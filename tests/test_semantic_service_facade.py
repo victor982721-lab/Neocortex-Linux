@@ -73,7 +73,8 @@ EXPECTED_SIGNATURES = {
         "'EmbeddingModelSpec | None' = None, model_cache: 'Path | None' = None, "
         "local_files_only: 'bool' = True, threads: 'int | None' = None, "
         "chunking: 'TextChunkingConfig | None' = None, work_budget: "
-        "'SemanticWorkBudget | None' = None) -> 'SemanticIndexResult'"
+        "'SemanticWorkBudget | None' = None, progress: "
+        "'ProgressCallback | None' = None) -> 'SemanticIndexResult'"
     ),
     "index_image_embeddings": (
         "(state_directory: 'Path', *, model_cache: 'Path | None' = None, "
@@ -81,7 +82,8 @@ EXPECTED_SIGNATURES = {
         "embed_ocr_text: 'bool' = True, ocr_model: "
         "'EmbeddingModelSpec | None' = None, chunking: "
         "'TextChunkingConfig | None' = None, work_budget: "
-        "'SemanticWorkBudget | None' = None) -> 'SemanticIndexResult'"
+        "'SemanticWorkBudget | None' = None, progress: "
+        "'ProgressCallback | None' = None) -> 'SemanticIndexResult'"
     ),
     "search_semantic_index": (
         "(state_directory: 'Path', query: 'str', *, limit: 'int' = 20, "

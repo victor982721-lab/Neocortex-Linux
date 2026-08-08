@@ -7,9 +7,11 @@
 # region [01] Dependencias del módulo
 from __future__ import annotations
 
+import inspect
 import json
 import sqlite3
 import zlib
+from contextlib import closing
 from dataclasses import replace
 from pathlib import Path
 
@@ -122,7 +124,7 @@ def _create_inventory(path: Path) -> str:
     def blob(value: int) -> bytes:
         return value.to_bytes(16, "little")
 
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         connection.execute(
             """INSERT INTO scans(
             scan_id,root,started_ns,completed_ns,files_seen,directories_seen,
@@ -231,7 +233,7 @@ def _insert_code_version(connection: sqlite3.Connection) -> None:
 
 def _create_code(path: Path) -> None:
     initialize_code_state(path)
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         connection.execute("PRAGMA foreign_keys=ON")
         _insert_code_version(connection)
 
@@ -271,7 +273,7 @@ def _insert_catalog_document(
 
 def _create_catalog(path: Path) -> None:
     initialize_document_catalog(path)
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         connection.executemany(
             """INSERT INTO catalog_generations(
             generation_id,source_kind,status,started_ns,completed_ns,published_ns)
@@ -316,6 +318,15 @@ def _state_file_bytes(state: Path) -> dict[str, bytes]:
         for path in sorted(state.iterdir())
         if path.is_file()
     }
+
+
+def test_private_code_lookup_signature_is_frozen() -> None:
+    assert str(inspect.signature(knowledge_exact_module._lookup_code)) == (
+        "(path: 'Path', owner: 'OwnerSnapshot', "
+        "terms: 'Sequence[ExactLookupTerm]', control: '_QueryControl', "
+        "per_term_limit: 'int', path_scope: 'tuple[str, ...] | None') -> "
+        "'tuple[list[ExactEvidenceMatch], list[ExactOwnerReport]]'"
+    )
 
 
 def test_lookup_exact_orchestration_preserves_primary_state_bytes(
@@ -682,7 +693,7 @@ def test_catalog_invalid_json_and_hostile_identifier_fail_closed(
             limit=5,
         ),
     )
-    with sqlite3.connect(catalog) as connection:
+    with closing(sqlite3.connect(catalog)) as connection, connection:
         assert (
             connection.execute(
                 "SELECT COUNT(*) FROM catalog_generation_documents"
@@ -716,7 +727,7 @@ def test_catalog_row_budget_and_unicode_nocase_cannot_report_false_complete(
     state.mkdir()
     catalog = state / "document_catalog.sqlite3"
     _create_catalog(catalog)
-    with sqlite3.connect(catalog) as connection:
+    with closing(sqlite3.connect(catalog)) as connection, connection:
         for index in range(5):
             _insert_catalog_document(
                 connection,
@@ -737,7 +748,7 @@ def test_catalog_row_budget_and_unicode_nocase_cannot_report_false_complete(
             max_observed_rows=5,
         ),
     )
-    with sqlite3.connect(catalog) as connection:
+    with closing(sqlite3.connect(catalog)) as connection, connection:
         connection.execute(
             """UPDATE catalog_generation_documents
             SET standard_references_json=?
@@ -780,7 +791,7 @@ def test_catalog_quality_states_are_observably_partial(
     state.mkdir()
     catalog = state / "document_catalog.sqlite3"
     _create_catalog(catalog)
-    with sqlite3.connect(catalog) as connection:
+    with closing(sqlite3.connect(catalog)) as connection, connection:
         connection.execute(
             f"""UPDATE catalog_generation_documents SET {assignment}
             WHERE generation_id=1"""
@@ -809,7 +820,7 @@ def test_catalog_identifier_error_coverage_cannot_report_false_absence(
     state.mkdir()
     catalog = state / "document_catalog.sqlite3"
     _create_catalog(catalog)
-    with sqlite3.connect(catalog) as connection:
+    with closing(sqlite3.connect(catalog)) as connection, connection:
         connection.execute(
             """UPDATE catalog_generation_documents
             SET catalog_status='error',uncertainty='alta',
@@ -837,7 +848,7 @@ def test_catalog_source_alias_is_applied_before_limit(tmp_path: Path) -> None:
     state.mkdir()
     catalog = state / "document_catalog.sqlite3"
     _create_catalog(catalog)
-    with sqlite3.connect(catalog) as connection:
+    with closing(sqlite3.connect(catalog)) as connection, connection:
         connection.execute(
             """INSERT INTO catalog_generations(
             generation_id,source_kind,status,started_ns,completed_ns,published_ns)
@@ -977,7 +988,7 @@ def test_inventory_checkpoint_change_after_snapshot_abstains(tmp_path: Path) -> 
     state.mkdir()
     inventory = state / "dedup.sqlite3"
     _create_inventory(inventory)
-    with sqlite3.connect(inventory) as connection:
+    with closing(sqlite3.connect(inventory)) as connection, connection:
         connection.execute(
             "UPDATE inventory_checkpoints SET updated_ns=4 WHERE root='C:/docs'"
         )
@@ -1042,7 +1053,7 @@ def test_owner_lookahead_contributes_to_omitted_match_count(tmp_path: Path) -> N
     def blob(value: int) -> bytes:
         return value.to_bytes(16, "little")
 
-    with sqlite3.connect(inventory) as connection:
+    with closing(sqlite3.connect(inventory)) as connection, connection:
         connection.execute(
             """INSERT INTO files(
             scan_id,path,volume_id,file_id,size,mtime_ns,birthtime_ns)
@@ -1075,7 +1086,7 @@ def test_inventory_format_and_source_predicates_precede_limit(tmp_path: Path) ->
     def blob(value: int) -> bytes:
         return value.to_bytes(16, "little")
 
-    with sqlite3.connect(inventory) as connection:
+    with closing(sqlite3.connect(inventory)) as connection, connection:
         connection.execute("UPDATE files SET path='C:/docs/A.docx' WHERE scan_id=1")
         connection.execute(
             """INSERT INTO files(
@@ -1131,7 +1142,7 @@ def test_invalid_row_does_not_count_as_omitted_valid_match(tmp_path: Path) -> No
     def blob(value: int) -> bytes:
         return value.to_bytes(16, "little")
 
-    with sqlite3.connect(inventory) as connection:
+    with closing(sqlite3.connect(inventory)) as connection, connection:
         connection.execute(
             "UPDATE files SET volume_id=? WHERE scan_id=1",
             (sqlite3.Binary(b"invalid"),),
@@ -1293,12 +1304,49 @@ def test_code_exact_path_hash_and_symbol_need_no_fts_chunks(tmp_path: Path) -> N
     assert prefix.reports[0].reason == "code_owner_non_generational"
 
 
+def test_code_exact_reads_committed_wal_without_mutating_owner_bytes(
+    tmp_path: Path,
+) -> None:
+    state = tmp_path / "state"
+    state.mkdir()
+    code = state / "code.sqlite3"
+    initialize_code_state(code)
+    writer = sqlite3.connect(code)
+    try:
+        writer.setconfig(sqlite3.SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, True)
+        writer.execute("PRAGMA foreign_keys=ON")
+        _insert_code_version(writer)
+        writer.commit()
+    finally:
+        writer.close()
+
+    wal = Path(f"{code}-wal")
+    primary_before = code.read_bytes()
+    wal_before = wal.read_bytes()
+    assert wal_before
+
+    result = lookup_exact(
+        KnowledgeStatePaths.from_directory(state),
+        _snapshot(_code_owner()),
+        ExactLookupRequest(
+            (ExactLookupTerm(ExactLookupKind.SYMBOL, "control.validate"),),
+            owner_scope=("code",),
+        ),
+    )
+
+    assert [match.evidence.symbol for match in result.matches] == [
+        "control.validate"
+    ]
+    assert code.read_bytes() == primary_before
+    assert wal.read_bytes() == wal_before
+
+
 def test_unconfirmed_code_symbol_is_explicitly_partial(tmp_path: Path) -> None:
     state = tmp_path / "state"
     state.mkdir()
     code = state / "code.sqlite3"
     _create_code(code)
-    with sqlite3.connect(code) as connection:
+    with closing(sqlite3.connect(code)) as connection, connection:
         connection.execute("UPDATE symbols SET confirmed=0 WHERE symbol_id=1")
 
     result = lookup_exact(
@@ -1322,7 +1370,7 @@ def test_code_format_predicate_precedes_limit(tmp_path: Path) -> None:
     state.mkdir()
     code = state / "code.sqlite3"
     _create_code(code)
-    with sqlite3.connect(code) as connection:
+    with closing(sqlite3.connect(code)) as connection, connection:
         connection.execute(
             "UPDATE files SET current_path='C:/src/A.js' WHERE file_id=1"
         )
@@ -1384,7 +1432,7 @@ def test_code_watermark_change_after_snapshot_abstains(tmp_path: Path) -> None:
     state.mkdir()
     code = state / "code.sqlite3"
     _create_code(code)
-    with sqlite3.connect(code) as connection:
+    with closing(sqlite3.connect(code)) as connection, connection:
         connection.execute(
             """INSERT INTO analysis_runs(
             analysis_run_id,framework_run_id,scan_id,processing_signature,status,

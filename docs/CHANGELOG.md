@@ -4,6 +4,29 @@ Este archivo registra cambios observables del producto. Las cifras de pruebas,
 cobertura y rendimiento pertenecen al informe técnico fechado de cada auditoría;
 no se copian aquí para evitar que se conviertan en datos históricos sin contexto.
 
+## [Sin publicar]
+
+### Cambiado
+
+- El paquete admite CPython 3.13 y 3.14 en Windows (`>=3.13,<3.15`); el carril
+  `standard` instala el perfil `full`, comprueba sus imports nativos y prueba el
+  wheel con ambas versiones.
+- La instalación documenta y valida el Microsoft Visual C++ v14 Redistributable
+  x64 requerido por los wheels nativos; `pip check` permanece como una barrera
+  distinta y no sustituye el probe de carga de DLL.
+- El proveedor de historia Git admite repositorios con ownership de otro SID
+  mediante `safe.directory` limitado a la raíz exacta validada y a cada comando;
+  no usa comodines ni modifica configuración persistente de Git.
+- Los extras `audio` y `full` declaran directamente `ctranslate2`, y el runtime
+  base declara `radon` para la suite NTFS que ejecuta el perfil profundo, de
+  modo que cada import pertenece a una dependencia explícita sin excepciones
+  de Deptry.
+- Los pisos accionables de seguridad suben a `Pillow 12.3.0` y
+  `setuptools 83.0.0`; constraints, CI y la guía de build vigente comparten las
+  mismas versiones.
+- El entrypoint del runtime versionado incorpora su directorio Node propiedad
+  de la instalación junto al shim de Pyright, sin depender del `PATH` heredado.
+
 ## [0.7.2] - 2026-07-31
 
 ### Añadido

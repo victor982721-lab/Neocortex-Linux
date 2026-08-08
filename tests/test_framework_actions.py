@@ -35,19 +35,29 @@ class ContentTypeTests(unittest.TestCase):
     @unittest.skipUnless(os.name == "nt", "Windows extended paths are required")
     def test_detects_signature_through_extended_length_path(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            parent = Path(directory)
+            base = Path(directory)
+            parent = base
             while len(os.fspath(parent / "image.png")) < 280:
                 parent /= "long-path-segment-0123456789"
-            parent.mkdir(parents=True)
             path = parent / "image.png"
-            path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"payload")
+            extended_parent = Path("\\\\?\\" + os.path.abspath(parent))
+            extended_path = Path("\\\\?\\" + os.path.abspath(path))
+            extended_base = Path("\\\\?\\" + os.path.abspath(base))
+            extended_parent.mkdir(parents=True)
+            extended_path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"payload")
+            try:
+                self.assertTrue(native_io_path(path).startswith("\\\\?\\"))
+                detected = detect_content_type(path)
 
-            self.assertTrue(native_io_path(path).startswith("\\\\?\\"))
-            detected = detect_content_type(path)
-
-            self.assertIsNotNone(detected)
-            assert detected is not None
-            self.assertEqual(detected.mime, "image/png")
+                self.assertIsNotNone(detected)
+                assert detected is not None
+                self.assertEqual(detected.mime, "image/png")
+            finally:
+                extended_path.unlink(missing_ok=True)
+                current = extended_parent
+                while current != extended_base:
+                    current.rmdir()
+                    current = current.parent
 
     def test_detects_signature_instead_of_claimed_extension(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

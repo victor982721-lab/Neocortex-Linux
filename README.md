@@ -64,7 +64,8 @@ artefacto y su entorno aislado. La invocación pública continúa siendo
 
 ## Instalación compatible
 
-El paquete actual requiere Windows y CPython `>=3.13,<3.14`. Instálelo primero
+El paquete actual requiere Windows y CPython `>=3.13,<3.15`; se valida con
+CPython 3.13 y 3.14. Instálelo primero
 en un entorno virtual aislado fuera del repositorio; no ejecute `pip install .`
 contra el Python global:
 
@@ -100,6 +101,12 @@ puede instalar: `ffprobe` es obligatorio para `audio`; `tesseract` y `qpdf`
 habilitan OCR y recuperación PDF degradables en `documents`; y `tesseract`
 habilita el OCR documental degradable en `image`. El probe ligero sólo busca
 estos ejecutables en `PATH`; no interpreta overrides de una ejecución concreta.
+
+Los wheels nativos del perfil `full` requieren el Microsoft Visual C++ v14
+Redistributable x64 vigente. Después de instalarlo, valida en el mismo runtime
+los imports de PyMuPDF, ONNX Runtime, PySide6, PyAV, CTranslate2 y OpenCV antes
+de promover el launcher; `pip check` por sí solo no detecta una DLL del sistema
+ausente.
 
 Para desarrollo sobre el runtime completo:
 
@@ -414,12 +421,12 @@ descendientes. `--code-query-limit` acepta 1–500 (50 por defecto) y
 conservan dimensiones, evidencia y limitaciones por separado: no calculan un
 score agregado ni una probabilidad de defecto, y nunca autorizan una mutación.
 
-El único workflow `Neocortex CI` en `.github/workflows/ci.yml` valida Windows y
-Python 3.13. Los carriles `fast` y `standard` corren en pull requests y pushes;
-`deep` queda reservado al cron semanal o a `workflow_dispatch`. Standard
-construye e instala el wheel antes de probarlo; deep ejecuta sólo fixtures y
-contratos acotados, no suplanta la identidad física local exigida por una
-corrida real `trusted-deep`.
+El único workflow `Neocortex CI` en `.github/workflows/ci.yml` valida Windows.
+Los carriles `fast` y `standard` corren en pull requests y pushes; `standard`
+construye, instala y prueba el wheel tanto con Python 3.13 como con 3.14.
+`deep` queda reservado al cron semanal o a `workflow_dispatch`. Deep ejecuta
+sólo fixtures y contratos acotados, no suplanta la identidad física local
+exigida por una corrida real `trusted-deep`.
 
 La validación H6 sobre la raíz canónica produjo el work package
 `_04_Nucleo_Operativo.external_deep_coverage` /

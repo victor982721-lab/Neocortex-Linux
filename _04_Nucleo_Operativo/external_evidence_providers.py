@@ -2851,7 +2851,7 @@ class GitHistoryLocalProvider:
                 path_value=executable_value,
             ),
             root_identity=self._root_identity,
-            execution_strategy="bounded-local-git-history-v1",
+            execution_strategy="bounded-local-git-history-v2",
             invalidation_strategy="project_wide",
             memory=_GIT_HISTORY_MEMORY_BYTES,
             loads_project_configuration=False,

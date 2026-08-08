@@ -613,9 +613,63 @@ def _append_diff_examples(
         )
 
 
-def _extract_diff(payload: Mapping[str, object]) -> list[dict[str, object]]:
-    records: list[dict[str, object]] = []
-    for index, provider in enumerate(_mapping_items(payload.get("providers"))):
+def _append_provider_relocations(
+    records: list[dict[str, object]],
+    provider: Mapping[str, object],
+    *,
+    provider_index: int,
+    provider_id: str,
+) -> None:
+    for relocation_index, relocation in enumerate(
+        _mapping_items(provider.get("relocation_examples"))
+    ):
+        relocation_id = _first_text(
+            relocation,
+            "current_finding_id",
+            "baseline_finding_id",
+        ) or str(relocation_index)
+        records.append(
+            _record(
+                record_type="provider_finding_relocation",
+                record_id=relocation_id,
+                source_path=(
+                    f"providers[{provider_index}].relocation_examples[{relocation_index}]"
+                ),
+                providers=(provider_id,),
+                categories=(
+                    "finding_relocation",
+                    _first_text(relocation, "category") or "finding",
+                ),
+                modules=_module_values(relocation),
+                statuses=("ready",),
+                deltas=("relocated",),
+                facts=_facts(
+                    relocation,
+                    "baseline_finding_id",
+                    "current_finding_id",
+                    "path",
+                    "category",
+                    "code",
+                    "severity",
+                    "message",
+                    "baseline_start_line",
+                    "baseline_start_column",
+                    "baseline_end_line",
+                    "baseline_end_column",
+                    "current_start_line",
+                    "current_start_column",
+                    "current_end_line",
+                    "current_end_column",
+                ),
+            )
+        )
+
+
+def _append_provider_diffs(
+    records: list[dict[str, object]],
+    value: object,
+) -> None:
+    for index, provider in enumerate(_mapping_items(value)):
         provider_id = _first_text(provider, "provider_id") or str(index)
         baseline = _mapping(provider.get("baseline"))
         current = _mapping(provider.get("current"))
@@ -644,182 +698,192 @@ def _extract_diff(payload: Mapping[str, object]) -> list[dict[str, object]]:
                 ),
             )
         )
-        for relocation_index, relocation in enumerate(
-            _mapping_items(provider.get("relocation_examples"))
-        ):
-            relocation_id = _first_text(
-                relocation,
-                "current_finding_id",
-                "baseline_finding_id",
-            ) or str(relocation_index)
-            records.append(
-                _record(
-                    record_type="provider_finding_relocation",
-                    record_id=relocation_id,
-                    source_path=(f"providers[{index}].relocation_examples[{relocation_index}]"),
-                    providers=(provider_id,),
-                    categories=(
-                        "finding_relocation",
-                        _first_text(relocation, "category") or "finding",
-                    ),
-                    modules=_module_values(relocation),
-                    statuses=("ready",),
-                    deltas=("relocated",),
-                    facts=_facts(
-                        relocation,
-                        "baseline_finding_id",
-                        "current_finding_id",
-                        "path",
-                        "category",
-                        "code",
-                        "severity",
-                        "message",
-                        "baseline_start_line",
-                        "baseline_start_column",
-                        "baseline_end_line",
-                        "baseline_end_column",
-                        "current_start_line",
-                        "current_start_column",
-                        "current_end_line",
-                        "current_end_column",
-                    ),
-                )
-            )
-    architecture = _mapping(payload.get("architecture"))
-    if architecture is not None:
-        for index, module in enumerate(_mapping_items(architecture.get("modules"))):
-            module_id = _first_text(module, "module_id", "module") or str(index)
-            records.append(
-                _record(
-                    record_type="architecture_module_delta",
-                    record_id=module_id,
-                    source_path=f"architecture.modules[{index}]",
-                    categories=("architecture", "module"),
-                    modules=_module_values(module),
-                    statuses=_texts(module, "status"),
-                    deltas=_delta_words(
-                        module,
-                        "complexity_delta",
-                        "fan_in_delta",
-                        "fan_out_delta",
-                        "blast_radius_delta",
-                    ),
-                    facts=_facts(
-                        module,
-                        "complexity_delta",
-                        "fan_in_delta",
-                        "fan_out_delta",
-                        "blast_radius_delta",
-                        "reason",
-                    ),
-                )
-            )
-    hotspots = _mapping(payload.get("hotspots"))
-    if hotspots is not None:
-        for key, delta in (
-            ("added_examples", "added"),
-            ("removed_examples", "removed"),
-            ("changed_examples", "changed"),
-        ):
-            _append_diff_examples(
-                records,
-                hotspots.get(key),
-                source_path=f"hotspots.{key}",
-                record_type="hotspot_delta",
-                category="hotspot",
-                delta=delta,
-            )
-    supply = _mapping(payload.get("supply_chain"))
-    if supply is not None:
-        for index, category in enumerate(_mapping_items(supply.get("categories"))):
-            category_id = _first_text(category, "category") or str(index)
-            records.append(
-                _record(
-                    record_type="supply_chain_category_delta",
-                    record_id=category_id,
-                    source_path=f"supply_chain.categories[{index}]",
-                    categories=("supply_chain", category_id),
-                    statuses=_texts(supply, "status", "current_status"),
-                    deltas=_delta_words(category, "delta"),
-                    facts=_facts(category, "baseline", "current", "delta"),
-                )
-            )
-        for index, provider in enumerate(_mapping_items(supply.get("providers"))):
-            provider_id = _first_text(provider, "provider_id") or str(index)
-            records.append(
-                _record(
-                    record_type="supply_chain_provider_delta",
-                    record_id=provider_id,
-                    source_path=f"supply_chain.providers[{index}]",
-                    providers=(provider_id,),
-                    categories=("supply_chain", "provider_delta"),
-                    statuses=_texts(provider, "baseline_status", "current_status"),
-                    deltas=_delta_words(
-                        provider,
-                        "findings_delta",
-                        "metrics_delta",
-                        "relations_delta",
-                    ),
-                    facts=_facts(
-                        provider,
-                        "baseline_status",
-                        "current_status",
-                        "findings_delta",
-                        "metrics_delta",
-                        "relations_delta",
-                    ),
-                )
-            )
-    coverage = _mapping(payload.get("test_coverage"))
-    if coverage is not None:
+        _append_provider_relocations(
+            records,
+            provider,
+            provider_index=index,
+            provider_id=provider_id,
+        )
+
+
+def _append_architecture_diffs(
+    records: list[dict[str, object]],
+    value: object,
+) -> None:
+    architecture = _mapping(value)
+    if architecture is None:
+        return
+    for index, module in enumerate(_mapping_items(architecture.get("modules"))):
+        module_id = _first_text(module, "module_id", "module") or str(index)
         records.append(
             _record(
-                record_type="coverage_delta",
-                record_id="pytest-coverage-trusted-deep",
-                source_path="test_coverage",
-                providers=("pytest-coverage-trusted-deep",),
-                categories=("test_coverage", "coverage"),
-                statuses=_texts(coverage, "status"),
+                record_type="architecture_module_delta",
+                record_id=module_id,
+                source_path=f"architecture.modules[{index}]",
+                categories=("architecture", "module"),
+                modules=_module_values(module),
+                statuses=_texts(module, "status"),
                 deltas=_delta_words(
-                    coverage,
-                    "line_coverage_percent_delta",
-                    "branch_coverage_percent_delta",
-                    "covered_lines_delta",
-                    "covered_branch_exits_delta",
+                    module,
+                    "complexity_delta",
+                    "fan_in_delta",
+                    "fan_out_delta",
+                    "blast_radius_delta",
                 ),
                 facts=_facts(
-                    coverage,
-                    "line_coverage_percent_delta",
-                    "branch_coverage_percent_delta",
-                    "covered_lines_delta",
-                    "missing_lines_delta",
-                    "covered_branch_exits_delta",
-                    "missing_branch_exits_delta",
+                    module,
+                    "complexity_delta",
+                    "fan_in_delta",
+                    "fan_out_delta",
+                    "blast_radius_delta",
                     "reason",
                 ),
             )
         )
-    engineering = _mapping(payload.get("engineering_analytics"))
-    if engineering is not None:
-        for index, dimension in enumerate(_mapping_items(engineering.get("dimensions"))):
-            dimension_id = _first_text(dimension, "dimension") or str(index)
-            records.append(
-                _record(
-                    record_type="engineering_dimension_delta",
-                    record_id=dimension_id,
-                    source_path=f"engineering_analytics.dimensions[{index}]",
-                    categories=("engineering", dimension_id),
-                    statuses=_texts(dimension, "baseline_status", "current_status"),
-                    deltas=_delta_words(dimension),
-                    facts=_facts(
-                        dimension,
-                        "baseline_status",
-                        "current_status",
-                        "baseline_reason",
-                        "current_reason",
-                    ),
-                )
+
+
+def _append_hotspot_diffs(
+    records: list[dict[str, object]],
+    value: object,
+) -> None:
+    hotspots = _mapping(value)
+    if hotspots is None:
+        return
+    for key, delta in (
+        ("added_examples", "added"),
+        ("removed_examples", "removed"),
+        ("changed_examples", "changed"),
+    ):
+        _append_diff_examples(
+            records,
+            hotspots.get(key),
+            source_path=f"hotspots.{key}",
+            record_type="hotspot_delta",
+            category="hotspot",
+            delta=delta,
+        )
+
+
+def _append_supply_chain_diffs(
+    records: list[dict[str, object]],
+    value: object,
+) -> None:
+    supply = _mapping(value)
+    if supply is None:
+        return
+    for index, category in enumerate(_mapping_items(supply.get("categories"))):
+        category_id = _first_text(category, "category") or str(index)
+        records.append(
+            _record(
+                record_type="supply_chain_category_delta",
+                record_id=category_id,
+                source_path=f"supply_chain.categories[{index}]",
+                categories=("supply_chain", category_id),
+                statuses=_texts(supply, "status", "current_status"),
+                deltas=_delta_words(category, "delta"),
+                facts=_facts(category, "baseline", "current", "delta"),
             )
+        )
+    for index, provider in enumerate(_mapping_items(supply.get("providers"))):
+        provider_id = _first_text(provider, "provider_id") or str(index)
+        records.append(
+            _record(
+                record_type="supply_chain_provider_delta",
+                record_id=provider_id,
+                source_path=f"supply_chain.providers[{index}]",
+                providers=(provider_id,),
+                categories=("supply_chain", "provider_delta"),
+                statuses=_texts(provider, "baseline_status", "current_status"),
+                deltas=_delta_words(
+                    provider,
+                    "findings_delta",
+                    "metrics_delta",
+                    "relations_delta",
+                ),
+                facts=_facts(
+                    provider,
+                    "baseline_status",
+                    "current_status",
+                    "findings_delta",
+                    "metrics_delta",
+                    "relations_delta",
+                ),
+            )
+        )
+
+
+def _append_coverage_diff(
+    records: list[dict[str, object]],
+    value: object,
+) -> None:
+    coverage = _mapping(value)
+    if coverage is None:
+        return
+    records.append(
+        _record(
+            record_type="coverage_delta",
+            record_id="pytest-coverage-trusted-deep",
+            source_path="test_coverage",
+            providers=("pytest-coverage-trusted-deep",),
+            categories=("test_coverage", "coverage"),
+            statuses=_texts(coverage, "status"),
+            deltas=_delta_words(
+                coverage,
+                "line_coverage_percent_delta",
+                "branch_coverage_percent_delta",
+                "covered_lines_delta",
+                "covered_branch_exits_delta",
+            ),
+            facts=_facts(
+                coverage,
+                "line_coverage_percent_delta",
+                "branch_coverage_percent_delta",
+                "covered_lines_delta",
+                "missing_lines_delta",
+                "covered_branch_exits_delta",
+                "missing_branch_exits_delta",
+                "reason",
+            ),
+        )
+    )
+
+
+def _append_engineering_diffs(
+    records: list[dict[str, object]],
+    value: object,
+) -> None:
+    engineering = _mapping(value)
+    if engineering is None:
+        return
+    for index, dimension in enumerate(_mapping_items(engineering.get("dimensions"))):
+        dimension_id = _first_text(dimension, "dimension") or str(index)
+        records.append(
+            _record(
+                record_type="engineering_dimension_delta",
+                record_id=dimension_id,
+                source_path=f"engineering_analytics.dimensions[{index}]",
+                categories=("engineering", dimension_id),
+                statuses=_texts(dimension, "baseline_status", "current_status"),
+                deltas=_delta_words(dimension),
+                facts=_facts(
+                    dimension,
+                    "baseline_status",
+                    "current_status",
+                    "baseline_reason",
+                    "current_reason",
+                ),
+            )
+        )
+
+
+def _extract_diff(payload: Mapping[str, object]) -> list[dict[str, object]]:
+    records: list[dict[str, object]] = []
+    _append_provider_diffs(records, payload.get("providers"))
+    _append_architecture_diffs(records, payload.get("architecture"))
+    _append_hotspot_diffs(records, payload.get("hotspots"))
+    _append_supply_chain_diffs(records, payload.get("supply_chain"))
+    _append_coverage_diff(records, payload.get("test_coverage"))
+    _append_engineering_diffs(records, payload.get("engineering_analytics"))
     return records
 
 

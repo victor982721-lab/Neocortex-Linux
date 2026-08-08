@@ -12,7 +12,7 @@ from dataclasses import replace
 import pytest
 
 import _04_Nucleo_Operativo.knowledge_contracts as contracts
-from test_knowledge_contracts_characterization import (
+from tests.test_knowledge_contracts_characterization import (
     _contract_instances as make_contract_instances,
 )
 # endregion [01]
@@ -681,7 +681,7 @@ def _trigger_evidence_precedence(case: str) -> None:
             "identifiers": (("serial", "Q52"), ("serial", "Q52")),
         },
         "identifier-count": {
-            "identifiers": too_many_identifiers + (too_many_identifiers[-1],),
+            "identifiers": (*too_many_identifiers, too_many_identifiers[-1]),
         },
     }
     values.update(overrides[case])
@@ -752,7 +752,7 @@ def _remove_rendered_item(
 def _trigger_bundle_precedence(case: str) -> None:
     bundle = make_contract_instances()["ContextBundle"]
     first_hit, second_hit = bundle.selected_hits  # type: ignore[attr-defined]
-    first_entity, second_entity = bundle.entities  # type: ignore[attr-defined]
+    first_entity, _second_entity = bundle.entities  # type: ignore[attr-defined]
     relation = bundle.relations[0]  # type: ignore[attr-defined]
     contradiction = bundle.contradictions[0]  # type: ignore[attr-defined]
 

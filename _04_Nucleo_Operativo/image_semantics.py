@@ -67,10 +67,12 @@ def cached_features_are_compatible(processing_signature: str | None) -> bool:
         return True
     return bool(
         processing_signature
-        and (
-            processing_signature.startswith(COMPATIBLE_FEATURE_PREFIXES)
-            or processing_signature.startswith(f"image-route-v4|{FEATURE_VERSION}|")
-            or processing_signature.startswith(f"psig-v1|image|{FEATURE_VERSION}|")
+        and processing_signature.startswith(
+            (
+                *COMPATIBLE_FEATURE_PREFIXES,
+                f"image-route-v4|{FEATURE_VERSION}|",
+                f"psig-v1|image|{FEATURE_VERSION}|",
+            )
         )
     )
 
@@ -138,6 +140,85 @@ def _merge_semantic_labels(
     return tuple(sorted(merged.values(), key=lambda value: (-value.score, value.label)))
 
 
+def _document_semantic_sources(
+    document_text: DocumentTextEvidence | None,
+) -> tuple[
+    tuple[str, ...],
+    tuple[str, ...],
+    tuple[str, ...],
+    tuple[str, ...],
+]:
+    if document_text is None or not document_text.available:
+        return (), (), (), ()
+    return (
+        document_text.industrial_entities,
+        document_text.industrial_activities,
+        document_text.industrial_operational_contexts,
+        document_text.industrial_safety_conditions,
+    )
+
+
+def _visual_semantic_sources(
+    visual: VisualSemanticEvidence | None,
+) -> tuple[
+    tuple[SemanticLabel, ...],
+    tuple[SemanticLabel, ...],
+    tuple[SemanticLabel, ...],
+    tuple[SemanticLabel, ...],
+]:
+    if visual is None:
+        return (), (), (), ()
+    return (
+        visual.entities,
+        visual.activities,
+        visual.operational_contexts,
+        visual.safety_conditions,
+    )
+
+
+def _classify_semantic_family(
+    context: str,
+    hints: dict[str, tuple[str, ...]],
+    document_labels: tuple[str, ...],
+    visual_labels: tuple[SemanticLabel, ...],
+) -> tuple[SemanticLabel, ...]:
+    return _merge_semantic_labels(
+        _semantic_labels(context, hints),
+        _ocr_semantic_labels(document_labels),
+        visual_labels,
+    )
+
+
+def _semantic_provenances(
+    groups: tuple[tuple[SemanticLabel, ...], ...],
+) -> set[str]:
+    return {item.provenance for group in groups for item in group}
+
+
+def _industrial_context_uncertainty(
+    provenances: set[str],
+    visual: VisualSemanticEvidence | None,
+) -> str:
+    has_path = any("path-keywords-v1" in value for value in provenances)
+    has_ocr = any("ocr-keywords-v1" in value for value in provenances)
+    has_visual = any("visual-" in value for value in provenances)
+    if has_visual and (has_path or has_ocr):
+        return "evidencia_multifuente_con_componente_visual_no_calibrado"
+    if has_path and has_ocr:
+        return "evidencia_semantica_indirecta_de_ruta_y_ocr"
+    if has_visual:
+        return (
+            visual.uncertainty
+            if visual is not None
+            else "evidencia_visual_no_calibrada"
+        )
+    if has_ocr:
+        return "evidencia_semantica_limitada_a_ocr"
+    if has_path:
+        return "evidencia_semantica_limitada_a_nombre_y_ruta"
+    return "sin_evidencia_semantica_suficiente"
+
+
 def classify_industrial_context(
     context: str,
     document_text: DocumentTextEvidence | None = None,
@@ -145,74 +226,52 @@ def classify_industrial_context(
 ) -> IndustrialContext:
     """Fuse path, OCR and visual labels while retaining their provenance."""
 
-    entities = _merge_semantic_labels(
-        _semantic_labels(context, INDUSTRIAL_ENTITY_HINTS),
-        _ocr_semantic_labels(
-            document_text.industrial_entities
-            if document_text is not None and document_text.available
-            else ()
-        ),
-        visual.entities if visual is not None else (),
+    (
+        document_entities,
+        document_activities,
+        document_operational,
+        document_safety,
+    ) = _document_semantic_sources(document_text)
+    (
+        visual_entities,
+        visual_activities,
+        visual_operational,
+        visual_safety,
+    ) = _visual_semantic_sources(visual)
+    entities = _classify_semantic_family(
+        context,
+        INDUSTRIAL_ENTITY_HINTS,
+        document_entities,
+        visual_entities,
     )
-    activities = _merge_semantic_labels(
-        _semantic_labels(context, INDUSTRIAL_ACTIVITY_HINTS),
-        _ocr_semantic_labels(
-            document_text.industrial_activities
-            if document_text is not None and document_text.available
-            else ()
-        ),
-        visual.activities if visual is not None else (),
+    activities = _classify_semantic_family(
+        context,
+        INDUSTRIAL_ACTIVITY_HINTS,
+        document_activities,
+        visual_activities,
     )
-    operational = _merge_semantic_labels(
-        _semantic_labels(context, OPERATIONAL_CONTEXT_HINTS),
-        _ocr_semantic_labels(
-            document_text.industrial_operational_contexts
-            if document_text is not None and document_text.available
-            else ()
-        ),
-        visual.operational_contexts if visual is not None else (),
+    operational = _classify_semantic_family(
+        context,
+        OPERATIONAL_CONTEXT_HINTS,
+        document_operational,
+        visual_operational,
     )
-    safety = _merge_semantic_labels(
-        _semantic_labels(context, SAFETY_CONDITION_HINTS),
-        _ocr_semantic_labels(
-            document_text.industrial_safety_conditions
-            if document_text is not None and document_text.available
-            else ()
-        ),
-        visual.safety_conditions if visual is not None else (),
+    safety = _classify_semantic_family(
+        context,
+        SAFETY_CONDITION_HINTS,
+        document_safety,
+        visual_safety,
     )
-    has_evidence = bool(entities or activities or operational or safety)
-    provenances = {
-        item.provenance
-        for group in (entities, activities, operational, safety)
-        for item in group
-    }
-    has_path = any("path-keywords-v1" in value for value in provenances)
-    has_ocr = any("ocr-keywords-v1" in value for value in provenances)
-    has_visual = any("visual-" in value for value in provenances)
-    if has_visual and (has_path or has_ocr):
-        uncertainty = "evidencia_multifuente_con_componente_visual_no_calibrado"
-    elif has_path and has_ocr:
-        uncertainty = "evidencia_semantica_indirecta_de_ruta_y_ocr"
-    elif has_visual:
-        uncertainty = (
-            visual.uncertainty
-            if visual is not None
-            else "evidencia_visual_no_calibrada"
-        )
-    elif has_ocr:
-        uncertainty = "evidencia_semantica_limitada_a_ocr"
-    elif has_path:
-        uncertainty = "evidencia_semantica_limitada_a_nombre_y_ruta"
-    else:
-        uncertainty = "sin_evidencia_semantica_suficiente"
+    provenances = _semantic_provenances(
+        (entities, activities, operational, safety)
+    )
     return IndustrialContext(
         entities=entities,
         activities=activities,
         operational_contexts=operational,
         safety_conditions=safety,
-        uncertainty=uncertainty,
-        provenance=tuple(sorted(provenances)) if has_evidence else (),
+        uncertainty=_industrial_context_uncertainty(provenances, visual),
+        provenance=tuple(sorted(provenances)),
     )
 
 

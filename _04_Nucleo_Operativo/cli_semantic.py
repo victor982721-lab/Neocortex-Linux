@@ -6,9 +6,16 @@ import argparse
 import json
 import sys
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from _03_Progreso import ProgressCallback, ProgressEvent, ProgressMetric, emit_progress
+
+if TYPE_CHECKING:
+    from .semantic_models import EmbeddingModelSpec
+    from .semantic_service_contracts import SemanticIndexResult
+    from .semantic_work_budget import SemanticWorkBudget
 
 __all__ = [
     "run_integrated_all_semantic_index",
@@ -132,6 +139,18 @@ def _print_semantic_index_result(scope: str, result) -> None:
             f"failed={work.failed} pending={summary.pending} leased={summary.leased} "
             f"errors={summary.errors} stale={summary.stale}"
         )
+
+
+@dataclass(slots=True)
+class _SemanticIndexExecution:
+    args: argparse.Namespace
+    text_model: EmbeddingModelSpec
+    selected_sources: tuple[str, ...]
+    work_budget: SemanticWorkBudget
+    progress: ProgressCallback | None
+    result_sink: Callable[[str, object], None] | None
+    results: list[tuple[str, SemanticIndexResult]] = field(default_factory=list)
+    code_link_statuses: list[tuple[int, str, int, int]] = field(default_factory=list)
 
 
 def run_semantic_status(args: argparse.Namespace) -> int:
@@ -340,107 +359,197 @@ def run_semantic_index(
         max_new_jobs=args.semantic_max_new_jobs,
         time_budget_seconds=args.semantic_time_budget_seconds,
     )
-    results = []
-    code_link_statuses: list[tuple[int, str, int, int]] = []
+    execution = _SemanticIndexExecution(
+        args=args,
+        text_model=text_model,
+        selected_sources=selected_sources,
+        work_budget=work_budget,
+        progress=progress,
+        result_sink=result_sink,
+    )
     try:
         _validate_semantic_state_write(
             args.state_directory,
             database=True,
         )
         with FrameworkRunLock(args.state_directory / "framework.lock"):
-            if args.semantic_index in {"text", "all"}:
-                if not selected_sources:
-                    raise FileNotFoundError(
-                        "no durable PDF, DOCX, Office, audio or code text cache is available"
-                    )
-                text_result = index_text_embeddings(
-                    args.state_directory,
-                    source_kinds=selected_sources,
-                    model=text_model,
-                    model_cache=args.semantic_model_cache,
-                    local_files_only=True,
-                    threads=args.semantic_threads,
-                    work_budget=work_budget,
-                    progress=progress,
-                )
-                results.append(("text", text_result))
-                if result_sink is not None:
-                    result_sink("text", text_result)
-                if "code" in text_result.sources and text_result.complete:
-                    from .code_semantic_links import (
-                        current_code_embedding_link_counts,
-                    )
-
-                    summary = text_result.generations[0].summary
-                    active_links, current_links = current_code_embedding_link_counts(
-                        args.state_directory,
-                        generation_id=summary.generation_id,
-                        model_signature=summary.model_signature,
-                    )
-                    code_link_statuses.append(
-                        (
-                            summary.generation_id,
-                            summary.model_signature,
-                            active_links,
-                            current_links,
-                        )
-                    )
-            if args.semantic_index in {"image", "all"} and not work_budget.truncated:
-                results.append(
-                    (
-                        "image",
-                        index_image_embeddings(
-                            args.state_directory,
-                            model_cache=args.semantic_model_cache,
-                            local_files_only=True,
-                            threads=args.semantic_threads,
-                            embed_ocr_text=not args.semantic_no_ocr,
-                            ocr_model=text_model,
-                            work_budget=work_budget,
-                            progress=progress,
-                        ),
-                    )
-                )
-                if result_sink is not None:
-                    result_sink("image", results[-1][1])
+            _execute_semantic_index_scopes(
+                execution,
+                text_operation=index_text_embeddings,
+                image_operation=index_image_embeddings,
+            )
     except Exception as exc:  # model runtimes expose backend-specific exceptions
-        if print_output:
-            for scope, result in results:
-                _print_semantic_index_result(scope, result)
-        return _semantic_failure(
-            "semantic-index",
-            exc,
-            offline=True,
-            print_output=print_output,
+        return _semantic_index_failure(execution, exc, print_output=print_output)
+    return _complete_semantic_index_execution(
+        execution,
+        incomplete_is_error=incomplete_is_error,
+        print_output=print_output,
+    )
+
+
+def _execute_semantic_index_scopes(
+    execution: _SemanticIndexExecution,
+    *,
+    text_operation: Callable[..., SemanticIndexResult],
+    image_operation: Callable[..., SemanticIndexResult],
+) -> None:
+    _execute_semantic_text_index(execution, text_operation)
+    _execute_semantic_image_index(execution, image_operation)
+
+
+def _execute_semantic_text_index(
+    execution: _SemanticIndexExecution,
+    operation: Callable[..., SemanticIndexResult],
+) -> None:
+    args = execution.args
+    if args.semantic_index not in {"text", "all"}:
+        return
+    if not execution.selected_sources:
+        raise FileNotFoundError(
+            "no durable PDF, DOCX, Office, audio or code text cache is available"
         )
+    result = operation(
+        args.state_directory,
+        source_kinds=execution.selected_sources,
+        model=execution.text_model,
+        model_cache=args.semantic_model_cache,
+        local_files_only=True,
+        threads=args.semantic_threads,
+        work_budget=execution.work_budget,
+        progress=execution.progress,
+    )
+    _record_semantic_index_result(execution, "text", result)
+    code_link_status = _current_semantic_code_link_status(args.state_directory, result)
+    if code_link_status is not None:
+        execution.code_link_statuses.append(code_link_status)
+
+
+def _execute_semantic_image_index(
+    execution: _SemanticIndexExecution,
+    operation: Callable[..., SemanticIndexResult],
+) -> None:
+    args = execution.args
+    if args.semantic_index not in {"image", "all"} or execution.work_budget.truncated:
+        return
+    result = operation(
+        args.state_directory,
+        model_cache=args.semantic_model_cache,
+        local_files_only=True,
+        threads=args.semantic_threads,
+        embed_ocr_text=not args.semantic_no_ocr,
+        ocr_model=execution.text_model,
+        work_budget=execution.work_budget,
+        progress=execution.progress,
+    )
+    _record_semantic_index_result(execution, "image", result)
+
+
+def _record_semantic_index_result(
+    execution: _SemanticIndexExecution,
+    scope: str,
+    result: SemanticIndexResult,
+) -> None:
+    execution.results.append((scope, result))
+    if execution.result_sink is not None:
+        execution.result_sink(scope, result)
+
+
+def _current_semantic_code_link_status(
+    state_directory: Path,
+    result: SemanticIndexResult,
+) -> tuple[int, str, int, int] | None:
+    if "code" not in result.sources or not result.complete:
+        return None
+    from .code_semantic_links import current_code_embedding_link_counts
+
+    summary = result.generations[0].summary
+    active_links, current_links = current_code_embedding_link_counts(
+        state_directory,
+        generation_id=summary.generation_id,
+        model_signature=summary.model_signature,
+    )
+    return (
+        summary.generation_id,
+        summary.model_signature,
+        active_links,
+        current_links,
+    )
+
+
+def _semantic_index_failure(
+    execution: _SemanticIndexExecution,
+    exc: Exception,
+    *,
+    print_output: bool,
+) -> int:
+    if print_output:
+        for scope, result in execution.results:
+            _print_semantic_index_result(scope, result)
+    return _semantic_failure(
+        "semantic-index",
+        exc,
+        offline=True,
+        print_output=print_output,
+    )
+
+
+def _complete_semantic_index_execution(
+    execution: _SemanticIndexExecution,
+    *,
+    incomplete_is_error: bool,
+    print_output: bool,
+) -> int:
     failed = False
-    for scope, result in results:
+    for scope, result in execution.results:
         if print_output:
             _print_semantic_index_result(scope, result)
-        scope_failed = not result.complete
-        if (
-            not incomplete_is_error
-            and result.truncated
-            and result.errors == 0
-            and result.stale == 0
-        ):
-            scope_failed = False
+        scope_failed = _semantic_index_result_failed(
+            result,
+            incomplete_is_error=incomplete_is_error,
+        )
         failed = failed or scope_failed
+    _print_semantic_code_link_statuses(
+        execution.code_link_statuses,
+        print_output=print_output,
+    )
+    return 2 if failed else 0
+
+
+def _semantic_index_result_failed(
+    result: SemanticIndexResult,
+    *,
+    incomplete_is_error: bool,
+) -> bool:
+    if (
+        not incomplete_is_error
+        and result.truncated
+        and result.errors == 0
+        and result.stale == 0
+    ):
+        return False
+    return not result.complete
+
+
+def _print_semantic_code_link_statuses(
+    statuses: list[tuple[int, str, int, int]],
+    *,
+    print_output: bool,
+) -> None:
+    if not print_output:
+        return
     for (
         generation_id,
         model_signature,
         active_links,
         current_links,
-    ) in code_link_statuses:
-        if print_output:
-            print(
-                f"SEMANTIC_CODE_LINKS generation={generation_id} "
-                f"model={model_signature} active={active_links} "
-                f"current={current_links} stale={active_links - current_links} "
-                "authority=retrieval_evidence_only "
-                "calibration=uncalibrated_similarity"
-            )
-    return 2 if failed else 0
+    ) in statuses:
+        print(
+            f"SEMANTIC_CODE_LINKS generation={generation_id} "
+            f"model={model_signature} active={active_links} "
+            f"current={current_links} stale={active_links - current_links} "
+            "authority=retrieval_evidence_only "
+            "calibration=uncalibrated_similarity"
+        )
 
 
 def run_integrated_all_semantic_index(

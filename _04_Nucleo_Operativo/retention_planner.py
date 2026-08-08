@@ -1141,18 +1141,13 @@ def _validated_snapshot(
         return _StoreSnapshot(store, database, "blocked", None, None, str(exc)[:1000])
 
 
-def plan_retention(
-    state_directory: Path,
+def _retention_request(
     *,
-    policy: RetentionPolicy | None = None,
-    after: Mapping[str, int] | None = None,
-    stores: Sequence[str] | None = None,
+    policy: RetentionPolicy | None,
+    after: Mapping[str, int] | None,
+    stores: Sequence[str] | None,
     now_ns: int,
-    cancelled: Callable[[], bool] | None = None,
-    observer: RetentionObserver | None = None,
-) -> RetentionPlan:
-    """Return one stable, bounded dry-run page without creating or migrating state."""
-
+) -> tuple[tuple[RetentionStore, ...], RetentionPolicy, dict[str, int]]:
     selected = _selected_stores(stores)
     selected_policy = RetentionPolicy() if policy is None else policy
     cursors = dict(after or {})
@@ -1166,79 +1161,177 @@ def plan_retention(
         raise ValueError("retention cursors must be non-negative integers")
     if isinstance(now_ns, bool) or not isinstance(now_ns, int) or now_ns < 0:
         raise ValueError("now_ns must be a non-negative integer")
-    _check_cancelled(cancelled)
+    return selected, selected_policy, cursors
 
+
+def _required_retention_stores(
+    selected: tuple[RetentionStore, ...],
+) -> set[RetentionStore]:
     required = set(selected)
     if "inventory" in selected:
         required.add("framework")
     if "framework" in selected:
         required.add("catalog")
+    return required
 
-    with ExitStack() as stack:
-        snapshots = {
-            store: _validated_snapshot(
-                store,
-                Path(state_directory),
-                stack,
-                cancelled=cancelled,
-                observer=observer,
-            )
-            for store in STORE_ORDER
-            if store in required
-        }
-        plans: list[RetentionStorePlan] = []
-        for store in selected:
-            _check_cancelled(cancelled)
-            snapshot = snapshots[store]
-            cursor = cursors.get(store, 0)
-            try:
-                if snapshot.status != "ready":
-                    store_plan = _empty_store_plan(snapshot, after=cursor)
-                elif store == "semantic":
-                    store_plan = _plan_semantic(
-                        snapshot,
-                        policy=selected_policy,
-                        after=cursor,
-                        now_ns=now_ns,
-                    )
-                elif store == "catalog":
-                    store_plan = _plan_catalog(
-                        snapshot,
-                        policy=selected_policy,
-                        after=cursor,
-                        now_ns=now_ns,
-                    )
-                elif store == "inventory":
-                    store_plan = _plan_inventory(
-                        snapshot,
-                        framework=snapshots.get("framework"),
-                        policy=selected_policy,
-                        after=cursor,
-                        now_ns=now_ns,
-                    )
-                else:
-                    store_plan = _plan_framework(
-                        snapshot,
-                        catalog=snapshots.get("catalog"),
-                        policy=selected_policy,
-                        after=cursor,
-                        now_ns=now_ns,
-                    )
-            except sqlite3.OperationalError as exc:
-                if (
-                    cancelled is not None
-                    and cancelled()
-                    and "interrupt" in str(exc).lower()
-                ):
-                    raise RetentionPlanningCancelled(
-                        "retention planning was cancelled"
-                    ) from exc
-                raise
-            plans.append(store_plan)
-            if observer is not None:
-                observer(store, "planned")
+
+def _open_retention_snapshots(
+    state_directory: Path,
+    stack: ExitStack,
+    required: set[RetentionStore],
+    *,
+    cancelled: Callable[[], bool] | None,
+    observer: RetentionObserver | None,
+) -> dict[RetentionStore, _StoreSnapshot]:
+    return {
+        store: _validated_snapshot(
+            store,
+            state_directory,
+            stack,
+            cancelled=cancelled,
+            observer=observer,
+        )
+        for store in STORE_ORDER
+        if store in required
+    }
+
+
+def _plan_retention_store(
+    store: RetentionStore,
+    snapshot: _StoreSnapshot,
+    snapshots: Mapping[RetentionStore, _StoreSnapshot],
+    *,
+    policy: RetentionPolicy,
+    after: int,
+    now_ns: int,
+) -> RetentionStorePlan:
+    if snapshot.status != "ready":
+        return _empty_store_plan(snapshot, after=after)
+    if store == "semantic":
+        return _plan_semantic(
+            snapshot,
+            policy=policy,
+            after=after,
+            now_ns=now_ns,
+        )
+    if store == "catalog":
+        return _plan_catalog(
+            snapshot,
+            policy=policy,
+            after=after,
+            now_ns=now_ns,
+        )
+    if store == "inventory":
+        return _plan_inventory(
+            snapshot,
+            framework=snapshots.get("framework"),
+            policy=policy,
+            after=after,
+            now_ns=now_ns,
+        )
+    return _plan_framework(
+        snapshot,
+        catalog=snapshots.get("catalog"),
+        policy=policy,
+        after=after,
+        now_ns=now_ns,
+    )
+
+
+def _plan_retention_store_with_cancellation(
+    store: RetentionStore,
+    snapshot: _StoreSnapshot,
+    snapshots: Mapping[RetentionStore, _StoreSnapshot],
+    *,
+    policy: RetentionPolicy,
+    after: int,
+    now_ns: int,
+    cancelled: Callable[[], bool] | None,
+) -> RetentionStorePlan:
+    try:
+        return _plan_retention_store(
+            store,
+            snapshot,
+            snapshots,
+            policy=policy,
+            after=after,
+            now_ns=now_ns,
+        )
+    except sqlite3.OperationalError as exc:
+        if cancelled is not None and cancelled() and "interrupt" in str(exc).lower():
+            raise RetentionPlanningCancelled(
+                "retention planning was cancelled"
+            ) from exc
+        raise
+
+
+def _plan_selected_retention_stores(
+    selected: tuple[RetentionStore, ...],
+    snapshots: Mapping[RetentionStore, _StoreSnapshot],
+    cursors: Mapping[str, int],
+    *,
+    policy: RetentionPolicy,
+    now_ns: int,
+    cancelled: Callable[[], bool] | None,
+    observer: RetentionObserver | None,
+) -> tuple[RetentionStorePlan, ...]:
+    plans: list[RetentionStorePlan] = []
+    for store in selected:
         _check_cancelled(cancelled)
-        return RetentionPlan(now_ns, selected_policy, tuple(plans))
+        plans.append(
+            _plan_retention_store_with_cancellation(
+                store,
+                snapshots[store],
+                snapshots,
+                policy=policy,
+                after=cursors.get(store, 0),
+                now_ns=now_ns,
+                cancelled=cancelled,
+            )
+        )
+        if observer is not None:
+            observer(store, "planned")
+    return tuple(plans)
+
+
+def plan_retention(
+    state_directory: Path,
+    *,
+    policy: RetentionPolicy | None = None,
+    after: Mapping[str, int] | None = None,
+    stores: Sequence[str] | None = None,
+    now_ns: int,
+    cancelled: Callable[[], bool] | None = None,
+    observer: RetentionObserver | None = None,
+) -> RetentionPlan:
+    """Return one stable, bounded dry-run page without creating or migrating state."""
+
+    selected, selected_policy, cursors = _retention_request(
+        policy=policy,
+        after=after,
+        stores=stores,
+        now_ns=now_ns,
+    )
+    _check_cancelled(cancelled)
+    with ExitStack() as stack:
+        snapshots = _open_retention_snapshots(
+            Path(state_directory),
+            stack,
+            _required_retention_stores(selected),
+            cancelled=cancelled,
+            observer=observer,
+        )
+        plans = _plan_selected_retention_stores(
+            selected,
+            snapshots,
+            cursors,
+            policy=selected_policy,
+            now_ns=now_ns,
+            cancelled=cancelled,
+            observer=observer,
+        )
+        _check_cancelled(cancelled)
+        return RetentionPlan(now_ns, selected_policy, plans)
 
 
 def retention_plan_payload(plan: RetentionPlan) -> dict[str, object]:

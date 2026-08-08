@@ -346,26 +346,24 @@ def _validate_signals(signals: UnusedEvidenceSignals) -> None:
         raise ValueError("unused evidence identities are duplicated")
 
 
-def _classify(signals: UnusedEvidenceSignals) -> tuple[UnusedState, tuple[str, ...]]:
-    _validate_signals(signals)
-    confirmed_usage = []
-    if signals.graph_references:
-        confirmed_usage.append("indexed_reference")
-    if signals.graph_calls:
-        confirmed_usage.append("indexed_call")
-    if signals.graph_imports:
-        confirmed_usage.append("indexed_import")
-    if signals.in_all:
-        confirmed_usage.append("declared_in___all__")
-    if signals.reexported:
-        confirmed_usage.append("reexported")
-    if signals.entry_point:
-        confirmed_usage.append("declared_entry_point")
-    if signals.coverage_observed:
-        confirmed_usage.append("observed_by_declared_coverage_scope")
-    if confirmed_usage:
-        return "explained_usage", tuple(confirmed_usage)
-    dynamic = []
+def _confirmed_usage_reasons(signals: UnusedEvidenceSignals) -> tuple[str, ...]:
+    reasons = []
+    for observed, reason in (
+        (bool(signals.graph_references), "indexed_reference"),
+        (bool(signals.graph_calls), "indexed_call"),
+        (bool(signals.graph_imports), "indexed_import"),
+        (signals.in_all, "declared_in___all__"),
+        (signals.reexported, "reexported"),
+        (signals.entry_point, "declared_entry_point"),
+        (signals.coverage_observed, "observed_by_declared_coverage_scope"),
+    ):
+        if observed:
+            reasons.append(reason)
+    return tuple(reasons)
+
+
+def _dynamic_usage_reasons(signals: UnusedEvidenceSignals) -> tuple[str, ...]:
+    reasons = []
     for observed, reason in (
         (signals.callback, "callback_binding"),
         (signals.registry, "registry_binding"),
@@ -374,10 +372,12 @@ def _classify(signals: UnusedEvidenceSignals) -> tuple[UnusedState, tuple[str, .
         (signals.special, "special_runtime_protocol"),
     ):
         if observed:
-            dynamic.append(reason)
-    if dynamic:
-        return "dynamic_usage_possible", tuple(dynamic)
-    if (
+            reasons.append(reason)
+    return tuple(reasons)
+
+
+def _has_high_unused_consensus(signals: UnusedEvidenceSignals) -> bool:
+    return bool(
         signals.vulture_reported
         and signals.pyright_reported
         and signals.vulture_confidence is not None
@@ -385,16 +385,16 @@ def _classify(signals: UnusedEvidenceSignals) -> tuple[UnusedState, tuple[str, .
         and signals.vulture_complete
         and signals.pyright_complete
         and signals.providers_aligned
-    ):
-        return "probable_unused_high_consensus", (
-            "vulture_high_confidence",
-            "pyright_reported_unused",
-            "no_observed_usage_or_dynamic_contract",
-        )
+    )
+
+
+def _insufficient_evidence_reasons(signals: UnusedEvidenceSignals) -> tuple[str, ...]:
     reasons = []
     if not signals.vulture_reported:
         reasons.append("vulture_did_not_report")
-    elif signals.vulture_confidence is None or signals.vulture_confidence < VULTURE_HIGH_CONFIDENCE:
+    elif signals.vulture_confidence is None or (
+        signals.vulture_confidence < VULTURE_HIGH_CONFIDENCE
+    ):
         reasons.append("vulture_confidence_below_calibrated_threshold")
     if not signals.pyright_reported:
         reasons.append("pyright_did_not_report")
@@ -404,7 +404,24 @@ def _classify(signals: UnusedEvidenceSignals) -> tuple[UnusedState, tuple[str, .
         reasons.append("provider_domains_not_aligned")
     if signals.coverage_status != "complete":
         reasons.append(f"coverage_{signals.coverage_status}_does_not_support_usage")
-    return "insufficient_evidence", tuple(sorted(set(reasons)))
+    return tuple(sorted(set(reasons)))
+
+
+def _classify(signals: UnusedEvidenceSignals) -> tuple[UnusedState, tuple[str, ...]]:
+    _validate_signals(signals)
+    confirmed_usage = _confirmed_usage_reasons(signals)
+    if confirmed_usage:
+        return "explained_usage", confirmed_usage
+    dynamic_usage = _dynamic_usage_reasons(signals)
+    if dynamic_usage:
+        return "dynamic_usage_possible", dynamic_usage
+    if _has_high_unused_consensus(signals):
+        return "probable_unused_high_consensus", (
+            "vulture_high_confidence",
+            "pyright_reported_unused",
+            "no_observed_usage_or_dynamic_contract",
+        )
+    return "insufficient_evidence", _insufficient_evidence_reasons(signals)
 
 
 def classify_unused_candidate(signals: UnusedEvidenceSignals) -> UnusedState:

@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import cast
 from typing import Any
 
 import coverage
@@ -413,6 +414,9 @@ def test_real_adapter_runs_collect_shards_and_checkpoint_replay(
         "    root = Path(os.environ['NEOCORTEX_AUDIT_LAB_ROOT']).resolve()\n"
         "    for name in ('TEMP', 'TMP', 'TMPDIR', 'PYTHONPYCACHEPREFIX'):\n"
         "        assert Path(os.environ[name]).resolve().is_relative_to(root)\n"
+        "    if os.name == 'nt':\n"
+        "        for name in ('SYSTEMROOT', 'WINDIR'):\n"
+        "            assert Path(os.environ[name]).is_dir()\n"
         "    assert os.environ['GIT_CONFIG_COUNT'] == '1'\n"
         "    assert os.environ['GIT_CONFIG_KEY_0'] == 'core.longpaths'\n"
         "    assert os.environ['GIT_CONFIG_VALUE_0'] == 'true'\n"
@@ -485,11 +489,12 @@ def test_real_adapter_runs_collect_shards_and_checkpoint_replay(
     assert any(
         endpoint < 0
         for metric in first.metrics
-        for arc in metric.metadata.get("missing_branch_arcs", ())
+        for arc in cast(list[list[int]], metric.metadata.get("missing_branch_arcs", []))
         for endpoint in arc
     )
     assert any(
-        metric.subject_kind == "symbol" and metric.metadata["qualified_name"].endswith(".choose")
+        metric.subject_kind == "symbol"
+        and cast(str, metric.metadata["qualified_name"]).endswith(".choose")
         for metric in first.metrics
     )
     assert replay.counters["shards_reused"] == 2

@@ -7,6 +7,7 @@
 # region [01] Dependencias del módulo
 from __future__ import annotations
 
+import inspect
 import json
 import sqlite3
 from dataclasses import replace
@@ -69,6 +70,124 @@ def _inventory_adapter(seen: list[tuple[str, ...]]) -> RouteAdapter:
         )
 
     return RouteAdapter("code", execute, input_source="inventory_snapshot")
+
+
+def test_locked_self_analysis_signature_and_phase_order(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert str(inspect.signature(FrameworkOrchestrator._run_self_analysis_locked)) == (
+        "(self, access_policy: 'CorpusAccessPolicy', "
+        "inventory_policy: 'InventoryExclusionPolicy', "
+        "state_identity: 'CorpusAccessPolicy', "
+        "internal_paths_policy: 'InternalPathsPolicy') -> 'SelfAnalysisRunResult'"
+    )
+    root = tmp_path / "corpus"
+    state = tmp_path / "state"
+    root.mkdir()
+    (root / "source.py").write_text("value = 1\n", encoding="utf-8")
+    observed: list[str] = []
+
+    original_commands = orchestrator_module.self_analysis_commands
+    original_gate = FrameworkOrchestrator._self_analysis_incremental_gate
+    original_prepare = orchestrator_module.prepare_inventory
+    original_publish = orchestrator_module.FrameworkState.publish_initial_routing_snapshot
+    original_routes = FrameworkOrchestrator._run_content_routes
+    original_complete = orchestrator_module.FrameworkState.complete_self_analysis_run
+
+    def commands(*args, **kwargs):
+        observed.append("commands")
+        return original_commands(*args, **kwargs)
+
+    def gate(self, *args, **kwargs):
+        observed.append("incremental_gate")
+        return original_gate(self, *args, **kwargs)
+
+    def prepare(*args, **kwargs):
+        observed.append("inventory")
+        return original_prepare(*args, **kwargs)
+
+    def publish(self, *args, **kwargs):
+        observed.append("inventory_snapshot")
+        return original_publish(self, *args, **kwargs)
+
+    def routes(self, *args, **kwargs):
+        observed.append("content_routes")
+        return original_routes(self, *args, **kwargs)
+
+    def complete(self, *args, **kwargs):
+        observed.append("manifest_commit")
+        return original_complete(self, *args, **kwargs)
+
+    monkeypatch.setattr(orchestrator_module, "self_analysis_commands", commands)
+    monkeypatch.setattr(FrameworkOrchestrator, "_self_analysis_incremental_gate", gate)
+    monkeypatch.setattr(orchestrator_module, "prepare_inventory", prepare)
+    monkeypatch.setattr(
+        orchestrator_module.FrameworkState,
+        "publish_initial_routing_snapshot",
+        publish,
+    )
+    monkeypatch.setattr(FrameworkOrchestrator, "_run_content_routes", routes)
+    monkeypatch.setattr(
+        orchestrator_module.FrameworkState,
+        "complete_self_analysis_run",
+        complete,
+    )
+
+    def progress(event) -> None:
+        if event.operation == "framework" and event.phase in {"prepare", "complete"}:
+            observed.append(f"progress:{event.phase}:{event.completed}")
+
+    with SyntheticUsnJournal(root):
+        result = FrameworkOrchestrator(
+            _config(root, state),
+            progress=progress,
+            route_registry={"code": _inventory_adapter([])},
+        ).run()
+
+    assert isinstance(result, SelfAnalysisRunResult)
+    assert observed == [
+        "progress:prepare:0",
+        "progress:prepare:1",
+        "commands",
+        "incremental_gate",
+        "inventory",
+        "inventory_snapshot",
+        "content_routes",
+        "manifest_commit",
+        "progress:complete:1",
+    ]
+
+
+def test_locked_self_analysis_preserves_interrupt_identity_and_cancels_run(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "corpus"
+    state = tmp_path / "state"
+    root.mkdir()
+    (root / "source.py").write_text("value = 1\n", encoding="utf-8")
+    cancellation = KeyboardInterrupt("self-analysis cancellation sentinel")
+
+    def cancel(_context):
+        raise cancellation
+
+    registry = {
+        "code": RouteAdapter("code", cancel, input_source="inventory_snapshot")
+    }
+    with SyntheticUsnJournal(root):
+        with pytest.raises(KeyboardInterrupt) as raised:
+            FrameworkOrchestrator(_config(root, state), route_registry=registry).run()
+
+    assert raised.value is cancellation
+    with sqlite3.connect(state / "framework.sqlite3") as connection:
+        run = connection.execute(
+            "SELECT status,current_phase FROM initial_runs"
+        ).fetchone()
+        event = connection.execute(
+            "SELECT level,message FROM run_events WHERE message='Autoanálisis cancelado por el usuario'"
+        ).fetchone()
+    assert run == ("cancelled", "cancelled")
+    assert event == ("warning", "Autoanálisis cancelado por el usuario")
 
 
 def test_self_analysis_policy_is_explicit_and_has_no_home_defaults(
@@ -309,6 +428,8 @@ def test_self_analysis_real_code_route_omits_common_work_and_publishes_manifest(
             """SELECT framework_run_id,scan_id,processing_signature,status
             FROM analysis_runs ORDER BY analysis_run_id DESC LIMIT 1"""
         ).fetchone()
+    assert result.journal_before is not None
+    assert result.journal_after is not None
     assert run_row == (
         "self_analysis",
         "analyze_only",
@@ -550,6 +671,7 @@ def test_failed_incremental_checkpoint_cannot_advance_past_durable_boundary(
             failed_checkpoint = index.inventory_checkpoint(root)
         assert failed_checkpoint is not None
         assert failed_checkpoint.scan_id == durable.scan.scan_id
+        assert failed_checkpoint.next_usn is not None
         assert failed_checkpoint.next_usn > durable_end_usn
 
         recovered = FrameworkOrchestrator(_config(root, state), route_registry=succeeding).run()

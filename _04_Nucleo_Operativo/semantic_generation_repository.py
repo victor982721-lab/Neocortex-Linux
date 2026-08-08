@@ -95,9 +95,7 @@ def _load_base_clone_generation(
     if generation is None:
         raise KeyError(f"unknown embedding generation {generation_id}")
     if str(generation["status"]) != "building":
-        raise SemanticStateError(
-            f"generation {generation_id} stopped building during base clone"
-        )
+        raise SemanticStateError(f"generation {generation_id} stopped building during base clone")
     return generation
 
 
@@ -105,9 +103,7 @@ def _decode_base_clone_cursor(raw: object) -> dict[str, object]:
     try:
         cursor = json.loads(str(raw))
     except (TypeError, ValueError) as exc:
-        raise SemanticStateError(
-            "generation cursor is not valid JSON during base clone"
-        ) from exc
+        raise SemanticStateError("generation cursor is not valid JSON during base clone") from exc
     if not isinstance(cursor, dict):
         raise SemanticStateError("generation cursor is not an object during base clone")
     return cursor
@@ -124,9 +120,7 @@ def _validate_base_clone_snapshot(
         (base_generation_id,),
     ).fetchone()
     if base is None or str(base["status"]) != "ready":
-        raise SemanticStateError(
-            "generation base snapshot is absent or not immutable-ready"
-        )
+        raise SemanticStateError("generation base snapshot is absent or not immutable-ready")
     if str(base["model_signature"]) != str(generation["model_signature"]):
         raise SemanticStateError("generation base snapshot model differs from candidate")
     snapshot = connection.execute(
@@ -200,9 +194,7 @@ def _resume_base_clone_cursor(
         ).fetchone()[0]
     )
     if observed_after > after_member_id:
-        raise SemanticStateError(
-            "generation base members advanced beyond their durable cursor"
-        )
+        raise SemanticStateError("generation base members advanced beyond their durable cursor")
     return clone_cursor
 
 
@@ -278,9 +270,7 @@ def _insert_base_clone_rows(
                 str(row["entity_id"]),
                 str(row["item_id"]),
                 int(row["item_revision_id"]),
-                None
-                if row["chunk_revision_id"] is None
-                else int(row["chunk_revision_id"]),
+                None if row["chunk_revision_id"] is None else int(row["chunk_revision_id"]),
                 int(row["payload_id"]),
                 str(row["content_xxh3_128"]),
                 int(row["content_bytes"]),
@@ -454,9 +444,7 @@ def _mark_generation_head_conflict(
     if generation is None:
         raise KeyError(f"unknown embedding generation {generation_id}")
     expected_head = (
-        None
-        if generation["base_generation_id"] is None
-        else int(generation["base_generation_id"])
+        None if generation["base_generation_id"] is None else int(generation["base_generation_id"])
     )
     conflict = EmbeddingGenerationRebaseRequiredError(
         generation_id,
@@ -546,9 +534,7 @@ def start_embedding_generation(
             if str(existing["provenance_json"]) != provenance_json:
                 raise ValueError("resumed generation provenance does not match")
             generation_id = int(existing["generation_id"])
-            if existing["base_generation_id"] is None and not bool(
-                existing["base_clone_complete"]
-            ):
+            if existing["base_generation_id"] is None and not bool(existing["base_clone_complete"]):
                 connection.execute(
                     """UPDATE embedding_generations
                     SET base_generation_id=?,base_clone_complete=?
@@ -576,9 +562,7 @@ def start_embedding_generation(
                 ),
             )
             if cursor_row.lastrowid is None:
-                raise SemanticStateError(
-                    "generation insert did not return an identifier"
-                )
+                raise SemanticStateError("generation insert did not return an identifier")
             generation_id = int(cursor_row.lastrowid)
     if materialize_base:
         _clone_published_members(
@@ -793,14 +777,9 @@ def _queue_generation_members(
             identifiers,
         )
     }
-    if (
-        bool(generation["base_clone_complete"])
-        or generation["base_generation_id"] is None
-    ):
+    if bool(generation["base_clone_complete"]) or generation["base_generation_id"] is None:
         return members
-    missing = tuple(
-        identifier for identifier in identifiers if identifier not in members
-    )
+    missing = tuple(identifier for identifier in identifiers if identifier not in members)
     if not missing:
         return members
     base_rows = _member_rows(
@@ -810,9 +789,7 @@ def _queue_generation_members(
         missing,
     )
     members.update(
-        (str(row["entity_id"]), row)
-        for row in base_rows
-        if str(row["entity_id"]) not in members
+        (str(row["entity_id"]), row) for row in base_rows if str(row["entity_id"]) not in members
     )
     return members
 
@@ -929,14 +906,9 @@ def _reuse_generation_member(
     )
     prior_item_revision_id = int(member["item_revision_id"])
     prior_chunk_revision_id = (
-        None
-        if member["chunk_revision_id"] is None
-        else int(member["chunk_revision_id"])
+        None if member["chunk_revision_id"] is None else int(member["chunk_revision_id"])
     )
-    if (
-        item_revision_id == prior_item_revision_id
-        and chunk_revision_id == prior_chunk_revision_id
-    ):
+    if item_revision_id == prior_item_revision_id and chunk_revision_id == prior_chunk_revision_id:
         _finish_existing_job(connection, prior, context.now_ns)
         return True, False
     if chunk_revision_id != prior_chunk_revision_id or not _same_item_identity(
@@ -1145,9 +1117,7 @@ def _enqueue_job_batch(
     if not 1 <= max_attempts <= 100:
         raise ValueError("max_attempts must be between 1 and 100")
     if len(identifiers) > MAX_WRITE_BATCH:
-        raise ValueError(
-            f"embedding job batch cannot exceed {MAX_WRITE_BATCH} identifiers"
-        )
+        raise ValueError(f"embedding job batch cannot exceed {MAX_WRITE_BATCH} identifiers")
     batch = tuple(dict.fromkeys(identifiers))
     if any(not identifier.strip() for identifier in batch):
         raise ValueError("entity identifiers cannot be blank")
@@ -1187,9 +1157,7 @@ def _enqueue_job_batch_bounded(
     if not 1 <= max_attempts <= 100:
         raise ValueError("max_attempts must be between 1 and 100")
     if len(identifiers) > MAX_WRITE_BATCH:
-        raise ValueError(
-            f"embedding job batch cannot exceed {MAX_WRITE_BATCH} identifiers"
-        )
+        raise ValueError(f"embedding job batch cannot exceed {MAX_WRITE_BATCH} identifiers")
     batch = tuple(dict.fromkeys(identifiers))
     if any(not identifier.strip() for identifier in batch):
         raise ValueError("entity identifiers cannot be blank")
@@ -1764,9 +1732,7 @@ def reuse_cached_jobs(
                 canonical_json(
                     {
                         "reuse": "exact-xxh3-content",
-                        "payload_provenance": json.loads(
-                            str(row["payload_provenance_json"])
-                        ),
+                        "payload_provenance": json.loads(str(row["payload_provenance_json"])),
                     }
                 ),
                 selected_ns,
@@ -1875,9 +1841,7 @@ def claim_embedding_jobs(
                 else None
             )
             image_path = (
-                Path(str(row["path"]))
-                if model.modality is EmbeddingModality.IMAGE
-                else None
+                Path(str(row["path"])) if model.modality is EmbeddingModality.IMAGE else None
             )
             source_revision: Mapping[str, object] = {}
             if model.modality is EmbeddingModality.IMAGE:
@@ -1998,9 +1962,7 @@ def _job_is_current(connection: sqlite3.Connection, row: sqlite3.Row) -> bool:
             FROM semantic_items WHERE item_id=? AND active=1 AND path IS NOT NULL""",
             (str(row["entity_id"]),),
         ).fetchone()
-    return current is not None and _same_fingerprint(
-        current, _fingerprint_from_row(row)
-    )
+    return current is not None and _same_fingerprint(current, _fingerprint_from_row(row))
 
 
 def complete_embedding_job(
@@ -2274,9 +2236,7 @@ def _generation_summary_rows(
         ),
         ordered_ids,
     ).fetchall()
-    summaries = {
-        int(row["generation_id"]): _generation_summary_from_row(row) for row in rows
-    }
+    summaries = {int(row["generation_id"]): _generation_summary_from_row(row) for row in rows}
     missing = tuple(value for value in ordered_ids if value not in summaries)
     if missing:
         raise KeyError(f"unknown embedding generation {missing[0]}")
@@ -2316,22 +2276,16 @@ def _generation_cleanup_profile(
     selected_sources: tuple[str, ...] = ()
     if chunking_signature is not None:
         if not isinstance(chunking_signature, str) or not chunking_signature.strip():
-            raise SemanticStateError(
-                "embedding generation chunking signature is invalid"
-            )
+            raise SemanticStateError("embedding generation chunking signature is invalid")
         raw_sources = provenance.get("sources")
         if raw_sources is not None:
             if not isinstance(raw_sources, list) or any(
-                not isinstance(source, str) or not source.strip()
-                for source in raw_sources
+                not isinstance(source, str) or not source.strip() for source in raw_sources
             ):
-                raise SemanticStateError(
-                    "embedding generation text sources are invalid"
-                )
+                raise SemanticStateError("embedding generation text sources are invalid")
             selected_sources = tuple(
                 dict.fromkeys(
-                    "image" if source == "image-ocr" else source
-                    for source in raw_sources
+                    "image" if source == "image-ocr" else source for source in raw_sources
                 )
             )
         elif provenance.get("source") == "image-ocr":
@@ -2465,6 +2419,198 @@ def _remove_obsolete_candidate_members(
     return profile_members + max(0, int(text.rowcount)) + max(0, int(image.rowcount))
 
 
+@dataclass(frozen=True, slots=True)
+class _EmbeddingGenerationPreparation:
+    generation_id: int
+    model_signature: str
+    processing_signature: str
+    provenance_json: str
+    expected_head: int | None
+    base_clone_complete: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _EmbeddingGenerationPreparationDecision:
+    conflict: EmbeddingGenerationRebaseRequiredError | None = None
+    reused_summary: GenerationSummary | None = None
+    materialize_base: bool = False
+
+
+def _load_embedding_generation_preparation(
+    connection: sqlite3.Connection,
+    generation_id: int,
+) -> _EmbeddingGenerationPreparation:
+    model = _generation_model(connection, generation_id, require_building=True)
+    generation = connection.execute(
+        """SELECT processing_signature,provenance_json,base_generation_id,
+            base_clone_complete
+        FROM embedding_generations WHERE generation_id=?""",
+        (generation_id,),
+    ).fetchone()
+    if generation is None:  # pragma: no cover - protected by model load
+        raise KeyError(f"unknown embedding generation {generation_id}")
+    expected_head = (
+        None if generation["base_generation_id"] is None else int(generation["base_generation_id"])
+    )
+    return _EmbeddingGenerationPreparation(
+        generation_id=generation_id,
+        model_signature=model.model_signature,
+        processing_signature=str(generation["processing_signature"]),
+        provenance_json=str(generation["provenance_json"]),
+        expected_head=expected_head,
+        base_clone_complete=bool(generation["base_clone_complete"]),
+    )
+
+
+def _deferred_generation_work_counts(
+    connection: sqlite3.Connection,
+    generation_id: int,
+) -> tuple[int, int]:
+    job_count = int(
+        connection.execute(
+            "SELECT COUNT(*) FROM embedding_jobs WHERE generation_id=?",
+            (generation_id,),
+        ).fetchone()[0]
+    )
+    candidate_members = int(
+        connection.execute(
+            """SELECT COUNT(*) FROM embedding_generation_members
+            WHERE generation_id=?""",
+            (generation_id,),
+        ).fetchone()[0]
+    )
+    return job_count, candidate_members
+
+
+def _embedding_base_has_exact_contract(
+    connection: sqlite3.Connection,
+    preparation: _EmbeddingGenerationPreparation,
+) -> bool:
+    base = connection.execute(
+        """SELECT status,processing_signature,provenance_json
+        FROM embedding_generations WHERE generation_id=?""",
+        (preparation.expected_head,),
+    ).fetchone()
+    if base is None or str(base["status"]) != "ready":
+        raise SemanticStateError("published embedding base is absent or not ready")
+    return (
+        str(base["processing_signature"]) == preparation.processing_signature
+        and str(base["provenance_json"]) == preparation.provenance_json
+    )
+
+
+def _exact_replay_candidate_dependents(
+    connection: sqlite3.Connection,
+    generation_id: int,
+) -> int:
+    return int(
+        connection.execute(
+            """SELECT
+                (SELECT COUNT(*) FROM text_embeddings WHERE generation_id=?) +
+                (SELECT COUNT(*) FROM image_embeddings WHERE generation_id=?) +
+                (SELECT COUNT(*) FROM semantic_evidence WHERE generation_id=?) +
+                (SELECT COUNT(*) FROM embedding_generations WHERE base_generation_id=?)""",
+            (generation_id, generation_id, generation_id, generation_id),
+        ).fetchone()[0]
+    )
+
+
+def _elide_exact_embedding_replay(
+    connection: sqlite3.Connection,
+    preparation: _EmbeddingGenerationPreparation,
+) -> GenerationSummary:
+    if _exact_replay_candidate_dependents(connection, preparation.generation_id):
+        raise SemanticStateError("exact replay candidate has unexpected durable dependents")
+    deleted = connection.execute(
+        """DELETE FROM embedding_generations
+        WHERE generation_id=? AND status='building'""",
+        (preparation.generation_id,),
+    )
+    if deleted.rowcount != 1:
+        raise SemanticStateError("exact replay candidate changed before elision")
+    if preparation.expected_head is None:  # pragma: no cover - caller invariant
+        raise SemanticStateError("exact replay candidate has no published base")
+    return _generation_summary_row(connection, preparation.expected_head)
+
+
+def _prepare_enumerated_embedding_generation(
+    connection: sqlite3.Connection,
+    preparation: _EmbeddingGenerationPreparation,
+    *,
+    job_count: int,
+    candidate_members: int,
+) -> _EmbeddingGenerationPreparationDecision:
+    exact_contract = _embedding_base_has_exact_contract(connection, preparation)
+    if preparation.expected_head is None:  # pragma: no cover - caller invariant
+        raise SemanticStateError("enumerated generation has no published base")
+    obsolete_members = _count_obsolete_generation_members(
+        connection,
+        preparation.expected_head,
+        policy_generation_id=preparation.generation_id,
+    )
+    exact_replay = (
+        exact_contract and job_count == 0 and candidate_members == 0 and obsolete_members == 0
+    )
+    if not exact_replay:
+        return _EmbeddingGenerationPreparationDecision(materialize_base=True)
+    return _EmbeddingGenerationPreparationDecision(
+        reused_summary=_elide_exact_embedding_replay(connection, preparation)
+    )
+
+
+def _prepare_deferred_embedding_generation(
+    connection: sqlite3.Connection,
+    preparation: _EmbeddingGenerationPreparation,
+    *,
+    enumeration_complete: bool,
+) -> _EmbeddingGenerationPreparationDecision:
+    if preparation.expected_head is None:
+        connection.execute(
+            """UPDATE embedding_generations SET base_clone_complete=1
+            WHERE generation_id=? AND status='building'""",
+            (preparation.generation_id,),
+        )
+        return _EmbeddingGenerationPreparationDecision()
+    job_count, candidate_members = _deferred_generation_work_counts(
+        connection,
+        preparation.generation_id,
+    )
+    if not enumeration_complete:
+        return _EmbeddingGenerationPreparationDecision(materialize_base=bool(job_count))
+    return _prepare_enumerated_embedding_generation(
+        connection,
+        preparation,
+        job_count=job_count,
+        candidate_members=candidate_members,
+    )
+
+
+def _prepare_embedding_generation_transaction(
+    connection: sqlite3.Connection,
+    generation_id: int,
+    *,
+    enumeration_complete: bool,
+) -> _EmbeddingGenerationPreparationDecision:
+    preparation = _load_embedding_generation_preparation(connection, generation_id)
+    observed_head = _published_head_id(connection, preparation.model_signature)
+    if observed_head != preparation.expected_head:
+        return _EmbeddingGenerationPreparationDecision(
+            conflict=_mark_generation_head_conflict(
+                connection,
+                generation_id,
+                observed_head=observed_head,
+                completed_ns=_now(None),
+            )
+        )
+    if preparation.base_clone_complete:
+        return _EmbeddingGenerationPreparationDecision()
+    return _prepare_deferred_embedding_generation(
+        connection,
+        preparation,
+        enumeration_complete=enumeration_complete,
+    )
+
+
 def prepare_embedding_generation(
     path: Path,
     generation_id: int,
@@ -2480,131 +2626,214 @@ def prepare_embedding_generation(
 
     if not isinstance(enumeration_complete, bool):
         raise TypeError("enumeration_complete must be a boolean")
-    conflict: EmbeddingGenerationRebaseRequiredError | None = None
-    reused_summary: GenerationSummary | None = None
-    must_materialize = False
     with semantic_database(path) as connection:
         connection.execute("BEGIN IMMEDIATE")
-        model = _generation_model(connection, generation_id, require_building=True)
-        generation = connection.execute(
-            """SELECT processing_signature,provenance_json,base_generation_id,
-                base_clone_complete
-            FROM embedding_generations WHERE generation_id=?""",
-            (generation_id,),
-        ).fetchone()
-        if generation is None:
-            raise KeyError(f"unknown embedding generation {generation_id}")
-        expected_head = (
-            None
-            if generation["base_generation_id"] is None
-            else int(generation["base_generation_id"])
+        decision = _prepare_embedding_generation_transaction(
+            connection,
+            generation_id,
+            enumeration_complete=enumeration_complete,
         )
-        observed_head = _published_head_id(connection, model.model_signature)
-        if observed_head != expected_head:
-            conflict = _mark_generation_head_conflict(
-                connection,
-                generation_id,
-                observed_head=observed_head,
-                completed_ns=_now(None),
-            )
-        elif not bool(generation["base_clone_complete"]):
-            if expected_head is None:
-                connection.execute(
-                    """UPDATE embedding_generations SET base_clone_complete=1
-                    WHERE generation_id=? AND status='building'""",
-                    (generation_id,),
-                )
-            else:
-                job_count = int(
-                    connection.execute(
-                        "SELECT COUNT(*) FROM embedding_jobs WHERE generation_id=?",
-                        (generation_id,),
-                    ).fetchone()[0]
-                )
-                candidate_members = int(
-                    connection.execute(
-                        """SELECT COUNT(*) FROM embedding_generation_members
-                        WHERE generation_id=?""",
-                        (generation_id,),
-                    ).fetchone()[0]
-                )
-                if enumeration_complete:
-                    base = connection.execute(
-                        """SELECT status,processing_signature,provenance_json
-                        FROM embedding_generations WHERE generation_id=?""",
-                        (expected_head,),
-                    ).fetchone()
-                    if base is None or str(base["status"]) != "ready":
-                        raise SemanticStateError(
-                            "published embedding base is absent or not ready"
-                        )
-                    exact_contract = str(base["processing_signature"]) == str(
-                        generation["processing_signature"]
-                    ) and str(base["provenance_json"]) == str(
-                        generation["provenance_json"]
-                    )
-                    obsolete_members = _count_obsolete_generation_members(
-                        connection,
-                        expected_head,
-                        policy_generation_id=generation_id,
-                    )
-                    if (
-                        exact_contract
-                        and job_count == 0
-                        and candidate_members == 0
-                        and obsolete_members == 0
-                    ):
-                        dependent_rows = int(
-                            connection.execute(
-                                """SELECT
-                                    (SELECT COUNT(*) FROM text_embeddings
-                                     WHERE generation_id=?) +
-                                    (SELECT COUNT(*) FROM image_embeddings
-                                     WHERE generation_id=?) +
-                                    (SELECT COUNT(*) FROM semantic_evidence
-                                     WHERE generation_id=?) +
-                                    (SELECT COUNT(*) FROM embedding_generations
-                                     WHERE base_generation_id=?)""",
-                                (
-                                    generation_id,
-                                    generation_id,
-                                    generation_id,
-                                    generation_id,
-                                ),
-                            ).fetchone()[0]
-                        )
-                        if dependent_rows:
-                            raise SemanticStateError(
-                                "exact replay candidate has unexpected durable dependents"
-                            )
-                        deleted = connection.execute(
-                            """DELETE FROM embedding_generations
-                            WHERE generation_id=? AND status='building'""",
-                            (generation_id,),
-                        )
-                        if deleted.rowcount != 1:
-                            raise SemanticStateError(
-                                "exact replay candidate changed before elision"
-                            )
-                        reused_summary = _generation_summary_row(
-                            connection,
-                            expected_head,
-                        )
-                    else:
-                        must_materialize = True
-                elif job_count:
-                    must_materialize = True
-    if conflict is not None:
-        raise conflict
-    if reused_summary is not None:
-        return reused_summary
-    if must_materialize:
+    if decision.conflict is not None:
+        raise decision.conflict
+    if decision.reused_summary is not None:
+        return decision.reused_summary
+    if decision.materialize_base:
         _clone_published_members(
             path,
             generation_id,
             work_budget=work_budget,
         )
     return None
+
+
+@dataclass(frozen=True, slots=True)
+class _EmbeddingGenerationFinalization:
+    generation_id: int
+    model: EmbeddingModelSpec
+    summary: GenerationSummary
+    expected_head: int | None
+    partial: bool
+    status: str
+    completed_ns: int
+
+
+def _finalization_status(
+    summary: GenerationSummary,
+    *,
+    allow_partial: bool,
+) -> tuple[bool, str]:
+    if "enumeration=bounded-v1" in summary.processing_signature and (
+        summary.cursor.get("protocol") != "bounded-v1"
+        or summary.cursor.get("enumeration_complete") is not True
+    ):
+        raise SemanticStateError("bounded generation source enumeration is not complete")
+    if summary.unfinished:
+        raise SemanticStateError(f"generation still has {summary.unfinished} unfinished jobs")
+    if (summary.errors or summary.stale) and not allow_partial:
+        raise SemanticStateError(
+            f"generation has {summary.errors} errors and {summary.stale} stale jobs"
+        )
+    partial = bool(summary.errors or summary.stale)
+    return partial, "ready_partial" if partial else "ready"
+
+
+def _load_generation_finalization(
+    connection: sqlite3.Connection,
+    generation_id: int,
+    *,
+    allow_partial: bool,
+    completed_ns: int,
+) -> _EmbeddingGenerationFinalization:
+    model = _generation_model(connection, generation_id, require_building=True)
+    _mark_stale_jobs(connection, generation_id, model.modality, completed_ns)
+    _remove_superseded_completed_jobs(
+        connection,
+        generation_id,
+        model.modality,
+    )
+    summary = _generation_summary_row(connection, generation_id)
+    partial, status = _finalization_status(summary, allow_partial=allow_partial)
+    generation = connection.execute(
+        """SELECT base_generation_id,base_clone_complete
+        FROM embedding_generations WHERE generation_id=?""",
+        (generation_id,),
+    ).fetchone()
+    if generation is None:  # pragma: no cover - protected by model load
+        raise KeyError(f"unknown embedding generation {generation_id}")
+    if not bool(generation["base_clone_complete"]):
+        raise SemanticStateError("generation base snapshot is not fully cloned")
+    expected_head = (
+        None if generation["base_generation_id"] is None else int(generation["base_generation_id"])
+    )
+    return _EmbeddingGenerationFinalization(
+        generation_id=generation_id,
+        model=model,
+        summary=summary,
+        expected_head=expected_head,
+        partial=partial,
+        status=status,
+        completed_ns=completed_ns,
+    )
+
+
+def _missing_finalization_member(
+    connection: sqlite3.Connection,
+    generation_id: int,
+) -> int | None:
+    row = connection.execute(
+        """SELECT j.job_id FROM embedding_jobs j
+        LEFT JOIN embedding_generation_members member
+          ON member.generation_id=j.generation_id
+         AND member.entity_kind=j.entity_kind
+         AND member.entity_id=j.entity_id
+        WHERE j.generation_id=? AND j.status='done'
+          AND member.member_id IS NULL LIMIT 1""",
+        (generation_id,),
+    ).fetchone()
+    return None if row is None else int(row[0])
+
+
+def _reconcile_generation_finalization(
+    connection: sqlite3.Connection,
+    finalization: _EmbeddingGenerationFinalization,
+) -> EmbeddingGenerationRebaseRequiredError | None:
+    if finalization.partial:
+        return None
+    _remove_obsolete_candidate_members(connection, finalization.generation_id)
+    missing_member = _missing_finalization_member(
+        connection,
+        finalization.generation_id,
+    )
+    if missing_member is not None:
+        raise SemanticStateError(f"completed job {missing_member} has no candidate member")
+    current_head = _published_head_id(
+        connection,
+        finalization.model.model_signature,
+    )
+    if current_head == finalization.expected_head:
+        return None
+    return _mark_generation_head_conflict(
+        connection,
+        finalization.generation_id,
+        observed_head=current_head,
+        completed_ns=finalization.completed_ns,
+        summary=finalization.summary,
+    )
+
+
+def _persist_generation_finalization(
+    connection: sqlite3.Connection,
+    finalization: _EmbeddingGenerationFinalization,
+) -> None:
+    summary = finalization.summary
+    updated = connection.execute(
+        """UPDATE embedding_generations SET status=?,completed_ns=?,
+            pending_count=?,leased_count=?,done_count=?,error_count=?,stale_count=?
+        WHERE generation_id=? AND status='building'""",
+        (
+            finalization.status,
+            finalization.completed_ns,
+            summary.pending,
+            summary.leased,
+            summary.done,
+            summary.errors,
+            summary.stale,
+            finalization.generation_id,
+        ),
+    )
+    if updated.rowcount != 1:
+        raise SemanticStateError("generation changed before finalization")
+
+
+def _publish_generation_finalization(
+    connection: sqlite3.Connection,
+    finalization: _EmbeddingGenerationFinalization,
+) -> None:
+    if finalization.partial:
+        return
+    if finalization.expected_head is None:
+        connection.execute(
+            """INSERT INTO published_embedding_heads(
+                model_signature,generation_id,published_ns)
+            VALUES(?,?,?)""",
+            (
+                finalization.model.model_signature,
+                finalization.generation_id,
+                finalization.completed_ns,
+            ),
+        )
+        return
+    published = connection.execute(
+        """UPDATE published_embedding_heads
+        SET generation_id=?,published_ns=?
+        WHERE model_signature=? AND generation_id=?""",
+        (
+            finalization.generation_id,
+            finalization.completed_ns,
+            finalization.model.model_signature,
+            finalization.expected_head,
+        ),
+    )
+    if published.rowcount != 1:  # protected by BEGIN IMMEDIATE + CAS
+        raise SemanticStateError("published embedding head changed during finalization")
+
+
+def _finalized_generation_summary(
+    finalization: _EmbeddingGenerationFinalization,
+) -> GenerationSummary:
+    summary = finalization.summary
+    return GenerationSummary(
+        generation_id=summary.generation_id,
+        model_signature=summary.model_signature,
+        processing_signature=summary.processing_signature,
+        status=finalization.status,
+        pending=summary.pending,
+        leased=summary.leased,
+        done=summary.done,
+        errors=summary.errors,
+        stale=summary.stale,
+        cursor=summary.cursor,
+    )
 
 
 def finalize_embedding_generation(
@@ -2617,143 +2846,26 @@ def finalize_embedding_generation(
     """Finalize work and atomically publish only a complete CAS-safe snapshot."""
 
     selected_ns = _now(completed_ns)
-    conflict: EmbeddingGenerationRebaseRequiredError | None = None
-    finalized: GenerationSummary | None = None
     with semantic_database(path) as connection:
         connection.execute("BEGIN IMMEDIATE")
-        model = _generation_model(connection, generation_id, require_building=True)
-        _mark_stale_jobs(connection, generation_id, model.modality, selected_ns)
-        _remove_superseded_completed_jobs(
+        finalization = _load_generation_finalization(
             connection,
             generation_id,
-            model.modality,
+            allow_partial=allow_partial,
+            completed_ns=selected_ns,
         )
-        summary = _generation_summary_row(connection, generation_id)
-        if "enumeration=bounded-v1" in summary.processing_signature and (
-            summary.cursor.get("protocol") != "bounded-v1"
-            or summary.cursor.get("enumeration_complete") is not True
-        ):
-            raise SemanticStateError(
-                "bounded generation source enumeration is not complete"
-            )
-        if summary.unfinished:
-            raise SemanticStateError(
-                f"generation still has {summary.unfinished} unfinished jobs"
-            )
-        if (summary.errors or summary.stale) and not allow_partial:
-            raise SemanticStateError(
-                f"generation has {summary.errors} errors and {summary.stale} stale jobs"
-            )
-        partial = bool(summary.errors or summary.stale)
-        status = "ready_partial" if partial else "ready"
-        generation = connection.execute(
-            """SELECT base_generation_id,base_clone_complete
-            FROM embedding_generations WHERE generation_id=?""",
-            (generation_id,),
-        ).fetchone()
-        if generation is None:  # pragma: no cover - protected by model load
-            raise KeyError(f"unknown embedding generation {generation_id}")
-        if not bool(generation["base_clone_complete"]):
-            raise SemanticStateError("generation base snapshot is not fully cloned")
-        if not partial:
-            _remove_obsolete_candidate_members(connection, generation_id)
-            missing_member = connection.execute(
-                """SELECT j.job_id FROM embedding_jobs j
-                LEFT JOIN embedding_generation_members member
-                  ON member.generation_id=j.generation_id
-                 AND member.entity_kind=j.entity_kind
-                 AND member.entity_id=j.entity_id
-                WHERE j.generation_id=? AND j.status='done'
-                  AND member.member_id IS NULL LIMIT 1""",
-                (generation_id,),
-            ).fetchone()
-            if missing_member is not None:
-                raise SemanticStateError(
-                    f"completed job {int(missing_member[0])} has no candidate member"
-                )
-            head = connection.execute(
-                "SELECT generation_id FROM published_embedding_heads "
-                "WHERE model_signature=?",
-                (model.model_signature,),
-            ).fetchone()
-            current_head = None if head is None else int(head[0])
-            expected_head = (
-                None
-                if generation["base_generation_id"] is None
-                else int(generation["base_generation_id"])
-            )
-            if current_head != expected_head:
-                conflict = _mark_generation_head_conflict(
-                    connection,
-                    generation_id,
-                    observed_head=current_head,
-                    completed_ns=selected_ns,
-                    summary=summary,
-                )
+        conflict = _reconcile_generation_finalization(connection, finalization)
         if conflict is None:
-            updated = connection.execute(
-                """UPDATE embedding_generations SET status=?,completed_ns=?,
-                    pending_count=?,leased_count=?,done_count=?,error_count=?,stale_count=?
-                WHERE generation_id=? AND status='building'""",
-                (
-                    status,
-                    selected_ns,
-                    summary.pending,
-                    summary.leased,
-                    summary.done,
-                    summary.errors,
-                    summary.stale,
-                    generation_id,
-                ),
+            _persist_generation_finalization(connection, finalization)
+            _publish_generation_finalization(connection, finalization)
+            outcome: GenerationSummary | EmbeddingGenerationRebaseRequiredError = (
+                _finalized_generation_summary(finalization)
             )
-            if updated.rowcount != 1:
-                raise SemanticStateError("generation changed before finalization")
-            if not partial:
-                expected_head = (
-                    None
-                    if generation["base_generation_id"] is None
-                    else int(generation["base_generation_id"])
-                )
-                if expected_head is None:
-                    connection.execute(
-                        """INSERT INTO published_embedding_heads(
-                            model_signature,generation_id,published_ns)
-                        VALUES(?,?,?)""",
-                        (model.model_signature, generation_id, selected_ns),
-                    )
-                else:
-                    published = connection.execute(
-                        """UPDATE published_embedding_heads
-                        SET generation_id=?,published_ns=?
-                        WHERE model_signature=? AND generation_id=?""",
-                        (
-                            generation_id,
-                            selected_ns,
-                            model.model_signature,
-                            expected_head,
-                        ),
-                    )
-                    if published.rowcount != 1:  # protected by BEGIN IMMEDIATE + CAS
-                        raise SemanticStateError(
-                            "published embedding head changed during finalization"
-                        )
-            finalized = GenerationSummary(
-                generation_id=summary.generation_id,
-                model_signature=summary.model_signature,
-                processing_signature=summary.processing_signature,
-                status=status,
-                pending=summary.pending,
-                leased=summary.leased,
-                done=summary.done,
-                errors=summary.errors,
-                stale=summary.stale,
-                cursor=summary.cursor,
-            )
-    if conflict is not None:
-        raise conflict
-    if finalized is None:  # pragma: no cover - every non-conflict path finalizes
-        raise SemanticStateError("generation finalization produced no result")
-    return finalized
+        else:
+            outcome = conflict
+    if isinstance(outcome, EmbeddingGenerationRebaseRequiredError):
+        raise outcome
+    return outcome
 
 
 # endregion [05]

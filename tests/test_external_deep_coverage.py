@@ -334,6 +334,49 @@ def test_reuses_only_validated_passing_shards_and_reruns_malformed_checkpoint(
     assert [item[0] for item in calls].count("shard") == 3
 
 
+def test_interrupted_shards_publish_no_partial_result_and_resume_checkpoint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    trusted, stage, scratch, staged = _fixture(tmp_path, monkeypatch)
+    nodeids = (
+        "tests/test_logic.py::test_false",
+        "tests/test_logic.py::test_true",
+    )
+    calls, stable_worker = _worker(nodeids)
+    interrupted_modes: list[str] = []
+
+    def interrupted_worker(request, *, scratch_root, environment, timeout_seconds):
+        mode = str(request["mode"])
+        interrupted_modes.append(mode)
+        if mode == "shard" and tuple(request["nodeids"]) == (nodeids[1],):
+            raise subprocess.TimeoutExpired(("pytest",), timeout_seconds)
+        return stable_worker(
+            request,
+            scratch_root=scratch_root,
+            environment=environment,
+            timeout_seconds=timeout_seconds,
+        )
+
+    monkeypatch.setattr(deep, "_run_worker", interrupted_worker)
+    config = _config(shard_size=1)
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        _execute(trusted, stage, scratch, staged, config)
+
+    assert interrupted_modes == ["collect", "shard", "shard"]
+    assert len(tuple((scratch / "checkpoints").glob("*.json"))) == 1
+
+    monkeypatch.setattr(deep, "_run_worker", stable_worker)
+    resumed = _execute(trusted, stage, scratch, staged, config)
+
+    assert resumed.measurement_complete is True
+    assert resumed.counters["tests_passed"] == 2
+    assert resumed.counters["shards_reused"] == 1
+    assert resumed.process_invocations == 3  # git, collect and the unfinished shard
+    assert [item[0] for item in calls] == ["collect", "shard", "collect", "shard"]
+
+
 def test_failed_shard_is_advisory_and_never_reused(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

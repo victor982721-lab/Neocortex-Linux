@@ -70,10 +70,30 @@ def test_adapter_normalizes_counts_findings_relations_and_timeout_separately(
     trusted, stage, scratch, staged = _stage(tmp_path)
     target = trusted / "pkg/logic.py"
     original_digest = hashlib.sha256(target.read_bytes()).hexdigest()
+    events: list[str] = []
     monkeypatch.setattr(mutation, "_canonical_repository_root", lambda: trusted)
     monkeypatch.setattr(mutation, "cosmic_ray_tool_version", lambda: "8.4.6")
 
+    original_validate_root = mutation._validate_trusted_root
+    original_validate_inputs = mutation.validate_external_inputs
+    original_sha256 = mutation._sha256
+
+    def validate_root(root: Path) -> Path:
+        events.append("trusted-root")
+        return original_validate_root(root)
+
+    def validate_inputs(files: tuple[ExternalEvidenceFile, ...]) -> None:
+        events.append("validate-inputs")
+        original_validate_inputs(files)
+
+    def sha256(path: Path) -> str:
+        events.append(f"sha256:{path.relative_to(stage / 'source').as_posix()}")
+        return original_sha256(path)
+
     def run(arguments, **_kwargs):
+        events.append("worker")
+        assert Path(arguments[-1]).is_file()
+        assert not Path(arguments[-1]).with_suffix(".tmp").exists()
         request = json.loads(Path(arguments[-1]).read_text(encoding="utf-8"))
         raw = {
             "operator": "core/NumberReplacer",
@@ -127,6 +147,9 @@ def test_adapter_normalizes_counts_findings_relations_and_timeout_separately(
         encoded = json.dumps(payload).encode("utf-8")
         return subprocess.CompletedProcess(arguments, 0, encoded, b"")
 
+    monkeypatch.setattr(mutation, "_validate_trusted_root", validate_root)
+    monkeypatch.setattr(mutation, "validate_external_inputs", validate_inputs)
+    monkeypatch.setattr(mutation, "_sha256", sha256)
     monkeypatch.setattr(mutation, "run_bounded_capture", run)
     result = mutation.execute_cosmic_ray_mutation(
         stage,
@@ -154,6 +177,15 @@ def test_adapter_normalizes_counts_findings_relations_and_timeout_separately(
     assert result.process_invocations == 5
     assert result.measurement_complete is True
     assert hashlib.sha256(target.read_bytes()).hexdigest() == original_digest
+    assert events == [
+        "trusted-root",
+        "validate-inputs",
+        "sha256:pkg/logic.py",
+        "sha256:tests/test_logic.py",
+        "worker",
+        "validate-inputs",
+        "sha256:pkg/logic.py",
+    ]
 
 
 def test_adapter_abstains_without_declared_tests_or_indexed_target(
@@ -183,6 +215,39 @@ def test_adapter_abstains_without_declared_tests_or_indexed_target(
             trusted_root=trusted,
             scratch_root=scratch,
             config=config,
+        )
+
+
+def test_adapter_preserves_bounded_worker_failure_detail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    trusted, stage, scratch, staged = _stage(tmp_path)
+    monkeypatch.setattr(mutation, "_canonical_repository_root", lambda: trusted)
+    monkeypatch.setattr(mutation, "cosmic_ray_tool_version", lambda: "8.4.6")
+
+    def run(arguments, **_kwargs):
+        payload = {
+            "schema": "neocortex.external-mutation-cosmic-ray-worker/error-v1",
+            "status": "error",
+            "error": {
+                "code": "worker_failure",
+                "message": "FileNotFoundError:checkpoint.tmp",
+            },
+        }
+        return subprocess.CompletedProcess(arguments, 2, json.dumps(payload).encode(), b"")
+
+    monkeypatch.setattr(mutation, "run_bounded_capture", run)
+    with pytest.raises(
+        ValueError,
+        match=r"worker_failure:FileNotFoundError:checkpoint\.tmp",
+    ):
+        mutation.execute_cosmic_ray_mutation(
+            stage,
+            staged,
+            {},
+            trusted_root=trusted,
+            scratch_root=scratch,
+            config=_config(),
         )
 
 

@@ -6,6 +6,7 @@ import heapq
 import json
 import sqlite3
 from collections.abc import Callable, Iterator, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
@@ -550,25 +551,29 @@ def iter_active_embedding_pages(
 # region [07] Bounded hit resolution
 
 
-def resolve_search_hits(
-    path: Path,
+@dataclass(frozen=True, slots=True)
+class _ResolvedSearchSource:
+    row: sqlite3.Row
+    source_revision: dict[str, object]
+    source_status: str | None
+    published_revision_id: int
+    current_revision_id: int | None
+
+
+def _validate_hit_resolution_request(
     hits: Sequence[SearchHit],
-    *,
-    snippet_chars: int = 240,
-) -> tuple[ResolvedSearchHit, ...]:
-    """Resolve immutable evidence with an identity-safe locator and DB currency.
-
-    ``active`` is deliberately not filtered: the published head remains the
-    visibility contract until a successor is atomically published.
-    """
-
+    snippet_chars: int,
+) -> None:
     if len(hits) > MAX_WRITE_BATCH:
         raise ValueError(f"at most {MAX_WRITE_BATCH} hits can be resolved per call")
     if not 0 <= snippet_chars <= 4_096:
         raise ValueError("snippet_chars must be between 0 and 4096")
-    if not hits:
-        return ()
-    member_ids = tuple(dict.fromkeys(hit.ref_id for hit in hits))
+
+
+def _load_search_hit_snapshots(
+    path: Path,
+    member_ids: tuple[int, ...],
+) -> dict[int, sqlite3.Row]:
     placeholders = ",".join("?" for _ in member_ids)
     with semantic_database(path, readonly=True) as connection:
         rows = connection.execute(
@@ -627,103 +632,198 @@ def resolve_search_hits(
             WHERE member.member_id IN ({placeholders})""",
             member_ids,
         ).fetchall()
-    snapshots = {int(row["member_id"]): row for row in rows}
-    output: list[ResolvedSearchHit] = []
-    for hit in hits:
-        source = snapshots.get(hit.ref_id)
-        expected_kind = (
-            SemanticEntityKind.TEXT_CHUNK.value
-            if hit.modality is EmbeddingModality.TEXT
-            else SemanticEntityKind.IMAGE_ITEM.value
+    return {int(row["member_id"]): row for row in rows}
+
+
+def _expected_hit_entity_kind(hit: SearchHit) -> str:
+    if hit.modality is EmbeddingModality.TEXT:
+        return SemanticEntityKind.TEXT_CHUNK.value
+    return SemanticEntityKind.IMAGE_ITEM.value
+
+
+def _require_consistent_hit_snapshot(
+    hit: SearchHit,
+    source: sqlite3.Row | None,
+) -> sqlite3.Row:
+    if (
+        source is None
+        or int(source["generation_id"]) != hit.generation_id
+        or str(source["model_signature"]) != hit.indexed_model_signature
+        or str(source["vector_space"]) != hit.vector_space
+        or str(source["modality"]) != hit.modality.value
+        or str(source["entity_kind"]) != _expected_hit_entity_kind(hit)
+        or str(source["entity_id"]) != hit.entity_id
+        or str(source["item_id"]) != hit.item_id
+    ):
+        raise SemanticStateError(
+            f"published hit snapshot is unavailable or inconsistent: {hit.ref_id}"
         )
-        if (
-            source is None
-            or int(source["generation_id"]) != hit.generation_id
-            or str(source["model_signature"]) != hit.indexed_model_signature
-            or str(source["vector_space"]) != hit.vector_space
-            or str(source["modality"]) != hit.modality.value
-            or str(source["entity_kind"]) != expected_kind
-            or str(source["entity_id"]) != hit.entity_id
-            or str(source["item_id"]) != hit.item_id
-        ):
-            raise SemanticStateError(
-                f"published hit snapshot is unavailable or inconsistent: {hit.ref_id}"
-            )
-        source_revision = json.loads(str(source["source_revision_json"]))
-        if not isinstance(source_revision, dict):
-            raise SemanticStateError("semantic source revision is not a JSON object")
-        published_provenance = json.loads(str(source["item_provenance_json"]))
-        if not isinstance(published_provenance, dict):
-            raise SemanticStateError("semantic item provenance is not a JSON object")
-        published_revision_id = int(source["published_revision_id"])
-        current_revision_id = (
-            None
-            if source["current_revision_id"] is None
-            else int(source["current_revision_id"])
+    return source
+
+
+def _json_object(raw: object, *, error: str) -> dict[str, object]:
+    value = json.loads(str(raw))
+    if not isinstance(value, dict):
+        raise SemanticStateError(error)
+    return value
+
+
+def _search_source_revision_ids(source: sqlite3.Row) -> tuple[int, int | None]:
+    published_revision_id = int(source["published_revision_id"])
+    current_revision_id = (
+        None
+        if source["current_revision_id"] is None
+        else int(source["current_revision_id"])
+    )
+    return published_revision_id, current_revision_id
+
+
+def _search_source_status(
+    source: sqlite3.Row,
+    *,
+    published_provenance: dict[str, object],
+    published_revision_id: int,
+    current_revision_id: int | None,
+) -> str | None:
+    provenance = published_provenance
+    if current_revision_id == published_revision_id:
+        provenance = _json_object(
+            source["current_item_provenance_json"],
+            error="semantic current-item provenance is not a JSON object",
         )
-        status_provenance = published_provenance
-        if current_revision_id == published_revision_id:
-            current_provenance = json.loads(str(source["current_item_provenance_json"]))
-            if not isinstance(current_provenance, dict):
-                raise SemanticStateError(
-                    "semantic current-item provenance is not a JSON object"
-                )
-            status_provenance = current_provenance
-        source_status = next(
-            (
-                value.strip()
-                for name in ("source_status", "analysis_status")
-                if isinstance((value := status_provenance.get(name)), str)
-                and value.strip()
-            ),
-            None,
+    return next(
+        (
+            value.strip()
+            for name in ("source_status", "analysis_status")
+            if isinstance((value := provenance.get(name)), str) and value.strip()
+        ),
+        None,
+    )
+
+
+def _resolved_search_source(
+    hit: SearchHit,
+    source: sqlite3.Row | None,
+) -> _ResolvedSearchSource:
+    selected = _require_consistent_hit_snapshot(hit, source)
+    source_revision = _json_object(
+        selected["source_revision_json"],
+        error="semantic source revision is not a JSON object",
+    )
+    published_provenance = _json_object(
+        selected["item_provenance_json"],
+        error="semantic item provenance is not a JSON object",
+    )
+    published_revision_id, current_revision_id = _search_source_revision_ids(selected)
+    return _ResolvedSearchSource(
+        row=selected,
+        source_revision=source_revision,
+        source_status=_search_source_status(
+            selected,
+            published_provenance=published_provenance,
+            published_revision_id=published_revision_id,
+            current_revision_id=current_revision_id,
+        ),
+        published_revision_id=published_revision_id,
+        current_revision_id=current_revision_id,
+    )
+
+
+def _resolved_text_search_hit(
+    hit: SearchHit,
+    source: _ResolvedSearchSource,
+    *,
+    snippet_chars: int,
+) -> ResolvedSearchHit:
+    row = source.row
+    section_provenance = _json_object(
+        row["section_provenance_json"],
+        error="semantic section provenance is not a JSON object",
+    )
+    fingerprint = _fingerprint_from_row(row)
+    text = _decode_chunk_text(bytes(row["text_zlib"]), fingerprint)
+    snippet = text[:snippet_chars] if snippet_chars else None
+    return ResolvedSearchHit(
+        hit=hit,
+        path=None if row["path"] is None else str(row["path"]),
+        source_kind=str(row["source_kind"]),
+        source_identity=str(row["source_identity"]),
+        section_kind=str(row["section_kind"]),
+        section_id=str(row["section_id"]),
+        start_char=int(row["start_char"]),
+        end_char=int(row["end_char"]),
+        snippet=snippet,
+        source_status=source.source_status,
+        source_revision=source.source_revision,
+        section_provenance=section_provenance,
+        published_revision_id=source.published_revision_id,
+        current_revision_id=source.current_revision_id,
+    )
+
+
+def _resolved_image_search_hit(
+    hit: SearchHit,
+    source: _ResolvedSearchSource,
+) -> ResolvedSearchHit:
+    row = source.row
+    return ResolvedSearchHit(
+        hit=hit,
+        path=None if row["path"] is None else str(row["path"]),
+        source_kind=str(row["source_kind"]),
+        source_identity=str(row["source_identity"]),
+        section_kind=None,
+        section_id=None,
+        start_char=None,
+        end_char=None,
+        snippet=None,
+        source_status=source.source_status,
+        source_revision=source.source_revision,
+        published_revision_id=source.published_revision_id,
+        current_revision_id=source.current_revision_id,
+    )
+
+
+def _resolved_search_hit(
+    hit: SearchHit,
+    source: sqlite3.Row | None,
+    *,
+    snippet_chars: int,
+) -> ResolvedSearchHit:
+    resolved_source = _resolved_search_source(hit, source)
+    if hit.modality is EmbeddingModality.TEXT:
+        return _resolved_text_search_hit(
+            hit,
+            resolved_source,
+            snippet_chars=snippet_chars,
         )
-        if hit.modality is EmbeddingModality.TEXT:
-            section_provenance = json.loads(str(source["section_provenance_json"]))
-            if not isinstance(section_provenance, dict):
-                raise SemanticStateError(
-                    "semantic section provenance is not a JSON object"
-                )
-            fingerprint = _fingerprint_from_row(source)
-            text = _decode_chunk_text(bytes(source["text_zlib"]), fingerprint)
-            snippet = text[:snippet_chars] if snippet_chars else None
-            output.append(
-                ResolvedSearchHit(
-                    hit=hit,
-                    path=None if source["path"] is None else str(source["path"]),
-                    source_kind=str(source["source_kind"]),
-                    source_identity=str(source["source_identity"]),
-                    section_kind=str(source["section_kind"]),
-                    section_id=str(source["section_id"]),
-                    start_char=int(source["start_char"]),
-                    end_char=int(source["end_char"]),
-                    snippet=snippet,
-                    source_status=source_status,
-                    source_revision=source_revision,
-                    section_provenance=section_provenance,
-                    published_revision_id=published_revision_id,
-                    current_revision_id=current_revision_id,
-                )
-            )
-        else:
-            output.append(
-                ResolvedSearchHit(
-                    hit=hit,
-                    path=None if source["path"] is None else str(source["path"]),
-                    source_kind=str(source["source_kind"]),
-                    source_identity=str(source["source_identity"]),
-                    section_kind=None,
-                    section_id=None,
-                    start_char=None,
-                    end_char=None,
-                    snippet=None,
-                    source_status=source_status,
-                    source_revision=source_revision,
-                    published_revision_id=published_revision_id,
-                    current_revision_id=current_revision_id,
-                )
-            )
-    return tuple(output)
+    return _resolved_image_search_hit(hit, resolved_source)
+
+
+def resolve_search_hits(
+    path: Path,
+    hits: Sequence[SearchHit],
+    *,
+    snippet_chars: int = 240,
+) -> tuple[ResolvedSearchHit, ...]:
+    """Resolve immutable evidence with an identity-safe locator and DB currency.
+
+    ``active`` is deliberately not filtered: the published head remains the
+    visibility contract until a successor is atomically published.
+    """
+
+    _validate_hit_resolution_request(hits, snippet_chars)
+    if not hits:
+        return ()
+    member_ids = tuple(dict.fromkeys(hit.ref_id for hit in hits))
+    snapshots = _load_search_hit_snapshots(path, member_ids)
+    return tuple(
+        _resolved_search_hit(
+            hit,
+            snapshots.get(hit.ref_id),
+            snippet_chars=snippet_chars,
+        )
+        for hit in hits
+    )
 
 
 # endregion [07]

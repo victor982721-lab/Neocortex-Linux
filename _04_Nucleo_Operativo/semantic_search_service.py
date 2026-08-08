@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import unicodedata
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal, Protocol
 
@@ -71,6 +71,19 @@ class LexicalSearch(Protocol):
 SEMANTIC_TEXT_RANKING = "semantic_text"
 SEMANTIC_TITLE_RANKING = "semantic_title"
 SEMANTIC_TITLE_FUSION_WEIGHT = 0.5
+
+
+@dataclass(frozen=True, slots=True)
+class _SemanticSearchContext:
+    state_directory: Path
+    query: str
+    limit: int
+    semantic_candidate_limit: int
+    lexical_candidate_limit: int
+    max_vectors: int
+    database: Path
+    database_exists: bool
+    cache: Path
 
 
 # region [01] Query vectors and exact rankings
@@ -668,6 +681,180 @@ def _resolve_fused_hits(
     )
 
 
+def _validated_search_query(query: object) -> str:
+    if not isinstance(query, str):
+        raise ValueError("semantic query must be a string")
+    normalized = query.strip()
+    if not normalized:
+        raise ValueError("semantic query cannot be blank")
+    if any(unicodedata.category(character) == "Cc" for character in query):
+        raise ValueError("semantic query cannot contain control characters")
+    if len(normalized) > MAX_QUERY_CHARS:
+        raise ValueError(f"semantic query cannot exceed {MAX_QUERY_CHARS} characters")
+    return normalized
+
+
+def _bounded_search_integer(
+    value: object,
+    *,
+    maximum: int,
+    error_message: str,
+) -> int:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or not 1 <= value <= maximum
+    ):
+        raise ValueError(error_message)
+    return value
+
+
+def _semantic_candidate_limit(candidate_limit: object, *, result_limit: int) -> int:
+    if candidate_limit is None:
+        return min(MAX_SEMANTIC_CANDIDATE_HITS, max(result_limit * 3, result_limit))
+    return _bounded_search_integer(
+        candidate_limit,
+        maximum=MAX_SEMANTIC_CANDIDATE_HITS,
+        error_message=(
+            "semantic candidate_limit must be between 1 and "
+            f"{MAX_SEMANTIC_CANDIDATE_HITS}"
+        ),
+    )
+
+
+def _cancellation_point(cancellation_check: Callable[[], None] | None) -> None:
+    if cancellation_check is not None:
+        cancellation_check()
+
+
+def _prepare_search_context(
+    state_directory: Path,
+    query: object,
+    *,
+    limit: object,
+    candidate_limit: object,
+    max_vectors: object,
+    include_text: bool,
+    include_images: bool,
+    include_lexical: bool,
+    semantic_database: object,
+    model_cache_override: Path | None,
+    cancellation_check: Callable[[], None] | None,
+) -> _SemanticSearchContext:
+    normalized_query = _validated_search_query(query)
+    validated_limit = _bounded_search_integer(
+        limit,
+        maximum=1_000,
+        error_message="semantic search limit must be between 1 and 1000",
+    )
+    validated_candidate_limit = _semantic_candidate_limit(
+        candidate_limit,
+        result_limit=validated_limit,
+    )
+    validated_max_vectors = _bounded_search_integer(
+        max_vectors,
+        maximum=10_000_000,
+        error_message="semantic max_vectors must be between 1 and 10000000",
+    )
+    if not (include_text or include_images or include_lexical):
+        raise ValueError("at least one semantic or lexical ranking must be selected")
+    if semantic_database is not None and not isinstance(semantic_database, Path):
+        raise ValueError("semantic_database must be a Path when provided")
+    _cancellation_point(cancellation_check)
+    database = (
+        semantic_database
+        if isinstance(semantic_database, Path)
+        else state_directory / SEMANTIC_DATABASE_NAME
+    )
+    return _SemanticSearchContext(
+        state_directory,
+        normalized_query,
+        validated_limit,
+        validated_candidate_limit,
+        min(MAX_LEXICAL_CANDIDATE_HITS, max(validated_limit * 3, validated_limit)),
+        validated_max_vectors,
+        database,
+        database.is_file(),
+        model_cache(state_directory, model_cache_override),
+    )
+
+
+def _semantic_search_rankings(
+    context: _SemanticSearchContext,
+    *,
+    include_text: bool,
+    include_title: bool,
+    include_images: bool,
+    text_model: EmbeddingModelSpec | None,
+    local_files_only: bool,
+    threads: int | None,
+    backend_factory: BackendFactory,
+    evidence_mode: bool,
+    cancellation_check: Callable[[], None] | None,
+) -> tuple[SemanticRanking, ...]:
+    rankings: list[SemanticRanking] = []
+    if include_text:
+        rankings.extend(
+            text_search_rankings(
+                context.database,
+                database_exists=context.database_exists,
+                selected_model=text_model or multilingual_text_model(),
+                query=context.query,
+                cache=context.cache,
+                local_files_only=local_files_only,
+                threads=threads,
+                limit=context.semantic_candidate_limit,
+                max_vectors=context.max_vectors,
+                backend_factory=backend_factory,
+                evidence_mode=evidence_mode,
+                include_title=include_title,
+                cancellation_check=cancellation_check,
+            )
+        )
+    if include_images:
+        rankings.append(
+            image_search_ranking(
+                context.database,
+                database_exists=context.database_exists,
+                query=context.query,
+                cache=context.cache,
+                local_files_only=local_files_only,
+                threads=threads,
+                limit=context.semantic_candidate_limit,
+                max_vectors=context.max_vectors,
+                backend_factory=backend_factory,
+                evidence_mode=evidence_mode,
+                cancellation_check=cancellation_check,
+            )
+        )
+    return tuple(rankings)
+
+
+def _lexical_search_rankings(
+    context: _SemanticSearchContext,
+    *,
+    include_lexical: bool,
+    lexical_paths: LexicalStatePaths | None,
+    lexical_search: LexicalSearch,
+    cancellation_check: Callable[[], None] | None,
+) -> tuple[LexicalRanking, ...]:
+    if not include_lexical:
+        return ()
+    paths = lexical_paths or default_lexical_paths(context.state_directory)
+    if cancellation_check is None:
+        return lexical_search(
+            paths,
+            context.query,
+            limit=context.lexical_candidate_limit,
+        )
+    return lexical_search(
+        paths,
+        context.query,
+        limit=context.lexical_candidate_limit,
+        cancellation_check=cancellation_check,
+    )
+
+
 def search_semantic_index(
     state_directory: Path,
     query: str,
@@ -692,112 +879,45 @@ def search_semantic_index(
 ) -> SemanticSearchResult:
     """Search incompatible spaces independently, then fuse only their ranks."""
 
-    if not isinstance(query, str):
-        raise ValueError("semantic query must be a string")
-    normalized_query = query.strip()
-    if not normalized_query:
-        raise ValueError("semantic query cannot be blank")
-    if any(unicodedata.category(character) == "Cc" for character in query):
-        raise ValueError("semantic query cannot contain control characters")
-    if len(normalized_query) > MAX_QUERY_CHARS:
-        raise ValueError(f"semantic query cannot exceed {MAX_QUERY_CHARS} characters")
-    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 1_000:
-        raise ValueError("semantic search limit must be between 1 and 1000")
-    if candidate_limit is not None and (
-        isinstance(candidate_limit, bool)
-        or not isinstance(candidate_limit, int)
-        or not 1 <= candidate_limit <= MAX_SEMANTIC_CANDIDATE_HITS
-    ):
-        raise ValueError(
-            "semantic candidate_limit must be between 1 and "
-            f"{MAX_SEMANTIC_CANDIDATE_HITS}"
-        )
-    if (
-        isinstance(max_vectors, bool)
-        or not isinstance(max_vectors, int)
-        or not 1 <= max_vectors <= 10_000_000
-    ):
-        raise ValueError("semantic max_vectors must be between 1 and 10000000")
-    if not (include_text or include_images or include_lexical):
-        raise ValueError("at least one semantic or lexical ranking must be selected")
-    if semantic_database is not None and not isinstance(semantic_database, Path):
-        raise ValueError("semantic_database must be a Path when provided")
-    if cancellation_check is not None:
-        cancellation_check()
-
-    database = (
-        semantic_database
-        if semantic_database is not None
-        else state_directory / SEMANTIC_DATABASE_NAME
+    context = _prepare_search_context(
+        state_directory,
+        query,
+        limit=limit,
+        candidate_limit=candidate_limit,
+        max_vectors=max_vectors,
+        include_text=include_text,
+        include_images=include_images,
+        include_lexical=include_lexical,
+        semantic_database=semantic_database,
+        model_cache_override=model_cache_override,
+        cancellation_check=cancellation_check,
     )
-    database_exists = database.is_file()
-    cache = model_cache(state_directory, model_cache_override)
-    rankings: list[SemanticRanking] = []
-    semantic_candidate_limit = (
-        candidate_limit
-        if candidate_limit is not None
-        else min(MAX_SEMANTIC_CANDIDATE_HITS, max(limit * 3, limit))
+    rankings = _semantic_search_rankings(
+        context,
+        include_text=include_text,
+        include_title=include_title,
+        include_images=include_images,
+        text_model=text_model,
+        local_files_only=local_files_only,
+        threads=threads,
+        backend_factory=backend_factory,
+        evidence_mode=evidence_mode,
+        cancellation_check=cancellation_check,
     )
-    if include_text:
-        rankings.extend(
-            text_search_rankings(
-                database,
-                database_exists=database_exists,
-                selected_model=text_model or multilingual_text_model(),
-                query=normalized_query,
-                cache=cache,
-                local_files_only=local_files_only,
-                threads=threads,
-                limit=semantic_candidate_limit,
-                max_vectors=max_vectors,
-                backend_factory=backend_factory,
-                evidence_mode=evidence_mode,
-                include_title=include_title,
-                cancellation_check=cancellation_check,
-            )
-        )
-    if include_images:
-        rankings.append(
-            image_search_ranking(
-                database,
-                database_exists=database_exists,
-                query=normalized_query,
-                cache=cache,
-                local_files_only=local_files_only,
-                threads=threads,
-                limit=semantic_candidate_limit,
-                max_vectors=max_vectors,
-                backend_factory=backend_factory,
-                evidence_mode=evidence_mode,
-                cancellation_check=cancellation_check,
-            )
-        )
-
-    if cancellation_check is not None:
-        cancellation_check()
-    if include_lexical and cancellation_check is not None:
-        lexical_rankings = lexical_search(
-            lexical_paths or default_lexical_paths(state_directory),
-            normalized_query,
-            limit=min(MAX_LEXICAL_CANDIDATE_HITS, max(limit * 3, limit)),
-            cancellation_check=cancellation_check,
-        )
-    elif include_lexical:
-        lexical_rankings = lexical_search(
-            lexical_paths or default_lexical_paths(state_directory),
-            normalized_query,
-            limit=min(MAX_LEXICAL_CANDIDATE_HITS, max(limit * 3, limit)),
-        )
-    else:
-        lexical_rankings = ()
-    if cancellation_check is not None:
-        cancellation_check()
+    _cancellation_point(cancellation_check)
+    lexical_rankings = _lexical_search_rankings(
+        context,
+        include_lexical=include_lexical,
+        lexical_paths=lexical_paths,
+        lexical_search=lexical_search,
+        cancellation_check=cancellation_check,
+    )
+    _cancellation_point(cancellation_check)
     return SemanticSearchResult(
-        normalized_query,
-        tuple(rankings),
-        tuple(lexical_rankings),
-        _resolve_fused_hits(rankings, lexical_rankings, limit=limit),
+        context.query,
+        rankings,
+        lexical_rankings,
+        _resolve_fused_hits(rankings, lexical_rankings, limit=context.limit),
     )
-
 
 # endregion [03]

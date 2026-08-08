@@ -16,10 +16,11 @@ import io
 import re
 import subprocess
 import unicodedata
+from collections.abc import Mapping
 from contextlib import nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 from PIL import Image, ImageOps
 
@@ -241,6 +242,209 @@ def _semantic_hits(text: str, groups: dict[str, tuple[str, ...]]) -> tuple[str, 
     return tuple(sorted(labels))
 
 
+@dataclass(frozen=True, slots=True)
+class _DocumentOcrSample:
+    width: int
+    height: int
+    payload: bytes
+
+
+type _TsvRow = Mapping[str, str | list[str] | None]
+
+
+@dataclass(slots=True)
+class _DocumentTextAccumulator:
+    retained_words: list[str] = field(default_factory=list)
+    retained_utf8_bytes: int = 0
+    text_truncated: bool = False
+    word_count: int = 0
+    character_count: int = 0
+    confidence_total: float = 0.0
+    lines: set[tuple[int, int, int]] = field(default_factory=set)
+    box_area: int = 0
+
+    def _retain(self, word: str) -> None:
+        if self.text_truncated:
+            return
+        word_bytes = len(word.encode("utf-8"))
+        separator_bytes = 1 if self.retained_words else 0
+        if (
+            self.retained_utf8_bytes + separator_bytes + word_bytes
+            <= DOCUMENT_OCR_TEXT_MAX_UTF8_BYTES
+        ):
+            self.retained_words.append(word)
+            self.retained_utf8_bytes += separator_bytes + word_bytes
+            return
+        self.text_truncated = True
+
+    def observe(self, row: _TsvRow) -> None:
+        word = str(row.get("text") or "").strip()
+        confidence = _ocr_confidence(row)
+        if not word or confidence < OCR_WORD_CONFIDENCE:
+            return
+        self.word_count += 1
+        self.character_count += len(word)
+        self.confidence_total += confidence
+        self._retain(word)
+        self.lines.add(
+            (
+                _ocr_integer(row, "block_num"),
+                _ocr_integer(row, "par_num"),
+                _ocr_integer(row, "line_num"),
+            )
+        )
+        self.box_area += _ocr_integer(row, "width") * _ocr_integer(row, "height")
+
+
+def _ocr_confidence(row: _TsvRow) -> float:
+    try:
+        return float(cast(str | int, row.get("conf") or -1))
+    except (TypeError, ValueError):
+        return -1.0
+
+
+def _ocr_integer(row: _TsvRow, name: str) -> int:
+    return int(cast(str | int, row.get(name) or 0))
+
+
+def _gray_document_sample(source: Image.Image) -> Image.Image:
+    oriented = ImageOps.exif_transpose(source)
+    try:
+        return oriented.convert("L")
+    finally:
+        if oriented is not source:
+            oriented.close()
+
+
+def _contrast_document_sample(sample: Image.Image) -> Image.Image:
+    try:
+        sample.thumbnail(
+            (DOCUMENT_OCR_SAMPLE_SIDE, DOCUMENT_OCR_SAMPLE_SIDE),
+            Image.Resampling.LANCZOS,
+        )
+        return ImageOps.autocontrast(sample)
+    finally:
+        sample.close()
+
+
+def _encode_document_sample(contrasted: Image.Image) -> _DocumentOcrSample:
+    try:
+        width, height = contrasted.size
+        with io.BytesIO() as encoded:
+            contrasted.save(encoded, format="PNG")
+            payload = encoded.getvalue()
+        return _DocumentOcrSample(width, height, payload)
+    finally:
+        contrasted.close()
+
+
+def _sample_document_image(path: Path) -> _DocumentOcrSample:
+    with pillow_decode_scope(allow_truncated=False):
+        with Image.open(path) as source:
+            gray = _gray_document_sample(source)
+            contrasted = _contrast_document_sample(gray)
+            return _encode_document_sample(contrasted)
+
+
+def _document_ocr_command(
+    runtime: DocumentVerifierRuntime,
+    tesseract_cmd: str,
+) -> list[str]:
+    command = [
+        tesseract_cmd,
+        "stdin",
+        "stdout",
+        "-l",
+        runtime.lang,
+        "--psm",
+        "11",
+    ]
+    if runtime.tessdata_dir:
+        command.extend(("--tessdata-dir", runtime.tessdata_dir))
+    command.append("tsv")
+    return command
+
+
+def _run_document_ocr(
+    sample: _DocumentOcrSample,
+    runtime: DocumentVerifierRuntime,
+    tesseract_cmd: str,
+) -> bytes:
+    result = run_bounded_capture(
+        _document_ocr_command(runtime, tesseract_cmd),
+        input_bytes=sample.payload,
+        timeout_seconds=runtime.timeout_seconds,
+        stdout_limit_bytes=DOCUMENT_OCR_TSV_MAX_BYTES,
+        stderr_limit_bytes=DOCUMENT_OCR_DIAGNOSTIC_MAX_BYTES,
+        creationflags=CREATE_NO_WINDOW,
+    )
+    if result.returncode != 0:
+        detail = result.stderr.decode("utf-8", "replace")[:500]
+        raise RuntimeError(detail or f"tesseract exited with code {result.returncode}")
+    return result.stdout
+
+
+def _parse_document_tsv(payload: bytes) -> _DocumentTextAccumulator:
+    accumulator = _DocumentTextAccumulator()
+    decoded = payload.decode("utf-8", "replace")
+    for row in csv.DictReader(
+        io.StringIO(decoded),
+        delimiter="\t",
+        quoting=csv.QUOTE_NONE,
+    ):
+        accumulator.observe(row)
+    return accumulator
+
+
+def _available_document_evidence(
+    sample: _DocumentOcrSample,
+    text: _DocumentTextAccumulator,
+    runtime: DocumentVerifierRuntime,
+) -> DocumentTextEvidence:
+    recognized = " ".join(text.retained_words)
+    return DocumentTextEvidence(
+        attempted=True,
+        available=True,
+        word_count=text.word_count,
+        line_count=len(text.lines),
+        character_count=text.character_count,
+        recognized_text=recognized,
+        recognized_text_truncated=text.text_truncated,
+        text_coverage=round(
+            min(1.0, text.box_area / max(1, sample.width * sample.height)),
+            5,
+        ),
+        mean_confidence=round(
+            text.confidence_total / text.word_count if text.word_count else 0.0,
+            2,
+        ),
+        document_terms=_semantic_hits(recognized, DOCUMENT_TERMS),
+        ui_terms=_semantic_hits(recognized, UI_TERMS),
+        industrial_entities=_semantic_hits(recognized, INDUSTRIAL_ENTITY_HINTS),
+        industrial_activities=_semantic_hits(recognized, INDUSTRIAL_ACTIVITY_HINTS),
+        industrial_operational_contexts=_semantic_hits(
+            recognized, OPERATIONAL_CONTEXT_HINTS
+        ),
+        industrial_safety_conditions=_semantic_hits(
+            recognized, SAFETY_CONDITION_HINTS
+        ),
+        provenance=runtime.provenance,
+    )
+
+
+def _unavailable_document_evidence(
+    runtime: DocumentVerifierRuntime,
+    exc: Exception,
+) -> DocumentTextEvidence:
+    return DocumentTextEvidence(
+        attempted=True,
+        available=False,
+        provenance=runtime.provenance,
+        error_type=type(exc).__name__,
+        error_message=_safe_error(exc),
+    )
+
+
 def verify_document_text(
     path: Path,
     runtime: DocumentVerifierRuntime,
@@ -264,133 +468,16 @@ def verify_document_text(
     try:
         assert runtime.tesseract_cmd is not None
         with admission:
-            with pillow_decode_scope(allow_truncated=False):
-                with Image.open(path) as source:
-                    oriented = ImageOps.exif_transpose(source)
-                    try:
-                        sample = oriented.convert("L")
-                    finally:
-                        if oriented is not source:
-                            oriented.close()
-                    try:
-                        sample.thumbnail(
-                            (DOCUMENT_OCR_SAMPLE_SIDE, DOCUMENT_OCR_SAMPLE_SIDE),
-                            Image.Resampling.LANCZOS,
-                        )
-                        contrasted = ImageOps.autocontrast(sample)
-                    finally:
-                        sample.close()
-                    try:
-                        width, height = contrasted.size
-                        with io.BytesIO() as encoded:
-                            contrasted.save(encoded, format="PNG")
-                            image_payload = encoded.getvalue()
-                    finally:
-                        contrasted.close()
-
-            command = [
+            sample = _sample_document_image(path)
+            tsv = _run_document_ocr(
+                sample,
+                runtime,
                 runtime.tesseract_cmd,
-                "stdin",
-                "stdout",
-                "-l",
-                runtime.lang,
-                "--psm",
-                "11",
-            ]
-            if runtime.tessdata_dir:
-                command.extend(("--tessdata-dir", runtime.tessdata_dir))
-            command.append("tsv")
-            result = run_bounded_capture(
-                command,
-                input_bytes=image_payload,
-                timeout_seconds=runtime.timeout_seconds,
-                stdout_limit_bytes=DOCUMENT_OCR_TSV_MAX_BYTES,
-                stderr_limit_bytes=DOCUMENT_OCR_DIAGNOSTIC_MAX_BYTES,
-                creationflags=CREATE_NO_WINDOW,
             )
-            if result.returncode != 0:
-                detail = result.stderr.decode("utf-8", "replace")[:500]
-                raise RuntimeError(
-                    detail or f"tesseract exited with code {result.returncode}"
-                )
-
-        retained_words: list[str] = []
-        retained_utf8_bytes = 0
-        text_truncated = False
-        word_count = 0
-        character_count = 0
-        confidence_total = 0.0
-        lines: set[tuple[int, int, int]] = set()
-        box_area = 0
-        decoded_tsv = result.stdout.decode("utf-8", "replace")
-        for row in csv.DictReader(
-            io.StringIO(decoded_tsv),
-            delimiter="\t",
-            quoting=csv.QUOTE_NONE,
-        ):
-            word = str(row.get("text") or "").strip()
-            try:
-                confidence = float(row.get("conf") or -1)
-            except (TypeError, ValueError):
-                confidence = -1.0
-            if not word or confidence < OCR_WORD_CONFIDENCE:
-                continue
-            word_count += 1
-            character_count += len(word)
-            confidence_total += confidence
-            if not text_truncated:
-                word_utf8_bytes = len(word.encode("utf-8"))
-                separator_bytes = 1 if retained_words else 0
-                if (
-                    retained_utf8_bytes + separator_bytes + word_utf8_bytes
-                    <= DOCUMENT_OCR_TEXT_MAX_UTF8_BYTES
-                ):
-                    retained_words.append(word)
-                    retained_utf8_bytes += separator_bytes + word_utf8_bytes
-                else:
-                    text_truncated = True
-            lines.add(
-                (
-                    int(row.get("block_num") or 0),
-                    int(row.get("par_num") or 0),
-                    int(row.get("line_num") or 0),
-                )
-            )
-            box_area += int(row.get("width") or 0) * int(row.get("height") or 0)
-        recognized = " ".join(retained_words)
-        return DocumentTextEvidence(
-            attempted=True,
-            available=True,
-            word_count=word_count,
-            line_count=len(lines),
-            character_count=character_count,
-            recognized_text=recognized,
-            recognized_text_truncated=text_truncated,
-            text_coverage=round(min(1.0, box_area / max(1, width * height)), 5),
-            mean_confidence=round(
-                confidence_total / word_count if word_count else 0.0,
-                2,
-            ),
-            document_terms=_semantic_hits(recognized, DOCUMENT_TERMS),
-            ui_terms=_semantic_hits(recognized, UI_TERMS),
-            industrial_entities=_semantic_hits(recognized, INDUSTRIAL_ENTITY_HINTS),
-            industrial_activities=_semantic_hits(recognized, INDUSTRIAL_ACTIVITY_HINTS),
-            industrial_operational_contexts=_semantic_hits(
-                recognized, OPERATIONAL_CONTEXT_HINTS
-            ),
-            industrial_safety_conditions=_semantic_hits(
-                recognized, SAFETY_CONDITION_HINTS
-            ),
-            provenance=runtime.provenance,
-        )
+        text = _parse_document_tsv(tsv)
+        return _available_document_evidence(sample, text, runtime)
     except Exception as exc:
-        return DocumentTextEvidence(
-            attempted=True,
-            available=False,
-            provenance=runtime.provenance,
-            error_type=type(exc).__name__,
-            error_message=_safe_error(exc),
-        )
+        return _unavailable_document_evidence(runtime, exc)
 
 
 # endregion [03]

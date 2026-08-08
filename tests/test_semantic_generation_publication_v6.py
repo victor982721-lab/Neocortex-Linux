@@ -6,8 +6,10 @@
 from __future__ import annotations
 
 import json
+import inspect
 import sqlite3
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -23,6 +25,7 @@ from _04_Nucleo_Operativo.semantic_models import (
     EmbeddingModelSpec,
     EmbeddingRole,
     ExactSearchQuery,
+    GenerationSummary,
     SemanticItem,
     TextChunk,
     TextSection,
@@ -249,9 +252,7 @@ def test_successor_replaces_only_the_selected_source_chunking_profile(
         },
         started_ns=120,
     )
-    assert (
-        enqueue_text_chunk_jobs(database, successor, (pdf_b.chunk_id,), now_ns=120) == 1
-    )
+    assert enqueue_text_chunk_jobs(database, successor, (pdf_b.chunk_id,), now_ns=120) == 1
     _complete_jobs(database, successor, now_ns=130)
     finalize_embedding_generation(database, successor, completed_ns=140)
 
@@ -275,18 +276,14 @@ def test_successor_replaces_only_the_selected_source_chunking_profile(
             )
         )
         retained_historical_chunks = int(
-            connection.execute(
-                "SELECT COUNT(*) FROM semantic_chunk_revisions"
-            ).fetchone()[0]
+            connection.execute("SELECT COUNT(*) FROM semantic_chunk_revisions").fetchone()[0]
         )
     assert profiles == (
         ("docx", profile_a.signature, docx_a.chunk_id),
         ("pdf", profile_b.signature, pdf_b.chunk_id),
     )
     assert retained_historical_chunks == 3
-    assert {
-        hit.entity_id for hit in search_exact_page(database, _query(model)).hits
-    } == {
+    assert {hit.entity_id for hit in search_exact_page(database, _query(model)).hits} == {
         docx_a.chunk_id,
         pdf_b.chunk_id,
     }
@@ -310,6 +307,128 @@ def _complete_jobs(path: Path, generation_id: int, *, now_ns: int) -> None:
             provenance={"fixture": "publication"},
             now_ns=now_ns + offset,
         )
+
+
+def _finalize_with_trace(
+    path: Path,
+    generation_id: int,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    completed_ns: int,
+) -> tuple[GenerationSummary, tuple[str, ...]]:
+    original_database = semantic_generation_repository.semantic_database
+    statements: list[str] = []
+
+    @contextmanager
+    def traced_database(
+        selected_path: Path,
+        *,
+        readonly: bool = False,
+    ) -> Iterator[sqlite3.Connection]:
+        with original_database(selected_path, readonly=readonly) as connection:
+            connection.set_trace_callback(statements.append)
+            yield connection
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(
+            semantic_generation_repository,
+            "semantic_database",
+            traced_database,
+        )
+        result = finalize_embedding_generation(
+            path,
+            generation_id,
+            completed_ns=completed_ns,
+        )
+    normalized = tuple(" ".join(statement.lower().split()) for statement in statements)
+    return result, normalized
+
+
+def _prepare_with_trace(
+    path: Path,
+    generation_id: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[GenerationSummary | None, tuple[str, ...]]:
+    original_database = semantic_generation_repository.semantic_database
+    statements: list[str] = []
+
+    @contextmanager
+    def traced_database(
+        selected_path: Path,
+        *,
+        readonly: bool = False,
+    ) -> Iterator[sqlite3.Connection]:
+        with original_database(selected_path, readonly=readonly) as connection:
+            connection.set_trace_callback(statements.append)
+            yield connection
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(
+            semantic_generation_repository,
+            "semantic_database",
+            traced_database,
+        )
+        result = prepare_embedding_generation(
+            path,
+            generation_id,
+            enumeration_complete=True,
+        )
+    normalized = tuple(" ".join(statement.lower().split()) for statement in statements)
+    return result, normalized
+
+
+def _completed_generation(
+    path: Path,
+    *,
+    member_count: int,
+    processing_signature: str,
+) -> tuple[EmbeddingModelSpec, int]:
+    model = _initialize(path)
+    chunks = tuple(
+        _stage(
+            path,
+            f"finalization-{offset}",
+            f"published transformer record {offset}",
+            1,
+        )
+        for offset in range(member_count)
+    )
+    generation_id = start_embedding_generation(
+        path,
+        model_signature=model.model_signature,
+        processing_signature=processing_signature,
+        started_ns=100,
+    )
+    enqueue_text_chunk_jobs(
+        path,
+        generation_id,
+        tuple(chunk.chunk_id for chunk in chunks),
+        now_ns=101,
+    )
+    _complete_jobs(path, generation_id, now_ns=102)
+    return model, generation_id
+
+
+def _exact_replay_fixture(
+    path: Path,
+    *,
+    member_count: int,
+    processing_signature: str,
+) -> tuple[EmbeddingModelSpec, int, int]:
+    model, baseline = _completed_generation(
+        path,
+        member_count=member_count,
+        processing_signature=processing_signature,
+    )
+    finalize_embedding_generation(path, baseline, completed_ns=110)
+    candidate = start_embedding_generation(
+        path,
+        model_signature=model.model_signature,
+        processing_signature=processing_signature,
+        materialize_base=False,
+        started_ns=120,
+    )
+    return model, baseline, candidate
 
 
 def _duplicate_generation_member_rows(
@@ -629,8 +748,7 @@ def test_lazy_exact_replay_returns_published_head_without_member_clone(
         ).fetchone()
         candidate_members = int(
             connection.execute(
-                "SELECT COUNT(*) FROM embedding_generation_members "
-                "WHERE generation_id=?",
+                "SELECT COUNT(*) FROM embedding_generation_members WHERE generation_id=?",
                 (candidate,),
             ).fetchone()[0]
         )
@@ -668,8 +786,7 @@ def test_lazy_exact_replay_returns_published_head_without_member_clone(
         assert (
             int(
                 connection.execute(
-                    "SELECT generation_id FROM published_embedding_heads "
-                    "WHERE model_signature=?",
+                    "SELECT generation_id FROM published_embedding_heads WHERE model_signature=?",
                     (model.model_signature,),
                 ).fetchone()[0]
             )
@@ -677,9 +794,9 @@ def test_lazy_exact_replay_returns_published_head_without_member_clone(
         )
         assert (
             int(
-                connection.execute(
-                    "SELECT COUNT(*) FROM embedding_generation_members"
-                ).fetchone()[0]
+                connection.execute("SELECT COUNT(*) FROM embedding_generation_members").fetchone()[
+                    0
+                ]
             )
             == 1
         )
@@ -743,22 +860,15 @@ def test_done_job_metadata_restage_rebinds_current_item_revision_without_inferen
             "SELECT path FROM semantic_item_revisions WHERE item_revision_id=?",
             (int(rebound_member["item_revision_id"]),),
         ).fetchone()
-        payloads = int(
-            connection.execute("SELECT COUNT(*) FROM vector_payloads").fetchone()[0]
-        )
+        payloads = int(connection.execute("SELECT COUNT(*) FROM vector_payloads").fetchone()[0])
         published_head = int(
             connection.execute(
-                "SELECT generation_id FROM published_embedding_heads "
-                "WHERE model_signature=?",
+                "SELECT generation_id FROM published_embedding_heads WHERE model_signature=?",
                 (model.model_signature,),
             ).fetchone()[0]
         )
-    assert int(rebound_member["item_revision_id"]) != int(
-        baseline_member["item_revision_id"]
-    )
-    assert int(rebound_member["chunk_revision_id"]) == int(
-        baseline_member["chunk_revision_id"]
-    )
+    assert int(rebound_member["item_revision_id"]) != int(baseline_member["item_revision_id"])
+    assert int(rebound_member["chunk_revision_id"]) == int(baseline_member["chunk_revision_id"])
     assert int(rebound_member["payload_id"]) == int(baseline_member["payload_id"])
     assert rebound_revision is not None
     assert str(rebound_revision["path"]) == "C:/fixtures/moved/metadata-document.pdf"
@@ -897,17 +1007,16 @@ def test_done_replaced_title_job_is_reconciled_and_successor_can_publish(
         )
         published_head = int(
             connection.execute(
-                "SELECT generation_id FROM published_embedding_heads "
-                "WHERE model_signature=?",
+                "SELECT generation_id FROM published_embedding_heads WHERE model_signature=?",
                 (model.model_signature,),
             ).fetchone()[0]
         )
         assert connection.execute("PRAGMA foreign_key_check").fetchone() is None
     assert members == (renamed_title.chunk_id,)
     assert published_head == generation
-    assert tuple(
-        hit.entity_id for hit in search_exact_page(database, _query(model)).hits
-    ) == (renamed_title.chunk_id,)
+    assert tuple(hit.entity_id for hit in search_exact_page(database, _query(model)).hits) == (
+        renamed_title.chunk_id,
+    )
 
 
 def _create_populated_v5(path: Path) -> tuple[EmbeddingModelSpec, TextChunk]:
@@ -942,9 +1051,7 @@ def _create_populated_v5(path: Path) -> tuple[EmbeddingModelSpec, TextChunk]:
                 connection,
                 version,
             )
-        connection.execute(
-            "INSERT INTO metadata(key,value) VALUES('schema_version','5')"
-        )
+        connection.execute("INSERT INTO metadata(key,value) VALUES('schema_version','5')")
         connection.execute("PRAGMA user_version=5")
         connection.execute(
             """INSERT INTO vector_spaces(
@@ -1159,9 +1266,7 @@ def test_source_change_preserves_old_snapshot_until_successor_is_published(
     current_resolved = resolve_search_hits(database, current)[0]
     assert current_resolved.snippet == "new breaker record"
     assert current_resolved.published_revision_id is not None
-    assert (
-        current_resolved.published_revision_id == current_resolved.current_revision_id
-    )
+    assert current_resolved.published_revision_id == current_resolved.current_revision_id
     assert current_resolved.source_revision_is_current is True
 
 
@@ -1261,8 +1366,7 @@ def test_resolve_uses_current_path_without_marking_safe_move_stale(
         assert (
             int(
                 connection.execute(
-                    "SELECT COUNT(*) FROM embedding_generation_members "
-                    "WHERE generation_id=?",
+                    "SELECT COUNT(*) FROM embedding_generation_members WHERE generation_id=?",
                     (moved_generation,),
                 ).fetchone()[0]
             )
@@ -1319,15 +1423,12 @@ def test_resolve_uses_current_path_without_marking_safe_move_stale(
         ).fetchone()
         published_head = int(
             connection.execute(
-                "SELECT generation_id FROM published_embedding_heads "
-                "WHERE model_signature=?",
+                "SELECT generation_id FROM published_embedding_heads WHERE model_signature=?",
                 (model.model_signature,),
             ).fetchone()[0]
         )
     assert int(moved_member["payload_id"]) == int(baseline_member["payload_id"])
-    assert int(moved_member["item_revision_id"]) != int(
-        baseline_member["item_revision_id"]
-    )
+    assert int(moved_member["item_revision_id"]) != int(baseline_member["item_revision_id"])
     assert published_path is not None
     assert str(published_path["path"]) == "C:/fixtures/moved-document.pdf"
     assert published_head == moved_generation
@@ -1376,6 +1477,394 @@ def test_exact_search_checks_cancellation_at_scan_batches(tmp_path: Path) -> Non
             cancellation_check=cancellation_check,
         )
     assert checkpoints == 2
+
+
+def test_embedding_generation_preparation_public_contract(tmp_path: Path) -> None:
+    assert str(inspect.signature(prepare_embedding_generation)) == (
+        "(path: 'Path', generation_id: 'int', *, enumeration_complete: 'bool', "
+        "work_budget: 'SemanticWorkBudget | None' = None) -> "
+        "'GenerationSummary | None'"
+    )
+    assert (
+        semantic_generation_repository.prepare_embedding_generation is prepare_embedding_generation
+    )
+
+    database = tmp_path / "semantic.sqlite3"
+    model, baseline, candidate = _exact_replay_fixture(
+        database,
+        member_count=1,
+        processing_signature="preparation-contract-v1",
+    )
+    summary = prepare_embedding_generation(
+        database,
+        candidate,
+        enumeration_complete=True,
+    )
+
+    assert summary == GenerationSummary(
+        generation_id=baseline,
+        model_signature=model.model_signature,
+        processing_signature="preparation-contract-v1",
+        status="ready",
+        pending=0,
+        leased=0,
+        done=1,
+        errors=0,
+        stale=0,
+        cursor={},
+    )
+
+
+def test_embedding_generation_preparation_order_and_work_are_row_bounded(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    small_database = tmp_path / "small" / "semantic.sqlite3"
+    _, small_baseline, small_candidate = _exact_replay_fixture(
+        small_database,
+        member_count=1,
+        processing_signature="bounded-preparation-small-v1",
+    )
+    small_summary, small_trace = _prepare_with_trace(
+        small_database,
+        small_candidate,
+        monkeypatch,
+    )
+
+    large_database = tmp_path / "large" / "semantic.sqlite3"
+    _, large_baseline, large_candidate = _exact_replay_fixture(
+        large_database,
+        member_count=24,
+        processing_signature="bounded-preparation-large-v1",
+    )
+    large_summary, large_trace = _prepare_with_trace(
+        large_database,
+        large_candidate,
+        monkeypatch,
+    )
+
+    assert small_summary is not None
+    assert large_summary is not None
+    assert (small_summary.generation_id, large_summary.generation_id) == (
+        small_baseline,
+        large_baseline,
+    )
+    assert len(small_trace) == len(large_trace)
+    assert len(small_trace) <= 24
+    ordered_phases = (
+        "begin immediate",
+        "select model_signature,status from embedding_generations",
+        "select processing_signature,provenance_json,base_generation_id",
+        "select generation_id from published_embedding_heads",
+        "select count(*) from embedding_jobs",
+        "select count(*) from embedding_generation_members",
+        "select status,processing_signature,provenance_json",
+        "select provenance_json from embedding_generations",
+        "select (select count(*) from text_embeddings",
+        "delete from embedding_generations",
+        "from embedding_generations g left join embedding_jobs j",
+        "commit",
+    )
+    phase_positions: list[int] = []
+    for phase in ordered_phases:
+        matches = tuple(index for index, statement in enumerate(small_trace) if phase in statement)
+        assert matches, (phase, small_trace)
+        phase_positions.append(matches[0])
+    assert phase_positions == sorted(phase_positions)
+
+
+def test_embedding_generation_preparation_rolls_back_then_retries_exact_replay(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "semantic.sqlite3"
+    model, baseline, candidate = _exact_replay_fixture(
+        database,
+        member_count=1,
+        processing_signature="preparation-rollback-v1",
+    )
+    with semantic_database(database) as connection:
+        connection.execute(
+            f"""CREATE TRIGGER fail_embedding_generation_preparation
+            BEFORE DELETE ON embedding_generations
+            WHEN OLD.generation_id={candidate}
+            BEGIN
+                SELECT RAISE(ABORT, 'injected preparation failure');
+            END"""
+        )
+
+    with pytest.raises(sqlite3.IntegrityError, match="injected preparation failure"):
+        prepare_embedding_generation(
+            database,
+            candidate,
+            enumeration_complete=True,
+        )
+
+    with semantic_database(database, readonly=True) as connection:
+        candidate_snapshot = connection.execute(
+            """SELECT status,base_generation_id,base_clone_complete
+            FROM embedding_generations WHERE generation_id=?""",
+            (candidate,),
+        ).fetchone()
+        published_head = int(
+            connection.execute(
+                """SELECT generation_id FROM published_embedding_heads
+                WHERE model_signature=?""",
+                (model.model_signature,),
+            ).fetchone()[0]
+        )
+    assert candidate_snapshot is not None
+    assert tuple(candidate_snapshot) == ("building", baseline, 0)
+    assert published_head == baseline
+
+    with semantic_database(database) as connection:
+        connection.execute("DROP TRIGGER fail_embedding_generation_preparation")
+    retry = prepare_embedding_generation(
+        database,
+        candidate,
+        enumeration_complete=True,
+    )
+    assert retry is not None
+    assert retry.generation_id == baseline
+
+    replay = start_embedding_generation(
+        database,
+        model_signature=model.model_signature,
+        processing_signature="preparation-rollback-v1",
+        materialize_base=False,
+        started_ns=130,
+    )
+    repeated = prepare_embedding_generation(
+        database,
+        replay,
+        enumeration_complete=True,
+    )
+    assert repeated == retry
+
+
+def test_embedding_generation_finalization_public_contract(tmp_path: Path) -> None:
+    assert str(inspect.signature(finalize_embedding_generation)) == (
+        "(path: 'Path', generation_id: 'int', *, allow_partial: 'bool' = False, "
+        "completed_ns: 'int | None' = None) -> 'GenerationSummary'"
+    )
+    assert (
+        semantic_generation_repository.finalize_embedding_generation
+        is finalize_embedding_generation
+    )
+
+    database = tmp_path / "semantic.sqlite3"
+    model, generation = _completed_generation(
+        database,
+        member_count=1,
+        processing_signature="finalization-contract-v1",
+    )
+    summary = finalize_embedding_generation(database, generation, completed_ns=110)
+
+    assert summary == GenerationSummary(
+        generation_id=generation,
+        model_signature=model.model_signature,
+        processing_signature="finalization-contract-v1",
+        status="ready",
+        pending=0,
+        leased=0,
+        done=1,
+        errors=0,
+        stale=0,
+        cursor={},
+    )
+
+
+def test_embedding_generation_finalization_order_and_work_are_row_bounded(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    small_database = tmp_path / "small" / "semantic.sqlite3"
+    _, small_generation = _completed_generation(
+        small_database,
+        member_count=1,
+        processing_signature="bounded-finalization-small-v1",
+    )
+    small_summary, small_trace = _finalize_with_trace(
+        small_database,
+        small_generation,
+        monkeypatch,
+        completed_ns=110,
+    )
+
+    large_database = tmp_path / "large" / "semantic.sqlite3"
+    _, large_generation = _completed_generation(
+        large_database,
+        member_count=24,
+        processing_signature="bounded-finalization-large-v1",
+    )
+    large_summary, large_trace = _finalize_with_trace(
+        large_database,
+        large_generation,
+        monkeypatch,
+        completed_ns=110,
+    )
+
+    assert (small_summary.done, large_summary.done) == (1, 24)
+    assert len(small_trace) == len(large_trace)
+    assert len(small_trace) <= 24
+    ordered_phases = (
+        "begin immediate",
+        "select model_signature,status from embedding_generations",
+        "update embedding_jobs set status='stale'",
+        "delete from embedding_jobs where generation_id=",
+        "from embedding_generations g left join embedding_jobs j",
+        "select base_generation_id,base_clone_complete",
+        "select provenance_json from embedding_generations",
+        "delete from embedding_generation_members as member",
+        "select j.job_id from embedding_jobs j",
+        "select generation_id from published_embedding_heads",
+        "update embedding_generations set status='ready'",
+        "insert into published_embedding_heads",
+        "commit",
+    )
+    phase_positions: list[int] = []
+    for phase in ordered_phases:
+        matches = tuple(index for index, statement in enumerate(small_trace) if phase in statement)
+        assert matches, (phase, small_trace)
+        phase_positions.append(matches[0])
+    assert phase_positions == sorted(phase_positions)
+
+
+def test_embedding_generation_finalization_rolls_back_then_retries_idempotently(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "semantic.sqlite3"
+    model = _initialize(database)
+    original_chunk = _stage(database, "rollback-document", "original record", 1)
+    generation = start_embedding_generation(
+        database,
+        model_signature=model.model_signature,
+        processing_signature="finalization-rollback-v1",
+        started_ns=100,
+    )
+    enqueue_text_chunk_jobs(
+        database,
+        generation,
+        (original_chunk.chunk_id,),
+        now_ns=101,
+    )
+    _complete_jobs(database, generation, now_ns=102)
+    _stage(database, "rollback-document", "replacement record", 2)
+
+    with semantic_database(database) as connection:
+        connection.execute(
+            f"""CREATE TRIGGER fail_embedding_generation_finalize
+            BEFORE UPDATE OF status ON embedding_generations
+            WHEN OLD.generation_id={generation} AND NEW.status='ready'
+            BEGIN
+                SELECT RAISE(ABORT, 'injected finalization failure');
+            END"""
+        )
+
+    with pytest.raises(sqlite3.IntegrityError, match="injected finalization failure"):
+        finalize_embedding_generation(database, generation, completed_ns=110)
+
+    with semantic_database(database, readonly=True) as connection:
+        rolled_back = connection.execute(
+            """SELECT status,completed_ns FROM embedding_generations
+            WHERE generation_id=?""",
+            (generation,),
+        ).fetchone()
+        rolled_back_jobs = int(
+            connection.execute(
+                "SELECT COUNT(*) FROM embedding_jobs WHERE generation_id=?",
+                (generation,),
+            ).fetchone()[0]
+        )
+        rolled_back_members = int(
+            connection.execute(
+                """SELECT COUNT(*) FROM embedding_generation_members
+                WHERE generation_id=?""",
+                (generation,),
+            ).fetchone()[0]
+        )
+        rolled_back_head = connection.execute(
+            """SELECT generation_id FROM published_embedding_heads
+            WHERE model_signature=?""",
+            (model.model_signature,),
+        ).fetchone()
+    assert rolled_back is not None
+    assert (str(rolled_back["status"]), rolled_back["completed_ns"]) == (
+        "building",
+        None,
+    )
+    assert (rolled_back_jobs, rolled_back_members, rolled_back_head) == (1, 1, None)
+
+    with semantic_database(database) as connection:
+        connection.execute("DROP TRIGGER fail_embedding_generation_finalize")
+    summary = finalize_embedding_generation(database, generation, completed_ns=111)
+    assert (summary.status, summary.done, summary.errors, summary.stale) == (
+        "ready",
+        0,
+        0,
+        0,
+    )
+
+    with semantic_database(database, readonly=True) as connection:
+        published_snapshot = (
+            tuple(
+                connection.execute(
+                    """SELECT status,completed_ns,pending_count,leased_count,
+                        done_count,error_count,stale_count
+                    FROM embedding_generations WHERE generation_id=?""",
+                    (generation,),
+                ).fetchone()
+            ),
+            connection.execute(
+                """SELECT generation_id,published_ns FROM published_embedding_heads
+                WHERE model_signature=?""",
+                (model.model_signature,),
+            ).fetchone(),
+            int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM embedding_jobs WHERE generation_id=?",
+                    (generation,),
+                ).fetchone()[0]
+            ),
+            int(
+                connection.execute(
+                    """SELECT COUNT(*) FROM embedding_generation_members
+                    WHERE generation_id=?""",
+                    (generation,),
+                ).fetchone()[0]
+            ),
+        )
+    with pytest.raises(SemanticStateError, match="is not building"):
+        finalize_embedding_generation(database, generation, completed_ns=112)
+    with semantic_database(database, readonly=True) as connection:
+        replay_snapshot = (
+            tuple(
+                connection.execute(
+                    """SELECT status,completed_ns,pending_count,leased_count,
+                        done_count,error_count,stale_count
+                    FROM embedding_generations WHERE generation_id=?""",
+                    (generation,),
+                ).fetchone()
+            ),
+            connection.execute(
+                """SELECT generation_id,published_ns FROM published_embedding_heads
+                WHERE model_signature=?""",
+                (model.model_signature,),
+            ).fetchone(),
+            int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM embedding_jobs WHERE generation_id=?",
+                    (generation,),
+                ).fetchone()[0]
+            ),
+            int(
+                connection.execute(
+                    """SELECT COUNT(*) FROM embedding_generation_members
+                    WHERE generation_id=?""",
+                    (generation,),
+                ).fetchone()[0]
+            ),
+        )
+    assert replay_snapshot == published_snapshot
 
 
 def test_partial_and_cas_loser_generations_never_replace_the_published_head(
@@ -1431,9 +1920,9 @@ def test_partial_and_cas_loser_generations_never_replace_the_published_head(
         completed_ns=124,
     )
     assert summary.status == "ready_partial"
-    assert {
-        hit.generation_id for hit in search_exact_page(database, _query(model)).hits
-    } == {initial}
+    assert {hit.generation_id for hit in search_exact_page(database, _query(model)).hits} == {
+        initial
+    }
 
     winner = start_embedding_generation(
         database,
@@ -1457,18 +1946,16 @@ def test_partial_and_cas_loser_generations_never_replace_the_published_head(
         started_ns=134,
     )
     assert rebased != loser
-    assert {
-        hit.generation_id for hit in search_exact_page(database, _query(model)).hits
-    } == {winner}
+    assert {hit.generation_id for hit in search_exact_page(database, _query(model)).hits} == {
+        winner
+    }
     with semantic_database(database, readonly=True) as connection:
         loser_row = connection.execute(
-            "SELECT status,completed_ns FROM embedding_generations "
-            "WHERE generation_id=?",
+            "SELECT status,completed_ns FROM embedding_generations WHERE generation_id=?",
             (loser,),
         ).fetchone()
         rebased_row = connection.execute(
-            "SELECT status,base_generation_id FROM embedding_generations "
-            "WHERE generation_id=?",
+            "SELECT status,base_generation_id FROM embedding_generations WHERE generation_id=?",
             (rebased,),
         ).fetchone()
         assert loser_row is not None
@@ -1496,21 +1983,13 @@ def test_populated_v5_migration_preserves_legacy_rows_and_publishes_snapshot(
     assert resolved[0].snippet == "legacy published transformer record"
     with semantic_database(database, readonly=True) as connection:
         assert connection.execute("PRAGMA user_version").fetchone()[0] == 6
+        assert connection.execute("SELECT COUNT(*) FROM text_embeddings").fetchone()[0] == 1
         assert (
-            connection.execute("SELECT COUNT(*) FROM text_embeddings").fetchone()[0]
+            connection.execute("SELECT COUNT(*) FROM embedding_generation_members").fetchone()[0]
             == 1
         )
         assert (
-            connection.execute(
-                "SELECT COUNT(*) FROM embedding_generation_members"
-            ).fetchone()[0]
-            == 1
-        )
-        assert (
-            connection.execute(
-                "SELECT COUNT(*) FROM published_embedding_heads"
-            ).fetchone()[0]
-            == 1
+            connection.execute("SELECT COUNT(*) FROM published_embedding_heads").fetchone()[0] == 1
         )
         assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
         assert connection.execute("PRAGMA foreign_key_check").fetchone() is None
@@ -1554,10 +2033,7 @@ def test_v6_migration_rolls_back_on_base_exception(
             ).fetchone()[0]
             == 0
         )
-        assert (
-            connection.execute("SELECT COUNT(*) FROM text_embeddings").fetchone()[0]
-            == 1
-        )
+        assert connection.execute("SELECT COUNT(*) FROM text_embeddings").fetchone()[0] == 1
 
 
 @pytest.mark.parametrize("unknown_kind", ("table", "column", "index", "trigger"))
@@ -1570,13 +2046,9 @@ def test_v5_migration_abstains_from_unknown_objects_without_mutation(
     with sqlite3.connect(database) as connection:
         if unknown_kind == "table":
             connection.execute("CREATE TABLE vendor_extension(value TEXT)")
-            connection.execute(
-                "INSERT INTO vendor_extension(value) VALUES('preserve-me')"
-            )
+            connection.execute("INSERT INTO vendor_extension(value) VALUES('preserve-me')")
         elif unknown_kind == "column":
-            connection.execute(
-                "ALTER TABLE semantic_items ADD COLUMN vendor_payload TEXT"
-            )
+            connection.execute("ALTER TABLE semantic_items ADD COLUMN vendor_payload TEXT")
         elif unknown_kind == "index":
             connection.execute(
                 "CREATE INDEX vendor_semantic_items_idx ON semantic_items(updated_ns)"
@@ -1594,19 +2066,16 @@ def test_v5_migration_abstains_from_unknown_objects_without_mutation(
             )
         )
 
-    with pytest.raises(SemanticStateError, match="unexpected|incompatible"):
+    with pytest.raises(SemanticStateError, match=r"unexpected|incompatible"):
         initialize_semantic_state(database)
 
     with sqlite3.connect(database) as connection:
         assert connection.execute("PRAGMA user_version").fetchone()[0] == 5
-        assert (
-            connection.execute("SELECT COUNT(*) FROM text_embeddings").fetchone()[0]
-            == 1
-        )
+        assert connection.execute("SELECT COUNT(*) FROM text_embeddings").fetchone()[0] == 1
         if unknown_kind == "table":
-            assert connection.execute(
-                "SELECT value FROM vendor_extension"
-            ).fetchone() == ("preserve-me",)
+            assert connection.execute("SELECT value FROM vendor_extension").fetchone() == (
+                "preserve-me",
+            )
         assert (
             tuple(
                 connection.execute(

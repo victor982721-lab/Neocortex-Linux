@@ -8,6 +8,7 @@
 # region [01] Dependencias del módulo
 from __future__ import annotations
 
+import inspect
 import json
 import sqlite3
 from contextlib import closing
@@ -24,6 +25,8 @@ from _04_Nucleo_Operativo.document_catalog import (
 )
 from _04_Nucleo_Operativo.framework_state_writer import FrameworkState
 from _04_Nucleo_Operativo.retention_planner import (
+    RetentionItem,
+    RetentionPlan,
     RetentionPlanningCancelled,
     RetentionPolicy,
     plan_retention,
@@ -242,7 +245,7 @@ def _populate_inventory(database: Path, framework: Path) -> None:
         connection.commit()
 
 
-def _by_key(plan, store: str) -> dict[int, object]:
+def _by_key(plan: RetentionPlan, store: str) -> dict[int, RetentionItem]:
     selected = next(value for value in plan.stores if value.store == store)
     return {item.key: item for item in selected.items}
 
@@ -270,6 +273,53 @@ def test_absent_state_and_cli_json_do_not_create_directories(
     assert payload["deletion_supported"] is False
     assert {store["status"] for store in payload["stores"]} == {"absent"}
     assert not state.exists()
+
+
+def test_plan_retention_signature_and_snapshot_then_planning_phase_order(
+    tmp_path: Path,
+) -> None:
+    assert str(inspect.signature(plan_retention)) == (
+        "(state_directory: 'Path', *, policy: 'RetentionPolicy | None' = None, "
+        "after: 'Mapping[str, int] | None' = None, "
+        "stores: 'Sequence[str] | None' = None, now_ns: 'int', "
+        "cancelled: 'Callable[[], bool] | None' = None, "
+        "observer: 'RetentionObserver | None' = None) -> 'RetentionPlan'"
+    )
+    _populate_semantic(tmp_path / "semantic.sqlite3")
+    _populate_catalog(tmp_path / "document_catalog.sqlite3")
+    _populate_inventory(
+        tmp_path / "dedup.sqlite3",
+        tmp_path / "framework.sqlite3",
+    )
+    _populate_framework(tmp_path / "framework.sqlite3")
+    events: list[tuple[str, str]] = []
+
+    plan = plan_retention(
+        tmp_path,
+        policy=RetentionPolicy(minimum_age_ns=0),
+        now_ns=NOW_NS,
+        observer=lambda store, phase: events.append((store, phase)),
+    )
+
+    assert events == [
+        ("semantic", "snapshot_opened"),
+        ("catalog", "snapshot_opened"),
+        ("inventory", "snapshot_opened"),
+        ("framework", "snapshot_opened"),
+        ("semantic", "planned"),
+        ("catalog", "planned"),
+        ("inventory", "planned"),
+        ("framework", "planned"),
+    ]
+    assert tuple(store.store for store in plan.stores) == (
+        "semantic",
+        "catalog",
+        "inventory",
+        "framework",
+    )
+    assert all(store.status == "ready" for store in plan.stores)
+    assert plan.dry_run
+    assert not plan.deletion_supported
 
 
 def test_policy_does_not_promise_an_unimplemented_publication_depth() -> None:

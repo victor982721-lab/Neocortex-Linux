@@ -60,6 +60,10 @@ ejecutar todas las reglas configuradas en el repositorio.
 Ruff y Mypy se resuelven desde el mismo intérprete de NeoCortex; ambos forman
 parte de la base Python. Pyright `1.1.411` se mantiene como paquete npm aislado
 junto al runtime y se ejecuta mediante Node, no mediante scripts del proyecto.
+El entrypoint expone tanto el shim bajo
+`venv\tools\pyright\node_modules\.bin` como el Node propiedad del runtime bajo
+`tools\node`; la disponibilidad de Pyright no depende del `PATH` heredado del
+shell que invoque el launcher.
 Grimp `3.15` y Complexipy `6.2.0` pertenecen también a la base Python. La
 selección focal conservó Grimp directo en lugar de envolver Import Linter
 `2.13`: ambos resultaron viables, pero Grimp entrega el grafo directamente en

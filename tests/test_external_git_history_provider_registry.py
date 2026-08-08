@@ -265,5 +265,5 @@ def test_registry_profiles_and_tool_probe_include_local_git(
     assert deep_git.descriptor == static_git.descriptor
     assert static_git.descriptor.profile == "trusted-static"
     assert static_git.descriptor.invalidation_strategy == "project_wide"
-    assert static_git.descriptor.execution_strategy == "bounded-local-git-history-v1"
+    assert static_git.descriptor.execution_strategy == "bounded-local-git-history-v2"
     assert provider_tool_versions()[GIT_HISTORY_PROVIDER_ID] == "2.fixture"

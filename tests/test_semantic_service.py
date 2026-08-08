@@ -23,6 +23,7 @@ from _04_Nucleo_Operativo.semantic_lexical import (
     MAX_QUERY_CHARS,
     LexicalAvailability,
     LexicalRanking,
+    LexicalStatePaths,
 )
 from _04_Nucleo_Operativo.semantic_models import (
     BackendEmbedding,
@@ -1804,6 +1805,126 @@ def test_public_semantic_search_accepts_inclusive_query_and_integer_bounds(
     )
 
     assert result.rankings[0].unavailable_reason == "semantic_index_missing"
+
+
+def test_search_orchestration_freezes_order_limits_provenance_and_read_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    database = tmp_path / "generations" / "semantic-000042.sqlite3"
+    cache = tmp_path / "model-cache"
+    lexical_paths = LexicalStatePaths(
+        pdf=tmp_path / "pdf.sqlite3",
+        docx=tmp_path / "docx.sqlite3",
+        office=tmp_path / "office.sqlite3",
+        audio=tmp_path / "audio.sqlite3",
+    )
+    model = service.multilingual_text_model()
+    body = service.SemanticRanking(
+        name="semantic_text",
+        hits=(),
+        resolved=(),
+        scanned=3,
+        complete=True,
+        provenance={"channel": "source_content"},
+    )
+    title = service.SemanticRanking(
+        name="semantic_title",
+        hits=(),
+        resolved=(),
+        scanned=2,
+        complete=True,
+        provenance={"channel": "durable_title"},
+    )
+    image = service.SemanticRanking(
+        name="semantic_image",
+        hits=(),
+        resolved=(),
+        scanned=1,
+        complete=False,
+        provenance={"channel": "image"},
+    )
+
+    def cancellation_check() -> None:
+        events.append("cancel")
+
+    def text_rankings(selected_database: Path, **kwargs):
+        events.append("text")
+        assert selected_database is database
+        assert kwargs == {
+            "database_exists": False,
+            "selected_model": model,
+            "query": "transformador",
+            "cache": cache,
+            "local_files_only": False,
+            "threads": 3,
+            "limit": 7,
+            "max_vectors": 11,
+            "backend_factory": service._backend,
+            "evidence_mode": True,
+            "include_title": True,
+            "cancellation_check": cancellation_check,
+        }
+        return body, title
+
+    def image_ranking(selected_database: Path, **kwargs):
+        events.append("image")
+        assert selected_database is database
+        assert kwargs["query"] == "transformador"
+        assert kwargs["cache"] is cache
+        assert kwargs["limit"] == 7
+        assert kwargs["max_vectors"] == 11
+        assert kwargs["evidence_mode"] is True
+        assert kwargs["cancellation_check"] is cancellation_check
+        return image
+
+    def lexical_search(paths, query, *, limit, cancellation_check=None):
+        events.append("lexical")
+        assert paths is lexical_paths
+        assert query == "transformador"
+        assert limit == 6
+        assert cancellation_check is not None
+        return ()
+
+    def resolve_fused(rankings, lexical_rankings, *, limit):
+        events.append("fuse")
+        assert tuple(rankings) == (body, title, image)
+        assert tuple(lexical_rankings) == ()
+        assert limit == 2
+        return ()
+
+    monkeypatch.setattr(search_implementation, "text_search_rankings", text_rankings)
+    monkeypatch.setattr(search_implementation, "image_search_ranking", image_ranking)
+    monkeypatch.setattr(search_implementation, "_resolve_fused_hits", resolve_fused)
+    monkeypatch.setattr(service, "search_lexical_sources", lexical_search)
+
+    result = service.search_semantic_index(
+        tmp_path,
+        "  transformador  ",
+        limit=2,
+        candidate_limit=7,
+        max_vectors=11,
+        include_text=True,
+        include_title=True,
+        include_images=True,
+        include_lexical=True,
+        lexical_paths=lexical_paths,
+        semantic_database=database,
+        text_model=model,
+        model_cache=cache,
+        local_files_only=False,
+        threads=3,
+        evidence_mode=True,
+        cancellation_check=cancellation_check,
+    )
+
+    assert events == ["cancel", "text", "image", "cancel", "lexical", "cancel", "fuse"]
+    assert result.rankings == (body, title, image)
+    assert result.lexical_rankings == ()
+    assert result.fused == ()
+    assert not database.exists()
+    assert not cache.exists()
 
 
 def _fixture_lexical_ranking(tmp_path: Path) -> LexicalRanking:

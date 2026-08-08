@@ -24,10 +24,9 @@ def test_project_metadata_uses_package_version_and_installed_command() -> None:
         metadata = tomllib.load(stream)
 
     assert metadata["project"]["dynamic"] == ["version"]
+    assert metadata["project"]["requires-python"] == ">=3.13,<3.15"
     assert metadata["project"]["scripts"]["Neocortex"] == ("neocortex.cli:entrypoint")
-    assert metadata["tool"]["setuptools"]["dynamic"]["version"] == {
-        "attr": "neocortex.__version__"
-    }
+    assert metadata["tool"]["setuptools"]["dynamic"]["version"] == {"attr": "neocortex.__version__"}
     assert neocortex.__version__ == "0.7.2"
 
 
@@ -35,9 +34,7 @@ def test_source_manifest_excludes_release_internal_material() -> None:
     project_root = Path(__file__).resolve().parents[1]
     manifest_lines = {
         line.strip()
-        for line in (project_root / "MANIFEST.in")
-        .read_text(encoding="utf-8")
-        .splitlines()
+        for line in (project_root / "MANIFEST.in").read_text(encoding="utf-8").splitlines()
     }
 
     assert "include AGENTS.md" not in manifest_lines
@@ -59,9 +56,7 @@ def test_sdist_manifest_includes_active_docs_and_release_tools() -> None:
     project_root = Path(__file__).resolve().parents[1]
     manifest_lines = {
         line.strip()
-        for line in (project_root / "MANIFEST.in")
-        .read_text(encoding="utf-8")
-        .splitlines()
+        for line in (project_root / "MANIFEST.in").read_text(encoding="utf-8").splitlines()
     }
 
     assert "include docs/SELF_ANALYSIS.md" in manifest_lines
@@ -70,23 +65,15 @@ def test_sdist_manifest_includes_active_docs_and_release_tools() -> None:
 
     with (project_root / "pyproject.toml").open("rb") as stream:
         metadata = tomllib.load(stream)
-    wheel_package_patterns = metadata["tool"]["setuptools"]["packages"]["find"][
-        "include"
-    ]
-    assert all(
-        not str(pattern).startswith(("tests", "docs"))
-        for pattern in wheel_package_patterns
-    )
+    wheel_package_patterns = metadata["tool"]["setuptools"]["packages"]["find"]["include"]
+    assert all(not str(pattern).startswith(("tests", "docs")) for pattern in wheel_package_patterns)
 
 
 def test_svg_release_asset_has_canonical_lf_export() -> None:
     project_root = Path(__file__).resolve().parents[1]
     attributes = (project_root / ".gitattributes").read_text(encoding="utf-8")
 
-    assert (
-        "_05_Interfaz/assets/neocortex-app-icon.svg text eol=lf"
-        in attributes.splitlines()
-    )
+    assert "_05_Interfaz/assets/neocortex-app-icon.svg text eol=lf" in attributes.splitlines()
 
 
 def test_installed_entrypoint_forwards_arguments_to_integrated_cli() -> None:
@@ -100,15 +87,18 @@ def test_installed_entrypoint_forwards_arguments_to_integrated_cli() -> None:
     run_cli.assert_called_once_with(["--status"])
 
 
-def test_installed_entrypoint_exposes_owned_pyright_shim(
+def test_installed_entrypoint_exposes_owned_pyright_shim_and_node(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    owned_bin = tmp_path / "tools" / "pyright" / "node_modules" / ".bin"
+    prefix = tmp_path / "venv"
+    owned_bin = prefix / "tools" / "pyright" / "node_modules" / ".bin"
+    owned_node = tmp_path / "tools" / "node"
     owned_bin.mkdir(parents=True)
+    owned_node.mkdir(parents=True)
     original_path = os.pathsep.join(("C:/system/bin", "C:/other/bin"))
     monkeypatch.setenv("PATH", original_path)
-    monkeypatch.setattr("neocortex.cli.sys.prefix", str(tmp_path))
+    monkeypatch.setattr("neocortex.cli.sys.prefix", str(prefix))
 
     with patch("_04_Nucleo_Operativo.cli_app.main", return_value=0):
         assert entrypoint(("--version",)) == 0
@@ -116,6 +106,7 @@ def test_installed_entrypoint_exposes_owned_pyright_shim(
 
     assert os.environ["PATH"].split(os.pathsep) == [
         str(owned_bin),
+        str(owned_node),
         *original_path.split(os.pathsep),
     ]
 
@@ -148,4 +139,6 @@ def test_legacy_dedup_entrypoint_delegates_without_legacy_state(
         "3",
     )
     assert "obsoleto" in capsys.readouterr().err
+
+
 # endregion [02]

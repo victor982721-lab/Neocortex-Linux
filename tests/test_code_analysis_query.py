@@ -288,3 +288,96 @@ def test_missing_status_state_abstains_without_creating_evidence() -> None:
     assert result["status"] == "abstained"
     assert result["matches"] == []
     assert "code_state_missing" in result["limitations"]
+
+
+def test_diff_extractor_signature_order_and_exact_fixture_are_frozen() -> None:
+    from hashlib import sha256
+    from inspect import signature
+
+    import _04_Nucleo_Operativo.code_analysis_query as query_module
+
+    assert str(signature(query_module._extract_diff)) == (
+        "(payload: 'Mapping[str, object]') -> 'list[dict[str, object]]'"
+    )
+    payload = _surface("diff")
+    before = deepcopy(payload)
+
+    records = query_module._extract_diff(payload)
+
+    assert payload == before
+    assert records == query_module._extract_diff(deepcopy(payload))
+    assert [
+        (record["record_type"], record["id"], record["source_path"])
+        for record in records
+    ] == [
+        (
+            "provider_delta",
+            "providers[0]:cosmic-ray-focal-mutation",
+            "providers[0]",
+        ),
+        (
+            "architecture_module_delta",
+            "architecture.modules[0]:pkg.worker",
+            "architecture.modules[0]",
+        ),
+        (
+            "hotspot_delta",
+            "hotspots.added_examples[0]:pkg/new_module.py::new_module.hotspot",
+            "hotspots.added_examples[0]",
+        ),
+        (
+            "hotspot_delta",
+            "hotspots.removed_examples[0]:pkg/worker.py::worker.old",
+            "hotspots.removed_examples[0]",
+        ),
+        (
+            "supply_chain_category_delta",
+            "supply_chain.categories[0]:dependency_hygiene",
+            "supply_chain.categories[0]",
+        ),
+        (
+            "supply_chain_provider_delta",
+            "supply_chain.providers[0]:deptry-project-dependencies",
+            "supply_chain.providers[0]",
+        ),
+        (
+            "coverage_delta",
+            "test_coverage:pytest-coverage-trusted-deep",
+            "test_coverage",
+        ),
+        (
+            "engineering_dimension_delta",
+            "engineering_analytics.dimensions[0]:mutation",
+            "engineering_analytics.dimensions[0]",
+        ),
+    ]
+    encoded = json.dumps(
+        records,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    assert sha256(encoded).hexdigest() == (
+        "d2288e5e152abbeaaac93be78699c52cca07a6a229f22b80593f65ecf055f4e6"
+    )
+
+
+def test_diff_extractor_ignores_unsupported_and_malformed_sections() -> None:
+    import _04_Nucleo_Operativo.code_analysis_query as query_module
+
+    assert query_module._extract_diff({}) == []
+    records = query_module._extract_diff(
+        {
+            "providers": "not-a-sequence",
+            "architecture": ["not-a-mapping"],
+            "hotspots": {"added_examples": [None, 3, {"private": "ignored"}]},
+            "supply_chain": {"categories": "not-a-sequence"},
+            "test_coverage": "not-a-mapping",
+            "engineering_analytics": {"dimensions": [None, "invalid"]},
+            "private_extension": {"secret": "must-not-leak"},
+        }
+    )
+    assert [record["id"] for record in records] == ["hotspots.added_examples[2]:2"]
+    assert records[0]["facts"] == {}
+    assert "must-not-leak" not in json.dumps(records, sort_keys=True)
+    assert "ignored" not in json.dumps(records, sort_keys=True)

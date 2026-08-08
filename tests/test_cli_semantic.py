@@ -2,16 +2,26 @@ from __future__ import annotations
 
 # region [01] Imports and result fixtures
 
+import argparse
+import inspect
 import json
 import sys
+import time
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
+from types import TracebackType
+from typing import Literal
 from unittest.mock import patch
 
 import pytest
 
 from _04_Nucleo_Operativo.cli_app import dispatch_direct
-from _04_Nucleo_Operativo.cli_semantic import run_integrated_all_semantic_index
+from _04_Nucleo_Operativo import cli_semantic as semantic_cli
+from _04_Nucleo_Operativo.cli_semantic import (
+    run_integrated_all_semantic_index,
+    run_semantic_index,
+)
 from _04_Nucleo_Operativo.cli_parser import build_parser
 from _04_Nucleo_Operativo.cli_validation import validate_arguments
 from _04_Nucleo_Operativo.semantic_config import COMPACT_TEXT_MODEL_ID
@@ -44,7 +54,10 @@ from _04_Nucleo_Operativo.semantic_service import (
     SemanticSourcePlan,
     SemanticWorkloadPlan,
 )
-from _04_Nucleo_Operativo.semantic_work_budget import SemanticIndexDeadlineExceeded
+from _04_Nucleo_Operativo.semantic_work_budget import (
+    SemanticIndexDeadlineExceeded,
+    SemanticWorkBudget,
+)
 from tests.internal_paths_test_support import disjoint_internal_paths_policy
 
 
@@ -610,6 +623,228 @@ def test_semantic_index_all_runs_text_then_image_offline_with_selected_profile(
     assert "SEMANTIC_INDEX scope=text" in output
     assert "SEMANTIC_INDEX scope=image" in output
     assert (tmp_path / "framework.lock").is_file()
+
+
+def test_semantic_index_public_signature_is_stable() -> None:
+    assert str(inspect.signature(run_semantic_index)) == (
+        "(args: 'argparse.Namespace', *, incomplete_is_error: 'bool' = True, "
+        "progress: 'ProgressCallback | None' = None, result_sink: "
+        "'Callable[[str, object], None] | None' = None, print_output: 'bool' = "
+        "True) -> 'int'"
+    )
+
+
+def test_semantic_index_preserves_preparation_execution_and_publication_order(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    args = build_parser().parse_args(
+        [
+            "--state-directory",
+            str(tmp_path),
+            "--semantic-index",
+            "all",
+            "--semantic-source",
+            "code",
+        ]
+    )
+    validate_arguments(args)
+    events: list[str] = []
+    text_result = _index_result(tmp_path, ("code",))
+    image_result = _index_result(tmp_path, ("image",))
+    original_model = semantic_cli._semantic_text_model
+    original_sources = semantic_cli._selected_semantic_text_sources
+    original_validate = semantic_cli._validate_semantic_state_write
+
+    def record_model(profile: str) -> object:
+        events.append("model")
+        return original_model(profile)
+
+    def record_sources(current_args: argparse.Namespace) -> tuple[str, ...]:
+        events.append("sources")
+        return original_sources(current_args)
+
+    class RecordingBudget(SemanticWorkBudget):
+        @classmethod
+        def from_time_budget(
+            cls,
+            *,
+            max_items: int | None = None,
+            max_new_jobs: int | None = None,
+            time_budget_seconds: float | None = None,
+            clock: Callable[[], float] = time.monotonic,
+        ) -> RecordingBudget:
+            events.append("budget")
+            assert time_budget_seconds is not None
+            budget = super().from_time_budget(
+                max_items=max_items,
+                max_new_jobs=max_new_jobs,
+                time_budget_seconds=time_budget_seconds,
+                clock=clock,
+            )
+            assert isinstance(budget, RecordingBudget)
+            return budget
+
+    def record_validate(
+        state_directory: Path,
+        *,
+        database: bool,
+        extra_paths: tuple[Path, ...] = (),
+    ) -> None:
+        events.append("validate")
+        assert database is True
+        original_validate(
+            state_directory,
+            database=database,
+            extra_paths=extra_paths,
+        )
+
+    class RecordingLock:
+        def __init__(self, _path: Path) -> None:
+            events.append("lock_construct")
+
+        def __enter__(self) -> RecordingLock:
+            events.append("lock_enter")
+            return self
+
+        def __exit__(
+            self,
+            _exc_type: type[BaseException] | None,
+            _exc: BaseException | None,
+            _traceback: TracebackType | None,
+        ) -> Literal[False]:
+            events.append("lock_exit")
+            return False
+
+    def text_index(*_args: object, **_kwargs: object) -> SemanticIndexResult:
+        events.append("text")
+        return text_result
+
+    def image_index(*_args: object, **_kwargs: object) -> SemanticIndexResult:
+        events.append("image")
+        return image_result
+
+    def capture_result(scope: str, _result: object) -> None:
+        events.append(f"sink:{scope}")
+
+    def code_links(*_args: object, **_kwargs: object) -> tuple[int, int]:
+        events.append("code_links")
+        return 4, 3
+
+    def print_result(scope: str, _result: object) -> None:
+        events.append(f"print:{scope}")
+
+    monkeypatch.setattr(semantic_cli, "_semantic_text_model", record_model)
+    monkeypatch.setattr(
+        semantic_cli,
+        "_selected_semantic_text_sources",
+        record_sources,
+    )
+    monkeypatch.setattr(
+        "_04_Nucleo_Operativo.semantic_work_budget.SemanticWorkBudget",
+        RecordingBudget,
+    )
+    monkeypatch.setattr(semantic_cli, "_validate_semantic_state_write", record_validate)
+    monkeypatch.setattr(
+        "_04_Nucleo_Operativo.locking.FrameworkRunLock",
+        RecordingLock,
+    )
+    monkeypatch.setattr(
+        "_04_Nucleo_Operativo.semantic_service.index_text_embeddings",
+        text_index,
+    )
+    monkeypatch.setattr(
+        "_04_Nucleo_Operativo.semantic_service.index_image_embeddings",
+        image_index,
+    )
+    monkeypatch.setattr(
+        "_04_Nucleo_Operativo.code_semantic_links.current_code_embedding_link_counts",
+        code_links,
+    )
+    monkeypatch.setattr(semantic_cli, "_print_semantic_index_result", print_result)
+
+    assert run_semantic_index(args, result_sink=capture_result) == 0
+    assert events == [
+        "model",
+        "sources",
+        "budget",
+        "validate",
+        "lock_construct",
+        "lock_enter",
+        "text",
+        "sink:text",
+        "code_links",
+        "image",
+        "sink:image",
+        "lock_exit",
+        "print:text",
+        "print:image",
+    ]
+
+
+def test_semantic_index_cancellation_propagates_without_partial_console_publication(
+    tmp_path: Path,
+) -> None:
+    args = build_parser().parse_args(
+        [
+            "--state-directory",
+            str(tmp_path),
+            "--semantic-index",
+            "all",
+            "--semantic-source",
+            "pdf",
+        ]
+    )
+    validate_arguments(args)
+    text_result = _index_result(tmp_path, ("pdf",))
+    captured: list[tuple[str, object]] = []
+    lock_events: list[tuple[str, type[BaseException] | None]] = []
+    cancellation = KeyboardInterrupt("injected semantic index cancellation")
+
+    class RecordingLock:
+        def __init__(self, _path: Path) -> None:
+            pass
+
+        def __enter__(self) -> RecordingLock:
+            lock_events.append(("enter", None))
+            return self
+
+        def __exit__(
+            self,
+            exc_type: type[BaseException] | None,
+            _exc: BaseException | None,
+            _traceback: TracebackType | None,
+        ) -> Literal[False]:
+            lock_events.append(("exit", exc_type))
+            return False
+
+    with (
+        patch(
+            "_04_Nucleo_Operativo.locking.FrameworkRunLock",
+            RecordingLock,
+        ),
+        patch(
+            "_04_Nucleo_Operativo.semantic_service.index_text_embeddings",
+            return_value=text_result,
+        ),
+        patch(
+            "_04_Nucleo_Operativo.semantic_service.index_image_embeddings",
+            side_effect=cancellation,
+        ),
+        patch.object(semantic_cli, "_print_semantic_index_result") as print_result,
+        patch.object(semantic_cli, "_semantic_failure") as semantic_failure,
+    ):
+        with pytest.raises(KeyboardInterrupt) as raised:
+            run_semantic_index(
+                args,
+                result_sink=lambda scope, result: captured.append((scope, result)),
+            )
+
+    assert raised.value is cancellation
+    assert captured == [("text", text_result)]
+    assert lock_events == [("enter", None), ("exit", KeyboardInterrupt)]
+    print_result.assert_not_called()
+    semantic_failure.assert_not_called()
 
 
 def test_semantic_index_reports_published_code_link_coverage(

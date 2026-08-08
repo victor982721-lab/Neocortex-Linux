@@ -290,18 +290,11 @@ def _normalize_finding(
     )
 
 
-def execute_vulture_unused(
-    stage_root: Path,
-    staged: Mapping[str, ExternalEvidenceFile],
-    environment: Mapping[str, str],
-) -> VultureUnusedExecution:
-    """Run Vulture's API over only the exact staged files and normalize evidence."""
-
-    manifest, manifest_digest, expected_files, expected_bytes = _input_manifest(
-        stage_root, staged
+def _vulture_worker_command(stage_root: Path) -> tuple[str, ...]:
+    worker = Path(__file__).with_name("external_unused_vulture_worker.py").resolve(
+        strict=True
     )
-    worker = Path(__file__).with_name("external_unused_vulture_worker.py").resolve(strict=True)
-    command = (
+    return (
         sys.executable,
         "-I",
         str(worker),
@@ -316,8 +309,15 @@ def execute_vulture_unused(
         "--max-findings",
         str(_MAX_FINDINGS),
     )
-    completed = run_bounded_capture(
-        command,
+
+
+def _run_vulture_worker(
+    stage_root: Path,
+    manifest: bytes,
+    environment: Mapping[str, str],
+) -> subprocess.CompletedProcess[bytes]:
+    return run_bounded_capture(
+        _vulture_worker_command(stage_root),
         input_bytes=manifest,
         timeout_seconds=_TIMEOUT_SECONDS,
         stdout_limit_bytes=_STDOUT_LIMIT_BYTES,
@@ -326,13 +326,16 @@ def execute_vulture_unused(
         environment=environment,
         memory_limit_bytes=_MEMORY_LIMIT_BYTES if os.name == "nt" else None,
     )
-    if completed.returncode != 0:
-        raise _unexpected_exit(completed)
-    payload = _decode_object(completed.stdout)
+
+
+def _validate_worker_envelope(payload: Mapping[str, object]) -> None:
     if set(payload) != {"schema", "status", "tool", "inputs", "findings", "limitations"}:
         raise ValueError("Vulture worker fields are incompatible")
     if payload.get("schema") != _WORKER_SCHEMA or payload.get("status") != "ready":
         raise ValueError("Vulture worker contract is incompatible")
+
+
+def _validate_worker_tool(payload: Mapping[str, object]) -> None:
     tool = _required_mapping(payload.get("tool"), label="tool")
     if set(tool) != {"name", "version", "api"}:
         raise ValueError("Vulture tool fields are incompatible")
@@ -348,22 +351,42 @@ def execute_vulture_unused(
     ):
         raise ValueError("Vulture worker tool identity disagrees")
     _validate_tool_version(observed_version)
+
+
+def _validate_worker_inputs(
+    payload: Mapping[str, object],
+    *,
+    expected_files: int,
+    expected_bytes: int,
+    manifest_digest: str,
+) -> None:
     inputs = _required_mapping(payload.get("inputs"), label="inputs")
     if set(inputs) != {"file_count", "total_bytes", "content_manifest_sha256"}:
         raise ValueError("Vulture input evidence fields are incompatible")
     if (
         _required_int(inputs.get("file_count"), label="input file count") != expected_files
-        or _required_int(inputs.get("total_bytes"), label="input byte count") != expected_bytes
+        or _required_int(inputs.get("total_bytes"), label="input byte count")
+        != expected_bytes
         or _required_text(inputs.get("content_manifest_sha256"), label="manifest digest", maximum=64)
         != manifest_digest
     ):
         raise ValueError("Vulture worker input evidence disagrees")
+
+
+def _validated_worker_limitations(payload: Mapping[str, object]) -> tuple[str, ...]:
     raw_limitations = _required_list(payload.get("limitations"), label="limitations")
     limitations = tuple(
         _required_text(item, label="limitation", maximum=256) for item in raw_limitations
     )
     if limitations != _LIMITATIONS:
         raise ValueError("Vulture worker limitations are incompatible")
+    return limitations
+
+
+def _normalized_worker_findings(
+    payload: Mapping[str, object],
+    staged: Mapping[str, ExternalEvidenceFile],
+) -> tuple[ExternalProviderFinding, ...]:
     raw_findings = _required_list(payload.get("findings"), label="findings")
     if len(raw_findings) > _MAX_FINDINGS:
         raise ValueError("Vulture worker findings exceed their bound")
@@ -378,8 +401,35 @@ def execute_vulture_unused(
         if existing is not None and existing != finding:
             raise ValueError("Vulture finding identity collision")
         findings_by_id[finding.portable_finding_id] = finding
+    return tuple(sorted(findings_by_id.values(), key=lambda item: item.portable_finding_id))
+
+
+def execute_vulture_unused(
+    stage_root: Path,
+    staged: Mapping[str, ExternalEvidenceFile],
+    environment: Mapping[str, str],
+) -> VultureUnusedExecution:
+    """Run Vulture's API over only the exact staged files and normalize evidence."""
+
+    manifest, manifest_digest, expected_files, expected_bytes = _input_manifest(
+        stage_root, staged
+    )
+    completed = _run_vulture_worker(stage_root, manifest, environment)
+    if completed.returncode != 0:
+        raise _unexpected_exit(completed)
+    payload = _decode_object(completed.stdout)
+    _validate_worker_envelope(payload)
+    _validate_worker_tool(payload)
+    _validate_worker_inputs(
+        payload,
+        expected_files=expected_files,
+        expected_bytes=expected_bytes,
+        manifest_digest=manifest_digest,
+    )
+    limitations = _validated_worker_limitations(payload)
+    findings = _normalized_worker_findings(payload, staged)
     return VultureUnusedExecution(
-        tuple(sorted(findings_by_id.values(), key=lambda item: item.portable_finding_id)),
+        findings,
         len(completed.stdout),
         len(completed.stderr),
         1,

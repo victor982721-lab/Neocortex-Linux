@@ -530,6 +530,10 @@ Neocortex --code-doctor
 - FFprobe se requiere para el sondeo de audio; FFmpeg se informa en el
   diagnóstico de audio.
 - qpdf es opcional y sólo participa en recuperación estructural PDF.
+- El cierre `full` requiere el Microsoft Visual C++ v14 Redistributable x64
+  vigente para sus wheels nativos. Antes de promover, importa PyMuPDF, ONNX
+  Runtime, PySide6, PyAV, CTranslate2 y OpenCV desde el runtime candidato;
+  `pip check` no detecta una DLL del sistema ausente.
 - Ruff pertenece al runtime base. `--code-doctor --code-json` debe mostrar su
   distribución y versión desde el mismo intérprete de Neocortex; una copia
   global encontrada en `PATH` no satisface esta capacidad.
@@ -612,14 +616,16 @@ que se haya omitido la comprobación de frescura.
 ## Integración continua por carriles
 
 `.github/workflows/ci.yml` es el único workflow de producto y se presenta como
-`Neocortex CI`. Todos sus jobs usan Windows y Python 3.13:
+`Neocortex CI`. Todos sus jobs usan Windows; el carril instalado cubre Python
+3.13 y 3.14:
 
 - `fast` corre en pull requests y pushes: Ruff check/format y el subconjunto
   contractual rápido;
-- `standard` corre en pull requests y pushes: construye el wheel sin aislar la
-  resolución ya declarada, lo instala con constraints en un entorno temporal,
-  ejecuta `pip check`, verifica que imports y `Neocortex` provengan de
-  `site-packages`/`Scripts` y prueba la suite core desde una copia temporal;
+- `standard` corre en pull requests y pushes sobre Python 3.13 y 3.14:
+  construye el wheel sin aislar la resolución ya declarada, instala `full` con
+  constraints en un entorno temporal, ejecuta `pip check` y los imports nativos,
+  verifica que imports y `Neocortex` provengan de `site-packages`/`Scripts` y
+  prueba la suite core desde una copia temporal;
 - `deep` sólo corre por el cron semanal o `workflow_dispatch`: prepara Pyright
   `1.1.411` aislado y ejecuta las pruebas opt-in de los workers
   trusted-deep/mutación sobre fixtures acotados.

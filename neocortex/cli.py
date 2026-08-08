@@ -26,7 +26,11 @@ _CAPABILITIES_JSON_FLAT_FLAG = "--doctor-capabilities-json"
 def _prepend_owned_executable_directories() -> None:
     """Expose executable shims installed inside the active Neocortex runtime."""
 
-    candidates = (Path(sys.prefix) / "tools" / "pyright" / "node_modules" / ".bin",)
+    prefix = Path(sys.prefix)
+    candidates = (
+        prefix / "tools" / "pyright" / "node_modules" / ".bin",
+        prefix.parent / "tools" / "node",
+    )
     path_entries = [entry for entry in os.environ.get("PATH", "").split(os.pathsep) if entry]
     known_entries = {os.path.normcase(os.path.normpath(entry)) for entry in path_entries}
     additions: list[str] = []

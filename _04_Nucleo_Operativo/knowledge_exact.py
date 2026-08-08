@@ -13,6 +13,7 @@ database.  Missing and incompatible state is reported without creating files.
 from __future__ import annotations
 
 import json
+import os
 import re
 import sqlite3
 import time
@@ -23,7 +24,7 @@ from enum import StrEnum
 from pathlib import Path
 
 from .code_detection import LANGUAGE_EXTENSIONS
-from .code_schema import connect_code_state
+from .code_schema import readonly_code_database
 from .document_catalog import connect_document_catalog
 from .file_identity import FileIdentity, FileIdentityError
 from .knowledge_contracts import (
@@ -41,7 +42,11 @@ from .knowledge_contracts import (
 from .knowledge_planner import KnowledgePlan
 from .knowledge_snapshot import KnowledgeStatePaths
 from .semantic_models import canonical_json, fingerprint_text
-from .sqlite_paths import readonly_sqlite_uri
+from neocortex.sqlite_connection import (
+    READONLY_EXISTING,
+    SQLiteConnectionPolicy,
+    connect_sqlite,
+)
 
 # region [01] Public immutable contracts and bounds
 
@@ -55,6 +60,11 @@ DEFAULT_EXACT_SQLITE_STEPS = 5_000_000
 SQLITE_PROGRESS_INTERVAL = 1_000
 HEAD_BATCH_SIZE = 200
 EXACT_OWNER_NAMES = ("inventory", "code", "catalog")
+_EXACT_INVENTORY_SQLITE_POLICY = SQLiteConnectionPolicy(
+    label="exact inventory",
+    timeout_seconds=60.0,
+    row_factory=sqlite3.Row,
+)
 
 
 def _duration_ns(clock_ns: Callable[[], int], started_ns: int) -> int:
@@ -917,7 +927,7 @@ class _QueryControl:
                 rows = tuple(connection.execute(sql, parameters).fetchall())
             except sqlite3.OperationalError as exc:
                 if self.cancellation_failure is not None:
-                    raise self.cancellation_failure
+                    raise self.cancellation_failure from None
                 if exhausted:
                     raise _WorkBudgetExceeded(
                         "exact SQLite work budget exhausted"
@@ -1022,20 +1032,28 @@ def _flatten_heads(heads: Sequence[tuple[str, int]]) -> tuple[object, ...]:
 
 @contextmanager
 def _inventory_database(path: Path):
-    connection = sqlite3.connect(
-        readonly_sqlite_uri(path),
-        uri=True,
-        timeout=60,
+    connection = connect_sqlite(
+        path,
+        mode=READONLY_EXISTING,
+        policy=_EXACT_INVENTORY_SQLITE_POLICY,
     )
     try:
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA busy_timeout=60000")
-        connection.execute("PRAGMA foreign_keys=ON")
-        if int(connection.execute("PRAGMA foreign_keys").fetchone()[0]) != 1:
-            raise RuntimeError("exact inventory reader could not enable foreign keys")
-        connection.execute("PRAGMA query_only=ON")
-        if int(connection.execute("PRAGMA query_only").fetchone()[0]) != 1:
-            raise RuntimeError("exact inventory reader could not enforce query-only")
+        yield connection
+    finally:
+        connection.close()
+
+
+@contextmanager
+def _catalog_database(path: Path):
+    sidecars = (Path(f"{path}-wal"), Path(f"{path}-shm"))
+    if path.is_file() and not any(os.path.lexists(item) for item in sidecars):
+        from .self_analysis_status import quiescent_sqlite_database
+
+        with quiescent_sqlite_database(path, timeout_seconds=60) as connection:
+            yield connection
+        return
+    connection = connect_document_catalog(path, readonly=True)
+    try:
         yield connection
     finally:
         connection.close()
@@ -1657,6 +1675,14 @@ _CODE_KINDS = frozenset(
         ExactLookupKind.SYMBOL,
     }
 )
+_CODE_WATERMARK_NAMES = (
+    "current_files",
+    "latest_version_id",
+    "latest_analysis_run_id",
+)
+_CODE_HASH_ALGORITHMS = frozenset(
+    {None, "xxh3_128", "raw_xxh3_128", "xxh3_128_raw_v1"}
+)
 
 
 def _code_current_vector(
@@ -1840,6 +1866,263 @@ def _code_row_match(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class _CodeTermOutcome:
+    matches: tuple[ExactEvidenceMatch, ...]
+    report: ExactOwnerReport
+    consumed_preflight: bool
+
+
+def _code_expected_vector(owner: OwnerSnapshot) -> dict[str, int] | None:
+    expected: dict[str, int] = {}
+    for name in _CODE_WATERMARK_NAMES:
+        value = _watermark_int(owner, name)
+        if value is None:
+            return None
+        expected[name] = value
+    return expected
+
+
+def _code_missing_watermark_reports(
+    terms: Sequence[ExactLookupTerm],
+) -> list[ExactOwnerReport]:
+    return [
+        _report(
+            "code",
+            term,
+            ExactLookupStatus.PARTIAL,
+            executed=False,
+            available=True,
+            reason="code_snapshot_watermark_missing",
+        )
+        for term in terms
+    ]
+
+
+def _code_changed_reports(
+    terms: Sequence[ExactLookupTerm],
+    preflight_steps: int,
+) -> list[ExactOwnerReport]:
+    return [
+        _report(
+            "code",
+            term,
+            ExactLookupStatus.PARTIAL,
+            executed=True,
+            available=True,
+            sqlite_steps=preflight_steps,
+            reason="code_changed_after_snapshot",
+        )
+        for term in terms
+    ]
+
+
+def _code_hash_is_supported(term: ExactLookupTerm) -> bool:
+    return term.kind is not ExactLookupKind.HASH or (
+        len(term.value) == 32 and term.algorithm in _CODE_HASH_ALGORITHMS
+    )
+
+
+def _code_decode_rows(
+    rows: Sequence[sqlite3.Row],
+    term: ExactLookupTerm,
+    control: _QueryControl,
+) -> tuple[list[ExactEvidenceMatch], int]:
+    matches: list[ExactEvidenceMatch] = []
+    invalid = 0
+    for row in rows:
+        control.checkpoint()
+        try:
+            matches.append(_code_row_match(row, term, len(matches) + 1))
+        except (FileIdentityError, TypeError, ValueError):
+            invalid += 1
+    return matches, invalid
+
+
+def _code_report_warnings(
+    term: ExactLookupTerm,
+    *,
+    symbol_unconfirmed: bool,
+) -> tuple[str, ...]:
+    warnings = ["code_exact_is_best_effort_non_generational"]
+    if term.kind is ExactLookupKind.NAME:
+        warnings.append("code_has_no_basename_index")
+    if symbol_unconfirmed:
+        warnings.append("code_symbol_unconfirmed")
+    return tuple(warnings)
+
+
+def _code_report_reason(
+    *,
+    truncated: bool,
+    invalid: int,
+    symbol_unconfirmed: bool,
+) -> str:
+    if truncated:
+        return "exact_result_limit_reached"
+    if invalid:
+        return "code_identity_invalid"
+    if symbol_unconfirmed:
+        return "code_symbol_unconfirmed"
+    return "code_owner_non_generational"
+
+
+def _code_ranked_outcome(
+    rows: Sequence[sqlite3.Row],
+    term: ExactLookupTerm,
+    control: _QueryControl,
+    per_term_limit: int,
+    steps: int,
+    preflight_steps: int,
+    query_truncated: bool,
+) -> _CodeTermOutcome:
+    decoded, invalid = _code_decode_rows(rows, term, control)
+    all_ranked = _rank_matches(decoded)
+    ranked = tuple(all_ranked[:per_term_limit])
+    omitted = max(0, len(all_ranked) - len(ranked))
+    truncated = query_truncated or omitted > 0
+    symbol_unconfirmed = any(
+        "code_symbol_unconfirmed" in match.warnings for match in ranked
+    )
+    report = _report(
+        "code",
+        term,
+        ExactLookupStatus.PARTIAL,
+        executed=True,
+        available=True,
+        returned=len(ranked),
+        rows_observed=len(rows),
+        sqlite_steps=steps + preflight_steps,
+        truncated=truncated,
+        omitted_matches=omitted,
+        reason=_code_report_reason(
+            truncated=truncated,
+            invalid=invalid,
+            symbol_unconfirmed=symbol_unconfirmed,
+        ),
+        warnings=_code_report_warnings(
+            term,
+            symbol_unconfirmed=symbol_unconfirmed,
+        ),
+    )
+    return _CodeTermOutcome(ranked, report, True)
+
+
+def _code_term_outcome(
+    connection: sqlite3.Connection,
+    term: ExactLookupTerm,
+    control: _QueryControl,
+    latest_version_id: int,
+    per_term_limit: int,
+    path_scope: tuple[str, ...] | None,
+    preflight_steps: int,
+) -> _CodeTermOutcome:
+    if not _code_hash_is_supported(term):
+        return _CodeTermOutcome(
+            (),
+            _report(
+                "code",
+                term,
+                ExactLookupStatus.UNSUPPORTED,
+                executed=False,
+                available=True,
+                reason="code_hash_algorithm_unsupported",
+            ),
+            False,
+        )
+    try:
+        rows, steps, truncated = _code_term_rows(
+            connection,
+            control,
+            term,
+            latest_version_id,
+            per_term_limit + 1,
+            path_scope,
+        )
+    except _WorkBudgetExceeded:
+        return _CodeTermOutcome(
+            (),
+            _report(
+                "code",
+                term,
+                ExactLookupStatus.PARTIAL,
+                executed=True,
+                available=True,
+                truncated=True,
+                reason="exact_work_budget_exhausted",
+            ),
+            False,
+        )
+    return _code_ranked_outcome(
+        rows,
+        term,
+        control,
+        per_term_limit,
+        steps,
+        preflight_steps,
+        truncated,
+    )
+
+
+def _read_code_transaction(
+    connection: sqlite3.Connection,
+    expected: Mapping[str, int],
+    terms: Sequence[ExactLookupTerm],
+    control: _QueryControl,
+    per_term_limit: int,
+    path_scope: tuple[str, ...] | None,
+    matches: list[ExactEvidenceMatch],
+    reports: list[ExactOwnerReport],
+) -> None:
+    connection.execute("BEGIN")
+    current, preflight_steps = _code_current_vector(connection, control)
+    if any(current[name] != expected[name] for name in current):
+        reports.extend(_code_changed_reports(terms, preflight_steps))
+        connection.execute("ROLLBACK")
+        return
+    latest_version_id = current["latest_version_id"]
+    for term in terms:
+        outcome = _code_term_outcome(
+            connection,
+            term,
+            control,
+            latest_version_id,
+            per_term_limit,
+            path_scope,
+            preflight_steps,
+        )
+        matches.extend(outcome.matches)
+        reports.append(outcome.report)
+        if outcome.consumed_preflight:
+            preflight_steps = 0
+    connection.execute("ROLLBACK")
+
+
+def _code_failure_reports(
+    terms: Sequence[ExactLookupTerm],
+    completed_reports: int,
+    exc: BaseException,
+) -> list[ExactOwnerReport]:
+    exhausted = isinstance(exc, _WorkBudgetExceeded)
+    reason = (
+        "exact_work_budget_exhausted"
+        if exhausted
+        else f"owner_read_failed:{type(exc).__name__}"
+    )
+    return [
+        _report(
+            "code",
+            term,
+            ExactLookupStatus.PARTIAL,
+            executed=True,
+            available=True,
+            truncated=exhausted,
+            reason=reason,
+        )
+        for term in terms[completed_reports:]
+    ]
+
+
 def _lookup_code(
     path: Path,
     owner: OwnerSnapshot,
@@ -1850,162 +2133,31 @@ def _lookup_code(
 ) -> tuple[list[ExactEvidenceMatch], list[ExactOwnerReport]]:
     matches: list[ExactEvidenceMatch] = []
     reports: list[ExactOwnerReport] = []
-    expected = {
-        name: _watermark_int(owner, name)
-        for name in (
-            "current_files",
-            "latest_version_id",
-            "latest_analysis_run_id",
-        )
-    }
-    if any(value is None for value in expected.values()):
-        return matches, [
-            _report(
-                "code",
-                term,
-                ExactLookupStatus.PARTIAL,
-                executed=False,
-                available=True,
-                reason="code_snapshot_watermark_missing",
-            )
-            for term in terms
-        ]
+    expected = _code_expected_vector(owner)
+    if expected is None:
+        return matches, _code_missing_watermark_reports(terms)
     try:
-        connection = connect_code_state(path, readonly=True)
-        try:
-            connection.execute("BEGIN")
-            current, preflight_steps = _code_current_vector(connection, control)
-            if any(current[name] != expected[name] for name in current):
-                for term in terms:
-                    reports.append(
-                        _report(
-                            "code",
-                            term,
-                            ExactLookupStatus.PARTIAL,
-                            executed=True,
-                            available=True,
-                            sqlite_steps=preflight_steps,
-                            reason="code_changed_after_snapshot",
-                        )
-                    )
-                connection.execute("ROLLBACK")
-                return matches, reports
-            latest_version_id = current["latest_version_id"]
-            for term in terms:
-                if term.kind is ExactLookupKind.HASH and (
-                    len(term.value) != 32
-                    or term.algorithm
-                    not in {None, "xxh3_128", "raw_xxh3_128", "xxh3_128_raw_v1"}
-                ):
-                    reports.append(
-                        _report(
-                            "code",
-                            term,
-                            ExactLookupStatus.UNSUPPORTED,
-                            executed=False,
-                            available=True,
-                            reason="code_hash_algorithm_unsupported",
-                        )
-                    )
-                    continue
-                try:
-                    rows, steps, truncated = _code_term_rows(
-                        connection,
-                        control,
-                        term,
-                        latest_version_id,
-                        per_term_limit + 1,
-                        path_scope,
-                    )
-                except _WorkBudgetExceeded:
-                    reports.append(
-                        _report(
-                            "code",
-                            term,
-                            ExactLookupStatus.PARTIAL,
-                            executed=True,
-                            available=True,
-                            truncated=True,
-                            reason="exact_work_budget_exhausted",
-                        )
-                    )
-                    continue
-                invalid = 0
-                term_matches: list[ExactEvidenceMatch] = []
-                for row in rows:
-                    control.checkpoint()
-                    try:
-                        term_matches.append(
-                            _code_row_match(row, term, len(term_matches) + 1)
-                        )
-                    except (FileIdentityError, TypeError, ValueError):
-                        invalid += 1
-                all_ranked = _rank_matches(term_matches)
-                ranked = all_ranked[:per_term_limit]
-                known_omitted = max(0, len(all_ranked) - len(ranked))
-                matches.extend(ranked)
-                was_truncated = truncated or known_omitted > 0
-                warnings = ["code_exact_is_best_effort_non_generational"]
-                if term.kind is ExactLookupKind.NAME:
-                    warnings.append("code_has_no_basename_index")
-                symbol_unconfirmed = any(
-                    "code_symbol_unconfirmed" in match.warnings for match in ranked
-                )
-                if symbol_unconfirmed:
-                    warnings.append("code_symbol_unconfirmed")
-                report_reason = (
-                    "exact_result_limit_reached"
-                    if was_truncated
-                    else (
-                        "code_identity_invalid"
-                        if invalid
-                        else (
-                            "code_symbol_unconfirmed"
-                            if symbol_unconfirmed
-                            else "code_owner_non_generational"
-                        )
-                    )
-                )
-                reports.append(
-                    _report(
-                        "code",
-                        term,
-                        ExactLookupStatus.PARTIAL,
-                        executed=True,
-                        available=True,
-                        returned=len(ranked),
-                        rows_observed=len(rows),
-                        sqlite_steps=steps + preflight_steps,
-                        truncated=was_truncated,
-                        omitted_matches=known_omitted,
-                        reason=report_reason,
-                        warnings=tuple(warnings),
-                    )
-                )
-                preflight_steps = 0
-            connection.execute("ROLLBACK")
-        finally:
-            connection.close()
+        with readonly_code_database(path) as connection:
+            _read_code_transaction(
+                connection,
+                expected,
+                terms,
+                control,
+                per_term_limit,
+                path_scope,
+                matches,
+                reports,
+            )
     except (sqlite3.Error, RuntimeError, OSError) as exc:
         if control.cancellation_failure is exc:
             raise
-        failure_reason = (
-            "exact_work_budget_exhausted"
-            if isinstance(exc, _WorkBudgetExceeded)
-            else f"owner_read_failed:{type(exc).__name__}"
-        )
-        for term in terms[len(reports) :]:
-            reports.append(
-                _report(
-                    "code",
-                    term,
-                    ExactLookupStatus.PARTIAL,
-                    executed=True,
-                    available=True,
-                    truncated=isinstance(exc, _WorkBudgetExceeded),
-                    reason=failure_reason,
-                )
+        reports.extend(
+            _code_failure_reports(
+                terms,
+                len(reports),
+                exc,
             )
+        )
     return matches, reports
 
 
@@ -2613,8 +2765,7 @@ def _lookup_catalog(
     reports: list[ExactOwnerReport] = []
     heads = _catalog_snapshot_heads(owner, source_scope, path_scope)
     try:
-        connection = connect_document_catalog(path, readonly=True)
-        try:
+        with _catalog_database(path) as connection:
             connection.execute("BEGIN")
             preflight = _catalog_preflight(
                 connection,
@@ -2645,8 +2796,6 @@ def _lookup_catalog(
                     reports,
                 )
             connection.execute("ROLLBACK")
-        finally:
-            connection.close()
     except (sqlite3.Error, RuntimeError, OSError) as exc:
         if control.cancellation_failure is exc:
             raise

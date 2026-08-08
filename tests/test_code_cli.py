@@ -7,7 +7,9 @@
 # region [01] Dependencias del módulo
 from __future__ import annotations
 
+import argparse
 import io
+import inspect
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -427,6 +429,136 @@ def test_code_status_projects_bounded_architecture_summary_and_gates(
     assert "CODE_COVERAGE_GATE id=tests_passed status=passed" in output
 
 
+def test_run_code_review_signature_json_and_abstention_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from _04_Nucleo_Operativo import code_review
+
+    assert str(inspect.signature(cli_code.run_code_review)) == (
+        "(args: 'argparse.Namespace') -> 'int'"
+    )
+    calls: list[tuple[Path, int]] = []
+    selected_result: object
+
+    def review_code_state(state_directory: Path, *, limit: int):
+        calls.append((state_directory, limit))
+        return selected_result
+
+    monkeypatch.setattr(code_review, "review_code_state", review_code_state)
+    args = argparse.Namespace(
+        state_directory=tmp_path,
+        code_review_limit=7,
+        code_json=True,
+    )
+    ready_payload = {"schema": "fixture-review/v1", "status": "ready"}
+    selected_result = SimpleNamespace(
+        status="ready",
+        as_payload=lambda: ready_payload,
+    )
+
+    assert cli_code.run_code_review(args) == 0
+    assert json.loads(capsys.readouterr().out) == ready_payload
+
+    abstained_payload = {
+        "schema": "fixture-review/v1",
+        "status": "abstained",
+        "reason": "fixture_unavailable",
+    }
+    selected_result = SimpleNamespace(
+        status="abstained",
+        as_payload=lambda: abstained_payload,
+    )
+    assert cli_code.run_code_review(args) == 2
+    assert json.loads(capsys.readouterr().out) == abstained_payload
+
+    args.code_json = False
+    selected_result = SimpleNamespace(
+        status="abstained",
+        reason="fixture_unavailable",
+        database="C:/fixture/code.sqlite3",
+    )
+    assert cli_code.run_code_review(args) == 2
+    assert capsys.readouterr().out == (
+        "CODE_REVIEW status=abstained reason=fixture_unavailable "
+        'database="C:/fixture/code.sqlite3"\n'
+    )
+    assert calls == [(tmp_path, 7), (tmp_path, 7), (tmp_path, 7)]
+
+
+def test_run_code_review_propagates_cancellation_and_maps_known_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from _04_Nucleo_Operativo import code_review
+
+    args = argparse.Namespace(
+        state_directory=tmp_path,
+        code_review_limit=5,
+        code_json=False,
+    )
+    cancellation = KeyboardInterrupt("cancel review")
+
+    def cancel(*_args, **_kwargs):
+        raise cancellation
+
+    monkeypatch.setattr(code_review, "review_code_state", cancel)
+    with pytest.raises(KeyboardInterrupt) as raised:
+        cli_code.run_code_review(args)
+    assert raised.value is cancellation
+    cancelled_output = capsys.readouterr()
+    assert cancelled_output.out == ""
+    assert cancelled_output.err == ""
+
+    def fail(*_args, **_kwargs):
+        raise RuntimeError("fixture failure")
+
+    monkeypatch.setattr(code_review, "review_code_state", fail)
+    assert cli_code.run_code_review(args) == 2
+    failed_output = capsys.readouterr()
+    assert failed_output.out == ""
+    assert failed_output.err == "ERROR code-review RuntimeError: fixture failure\n"
+
+
+@pytest.mark.parametrize("missing", ("snapshot", "coverage", "digest"))
+def test_run_code_review_rejects_incomplete_human_ready_results(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    missing: str,
+) -> None:
+    from _04_Nucleo_Operativo import code_review
+
+    values: dict[str, object | None] = {
+        "snapshot": object(),
+        "coverage": object(),
+        "digest": object(),
+    }
+    values[missing] = None
+    result = SimpleNamespace(status="ready", **values)
+    monkeypatch.setattr(
+        code_review,
+        "review_code_state",
+        lambda *_args, **_kwargs: result,
+    )
+
+    assert (
+        cli_code.run_code_review(
+            argparse.Namespace(
+                state_directory=tmp_path,
+                code_review_limit=5,
+                code_json=False,
+            )
+        )
+        == 2
+    )
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert output.err == "ERROR code-review RuntimeError: ready result is incomplete\n"
+
+
 def test_code_review_human_surfaces_architecture_and_work_package_context(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -519,8 +651,30 @@ def test_code_review_human_surfaces_architecture_and_work_package_context(
         ranking="python-confirmed-hotspots-v2",
         actionability_version="python-maintenance-actionability-v1",
         planning_version="python-maintenance-work-packages-v3",
-        external_evidence=None,
-        external_evidence_suite=None,
+        external_evidence=SimpleNamespace(
+            provider="pyright",
+            status="ready",
+            execution="executed",
+            diagnostics=2,
+            added=1,
+            resolved=3,
+            gate="passed",
+        ),
+        external_evidence_suite=SimpleNamespace(
+            profile="trusted-static",
+            status="ready",
+            providers=(
+                SimpleNamespace(
+                    provider_id="pyright",
+                    status="ready",
+                    findings=2,
+                    metrics=1,
+                    relations=3,
+                    content_executed=True,
+                    gate="passed",
+                ),
+            ),
+        ),
         architecture=architecture,
         test_coverage=CodeCoverageAnalysis(
             database="fixture",
@@ -555,12 +709,15 @@ def test_code_review_human_surfaces_architecture_and_work_package_context(
     monkeypatch.setattr(code_review, "review_code_state", lambda *_args, **_kwargs: result)
 
     exit_code = cli_code.run_code_review(
-        SimpleNamespace(state_directory=tmp_path, code_review_limit=10, code_json=False)
+        argparse.Namespace(state_directory=tmp_path, code_review_limit=10, code_json=False)
     )
 
     output = capsys.readouterr().out
     assert exit_code == 0
     assert "CODE_REVIEW_ARCHITECTURE status=ready gate=observed failed_contracts=1" in output
+    assert "CODE_REVIEW_EXTERNAL provider=pyright status=ready execution=executed" in output
+    assert "CODE_REVIEW_PROVIDER_SUITE profile=trusted-static status=ready" in output
+    assert "CODE_REVIEW_PROVIDER id=pyright status=ready findings=2" in output
     assert "CODE_REVIEW_ARCHITECTURE_SUMMARY modules=4 import_edges=5" in output
     assert "CODE_REVIEW_ARCHITECTURE_GATE id=architecture_contracts status=failed" in output
     assert 'CODE_REVIEW_ARCHITECTURE_CONTRACT status=failed id="layers"' in output
@@ -576,6 +733,303 @@ def test_code_review_human_surfaces_architecture_and_work_package_context(
     assert 'tests=["tests/test_app.py::test_handler"]' in output
     assert "missing_lines=[[19, 20]]" in output
     assert "missing_branches=[[18, 20]]" in output
+    lines = output.splitlines()
+    ordered_prefixes = (
+        "CODE_REVIEW status=ready",
+        "CODE_REVIEW_COVERAGE ",
+        "CODE_REVIEW_EXTERNAL ",
+        "CODE_REVIEW_PROVIDER_SUITE ",
+        "CODE_REVIEW_PROVIDER ",
+        "CODE_REVIEW_ARCHITECTURE ",
+        "CODE_REVIEW_TEST_COVERAGE ",
+        "CODE_REVIEW_UNUSED ",
+        "CODE_REVIEW_SUPPLY_CHAIN ",
+        "CODE_REVIEW_RECOMMENDATION status=abstained",
+        "CODE_REVIEW_WORK_PACKAGE_SUPPLY_CHAIN ",
+        "CODE_REVIEW_WORK_PACKAGE status=ready",
+        "CODE_REVIEW_WORK_PACKAGE_ARCHITECTURE ",
+        "CODE_REVIEW_WORK_PACKAGE_COVERAGE ",
+    )
+    phase_positions = tuple(
+        next(
+            index
+            for index, line in enumerate(lines)
+            if line.startswith(prefix)
+        )
+        for prefix in ordered_prefixes
+    )
+    assert phase_positions == tuple(sorted(phase_positions))
+
+
+def _ready_code_publication_cli_result(tmp_path: Path) -> SimpleNamespace:
+    return SimpleNamespace(
+        baseline_database=str(tmp_path / "baseline" / "code.sqlite3"),
+        current_database=str(tmp_path / "current" / "code.sqlite3"),
+        status="ready",
+        reason=None,
+        baseline=SimpleNamespace(resolved_call_edges=2, call_edges=3),
+        current=SimpleNamespace(resolved_call_edges=3, call_edges=4),
+        calls=SimpleNamespace(
+            common_call_sites=2,
+            baseline_only_call_sites=1,
+            current_only_call_sites=2,
+            newly_resolved=1,
+            corrected=2,
+            lost=3,
+        ),
+        hotspots=SimpleNamespace(common=4, added=5, removed=6, changed_evidence=7),
+        probable_dead_delta=1,
+        external_evidence=SimpleNamespace(
+            status="ready",
+            common=8,
+            added=9,
+            resolved=10,
+            gate="passed",
+        ),
+        digest=SimpleNamespace(xxh3_128="digest"),
+        analysis_profile="trusted-static",
+        verdict="improved",
+        providers=(
+            SimpleNamespace(
+                provider_id="mypy-trusted-project",
+                status="ready",
+                common=11,
+                added=12,
+                resolved=13,
+                relocated=14,
+                gate="passed",
+            ),
+        ),
+        architecture=SimpleNamespace(
+            status="ready",
+            reason=None,
+            modules=(),
+            added_failed_contracts=(),
+            resolved_failed_contracts=(),
+            added_cycles=(),
+            resolved_cycles=(),
+            displaced_complexity=(),
+            architecture_contracts_not_degraded="passed",
+            no_new_import_cycles="passed",
+            module_complexity_not_displaced="passed",
+        ),
+        test_coverage=CoverageComparison(
+            status="comparable",
+            reason=None,
+            baseline_suite_signature="suite",
+            current_suite_signature="suite",
+            executable_lines_delta=0,
+            covered_lines_delta=1,
+            missing_lines_delta=-1,
+            branch_exits_delta=0,
+            covered_branch_exits_delta=2,
+            missing_branch_exits_delta=-2,
+            line_coverage_percent_delta=1.5,
+            branch_coverage_percent_delta=2.5,
+            gates=(
+                CoverageGateEvaluation(
+                    "line_coverage_not_degraded",
+                    "passed",
+                    None,
+                ),
+            ),
+        ),
+        limitations=("fixture_limit",),
+        as_payload=lambda: {
+            "kind": "code-publication-diff",
+            "status": "ready",
+            "digest": "digest",
+        },
+    )
+
+
+def test_run_code_publication_diff_signature_phase_order_and_complete_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from _04_Nucleo_Operativo import code_publication_diff
+
+    assert str(inspect.signature(cli_code.run_code_publication_diff)) == (
+        "(args: 'argparse.Namespace') -> 'int'"
+    )
+    calls: list[tuple[Path, Path]] = []
+    result = _ready_code_publication_cli_result(tmp_path)
+
+    def compare_code_publications(baseline: Path, current: Path):
+        calls.append((baseline, current))
+        return result
+
+    monkeypatch.setattr(
+        code_publication_diff,
+        "compare_code_publications",
+        compare_code_publications,
+    )
+    baseline = tmp_path / "baseline"
+    current = tmp_path / "current"
+    args = argparse.Namespace(
+        code_publication_diff=str(baseline),
+        state_directory=current,
+        code_json=False,
+    )
+
+    assert cli_code.run_code_publication_diff(args) == 0
+    assert calls == [(baseline, current)]
+    assert capsys.readouterr().out.splitlines() == [
+        "CODE_PUBLICATION_DIFF status=ready digest=digest "
+        "baseline_calls=2/3 current_calls=3/4",
+        "CODE_PUBLICATION_DIFF_CALLS common=2 baseline_only=1 current_only=2 "
+        "newly_resolved=1 corrected=2 lost=3",
+        "CODE_PUBLICATION_DIFF_HOTSPOTS common=4 added=5 removed=6 "
+        "changed_evidence=7 probable_dead_delta=+1",
+        "CODE_PUBLICATION_DIFF_EXTERNAL provider=ruff status=ready common=8 "
+        "added=9 resolved=10 gate=passed",
+        "CODE_PUBLICATION_DIFF_PROVIDERS profile=trusted-static verdict=improved",
+        "CODE_PUBLICATION_DIFF_PROVIDER id=mypy-trusted-project status=ready "
+        "common=11 added=12 resolved=13 relocated=14 gate=passed",
+        "CODE_PUBLICATION_DIFF_ARCHITECTURE status=ready module_deltas=0 "
+        "changed_modules=0 added_failed_contracts=0 resolved_failed_contracts=0 "
+        "added_cycles=0 resolved_cycles=0 displacements=0 contracts_gate=passed "
+        "cycles_gate=passed displacement_gate=passed reason=null",
+        "CODE_PUBLICATION_DIFF_ARCHITECTURE_CONTRACTS added=[] resolved=[] "
+        "added_truncated=0 resolved_truncated=0",
+        "CODE_PUBLICATION_DIFF_ARCHITECTURE_CYCLES added=[] resolved=[] "
+        "added_truncated=0 resolved_truncated=0",
+        "CODE_PUBLICATION_DIFF_COVERAGE status=comparable line_delta=1.5 "
+        "branch_delta=2.5 covered_lines_delta=1 missing_lines_delta=-1 "
+        "covered_branches_delta=2 missing_branches_delta=-2 reason=null",
+        "CODE_PUBLICATION_DIFF_COVERAGE_GATE id=line_coverage_not_degraded "
+        "status=passed reason=null",
+        "CODE_PUBLICATION_DIFF_UNUSED status=not_evaluated gate=not_evaluated "
+        'reason="unused_delta_missing"',
+        "CODE_PUBLICATION_DIFF_SUPPLY_CHAIN status=not_evaluated "
+        'reason="supply_chain_delta_missing"',
+        "CODE_PUBLICATION_DIFF_ENGINEERING status=not_comparable "
+        'reason="engineering_analytics_delta_missing"',
+        "CODE_PUBLICATION_DIFF_LIMITATION fixture_limit",
+    ]
+
+
+def test_run_code_publication_diff_json_and_abstention_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from _04_Nucleo_Operativo import code_publication_diff
+
+    result = _ready_code_publication_cli_result(tmp_path)
+    monkeypatch.setattr(
+        code_publication_diff,
+        "compare_code_publications",
+        lambda *_args: result,
+    )
+    args = argparse.Namespace(
+        code_publication_diff=str(tmp_path / "baseline"),
+        state_directory=tmp_path / "current",
+        code_json=True,
+    )
+
+    assert cli_code.run_code_publication_diff(args) == 0
+    assert json.loads(capsys.readouterr().out) == result.as_payload()
+
+    result.status = "abstained"
+    result.reason = "fixture_unavailable"
+    result.as_payload = lambda: {
+        "kind": "code-publication-diff",
+        "status": "abstained",
+        "reason": "fixture_unavailable",
+    }
+    assert cli_code.run_code_publication_diff(args) == 2
+    assert json.loads(capsys.readouterr().out) == result.as_payload()
+
+    args.code_json = False
+    assert cli_code.run_code_publication_diff(args) == 2
+    assert capsys.readouterr().out == (
+        "CODE_PUBLICATION_DIFF status=abstained reason=fixture_unavailable "
+        f"baseline={json.dumps(result.baseline_database, ensure_ascii=True)} "
+        f"current={json.dumps(result.current_database, ensure_ascii=True)}\n"
+    )
+
+
+def test_run_code_publication_diff_propagates_cancellation_and_maps_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from _04_Nucleo_Operativo import code_publication_diff
+
+    args = argparse.Namespace(
+        code_publication_diff=str(tmp_path / "baseline"),
+        state_directory=tmp_path / "current",
+        code_json=False,
+    )
+    cancellation = KeyboardInterrupt("cancel publication diff")
+
+    def cancel(*_args, **_kwargs):
+        raise cancellation
+
+    monkeypatch.setattr(code_publication_diff, "compare_code_publications", cancel)
+    with pytest.raises(KeyboardInterrupt) as raised:
+        cli_code.run_code_publication_diff(args)
+    assert raised.value is cancellation
+    cancelled_output = capsys.readouterr()
+    assert cancelled_output.out == ""
+    assert cancelled_output.err == ""
+
+    def fail(*_args, **_kwargs):
+        raise RuntimeError("fixture failure")
+
+    monkeypatch.setattr(code_publication_diff, "compare_code_publications", fail)
+    assert cli_code.run_code_publication_diff(args) == 2
+    failed_output = capsys.readouterr()
+    assert failed_output.out == ""
+    assert failed_output.err == (
+        "ERROR code-publication-diff RuntimeError: fixture failure\n"
+    )
+
+
+@pytest.mark.parametrize(
+    "missing",
+    (
+        "baseline",
+        "current",
+        "calls",
+        "hotspots",
+        "probable_dead_delta",
+        "external_evidence",
+        "architecture",
+        "test_coverage",
+        "digest",
+    ),
+)
+def test_run_code_publication_diff_rejects_incomplete_human_ready_results(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    missing: str,
+) -> None:
+    from _04_Nucleo_Operativo import code_publication_diff
+
+    result = _ready_code_publication_cli_result(tmp_path)
+    setattr(result, missing, None)
+    monkeypatch.setattr(
+        code_publication_diff,
+        "compare_code_publications",
+        lambda *_args: result,
+    )
+
+    assert cli_code.run_code_publication_diff(
+        argparse.Namespace(
+            code_publication_diff=str(tmp_path / "baseline"),
+            state_directory=tmp_path / "current",
+            code_json=False,
+        )
+    ) == 2
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert output.err == (
+        "ERROR code-publication-diff RuntimeError: ready result is incomplete\n"
+    )
 
 
 def test_code_publication_diff_human_surfaces_bounded_architecture_delta(
@@ -586,7 +1040,7 @@ def test_code_publication_diff_human_surfaces_bounded_architecture_delta(
     from _04_Nucleo_Operativo import code_publication_diff
 
     modules = tuple(
-        SimpleNamespace(
+        argparse.Namespace(
             module_id=f"module_{index:02d}",
             cognitive_complexity_delta=1.0,
             fan_in_delta=1,
@@ -685,7 +1139,7 @@ def test_code_publication_diff_human_surfaces_bounded_architecture_delta(
     )
 
     exit_code = cli_code.run_code_publication_diff(
-        SimpleNamespace(
+        argparse.Namespace(
             code_publication_diff=str(tmp_path / "baseline"),
             state_directory=tmp_path / "current",
             code_json=False,

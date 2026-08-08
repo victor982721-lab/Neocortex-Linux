@@ -196,6 +196,49 @@ class _CoverageTotals:
         self.covered_branch_exits += len(possible_arcs & executed_arcs)
 
 
+@dataclass(frozen=True, slots=True)
+class _DeepCoverageContext:
+    started: float
+    project_root: Path
+    durable_scratch: Path
+    runtime_root: Path
+    owners: Mapping[str, ExternalEvidenceFile]
+    environment: Mapping[str, str]
+    config: DeepCoverageConfig
+    prepared: DeepCoveragePreparedInput
+    preparation_elapsed: float
+
+
+@dataclass(frozen=True, slots=True)
+class _CollectedSuite:
+    collected_nodeids: tuple[str, ...]
+    selected_nodeids: tuple[str, ...]
+    shards: tuple[tuple[str, ...], ...]
+    raw_symbols: tuple[Mapping[str, object], ...]
+    suite_signature: str
+    measurement_scope_signature: str
+    measurement_complete: bool
+    stdout_bytes: int
+    stderr_bytes: int
+
+
+@dataclass(frozen=True, slots=True)
+class _ShardPlan:
+    index: int
+    nodeids: tuple[str, ...]
+    shard_signature: str
+    checkpoint: Path
+
+
+@dataclass(frozen=True, slots=True)
+class _ShardExecution:
+    results: tuple[Mapping[str, object], ...]
+    shards_reused: int
+    stdout_bytes: int
+    stderr_bytes: int
+    process_invocations: int
+
+
 def _required_mapping(value: object, *, label: str) -> Mapping[str, object]:
     if not isinstance(value, Mapping):
         raise ValueError(f"{label} is not an object")
@@ -1642,6 +1685,404 @@ def _normalize(
     )
 
 
+def _controlled_execution_environment(
+    environment: Mapping[str, str],
+    durable_scratch: Path,
+) -> tuple[dict[str, str], Path]:
+    controlled = dict(environment)
+    runtime_root = durable_scratch / "r"
+    runtime_root.mkdir(parents=True, exist_ok=True)
+    home_directory = trusted_deep_home_directory()
+    controlled["HOME"] = home_directory
+    if os.name == "nt":
+        controlled["USERPROFILE"] = home_directory
+    host_names: tuple[str, ...] = ("PATH", "PATHEXT")
+    if os.name == "nt":
+        # CPython 3.14 imports Winsock-backed modules while pytest configures
+        # debugging. Windows cannot initialize those providers without its
+        # canonical runtime roots, even when PATH itself is present.
+        host_names += ("COMSPEC", "SYSTEMROOT", "WINDIR")
+    for name in host_names:
+        value = os.environ.get(name)
+        if value:
+            controlled[name] = value
+    controlled["NEOCORTEX_AUDIT_LAB_ROOT"] = str(durable_scratch)
+    for name in ("TEMP", "TMP", "TMPDIR", "PYTHONPYCACHEPREFIX"):
+        controlled[name] = str(runtime_root)
+    controlled["PYTEST_ADDOPTS"] = ""
+    controlled["COVERAGE_FILE"] = str(runtime_root / ".coverage")
+    return controlled, runtime_root
+
+
+def _validate_prepared_execution_input(
+    prepared: DeepCoveragePreparedInput,
+    *,
+    project_root: Path,
+    staged: Mapping[str, ExternalEvidenceFile],
+    config: DeepCoverageConfig,
+) -> None:
+    expected_manifest = tuple(_source_manifest(tuple(staged.values())))
+    expected_code_signature = _input_signature(expected_manifest)
+    expected_tool_versions = _tool_versions()
+    expected_publication_signature = _publication_input_signature(
+        project_root,
+        code_input_signature=prepared.code_input_signature,
+        support_signature=prepared.support_signature,
+        config=config,
+        tool_versions=prepared.tool_versions,
+    )
+    checks = (
+        Path(prepared.trusted_root).resolve(strict=True) == project_root,
+        prepared.configuration_signature == config.configuration_signature,
+        prepared.manifest == expected_manifest,
+        prepared.code_input_signature == expected_code_signature,
+        dict(prepared.tool_versions) == expected_tool_versions,
+        prepared.publication_input_signature == expected_publication_signature,
+        prepared.process_invocations == 1,
+        prepared.support_files_verified >= 1,
+        prepared.support_bytes_verified >= 0,
+        prepared.preparation_milliseconds >= 0,
+    )
+    if not all(checks):
+        raise ValueError("deep coverage prepared input is incompatible")
+
+
+def _execution_context(
+    stage_root: Path,
+    staged: Mapping[str, ExternalEvidenceFile],
+    environment: Mapping[str, str],
+    *,
+    trusted_root: Path,
+    scratch_root: Path,
+    config: DeepCoverageConfig,
+    prepared_input: DeepCoveragePreparedInput | None,
+    started: float,
+) -> _DeepCoverageContext:
+    project_root = _validate_trusted_root(trusted_root)
+    durable_scratch = _validate_scratch(stage_root, scratch_root, project_root)
+    owners = _owners_by_relative(staged)
+    controlled_environment, runtime_root = _controlled_execution_environment(
+        environment,
+        durable_scratch,
+    )
+    if prepared_input is None:
+        prepared = _prepare_deep_coverage_input(
+            project_root,
+            tuple(staged.values()),
+            config,
+            environment=controlled_environment,
+            deadline=started + config.time_budget_seconds,
+        )
+        preparation_elapsed = 0.0
+    else:
+        prepared = prepared_input
+        _validate_prepared_execution_input(
+            prepared,
+            project_root=project_root,
+            staged=staged,
+            config=config,
+        )
+        preparation_elapsed = prepared.preparation_milliseconds / 1000.0
+    return _DeepCoverageContext(
+        started,
+        project_root,
+        durable_scratch,
+        runtime_root,
+        owners,
+        controlled_environment,
+        config,
+        prepared,
+        preparation_elapsed,
+    )
+
+
+def _remaining_execution_seconds(
+    context: _DeepCoverageContext,
+    command: tuple[str, ...],
+) -> float:
+    elapsed = time.monotonic() - context.started + context.preparation_elapsed
+    remaining = context.config.time_budget_seconds - elapsed
+    if remaining <= 0:
+        raise subprocess.TimeoutExpired(command, context.config.time_budget_seconds)
+    return max(0.001, remaining)
+
+
+def _context_request(
+    context: _DeepCoverageContext,
+    *,
+    mode: Literal["collect", "shard"],
+) -> dict[str, object]:
+    prepared = context.prepared
+    return _request_base(
+        mode=mode,
+        project_root=context.project_root,
+        scratch_root=context.runtime_root,
+        manifest=prepared.manifest,
+        input_signature=prepared.code_input_signature,
+        support_signature=prepared.support_signature,
+        config=context.config,
+        tool_versions=prepared.tool_versions,
+    )
+
+
+def _collect_suite(context: _DeepCoverageContext) -> _CollectedSuite:
+    remaining = _remaining_execution_seconds(context, ("pytest", "collect"))
+    request = _context_request(context, mode="collect")
+    request["selectors"] = list(context.config.test_selectors)
+    request["nodeids"] = []
+    request_signature = _request_digest(request)
+    payload, stdout_bytes, stderr_bytes = _run_worker(
+        request,
+        scratch_root=context.durable_scratch,
+        environment=context.environment,
+        timeout_seconds=remaining,
+    )
+    collected, raw_symbols = _validate_collect(
+        payload,
+        request_signature=request_signature,
+        tool_versions=context.prepared.tool_versions,
+    )
+    if not collected:
+        raise ValueError("deep coverage collected no tests")
+    selected = collected[: context.config.max_tests]
+    suite_signature = external_signature(
+        "deep-coverage-suite-v1",
+        {
+            "suite_selection": context.config.suite_selection,
+            "selectors": list(context.config.test_selectors),
+            "nodeids": list(collected),
+        },
+    )
+    measurement_scope_signature = external_signature(
+        "deep-coverage-scope-v1",
+        {
+            "suite_signature": suite_signature,
+            "configuration_signature": context.config.configuration_signature,
+            "tool_versions": dict(context.prepared.tool_versions),
+            "selected_nodeids": list(selected),
+        },
+    )
+    shards = tuple(
+        tuple(selected[index : index + context.config.shard_size])
+        for index in range(0, len(selected), context.config.shard_size)
+    )
+    return _CollectedSuite(
+        collected,
+        selected,
+        shards,
+        raw_symbols,
+        suite_signature,
+        measurement_scope_signature,
+        len(selected) == len(collected),
+        stdout_bytes,
+        stderr_bytes,
+    )
+
+
+def _shard_signature(
+    context: _DeepCoverageContext,
+    suite: _CollectedSuite,
+    *,
+    index: int,
+    nodeids: tuple[str, ...],
+) -> str:
+    prepared = context.prepared
+    return external_signature(
+        "deep-coverage-shard-v1",
+        {
+            "input_signature": prepared.code_input_signature,
+            "support_signature": prepared.support_signature,
+            "configuration_signature": context.config.configuration_signature,
+            "tool_versions": dict(prepared.tool_versions),
+            "suite_signature": suite.suite_signature,
+            "measurement_scope_signature": suite.measurement_scope_signature,
+            "index": index,
+            "nodeids": list(nodeids),
+        },
+    )
+
+
+def _plan_shard(
+    context: _DeepCoverageContext,
+    suite: _CollectedSuite,
+    checkpoint_root: Path,
+    *,
+    index: int,
+    nodeids: tuple[str, ...],
+) -> _ShardPlan:
+    shard_signature = _shard_signature(context, suite, index=index, nodeids=nodeids)
+    return _ShardPlan(
+        index,
+        nodeids,
+        shard_signature,
+        _checkpoint_path(checkpoint_root, shard_signature),
+    )
+
+
+def _shard_request(
+    context: _DeepCoverageContext,
+    suite: _CollectedSuite,
+    plan: _ShardPlan,
+) -> dict[str, object]:
+    request = _context_request(context, mode="shard")
+    request.update(
+        {
+            "selectors": [],
+            "nodeids": list(plan.nodeids),
+            "suite_signature": suite.suite_signature,
+            "measurement_scope_signature": suite.measurement_scope_signature,
+            "shard_signature": plan.shard_signature,
+            "shard_index": plan.index,
+        }
+    )
+    return request
+
+
+def _validated_checkpoint(
+    plan: _ShardPlan,
+    context: _DeepCoverageContext,
+    suite: _CollectedSuite,
+) -> Mapping[str, object] | None:
+    cached = _load_checkpoint(plan.checkpoint, shard_signature=plan.shard_signature)
+    if cached is None:
+        return None
+    request = _shard_request(context, suite, plan)
+    try:
+        validated = _validate_shard(
+            cached,
+            request_signature=_request_digest(request),
+            shard_nodeids=plan.nodeids,
+            tool_versions=context.prepared.tool_versions,
+            owners=context.owners,
+        )
+    except (TypeError, ValueError):
+        return None
+    return validated if _shard_all_passed(validated) else None
+
+
+def _run_shard(
+    plan: _ShardPlan,
+    context: _DeepCoverageContext,
+    suite: _CollectedSuite,
+) -> tuple[Mapping[str, object], int, int]:
+    remaining = _remaining_execution_seconds(context, ("pytest",))
+    request = _shard_request(context, suite, plan)
+    payload, stdout_bytes, stderr_bytes = _run_worker(
+        request,
+        scratch_root=context.durable_scratch,
+        environment=context.environment,
+        timeout_seconds=remaining,
+    )
+    validated = _validate_shard(
+        payload,
+        request_signature=_request_digest(request),
+        shard_nodeids=plan.nodeids,
+        tool_versions=context.prepared.tool_versions,
+        owners=context.owners,
+    )
+    return validated, stdout_bytes, stderr_bytes
+
+
+def _execute_shards(
+    context: _DeepCoverageContext,
+    suite: _CollectedSuite,
+) -> _ShardExecution:
+    checkpoint_root = context.durable_scratch / "checkpoints"
+    checkpoint_root.mkdir(parents=True, exist_ok=True)
+    results: list[Mapping[str, object]] = []
+    shards_reused = 0
+    stdout_bytes = context.prepared.stdout_bytes + suite.stdout_bytes
+    stderr_bytes = context.prepared.stderr_bytes + suite.stderr_bytes
+    process_invocations = context.prepared.process_invocations + 1
+    for index, nodeids in enumerate(suite.shards):
+        plan = _plan_shard(
+            context,
+            suite,
+            checkpoint_root,
+            index=index,
+            nodeids=nodeids,
+        )
+        cached = _validated_checkpoint(plan, context, suite)
+        if cached is not None:
+            results.append(cached)
+            shards_reused += 1
+            continue
+        validated, out_bytes, err_bytes = _run_shard(plan, context, suite)
+        results.append(validated)
+        stdout_bytes += out_bytes
+        stderr_bytes += err_bytes
+        process_invocations += 1
+        if _shard_all_passed(validated):
+            _save_checkpoint(
+                plan.checkpoint,
+                shard_signature=plan.shard_signature,
+                result=validated,
+            )
+    return _ShardExecution(
+        tuple(results),
+        shards_reused,
+        stdout_bytes,
+        stderr_bytes,
+        process_invocations,
+    )
+
+
+def _finalize_execution(
+    context: _DeepCoverageContext,
+    suite: _CollectedSuite,
+    shards: _ShardExecution,
+) -> DeepCoverageExecution:
+    prepared = context.prepared
+    findings, metrics, relations, normalized_counts = _normalize(
+        shards.results,
+        raw_symbols=suite.raw_symbols,
+        owners=context.owners,
+        config=context.config,
+        tool_versions=prepared.tool_versions,
+        suite_signature=suite.suite_signature,
+        code_input_signature=prepared.code_input_signature,
+        support_signature=prepared.support_signature,
+        publication_input_signature=prepared.publication_input_signature,
+        measurement_scope_signature=suite.measurement_scope_signature,
+        measurement_complete=suite.measurement_complete,
+        collected_count=len(suite.collected_nodeids),
+        selected_nodeids=suite.selected_nodeids,
+        shards_reused=shards.shards_reused,
+    )
+    limitations = [
+        "coverage_main_process_only",
+        "subprocess_coverage_not_collected",
+        "git_ignored_support_files_excluded_from_support_signature",
+        "codex_control_files_excluded_from_support_signature",
+    ]
+    if not suite.measurement_complete:
+        limitations.append("suite_truncated_by_max_tests")
+    counters = {
+        **normalized_counts,
+        "process_invocations": shards.process_invocations,
+        "stdout_bytes": shards.stdout_bytes,
+        "stderr_bytes": shards.stderr_bytes,
+        "measurement_complete": int(suite.measurement_complete),
+        "support_files_verified": prepared.support_files_verified,
+        "support_bytes_verified": prepared.support_bytes_verified,
+        "preparation_milliseconds": prepared.preparation_milliseconds,
+    }
+    return DeepCoverageExecution(
+        findings,
+        metrics,
+        relations,
+        shards.stdout_bytes,
+        shards.stderr_bytes,
+        shards.process_invocations,
+        context.config.suite_selection,
+        suite.measurement_complete,
+        suite.suite_signature,
+        suite.measurement_scope_signature,
+        counters,
+        tuple(limitations),
+    )
+
+
 def execute_pytest_coverage(
     stage_root: Path,
     staged: Mapping[str, ExternalEvidenceFile],
@@ -1661,280 +2102,19 @@ def execute_pytest_coverage(
     results survive an interrupted provider attempt.
     """
 
-    started = time.monotonic()
-    project_root = _validate_trusted_root(trusted_root)
-    durable_scratch = _validate_scratch(stage_root, scratch_root, project_root)
-    owners = _owners_by_relative(staged)
-    controlled_environment = dict(environment)
-    # These names are internal and intentionally compact: pytest appends long,
-    # node-id-derived paths below this root on Windows.
-    runtime_root = durable_scratch / "r"
-    runtime_root.mkdir(parents=True, exist_ok=True)
-    home_directory = trusted_deep_home_directory()
-    controlled_environment["HOME"] = home_directory
-    if os.name == "nt":
-        controlled_environment["USERPROFILE"] = home_directory
-    for name in ("PATH", "PATHEXT"):
-        value = os.environ.get(name)
-        if value:
-            controlled_environment[name] = value
-    controlled_environment["NEOCORTEX_AUDIT_LAB_ROOT"] = str(durable_scratch)
-    for name in ("TEMP", "TMP", "TMPDIR", "PYTHONPYCACHEPREFIX"):
-        controlled_environment[name] = str(runtime_root)
-    controlled_environment["PYTEST_ADDOPTS"] = ""
-    controlled_environment["COVERAGE_FILE"] = str(runtime_root / ".coverage")
-    prepared_was_external = prepared_input is not None
-    if prepared_input is None:
-        prepared = _prepare_deep_coverage_input(
-            project_root,
-            tuple(staged.values()),
-            config,
-            environment=controlled_environment,
-            deadline=started + config.time_budget_seconds,
-        )
-    else:
-        prepared = prepared_input
-        expected_manifest = tuple(_source_manifest(tuple(staged.values())))
-        expected_code_signature = _input_signature(expected_manifest)
-        if (
-            Path(prepared.trusted_root).resolve(strict=True) != project_root
-            or prepared.configuration_signature != config.configuration_signature
-            or prepared.manifest != expected_manifest
-            or prepared.code_input_signature != expected_code_signature
-            or dict(prepared.tool_versions) != _tool_versions()
-            or prepared.publication_input_signature
-            != _publication_input_signature(
-                project_root,
-                code_input_signature=prepared.code_input_signature,
-                support_signature=prepared.support_signature,
-                config=config,
-                tool_versions=prepared.tool_versions,
-            )
-            or prepared.process_invocations != 1
-            or prepared.support_files_verified < 1
-            or prepared.support_bytes_verified < 0
-            or prepared.preparation_milliseconds < 0
-        ):
-            raise ValueError("deep coverage prepared input is incompatible")
-    manifest = prepared.manifest
-    input_signature = prepared.code_input_signature
-    support_signature = prepared.support_signature
-    publication_input_signature = prepared.publication_input_signature
-    versions = dict(prepared.tool_versions)
-    preparation_elapsed = (
-        prepared.preparation_milliseconds / 1000.0 if prepared_was_external else 0.0
-    )
-    elapsed = time.monotonic() - started + preparation_elapsed
-    remaining = config.time_budget_seconds - elapsed
-    if remaining <= 0:
-        raise subprocess.TimeoutExpired(("pytest", "collect"), config.time_budget_seconds)
-
-    collect_request = _request_base(
-        mode="collect",
-        project_root=project_root,
-        scratch_root=runtime_root,
-        manifest=manifest,
-        input_signature=input_signature,
-        support_signature=support_signature,
+    context = _execution_context(
+        stage_root,
+        staged,
+        environment,
+        trusted_root=trusted_root,
+        scratch_root=scratch_root,
         config=config,
-        tool_versions=versions,
+        prepared_input=prepared_input,
+        started=time.monotonic(),
     )
-    collect_request["selectors"] = list(config.test_selectors)
-    collect_request["nodeids"] = []
-    collect_signature = _request_digest(collect_request)
-    collected_payload, stdout_bytes, stderr_bytes = _run_worker(
-        collect_request,
-        scratch_root=durable_scratch,
-        environment=controlled_environment,
-        timeout_seconds=max(0.001, remaining),
-    )
-    collected, raw_symbols = _validate_collect(
-        collected_payload,
-        request_signature=collect_signature,
-        tool_versions=versions,
-    )
-    if not collected:
-        raise ValueError("deep coverage collected no tests")
-    selected = collected[: config.max_tests]
-    measurement_complete = len(selected) == len(collected)
-    suite_signature = external_signature(
-        "deep-coverage-suite-v1",
-        {
-            "suite_selection": config.suite_selection,
-            "selectors": list(config.test_selectors),
-            "nodeids": list(collected),
-        },
-    )
-    measurement_scope_signature = external_signature(
-        "deep-coverage-scope-v1",
-        {
-            "suite_signature": suite_signature,
-            "configuration_signature": config.configuration_signature,
-            "tool_versions": versions,
-            "selected_nodeids": list(selected),
-        },
-    )
-    checkpoint_root = durable_scratch / "checkpoints"
-    checkpoint_root.mkdir(parents=True, exist_ok=True)
-    shards = tuple(
-        tuple(selected[index : index + config.shard_size])
-        for index in range(0, len(selected), config.shard_size)
-    )
-    results: list[Mapping[str, object]] = []
-    reused = 0
-    stdout_bytes += prepared.stdout_bytes
-    stderr_bytes += prepared.stderr_bytes
-    process_invocations = prepared.process_invocations + 1
-    for index, nodeids in enumerate(shards):
-        shard_signature = external_signature(
-            "deep-coverage-shard-v1",
-            {
-                "input_signature": input_signature,
-                "support_signature": support_signature,
-                "configuration_signature": config.configuration_signature,
-                "tool_versions": versions,
-                "suite_signature": suite_signature,
-                "measurement_scope_signature": measurement_scope_signature,
-                "index": index,
-                "nodeids": list(nodeids),
-            },
-        )
-        checkpoint = _checkpoint_path(checkpoint_root, shard_signature)
-        cached = _load_checkpoint(checkpoint, shard_signature=shard_signature)
-        if cached is not None:
-            request_for_validation = _request_base(
-                mode="shard",
-                project_root=project_root,
-                scratch_root=runtime_root,
-                manifest=manifest,
-                input_signature=input_signature,
-                support_signature=support_signature,
-                config=config,
-                tool_versions=versions,
-            )
-            request_for_validation.update(
-                {
-                    "selectors": [],
-                    "nodeids": list(nodeids),
-                    "suite_signature": suite_signature,
-                    "measurement_scope_signature": measurement_scope_signature,
-                    "shard_signature": shard_signature,
-                    "shard_index": index,
-                }
-            )
-            expected_request_signature = _request_digest(request_for_validation)
-            try:
-                validated = _validate_shard(
-                    cached,
-                    request_signature=expected_request_signature,
-                    shard_nodeids=nodeids,
-                    tool_versions=versions,
-                    owners=owners,
-                )
-            except (TypeError, ValueError):
-                cached = None
-            else:
-                if _shard_all_passed(validated):
-                    results.append(validated)
-                    reused += 1
-                    continue
-                cached = None
-        remaining = config.time_budget_seconds - (time.monotonic() - started + preparation_elapsed)
-        if remaining <= 0:
-            raise subprocess.TimeoutExpired(("pytest",), config.time_budget_seconds)
-        request = _request_base(
-            mode="shard",
-            project_root=project_root,
-            scratch_root=runtime_root,
-            manifest=manifest,
-            input_signature=input_signature,
-            support_signature=support_signature,
-            config=config,
-            tool_versions=versions,
-        )
-        request.update(
-            {
-                "selectors": [],
-                "nodeids": list(nodeids),
-                "suite_signature": suite_signature,
-                "measurement_scope_signature": measurement_scope_signature,
-                "shard_signature": shard_signature,
-                "shard_index": index,
-            }
-        )
-        request_signature = _request_digest(request)
-        payload, out_bytes, err_bytes = _run_worker(
-            request,
-            scratch_root=durable_scratch,
-            environment=controlled_environment,
-            timeout_seconds=max(0.001, remaining),
-        )
-        stdout_bytes += out_bytes
-        stderr_bytes += err_bytes
-        process_invocations += 1
-        validated = _validate_shard(
-            payload,
-            request_signature=request_signature,
-            shard_nodeids=nodeids,
-            tool_versions=versions,
-            owners=owners,
-        )
-        results.append(validated)
-        if _shard_all_passed(validated):
-            _save_checkpoint(
-                checkpoint,
-                shard_signature=shard_signature,
-                result=validated,
-            )
-
-    findings, metrics, relations, normalized_counts = _normalize(
-        results,
-        raw_symbols=raw_symbols,
-        owners=owners,
-        config=config,
-        tool_versions=versions,
-        suite_signature=suite_signature,
-        code_input_signature=input_signature,
-        support_signature=support_signature,
-        publication_input_signature=publication_input_signature,
-        measurement_scope_signature=measurement_scope_signature,
-        measurement_complete=measurement_complete,
-        collected_count=len(collected),
-        selected_nodeids=selected,
-        shards_reused=reused,
-    )
-    limitations = [
-        "coverage_main_process_only",
-        "subprocess_coverage_not_collected",
-        "git_ignored_support_files_excluded_from_support_signature",
-        "codex_control_files_excluded_from_support_signature",
-    ]
-    if not measurement_complete:
-        limitations.append("suite_truncated_by_max_tests")
-    counters = {
-        **normalized_counts,
-        "process_invocations": process_invocations,
-        "stdout_bytes": stdout_bytes,
-        "stderr_bytes": stderr_bytes,
-        "measurement_complete": int(measurement_complete),
-        "support_files_verified": prepared.support_files_verified,
-        "support_bytes_verified": prepared.support_bytes_verified,
-        "preparation_milliseconds": prepared.preparation_milliseconds,
-    }
-    return DeepCoverageExecution(
-        findings,
-        metrics,
-        relations,
-        stdout_bytes,
-        stderr_bytes,
-        process_invocations,
-        config.suite_selection,
-        measurement_complete,
-        suite_signature,
-        measurement_scope_signature,
-        counters,
-        tuple(limitations),
-    )
+    suite = _collect_suite(context)
+    shards = _execute_shards(context, suite)
+    return _finalize_execution(context, suite, shards)
 
 
 __all__ = [

@@ -668,6 +668,8 @@ class CodeState:
 
         _validate_optional_raw_fingerprint(raw_xxh3_128, raw_xxh3_64_guard)
         volume_id, physical_file_id = _identity(snapshot)
+        # ProviderDescriptor reserves ``external:`` for evidence projected only
+        # after the route's analyzer-owned counters have been calculated.
         derived_placeholders = ",".join("?" for _ in _DERIVED_DIAGNOSTIC_SOURCES)
         row = self.connection.execute(
             f"""SELECT f.file_id,f.current_path,v.version_id,v.analysis_status,
@@ -679,6 +681,7 @@ class CodeState:
             (SELECT COUNT(*) FROM code_references r WHERE r.version_id=v.version_id)
                 AS reference_count,
             (SELECT COUNT(*) FROM diagnostics d WHERE d.version_id=v.version_id
+                AND d.source NOT LIKE 'external:%'
                 AND d.source NOT IN ({derived_placeholders}))
                 AS diagnostic_count
             FROM files f JOIN file_versions v ON v.version_id=f.current_version_id

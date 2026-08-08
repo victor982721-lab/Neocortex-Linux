@@ -25,12 +25,18 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 BASE_DEPENDENCIES = (
     "complexipy>=6.2,<7",
+    "cosmic-ray>=8.4.6,<8.5",
     "coverage>=7.14,<8",
+    "deptry>=0.25,<0.26",
     "grimp>=3.15,<4",
     "mypy>=2.1,<3",
+    "packaging>=26,<27",
+    "pip-audit>=2.10,<2.11",
     "pytest>=9.1,<10",
+    "radon>=6.0.1,<7",
     "rich>=15,<16",
     "ruff>=0.15,<0.16",
+    "semgrep>=1.172,<1.173",
     "vulture>=2.16,<2.17",
     "xxhash>=3.8,<4",
 )
@@ -39,28 +45,29 @@ DEV_DEPENDENCIES = ("build>=1.5,<2",)
 
 OPTIONAL_DEPENDENCIES = {
     "documents": (
-        "Pillow>=12.2,<13",
+        "Pillow>=12.3,<13",
         "PyMuPDF>=1.27,<2",
         "pdfminer.six>=20260107",
         "pytesseract>=0.3.13,<0.4",
     ),
-    "audio": ("faster-whisper>=1.2,<2",),
+    "audio": ("ctranslate2>=4.8,<5", "faster-whisper>=1.2,<2"),
     "image": (
         "nudenet>=3.4.2,<4",
-        "Pillow>=12.2,<13",
+        "Pillow>=12.3,<13",
     ),
     "semantic": (
         "fastembed==0.8.0",
         "numpy>=2.1,<3",
-        "Pillow>=12.2,<13",
+        "Pillow>=12.3,<13",
     ),
     "ui": ("PySide6>=6.11,<7",),
     "full": (
+        "ctranslate2>=4.8,<5",
         "fastembed==0.8.0",
         "faster-whisper>=1.2,<2",
         "nudenet>=3.4.2,<4",
         "numpy>=2.1,<3",
-        "Pillow>=12.2,<13",
+        "Pillow>=12.3,<13",
         "PyMuPDF>=1.27,<2",
         "pdfminer.six>=20260107",
         "PySide6>=6.11,<7",
@@ -113,12 +120,15 @@ def test_project_metadata_separates_canonical_runtime_and_extras() -> None:
         for dependency in extras[name]
     }
     assert set(extras["full"]) == full_union
-    assert "Pillow>=12.2,<13" in extras["documents"]
-    assert "Pillow>=12.2,<13" in extras["image"]
-    assert "Pillow>=12.2,<13" in extras["semantic"]
+    assert "Pillow>=12.3,<13" in extras["documents"]
+    assert "Pillow>=12.3,<13" in extras["image"]
+    assert "Pillow>=12.3,<13" in extras["semantic"]
     package_data = metadata_document["tool"]["setuptools"]["package-data"]
     assert package_data["neocortex"] == ["py.typed"]
-    assert package_data["_04_Nucleo_Operativo"] == ["py.typed"]
+    assert package_data["_04_Nucleo_Operativo"] == [
+        "py.typed",
+        "semgrep_rules/*.yml",
+    ]
     assert (PROJECT_ROOT / "neocortex" / "py.typed").is_file()
     assert (PROJECT_ROOT / "_04_Nucleo_Operativo" / "py.typed").is_file()
 

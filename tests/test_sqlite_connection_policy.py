@@ -6,6 +6,7 @@ from collections.abc import Callable
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 
@@ -132,6 +133,40 @@ def test_helper_leaves_row_factory_and_transaction_ownership_to_caller(
         reader.close()
 
 
+def test_readonly_connection_preserves_committed_wal_and_primary_bytes(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "wal-owner.sqlite3"
+    writer = sqlite3.connect(database)
+    try:
+        assert writer.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
+        writer.setconfig(sqlite3.SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, True)
+        writer.execute("CREATE TABLE probe(value INTEGER NOT NULL)")
+        writer.execute("INSERT INTO probe VALUES(7)")
+        writer.commit()
+    finally:
+        writer.close()
+
+    wal = Path(f"{database}-wal")
+    primary_before = database.read_bytes()
+    wal_before = wal.read_bytes()
+    assert wal_before
+
+    reader = connect_sqlite(
+        database,
+        mode=READONLY_EXISTING,
+        policy=SQLiteConnectionPolicy(label="WAL reader"),
+    )
+    try:
+        assert reader.getconfig(sqlite3.SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE)
+        assert reader.execute("SELECT value FROM probe").fetchone()[0] == 7
+    finally:
+        reader.close()
+
+    assert database.read_bytes() == primary_before
+    assert wal.read_bytes() == wal_before
+
+
 class _InjectedAbort(BaseException):
     pass
 
@@ -148,6 +183,12 @@ def test_helper_closes_connection_when_configuration_raises_base_exception(
 
         def execute(self, _statement: str) -> object:
             raise _InjectedAbort
+
+        def setconfig(self, _option: int, _value: bool) -> None:
+            return None
+
+        def getconfig(self, _option: int) -> bool:
+            return True
 
         def close(self) -> None:
             self.closed = True
@@ -179,7 +220,7 @@ def test_helper_closes_connection_when_configuration_raises_base_exception(
 class _FactoryCase:
     name: str
     label: str
-    module: object
+    module: ModuleType
     initialize: Callable[[Path], None]
     connect: Callable[..., sqlite3.Connection]
 
@@ -270,6 +311,12 @@ class _DisabledPragmaConnection:
             return _PragmaCursor(self.query_only)
         return _PragmaCursor(1)
 
+    def setconfig(self, _option: int, _value: bool) -> None:
+        return None
+
+    def getconfig(self, _option: int) -> bool:
+        return True
+
     def close(self) -> None:
         self.closed = True
 
@@ -296,7 +343,7 @@ def test_equivalent_factories_preserve_errors_close_and_monkeypatch_seam(
         foreign_keys=foreign_keys,
         query_only=query_only,
     )
-    sqlite3_module = getattr(case.module, "sqlite3")
+    sqlite3_module = case.module.sqlite3
     monkeypatch.setattr(
         sqlite3_module,
         "connect",
@@ -320,7 +367,7 @@ def test_equivalent_factories_preserve_errors_close_and_monkeypatch_seam(
 class _RouteOwnerFactoryCase:
     name: str
     label: str
-    module: object
+    module: ModuleType
     initialize: Callable[[Path], None]
     open_database: Callable[..., AbstractContextManager[sqlite3.Connection]]
     cache_size_kib: int
@@ -451,7 +498,7 @@ def test_route_owner_factories_preserve_errors_close_and_monkeypatch_seam(
         foreign_keys=foreign_keys,
         query_only=query_only,
     )
-    sqlite3_module = getattr(case.module, "sqlite3")
+    sqlite3_module = case.module.sqlite3
     monkeypatch.setattr(
         sqlite3_module,
         "connect",
@@ -497,7 +544,7 @@ def test_route_owner_readers_do_not_recreate_state_deleted_before_open(
             removed = True
         return real_connect(database_arg, uri=uri, timeout=timeout)
 
-    sqlite3_module = getattr(case.module, "sqlite3")
+    sqlite3_module = case.module.sqlite3
     monkeypatch.setattr(sqlite3_module, "connect", remove_before_open)
 
     with pytest.raises(sqlite3.OperationalError, match="open database"):

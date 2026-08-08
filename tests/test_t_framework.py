@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import io
+import inspect
 import sqlite3
 import tempfile
 import unittest
@@ -343,6 +344,12 @@ class ProgressTests(unittest.TestCase):
 
 
 class OrchestratorTests(unittest.TestCase):
+    def test_locked_initial_run_signature_is_frozen(self) -> None:
+        self.assertEqual(
+            str(inspect.signature(FrameworkOrchestrator._run_initial_locked)),
+            "(self, boundary: 'NormalInventoryBoundary') -> 'InitialRunResult'",
+        )
+
     def test_effective_exclusions_include_custom_state_but_not_same_named_dirs(
         self,
     ) -> None:
@@ -797,14 +804,28 @@ class OrchestratorTests(unittest.TestCase):
             self.assertFalse(result.actions.apply_actions)
             self.assertEqual(result.actions.duplicate_candidates, 1)
             self.assertEqual(result.dedup_plan.statistics.exact_compare_files, 0)
-            self.assertGreaterEqual(result.journal_usn_span, 0)
+            journal_usn_span = result.journal_usn_span
+            self.assertIsNotNone(journal_usn_span)
+            assert journal_usn_span is not None
+            self.assertGreaterEqual(journal_usn_span, 0)
             self.assertTrue((state / "framework.sqlite3").is_file())
             self.assertTrue((state / "dedup.sqlite3").is_file())
-            event_keys = {event.key for event in progress.events}
+            event_sequence = [event.key for event in progress.events]
+            event_keys = set(event_sequence)
             self.assertIn(("framework", "prepare"), event_keys)
             self.assertIn(("dedup", "inventory"), event_keys)
             self.assertIn(("dedup", "verify"), event_keys)
             self.assertIn(("framework", "complete"), event_keys)
+            expected_phase_order = (
+                ("framework", "prepare"),
+                ("dedup", "inventory"),
+                ("dedup", "verify"),
+                ("framework", "complete"),
+            )
+            phase_positions = [
+                event_sequence.index(key) for key in expected_phase_order
+            ]
+            self.assertEqual(phase_positions, sorted(phase_positions))
 
             second = FrameworkOrchestrator(
                 FrameworkConfig(root=corpus, state_directory=state)

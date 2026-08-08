@@ -1295,6 +1295,111 @@ def _store_catalog_error(
 # region [05] Bounded read-only catalog inspection
 
 
+def _catalog_query_predicates(
+    columns: set[str],
+    *,
+    primary_kind: str | None,
+    authority: str | None,
+    organization: str | None,
+    client: str | None,
+    project: str | None,
+    workstream: str | None,
+) -> tuple[list[str], list[object]] | None:
+    clauses = ["active=1"]
+    parameters: list[object] = []
+    for column, value in (
+        ("primary_kind", primary_kind),
+        ("primary_authority", authority),
+        ("primary_organization", organization),
+    ):
+        if value is not None:
+            clauses.append(f"{column}=? COLLATE NOCASE")
+            parameters.append(value)
+    for column, value in (
+        ("primary_client", client),
+        ("primary_project", project),
+        ("primary_workstream", workstream),
+    ):
+        if value is None:
+            continue
+        if column not in columns:
+            return None
+        clauses.append(f"{column}=? COLLATE NOCASE")
+        parameters.append(value)
+    return clauses, parameters
+
+
+def _catalog_projection_column(
+    columns: set[str],
+    column: str,
+    fallback: str,
+) -> str:
+    return column if column in columns else f"{fallback} AS {column}"
+
+
+def _catalog_document_rows(
+    connection: sqlite3.Connection,
+    columns: set[str],
+    clauses: list[str],
+    parameters: list[object],
+    limit: int,
+) -> list[sqlite3.Row]:
+    subtype_column = _catalog_projection_column(columns, "primary_subtype", "NULL")
+    equipment_column = _catalog_projection_column(columns, "equipment_json", "'[]'")
+    activities_column = _catalog_projection_column(columns, "activities_json", "'[]'")
+    client_column = _catalog_projection_column(columns, "primary_client", "NULL")
+    project_column = _catalog_projection_column(columns, "primary_project", "NULL")
+    workstream_column = _catalog_projection_column(columns, "primary_workstream", "NULL")
+    clients_column = _catalog_projection_column(columns, "clients_json", "'[]'")
+    projects_column = _catalog_projection_column(columns, "projects_json", "'[]'")
+    workstreams_column = _catalog_projection_column(columns, "workstreams_json", "'[]'")
+    return connection.execute(
+        f"""SELECT source_kind,path,primary_kind,{subtype_column},
+        primary_authority,primary_organization,{client_column},{project_column},
+        {workstream_column},standard_references_json,{clients_column},
+        {projects_column},{workstreams_column},
+        topics_json,{equipment_column},{activities_column},
+        confidence,uncertainty,catalog_status FROM documents
+        WHERE {" AND ".join(clauses)}
+        ORDER BY primary_kind,primary_client,primary_project,
+        primary_authority,primary_organization,path
+        LIMIT ?""",
+        (*parameters, limit),
+    ).fetchall()
+
+
+def _catalog_optional_text(row: sqlite3.Row, column: str) -> str | None:
+    value = row[column]
+    return None if value is None else str(value)
+
+
+def _catalog_document_view(row: sqlite3.Row) -> CatalogDocumentView:
+    return CatalogDocumentView(
+        source_kind=str(row["source_kind"]),
+        path=str(row["path"]),
+        primary_kind=str(row["primary_kind"]),
+        primary_subtype=_catalog_optional_text(row, "primary_subtype"),
+        primary_authority=_catalog_optional_text(row, "primary_authority"),
+        primary_organization=_catalog_optional_text(row, "primary_organization"),
+        primary_client=_catalog_optional_text(row, "primary_client"),
+        primary_project=_catalog_optional_text(row, "primary_project"),
+        primary_workstream=_catalog_optional_text(row, "primary_workstream"),
+        standard_identifiers=_json_labels(
+            row["standard_references_json"],
+            "identifier",
+        ),
+        clients=_json_labels(row["clients_json"], "label"),
+        projects=_json_labels(row["projects_json"], "label"),
+        workstreams=_json_labels(row["workstreams_json"], "label"),
+        topics=_json_labels(row["topics_json"], "label"),
+        equipment=_json_labels(row["equipment_json"], "label"),
+        activities=_json_labels(row["activities_json"], "label"),
+        confidence=float(row["confidence"]),
+        uncertainty=str(row["uncertainty"]),
+        catalog_status=str(row["catalog_status"]),
+    )
+
+
 def list_catalog_documents(
     catalog_path: Path,
     *,
@@ -1308,137 +1413,31 @@ def list_catalog_documents(
 ) -> tuple[CatalogDocumentView, ...]:
     if limit < 1 or limit > 10_000:
         raise ValueError("limit must be between 1 and 10000")
-    clauses = ["active=1"]
-    parameters: list[object] = []
-    for column, value in (
-        ("primary_kind", primary_kind),
-        ("primary_authority", authority),
-        ("primary_organization", organization),
-    ):
-        if value is None:
-            continue
-        clauses.append(f"{column}=? COLLATE NOCASE")
-        parameters.append(value)
     connection = connect_document_catalog(catalog_path, readonly=True)
     try:
         columns = {
             str(row[1]) for row in connection.execute("PRAGMA table_info(documents)")
         }
-        for column, value in (
-            ("primary_client", client),
-            ("primary_project", project),
-            ("primary_workstream", workstream),
-        ):
-            if value is None:
-                continue
-            if column not in columns:
-                return ()
-            clauses.append(f"{column}=? COLLATE NOCASE")
-            parameters.append(value)
-        subtype_column = (
-            "primary_subtype"
-            if "primary_subtype" in columns
-            else "NULL AS primary_subtype"
+        predicates = _catalog_query_predicates(
+            columns,
+            primary_kind=primary_kind,
+            authority=authority,
+            organization=organization,
+            client=client,
+            project=project,
+            workstream=workstream,
         )
-        equipment_column = (
-            "equipment_json"
-            if "equipment_json" in columns
-            else "'[]' AS equipment_json"
+        if predicates is None:
+            return ()
+        clauses, parameters = predicates
+        rows = _catalog_document_rows(
+            connection,
+            columns,
+            clauses,
+            parameters,
+            limit,
         )
-        activities_column = (
-            "activities_json"
-            if "activities_json" in columns
-            else "'[]' AS activities_json"
-        )
-        client_column = (
-            "primary_client"
-            if "primary_client" in columns
-            else "NULL AS primary_client"
-        )
-        project_column = (
-            "primary_project"
-            if "primary_project" in columns
-            else "NULL AS primary_project"
-        )
-        workstream_column = (
-            "primary_workstream"
-            if "primary_workstream" in columns
-            else "NULL AS primary_workstream"
-        )
-        clients_column = (
-            "clients_json" if "clients_json" in columns else "'[]' AS clients_json"
-        )
-        projects_column = (
-            "projects_json" if "projects_json" in columns else "'[]' AS projects_json"
-        )
-        workstreams_column = (
-            "workstreams_json"
-            if "workstreams_json" in columns
-            else "'[]' AS workstreams_json"
-        )
-        rows = connection.execute(
-            f"""SELECT source_kind,path,primary_kind,{subtype_column},
-            primary_authority,primary_organization,{client_column},{project_column},
-            {workstream_column},standard_references_json,{clients_column},
-            {projects_column},{workstreams_column},
-            topics_json,{equipment_column},{activities_column},
-            confidence,uncertainty,catalog_status FROM documents
-            WHERE {" AND ".join(clauses)}
-            ORDER BY primary_kind,primary_client,primary_project,
-            primary_authority,primary_organization,path
-            LIMIT ?""",
-            (*parameters, limit),
-        ).fetchall()
-        return tuple(
-            CatalogDocumentView(
-                source_kind=str(row["source_kind"]),
-                path=str(row["path"]),
-                primary_kind=str(row["primary_kind"]),
-                primary_subtype=(
-                    None
-                    if row["primary_subtype"] is None
-                    else str(row["primary_subtype"])
-                ),
-                primary_authority=(
-                    None
-                    if row["primary_authority"] is None
-                    else str(row["primary_authority"])
-                ),
-                primary_organization=(
-                    None
-                    if row["primary_organization"] is None
-                    else str(row["primary_organization"])
-                ),
-                primary_client=(
-                    None
-                    if row["primary_client"] is None
-                    else str(row["primary_client"])
-                ),
-                primary_project=(
-                    None
-                    if row["primary_project"] is None
-                    else str(row["primary_project"])
-                ),
-                primary_workstream=(
-                    None
-                    if row["primary_workstream"] is None
-                    else str(row["primary_workstream"])
-                ),
-                standard_identifiers=_json_labels(
-                    row["standard_references_json"], "identifier"
-                ),
-                clients=_json_labels(row["clients_json"], "label"),
-                projects=_json_labels(row["projects_json"], "label"),
-                workstreams=_json_labels(row["workstreams_json"], "label"),
-                topics=_json_labels(row["topics_json"], "label"),
-                equipment=_json_labels(row["equipment_json"], "label"),
-                activities=_json_labels(row["activities_json"], "label"),
-                confidence=float(row["confidence"]),
-                uncertainty=str(row["uncertainty"]),
-                catalog_status=str(row["catalog_status"]),
-            )
-            for row in rows
-        )
+        return tuple(_catalog_document_view(row) for row in rows)
     finally:
         connection.close()
 
