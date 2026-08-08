@@ -536,14 +536,12 @@ def test_contract_cold_import_stays_free_of_owners_pil_planner_and_service() -> 
 def test_contract_signatures_fields_defaults_and_dataclass_shape_are_stable() -> None:
     for contract in CONTRACT_CLASSES:
         expected_fields = EXPECTED_FIELDS[contract.__name__]
-        assert (
-            str(inspect.signature(contract)) == EXPECTED_SIGNATURES[contract.__name__]
-        )
+        assert str(inspect.signature(contract)) == EXPECTED_SIGNATURES[contract.__name__]
         assert tuple(item.name for item in fields(contract)) == expected_fields
         assert tuple(contract.__slots__) == expected_fields
         assert contract.__match_args__ == expected_fields
         assert contract.__module__ == "_04_Nucleo_Operativo.semantic_service_contracts"
-        parameters = getattr(contract, "__dataclass_params__")
+        parameters = contract.__dataclass_params__
         assert parameters.frozen is True
         assert parameters.slots is True
         assert parameters.kw_only is False
@@ -557,8 +555,7 @@ def test_contract_signatures_fields_defaults_and_dataclass_shape_are_stable() ->
     )
     assert plan_fields["vector_bytes_kind"].default == "lower_bound_vector_blob_only"
     assert plan_fields["snapshot_scope"].default == (
-        "read_transaction_per_database_with_data_version_fence_"
-        "not_cross_database_atomic"
+        "read_transaction_per_database_with_data_version_fence_not_cross_database_atomic"
     )
     assert plan_fields["sqlite_read_snapshot_may_touch_shm"].default is True
     index_fields = {item.name: item for item in fields(SemanticIndexResult)}
@@ -572,9 +569,7 @@ def test_contract_signatures_fields_defaults_and_dataclass_shape_are_stable() ->
     status_fields = {item.name: item for item in fields(SemanticStatus)}
     assert status_fields["counts"].default is MISSING
     assert status_fields["counts"].default_factory is dict
-    classification_fields = {
-        item.name: item for item in fields(SemanticClassificationResult)
-    }
+    classification_fields = {item.name: item for item in fields(SemanticClassificationResult)}
     assert classification_fields["skipped"].default is MISSING
     assert classification_fields["skipped"].default_factory is dict
 
@@ -632,9 +627,7 @@ def test_cost_calibration_validation_messages_and_priority_are_stable() -> None:
         ("semantic calibration sample bounds are invalid", {"sample_contents": 0}),
     )
     for message, changes in cases:
-        _assert_value_error(
-            message, lambda changes=changes: replace(calibration, **changes)
-        )
+        _assert_value_error(message, lambda changes=changes: replace(calibration, **changes))
 
 
 def test_source_plan_validation_messages_and_priority_are_stable() -> None:
@@ -692,9 +685,7 @@ def test_workload_plan_validation_messages_and_priority_are_stable() -> None:
         ),
     )
     for message, changes in cases:
-        _assert_value_error(
-            message, lambda changes=changes: replace(workload, **changes)
-        )
+        _assert_value_error(message, lambda changes=changes: replace(workload, **changes))
 
 
 def test_semantic_plan_validation_messages_and_priority_are_stable() -> None:
@@ -752,9 +743,7 @@ def test_passive_contracts_remain_unvalidated_and_shallowly_frozen() -> None:
         SemanticEvidencePassResult,
         SemanticClassificationResult,
     )
-    assert all(
-        "__post_init__" not in contract.__dict__ for contract in passive_contracts
-    )
+    assert all("__post_init__" not in contract.__dict__ for contract in passive_contracts)
 
     ranking = cast(Any, SemanticRanking)(
         name=1,

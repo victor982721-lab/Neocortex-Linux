@@ -102,7 +102,7 @@ jobs:
       - name: Build one constrained wheel
         run: |
           python -m pip install --disable-pip-version-check --no-cache-dir `
-            --constraint constraints.txt "build==1.5.0" "setuptools==82.0.1"
+            --constraint constraints.txt "build==1.5.0" "setuptools==83.0.0"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $wheelRoot = Join-Path $env:RUNNER_TEMP "neocortex-wheel"
           New-Item -ItemType Directory -Path $wheelRoot -Force | Out-Null
