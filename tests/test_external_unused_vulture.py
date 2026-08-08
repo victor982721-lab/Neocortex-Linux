@@ -311,3 +311,144 @@ def test_vulture_is_a_canonical_runtime_dependency() -> None:
 
     assert "vulture>=2.16,<2.17" in runtime
     assert not any(str(item).startswith("vulture") for item in development)
+
+
+def test_vulture_adapter_phase_order_and_complete_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import hashlib
+
+    staged = _stage(tmp_path, {"module.py": "def unused():\n    return 1\n"})
+    phases: list[str] = []
+    real_manifest = adapter._input_manifest
+    real_decode = adapter._decode_object
+    real_version = adapter.importlib.metadata.version
+    real_validate_version = adapter._validate_tool_version
+    real_owners = adapter._owners_by_relative
+    real_normalize = adapter._normalize_finding
+
+    def input_manifest(*args, **kwargs):
+        phases.append("manifest")
+        return real_manifest(*args, **kwargs)
+
+    def run(arguments, **kwargs):
+        phases.append("worker")
+        manifest = json.loads(kwargs["input_bytes"])
+        rows = manifest["files"]
+        digest = hashlib.sha256(
+            json.dumps(
+                rows,
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        payload = {
+            "schema": "neocortex.external-unused-vulture-worker/v1",
+            "status": "ready",
+            "tool": {
+                "name": "vulture",
+                "version": real_version("vulture"),
+                "api": "Vulture.scavenge/get_unused_code",
+            },
+            "inputs": {
+                "file_count": len(rows),
+                "total_bytes": sum(int(row["size"]) for row in rows),
+                "content_manifest_sha256": digest,
+            },
+            "findings": [
+                {
+                    "relative_path": "module.py",
+                    "kind": "function",
+                    "name": "unused",
+                    "message": "unused function 'unused'",
+                    "confidence_percent": 60,
+                    "size": 2,
+                    "start_line": 1,
+                    "end_line": 2,
+                }
+            ],
+            "limitations": list(adapter._LIMITATIONS),
+        }
+        stdout = json.dumps(payload, sort_keys=True).encode("utf-8")
+        return subprocess.CompletedProcess(arguments, 0, stdout, b"note")
+
+    def decode(raw: bytes):
+        phases.append("decode")
+        return real_decode(raw)
+
+    def installed_version(name: str) -> str:
+        phases.append("installed_version")
+        return real_version(name)
+
+    def validate_version(value: str) -> None:
+        phases.append("validate_version")
+        real_validate_version(value)
+
+    def owners(mapping):
+        phases.append("owners")
+        return real_owners(mapping)
+
+    def normalize(raw, owner_map):
+        phases.append("normalize_finding")
+        return real_normalize(raw, owner_map)
+
+    monkeypatch.setattr(adapter, "_input_manifest", input_manifest)
+    monkeypatch.setattr(adapter, "run_bounded_capture", run)
+    monkeypatch.setattr(adapter, "_decode_object", decode)
+    monkeypatch.setattr(adapter.importlib.metadata, "version", installed_version)
+    monkeypatch.setattr(adapter, "_validate_tool_version", validate_version)
+    monkeypatch.setattr(adapter, "_owners_by_relative", owners)
+    monkeypatch.setattr(adapter, "_normalize_finding", normalize)
+
+    result = adapter.execute_vulture_unused(tmp_path, staged, _environment())
+
+    assert phases == [
+        "manifest",
+        "worker",
+        "decode",
+        "installed_version",
+        "validate_version",
+        "owners",
+        "normalize_finding",
+    ]
+    assert len(result.findings) == 1
+    assert result.findings[0].metadata["symbol_name"] == "unused"
+    assert result.stderr_bytes == len(b"note")
+    assert result.process_invocations == 1
+    assert result.limitations == adapter._LIMITATIONS
+
+
+def test_vulture_adapter_propagates_interruption_before_decode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    staged = _stage(tmp_path, {"module.py": "value = 1\n"})
+    decoded = False
+
+    def interrupt(*_args, **_kwargs):
+        raise KeyboardInterrupt
+
+    def decode(_raw: bytes):
+        nonlocal decoded
+        decoded = True
+        pytest.fail("interrupted worker output must not be decoded")
+
+    monkeypatch.setattr(adapter, "run_bounded_capture", interrupt)
+    monkeypatch.setattr(adapter, "_decode_object", decode)
+
+    with pytest.raises(KeyboardInterrupt):
+        adapter.execute_vulture_unused(tmp_path, staged, _environment())
+
+    assert decoded is False
+    assert (tmp_path / "source" / "module.py").read_text("utf-8") == "value = 1\n"
+
+
+def test_vulture_adapter_signature_is_frozen() -> None:
+    from inspect import signature
+
+    assert str(signature(adapter.execute_vulture_unused)) == (
+        "(stage_root: 'Path', staged: 'Mapping[str, ExternalEvidenceFile]', "
+        "environment: 'Mapping[str, str]') -> 'VultureUnusedExecution'"
+    )

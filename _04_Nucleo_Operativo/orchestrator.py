@@ -11,13 +11,14 @@ import os
 import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
-from dataclasses import asdict, replace
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Mapping, cast
 
 from _01_Enumeracion import JournalCursor, NtfsUsnError, query_journal_cursor
 from _02_Deduplicacion import (
     DedupIndex,
+    DedupPlan,
     DedupPlanner,
     InventoryExclusionPolicy,
 )
@@ -33,7 +34,7 @@ from .global_resources import (
     GlobalResourceSummary,
 )
 from .incremental_gate import IncrementalGateRequest, evaluate_incremental_gate
-from .inventory_coordinator import prepare_inventory
+from .inventory_coordinator import PreparedInventory, prepare_inventory
 from .internal_paths import InternalPathsPolicy
 from .inventory_boundary import (
     AuthorizedStateDirectory as AuthorizedStateDirectory,
@@ -44,6 +45,7 @@ from .inventory_boundary import (
 )
 from .locking import FrameworkRunLock
 from .models import (
+    ActionSummary,
     FrameworkConfig,
     InitialRunResult,
     RouteOnlyRunResult,
@@ -77,6 +79,51 @@ if TYPE_CHECKING:
         OrganizationApplySummary,
         OrganizationPlanSummary,
     )
+
+
+@dataclass(frozen=True, slots=True)
+class _SelfAnalysisExecution:
+    inventory: PreparedInventory
+    journal_after: JournalCursor | None
+    code: CodeRouteSummary
+    route_results: dict[str, object]
+    global_resources: GlobalResourceSummary | None
+    safety: Mapping[str, int]
+
+
+@dataclass(frozen=True, slots=True)
+class _InitialWork:
+    inventory: PreparedInventory
+    dedup_plan: DedupPlan
+    actions: ActionSummary
+    route_results: dict[str, object]
+    image: ImageRouteSummary | None
+    global_resources: GlobalResourceSummary | None
+    organization_plan: OrganizationPlanSummary | None
+    organization_apply: OrganizationApplySummary | None
+
+
+@dataclass(frozen=True, slots=True)
+class _InitialExecution:
+    work: _InitialWork
+    journal_after: JournalCursor | None
+
+
+@dataclass(frozen=True, slots=True)
+class _RouteOnlySource:
+    run_id: int
+    scan_id: int
+    route_input_sources: Mapping[str, str]
+    candidate_backed_routes: tuple[str, ...]
+    candidate_rows: int
+
+
+@dataclass(frozen=True, slots=True)
+class _RouteOnlyExecution:
+    run_id: int
+    source_run_id: int
+    route_results: dict[str, object]
+    global_resources: GlobalResourceSummary | None
 
 
 class RouteExecutionError(RuntimeError):
@@ -646,6 +693,64 @@ class FrameworkOrchestrator:
         internal_paths_policy: InternalPathsPolicy,
     ) -> SelfAnalysisRunResult:
         root = access_policy.root
+        journal_before, journal_error = self._prepare_self_analysis(
+            access_policy,
+            state_identity,
+            internal_paths_policy,
+        )
+        commands = self_analysis_commands(
+            self.config,
+            root,
+            self.config.state_directory,
+        )
+        self._revalidate_self_analysis_boundary(
+            access_policy,
+            internal_paths_policy,
+            self.config.state_directory,
+            require_state=True,
+            expected_state_identity=state_identity,
+        )
+        with FrameworkState(self.config.framework_database) as state:
+            state.mark_abandoned_runs()
+            state.mark_abandoned_actions()
+            run_id = state.begin_self_analysis_run(
+                access_policy,
+                journal_before,
+                state_directory=self.config.state_directory,
+                inventory_policy_signature=inventory_policy.signature,
+            )
+            execution = self._manage_self_analysis_run(
+                state=state,
+                run_id=run_id,
+                access_policy=access_policy,
+                inventory_policy=inventory_policy,
+                state_identity=state_identity,
+                internal_paths_policy=internal_paths_policy,
+                journal_before=journal_before,
+                journal_error=journal_error,
+                commands=commands,
+            )
+
+        emit_progress(
+            self.progress,
+            ProgressEvent(
+                "framework",
+                "complete",
+                "Autoanálisis protegido completado",
+                1,
+                1,
+                "fase",
+                True,
+            ),
+        )
+        return self._self_analysis_result(run_id, inventory_policy, execution)
+
+    def _prepare_self_analysis(
+        self,
+        access_policy: CorpusAccessPolicy,
+        state_identity: CorpusAccessPolicy,
+        internal_paths_policy: InternalPathsPolicy,
+    ) -> tuple[JournalCursor | None, str | None]:
         self._revalidate_self_analysis_boundary(
             access_policy,
             internal_paths_policy,
@@ -666,7 +771,9 @@ class FrameworkOrchestrator:
         )
         journal_error: str | None = None
         try:
-            journal_before: JournalCursor | None = query_journal_cursor(root.drive)
+            journal_before: JournalCursor | None = query_journal_cursor(
+                access_policy.root.drive
+            )
         except (NtfsUsnError, OSError) as exc:
             journal_before = None
             journal_error = f"{type(exc).__name__}: {exc}"
@@ -682,12 +789,305 @@ class FrameworkOrchestrator:
                 True,
             ),
         )
-        commands = self_analysis_commands(
-            self.config,
-            root,
-            self.config.state_directory,
+        return journal_before, journal_error
+
+    def _manage_self_analysis_run(
+        self,
+        *,
+        state: FrameworkState,
+        run_id: int,
+        access_policy: CorpusAccessPolicy,
+        inventory_policy: InventoryExclusionPolicy,
+        state_identity: CorpusAccessPolicy,
+        internal_paths_policy: InternalPathsPolicy,
+        journal_before: JournalCursor | None,
+        journal_error: str | None,
+        commands: dict[str, list[str]],
+    ) -> _SelfAnalysisExecution:
+        heartbeat = RunHeartbeat(
+            self.config.framework_database,
+            run_id,
+            interval_seconds=self.config.heartbeat_interval_seconds,
+        ).start()
+        try:
+            return self._execute_self_analysis_run(
+                state=state,
+                run_id=run_id,
+                access_policy=access_policy,
+                inventory_policy=inventory_policy,
+                state_identity=state_identity,
+                internal_paths_policy=internal_paths_policy,
+                journal_before=journal_before,
+                journal_error=journal_error,
+                commands=commands,
+            )
+        except KeyboardInterrupt as exc:
+            self._persist_self_analysis_termination(state, run_id, exc, cancelled=True)
+            raise
+        except BaseException as exc:
+            self._persist_self_analysis_termination(state, run_id, exc, cancelled=False)
+            raise
+        finally:
+            heartbeat.stop()
+
+    @staticmethod
+    def _persist_self_analysis_termination(
+        state: FrameworkState,
+        run_id: int,
+        exc: BaseException,
+        *,
+        cancelled: bool,
+    ) -> None:
+        transition_name = "cancellation" if cancelled else "failure"
+        try:
+            transitioned = (
+                state.cancel_initial_run(run_id)
+                if cancelled
+                else state.fail_initial_run(run_id)
+            )
+        except Exception as transition_exc:
+            exc.add_note(
+                f"{transition_name} status could not be persisted: "
+                f"{type(transition_exc).__name__}: {transition_exc}"
+            )
+            return
+        if not transitioned:
+            return
+        try:
+            state.record_event(
+                run_id,
+                "warning" if cancelled else "error",
+                "run",
+                (
+                    "Autoanálisis cancelado por el usuario"
+                    if cancelled
+                    else "Autoanálisis fallido"
+                ),
+                None
+                if cancelled
+                else {"error_type": type(exc).__name__, "detail": str(exc)},
+            )
+        except Exception as event_exc:
+            exc.add_note(
+                f"{transition_name} event could not be persisted: "
+                f"{type(event_exc).__name__}: {event_exc}"
+            )
+
+    def _execute_self_analysis_run(
+        self,
+        *,
+        state: FrameworkState,
+        run_id: int,
+        access_policy: CorpusAccessPolicy,
+        inventory_policy: InventoryExclusionPolicy,
+        state_identity: CorpusAccessPolicy,
+        internal_paths_policy: InternalPathsPolicy,
+        journal_before: JournalCursor | None,
+        journal_error: str | None,
+        commands: dict[str, list[str]],
+    ) -> _SelfAnalysisExecution:
+        self._record_self_analysis_start(
+            state,
+            run_id,
+            access_policy,
+            inventory_policy,
+            internal_paths_policy,
+            journal_before,
+            journal_error,
+        )
+        inventory = self._prepare_self_analysis_inventory(
+            state=state,
+            run_id=run_id,
+            access_policy=access_policy,
+            inventory_policy=inventory_policy,
+            state_identity=state_identity,
+            internal_paths_policy=internal_paths_policy,
+            journal_before=journal_before,
+        )
+        code_summary, route_results, global_resources, journal_after = (
+            self._run_self_analysis_code_routes(
+                state=state,
+                run_id=run_id,
+                root=access_policy.root,
+                inventory=inventory,
+            )
+        )
+        safety = self._finalize_self_analysis(
+            state=state,
+            run_id=run_id,
+            access_policy=access_policy,
+            inventory_policy=inventory_policy,
+            state_identity=state_identity,
+            internal_paths_policy=internal_paths_policy,
+            journal_after=journal_after,
+            code_processing_signature=code_summary.processing_signature,
+            commands=commands,
+        )
+        return _SelfAnalysisExecution(
+            inventory,
+            journal_after,
+            code_summary,
+            route_results,
+            global_resources,
+            safety,
         )
 
+    def _record_self_analysis_start(
+        self,
+        state: FrameworkState,
+        run_id: int,
+        access_policy: CorpusAccessPolicy,
+        inventory_policy: InventoryExclusionPolicy,
+        internal_paths_policy: InternalPathsPolicy,
+        journal_before: JournalCursor | None,
+        journal_error: str | None,
+    ) -> None:
+        state.record_event(
+            run_id,
+            "info",
+            "run",
+            "Autoanálisis protegido iniciado",
+            {
+                "root": str(access_policy.root),
+                "state_directory": str(self.config.state_directory),
+                "corpus_access_mode": "analyze_only",
+                "inventory_policy_signature": inventory_policy.signature,
+                "journal_status": (
+                    "available" if journal_before is not None else "unavailable"
+                ),
+                "journal_error": journal_error,
+                "internal_paths_policy": internal_paths_policy.manifest(),
+                "selected_routes": ["code"],
+            },
+        )
+
+    def _prepare_self_analysis_inventory(
+        self,
+        *,
+        state: FrameworkState,
+        run_id: int,
+        access_policy: CorpusAccessPolicy,
+        inventory_policy: InventoryExclusionPolicy,
+        state_identity: CorpusAccessPolicy,
+        internal_paths_policy: InternalPathsPolicy,
+        journal_before: JournalCursor | None,
+    ) -> PreparedInventory:
+        state.set_run_phase(run_id, "inventory")
+        with DedupIndex(self.config.dedup_database) as dedup_index:
+            allow_incremental = False
+            gate_reason = "journal_unavailable_full_scan"
+            source_run_id = None
+            if journal_before is not None:
+                allow_incremental, gate_reason, source_run_id = (
+                    self._self_analysis_incremental_gate(
+                        state=state,
+                        dedup_index=dedup_index,
+                        root=access_policy.root,
+                        access_policy=access_policy,
+                        inventory_policy=inventory_policy,
+                        journal_before=journal_before,
+                    )
+                )
+            state.record_event(
+                run_id,
+                "info" if allow_incremental else "warning",
+                "self-analysis-incremental-gate",
+                "Reutilización incremental evaluada",
+                {
+                    "allowed": allow_incremental,
+                    "reason": gate_reason,
+                    "source_run_id": source_run_id,
+                    "inventory_policy_signature": inventory_policy.signature,
+                },
+            )
+            inventory = prepare_inventory(
+                dedup_index,
+                state,
+                run_id,
+                access_policy.root,
+                journal_before,
+                progress=self.progress,
+                allow_incremental=allow_incremental,
+                exclusion_policy=inventory_policy,
+            )
+            self._revalidate_self_analysis_boundary(
+                access_policy,
+                internal_paths_policy,
+                self.config.state_directory,
+                require_state=True,
+                expected_state_identity=state_identity,
+            )
+        candidate_rows = state.route_candidate_run_count(run_id)
+        if candidate_rows != 0:
+            raise RuntimeError("self-analysis produced MIME route candidates")
+        state.publish_initial_routing_snapshot(
+            run_id,
+            inventory.scan.scan_id,
+            inventory.reconciliation_records,
+            inventory.inventory_attempts,
+            inventory.inventory_mode,
+            candidate_rows,
+        )
+        return inventory
+
+    def _run_self_analysis_code_routes(
+        self,
+        *,
+        state: FrameworkState,
+        run_id: int,
+        root: Path,
+        inventory: PreparedInventory,
+    ) -> tuple[
+        CodeRouteSummary,
+        dict[str, object],
+        GlobalResourceSummary | None,
+        JournalCursor | None,
+    ]:
+        route_results, global_resources = self._run_content_routes(
+            root=root,
+            state=state,
+            run_id=run_id,
+            scan_id=inventory.scan.scan_id,
+        )
+        code_summary = cast("CodeRouteSummary | None", route_results.get("code"))
+        if code_summary is None:
+            raise RuntimeError("self-analysis code route returned no summary")
+        code_processing_signature = code_summary.processing_signature
+        if not isinstance(code_processing_signature, str) or not code_processing_signature:
+            raise RuntimeError("self-analysis code route returned no effective signature")
+        journal_after = self._self_analysis_journal_after(inventory)
+        return code_summary, route_results, global_resources, journal_after
+
+    @staticmethod
+    def _self_analysis_journal_after(
+        inventory: PreparedInventory,
+    ) -> JournalCursor | None:
+        reconciliation = inventory.reconciliation
+        journal_after = None if reconciliation is None else reconciliation.cursor
+        journal_before = inventory.journal_before
+        if (journal_after is None) != (journal_before is None):
+            raise RuntimeError("self-analysis inventory returned partial journal evidence")
+        if (
+            journal_after is not None
+            and journal_before is not None
+            and journal_after.journal_id != journal_before.journal_id
+        ):
+            raise RuntimeError("the USN journal changed during protected self-analysis")
+        return journal_after
+
+    def _finalize_self_analysis(
+        self,
+        *,
+        state: FrameworkState,
+        run_id: int,
+        access_policy: CorpusAccessPolicy,
+        inventory_policy: InventoryExclusionPolicy,
+        state_identity: CorpusAccessPolicy,
+        internal_paths_policy: InternalPathsPolicy,
+        journal_after: JournalCursor | None,
+        code_processing_signature: str,
+        commands: dict[str, list[str]],
+    ) -> Mapping[str, int]:
         self._revalidate_self_analysis_boundary(
             access_policy,
             internal_paths_policy,
@@ -695,218 +1095,37 @@ class FrameworkOrchestrator:
             require_state=True,
             expected_state_identity=state_identity,
         )
-        with FrameworkState(self.config.framework_database) as state:
-            state.mark_abandoned_runs()
-            state.mark_abandoned_actions()
-            run_id = state.begin_self_analysis_run(
-                access_policy,
-                journal_before,
-                state_directory=self.config.state_directory,
-                inventory_policy_signature=inventory_policy.signature,
-            )
-            heartbeat = RunHeartbeat(
-                self.config.framework_database,
-                run_id,
-                interval_seconds=self.config.heartbeat_interval_seconds,
-            ).start()
-            try:
-                state.record_event(
-                    run_id,
-                    "info",
-                    "run",
-                    "Autoanálisis protegido iniciado",
-                    {
-                        "root": str(root),
-                        "state_directory": str(self.config.state_directory),
-                        "corpus_access_mode": "analyze_only",
-                        "inventory_policy_signature": inventory_policy.signature,
-                        "journal_status": (
-                            "available" if journal_before is not None else "unavailable"
-                        ),
-                        "journal_error": journal_error,
-                        "internal_paths_policy": internal_paths_policy.manifest(),
-                        "selected_routes": ["code"],
-                    },
-                )
-                state.set_run_phase(run_id, "inventory")
-                with DedupIndex(self.config.dedup_database) as dedup_index:
-                    if journal_before is None:
-                        allow_incremental = False
-                        gate_reason = "journal_unavailable_full_scan"
-                        source_run_id = None
-                    else:
-                        allow_incremental, gate_reason, source_run_id = (
-                            self._self_analysis_incremental_gate(
-                                state=state,
-                                dedup_index=dedup_index,
-                                root=root,
-                                access_policy=access_policy,
-                                inventory_policy=inventory_policy,
-                                journal_before=journal_before,
-                            )
-                        )
-                    state.record_event(
-                        run_id,
-                        "info" if allow_incremental else "warning",
-                        "self-analysis-incremental-gate",
-                        "Reutilización incremental evaluada",
-                        {
-                            "allowed": allow_incremental,
-                            "reason": gate_reason,
-                            "source_run_id": source_run_id,
-                            "inventory_policy_signature": inventory_policy.signature,
-                        },
-                    )
-                    inventory = prepare_inventory(
-                        dedup_index,
-                        state,
-                        run_id,
-                        root,
-                        journal_before,
-                        progress=self.progress,
-                        allow_incremental=allow_incremental,
-                        exclusion_policy=inventory_policy,
-                    )
-                    self._revalidate_self_analysis_boundary(
-                        access_policy,
-                        internal_paths_policy,
-                        self.config.state_directory,
-                        require_state=True,
-                        expected_state_identity=state_identity,
-                    )
-                scan = inventory.scan
-                journal_before = inventory.journal_before
-                reconciliation_records = inventory.reconciliation_records
-                inventory_attempts = inventory.inventory_attempts
-                inventory_mode = inventory.inventory_mode
-                candidate_rows = state.route_candidate_run_count(run_id)
-                if candidate_rows != 0:
-                    raise RuntimeError("self-analysis produced MIME route candidates")
-                state.publish_initial_routing_snapshot(
-                    run_id,
-                    scan.scan_id,
-                    reconciliation_records,
-                    inventory_attempts,
-                    inventory_mode,
-                    candidate_rows,
-                )
-                route_results, global_resource_summary = self._run_content_routes(
-                    root=root,
-                    state=state,
-                    run_id=run_id,
-                    scan_id=scan.scan_id,
-                )
-                code_summary = cast("CodeRouteSummary", route_results.get("code"))
-                if code_summary is None:
-                    raise RuntimeError("self-analysis code route returned no summary")
-                code_processing_signature = code_summary.processing_signature
-                if not isinstance(code_processing_signature, str) or not (
-                    code_processing_signature
-                ):
-                    raise RuntimeError("self-analysis code route returned no effective signature")
-                reconciliation = inventory.reconciliation
-                journal_after = None if reconciliation is None else reconciliation.cursor
-                if (journal_after is None) != (journal_before is None):
-                    raise RuntimeError("self-analysis inventory returned partial journal evidence")
-                if (
-                    journal_after is not None
-                    and journal_before is not None
-                    and journal_after.journal_id != journal_before.journal_id
-                ):
-                    raise RuntimeError("the USN journal changed during protected self-analysis")
-                self._revalidate_self_analysis_boundary(
-                    access_policy,
-                    internal_paths_policy,
-                    self.config.state_directory,
-                    require_state=True,
-                    expected_state_identity=state_identity,
-                )
-                state.set_run_phase(run_id, "finalize")
-                completion_manifest = state.complete_self_analysis_run(
-                    run_id,
-                    journal_after,
-                    inventory_policy=inventory_policy,
-                    code_processing_signature=code_processing_signature,
-                    commands=commands,
-                )
-                safety = cast(Mapping[str, int], completion_manifest["safety"])
-            except KeyboardInterrupt as exc:
-                try:
-                    transitioned = state.cancel_initial_run(run_id)
-                except Exception as transition_exc:
-                    exc.add_note(
-                        "cancellation status could not be persisted: "
-                        f"{type(transition_exc).__name__}: {transition_exc}"
-                    )
-                    transitioned = False
-                if transitioned:
-                    try:
-                        state.record_event(
-                            run_id,
-                            "warning",
-                            "run",
-                            "Autoanálisis cancelado por el usuario",
-                            None,
-                        )
-                    except Exception as event_exc:
-                        exc.add_note(
-                            "cancellation event could not be persisted: "
-                            f"{type(event_exc).__name__}: {event_exc}"
-                        )
-                raise
-            except BaseException as exc:
-                try:
-                    transitioned = state.fail_initial_run(run_id)
-                except Exception as transition_exc:
-                    exc.add_note(
-                        "failure status could not be persisted: "
-                        f"{type(transition_exc).__name__}: {transition_exc}"
-                    )
-                    transitioned = False
-                if transitioned:
-                    try:
-                        state.record_event(
-                            run_id,
-                            "error",
-                            "run",
-                            "Autoanálisis fallido",
-                            {"error_type": type(exc).__name__, "detail": str(exc)},
-                        )
-                    except Exception as event_exc:
-                        exc.add_note(
-                            "failure event could not be persisted: "
-                            f"{type(event_exc).__name__}: {event_exc}"
-                        )
-                raise
-            finally:
-                heartbeat.stop()
-
-        emit_progress(
-            self.progress,
-            ProgressEvent(
-                "framework",
-                "complete",
-                "Autoanálisis protegido completado",
-                1,
-                1,
-                "fase",
-                True,
-            ),
+        state.set_run_phase(run_id, "finalize")
+        completion_manifest = state.complete_self_analysis_run(
+            run_id,
+            journal_after,
+            inventory_policy=inventory_policy,
+            code_processing_signature=code_processing_signature,
+            commands=commands,
         )
+        return cast(Mapping[str, int], completion_manifest["safety"])
+
+    @staticmethod
+    def _self_analysis_result(
+        run_id: int,
+        inventory_policy: InventoryExclusionPolicy,
+        execution: _SelfAnalysisExecution,
+    ) -> SelfAnalysisRunResult:
+        inventory = execution.inventory
         return SelfAnalysisRunResult(
             run_id=run_id,
-            scan=scan,
-            journal_before=journal_before,
-            journal_after=journal_after,
-            reconciliation_records=reconciliation_records,
-            inventory_attempts=inventory_attempts,
-            inventory_mode=inventory_mode,
+            scan=inventory.scan,
+            journal_before=inventory.journal_before,
+            journal_after=execution.journal_after,
+            reconciliation_records=inventory.reconciliation_records,
+            inventory_attempts=inventory.inventory_attempts,
+            inventory_mode=inventory.inventory_mode,
             inventory_policy_signature=inventory_policy.signature,
-            code=code_summary,
-            route_results=route_results,
-            global_resources=global_resource_summary,
-            corpus_action_count=safety["file_actions"],
-            route_candidate_count=safety["route_candidates"],
+            code=execution.code,
+            route_results=execution.route_results,
+            global_resources=execution.global_resources,
+            corpus_action_count=execution.safety["file_actions"],
+            route_candidate_count=execution.safety["route_candidates"],
         )
 
     def run_initial(self) -> InitialRunResult:
@@ -939,354 +1158,587 @@ class FrameworkOrchestrator:
         with FrameworkRunLock(self.config.state_directory / "framework.lock"):
             return self._run_initial_locked(boundary)
 
-    def _run_initial_locked(
+    def _prepare_initial_run(
         self,
         boundary: NormalInventoryBoundary,
-    ) -> InitialRunResult:
+    ) -> tuple[JournalCursor | None, str | None]:
         boundary.verify()
-        root = boundary.access_policy.root
-        inventory_policy = boundary.exclusion_policy
-        excluded_paths = tuple(Path(path) for path in inventory_policy.explicit_roots)
         emit_progress(
             self.progress,
             ProgressEvent("framework", "prepare", "Preparando ejecución", 0, 1, "fase"),
         )
         journal_error: str | None = None
         try:
-            journal_before: JournalCursor | None = query_journal_cursor(root.drive)
+            journal_before: JournalCursor | None = query_journal_cursor(
+                boundary.access_policy.root.drive
+            )
         except (NtfsUsnError, OSError) as exc:
             journal_before = None
             journal_error = f"{type(exc).__name__}: {exc}"
         boundary.verify()
         emit_progress(
             self.progress,
-            ProgressEvent("framework", "prepare", "Ejecución preparada", 1, 1, "fase", True),
+            ProgressEvent(
+                "framework",
+                "prepare",
+                "Ejecución preparada",
+                1,
+                1,
+                "fase",
+                True,
+            ),
+        )
+        return journal_before, journal_error
+
+    def _initial_configuration_payload(
+        self,
+        boundary: NormalInventoryBoundary,
+        excluded_paths: tuple[Path, ...],
+    ) -> dict[str, object]:
+        return {
+            "route": self.config.route,
+            "selected_routes": list(self.selected_routes),
+            "global_memory_budget_bytes": self.config.global_memory_budget_bytes,
+            "global_min_free_memory_bytes": self.config.global_min_free_memory_bytes,
+            "global_min_free_commit_bytes": self.config.global_min_free_commit_bytes,
+            "global_cpu_slots": self.config.global_cpu_slots,
+            "global_max_cpu_load_percent": self.config.global_max_cpu_load_percent,
+            "global_resource_wait_timeout_seconds": (
+                self.config.global_resource_wait_timeout_seconds
+            ),
+            "dedup_policy": self.config.dedup_policy,
+            "code_max_file_bytes": self.config.code_max_file_bytes,
+            "code_max_documents": self.config.code_max_documents,
+            "code_cache_validation": self.config.code_cache_validation,
+            "code_candidate_scope": self.config.code_candidate_scope,
+            "code_include_generated": self.config.code_include_generated,
+            "code_include_vendored": self.config.code_include_vendored,
+            "apply_actions": self.config.apply_actions,
+            "excluded_paths": [str(path) for path in excluded_paths],
+            "inventory_exclusion_signature": boundary.exclusion_policy.signature,
+            "internal_paths_signature": boundary.internal_paths_policy.signature,
+            "inventory_policy_signature": boundary.effective_signature,
+            "document_catalog_enabled": self.config.document_catalog_enabled,
+            "document_taxonomy_path": (
+                None
+                if self.config.document_taxonomy_path is None
+                else str(self.config.document_taxonomy_path)
+            ),
+            "document_classification_max_chars": (
+                self.config.document_classification_max_chars
+            ),
+            "organization_root": (
+                None
+                if self.config.organization_root is None
+                else str(self.config.organization_root)
+            ),
+            "organization_min_confidence": self.config.organization_min_confidence,
+            "image_workers": self.config.image_workers,
+            "image_max_file_bytes": self.config.image_max_file_bytes,
+            "image_max_documents": self.config.image_max_documents,
+            "image_memory_budget_bytes": self.config.image_memory_budget_bytes,
+            "image_worker_timeout_seconds": self.config.image_worker_timeout_seconds,
+            "pdf_max_file_bytes": self.config.pdf_max_file_bytes,
+            "pdf_max_documents": self.config.pdf_max_documents,
+            "pdf_workers": self.config.pdf_workers,
+            "pdf_ocr_workers": self.config.pdf_ocr_workers,
+            "pdf_cache_validation": self.config.pdf_cache_validation,
+            "pdf_document_timeout_seconds": self.config.pdf_document_timeout_seconds,
+            "pdf_timeout_mode": self.config.pdf_timeout_mode,
+            "pdf_max_document_timeout_seconds": (
+                self.config.pdf_max_document_timeout_seconds
+            ),
+            "pdf_memory_backpressure_bytes": self.config.pdf_memory_backpressure_bytes,
+            "pdf_commit_backpressure_bytes": self.config.pdf_commit_backpressure_bytes,
+            "pdf_memory_budget_bytes": self.config.pdf_memory_budget_bytes,
+            "pdf_worker_memory_bytes": self.config.pdf_worker_memory_bytes,
+            "docx_max_file_bytes": self.config.docx_max_file_bytes,
+            "docx_max_documents": self.config.docx_max_documents,
+            "docx_max_text_chars": self.config.docx_max_text_chars,
+            "docx_memory_budget_bytes": self.config.docx_memory_budget_bytes,
+            "docx_min_free_memory_bytes": self.config.docx_min_free_memory_bytes,
+            "docx_min_free_commit_bytes": self.config.docx_min_free_commit_bytes,
+            "office_max_file_bytes": self.config.office_max_file_bytes,
+            "office_max_documents": self.config.office_max_documents,
+            "office_max_text_chars": self.config.office_max_text_chars,
+            "office_memory_budget_bytes": self.config.office_memory_budget_bytes,
+            "office_min_free_memory_bytes": self.config.office_min_free_memory_bytes,
+            "office_min_free_commit_bytes": self.config.office_min_free_commit_bytes,
+            "audio_model_name": self.config.audio_model_name,
+            "audio_device": self.config.audio_device,
+            "audio_compute_type": self.config.audio_compute_type,
+            "audio_language": self.config.audio_language,
+            "audio_include_video": self.config.audio_include_video,
+            "audio_max_file_bytes": self.config.audio_max_file_bytes,
+            "audio_max_documents": self.config.audio_max_documents,
+            "audio_max_duration_seconds": self.config.audio_max_duration_seconds,
+            "audio_memory_budget_bytes": self.config.audio_memory_budget_bytes,
+            "audio_worker_memory_bytes": self.config.audio_worker_memory_bytes,
+        }
+
+    def _record_initial_start(
+        self,
+        state: FrameworkState,
+        run_id: int,
+        boundary: NormalInventoryBoundary,
+        journal_before: JournalCursor | None,
+        journal_error: str | None,
+        excluded_paths: tuple[Path, ...],
+    ) -> None:
+        state.record_event(
+            run_id,
+            "info",
+            "run",
+            "Ejecución iniciada",
+            {
+                "root": str(boundary.access_policy.root),
+                "apply_actions": self.config.apply_actions,
+                "journal_status": (
+                    "available" if journal_before is not None else "unavailable"
+                ),
+                "journal_error": journal_error,
+                "inventory_exclusion_signature": boundary.exclusion_policy.signature,
+                "internal_paths_policy": boundary.internal_paths_policy.manifest(),
+                "inventory_policy_signature": boundary.effective_signature,
+            },
+        )
+        state.record_event(
+            run_id,
+            "info",
+            "configuration",
+            "Configuración efectiva",
+            self._initial_configuration_payload(boundary, excluded_paths),
         )
 
+    def _prepare_normal_inventory(
+        self,
+        *,
+        state: FrameworkState,
+        run_id: int,
+        boundary: NormalInventoryBoundary,
+        dedup_index: DedupIndex,
+        journal_before: JournalCursor | None,
+    ) -> PreparedInventory:
+        state.set_run_phase(run_id, "inventory")
+        if journal_before is None:
+            allow_incremental = False
+            gate_reason = "journal_unavailable_portable_full_scan"
+            source_run_id = None
+        else:
+            allow_incremental, gate_reason, source_run_id = self._normal_incremental_gate(
+                state=state,
+                dedup_index=dedup_index,
+                boundary=boundary,
+                journal_before=journal_before,
+            )
+        state.record_event(
+            run_id,
+            "info" if allow_incremental else "warning",
+            "normal-incremental-gate",
+            "Reutilización incremental normal evaluada",
+            {
+                "allowed": allow_incremental,
+                "reason": gate_reason,
+                "source_run_id": source_run_id,
+                "inventory_exclusion_signature": boundary.exclusion_policy.signature,
+                "inventory_policy_signature": boundary.effective_signature,
+            },
+        )
+        inventory = prepare_inventory(
+            dedup_index,
+            state,
+            run_id,
+            boundary.access_policy.root,
+            journal_before,
+            progress=self.progress,
+            exclusion_policy=boundary.exclusion_policy,
+            allow_incremental=allow_incremental,
+            publish_portable_checkpoint=True,
+        )
+        boundary.verify()
+        if inventory.inventory_policy_signature != boundary.exclusion_policy.signature:
+            raise RuntimeError("inventory result escaped its effective exclusion boundary")
+        return inventory
+
+    def _plan_initial_dedup(
+        self,
+        state: FrameworkState,
+        run_id: int,
+        dedup_index: DedupIndex,
+        scan_id: int,
+    ) -> DedupPlan:
+        state.set_run_phase(run_id, "dedup_plan")
+        started = time.perf_counter_ns()
+        plan = DedupPlanner(dedup_index).plan(
+            scan_id,
+            progress=self.progress,
+            preview_limit=self.config.preview_group_limit,
+            exact_compare=self.config.dedup_policy == "exact",
+        )
+        state.record_event(
+            run_id,
+            "info",
+            "dedup-plan",
+            "Plan de duplicados completado",
+            {
+                "elapsed_ns": time.perf_counter_ns() - started,
+                "groups": plan.group_count,
+                "reclaimable_bytes": plan.reclaimable_bytes,
+            },
+        )
+        return plan
+
+    def _execute_initial_actions(
+        self,
+        *,
+        state: FrameworkState,
+        run_id: int,
+        dedup_index: DedupIndex,
+        scan_id: int,
+        plan: DedupPlan,
+        excluded_paths: tuple[Path, ...],
+        inventory_policy: InventoryExclusionPolicy,
+    ) -> tuple[FrameworkActions, ActionSummary]:
+        runner = FrameworkActions(
+            dedup_index,
+            state,
+            run_id,
+            scan_id,
+            apply=self.config.apply_actions,
+            verify_bytes_before_trash=True,
+            excluded_paths=excluded_paths,
+            exclusion_policy=inventory_policy,
+            progress=self.progress,
+        )
+        state.set_run_phase(run_id, "actions")
+        actions = runner.execute(
+            plan,
+            cleanup_empty_directories=not self.selected_routes,
+        )
+        return runner, actions
+
+    def _run_initial_routes(
+        self,
+        *,
+        root: Path,
+        state: FrameworkState,
+        run_id: int,
+        scan_id: int,
+        action_runner: FrameworkActions,
+        plan: DedupPlan,
+        actions: ActionSummary,
+    ) -> tuple[
+        ActionSummary,
+        dict[str, object],
+        ImageRouteSummary | None,
+        GlobalResourceSummary | None,
+        OrganizationPlanSummary | None,
+        OrganizationApplySummary | None,
+    ]:
+        route_results, global_resources = self._run_content_routes(
+            root=root,
+            state=state,
+            run_id=run_id,
+            scan_id=scan_id,
+        )
+        image_summary = cast("ImageRouteSummary | None", route_results.get("image"))
+        image_summary = self._apply_explicit_adult_images(
+            action_runner,
+            image_summary,
+            state,
+            run_id,
+        )
+        if image_summary is not None:
+            route_results["image"] = image_summary
+        organization_plan, organization_apply = self._run_document_organization(
+            root=root,
+            state=state,
+            run_id=run_id,
+        )
+        if self.selected_routes:
+            actions = action_runner.cleanup_empty_directories(plan, actions)
+        return (
+            actions,
+            route_results,
+            image_summary,
+            global_resources,
+            organization_plan,
+            organization_apply,
+        )
+
+    def _execute_initial_work(
+        self,
+        *,
+        state: FrameworkState,
+        run_id: int,
+        boundary: NormalInventoryBoundary,
+        journal_before: JournalCursor | None,
+        excluded_paths: tuple[Path, ...],
+    ) -> _InitialWork:
+        with DedupIndex(self.config.dedup_database) as dedup_index:
+            inventory = self._prepare_normal_inventory(
+                state=state,
+                run_id=run_id,
+                boundary=boundary,
+                dedup_index=dedup_index,
+                journal_before=journal_before,
+            )
+            plan = self._plan_initial_dedup(
+                state,
+                run_id,
+                dedup_index,
+                inventory.scan.scan_id,
+            )
+            action_runner, actions = self._execute_initial_actions(
+                state=state,
+                run_id=run_id,
+                dedup_index=dedup_index,
+                scan_id=inventory.scan.scan_id,
+                plan=plan,
+                excluded_paths=excluded_paths,
+                inventory_policy=boundary.exclusion_policy,
+            )
+            candidate_rows = state.route_candidate_run_count(run_id)
+            state.publish_initial_routing_snapshot(
+                run_id,
+                inventory.scan.scan_id,
+                inventory.reconciliation_records,
+                inventory.inventory_attempts,
+                inventory.inventory_mode,
+                candidate_rows,
+            )
+            (
+                actions,
+                route_results,
+                image_summary,
+                global_resources,
+                organization_plan,
+                organization_apply,
+            ) = self._run_initial_routes(
+                root=boundary.access_policy.root,
+                state=state,
+                run_id=run_id,
+                scan_id=inventory.scan.scan_id,
+                action_runner=action_runner,
+                plan=plan,
+                actions=actions,
+            )
+        return _InitialWork(
+            inventory,
+            plan,
+            actions,
+            route_results,
+            image_summary,
+            global_resources,
+            organization_plan,
+            organization_apply,
+        )
+
+    @staticmethod
+    def _initial_journal_after(inventory: PreparedInventory) -> JournalCursor | None:
+        reconciliation = inventory.reconciliation
+        journal_after = None if reconciliation is None else reconciliation.cursor
+        journal_before = inventory.journal_before
+        if (journal_after is None) != (journal_before is None):
+            raise RuntimeError("normal inventory returned partial journal evidence")
+        if (
+            journal_after is not None
+            and journal_before is not None
+            and journal_after.journal_id != journal_before.journal_id
+        ):
+            raise RuntimeError("the USN journal changed during the initial framework run")
+        return journal_after
+
+    @staticmethod
+    def _finalize_initial_run(
+        state: FrameworkState,
+        run_id: int,
+        boundary: NormalInventoryBoundary,
+        work: _InitialWork,
+        journal_after: JournalCursor | None,
+    ) -> None:
+        boundary.verify()
+        state.set_run_phase(run_id, "finalize")
+        transient_rows_pruned = state.prune_route_candidates((run_id,))
+        inventory = work.inventory
+        state.complete_initial_run(
+            run_id,
+            inventory.scan.scan_id,
+            journal_after,
+            inventory.reconciliation_records,
+            inventory.inventory_attempts,
+            inventory.inventory_mode,
+        )
+        state.record_event(
+            run_id,
+            "info",
+            "run",
+            "Ejecución completada",
+            {
+                "inventory_mode": inventory.inventory_mode,
+                "scan_id": inventory.scan.scan_id,
+                "transient_route_rows_pruned": transient_rows_pruned,
+            },
+        )
+
+    def _execute_initial_run(
+        self,
+        *,
+        state: FrameworkState,
+        run_id: int,
+        boundary: NormalInventoryBoundary,
+        journal_before: JournalCursor | None,
+        journal_error: str | None,
+        excluded_paths: tuple[Path, ...],
+    ) -> _InitialExecution:
+        self._record_initial_start(
+            state,
+            run_id,
+            boundary,
+            journal_before,
+            journal_error,
+            excluded_paths,
+        )
+        work = self._execute_initial_work(
+            state=state,
+            run_id=run_id,
+            boundary=boundary,
+            journal_before=journal_before,
+            excluded_paths=excluded_paths,
+        )
+        journal_after = self._initial_journal_after(work.inventory)
+        self._finalize_initial_run(
+            state,
+            run_id,
+            boundary,
+            work,
+            journal_after,
+        )
+        return _InitialExecution(work, journal_after)
+
+    @staticmethod
+    def _persist_initial_termination(
+        state: FrameworkState,
+        run_id: int,
+        exc: BaseException,
+        *,
+        cancelled: bool,
+    ) -> None:
+        state.prune_route_candidates((run_id,))
+        state.record_event(
+            run_id,
+            "warning" if cancelled else "error",
+            "run",
+            "Ejecución cancelada por el usuario" if cancelled else "Ejecución fallida",
+            None
+            if cancelled
+            else {"error_type": type(exc).__name__, "detail": str(exc)},
+        )
+        if cancelled:
+            state.cancel_initial_run(run_id)
+        else:
+            state.fail_initial_run(run_id)
+
+    def _manage_initial_run(
+        self,
+        *,
+        state: FrameworkState,
+        run_id: int,
+        boundary: NormalInventoryBoundary,
+        journal_before: JournalCursor | None,
+        journal_error: str | None,
+        excluded_paths: tuple[Path, ...],
+    ) -> _InitialExecution:
+        heartbeat = RunHeartbeat(
+            self.config.framework_database,
+            run_id,
+            interval_seconds=self.config.heartbeat_interval_seconds,
+        ).start()
+        try:
+            return self._execute_initial_run(
+                state=state,
+                run_id=run_id,
+                boundary=boundary,
+                journal_before=journal_before,
+                journal_error=journal_error,
+                excluded_paths=excluded_paths,
+            )
+        except KeyboardInterrupt as exc:
+            self._persist_initial_termination(state, run_id, exc, cancelled=True)
+            raise
+        except BaseException as exc:
+            self._persist_initial_termination(state, run_id, exc, cancelled=False)
+            raise
+        finally:
+            heartbeat.stop()
+
+    @staticmethod
+    def _initial_result(
+        run_id: int,
+        execution: _InitialExecution,
+    ) -> InitialRunResult:
+        work = execution.work
+        inventory = work.inventory
+        routes = work.route_results
+        return InitialRunResult(
+            run_id=run_id,
+            scan=inventory.scan,
+            dedup_plan=work.dedup_plan,
+            journal_before=inventory.journal_before,
+            journal_after=execution.journal_after,
+            reconciliation_records=inventory.reconciliation_records,
+            inventory_attempts=inventory.inventory_attempts,
+            inventory_mode=inventory.inventory_mode,
+            actions=work.actions,
+            pdf=cast("PdfRouteSummary | None", routes.get("pdf")),
+            docx=cast("DocxRouteSummary | None", routes.get("docx")),
+            office=cast("OfficeRouteSummary | None", routes.get("office")),
+            audio=cast("AudioRouteSummary | None", routes.get("audio")),
+            image=work.image,
+            code=cast("CodeRouteSummary | None", routes.get("code")),
+            route_results=routes,
+            global_resources=work.global_resources,
+            organization_plan=work.organization_plan,
+            organization_apply=work.organization_apply,
+        )
+
+    def _run_initial_locked(
+        self,
+        boundary: NormalInventoryBoundary,
+    ) -> InitialRunResult:
+        excluded_paths = tuple(
+            Path(path) for path in boundary.exclusion_policy.explicit_roots
+        )
+        journal_before, journal_error = self._prepare_initial_run(boundary)
         with FrameworkState(self.config.framework_database) as state:
             state.mark_abandoned_runs()
             state.mark_abandoned_actions()
             run_id = state.begin_initial_run(
-                root,
+                boundary.access_policy.root,
                 journal_before,
                 inventory_policy_signature=boundary.effective_signature,
             )
-            heartbeat = RunHeartbeat(
-                self.config.framework_database,
-                run_id,
-                interval_seconds=self.config.heartbeat_interval_seconds,
-            ).start()
-            state.record_event(
-                run_id,
-                "info",
-                "run",
-                "Ejecución iniciada",
-                {
-                    "root": str(root),
-                    "apply_actions": self.config.apply_actions,
-                    "journal_status": (
-                        "available" if journal_before is not None else "unavailable"
-                    ),
-                    "journal_error": journal_error,
-                    "inventory_exclusion_signature": inventory_policy.signature,
-                    "internal_paths_policy": boundary.internal_paths_policy.manifest(),
-                    "inventory_policy_signature": boundary.effective_signature,
-                },
+            execution = self._manage_initial_run(
+                state=state,
+                run_id=run_id,
+                boundary=boundary,
+                journal_before=journal_before,
+                journal_error=journal_error,
+                excluded_paths=excluded_paths,
             )
-            state.record_event(
-                run_id,
-                "info",
-                "configuration",
-                "Configuración efectiva",
-                {
-                    "route": self.config.route,
-                    "selected_routes": list(self.selected_routes),
-                    "global_memory_budget_bytes": (self.config.global_memory_budget_bytes),
-                    "global_min_free_memory_bytes": (self.config.global_min_free_memory_bytes),
-                    "global_min_free_commit_bytes": (self.config.global_min_free_commit_bytes),
-                    "global_cpu_slots": self.config.global_cpu_slots,
-                    "global_max_cpu_load_percent": (self.config.global_max_cpu_load_percent),
-                    "global_resource_wait_timeout_seconds": (
-                        self.config.global_resource_wait_timeout_seconds
-                    ),
-                    "dedup_policy": self.config.dedup_policy,
-                    "code_max_file_bytes": self.config.code_max_file_bytes,
-                    "code_max_documents": self.config.code_max_documents,
-                    "code_cache_validation": self.config.code_cache_validation,
-                    "code_candidate_scope": self.config.code_candidate_scope,
-                    "code_include_generated": self.config.code_include_generated,
-                    "code_include_vendored": self.config.code_include_vendored,
-                    "apply_actions": self.config.apply_actions,
-                    "excluded_paths": [str(path) for path in excluded_paths],
-                    "inventory_exclusion_signature": inventory_policy.signature,
-                    "internal_paths_signature": (boundary.internal_paths_policy.signature),
-                    "inventory_policy_signature": boundary.effective_signature,
-                    "document_catalog_enabled": (self.config.document_catalog_enabled),
-                    "document_taxonomy_path": (
-                        None
-                        if self.config.document_taxonomy_path is None
-                        else str(self.config.document_taxonomy_path)
-                    ),
-                    "document_classification_max_chars": (
-                        self.config.document_classification_max_chars
-                    ),
-                    "organization_root": (
-                        None
-                        if self.config.organization_root is None
-                        else str(self.config.organization_root)
-                    ),
-                    "organization_min_confidence": (self.config.organization_min_confidence),
-                    "image_workers": self.config.image_workers,
-                    "image_max_file_bytes": self.config.image_max_file_bytes,
-                    "image_max_documents": self.config.image_max_documents,
-                    "image_memory_budget_bytes": self.config.image_memory_budget_bytes,
-                    "image_worker_timeout_seconds": (self.config.image_worker_timeout_seconds),
-                    "pdf_max_file_bytes": self.config.pdf_max_file_bytes,
-                    "pdf_max_documents": self.config.pdf_max_documents,
-                    "pdf_workers": self.config.pdf_workers,
-                    "pdf_ocr_workers": self.config.pdf_ocr_workers,
-                    "pdf_cache_validation": self.config.pdf_cache_validation,
-                    "pdf_document_timeout_seconds": self.config.pdf_document_timeout_seconds,
-                    "pdf_timeout_mode": self.config.pdf_timeout_mode,
-                    "pdf_max_document_timeout_seconds": (
-                        self.config.pdf_max_document_timeout_seconds
-                    ),
-                    "pdf_memory_backpressure_bytes": self.config.pdf_memory_backpressure_bytes,
-                    "pdf_commit_backpressure_bytes": self.config.pdf_commit_backpressure_bytes,
-                    "pdf_memory_budget_bytes": self.config.pdf_memory_budget_bytes,
-                    "pdf_worker_memory_bytes": self.config.pdf_worker_memory_bytes,
-                    "docx_max_file_bytes": self.config.docx_max_file_bytes,
-                    "docx_max_documents": self.config.docx_max_documents,
-                    "docx_max_text_chars": self.config.docx_max_text_chars,
-                    "docx_memory_budget_bytes": self.config.docx_memory_budget_bytes,
-                    "docx_min_free_memory_bytes": self.config.docx_min_free_memory_bytes,
-                    "docx_min_free_commit_bytes": self.config.docx_min_free_commit_bytes,
-                    "office_max_file_bytes": self.config.office_max_file_bytes,
-                    "office_max_documents": self.config.office_max_documents,
-                    "office_max_text_chars": self.config.office_max_text_chars,
-                    "office_memory_budget_bytes": (self.config.office_memory_budget_bytes),
-                    "office_min_free_memory_bytes": (self.config.office_min_free_memory_bytes),
-                    "office_min_free_commit_bytes": (self.config.office_min_free_commit_bytes),
-                    "audio_model_name": self.config.audio_model_name,
-                    "audio_device": self.config.audio_device,
-                    "audio_compute_type": self.config.audio_compute_type,
-                    "audio_language": self.config.audio_language,
-                    "audio_include_video": self.config.audio_include_video,
-                    "audio_max_file_bytes": self.config.audio_max_file_bytes,
-                    "audio_max_documents": self.config.audio_max_documents,
-                    "audio_max_duration_seconds": (self.config.audio_max_duration_seconds),
-                    "audio_memory_budget_bytes": (self.config.audio_memory_budget_bytes),
-                    "audio_worker_memory_bytes": (self.config.audio_worker_memory_bytes),
-                },
-            )
-            try:
-                state.set_run_phase(run_id, "inventory")
-                with DedupIndex(self.config.dedup_database) as dedup_index:
-                    if journal_before is None:
-                        allow_incremental = False
-                        gate_reason = "journal_unavailable_portable_full_scan"
-                        source_run_id = None
-                    else:
-                        allow_incremental, gate_reason, source_run_id = (
-                            self._normal_incremental_gate(
-                                state=state,
-                                dedup_index=dedup_index,
-                                boundary=boundary,
-                                journal_before=journal_before,
-                            )
-                        )
-                    state.record_event(
-                        run_id,
-                        "info" if allow_incremental else "warning",
-                        "normal-incremental-gate",
-                        "Reutilización incremental normal evaluada",
-                        {
-                            "allowed": allow_incremental,
-                            "reason": gate_reason,
-                            "source_run_id": source_run_id,
-                            "inventory_exclusion_signature": inventory_policy.signature,
-                            "inventory_policy_signature": boundary.effective_signature,
-                        },
-                    )
-                    inventory = prepare_inventory(
-                        dedup_index,
-                        state,
-                        run_id,
-                        root,
-                        journal_before,
-                        progress=self.progress,
-                        exclusion_policy=inventory_policy,
-                        allow_incremental=allow_incremental,
-                        publish_portable_checkpoint=True,
-                    )
-                    boundary.verify()
-                    if inventory.inventory_policy_signature != inventory_policy.signature:
-                        raise RuntimeError(
-                            "inventory result escaped its effective exclusion boundary"
-                        )
-                    scan = inventory.scan
-                    journal_before = inventory.journal_before
-                    reconciliation = inventory.reconciliation
-                    reconciliation_records = inventory.reconciliation_records
-                    inventory_attempts = inventory.inventory_attempts
-                    inventory_mode = inventory.inventory_mode
-                    state.set_run_phase(run_id, "dedup_plan")
-                    dedup_started = time.perf_counter_ns()
-                    plan = DedupPlanner(dedup_index).plan(
-                        scan.scan_id,
-                        progress=self.progress,
-                        preview_limit=self.config.preview_group_limit,
-                        exact_compare=self.config.dedup_policy == "exact",
-                    )
-                    state.record_event(
-                        run_id,
-                        "info",
-                        "dedup-plan",
-                        "Plan de duplicados completado",
-                        {
-                            "elapsed_ns": time.perf_counter_ns() - dedup_started,
-                            "groups": plan.group_count,
-                            "reclaimable_bytes": plan.reclaimable_bytes,
-                        },
-                    )
-                    action_runner = FrameworkActions(
-                        dedup_index,
-                        state,
-                        run_id,
-                        scan.scan_id,
-                        apply=self.config.apply_actions,
-                        # Hash reduction may be fast, but destructive application
-                        # always revalidates exact bytes immediately before trashing.
-                        verify_bytes_before_trash=True,
-                        excluded_paths=excluded_paths,
-                        exclusion_policy=inventory_policy,
-                        progress=self.progress,
-                    )
-                    state.set_run_phase(run_id, "actions")
-                    actions = action_runner.execute(
-                        plan,
-                        cleanup_empty_directories=not self.selected_routes,
-                    )
-                    candidate_rows = state.route_candidate_run_count(run_id)
-                    state.publish_initial_routing_snapshot(
-                        run_id,
-                        scan.scan_id,
-                        reconciliation_records,
-                        inventory_attempts,
-                        inventory_mode,
-                        candidate_rows,
-                    )
-                    route_results, global_resource_summary = self._run_content_routes(
-                        root=root,
-                        state=state,
-                        run_id=run_id,
-                        scan_id=scan.scan_id,
-                    )
-                    pdf_summary = cast("PdfRouteSummary | None", route_results.get("pdf"))
-                    docx_summary = cast("DocxRouteSummary | None", route_results.get("docx"))
-                    office_summary = cast("OfficeRouteSummary | None", route_results.get("office"))
-                    audio_summary = cast("AudioRouteSummary | None", route_results.get("audio"))
-                    image_summary = cast("ImageRouteSummary | None", route_results.get("image"))
-                    code_summary = cast("CodeRouteSummary | None", route_results.get("code"))
-                    image_summary = self._apply_explicit_adult_images(
-                        action_runner,
-                        image_summary,
-                        state,
-                        run_id,
-                    )
-                    if image_summary is not None:
-                        route_results["image"] = image_summary
-                    (
-                        organization_plan_summary,
-                        organization_apply_summary,
-                    ) = self._run_document_organization(
-                        root=root,
-                        state=state,
-                        run_id=run_id,
-                    )
-                    if self.selected_routes:
-                        actions = action_runner.cleanup_empty_directories(plan, actions)
-                journal_after = None if reconciliation is None else reconciliation.cursor
-                if (journal_after is None) != (journal_before is None):
-                    raise RuntimeError("normal inventory returned partial journal evidence")
-                if (
-                    journal_after is not None
-                    and journal_before is not None
-                    and journal_after.journal_id != journal_before.journal_id
-                ):
-                    raise RuntimeError("the USN journal changed during the initial framework run")
-                boundary.verify()
-                state.set_run_phase(run_id, "finalize")
-                transient_rows_pruned = state.prune_route_candidates((run_id,))
-                state.complete_initial_run(
-                    run_id,
-                    scan.scan_id,
-                    journal_after,
-                    reconciliation_records,
-                    inventory_attempts,
-                    inventory_mode,
-                )
-                state.record_event(
-                    run_id,
-                    "info",
-                    "run",
-                    "Ejecución completada",
-                    {
-                        "inventory_mode": inventory_mode,
-                        "scan_id": scan.scan_id,
-                        "transient_route_rows_pruned": transient_rows_pruned,
-                    },
-                )
-            except KeyboardInterrupt:
-                state.prune_route_candidates((run_id,))
-                state.record_event(
-                    run_id,
-                    "warning",
-                    "run",
-                    "Ejecución cancelada por el usuario",
-                    None,
-                )
-                state.cancel_initial_run(run_id)
-                raise
-            except BaseException as exc:
-                state.prune_route_candidates((run_id,))
-                state.record_event(
-                    run_id,
-                    "error",
-                    "run",
-                    "Ejecución fallida",
-                    {"error_type": type(exc).__name__, "detail": str(exc)},
-                )
-                state.fail_initial_run(run_id)
-                raise
-            finally:
-                heartbeat.stop()
-
         emit_progress(
             self.progress,
-            ProgressEvent("framework", "complete", "Etapa previa completada", 1, 1, "fase", True),
+            ProgressEvent(
+                "framework",
+                "complete",
+                "Etapa previa completada",
+                1,
+                1,
+                "fase",
+                True,
+            ),
         )
-        return InitialRunResult(
-            run_id=run_id,
-            scan=scan,
-            dedup_plan=plan,
-            journal_before=journal_before,
-            journal_after=journal_after,
-            reconciliation_records=reconciliation_records,
-            inventory_attempts=inventory_attempts,
-            inventory_mode=inventory_mode,
-            actions=actions,
-            pdf=pdf_summary,
-            docx=docx_summary,
-            office=office_summary,
-            audio=audio_summary,
-            image=image_summary,
-            code=code_summary,
-            route_results=route_results,
-            global_resources=global_resource_summary,
-            organization_plan=organization_plan_summary,
-            organization_apply=organization_apply_summary,
-        )
+        return self._initial_result(run_id, execution)
 
     def run_route_only(self) -> RouteOnlyRunResult:
         """Run content routes over durable inputs without common maintenance."""
@@ -1416,156 +1868,263 @@ class FrameworkOrchestrator:
         boundary: NormalInventoryBoundary,
     ) -> RouteOnlyRunResult:
         boundary.verify()
-        root = boundary.access_policy.root
         with FrameworkState(self.config.framework_database) as state:
-            expected_source_scan_id: int | None = None
-            if self.config.resume_run_id is not None:
-                source_run_id = self.config.resume_run_id
-            elif self.config.candidate_run_id is not None:
-                source_run_id = self.config.candidate_run_id
-            else:
-                latest_inventory = state.latest_durable_inventory_run(
-                    root,
-                    corpus_access_mode="normal",
-                    inventory_policy_signature=boundary.effective_signature,
-                )
-                if latest_inventory is None:
-                    raise ValueError(
-                        "no compatible durable inventory snapshot is available; "
-                        "run normal inventory first"
-                    )
-                source_run_id, expected_source_scan_id = latest_inventory
-            if self.config.resume_run_id is not None and not self.selected_routes:
-                resumable = state.resumable_route_names(source_run_id)
-                unknown = tuple(name for name in resumable if name not in self.route_registry)
-                if unknown:
-                    raise ValueError(
-                        "resume source references unavailable routes: " + ", ".join(unknown)
-                    )
-                self.selected_routes = resumable
-            if not self.selected_routes:
-                raise ValueError(f"run {source_run_id} has no resumable content routes")
-            route_input_sources = {
-                name: self.route_registry[name].input_source for name in self.selected_routes
-            }
-            candidate_backed_routes = tuple(
-                name
-                for name, input_source in route_input_sources.items()
-                if input_source != "inventory_snapshot"
-            )
-            source_candidate_rows = state.route_candidate_run_count(source_run_id)
-            if source_candidate_rows == 0 and candidate_backed_routes:
-                raise ValueError(
-                    f"run {source_run_id} has no retained routing candidates "
-                    "required by routes: " + ", ".join(candidate_backed_routes)
-                )
-            scan_id = self._reusable_source_scan_id(
+            source = self._prepare_route_only_source(state, boundary)
+            run_id, heartbeat = self._begin_route_only_execution(
                 state,
-                source_run_id,
                 boundary,
-                expected_source_scan_id,
+                source,
             )
-            run_kind = "resume" if self.config.resume_run_id is not None else "route_only"
-            boundary.verify()
-            run_id = state.begin_operational_run(
-                root,
-                run_kind=run_kind,
-                source_run_id=source_run_id,
+            execution = self._execute_route_only_run(
+                state=state,
+                boundary=boundary,
+                source=source,
+                run_id=run_id,
+                heartbeat=heartbeat,
             )
-            copied = (
-                state.copy_route_candidates(source_run_id, run_id) if candidate_backed_routes else 0
-            )
-            heartbeat = RunHeartbeat(
-                self.config.framework_database,
-                run_id,
-                interval_seconds=self.config.heartbeat_interval_seconds,
-            ).start()
-            state.record_event(
-                run_id,
-                "info",
-                "run",
-                "Ejecución aislada de rutas iniciada",
-                {
-                    "root": str(root),
-                    "source_run_id": source_run_id,
-                    "inventory_exclusion_signature": (boundary.exclusion_policy.signature),
-                    "inventory_policy_signature": boundary.effective_signature,
-                    "candidate_rows": copied,
-                    "source_candidate_rows": source_candidate_rows,
-                    "route_input_sources": route_input_sources,
-                    "selected_routes": list(self.selected_routes),
-                    "resume": self.config.resume_run_id is not None,
-                    "selection_active": self.config.selection.active,
-                    "document_catalog_enabled": (self.config.document_catalog_enabled),
-                    "document_taxonomy_path": (
-                        None
-                        if self.config.document_taxonomy_path is None
-                        else str(self.config.document_taxonomy_path)
-                    ),
-                    "selection": {
-                        "statuses": list(self.config.selection.statuses),
-                        "error_types": list(self.config.selection.error_types),
-                        "recommendations": list(self.config.selection.recommendations),
-                        "paths": list(self.config.selection.paths),
-                        "failed_pages_only": (self.config.selection.failed_pages_only),
-                    },
-                    "pdf_timeout_mode": self.config.pdf_timeout_mode,
-                    "pdf_document_timeout_seconds": (self.config.pdf_document_timeout_seconds),
-                    "pdf_max_document_timeout_seconds": (
-                        self.config.pdf_max_document_timeout_seconds
-                    ),
-                },
-            )
-            try:
-                route_results, global_resource_summary = self._run_content_routes(
-                    root=root,
-                    state=state,
-                    run_id=run_id,
-                    scan_id=scan_id,
-                )
-                boundary.verify()
-                state.set_run_phase(run_id, "finalize")
-                if candidate_backed_routes:
-                    state.prune_route_candidates((run_id,))
-                state.complete_operational_run(run_id)
-                state.record_event(
-                    run_id,
-                    "info",
-                    "run",
-                    "Ejecución aislada de rutas completada",
-                    {"source_run_id": source_run_id},
-                )
-            except KeyboardInterrupt:
-                if candidate_backed_routes:
-                    state.prune_route_candidates((run_id,))
-                state.cancel_initial_run(run_id)
-                raise
-            except BaseException as exc:
-                if candidate_backed_routes:
-                    state.prune_route_candidates((run_id,))
-                state.record_event(
-                    run_id,
-                    "error",
-                    "run",
-                    "Ejecución aislada de rutas fallida",
-                    {"error_type": type(exc).__name__, "detail": str(exc)},
-                )
-                state.fail_initial_run(run_id)
-                raise
-            finally:
-                heartbeat.stop()
+        return self._route_only_result(execution)
 
+    def _route_only_source_run(
+        self,
+        state: FrameworkState,
+        boundary: NormalInventoryBoundary,
+    ) -> tuple[int, int | None]:
+        if self.config.resume_run_id is not None:
+            return self.config.resume_run_id, None
+        if self.config.candidate_run_id is not None:
+            return self.config.candidate_run_id, None
+        latest_inventory = state.latest_durable_inventory_run(
+            boundary.access_policy.root,
+            corpus_access_mode="normal",
+            inventory_policy_signature=boundary.effective_signature,
+        )
+        if latest_inventory is None:
+            raise ValueError(
+                "no compatible durable inventory snapshot is available; "
+                "run normal inventory first"
+            )
+        return latest_inventory
+
+    def _select_route_only_routes(
+        self,
+        state: FrameworkState,
+        source_run_id: int,
+    ) -> None:
+        if self.config.resume_run_id is not None and not self.selected_routes:
+            resumable = state.resumable_route_names(source_run_id)
+            unknown = tuple(name for name in resumable if name not in self.route_registry)
+            if unknown:
+                raise ValueError(
+                    "resume source references unavailable routes: " + ", ".join(unknown)
+                )
+            self.selected_routes = resumable
+        if not self.selected_routes:
+            raise ValueError(f"run {source_run_id} has no resumable content routes")
+
+    def _prepare_route_only_source(
+        self,
+        state: FrameworkState,
+        boundary: NormalInventoryBoundary,
+    ) -> _RouteOnlySource:
+        source_run_id, expected_scan_id = self._route_only_source_run(state, boundary)
+        self._select_route_only_routes(state, source_run_id)
+        route_input_sources = {
+            name: self.route_registry[name].input_source for name in self.selected_routes
+        }
+        candidate_backed_routes = tuple(
+            name
+            for name, input_source in route_input_sources.items()
+            if input_source != "inventory_snapshot"
+        )
+        candidate_rows = state.route_candidate_run_count(source_run_id)
+        if candidate_rows == 0 and candidate_backed_routes:
+            raise ValueError(
+                f"run {source_run_id} has no retained routing candidates "
+                "required by routes: " + ", ".join(candidate_backed_routes)
+            )
+        scan_id = self._reusable_source_scan_id(
+            state,
+            source_run_id,
+            boundary,
+            expected_scan_id,
+        )
+        return _RouteOnlySource(
+            source_run_id,
+            scan_id,
+            route_input_sources,
+            candidate_backed_routes,
+            candidate_rows,
+        )
+
+    def _route_only_start_payload(
+        self,
+        boundary: NormalInventoryBoundary,
+        source: _RouteOnlySource,
+        copied_candidates: int,
+    ) -> dict[str, object]:
+        return {
+            "root": str(boundary.access_policy.root),
+            "source_run_id": source.run_id,
+            "inventory_exclusion_signature": boundary.exclusion_policy.signature,
+            "inventory_policy_signature": boundary.effective_signature,
+            "candidate_rows": copied_candidates,
+            "source_candidate_rows": source.candidate_rows,
+            "route_input_sources": source.route_input_sources,
+            "selected_routes": list(self.selected_routes),
+            "resume": self.config.resume_run_id is not None,
+            "selection_active": self.config.selection.active,
+            "document_catalog_enabled": self.config.document_catalog_enabled,
+            "document_taxonomy_path": (
+                None
+                if self.config.document_taxonomy_path is None
+                else str(self.config.document_taxonomy_path)
+            ),
+            "selection": {
+                "statuses": list(self.config.selection.statuses),
+                "error_types": list(self.config.selection.error_types),
+                "recommendations": list(self.config.selection.recommendations),
+                "paths": list(self.config.selection.paths),
+                "failed_pages_only": self.config.selection.failed_pages_only,
+            },
+            "pdf_timeout_mode": self.config.pdf_timeout_mode,
+            "pdf_document_timeout_seconds": self.config.pdf_document_timeout_seconds,
+            "pdf_max_document_timeout_seconds": (
+                self.config.pdf_max_document_timeout_seconds
+            ),
+        }
+
+    def _begin_route_only_execution(
+        self,
+        state: FrameworkState,
+        boundary: NormalInventoryBoundary,
+        source: _RouteOnlySource,
+    ) -> tuple[int, RunHeartbeat]:
+        run_kind = "resume" if self.config.resume_run_id is not None else "route_only"
+        boundary.verify()
+        run_id = state.begin_operational_run(
+            boundary.access_policy.root,
+            run_kind=run_kind,
+            source_run_id=source.run_id,
+        )
+        copied = (
+            state.copy_route_candidates(source.run_id, run_id)
+            if source.candidate_backed_routes
+            else 0
+        )
+        heartbeat = RunHeartbeat(
+            self.config.framework_database,
+            run_id,
+            interval_seconds=self.config.heartbeat_interval_seconds,
+        ).start()
+        state.record_event(
+            run_id,
+            "info",
+            "run",
+            "Ejecución aislada de rutas iniciada",
+            self._route_only_start_payload(boundary, source, copied),
+        )
+        return run_id, heartbeat
+
+    @staticmethod
+    def _prune_route_only_candidates(
+        state: FrameworkState,
+        source: _RouteOnlySource,
+        run_id: int,
+    ) -> None:
+        if source.candidate_backed_routes:
+            state.prune_route_candidates((run_id,))
+
+    def _complete_route_only_run(
+        self,
+        state: FrameworkState,
+        boundary: NormalInventoryBoundary,
+        source: _RouteOnlySource,
+        run_id: int,
+    ) -> None:
+        boundary.verify()
+        state.set_run_phase(run_id, "finalize")
+        self._prune_route_only_candidates(state, source, run_id)
+        state.complete_operational_run(run_id)
+        state.record_event(
+            run_id,
+            "info",
+            "run",
+            "Ejecución aislada de rutas completada",
+            {"source_run_id": source.run_id},
+        )
+
+    def _cancel_route_only_run(
+        self,
+        state: FrameworkState,
+        source: _RouteOnlySource,
+        run_id: int,
+    ) -> None:
+        self._prune_route_only_candidates(state, source, run_id)
+        state.cancel_initial_run(run_id)
+
+    def _fail_route_only_run(
+        self,
+        state: FrameworkState,
+        source: _RouteOnlySource,
+        run_id: int,
+        exc: BaseException,
+    ) -> None:
+        self._prune_route_only_candidates(state, source, run_id)
+        state.record_event(
+            run_id,
+            "error",
+            "run",
+            "Ejecución aislada de rutas fallida",
+            {"error_type": type(exc).__name__, "detail": str(exc)},
+        )
+        state.fail_initial_run(run_id)
+
+    def _execute_route_only_run(
+        self,
+        *,
+        state: FrameworkState,
+        boundary: NormalInventoryBoundary,
+        source: _RouteOnlySource,
+        run_id: int,
+        heartbeat: RunHeartbeat,
+    ) -> _RouteOnlyExecution:
+        try:
+            route_results, global_resources = self._run_content_routes(
+                root=boundary.access_policy.root,
+                state=state,
+                run_id=run_id,
+                scan_id=source.scan_id,
+            )
+            self._complete_route_only_run(state, boundary, source, run_id)
+        except KeyboardInterrupt:
+            self._cancel_route_only_run(state, source, run_id)
+            raise
+        except BaseException as exc:
+            self._fail_route_only_run(state, source, run_id, exc)
+            raise
+        finally:
+            heartbeat.stop()
+        return _RouteOnlyExecution(
+            run_id,
+            source.run_id,
+            route_results,
+            global_resources,
+        )
+
+    @staticmethod
+    def _route_only_result(execution: _RouteOnlyExecution) -> RouteOnlyRunResult:
+        routes = execution.route_results
         return RouteOnlyRunResult(
-            run_id=run_id,
-            source_run_id=source_run_id,
-            pdf=cast("PdfRouteSummary | None", route_results.get("pdf")),
-            docx=cast("DocxRouteSummary | None", route_results.get("docx")),
-            office=cast("OfficeRouteSummary | None", route_results.get("office")),
-            audio=cast("AudioRouteSummary | None", route_results.get("audio")),
-            image=cast("ImageRouteSummary | None", route_results.get("image")),
-            code=cast("CodeRouteSummary | None", route_results.get("code")),
-            route_results=route_results,
-            global_resources=global_resource_summary,
+            run_id=execution.run_id,
+            source_run_id=execution.source_run_id,
+            pdf=cast("PdfRouteSummary | None", routes.get("pdf")),
+            docx=cast("DocxRouteSummary | None", routes.get("docx")),
+            office=cast("OfficeRouteSummary | None", routes.get("office")),
+            audio=cast("AudioRouteSummary | None", routes.get("audio")),
+            image=cast("ImageRouteSummary | None", routes.get("image")),
+            code=cast("CodeRouteSummary | None", routes.get("code")),
+            route_results=routes,
+            global_resources=execution.global_resources,
         )
 
 

@@ -22,6 +22,13 @@ literalmente `0.6.0` conservan el ejercicio reproducido el 2026-07-25 y no deben
 reescribirse al citarlo. Para promover `0.7.2`, construye sus artefactos y repite
 las mismas barreras con nombres y requisitos exactos de la entrega actual:
 
+La metadata vigente admite CPython `>=3.13,<3.15`. El wheelhouse y la
+instalación deben validarse de forma independiente para 3.13 y 3.14; la
+compatibilidad de un conjunto de wheels con una versión no demuestra la otra.
+La sdist vigente declara `setuptools==83.0.0` como backend de build. Las
+referencias posteriores a `setuptools==82.0.1` pertenecen exclusivamente a la
+reproducción histórica de `0.6.0` y se conservan como evidencia fechada.
+
 ```powershell
 $Version = '0.7.2'
 $Wheel = "C:\Ruta\Dist\neocortex_framework-$Version-py3-none-any.whl"
@@ -53,9 +60,9 @@ La METADATA de `0.7.2` separa el cierre de runtime así:
 
 | Selección | Requisitos directos |
 |---|---|
-| base | `complexipy`, `grimp`, `mypy`, `rich`, `ruff`, `xxhash` |
+| base | `complexipy`, `cosmic-ray`, `coverage`, `deptry`, `grimp`, `mypy`, `packaging`, `pip-audit`, `pytest`, `radon`, `rich`, `ruff`, `semgrep`, `vulture`, `xxhash` |
 | `documents` | `Pillow`, `PyMuPDF`, `pdfminer.six`, `pytesseract` |
-| `audio` | `faster-whisper` |
+| `audio` | `ctranslate2`, `faster-whisper` |
 | `image` | `Pillow`, `nudenet` |
 | `semantic` | `Pillow`, `fastembed`, `numpy` |
 | `ui` | `PySide6` |
@@ -93,6 +100,12 @@ de `tesseract` o `qpdf` deja degradadas las funciones OCR/recuperación PDF de
 en `PATH`; no interpreta overrides de una invocación operativa. Sus estados
 declaran presencia, no validan los rangos de versiones: el resolver hermético y
 `pip check` son las barreras de compatibilidad antes de promover el runtime.
+
+En Windows, los wheels nativos del cierre `full` también requieren el Microsoft
+Visual C++ v14 Redistributable x64. Conserva el instalador firmado y su hash en
+la evidencia offline. Tras instalarlo, importa explícitamente PyMuPDF, ONNX
+Runtime, PySide6, PyAV, CTranslate2 y OpenCV desde el venv candidato: la metadata
+y `pip check` no detectan una DLL del sistema ausente.
 
 `--no-deps` permite comprobar versión y ayuda porque esas rutas de arranque no
 importan engines. No demuestra que `KnowledgeSearchService`, inventario o una

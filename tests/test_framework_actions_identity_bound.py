@@ -894,4 +894,12 @@ def test_normal_internal_source_is_rejected_before_native_rename(
     assert native_calls == 0
     assert source.read_bytes() == b"protected-source"
     assert not destination.exists()
+
+
+def test_rename_mismatch_signature_is_frozen() -> None:
+    from inspect import signature
+
+    assert str(signature(FrameworkActions._rename_mismatch)) == (
+        "(self, planned, detected, summary: 'ActionSummary') -> 'ActionSummary'"
+    )
 # endregion [02]

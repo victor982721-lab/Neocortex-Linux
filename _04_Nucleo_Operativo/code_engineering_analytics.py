@@ -472,6 +472,177 @@ def _mutation_gates(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class _EngineeringEvidence:
+    history: ExternalProviderEvidence | None
+    mutation: ExternalProviderEvidence | None
+    history_metrics: Mapping[str, Sequence[EngineeringMetric]]
+    mutation_metrics: Mapping[str, Sequence[EngineeringMetric]]
+    mutation_metadata: Mapping[str, object]
+    cochanges: Mapping[str, int]
+    coverage_by_module: Mapping[str, EngineeringDimension]
+
+
+def _engineering_evidence(
+    coverage: CodeCoverageAnalysis | None,
+    providers: Mapping[str, ExternalProviderEvidence],
+) -> _EngineeringEvidence:
+    history = _validated_provider(GIT_HISTORY_PROVIDER_ID, providers)
+    mutation = _validated_provider(MUTATION_PROVIDER_ID, providers)
+    history_metrics, _history_metadata = _external_metrics_by_module(
+        history,
+        _HISTORY_METRICS,
+        GIT_HISTORY_PROVIDER_ID,
+    )
+    mutation_metrics, mutation_metadata = _external_metrics_by_module(
+        mutation,
+        _MUTATION_METRICS,
+        MUTATION_PROVIDER_ID,
+    )
+    return _EngineeringEvidence(
+        history,
+        mutation,
+        history_metrics,
+        mutation_metrics,
+        mutation_metadata,
+        _history_cochanges(history),
+        _coverage_dimensions(coverage),
+    )
+
+
+def _module_engineering_profile(
+    module: ArchitectureModule,
+    coverage: CodeCoverageAnalysis | None,
+    evidence: _EngineeringEvidence,
+) -> ModuleEngineeringProfile:
+    history_values = list(evidence.history_metrics.get(module.module_id, ()))
+    if module.module_id in evidence.cochanges:
+        history_values.append(
+            _metric(
+                "observed_cochange_relation_count",
+                evidence.cochanges[module.module_id],
+                "count",
+                GIT_HISTORY_PROVIDER_ID,
+                "module",
+                module.module_id,
+            )
+        )
+    return ModuleEngineeringProfile(
+        module.module_id,
+        module.owner_id,
+        _complexity_dimension(module),
+        evidence.coverage_by_module.get(
+            module.module_id,
+            _dimension(
+                "coverage",
+                (),
+                reason=coverage.reason if coverage is not None else "coverage_not_recorded",
+                not_recorded=coverage is None,
+                provenance=("pytest-coverage-trusted-deep",),
+            ),
+        ),
+        _dimension(
+            "mutation",
+            evidence.mutation_metrics.get(module.module_id, ()),
+            reason=(
+                evidence.mutation.reason
+                if evidence.mutation is not None
+                else "mutation_not_recorded"
+            ),
+            not_recorded=evidence.mutation is None,
+            provenance=(MUTATION_PROVIDER_ID,),
+            limitations=("mutation_score_is_not_defect_probability",),
+        ),
+        _dimension(
+            "history",
+            history_values,
+            reason=(
+                evidence.history.reason
+                if evidence.history is not None
+                else "history_not_recorded"
+            ),
+            not_recorded=evidence.history is None,
+            provenance=(GIT_HISTORY_PROVIDER_ID,),
+            limitations=("history_and_cochange_are_not_defect_probability",),
+        ),
+        _graph_dimension(module),
+    )
+
+
+def _engineering_profiles(
+    architecture: CodeArchitectureAnalysis | None,
+    coverage: CodeCoverageAnalysis | None,
+    evidence: _EngineeringEvidence,
+) -> tuple[ModuleEngineeringProfile, ...]:
+    modules = (
+        ()
+        if architecture is None or architecture.status != "ready"
+        else architecture.modules
+    )
+    if len(modules) > CODE_ENGINEERING_MODULE_LIMIT:
+        raise ValueError("engineering module bound exceeded")
+    return tuple(
+        _module_engineering_profile(module, coverage, evidence) for module in modules
+    )
+
+
+def _engineering_status(
+    architecture: CodeArchitectureAnalysis | None,
+    coverage: CodeCoverageAnalysis | None,
+    summaries: Sequence[EngineeringProviderSummary],
+) -> tuple[EngineeringStatus, str | None]:
+    if architecture is None or architecture.status != "ready":
+        return "abstained", "architecture_not_ready"
+    if (
+        sum(item.status == "ready" for item in summaries) == len(summaries)
+        and coverage is not None
+        and coverage.status == "ready"
+    ):
+        return "ready", None
+    return "partial", "one_or_more_engineering_dimensions_not_ready"
+
+
+def _engineering_mutation_score(
+    mutation_metrics: Mapping[str, Sequence[EngineeringMetric]],
+) -> float | None:
+    return next(
+        (
+            item.value
+            for values in mutation_metrics.values()
+            for item in values
+            if item.name == "mutation_score"
+        ),
+        None,
+    )
+
+
+def _engineering_digest(
+    *,
+    status: EngineeringStatus,
+    reason: str | None,
+    summaries: Sequence[EngineeringProviderSummary],
+    profiles: Sequence[ModuleEngineeringProfile],
+    gates: Sequence[EngineeringGate],
+    mutation_scope_signature: str | None,
+    mutation_score: float | None,
+    limitations: Sequence[str],
+) -> str:
+    payload = {
+        "status": status,
+        "reason": reason,
+        "providers": [asdict(item) for item in summaries],
+        "modules": [asdict(item) for item in profiles],
+        "gates": [asdict(item) for item in gates],
+        "mutation_scope_signature": mutation_scope_signature,
+        "mutation_score": mutation_score,
+        "limitations": limitations,
+    }
+    return (
+        "code-engineering-v1:xxh3_128:"
+        + fingerprint_text(canonical_json(payload)).xxh3_128
+    )
+
+
 def analyze_code_engineering(
     architecture: CodeArchitectureAnalysis | None,
     coverage: CodeCoverageAnalysis | None,
@@ -482,114 +653,32 @@ def analyze_code_engineering(
 ) -> CodeEngineeringAnalytics:
     """Correlate dimensions by stable module key without an aggregate score."""
 
-    history = _validated_provider(GIT_HISTORY_PROVIDER_ID, providers)
-    mutation = _validated_provider(MUTATION_PROVIDER_ID, providers)
-    history_metrics, _history_metadata = _external_metrics_by_module(
-        history, _HISTORY_METRICS, GIT_HISTORY_PROVIDER_ID
-    )
-    mutation_metrics, mutation_metadata = _external_metrics_by_module(
-        mutation, _MUTATION_METRICS, MUTATION_PROVIDER_ID
-    )
-    cochanges = _history_cochanges(history)
-    coverage_by_module = _coverage_dimensions(coverage)
-    modules = () if architecture is None or architecture.status != "ready" else architecture.modules
-    if len(modules) > CODE_ENGINEERING_MODULE_LIMIT:
-        raise ValueError("engineering module bound exceeded")
-
-    profiles: list[ModuleEngineeringProfile] = []
-    for module in modules:
-        history_values = list(history_metrics.get(module.module_id, ()))
-        if module.module_id in cochanges:
-            history_values.append(
-                _metric(
-                    "observed_cochange_relation_count",
-                    cochanges[module.module_id],
-                    "count",
-                    GIT_HISTORY_PROVIDER_ID,
-                    "module",
-                    module.module_id,
-                )
-            )
-        profiles.append(
-            ModuleEngineeringProfile(
-                module.module_id,
-                module.owner_id,
-                _complexity_dimension(module),
-                coverage_by_module.get(
-                    module.module_id,
-                    _dimension(
-                        "coverage",
-                        (),
-                        reason=(
-                            coverage.reason if coverage is not None else "coverage_not_recorded"
-                        ),
-                        not_recorded=coverage is None,
-                        provenance=("pytest-coverage-trusted-deep",),
-                    ),
-                ),
-                _dimension(
-                    "mutation",
-                    mutation_metrics.get(module.module_id, ()),
-                    reason=(mutation.reason if mutation is not None else "mutation_not_recorded"),
-                    not_recorded=mutation is None,
-                    provenance=(MUTATION_PROVIDER_ID,),
-                    limitations=("mutation_score_is_not_defect_probability",),
-                ),
-                _dimension(
-                    "history",
-                    history_values,
-                    reason=(history.reason if history is not None else "history_not_recorded"),
-                    not_recorded=history is None,
-                    provenance=(GIT_HISTORY_PROVIDER_ID,),
-                    limitations=("history_and_cochange_are_not_defect_probability",),
-                ),
-                _graph_dimension(module),
-            )
-        )
-
+    evidence = _engineering_evidence(coverage, providers)
+    profiles = _engineering_profiles(architecture, coverage, evidence)
     summaries = tuple(
         _provider_summary(provider_id, providers.get(provider_id))
         for provider_id in (GIT_HISTORY_PROVIDER_ID, MUTATION_PROVIDER_ID)
     )
-    gates = _mutation_gates(mutation, mutation_metrics)
-    ready_dimensions = sum(item.status == "ready" for item in summaries)
-    if architecture is None or architecture.status != "ready":
-        status: EngineeringStatus = "abstained"
-        reason = "architecture_not_ready"
-    elif ready_dimensions == len(summaries) and coverage is not None and coverage.status == "ready":
-        status = "ready"
-        reason = None
-    else:
-        status = "partial"
-        reason = "one_or_more_engineering_dimensions_not_ready"
+    gates = _mutation_gates(evidence.mutation, evidence.mutation_metrics)
+    status, reason = _engineering_status(architecture, coverage, summaries)
     limitations = (
         "dimensions_are_correlated_by_module_identity_not_statistical_causation",
         "no_aggregate_score_is_computed",
         "no_dimension_is_a_defect_probability",
         "mutation_findings_are_advisory_and_have_zero_mutation_authority",
     )
-    scope = mutation_metadata.get("measurement_scope_signature")
-    mutation_score = next(
-        (
-            item.value
-            for values in mutation_metrics.values()
-            for item in values
-            if item.name == "mutation_score"
-        ),
-        None,
-    )
-    digest_payload = {
-        "status": status,
-        "reason": reason,
-        "providers": [asdict(item) for item in summaries],
-        "modules": [asdict(item) for item in profiles],
-        "gates": [asdict(item) for item in gates],
-        "mutation_scope_signature": scope if isinstance(scope, str) else None,
-        "mutation_score": mutation_score,
-        "limitations": limitations,
-    }
-    digest = (
-        "code-engineering-v1:xxh3_128:" + fingerprint_text(canonical_json(digest_payload)).xxh3_128
+    scope = evidence.mutation_metadata.get("measurement_scope_signature")
+    mutation_scope_signature = scope if isinstance(scope, str) else None
+    mutation_score = _engineering_mutation_score(evidence.mutation_metrics)
+    digest = _engineering_digest(
+        status=status,
+        reason=reason,
+        summaries=summaries,
+        profiles=profiles,
+        gates=gates,
+        mutation_scope_signature=mutation_scope_signature,
+        mutation_score=mutation_score,
+        limitations=limitations,
     )
     return CodeEngineeringAnalytics(
         database,
@@ -597,9 +686,9 @@ def analyze_code_engineering(
         status,
         reason,
         summaries,
-        tuple(profiles),
+        profiles,
         gates,
-        scope if isinstance(scope, str) else None,
+        mutation_scope_signature,
         mutation_score,
         limitations,
         digest,

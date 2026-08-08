@@ -186,6 +186,55 @@ def test_error_retry_preserves_attempt_history(tmp_path: Path) -> None:
     assert int(current) == second
 
 
+def test_cache_diagnostic_count_excludes_external_and_graph_projections(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "code.sqlite3"
+    snapshot = _snapshot(tmp_path / "cached.py", file_id=2, text="cached")
+    observation = _skipped(snapshot, "cached", status=AnalysisStatus.TEXT_ONLY)
+
+    with CodeState(database) as state:
+        version_id, _ = state.store_skipped(observation, 1)
+        state.connection.executemany(
+            """INSERT INTO diagnostics(
+            version_id,source,code,severity,message,tool_name,tool_version,
+            confirmed,confidence,metadata_json) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+            (
+                (
+                    version_id,
+                    source,
+                    "derived-fixture",
+                    "info",
+                    "derived fixture",
+                    "fixture",
+                    "1",
+                    0,
+                    1.0,
+                    "{}",
+                )
+                for source in (
+                    "external:vulture-unused-static",
+                    "external:future-provider",
+                    "neocortex-reference-graph",
+                )
+            ),
+        )
+        all_diagnostics = state.connection.execute(
+            "SELECT COUNT(*) FROM diagnostics WHERE version_id=?",
+            (version_id,),
+        ).fetchone()[0]
+        cached = state.reuse_cached(
+            snapshot,
+            PROCESSING_SIGNATURE,
+            2,
+            retry_errors=False,
+        )
+
+    assert int(all_diagnostics) == 4
+    assert cached is not None
+    assert cached.diagnostics == 1
+
+
 def test_full_cache_validation_rejects_metadata_preserving_change(
     tmp_path: Path,
 ) -> None:
@@ -1107,7 +1156,7 @@ def test_finalize_graph_sqlite_cancellation_rolls_back_and_clears_handler(
             **before,
             # A successful rebuild advances only project freshness provenance.
             "projects": [
-                row[:9] + (3,) + row[10:] for row in before["projects"]
+                (*row[:9], 3, *row[10:]) for row in before["projects"]
             ],
         }
         assert recovered == expected

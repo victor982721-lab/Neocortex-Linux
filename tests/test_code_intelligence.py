@@ -8,9 +8,10 @@ import sqlite3
 import sys
 from contextlib import AbstractContextManager
 from dataclasses import replace
+from functools import wraps
 from pathlib import Path
 from types import ModuleType
-from typing import Iterable, Literal, Mapping
+from typing import Callable, Iterable, Literal, Mapping, ParamSpec, TypeVar
 
 import pytest
 
@@ -132,7 +133,8 @@ class _Inventory:
     def __init__(self, paths: Iterable[Path]):
         self.paths = tuple(paths)
 
-    def snapshots(self, _scan_id: int):
+    def snapshots(self, scan_id: int):
+        del scan_id
         return iter(_snapshot(path) for path in self.paths)
 
 
@@ -142,33 +144,35 @@ class _FrameworkState:
 
     def begin_route_phase(
         self,
-        _run_id: int,
-        _route: str,
-        phase: str,
+        run_id: int,
+        route_name: str,
+        phase_name: str,
         *,
         source_run_id: int | None = None,
     ) -> None:
-        del source_run_id
-        self.phases.append((phase, "running"))
+        del run_id, route_name, source_run_id
+        self.phases.append((phase_name, "running"))
 
     def complete_route_phase(
         self,
-        _run_id: int,
-        _route: str,
-        phase: str,
+        run_id: int,
+        route_name: str,
+        phase_name: str,
         summary: Mapping[str, object] | None = None,
     ) -> None:
+        del run_id, route_name
         assert summary is not None
-        self.phases.append((phase, "completed"))
+        self.phases.append((phase_name, "completed"))
 
     def fail_route_phase(
         self,
-        _run_id: int,
-        _route: str,
-        phase: str,
-        _exc: BaseException,
+        run_id: int,
+        route_name: str,
+        phase_name: str,
+        exc: BaseException,
     ) -> None:
-        self.phases.append((phase, "failed"))
+        del run_id, route_name, exc
+        self.phases.append((phase_name, "failed"))
 
 
 def _config(
@@ -214,6 +218,23 @@ def _track_graph_finalization(
 
     monkeypatch.setattr(CodeState, "finalize_graph", tracked)
     return calls
+
+
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
+
+
+def _observed_call(
+    events: list[str],
+    label: str,
+    callback: Callable[_P, _R],
+) -> Callable[_P, _R]:
+    @wraps(callback)
+    def observed(*args: _P.args, **kwargs: _P.kwargs) -> _R:
+        events.append(label)
+        return callback(*args, **kwargs)
+
+    return observed
 
 
 # endregion [01]
@@ -343,6 +364,116 @@ def test_route_is_incremental_searchable_and_does_not_modify_sources(
         and "validate_sqlite_access" in record.section.text
         for record in semantic_records
     )
+
+
+def test_route_preserves_analysis_graph_publication_lifecycle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    source = tmp_path / "project" / "worker.py"
+    source.parent.mkdir()
+    source.write_text("def run():\n    return True\n", encoding="utf-8")
+
+    class ObservedFrameworkState(_FrameworkState):
+        def begin_route_phase(
+            self,
+            run_id: int,
+            route_name: str,
+            phase_name: str,
+            *,
+            source_run_id: int | None = None,
+        ) -> None:
+            events.append(f"framework:begin:{phase_name}")
+            super().begin_route_phase(
+                run_id,
+                route_name,
+                phase_name,
+                source_run_id=source_run_id,
+            )
+
+        def complete_route_phase(
+            self,
+            run_id: int,
+            route_name: str,
+            phase_name: str,
+            summary: Mapping[str, object] | None = None,
+        ) -> None:
+            events.append(f"framework:complete:{phase_name}")
+            super().complete_route_phase(run_id, route_name, phase_name, summary)
+
+    monkeypatch.setattr(
+        CodeState,
+        "begin_run",
+        _observed_call(events, "state:begin_run", CodeState.begin_run),
+    )
+    monkeypatch.setattr(
+        CodeRoute,
+        "_process_candidate",
+        _observed_call(events, "candidate", CodeRoute._process_candidate),
+    )
+    monkeypatch.setattr(
+        CodeState,
+        "mark_missing",
+        _observed_call(events, "state:mark_missing", CodeState.mark_missing),
+    )
+    monkeypatch.setattr(
+        CodeState,
+        "finalize_graph",
+        _observed_call(events, "state:finalize_graph", CodeState.finalize_graph),
+    )
+    monkeypatch.setattr(
+        CodeRoute,
+        "_external_evidence",
+        _observed_call(events, "external_evidence", CodeRoute._external_evidence),
+    )
+    monkeypatch.setattr(
+        CodeState,
+        "complete_run",
+        _observed_call(events, "state:complete_run", CodeState.complete_run),
+    )
+    monkeypatch.setattr(
+        code_route_module,
+        "checkpoint_code_wal",
+        _observed_call(
+            events,
+            "checkpoint_wal",
+            code_route_module.checkpoint_code_wal,
+        ),
+    )
+    monkeypatch.setattr(
+        code_route_module,
+        "remove_checkpointed_code_sidecars",
+        _observed_call(
+            events,
+            "remove_sidecars",
+            code_route_module.remove_checkpointed_code_sidecars,
+        ),
+    )
+
+    summary = CodeRoute(
+        _config(tmp_path),
+        _Inventory((source,)),
+        ObservedFrameworkState(),
+        1,
+        7,
+    ).run()
+
+    assert summary.processed == 1
+    assert events == [
+        "framework:begin:analysis",
+        "state:begin_run",
+        "candidate",
+        "framework:complete:analysis",
+        "framework:begin:graph",
+        "state:mark_missing",
+        "state:finalize_graph",
+        "external_evidence",
+        "state:complete_run",
+        "framework:complete:graph",
+        "checkpoint_wal",
+        "remove_sidecars",
+    ]
 
 
 def test_relative_imports_resolve_by_package_path_without_basename_guessing(
@@ -1297,7 +1428,7 @@ def test_newly_available_analyzer_invalidates_runtime_fallback_cache(
             )
 
     module = ModuleType(module_name)
-    setattr(module, "FixtureOptionalAnalyzer", FixtureOptionalAnalyzer)
+    module.__dict__["FixtureOptionalAnalyzer"] = FixtureOptionalAnalyzer
     sys.modules[module_name] = module
     try:
         second = CodeRoute(
@@ -1351,7 +1482,7 @@ def test_cached_incomplete_status_counters_match_first_publication(
             raise RuntimeError("injected analyzer failure")
 
     module = ModuleType(module_name)
-    setattr(module, "FixtureFailingAnalyzer", FixtureFailingAnalyzer)
+    module.__dict__["FixtureFailingAnalyzer"] = FixtureFailingAnalyzer
     sys.modules[module_name] = module
     specs = (
         AnalyzerSpec(

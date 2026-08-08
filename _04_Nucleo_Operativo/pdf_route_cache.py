@@ -566,85 +566,132 @@ class PdfRouteCacheMixin:
             return
         self._touch_cache_hits(connection, [snapshot])
 
+    def _cached_retry_explicitly_requested(self, status: str) -> bool:
+        return (
+            self.config.retry_errors
+            and status in {"error", "protected", "partial"}
+        ) or (
+            self.config.selection.force_incomplete_retry
+            and status in {"error", "protected", "partial", "processing"}
+        )
+
+    def _cached_structural_revalidation_required(
+        self,
+        status: str,
+        error_type: str,
+    ) -> bool:
+        return (
+            self.config.apply_actions
+            and status == "error"
+            and error_type == "PdfStructuralRecoveryFailed"
+        )
+
+    @staticmethod
+    def _cached_page_sequence_retry_required(
+        row,
+        status: str,
+        error_type: str,
+    ) -> bool:
+        if status != "partial":
+            return False
+        return error_type == "PdfPageSequenceAborted" or (
+            not error_type
+            and int(row["persisted_page_error_count"])
+            >= PDF_PAGE_SEQUENCE_ERROR_LIMIT
+        )
+
+    @staticmethod
+    def _cached_timeout_retry_required(
+        row,
+        status: str,
+        error_type: str,
+        error_message: str,
+    ) -> bool:
+        if status not in {"error", "partial"} or error_type != "PdfDocumentTimeout":
+            return False
+        if error_message.startswith("[durable-progress:"):
+            return True
+        timeout_policy_recorded = error_message.startswith("[no-durable-progress:")
+        return not timeout_policy_recorded and 0 < int(row["completed_pages"]) < int(
+            row["page_count"]
+        )
+
+    @staticmethod
+    def _cached_automatic_retry_required(
+        row,
+        status: str,
+        error_type: str,
+        error_message: str,
+    ) -> bool:
+        retry_due = automatic_retry_due(
+            int(row["transient_retry_count"]),
+            None if row["next_retry_ns"] is None else int(row["next_retry_ns"]),
+        )
+        if not retry_due:
+            return False
+        if status == "partial" and bool(row["has_retryable_page_error"]):
+            return True
+        return status in {"error", "partial"} and is_retryable_pdf_document_error(
+            error_type,
+            error_message,
+        )
+
+    def _cached_policy_retry_required(
+        self,
+        row,
+        status: str,
+        error_type: str,
+        error_message: str,
+    ) -> bool:
+        if self._cached_structural_revalidation_required(status, error_type):
+            # The destructive policy is explicit and scoped. Revalidate all
+            # recovery engines and the source snapshot before recycling.
+            return True
+        if self._cached_page_sequence_retry_required(row, status, error_type):
+            # One bounded structural-repair pass. Legacy rows have no document
+            # marker, but retain the exact consecutive page-error evidence.
+            return True
+        if self._cached_timeout_retry_required(
+            row,
+            status,
+            error_type,
+            error_message,
+        ):
+            # Persisted durable progress and legacy unmarked partial progress
+            # get another attempt; recorded no-progress uses bounded backoff.
+            return True
+        return self._cached_automatic_retry_required(
+            row,
+            status,
+            error_type,
+            error_message,
+        )
+
     def _cached_status_decision(
         self,
         row,
         prior_status: str,
         retry_pages: int,
     ) -> CacheDecision:
-        if row["status"] == "done":
+        status = row["status"]
+        if status == "done":
             return self._cache_hit_with_review_evidence(
                 row,
                 prior_status,
                 retry_pages,
             )
-        if self.config.retry_errors and row["status"] in {
-            "error",
-            "protected",
-            "partial",
-        }:
-            return CacheDecision(False, prior_status, retry_pages)
-        if self.config.selection.force_incomplete_retry and row["status"] in {
-            "error",
-            "protected",
-            "partial",
-            "processing",
-        }:
+        if self._cached_retry_explicitly_requested(status):
             return CacheDecision(False, prior_status, retry_pages)
         error_type = str(row["error_type"] or "")
         error_message = str(row["error_message"] or "")
-        if (
-            self.config.apply_actions
-            and row["status"] == "error"
-            and error_type == "PdfStructuralRecoveryFailed"
-        ):
-            # The destructive policy is explicit and scoped. Revalidate all
-            # recovery engines and the source snapshot before recycling.
-            return CacheDecision(False, prior_status, retry_pages)
-        if row["status"] == "partial" and (
-            error_type == "PdfPageSequenceAborted"
-            or (
-                not error_type
-                and int(row["persisted_page_error_count"])
-                >= PDF_PAGE_SEQUENCE_ERROR_LIMIT
-            )
-        ):
-            # One bounded structural-repair pass. Legacy rows have no document
-            # marker, but retain the exact consecutive page-error evidence.
-            return CacheDecision(False, prior_status, retry_pages)
-        if row["status"] in {"error", "partial"} and error_type == "PdfDocumentTimeout":
-            if error_message.startswith("[durable-progress:"):
-                return CacheDecision(False, prior_status, retry_pages)
-            timeout_policy_recorded = error_message.startswith("[no-durable-progress:")
-            if not timeout_policy_recorded and 0 < int(row["completed_pages"]) < int(
-                row["page_count"]
-            ):
-                # One-time migration of legacy timeouts. The next attempt
-                # records whether it made progress, so this cannot loop.
-                return CacheDecision(False, prior_status, retry_pages)
-        retry_due = automatic_retry_due(
-            int(row["transient_retry_count"]),
-            None if row["next_retry_ns"] is None else int(row["next_retry_ns"]),
-        )
-        if (
-            row["status"] == "partial"
-            and bool(row["has_retryable_page_error"])
-            and retry_due
+        if self._cached_policy_retry_required(
+            row,
+            status,
+            error_type,
+            error_message,
         ):
             return CacheDecision(False, prior_status, retry_pages)
-        if (
-            row["status"] == "partial"
-            and is_retryable_pdf_document_error(error_type, error_message)
-            and retry_due
-        ):
-            return CacheDecision(False, prior_status, retry_pages)
-        if (
-            row["status"] == "error"
-            and is_retryable_pdf_document_error(error_type, error_message)
-            and retry_due
-        ):
-            return CacheDecision(False, prior_status, retry_pages)
-        if row["status"] in {"error", "protected", "partial"}:
+        if status in {"error", "protected", "partial"}:
             return self._cache_hit_with_review_evidence(
                 row,
                 prior_status,

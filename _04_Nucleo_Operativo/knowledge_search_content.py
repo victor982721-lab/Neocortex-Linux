@@ -13,6 +13,7 @@ dependency back to knowledge_search and captures no mutable facade defaults.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 from .file_identity import FileIdentity, FileIdentityEncoding
@@ -74,6 +75,28 @@ RevisionIdentity = Callable[
 LexicalSearch = Callable[..., tuple[LexicalRanking, ...]]
 SemanticSearch = Callable[..., "SemanticSearchResult"]
 ExactLookup = Callable[..., ExactLookupResult | None]
+
+
+@dataclass(frozen=True, slots=True)
+class _SemanticRankingContext:
+    paths: KnowledgeStatePaths
+    plan: KnowledgePlan
+    clock: Callable[[], int]
+    duration_ns: DurationNanoseconds
+    materialize_candidate: MaterializeCandidate
+    materialize_discovery_signal: MaterializeDiscoverySignal
+    semantic_search: SemanticSearch
+    cancellation: SQLiteCancellationBridge
+    reraise_captured_cancellation: ReraiseCapturedCancellation
+    sqlite_error_type: type[Exception]
+    evidence_mode: RetrievalMode
+
+
+@dataclass(slots=True)
+class _SemanticRankingOutput:
+    rankings: dict[str, tuple[KnowledgeCandidate, ...]]
+    discovery_signals: list[ResourceDiscoverySignal]
+    reports: list[RankingExecution]
 
 
 def revision_identity(
@@ -778,6 +801,311 @@ def _semantic_result_report(
     )
 
 
+def _append_semantic_no_budget_reports(
+    output: _SemanticRankingOutput,
+    expected_name: str,
+    discovery_step: RetrievalStep | None,
+    *,
+    include_title: bool,
+) -> None:
+    output.reports.append(_semantic_no_budget_report(expected_name))
+    if include_title:
+        assert discovery_step is not None
+        output.reports.append(
+            _semantic_no_budget_report(
+                discovery_step.ranking_name,
+                channel=discovery_step.channel,
+            )
+        )
+
+
+def _append_semantic_failure_reports(
+    context: _SemanticRankingContext,
+    output: _SemanticRankingOutput,
+    expected_name: str,
+    discovery_step: RetrievalStep | None,
+    exc: BaseException,
+    started_ns: int,
+    *,
+    include_title: bool,
+) -> None:
+    output.reports.append(
+        _semantic_failed_report(
+            expected_name,
+            exc,
+            clock=context.clock,
+            started_ns=started_ns,
+            duration_ns=context.duration_ns,
+        )
+    )
+    if include_title:
+        assert discovery_step is not None
+        output.reports.append(
+            _semantic_failed_report(
+                discovery_step.ranking_name,
+                exc,
+                clock=context.clock,
+                started_ns=started_ns,
+                duration_ns=context.duration_ns,
+                channel=discovery_step.channel,
+            )
+        )
+
+
+def _append_semantic_missing_reports(
+    context: _SemanticRankingContext,
+    output: _SemanticRankingOutput,
+    expected_name: str,
+    discovery_step: RetrievalStep | None,
+    started_ns: int,
+    *,
+    ambiguous: bool,
+    include_title: bool,
+) -> None:
+    output.reports.append(
+        _semantic_missing_report(
+            expected_name,
+            ambiguous=ambiguous,
+            clock=context.clock,
+            started_ns=started_ns,
+            duration_ns=context.duration_ns,
+        )
+    )
+    if include_title:
+        assert discovery_step is not None
+        output.reports.append(
+            _semantic_missing_report(
+                discovery_step.ranking_name,
+                ambiguous=False,
+                clock=context.clock,
+                started_ns=started_ns,
+                duration_ns=context.duration_ns,
+                channel=discovery_step.channel,
+            )
+        )
+
+
+def _search_semantic_step(
+    context: _SemanticRankingContext,
+    step: RetrievalStep,
+    vector_budget: int,
+    *,
+    include_title: bool,
+) -> SemanticSearchResult:
+    expected_name = step.ranking_name
+    return context.semantic_search(
+        context.paths.semantic.parent,
+        context.plan.normalized_query,
+        semantic_database=context.paths.semantic,
+        candidate_limit=step.candidate_limit,
+        limit=step.candidate_limit,
+        max_vectors=vector_budget,
+        include_text=expected_name == "semantic_text",
+        include_title=include_title,
+        include_images=expected_name == "semantic_image",
+        include_lexical=False,
+        local_files_only=True,
+        evidence_mode=context.plan.retrieval_mode is context.evidence_mode,
+        cancellation_check=(
+            context.cancellation.checkpoint if context.cancellation.enabled else None
+        ),
+    )
+
+
+def _materialize_semantic_candidates(
+    context: _SemanticRankingContext,
+    step: RetrievalStep,
+    ranking: SemanticRanking,
+) -> tuple[KnowledgeCandidate, ...]:
+    return tuple(
+        context.materialize_candidate(
+            value,
+            ranking_name=step.ranking_name,
+            source_rank=index,
+            producer="semantic-v6",
+        )
+        for index, value in enumerate(
+            ranking.resolved[: step.candidate_limit],
+            1,
+        )
+    )
+
+
+def _materialize_semantic_discovery_signals(
+    context: _SemanticRankingContext,
+    step: RetrievalStep,
+    ranking: SemanticRanking,
+) -> tuple[tuple[ResourceDiscoverySignal, ...], int]:
+    signals: list[ResourceDiscoverySignal] = []
+    rejected = 0
+    for index, value in enumerate(
+        ranking.resolved[: step.candidate_limit],
+        1,
+    ):
+        try:
+            signals.append(
+                context.materialize_discovery_signal(
+                    value,
+                    ranking_name=step.ranking_name,
+                    source_rank=index,
+                    producer="semantic-v6",
+                    fusion_weight=ranking.fusion_weight,
+                )
+            )
+        except ValueError:
+            rejected += 1
+    return tuple(signals), rejected
+
+
+def _append_semantic_title_result(
+    context: _SemanticRankingContext,
+    output: _SemanticRankingOutput,
+    result: SemanticSearchResult,
+    discovery_step: RetrievalStep,
+    started_ns: int,
+) -> None:
+    title_matches = tuple(
+        ranking
+        for ranking in result.rankings
+        if ranking.name == discovery_step.ranking_name
+    )
+    if len(title_matches) != 1:
+        output.reports.append(
+            _semantic_missing_report(
+                discovery_step.ranking_name,
+                ambiguous=bool(title_matches),
+                clock=context.clock,
+                started_ns=started_ns,
+                duration_ns=context.duration_ns,
+                channel=discovery_step.channel,
+            )
+        )
+        return
+    title_ranking = title_matches[0]
+    title_signals, rejected = _materialize_semantic_discovery_signals(
+        context,
+        discovery_step,
+        title_ranking,
+    )
+    output.discovery_signals.extend(title_signals)
+    title_report = _semantic_result_report(
+        discovery_step.ranking_name,
+        title_ranking,
+        len(title_signals),
+        candidate_limit=discovery_step.candidate_limit,
+        clock=context.clock,
+        started_ns=started_ns,
+        duration_ns=context.duration_ns,
+        channel=discovery_step.channel,
+    )
+    if rejected:
+        title_report = replace(
+            title_report,
+            complete=False,
+            reason="semantic_title_provenance_rejected",
+        )
+    output.reports.append(title_report)
+
+
+def _append_semantic_step_result(
+    context: _SemanticRankingContext,
+    output: _SemanticRankingOutput,
+    result: SemanticSearchResult,
+    step: RetrievalStep,
+    discovery_step: RetrievalStep | None,
+    started_ns: int,
+    *,
+    include_title: bool,
+) -> None:
+    expected_name = step.ranking_name
+    matching_rankings = tuple(
+        ranking for ranking in result.rankings if ranking.name == expected_name
+    )
+    if len(matching_rankings) != 1:
+        _append_semantic_missing_reports(
+            context,
+            output,
+            expected_name,
+            discovery_step,
+            started_ns,
+            ambiguous=bool(matching_rankings),
+            include_title=include_title,
+        )
+        return
+    ranking = matching_rankings[0]
+    candidates = _materialize_semantic_candidates(context, step, ranking)
+    if candidates:
+        output.rankings[expected_name] = candidates
+    output.reports.append(
+        _semantic_result_report(
+            expected_name,
+            ranking,
+            len(candidates),
+            candidate_limit=step.candidate_limit,
+            clock=context.clock,
+            started_ns=started_ns,
+            duration_ns=context.duration_ns,
+        )
+    )
+    if include_title:
+        assert discovery_step is not None
+        _append_semantic_title_result(
+            context,
+            output,
+            result,
+            discovery_step,
+            started_ns,
+        )
+
+
+def _execute_semantic_step(
+    context: _SemanticRankingContext,
+    output: _SemanticRankingOutput,
+    step: RetrievalStep,
+    vector_budget: int,
+    discovery_step: RetrievalStep | None,
+) -> None:
+    expected_name = step.ranking_name
+    include_title = expected_name == "semantic_text" and discovery_step is not None
+    if vector_budget < 1:
+        _append_semantic_no_budget_reports(
+            output,
+            expected_name,
+            discovery_step,
+            include_title=include_title,
+        )
+        return
+    started_ns = context.clock()
+    try:
+        result = _search_semantic_step(
+            context,
+            step,
+            vector_budget,
+            include_title=include_title,
+        )
+    except (OSError, RuntimeError, context.sqlite_error_type, ValueError) as exc:
+        context.reraise_captured_cancellation(context.cancellation, exc)
+        _append_semantic_failure_reports(
+            context,
+            output,
+            expected_name,
+            discovery_step,
+            exc,
+            started_ns,
+            include_title=include_title,
+        )
+        return
+    _append_semantic_step_result(
+        context,
+        output,
+        result,
+        step,
+        discovery_step,
+        started_ns,
+        include_title=include_title,
+    )
+
+
 def semantic_rankings(
     paths: KnowledgeStatePaths,
     plan: KnowledgePlan,
@@ -816,184 +1144,30 @@ def semantic_rankings(
         )
 
     vector_budgets = _semantic_vector_budgets(plan.max_vectors, len(semantic_steps))
-    rankings: dict[str, tuple[KnowledgeCandidate, ...]] = {}
-    discovery_signals: list[ResourceDiscoverySignal] = []
-    reports: list[RankingExecution] = []
-    cancellation = cancellation_bridge_type(cancellation_check)
     discovery_step = discovery_steps[0] if discovery_steps else None
+    context = _SemanticRankingContext(
+        paths,
+        plan,
+        clock,
+        duration_ns,
+        materialize_candidate,
+        materialize_discovery_signal,
+        semantic_search,
+        cancellation_bridge_type(cancellation_check),
+        reraise_captured_cancellation,
+        sqlite_error_type,
+        evidence_mode,
+    )
+    output = _SemanticRankingOutput({}, [], [])
     for step, vector_budget in zip(semantic_steps, vector_budgets, strict=True):
-        expected_name = step.ranking_name
-        include_title = expected_name == "semantic_text" and discovery_step is not None
-        if vector_budget < 1:
-            reports.append(_semantic_no_budget_report(expected_name))
-            if include_title:
-                assert discovery_step is not None
-                reports.append(
-                    _semantic_no_budget_report(
-                        discovery_step.ranking_name,
-                        channel=discovery_step.channel,
-                    )
-                )
-            continue
-        started_ns = clock()
-        try:
-            result = semantic_search(
-                paths.semantic.parent,
-                plan.normalized_query,
-                semantic_database=paths.semantic,
-                candidate_limit=step.candidate_limit,
-                limit=step.candidate_limit,
-                max_vectors=vector_budget,
-                include_text=expected_name == "semantic_text",
-                include_title=include_title,
-                include_images=expected_name == "semantic_image",
-                include_lexical=False,
-                local_files_only=True,
-                evidence_mode=plan.retrieval_mode is evidence_mode,
-                cancellation_check=(
-                    cancellation.checkpoint if cancellation.enabled else None
-                ),
-            )
-        except (OSError, RuntimeError, sqlite_error_type, ValueError) as exc:
-            reraise_captured_cancellation(cancellation, exc)
-            reports.append(
-                _semantic_failed_report(
-                    expected_name,
-                    exc,
-                    clock=clock,
-                    started_ns=started_ns,
-                    duration_ns=duration_ns,
-                )
-            )
-            if include_title:
-                assert discovery_step is not None
-                reports.append(
-                    _semantic_failed_report(
-                        discovery_step.ranking_name,
-                        exc,
-                        clock=clock,
-                        started_ns=started_ns,
-                        duration_ns=duration_ns,
-                        channel=discovery_step.channel,
-                    )
-                )
-            continue
-        matching_rankings = tuple(
-            ranking for ranking in result.rankings if ranking.name == expected_name
+        _execute_semantic_step(
+            context,
+            output,
+            step,
+            vector_budget,
+            discovery_step,
         )
-        if len(matching_rankings) != 1:
-            reports.append(
-                _semantic_missing_report(
-                    expected_name,
-                    ambiguous=bool(matching_rankings),
-                    clock=clock,
-                    started_ns=started_ns,
-                    duration_ns=duration_ns,
-                )
-            )
-            if include_title:
-                assert discovery_step is not None
-                reports.append(
-                    _semantic_missing_report(
-                        discovery_step.ranking_name,
-                        ambiguous=False,
-                        clock=clock,
-                        started_ns=started_ns,
-                        duration_ns=duration_ns,
-                        channel=discovery_step.channel,
-                    )
-                )
-            continue
-        ranking = matching_rankings[0]
-        resolved = ranking.resolved[: step.candidate_limit]
-        candidates = tuple(
-            materialize_candidate(
-                value,
-                ranking_name=expected_name,
-                source_rank=index,
-                producer="semantic-v6",
-            )
-            for index, value in enumerate(resolved, 1)
-        )
-        if candidates:
-            rankings[expected_name] = candidates
-        reports.append(
-            _semantic_result_report(
-                expected_name,
-                ranking,
-                len(candidates),
-                candidate_limit=step.candidate_limit,
-                clock=clock,
-                started_ns=started_ns,
-                duration_ns=duration_ns,
-            )
-        )
-        if not include_title:
-            continue
-        assert discovery_step is not None
-        title_matches = tuple(
-            value
-            for value in result.rankings
-            if value.name == discovery_step.ranking_name
-        )
-        if len(title_matches) != 1:
-            reports.append(
-                _semantic_missing_report(
-                    discovery_step.ranking_name,
-                    ambiguous=bool(title_matches),
-                    clock=clock,
-                    started_ns=started_ns,
-                    duration_ns=duration_ns,
-                    channel=discovery_step.channel,
-                )
-            )
-            continue
-        title_ranking = title_matches[0]
-        title_signals: list[ResourceDiscoverySignal] = []
-        rejected = 0
-        for index, value in enumerate(
-            title_ranking.resolved[: discovery_step.candidate_limit],
-            1,
-        ):
-            try:
-                title_signals.append(
-                    materialize_discovery_signal(
-                        value,
-                        ranking_name=discovery_step.ranking_name,
-                        source_rank=index,
-                        producer="semantic-v6",
-                        fusion_weight=title_ranking.fusion_weight,
-                    )
-                )
-            except ValueError:
-                rejected += 1
-        discovery_signals.extend(title_signals)
-        title_report = _semantic_result_report(
-            discovery_step.ranking_name,
-            title_ranking,
-            len(title_signals),
-            candidate_limit=discovery_step.candidate_limit,
-            clock=clock,
-            started_ns=started_ns,
-            duration_ns=duration_ns,
-            channel=discovery_step.channel,
-        )
-        if rejected:
-            title_report = RankingExecution(
-                name=title_report.name,
-                channel=title_report.channel,
-                executed=title_report.executed,
-                available=title_report.available,
-                complete=False,
-                returned=title_report.returned,
-                rows_scanned=title_report.rows_scanned,
-                vectors_scanned=title_report.vectors_scanned,
-                reason="semantic_title_provenance_rejected",
-                owner=title_report.owner,
-                elapsed_ns=title_report.elapsed_ns,
-            )
-        reports.append(title_report)
-    return rankings, tuple(discovery_signals), reports
+    return output.rankings, tuple(output.discovery_signals), output.reports
 
 
 def exact_rankings(

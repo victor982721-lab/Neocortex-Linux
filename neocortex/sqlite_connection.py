@@ -169,6 +169,19 @@ def _configure_writer(
         )
 
 
+def _disable_checkpoint_on_readonly_close(
+    connection: sqlite3.Connection,
+    *,
+    label: str,
+) -> None:
+    """Keep a WAL reader from checkpointing owner bytes when it closes."""
+
+    option = sqlite3.SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE
+    connection.setconfig(option, True)
+    if not connection.getconfig(option):
+        raise RuntimeError(f"{label} could not disable checkpoint-on-close")
+
+
 def connect_sqlite(
     path: str | Path,
     *,
@@ -185,6 +198,11 @@ def connect_sqlite(
         timeout_seconds=policy.timeout_seconds,
     )
     try:
+        if mode is READONLY_EXISTING:
+            _disable_checkpoint_on_readonly_close(
+                connection,
+                label=policy.label,
+            )
         if policy.row_factory is not None:
             connection.row_factory = policy.row_factory
         busy_timeout_ms = max(1, round(policy.timeout_seconds * 1000))

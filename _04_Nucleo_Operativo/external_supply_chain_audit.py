@@ -24,7 +24,7 @@ import tempfile
 import tomllib
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Literal
@@ -50,6 +50,7 @@ INSTALLED_PACKAGE_PROVIDER_SCHEMA = "neocortex.installed-package-inventory/v1"
 PIP_AUDIT_USES_NETWORK = True
 INSTALLED_PACKAGE_USES_NETWORK = False
 PIP_AUDIT_SERVICE = "pypi"
+_PIP_AUDIT_SOURCE = "PyPI JSON API via pip-audit pypi service"
 
 _PIP_AUDIT_TIMEOUT_SECONDS = 180.0
 _PIP_AUDIT_SOCKET_TIMEOUT_SECONDS = 15
@@ -132,6 +133,37 @@ class PipAuditExecution:
     process_invocations: int
     uses_network: bool
     limitations: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _PipAuditProcess:
+    tool_version: str
+    completed: subprocess.CompletedProcess[bytes]
+
+
+@dataclass(frozen=True, slots=True)
+class _PipAuditContext:
+    process: _PipAuditProcess
+    payload: tuple[object, ...]
+    observed: datetime
+    fresh_until: datetime
+    observed_text: str
+    fresh_until_text: str
+    snapshot_id: str
+    common_metadata: Mapping[str, object]
+
+
+@dataclass(slots=True)
+class _PipAuditProjection:
+    metrics: list[ExternalProviderMetric] = field(default_factory=list)
+    relations: list[ExternalProviderRelation] = field(default_factory=list)
+    seen_packages: set[str] = field(default_factory=set)
+    raw_vulnerability_rows: int = 0
+    packages_audited: int = 0
+    packages_skipped: int = 0
+    vulnerable_packages: int = 0
+    vulnerabilities: int = 0
+    aliases: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -498,16 +530,34 @@ def _deduplicated_pip_audit_vulnerabilities(
     return tuple(merged)
 
 
-def execute_pip_audit_known_vulnerabilities(
-    environment: Mapping[str, str],
-    *,
-    observed_at: datetime | None = None,
-    freshness_seconds: int = _PIP_AUDIT_FRESHNESS_SECONDS,
-) -> PipAuditExecution:
-    """Audit the installed environment through the bounded PyPI service only."""
-
+def _validate_pip_audit_freshness(freshness_seconds: int) -> None:
     if not 60 <= freshness_seconds <= 7 * 24 * 60 * 60:
         raise ValueError("pip-audit freshness window is outside its bound")
+
+
+def _pip_audit_command(cache_sentinel: Path) -> tuple[str, ...]:
+    return (
+        sys.executable,
+        "-m",
+        "pip_audit",
+        "--format",
+        "json",
+        "--vulnerability-service",
+        PIP_AUDIT_SERVICE,
+        "--aliases",
+        "on",
+        "--desc",
+        "off",
+        "--progress-spinner",
+        "off",
+        "--timeout",
+        str(_PIP_AUDIT_SOCKET_TIMEOUT_SECONDS),
+        "--cache-dir",
+        str(cache_sentinel),
+    )
+
+
+def _execute_pip_audit_process(environment: Mapping[str, str]) -> _PipAuditProcess:
     tool_version = _pip_audit_version()
     cache_parent = _pip_audit_cache_parent(environment)
     with tempfile.TemporaryDirectory(
@@ -522,25 +572,7 @@ def execute_pip_audit_known_vulnerabilities(
         # that a constrained Windows runner cannot remove.
         cache_sentinel = Path(temporary) / "http-cache-disabled"
         cache_sentinel.write_bytes(b"")
-        command = (
-            sys.executable,
-            "-m",
-            "pip_audit",
-            "--format",
-            "json",
-            "--vulnerability-service",
-            PIP_AUDIT_SERVICE,
-            "--aliases",
-            "on",
-            "--desc",
-            "off",
-            "--progress-spinner",
-            "off",
-            "--timeout",
-            str(_PIP_AUDIT_SOCKET_TIMEOUT_SECONDS),
-            "--cache-dir",
-            str(cache_sentinel),
-        )
+        command = _pip_audit_command(cache_sentinel)
         completed = run_bounded_capture(
             command,
             timeout_seconds=_PIP_AUDIT_TIMEOUT_SECONDS,
@@ -553,9 +585,14 @@ def execute_pip_audit_known_vulnerabilities(
             },
             memory_limit_bytes=_PIP_AUDIT_MEMORY_LIMIT_BYTES if os.name == "nt" else None,
         )
+    return _PipAuditProcess(tool_version, completed)
+
+
+def _validated_pip_audit_payload(
+    completed: subprocess.CompletedProcess[bytes],
+) -> tuple[object, ...]:
     if completed.returncode not in {0, 1}:
         raise _pip_audit_exit_error(completed)
-
     try:
         payload = _pip_audit_payload(completed.stdout)
     except ValueError as exc:
@@ -564,6 +601,16 @@ def execute_pip_audit_known_vulnerabilities(
         raise
     if len(payload) > _MAX_AUDIT_PACKAGES:
         raise ValueError("pip-audit package count exceeds its bound")
+    return tuple(payload)
+
+
+def _prepare_pip_audit_context(
+    process: _PipAuditProcess,
+    payload: tuple[object, ...],
+    *,
+    observed_at: datetime | None,
+    freshness_seconds: int,
+) -> _PipAuditContext:
     observed = _observation_time(observed_at)
     fresh_until = observed + timedelta(seconds=freshness_seconds)
     observed_text = _iso_utc(observed)
@@ -571,16 +618,16 @@ def execute_pip_audit_known_vulnerabilities(
     snapshot_id = external_signature(
         "pip-audit-snapshot-v1",
         {
-            "tool_version": tool_version,
+            "tool_version": process.tool_version,
             "service": PIP_AUDIT_SERVICE,
             "observed_at_utc": observed_text,
-            "payload_sha256": hashlib.sha256(completed.stdout).hexdigest(),
+            "payload_sha256": hashlib.sha256(process.completed.stdout).hexdigest(),
         },
     )
     common_metadata = {
         "provider_schema": PIP_AUDIT_PROVIDER_SCHEMA,
-        "tool_version": tool_version,
-        "source": "PyPI JSON API via pip-audit pypi service",
+        "tool_version": process.tool_version,
+        "source": _PIP_AUDIT_SOURCE,
         "service": PIP_AUDIT_SERVICE,
         "observed_at_utc": observed_text,
         "observed_date_utc": observed.date().isoformat(),
@@ -590,125 +637,197 @@ def execute_pip_audit_known_vulnerabilities(
         "authority": "advisory",
         "mutation_authority": False,
     }
-    metrics: list[ExternalProviderMetric] = []
-    relations: list[ExternalProviderRelation] = []
-    seen_packages: set[str] = set()
-    packages_audited = packages_skipped = vulnerable_packages = 0
-    vulnerability_count = alias_count = 0
-    raw_vulnerability_rows = 0
-    for raw_package in payload:
-        package = _required_mapping(raw_package, label="pip-audit package")
-        raw_name = _required_text(package.get("name"), label="pip-audit package name", maximum=256)
-        normalized = _normalized_package_name(raw_name, label="pip-audit package name")
-        if normalized in seen_packages:
-            raise ValueError("pip-audit output contains a duplicate package")
-        seen_packages.add(normalized)
-        subject_key = f"package:{normalized}"
-        skip_reason = package.get("skip_reason")
-        if skip_reason is not None:
-            reason = _required_text(skip_reason, label="pip-audit skip reason")
-            packages_skipped += 1
-            metrics.append(
-                _metric(
-                    PIP_AUDIT_PROVIDER_ID,
-                    subject_key=subject_key,
-                    category="known_vulnerability",
-                    name="package_audit_skipped",
-                    value=1,
-                    metadata={**common_metadata, "package_name": raw_name, "skip_reason": reason},
-                )
-            )
-            continue
-        version = _required_text(
-            package.get("version"), label="pip-audit installed version", maximum=512
-        )
-        raw_vulnerabilities = _required_list(
-            package.get("vulns"), label="pip-audit vulnerabilities"
-        )
-        raw_vulnerability_rows += len(raw_vulnerabilities)
-        if raw_vulnerability_rows > _MAX_VULNERABILITIES:
-            raise ValueError("pip-audit vulnerability count exceeds its bound")
-        vulnerabilities = _deduplicated_pip_audit_vulnerabilities(raw_vulnerabilities)
-        packages_audited += 1
-        if vulnerabilities:
-            vulnerable_packages += 1
-        package_metadata = {
-            **common_metadata,
-            "package_name": raw_name,
-            "normalized_name": normalized,
-            "installed_version": version,
-        }
-        metrics.extend(
-            (
-                _metric(
-                    PIP_AUDIT_PROVIDER_ID,
-                    subject_key=subject_key,
-                    category="known_vulnerability",
-                    name="package_audited",
-                    value=1,
-                    metadata=package_metadata,
-                ),
-                _metric(
-                    PIP_AUDIT_PROVIDER_ID,
-                    subject_key=subject_key,
-                    category="known_vulnerability",
-                    name="known_vulnerability_count",
-                    value=len(vulnerabilities),
-                    metadata=package_metadata,
-                ),
-            )
-        )
-        for vulnerability in vulnerabilities:
-            vulnerability_id = vulnerability.vulnerability_id
-            aliases = vulnerability.aliases
-            fix_versions = vulnerability.fix_versions
-            vulnerability_count += 1
-            alias_count += len(aliases)
-            advisory_key = f"advisory:{vulnerability_id}"
-            evidence_metadata = {
-                **package_metadata,
-                "vulnerability_id": vulnerability_id,
-                "aliases": list(aliases),
-                "fix_versions": list(fix_versions),
-                "fix_available": bool(fix_versions),
-                "descriptions_collected": False,
-            }
-            metrics.append(
-                _metric(
-                    PIP_AUDIT_PROVIDER_ID,
-                    subject_key=subject_key,
-                    category="known_vulnerability",
-                    name=f"known_vulnerability:{vulnerability_id}",
-                    value=1,
-                    metadata=evidence_metadata,
-                )
-            )
-            relations.append(
-                _relation(
-                    PIP_AUDIT_PROVIDER_ID,
-                    relation_kind="package_has_known_vulnerability",
-                    source_key=subject_key,
-                    target_kind="contract",
-                    target_key=advisory_key,
-                    metadata={**evidence_metadata, "category": "known_vulnerability"},
-                )
-            )
+    return _PipAuditContext(
+        process,
+        payload,
+        observed,
+        fresh_until,
+        observed_text,
+        fresh_until_text,
+        snapshot_id,
+        common_metadata,
+    )
 
+
+def _append_pip_audit_vulnerability(
+    projection: _PipAuditProjection,
+    vulnerability: _PipAuditVulnerability,
+    *,
+    subject_key: str,
+    package_metadata: Mapping[str, object],
+) -> None:
+    vulnerability_id = vulnerability.vulnerability_id
+    aliases = vulnerability.aliases
+    fix_versions = vulnerability.fix_versions
+    projection.vulnerabilities += 1
+    projection.aliases += len(aliases)
+    evidence_metadata = {
+        **package_metadata,
+        "vulnerability_id": vulnerability_id,
+        "aliases": list(aliases),
+        "fix_versions": list(fix_versions),
+        "fix_available": bool(fix_versions),
+        "descriptions_collected": False,
+    }
+    projection.metrics.append(
+        _metric(
+            PIP_AUDIT_PROVIDER_ID,
+            subject_key=subject_key,
+            category="known_vulnerability",
+            name=f"known_vulnerability:{vulnerability_id}",
+            value=1,
+            metadata=evidence_metadata,
+        )
+    )
+    projection.relations.append(
+        _relation(
+            PIP_AUDIT_PROVIDER_ID,
+            relation_kind="package_has_known_vulnerability",
+            source_key=subject_key,
+            target_kind="contract",
+            target_key=f"advisory:{vulnerability_id}",
+            metadata={**evidence_metadata, "category": "known_vulnerability"},
+        )
+    )
+
+
+def _append_pip_audit_package(
+    context: _PipAuditContext,
+    projection: _PipAuditProjection,
+    raw_package: object,
+) -> None:
+    package = _required_mapping(raw_package, label="pip-audit package")
+    raw_name = _required_text(
+        package.get("name"),
+        label="pip-audit package name",
+        maximum=256,
+    )
+    normalized = _normalized_package_name(raw_name, label="pip-audit package name")
+    if normalized in projection.seen_packages:
+        raise ValueError("pip-audit output contains a duplicate package")
+    projection.seen_packages.add(normalized)
+    subject_key = f"package:{normalized}"
+    skip_reason = package.get("skip_reason")
+    if skip_reason is not None:
+        reason = _required_text(skip_reason, label="pip-audit skip reason")
+        projection.packages_skipped += 1
+        projection.metrics.append(
+            _metric(
+                PIP_AUDIT_PROVIDER_ID,
+                subject_key=subject_key,
+                category="known_vulnerability",
+                name="package_audit_skipped",
+                value=1,
+                metadata={
+                    **context.common_metadata,
+                    "package_name": raw_name,
+                    "skip_reason": reason,
+                },
+            )
+        )
+        return
+
+    version = _required_text(
+        package.get("version"),
+        label="pip-audit installed version",
+        maximum=512,
+    )
+    raw_vulnerabilities = _required_list(
+        package.get("vulns"),
+        label="pip-audit vulnerabilities",
+    )
+    projection.raw_vulnerability_rows += len(raw_vulnerabilities)
+    if projection.raw_vulnerability_rows > _MAX_VULNERABILITIES:
+        raise ValueError("pip-audit vulnerability count exceeds its bound")
+    vulnerabilities = _deduplicated_pip_audit_vulnerabilities(raw_vulnerabilities)
+    projection.packages_audited += 1
+    projection.vulnerable_packages += int(bool(vulnerabilities))
+    package_metadata = {
+        **context.common_metadata,
+        "package_name": raw_name,
+        "normalized_name": normalized,
+        "installed_version": version,
+    }
+    projection.metrics.extend(
+        (
+            _metric(
+                PIP_AUDIT_PROVIDER_ID,
+                subject_key=subject_key,
+                category="known_vulnerability",
+                name="package_audited",
+                value=1,
+                metadata=package_metadata,
+            ),
+            _metric(
+                PIP_AUDIT_PROVIDER_ID,
+                subject_key=subject_key,
+                category="known_vulnerability",
+                name="known_vulnerability_count",
+                value=len(vulnerabilities),
+                metadata=package_metadata,
+            ),
+        )
+    )
+    for vulnerability in vulnerabilities:
+        _append_pip_audit_vulnerability(
+            projection,
+            vulnerability,
+            subject_key=subject_key,
+            package_metadata=package_metadata,
+        )
+
+
+def _build_pip_audit_outputs(context: _PipAuditContext) -> _PipAuditProjection:
+    projection = _PipAuditProjection()
+    for raw_package in context.payload:
+        _append_pip_audit_package(context, projection, raw_package)
+    return projection
+
+
+def _validate_pip_audit_exit_status(
+    completed: subprocess.CompletedProcess[bytes],
+    vulnerability_count: int,
+) -> None:
     if (completed.returncode == 1) != (vulnerability_count > 0):
         raise ValueError("pip-audit exit status disagrees with vulnerability payload")
 
+
+def _pip_audit_counters(
+    context: _PipAuditContext,
+    projection: _PipAuditProjection,
+) -> PipAuditCounters:
+    return PipAuditCounters(
+        len(context.payload),
+        projection.packages_audited,
+        projection.packages_skipped,
+        projection.vulnerable_packages,
+        projection.vulnerabilities,
+        projection.aliases,
+    )
+
+
+def _pip_audit_summary_metrics(
+    context: _PipAuditContext,
+    counters: PipAuditCounters,
+    *,
+    freshness_seconds: int,
+) -> tuple[ExternalProviderMetric, ...]:
     summary_key = "project:installed-environment"
     summary_values = (
-        ("audit_observed_at_unix_seconds", int(observed.timestamp()), "unix_seconds"),
-        ("audit_fresh_until_unix_seconds", int(fresh_until.timestamp()), "unix_seconds"),
+        ("audit_observed_at_unix_seconds", int(context.observed.timestamp()), "unix_seconds"),
+        (
+            "audit_fresh_until_unix_seconds",
+            int(context.fresh_until.timestamp()),
+            "unix_seconds",
+        ),
         ("audit_freshness_window_seconds", freshness_seconds, "seconds"),
         ("audit_current_at_observation", 1, "boolean"),
-        ("audited_package_count", packages_audited, "count"),
-        ("skipped_package_count", packages_skipped, "count"),
-        ("vulnerable_package_count", vulnerable_packages, "count"),
-        ("known_vulnerability_count", vulnerability_count, "count"),
+        ("audited_package_count", counters.packages_audited, "count"),
+        ("skipped_package_count", counters.packages_skipped, "count"),
+        ("vulnerable_package_count", counters.vulnerable_packages, "count"),
+        ("known_vulnerability_count", counters.vulnerabilities, "count"),
     )
-    metrics.extend(
+    return tuple(
         _metric(
             PIP_AUDIT_PROVIDER_ID,
             subject_key=summary_key,
@@ -716,33 +835,73 @@ def execute_pip_audit_known_vulnerabilities(
             name=name,
             value=value,
             unit=unit,
-            metadata=common_metadata,
+            metadata=context.common_metadata,
         )
         for name, value, unit in summary_values
     )
+
+
+def _build_pip_audit_execution(
+    context: _PipAuditContext,
+    projection: _PipAuditProjection,
+    *,
+    freshness_seconds: int,
+) -> PipAuditExecution:
+    completed = context.process.completed
+    counters = _pip_audit_counters(context, projection)
+    metrics = (
+        *projection.metrics,
+        *_pip_audit_summary_metrics(
+            context,
+            counters,
+            freshness_seconds=freshness_seconds,
+        ),
+    )
     return PipAuditExecution(
         tuple(sorted(metrics, key=lambda item: item.portable_metric_id)),
-        tuple(sorted(relations, key=lambda item: item.portable_relation_id)),
-        PipAuditCounters(
-            len(payload),
-            packages_audited,
-            packages_skipped,
-            vulnerable_packages,
-            vulnerability_count,
-            alias_count,
-        ),
-        tool_version,
-        "PyPI JSON API via pip-audit pypi service",
-        observed_text,
-        observed.date().isoformat(),
-        snapshot_id,
+        tuple(sorted(projection.relations, key=lambda item: item.portable_relation_id)),
+        counters,
+        context.process.tool_version,
+        _PIP_AUDIT_SOURCE,
+        context.observed_text,
+        context.observed.date().isoformat(),
+        context.snapshot_id,
         "fresh_at_observation",
-        fresh_until_text,
+        context.fresh_until_text,
         len(completed.stdout),
         len(completed.stderr),
         1,
         PIP_AUDIT_USES_NETWORK,
         PIP_AUDIT_LIMITATIONS,
+    )
+
+
+def execute_pip_audit_known_vulnerabilities(
+    environment: Mapping[str, str],
+    *,
+    observed_at: datetime | None = None,
+    freshness_seconds: int = _PIP_AUDIT_FRESHNESS_SECONDS,
+) -> PipAuditExecution:
+    """Audit the installed environment through the bounded PyPI service only."""
+
+    _validate_pip_audit_freshness(freshness_seconds)
+    process = _execute_pip_audit_process(environment)
+    payload = _validated_pip_audit_payload(process.completed)
+    context = _prepare_pip_audit_context(
+        process,
+        payload,
+        observed_at=observed_at,
+        freshness_seconds=freshness_seconds,
+    )
+    outputs = _build_pip_audit_outputs(context)
+    _validate_pip_audit_exit_status(
+        process.completed,
+        outputs.vulnerabilities,
+    )
+    return _build_pip_audit_execution(
+        context,
+        outputs,
+        freshness_seconds=freshness_seconds,
     )
 
 
@@ -1083,6 +1242,154 @@ def _record_hash(path: Path, algorithm: str) -> tuple[bytes, int]:
     return digest.digest(), observed
 
 
+@dataclass(slots=True)
+class _RecordVerificationProgress:
+    hash_verified: int = 0
+    size_verified: int = 0
+    missing_files: int = 0
+    hash_mismatches: int = 0
+    size_mismatches: int = 0
+    unverifiable_entries: int = 0
+    unsafe_entries: int = 0
+    malformed_entries: int = 0
+    files_hashed: int = 0
+    bytes_hashed: int = 0
+
+    def result(self, raw_record: bytes, entry_count: int) -> _RecordVerification:
+        return _RecordVerification(
+            present=True,
+            digest=hashlib.sha256(raw_record).hexdigest(),
+            entries=entry_count,
+            hash_verified=self.hash_verified,
+            size_verified=self.size_verified,
+            missing_files=self.missing_files,
+            hash_mismatches=self.hash_mismatches,
+            size_mismatches=self.size_mismatches,
+            unverifiable_entries=self.unverifiable_entries,
+            unsafe_entries=self.unsafe_entries,
+            malformed_entries=self.malformed_entries,
+            files_hashed=self.files_hashed,
+            bytes_hashed=self.bytes_hashed,
+        )
+
+
+class _RecordVerifier:
+    __slots__ = ("_distribution", "_progress", "_root")
+
+    def __init__(
+        self,
+        distribution: importlib.metadata.Distribution,
+        root: Path,
+    ) -> None:
+        self._distribution = distribution
+        self._root = root
+        self._progress = _RecordVerificationProgress()
+
+    def verify(
+        self,
+        rows: Sequence[Sequence[str]],
+        raw_record: bytes,
+    ) -> _RecordVerification:
+        for row in rows:
+            self._verify_row(row)
+        return self._progress.result(raw_record, len(rows))
+
+    def _verify_row(self, row: Sequence[str]) -> None:
+        entry = self._parse_entry(row)
+        if entry is None:
+            return
+        record_path, hash_field, size_field = entry
+        candidate = self._admit_candidate(record_path)
+        if candidate is None:
+            return
+        path, file_metadata = candidate
+        self._verify_size(size_field, file_metadata.st_size)
+        expected_hash = self._expected_hash(hash_field)
+        if expected_hash is None:
+            if not self._blank_hash_is_exempt(record_path):
+                self._progress.unverifiable_entries += 1
+            return
+        algorithm, expected_digest = expected_hash
+        self._verify_hash(path, file_metadata.st_size, algorithm, expected_digest)
+
+    def _parse_entry(self, row: Sequence[str]) -> tuple[str, str, str] | None:
+        if (
+            len(row) != 3
+            or not row[0]
+            or len(row[0].encode("utf-8")) > _MAX_TEXT_BYTES
+        ):
+            self._progress.malformed_entries += 1
+            return None
+        return row[0], row[1], row[2]
+
+    def _admit_candidate(self, record_path: str) -> tuple[Path, os.stat_result] | None:
+        candidate = Path(str(self._distribution.locate_file(record_path))).resolve(
+            strict=False
+        )
+        if not _is_within(candidate, self._root):
+            self._progress.unsafe_entries += 1
+            return None
+        try:
+            file_metadata = os.lstat(candidate)
+        except FileNotFoundError:
+            self._progress.missing_files += 1
+            return None
+        if _is_reparse_point(candidate) or not stat.S_ISREG(file_metadata.st_mode):
+            self._progress.unsafe_entries += 1
+            return None
+        return candidate, file_metadata
+
+    def _verify_size(self, size_field: str, observed_size: int) -> None:
+        if not size_field:
+            return
+        if not size_field.isdecimal():
+            self._progress.malformed_entries += 1
+        elif int(size_field) == observed_size:
+            self._progress.size_verified += 1
+        else:
+            self._progress.size_mismatches += 1
+
+    def _expected_hash(self, hash_field: str) -> tuple[str, bytes] | None:
+        if not hash_field:
+            return None
+        algorithm, separator, encoded_digest = hash_field.partition("=")
+        try:
+            if (
+                not separator
+                or algorithm not in hashlib.algorithms_guaranteed
+                or not encoded_digest
+            ):
+                raise ValueError
+            padding = "=" * (-len(encoded_digest) % 4)
+            expected_digest = base64.urlsafe_b64decode(encoded_digest + padding)
+        except (ValueError, binascii.Error):
+            self._progress.malformed_entries += 1
+            return None
+        return algorithm, expected_digest
+
+    @staticmethod
+    def _blank_hash_is_exempt(record_path: str) -> bool:
+        normalized = record_path.replace("\\", "/").casefold()
+        return normalized.endswith((".pyc", ".dist-info/record"))
+
+    def _verify_hash(
+        self,
+        path: Path,
+        expected_bytes: int,
+        algorithm: str,
+        expected_digest: bytes,
+    ) -> None:
+        if self._progress.bytes_hashed + expected_bytes > _MAX_RECORD_HASH_BYTES:
+            raise ValueError("installed RECORD hash bytes exceed their bound")
+        observed_digest, observed_bytes = _record_hash(path, algorithm)
+        self._progress.files_hashed += 1
+        self._progress.bytes_hashed += observed_bytes
+        if observed_digest == expected_digest:
+            self._progress.hash_verified += 1
+        else:
+            self._progress.hash_mismatches += 1
+
+
 def _record_verification(
     distribution: importlib.metadata.Distribution,
     *,
@@ -1090,7 +1397,21 @@ def _record_verification(
 ) -> _RecordVerification:
     record = distribution.read_text("RECORD")
     if record is None:
-        return _RecordVerification(False, None, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+        return _RecordVerification(
+            present=False,
+            digest=None,
+            entries=0,
+            hash_verified=0,
+            size_verified=0,
+            missing_files=0,
+            hash_mismatches=0,
+            size_mismatches=0,
+            unverifiable_entries=0,
+            unsafe_entries=0,
+            malformed_entries=0,
+            files_hashed=0,
+            bytes_hashed=0,
+        )
     raw_record = record.encode("utf-8")
     if len(raw_record) > _MAX_RECORD_BYTES:
         raise ValueError("installed RECORD exceeds its byte bound")
@@ -1098,82 +1419,7 @@ def _record_verification(
     if len(rows) > _MAX_RECORD_ENTRIES:
         raise ValueError("installed RECORD entry count exceeds its bound")
     root = installation_root.resolve(strict=True)
-    hash_verified = size_verified = missing = hash_mismatches = 0
-    size_mismatches = unverifiable = unsafe = malformed = 0
-    files_hashed = bytes_hashed = 0
-    for row in rows:
-        if len(row) != 3 or not row[0] or len(row[0].encode("utf-8")) > _MAX_TEXT_BYTES:
-            malformed += 1
-            continue
-        record_path, hash_field, size_field = row
-        candidate = Path(str(distribution.locate_file(record_path))).resolve(strict=False)
-        if not _is_within(candidate, root):
-            unsafe += 1
-            continue
-        try:
-            file_metadata = os.lstat(candidate)
-        except FileNotFoundError:
-            missing += 1
-            continue
-        if _is_reparse_point(candidate) or not stat.S_ISREG(file_metadata.st_mode):
-            unsafe += 1
-            continue
-        expected_size: int | None = None
-        if size_field:
-            if not size_field.isdecimal():
-                malformed += 1
-            else:
-                expected_size = int(size_field)
-                if expected_size == file_metadata.st_size:
-                    size_verified += 1
-                else:
-                    size_mismatches += 1
-        expected_digest: bytes | None = None
-        algorithm = ""
-        if hash_field:
-            algorithm, separator, encoded_digest = hash_field.partition("=")
-            try:
-                if (
-                    not separator
-                    or algorithm not in hashlib.algorithms_guaranteed
-                    or not encoded_digest
-                ):
-                    raise ValueError
-                padding = "=" * (-len(encoded_digest) % 4)
-                expected_digest = base64.urlsafe_b64decode(encoded_digest + padding)
-            except (ValueError, binascii.Error):
-                malformed += 1
-                expected_digest = None
-        normalized_record_path = record_path.replace("\\", "/").casefold()
-        exempt_blank = normalized_record_path.endswith((".pyc", ".dist-info/record"))
-        if expected_digest is None:
-            if not exempt_blank:
-                unverifiable += 1
-            continue
-        if bytes_hashed + file_metadata.st_size > _MAX_RECORD_HASH_BYTES:
-            raise ValueError("installed RECORD hash bytes exceed their bound")
-        observed_digest, observed_bytes = _record_hash(candidate, algorithm)
-        files_hashed += 1
-        bytes_hashed += observed_bytes
-        if observed_digest == expected_digest:
-            hash_verified += 1
-        else:
-            hash_mismatches += 1
-    return _RecordVerification(
-        True,
-        hashlib.sha256(raw_record).hexdigest(),
-        len(rows),
-        hash_verified,
-        size_verified,
-        missing,
-        hash_mismatches,
-        size_mismatches,
-        unverifiable,
-        unsafe,
-        malformed,
-        files_hashed,
-        bytes_hashed,
-    )
+    return _RecordVerifier(distribution, root).verify(rows, raw_record)
 
 
 def _license_ambiguity(row: _DistributionRow) -> tuple[bool, tuple[str, ...]]:

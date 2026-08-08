@@ -39,6 +39,31 @@ _MAX_STDERR_BYTES = 256 * 1024
 _MAX_TEST_OUTPUT_BYTES = 256 * 1024
 _MAX_REQUEST_BYTES = 16 * 1024 * 1024
 _MEMORY_LIMIT_BYTES = 4 * 1024 * 1024 * 1024
+_MUTATION_COUNT_NAMES = (
+    "generated",
+    "selected",
+    "completed",
+    "killed",
+    "survived",
+    "timed_out",
+    "incompetent",
+    "reused",
+    "process_invocations",
+)
+_MUTATION_FINDING_DETAILS = {
+    "survived": (
+        "MUTATION_SURVIVED",
+        "Selected mutant survived the declared focal tests.",
+    ),
+    "timeout": (
+        "MUTATION_TIMEOUT",
+        "Selected mutant exceeded its declared per-mutant timeout.",
+    ),
+    "incompetent": (
+        "MUTATION_INCOMPETENT",
+        "Selected mutant could not produce a valid test outcome.",
+    ),
+}
 
 
 class MutationAbstentionError(ValueError):
@@ -113,6 +138,29 @@ class FocalMutationExecution:
     limitations: tuple[str, ...]
     measurement_scope_signature: str
     measurement_complete: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedMutation:
+    owner: ExternalEvidenceFile
+    target_path: Path
+    target_sha256: str
+    source_hashes_verified: int
+    scratch: Path
+    request_path: Path
+    scope: str
+    signature: str
+
+
+@dataclass(frozen=True, slots=True)
+class _NormalizedMutation:
+    findings: tuple[ExternalProviderFinding, ...]
+    metrics: tuple[ExternalProviderMetric, ...]
+    relations: tuple[ExternalProviderRelation, ...]
+    counts: Mapping[str, int]
+    limitations: tuple[str, ...]
+    measurement_complete: bool
+    selection_truncated: bool
 
 
 def cosmic_ray_tool_version() -> str | None:
@@ -418,47 +466,38 @@ def _relations(
     return tuple(sorted(result, key=lambda item: item.portable_relation_id))
 
 
-def execute_cosmic_ray_mutation(
-    stage_root: Path,
-    staged: Mapping[str, ExternalEvidenceFile],
-    environment: Mapping[str, str],
-    *,
-    trusted_root: Path,
-    scratch_root: Path,
-    config: FocalMutationConfig,
-) -> FocalMutationExecution:
-    """Execute one explicit target and suite in a disposable staged copy."""
-
-    _validate_trusted_root(trusted_root)
-    validate_external_inputs(tuple(staged.values()))
-    owners = _owners_by_relative(staged)
-    selected = owners.get(config.target_relative_path.casefold())
-    if selected is None:
-        raise MutationAbstentionError("mutation_target_not_indexed")
-    target_path, owner = selected
-    if not target_path.is_file():
-        raise MutationAbstentionError("mutation_target_missing")
+def _mutation_roots(stage_root: Path, scratch_root: Path) -> tuple[Path, Path]:
     project_root = (stage_root / "source").resolve(strict=True)
     scratch = scratch_root.resolve(strict=True)
-    if os.path.commonpath(
-        (
-            os.path.normcase(os.path.abspath(project_root)),
-            os.path.normcase(os.path.abspath(scratch)),
-        )
-    ) == os.path.normcase(os.path.abspath(project_root)):
+    normalized_project = os.path.normcase(os.path.abspath(project_root))
+    normalized_scratch = os.path.normcase(os.path.abspath(scratch))
+    if os.path.commonpath((normalized_project, normalized_scratch)) == normalized_project:
         raise ValueError("mutation scratch cannot be inside staged project")
     scratch.mkdir(parents=True, exist_ok=True)
-    manifest = []
-    for _relative, (path, _item) in sorted(owners.items()):
+    return project_root, scratch
+
+
+def _mutation_source_manifest(
+    owners: Mapping[str, tuple[Path, ExternalEvidenceFile]],
+) -> tuple[list[dict[str, object]], dict[str, str]]:
+    manifest: list[dict[str, object]] = []
+    hashes: dict[str, str] = {}
+    for _relative, (path, item) in sorted(owners.items()):
         if not path.is_file():
             raise ValueError("mutation staged input is missing")
+        digest = _sha256(path)
+        hashes[item.relative_path] = digest
         manifest.append(
             {
-                "relative_path": _item.relative_path,
+                "relative_path": item.relative_path,
                 "size": path.stat().st_size,
-                "sha256": _sha256(path),
+                "sha256": digest,
             }
         )
+    return manifest, hashes
+
+
+def _mutation_tool_versions() -> dict[str, str]:
     version = cosmic_ray_tool_version()
     if version is None:
         raise MutationAbstentionError("cosmic_ray_8_4_6_unavailable")
@@ -466,7 +505,23 @@ def execute_cosmic_ray_mutation(
         pytest_version = importlib.metadata.version("pytest")
     except importlib.metadata.PackageNotFoundError as exc:
         raise MutationAbstentionError("pytest_unavailable") from exc
-    scope = mutation_input_signature(tuple(staged.values()), config)
+    return {
+        "cosmic-ray": version,
+        "pytest": pytest_version,
+        "python": sys.version.split()[0],
+    }
+
+
+def _publish_mutation_request(
+    *,
+    project_root: Path,
+    scratch: Path,
+    files: Sequence[ExternalEvidenceFile],
+    manifest: list[dict[str, object]],
+    tool_versions: Mapping[str, str],
+    config: FocalMutationConfig,
+) -> tuple[str, str, Path]:
+    scope = mutation_input_signature(files, config)
     request: dict[str, object] = {
         "schema": COSMIC_RAY_MUTATION_REQUEST_SCHEMA,
         "project_root": str(project_root),
@@ -477,11 +532,7 @@ def execute_cosmic_ray_mutation(
         "configuration_signature": config.configuration_signature,
         "measurement_scope_signature": scope,
         "source_manifest": manifest,
-        "tool_versions": {
-            "cosmic-ray": version,
-            "pytest": pytest_version,
-            "python": sys.version.split()[0],
-        },
+        "tool_versions": dict(tool_versions),
         "limits": {
             "max_mutants": config.max_mutants,
             "mutant_timeout_seconds": config.mutant_timeout_seconds,
@@ -491,9 +542,12 @@ def execute_cosmic_ray_mutation(
     }
     signature = _request_signature(request)
     request["request_signature"] = signature
-    encoded = json.dumps(request, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
-        "utf-8"
-    )
+    encoded = json.dumps(
+        request,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
     if len(encoded) > _MAX_REQUEST_BYTES:
         raise ValueError("mutation request exceeds its bound")
     request_root = scratch / "mutation-requests"
@@ -502,9 +556,57 @@ def execute_cosmic_ray_mutation(
     temporary = request_path.with_suffix(".tmp")
     temporary.write_bytes(encoded)
     os.replace(temporary, request_path)
-    worker = Path(__file__).with_name("external_mutation_cosmic_ray_worker.py").resolve(strict=True)
-    started = time.monotonic()
-    completed = run_bounded_capture(
+    return scope, signature, request_path
+
+
+def _prepare_mutation(
+    stage_root: Path,
+    staged: Mapping[str, ExternalEvidenceFile],
+    *,
+    trusted_root: Path,
+    scratch_root: Path,
+    config: FocalMutationConfig,
+) -> _PreparedMutation:
+    _validate_trusted_root(trusted_root)
+    files = tuple(staged.values())
+    validate_external_inputs(files)
+    owners = _owners_by_relative(staged)
+    selected = owners.get(config.target_relative_path.casefold())
+    if selected is None:
+        raise MutationAbstentionError("mutation_target_not_indexed")
+    target_path, owner = selected
+    if not target_path.is_file():
+        raise MutationAbstentionError("mutation_target_missing")
+    project_root, scratch = _mutation_roots(stage_root, scratch_root)
+    manifest, hashes = _mutation_source_manifest(owners)
+    scope, signature, request_path = _publish_mutation_request(
+        project_root=project_root,
+        scratch=scratch,
+        files=files,
+        manifest=manifest,
+        tool_versions=_mutation_tool_versions(),
+        config=config,
+    )
+    return _PreparedMutation(
+        owner,
+        target_path,
+        hashes[owner.relative_path],
+        len(manifest),
+        scratch,
+        request_path,
+        scope,
+        signature,
+    )
+
+
+def _run_mutation_worker(
+    worker: Path,
+    request_path: Path,
+    scratch: Path,
+    environment: Mapping[str, str],
+    config: FocalMutationConfig,
+) -> subprocess.CompletedProcess[bytes]:
+    return run_bounded_capture(
         (sys.executable, "-I", str(worker), "--request", str(request_path)),
         timeout_seconds=config.time_budget_seconds + 15.0,
         stdout_limit_bytes=_MAX_OUTPUT_BYTES,
@@ -513,65 +615,85 @@ def execute_cosmic_ray_mutation(
         environment=environment,
         memory_limit_bytes=_MEMORY_LIMIT_BYTES if os.name == "nt" else None,
     )
+
+
+def _validate_mutation_worker_status(
+    payload: Mapping[str, object],
+    completed: subprocess.CompletedProcess[bytes],
+    config: FocalMutationConfig,
+) -> None:
+    if completed.returncode == 0 and payload.get("status") == "ready":
+        return
+    error = _required_mapping(payload.get("error"), label="mutation worker error")
+    code = _required_text(error.get("code"), label="mutation worker error code", maximum=128)
+    if code == "time_budget_exhausted":
+        raise subprocess.TimeoutExpired(("cosmic-ray",), config.time_budget_seconds)
+    if code in {
+        "baseline_failed",
+        "baseline_timeout",
+        "empty_mutation_selection",
+        "symbol_not_found",
+        "test_missing",
+    }:
+        raise MutationAbstentionError(f"mutation_{code}")
+    detail = _required_text(
+        error.get("message"),
+        label="mutation worker error message",
+        maximum=2048,
+    )
+    raise ValueError(f"mutation_worker_exit:{completed.returncode}:{code}:{detail}")
+
+
+def _mutation_worker_payload(
+    completed: subprocess.CompletedProcess[bytes],
+    *,
+    signature: str,
+    scope: str,
+    config: FocalMutationConfig,
+) -> Mapping[str, object]:
     try:
         payload = _required_mapping(
-            json.loads(completed.stdout.decode("utf-8")), label="mutation worker"
+            json.loads(completed.stdout.decode("utf-8")),
+            label="mutation worker",
         )
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ValueError("mutation worker JSON is malformed") from exc
-    if completed.returncode != 0 or payload.get("status") != "ready":
-        error = _required_mapping(payload.get("error"), label="mutation worker error")
-        code = _required_text(error.get("code"), label="mutation worker error code", maximum=128)
-        if code == "time_budget_exhausted":
-            raise subprocess.TimeoutExpired(("cosmic-ray",), config.time_budget_seconds)
-        if code in {
-            "baseline_failed",
-            "baseline_timeout",
-            "empty_mutation_selection",
-            "symbol_not_found",
-            "test_missing",
-        }:
-            raise MutationAbstentionError(f"mutation_{code}")
-        raise ValueError(f"mutation_worker_exit:{completed.returncode}:{code}")
+    _validate_mutation_worker_status(payload, completed, config)
     if (
         payload.get("schema") != COSMIC_RAY_MUTATION_WORKER_SCHEMA
         or payload.get("request_signature") != signature
         or payload.get("measurement_scope_signature") != scope
     ):
         raise ValueError("mutation worker contract is incompatible")
-    canonical_symbol_value = payload.get("canonical_symbol")
-    canonical_symbol = None
-    if canonical_symbol_value is not None:
-        canonical_symbol = _required_text(
-            canonical_symbol_value, label="mutation canonical symbol", maximum=512
-        )
+    return payload
+
+
+def _mutation_canonical_symbol(payload: Mapping[str, object]) -> str | None:
+    value = payload.get("canonical_symbol")
+    if value is None:
+        return None
+    return _required_text(value, label="mutation canonical symbol", maximum=512)
+
+
+def _mutation_counts(payload: Mapping[str, object]) -> dict[str, int]:
     raw_counts = _required_mapping(payload.get("counts"), label="mutation counts")
-    counts = {
+    return {
         name: _required_int(raw_counts.get(name), label=f"mutation {name}")
-        for name in (
-            "generated",
-            "selected",
-            "completed",
-            "killed",
-            "survived",
-            "timed_out",
-            "incompetent",
-            "reused",
-            "process_invocations",
-        )
+        for name in _MUTATION_COUNT_NAMES
     }
-    measurement_complete = bool(payload.get("measurement_complete"))
-    selection_truncated = bool(payload.get("selection_truncated"))
-    common = {
-        "provider_schema": COSMIC_RAY_MUTATION_PROVIDER_SCHEMA,
-        "target_relative_path": owner.relative_path,
-        "target_symbol": canonical_symbol,
-        "test_selectors": list(config.test_selectors),
-        "selection_truncated": selection_truncated,
-        "measurement_complete": measurement_complete,
-        "baseline_passed": True,
-        "mutation_authority": False,
-    }
+
+
+def _mutation_metrics(
+    owner: ExternalEvidenceFile,
+    config: FocalMutationConfig,
+    *,
+    canonical_symbol: str | None,
+    scope: str,
+    payload: Mapping[str, object],
+    counts: Mapping[str, int],
+    measurement_complete: bool,
+    common_metadata: Mapping[str, object],
+) -> tuple[tuple[ExternalProviderMetric, ...], list[str]]:
     metric_specs: list[tuple[str, float, str]] = [
         ("mutants_generated", counts["generated"], "count"),
         ("mutants_selected", counts["selected"], "count"),
@@ -589,7 +711,8 @@ def execute_cosmic_ray_mutation(
         (
             "baseline_duration_milliseconds",
             _required_int(
-                payload.get("baseline_duration_milliseconds"), label="mutation baseline duration"
+                payload.get("baseline_duration_milliseconds"),
+                label="mutation baseline duration",
             ),
             "milliseconds",
         ),
@@ -614,72 +737,161 @@ def execute_cosmic_ray_mutation(
             name=name,
             value=float(value),
             unit=unit,
-            common_metadata=common,
+            common_metadata=common_metadata,
         )
         for name, value, unit in metric_specs
     )
-    findings = []
+    return metrics, limitations
+
+
+def _mutation_outcome_finding(
+    owner: ExternalEvidenceFile,
+    raw: Mapping[str, object],
+    *,
+    scope: str,
+) -> ExternalProviderFinding | None:
+    outcome = _required_text(raw.get("outcome"), label="mutation outcome", maximum=32)
+    if outcome == "killed":
+        return None
+    details = _MUTATION_FINDING_DETAILS.get(outcome)
+    if details is None:
+        raise ValueError("mutation worker emitted an unknown outcome")
+    code, message = details
+    return _finding(owner, raw, code=code, message=message, scope=scope)
+
+
+def _mutation_findings(
+    owner: ExternalEvidenceFile,
+    payload: Mapping[str, object],
+    *,
+    scope: str,
+) -> tuple[ExternalProviderFinding, ...]:
+    findings: list[ExternalProviderFinding] = []
     for item in _required_list(payload.get("mutations"), label="mutation results"):
         raw = _required_mapping(item, label="mutation result")
-        outcome = _required_text(raw.get("outcome"), label="mutation outcome", maximum=32)
-        if outcome == "survived":
-            findings.append(
-                _finding(
-                    owner,
-                    raw,
-                    code="MUTATION_SURVIVED",
-                    message="Selected mutant survived the declared focal tests.",
-                    scope=scope,
-                )
-            )
-        elif outcome == "timeout":
-            findings.append(
-                _finding(
-                    owner,
-                    raw,
-                    code="MUTATION_TIMEOUT",
-                    message="Selected mutant exceeded its declared per-mutant timeout.",
-                    scope=scope,
-                )
-            )
-        elif outcome == "incompetent":
-            findings.append(
-                _finding(
-                    owner,
-                    raw,
-                    code="MUTATION_INCOMPETENT",
-                    message="Selected mutant could not produce a valid test outcome.",
-                    scope=scope,
-                )
-            )
-        elif outcome != "killed":
-            raise ValueError("mutation worker emitted an unknown outcome")
-    validate_external_inputs(tuple(staged.values()))
-    if _sha256(target_path) != next(
-        str(item["sha256"]) for item in manifest if item["relative_path"] == owner.relative_path
-    ):
-        raise ValueError("mutation staged target changed after execution")
-    counters = {
-        **{
-            f"mutants_{key}": value for key, value in counts.items() if key != "process_invocations"
-        },
-        "process_invocations": 1 + counts["process_invocations"],
-        "measurement_complete": int(measurement_complete),
-        "selection_truncated": int(selection_truncated),
-        "source_hashes_verified": len(manifest),
-        "wall_milliseconds": int((time.monotonic() - started) * 1000),
+        finding = _mutation_outcome_finding(owner, raw, scope=scope)
+        if finding is not None:
+            findings.append(finding)
+    return tuple(sorted(findings, key=lambda item: item.portable_finding_id))
+
+
+def _normalize_mutation(
+    owner: ExternalEvidenceFile,
+    config: FocalMutationConfig,
+    payload: Mapping[str, object],
+    *,
+    scope: str,
+) -> _NormalizedMutation:
+    canonical_symbol = _mutation_canonical_symbol(payload)
+    counts = _mutation_counts(payload)
+    measurement_complete = bool(payload.get("measurement_complete"))
+    selection_truncated = bool(payload.get("selection_truncated"))
+    common = {
+        "provider_schema": COSMIC_RAY_MUTATION_PROVIDER_SCHEMA,
+        "target_relative_path": owner.relative_path,
+        "target_symbol": canonical_symbol,
+        "test_selectors": list(config.test_selectors),
+        "selection_truncated": selection_truncated,
+        "measurement_complete": measurement_complete,
+        "baseline_passed": True,
+        "mutation_authority": False,
     }
-    return FocalMutationExecution(
-        tuple(sorted(findings, key=lambda item: item.portable_finding_id)),
+    metrics, limitations = _mutation_metrics(
+        owner,
+        config,
+        canonical_symbol=canonical_symbol,
+        scope=scope,
+        payload=payload,
+        counts=counts,
+        measurement_complete=measurement_complete,
+        common_metadata=common,
+    )
+    return _NormalizedMutation(
+        _mutation_findings(owner, payload, scope=scope),
         tuple(sorted(metrics, key=lambda item: item.portable_metric_id)),
         _relations(owner, config, canonical_symbol=canonical_symbol, scope=scope),
+        counts,
+        tuple(sorted({str(item) for item in limitations})),
+        measurement_complete,
+        selection_truncated,
+    )
+
+
+def _verify_mutation_sources(
+    staged: Mapping[str, ExternalEvidenceFile],
+    prepared: _PreparedMutation,
+) -> None:
+    validate_external_inputs(tuple(staged.values()))
+    if _sha256(prepared.target_path) != prepared.target_sha256:
+        raise ValueError("mutation staged target changed after execution")
+
+
+def _mutation_counters(
+    normalized: _NormalizedMutation,
+    prepared: _PreparedMutation,
+    *,
+    started: float,
+) -> dict[str, int]:
+    return {
+        **{
+            f"mutants_{key}": value
+            for key, value in normalized.counts.items()
+            if key != "process_invocations"
+        },
+        "process_invocations": 1 + normalized.counts["process_invocations"],
+        "measurement_complete": int(normalized.measurement_complete),
+        "selection_truncated": int(normalized.selection_truncated),
+        "source_hashes_verified": prepared.source_hashes_verified,
+        "wall_milliseconds": int((time.monotonic() - started) * 1000),
+    }
+
+
+def execute_cosmic_ray_mutation(
+    stage_root: Path,
+    staged: Mapping[str, ExternalEvidenceFile],
+    environment: Mapping[str, str],
+    *,
+    trusted_root: Path,
+    scratch_root: Path,
+    config: FocalMutationConfig,
+) -> FocalMutationExecution:
+    """Execute one explicit target and suite in a disposable staged copy."""
+    prepared = _prepare_mutation(
+        stage_root,
+        staged,
+        trusted_root=trusted_root,
+        scratch_root=scratch_root,
+        config=config,
+    )
+    worker = Path(__file__).with_name("external_mutation_cosmic_ray_worker.py").resolve(strict=True)
+    started = time.monotonic()
+    completed = _run_mutation_worker(
+        worker,
+        prepared.request_path,
+        prepared.scratch,
+        environment,
+        config,
+    )
+    payload = _mutation_worker_payload(
+        completed,
+        signature=prepared.signature,
+        scope=prepared.scope,
+        config=config,
+    )
+    normalized = _normalize_mutation(prepared.owner, config, payload, scope=prepared.scope)
+    _verify_mutation_sources(staged, prepared)
+    counters = _mutation_counters(normalized, prepared, started=started)
+    return FocalMutationExecution(
+        normalized.findings,
+        normalized.metrics,
+        normalized.relations,
         len(completed.stdout),
         len(completed.stderr),
         counters["process_invocations"],
         counters,
-        tuple(sorted({str(item) for item in limitations})),
-        scope,
-        measurement_complete,
+        normalized.limitations,
+        prepared.scope,
+        normalized.measurement_complete,
     )
 
 

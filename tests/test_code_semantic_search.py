@@ -7,6 +7,7 @@
 # region [01] Dependencias del módulo
 from __future__ import annotations
 
+import inspect
 import json
 import sqlite3
 from contextlib import closing
@@ -17,12 +18,14 @@ from typing import Iterable, Mapping, Sequence
 import pytest
 
 from _02_Deduplicacion import FileSnapshot
+from _04_Nucleo_Operativo import code_search as code_search_implementation
 from _04_Nucleo_Operativo import semantic_service
 from _04_Nucleo_Operativo import (
     semantic_search_service as semantic_search_implementation,
 )
 from _04_Nucleo_Operativo.code_contracts import CodeRouteConfig, CodeSearchQuery
 from _04_Nucleo_Operativo.code_route import CodeRoute
+from _04_Nucleo_Operativo.code_schema import readonly_code_database
 from _04_Nucleo_Operativo.code_search import search_code
 from _04_Nucleo_Operativo.code_semantic_links import (
     CodeSemanticLinkError,
@@ -34,6 +37,7 @@ from _04_Nucleo_Operativo.semantic_models import (
     EmbeddingModelSpec,
     EmbeddingRequest,
 )
+from _04_Nucleo_Operativo.sqlite_cancellation import SQLiteCancellationBridge
 # endregion [01]
 
 # region [02] Implementación
@@ -55,37 +59,40 @@ class _Inventory:
     def __init__(self, paths: Iterable[Path]):
         self.paths = tuple(paths)
 
-    def snapshots(self, _scan_id: int):
+    def snapshots(self, scan_id: int):
+        del scan_id
         return iter(_snapshot(path) for path in self.paths)
 
 
 class _FrameworkState:
     def begin_route_phase(
         self,
-        _run_id: int,
-        _route: str,
-        _phase: str,
+        run_id: int,
+        route_name: str,
+        phase_name: str,
         *,
         source_run_id: int | None = None,
     ) -> None:
-        del source_run_id
+        del run_id, route_name, phase_name, source_run_id
 
     def complete_route_phase(
         self,
-        _run_id: int,
-        _route: str,
-        _phase: str,
+        run_id: int,
+        route_name: str,
+        phase_name: str,
         summary: Mapping[str, object] | None = None,
     ) -> None:
+        del run_id, route_name, phase_name
         assert summary is not None
 
     def fail_route_phase(
         self,
-        _run_id: int,
-        _route: str,
-        _phase: str,
-        _exc: BaseException,
+        run_id: int,
+        route_name: str,
+        phase_name: str,
+        exc: BaseException,
     ) -> None:
+        del run_id, route_name, phase_name, exc
         raise AssertionError("semantic search fixture route must not fail")
 
 
@@ -119,6 +126,61 @@ class _ConstantBackend:
 
     def text_tokenizer_contract(self) -> tuple[str, int]:
         return "code-semantic-fixture-tokenizer-v1", 512
+
+
+def test_semantic_rows_abstain_before_search_without_prerequisites(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert str(inspect.signature(code_search_implementation._semantic_rows)) == (
+        "(code_database: 'Path', connection: 'sqlite3.Connection', query: "
+        "'CodeSearchQuery', fetch_limit: 'int', cancellation: "
+        "'SQLiteCancellationBridge', *, model_cache: 'Path | None', threads: "
+        "'int | None') -> 'tuple[_SearchRow, ...]'"
+    )
+    source = tmp_path / "prerequisite.py"
+    source.write_text("def guarded_search():\n    return 'ready'\n", encoding="utf-8")
+    state_path = tmp_path / "state" / "code.sqlite3"
+    CodeRoute(
+        CodeRouteConfig(
+            state_path=state_path,
+            dedup_path=tmp_path / "state" / "dedup.sqlite3",
+        ),
+        _Inventory((source,)),
+        _FrameworkState(),
+        1,
+        1,
+    ).run()
+    calls = 0
+
+    def unexpected_search(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        raise AssertionError("semantic model search must remain gated")
+
+    monkeypatch.setattr(
+        semantic_service,
+        "search_semantic_index",
+        unexpected_search,
+    )
+    assert (
+        search_code(
+            state_path,
+            CodeSearchQuery(text="guarded search", modes=("semantic",)),
+        )
+        == ()
+    )
+
+    (state_path.parent / "semantic.sqlite3").touch()
+    assert search_code(state_path, CodeSearchQuery(modes=("semantic",))) == ()
+    assert (
+        search_code(
+            state_path,
+            CodeSearchQuery(text="guarded search", modes=("semantic",)),
+        )
+        == ()
+    )
+    assert calls == 0
 
 
 def test_semantic_hits_resolve_to_current_rows_and_apply_filters(
@@ -214,14 +276,86 @@ def test_semantic_hits_resolve_to_current_rows_and_apply_filters(
     monkeypatch.setattr(semantic_service, "search_semantic_index", semantic_result)
 
     model_cache = tmp_path / "model-cache"
+    lower_score_hit = SimpleNamespace(**(vars(resolved.hit) | {"score": 0.625}))
+    lower_score_resolved = SimpleNamespace(
+        **(
+            vars(resolved)
+            | {
+                "snippet": "Secondary SQLite access evidence",
+                "hit": lower_score_hit,
+            }
+        )
+    )
+    ordered_result = SimpleNamespace(
+        rankings=(
+            SimpleNamespace(
+                name="semantic_text",
+                available=True,
+                resolved=(resolved, lower_score_resolved),
+            ),
+        )
+    )
+
+    def ordered_semantic_result(*_args, **kwargs):
+        search_kwargs.update(kwargs)
+        return ordered_result
+
+    monkeypatch.setattr(
+        semantic_service,
+        "search_semantic_index",
+        ordered_semantic_result,
+    )
+    checkpoints = 0
+
+    def checkpoint() -> None:
+        nonlocal checkpoints
+        checkpoints += 1
+
+    query = CodeSearchQuery(
+        text="where is SQLite access validated",
+        modes=("semantic",),
+        path="access.py",
+        language="python",
+    )
+    with readonly_code_database(state_path) as connection:
+        before_changes = connection.total_changes
+        ordered_rows = code_search_implementation._semantic_rows(
+            state_path,
+            connection,
+            query,
+            7,
+            SQLiteCancellationBridge(checkpoint),
+            model_cache=model_cache,
+            threads=2,
+        )
+        assert connection.total_changes == before_changes == 0
+    assert checkpoints == 2
+    assert search_kwargs["limit"] == 7
+    assert search_kwargs["max_vectors"] == 500_000
+    assert search_kwargs["include_text"] is True
+    assert search_kwargs["include_images"] is False
+    assert search_kwargs["include_lexical"] is False
+    assert search_kwargs["model_cache"] == model_cache
+    assert search_kwargs["local_files_only"] is True
+    assert search_kwargs["threads"] == 2
+    assert callable(search_kwargs["cancellation_check"])
+    assert tuple(row.snippet for row in ordered_rows) == (
+        "Validate SQLite access with PRAGMA quick_check",
+        "Secondary SQLite access evidence",
+    )
+    assert tuple(row.evidence for row in ordered_rows) == (
+        "semantic:fixture-model-v1:0.87500000:generation=4:"
+        "space=fixture-space-v1:calibration=uncalibrated",
+        "semantic:fixture-model-v1:0.62500000:generation=4:"
+        "space=fixture-space-v1:calibration=uncalibrated",
+    )
+    assert all(row.version_id == target_version_id for row in ordered_rows)
+
+    search_kwargs.clear()
+    monkeypatch.setattr(semantic_service, "search_semantic_index", semantic_result)
     hits = search_code(
         state_path,
-        CodeSearchQuery(
-            text="where is SQLite access validated",
-            modes=("semantic",),
-            path="access.py",
-            language="python",
-        ),
+        query,
         semantic_model_cache=model_cache,
         semantic_threads=2,
     )
@@ -252,6 +386,10 @@ def test_semantic_hits_resolve_to_current_rows_and_apply_filters(
 
     base_resolved = vars(resolved)
     invalid_overrides: tuple[dict[str, object], ...] = (
+        {"source_kind": "pdf"},
+        {"section_kind": 1},
+        {"section_kind": "code_"},
+        {"section_id": target_chunk_index},
         {"section_id": f"0{target_chunk_index}"},
         {"section_id": "-1"},
         {"section_id": "not-a-chunk"},
@@ -259,6 +397,7 @@ def test_semantic_hits_resolve_to_current_rows_and_apply_filters(
         {"section_id": str(target_chunk_index + 10_000)},
         {"section_kind": "text"},
         {"section_kind": f"code_{target_kind}_missing"},
+        {"source_revision": []},
         {"source_revision": {}},
         {"source_revision": {"version_id": True}},
         {"source_revision": {"version_id": target_version_id + 10_000}},
@@ -279,6 +418,70 @@ def test_semantic_hits_resolve_to_current_rows_and_apply_filters(
             semantic_service,
             "search_semantic_index",
             lambda *_args, _result=invalid_result, **_kwargs: _result,
+        )
+        assert (
+            search_code(
+                state_path,
+                CodeSearchQuery(text="SQLite access", modes=("semantic",)),
+            )
+            == ()
+        )
+
+    for hit_overrides in (
+        {"item_id": ""},
+        {"indexed_model_signature": ""},
+        {"vector_space": ""},
+        {"generation_id": True},
+        {"generation_id": 0},
+        {"generation_id": 9_223_372_036_854_775_808},
+    ):
+        invalid_hit = SimpleNamespace(**(vars(resolved.hit) | hit_overrides))
+        invalid = SimpleNamespace(**(base_resolved | {"hit": invalid_hit}))
+        invalid_result = SimpleNamespace(
+            rankings=(
+                SimpleNamespace(
+                    name="semantic_text",
+                    available=True,
+                    resolved=(invalid,),
+                ),
+            )
+        )
+        monkeypatch.setattr(
+            semantic_service,
+            "search_semantic_index",
+            lambda *_args, _result=invalid_result, **_kwargs: _result,
+        )
+        assert (
+            search_code(
+                state_path,
+                CodeSearchQuery(text="SQLite access", modes=("semantic",)),
+            )
+            == ()
+        )
+
+    unavailable_rankings = (
+        (),
+        (
+            SimpleNamespace(
+                name="semantic_image",
+                available=True,
+                resolved=(resolved,),
+            ),
+        ),
+        (
+            SimpleNamespace(
+                name="semantic_text",
+                available=False,
+                resolved=(resolved,),
+            ),
+        ),
+    )
+    for rankings in unavailable_rankings:
+        unavailable_result = SimpleNamespace(rankings=rankings)
+        monkeypatch.setattr(
+            semantic_service,
+            "search_semantic_index",
+            lambda *_args, _result=unavailable_result, **_kwargs: _result,
         )
         assert (
             search_code(
@@ -478,7 +681,7 @@ def test_code_semantic_links_publish_replay_and_follow_current_version(
             generation_id,active,provenance_json FROM embedding_links
             ORDER BY chunk_id,model_signature,generation_id"""
         ).fetchall()
-    with pytest.raises(CodeSemanticLinkError, match="current Code row|unlinked"):
+    with pytest.raises(CodeSemanticLinkError, match=r"current Code row|unlinked"):
         synchronize_code_embedding_links(
             state_path.parent,
             generation_id=first_generation,

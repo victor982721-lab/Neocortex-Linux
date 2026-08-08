@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import inspect
 import json
 import subprocess
+from dataclasses import fields as dataclass_fields
 from datetime import datetime, timezone
 from email.message import Message
+from importlib.metadata import Distribution
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -73,7 +77,7 @@ def _pip_payload() -> bytes:
     return json.dumps({"dependencies": dependencies, "fixes": []}).encode()
 
 
-def _install_fixture(tmp_path: Path) -> tuple[Path, Path, list[_FakeDistribution]]:
+def _install_fixture(tmp_path: Path) -> tuple[Path, Path, list[Distribution]]:
     install_root = tmp_path / "runtime"
     site_packages = install_root / "Lib" / "site-packages"
     package_file = site_packages / "neocortex" / "__init__.py"
@@ -111,7 +115,162 @@ def _install_fixture(tmp_path: Path) -> tuple[Path, Path, list[_FakeDistribution
         version="1.5",
         license_expression="Apache-2.0",
     )
-    return install_root, package_file, [framework, dependency, mismatch]
+    return install_root, package_file, cast(
+        list[Distribution],
+        [framework, dependency, mismatch],
+    )
+
+
+def _trace_pip_audit_phase(
+    monkeypatch: pytest.MonkeyPatch,
+    trace: list[str],
+    phase: str,
+) -> None:
+    implementation = getattr(audit, phase)
+
+    def traced(*args, **kwargs):
+        trace.append(phase)
+        return implementation(*args, **kwargs)
+
+    monkeypatch.setattr(audit, phase, traced)
+
+
+def test_pip_audit_public_contract_phase_order_and_complete_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert str(inspect.signature(audit.execute_pip_audit_known_vulnerabilities)) == (
+        "(environment: 'Mapping[str, str]', *, observed_at: 'datetime | None' = None, "
+        "freshness_seconds: 'int' = 86400) -> 'PipAuditExecution'"
+    )
+    trace: list[str] = []
+    phases = (
+        "_validate_pip_audit_freshness",
+        "_execute_pip_audit_process",
+        "_validated_pip_audit_payload",
+        "_prepare_pip_audit_context",
+        "_build_pip_audit_outputs",
+        "_validate_pip_audit_exit_status",
+        "_build_pip_audit_execution",
+    )
+    for phase in phases:
+        _trace_pip_audit_phase(monkeypatch, trace, phase)
+    monkeypatch.setattr(audit.importlib.metadata, "version", lambda _name: "2.10.0")
+    monkeypatch.setattr(
+        audit,
+        "run_bounded_capture",
+        lambda arguments, **_kwargs: subprocess.CompletedProcess(
+            arguments,
+            1,
+            _pip_payload(),
+            b"2 vulnerabilities",
+        ),
+    )
+
+    result = audit.execute_pip_audit_known_vulnerabilities({}, observed_at=_OBSERVED)
+
+    assert tuple(trace) == phases
+    assert tuple(item.name for item in dataclass_fields(result)) == (
+        "metrics",
+        "relations",
+        "counters",
+        "tool_version",
+        "source",
+        "observed_at_utc",
+        "observed_date_utc",
+        "snapshot_id",
+        "freshness_status",
+        "fresh_until_utc",
+        "stdout_bytes",
+        "stderr_bytes",
+        "process_invocations",
+        "uses_network",
+        "limitations",
+    )
+    assert result.counters == audit.PipAuditCounters(3, 2, 1, 1, 2, 2)
+    assert result.process_invocations == 1
+    assert result.stdout_bytes == len(_pip_payload())
+    assert result.stderr_bytes == len(b"2 vulnerabilities")
+    assert tuple(item.portable_metric_id for item in result.metrics) == tuple(
+        sorted(item.portable_metric_id for item in result.metrics)
+    )
+    assert tuple(item.portable_relation_id for item in result.relations) == tuple(
+        sorted(item.portable_relation_id for item in result.relations)
+    )
+
+
+def test_pip_audit_propagates_interruption_before_decode_and_cleans_scratch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cancellation = KeyboardInterrupt("injected pip-audit cancellation")
+    scratch_paths: list[Path] = []
+    payload_decoded = False
+
+    def interrupt(arguments, **_kwargs):
+        cache_path = Path(arguments[arguments.index("--cache-dir") + 1])
+        scratch_paths.append(cache_path.parent)
+        assert cache_path.is_file()
+        raise cancellation
+
+    def reject_decode(_raw: bytes) -> list[object]:
+        nonlocal payload_decoded
+        payload_decoded = True
+        raise AssertionError("cancelled subprocess output must not be decoded")
+
+    monkeypatch.setattr(audit.importlib.metadata, "version", lambda _name: "2.10.0")
+    monkeypatch.setattr(audit, "run_bounded_capture", interrupt)
+    monkeypatch.setattr(audit, "_pip_audit_payload", reject_decode)
+    environment = {"TEMP": str(tmp_path), "SAFE_SENTINEL": "unchanged"}
+
+    with pytest.raises(KeyboardInterrupt) as raised:
+        audit.execute_pip_audit_known_vulnerabilities(environment, observed_at=_OBSERVED)
+
+    assert raised.value is cancellation
+    assert payload_decoded is False
+    assert scratch_paths and not scratch_paths[0].exists()
+    assert environment == {"TEMP": str(tmp_path), "SAFE_SENTINEL": "unchanged"}
+
+
+def test_pip_audit_projection_cancellation_never_builds_partial_execution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cancellation = KeyboardInterrupt("injected pip-audit projection cancellation")
+    real_append = audit._append_pip_audit_package
+    appended_packages = 0
+    execution_started = False
+
+    def cancel_after_first(context, projection, raw_package):
+        nonlocal appended_packages
+        if appended_packages:
+            raise cancellation
+        real_append(context, projection, raw_package)
+        appended_packages += 1
+
+    def reject_execution(*_args, **_kwargs):
+        nonlocal execution_started
+        execution_started = True
+        raise AssertionError("partial pip-audit evidence must not become an execution")
+
+    monkeypatch.setattr(audit.importlib.metadata, "version", lambda _name: "2.10.0")
+    monkeypatch.setattr(
+        audit,
+        "run_bounded_capture",
+        lambda arguments, **_kwargs: subprocess.CompletedProcess(
+            arguments,
+            1,
+            _pip_payload(),
+            b"2 vulnerabilities",
+        ),
+    )
+    monkeypatch.setattr(audit, "_append_pip_audit_package", cancel_after_first)
+    monkeypatch.setattr(audit, "_build_pip_audit_execution", reject_execution)
+
+    with pytest.raises(KeyboardInterrupt) as raised:
+        audit.execute_pip_audit_known_vulnerabilities({}, observed_at=_OBSERVED)
+
+    assert raised.value is cancellation
+    assert appended_packages == 1
+    assert execution_started is False
 
 
 def test_pip_audit_is_bounded_no_fix_and_normalizes_advisories(
@@ -388,14 +547,22 @@ def test_installed_inventory_correlates_pyproject_licenses_requirements_and_reco
         and item.target_key == "package:demo-dep"
     )
     assert dependency.metadata["target_installed"] is True
-    demo_evaluation = dependency.metadata["base_dependency_evaluations"][0]
+    demo_evaluation = _metadata_rows(
+        dependency.metadata["base_dependency_evaluations"]
+    )[0]
     assert demo_evaluation["marker_evaluated"] is True
     assert demo_evaluation["marker_applies"] is True
     assert demo_evaluation["presence_gate_evaluated"] is True
     assert demo_evaluation["version_constraint_evaluated"] is True
     assert demo_evaluation["version_compatible"] is True
     assert demo_evaluation["installed_version"] == "1.5"
-    assert demo_evaluation["marker_environment"]["python_version"] == "3.13"
+    import sys
+
+    marker_environment = demo_evaluation["marker_environment"]
+    assert isinstance(marker_environment, dict)
+    assert marker_environment["python_version"] == (
+        f"{sys.version_info.major}.{sys.version_info.minor}"
+    )
 
 
 def test_base_dependency_gates_exclude_false_markers_and_optional_extras(
@@ -439,7 +606,9 @@ def test_base_dependency_gates_exclude_false_markers_and_optional_extras(
         if item.relation_kind == "project_declares_dependency"
         and item.target_key == "package:ignored-dep"
     )
-    ignored_evaluation = ignored.metadata["base_dependency_evaluations"][0]
+    ignored_evaluation = _metadata_rows(
+        ignored.metadata["base_dependency_evaluations"]
+    )[0]
     assert ignored_evaluation["marker_applies"] is False
     assert ignored_evaluation["presence_gate_evaluated"] is False
     assert ignored_evaluation["version_constraint_evaluated"] is False
@@ -450,14 +619,19 @@ def test_base_dependency_gates_exclude_false_markers_and_optional_extras(
         if item.relation_kind == "project_declares_dependency"
         and item.target_key == "package:mismatch-dep"
     )
-    assert mismatch.metadata["base_dependency_evaluations"][0]["version_compatible"] is False
+    assert (
+        _metadata_rows(mismatch.metadata["base_dependency_evaluations"])[0][
+            "version_compatible"
+        ]
+        is False
+    )
     optional = next(
         item
         for item in result.relations
         if item.relation_kind == "project_declares_dependency"
         and item.target_key == "package:optional-extra"
     )
-    optional_metadata = optional.metadata["optional_declarations"][0]
+    optional_metadata = _metadata_rows(optional.metadata["optional_declarations"])[0]
     assert optional_metadata["extra_group_selected"] is False
     assert optional_metadata["presence_gate_evaluated"] is False
     assert optional_metadata["version_constraint_evaluated"] is False
@@ -503,3 +677,171 @@ def test_installed_inventory_has_hard_distribution_bound(
             installation_root=install_root,
             observed_at=_OBSERVED,
         )
+
+
+def _metadata_rows(value: object) -> list[dict[str, object]]:
+    assert isinstance(value, list)
+    assert all(isinstance(item, dict) for item in value)
+    return cast(list[dict[str, object]], value)
+
+
+def _record_fixture(
+    install_root: Path,
+    record: str,
+) -> tuple[_FakeDistribution, Path]:
+    site_packages = install_root / "Lib" / "site-packages"
+    dist_info = site_packages / "neocortex_framework-0.7.2.dist-info"
+    dist_info.mkdir(parents=True)
+    record_path = dist_info / "RECORD"
+    record_path.write_text(record, encoding="utf-8")
+    return (
+        _FakeDistribution(
+            site_packages,
+            name="neocortex-framework",
+            version="0.7.2",
+            record_path=record_path,
+        ),
+        record_path,
+    )
+
+
+def test_record_verification_mixed_entry_contract_is_deterministic(
+    tmp_path: Path,
+) -> None:
+    from dataclasses import asdict
+
+    install_root = tmp_path / "runtime"
+    site_packages = install_root / "Lib" / "site-packages"
+    contents = {
+        "good.py": b"good",
+        "wrong-hash.py": b"actual",
+        "wrong-size.py": b"x",
+        "invalid-size.py": b"size",
+        "invalid-hash.py": b"hash",
+        "blank.txt": b"blank",
+        "pkg/cache.pyc": b"cache",
+    }
+    for relative_path, content in contents.items():
+        target = site_packages / relative_path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(content)
+    (site_packages / "directory").mkdir()
+
+    def encoded_digest(content: bytes) -> str:
+        return base64.urlsafe_b64encode(hashlib.sha256(content).digest()).decode().rstrip("=")
+
+    record = "\n".join(
+        (
+            f"good.py,sha256={encoded_digest(contents['good.py'])},4",
+            f"wrong-hash.py,sha256={encoded_digest(b'different')},6",
+            f"wrong-size.py,sha256={encoded_digest(contents['wrong-size.py'])},2",
+            f"missing.py,sha256={encoded_digest(b'missing')},7",
+            f"../../../outside.txt,sha256={encoded_digest(b'outside')},7",
+            f"directory,sha256={encoded_digest(b'')},0",
+            "invalid-size.py,,not-a-number",
+            "invalid-hash.py,sha999=YWJj,4",
+            "blank.txt,,",
+            "pkg/cache.pyc,,",
+            "neocortex_framework-0.7.2.dist-info/RECORD,,",
+            "too,few",
+            ",sha256=YWJj,1",
+        )
+    ) + "\n"
+    fake_distribution, record_path = _record_fixture(install_root, record)
+    distribution = cast(Distribution, fake_distribution)
+    before = dict(contents)
+
+    first = audit._record_verification(distribution, installation_root=install_root)
+    second = audit._record_verification(distribution, installation_root=install_root)
+
+    assert first == second
+    assert asdict(first) == {
+        "present": True,
+        "digest": hashlib.sha256(record.encode("utf-8")).hexdigest(),
+        "entries": 13,
+        "hash_verified": 2,
+        "size_verified": 3,
+        "missing_files": 1,
+        "hash_mismatches": 1,
+        "size_mismatches": 1,
+        "unverifiable_entries": 3,
+        "unsafe_entries": 2,
+        "malformed_entries": 4,
+        "files_hashed": 3,
+        "bytes_hashed": 11,
+    }
+    assert first.current is False
+    assert record_path.read_text("utf-8") == record
+    assert {path: (site_packages / path).read_bytes() for path in contents} == before
+
+
+def test_record_verification_absence_and_signature_are_frozen(tmp_path: Path) -> None:
+    from dataclasses import asdict
+    from inspect import signature
+
+    distribution = cast(
+        Distribution,
+        _FakeDistribution(
+            tmp_path,
+            name="neocortex-framework",
+            version="0.7.2",
+        ),
+    )
+
+    assert str(signature(audit._record_verification)) == (
+        "(distribution: 'importlib.metadata.Distribution', *, "
+        "installation_root: 'Path') -> '_RecordVerification'"
+    )
+    assert asdict(
+        audit._record_verification(distribution, installation_root=tmp_path)
+    ) == {
+        "present": False,
+        "digest": None,
+        "entries": 0,
+        "hash_verified": 0,
+        "size_verified": 0,
+        "missing_files": 0,
+        "hash_mismatches": 0,
+        "size_mismatches": 0,
+        "unverifiable_entries": 0,
+        "unsafe_entries": 0,
+        "malformed_entries": 0,
+        "files_hashed": 0,
+        "bytes_hashed": 0,
+    }
+
+
+def test_record_verification_bounds_fail_atomically_and_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_root, package_file, distributions = _install_fixture(tmp_path)
+    distribution = distributions[0]
+    record_path = cast(_FakeDistribution, distribution)._record_path
+    assert record_path is not None
+    record_bytes = record_path.read_bytes()
+    logical_record_bytes = record_path.read_text("utf-8").encode("utf-8")
+    package_bytes = package_file.read_bytes()
+
+    monkeypatch.setattr(audit, "_MAX_RECORD_BYTES", len(logical_record_bytes) - 1)
+    with pytest.raises(ValueError, match="byte bound"):
+        audit._record_verification(distribution, installation_root=install_root)
+    monkeypatch.setattr(audit, "_MAX_RECORD_BYTES", len(logical_record_bytes))
+
+    monkeypatch.setattr(audit, "_MAX_RECORD_ENTRIES", 1)
+    with pytest.raises(ValueError, match="entry count"):
+        audit._record_verification(distribution, installation_root=install_root)
+    monkeypatch.setattr(audit, "_MAX_RECORD_ENTRIES", 2)
+
+    monkeypatch.setattr(audit, "_MAX_RECORD_HASH_BYTES", len(package_bytes) - 1)
+    with pytest.raises(ValueError, match="hash bytes"):
+        audit._record_verification(distribution, installation_root=install_root)
+    monkeypatch.setattr(audit, "_MAX_RECORD_HASH_BYTES", len(package_bytes))
+
+    recovered = audit._record_verification(distribution, installation_root=install_root)
+
+    assert recovered.current is True
+    assert recovered.files_hashed == 1
+    assert recovered.bytes_hashed == len(package_bytes)
+    assert record_path.read_bytes() == record_bytes
+    assert package_file.read_bytes() == package_bytes

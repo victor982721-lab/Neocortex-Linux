@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import inspect
 import os
 import subprocess
+from collections.abc import Callable
+from dataclasses import fields as dataclass_fields
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -58,6 +62,37 @@ def _owner(root: Path, relative_path: str, version_id: int) -> ExternalEvidenceF
         len(raw),
         digest.xxh3_128,
         digest.xxh3_64_guard,
+    )
+
+
+def _trace_history_phase(
+    monkeypatch: pytest.MonkeyPatch,
+    trace: list[str],
+    name: str,
+) -> None:
+    original = cast(Callable[..., object], getattr(history, name))
+
+    def traced(*args: object, **kwargs: object) -> object:
+        trace.append(name)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(history, name, traced)
+
+
+def _log_header(
+    object_id: bytes,
+    *,
+    timestamp: bytes = b"1700000000",
+    parents: bytes = b"",
+) -> bytes:
+    return (
+        b"\x00NEOCORTEX-GIT-HISTORY-COMMIT-V1\x00"
+        + object_id
+        + b"\x00"
+        + timestamp
+        + b"\x00"
+        + parents
+        + b"\x00\x00"
     )
 
 
@@ -216,9 +251,238 @@ def test_parser_rejects_path_escape_and_excess_changes() -> None:
         history._parse_git_log(header + b"1\t0\ta.py\x001\t0\tb.py\x00", max_change_entries=1)
 
 
+def test_git_log_parser_signature_and_exact_edge_semantics_are_frozen() -> None:
+    assert str(inspect.signature(history._parse_git_log)) == (
+        "(raw: 'bytes', *, max_change_entries: 'int') -> 'tuple[_GitCommit, ...]'"
+    )
+    first_id = b"a" * 40
+    second_id = b"b" * 64
+    raw = (
+        _log_header(first_id)
+        + b"\n2\t1\tpkg/a.py\x00"
+        + b"-\t-\tpkg/blob.bin\x00"
+        + b"3\t4\t\x00pkg/old.py\x00pkg/new.py\x00"
+        + _log_header(second_id, timestamp=b"1700000100", parents=first_id)
+        + b"\n"
+    )
+    expected = (
+        history._GitCommit(
+            "a" * 40,
+            1_700_000_000,
+            (),
+            (
+                history._GitChange("pkg/a.py", 2, 1),
+                history._GitChange("pkg/blob.bin", None, None),
+                history._GitChange("pkg/new.py", 3, 4, "pkg/old.py"),
+            ),
+        ),
+        history._GitCommit("b" * 64, 1_700_000_100, ("a" * 40,), ()),
+    )
+
+    assert history._parse_git_log(raw, max_change_entries=3) == expected
+    assert history._parse_git_log(raw, max_change_entries=3) == expected
+
+
+@pytest.mark.parametrize(
+    ("raw", "message"),
+    (
+        (b"not-delimited", "initial delimiter"),
+        (b"\x00", "did not return any non-merge commit"),
+        (_log_header(b"g" * 40) + b"\n", "identity is invalid"),
+        (_log_header(b"a" * 40, timestamp=b"now") + b"\n", "timestamp is invalid"),
+        (
+            _log_header(b"a" * 40, parents=b"b" * 40 + b" " + b"c" * 40)
+            + b"\n",
+            "merge exclusion contract",
+        ),
+        (_log_header(b"a" * 40) + b"1\t-\tpkg/a.py\x00", "binary markers disagree"),
+        (_log_header(b"a" * 40) + b"one\t0\tpkg/a.py\x00", "line delta is invalid"),
+        (_log_header(b"a" * 40) + b"1\t0\tpkg/a.py", "record is unterminated"),
+    ),
+)
+def test_git_log_parser_representative_fail_closed_errors(
+    raw: bytes,
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        history._parse_git_log(raw, max_change_entries=10)
+
+
 def test_ref_and_repository_root_contracts_fail_closed(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="revision expression"):
         history.GitHistoryConfig(ref="--all")
     root, _files = _repository(tmp_path)
     with pytest.raises(ValueError, match="top level"):
         history.inspect_git_repository(root / "pkg", os.environ)
+
+
+def test_git_invocation_scopes_safe_directory_to_exact_validated_root(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "repository"
+    root.mkdir()
+    aliased_root = root / ".." / root.name
+    resolved_root = str(root.resolve())
+
+    assert history._git_prefix("git", aliased_root) == (
+        "git",
+        "--no-pager",
+        "--no-optional-locks",
+        "--no-replace-objects",
+        "-c",
+        f"safe.directory={resolved_root}",
+        "-C",
+        resolved_root,
+    )
+    assert history.GitHistoryConfig().as_payload()["safe_directory_policy"] == (
+        "command-scoped-exact-validated-root-v1"
+    )
+
+
+def test_git_environment_rejects_inherited_configuration_injection() -> None:
+    controlled = history._git_environment(
+        {
+            "PATH": "fixture-path",
+            "GIT_CONFIG_COUNT": "1",
+            "GIT_CONFIG_KEY_0": "safe.directory",
+            "GIT_CONFIG_VALUE_0": "*",
+        }
+    )
+
+    assert controlled["PATH"] == "fixture-path"
+    assert controlled["GIT_CONFIG_NOSYSTEM"] == "1"
+    assert controlled["GIT_CONFIG_GLOBAL"] == os.devnull
+    assert "GIT_CONFIG_COUNT" not in controlled
+    assert "GIT_CONFIG_KEY_0" not in controlled
+    assert "GIT_CONFIG_VALUE_0" not in controlled
+
+
+def test_execute_git_history_public_contract_and_phase_order(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert str(inspect.signature(history.execute_git_history)) == (
+        "(root: 'Path', files: 'Sequence[ExternalEvidenceFile]', "
+        "environment: 'Mapping[str, str]', *, config: 'GitHistoryConfig | None' = "
+        "None, snapshot: 'GitRepositorySnapshot | None' = None, "
+        "git_executable: 'str' = 'git') -> 'GitHistoryExecution'"
+    )
+    root, files = _repository(tmp_path)
+    trace: list[str] = []
+    ordered_phases = (
+        "_collect_git_history_window",
+        "_observations",
+        "_git_history_shared_metadata",
+        "_git_history_metrics",
+        "_git_history_relations",
+        "_git_history_limitations",
+        "_git_history_counters",
+        "_git_history_execution",
+        "_git_history_provenance",
+    )
+    for phase in ordered_phases:
+        _trace_history_phase(monkeypatch, trace, phase)
+
+    result = history.execute_git_history(
+        root,
+        files,
+        os.environ,
+        config=history.GitHistoryConfig(max_commits=10, max_relations=10),
+    )
+
+    assert tuple(trace) == ordered_phases
+    assert tuple(item.name for item in dataclass_fields(result)) == (
+        "findings",
+        "metrics",
+        "relations",
+        "history_input_signature",
+        "configuration_signature",
+        "requested_ref",
+        "head_commit",
+        "repository_shallow",
+        "history_truncated",
+        "relations_truncated",
+        "counters",
+        "limitations",
+        "provenance",
+        "stdout_bytes",
+        "stderr_bytes",
+        "process_invocations",
+    )
+    assert result.process_invocations == 4
+    assert result.counters["metrics_emitted"] == len(result.metrics)
+    assert result.counters["relations_emitted"] == len(result.relations)
+
+
+def test_execute_git_history_propagates_cancellation_before_projection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, files = _repository(tmp_path)
+    before_status = _git(root, "status", "--porcelain=v2", "-z")
+    projection_started = False
+
+    def cancel_observation(*_args: object, **_kwargs: object) -> object:
+        raise KeyboardInterrupt("injected Git history cancellation")
+
+    def reject_projection(*_args: object, **_kwargs: object) -> object:
+        nonlocal projection_started
+        projection_started = True
+        raise AssertionError("projection started after cancellation")
+
+    monkeypatch.setattr(history, "_observations", cancel_observation)
+    monkeypatch.setattr(history, "_git_history_metrics", reject_projection)
+
+    with pytest.raises(KeyboardInterrupt, match="injected Git history cancellation"):
+        history.execute_git_history(
+            root,
+            files,
+            os.environ,
+            config=history.GitHistoryConfig(max_commits=10, max_relations=10),
+        )
+
+    assert projection_started is False
+    assert _git(root, "status", "--porcelain=v2", "-z") == before_status == b""
+
+
+def test_history_observations_preserve_rename_ambiguity_and_cochange_bound(
+    tmp_path: Path,
+) -> None:
+    _root, files = _repository(tmp_path)
+    owners = {item.relative_path: item for item in files}
+    ambiguous = history._GitCommit(
+        "a" * 40,
+        1_700_000_000,
+        (),
+        (
+            history._GitChange("pkg/b.py", 1, 0, "pkg/old.py"),
+            history._GitChange("pkg/c.py", 1, 0, "pkg/old.py"),
+        ),
+    )
+    with pytest.raises(ValueError, match="rename lineage is ambiguous"):
+        history._observations((ambiguous,), owners, history.GitHistoryConfig())
+
+    large_commit = history._GitCommit(
+        "b" * 40,
+        1_700_000_100,
+        (),
+        (
+            history._GitChange("pkg/b.py", 1, 0),
+            history._GitChange("pkg/c.py", 1, 0),
+        ),
+    )
+    aggregates, cochanges, counters = history._observations(
+        (large_commit,),
+        owners,
+        history.GitHistoryConfig(max_files_per_cochange_commit=1),
+    )
+
+    assert set(aggregates) == set(owners)
+    assert cochanges == {}
+    assert counters == {
+        "change_entries": 2,
+        "rename_entries": 0,
+        "binary_or_unmeasured_entries": 0,
+        "commits_touching_current_files": 1,
+        "cochange_commits_skipped_large": 1,
+    }

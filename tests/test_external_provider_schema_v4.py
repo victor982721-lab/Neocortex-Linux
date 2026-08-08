@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 import sqlite3
 from collections.abc import Collection
@@ -388,6 +389,47 @@ def test_v1_digest_and_hito1_publication_constructor_remain_exact() -> None:
     assert external_provider_result_digest(publication.findings) == digest
 
 
+def test_suite_reader_signature_transaction_and_idempotency_are_frozen(
+    tmp_path: Path,
+) -> None:
+    assert str(inspect.signature(read_external_evidence_suite)) == (
+        "(connection: 'sqlite3.Connection', analysis_run_id: 'int', *, "
+        "enforce_current_runtime: 'bool', provider_ids: 'Collection[str] | None' "
+        "= None) -> 'ExternalEvidenceSuiteStatus'"
+    )
+    database = tmp_path / "suite-reader.sqlite3"
+    _create_current_owner(database, 1)
+    connection = code_schema.connect_code_state(database, create=False)
+    try:
+        publish_external_provider(
+            connection,
+            1,
+            _full_publication("architecture-provider"),
+        )
+        connection.commit()
+        connection.execute("BEGIN")
+        changes_before = connection.total_changes
+
+        first = read_external_evidence_suite(
+            connection,
+            1,
+            enforce_current_runtime=False,
+        )
+        second = read_external_evidence_suite(
+            connection,
+            1,
+            enforce_current_runtime=False,
+        )
+
+        assert first == second
+        assert first.status == "ready"
+        assert connection.in_transaction is True
+        assert connection.total_changes == changes_before
+        connection.rollback()
+    finally:
+        connection.close()
+
+
 def test_legacy_pyright_stage_paths_read_as_one_portable_identity(tmp_path: Path) -> None:
     database = tmp_path / "pyright-portable-identity.sqlite3"
     _create_current_owner(database, 1, 2)
@@ -741,6 +783,110 @@ def test_one_corrupt_provider_abstains_without_hiding_a_valid_provider(
     assert evidence["first"].status == "abstained"
     assert evidence["second"].status == "ready"
     assert len(evidence["second"].metrics) == len(evidence["second"].relations) == 1
+
+
+def test_provider_status_freezes_projection_order_and_stops_after_counter_mismatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "provider-status-order.sqlite3"
+    _create_current_owner(database, 1)
+    connection = code_schema.connect_code_state(database, create=False)
+    try:
+        tool_run_id = publish_external_provider(
+            connection,
+            1,
+            _full_publication("ordered-provider"),
+        )
+        connection.commit()
+        events: list[tuple[str, int]] = []
+        original_counters = external_evidence_store._counter_map
+        original_effective = external_evidence_store._effective_provider_run_id
+        original_findings = external_evidence_store._provider_findings
+        original_metrics = external_evidence_store._provider_metrics
+        original_relations = external_evidence_store._provider_relations
+        original_current = external_evidence_store._current_version_exists
+
+        def tracked_counters(selected_connection, selected_run_id):
+            events.append(("counters", selected_run_id))
+            return original_counters(selected_connection, selected_run_id)
+
+        def tracked_effective(selected_connection, row):
+            events.append(("effective", int(row["tool_run_id"])))
+            return original_effective(selected_connection, row)
+
+        def tracked_findings(selected_connection, selected_run_id):
+            events.append(("findings", selected_run_id))
+            return original_findings(selected_connection, selected_run_id)
+
+        def tracked_metrics(selected_connection, selected_run_id):
+            events.append(("metrics", selected_run_id))
+            return original_metrics(selected_connection, selected_run_id)
+
+        def tracked_relations(selected_connection, selected_run_id):
+            events.append(("relations", selected_run_id))
+            return original_relations(selected_connection, selected_run_id)
+
+        def tracked_current(selected_connection, version_id):
+            events.append(("current", version_id))
+            return original_current(selected_connection, version_id)
+
+        monkeypatch.setattr(external_evidence_store, "_counter_map", tracked_counters)
+        monkeypatch.setattr(
+            external_evidence_store,
+            "_effective_provider_run_id",
+            tracked_effective,
+        )
+        monkeypatch.setattr(external_evidence_store, "_provider_findings", tracked_findings)
+        monkeypatch.setattr(external_evidence_store, "_provider_metrics", tracked_metrics)
+        monkeypatch.setattr(external_evidence_store, "_provider_relations", tracked_relations)
+        monkeypatch.setattr(
+            external_evidence_store,
+            "_current_version_exists",
+            tracked_current,
+        )
+
+        valid = read_external_evidence_suite(
+            connection,
+            1,
+            enforce_current_runtime=False,
+        )
+
+        assert events == [
+            ("counters", tool_run_id),
+            ("effective", tool_run_id),
+            ("findings", tool_run_id),
+            ("metrics", tool_run_id),
+            ("relations", tool_run_id),
+            ("current", 1),
+        ]
+        status = valid.providers[0]
+        assert status.status == "ready"
+        assert status.gate == "baseline"
+        assert status.comparable is False
+        assert status.added is status.resolved is None
+        assert status.findings == 0
+        assert status.metrics == status.relations == 1
+
+        connection.execute(
+            """UPDATE external_run_counters SET value=2
+            WHERE tool_run_id=? AND name='eligible_files'""",
+            (tool_run_id,),
+        )
+        connection.commit()
+        events.clear()
+
+        invalid = read_external_evidence_suite(
+            connection,
+            1,
+            enforce_current_runtime=False,
+        )
+    finally:
+        connection.close()
+
+    assert events == [("counters", tool_run_id)]
+    assert invalid.providers[0].status == "abstained"
+    assert invalid.providers[0].reason == "external_provider_projection_invalid"
 
 
 def test_provider_filter_skips_unrequested_projection_reads_and_preserves_replay(

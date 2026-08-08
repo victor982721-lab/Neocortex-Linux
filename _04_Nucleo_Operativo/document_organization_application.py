@@ -12,6 +12,7 @@ import os
 import sqlite3
 import stat as stat_module
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 from _02_Deduplicacion import FileSnapshot, snapshot_path
@@ -66,6 +67,58 @@ from .windows_handle_mutation import (
 # region [02] Implementación
 
 
+@dataclass(slots=True)
+class _OrganizationApplyCounters:
+    applied: int = 0
+    stale: int = 0
+    blocked: int = 0
+    failed: int = 0
+    cache_synced: int = 0
+    cache_pending: int = 0
+
+    def record(self, outcome: _ApplyRowOutcome) -> None:
+        if outcome.cache_synced:
+            self.applied += 1
+            self.cache_synced += 1
+        elif outcome.cache_pending:
+            self.cache_pending += 1
+        elif outcome.status == "stale":
+            self.stale += 1
+        elif outcome.status == "blocked":
+            self.blocked += 1
+        else:
+            self.failed += 1
+
+    def progress(self, selected: int) -> OrganizationApplyProgress:
+        return OrganizationApplyProgress(
+            selected=selected,
+            applied=self.applied,
+            stale=self.stale,
+            blocked=self.blocked,
+            failed=self.failed,
+            cache_synced=self.cache_synced,
+        )
+
+    def summary(
+        self,
+        *,
+        run_id: int,
+        selected: int,
+        remaining: int,
+    ) -> OrganizationApplySummary:
+        return OrganizationApplySummary(
+            catalog_run_id=run_id,
+            selected=selected,
+            applied=self.applied,
+            stale=self.stale,
+            blocked=self.blocked,
+            failed=self.failed,
+            cache_synced=self.cache_synced,
+            cache_pending=self.cache_pending,
+            remaining=remaining,
+        )
+
+
 def apply_document_organization(
     catalog_path: Path,
     organization_root: Path,
@@ -76,6 +129,37 @@ def apply_document_organization(
 ) -> OrganizationApplySummary:
     """Apply plans and mark them complete only after every cache is synchronized."""
 
+    root = _validated_organization_apply_request(
+        catalog_path,
+        organization_root,
+        mutation_guard=mutation_guard,
+        max_actions=max_actions,
+    )
+    with document_catalog_database(catalog_path) as connection:
+        run_id = _begin_organization_run(connection, "apply", root)
+        rows = _select_organization_apply_rows(connection, root, max_actions)
+        try:
+            return _execute_organization_apply_run(
+                connection,
+                catalog_path,
+                root,
+                run_id,
+                rows,
+                mutation_guard,
+                on_progress,
+            )
+        except BaseException as exc:
+            _fail_organization_run(connection, run_id, exc)
+            raise
+
+
+def _validated_organization_apply_request(
+    catalog_path: Path,
+    organization_root: Path,
+    *,
+    mutation_guard: CorpusMutationGuard,
+    max_actions: int,
+) -> Path:
     mutation_guard.reject_run_mutation()
     if max_actions < 1:
         raise ValueError("max_actions must be positive")
@@ -87,109 +171,171 @@ def apply_document_organization(
         raise ValueError(f"organization root is protected: {root_reason}")
     _reject_state_destination(catalog_path, root)
     initialize_document_catalog(catalog_path)
-    with document_catalog_database(catalog_path) as connection:
-        run_id = _begin_organization_run(connection, "apply", root)
-        rows = connection.execute(
-            """SELECT * FROM organization_plans
+    return root
+
+
+def _select_organization_apply_rows(
+    connection: sqlite3.Connection,
+    root: Path,
+    max_actions: int,
+) -> list[sqlite3.Row]:
+    return connection.execute(
+        """SELECT * FROM organization_plans
+        WHERE organization_root=?
+        AND status IN ('planned','applying','moved_cache_pending')
+        ORDER BY CASE status
+            WHEN 'applying' THEN 0
+            WHEN 'planned' THEN 1
+            ELSE 2 END,plan_id LIMIT ?""",
+        (str(root), max_actions),
+    ).fetchall()
+
+
+def _execute_organization_apply_run(
+    connection: sqlite3.Connection,
+    catalog_path: Path,
+    root: Path,
+    run_id: int,
+    rows: list[sqlite3.Row],
+    mutation_guard: CorpusMutationGuard,
+    on_progress: OrganizationApplyProgressCallback | None,
+) -> OrganizationApplySummary:
+    protected_denials, root_stat = _prepare_selected_organization_plans(
+        catalog_path,
+        root,
+        rows,
+        mutation_guard,
+    )
+    counters = _OrganizationApplyCounters()
+    _apply_selected_organization_rows(
+        connection,
+        catalog_path,
+        root,
+        root_stat,
+        rows,
+        protected_denials,
+        mutation_guard,
+        counters,
+        on_progress,
+    )
+    summary = counters.summary(
+        run_id=run_id,
+        selected=len(rows),
+        remaining=_remaining_organization_apply_rows(connection, root),
+    )
+    _complete_organization_run(connection, run_id, summary)
+    return summary
+
+
+def _prepare_selected_organization_plans(
+    catalog_path: Path,
+    root: Path,
+    rows: list[sqlite3.Row],
+    mutation_guard: CorpusMutationGuard,
+) -> tuple[dict[str, str], os.stat_result | None]:
+    protected_denials = _protected_organization_plan_denials(rows, mutation_guard)
+    admitted_rows = [
+        row for row in rows if str(row["plan_id"]) not in protected_denials
+    ]
+    if not admitted_rows:
+        return protected_denials, None
+    _preflight_selected_organization_boundaries(
+        catalog_path.parent,
+        root,
+        admitted_rows,
+        mutation_guard,
+    )
+    return protected_denials, _prepare_apply_root(catalog_path, root, mutation_guard)
+
+
+def _apply_selected_organization_rows(
+    connection: sqlite3.Connection,
+    catalog_path: Path,
+    root: Path,
+    root_stat: os.stat_result | None,
+    rows: list[sqlite3.Row],
+    protected_denials: dict[str, str],
+    mutation_guard: CorpusMutationGuard,
+    counters: _OrganizationApplyCounters,
+    on_progress: OrganizationApplyProgressCallback | None,
+) -> None:
+    for selected_index, row in enumerate(rows, start=1):
+        outcome = _apply_organization_row(
+            connection,
+            catalog_path,
+            root,
+            root_stat,
+            row,
+            protected_denials,
+            mutation_guard,
+        )
+        counters.record(outcome)
+        connection.commit()
+        _report_organization_apply_progress(
+            on_progress,
+            counters,
+            selected_index=selected_index,
+            selected_total=len(rows),
+        )
+
+
+def _apply_organization_row(
+    connection: sqlite3.Connection,
+    catalog_path: Path,
+    root: Path,
+    root_stat: os.stat_result | None,
+    row: sqlite3.Row,
+    protected_denials: dict[str, str],
+    mutation_guard: CorpusMutationGuard,
+) -> _ApplyRowOutcome:
+    plan_id = str(row["plan_id"])
+    if plan_id in protected_denials:
+        return _record_protected_organization_plan(
+            connection,
+            row,
+            protected_denials[plan_id],
+        )
+    if root_stat is None:
+        raise RuntimeError("organization root was not prepared")
+    return _apply_selected_organization_plan(
+        connection,
+        catalog_path,
+        row,
+        root,
+        root_stat,
+        mutation_guard,
+    )
+
+
+def _report_organization_apply_progress(
+    on_progress: OrganizationApplyProgressCallback | None,
+    counters: _OrganizationApplyCounters,
+    *,
+    selected_index: int,
+    selected_total: int,
+) -> None:
+    if on_progress is None:
+        return
+    if (
+        selected_index % ORGANIZATION_PROGRESS_INTERVAL != 0
+        and selected_index != selected_total
+    ):
+        return
+    on_progress(counters.progress(selected_index))
+
+
+def _remaining_organization_apply_rows(
+    connection: sqlite3.Connection,
+    root: Path,
+) -> int:
+    return int(
+        connection.execute(
+            """SELECT COUNT(*) FROM organization_plans
             WHERE organization_root=?
-            AND status IN ('planned','applying','moved_cache_pending')
-            ORDER BY CASE status
-                WHEN 'applying' THEN 0
-                WHEN 'planned' THEN 1
-                ELSE 2 END,plan_id LIMIT ?""",
-            (str(root), max_actions),
-        ).fetchall()
-        applied = stale = blocked = failed = 0
-        cache_synced = cache_pending = 0
-        try:
-            protected_denials = _protected_organization_plan_denials(
-                rows,
-                mutation_guard,
-            )
-            admitted_rows = [
-                row for row in rows if str(row["plan_id"]) not in protected_denials
-            ]
-            if admitted_rows:
-                _preflight_selected_organization_boundaries(
-                    catalog_path.parent,
-                    root,
-                    admitted_rows,
-                    mutation_guard,
-                )
-            root_stat = (
-                _prepare_apply_root(catalog_path, root, mutation_guard)
-                if admitted_rows
-                else None
-            )
-            for selected_index, row in enumerate(rows, start=1):
-                plan_id = str(row["plan_id"])
-                if plan_id in protected_denials:
-                    outcome = _record_protected_organization_plan(
-                        connection,
-                        row,
-                        protected_denials[plan_id],
-                    )
-                else:
-                    if root_stat is None:
-                        raise RuntimeError("organization root was not prepared")
-                    outcome = _apply_selected_organization_plan(
-                        connection,
-                        catalog_path,
-                        row,
-                        root,
-                        root_stat,
-                        mutation_guard,
-                    )
-                if outcome.cache_synced:
-                    applied += 1
-                    cache_synced += 1
-                elif outcome.cache_pending:
-                    cache_pending += 1
-                elif outcome.status == "stale":
-                    stale += 1
-                elif outcome.status == "blocked":
-                    blocked += 1
-                else:
-                    failed += 1
-                connection.commit()
-                if on_progress is not None and (
-                    selected_index % ORGANIZATION_PROGRESS_INTERVAL == 0
-                    or selected_index == len(rows)
-                ):
-                    on_progress(
-                        OrganizationApplyProgress(
-                            selected=selected_index,
-                            applied=applied,
-                            stale=stale,
-                            blocked=blocked,
-                            failed=failed,
-                            cache_synced=cache_synced,
-                        )
-                    )
-            remaining = int(
-                connection.execute(
-                    """SELECT COUNT(*) FROM organization_plans
-                    WHERE organization_root=?
-                    AND status IN ('planned','applying','moved_cache_pending')""",
-                    (str(root),),
-                ).fetchone()[0]
-            )
-            summary = OrganizationApplySummary(
-                catalog_run_id=run_id,
-                selected=len(rows),
-                applied=applied,
-                stale=stale,
-                blocked=blocked,
-                failed=failed,
-                cache_synced=cache_synced,
-                cache_pending=cache_pending,
-                remaining=remaining,
-            )
-            _complete_organization_run(connection, run_id, summary)
-            return summary
-        except BaseException as exc:
-            _fail_organization_run(connection, run_id, exc)
-            raise
+            AND status IN ('planned','applying','moved_cache_pending')""",
+            (str(root),),
+        ).fetchone()[0]
+    )
 
 
 def _lexical_path_trees_intersect(left: Path, right: Path) -> bool:
@@ -390,21 +536,17 @@ def apply_all_document_organization(
         blocked_before = blocked
         failed_before = failed
         cache_synced_before = cache_synced
-
-        def report_batch(current: OrganizationApplyProgress) -> None:
-            current_selected = selected_before + current.selected
-            _emit_organization_apply_progress(
-                progress,
-                operation=progress_operation,
-                completed=current_selected,
-                total=total,
-                applied=applied_before + current.applied,
-                stale=stale_before + current.stale,
-                blocked=blocked_before + current.blocked,
-                failed=failed_before + current.failed,
-                cache_synced=cache_synced_before + current.cache_synced,
-                remaining=max(0, total - current_selected),
-            )
+        report_batch = _organization_apply_batch_reporter(
+            progress,
+            operation=progress_operation,
+            total=total,
+            selected_before=selected_before,
+            applied_before=applied_before,
+            stale_before=stale_before,
+            blocked_before=blocked_before,
+            failed_before=failed_before,
+            cache_synced_before=cache_synced_before,
+        )
 
         current = apply_document_organization(
             catalog_path,
@@ -456,6 +598,36 @@ def apply_all_document_organization(
         finished=True,
     )
     return summary
+
+
+def _organization_apply_batch_reporter(
+    progress: ProgressCallback | None,
+    *,
+    operation: str,
+    total: int,
+    selected_before: int,
+    applied_before: int,
+    stale_before: int,
+    blocked_before: int,
+    failed_before: int,
+    cache_synced_before: int,
+) -> OrganizationApplyProgressCallback:
+    def report_batch(current: OrganizationApplyProgress) -> None:
+        current_selected = selected_before + current.selected
+        _emit_organization_apply_progress(
+            progress,
+            operation=operation,
+            completed=current_selected,
+            total=total,
+            applied=applied_before + current.applied,
+            stale=stale_before + current.stale,
+            blocked=blocked_before + current.blocked,
+            failed=failed_before + current.failed,
+            cache_synced=cache_synced_before + current.cache_synced,
+            remaining=max(0, total - current_selected),
+        )
+
+    return report_batch
 
 
 def _organization_actionable_count(
@@ -603,23 +775,54 @@ def _prepare_apply_root(
         detail="organization root and framework state directory",
     )
     if root.exists():
-        _require_organization_tree_allowed(root, mutation_guard)
-        if not root.is_dir():
-            raise ValueError("organization root exists but is not a directory")
-        if root.is_symlink() or _is_junction(root):
-            raise ValueError("organization root cannot be a symlink or junction")
-        root_reason = protected_path_reason(root)
-        if root_reason is not None:
-            raise ValueError(f"organization root is protected: {root_reason}")
-        root_stat = os.stat(root, follow_symlinks=False)
-        _require_disjoint_path_trees(
+        return _validated_existing_apply_root(
             state_directory,
             root,
-            detail="organization root and framework state directory",
+            mutation_guard,
         )
-        _require_directory_identity(root, root_stat, role="organization root")
-        _require_organization_tree_allowed(root, mutation_guard)
-        return root_stat
+    parent, parent_stat = _validated_apply_root_parent(
+        state_directory,
+        root,
+        mutation_guard,
+    )
+    return _create_validated_apply_root(
+        state_directory,
+        root,
+        parent,
+        parent_stat,
+        mutation_guard,
+    )
+
+
+def _validated_existing_apply_root(
+    state_directory: Path,
+    root: Path,
+    mutation_guard: CorpusMutationGuard,
+) -> os.stat_result:
+    _require_organization_tree_allowed(root, mutation_guard)
+    if not root.is_dir():
+        raise ValueError("organization root exists but is not a directory")
+    if root.is_symlink() or _is_junction(root):
+        raise ValueError("organization root cannot be a symlink or junction")
+    root_reason = protected_path_reason(root)
+    if root_reason is not None:
+        raise ValueError(f"organization root is protected: {root_reason}")
+    root_stat = os.stat(root, follow_symlinks=False)
+    _require_disjoint_path_trees(
+        state_directory,
+        root,
+        detail="organization root and framework state directory",
+    )
+    _require_directory_identity(root, root_stat, role="organization root")
+    _require_organization_tree_allowed(root, mutation_guard)
+    return root_stat
+
+
+def _validated_apply_root_parent(
+    state_directory: Path,
+    root: Path,
+    mutation_guard: CorpusMutationGuard,
+) -> tuple[Path, os.stat_result]:
     parent = root.parent
     if not parent.is_dir():
         raise ValueError(
@@ -644,6 +847,16 @@ def _prepare_apply_root(
         role="organization root parent",
     )
     mutation_guard.require_paths_allowed(root)
+    return parent, parent_stat
+
+
+def _create_validated_apply_root(
+    state_directory: Path,
+    root: Path,
+    parent: Path,
+    parent_stat: os.stat_result,
+    mutation_guard: CorpusMutationGuard,
+) -> os.stat_result:
     try:
         root.mkdir()
     except FileExistsError:

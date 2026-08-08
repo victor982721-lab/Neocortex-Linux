@@ -211,7 +211,8 @@ fronteras que no modificó.
 
 ## Dependencias, código y herramientas
 
-- Mantén compatibilidad con Windows 11 y CPython 3.13.
+- Mantén compatibilidad con Windows 11 y CPython 3.13–3.14; conserva 3.13 como
+  piso sintáctico mientras ambos intérpretes estén soportados.
 - Usa PowerShell para la capa externa. Para trabajo pequeño elige la solución
   más simple y legible; usa Python cuando la lógica por elemento o el volumen lo
   justifiquen.

@@ -13,16 +13,28 @@ from typing import TYPE_CHECKING, TextIO
 
 if TYPE_CHECKING:
     from .code_architecture_analysis import CodeArchitectureAnalysis
-    from .code_coverage_analysis import CodeCoverageAnalysis
+    from .code_coverage_analysis import CodeCoverageAnalysis, CoverageComparison
     from .code_engineering_analytics import CodeEngineeringAnalytics
     from .code_publication_diff import (
         CodeArchitectureDelta,
+        CodeCallResolutionDelta,
         CodeEngineeringAnalyticsDelta,
+        CodeExternalEvidenceDelta,
+        CodeHotspotDelta,
         CodeModuleArchitectureDelta,
+        CodePublicationDiffDigest,
+        CodePublicationDiffResult,
+        CodePublicationSnapshot,
         CodeSupplyChainDelta,
         CodeUnusedAnalysisDelta,
     )
-    from .code_review_models import CodeReviewResult
+    from .code_review_models import (
+        CodeReviewCoverage,
+        CodeReviewDigest,
+        CodeReviewResult,
+        CodeReviewSnapshot,
+        CodeReviewWorkPackage,
+    )
 
 
 _CODE_CLI_ARCHITECTURE_EXAMPLE_LIMIT = 20
@@ -1330,48 +1342,54 @@ def _emit_code_review_ranked_evidence(result: CodeReviewResult) -> None:
         _print_console_line(f"CODE_REVIEW_LIMITATION {limitation}")
 
 
-def run_code_review(args: argparse.Namespace) -> int:
-    """Rank confirmed Python hotspots in the published self-analysis snapshot."""
+def _emit_code_review_json(result: CodeReviewResult) -> int:
+    _emit(result.as_payload(), json_output=True)
+    return 0 if result.status == "ready" else 2
 
-    from .code_review import review_code_state
-    from .code_review_models import (
-        bounded_code_coverage_payload,
-    )
 
-    try:
-        result = review_code_state(
-            args.state_directory,
-            limit=args.code_review_limit,
-        )
-    except (OSError, sqlite3.Error, RuntimeError, ValueError) as exc:
-        return _error("code-review", exc)
-    if args.code_json:
-        _emit(result.as_payload(), json_output=True)
-        return 0 if result.status == "ready" else 2
-    if result.status != "ready":
-        _print_console_line(
-            f"CODE_REVIEW status=abstained reason={result.reason} "
-            f"database={json.dumps(result.database, ensure_ascii=True)}"
-        )
-        return 2
-    if result.snapshot is None or result.coverage is None or result.digest is None:
-        return _error("code-review", RuntimeError("ready result is incomplete"))
+def _emit_code_review_abstention(result: CodeReviewResult) -> int:
     _print_console_line(
-        f"CODE_REVIEW status=ready freshness={result.snapshot.freshness} "
-        f"current={int(result.snapshot.current)} findings={len(result.findings)} "
+        f"CODE_REVIEW status=abstained reason={result.reason} "
+        f"database={json.dumps(result.database, ensure_ascii=True)}"
+    )
+    return 2
+
+
+def _complete_code_review_evidence(
+    result: CodeReviewResult,
+) -> tuple[CodeReviewSnapshot, CodeReviewCoverage, CodeReviewDigest] | None:
+    snapshot = result.snapshot
+    coverage = result.coverage
+    digest = result.digest
+    if snapshot is None or coverage is None or digest is None:
+        return None
+    return snapshot, coverage, digest
+
+
+def _emit_code_review_header(
+    result: CodeReviewResult,
+    snapshot: CodeReviewSnapshot,
+    coverage: CodeReviewCoverage,
+    digest: CodeReviewDigest,
+) -> None:
+    _print_console_line(
+        f"CODE_REVIEW status=ready freshness={snapshot.freshness} "
+        f"current={int(snapshot.current)} findings={len(result.findings)} "
         f"recommendations={len(result.recommendations)} "
         f"work_packages={len(result.work_packages)} ranking={result.ranking} "
         f"actionability={result.actionability_version} planner={result.planning_version} "
-        f"digest={result.digest.xxh3_128}"
+        f"digest={digest.xxh3_128}"
     )
     _print_console_line(
-        f"CODE_REVIEW_COVERAGE python_files={result.coverage.current_python_files} "
-        f"complete={result.coverage.complete_python_files} "
-        f"hotspots={result.coverage.candidate_hotspots} "
-        f"probable_dead_suppressed={result.coverage.probable_dead_suppressed} "
-        f"resolved_calls={result.coverage.resolved_call_edges}/"
-        f"{result.coverage.call_edges}"
+        f"CODE_REVIEW_COVERAGE python_files={coverage.current_python_files} "
+        f"complete={coverage.complete_python_files} "
+        f"hotspots={coverage.candidate_hotspots} "
+        f"probable_dead_suppressed={coverage.probable_dead_suppressed} "
+        f"resolved_calls={coverage.resolved_call_edges}/{coverage.call_edges}"
     )
+
+
+def _emit_code_review_external_evidence(result: CodeReviewResult) -> None:
     if result.external_evidence is not None:
         external = result.external_evidence
         _print_console_line(
@@ -1380,165 +1398,217 @@ def run_code_review(args: argparse.Namespace) -> int:
             f"diagnostics={external.diagnostics} added={external.added} "
             f"resolved={external.resolved} gate={external.gate}"
         )
-    if result.external_evidence_suite is not None:
+    if result.external_evidence_suite is None:
+        return
+    _print_console_line(
+        f"CODE_REVIEW_PROVIDER_SUITE profile={result.external_evidence_suite.profile} "
+        f"status={result.external_evidence_suite.status}"
+    )
+    for provider in result.external_evidence_suite.providers:
         _print_console_line(
-            f"CODE_REVIEW_PROVIDER_SUITE profile="
-            f"{result.external_evidence_suite.profile} "
-            f"status={result.external_evidence_suite.status}"
+            f"CODE_REVIEW_PROVIDER id={provider.provider_id} "
+            f"status={provider.status} findings={provider.findings} "
+            f"metrics={provider.metrics} relations={provider.relations} "
+            f"content_executed={int(provider.content_executed)} "
+            f"gate={provider.gate}"
         )
-        for provider in result.external_evidence_suite.providers:
-            _print_console_line(
-                f"CODE_REVIEW_PROVIDER id={provider.provider_id} "
-                f"status={provider.status} findings={provider.findings} "
-                f"metrics={provider.metrics} relations={provider.relations} "
-                f"content_executed={int(provider.content_executed)} "
-                f"gate={provider.gate}"
-            )
+
+
+def _emit_code_review_architecture_result(result: CodeReviewResult) -> None:
     if result.architecture is None:
         _print_console_line(
             'CODE_REVIEW_ARCHITECTURE status=not_evaluated reason="architecture_result_missing"'
         )
-    else:
-        _emit_code_review_architecture(result.architecture)
+        return
+    _emit_code_review_architecture(result.architecture)
+
+
+def _emit_code_review_test_coverage_result(result: CodeReviewResult) -> None:
+    from .code_review_models import bounded_code_coverage_payload
+
     if result.test_coverage is None:
-        _emit_code_coverage(
-            "CODE_REVIEW_TEST_COVERAGE",
-            {
-                "status": "abstained",
-                "reason": "coverage_result_missing",
-                "suite_selection": None,
-                "measurement_complete": False,
-                "content_executed": False,
-                "outcomes": None,
-                "totals": None,
-                "gates": [],
-            },
-        )
+        payload: dict[str, object] = {
+            "status": "abstained",
+            "reason": "coverage_result_missing",
+            "suite_selection": None,
+            "measurement_complete": False,
+            "content_executed": False,
+            "outcomes": None,
+            "totals": None,
+            "gates": [],
+        }
     else:
-        _emit_code_coverage(
-            "CODE_REVIEW_TEST_COVERAGE",
-            bounded_code_coverage_payload(result.test_coverage),
-        )
-    _emit_code_review_unused_result(result)
-    _emit_code_review_supply_chain_result(result)
+        payload = bounded_code_coverage_payload(result.test_coverage)
+    _emit_code_coverage("CODE_REVIEW_TEST_COVERAGE", payload)
+
+
+def _emit_code_review_abstention_statuses(result: CodeReviewResult) -> None:
     if result.recommendation_status == "abstained":
         _print_console_line(
-            f"CODE_REVIEW_RECOMMENDATION status=abstained reason={result.recommendation_reason}"
+            f"CODE_REVIEW_RECOMMENDATION status=abstained "
+            f"reason={result.recommendation_reason}"
         )
     if result.work_package_status == "abstained":
         _print_console_line(
-            f"CODE_REVIEW_WORK_PACKAGE status=abstained reason={result.work_package_reason}"
+            f"CODE_REVIEW_WORK_PACKAGE status=abstained "
+            f"reason={result.work_package_reason}"
         )
+
+
+def _emit_code_review_work_package_supply_chain(
+    package: CodeReviewWorkPackage,
+) -> None:
+    gates = getattr(package, "supply_chain_gates", ())
+    observations = getattr(package, "supply_chain_observations", ())
+    relations = getattr(package, "supply_chain_relations", ())
+    _print_console_line(
+        "CODE_REVIEW_WORK_PACKAGE_SUPPLY_CHAIN "
+        f"status={'ready' if gates else 'not_evaluated'} "
+        f"package_rank={package.package_rank} package_id={package.package_id} "
+        f"observations={len(observations)} "
+        f"relations={len(relations)} "
+        f"gates={json.dumps([gate.gate for gate in gates], ensure_ascii=True)} "
+        "mutation_authority=0"
+    )
+
+
+def _emit_code_review_work_package_summary(package: CodeReviewWorkPackage) -> None:
+    _print_console_line(
+        "CODE_REVIEW_WORK_PACKAGE status=ready "
+        f"package_rank={package.package_rank} risk={package.change_risk} "
+        f"kind={getattr(package, 'package_kind', 'hotspot_maintenance')} "
+        f"members={len(package.members)} "
+        f"members_truncated={int(package.members_truncated)} "
+        f"confidence={package.confidence} "
+        f"primary={json.dumps(package.primary_symbol, ensure_ascii=True)} "
+        f"human_confirmation="
+        f"{int(bool(getattr(package, 'requires_human_confirmation', False)))} "
+        f"mutation_authority="
+        f"{int(bool(getattr(package, 'mutation_authority', False)))} "
+        f"package_id={package.package_id}"
+    )
+
+
+def _emit_code_review_work_package_unused(package: CodeReviewWorkPackage) -> None:
+    unused_candidates = getattr(package, "unused_candidates", ())
+    for candidate in unused_candidates[:_CODE_CLI_UNUSED_EXAMPLE_LIMIT]:
+        _print_console_line(
+            "CODE_REVIEW_WORK_PACKAGE_UNUSED "
+            f"package_rank={package.package_rank} package_id={package.package_id} "
+            f"candidate_id={candidate.candidate_id} state={candidate.state} "
+            f"path={json.dumps(candidate.relative_path, ensure_ascii=True)} "
+            f"symbol={json.dumps(candidate.symbol, ensure_ascii=True)} "
+            f"reasons={json.dumps(candidate.reasons, ensure_ascii=True)}"
+        )
+
+
+def _emit_code_review_work_package_architecture(
+    package: CodeReviewWorkPackage,
+) -> None:
+    import_chains = package.import_chains[:_CODE_CLI_ARCHITECTURE_EXAMPLE_LIMIT]
+    affected_contracts = package.affected_architecture_contracts[
+        :_CODE_CLI_ARCHITECTURE_EXAMPLE_LIMIT
+    ]
+    architecture_gates = tuple(
+        gate
+        for gate in package.acceptance_gates
+        if gate in _CODE_ARCHITECTURE_ACCEPTANCE_GATES
+    )
+    _print_console_line(
+        "CODE_REVIEW_WORK_PACKAGE_ARCHITECTURE status=ready "
+        f"package_rank={package.package_rank} package_id={package.package_id} "
+        f"primary_module={json.dumps(package.primary_module, ensure_ascii=True)} "
+        f"import_chains={json.dumps(import_chains, ensure_ascii=True)} "
+        f"import_chains_truncated="
+        f"{int(len(package.import_chains) > _CODE_CLI_ARCHITECTURE_EXAMPLE_LIMIT)} "
+        f"affected_architecture_contracts="
+        f"{json.dumps(affected_contracts, ensure_ascii=True)} "
+        f"affected_contracts_truncated="
+        f"{int(len(package.affected_architecture_contracts) > _CODE_CLI_ARCHITECTURE_EXAMPLE_LIMIT)} "
+        f"architecture_acceptance_gates={json.dumps(architecture_gates, ensure_ascii=True)}"
+    )
+
+
+def _bounded_code_review_sequence(value: object) -> list[object] | tuple[object, ...]:
+    if isinstance(value, (list, tuple)):
+        return value[:_CODE_CLI_COVERAGE_EXAMPLE_LIMIT]
+    return []
+
+
+def _emit_code_review_work_package_coverage(
+    package: CodeReviewWorkPackage,
+) -> None:
+    projection = package.test_coverage
+    if projection is None:
+        _print_console_line(
+            "CODE_REVIEW_WORK_PACKAGE_COVERAGE status=not_evaluated "
+            f"package_rank={package.package_rank} package_id={package.package_id} "
+            'reason="coverage_projection_missing"'
+        )
+        return
+    payload = asdict(projection)
+    coverage_scope = (
+        {} if package.test_coverage_scope is None else asdict(package.test_coverage_scope)
+    )
+    coverage_gate = payload.get("gate")
+    bounded_gate = coverage_gate if isinstance(coverage_gate, dict) else {}
+    _print_console_line(
+        "CODE_REVIEW_WORK_PACKAGE_COVERAGE "
+        f"status={payload.get('status')} "
+        f"package_rank={package.package_rank} package_id={package.package_id} "
+        f"subject={json.dumps(payload.get('primary_symbol'), ensure_ascii=True)} "
+        f"tests={json.dumps(_bounded_code_review_sequence(payload.get('protecting_tests')), ensure_ascii=True)} "
+        f"relations={json.dumps(_bounded_code_review_sequence(payload.get('relation_ids')), ensure_ascii=True)} "
+        f"missing_lines={json.dumps(_bounded_code_review_sequence(coverage_scope.get('missing_line_ranges')), ensure_ascii=True)} "
+        f"missing_branches={json.dumps(_bounded_code_review_sequence(coverage_scope.get('missing_branch_arcs')), ensure_ascii=True)} "
+        f"details_truncated={int(bool(coverage_scope.get('missing_line_ranges_truncated')) or bool(coverage_scope.get('missing_branch_arcs_truncated')))} "
+        f"gate={bounded_gate.get('status')} "
+        f"reason={json.dumps(bounded_gate.get('reason'), ensure_ascii=True)}"
+    )
+
+
+def _emit_code_review_work_package(package: CodeReviewWorkPackage) -> None:
+    _emit_code_review_work_package_supply_chain(package)
+    _emit_code_review_work_package_summary(package)
+    _emit_code_review_work_package_unused(package)
+    _emit_code_review_work_package_architecture(package)
+    _emit_code_review_work_package_coverage(package)
+
+
+def _emit_code_review_ready(result: CodeReviewResult) -> int:
+    complete_evidence = _complete_code_review_evidence(result)
+    if complete_evidence is None:
+        return _error("code-review", RuntimeError("ready result is incomplete"))
+    snapshot, coverage, digest = complete_evidence
+    _emit_code_review_header(result, snapshot, coverage, digest)
+    _emit_code_review_external_evidence(result)
+    _emit_code_review_architecture_result(result)
+    _emit_code_review_test_coverage_result(result)
+    _emit_code_review_unused_result(result)
+    _emit_code_review_supply_chain_result(result)
+    _emit_code_review_abstention_statuses(result)
     for package in result.work_packages:
-        import_chains = package.import_chains[:_CODE_CLI_ARCHITECTURE_EXAMPLE_LIMIT]
-        affected_contracts = package.affected_architecture_contracts[
-            :_CODE_CLI_ARCHITECTURE_EXAMPLE_LIMIT
-        ]
-        package_supply_gates = getattr(package, "supply_chain_gates", ())
-        package_supply_observations = getattr(package, "supply_chain_observations", ())
-        package_supply_relations = getattr(package, "supply_chain_relations", ())
-        _print_console_line(
-            "CODE_REVIEW_WORK_PACKAGE_SUPPLY_CHAIN "
-            f"status={'ready' if package_supply_gates else 'not_evaluated'} "
-            f"package_rank={package.package_rank} package_id={package.package_id} "
-            f"observations={len(package_supply_observations)} "
-            f"relations={len(package_supply_relations)} "
-            f"gates={json.dumps([gate.gate for gate in package_supply_gates], ensure_ascii=True)} "
-            "mutation_authority=0"
-        )
-        architecture_gates = tuple(
-            gate for gate in package.acceptance_gates if gate in _CODE_ARCHITECTURE_ACCEPTANCE_GATES
-        )
-        _print_console_line(
-            "CODE_REVIEW_WORK_PACKAGE status=ready "
-            f"package_rank={package.package_rank} risk={package.change_risk} "
-            f"kind={getattr(package, 'package_kind', 'hotspot_maintenance')} "
-            f"members={len(package.members)} "
-            f"members_truncated={int(package.members_truncated)} "
-            f"confidence={package.confidence} "
-            f"primary={json.dumps(package.primary_symbol, ensure_ascii=True)} "
-            f"human_confirmation="
-            f"{int(bool(getattr(package, 'requires_human_confirmation', False)))} "
-            f"mutation_authority="
-            f"{int(bool(getattr(package, 'mutation_authority', False)))} "
-            f"package_id={package.package_id}"
-        )
-        unused_candidates = getattr(package, "unused_candidates", ())
-        for candidate in unused_candidates[:_CODE_CLI_UNUSED_EXAMPLE_LIMIT]:
-            _print_console_line(
-                "CODE_REVIEW_WORK_PACKAGE_UNUSED "
-                f"package_rank={package.package_rank} package_id={package.package_id} "
-                f"candidate_id={candidate.candidate_id} state={candidate.state} "
-                f"path={json.dumps(candidate.relative_path, ensure_ascii=True)} "
-                f"symbol={json.dumps(candidate.symbol, ensure_ascii=True)} "
-                f"reasons={json.dumps(candidate.reasons, ensure_ascii=True)}"
-            )
-        _print_console_line(
-            "CODE_REVIEW_WORK_PACKAGE_ARCHITECTURE status=ready "
-            f"package_rank={package.package_rank} package_id={package.package_id} "
-            f"primary_module={json.dumps(package.primary_module, ensure_ascii=True)} "
-            f"import_chains={json.dumps(import_chains, ensure_ascii=True)} "
-            f"import_chains_truncated="
-            f"{int(len(package.import_chains) > _CODE_CLI_ARCHITECTURE_EXAMPLE_LIMIT)} "
-            f"affected_architecture_contracts="
-            f"{json.dumps(affected_contracts, ensure_ascii=True)} "
-            f"affected_contracts_truncated="
-            f"{int(len(package.affected_architecture_contracts) > _CODE_CLI_ARCHITECTURE_EXAMPLE_LIMIT)} "
-            f"architecture_acceptance_gates={json.dumps(architecture_gates, ensure_ascii=True)}"
-        )
-        coverage_projection = package.test_coverage
-        if coverage_projection is None:
-            _print_console_line(
-                "CODE_REVIEW_WORK_PACKAGE_COVERAGE status=not_evaluated "
-                f"package_rank={package.package_rank} package_id={package.package_id} "
-                'reason="coverage_projection_missing"'
-            )
-        else:
-            coverage_payload = asdict(coverage_projection)
-            protecting_tests = coverage_payload.get("protecting_tests")
-            bounded_tests = (
-                protecting_tests[:_CODE_CLI_COVERAGE_EXAMPLE_LIMIT]
-                if isinstance(protecting_tests, (list, tuple))
-                else []
-            )
-            coverage_scope = (
-                {} if package.test_coverage_scope is None else asdict(package.test_coverage_scope)
-            )
-            missing_lines = coverage_scope.get("missing_line_ranges")
-            bounded_lines = (
-                missing_lines[:_CODE_CLI_COVERAGE_EXAMPLE_LIMIT]
-                if isinstance(missing_lines, (list, tuple))
-                else []
-            )
-            missing_branches = coverage_scope.get("missing_branch_arcs")
-            bounded_branches = (
-                missing_branches[:_CODE_CLI_COVERAGE_EXAMPLE_LIMIT]
-                if isinstance(missing_branches, (list, tuple))
-                else []
-            )
-            coverage_gate = coverage_payload.get("gate")
-            bounded_gate = coverage_gate if isinstance(coverage_gate, dict) else {}
-            relation_ids = coverage_payload.get("relation_ids")
-            bounded_relations = (
-                relation_ids[:_CODE_CLI_COVERAGE_EXAMPLE_LIMIT]
-                if isinstance(relation_ids, (list, tuple))
-                else []
-            )
-            _print_console_line(
-                "CODE_REVIEW_WORK_PACKAGE_COVERAGE "
-                f"status={coverage_payload.get('status')} "
-                f"package_rank={package.package_rank} package_id={package.package_id} "
-                f"subject={json.dumps(coverage_payload.get('primary_symbol'), ensure_ascii=True)} "
-                f"tests={json.dumps(bounded_tests, ensure_ascii=True)} "
-                f"relations={json.dumps(bounded_relations, ensure_ascii=True)} "
-                f"missing_lines={json.dumps(bounded_lines, ensure_ascii=True)} "
-                f"missing_branches={json.dumps(bounded_branches, ensure_ascii=True)} "
-                f"details_truncated={int(bool(coverage_scope.get('missing_line_ranges_truncated')) or bool(coverage_scope.get('missing_branch_arcs_truncated')))} "
-                f"gate={bounded_gate.get('status')} "
-                f"reason={json.dumps(bounded_gate.get('reason'), ensure_ascii=True)}"
-            )
+        _emit_code_review_work_package(package)
     _emit_code_review_ranked_evidence(result)
     return 0
+
+
+def run_code_review(args: argparse.Namespace) -> int:
+    """Rank confirmed Python hotspots in the published self-analysis snapshot."""
+
+    from .code_review import review_code_state
+    try:
+        result = review_code_state(
+            args.state_directory,
+            limit=args.code_review_limit,
+        )
+    except (OSError, sqlite3.Error, RuntimeError, ValueError) as exc:
+        return _error("code-review", exc)
+    if args.code_json:
+        return _emit_code_review_json(result)
+    if result.status != "ready":
+        return _emit_code_review_abstention(result)
+    return _emit_code_review_ready(result)
 
 
 def _emit_code_publication_unused(analysis: CodeUnusedAnalysisDelta) -> None:
@@ -1633,70 +1703,103 @@ def _emit_code_publication_engineering(
         )
 
 
-def run_code_publication_diff(args: argparse.Namespace) -> int:
-    """Compare two completed Code publications without mutating either state."""
+@dataclass(frozen=True, slots=True)
+class _CodePublicationReadyEvidence:
+    baseline: CodePublicationSnapshot
+    current: CodePublicationSnapshot
+    calls: CodeCallResolutionDelta
+    hotspots: CodeHotspotDelta
+    probable_dead_delta: int
+    external_evidence: CodeExternalEvidenceDelta
+    architecture: CodeArchitectureDelta
+    test_coverage: CoverageComparison
+    digest: CodePublicationDiffDigest
 
-    from .code_publication_diff import compare_code_publications
 
-    try:
-        result = compare_code_publications(
-            Path(args.code_publication_diff),
-            args.state_directory,
-        )
-    except (OSError, sqlite3.Error, RuntimeError, ValueError) as exc:
-        return _error("code-publication-diff", exc)
-    if args.code_json:
-        _emit(result.as_payload(), json_output=True)
-        return 0 if result.status == "ready" else 2
-    if result.status != "ready":
-        _print_console_line(
-            f"CODE_PUBLICATION_DIFF status=abstained reason={result.reason} "
-            f"baseline={json.dumps(result.baseline_database, ensure_ascii=True)} "
-            f"current={json.dumps(result.current_database, ensure_ascii=True)}"
-        )
-        return 2
+def _emit_code_publication_json(result: CodePublicationDiffResult) -> int:
+    _emit(result.as_payload(), json_output=True)
+    return 0 if result.status == "ready" else 2
+
+
+def _emit_code_publication_abstention(result: CodePublicationDiffResult) -> int:
+    _print_console_line(
+        f"CODE_PUBLICATION_DIFF status=abstained reason={result.reason} "
+        f"baseline={json.dumps(result.baseline_database, ensure_ascii=True)} "
+        f"current={json.dumps(result.current_database, ensure_ascii=True)}"
+    )
+    return 2
+
+
+def _complete_code_publication_evidence(
+    result: CodePublicationDiffResult,
+) -> _CodePublicationReadyEvidence | None:
+    baseline = result.baseline
+    current = result.current
+    calls = result.calls
+    hotspots = result.hotspots
+    probable_dead_delta = result.probable_dead_delta
+    external_evidence = result.external_evidence
+    architecture = result.architecture
+    test_coverage = result.test_coverage
+    digest = result.digest
     if (
-        result.baseline is None
-        or result.current is None
-        or result.calls is None
-        or result.hotspots is None
-        or result.probable_dead_delta is None
-        or result.external_evidence is None
-        or result.architecture is None
-        or result.test_coverage is None
-        or result.digest is None
+        baseline is None
+        or current is None
+        or calls is None
+        or hotspots is None
+        or probable_dead_delta is None
+        or external_evidence is None
+        or architecture is None
+        or test_coverage is None
+        or digest is None
     ):
-        return _error(
-            "code-publication-diff",
-            RuntimeError("ready result is incomplete"),
-        )
+        return None
+    return _CodePublicationReadyEvidence(
+        baseline=baseline,
+        current=current,
+        calls=calls,
+        hotspots=hotspots,
+        probable_dead_delta=probable_dead_delta,
+        external_evidence=external_evidence,
+        architecture=architecture,
+        test_coverage=test_coverage,
+        digest=digest,
+    )
+
+
+def _emit_code_publication_summary(
+    evidence: _CodePublicationReadyEvidence,
+) -> None:
     _print_console_line(
-        f"CODE_PUBLICATION_DIFF status=ready digest={result.digest.xxh3_128} "
-        f"baseline_calls={result.baseline.resolved_call_edges}/"
-        f"{result.baseline.call_edges} current_calls="
-        f"{result.current.resolved_call_edges}/{result.current.call_edges}"
+        f"CODE_PUBLICATION_DIFF status=ready digest={evidence.digest.xxh3_128} "
+        f"baseline_calls={evidence.baseline.resolved_call_edges}/"
+        f"{evidence.baseline.call_edges} current_calls="
+        f"{evidence.current.resolved_call_edges}/{evidence.current.call_edges}"
     )
     _print_console_line(
-        f"CODE_PUBLICATION_DIFF_CALLS common={result.calls.common_call_sites} "
-        f"baseline_only={result.calls.baseline_only_call_sites} "
-        f"current_only={result.calls.current_only_call_sites} "
-        f"newly_resolved={result.calls.newly_resolved} "
-        f"corrected={result.calls.corrected} lost={result.calls.lost}"
+        f"CODE_PUBLICATION_DIFF_CALLS common={evidence.calls.common_call_sites} "
+        f"baseline_only={evidence.calls.baseline_only_call_sites} "
+        f"current_only={evidence.calls.current_only_call_sites} "
+        f"newly_resolved={evidence.calls.newly_resolved} "
+        f"corrected={evidence.calls.corrected} lost={evidence.calls.lost}"
     )
     _print_console_line(
-        f"CODE_PUBLICATION_DIFF_HOTSPOTS common={result.hotspots.common} "
-        f"added={result.hotspots.added} removed={result.hotspots.removed} "
-        f"changed_evidence={result.hotspots.changed_evidence} "
-        f"probable_dead_delta={result.probable_dead_delta:+d}"
+        f"CODE_PUBLICATION_DIFF_HOTSPOTS common={evidence.hotspots.common} "
+        f"added={evidence.hotspots.added} removed={evidence.hotspots.removed} "
+        f"changed_evidence={evidence.hotspots.changed_evidence} "
+        f"probable_dead_delta={evidence.probable_dead_delta:+d}"
     )
     _print_console_line(
         "CODE_PUBLICATION_DIFF_EXTERNAL provider=ruff "
-        f"status={result.external_evidence.status} "
-        f"common={result.external_evidence.common} "
-        f"added={result.external_evidence.added} "
-        f"resolved={result.external_evidence.resolved} "
-        f"gate={result.external_evidence.gate}"
+        f"status={evidence.external_evidence.status} "
+        f"common={evidence.external_evidence.common} "
+        f"added={evidence.external_evidence.added} "
+        f"resolved={evidence.external_evidence.resolved} "
+        f"gate={evidence.external_evidence.gate}"
     )
+
+
+def _emit_code_publication_providers(result: CodePublicationDiffResult) -> None:
     _print_console_line(
         f"CODE_PUBLICATION_DIFF_PROVIDERS profile={result.analysis_profile} "
         f"verdict={result.verdict}"
@@ -1708,8 +1811,10 @@ def run_code_publication_diff(args: argparse.Namespace) -> int:
             f"added={provider.added} resolved={provider.resolved} "
             f"relocated={provider.relocated} gate={provider.gate}"
         )
-    _emit_code_publication_architecture(result.architecture)
-    coverage_delta = asdict(result.test_coverage)
+
+
+def _emit_code_publication_coverage(coverage: CoverageComparison) -> None:
+    coverage_delta = asdict(coverage)
     _print_console_line(
         "CODE_PUBLICATION_DIFF_COVERAGE "
         f"status={coverage_delta.get('status')} "
@@ -1731,33 +1836,81 @@ def run_code_publication_diff(args: argparse.Namespace) -> int:
                 f"status={gate.get('status')} "
                 f"reason={json.dumps(gate.get('reason'), ensure_ascii=True)}"
             )
+
+
+def _emit_code_publication_unused_result(result: CodePublicationDiffResult) -> None:
     unused_delta = getattr(result, "unused_analysis", None)
     if unused_delta is None:
         _print_console_line(
             "CODE_PUBLICATION_DIFF_UNUSED status=not_evaluated "
             'gate=not_evaluated reason="unused_delta_missing"'
         )
-    else:
-        _emit_code_publication_unused(unused_delta)
+        return
+    _emit_code_publication_unused(unused_delta)
+
+
+def _emit_code_publication_supply_chain_result(
+    result: CodePublicationDiffResult,
+) -> None:
     supply_chain_delta = getattr(result, "supply_chain", None)
     if supply_chain_delta is None:
         _print_console_line(
             "CODE_PUBLICATION_DIFF_SUPPLY_CHAIN status=not_evaluated "
             'reason="supply_chain_delta_missing"'
         )
-    else:
-        _emit_code_publication_supply_chain(supply_chain_delta)
+        return
+    _emit_code_publication_supply_chain(supply_chain_delta)
+
+
+def _emit_code_publication_engineering_result(
+    result: CodePublicationDiffResult,
+) -> None:
     engineering_delta = getattr(result, "engineering_analytics", None)
     if engineering_delta is None:
         _print_console_line(
             "CODE_PUBLICATION_DIFF_ENGINEERING status=not_comparable "
             'reason="engineering_analytics_delta_missing"'
         )
-    else:
-        _emit_code_publication_engineering(engineering_delta)
+        return
+    _emit_code_publication_engineering(engineering_delta)
+
+
+def _emit_code_publication_ready(result: CodePublicationDiffResult) -> int:
+    evidence = _complete_code_publication_evidence(result)
+    if evidence is None:
+        return _error(
+            "code-publication-diff",
+            RuntimeError("ready result is incomplete"),
+        )
+    _emit_code_publication_summary(evidence)
+    _emit_code_publication_providers(result)
+    _emit_code_publication_architecture(evidence.architecture)
+    _emit_code_publication_coverage(evidence.test_coverage)
+    _emit_code_publication_unused_result(result)
+    _emit_code_publication_supply_chain_result(result)
+    _emit_code_publication_engineering_result(result)
     for limitation in result.limitations:
         _print_console_line(f"CODE_PUBLICATION_DIFF_LIMITATION {limitation}")
     return 0
+
+
+def run_code_publication_diff(args: argparse.Namespace) -> int:
+    """Compare two completed Code publications without mutating either state."""
+
+    from .code_publication_diff import compare_code_publications
+
+    try:
+        result = compare_code_publications(
+            Path(args.code_publication_diff),
+            args.state_directory,
+        )
+    except (OSError, sqlite3.Error, RuntimeError, ValueError) as exc:
+        return _error("code-publication-diff", exc)
+    if args.code_json:
+        return _emit_code_publication_json(result)
+    if result.status != "ready":
+        return _emit_code_publication_abstention(result)
+    return _emit_code_publication_ready(result)
 
 
 def run_code_doctor(args: argparse.Namespace) -> int:

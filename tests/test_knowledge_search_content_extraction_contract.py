@@ -41,6 +41,7 @@ from _04_Nucleo_Operativo.knowledge_snapshot import KnowledgeStatePaths
 from _04_Nucleo_Operativo.semantic_lexical import (
     LexicalAvailability,
     LexicalRanking,
+    LexicalStatePaths,
 )
 from _04_Nucleo_Operativo.semantic_models import (
     EmbeddingModality,
@@ -100,6 +101,22 @@ EXPECTED_SIGNATURES = {
         "list[RankingExecution], int, bool, tuple[ExactOwnerTiming, ...]]'"
     ),
 }
+
+LOWER_SEMANTIC_SIGNATURE = (
+    "(paths: 'KnowledgeStatePaths', plan: 'KnowledgePlan', "
+    "snapshot: 'KnowledgeSnapshot', cancellation_check: "
+    "'Callable[[], None] | None', clock_ns: 'Callable[[], int] | None', *, "
+    "planned_steps: 'PlannedSteps', owner_available: 'OwnerAvailable', "
+    "duration_ns: 'DurationNanoseconds', materialize_candidate: "
+    "'MaterializeCandidate', materialize_discovery_signal: "
+    "'MaterializeDiscoverySignal', default_clock: 'Callable[[], int]', "
+    "semantic_search: 'SemanticSearch', cancellation_bridge_type: "
+    "'type[SQLiteCancellationBridge]', reraise_captured_cancellation: "
+    "'ReraiseCapturedCancellation', sqlite_error_type: 'type[Exception]', "
+    "evidence_mode: 'RetrievalMode') -> "
+    "'tuple[dict[str, tuple[KnowledgeCandidate, ...]], "
+    "tuple[ResourceDiscoverySignal, ...], list[RankingExecution]]'"
+)
 
 
 def _snapshot() -> KnowledgeSnapshot:
@@ -230,6 +247,12 @@ def test_content_facade_seam_signatures_metadata_and_pickle_are_stable() -> None
         assert pickle.loads(pickle.dumps(seam, protocol=5)) is seam
 
 
+def test_lower_semantic_ranking_signature_is_frozen() -> None:
+    assert str(inspect.signature(content_implementation.semantic_rankings)) == (
+        LOWER_SEMANTIC_SIGNATURE
+    )
+
+
 def test_lexical_wrapper_resolves_all_lower_dependencies_per_call(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -272,7 +295,7 @@ def test_lexical_wrapper_resolves_all_lower_dependencies_per_call(
         return 10
 
     def lexical_search(
-        state_paths: object,
+        state_paths: LexicalStatePaths,
         query: str,
         *,
         limit: int,

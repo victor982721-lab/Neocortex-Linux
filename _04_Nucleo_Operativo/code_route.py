@@ -15,7 +15,7 @@ import subprocess
 import time
 from collections.abc import Iterable, Mapping
 from contextlib import AbstractContextManager, nullcontext
-from dataclasses import asdict, replace
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Protocol
 
@@ -123,6 +123,39 @@ _CODE_ANALYSIS_RAW_BYTES_FACTOR = 2
 _CODE_ANALYSIS_TEXT_BYTES_FACTOR = 12
 _CODE_GRAPH_FIXED_BYTES = 8 * _MIB
 _CODE_GRAPH_DATABASE_BYTES_CAP = 64 * _MIB
+_PROJECT_SCOPE_SKIP_COUNTERS = {
+    "outside_project": "outside_project_skips",
+    "dependency": "dependency_skips",
+    "generated": "generated_scope_skips",
+    "cache": "cache_skips",
+}
+
+
+@dataclass(slots=True)
+class _CodeRouteRun:
+    """Mutable state shared by one analysis/graph orchestration."""
+
+    counters: dict[str, int]
+    elapsed_nanoseconds: dict[str, int]
+    graph_inputs_changed: bool = False
+    analysis_run_id: int | None = None
+    current_phase: str = "analysis"
+
+    @classmethod
+    def create(cls) -> _CodeRouteRun:
+        return cls(
+            counters={
+                field: 0
+                for field in CodeRouteSummary.__dataclass_fields__
+                if field != "processing_signature"
+            },
+            elapsed_nanoseconds={"read": 0, "analyze": 0, "persist": 0},
+        )
+
+    def require_analysis_run_id(self) -> int:
+        if self.analysis_run_id is None:
+            raise RuntimeError("code analysis run did not start")
+        return self.analysis_run_id
 
 
 def estimate_code_analysis_memory_bytes(observed_size: int, max_text_chars: int) -> int:
@@ -459,7 +492,7 @@ class CodeRoute:
                     )
                     if callable(baseline_input_signature):
                         try:
-                            provider_input_signature = baseline_input_signature(files)
+                            computed_signature = baseline_input_signature(files)
                         except (
                             OSError,
                             RuntimeError,
@@ -468,6 +501,10 @@ class CodeRoute:
                             subprocess.TimeoutExpired,
                         ):
                             provider_input_signature = None
+                        else:
+                            provider_input_signature = (
+                                computed_signature if isinstance(computed_signature, str) else None
+                            )
                     if version is not None and provider_input_signature is not None:
                         exact, comparable = state.external_provider_baselines(
                             descriptor=provider.descriptor,
@@ -885,173 +922,197 @@ class CodeRoute:
             )
             return True
 
+    def _candidate_selected(
+        self,
+        state: CodeState,
+        snapshot: FileSnapshot,
+        project_scope: ProjectCandidateScope | None,
+        counters: dict[str, int],
+    ) -> bool:
+        if (
+            not likely_code_candidate(snapshot.path) and not is_project_marker(snapshot.path)
+        ) or not self._selected_path(snapshot.path):
+            return False
+        if project_scope is not None:
+            decision = project_scope.decision(snapshot.path)
+            if decision != "admit":
+                counters[_PROJECT_SCOPE_SKIP_COUNTERS[decision]] += 1
+                return False
+        return state.matches_selection(snapshot, self.config.selection)
+
+    def _analyze_inventory(self, state: CodeState, run: _CodeRouteRun) -> None:
+        project_scope = self._discover_project_scope()
+        if project_scope is not None:
+            run.counters["project_scope_enabled"] = 1
+            run.counters["project_roots"] = project_scope.root_count
+        for snapshot in self.dedup_index.snapshots(self.scan_id):
+            self.cancellation.checkpoint()
+            if not self._candidate_selected(
+                state,
+                snapshot,
+                project_scope,
+                run.counters,
+            ):
+                continue
+            if (
+                self.config.max_documents is not None
+                and run.counters["candidates"] >= self.config.max_documents
+            ):
+                break
+            run.counters["candidates"] += 1
+            candidate_changed = self._process_candidate(
+                state,
+                snapshot,
+                run.counters,
+                run.elapsed_nanoseconds,
+            )
+            run.graph_inputs_changed = run.graph_inputs_changed or candidate_changed
+
+    def _run_analysis_phase(self, state: CodeState, run: _CodeRouteRun) -> None:
+        run.analysis_run_id = state.begin_run(
+            self.framework_run_id,
+            self.scan_id,
+            self.processing_signature,
+        )
+        self._emit(0)
+        self._analyze_inventory(state, run)
+        for operation, elapsed in run.elapsed_nanoseconds.items():
+            run.counters[f"{operation}_milliseconds"] = elapsed // 1_000_000
+        self.framework_state.complete_route_phase(
+            self.framework_run_id,
+            self.route_name,
+            run.current_phase,
+            {"processing_signature": self.processing_signature, **run.counters},
+        )
+
+    def _advance_to_graph_phase(self, run: _CodeRouteRun) -> None:
+        run.current_phase = "graph"
+        self.framework_state.begin_route_phase(
+            self.framework_run_id,
+            self.route_name,
+            run.current_phase,
+        )
+
+    def _graph_reuse_count(
+        self,
+        state: CodeState,
+        run: _CodeRouteRun,
+        full_reconciliation: bool,
+    ) -> int | None:
+        if not (
+            full_reconciliation
+            and not run.graph_inputs_changed
+            and run.counters["processed"] == 0
+            and run.counters["cache_hits"] == run.counters["candidates"]
+            and run.counters["invalidated_versions"] == 0
+        ):
+            return None
+        return state.reusable_graph_project_count(
+            run.require_analysis_run_id(),
+            self.processing_signature,
+        )
+
+    def _run_graph_phase(
+        self,
+        state: CodeState,
+        run: _CodeRouteRun,
+    ) -> CodeRouteSummary:
+        graph_started = time.perf_counter_ns()
+        full_reconciliation = self.config.max_documents is None and not self.config.selection.active
+        self.cancellation.checkpoint()
+        if full_reconciliation:
+            missing_versions = state.mark_missing(self.framework_run_id)
+            run.counters["invalidated_versions"] += missing_versions
+            run.graph_inputs_changed = run.graph_inputs_changed or missing_versions > 0
+            self.cancellation.checkpoint()
+        reusable_projects = self._graph_reuse_count(
+            state,
+            run,
+            full_reconciliation,
+        )
+        if reusable_projects is None:
+            with self._graph_admission():
+                self.cancellation.checkpoint()
+                run.counters["projects"] = state.finalize_graph(
+                    self.framework_run_id,
+                    cancellation_check=self.cancellation.checkpoint,
+                )
+                self.cancellation.checkpoint()
+        else:
+            run.counters["projects"] = reusable_projects
+            self.cancellation.checkpoint()
+        run.counters["graph_milliseconds"] = (time.perf_counter_ns() - graph_started) // 1_000_000
+        self.cancellation.checkpoint()
+        external_evidence = self._external_evidence(
+            state,
+            full_reconciliation=full_reconciliation,
+            counters=run.counters,
+        )
+        self.cancellation.checkpoint()
+        summary = CodeRouteSummary(
+            processing_signature=self.processing_signature,
+            **run.counters,
+        )
+        payload = asdict(summary)
+        state.complete_run(
+            run.require_analysis_run_id(),
+            payload,
+            partial=(self.config.max_documents is not None or self.config.selection.active),
+            graph_current=True,
+            external_evidence=external_evidence,
+        )
+        self.framework_state.complete_route_phase(
+            self.framework_run_id,
+            self.route_name,
+            run.current_phase,
+            payload,
+        )
+        self._emit(
+            run.counters["candidates"],
+            finished=True,
+            errors=run.counters["errors"],
+            cache_hits=run.counters["cache_hits"],
+        )
+        checkpoint_code_wal(state.connection)
+        return summary
+
+    def _persist_run_failure(self, run: _CodeRouteRun, exc: BaseException) -> None:
+        if run.analysis_run_id is None:
+            return
+        try:
+            with CodeState(self.config.state_path) as state:
+                state.fail_run(run.analysis_run_id, exc)
+        except Exception as cleanup_exc:
+            exc.add_note(
+                "code run failure could not be persisted: "
+                f"{type(cleanup_exc).__name__}: {cleanup_exc}"
+            )
+
     def run(self) -> CodeRouteSummary:
         """Run analysis and graph publication with durable phase boundaries."""
 
-        counters: dict[str, int] = {
-            field: 0
-            for field in CodeRouteSummary.__dataclass_fields__
-            if field != "processing_signature"
-        }
-        elapsed_nanoseconds = {"read": 0, "analyze": 0, "persist": 0}
-        graph_inputs_changed = False
-        analysis_run_id: int | None = None
-        summary: CodeRouteSummary | None = None
-        current_phase = "analysis"
+        run = _CodeRouteRun.create()
         self.framework_state.begin_route_phase(
-            self.framework_run_id, self.route_name, current_phase
+            self.framework_run_id,
+            self.route_name,
+            run.current_phase,
         )
         try:
             with CodeState(self.config.state_path) as state:
-                analysis_run_id = state.begin_run(
-                    self.framework_run_id,
-                    self.scan_id,
-                    self.processing_signature,
-                )
-                self._emit(0)
-                project_scope = self._discover_project_scope()
-                if project_scope is not None:
-                    counters["project_scope_enabled"] = 1
-                    counters["project_roots"] = project_scope.root_count
-                for snapshot in self.dedup_index.snapshots(self.scan_id):
-                    self.cancellation.checkpoint()
-                    if (
-                        not likely_code_candidate(snapshot.path)
-                        and not is_project_marker(snapshot.path)
-                    ) or not self._selected_path(snapshot.path):
-                        continue
-                    if project_scope is not None:
-                        decision = project_scope.decision(snapshot.path)
-                        if decision != "admit":
-                            counter = {
-                                "outside_project": "outside_project_skips",
-                                "dependency": "dependency_skips",
-                                "generated": "generated_scope_skips",
-                                "cache": "cache_skips",
-                            }[decision]
-                            counters[counter] += 1
-                            continue
-                    if not state.matches_selection(snapshot, self.config.selection):
-                        continue
-                    if (
-                        self.config.max_documents is not None
-                        and counters["candidates"] >= self.config.max_documents
-                    ):
-                        break
-                    counters["candidates"] += 1
-                    candidate_changed = self._process_candidate(
-                        state,
-                        snapshot,
-                        counters,
-                        elapsed_nanoseconds,
-                    )
-                    graph_inputs_changed = graph_inputs_changed or candidate_changed
-
-                for operation, elapsed in elapsed_nanoseconds.items():
-                    counters[f"{operation}_milliseconds"] = elapsed // 1_000_000
-                analysis_summary = {
-                    "processing_signature": self.processing_signature,
-                    **counters,
-                }
-                self.framework_state.complete_route_phase(
-                    self.framework_run_id,
-                    self.route_name,
-                    current_phase,
-                    analysis_summary,
-                )
-                current_phase = "graph"
-                self.framework_state.begin_route_phase(
-                    self.framework_run_id, self.route_name, current_phase
-                )
-                graph_started = time.perf_counter_ns()
-                full_reconciliation = (
-                    self.config.max_documents is None and not self.config.selection.active
-                )
-                self.cancellation.checkpoint()
-                if full_reconciliation:
-                    missing_versions = state.mark_missing(self.framework_run_id)
-                    counters["invalidated_versions"] += missing_versions
-                    graph_inputs_changed = graph_inputs_changed or missing_versions > 0
-                    self.cancellation.checkpoint()
-                reusable_projects = None
-                if (
-                    full_reconciliation
-                    and not graph_inputs_changed
-                    and counters["processed"] == 0
-                    and counters["cache_hits"] == counters["candidates"]
-                    and counters["invalidated_versions"] == 0
-                ):
-                    reusable_projects = state.reusable_graph_project_count(
-                        analysis_run_id,
-                        self.processing_signature,
-                    )
-                if reusable_projects is None:
-                    with self._graph_admission():
-                        self.cancellation.checkpoint()
-                        counters["projects"] = state.finalize_graph(
-                            self.framework_run_id,
-                            cancellation_check=self.cancellation.checkpoint,
-                        )
-                        self.cancellation.checkpoint()
-                else:
-                    counters["projects"] = reusable_projects
-                    self.cancellation.checkpoint()
-                counters["graph_milliseconds"] = (
-                    time.perf_counter_ns() - graph_started
-                ) // 1_000_000
-                self.cancellation.checkpoint()
-                external_evidence = self._external_evidence(
-                    state,
-                    full_reconciliation=full_reconciliation,
-                    counters=counters,
-                )
-                self.cancellation.checkpoint()
-                summary = CodeRouteSummary(
-                    processing_signature=self.processing_signature,
-                    **counters,
-                )
-                payload = asdict(summary)
-                state.complete_run(
-                    analysis_run_id,
-                    payload,
-                    partial=(self.config.max_documents is not None or self.config.selection.active),
-                    graph_current=True,
-                    external_evidence=external_evidence,
-                )
-                self.framework_state.complete_route_phase(
-                    self.framework_run_id,
-                    self.route_name,
-                    current_phase,
-                    payload,
-                )
-                self._emit(
-                    counters["candidates"],
-                    finished=True,
-                    errors=counters["errors"],
-                    cache_hits=counters["cache_hits"],
-                )
-                checkpoint_code_wal(state.connection)
+                self._run_analysis_phase(state, run)
+                self._advance_to_graph_phase(run)
+                summary = self._run_graph_phase(state, run)
             remove_checkpointed_code_sidecars(
                 self.config.state_path,
                 require_removal=False,
             )
-            if summary is None:  # pragma: no cover - successful flow assigns it
-                raise RuntimeError("code route completed without a summary")
             return summary
         except BaseException as exc:
-            if analysis_run_id is not None:
-                try:
-                    with CodeState(self.config.state_path) as state:
-                        state.fail_run(analysis_run_id, exc)
-                except Exception as cleanup_exc:
-                    exc.add_note(
-                        "code run failure could not be persisted: "
-                        f"{type(cleanup_exc).__name__}: {cleanup_exc}"
-                    )
+            self._persist_run_failure(run, exc)
             self.framework_state.fail_route_phase(
                 self.framework_run_id,
                 self.route_name,
-                current_phase,
+                run.current_phase,
                 exc,
             )
             raise

@@ -671,10 +671,14 @@ def readonly_code_database(
         raise TypeError("close_connection must be a boolean")
     selected = Path(path)
     sidecars = (Path(f"{selected}-wal"), Path(f"{selected}-shm"))
-    if connect is connect_code_state and not any(os.path.lexists(sidecar) for sidecar in sidecars):
+    if (
+        connect is connect_code_state
+        and selected.is_file()
+        and not any(os.path.lexists(sidecar) for sidecar in sidecars)
+    ):
         from .self_analysis_status import quiescent_sqlite_database
 
-        with quiescent_sqlite_database(selected) as connection:
+        with quiescent_sqlite_database(selected, timeout_seconds=60) as connection:
             yield connection
         return
     connection = connect(selected, readonly=True, create=False)

@@ -39,6 +39,7 @@ _MAX_PATH_BYTES = 4_096
 _MAX_LINE_DELTA = 1_000_000_000_000
 _MEMORY_BOUND_BYTES = 512 * 1024 * 1024
 _SECONDS_PER_100_COMMITS = 100.0
+_SAFE_DIRECTORY_POLICY = "command-scoped-exact-validated-root-v1"
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,6 +96,7 @@ class GitHistoryConfig:
             "rename_policy": "find-renames-50-percent-window-v1",
             "recency_reference": "maximum-observed-commit-timestamp-v1",
             "cochange_policy": "current-files-same-nonmerge-commit-v1",
+            "safe_directory_policy": _SAFE_DIRECTORY_POLICY,
             "network": False,
             "content_execution": False,
             "mutation_authority": False,
@@ -226,13 +228,18 @@ def _git_environment(environment: Mapping[str, str]) -> dict[str, str]:
 def _git_prefix(git_executable: str, root: Path) -> tuple[str, ...]:
     if not git_executable or "\x00" in git_executable:
         raise ValueError("Git executable is invalid")
+    resolved_root = _validated_root(root)
+    # Git evaluates ownership before repository queries.  Authorize only the
+    # already validated root, in this process, without persistent configuration.
     return (
         git_executable,
         "--no-pager",
         "--no-optional-locks",
         "--no-replace-objects",
+        "-c",
+        f"safe.directory={resolved_root}",
         "-C",
-        str(root),
+        str(resolved_root),
     )
 
 
@@ -394,6 +401,64 @@ def _parse_change(tokens: list[bytes], index: int) -> tuple[_GitChange, int]:
     return _GitChange(path, additions, deletions, renamed_from), index + 3
 
 
+def _parse_commit_header(
+    tokens: list[bytes],
+    index: int,
+    seen_commits: set[str],
+) -> tuple[str, int, tuple[str, ...], int]:
+    if tokens[index] != _LOG_MARKER or index + 5 >= len(tokens):
+        raise ValueError("Git history commit record has an incompatible schema")
+    try:
+        object_id = tokens[index + 1].decode("ascii")
+        raw_timestamp = tokens[index + 2].decode("ascii")
+        raw_parents = tokens[index + 3].decode("ascii")
+    except UnicodeDecodeError as exc:
+        raise ValueError("Git history commit metadata is not ASCII") from exc
+    if _OBJECT_ID_PATTERN.fullmatch(object_id) is None or object_id in seen_commits:
+        raise ValueError("Git history commit identity is invalid or duplicated")
+    if not raw_timestamp.isdigit():
+        raise ValueError("Git history commit timestamp is invalid")
+    parents = tuple(raw_parents.split()) if raw_parents else ()
+    if len(parents) > 1 or any(
+        _OBJECT_ID_PATTERN.fullmatch(item) is None for item in parents
+    ):
+        raise ValueError("Git history merge exclusion contract was violated")
+    if tokens[index + 4] != b"":
+        raise ValueError("Git history commit header delimiter is invalid")
+    return object_id, int(raw_timestamp), parents, index + 5
+
+
+def _start_commit_changes(tokens: list[bytes], index: int) -> tuple[int, bool]:
+    """Consume Git's single header/diff LF and identify an empty commit."""
+
+    if index < len(tokens) and tokens[index].startswith(b"\n"):
+        tokens[index] = tokens[index][1:]
+        if not tokens[index]:
+            return index + 1, True
+    return index, False
+
+
+def _parse_commit_changes(
+    tokens: list[bytes],
+    index: int,
+    change_entries: int,
+    max_change_entries: int,
+) -> tuple[tuple[_GitChange, ...], int, int]:
+    index, empty_commit = _start_commit_changes(tokens, index)
+    if empty_commit:
+        return (), index, change_entries
+    changes: list[_GitChange] = []
+    while index < len(tokens) and tokens[index] != b"":
+        change, index = _parse_change(tokens, index)
+        changes.append(change)
+        change_entries += 1
+        if change_entries > max_change_entries:
+            raise ValueError("Git history change-entry bound was exceeded")
+    if index >= len(tokens) or tokens[index] != b"":
+        raise ValueError("Git history commit record is unterminated")
+    return tuple(changes), index + 1, change_entries
+
+
 def _parse_git_log(raw: bytes, *, max_change_entries: int) -> tuple[_GitCommit, ...]:
     tokens = raw.split(b"\x00")
     if not tokens or tokens[0] != b"":
@@ -405,46 +470,19 @@ def _parse_git_log(raw: bytes, *, max_change_entries: int) -> tuple[_GitCommit, 
     while index < len(tokens):
         if index == len(tokens) - 1 and tokens[index] == b"":
             break
-        if tokens[index] != _LOG_MARKER or index + 5 >= len(tokens):
-            raise ValueError("Git history commit record has an incompatible schema")
-        try:
-            object_id = tokens[index + 1].decode("ascii")
-            raw_timestamp = tokens[index + 2].decode("ascii")
-            raw_parents = tokens[index + 3].decode("ascii")
-        except UnicodeDecodeError as exc:
-            raise ValueError("Git history commit metadata is not ASCII") from exc
-        if _OBJECT_ID_PATTERN.fullmatch(object_id) is None or object_id in seen_commits:
-            raise ValueError("Git history commit identity is invalid or duplicated")
-        if not raw_timestamp.isdigit():
-            raise ValueError("Git history commit timestamp is invalid")
-        timestamp = int(raw_timestamp)
-        parents = tuple(raw_parents.split()) if raw_parents else ()
-        if len(parents) > 1 or any(_OBJECT_ID_PATTERN.fullmatch(item) is None for item in parents):
-            raise ValueError("Git history merge exclusion contract was violated")
-        if tokens[index + 4] != b"":
-            raise ValueError("Git history commit header delimiter is invalid")
-        index += 5
-        changes: list[_GitChange] = []
-        # ``git log --numstat`` separates the pretty header from the diff with
-        # one LF even when both contracts otherwise use NUL delimiters.
-        if index < len(tokens) and tokens[index].startswith(b"\n"):
-            tokens[index] = tokens[index][1:]
-            if not tokens[index]:
-                index += 1
-                seen_commits.add(object_id)
-                commits.append(_GitCommit(object_id, timestamp, parents, ()))
-                continue
-        while index < len(tokens) and tokens[index] != b"":
-            change, index = _parse_change(tokens, index)
-            changes.append(change)
-            change_entries += 1
-            if change_entries > max_change_entries:
-                raise ValueError("Git history change-entry bound was exceeded")
-        if index >= len(tokens) or tokens[index] != b"":
-            raise ValueError("Git history commit record is unterminated")
-        index += 1
+        object_id, timestamp, parents, index = _parse_commit_header(
+            tokens,
+            index,
+            seen_commits,
+        )
+        changes, index, change_entries = _parse_commit_changes(
+            tokens,
+            index,
+            change_entries,
+            max_change_entries,
+        )
         seen_commits.add(object_id)
-        commits.append(_GitCommit(object_id, timestamp, parents, tuple(changes)))
+        commits.append(_GitCommit(object_id, timestamp, parents, changes))
     if not commits:
         raise ValueError("Git history did not return any non-merge commit")
     return tuple(commits)
@@ -601,6 +639,93 @@ def _metrics_for_subject(
     )
 
 
+@dataclass(slots=True)
+class _HistoryObservationState:
+    aggregates: dict[str, _HistoryAggregate]
+    aliases: dict[str, str]
+    cochanges: defaultdict[tuple[str, str], int]
+    counters: dict[str, int]
+
+
+def _new_history_observation_state(
+    owners: Mapping[str, ExternalEvidenceFile],
+) -> _HistoryObservationState:
+    return _HistoryObservationState(
+        aggregates={path: _HistoryAggregate() for path in owners},
+        aliases={path: path for path in owners},
+        cochanges=defaultdict(int),
+        counters={
+            "change_entries": 0,
+            "rename_entries": 0,
+            "binary_or_unmeasured_entries": 0,
+            "commits_touching_current_files": 0,
+            "cochange_commits_skipped_large": 0,
+        },
+    )
+
+
+def _record_history_change(
+    state: _HistoryObservationState,
+    commit: _GitCommit,
+    change: _GitChange,
+    touched: set[str],
+    pending_aliases: list[tuple[str, str]],
+) -> None:
+    state.counters["change_entries"] += 1
+    if change.renamed_from is not None:
+        state.counters["rename_entries"] += 1
+    if change.additions is None:
+        state.counters["binary_or_unmeasured_entries"] += 1
+    current = state.aliases.get(change.path)
+    if current is None:
+        return
+    state.aggregates[current].record(commit, change)
+    touched.add(current)
+    if change.renamed_from is not None:
+        pending_aliases.append((change.renamed_from, current))
+
+
+def _extend_history_aliases(
+    state: _HistoryObservationState,
+    pending_aliases: Sequence[tuple[str, str]],
+) -> None:
+    for old_path, current in pending_aliases:
+        existing = state.aliases.get(old_path)
+        if existing is not None and existing != current:
+            raise ValueError("Git history rename lineage is ambiguous")
+        state.aliases[old_path] = current
+
+
+def _record_history_cochanges(
+    state: _HistoryObservationState,
+    touched: set[str],
+    config: GitHistoryConfig,
+) -> None:
+    if not touched:
+        return
+    state.counters["commits_touching_current_files"] += 1
+    if len(touched) > config.max_files_per_cochange_commit:
+        state.counters["cochange_commits_skipped_large"] += 1
+        return
+    ordered = sorted(touched)
+    for left_index, left in enumerate(ordered):
+        for right in ordered[left_index + 1 :]:
+            state.cochanges[(left, right)] += 1
+
+
+def _record_history_commit(
+    state: _HistoryObservationState,
+    commit: _GitCommit,
+    config: GitHistoryConfig,
+) -> None:
+    touched: set[str] = set()
+    pending_aliases: list[tuple[str, str]] = []
+    for change in commit.changes:
+        _record_history_change(state, commit, change, touched, pending_aliases)
+    _extend_history_aliases(state, pending_aliases)
+    _record_history_cochanges(state, touched, config)
+
+
 def _observations(
     commits: Sequence[_GitCommit],
     owners: Mapping[str, ExternalEvidenceFile],
@@ -610,65 +735,40 @@ def _observations(
     dict[tuple[str, str], int],
     dict[str, int],
 ]:
-    aggregates = {path: _HistoryAggregate() for path in owners}
-    aliases = {path: path for path in owners}
-    cochanges: defaultdict[tuple[str, str], int] = defaultdict(int)
-    counters = {
-        "change_entries": 0,
-        "rename_entries": 0,
-        "binary_or_unmeasured_entries": 0,
-        "commits_touching_current_files": 0,
-        "cochange_commits_skipped_large": 0,
-    }
+    state = _new_history_observation_state(owners)
     for commit in commits:
-        touched: set[str] = set()
-        pending_aliases: list[tuple[str, str]] = []
-        for change in commit.changes:
-            counters["change_entries"] += 1
-            if change.renamed_from is not None:
-                counters["rename_entries"] += 1
-            if change.additions is None:
-                counters["binary_or_unmeasured_entries"] += 1
-            current = aliases.get(change.path)
-            if current is not None:
-                aggregates[current].record(commit, change)
-                touched.add(current)
-                if change.renamed_from is not None:
-                    pending_aliases.append((change.renamed_from, current))
-        for old_path, current in pending_aliases:
-            existing = aliases.get(old_path)
-            if existing is not None and existing != current:
-                raise ValueError("Git history rename lineage is ambiguous")
-            aliases[old_path] = current
-        if not touched:
-            continue
-        counters["commits_touching_current_files"] += 1
-        if len(touched) > config.max_files_per_cochange_commit:
-            counters["cochange_commits_skipped_large"] += 1
-            continue
-        ordered = sorted(touched)
-        for left_index, left in enumerate(ordered):
-            for right in ordered[left_index + 1 :]:
-                cochanges[(left, right)] += 1
-    return aggregates, dict(cochanges), counters
+        _record_history_commit(state, commit, config)
+    return state.aggregates, dict(state.cochanges), state.counters
 
 
-def execute_git_history(
+@dataclass(frozen=True, slots=True)
+class _GitHistoryWindow:
+    config: GitHistoryConfig
+    owners: dict[str, ExternalEvidenceFile]
+    repository: GitRepositorySnapshot
+    input_signature: str
+    commits: tuple[_GitCommit, ...]
+    history_truncated: bool
+    start_timestamp: int
+    end_timestamp: int
+    stdout_bytes: int
+    stderr_bytes: int
+    process_invocations: int
+
+
+def _collect_git_history_window(
     root: Path,
     files: Sequence[ExternalEvidenceFile],
     environment: Mapping[str, str],
     *,
-    config: GitHistoryConfig | None = None,
-    snapshot: GitRepositorySnapshot | None = None,
-    git_executable: str = "git",
-) -> GitHistoryExecution:
-    """Collect deterministic local history evidence under explicit hard bounds."""
-
-    started_ns = time.time_ns()
+    config: GitHistoryConfig | None,
+    snapshot: GitRepositorySnapshot | None,
+    git_executable: str,
+) -> _GitHistoryWindow:
     effective = GitHistoryConfig() if config is None else config
     resolved_root = _validated_root(root)
     owners = _owners_by_relative(files, effective)
-    inspected = (
+    repository = (
         inspect_git_repository(
             resolved_root,
             environment,
@@ -678,7 +778,7 @@ def execute_git_history(
         if snapshot is None
         else snapshot
     )
-    signature = git_history_input_signature(files, inspected, config=effective)
+    signature = git_history_input_signature(files, repository, config=effective)
     log_run = _run_git(
         (
             "log",
@@ -695,7 +795,7 @@ def execute_git_history(
             "--numstat",
             "-z",
             "--end-of-options",
-            inspected.head_commit,
+            repository.head_commit,
             "--",
         ),
         root=resolved_root,
@@ -703,37 +803,59 @@ def execute_git_history(
         config=effective,
         git_executable=git_executable,
     )
-    parsed = _parse_git_log(log_run.stdout, max_change_entries=effective.max_change_entries)
+    parsed = _parse_git_log(
+        log_run.stdout,
+        max_change_entries=effective.max_change_entries,
+    )
     history_truncated = len(parsed) > effective.max_commits
     commits = parsed[: effective.max_commits]
     final_head, verify_stdout, verify_stderr = _resolve_root_and_head(
-        resolved_root, environment, effective, git_executable
+        resolved_root,
+        environment,
+        effective,
+        git_executable,
     )
-    if final_head != inspected.head_commit:
+    if final_head != repository.head_commit:
         raise ValueError("Git history ref changed during observation")
-
-    aggregates, candidate_relations, observation_counters = _observations(
-        commits, owners, effective
+    return _GitHistoryWindow(
+        config=effective,
+        owners=owners,
+        repository=repository,
+        input_signature=signature,
+        commits=commits,
+        history_truncated=history_truncated,
+        start_timestamp=min(item.timestamp for item in commits),
+        end_timestamp=max(item.timestamp for item in commits),
+        stdout_bytes=repository.stdout_bytes + len(log_run.stdout) + verify_stdout,
+        stderr_bytes=repository.stderr_bytes + len(log_run.stderr) + verify_stderr,
+        process_invocations=repository.process_invocations + 2,
     )
-    reference_timestamp = max(item.timestamp for item in commits)
-    window_start = min(item.timestamp for item in commits)
-    shared_metadata: dict[str, object] = {
+
+
+def _git_history_shared_metadata(window: _GitHistoryWindow) -> dict[str, object]:
+    return {
         "provider_schema": GIT_HISTORY_PROVIDER_SCHEMA,
-        "history_input_signature": signature,
-        "requested_ref": inspected.requested_ref,
-        "head_commit": inspected.head_commit,
-        "window_commits": len(commits),
-        "window_start_timestamp": window_start,
-        "window_end_timestamp": reference_timestamp,
-        "history_truncated": history_truncated,
-        "repository_shallow": inspected.repository_shallow,
+        "history_input_signature": window.input_signature,
+        "requested_ref": window.repository.requested_ref,
+        "head_commit": window.repository.head_commit,
+        "window_commits": len(window.commits),
+        "window_start_timestamp": window.start_timestamp,
+        "window_end_timestamp": window.end_timestamp,
+        "history_truncated": window.history_truncated,
+        "repository_shallow": window.repository.repository_shallow,
         "interpretation": "observed_history_not_defect_probability",
     }
 
+
+def _git_history_metrics(
+    window: _GitHistoryWindow,
+    aggregates: Mapping[str, _HistoryAggregate],
+    shared_metadata: Mapping[str, object],
+) -> tuple[ExternalProviderMetric, ...]:
     metrics: list[ExternalProviderMetric] = []
     modules: dict[str, _HistoryAggregate] = {}
     module_files: defaultdict[str, int] = defaultdict(int)
-    for path, owner in sorted(owners.items()):
+    for path, owner in sorted(window.owners.items()):
         aggregate = aggregates[path]
         metrics.extend(
             _metrics_for_subject(
@@ -741,8 +863,8 @@ def execute_git_history(
                 subject_key=path,
                 version_id=owner.version_id,
                 aggregate=aggregate,
-                window_commits=len(commits),
-                reference_timestamp=reference_timestamp,
+                window_commits=len(window.commits),
+                reference_timestamp=window.end_timestamp,
                 shared_metadata=shared_metadata,
             )
         )
@@ -757,15 +879,25 @@ def execute_git_history(
                 subject_key=module,
                 version_id=None,
                 aggregate=aggregate,
-                window_commits=len(commits),
-                reference_timestamp=reference_timestamp,
-                shared_metadata={**shared_metadata, "current_module_files": module_files[module]},
+                window_commits=len(window.commits),
+                reference_timestamp=window.end_timestamp,
+                shared_metadata={
+                    **shared_metadata,
+                    "current_module_files": module_files[module],
+                },
             )
         )
+    return tuple(metrics)
 
-    ordered_candidates = sorted(candidate_relations.items(), key=lambda item: (-item[1], item[0]))
-    relations_truncated = len(ordered_candidates) > effective.max_relations
-    selected_relations = ordered_candidates[: effective.max_relations]
+
+def _git_history_relations(
+    window: _GitHistoryWindow,
+    candidates: Mapping[tuple[str, str], int],
+    shared_metadata: Mapping[str, object],
+) -> tuple[tuple[ExternalProviderRelation, ...], int, bool]:
+    ordered = sorted(candidates.items(), key=lambda item: (-item[1], item[0]))
+    truncated = len(ordered) > window.config.max_relations
+    selected = ordered[: window.config.max_relations]
     relations = tuple(
         ExternalProviderRelation(
             external_relation_identity(
@@ -784,24 +916,34 @@ def execute_git_history(
             right,
             directed=False,
             confidence=None,
-            source_version_id=owners[left].version_id,
-            target_version_id=owners[right].version_id,
+            source_version_id=window.owners[left].version_id,
+            target_version_id=window.owners[right].version_id,
             metadata={
                 **shared_metadata,
                 "observed_commits_together": count,
-                "observed_frequency_per_100_commits": count * 100.0 / len(commits),
-                "relations_truncated": relations_truncated,
+                "observed_frequency_per_100_commits": (
+                    count * 100.0 / len(window.commits)
+                ),
+                "relations_truncated": truncated,
                 "interpretation": "cochange_observation_not_defect_probability",
             },
         )
-        for (left, right), count in selected_relations
+        for (left, right), count in selected
     )
+    return relations, len(ordered), truncated
 
-    files_with_history = sum(bool(item.commits) for item in aggregates.values())
+
+def _git_history_limitations(
+    window: _GitHistoryWindow,
+    observation_counters: Mapping[str, int],
+    *,
+    files_with_history: int,
+    relations_truncated: bool,
+) -> tuple[str, ...]:
     limitations = ["merge_commits_excluded_from_churn_window"]
-    if history_truncated:
+    if window.history_truncated:
         limitations.append("commit_window_truncated")
-    if inspected.repository_shallow:
+    if window.repository.repository_shallow:
         limitations.append("shallow_repository_history_incomplete")
     if relations_truncated:
         limitations.append("cochange_relation_candidates_truncated")
@@ -811,68 +953,151 @@ def execute_git_history(
         limitations.append("binary_numstat_line_counts_unavailable")
     if observation_counters["rename_entries"]:
         limitations.append("renames_followed_only_within_observed_window")
-    if files_with_history < len(files):
+    if files_with_history < len(window.owners):
         limitations.append("some_current_files_absent_from_observed_history")
+    return tuple(limitations)
 
-    stdout_bytes = inspected.stdout_bytes + len(log_run.stdout) + verify_stdout
-    stderr_bytes = inspected.stderr_bytes + len(log_run.stderr) + verify_stderr
-    process_invocations = inspected.process_invocations + 2
-    counters = {
-        "eligible_files": len(files),
+
+def _git_history_counters(
+    window: _GitHistoryWindow,
+    observation_counters: Mapping[str, int],
+    *,
+    files_with_history: int,
+    relation_candidates: int,
+    relations_emitted: int,
+    relations_truncated: bool,
+    metrics_emitted: int,
+    started_ns: int,
+) -> dict[str, int]:
+    return {
+        "eligible_files": len(window.owners),
         "covered_files": files_with_history,
-        "files_without_observed_history": len(files) - files_with_history,
-        "commits_requested": effective.max_commits,
-        "commits_observed": len(commits),
-        "history_truncated": int(history_truncated),
-        "repository_shallow": int(inspected.repository_shallow),
-        "relation_candidates": len(ordered_candidates),
-        "relations_emitted": len(relations),
+        "files_without_observed_history": len(window.owners) - files_with_history,
+        "commits_requested": window.config.max_commits,
+        "commits_observed": len(window.commits),
+        "history_truncated": int(window.history_truncated),
+        "repository_shallow": int(window.repository.repository_shallow),
+        "relation_candidates": relation_candidates,
+        "relations_emitted": relations_emitted,
         "relations_truncated": int(relations_truncated),
-        "metrics_emitted": len(metrics),
-        "process_invocations": process_invocations,
-        "stdout_bytes": stdout_bytes,
-        "stderr_bytes": stderr_bytes,
+        "metrics_emitted": metrics_emitted,
+        "process_invocations": window.process_invocations,
+        "stdout_bytes": window.stdout_bytes,
+        "stderr_bytes": window.stderr_bytes,
         "wall_milliseconds": max(0, (time.time_ns() - started_ns) // 1_000_000),
         **observation_counters,
     }
-    provenance = {
+
+
+def _git_history_provenance(window: _GitHistoryWindow) -> dict[str, object]:
+    return {
         "provider_id": GIT_HISTORY_PROVIDER_ID,
         "provider_schema": GIT_HISTORY_PROVIDER_SCHEMA,
         "source": "local_git_object_database",
-        "requested_ref": inspected.requested_ref,
-        "head_commit": inspected.head_commit,
-        "repository_shallow": inspected.repository_shallow,
-        "history_input_signature": signature,
-        "configuration_signature": effective.signature,
-        "configuration": effective.as_payload(),
+        "requested_ref": window.repository.requested_ref,
+        "head_commit": window.repository.head_commit,
+        "repository_shallow": window.repository.repository_shallow,
+        "history_input_signature": window.input_signature,
+        "configuration_signature": window.config.signature,
+        "configuration": window.config.as_payload(),
         "window": {
-            "commits": len(commits),
-            "start_timestamp": window_start,
-            "end_timestamp": reference_timestamp,
-            "truncated": history_truncated,
+            "commits": len(window.commits),
+            "start_timestamp": window.start_timestamp,
+            "end_timestamp": window.end_timestamp,
+            "truncated": window.history_truncated,
         },
         "authority": "advisory",
         "mutation_authority": False,
         "uses_network": False,
         "executes_content": False,
     }
+
+
+def _git_history_execution(
+    window: _GitHistoryWindow,
+    metrics: Sequence[ExternalProviderMetric],
+    relations: Sequence[ExternalProviderRelation],
+    counters: Mapping[str, int],
+    limitations: Sequence[str],
+    *,
+    relations_truncated: bool,
+) -> GitHistoryExecution:
     return GitHistoryExecution(
         findings=(),
         metrics=tuple(sorted(metrics, key=lambda item: item.portable_metric_id)),
         relations=tuple(sorted(relations, key=lambda item: item.portable_relation_id)),
-        history_input_signature=signature,
-        configuration_signature=effective.signature,
-        requested_ref=inspected.requested_ref,
-        head_commit=inspected.head_commit,
-        repository_shallow=inspected.repository_shallow,
-        history_truncated=history_truncated,
+        history_input_signature=window.input_signature,
+        configuration_signature=window.config.signature,
+        requested_ref=window.repository.requested_ref,
+        head_commit=window.repository.head_commit,
+        repository_shallow=window.repository.repository_shallow,
+        history_truncated=window.history_truncated,
         relations_truncated=relations_truncated,
         counters=counters,
         limitations=tuple(limitations),
-        provenance=provenance,
-        stdout_bytes=stdout_bytes,
-        stderr_bytes=stderr_bytes,
-        process_invocations=process_invocations,
+        provenance=_git_history_provenance(window),
+        stdout_bytes=window.stdout_bytes,
+        stderr_bytes=window.stderr_bytes,
+        process_invocations=window.process_invocations,
+    )
+
+
+def execute_git_history(
+    root: Path,
+    files: Sequence[ExternalEvidenceFile],
+    environment: Mapping[str, str],
+    *,
+    config: GitHistoryConfig | None = None,
+    snapshot: GitRepositorySnapshot | None = None,
+    git_executable: str = "git",
+) -> GitHistoryExecution:
+    """Collect deterministic local history evidence under explicit hard bounds."""
+
+    started_ns = time.time_ns()
+    window = _collect_git_history_window(
+        root,
+        files,
+        environment,
+        config=config,
+        snapshot=snapshot,
+        git_executable=git_executable,
+    )
+    aggregates, relation_candidates, observation_counters = _observations(
+        window.commits,
+        window.owners,
+        window.config,
+    )
+    shared_metadata = _git_history_shared_metadata(window)
+    metrics = _git_history_metrics(window, aggregates, shared_metadata)
+    relations, relation_candidate_count, relations_truncated = _git_history_relations(
+        window,
+        relation_candidates,
+        shared_metadata,
+    )
+    files_with_history = sum(bool(item.commits) for item in aggregates.values())
+    limitations = _git_history_limitations(
+        window,
+        observation_counters,
+        files_with_history=files_with_history,
+        relations_truncated=relations_truncated,
+    )
+    counters = _git_history_counters(
+        window,
+        observation_counters,
+        files_with_history=files_with_history,
+        relation_candidates=relation_candidate_count,
+        relations_emitted=len(relations),
+        relations_truncated=relations_truncated,
+        metrics_emitted=len(metrics),
+        started_ns=started_ns,
+    )
+    return _git_history_execution(
+        window,
+        metrics,
+        relations,
+        counters,
+        limitations,
+        relations_truncated=relations_truncated,
     )
 
 

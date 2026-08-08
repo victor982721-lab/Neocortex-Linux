@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import inspect
 import sqlite3
 from pathlib import Path
 
 import pytest
+from neocortex import sqlite_schema_contract as shared_schema_contract
 
 from _04_Nucleo_Operativo.sqlite_schema_contract import (
     SQLiteSchemaContractError,
@@ -41,6 +43,79 @@ def _connection() -> sqlite3.Connection:
     connection = sqlite3.connect(":memory:")
     connection.execute("PRAGMA foreign_keys=ON")
     return connection
+
+
+@pytest.mark.parametrize(
+    ("source", "start", "value", "end"),
+    (
+        ("0", 0, "0", 1),
+        ("123 rest", 0, "123", 3),
+        ("1_2_3", 0, "1_2_3", 5),
+        ("0xCA_FE!", 0, "0xca_fe", 7),
+        ("0X", 0, "0x", 2),
+        ("0x_G", 0, "0x_", 3),
+        ("0x1g", 0, "0x1", 3),
+        (".5,", 0, ".5", 2),
+        ("1.", 0, "1.", 2),
+        ("12.34E+05tail", 0, "12.34e+05", 9),
+        ("1E-9", 0, "1e-9", 4),
+        ("1e+", 0, "1", 1),
+        ("1e+x", 0, "1", 1),
+        ("1e_", 0, "1e_", 3),
+        ("1e+_", 0, "1e+_", 4),
+        ("12..3", 0, "12.", 3),
+        ("00x12", 0, "00", 2),
+        ("١٢.٣E٤", 0, "١٢.٣e٤", 6),
+        ("xx12.5yy", 2, "12.5", 6),
+        ("-12", 1, "12", 3),
+        ("", 0, "", 0),
+        ("1", 1, "", 1),
+        ("1", 2, "", 2),
+    ),
+)
+def test_numeric_sql_token_signature_determinism_and_edge_semantics(
+    source: str,
+    start: int,
+    value: str,
+    end: int,
+) -> None:
+    assert str(inspect.signature(shared_schema_contract._read_numeric_sql_token)) == (
+        "(source: 'str', start: 'int') -> 'tuple[_SQLToken, int]'"
+    )
+    expected = (shared_schema_contract._SQLToken("number", value), end)
+
+    assert shared_schema_contract._read_numeric_sql_token(source, start) == expected
+    assert shared_schema_contract._read_numeric_sql_token(source, start) == expected
+
+
+def test_numeric_sql_tokens_preserve_caller_boundaries() -> None:
+    tokens = shared_schema_contract._tokenize_schema_sql(
+        "VALUES(-1,+.5,6.02E23,0XCA_FE,1e+,1e_,12..3)"
+    )
+
+    assert tuple((token.kind, token.value) for token in tokens) == (
+        ("word", "VALUES"),
+        ("symbol", "("),
+        ("symbol", "-"),
+        ("number", "1"),
+        ("symbol", ","),
+        ("symbol", "+"),
+        ("number", ".5"),
+        ("symbol", ","),
+        ("number", "6.02e23"),
+        ("symbol", ","),
+        ("number", "0xca_fe"),
+        ("symbol", ","),
+        ("number", "1"),
+        ("word", "e"),
+        ("symbol", "+"),
+        ("symbol", ","),
+        ("number", "1e_"),
+        ("symbol", ","),
+        ("number", "12."),
+        ("number", ".3"),
+        ("symbol", ")"),
+    )
 
 
 def test_matching_contract_and_canonical_version_are_accepted() -> None:

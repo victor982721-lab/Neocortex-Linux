@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import re
 import tomllib
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
@@ -154,64 +155,115 @@ def _validate_identifier_pattern(pattern: str, authority_code: str) -> None:
         )
 
 
+_BACKREFERENCE_REASON = "backreferences are not allowed"
+_SPECIAL_GROUP_REASON = (
+    "lookarounds, named groups, and inline extensions are not allowed"
+)
+_REPEATED_GROUP_REASON = (
+    "a repeated group cannot itself contain repetition or alternation"
+)
+
+
+@dataclass(slots=True)
+class _RegexGroupFrame:
+    has_repetition: bool = False
+    has_alternation: bool = False
+
+
+class _CustomRegexSafetyScanner:
+    __slots__ = ("_frames", "_in_character_class", "_index", "_pattern")
+
+    def __init__(self, pattern: str) -> None:
+        self._pattern = pattern
+        self._frames = [_RegexGroupFrame()]
+        self._in_character_class = False
+        self._index = 0
+
+    def unsafe_reason(self) -> str | None:
+        while self._index < len(self._pattern):
+            reason = self._consume_next()
+            if reason is not None:
+                return reason
+        return None
+
+    def _consume_next(self) -> str | None:
+        character = self._pattern[self._index]
+        if character == "\\":
+            return self._consume_escape()
+        if self._consume_character_class(character):
+            return None
+        return self._consume_structural_token(character)
+
+    def _consume_escape(self) -> str | None:
+        if (
+            self._index + 1 < len(self._pattern)
+            and self._pattern[self._index + 1] in "123456789"
+        ):
+            return _BACKREFERENCE_REASON
+        self._index += 2
+        return None
+
+    def _consume_character_class(self, character: str) -> bool:
+        if character == "[" and not self._in_character_class:
+            self._in_character_class = True
+        elif character == "]" and self._in_character_class:
+            self._in_character_class = False
+        elif not self._in_character_class:
+            return False
+        self._index += 1
+        return True
+
+    def _consume_structural_token(self, character: str) -> str | None:
+        if character == "(":
+            return self._open_group()
+        if character == "|":
+            self._frames[-1].has_alternation = True
+            self._index += 1
+            return None
+        if character == ")" and len(self._frames) > 1:
+            return self._close_group()
+        self._consume_quantifier_or_literal()
+        return None
+
+    def _open_group(self) -> str | None:
+        if self._pattern.startswith("(?:", self._index):
+            self._index += 3
+        elif self._pattern.startswith("(?", self._index):
+            return _SPECIAL_GROUP_REASON
+        else:
+            self._index += 1
+        self._frames.append(_RegexGroupFrame())
+        return None
+
+    def _close_group(self) -> str | None:
+        frame = self._frames.pop()
+        repeated, next_index = _regex_quantifier_end(
+            self._pattern,
+            self._index + 1,
+        )
+        if repeated and (frame.has_repetition or frame.has_alternation):
+            return _REPEATED_GROUP_REASON
+        parent = self._frames[-1]
+        parent.has_repetition = (
+            parent.has_repetition or frame.has_repetition or repeated
+        )
+        parent.has_alternation = parent.has_alternation or frame.has_alternation
+        self._index = next_index if repeated else self._index + 1
+        return None
+
+    def _consume_quantifier_or_literal(self) -> None:
+        repeated, next_index = _regex_quantifier_end(self._pattern, self._index)
+        if repeated:
+            self._frames[-1].has_repetition = True
+            self._index = next_index
+        else:
+            self._index += 1
+
+
 def _unsafe_custom_regex_reason(pattern: str) -> str | None:
     """Conservatively reject constructs commonly responsible for regex backtracking."""
 
-    # Each frame records whether its group contains repetition or alternation.
-    frames: list[list[bool]] = [[False, False]]
-    in_character_class = False
-    index = 0
-    while index < len(pattern):
-        character = pattern[index]
-        if character == "\\":
-            if index + 1 < len(pattern) and pattern[index + 1] in "123456789":
-                return "backreferences are not allowed"
-            index += 2
-            continue
-        if character == "[" and not in_character_class:
-            in_character_class = True
-            index += 1
-            continue
-        if character == "]" and in_character_class:
-            in_character_class = False
-            index += 1
-            continue
-        if in_character_class:
-            index += 1
-            continue
-        if character == "(":
-            if pattern.startswith("(?:", index):
-                index += 3
-            elif pattern.startswith("(?", index):
-                return (
-                    "lookarounds, named groups, and inline extensions are not allowed"
-                )
-            else:
-                index += 1
-            frames.append([False, False])
-            continue
-        if character == "|":
-            frames[-1][1] = True
-            index += 1
-            continue
-        if character == ")" and len(frames) > 1:
-            has_repetition, has_alternation = frames.pop()
-            repeated, next_index = _regex_quantifier_end(pattern, index + 1)
-            if repeated and (has_repetition or has_alternation):
-                return (
-                    "a repeated group cannot itself contain repetition or alternation"
-                )
-            frames[-1][0] = frames[-1][0] or has_repetition or repeated
-            frames[-1][1] = frames[-1][1] or has_alternation
-            index = next_index if repeated else index + 1
-            continue
-        repeated, next_index = _regex_quantifier_end(pattern, index)
-        if repeated:
-            frames[-1][0] = True
-            index = next_index
-            continue
-        index += 1
-    return None
+    return _CustomRegexSafetyScanner(pattern).unsafe_reason()
 
 
 def _regex_quantifier_end(pattern: str, index: int) -> tuple[bool, int]:

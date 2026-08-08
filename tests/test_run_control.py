@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import inspect
 import json
 import sqlite3
 import time
+from collections.abc import Callable
 from pathlib import Path
+from types import SimpleNamespace
+from typing import cast
 
 import pytest
 
@@ -15,6 +19,9 @@ from _02_Deduplicacion import (
     ScanSummary,
 )
 from _04_Nucleo_Operativo.models import FrameworkConfig, RouteOnlyRunResult
+from _04_Nucleo_Operativo.inventory_boundary import NormalInventoryBoundary
+from _04_Nucleo_Operativo import orchestrator as orchestrator_module
+from _04_Nucleo_Operativo.global_resources import GlobalResourceSummary
 from _04_Nucleo_Operativo.orchestrator import (
     FrameworkOrchestrator,
     RouteExecutionError,
@@ -161,6 +168,285 @@ def _inventory_snapshot_adapter(
         return {"processed": len(paths)}
 
     return RouteAdapter("code", execute, input_source="inventory_snapshot")
+
+
+class _RouteOnlyBoundaryDouble:
+    def __init__(self, root: Path, events: list[str]) -> None:
+        self.access_policy = SimpleNamespace(root=root)
+        self.exclusion_policy = SimpleNamespace(signature="exclusion-signature")
+        self.effective_signature = "effective-signature"
+        self._events = events
+
+    def verify(self) -> None:
+        self._events.append("boundary.verify")
+
+
+class _RouteOnlyStateDouble:
+    def __init__(self, events: list[str]) -> None:
+        self.events = events
+        self.recorded_details: dict[str, dict[str, object]] = {}
+
+    def __enter__(self):
+        self.events.append("state.enter")
+        return self
+
+    def __exit__(self, exc_type, _exc, _traceback) -> None:
+        suffix = "none" if exc_type is None else exc_type.__name__
+        self.events.append(f"state.exit:{suffix}")
+
+    def route_candidate_run_count(self, run_id: int) -> int:
+        self.events.append(f"state.route_candidate_run_count:{run_id}")
+        return 3
+
+    def begin_operational_run(
+        self,
+        root: Path,
+        *,
+        run_kind: str,
+        source_run_id: int,
+    ) -> int:
+        self.events.append(
+            f"state.begin:{root.name}:{run_kind}:{source_run_id}"
+        )
+        return 84
+
+    def copy_route_candidates(self, source_run_id: int, run_id: int) -> int:
+        self.events.append(f"state.copy:{source_run_id}:{run_id}")
+        return 3
+
+    def record_event(
+        self,
+        run_id: int,
+        severity: str,
+        phase: str,
+        message: str,
+        details: dict[str, object],
+    ) -> None:
+        del run_id, phase
+        if message.endswith("iniciada"):
+            label = "start"
+        elif message.endswith("completada"):
+            label = "complete"
+        else:
+            label = "failure"
+        self.events.append(f"state.event:{severity}:{label}")
+        self.recorded_details[label] = details
+
+    def set_run_phase(self, run_id: int, phase: str) -> None:
+        self.events.append(f"state.phase:{run_id}:{phase}")
+
+    def prune_route_candidates(self, run_ids: tuple[int, ...]) -> None:
+        self.events.append(f"state.prune:{run_ids[0]}")
+
+    def complete_operational_run(self, run_id: int) -> None:
+        self.events.append(f"state.complete:{run_id}")
+
+    def cancel_initial_run(self, run_id: int) -> None:
+        self.events.append(f"state.cancel:{run_id}")
+
+    def fail_initial_run(self, run_id: int) -> None:
+        self.events.append(f"state.fail:{run_id}")
+
+
+def _route_only_doubles(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    route_action: Callable[[], tuple[dict[str, object], object | None]],
+) -> tuple[
+    FrameworkOrchestrator,
+    NormalInventoryBoundary,
+    _RouteOnlyStateDouble,
+    list[str],
+]:
+    events: list[str] = []
+    state = _RouteOnlyStateDouble(events)
+    boundary = _RouteOnlyBoundaryDouble(tmp_path, events)
+    framework = FrameworkOrchestrator(
+        FrameworkConfig(
+            root=tmp_path,
+            state_directory=tmp_path / "state",
+            route="probe",
+            route_only=True,
+            candidate_run_id=41,
+            heartbeat_interval_seconds=0.25,
+        ),
+        route_registry={"probe": RouteAdapter("probe", lambda _context: None)},
+    )
+
+    def reusable_source_scan_id(
+        selected_state,
+        source_run_id: int,
+        selected_boundary,
+        expected_scan_id: int | None,
+    ) -> int:
+        assert selected_state is state
+        assert selected_boundary is boundary
+        assert source_run_id == 41
+        assert expected_scan_id is None
+        events.append("source.scan")
+        return 73
+
+    def run_content_routes(*, root, state, run_id, scan_id):
+        assert root == tmp_path
+        assert state is state_double
+        assert run_id == 84
+        assert scan_id == 73
+        events.append("routes.execute")
+        return route_action()
+
+    state_double = state
+
+    class _HeartbeatDouble:
+        def __init__(
+            self,
+            database: Path,
+            run_id: int,
+            *,
+            interval_seconds: float,
+        ) -> None:
+            assert database == framework.config.framework_database
+            assert run_id == 84
+            assert interval_seconds == 0.25
+            events.append("heartbeat.init")
+
+        def start(self):
+            events.append("heartbeat.start")
+            return self
+
+        def stop(self) -> None:
+            events.append("heartbeat.stop")
+
+    monkeypatch.setattr(orchestrator_module, "FrameworkState", lambda _path: state)
+    monkeypatch.setattr(orchestrator_module, "RunHeartbeat", _HeartbeatDouble)
+    monkeypatch.setattr(
+        framework,
+        "_reusable_source_scan_id",
+        reusable_source_scan_id,
+    )
+    monkeypatch.setattr(framework, "_run_content_routes", run_content_routes)
+    return framework, cast(NormalInventoryBoundary, boundary), state, events
+
+
+def test_locked_route_only_signature_phase_order_and_complete_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert str(inspect.signature(FrameworkOrchestrator._run_route_only_locked)) == (
+        "(self, boundary: 'NormalInventoryBoundary') -> 'RouteOnlyRunResult'"
+    )
+    summaries: dict[str, object] = {
+        name: SimpleNamespace(name=name)
+        for name in ("pdf", "docx", "office", "audio", "image", "code")
+    }
+    summaries["probe"] = SimpleNamespace(name="probe")
+    resources = cast(GlobalResourceSummary, SimpleNamespace(name="resources"))
+    framework, boundary, state, events = _route_only_doubles(
+        tmp_path,
+        monkeypatch,
+        lambda: (summaries, resources),
+    )
+
+    result = framework._run_route_only_locked(boundary)
+
+    assert result.run_id == 84
+    assert result.source_run_id == 41
+    assert result.route_results is summaries
+    assert result.global_resources is resources
+    assert result.pdf is summaries["pdf"]
+    assert result.docx is summaries["docx"]
+    assert result.office is summaries["office"]
+    assert result.audio is summaries["audio"]
+    assert result.image is summaries["image"]
+    assert result.code is summaries["code"]
+    assert result.actions.apply_actions is False
+    assert events == [
+        "boundary.verify",
+        "state.enter",
+        "state.route_candidate_run_count:41",
+        "source.scan",
+        "boundary.verify",
+        f"state.begin:{tmp_path.name}:route_only:41",
+        "state.copy:41:84",
+        "heartbeat.init",
+        "heartbeat.start",
+        "state.event:info:start",
+        "routes.execute",
+        "boundary.verify",
+        "state.phase:84:finalize",
+        "state.prune:84",
+        "state.complete:84",
+        "state.event:info:complete",
+        "heartbeat.stop",
+        "state.exit:none",
+    ]
+    start = state.recorded_details["start"]
+    assert start["source_run_id"] == 41
+    assert start["candidate_rows"] == 3
+    assert start["source_candidate_rows"] == 3
+    assert start["route_input_sources"] == {"probe": "route_candidates"}
+    assert start["selected_routes"] == ["probe"]
+    assert start["resume"] is False
+    assert state.recorded_details["complete"] == {"source_run_id": 41}
+
+
+def test_locked_route_only_propagates_cancellation_after_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cancellation = KeyboardInterrupt("cancel route-only")
+
+    def cancel() -> tuple[dict[str, object], object | None]:
+        raise cancellation
+
+    framework, boundary, _state, events = _route_only_doubles(
+        tmp_path,
+        monkeypatch,
+        cancel,
+    )
+
+    with pytest.raises(KeyboardInterrupt) as raised:
+        framework._run_route_only_locked(boundary)
+    assert raised.value is cancellation
+    assert events[-5:] == [
+        "routes.execute",
+        "state.prune:84",
+        "state.cancel:84",
+        "heartbeat.stop",
+        "state.exit:KeyboardInterrupt",
+    ]
+    assert not any(event.startswith("state.event:error") for event in events)
+
+
+def test_locked_route_only_records_failure_before_marking_run_failed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    failure = RuntimeError("route-only failure")
+
+    def fail() -> tuple[dict[str, object], object | None]:
+        raise failure
+
+    framework, boundary, state, events = _route_only_doubles(
+        tmp_path,
+        monkeypatch,
+        fail,
+    )
+
+    with pytest.raises(RuntimeError) as raised:
+        framework._run_route_only_locked(boundary)
+    assert raised.value is failure
+    assert events[-6:] == [
+        "routes.execute",
+        "state.prune:84",
+        "state.event:error:failure",
+        "state.fail:84",
+        "heartbeat.stop",
+        "state.exit:RuntimeError",
+    ]
+    assert state.recorded_details["failure"] == {
+        "error_type": "RuntimeError",
+        "detail": "route-only failure",
+    }
 
 
 def test_route_only_reuses_retained_candidates_without_inventory(tmp_path) -> None:

@@ -69,20 +69,20 @@ def test_controller_discards_oversized_unterminated_line_and_resynchronizes() ->
     emitted: list[str] = []
     controller.output_received.connect(emitted.append)
 
-    controller._ingest_output(  # noqa: SLF001 - direct bounded-buffer regression
-        controller._stdout_buffer,  # noqa: SLF001
+    controller._ingest_output(
+        controller._stdout_buffer,
         b"x" * (MAX_PROCESS_LINE_BYTES + 1),
         protocol=True,
     )
 
-    assert not controller._stdout_buffer  # noqa: SLF001
-    assert controller._stdout_discarding_oversized_line  # noqa: SLF001
-    controller._ingest_output(  # noqa: SLF001
-        controller._stdout_buffer,  # noqa: SLF001
+    assert not controller._stdout_buffer
+    assert controller._stdout_discarding_oversized_line
+    controller._ingest_output(
+        controller._stdout_buffer,
         b"discarded suffix\nvisible output\n",
         protocol=True,
     )
-    assert not controller._stdout_discarding_oversized_line  # noqa: SLF001
+    assert not controller._stdout_discarding_oversized_line
     assert any("exceder el límite" in message for message in emitted)
     assert emitted[-1] == "visible output"
 
@@ -142,4 +142,85 @@ def test_destination_parent_creation_rejects_existing_reparse_component(
             )
 
     assert not (unsafe_parent / "nested").exists()
+
+
+@pytest.mark.parametrize(
+    ("pattern", "expected"),
+    (
+        (r"^[A-Z]{2}-\d{4}$", None),
+        (r"(?:AB)+-\d+$", None),
+        (r"(AB|CD)-\d+$", None),
+        (r"(AB){2,3}?$", None),
+        (r"\(AB\+\)", None),
+        (
+            r"(a+)+$",
+            "a repeated group cannot itself contain repetition or alternation",
+        ),
+        (
+            r"(a|b)+$",
+            "a repeated group cannot itself contain repetition or alternation",
+        ),
+        (
+            r"(?:a*){2}$",
+            "a repeated group cannot itself contain repetition or alternation",
+        ),
+        (
+            r"((ab)+)?$",
+            "a repeated group cannot itself contain repetition or alternation",
+        ),
+        (
+            r"(a++)+$",
+            "a repeated group cannot itself contain repetition or alternation",
+        ),
+        (r"(a)\1", "backreferences are not allowed"),
+        (r"[\1]", "backreferences are not allowed"),
+        (
+            r"a(?=b)",
+            "lookarounds, named groups, and inline extensions are not allowed",
+        ),
+        (
+            r"(?P<name>a)",
+            "lookarounds, named groups, and inline extensions are not allowed",
+        ),
+        (
+            r"(?i:a)",
+            "lookarounds, named groups, and inline extensions are not allowed",
+        ),
+    ),
+)
+def test_custom_regex_safety_characterization(
+    pattern: str,
+    expected: str | None,
+) -> None:
+    from _04_Nucleo_Operativo.document_taxonomy_overlay import (
+        _unsafe_custom_regex_reason,
+    )
+
+    assert _unsafe_custom_regex_reason(pattern) == expected
+    assert _unsafe_custom_regex_reason(pattern) == expected
+
+
+def test_custom_regex_safety_reason_precedence_is_left_to_right() -> None:
+    from _04_Nucleo_Operativo.document_taxonomy_overlay import (
+        _unsafe_custom_regex_reason,
+    )
+
+    assert _unsafe_custom_regex_reason(r"(a)\1(?=b)") == (
+        "backreferences are not allowed"
+    )
+    assert _unsafe_custom_regex_reason(r"(?=b)(a)\1") == (
+        "lookarounds, named groups, and inline extensions are not allowed"
+    )
+
+
+def test_custom_regex_safety_signature_is_frozen() -> None:
+    from inspect import signature
+
+    from _04_Nucleo_Operativo.document_taxonomy_overlay import (
+        _unsafe_custom_regex_reason,
+    )
+
+    assert str(signature(_unsafe_custom_regex_reason)) == (
+        "(pattern: 'str') -> 'str | None'"
+    )
 # endregion [02]

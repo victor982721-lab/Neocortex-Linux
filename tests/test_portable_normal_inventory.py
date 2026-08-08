@@ -46,6 +46,7 @@ def _run(root: Path, state: Path, *, route: str = "none"):
                 root=root,
                 state_directory=state,
                 route=route,
+                code_candidate_scope="broad",
                 document_catalog_enabled=False,
             )
         ).run_initial()

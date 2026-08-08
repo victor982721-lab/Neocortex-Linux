@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 import sqlite3
 from dataclasses import replace
@@ -15,6 +16,7 @@ from _04_Nucleo_Operativo.code_unused_analysis import (
     CodeUnusedAnalysis,
     UnusedConsensusCandidate,
     UnusedEvidenceSignals,
+    _classify,
     analyze_code_unused,
     classify_unused_candidate,
     evaluate_unused_calibration,
@@ -72,6 +74,113 @@ def _candidate(index: int) -> UnusedConsensusCandidate:
         signals.evidence_ids,
         ("advisory_only",),
     )
+
+
+def test_private_classification_signature_and_reason_precedence() -> None:
+    assert str(inspect.signature(_classify)) == (
+        "(signals: 'UnusedEvidenceSignals') -> "
+        "'tuple[UnusedState, tuple[str, ...]]'"
+    )
+    state, reasons = _classify(
+        _signals(
+            graph_references=1,
+            graph_calls=2,
+            graph_imports=3,
+            in_all=True,
+            reexported=True,
+            entry_point=True,
+            coverage_observed=True,
+            coverage_status="complete",
+            callback=True,
+            registry=True,
+            fixture=True,
+            protocol=True,
+            special=True,
+        )
+    )
+
+    assert state == "explained_usage"
+    assert reasons == (
+        "indexed_reference",
+        "indexed_call",
+        "indexed_import",
+        "declared_in___all__",
+        "reexported",
+        "declared_entry_point",
+        "observed_by_declared_coverage_scope",
+    )
+
+
+def test_dynamic_reasons_are_ordered_and_precede_static_consensus() -> None:
+    state, reasons = _classify(
+        _signals(
+            callback=True,
+            registry=True,
+            fixture=True,
+            protocol=True,
+            special=True,
+        )
+    )
+
+    assert state == "dynamic_usage_possible"
+    assert reasons == (
+        "callback_binding",
+        "registry_binding",
+        "fixture_binding",
+        "protocol_contract",
+        "special_runtime_protocol",
+    )
+
+
+def test_high_consensus_and_abstention_reasons_are_exact() -> None:
+    assert _classify(_signals()) == (
+        "probable_unused_high_consensus",
+        (
+            "vulture_high_confidence",
+            "pyright_reported_unused",
+            "no_observed_usage_or_dynamic_contract",
+        ),
+    )
+
+    state, reasons = _classify(
+        _signals(
+            vulture_reported=False,
+            vulture_confidence=None,
+            pyright_reported=False,
+            vulture_complete=False,
+            pyright_complete=False,
+            providers_aligned=False,
+            coverage_status="partial",
+        )
+    )
+
+    assert state == "insufficient_evidence"
+    assert reasons == (
+        "coverage_partial_does_not_support_usage",
+        "provider_domains_not_aligned",
+        "provider_measurement_incomplete",
+        "pyright_did_not_report",
+        "vulture_did_not_report",
+    )
+
+
+@pytest.mark.parametrize(
+    "signals",
+    (
+        _signals(vulture_confidence=True),
+        _signals(vulture_confidence=float("nan")),
+        _signals(vulture_confidence=1.01),
+        _signals(graph_references=True),
+        _signals(graph_calls=-1),
+        _signals(graph_imports=0.5),
+        _signals(evidence_ids=("duplicate", "duplicate")),
+    ),
+)
+def test_classification_rejects_invalid_or_ambiguous_signal_domains(
+    signals: UnusedEvidenceSignals,
+) -> None:
+    with pytest.raises(ValueError):
+        _classify(signals)
 
 
 @pytest.mark.parametrize(

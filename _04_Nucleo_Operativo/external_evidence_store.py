@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections.abc import Collection, Mapping, Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal, cast
 
@@ -39,6 +39,32 @@ _RELATION_LIMIT = 250_000
 _COUNTER_LIMIT = 128
 _ProviderStatusGate = Literal["passed", "failed", "baseline", "not_evaluated"]
 _SuiteStatus = Literal["ready", "partial", "abstained", "not_recorded"]
+_ProviderStatusProjection = tuple[
+    ExternalProviderStatus,
+    tuple[ExternalProviderFinding, ...],
+    int | None,
+    tuple[ExternalProviderMetric, ...],
+    tuple[ExternalProviderRelation, ...],
+]
+
+
+@dataclass(frozen=True, slots=True)
+class _ProviderReadContext:
+    tool_run_id: int
+    limitations: tuple[str, ...]
+    inputs: tuple[sqlite3.Row, ...]
+    counters: Mapping[str, int]
+    eligible: int
+    covered: int
+
+
+@dataclass(frozen=True, slots=True)
+class _ProviderEvidenceProjection:
+    effective_run_id: int
+    findings: tuple[ExternalProviderFinding, ...]
+    metrics: tuple[ExternalProviderMetric, ...]
+    relations: tuple[ExternalProviderRelation, ...]
+    digest: str
 
 
 def _portable_provider_findings(
@@ -932,135 +958,181 @@ def _effective_provider_run_id(
     return effective_run_id
 
 
-def _provider_status(
+def _provider_read_context(
     connection: sqlite3.Connection,
     row: sqlite3.Row | Mapping[str, object],
-) -> tuple[
-    ExternalProviderStatus,
-    tuple[ExternalProviderFinding, ...],
-    int | None,
-    tuple[ExternalProviderMetric, ...],
-    tuple[ExternalProviderRelation, ...],
-]:
+) -> _ProviderReadContext:
     tool_run_id = int(str(row["tool_run_id"]))
-    try:
-        limitations_value = json.loads(str(row["limitations_json"]))
-        limitations = tuple(str(item) for item in limitations_value)
-        inputs = connection.execute(
+    limitations_value = json.loads(str(row["limitations_json"]))
+    limitations = tuple(str(item) for item in limitations_value)
+    inputs = tuple(
+        connection.execute(
             """SELECT version_id,portable_input_id,relative_path,eligible,covered,
             coverage_reason,size,content_digest FROM external_run_inputs
             WHERE tool_run_id=? ORDER BY portable_input_id LIMIT 2001""",
             (tool_run_id,),
         ).fetchall()
-        if len(inputs) > 2_000:
-            raise ValueError("input_bound")
-        counters = _counter_map(connection, tool_run_id)
-        eligible = sum(int(item["eligible"]) for item in inputs)
-        covered = sum(int(item["covered"]) for item in inputs)
-        if counters.get("eligible_files", eligible) != eligible:
-            raise ValueError("eligible_counter")
-        if counters.get("covered_files", covered) != covered:
-            raise ValueError("covered_counter")
-        tool_status = str(row["status"])
-        if tool_status == "skipped" and str(row["execution"]) != "cache_replay":
-            reason = "provider_abstained"
-            try:
-                provenance = json.loads(str(row["provenance_json"]))
-                error = provenance.get("error") if isinstance(provenance, dict) else None
-                detail = error.get("reason") if isinstance(error, dict) else None
-                if isinstance(detail, str) and detail:
-                    reason = f"provider_abstained:{detail[:4096]}"
-            except (TypeError, ValueError, json.JSONDecodeError):
-                pass
-            return (
-                replace(
-                    _abstained_provider(
-                        row,
-                        reason,
-                        eligible_files=eligible,
-                        covered_files=covered,
-                        findings=counters.get("findings", 0),
-                        limitations=limitations,
-                        counters=counters,
-                    ),
-                    content_executed=False,
-                ),
-                (),
-                None,
-                (),
-                (),
-            )
-        if tool_status not in {"completed", "skipped"}:
-            reason = f"provider_{tool_status}"
-            if tool_status == "failed":
-                try:
-                    provenance = json.loads(str(row["provenance_json"]))
-                    error = provenance.get("error") if isinstance(provenance, dict) else None
-                    detail = error.get("reason") if isinstance(error, dict) else None
-                    if isinstance(detail, str) and detail:
-                        reason = f"provider_failed:{detail[:4096]}"
-                except (TypeError, ValueError, json.JSONDecodeError):
-                    pass
-            return (
-                _abstained_provider(
-                    row,
-                    reason,
-                    eligible_files=eligible,
-                    covered_files=covered,
-                    findings=counters.get("findings", 0),
-                    limitations=limitations,
-                    counters=counters,
-                ),
-                (),
-                None,
-                (),
-                (),
-            )
-        effective_run_id = _effective_provider_run_id(connection, row)
-        findings = _provider_findings(connection, effective_run_id)
-        metrics = _provider_metrics(connection, effective_run_id)
-        relations = _provider_relations(connection, effective_run_id)
-        digest = external_provider_result_digest(findings, metrics, relations)
-        if row["result_digest"] != digest:
-            raise ValueError("result_digest")
-        if counters.get("findings", len(findings)) != len(findings):
-            raise ValueError("finding_counter")
-        if counters.get("metrics", len(metrics)) != len(metrics):
-            raise ValueError("metric_counter")
-        if counters.get("relations", len(relations)) != len(relations):
-            raise ValueError("relation_counter")
-        for item in inputs:
-            if not _current_version_exists(connection, int(item["version_id"])):
-                raise ValueError("input_not_current")
-        comparable = counters.get("comparable", 0) == 1
-        added = counters.get("added") if comparable else None
-        resolved = counters.get("resolved") if comparable else None
-        gate = "baseline" if not comparable else "passed" if added == 0 else "failed"
-        status = ExternalProviderStatus(
-            str(row["provider_id"]),
-            str(row["provider_schema"]),
-            cast(AnalysisProfile, str(row["profile"])),
-            str(row["tool_name"]),
-            str(row["tool_version"]),
-            "ready",
-            None,
-            str(row["execution"]),
-            eligible,
-            covered,
-            len(findings),
-            added,
-            resolved,
-            comparable,
-            digest,
-            str(row["comparability_signature"]),
-            cast(_ProviderStatusGate, gate),
-            limitations,
-            content_executed=bool(row["executes_content"]),
-            counters=counters,
-            metrics=len(metrics),
-            relations=len(relations),
+    )
+    if len(inputs) > 2_000:
+        raise ValueError("input_bound")
+    counters = _counter_map(connection, tool_run_id)
+    eligible = sum(int(item["eligible"]) for item in inputs)
+    covered = sum(int(item["covered"]) for item in inputs)
+    if counters.get("eligible_files", eligible) != eligible:
+        raise ValueError("eligible_counter")
+    if counters.get("covered_files", covered) != covered:
+        raise ValueError("covered_counter")
+    return _ProviderReadContext(
+        tool_run_id,
+        limitations,
+        inputs,
+        counters,
+        eligible,
+        covered,
+    )
+
+
+def _terminal_provider_reason(
+    row: sqlite3.Row | Mapping[str, object],
+    tool_status: str,
+) -> str:
+    reason = "provider_abstained" if tool_status == "skipped" else f"provider_{tool_status}"
+    if tool_status not in {"skipped", "failed"}:
+        return reason
+    try:
+        provenance = json.loads(str(row["provenance_json"]))
+        error = provenance.get("error") if isinstance(provenance, dict) else None
+        detail = error.get("reason") if isinstance(error, dict) else None
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return reason
+    if isinstance(detail, str) and detail:
+        return f"{reason}:{detail[:4096]}"
+    return reason
+
+
+def _terminal_provider_projection(
+    row: sqlite3.Row | Mapping[str, object],
+    context: _ProviderReadContext,
+) -> _ProviderStatusProjection | None:
+    tool_status = str(row["status"])
+    if tool_status == "skipped" and str(row["execution"]) != "cache_replay":
+        status = _abstained_provider(
+            row,
+            _terminal_provider_reason(row, tool_status),
+            eligible_files=context.eligible,
+            covered_files=context.covered,
+            findings=context.counters.get("findings", 0),
+            limitations=context.limitations,
+            counters=context.counters,
         )
-        return status, findings, effective_run_id, metrics, relations
+        return replace(status, content_executed=False), (), None, (), ()
+    if tool_status in {"completed", "skipped"}:
+        return None
+    return (
+        _abstained_provider(
+            row,
+            _terminal_provider_reason(row, tool_status),
+            eligible_files=context.eligible,
+            covered_files=context.covered,
+            findings=context.counters.get("findings", 0),
+            limitations=context.limitations,
+            counters=context.counters,
+        ),
+        (),
+        None,
+        (),
+        (),
+    )
+
+
+def _ready_provider_evidence(
+    connection: sqlite3.Connection,
+    row: sqlite3.Row | Mapping[str, object],
+    context: _ProviderReadContext,
+) -> _ProviderEvidenceProjection:
+    effective_run_id = _effective_provider_run_id(connection, row)
+    findings = _provider_findings(connection, effective_run_id)
+    metrics = _provider_metrics(connection, effective_run_id)
+    relations = _provider_relations(connection, effective_run_id)
+    digest = external_provider_result_digest(findings, metrics, relations)
+    if row["result_digest"] != digest:
+        raise ValueError("result_digest")
+    if context.counters.get("findings", len(findings)) != len(findings):
+        raise ValueError("finding_counter")
+    if context.counters.get("metrics", len(metrics)) != len(metrics):
+        raise ValueError("metric_counter")
+    if context.counters.get("relations", len(relations)) != len(relations):
+        raise ValueError("relation_counter")
+    for item in context.inputs:
+        if not _current_version_exists(connection, int(item["version_id"])):
+            raise ValueError("input_not_current")
+    return _ProviderEvidenceProjection(
+        effective_run_id,
+        findings,
+        metrics,
+        relations,
+        digest,
+    )
+
+
+def _provider_gate(comparable: bool, added: int | None) -> _ProviderStatusGate:
+    if not comparable:
+        return "baseline"
+    return "passed" if added == 0 else "failed"
+
+
+def _ready_provider_projection(
+    row: sqlite3.Row | Mapping[str, object],
+    context: _ProviderReadContext,
+    evidence: _ProviderEvidenceProjection,
+) -> _ProviderStatusProjection:
+    comparable = context.counters.get("comparable", 0) == 1
+    added = context.counters.get("added") if comparable else None
+    resolved = context.counters.get("resolved") if comparable else None
+    status = ExternalProviderStatus(
+        str(row["provider_id"]),
+        str(row["provider_schema"]),
+        cast(AnalysisProfile, str(row["profile"])),
+        str(row["tool_name"]),
+        str(row["tool_version"]),
+        "ready",
+        None,
+        str(row["execution"]),
+        context.eligible,
+        context.covered,
+        len(evidence.findings),
+        added,
+        resolved,
+        comparable,
+        evidence.digest,
+        str(row["comparability_signature"]),
+        _provider_gate(comparable, added),
+        context.limitations,
+        content_executed=bool(row["executes_content"]),
+        counters=context.counters,
+        metrics=len(evidence.metrics),
+        relations=len(evidence.relations),
+    )
+    return (
+        status,
+        evidence.findings,
+        evidence.effective_run_id,
+        evidence.metrics,
+        evidence.relations,
+    )
+
+
+def _provider_status(
+    connection: sqlite3.Connection,
+    row: sqlite3.Row | Mapping[str, object],
+) -> _ProviderStatusProjection:
+    try:
+        context = _provider_read_context(connection, row)
+        terminal = _terminal_provider_projection(row, context)
+        if terminal is not None:
+            return terminal
+        evidence = _ready_provider_evidence(connection, row, context)
+        return _ready_provider_projection(row, context, evidence)
     except (KeyError, TypeError, ValueError, sqlite3.DatabaseError):
         return (
             _abstained_provider(row, "external_provider_projection_invalid"),
@@ -1069,7 +1141,6 @@ def _provider_status(
             (),
             (),
         )
-
 
 def _legacy_provider_status(status: ExternalEvidenceStatus) -> ExternalProviderStatus:
     return ExternalProviderStatus(
@@ -1278,6 +1349,112 @@ def _provider_run_rows(
     ).fetchall()
 
 
+def _latest_provider_rows(rows: Sequence[sqlite3.Row]) -> dict[str, sqlite3.Row]:
+    latest: dict[str, sqlite3.Row] = {}
+    for row in rows:
+        latest.setdefault(str(row["provider_id"]), row)
+    return latest
+
+
+def _read_provider_suite_status(
+    connection: sqlite3.Connection,
+    row: sqlite3.Row,
+    *,
+    enforce_current_runtime: bool,
+) -> tuple[ExternalProviderStatus, tuple[ExternalProviderFinding, ...]]:
+    runtime_reason = (
+        _current_runtime_reason(row)
+        if enforce_current_runtime and str(row["status"]) in {"completed", "skipped"}
+        else None
+    )
+    status, findings, _effective_run_id, _metrics, _relations = _provider_status(
+        connection,
+        row,
+    )
+    if runtime_reason is None:
+        return status, findings
+    return (
+        replace(
+            status,
+            status="abstained",
+            reason=runtime_reason,
+            gate="not_evaluated",
+        ),
+        (),
+    )
+
+
+def _read_provider_suite_statuses(
+    connection: sqlite3.Connection,
+    latest: Mapping[str, sqlite3.Row],
+    *,
+    enforce_current_runtime: bool,
+) -> tuple[
+    list[ExternalProviderStatus],
+    dict[str, tuple[ExternalProviderFinding, ...]],
+]:
+    statuses: list[ExternalProviderStatus] = []
+    findings: dict[str, tuple[ExternalProviderFinding, ...]] = {}
+    for provider_id in sorted(latest):
+        status, provider_findings = _read_provider_suite_status(
+            connection,
+            latest[provider_id],
+            enforce_current_runtime=enforce_current_runtime,
+        )
+        statuses.append(status)
+        findings[provider_id] = provider_findings
+    return statuses, findings
+
+
+def _append_legacy_provider_status(
+    connection: sqlite3.Connection,
+    analysis_run_id: int,
+    requested: tuple[str, ...] | None,
+    latest: Mapping[str, sqlite3.Row],
+    statuses: list[ExternalProviderStatus],
+    *,
+    enforce_current_runtime: bool,
+) -> None:
+    legacy_requested = requested is None or "ruff-protected-basic" in requested
+    if "ruff-protected-basic" in latest or not legacy_requested:
+        return
+    legacy, _ids, _row = read_external_evidence(
+        connection,
+        analysis_run_id,
+        enforce_current_runtime=enforce_current_runtime,
+    )
+    if legacy.status != "not_recorded":
+        statuses.append(_legacy_provider_status(legacy))
+
+
+def _suite_profile(statuses: Sequence[ExternalProviderStatus]) -> AnalysisProfile:
+    if any(item.profile == "trusted-deep" for item in statuses):
+        return "trusted-deep"
+    if any(item.profile == "trusted-static" for item in statuses):
+        return "trusted-static"
+    return "protected"
+
+
+def _suite_status(statuses: Sequence[ExternalProviderStatus]) -> _SuiteStatus:
+    if not statuses:
+        return "not_recorded"
+    if all(item.status == "ready" for item in statuses):
+        return "ready"
+    if any(item.status == "ready" for item in statuses):
+        return "partial"
+    return "abstained"
+
+
+def _provider_bound_abstention() -> ExternalEvidenceSuiteStatus:
+    return ExternalEvidenceSuiteStatus(
+        "protected",
+        "abstained",
+        (),
+        TypeConsensusSummary("not_comparable", not_comparable=1),
+        (),
+    )
+
+
 def read_external_evidence_suite(
     connection: sqlite3.Connection,
     analysis_run_id: int,
@@ -1290,68 +1467,26 @@ def read_external_evidence_suite(
     requested = _normalized_provider_filter(provider_ids)
     rows = _provider_run_rows(connection, analysis_run_id, requested)
     if len(rows) > _PROVIDER_STATUS_LIMIT:
-        return ExternalEvidenceSuiteStatus(
-            "protected",
-            "abstained",
-            (),
-            TypeConsensusSummary("not_comparable", not_comparable=1),
-            (),
-        )
-    latest: dict[str, sqlite3.Row] = {}
-    for row in rows:
-        latest.setdefault(str(row["provider_id"]), row)
-    statuses: list[ExternalProviderStatus] = []
-    findings: dict[str, tuple[ExternalProviderFinding, ...]] = {}
-    for provider_id in sorted(latest):
-        row = latest[provider_id]
-        runtime_reason = (
-            _current_runtime_reason(row)
-            if enforce_current_runtime and str(row["status"]) in {"completed", "skipped"}
-            else None
-        )
-        status, provider_findings, _effective_run_id, _metrics, _relations = _provider_status(
-            connection,
-            row,
-        )
-        if runtime_reason is not None:
-            status = replace(
-                status,
-                status="abstained",
-                reason=runtime_reason,
-                gate="not_evaluated",
-            )
-            provider_findings = ()
-        statuses.append(status)
-        findings[provider_id] = provider_findings
-    if "ruff-protected-basic" not in latest and (
-        requested is None or "ruff-protected-basic" in requested
-    ):
-        legacy, _ids, _row = read_external_evidence(
-            connection,
-            analysis_run_id,
-            enforce_current_runtime=enforce_current_runtime,
-        )
-        if legacy.status != "not_recorded":
-            statuses.append(_legacy_provider_status(legacy))
+        return _provider_bound_abstention()
+    latest = _latest_provider_rows(rows)
+    statuses, findings = _read_provider_suite_statuses(
+        connection,
+        latest,
+        enforce_current_runtime=enforce_current_runtime,
+    )
+    _append_legacy_provider_status(
+        connection,
+        analysis_run_id,
+        requested,
+        latest,
+        statuses,
+        enforce_current_runtime=enforce_current_runtime,
+    )
     statuses.sort(key=lambda item: item.provider_id)
     status_map = {item.provider_id: item for item in statuses}
-    if any(item.profile == "trusted-deep" for item in statuses):
-        profile: AnalysisProfile = "trusted-deep"
-    elif any(item.profile == "trusted-static" for item in statuses):
-        profile = "trusted-static"
-    else:
-        profile = "protected"
-    if not statuses:
-        suite_status = "not_recorded"
-    elif all(item.status == "ready" for item in statuses):
-        suite_status = "ready"
-    elif any(item.status == "ready" for item in statuses):
-        suite_status = "partial"
-    else:
-        suite_status = "abstained"
     return ExternalEvidenceSuiteStatus(
-        profile,
-        cast(_SuiteStatus, suite_status),
+        _suite_profile(statuses),
+        _suite_status(statuses),
         tuple(statuses),
         _type_consensus(findings, status_map),
         _gate_evaluations(status_map),

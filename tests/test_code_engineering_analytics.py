@@ -341,3 +341,55 @@ def test_engineering_reader_reuses_projections_and_filters_provider_io(
             analysis_run_id=7,
         ).digest
     )
+
+
+def test_engineering_analyzer_signature_status_order_and_digests_are_frozen() -> None:
+    from inspect import signature
+
+    assert str(signature(analyze_code_engineering)) == (
+        "(architecture: 'CodeArchitectureAnalysis | None', "
+        "coverage: 'CodeCoverageAnalysis | None', "
+        "providers: 'Mapping[str, ExternalProviderEvidence]', *, "
+        "database: 'str' = '', analysis_run_id: 'int | None' = None) "
+        "-> 'CodeEngineeringAnalytics'"
+    )
+    ready = analyze_code_engineering(_architecture(), _coverage(), _providers())
+    partial = analyze_code_engineering(_architecture(), None, {})
+    abstained = analyze_code_engineering(None, None, {})
+
+    assert [item.provider_id for item in ready.providers] == [
+        GIT_HISTORY_PROVIDER_ID,
+        MUTATION_PROVIDER_ID,
+    ]
+    assert [item.module_id for item in ready.modules] == [MODULE]
+    assert [item.gate for item in ready.gates] == [
+        "mutation_test_baseline",
+        "mutation_measurement_complete",
+        "mutation_score_recorded",
+    ]
+    assert (ready.status, ready.reason, ready.digest) == (
+        "ready",
+        None,
+        "code-engineering-v1:xxh3_128:35554e27e2bfcc902c447986dda7630b",
+    )
+    assert (partial.status, partial.reason, partial.digest) == (
+        "partial",
+        "one_or_more_engineering_dimensions_not_ready",
+        "code-engineering-v1:xxh3_128:a119e13e8a3abdfe108aff03e3c95c5f",
+    )
+    assert (abstained.status, abstained.reason, abstained.digest) == (
+        "abstained",
+        "architecture_not_ready",
+        "code-engineering-v1:xxh3_128:ea7a72397d258bf053904222e3b717d9",
+    )
+    assert abstained.modules == ()
+    assert {gate.status for gate in abstained.gates} == {"not_evaluated"}
+
+
+def test_engineering_analyzer_enforces_module_bound_before_projection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(engineering_module, "CODE_ENGINEERING_MODULE_LIMIT", 0)
+
+    with pytest.raises(ValueError, match="engineering module bound exceeded"):
+        analyze_code_engineering(_architecture(), _coverage(), _providers())

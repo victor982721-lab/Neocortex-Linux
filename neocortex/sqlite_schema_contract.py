@@ -259,37 +259,52 @@ def _read_quoted_sql_token(
     raise _schema_definition_error("unterminated quoted token")
 
 
+def _consume_decimal_sql_digits(source: str, start: int) -> int:
+    index = start
+    while index < len(source) and (
+        source[index].isdigit() or source[index] == "_"
+    ):
+        index += 1
+    return index
+
+
+def _consume_hexadecimal_sql_digits(source: str, start: int) -> int:
+    index = start
+    while index < len(source) and (
+        source[index].isdigit()
+        or source[index].lower() in "abcdef"
+        or source[index] == "_"
+    ):
+        index += 1
+    return index
+
+
+def _consume_decimal_sql_fraction(source: str, index: int) -> int:
+    if index >= len(source) or source[index] != ".":
+        return index
+    return _consume_decimal_sql_digits(source, index + 1)
+
+
+def _consume_decimal_sql_exponent(source: str, index: int) -> int:
+    if index >= len(source) or source[index] not in {"e", "E"}:
+        return index
+    exponent = index + 1
+    if exponent < len(source) and source[exponent] in {"+", "-"}:
+        exponent += 1
+    digit_start = exponent
+    exponent = _consume_decimal_sql_digits(source, exponent)
+    return exponent if exponent > digit_start else index
+
+
 def _read_numeric_sql_token(source: str, start: int) -> tuple[_SQLToken, int]:
     """Read one SQLite decimal or hexadecimal numeric literal."""
 
-    index = start
-    if source.startswith(("0x", "0X"), index):
-        index += 2
-        while index < len(source) and (
-            source[index].isdigit()
-            or source[index].lower() in "abcdef"
-            or source[index] == "_"
-        ):
-            index += 1
-        return _SQLToken("number", _ascii_casefold(source[start:index])), index
-
-    while index < len(source) and (source[index].isdigit() or source[index] == "_"):
-        index += 1
-    if index < len(source) and source[index] == ".":
-        index += 1
-        while index < len(source) and (source[index].isdigit() or source[index] == "_"):
-            index += 1
-    if index < len(source) and source[index] in {"e", "E"}:
-        exponent = index + 1
-        if exponent < len(source) and source[exponent] in {"+", "-"}:
-            exponent += 1
-        digit_start = exponent
-        while exponent < len(source) and (
-            source[exponent].isdigit() or source[exponent] == "_"
-        ):
-            exponent += 1
-        if exponent > digit_start:
-            index = exponent
+    if source.startswith(("0x", "0X"), start):
+        index = _consume_hexadecimal_sql_digits(source, start + 2)
+    else:
+        index = _consume_decimal_sql_digits(source, start)
+        index = _consume_decimal_sql_fraction(source, index)
+        index = _consume_decimal_sql_exponent(source, index)
     return _SQLToken("number", _ascii_casefold(source[start:index])), index
 
 

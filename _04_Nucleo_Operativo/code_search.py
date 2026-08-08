@@ -8,6 +8,7 @@ from collections import defaultdict
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from .code_contracts import (
     CodeRelationEndpoint,
@@ -21,6 +22,9 @@ from .sqlite_cancellation import (
     SQLiteCancellationBridge,
     sqlite_cancellation_scope,
 )
+
+if TYPE_CHECKING:
+    from .semantic_models import ResolvedSearchHit
 
 
 # region [01] Query vocabulary and row projection
@@ -523,21 +527,31 @@ def _diagnostic_rows(
     return tuple(_SearchRow.from_sql(row) for row in connection.execute(sql, params))
 
 
-def _semantic_rows(
+_SQLITE_SIGNED_INTEGER_MAX = 9_223_372_036_854_775_807
+
+
+@dataclass(frozen=True, slots=True)
+class _SemanticCodeResolution:
+    source_identity: str
+    chunk_kind: str
+    chunk_index: int
+    version_id: int
+    semantic_item_id: str
+    indexed_model_signature: str
+    vector_space: str
+    generation_id: int
+    score: float
+    snippet: str
+
+
+def _semantic_search_ready(
     code_database: Path,
     connection: sqlite3.Connection,
     query: CodeSearchQuery,
-    fetch_limit: int,
-    cancellation: SQLiteCancellationBridge,
-    *,
-    model_cache: Path | None,
-    threads: int | None,
-) -> tuple[_SearchRow, ...]:
-    """Resolve optional text-vector hits back to current structured code rows."""
-
+) -> bool:
     if not query.text or not (code_database.parent / "semantic.sqlite3").is_file():
-        return ()
-    if not bool(
+        return False
+    return bool(
         connection.execute(
             """SELECT EXISTS(
             SELECT 1 FROM embedding_links e
@@ -547,8 +561,18 @@ def _semantic_rows(
             WHERE e.active=1 AND f.status='current'
             AND v.invalidated_ns IS NULL)"""
         ).fetchone()[0]
-    ):
-        return ()
+    )
+
+
+def _semantic_ranked_hits(
+    code_database: Path,
+    query: CodeSearchQuery,
+    fetch_limit: int,
+    cancellation: SQLiteCancellationBridge,
+    *,
+    model_cache: Path | None,
+    threads: int | None,
+) -> tuple[ResolvedSearchHit, ...]:
     from .semantic_service import search_semantic_index
 
     cancellation.checkpoint()
@@ -571,84 +595,168 @@ def _semantic_rows(
     )
     if ranking is None or not ranking.available:
         return ()
+    return ranking.resolved
+
+
+def _semantic_chunk_locator(
+    resolved: ResolvedSearchHit,
+) -> tuple[str, int] | None:
+    if resolved.source_kind != "code":
+        return None
+    if not isinstance(
+        resolved.section_kind, str
+    ) or not resolved.section_kind.startswith("code_"):
+        return None
+    chunk_kind = resolved.section_kind.removeprefix("code_")
+    if not chunk_kind:
+        return None
+    section_id = resolved.section_id
+    if not isinstance(section_id, str) or not section_id.isdecimal():
+        return None
+    chunk_index = int(section_id)
+    if str(chunk_index) != section_id or chunk_index > _SQLITE_SIGNED_INTEGER_MAX:
+        return None
+    return chunk_kind, chunk_index
+
+
+def _semantic_source_version(resolved: ResolvedSearchHit) -> int | None:
+    source_revision: object = resolved.source_revision
+    if not isinstance(source_revision, Mapping):
+        return None
+    version_id = source_revision.get("version_id")
+    if (
+        isinstance(version_id, bool)
+        or not isinstance(version_id, int)
+        or not 0 < version_id <= _SQLITE_SIGNED_INTEGER_MAX
+    ):
+        return None
+    return version_id
+
+
+def _semantic_hit_binding(
+    resolved: ResolvedSearchHit,
+) -> tuple[str, str, str, int] | None:
+    semantic_item_id = resolved.hit.item_id
+    if not isinstance(semantic_item_id, str) or not semantic_item_id.strip():
+        return None
+    indexed_model_signature = resolved.hit.indexed_model_signature
+    if (
+        not isinstance(indexed_model_signature, str)
+        or not indexed_model_signature.strip()
+    ):
+        return None
+    vector_space = resolved.hit.vector_space
+    if not isinstance(vector_space, str) or not vector_space.strip():
+        return None
+    generation_id = resolved.hit.generation_id
+    if (
+        isinstance(generation_id, bool)
+        or not isinstance(generation_id, int)
+        or not 0 < generation_id <= _SQLITE_SIGNED_INTEGER_MAX
+    ):
+        return None
+    return semantic_item_id, indexed_model_signature, vector_space, generation_id
+
+
+def _semantic_code_resolution(
+    resolved: ResolvedSearchHit,
+) -> _SemanticCodeResolution | None:
+    locator = _semantic_chunk_locator(resolved)
+    if locator is None:
+        return None
+    version_id = _semantic_source_version(resolved)
+    if version_id is None:
+        return None
+    binding = _semantic_hit_binding(resolved)
+    if binding is None:
+        return None
+    chunk_kind, chunk_index = locator
+    semantic_item_id, indexed_model_signature, vector_space, generation_id = binding
+    return _SemanticCodeResolution(
+        source_identity=resolved.source_identity,
+        chunk_kind=chunk_kind,
+        chunk_index=chunk_index,
+        version_id=version_id,
+        semantic_item_id=semantic_item_id,
+        indexed_model_signature=indexed_model_signature,
+        vector_space=vector_space,
+        generation_id=generation_id,
+        score=resolved.hit.score,
+        snippet=resolved.snippet or "",
+    )
+
+
+def _resolve_semantic_code_row(
+    connection: sqlite3.Connection,
+    query: CodeSearchQuery,
+    resolved: _SemanticCodeResolution,
+) -> _SearchRow | None:
+    row = connection.execute(
+        f"""SELECT v.version_id,f.current_path,{_project_sql()},v.language,
+        v.artifact_kind,s.qualified_name,s.signature,c.start_line,c.end_line,
+        ?,v.size,v.mtime_ns,v.analysis_status,?
+        FROM files f JOIN file_versions v ON v.version_id=f.current_version_id
+        JOIN code_chunks c ON c.version_id=v.version_id
+        JOIN embedding_links e ON e.chunk_id=c.chunk_id
+        LEFT JOIN symbols s ON s.symbol_id=c.symbol_id
+        WHERE f.status='current' AND v.invalidated_ns IS NULL
+        AND f.volume_id || ':' || f.physical_file_id=?
+        AND v.version_id=? AND c.chunk_index=? AND c.kind=?
+        AND e.semantic_item_id=? AND e.model_signature=?
+        AND e.vector_space=? AND e.generation_id=? AND e.active=1
+        AND {_COMMON_FILTER}
+        LIMIT 1""",
+        (
+            resolved.snippet,
+            f"semantic:{resolved.indexed_model_signature}:{resolved.score:.8f}:"
+            f"generation={resolved.generation_id}:space={resolved.vector_space}:"
+            "calibration=uncalibrated",
+            resolved.source_identity,
+            resolved.version_id,
+            resolved.chunk_index,
+            resolved.chunk_kind,
+            resolved.semantic_item_id,
+            resolved.indexed_model_signature,
+            resolved.vector_space,
+            resolved.generation_id,
+            *_filter_parameters(query),
+        ),
+    ).fetchone()
+    return None if row is None else _SearchRow.from_sql(row)
+
+
+def _semantic_rows(
+    code_database: Path,
+    connection: sqlite3.Connection,
+    query: CodeSearchQuery,
+    fetch_limit: int,
+    cancellation: SQLiteCancellationBridge,
+    *,
+    model_cache: Path | None,
+    threads: int | None,
+) -> tuple[_SearchRow, ...]:
+    """Resolve optional text-vector hits back to current structured code rows."""
+
+    if not _semantic_search_ready(code_database, connection, query):
+        return ()
+    hits = _semantic_ranked_hits(
+        code_database,
+        query,
+        fetch_limit,
+        cancellation,
+        model_cache=model_cache,
+        threads=threads,
+    )
     rows: list[_SearchRow] = []
-    for position, resolved in enumerate(ranking.resolved, start=1):
+    for position, hit in enumerate(hits, start=1):
         if position % _CANCELLATION_BATCH_ROWS == 0:
             cancellation.checkpoint()
-        if resolved.source_kind != "code":
+        resolution = _semantic_code_resolution(hit)
+        if resolution is None:
             continue
-        if not isinstance(
-            resolved.section_kind, str
-        ) or not resolved.section_kind.startswith("code_"):
-            continue
-        chunk_kind = resolved.section_kind.removeprefix("code_")
-        if not chunk_kind:
-            continue
-        section_id = resolved.section_id
-        if not isinstance(section_id, str) or not section_id.isdecimal():
-            continue
-        chunk_index = int(section_id)
-        if str(chunk_index) != section_id or chunk_index > 9_223_372_036_854_775_807:
-            continue
-        source_revision = resolved.source_revision
-        if not isinstance(source_revision, Mapping):
-            continue
-        version_id = source_revision.get("version_id")
-        if (
-            isinstance(version_id, bool)
-            or not isinstance(version_id, int)
-            or not 0 < version_id <= 9_223_372_036_854_775_807
-        ):
-            continue
-        semantic_item_id = resolved.hit.item_id
-        indexed_model_signature = resolved.hit.indexed_model_signature
-        vector_space = resolved.hit.vector_space
-        generation_id = resolved.hit.generation_id
-        if (
-            not isinstance(semantic_item_id, str)
-            or not semantic_item_id.strip()
-            or not isinstance(indexed_model_signature, str)
-            or not indexed_model_signature.strip()
-            or not isinstance(vector_space, str)
-            or not vector_space.strip()
-            or isinstance(generation_id, bool)
-            or not isinstance(generation_id, int)
-            or not 0 < generation_id <= 9_223_372_036_854_775_807
-        ):
-            continue
-        row = connection.execute(
-            f"""SELECT v.version_id,f.current_path,{_project_sql()},v.language,
-            v.artifact_kind,s.qualified_name,s.signature,c.start_line,c.end_line,
-            ?,v.size,v.mtime_ns,v.analysis_status,?
-            FROM files f JOIN file_versions v ON v.version_id=f.current_version_id
-            JOIN code_chunks c ON c.version_id=v.version_id
-            JOIN embedding_links e ON e.chunk_id=c.chunk_id
-            LEFT JOIN symbols s ON s.symbol_id=c.symbol_id
-            WHERE f.status='current' AND v.invalidated_ns IS NULL
-            AND f.volume_id || ':' || f.physical_file_id=?
-            AND v.version_id=? AND c.chunk_index=? AND c.kind=?
-            AND e.semantic_item_id=? AND e.model_signature=?
-            AND e.vector_space=? AND e.generation_id=? AND e.active=1
-            AND {_COMMON_FILTER}
-            LIMIT 1""",
-            (
-                resolved.snippet or "",
-                f"semantic:{indexed_model_signature}:{resolved.hit.score:.8f}:"
-                f"generation={generation_id}:space={vector_space}:"
-                "calibration=uncalibrated",
-                resolved.source_identity,
-                version_id,
-                chunk_index,
-                chunk_kind,
-                semantic_item_id,
-                indexed_model_signature,
-                vector_space,
-                generation_id,
-                *_filter_parameters(query),
-            ),
-        ).fetchone()
+        row = _resolve_semantic_code_row(connection, query, resolution)
         if row is not None:
-            rows.append(_SearchRow.from_sql(row))
+            rows.append(row)
     return tuple(rows)
 
 

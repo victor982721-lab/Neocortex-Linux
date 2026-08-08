@@ -896,7 +896,8 @@ equivale a sandbox completo; véase [SECURITY.md](SECURITY.md).
 
 ## Empaquetado y dependencias opcionales
 
-El paquete se construye con setuptools y exige Python `>=3.13,<3.14`. Incluye
+El paquete se construye con setuptools y exige Python `>=3.13,<3.15`, validado
+en Windows con CPython 3.13 y 3.14. Incluye
 los seis paquetes de producción, `neocortex`, el shim `Orquestador.py`, las
 reglas Semgrep y assets de la GUI. La base exacta incluye Complexipy, Coverage,
 Deptry, Grimp, Mypy, Packaging, pip-audit, Pytest, Rich, Ruff, Semgrep, Vulture

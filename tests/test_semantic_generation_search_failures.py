@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import inspect
 import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
+from _04_Nucleo_Operativo import semantic_search_repository
 from _04_Nucleo_Operativo.semantic_models import (
     EmbeddingModality,
     EmbeddingModelSpec,
@@ -16,8 +20,10 @@ from _04_Nucleo_Operativo.semantic_models import (
     SearchHit,
     SemanticItem,
     TextChunk,
+    fingerprint_bytes,
     fingerprint_text,
 )
+from _04_Nucleo_Operativo.semantic_repository_common import MAX_WRITE_BATCH
 from _04_Nucleo_Operativo.semantic_state import (
     SemanticStateError,
     StaleEmbeddingJobError,
@@ -263,6 +269,227 @@ def test_resolver_rejects_every_identity_or_space_mismatch(tmp_path: Path) -> No
             match="published hit snapshot is unavailable or inconsistent",
         ):
             resolve_search_hits(database, (forged,))
+
+
+def test_resolver_preserves_order_provenance_and_read_only_contract(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert str(inspect.signature(resolve_search_hits)) == (
+        "(path: 'Path', hits: 'Sequence[SearchHit]', *, snippet_chars: 'int' = "
+        "240) -> 'tuple[ResolvedSearchHit, ...]'"
+    )
+    assert semantic_search_repository.resolve_search_hits is resolve_search_hits
+    database = tmp_path / "semantic.sqlite3"
+    model = _model()
+    _initialize(database, model)
+    chunk = _stage(database, "document", "published breaker record")
+    _, hit = _complete_generation(
+        database,
+        model,
+        chunk,
+        processing_signature="resolver-contract",
+        started_ns=100,
+    )
+    lower = replace(hit, score=0.125, provenance={"rank": "lower"})
+    higher = replace(hit, score=0.875, provenance={"rank": "higher"})
+    ordered_hits = (higher, lower, higher)
+    original_database = semantic_search_repository.semantic_database
+    readonly_calls: list[bool] = []
+
+    @contextmanager
+    def observed_database(
+        selected_path: Path,
+        *,
+        readonly: bool = False,
+    ) -> Iterator[sqlite3.Connection]:
+        readonly_calls.append(readonly)
+        with original_database(selected_path, readonly=readonly) as connection:
+            before_changes = connection.total_changes
+            yield connection
+            assert connection.total_changes == before_changes == 0
+
+    monkeypatch.setattr(
+        semantic_search_repository,
+        "semantic_database",
+        observed_database,
+    )
+    resolved = resolve_search_hits(database, ordered_hits, snippet_chars=9)
+
+    assert readonly_calls == [True]
+    assert tuple(value.hit for value in resolved) == ordered_hits
+    assert all(
+        value.hit is expected
+        for value, expected in zip(resolved, ordered_hits, strict=True)
+    )
+    assert tuple(value.snippet for value in resolved) == (
+        "published",
+        "published",
+        "published",
+    )
+    assert all(value.path == "C:/fixtures/document.pdf" for value in resolved)
+    assert all(value.source_kind == "pdf" for value in resolved)
+    assert all(value.source_identity == "identity:document" for value in resolved)
+    assert all(value.section_kind == "pdf_page" for value in resolved)
+    assert all(value.section_id == "1" for value in resolved)
+    assert all(value.source_revision == {} for value in resolved)
+    assert all(value.section_provenance == {} for value in resolved)
+    assert all(value.source_status is None for value in resolved)
+    assert all(value.published_revision_id is not None for value in resolved)
+    assert all(
+        value.current_revision_id == value.published_revision_id for value in resolved
+    )
+
+    without_snippet = resolve_search_hits(database, (hit,), snippet_chars=0)
+    assert readonly_calls == [True, True]
+    assert without_snippet[0].snippet is None
+    with pytest.raises(ValueError, match=f"at most {MAX_WRITE_BATCH} hits"):
+        resolve_search_hits(database, (hit,) * (MAX_WRITE_BATCH + 1))
+
+
+@pytest.mark.parametrize("snippet_chars", (-1, 4_097))
+def test_resolver_validates_snippet_limit_before_database_access(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    snippet_chars: int,
+) -> None:
+    def unexpected_database(*_args, **_kwargs):
+        raise AssertionError("invalid resolver input must not open SQLite")
+
+    monkeypatch.setattr(
+        semantic_search_repository,
+        "semantic_database",
+        unexpected_database,
+    )
+    with pytest.raises(ValueError, match="snippet_chars must be between 0 and 4096"):
+        resolve_search_hits(tmp_path / "absent.sqlite3", (), snippet_chars=snippet_chars)
+
+
+@pytest.mark.parametrize(
+    ("statement", "message"),
+    (
+        (
+            "UPDATE semantic_item_revisions SET source_revision_json='[]'",
+            "semantic source revision is not a JSON object",
+        ),
+        (
+            "UPDATE semantic_item_revisions SET provenance_json='[]'",
+            "semantic item provenance is not a JSON object",
+        ),
+        (
+            "UPDATE semantic_items SET provenance_json='[]'",
+            "semantic current-item provenance is not a JSON object",
+        ),
+        (
+            "UPDATE semantic_chunk_revisions SET provenance_json='[]'",
+            "semantic section provenance is not a JSON object",
+        ),
+    ),
+)
+def test_resolver_rejects_malformed_provenance_objects(
+    tmp_path: Path,
+    statement: str,
+    message: str,
+) -> None:
+    database = tmp_path / "semantic.sqlite3"
+    model = _model()
+    _initialize(database, model)
+    chunk = _stage(database, "document", "published relay record")
+    _, hit = _complete_generation(
+        database,
+        model,
+        chunk,
+        processing_signature="malformed-provenance",
+        started_ns=100,
+    )
+    with sqlite3.connect(database) as connection:
+        connection.execute(statement)
+
+    with pytest.raises(SemanticStateError, match=message):
+        resolve_search_hits(database, (hit,))
+
+
+def test_resolver_projects_image_evidence_without_text_fields(tmp_path: Path) -> None:
+    database = tmp_path / "semantic.sqlite3"
+    model = EmbeddingModelSpec(
+        "failure-image-model-v1",
+        "failure-image-space-v1",
+        EmbeddingModality.IMAGE,
+        "fixture/failure-image-model-v1",
+        "1",
+        4,
+        "test-deterministic",
+        (EmbeddingRole.IMAGE,),
+    )
+    _initialize(database, model)
+    image = tmp_path / "breaker.png"
+    image.write_bytes(b"image resolver fixture")
+    item = SemanticItem(
+        "image-document",
+        "image",
+        "identity:image-document",
+        "failure-fixture-v1",
+        fingerprint_bytes(image.read_bytes()),
+        path=str(image),
+        provenance={"analysis_status": "complete"},
+        source_revision={"revision": 7},
+    )
+    upsert_semantic_item(
+        database,
+        item,
+        refresh_token="image-current",
+        updated_ns=10,
+    )
+    generation = start_embedding_generation(
+        database,
+        model_signature=model.model_signature,
+        processing_signature="image-resolver-contract",
+        started_ns=100,
+    )
+    enqueue_image_item_jobs(database, generation, (item.item_id,), now_ns=101)
+    lease = claim_embedding_jobs(
+        database,
+        generation,
+        worker_id="fixture-worker",
+        limit=1,
+        lease_seconds=60,
+        now_ns=102,
+    )[0]
+    complete_embedding_job(
+        database,
+        lease.job_id,
+        worker_id="fixture-worker",
+        vector=(1.0, 0.0, 0.0, 0.0),
+        provenance={"fixture": "image-resolver"},
+        now_ns=103,
+    )
+    finalize_embedding_generation(database, generation, completed_ns=104)
+    page = search_exact_page(
+        database,
+        ExactSearchQuery(
+            model.model_signature,
+            model.vector_space,
+            model.dimensions,
+            (1.0, 0.0, 0.0, 0.0),
+            EmbeddingModality.IMAGE,
+            indexed_model_signatures=(model.model_signature,),
+        ),
+    )
+    resolved = resolve_search_hits(database, page.hits)
+
+    assert len(resolved) == 1
+    assert resolved[0].path == str(image)
+    assert resolved[0].source_kind == "image"
+    assert resolved[0].source_identity == "identity:image-document"
+    assert resolved[0].source_status == "complete"
+    assert resolved[0].source_revision == {"revision": 7}
+    assert resolved[0].section_kind is None
+    assert resolved[0].section_id is None
+    assert resolved[0].start_char is None
+    assert resolved[0].end_char is None
+    assert resolved[0].snippet is None
+    assert resolved[0].section_provenance == {}
+    assert resolved[0].published_revision_id == resolved[0].current_revision_id
 
 
 def test_search_rejects_corrupt_vector_and_member_provenance(tmp_path: Path) -> None:

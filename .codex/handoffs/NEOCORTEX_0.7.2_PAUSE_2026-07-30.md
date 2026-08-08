@@ -1563,12 +1563,23 @@ ausentes y su candidate limit, no evidencia inventada.
 
 ## Próximos pasos, en orden
 
-1. **Construir y validar un candidato desde este commit.** Instalar el wheel en
-   un runtime aislado, ejecutar versión, doctor y un slice PDF sintético con
-   replay; no usar estado ni corpus vivos.
-2. **Promover sólo tras la aceptación instalada.** Reemplazar atómicamente el
-   launcher estable mediante la transición NTFS y verificar versión,
-   capacidades, hash y recibo; no ejecutar `--all` durante la promoción.
+Actualización local `2026-08-07`: el árbol `9d6fa1c` más el cambio pendiente de
+compatibilidad CPython 3.14 produjo el wheel `0.7.2` SHA-256
+`c390d9505758bebe2daa17a2a491ca7dea88070da700b6908dc6259c8e3f3b8d`.
+Se instaló `full` con Python `3.14.6` en el runtime versionado
+`0.7.2-py314-c390d950`, se promovió el launcher estable y no existían estado ni
+corpus vivos que migrar. Pasaron 52 pruebas contractuales, 385 pruebas core
+desde el wheel y el slice PDF sintético con replay de caché; los imports nativos
+también pasaron después de instalar el Visual C++ v14 Redistributable x64. Audio,
+Code, Semantic, UI, DOCX y Office están disponibles; PDF e imagen conservan sólo
+la degradación opcional por Tesseract/qpdf ausentes.
+
+1. **Versionar y publicar el cambio de compatibilidad.** Revisar el diff
+   pendiente, crear una frontera Git intencional y no atribuirla al commit base
+   `9d6fa1c`.
+2. **Confirmar la matriz instalada en GitHub.** El carril `standard` debe
+   construir e instalar `full`, importar sus wheels nativos y pasar la suite
+   core tanto con Python 3.13 como con 3.14 antes de una entrega remota.
 3. **Repetir la corrida real sólo cuando Victor lo decida.** Ejecutar
    `Neocortex --all`, sin `--apply`, sobre la raíz y estado canónicos. Las
    corridas 27 y 28 ya están `partial`; Code seleccionará proyectos por defecto

@@ -10,6 +10,7 @@ import sqlite3
 import zlib
 from collections.abc import Callable
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -164,7 +165,8 @@ def test_apply_blocks_stale_protected_row_without_path_syscalls_and_continues(
 
     def is_forbidden(value: object) -> bool:
         try:
-            candidate = os.path.normcase(os.path.abspath(os.fspath(value)))
+            path_value = cast(str | os.PathLike[str], value)
+            candidate = os.path.normcase(os.path.abspath(os.fspath(path_value)))
         except (TypeError, ValueError):
             return False
         return candidate in forbidden_keys
@@ -176,7 +178,8 @@ def test_apply_blocks_stale_protected_row_without_path_syscalls_and_continues(
         def guarded(*args: object, **kwargs: object) -> object:
             for value in args[:2]:
                 if is_forbidden(value):
-                    forbidden_calls.append((name, os.fspath(value)))
+                    path_value = cast(str | os.PathLike[str], value)
+                    forbidden_calls.append((name, os.fspath(path_value)))
                     raise AssertionError(
                         f"{name} must remain unreachable for protected plan paths"
                     )
@@ -320,4 +323,207 @@ def test_apply_propagates_systemic_preadmission_failure(
     assert run["status"] == "failed"
     assert run["error_type"] == "OSError"
     assert run["error_message"] == "systemic preadmission failure"
+
+
+def test_apply_preserves_validation_and_publication_phase_order(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state_directory = tmp_path / "state"
+    state_directory.mkdir()
+    source = tmp_path / "Formato SERINTRA.docx"
+    source.write_bytes(b"phase-order fixture")
+    _seed_docx(state_directory / "docx.sqlite3", source)
+    update_document_catalog(state_directory)
+    catalog_path = state_directory / "document_catalog.sqlite3"
+    destination_root = tmp_path / "organizados"
+    plan_document_organization(catalog_path, destination_root)
+    guard = _normal_mutation_guard(tmp_path)
+    events: list[str] = []
+
+    original_reject = CorpusMutationGuard.reject_run_mutation
+    original_initialize = organization_application.initialize_document_catalog
+    original_begin = organization_application._begin_organization_run
+    original_denials = organization_application._protected_organization_plan_denials
+    original_preflight = (
+        organization_application._preflight_selected_organization_boundaries
+    )
+    original_prepare = organization_application._prepare_apply_root
+    original_apply = organization_application._apply_selected_organization_plan
+    original_complete = organization_application._complete_organization_run
+
+    def record_rejection(current: CorpusMutationGuard) -> None:
+        events.append("reject")
+        original_reject(current)
+
+    def record_initialize(path: Path) -> None:
+        events.append("initialize")
+        original_initialize(path)
+
+    def record_begin(
+        connection: sqlite3.Connection,
+        mode: str,
+        root: Path,
+    ) -> int:
+        events.append("begin")
+        return original_begin(connection, mode, root)
+
+    def record_denials(
+        rows: list[sqlite3.Row],
+        mutation_guard: CorpusMutationGuard,
+    ) -> dict[str, str]:
+        events.append("denials")
+        return original_denials(rows, mutation_guard)
+
+    def record_preflight(
+        state: Path,
+        root: Path,
+        rows: list[sqlite3.Row],
+        mutation_guard: CorpusMutationGuard,
+    ) -> None:
+        events.append("preflight")
+        original_preflight(state, root, rows, mutation_guard)
+
+    def record_prepare(
+        catalog: Path,
+        root: Path,
+        mutation_guard: CorpusMutationGuard,
+    ) -> os.stat_result:
+        events.append("prepare")
+        return original_prepare(catalog, root, mutation_guard)
+
+    def record_apply(
+        connection: sqlite3.Connection,
+        catalog: Path,
+        row: sqlite3.Row,
+        root: Path,
+        root_stat: os.stat_result,
+        mutation_guard: CorpusMutationGuard,
+    ) -> organization_application._ApplyRowOutcome:
+        events.append("apply")
+        return original_apply(
+            connection,
+            catalog,
+            row,
+            root,
+            root_stat,
+            mutation_guard,
+        )
+
+    def record_complete(
+        connection: sqlite3.Connection,
+        run_id: int,
+        summary: organization_application.OrganizationApplySummary,
+    ) -> None:
+        events.append("complete")
+        original_complete(connection, run_id, summary)
+
+    monkeypatch.setattr(CorpusMutationGuard, "reject_run_mutation", record_rejection)
+    monkeypatch.setattr(
+        organization_application,
+        "initialize_document_catalog",
+        record_initialize,
+    )
+    monkeypatch.setattr(organization_application, "_begin_organization_run", record_begin)
+    monkeypatch.setattr(
+        organization_application,
+        "_protected_organization_plan_denials",
+        record_denials,
+    )
+    monkeypatch.setattr(
+        organization_application,
+        "_preflight_selected_organization_boundaries",
+        record_preflight,
+    )
+    monkeypatch.setattr(organization_application, "_prepare_apply_root", record_prepare)
+    monkeypatch.setattr(
+        organization_application,
+        "_apply_selected_organization_plan",
+        record_apply,
+    )
+    monkeypatch.setattr(
+        organization_application,
+        "_complete_organization_run",
+        record_complete,
+    )
+
+    summary = apply_document_organization(
+        catalog_path,
+        destination_root,
+        mutation_guard=guard,
+        max_actions=1,
+        on_progress=lambda _current: events.append("progress"),
+    )
+
+    assert summary.selected == 1
+    assert summary.applied == 1
+    assert events == [
+        "reject",
+        "initialize",
+        "begin",
+        "denials",
+        "preflight",
+        "prepare",
+        "apply",
+        "progress",
+        "complete",
+    ]
+
+
+def test_apply_progress_cancellation_keeps_row_durable_and_fails_run(
+    tmp_path: Path,
+) -> None:
+    state_directory = tmp_path / "state"
+    state_directory.mkdir()
+    source = tmp_path / "Formato SERINTRA.docx"
+    source.write_bytes(b"cancellation fixture")
+    _seed_docx(state_directory / "docx.sqlite3", source)
+    update_document_catalog(state_directory)
+    catalog_path = state_directory / "document_catalog.sqlite3"
+    destination_root = tmp_path / "organizados"
+    plan_document_organization(catalog_path, destination_root)
+    with document_catalog_database(catalog_path, readonly=True) as catalog:
+        destination_row = catalog.execute(
+            "SELECT destination_path FROM organization_plans"
+        ).fetchone()
+        assert destination_row is not None
+        destination = Path(str(destination_row[0]))
+
+    def cancel_after_committed_row(
+        _current: organization_application.OrganizationApplyProgress,
+    ) -> None:
+        raise KeyboardInterrupt("injected apply progress cancellation")
+
+    with pytest.raises(
+        KeyboardInterrupt,
+        match="injected apply progress cancellation",
+    ):
+        apply_document_organization(
+            catalog_path,
+            destination_root,
+            mutation_guard=_normal_mutation_guard(tmp_path),
+            max_actions=1,
+            on_progress=cancel_after_committed_row,
+        )
+
+    assert not source.exists()
+    assert destination.read_bytes() == b"cancellation fixture"
+    with document_catalog_database(catalog_path, readonly=True) as catalog:
+        plan = catalog.execute(
+            """SELECT status,cache_sync_status,completed_ns
+            FROM organization_plans"""
+        ).fetchone()
+        run = catalog.execute(
+            """SELECT status,error_type,error_message FROM catalog_runs
+            WHERE mode='apply' ORDER BY catalog_run_id DESC LIMIT 1"""
+        ).fetchone()
+    assert plan is not None
+    assert tuple(plan)[:2] == ("applied", "synced")
+    assert plan["completed_ns"] is not None
+    assert run is not None
+    assert tuple(run) == (
+        "failed",
+        "KeyboardInterrupt",
+        "injected apply progress cancellation",
+    )
 # endregion [02]

@@ -94,7 +94,10 @@ siquiera el consenso alto tiene autoridad de borrado. Ningún gate de supply
 chain autoriza actualizar, desinstalar o modificar paquetes.
 `git-history-local` sólo lee objetos del repositorio local verificado bajo
 límites de commits, archivos, relaciones, tiempo y salida; no usa red, hooks,
-`textconv` ni drivers de diff externos, y sus señales son advisory.
+`textconv` ni drivers de diff externos, y sus señales son advisory. Si la
+protección de ownership de Git requiere `safe.directory`, el proveedor autoriza
+únicamente la raíz exacta ya resuelta mediante `-c` en cada invocación; nunca
+usa comodines ni modifica configuración global, local o del sistema.
 
 `trusted-deep` es la única frontera que ejecuta contenido. La CLI exige la
 identidad física exacta de `C:\Users\Victor\Neocortex\Repository`, estado
