@@ -388,6 +388,117 @@ def _emit_generation_progress(
     )
 
 
+def _reuse_generation_jobs(
+    database: Path,
+    generation_id: int,
+    backend: EmbeddingBackend,
+    *,
+    budget: SemanticWorkBudget,
+    progress: ProgressCallback | None,
+    reused: int,
+    embedded: int,
+    failed: int,
+) -> tuple[GenerationSummary, int]:
+    while count := reuse_cached_jobs(database, generation_id):
+        reused += count
+        summary = generation_summary(database, generation_id)
+        _emit_generation_progress(
+            progress,
+            summary,
+            backend,
+            reused=reused,
+            embedded=embedded,
+            failed=failed,
+        )
+        if budget.deadline_expired():
+            break
+    return generation_summary(database, generation_id), reused
+
+
+def _run_generation_batch(
+    database: Path,
+    generation_id: int,
+    backend: EmbeddingBackend,
+    *,
+    worker_id: str,
+    heartbeat_jobs: Callable[..., int],
+) -> tuple[int, int, bool] | None:
+    leases = claim_embedding_jobs(
+        database,
+        generation_id,
+        worker_id=worker_id,
+        limit=min(JOB_BATCH_SIZE, backend.max_batch_size),
+        lease_seconds=WORKER_LEASE_SECONDS,
+    )
+    if not leases:
+        return None
+
+    batch_embedded = batch_failed = 0
+    try:
+        requests = tuple(embedding_request_from_lease(lease) for lease in leases)
+        successes, embedding_failures = embed_requests_with_heartbeat(
+            database,
+            leases,
+            worker_id=worker_id,
+            backend=backend,
+            requests=requests,
+            heartbeat_jobs=heartbeat_jobs,
+        )
+        batch_failed += _record_embedding_failures(
+            database,
+            leases,
+            embedding_failures,
+            worker_id=worker_id,
+        )
+        batch_embedded, completion_failures = _record_embedding_successes(
+            database,
+            leases,
+            successes,
+            worker_id=worker_id,
+        )
+        batch_failed += completion_failures
+    except SemanticIndexDeadlineExceeded as exc:
+        _release_timed_out_leases(
+            database,
+            leases,
+            worker_id=worker_id,
+            interruption=exc,
+        )
+        return batch_embedded, batch_failed, True
+    except BaseException as exc:
+        _release_interrupted_leases(
+            database,
+            leases,
+            worker_id=worker_id,
+            interruption=exc,
+        )
+        raise
+    return batch_embedded, batch_failed, False
+
+
+def _finish_generation(
+    database: Path,
+    generation_id: int,
+    *,
+    budget: SemanticWorkBudget,
+    publish_if_complete: bool,
+) -> tuple[GenerationSummary, bool]:
+    summary = generation_summary(database, generation_id)
+    deadline_expired = budget.deadline_expired()
+    if (
+        not summary.unfinished
+        and publish_if_complete
+        and not budget.truncated
+        and not deadline_expired
+    ):
+        summary = finalize_embedding_generation(
+            database,
+            generation_id,
+            allow_partial=True,
+        )
+    return summary, deadline_expired
+
+
 def run_generation(
     database: Path,
     generation_id: int,
@@ -413,90 +524,42 @@ def run_generation(
             embedded=embedded,
             failed=failed,
         )
-        if budget.deadline_expired():
+        if budget.deadline_expired() or not summary.unfinished:
             break
-        if not summary.unfinished:
-            break
-        while count := reuse_cached_jobs(database, generation_id):
-            reused += count
-            summary = generation_summary(database, generation_id)
-            _emit_generation_progress(
-                progress,
-                summary,
-                backend,
-                reused=reused,
-                embedded=embedded,
-                failed=failed,
-            )
-            if budget.deadline_expired():
-                break
-        summary = generation_summary(database, generation_id)
+        summary, reused = _reuse_generation_jobs(
+            database,
+            generation_id,
+            backend,
+            budget=budget,
+            progress=progress,
+            reused=reused,
+            embedded=embedded,
+            failed=failed,
+        )
         if not summary.unfinished or budget.deadline_expired():
             break
-        leases = claim_embedding_jobs(
+        batch = _run_generation_batch(
             database,
             generation_id,
+            backend,
             worker_id=worker_id,
-            limit=min(JOB_BATCH_SIZE, backend.max_batch_size),
-            lease_seconds=WORKER_LEASE_SECONDS,
+            heartbeat_jobs=heartbeat_jobs,
         )
-        if not leases:
+        if batch is None:
             break
-        try:
-            requests = tuple(embedding_request_from_lease(lease) for lease in leases)
-            successes, embedding_failures = embed_requests_with_heartbeat(
-                database,
-                leases,
-                worker_id=worker_id,
-                backend=backend,
-                requests=requests,
-                heartbeat_jobs=heartbeat_jobs,
-            )
-            failed += _record_embedding_failures(
-                database,
-                leases,
-                embedding_failures,
-                worker_id=worker_id,
-            )
-            batch_embedded, completion_failures = _record_embedding_successes(
-                database,
-                leases,
-                successes,
-                worker_id=worker_id,
-            )
-        except SemanticIndexDeadlineExceeded as exc:
-            _release_timed_out_leases(
-                database,
-                leases,
-                worker_id=worker_id,
-                interruption=exc,
-            )
+        batch_embedded, batch_failed, batch_deadline_expired = batch
+        embedded += batch_embedded
+        failed += batch_failed
+        if batch_deadline_expired:
             budget.mark_truncated("time_budget")
             break
-        except BaseException as exc:
-            _release_interrupted_leases(
-                database,
-                leases,
-                worker_id=worker_id,
-                interruption=exc,
-            )
-            raise
-        embedded += batch_embedded
-        failed += completion_failures
 
-    summary = generation_summary(database, generation_id)
-    deadline_expired = budget.deadline_expired()
-    if (
-        not summary.unfinished
-        and publish_if_complete
-        and not budget.truncated
-        and not deadline_expired
-    ):
-        summary = finalize_embedding_generation(
-            database,
-            generation_id,
-            allow_partial=True,
-        )
+    summary, deadline_expired = _finish_generation(
+        database,
+        generation_id,
+        budget=budget,
+        publish_if_complete=publish_if_complete,
+    )
     _emit_generation_progress(
         progress,
         summary,

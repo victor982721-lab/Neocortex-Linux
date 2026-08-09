@@ -62,9 +62,7 @@ class ReviewCandidate:
         if self.recommendation not in REVIEW_RECOMMENDATIONS:
             raise ValueError(f"invalid review recommendation: {self.recommendation}")
         if not math.isfinite(self.confidence) or not 0.0 <= self.confidence <= 1.0:
-            raise ValueError(
-                "review confidence must be finite and between zero and one"
-            )
+            raise ValueError("review confidence must be finite and between zero and one")
         serialized_evidence(self.evidence)
 
 
@@ -125,9 +123,7 @@ class ReviewDecision:
         ):
             _validated_identifier(value, field_name=field_name)
         if isinstance(self.candidate_generation, bool) or self.candidate_generation < 0:
-            raise ValueError(
-                "review candidate_generation must be a non-negative integer"
-            )
+            raise ValueError("review candidate_generation must be a non-negative integer")
         if self.status not in REVIEW_DECISION_STATUSES:
             raise ValueError(f"invalid review decision status: {self.status}")
         if self.recommendation not in REVIEW_RECOMMENDATIONS:
@@ -135,16 +131,12 @@ class ReviewDecision:
         if not isinstance(self.retryable, bool):
             raise TypeError("review retryable must be a boolean")
         if not math.isfinite(self.confidence) or not 0.0 <= self.confidence <= 1.0:
-            raise ValueError(
-                "review confidence must be finite and between zero and one"
-            )
+            raise ValueError("review confidence must be finite and between zero and one")
         if isinstance(self.decided_ns, bool) or self.decided_ns <= 0:
             raise ValueError("review decided_ns must be a positive integer")
         if self.note is not None:
             if not self.note or self.note.strip() != self.note:
-                raise ValueError(
-                    "review note must be non-empty and trimmed when present"
-                )
+                raise ValueError("review note must be non-empty and trimmed when present")
             if len(self.note.encode("utf-8")) > MAX_NOTE_BYTES:
                 raise ValueError(f"review note exceeds the {MAX_NOTE_BYTES}-byte limit")
         if not self.provenance:
@@ -184,9 +176,7 @@ def _validated_identifier(value: str, *, field_name: str) -> str:
     if not value or value.strip() != value:
         raise ValueError(f"review {field_name} must be non-empty and trimmed")
     if len(value) > MAX_IDENTIFIER_CHARS:
-        raise ValueError(
-            f"review {field_name} exceeds {MAX_IDENTIFIER_CHARS} characters"
-        )
+        raise ValueError(f"review {field_name} exceeds {MAX_IDENTIFIER_CHARS} characters")
     return value
 
 
@@ -200,9 +190,7 @@ def validated_reason_codes(reason_codes: object) -> tuple[str, ...]:
     except TypeError as exc:
         raise TypeError("review reason codes must be an iterable of strings") from exc
     if len(values) > MAX_RECONCILIATION_REASONS:
-        raise ValueError(
-            f"review reconciliation exceeds {MAX_RECONCILIATION_REASONS} reason codes"
-        )
+        raise ValueError(f"review reconciliation exceeds {MAX_RECONCILIATION_REASONS} reason codes")
     normalized: set[str] = set()
     for value in values:
         if not isinstance(value, str):
@@ -289,9 +277,7 @@ def _review_candidate_record(row: sqlite3.Row) -> ReviewCandidateRecord:
         resolved_generation=(
             None if row["resolved_run_id"] is None else int(row["resolved_run_id"])
         ),
-        resolution_note=(
-            None if row["resolution_note"] is None else str(row["resolution_note"])
-        ),
+        resolution_note=(None if row["resolution_note"] is None else str(row["resolution_note"])),
     )
 
 
@@ -312,9 +298,7 @@ def list_review_candidates(
     if status not in REVIEW_STATUSES:
         raise ValueError(f"invalid review status: {status}")
 
-    connection = connect_existing_framework(
-        Path(database), readonly=True, timeout_seconds=60
-    )
+    connection = connect_existing_framework(Path(database), readonly=True, timeout_seconds=60)
     try:
         clauses = ["status=?"]
         parameters: list[object] = [status]
@@ -362,9 +346,7 @@ def get_review_candidate(
         if isinstance(value, bool) or not isinstance(value, int) or value < 0:
             raise ValueError(f"review {field_name} must be a non-negative integer")
 
-    connection = connect_existing_framework(
-        Path(database), readonly=True, timeout_seconds=60
-    )
+    connection = connect_existing_framework(Path(database), readonly=True, timeout_seconds=60)
     try:
         row = connection.execute(
             "SELECT "
@@ -406,9 +388,7 @@ def _review_decision_record(row: sqlite3.Row) -> ReviewDecisionRecord:
         detector_version = None
     else:
         if any(value is None for value in snapshot_values):
-            raise sqlite3.DatabaseError(
-                "review decision candidate snapshot is incomplete"
-            )
+            raise sqlite3.DatabaseError("review decision candidate snapshot is incomplete")
         source_status = str(row["source_status"])
         recommendation = str(row["recommendation"])
         if recommendation not in REVIEW_RECOMMENDATIONS:
@@ -423,13 +403,9 @@ def _review_decision_record(row: sqlite3.Row) -> ReviewDecisionRecord:
         raw_evidence = str(row["evidence_json"])
         evidence_value = json.loads(raw_evidence)
         if not isinstance(evidence_value, dict):
-            raise sqlite3.DatabaseError(
-                "review decision evidence must be a JSON object"
-            )
+            raise sqlite3.DatabaseError("review decision evidence must be a JSON object")
         if serialized_evidence(evidence_value) != raw_evidence:
-            raise sqlite3.DatabaseError(
-                "review decision evidence must be canonical and bounded"
-            )
+            raise sqlite3.DatabaseError("review decision evidence must be canonical and bounded")
         evidence = evidence_value
         detector_version = str(row["detector_version"])
     return ReviewDecisionRecord(
@@ -459,19 +435,16 @@ def _review_decision_record(row: sqlite3.Row) -> ReviewDecisionRecord:
     )
 
 
-def list_review_decisions(
-    database: str | Path,
+def _validate_review_decision_filters(
     *,
     limit: int,
-    route_name: str | None = None,
-    reason_code: str | None = None,
-    status: ReviewDecisionStatus | None = None,
-    volume_id: int | None = None,
-    file_id: int | None = None,
-    candidate_generation: int | None = None,
-) -> list[ReviewDecisionRecord]:
-    """Read a bounded decision history without creating or migrating state."""
-
+    route_name: str | None,
+    reason_code: str | None,
+    status: ReviewDecisionStatus | None,
+    volume_id: int | None,
+    file_id: int | None,
+    candidate_generation: int | None,
+) -> None:
     if not 1 <= limit <= 10_000:
         raise ValueError("review decision limit must be between 1 and 10000")
     if route_name is not None:
@@ -487,6 +460,17 @@ def list_review_decisions(
     ):
         raise ValueError("review candidate_generation must be non-negative")
 
+
+def _review_decision_query_filters(
+    *,
+    limit: int,
+    route_name: str | None,
+    reason_code: str | None,
+    status: ReviewDecisionStatus | None,
+    volume_id: int | None,
+    file_id: int | None,
+    candidate_generation: int | None,
+) -> tuple[str, list[object]]:
     clauses: list[str] = []
     parameters: list[object] = []
     for column, value in (
@@ -504,12 +488,44 @@ def list_review_decisions(
         clauses.append("candidate_generation=?")
         parameters.append(candidate_generation)
     parameters.append(limit)
+    where = "" if not clauses else " WHERE " + " AND ".join(clauses)
+    return where, parameters
 
-    connection = connect_existing_framework(
-        Path(database), readonly=True, timeout_seconds=60
+
+def list_review_decisions(
+    database: str | Path,
+    *,
+    limit: int,
+    route_name: str | None = None,
+    reason_code: str | None = None,
+    status: ReviewDecisionStatus | None = None,
+    volume_id: int | None = None,
+    file_id: int | None = None,
+    candidate_generation: int | None = None,
+) -> list[ReviewDecisionRecord]:
+    """Read a bounded decision history without creating or migrating state."""
+
+    _validate_review_decision_filters(
+        limit=limit,
+        route_name=route_name,
+        reason_code=reason_code,
+        status=status,
+        volume_id=volume_id,
+        file_id=file_id,
+        candidate_generation=candidate_generation,
     )
+    where, parameters = _review_decision_query_filters(
+        limit=limit,
+        route_name=route_name,
+        reason_code=reason_code,
+        status=status,
+        volume_id=volume_id,
+        file_id=file_id,
+        candidate_generation=candidate_generation,
+    )
+
+    connection = connect_existing_framework(Path(database), readonly=True, timeout_seconds=60)
     try:
-        where = "" if not clauses else " WHERE " + " AND ".join(clauses)
         rows = connection.execute(
             "SELECT "
             + _REVIEW_DECISION_COLUMNS
@@ -531,14 +547,10 @@ def get_review_decision_by_key(
     """Read one decision retry key exactly without scanning history."""
 
     _validated_identifier(idempotency_key, field_name="idempotency_key")
-    connection = connect_existing_framework(
-        Path(database), readonly=True, timeout_seconds=60
-    )
+    connection = connect_existing_framework(Path(database), readonly=True, timeout_seconds=60)
     try:
         row = connection.execute(
-            "SELECT "
-            + _REVIEW_DECISION_COLUMNS
-            + " FROM review_decisions WHERE idempotency_key=?",
+            "SELECT " + _REVIEW_DECISION_COLUMNS + " FROM review_decisions WHERE idempotency_key=?",
             (idempotency_key,),
         ).fetchone()
     finally:

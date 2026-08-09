@@ -151,9 +151,7 @@ def _reference_relation(row: sqlite3.Row) -> CodeSearchRelation:
     )
     if source_symbol_id != joined_source_symbol_id:
         raise RuntimeError("reference source symbol does not belong to source version")
-    source_symbol = (
-        None if joined_source_symbol_id is None else str(row["relation_source_symbol"])
-    )
+    source_symbol = None if joined_source_symbol_id is None else str(row["relation_source_symbol"])
     source = CodeRelationEndpoint(
         version_id=int(row[0]),
         path=str(row[1]),
@@ -208,9 +206,7 @@ def _reference_relation(row: sqlite3.Row) -> CodeSearchRelation:
         source=source,
         target=target,
         target_hint=(
-            None
-            if row["relation_target_hint"] is None
-            else str(row["relation_target_hint"])
+            None if row["relation_target_hint"] is None else str(row["relation_target_hint"])
         ),
         resolved=target is not None,
         confirmed=bool(int(row["relation_confirmed"])),
@@ -261,9 +257,7 @@ def _dependency_relation(row: sqlite3.Row) -> CodeSearchRelation:
         source_row_id=int(row["owner_relation_row_id"]),
         scope=None if row["relation_scope"] is None else str(row["relation_scope"]),
         version_spec=(
-            None
-            if row["relation_version_spec"] is None
-            else str(row["relation_version_spec"])
+            None if row["relation_version_spec"] is None else str(row["relation_version_spec"])
         ),
     )
 
@@ -361,9 +355,7 @@ def _text_rows(
         if mode == "literal" and not query.text:
             return ()
         predicate = "instr(c.text,?)>0" if mode == "literal" else "1=1"
-        evidence = (
-            query.text if mode == "literal" else (query.path or query.language or "")
-        )
+        evidence = query.text if mode == "literal" else (query.path or query.language or "")
         sql = f"""SELECT v.version_id,f.current_path,{project},v.language,
         v.artifact_kind,NULL,NULL,c.start_line,c.end_line,c.text,v.size,v.mtime_ns,
         v.analysis_status,? FROM code_chunks c
@@ -590,9 +582,7 @@ def _semantic_ranked_hits(
         cancellation_check=cancellation.checkpoint,
     )
     cancellation.checkpoint()
-    ranking = next(
-        (item for item in result.rankings if item.name == "semantic_text"), None
-    )
+    ranking = next((item for item in result.rankings if item.name == "semantic_text"), None)
     if ranking is None or not ranking.available:
         return ()
     return ranking.resolved
@@ -603,9 +593,7 @@ def _semantic_chunk_locator(
 ) -> tuple[str, int] | None:
     if resolved.source_kind != "code":
         return None
-    if not isinstance(
-        resolved.section_kind, str
-    ) or not resolved.section_kind.startswith("code_"):
+    if not isinstance(resolved.section_kind, str) or not resolved.section_kind.startswith("code_"):
         return None
     chunk_kind = resolved.section_kind.removeprefix("code_")
     if not chunk_kind:
@@ -640,10 +628,7 @@ def _semantic_hit_binding(
     if not isinstance(semantic_item_id, str) or not semantic_item_id.strip():
         return None
     indexed_model_signature = resolved.hit.indexed_model_signature
-    if (
-        not isinstance(indexed_model_signature, str)
-        or not indexed_model_signature.strip()
-    ):
+    if not isinstance(indexed_model_signature, str) or not indexed_model_signature.strip():
         return None
     vector_space = resolved.hit.vector_space
     if not isinstance(vector_space, str) or not vector_space.strip():
@@ -822,26 +807,50 @@ def _cleanup_search_connection(
         raise cleanup_error
 
 
-def search_code(
+def _search_rows_for_mode(
+    code_database: Path,
+    connection: sqlite3.Connection,
+    query: CodeSearchQuery,
+    mode: str,
+    fetch_limit: int,
+    cancellation: SQLiteCancellationBridge,
+    *,
+    semantic_model_cache: Path | None,
+    semantic_threads: int | None,
+) -> tuple[_SearchRow, ...]:
+    if mode in {"literal", "fts", "path", "language"}:
+        return _text_rows(connection, query, mode, fetch_limit)
+    if mode in {"symbol", "definition", "signature", "complexity"}:
+        return _symbol_rows(connection, query, mode, fetch_limit)
+    if mode in {"reference", "import", "call"}:
+        return _reference_rows(connection, query, mode, fetch_limit)
+    if mode == "dependency":
+        return _dependency_rows(connection, query, fetch_limit)
+    if mode == "diagnostic":
+        return _diagnostic_rows(connection, query, fetch_limit)
+    if mode == "semantic":
+        return _semantic_rows(
+            code_database,
+            connection,
+            query,
+            fetch_limit,
+            cancellation,
+            model_cache=semantic_model_cache,
+            threads=semantic_threads,
+        )
+    raise AssertionError(f"unhandled code search mode: {mode}")
+
+
+def _search_rankings(
     path: Path,
     query: CodeSearchQuery,
+    modes: tuple[str, ...],
+    fetch_limit: int,
+    cancellation: SQLiteCancellationBridge,
     *,
-    semantic_model_cache: Path | None = None,
-    semantic_threads: int | None = None,
-    cancellation_check: CancellationCheck | None = None,
-) -> tuple[CodeSearchHit, ...]:
-    """Return explained current hits using reciprocal-rank signal fusion.
-
-    ``semantic`` is deliberately not fabricated from lexical signals. It
-    contributes only when the published Semantic head has an exact active link
-    to the current Code chunk; exact and structural modes remain independently
-    usable.
-    """
-
-    cancellation = SQLiteCancellationBridge(cancellation_check)
-    cancellation.checkpoint()
-    modes = _mode_plan(query)
-    fetch_limit = min(5000, max(query.limit * 8, 64))
+    semantic_model_cache: Path | None,
+    semantic_threads: int | None,
+) -> tuple[tuple[str, tuple[_SearchRow, ...]], ...]:
     rankings: list[tuple[str, tuple[_SearchRow, ...]]] = []
     with readonly_code_database(
         path,
@@ -853,33 +862,16 @@ def search_code(
             connection.execute("BEGIN")
             with sqlite_cancellation_scope(connection, cancellation):
                 for mode in modes:
-                    if mode in {"literal", "fts", "path", "language"}:
-                        rows = _text_rows(connection, query, mode, fetch_limit)
-                    elif mode in {
-                        "symbol",
-                        "definition",
-                        "signature",
-                        "complexity",
-                    }:
-                        rows = _symbol_rows(connection, query, mode, fetch_limit)
-                    elif mode in {"reference", "import", "call"}:
-                        rows = _reference_rows(connection, query, mode, fetch_limit)
-                    elif mode == "dependency":
-                        rows = _dependency_rows(connection, query, fetch_limit)
-                    elif mode == "diagnostic":
-                        rows = _diagnostic_rows(connection, query, fetch_limit)
-                    elif mode == "semantic":
-                        rows = _semantic_rows(
-                            path,
-                            connection,
-                            query,
-                            fetch_limit,
-                            cancellation,
-                            model_cache=semantic_model_cache,
-                            threads=semantic_threads,
-                        )
-                    else:  # exhaustive guard for future modes
-                        raise AssertionError(f"unhandled code search mode: {mode}")
+                    rows = _search_rows_for_mode(
+                        path,
+                        connection,
+                        query,
+                        mode,
+                        fetch_limit,
+                        cancellation,
+                        semantic_model_cache=semantic_model_cache,
+                        semantic_threads=semantic_threads,
+                    )
                     rankings.append((mode, rows))
                     cancellation.checkpoint()
         except BaseException as exc:
@@ -887,13 +879,20 @@ def search_code(
             raise
         finally:
             _cleanup_search_connection(connection, primary_error)
+    return tuple(rankings)
 
+
+def _rank_search_rows(
+    rankings: tuple[tuple[str, tuple[_SearchRow, ...]], ...],
+    query: CodeSearchQuery,
+    cancellation: SQLiteCancellationBridge,
+) -> tuple[CodeSearchHit, ...]:
     score: defaultdict[tuple[object, ...], float] = defaultdict(float)
     match_types: defaultdict[tuple[object, ...], list[str]] = defaultdict(list)
     evidence: defaultdict[tuple[object, ...], list[str]] = defaultdict(list)
-    relations: defaultdict[
-        tuple[object, ...], dict[tuple[str, int], CodeSearchRelation]
-    ] = defaultdict(dict)
+    relations: defaultdict[tuple[object, ...], dict[tuple[str, int], CodeSearchRelation]] = (
+        defaultdict(dict)
+    )
     projected: dict[tuple[object, ...], _SearchRow] = {}
     fused_rows = 0
     for mode, rows in rankings:
@@ -953,6 +952,38 @@ def search_code(
         )
     cancellation.checkpoint()
     return tuple(hits)
+
+
+def search_code(
+    path: Path,
+    query: CodeSearchQuery,
+    *,
+    semantic_model_cache: Path | None = None,
+    semantic_threads: int | None = None,
+    cancellation_check: CancellationCheck | None = None,
+) -> tuple[CodeSearchHit, ...]:
+    """Return explained current hits using reciprocal-rank signal fusion.
+
+    ``semantic`` is deliberately not fabricated from lexical signals. It
+    contributes only when the published Semantic head has an exact active link
+    to the current Code chunk; exact and structural modes remain independently
+    usable.
+    """
+
+    cancellation = SQLiteCancellationBridge(cancellation_check)
+    cancellation.checkpoint()
+    modes = _mode_plan(query)
+    fetch_limit = min(5000, max(query.limit * 8, 64))
+    rankings = _search_rankings(
+        path,
+        query,
+        modes,
+        fetch_limit,
+        cancellation,
+        semantic_model_cache=semantic_model_cache,
+        semantic_threads=semantic_threads,
+    )
+    return _rank_search_rows(rankings, query, cancellation)
 
 
 def available_search_modes() -> tuple[str, ...]:

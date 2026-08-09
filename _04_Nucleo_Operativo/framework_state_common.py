@@ -4,7 +4,6 @@
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
-
 # region [01] Dependencias del módulo
 from __future__ import annotations
 
@@ -24,10 +23,14 @@ from .corpus_access import (
 )
 from .internal_paths import (
     InternalPathProtectionError,
+    InternalPathsPolicy,
     canonical_internal_paths_policy,
 )
 from .inventory_boundary import build_normal_inventory_boundary
-from .protected_content import canonical_protected_content_policy
+from .protected_content import (
+    ProtectedContentPolicy,
+    canonical_protected_content_policy,
+)
 from .self_analysis import build_self_analysis_inventory_policy
 # endregion [01]
 
@@ -39,9 +42,7 @@ FileActionSpec = tuple[str, str, str | None, str | None, str | None, bool]
 
 _TERMINAL_FILE_ACTION_STATUSES = frozenset({"planned", "applied", "skipped", "failed"})
 _FILE_ACTION_TRANSITIONS = {
-    "started": frozenset(
-        {"planned", "skipped", "failed", "applying", "recovery_required"}
-    ),
+    "started": frozenset({"planned", "skipped", "failed", "applying", "recovery_required"}),
     "applying": frozenset({"applied", "recovery_required"}),
 }
 
@@ -95,9 +96,7 @@ def _require_persisted_absolute_path(value: object, *, label: str) -> Path:
     if not candidate.is_absolute():
         raise InternalPathProtectionError(f"{label} is not absolute")
     normalized = Path(os.path.abspath(os.path.normpath(serialized)))
-    if os.path.normcase(os.fspath(candidate)) != os.path.normcase(
-        os.fspath(normalized)
-    ):
+    if os.path.normcase(os.fspath(candidate)) != os.path.normcase(os.fspath(normalized)):
         raise InternalPathProtectionError(f"{label} is not canonical")
     return normalized
 
@@ -125,9 +124,7 @@ def corpus_mutation_guard(
     if (run_kind == "initial" and mode != "normal") or (
         run_kind == "self_analysis" and mode != "analyze_only"
     ):
-        raise InternalPathProtectionError(
-            f"run {run_id} has an inconsistent kind/access mode"
-        )
+        raise InternalPathProtectionError(f"run {run_id} has an inconsistent kind/access mode")
     if mode not in {"normal", "analyze_only"}:
         raise InternalPathProtectionError(
             f"run {run_id} has unsupported corpus access mode: {mode!r}"
@@ -137,26 +134,12 @@ def corpus_mutation_guard(
         label=f"run {run_id} corpus root",
     )
     if any(value is None for value in row[3:6]):
-        raise InternalPathProtectionError(
-            f"run {run_id} has an incomplete corpus root identity"
-        )
+        raise InternalPathProtectionError(f"run {run_id} has an incomplete corpus root identity")
     state_directory = _require_persisted_absolute_path(
         row[6],
         label=f"run {run_id} state directory",
     )
-    if row[7] is None:
-        raise InternalPathProtectionError(
-            f"run {run_id} has no durable inventory policy signature"
-        )
-    signature = str(row[7])
-    if (
-        not signature
-        or signature.strip() != signature
-        or len(signature.encode("utf-8")) > 4096
-    ):
-        raise InternalPathProtectionError(
-            f"run {run_id} has a malformed inventory policy signature"
-        )
+    signature = _mutation_inventory_signature(run_id, row[7])
     access_policy = CorpusAccessPolicy.from_storage(
         mode,
         root,
@@ -164,9 +147,7 @@ def corpus_mutation_guard(
         str(row[4]),
         int(row[5]),
     )
-    if os.path.normcase(os.fspath(access_policy.root)) != os.path.normcase(
-        os.fspath(root)
-    ):
+    if os.path.normcase(os.fspath(access_policy.root)) != os.path.normcase(os.fspath(root)):
         raise InternalPathProtectionError(
             f"run {run_id} corpus root is not in canonical storage form"
         )
@@ -177,35 +158,14 @@ def corpus_mutation_guard(
     internal_paths_policy.validate_corpus_access(access_policy)
     protected_content_policy = canonical_protected_content_policy()
     protected_content_policy.validate_corpus_access(access_policy)
-    if mode == "normal":
-        boundary = build_normal_inventory_boundary(
-            access_policy.root,
-            state_policy.root,
-            access_policy=access_policy,
-            state_policy=state_policy,
-            internal_paths_policy=internal_paths_policy,
-            protected_content_policy=protected_content_policy,
-        )
-        expected_signature = boundary.effective_signature
-        protected_content_policy = boundary.protected_content_policy
-    elif mode == "analyze_only":
-        try:
-            intersects = path_trees_intersect(
-                access_policy.root,
-                state_policy.root,
-            )
-        except (OSError, ValueError) as exc:
-            raise InternalPathProtectionError(
-                f"run {run_id} root/state boundary cannot be verified"
-            ) from exc
-        if intersects:
-            raise InternalPathProtectionError(
-                f"run {run_id} root and state directory are not disjoint"
-            )
-        expected_signature = build_self_analysis_inventory_policy(
-            access_policy.root,
-            state_policy.root,
-        ).signature
+    expected_signature, protected_content_policy = _mutation_inventory_boundary(
+        run_id,
+        mode,
+        access_policy,
+        state_policy,
+        internal_paths_policy,
+        protected_content_policy,
+    )
     if signature != expected_signature:
         raise InternalPathProtectionError(
             f"run {run_id} inventory policy signature does not match its boundary"
@@ -221,6 +181,55 @@ def corpus_mutation_guard(
     )
 
 
+def _mutation_inventory_signature(run_id: int, value: object) -> str:
+    if value is None:
+        raise InternalPathProtectionError(f"run {run_id} has no durable inventory policy signature")
+    signature = str(value)
+    if not signature or signature.strip() != signature or len(signature.encode("utf-8")) > 4096:
+        raise InternalPathProtectionError(
+            f"run {run_id} has a malformed inventory policy signature"
+        )
+    return signature
+
+
+def _mutation_inventory_boundary(
+    run_id: int,
+    mode: str,
+    access_policy: CorpusAccessPolicy,
+    state_policy: CorpusAccessPolicy,
+    internal_paths_policy: InternalPathsPolicy,
+    protected_content_policy: ProtectedContentPolicy,
+) -> tuple[str, ProtectedContentPolicy]:
+    """Rebuild the mode-specific inventory boundary for a verified run."""
+
+    if mode == "normal":
+        boundary = build_normal_inventory_boundary(
+            access_policy.root,
+            state_policy.root,
+            access_policy=access_policy,
+            state_policy=state_policy,
+            internal_paths_policy=internal_paths_policy,
+            protected_content_policy=protected_content_policy,
+        )
+        return boundary.effective_signature, boundary.protected_content_policy
+    try:
+        intersects = path_trees_intersect(
+            access_policy.root,
+            state_policy.root,
+        )
+    except (OSError, ValueError) as exc:
+        raise InternalPathProtectionError(
+            f"run {run_id} root/state boundary cannot be verified"
+        ) from exc
+    if intersects:
+        raise InternalPathProtectionError(f"run {run_id} root and state directory are not disjoint")
+    expected_signature = build_self_analysis_inventory_policy(
+        access_policy.root,
+        state_policy.root,
+    ).signature
+    return expected_signature, protected_content_policy
+
+
 def _main_database_state_policy(
     connection: sqlite3.Connection,
     persisted_state_directory: Path,
@@ -233,33 +242,21 @@ def _main_database_state_policy(
         raise InternalPathProtectionError("framework database has no unique main owner")
     database_value = str(main_rows[0][2])
     if not database_value or database_value == ":memory:":
-        raise InternalPathProtectionError(
-            "framework database main owner is not a durable file"
-        )
+        raise InternalPathProtectionError("framework database main owner is not a durable file")
     if not Path(database_value).is_absolute():
-        raise InternalPathProtectionError(
-            "framework database main owner is not absolute"
-        )
+        raise InternalPathProtectionError("framework database main owner is not absolute")
     try:
-        database_path = Path(
-            os.path.abspath(os.path.realpath(Path(database_value).expanduser()))
-        )
+        database_path = Path(os.path.abspath(os.path.realpath(Path(database_value).expanduser())))
         if not database_path.is_file():
             raise FileNotFoundError(database_path)
         database_owner = database_path.parent
         requested_state = persisted_state_directory
         physical_state = Path(os.path.abspath(os.path.realpath(requested_state)))
     except (OSError, ValueError) as exc:
-        raise InternalPathProtectionError(
-            "framework state ownership cannot be verified"
-        ) from exc
-    if os.path.normcase(os.fspath(requested_state)) != os.path.normcase(
-        os.fspath(physical_state)
-    ):
+        raise InternalPathProtectionError("framework state ownership cannot be verified") from exc
+    if os.path.normcase(os.fspath(requested_state)) != os.path.normcase(os.fspath(physical_state)):
         raise InternalPathProtectionError("persisted state directory is not canonical")
-    if os.path.normcase(os.fspath(physical_state)) != os.path.normcase(
-        os.fspath(database_owner)
-    ):
+    if os.path.normcase(os.fspath(physical_state)) != os.path.normcase(os.fspath(database_owner)):
         raise InternalPathProtectionError(
             "persisted state directory does not own the main database"
         )
@@ -272,9 +269,7 @@ def _main_database_state_policy(
     if os.path.normcase(os.fspath(state_policy.root)) != os.path.normcase(
         os.fspath(database_owner)
     ):
-        raise InternalPathProtectionError(
-            "framework database owner is not a canonical directory"
-        )
+        raise InternalPathProtectionError("framework database owner is not a canonical directory")
     return state_policy
 
 
@@ -460,9 +455,7 @@ def mark_file_actions_applying(
     if not prepared:
         return
     if connection.in_transaction:
-        raise RuntimeError(
-            "file action mutation frontier requires transaction ownership"
-        )
+        raise RuntimeError("file action mutation frontier requires transaction ownership")
     applying_ns = time.time_ns()
     connection.execute("BEGIN IMMEDIATE")
     try:
@@ -513,8 +506,7 @@ def _transition_file_action(
     effect_receipt_json: str | None = None,
 ) -> None:
     row = connection.execute(
-        "SELECT status,detail,effect_receipt_json FROM main.file_actions "
-        "WHERE action_id=?",
+        "SELECT status,detail,effect_receipt_json FROM main.file_actions WHERE action_id=?",
         (action_id,),
     ).fetchone()
     if row is None:
@@ -523,20 +515,15 @@ def _transition_file_action(
     if current == status:
         stored_detail = None if row[1] is None else str(row[1])
         stored_receipt = None if row[2] is None else str(row[2])
-        expected_receipt = (
-            stored_receipt if effect_receipt_json is None else effect_receipt_json
-        )
+        expected_receipt = stored_receipt if effect_receipt_json is None else effect_receipt_json
         if stored_detail != detail or stored_receipt != expected_receipt:
             raise RuntimeError(
-                f"conflicting repeated file action transition for {action_id}: "
-                f"status={status}"
+                f"conflicting repeated file action transition for {action_id}: status={status}"
             )
         return
     allowed = _FILE_ACTION_TRANSITIONS.get(current, frozenset())
     if status not in allowed:
-        raise RuntimeError(
-            f"invalid file action transition for {action_id}: {current} -> {status}"
-        )
+        raise RuntimeError(f"invalid file action transition for {action_id}: {current} -> {status}")
     occurred_ns = time.time_ns()
     completed_ns = occurred_ns if status in _TERMINAL_FILE_ACTION_STATUSES else None
     updated = connection.execute(
@@ -614,4 +601,6 @@ def confirm_file_actions_applied(
                 evidence_json=receipt_json,
                 effect_receipt_json=receipt_json,
             )
+
+
 # endregion [02]

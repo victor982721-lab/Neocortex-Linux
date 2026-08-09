@@ -175,11 +175,7 @@ def semantic_ranking(
     cutoff_reason = (
         "max_vectors_reached"
         if not page.complete
-        else (
-            "top_k"
-            if len(page.hits) == limit and page.scanned > len(page.hits)
-            else None
-        )
+        else ("top_k" if len(page.hits) == limit and page.scanned > len(page.hits) else None)
     )
     cutoff_score = page.hits[-1].score if len(page.hits) == limit else None
     return SemanticRanking(
@@ -217,6 +213,48 @@ def _retrieval_contract_provenance(
     backend, backend_conflict = resolve("backend")
     pipeline, pipeline_conflict = resolve("pipeline")
     return backend, pipeline, backend_conflict or pipeline_conflict
+
+
+def _text_retrieval_hit_decision(
+    hit: SearchHit,
+    resolved: ResolvedSearchHit | None,
+) -> tuple[bool, str | None]:
+    """Return retention plus an abstention reason; ``None`` means calibrated."""
+
+    if resolved is None:
+        return True, "source_unresolved"
+    backend, pipeline, provenance_conflict = _retrieval_contract_provenance(hit.provenance)
+    if provenance_conflict:
+        return True, "provenance_contract_conflict"
+    floor = text_retrieval_score_floor(
+        model_signature=hit.indexed_model_signature,
+        pipeline=pipeline,
+        backend=backend,
+        source_kind=resolved.source_kind,
+    )
+    if floor is not None:
+        return hit.score >= floor, None
+    if hit.indexed_model_signature != TEXT_MODEL_SIGNATURE:
+        reason = "indexed_model_not_calibrated"
+    elif pipeline != SEMANTIC_PIPELINE_VERSION:
+        reason = "pipeline_not_calibrated"
+    elif backend != TEXT_RETRIEVAL_CALIBRATION_BACKEND:
+        reason = "backend_not_calibrated"
+    else:
+        reason = "source_kind_not_calibrated"
+    return True, reason
+
+
+def _text_retrieval_calibration_status(
+    *,
+    calibrated_hits: int,
+    uncalibrated_hits: int,
+) -> str:
+    if uncalibrated_hits and calibrated_hits:
+        return "partial"
+    if uncalibrated_hits:
+        return "not_applicable"
+    return "applied"
 
 
 def apply_text_retrieval_calibration(
@@ -260,67 +298,34 @@ def apply_text_retrieval_calibration(
     for hit in ranking.hits:
         key = _search_hit_key(hit)
         resolved = resolved_by_key.get(key)
-        if resolved is None:
+        retained, uncalibrated_reason = _text_retrieval_hit_decision(hit, resolved)
+        if uncalibrated_reason is not None:
             retained_keys.add(key)
-            uncalibrated_by_reason["source_unresolved"] = (
-                uncalibrated_by_reason.get("source_unresolved", 0) + 1
+            uncalibrated_by_reason[uncalibrated_reason] = (
+                uncalibrated_by_reason.get(uncalibrated_reason, 0) + 1
             )
-            continue
-        backend, pipeline, provenance_conflict = _retrieval_contract_provenance(
-            hit.provenance
-        )
-        floor = (
-            None
-            if provenance_conflict
-            else text_retrieval_score_floor(
-                model_signature=hit.indexed_model_signature,
-                pipeline=pipeline,
-                backend=backend,
-                source_kind=resolved.source_kind,
-            )
-        )
-        if floor is None:
-            retained_keys.add(key)
-            if provenance_conflict:
-                reason = "provenance_contract_conflict"
-            elif hit.indexed_model_signature != TEXT_MODEL_SIGNATURE:
-                reason = "indexed_model_not_calibrated"
-            elif pipeline != SEMANTIC_PIPELINE_VERSION:
-                reason = "pipeline_not_calibrated"
-            elif backend != TEXT_RETRIEVAL_CALIBRATION_BACKEND:
-                reason = "backend_not_calibrated"
-            else:
-                reason = "source_kind_not_calibrated"
-            uncalibrated_by_reason[reason] = uncalibrated_by_reason.get(reason, 0) + 1
             continue
         calibrated_hits += 1
-        if hit.score >= floor:
+        if retained:
             retained_keys.add(key)
             continue
+        assert resolved is not None
         rejected_by_source[resolved.source_kind] = (
             rejected_by_source.get(resolved.source_kind, 0) + 1
         )
 
-    retained_hits = tuple(
-        hit for hit in ranking.hits if _search_hit_key(hit) in retained_keys
-    )
+    retained_hits = tuple(hit for hit in ranking.hits if _search_hit_key(hit) in retained_keys)
     retained_resolved = tuple(
-        value
-        for value in ranking.resolved
-        if _search_hit_key(value.hit) in retained_keys
+        value for value in ranking.resolved if _search_hit_key(value.hit) in retained_keys
     )
     rejected_hits = len(ranking.hits) - len(retained_hits)
     uncalibrated_hits = sum(uncalibrated_by_reason.values())
-    if uncalibrated_hits and calibrated_hits:
-        status = "partial"
-    elif uncalibrated_hits:
-        status = "not_applicable"
-    else:
-        status = "applied"
+    status = _text_retrieval_calibration_status(
+        calibrated_hits=calibrated_hits,
+        uncalibrated_hits=uncalibrated_hits,
+    )
     query_abstained = (
-        bool(ranking.hits)
-        and calibrated_hits == len(ranking.hits)
-        and not retained_hits
+        bool(ranking.hits) and calibrated_hits == len(ranking.hits) and not retained_hits
     )
     calibration.update(
         {
@@ -333,9 +338,7 @@ def apply_text_retrieval_calibration(
             "rejected_by_source_kind": rejected_by_source,
             "query_abstained": query_abstained,
             "abstention_reason": (
-                "all_candidates_below_calibrated_source_floor"
-                if query_abstained
-                else None
+                "all_candidates_below_calibrated_source_floor" if query_abstained else None
             ),
         }
     )
@@ -359,9 +362,7 @@ def registered_model_available(
     except KeyError:
         return False
     if registered != expected:
-        raise RuntimeError(
-            f"registered model differs from current contract: {expected.model_id}"
-        )
+        raise RuntimeError(f"registered model differs from current contract: {expected.model_id}")
     return True
 
 
@@ -641,9 +642,7 @@ def _resolve_fused_hits(
     *,
     limit: int,
 ) -> tuple[FusedResolvedHit, ...]:
-    raw_rankings = {
-        semantic_ranking.name: semantic_ranking.hits for semantic_ranking in rankings
-    }
+    raw_rankings = {semantic_ranking.name: semantic_ranking.hits for semantic_ranking in rankings}
     raw_rankings.update(
         {
             lexical_ranking.ranking_name: lexical_ranking.search_hits
@@ -651,8 +650,7 @@ def _resolve_fused_hits(
         }
     )
     weights = {
-        semantic_ranking.name: semantic_ranking.fusion_weight
-        for semantic_ranking in rankings
+        semantic_ranking.name: semantic_ranking.fusion_weight for semantic_ranking in rankings
     }
     fused = reciprocal_rank_fusion(raw_rankings, limit=limit, weights=weights)
     resolved_by_item: dict[str, ResolvedSearchHit] = {}
@@ -700,11 +698,7 @@ def _bounded_search_integer(
     maximum: int,
     error_message: str,
 ) -> int:
-    if (
-        isinstance(value, bool)
-        or not isinstance(value, int)
-        or not 1 <= value <= maximum
-    ):
+    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= maximum:
         raise ValueError(error_message)
     return value
 
@@ -716,8 +710,7 @@ def _semantic_candidate_limit(candidate_limit: object, *, result_limit: int) -> 
         candidate_limit,
         maximum=MAX_SEMANTIC_CANDIDATE_HITS,
         error_message=(
-            "semantic candidate_limit must be between 1 and "
-            f"{MAX_SEMANTIC_CANDIDATE_HITS}"
+            f"semantic candidate_limit must be between 1 and {MAX_SEMANTIC_CANDIDATE_HITS}"
         ),
     )
 
@@ -919,5 +912,6 @@ def search_semantic_index(
         lexical_rankings,
         _resolve_fused_hits(rankings, lexical_rankings, limit=context.limit),
     )
+
 
 # endregion [03]
