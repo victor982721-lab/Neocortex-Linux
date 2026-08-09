@@ -137,13 +137,13 @@ def _duplicate_generation(tmp_path: Path) -> tuple[Path, int, EmbeddingModelSpec
             item,
             refresh_token="fixed-point-item-refresh",
         )
-        chunk = tuple(
+        chunk = next(
             iter_text_chunks(
                 item.item_id,
                 (TextSection("pdf_page", "1", duplicate_text),),
                 CHUNKING,
             )
-        )[0]
+        )
         refresh_token = f"fixed-point-chunk-refresh:{index}"
         stage_text_chunks(
             database,
@@ -186,23 +186,17 @@ def test_new_payload_satisfies_duplicate_pending_after_prior_batch(
     with semantic_database(database, readonly=True) as connection:
         statuses = tuple(
             str(row[0])
-            for row in connection.execute(
-                "SELECT status FROM embedding_jobs ORDER BY job_id"
-            )
+            for row in connection.execute("SELECT status FROM embedding_jobs ORDER BY job_id")
         )
-        payloads = int(
-            connection.execute("SELECT COUNT(*) FROM vector_payloads").fetchone()[0]
-        )
+        payloads = int(connection.execute("SELECT COUNT(*) FROM vector_payloads").fetchone()[0])
         members = int(
             connection.execute(
-                "SELECT COUNT(*) FROM embedding_generation_members "
-                "WHERE generation_id=?",
+                "SELECT COUNT(*) FROM embedding_generation_members WHERE generation_id=?",
                 (generation_id,),
             ).fetchone()[0]
         )
         head = connection.execute(
-            "SELECT generation_id FROM published_embedding_heads "
-            "WHERE model_signature=?",
+            "SELECT generation_id FROM published_embedding_heads WHERE model_signature=?",
             (model.model_signature,),
         ).fetchone()
     assert statuses == ("done", "done")
@@ -238,14 +232,88 @@ def test_generation_emits_live_semantic_progress_until_publication(
     assert metrics["remaining"] == 0
 
 
+def test_deadline_after_cache_reuse_stops_before_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database, generation_id, model = _duplicate_generation(tmp_path)
+    backend = _RecordingBackend(model, max_batch_size=1)
+    now = [0.0]
+    budget = SemanticWorkBudget(deadline=10.0, _clock=lambda: now[0])
+    real_reuse = semantic_generation_worker.reuse_cached_jobs
+
+    def reuse_then_expire(database: Path, generation_id: int) -> int:
+        count = real_reuse(database, generation_id)
+        if count:
+            now[0] = 20.0
+        return count
+
+    monkeypatch.setattr(
+        semantic_generation_worker,
+        "reuse_cached_jobs",
+        reuse_then_expire,
+    )
+
+    work = run_generation(
+        database,
+        generation_id,
+        backend,
+        queued=2,
+        work_budget=budget,
+    )
+
+    assert tuple(map(len, backend.calls)) == (1,)
+    assert work.reused == 1
+    assert work.embedded == 1
+    assert work.failed == 0
+    assert work.summary.status == "building"
+    assert work.summary.done == 2
+    assert work.summary.unfinished == 0
+    assert budget.truncation_reason == "time_budget"
+    with semantic_database(database, readonly=True) as connection:
+        assert (
+            connection.execute("SELECT COUNT(*) FROM published_embedding_heads").fetchone()[0] == 0
+        )
+
+
+def test_no_claimable_batch_pauses_without_inference_or_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database, generation_id, model = _duplicate_generation(tmp_path)
+    backend = _RecordingBackend(model, max_batch_size=2)
+    claims: list[int] = []
+
+    def no_claims(*_args: object, **_kwargs: object) -> tuple[()]:
+        claims.append(1)
+        return ()
+
+    monkeypatch.setattr(
+        semantic_generation_worker,
+        "claim_embedding_jobs",
+        no_claims,
+    )
+
+    work = run_generation(database, generation_id, backend, queued=2)
+
+    assert claims == [1]
+    assert backend.calls == []
+    assert work.reused == work.embedded == work.failed == 0
+    assert work.summary.status == "building"
+    assert work.summary.unfinished == 2
+    with semantic_database(database, readonly=True) as connection:
+        assert (
+            connection.execute("SELECT COUNT(*) FROM published_embedding_heads").fetchone()[0] == 0
+        )
+
+
 def test_bounded_generation_requires_durable_complete_enumeration_to_publish(
     tmp_path: Path,
 ) -> None:
     database, generation_id, model = _duplicate_generation(tmp_path)
     with semantic_database(database) as connection:
         connection.execute(
-            "UPDATE embedding_generations SET processing_signature=? "
-            "WHERE generation_id=?",
+            "UPDATE embedding_generations SET processing_signature=? WHERE generation_id=?",
             ("fixed-point|enumeration=bounded-v1", generation_id),
         )
     update_embedding_generation_cursor(
@@ -273,10 +341,7 @@ def test_bounded_generation_requires_durable_complete_enumeration_to_publish(
             == "building"
         )
         assert (
-            connection.execute(
-                "SELECT COUNT(*) FROM published_embedding_heads"
-            ).fetchone()[0]
-            == 0
+            connection.execute("SELECT COUNT(*) FROM published_embedding_heads").fetchone()[0] == 0
         )
 
     update_embedding_generation_cursor(
@@ -308,9 +373,7 @@ def test_systemic_embedding_error_leaves_no_job_leased(tmp_path: Path) -> None:
     with semantic_database(database, readonly=True) as connection:
         statuses = tuple(
             str(row[0])
-            for row in connection.execute(
-                "SELECT status FROM embedding_jobs ORDER BY job_id"
-            )
+            for row in connection.execute("SELECT status FROM embedding_jobs ORDER BY job_id")
         )
         leased = int(
             connection.execute(
@@ -318,9 +381,7 @@ def test_systemic_embedding_error_leaves_no_job_leased(tmp_path: Path) -> None:
             ).fetchone()[0]
         )
         heads = int(
-            connection.execute(
-                "SELECT COUNT(*) FROM published_embedding_heads"
-            ).fetchone()[0]
+            connection.execute("SELECT COUNT(*) FROM published_embedding_heads").fetchone()[0]
         )
     assert statuses == ("error", "error")
     assert leased == 0
@@ -345,8 +406,7 @@ def test_keyboard_interrupt_releases_exact_leases_without_publication(
         jobs = tuple(
             tuple(row)
             for row in connection.execute(
-                "SELECT status,lease_owner,lease_until_ns FROM embedding_jobs "
-                "ORDER BY job_id"
+                "SELECT status,lease_owner,lease_until_ns FROM embedding_jobs ORDER BY job_id"
             )
         )
         generation_status = str(
@@ -356,9 +416,7 @@ def test_keyboard_interrupt_releases_exact_leases_without_publication(
             ).fetchone()[0]
         )
         heads = int(
-            connection.execute(
-                "SELECT COUNT(*) FROM published_embedding_heads"
-            ).fetchone()[0]
+            connection.execute("SELECT COUNT(*) FROM published_embedding_heads").fetchone()[0]
         )
     assert jobs == (("pending", None, None), ("pending", None, None))
     assert generation_status == "building"
@@ -400,9 +458,7 @@ def test_deadline_releases_last_attempt_leases_without_spending_attempt(
             )
         )
         heads = int(
-            connection.execute(
-                "SELECT COUNT(*) FROM published_embedding_heads"
-            ).fetchone()[0]
+            connection.execute("SELECT COUNT(*) FROM published_embedding_heads").fetchone()[0]
         )
     assert jobs == (
         ("pending", 2, 3, None, None),
@@ -443,10 +499,7 @@ def test_deadline_crossed_by_last_embedding_batch_does_not_publish(
     assert budget.truncation_reason == "time_budget"
     with semantic_database(database, readonly=True) as connection:
         assert (
-            connection.execute(
-                "SELECT COUNT(*) FROM published_embedding_heads"
-            ).fetchone()[0]
-            == 0
+            connection.execute("SELECT COUNT(*) FROM published_embedding_heads").fetchone()[0] == 0
         )
 
     resumed = run_generation(
@@ -497,9 +550,7 @@ def test_request_construction_failure_releases_exact_leases_without_publication(
             ).fetchone()[0]
         )
         heads = int(
-            connection.execute(
-                "SELECT COUNT(*) FROM published_embedding_heads"
-            ).fetchone()[0]
+            connection.execute("SELECT COUNT(*) FROM published_embedding_heads").fetchone()[0]
         )
     assert jobs == (("pending", 1, None, None), ("pending", 1, None, None))
     assert generation_status == "building"
