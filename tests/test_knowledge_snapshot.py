@@ -17,6 +17,7 @@ import _04_Nucleo_Operativo.knowledge_snapshot as knowledge_snapshot
 from _02_Deduplicacion import inventory_schema as inventory_schema_module
 from _02_Deduplicacion.inventory_schema import initialize_inventory_schema
 from _04_Nucleo_Operativo import framework_schema as framework_schema_module
+from _04_Nucleo_Operativo.archive_state import initialize_archive_state
 from _04_Nucleo_Operativo.code_schema import initialize_code_state
 from _04_Nucleo_Operativo.document_catalog import initialize_document_catalog
 from _04_Nucleo_Operativo.knowledge_contracts import (
@@ -119,14 +120,10 @@ def _legacy_read_compatible_fixture(state: Path) -> None:
     state.mkdir()
     with sqlite3.connect(state / "dedup.sqlite3") as connection:
         inventory_schema_module._build_v7_schema(connection)
-        connection.execute(
-            "INSERT INTO metadata(key,value) VALUES('schema_version','7')"
-        )
+        connection.execute("INSERT INTO metadata(key,value) VALUES('schema_version','7')")
     with sqlite3.connect(state / "framework.sqlite3") as connection:
         framework_schema_module._build_v19_exact_schema(connection)
-        connection.execute(
-            "INSERT INTO metadata(key,value) VALUES('schema_version','19')"
-        )
+        connection.execute("INSERT INTO metadata(key,value) VALUES('schema_version','19')")
 
 
 def _set_duplicate_plan_summary(
@@ -144,9 +141,7 @@ def _set_duplicate_plan_summary(
             ).fetchone()[0]
         )
         if completed_ns is None:
-            connection.execute(
-                "DELETE FROM duplicate_plan_summaries WHERE scan_id=?", (scan_id,)
-            )
+            connection.execute("DELETE FROM duplicate_plan_summaries WHERE scan_id=?", (scan_id,))
             return
         connection.execute(
             """INSERT OR REPLACE INTO duplicate_plan_summaries(
@@ -483,9 +478,7 @@ def test_snapshot_collects_real_heads_and_marks_absent_owners(tmp_path: Path) ->
     assert snapshot.attempts == 1
     assert _owner(snapshot, "inventory").state is OwnerAvailability.AVAILABLE
     assert _owner(snapshot, "catalog").publications[0].scope == "pdf"
-    assert _owner(snapshot, "semantic").publications[0].model_signature == (
-        "snapshot-model-v1"
-    )
+    assert _owner(snapshot, "semantic").publications[0].model_signature == ("snapshot-model-v1")
     assert snapshot.active_models[0].vector_space == "snapshot-space-v1"
     assert _owner(snapshot, "code").watermarks
     assert _owner(snapshot, "pdf").state is OwnerAvailability.ABSENT
@@ -546,9 +539,7 @@ def test_snapshot_distinguishes_absent_future_and_corrupt_without_mutation(
     future = state / "pdf.sqlite3"
     with sqlite3.connect(future) as connection:
         connection.execute("CREATE TABLE metadata(key TEXT PRIMARY KEY,value TEXT)")
-        connection.execute(
-            "INSERT INTO metadata(key,value) VALUES('schema_version','12')"
-        )
+        connection.execute("INSERT INTO metadata(key,value) VALUES('schema_version','12')")
     future_before = future.read_bytes()
     corrupt = state / "docx.sqlite3"
     corrupt.write_bytes(b"not a sqlite database")
@@ -611,9 +602,7 @@ def test_snapshot_retries_after_commit_without_logical_watermark_change(
             return
         changed = True
         with sqlite3.connect(code) as connection:
-            connection.execute(
-                "INSERT INTO metadata(key,value) VALUES('snapshot_probe','1')"
-            )
+            connection.execute("INSERT INTO metadata(key,value) VALUES('snapshot_probe','1')")
 
     snapshot = collect_knowledge_snapshot(
         KnowledgeStatePaths.from_directory(state),
@@ -729,9 +718,7 @@ def test_snapshot_retries_when_inventory_duplicate_plan_is_cleared(
     paths = KnowledgeStatePaths.from_directory(state)
     before = collect_knowledge_snapshot(paths, source_version="0.7.0")
     before_inventory = _owner(before, "inventory")
-    assert before_inventory.publications[0].model_signature == (
-        "duplicate-plan-v1:40:1:2:300"
-    )
+    assert before_inventory.publications[0].model_signature == ("duplicate-plan-v1:40:1:2:300")
     changed = False
 
     def clear_plan(owner: str, attempt: int) -> None:
@@ -800,9 +787,7 @@ def test_snapshot_reports_changed_when_inventory_plan_rebuilds_on_retry(
     assert snapshot.changed_owners == ("inventory",)
     assert mutations == 2
     assert inventory_snapshot.warning == "logical_watermark_changed"
-    assert inventory_snapshot.publications[0].model_signature == (
-        "duplicate-plan-v1:99:2:4:600"
-    )
+    assert inventory_snapshot.publications[0].model_signature == ("duplicate-plan-v1:99:2:4:600")
 
 
 def test_snapshot_retries_when_later_owner_changes_captured_inventory(
@@ -873,9 +858,7 @@ def test_snapshot_reports_cross_owner_skew_after_second_attempt(
     assert snapshot.changed_owners == ("inventory",)
     assert writes == 2
     assert inventory_snapshot.warning == "logical_vector_changed"
-    assert inventory_snapshot.publications[0].model_signature == (
-        "duplicate-plan-v1:72:2:4:402"
-    )
+    assert inventory_snapshot.publications[0].model_signature == ("duplicate-plan-v1:72:2:4:402")
 
 
 def test_snapshot_rejects_catalog_head_source_mismatch(tmp_path: Path) -> None:
@@ -970,6 +953,26 @@ def test_snapshot_rejects_invalid_inventory_checkpoint_head(tmp_path: Path) -> N
     assert mismatched_inventory.state is OwnerAvailability.INCOMPATIBLE
     assert mismatched_inventory.warning is not None
     assert "root-mismatched scan" in mismatched_inventory.warning
+
+
+def test_archive_owner_is_additive_only_after_archive_state_exists(
+    tmp_path: Path,
+) -> None:
+    state = tmp_path / "state"
+    paths = KnowledgeStatePaths.from_directory(state)
+
+    absent = collect_knowledge_snapshot(paths, source_version="0.7.0")
+
+    assert all(owner.owner != "archive" for owner in absent.owners)
+    state.mkdir()
+    initialize_archive_state(state / "archive.sqlite3")
+
+    available = collect_knowledge_snapshot(paths, source_version="0.7.0")
+
+    archive = _owner(available, "archive")
+    assert archive.state is OwnerAvailability.AVAILABLE
+    assert archive.observed_schema_version == 1
+    assert {mark.name: mark.value for mark in archive.watermarks}["current_rows"] == "0"
 
 
 # endregion [02]

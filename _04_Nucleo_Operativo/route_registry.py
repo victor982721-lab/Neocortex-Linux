@@ -14,6 +14,8 @@ from .route_selection import normalize_route_selection as normalize_route_select
 if TYPE_CHECKING:
     from _03_Progreso import ProgressCallback
 
+    from .archive_route import ArchiveRoute as ArchiveRoute
+    from .archive_route import ArchiveRouteConfig as ArchiveRouteConfig
     from .audio_models import AudioRouteConfig as AudioRouteConfig
     from .audio_route import AudioRoute as AudioRoute
     from .code_contracts import CodeRouteConfig as CodeRouteConfig
@@ -52,9 +54,7 @@ class RouteExecutionContext:
 class RouteAdapter:
     name: str
     execute: Callable[[RouteExecutionContext], object]
-    input_source: Literal["route_candidates", "inventory_snapshot"] = (
-        "route_candidates"
-    )
+    input_source: Literal["route_candidates", "inventory_snapshot"] = "route_candidates"
 
     def summary_mapping(self, summary: object) -> Mapping[str, Any]:
         if is_dataclass(summary) and not isinstance(summary, type):
@@ -62,8 +62,7 @@ class RouteAdapter:
         if isinstance(summary, Mapping):
             return dict(summary)
         raise TypeError(
-            f"route {self.name} returned a non-serializable summary: "
-            f"{type(summary).__name__}"
+            f"route {self.name} returned a non-serializable summary: {type(summary).__name__}"
         )
 
 
@@ -76,6 +75,8 @@ class RouteAdapter:
 _DEFERRED_ROUTE_EXPORTS = {
     "AudioRoute": (".audio_route", "AudioRoute"),
     "AudioRouteConfig": (".audio_models", "AudioRouteConfig"),
+    "ArchiveRoute": (".archive_route", "ArchiveRoute"),
+    "ArchiveRouteConfig": (".archive_route", "ArchiveRouteConfig"),
     "CodeRoute": (".code_route", "CodeRoute"),
     "CodeRouteConfig": (".code_contracts", "CodeRouteConfig"),
     "PdfRoute": (".pdf_route", "PdfRoute"),
@@ -247,6 +248,34 @@ def _run_office(context: RouteExecutionContext) -> object:
     return summary
 
 
+def archive_route_config_from_framework(
+    config: "FrameworkConfig",
+) -> "ArchiveRouteConfig":
+    """Project application limits into the recursive ZIP route."""
+
+    from .application_config_projections import archive_route_config_from_application
+
+    return archive_route_config_from_application(config)
+
+
+def _run_archive(context: RouteExecutionContext) -> object:
+    from .archive_route import ArchiveRoute
+
+    gate = None
+    if context.resource_coordinator is not None:
+        from .global_resources import CoordinatedMemoryGate
+
+        gate = CoordinatedMemoryGate(context.resource_coordinator, "archive")
+    return ArchiveRoute(
+        archive_route_config_from_framework(context.config),
+        context.framework_state,
+        context.run_id,
+        progress=context.progress,
+        memory_gate=gate,
+        cancellation=context.cancellation,
+    ).run()
+
+
 def audio_route_config_from_framework(config: "FrameworkConfig") -> "AudioRouteConfig":
     """Preserve the route-registry projection boundary for audio execution."""
 
@@ -407,6 +436,7 @@ def builtin_route_registry() -> dict[str, RouteAdapter]:
         RouteAdapter("pdf", _run_pdf),
         RouteAdapter("docx", _run_docx),
         RouteAdapter("office", _run_office),
+        RouteAdapter("archive", _run_archive),
         RouteAdapter("audio", _run_audio),
         RouteAdapter("image", _run_image),
         RouteAdapter("code", _run_code, input_source="inventory_snapshot"),

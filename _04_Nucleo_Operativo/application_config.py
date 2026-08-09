@@ -17,6 +17,7 @@ from __future__ import annotations
 from typing import TypeAlias
 
 from .application_config_projections import (
+    archive_route_config_from_application,
     audio_route_config_from_application,
     code_route_config_from_application,
     docx_route_config_from_application,
@@ -33,6 +34,7 @@ from .models import FrameworkConfig
 __all__ = [
     "ApplicationConfig",
     "FrameworkConfig",
+    "archive_route_config_from_application",
     "audio_route_config_from_application",
     "code_route_config_from_application",
     "docx_route_config_from_application",

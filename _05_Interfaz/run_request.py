@@ -11,7 +11,7 @@ from pathlib import Path
 
 # Keep this explicit and stable so the UI cannot silently enable new mutation
 # surfaces merely because the canonical CLI gains another route.
-ROUTE_ORDER = ("pdf", "docx", "office", "audio", "image", "code")
+ROUTE_ORDER = ("pdf", "docx", "office", "archive", "audio", "image", "code")
 
 
 @dataclass(frozen=True, slots=True)

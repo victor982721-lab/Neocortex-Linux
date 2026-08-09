@@ -120,6 +120,9 @@ DIRECT_ARGUMENT_CASES = (
     ),
     ("docx_missing_pdf", "run_docx_missing_pdf", ("--docx-missing-pdf", "1")),
     ("office_search", "run_office_search", ("--office-search", "query")),
+    ("archive_status", "run_archive_status", ("--archive-status",)),
+    ("archive_search", "run_archive_search", ("--archive-search", "query")),
+    ("archive_list", "run_archive_list", ("--archive-list", "1")),
     ("audio_search", "run_audio_search", ("--audio-search", "query")),
     ("audio_doctor", "run_audio_doctor", ("--audio-doctor",)),
     ("code_status", "run_code_status", ("--code-status",)),
@@ -252,7 +255,7 @@ def test_direct_operations_remain_mutually_exclusive_across_domains() -> None:
         validate_arguments(args)
 
     assert str(raised.value) == (
-        "direct status/recovery/review/semantic/PDF/DOCX/Office/audio/code/Knowledge "
+        "direct status/recovery/review/semantic/PDF/DOCX/Office/ZIP/audio/code/Knowledge "
         "operations are mutually exclusive"
     )
 

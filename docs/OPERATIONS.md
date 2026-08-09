@@ -119,7 +119,7 @@ Neocortex --status --status-json
 ```
 
 Después de aprobar cada ruta por separado se puede probar una lista aún
-acotada. `--all` selecciona PDF, DOCX, Office, audio, imagen y código, actualiza
+acotada. `--all` selecciona PDF, DOCX, Office, ZIP, audio, imagen y código, actualiza
 el catálogo técnico y se reserva para cuando exista una proyección aceptada.
 Antes de esa etapa, reutiliza el servicio de autoanálisis protegido sobre el
 checkout canónico y su estado separado. Si el corpus no está disponible, ese
@@ -132,6 +132,25 @@ Neocortex --root $Root --route pdf,docx --MaxCount 25 --docx-max-count 25 --stri
 
 No use una corrida amplia como prueba de instalación. Ayuda, versión y doctors
 son la barrera inicial apropiada.
+
+### Piloto ZIP y replay
+
+Un piloto de ZIP debe fijar cantidad y conservar el estado fuera de la muestra:
+
+```bash
+Neocortex --root "$Root" --state-directory "$State" --route archive \
+  --archive-max-count 25 --strict-exit-codes
+Neocortex --state-directory "$State" --archive-status
+Neocortex --state-directory "$State" --archive-search "término representativo"
+```
+
+Repita exactamente el primer comando. El segundo resumen debe informar los ZIP
+seleccionados como `cache_hits`, sin volver a descomprimirlos. Compruebe una
+ruta profunda como `contenedor.zip!/otro.zip!/documento.txt` y confirme
+`inside_zip=1`. Una incidencia de traversal, cifrado, symlink, duplicado,
+profundidad o expansión deja el contenedor `partial` y el miembro inseguro sin
+leer; no se relajan límites para convertir ese resultado en éxito. La ruta no
+extrae archivos, no usa `--apply` y no organiza físicamente el corpus.
 
 ## Autoanálisis de código en laboratorio
 
@@ -497,6 +516,7 @@ nativas y procesos hijos también consumen memoria.
 | PDF | 4 workers y 2 permisos OCR; render máximo 40 000 000 píxeles por página; texto máximo 5 000 000 caracteres por página; timeout base 600 s en modo adaptativo, máximo 1200 s; reserva mínima 512 MiB por worker; máximo 2 documentos sobre 128 MiB. No hay límite predeterminado de cantidad, tamaño ni páginas. |
 | DOCX | Texto máximo 20 000 000 caracteres; presupuesto 512 MiB; margen físico y de commit de 1024 MiB; espera 60 s. Sin límite predeterminado de tamaño o cantidad. |
 | Office | Texto máximo 20 000 000 caracteres; presupuesto 512 MiB; margen físico y de commit de 1024 MiB; espera 60 s. Sin límite predeterminado de tamaño o cantidad. |
+| ZIP | Profundidad 5; 20 000 miembros visibles; directorio central 32 MiB; 64 MiB por miembro; 512 MiB expandidos y 20 000 000 caracteres por contenedor; ratio 200; PDF interno de hasta 500 páginas con worker de 768 MiB/60 s. Sin límite predeterminado de ZIP físicos. |
 | Imagen | 4 workers; presupuesto 512 MiB; margen físico y de commit de 1024 MiB; espera 60 s; timeout de worker 120 s y OCR documental 12 s. Sin límite predeterminado de tamaño o cantidad. |
 | Audio | Duración máxima 6 h; transcripción máxima 5 000 000 caracteres y 100 000 segmentos; timeout por archivo 3600 s; arranque de worker 1800 s; reserva declarada de worker 4096 MiB, presupuesto de ruta 2048 MiB, márgenes físico/commit de 2048 MiB y espera 300 s. Sin límite predeterminado de tamaño o cantidad. |
 | Código | Archivo máximo 8 MiB; texto máximo 4 000 000 caracteres; chunks de 12 000 caracteres; sin límite predeterminado de cantidad; incluye generado y vendorizado salvo override. |
@@ -511,6 +531,7 @@ a 1 GB:
 
 ```powershell
 Neocortex --root $Root --route pdf --MaxMB 1000 --MaxCount 25
+Neocortex --root $Root --route archive --archive-max-mb 1000 --archive-max-count 25
 Neocortex --root $Root --route image --image-max-mb 100 --image-max-count 100
 Neocortex --root $Root --route code --code-max-count 500
 ```

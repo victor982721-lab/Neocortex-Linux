@@ -23,6 +23,7 @@ from neocortex.platform_policy import (
 
 from .file_identity import FileIdentity, FileIdentityEncoding
 from .knowledge_contracts import (
+    MAX_EVIDENCE_IDENTIFIER_COMPONENT_CHARS,
     EvidenceMethod,
     EvidenceRef,
     KnowledgeSnapshot,
@@ -326,6 +327,28 @@ def _evidence_from_resolved(
     symbol = provenance.get("symbol")
     if not isinstance(symbol, str) or not symbol.strip():
         symbol = None
+    identifiers: list[tuple[str, str]] = [
+        ("source_identity", resolved.source_identity),
+        ("retrieval_entity_id", resolved.hit.entity_id),
+    ]
+    if resolved.source_kind == "archive":
+        identifiers.append(("inside_zip", "1"))
+        for key in (
+            "container_path",
+            "member_chain",
+            "member_path",
+            "archive_depth",
+            "content_kind",
+        ):
+            value = provenance.get(key)
+            if value is None:
+                continue
+            identifiers.append(
+                (
+                    key,
+                    str(value)[:MAX_EVIDENCE_IDENTIFIER_COMPONENT_CHARS],
+                )
+            )
     return evidence_ref_type(
         evidence_id=f"evidence:{resolved.source_kind}:{resolved.hit.entity_id}",
         resource_id=resource_id,
@@ -345,10 +368,7 @@ def _evidence_from_resolved(
         extractor=producer,
         extractor_version=str(provenance.get("adapter", "v1")),
         generation=generation,
-        identifiers=(
-            ("source_identity", resolved.source_identity),
-            ("retrieval_entity_id", resolved.hit.entity_id),
-        ),
+        identifiers=tuple(identifiers),
     )
 
 
@@ -511,6 +531,7 @@ def _lexical_state_paths(
         docx=paths.docx if owner_available(snapshot, "docx") else None,
         office=paths.office if owner_available(snapshot, "office") else None,
         audio=paths.audio if owner_available(snapshot, "audio") else None,
+        archive=(paths.archive if owner_available(snapshot, "archive") else None),
     )
 
 

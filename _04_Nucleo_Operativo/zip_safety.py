@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import os
 import struct
 import zlib
@@ -85,9 +86,7 @@ def _zip64_values(source, eocd_offset: int, file_size: int) -> tuple[int, int, i
     locator_offset = eocd_offset - ZIP64_LOCATOR_BYTES
     if locator_offset < 0:
         raise ZipStructureError("ZIP64 locator is missing")
-    locator = _ZIP64_LOCATOR.unpack(
-        _read_exact(source, locator_offset, ZIP64_LOCATOR_BYTES)
-    )
+    locator = _ZIP64_LOCATOR.unpack(_read_exact(source, locator_offset, ZIP64_LOCATOR_BYTES))
     signature, disk_number, record_offset, disk_count = locator
     if signature != ZIP64_LOCATOR_SIGNATURE:
         raise ZipStructureError("ZIP64 locator is missing")
@@ -95,9 +94,7 @@ def _zip64_values(source, eocd_offset: int, file_size: int) -> tuple[int, int, i
         raise ZipStructureError("multi-disk ZIP containers are not supported")
     if record_offset < 0 or record_offset + ZIP64_EOCD_MIN_BYTES > file_size:
         raise ZipStructureError("ZIP64 end record points outside the file")
-    record = _ZIP64_EOCD.unpack(
-        _read_exact(source, int(record_offset), ZIP64_EOCD_MIN_BYTES)
-    )
+    record = _ZIP64_EOCD.unpack(_read_exact(source, int(record_offset), ZIP64_EOCD_MIN_BYTES))
     (
         signature,
         record_size,
@@ -123,50 +120,44 @@ def _zip64_values(source, eocd_offset: int, file_size: int) -> tuple[int, int, i
 # region [03] Public validation
 
 
-def inspect_zip_structure(
-    path: str | Path,
+def _inspect_zip_source(
+    source: BinaryIO,
+    file_size: int,
     *,
     max_members: int,
     max_central_directory_bytes: int = DEFAULT_MAX_CENTRAL_DIRECTORY_BYTES,
 ) -> ZipStructure:
-    """Read only bounded end metadata and reject an unsafe central directory."""
+    """Validate one seekable ZIP source without materializing its directory."""
 
     if max_members < 1:
         raise ValueError("max_members must be positive")
     if max_central_directory_bytes < 1:
         raise ValueError("max_central_directory_bytes must be positive")
-    file_size = os.path.getsize(path)
     if file_size < EOCD_FIXED_BYTES:
         raise ZipStructureError("file is too small to contain a ZIP end record")
-
-    with open(path, "rb", buffering=0) as source:
-        eocd_offset, values = _find_eocd(source, file_size)
-        (
-            disk_number,
-            central_disk,
-            disk_members,
-            members,
-            central_size,
-            central_offset,
-            _comment_length,
-        ) = values
-        is_zip64 = (
-            disk_members == 0xFFFF
-            or members == 0xFFFF
-            or central_size == 0xFFFFFFFF
-            or central_offset == 0xFFFFFFFF
-        )
-        if is_zip64:
-            members, central_size, central_offset = _zip64_values(
-                source, eocd_offset, file_size
-            )
-        elif disk_number != 0 or central_disk != 0 or disk_members != members:
-            raise ZipStructureError("multi-disk ZIP containers are not supported")
+    eocd_offset, values = _find_eocd(source, file_size)
+    (
+        disk_number,
+        central_disk,
+        disk_members,
+        members,
+        central_size,
+        central_offset,
+        _comment_length,
+    ) = values
+    is_zip64 = (
+        disk_members == 0xFFFF
+        or members == 0xFFFF
+        or central_size == 0xFFFFFFFF
+        or central_offset == 0xFFFFFFFF
+    )
+    if is_zip64:
+        members, central_size, central_offset = _zip64_values(source, eocd_offset, file_size)
+    elif disk_number != 0 or central_disk != 0 or disk_members != members:
+        raise ZipStructureError("multi-disk ZIP containers are not supported")
 
     if members > max_members:
-        raise ZipStructureError(
-            f"ZIP contains {members} members; limit is {max_members}"
-        )
+        raise ZipStructureError(f"ZIP contains {members} members; limit is {max_members}")
     if central_size > max_central_directory_bytes:
         raise ZipStructureError(
             "ZIP central directory exceeds the safety limit: "
@@ -175,6 +166,65 @@ def inspect_zip_structure(
     if central_offset > file_size or central_size > file_size - central_offset:
         raise ZipStructureError("ZIP central directory points outside the file")
     return ZipStructure(members, central_size, central_offset, is_zip64)
+
+
+def inspect_zip_stream(
+    source: BinaryIO,
+    file_size: int,
+    *,
+    max_members: int,
+    max_central_directory_bytes: int = DEFAULT_MAX_CENTRAL_DIRECTORY_BYTES,
+) -> ZipStructure:
+    """Preflight one already-open seekable ZIP stream and restore its position."""
+
+    if file_size < 0:
+        raise ValueError("file_size cannot be negative")
+    position = source.tell()
+    try:
+        return _inspect_zip_source(
+            source,
+            file_size,
+            max_members=max_members,
+            max_central_directory_bytes=max_central_directory_bytes,
+        )
+    finally:
+        source.seek(position)
+
+
+def inspect_zip_structure(
+    path: str | Path,
+    *,
+    max_members: int,
+    max_central_directory_bytes: int = DEFAULT_MAX_CENTRAL_DIRECTORY_BYTES,
+) -> ZipStructure:
+    """Read only bounded end metadata and reject an unsafe central directory."""
+
+    file_size = os.path.getsize(path)
+    with open(path, "rb", buffering=0) as source:
+        return inspect_zip_stream(
+            source,
+            file_size,
+            max_members=max_members,
+            max_central_directory_bytes=max_central_directory_bytes,
+        )
+
+
+def inspect_zip_bytes(
+    payload: bytes | bytearray | memoryview,
+    *,
+    max_members: int,
+    max_central_directory_bytes: int = DEFAULT_MAX_CENTRAL_DIRECTORY_BYTES,
+) -> ZipStructure:
+    """Preflight an already-bounded in-memory ZIP, including nested archives."""
+
+    view = memoryview(payload)
+    with io.BytesIO(view) as source:
+        return inspect_zip_stream(
+            source,
+            view.nbytes,
+            max_members=max_members,
+            max_central_directory_bytes=max_central_directory_bytes,
+        )
 
 
 # endregion [03]
@@ -197,9 +247,7 @@ def _validate_raw_member_bounds(
     if max_compressed_bytes < 1 or max_output_bytes < 1:
         raise ValueError("raw DEFLATE bounds must be positive")
     if compressed_size > max_compressed_bytes:
-        raise ZipStructureError(
-            "compressed ZIP member exceeds the raw recovery safety limit"
-        )
+        raise ZipStructureError("compressed ZIP member exceeds the raw recovery safety limit")
     file_size = os.path.getsize(path)
     if upper_bound < 0 or upper_bound > file_size:
         raise ZipStructureError("ZIP member boundary points outside the file")
@@ -233,9 +281,7 @@ def _raw_member_payload_offset(
     if flags & 0x1:
         raise ZipStructureError("encrypted ZIP members cannot be recovered")
     if flags & 0x8:
-        raise ZipStructureError(
-            "ZIP data descriptors are not supported for raw recovery"
-        )
+        raise ZipStructureError("ZIP data descriptors are not supported for raw recovery")
     if compression_method != 8:
         raise ZipStructureError("raw recovery supports only DEFLATE members")
     payload_offset = header_offset + _LOCAL_FILE.size + name_length + extra_length

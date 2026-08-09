@@ -332,6 +332,7 @@ class MainWindow(QMainWindow):
             "pdf": "PDF",
             "docx": "Word",
             "office": "Office",
+            "archive": "ZIP",
             "audio": "Audio",
             "image": "Imágenes",
             "code": "Código",
@@ -341,10 +342,9 @@ class MainWindow(QMainWindow):
             toggle = RouteToggle(names[route], route)
             toggle.setChecked(True)
             self.route_toggles[route] = toggle
-            route_grid.addWidget(toggle, index // 3, index % 3)
-        route_grid.setColumnStretch(0, 1)
-        route_grid.setColumnStretch(1, 1)
-        route_grid.setColumnStretch(2, 1)
+            route_grid.addWidget(toggle, index // 4, index % 4)
+        for column in range(4):
+            route_grid.setColumnStretch(column, 1)
         config_layout.addLayout(route_grid)
 
         options_row = QHBoxLayout()

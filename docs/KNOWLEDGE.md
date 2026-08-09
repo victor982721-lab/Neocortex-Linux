@@ -314,7 +314,7 @@ La frontera `execute_knowledge_search()` reutiliza los owners existentes:
 | `exact_inventory_*` | Checkpoints y filas publicadas de inventario. | Coincidencia exacta; cobertura `partial`. |
 | `exact_code_*` | Estado actual de archivos, huellas y símbolos de code. | Coincidencia exacta; cobertura `partial`. |
 | `exact_catalog_*` | Generaciones publicadas del catálogo. | Coincidencia exacta y generación fijada. |
-| `fts_pdf`, `fts_docx`, `fts_office`, `fts_audio` | FTS5 de cada owner. | BM25 del owner y posición original. |
+| `fts_pdf`, `fts_docx`, `fts_office`, `fts_audio`, `fts_archive` | FTS5 de cada owner disponible; Archive conserva contenedor, miembro, cadena y profundidad. | BM25 del owner y posición original. |
 | `semantic_text`, `semantic_image` | Servicio semantic v6 local; `semantic_text` materializa sólo contenido corporal. | Coseno, firmas de modelo consultor/indexado, espacio y generación. |
 | `semantic_title` | Canal opcional sólo en planes `discovery` v3; basename durable, mutable y advisory. | Rango semántico con peso `0.5`; sólo refuerza evidencia corporal del mismo recurso y revisión. |
 | `code_structural` | `search_code` sin reentrar a semantic. | RRF propio de código y evidencia estructural. |

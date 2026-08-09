@@ -27,7 +27,7 @@ from neocortex.sqlite_schema_contract import (
     validate_sqlite_schema_contract,
 )
 
-from . import audio_state, document_catalog_schema, office_state
+from . import archive_state, audio_state, document_catalog_schema, office_state
 from . import semantic_schema as semantic_schema_module
 from .code_schema import CODE_SCHEMA_VERSION, validate_code_schema
 from .docx_schema import DOCX_SCHEMA_VERSION, validate_docx_schema
@@ -95,6 +95,7 @@ _STATE_PATH_NAMES = (
     "image",
     "semantic",
     "code",
+    "archive",
 )
 
 
@@ -114,7 +115,10 @@ class KnowledgeStateRootError(RuntimeError):
 def _state_roots(paths: KnowledgeStatePaths) -> tuple[Path, ...]:
     roots: dict[str, Path] = {}
     for name in _STATE_PATH_NAMES:
-        root = Path(getattr(paths, name)).parent.absolute()
+        value = getattr(paths, name)
+        if value is None:
+            continue
+        root = Path(value).parent.absolute()
         key = os.path.normcase(os.path.normpath(os.fspath(root)))
         roots.setdefault(key, root)
     return tuple(roots.values())
@@ -130,10 +134,7 @@ def _require_stable_root_presence(
     after: tuple[Path, ...],
 ) -> None:
     def by_key(values: tuple[Path, ...]) -> dict[str, Path]:
-        return {
-            os.path.normcase(os.path.normpath(os.fspath(value))): value
-            for value in values
-        }
+        return {os.path.normcase(os.path.normpath(os.fspath(value))): value for value in values}
 
     before_by_key = by_key(before)
     after_by_key = by_key(after)
@@ -157,6 +158,7 @@ class KnowledgeStatePaths:
     image: Path
     semantic: Path
     code: Path
+    archive: Path | None = None
 
     def validate_roots(self) -> tuple[Path, ...]:
         """Permit missing roots but fail closed for unusable existing roots."""
@@ -216,6 +218,7 @@ class KnowledgeStatePaths:
             image=root / "image.sqlite3",
             semantic=root / "semantic.sqlite3",
             code=root / "code.sqlite3",
+            archive=root / "archive.sqlite3",
         )
 
 
@@ -270,6 +273,15 @@ def _validate_audio(connection: sqlite3.Connection) -> None:
     )
 
 
+def _validate_archive(connection: sqlite3.Connection) -> None:
+    validate_sqlite_schema_contract(
+        connection,
+        archive_state.archive_schema_contract(),
+        label="archive state",
+        exact=True,
+    )
+
+
 def _validate_image(connection: sqlite3.Connection) -> None:
     from . import image_state
 
@@ -302,14 +314,35 @@ _OWNER_SPECS = (
     ),
     _OwnerSpec("pdf", PDF_SCHEMA_VERSION, validate_pdf_schema, "documents"),
     _OwnerSpec("docx", DOCX_SCHEMA_VERSION, validate_docx_schema, "documents"),
-    _OwnerSpec(
-        "office", office_state.OFFICE_SCHEMA_VERSION, _validate_office, "documents"
-    ),
+    _OwnerSpec("office", office_state.OFFICE_SCHEMA_VERSION, _validate_office, "documents"),
     _OwnerSpec("audio", audio_state.AUDIO_SCHEMA_VERSION, _validate_audio, "documents"),
     _OwnerSpec("image", _EXPECTED_IMAGE_SCHEMA_VERSION, _validate_image, "images"),
     _OwnerSpec("semantic", SEMANTIC_SCHEMA_VERSION, _validate_semantic, "semantic"),
     _OwnerSpec("code", CODE_SCHEMA_VERSION, validate_code_schema, "code"),
 )
+
+_ARCHIVE_OWNER_SPEC = _OwnerSpec(
+    "archive",
+    archive_state.ARCHIVE_SCHEMA_VERSION,
+    _validate_archive,
+    "documents",
+)
+
+
+def _owner_specs(paths: KnowledgeStatePaths) -> tuple[_OwnerSpec, ...]:
+    """Expose the additive archive owner only after its database exists."""
+
+    path = paths.archive
+    if path is None:
+        return _OWNER_SPECS
+    try:
+        path.stat()
+    except FileNotFoundError:
+        return _OWNER_SPECS
+    except OSError:
+        # Let the normal owner capture classify an inaccessible configured path.
+        return (*_OWNER_SPECS, _ARCHIVE_OWNER_SPEC)
+    return (*_OWNER_SPECS, _ARCHIVE_OWNER_SPEC)
 
 
 # endregion [01]
@@ -354,9 +387,7 @@ def _observed_schema_version(
         if metadata_version is None:
             return pragma_version
         if pragma_version not in {0, metadata_version}:
-            raise RuntimeError(
-                f"{spec.owner} metadata and PRAGMA user_version disagree"
-            )
+            raise RuntimeError(f"{spec.owner} metadata and PRAGMA user_version disagree")
     return metadata_version
 
 
@@ -397,9 +428,7 @@ def _limited_rows(
 ) -> tuple[sqlite3.Row, ...]:
     rows = tuple(connection.execute(sql, (MAX_SNAPSHOT_HEADS + 1,)).fetchall())
     if len(rows) > MAX_SNAPSHOT_HEADS:
-        raise RuntimeError(
-            f"Knowledge snapshot exceeds {MAX_SNAPSHOT_HEADS} publication heads"
-        )
+        raise RuntimeError(f"Knowledge snapshot exceeds {MAX_SNAPSHOT_HEADS} publication heads")
     return rows
 
 
@@ -433,9 +462,7 @@ def _inventory_observation(connection: sqlite3.Connection) -> _LogicalObservatio
         ORDER BY c.root COLLATE NOCASE LIMIT ?""",
     )
     if any(row["matched_scan_id"] is None for row in rows):
-        raise RuntimeError(
-            "valid inventory checkpoint points to a missing or root-mismatched scan"
-        )
+        raise RuntimeError("valid inventory checkpoint points to a missing or root-mismatched scan")
     if any(str(row["scan_status"]) != "complete" for row in rows):
         raise RuntimeError("valid inventory checkpoint points to a non-complete scan")
     heads = tuple(
@@ -469,9 +496,7 @@ def _catalog_observation(connection: sqlite3.Connection) -> _LogicalObservation:
     )
     if any(row["matched_generation_id"] is None for row in rows):
         raise RuntimeError("catalog publication points to a missing generation")
-    if any(
-        str(row["source_kind"]) != str(row["generation_source_kind"]) for row in rows
-    ):
+    if any(str(row["source_kind"]) != str(row["generation_source_kind"]) for row in rows):
         raise RuntimeError("catalog publication source kind mismatches its generation")
     if any(str(row["status"]) != "published" for row in rows):
         raise RuntimeError("catalog publication points to a non-published generation")
@@ -508,10 +533,7 @@ def _semantic_observation(connection: sqlite3.Connection) -> _LogicalObservation
         raise RuntimeError("semantic head points to a missing generation")
     if any(row["matched_model_signature"] is None for row in rows):
         raise RuntimeError("semantic head points to a missing model")
-    if any(
-        str(row["model_signature"]) != str(row["generation_model_signature"])
-        for row in rows
-    ):
+    if any(str(row["model_signature"]) != str(row["generation_model_signature"]) for row in rows):
         raise RuntimeError("semantic head model signature mismatches its generation")
     if any(str(row["status"]) != "ready" for row in rows):
         raise RuntimeError("semantic head points to a non-ready generation")
@@ -538,10 +560,7 @@ def _semantic_observation(connection: sqlite3.Connection) -> _LogicalObservation
         LogicalWatermark("published_models", str(len(rows))),
         LogicalWatermark(
             "processing_signatures",
-            "|".join(
-                f"{row['model_signature']}={row['processing_signature']}"
-                for row in rows
-            )
+            "|".join(f"{row['model_signature']}={row['processing_signature']}" for row in rows)
             or "none",
         ),
     )
@@ -654,7 +673,10 @@ def _logical_observation(
 
 
 def _owner_path(paths: KnowledgeStatePaths, owner: str) -> Path:
-    return getattr(paths, owner)
+    path = getattr(paths, owner)
+    if path is None:
+        raise AssertionError(f"Knowledge owner {owner} has no configured path")
+    return path
 
 
 def _capture_available_owner(
@@ -671,9 +693,7 @@ def _capture_available_owner(
     )
     try:
         cancellation.checkpoint()
-        data_version_before = int(
-            connection.execute("PRAGMA data_version").fetchone()[0]
-        )
+        data_version_before = int(connection.execute("PRAGMA data_version").fetchone()[0])
         connection.execute("BEGIN")
         try:
             cancellation.checkpoint()
@@ -749,17 +769,14 @@ def _capture_available_owner(
                 connection.execute("ROLLBACK")
             raise
         cancellation.checkpoint()
-        data_version_after = int(
-            connection.execute("PRAGMA data_version").fetchone()[0]
-        )
+        data_version_after = int(connection.execute("PRAGMA data_version").fetchone()[0])
         logical_changed = after_version != observed_version or after != before
         if logical_changed and data_version_after == data_version_before:
             data_version_after = data_version_before + 1
         warning_parts: list[str] = []
         if observed_version < spec.expected_schema:
             warning_parts.append(
-                "legacy_schema_read_compatible:"
-                f"{observed_version}->{spec.expected_schema}"
+                f"legacy_schema_read_compatible:{observed_version}->{spec.expected_schema}"
             )
         if logical_changed:
             warning_parts.append("logical_watermark_changed")
@@ -841,9 +858,7 @@ def _capture_owner(
         if cancellation.raised_here(exc):
             raise
         state = (
-            OwnerAvailability.CORRUPT
-            if _is_corrupt_error(exc)
-            else OwnerAvailability.INCOMPATIBLE
+            OwnerAvailability.CORRUPT if _is_corrupt_error(exc) else OwnerAvailability.INCOMPATIBLE
         )
         return (
             OwnerSnapshot(
@@ -870,7 +885,7 @@ def _capture_vector(
 ) -> tuple[tuple[OwnerSnapshot, ...], tuple[ActiveModel, ...]]:
     owners: list[OwnerSnapshot] = []
     models: list[ActiveModel] = []
-    for spec in _OWNER_SPECS:
+    for spec in _owner_specs(paths):
         cancellation.checkpoint()
         owner, active_models = _capture_owner(
             _owner_path(paths, spec.owner),
@@ -892,12 +907,10 @@ def _logical_vector_signature(
     return canonical_json(
         {
             "owners": [
-                owner.identity_dict()
-                for owner in sorted(owners, key=lambda item: item.owner)
+                owner.identity_dict() for owner in sorted(owners, key=lambda item: item.owner)
             ],
             "active_models": [
-                model.to_dict()
-                for model in sorted(models, key=lambda item: item.signature)
+                model.to_dict() for model in sorted(models, key=lambda item: item.signature)
             ],
         }
     )
@@ -919,24 +932,20 @@ def _changed_vector_owners(
     first_model_signature = canonical_json(
         {
             "active_models": [
-                model.to_dict()
-                for model in sorted(first_models, key=lambda item: item.signature)
+                model.to_dict() for model in sorted(first_models, key=lambda item: item.signature)
             ]
         }
     )
     second_model_signature = canonical_json(
         {
             "active_models": [
-                model.to_dict()
-                for model in sorted(second_models, key=lambda item: item.signature)
+                model.to_dict() for model in sorted(second_models, key=lambda item: item.signature)
             ]
         }
     )
     if first_model_signature != second_model_signature:
         changed.add("semantic")
-    changed.update(
-        owner.owner for owner in (*first_owners, *second_owners) if owner.changed
-    )
+    changed.update(owner.owner for owner in (*first_owners, *second_owners) if owner.changed)
     return frozenset(changed)
 
 
@@ -1023,14 +1032,10 @@ def collect_knowledge_snapshot(
         changed = logical_changed or bool(changed_owners)
         if not changed or attempt == 2:
             consistency = (
-                SnapshotConsistency.SNAPSHOT_CHANGED
-                if changed
-                else SnapshotConsistency.STABLE
+                SnapshotConsistency.SNAPSHOT_CHANGED if changed else SnapshotConsistency.STABLE
             )
             warnings = (
-                ("one or more owners changed during the bounded second capture",)
-                if changed
-                else ()
+                ("one or more owners changed during the bounded second capture",) if changed else ()
             )
             owners = (
                 _carry_change_evidence(

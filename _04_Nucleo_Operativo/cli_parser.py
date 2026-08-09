@@ -18,6 +18,7 @@ from neocortex import __version__
 
 from .app_paths import default_state_directory
 from .cli_audio_surface import register_audio_arguments
+from .cli_archive_surface import register_archive_arguments
 from .cli_capabilities_surface import register_capabilities_arguments
 from .cli_code_surface import register_code_arguments
 from .cli_docx_surface import register_docx_arguments
@@ -239,7 +240,8 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "run protected self-analysis of the canonical source repository, then "
-            "every PDF, DOCX, Office, audio, image and code route using the existing "
+            "every PDF, DOCX, Office, ZIP (including nested ZIP), audio, image and "
+            "code route using the existing "
             "cache, update the technical catalog and prune stale cache state; with "
             "--apply, also organize every safely classified technical document; "
             "cached errors are "
@@ -253,7 +255,7 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="ROUTES",
         help=(
             "content routes after the common inventory: one name, a comma-separated "
-            "set such as pdf,docx,audio,image,code, or all"
+            "set such as pdf,docx,office,archive,audio,image,code, or all"
         ),
     )
     parser.add_argument(
@@ -1015,6 +1017,7 @@ def build_parser() -> argparse.ArgumentParser:
     register_docx_arguments(parser, megabyte_type=decimal_megabytes)
 
     register_office_arguments(parser, megabyte_type=decimal_megabytes)
+    register_archive_arguments(parser, megabyte_type=decimal_megabytes)
     register_audio_arguments(parser, megabyte_type=decimal_megabytes)
 
     register_code_arguments(parser, megabyte_type=decimal_megabytes)

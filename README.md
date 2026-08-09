@@ -239,7 +239,8 @@ archivos originales. El primer uso debe cubrir una sola ruta y como máximo
 Neocortex --root C:\Datos --route pdf --MaxCount 25
 ```
 
-Las rutas vigentes son `pdf`, `docx`, `office`, `audio`, `image` y `code`.
+Las rutas vigentes son `pdf`, `docx`, `office`, `archive`, `audio`, `image` y
+`code`.
 Las listas y `--all` se reservan para después de aprobar cada ruta y su
 proyección. Las búsquedas operan sobre estado ya construido, por ejemplo:
 
@@ -247,6 +248,30 @@ proyección. Las búsquedas operan sobre estado ya construido, por ejemplo:
 Neocortex --code-search "dónde se valida el acceso a SQLite" --code-search-mode hybrid
 Neocortex --pdf-search "transformador AND mantenimiento"
 ```
+
+### ZIP, incluidos ZIP anidados
+
+La ruta `archive` indexa los miembros de cada ZIP y recorre ZIP anidados sin
+extraerlos al filesystem. Conserva nombres, tamaños, profundidad y texto
+consultable de archivos de texto, HTML/XML, PDF con texto nativo, documentos
+OOXML/ODF y EPUB; formatos binarios o sin texto permanecen visibles como
+metadatos. El primer piloto debe seguir acotado:
+
+```bash
+Neocortex --root "$Root" --route archive --archive-max-count 25 --strict-exit-codes
+Neocortex --archive-status
+Neocortex --archive-search "protección diferencial"
+Neocortex --archive-list 50
+```
+
+Una ruta virtual como
+`contenedor.zip!/subcarpeta/otro.zip!/documento.txt` indica exactamente la
+cadena de contenedores. Las salidas de Archive y Knowledge muestran
+`location=archive_member inside_zip=1`; un resultado normal de Knowledge usa
+`location=physical inside_zip=0`. La lectura rechaza nombres absolutos o con
+traversal, miembros cifrados o especiales y expansiones fuera de los límites de
+profundidad, cantidad, tamaño, ratio y texto. Nunca mueve, borra ni materializa
+los miembros del ZIP.
 
 ### Código con recuperación semántica integrada
 

@@ -35,7 +35,7 @@ MAX_SNIPPET_CHARS = 1_024
 _CANCELLATION_BATCH_ROWS = 128
 
 LEXICAL_MODEL_SIGNATURE = "sqlite-fts5-unicode61-rd2-v1"
-_SOURCE_ORDER = ("pdf", "docx", "office", "audio")
+_SOURCE_ORDER = ("pdf", "docx", "office", "audio", "archive")
 
 
 class LexicalAvailability(StrEnum):
@@ -49,20 +49,24 @@ class LexicalAvailability(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class LexicalStatePaths:
-    """Optional locations of the four existing route FTS databases."""
+    """Optional locations of route-owned FTS databases."""
 
     pdf: Path | None = None
     docx: Path | None = None
     office: Path | None = None
     audio: Path | None = None
+    archive: Path | None = None
 
     def ordered(self) -> tuple[tuple[str, Path | None], ...]:
-        return (
+        base = (
             ("pdf", self.pdf),
             ("docx", self.docx),
             ("office", self.office),
             ("audio", self.audio),
         )
+        if self.archive is None:
+            return base
+        return (*base, ("archive", self.archive))
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,18 +128,14 @@ def compile_natural_fts_query(query: str) -> str:
     if not value:
         raise ValueError("lexical search query must be non-empty")
     if len(value) > MAX_QUERY_CHARS:
-        raise ValueError(
-            f"lexical search query cannot exceed {MAX_QUERY_CHARS} characters"
-        )
+        raise ValueError(f"lexical search query cannot exceed {MAX_QUERY_CHARS} characters")
     terms = _NATURAL_TERM.findall(value)
     if not terms:
         raise ValueError("lexical search query must contain letters or numbers")
     if len(terms) > MAX_QUERY_TERMS:
         raise ValueError(f"lexical search query cannot exceed {MAX_QUERY_TERMS} terms")
     if any(len(term) > MAX_QUERY_TERM_CHARS for term in terms):
-        raise ValueError(
-            f"lexical search terms cannot exceed {MAX_QUERY_TERM_CHARS} characters"
-        )
+        raise ValueError(f"lexical search terms cannot exceed {MAX_QUERY_TERM_CHARS} characters")
 
     unique_terms: list[str] = []
     seen: set[str] = set()
@@ -150,9 +150,7 @@ def compile_natural_fts_query(query: str) -> str:
 
 def _validate_limit(limit: int) -> None:
     if not 1 <= limit <= MAX_LEXICAL_RESULTS:
-        raise ValueError(
-            f"lexical search limit must be between 1 and {MAX_LEXICAL_RESULTS}"
-        )
+        raise ValueError(f"lexical search limit must be between 1 and {MAX_LEXICAL_RESULTS}")
 
 
 # endregion [02]
@@ -228,6 +226,24 @@ _SPECS = {
         WHERE transcript_fts MATCH ? AND d.status='complete'
         ORDER BY raw_bm25,f.path COLLATE NOCASE LIMIT ?""",
     ),
+    "archive": _SourceSpec(
+        source_kind="archive",
+        fts_table="document_fts",
+        section_kind="archive_member",
+        sql="""SELECT f.rowid AS fts_rowid,f.file_key,f.path,
+        CASE WHEN d.text_chars>0
+        THEN snippet(document_fts,6,'[',']',' ... ',24)
+        ELSE d.member_chain END AS snippet,
+        bm25(document_fts) AS raw_bm25,d.size AS source_size,
+        d.mtime_ns AS source_mtime_ns,d.birthtime_ns AS source_birthtime_ns,
+        d.processing_signature AS source_processing_signature,
+        d.last_seen_run_id AS source_last_seen_run_id,d.status AS source_status,
+        d.container_path,d.member_chain,d.member_path,d.archive_depth,d.content_kind
+        FROM document_fts AS f JOIN documents AS d ON d.file_key=f.file_key
+        WHERE document_fts MATCH ?
+        AND d.status IN ('indexed','metadata_only','archive')
+        ORDER BY raw_bm25,f.path COLLATE NOCASE LIMIT ?""",
+    ),
 }
 
 
@@ -249,9 +265,7 @@ def _resolved_hit(
 ) -> ResolvedSearchHit:
     file_key = str(row["file_key"])
     item_source_kind = (
-        str(row["format"]).strip().casefold()
-        if spec.source_kind == "office"
-        else spec.source_kind
+        str(row["format"]).strip().casefold() if spec.source_kind == "office" else spec.source_kind
     )
     if not item_source_kind:
         raise sqlite3.DataError("FTS5 result has a blank source kind")
@@ -262,6 +276,9 @@ def _resolved_hit(
     if spec.source_kind == "pdf":
         section_id = str(int(row["page_number"]))
         entity_id = f"lexical:pdf:{file_key}:page:{section_id}"
+    elif spec.source_kind == "archive":
+        section_id = file_key
+        entity_id = f"lexical:archive:{file_key}:member"
     else:
         section_id = "fulltext"
         entity_id = f"lexical:{item_source_kind}:{file_key}:fulltext"
@@ -286,6 +303,16 @@ def _resolved_hit(
     }
     if spec.source_kind == "pdf":
         source_revision["is_partial"] = bool(row["source_is_partial"])
+    section_provenance: dict[str, object] = {}
+    if spec.source_kind == "archive":
+        section_provenance = {
+            "inside_zip": True,
+            "container_path": str(row["container_path"]),
+            "member_chain": str(row["member_chain"]),
+            "member_path": str(row["member_path"]),
+            "archive_depth": int(row["archive_depth"]),
+            "content_kind": str(row["content_kind"]),
+        }
     return ResolvedSearchHit(
         hit=SearchHit(
             ref_id=int(row["fts_rowid"]),
@@ -303,6 +330,7 @@ def _resolved_hit(
         source_identity=file_key,
         source_status=str(row["source_status"]),
         source_revision=source_revision,
+        section_provenance=section_provenance,
         section_kind=spec.section_kind,
         section_id=section_id,
         start_char=None,
@@ -340,9 +368,7 @@ def _search_compiled_source(
         spec = _SPECS[source_kind]
     except KeyError as exc:
         supported = ", ".join(_SOURCE_ORDER)
-        raise ValueError(
-            f"unsupported lexical source {source_kind!r}; use {supported}"
-        ) from exc
+        raise ValueError(f"unsupported lexical source {source_kind!r}; use {supported}") from exc
 
     if state_path is None:
         return _unavailable_ranking(
@@ -377,9 +403,7 @@ def _search_compiled_source(
             connection.execute("PRAGMA busy_timeout=60000")
             connection.execute("PRAGMA foreign_keys=ON")
             if int(connection.execute("PRAGMA foreign_keys").fetchone()[0]) != 1:
-                raise RuntimeError(
-                    "lexical source reader could not enable foreign keys"
-                )
+                raise RuntimeError("lexical source reader could not enable foreign keys")
             connection.execute("PRAGMA query_only=ON")
             if int(connection.execute("PRAGMA query_only").fetchone()[0]) != 1:
                 raise RuntimeError("lexical source reader is not query-only")
@@ -452,7 +476,7 @@ def search_lexical_sources(
     cancellation_check: CancellationCheck | None = None,
     clock_ns: Callable[[], int] | None = None,
 ) -> tuple[LexicalRanking, ...]:
-    """Return four independent, availability-aware rankings in stable order."""
+    """Return independent, availability-aware rankings in stable order."""
 
     _validate_limit(limit)
     normalized_query = compile_natural_fts_query(query)

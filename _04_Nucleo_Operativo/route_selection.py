@@ -11,7 +11,15 @@ __all__ = [
     "normalize_route_selection",
 ]
 
-BUILTIN_ROUTE_ORDER = ("pdf", "docx", "office", "audio", "image", "code")
+BUILTIN_ROUTE_ORDER = (
+    "pdf",
+    "docx",
+    "office",
+    "archive",
+    "audio",
+    "image",
+    "code",
+)
 ORGANIZABLE_ROUTE_NAMES = frozenset({"pdf", "docx", "office", "audio"})
 
 
@@ -26,9 +34,7 @@ def normalize_route_selection(
         return ()
     if normalized == "all":
         return available_routes
-    values = tuple(
-        part.strip().casefold() for part in normalized.split(",") if part.strip()
-    )
+    values = tuple(part.strip().casefold() for part in normalized.split(",") if part.strip())
     if not values:
         return ()
     if "none" in values or "all" in values:
@@ -39,8 +45,7 @@ def normalize_route_selection(
     unknown = [name for name in values if name not in available_routes]
     if unknown:
         raise ValueError(
-            f"unknown routes: {', '.join(unknown)}; available: "
-            f"{', '.join(available_routes)}"
+            f"unknown routes: {', '.join(unknown)}; available: {', '.join(available_routes)}"
         )
     return values
 

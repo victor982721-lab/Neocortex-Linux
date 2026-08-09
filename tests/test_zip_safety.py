@@ -13,6 +13,7 @@ from pathlib import Path
 
 from _04_Nucleo_Operativo.zip_safety import (
     ZipStructureError,
+    inspect_zip_bytes,
     inspect_zip_structure,
 )
 # endregion [01]
@@ -43,6 +44,19 @@ class ZipSafetyTests(unittest.TestCase):
 
             with self.assertRaisesRegex(ZipStructureError, "members"):
                 inspect_zip_structure(path, max_members=1)
+
+    def test_preflights_bounded_nested_zip_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "nested.zip"
+            with zipfile.ZipFile(path, "w") as archive:
+                archive.writestr("inside.txt", "nested evidence")
+                archive.writestr("second.txt", "more evidence")
+
+            structure = inspect_zip_bytes(path.read_bytes(), max_members=2)
+
+            self.assertEqual(structure.members, 2)
+            with self.assertRaisesRegex(ZipStructureError, "members"):
+                inspect_zip_bytes(path.read_bytes(), max_members=1)
 
     def test_rejects_declared_oversized_central_directory(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

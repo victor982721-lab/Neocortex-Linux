@@ -140,6 +140,24 @@ def _print_office_report(result) -> None:
     )
 
 
+def _print_archive_report(result) -> None:
+    if result.archive is None:
+        return
+    archive = result.archive
+    print(
+        f"route=archive candidate_pool={archive.candidate_pool} "
+        f"candidates={archive.candidates} processed={archive.processed} "
+        f"cache_hits={archive.cache_hits} cached_errors={archive.cached_errors} "
+        f"complete={archive.containers_complete} partial={archive.containers_partial} "
+        f"errors={archive.errors} members={archive.members_seen} "
+        f"indexed={archive.members_indexed} metadata_only={archive.metadata_only} "
+        f"nested_archives={archive.nested_archives} text_chars={archive.text_chars} "
+        f"safety_issues={archive.safety_issues} "
+        f"cache_containers_pruned={archive.cache_containers_pruned} "
+        f"cache_members_pruned={archive.cache_members_pruned}"
+    )
+
+
 def _print_audio_report(result) -> None:
     if result.audio is None:
         return
@@ -379,6 +397,7 @@ def print_reports(result, args: argparse.Namespace) -> None:
         _print_pdf_report(result)
         _print_docx_report(result)
         _print_office_report(result)
+        _print_archive_report(result)
         _print_audio_report(result)
         _print_image_report(result)
         _print_code_report(result)
@@ -389,6 +408,7 @@ def print_reports(result, args: argparse.Namespace) -> None:
     _print_pdf_report(result)
     _print_docx_report(result)
     _print_office_report(result)
+    _print_archive_report(result)
     _print_audio_report(result)
     _print_image_report(result)
     _print_code_report(result)
@@ -423,6 +443,7 @@ def _route_issue_count(summary: object) -> int:
         "catalog_errors",
         "adult_unavailable",
         "external_errors",
+        "safety_issues",
     )
     return sum(int(getattr(summary, field, 0) or 0) for field in fields)
 
@@ -440,6 +461,7 @@ def _professional_route_rows(result) -> tuple[tuple[str, object], ...]:
         ("PDF", "pdf"),
         ("DOCX", "docx"),
         ("Office", "office"),
+        ("ZIP", "archive"),
         ("Audio", "audio"),
         ("Imágenes", "image"),
         ("Código", "code"),

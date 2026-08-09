@@ -108,12 +108,9 @@ MAX_CODE_RELATION_CANDIDATES = 4_000
 _LEXICAL_OWNER_FORMATS: dict[str, frozenset[str]] = {
     "pdf": frozenset({"pdf"}),
     "docx": frozenset({"docx"}),
-    "office": frozenset(
-        {"doc", "odt", "ods", "odp", "xls", "xlsx", "xlsm", "ppt", "pptx"}
-    ),
-    "audio": frozenset(
-        {"audio", "aac", "flac", "m4a", "mp3", "ogg", "opus", "wav", "wma"}
-    ),
+    "office": frozenset({"doc", "odt", "ods", "odp", "xls", "xlsx", "xlsm", "ppt", "pptx"}),
+    "audio": frozenset({"audio", "aac", "flac", "m4a", "mp3", "ogg", "opus", "wav", "wma"}),
+    "archive": frozenset({"archive", "zip", "zipx", "cbz"}),
 }
 _IMAGE_FORMATS = frozenset(
     {"avif", "bmp", "gif", "heic", "heif", "jpeg", "jpg", "png", "tif", "tiff", "webp"}
@@ -165,9 +162,7 @@ def _cleanup_preserving_primary(
     try:
         cleanup()
     except BaseException as cleanup_error:
-        primary.add_note(
-            f"{label} failed: {type(cleanup_error).__name__}: {cleanup_error}"
-        )
+        primary.add_note(f"{label} failed: {type(cleanup_error).__name__}: {cleanup_error}")
 
 
 def _reraise_captured_cancellation(
@@ -250,9 +245,7 @@ def _planned_steps(
 def _planned_step(plan: KnowledgePlan, channel: str) -> RetrievalStep:
     steps = _planned_steps(plan, channel)
     if len(steps) != 1:
-        raise ValueError(
-            f"Knowledge plan must contain exactly one {channel} retrieval step"
-        )
+        raise ValueError(f"Knowledge plan must contain exactly one {channel} retrieval step")
     return steps[0]
 
 
@@ -727,6 +720,8 @@ def _matches_explicit_source_filters(
         aliases.add("office")
     if extension in _LEXICAL_OWNER_FORMATS["audio"]:
         aliases.add("audio")
+    if candidate.resource.owner == "archive":
+        aliases.update(_LEXICAL_OWNER_FORMATS["archive"])
     if extension in _IMAGE_FORMATS or "image" in aliases or "image_ocr" in aliases:
         aliases.add("image")
     code_language = _CODE_LANGUAGE_BY_EXTENSION.get(extension)
@@ -752,10 +747,9 @@ def _apply_plan_filters(
     """Apply restrictions to every ranking; filters never become rank signals."""
 
     if plan.date_from is not None or plan.date_to is not None:
-        return {name: () for name in rankings}
+        return dict.fromkeys(rankings, ())
     catalog_resources = {
-        candidate.resource.resource_id
-        for candidate in rankings.get("catalog_metadata", ())
+        candidate.resource.resource_id for candidate in rankings.get("catalog_metadata", ())
     }
     filtered: dict[str, tuple[KnowledgeCandidate, ...]] = {}
     for name, candidates in rankings.items():
@@ -788,11 +782,16 @@ def _planned(plan: KnowledgePlan, channel: str) -> bool:
     return any(step.channel == channel for step in plan.steps)
 
 
-def _required_lexical_ranking_names(plan: KnowledgePlan) -> frozenset[str]:
+def _required_lexical_ranking_names(
+    plan: KnowledgePlan,
+    snapshot: KnowledgeSnapshot,
+) -> frozenset[str]:
     if not any(step.channel == "lexical" and step.required for step in plan.steps):
         return frozenset()
 
     owners = set(_LEXICAL_OWNER_FORMATS)
+    if not any(owner.owner == "archive" for owner in snapshot.owners):
+        owners.discard("archive")
     if plan.source_kinds:
         source_owners = {
             owner
@@ -816,9 +815,7 @@ def _required_lexical_ranking_names(plan: KnowledgePlan) -> frozenset[str]:
 
 def _required_semantic_ranking_names(plan: KnowledgePlan) -> frozenset[str]:
     return frozenset(
-        step.ranking_name
-        for step in plan.steps
-        if step.channel == "semantic" and step.required
+        step.ranking_name for step in plan.steps if step.channel == "semantic" and step.required
     )
 
 
@@ -909,9 +906,7 @@ def _run_lexical_phase(execution: _SearchExecution) -> None:
             execution.paths,
             execution.plan,
             execution.snapshot,
-            cancellation_check=(
-                cancellation.checkpoint if cancellation.enabled else None
-            ),
+            cancellation_check=(cancellation.checkpoint if cancellation.enabled else None),
             clock_ns=execution.clock,
         )
     except ValueError as exc:
@@ -929,6 +924,8 @@ def _run_lexical_phase(execution: _SearchExecution) -> None:
                 owner=owner,
             )
             for owner in _LEXICAL_OWNER_FORMATS
+            if owner != "archive"
+            or any(item.owner == "archive" for item in execution.snapshot.owners)
         ]
     execution.rankings.update(rankings)
     execution.add_reports(reports)
@@ -1082,9 +1079,7 @@ def _run_direct_phases(execution: _SearchExecution) -> None:
 
 def _filter_and_apply_inventory(execution: _SearchExecution) -> RankingExecution:
     execution.check_cancelled()
-    counts_before_filters = {
-        name: len(values) for name, values in execution.rankings.items()
-    }
+    counts_before_filters = {name: len(values) for name, values in execution.rankings.items()}
     execution.rankings = _apply_plan_filters(execution.rankings, execution.plan)
     postfiltered_names = {
         name
@@ -1170,7 +1165,10 @@ def _required_ranking_gaps(
     set[str],
 ]:
     required_channels = {step.channel for step in execution.plan.steps if step.required}
-    required_lexical = _required_lexical_ranking_names(execution.plan)
+    required_lexical = _required_lexical_ranking_names(
+        execution.plan,
+        execution.snapshot,
+    )
     required_named = (
         required_lexical
         | _required_semantic_ranking_names(execution.plan)
@@ -1297,9 +1295,7 @@ def _finalize_search(
         unavailable_required,
         incomplete_required,
     ) = _required_ranking_gaps(execution, duplicate_report)
-    blocking_names = (unavailable_required | incomplete_required).intersection(
-        required_named
-    )
+    blocking_names = (unavailable_required | incomplete_required).intersection(required_named)
     blocking_owners = _blocking_ranking_owners(
         execution.reports,
         blocking_names,

@@ -14,11 +14,13 @@ from unittest.mock import patch
 import _04_Nucleo_Operativo.application_config_projections as runtime_projections
 from _04_Nucleo_Operativo import ApplicationConfig, FrameworkConfig
 from _04_Nucleo_Operativo.application_config import (
+    archive_route_config_from_application,
     code_route_config_from_application,
     docx_route_config_from_application,
     global_resource_limits_from_application,
     pdf_route_config_from_application,
 )
+from _04_Nucleo_Operativo.archive_route import ArchiveRouteConfig
 from _04_Nucleo_Operativo.cli_config import framework_config_from_args
 from _04_Nucleo_Operativo.cli_parser import build_parser
 from _04_Nucleo_Operativo.cli_validation import validate_arguments
@@ -30,6 +32,7 @@ from _04_Nucleo_Operativo.pdf_route_models import PdfRouteConfig
 from _04_Nucleo_Operativo.route_filters import CandidateSelection
 from _04_Nucleo_Operativo.route_registry import (
     RouteAdapter,
+    archive_route_config_from_framework,
     code_route_config_from_framework,
     docx_route_config_from_framework,
     pdf_route_config_from_framework,
@@ -42,7 +45,7 @@ from _04_Nucleo_Operativo.route_registry import (
 def test_application_config_preserves_the_complete_legacy_dataclass() -> None:
     assert ApplicationConfig is FrameworkConfig
     application_fields = fields(ApplicationConfig)
-    assert len(application_fields) == 132
+    assert len(application_fields) == 146
     assert {item.name for item in application_fields} >= {
         "analysis_profile",
         "deep_test_selectors",
@@ -56,6 +59,9 @@ def test_application_config_preserves_the_complete_legacy_dataclass() -> None:
         "code_candidate_scope",
         "code_project_roots",
         "deep_mutation_time_budget_seconds",
+        "archive_max_depth",
+        "archive_max_members",
+        "archive_max_total_uncompressed_bytes",
     }
     base = Path("synthetic-application-config")
 
@@ -74,9 +80,14 @@ def test_application_config_preserves_the_complete_legacy_dataclass() -> None:
     assert original.root == base / "requested-root"
     assert canonical.framework_database == (base / "canonical-state" / "framework.sqlite3")
     assert canonical.code_database == base / "canonical-state" / "code.sqlite3"
+    assert canonical.archive_database == base / "canonical-state" / "archive.sqlite3"
 
 
 def test_application_facade_reexports_the_runtime_projections() -> None:
+    assert (
+        archive_route_config_from_application
+        is runtime_projections.archive_route_config_from_application
+    )
     assert (
         code_route_config_from_application is runtime_projections.code_route_config_from_application
     )
@@ -90,6 +101,49 @@ def test_application_facade_reexports_the_runtime_projections() -> None:
     assert (
         pdf_route_config_from_application is runtime_projections.pdf_route_config_from_application
     )
+
+
+def test_archive_projection_preserves_recursive_limits_and_selection() -> None:
+    selection = CandidateSelection(paths=("nested.zip",))
+    config = ApplicationConfig(
+        state_directory=Path("archive-state"),
+        selection=selection,
+        archive_max_file_bytes=80_000_000,
+        archive_max_documents=23,
+        archive_retry_errors=True,
+        archive_max_depth=7,
+        archive_max_members=12_345,
+        archive_max_central_directory_bytes=7_000_000,
+        archive_max_member_bytes=8_000_000,
+        archive_max_total_uncompressed_bytes=90_000_000,
+        archive_max_text_chars=456_789,
+        archive_max_total_text_chars=4_567_890,
+        archive_max_compression_ratio=88.0,
+        archive_pdf_max_pages=321,
+        archive_pdf_timeout_seconds=12.0,
+        archive_pdf_worker_memory_bytes=456_000_000,
+    )
+    expected = ArchiveRouteConfig(
+        state_path=Path("archive-state") / "archive.sqlite3",
+        max_file_bytes=80_000_000,
+        max_documents=23,
+        retry_errors=True,
+        selection=selection,
+        max_depth=7,
+        max_members=12_345,
+        max_central_directory_bytes=7_000_000,
+        max_member_bytes=8_000_000,
+        max_total_uncompressed_bytes=90_000_000,
+        max_text_chars=456_789,
+        max_total_text_chars=4_567_890,
+        max_compression_ratio=88.0,
+        pdf_max_pages=321,
+        pdf_timeout_seconds=12.0,
+        pdf_worker_memory_bytes=456_000_000,
+    )
+
+    assert archive_route_config_from_application(config) == expected
+    assert archive_route_config_from_framework(config) == expected
 
 
 def test_default_code_projection_uses_current_canonical_paths() -> None:

@@ -80,6 +80,7 @@ Las rutas de contenido vigentes en la CLI son:
 | `pdf` | Extracción, OCR, FTS, perfiles y relaciones PDF. |
 | `docx` | Documentos y plantillas OOXML de texto. |
 | `office` | XLSX, PPTX y ODT. |
+| `archive` | Miembros de ZIP y ZIP anidados con texto, metadatos y procedencia. |
 | `audio` | Audio y pistas de vídeo admitidas mediante Whisper. |
 | `image` | Clasificación y evidencia de imágenes. |
 | `code` | Texto, estructura, símbolos y relaciones de código fuente. |
@@ -101,7 +102,7 @@ directas de consulta o diagnóstico.
 
 La corrida `--all` ejecuta primero el autoanálisis protegido de
 `~/Neocortex/Repository` —o su equivalente canónico Windows— usando el estado
-separado `self-analysis`. Después ejecuta las seis rutas del corpus y, si no
+separado `self-analysis`. Después ejecuta las siete rutas del corpus y, si no
 hubo errores de acciones u organización, avanza Semantic textual sobre los
 caches disponibles de PDF, DOCX, XLSX, PPTX, ODT y audio. Sus límites
 integrados son 100 000 items, 1 000 000 de jobs y 172 800 segundos. Una
@@ -400,8 +401,8 @@ Neocortex --ui
 Neocortex --ui --root $Root
 ```
 
-La GUI supervisa el mismo orquestador y expone PDF, DOCX, Office, audio, imagen
-y Code. En Linux muestra “modo portátil Linux”, no solicita elevación y
+La GUI supervisa el mismo orquestador y expone PDF, DOCX, Office, ZIP, audio,
+imagen y Code. En Linux muestra “modo portátil Linux”, no solicita elevación y
 desactiva los controles de mutación; inventario, procesamiento y búsqueda se
 conservan. El worker `--gui-worker` es un contrato interno y no debe invocarse
 manualmente.
@@ -558,6 +559,34 @@ incompatibilidad, un chunk sin correspondencia exacta o un head distinto falla
 cerrado y no deja una cobertura parcial activa. Un replay exacto revalida el
 puente sin clonar el head ni crear jobs.
 
+### Índice ZIP de sólo lectura
+
+Después de ejecutar la ruta `archive`, estas operaciones consultan únicamente
+`archive.sqlite3`; no recorren el corpus ni crean estado ausente:
+
+```powershell
+Neocortex --archive-status
+Neocortex --archive-search 'protección de transformador' --archive-search-limit 50
+Neocortex --archive-list 50 --archive-container 'contenedor.zip'
+Neocortex --archive-list 50 --archive-json
+```
+
+Search y list devuelven `3` cuando el estado es válido pero no hay resultados;
+estado ausente, schema incompatible o corrupción devuelven `2`. Los límites de
+search/list son `1..1000`. `--archive-container` es un filtro literal de
+fragmento escapado y sólo se admite con search/list. Las tres acciones son
+mutuamente excluyentes, rechazan `--apply` y `--route`, y `--archive-json`
+requiere una de ellas.
+
+Cada resultado declara `location=archive_member inside_zip=1`. `container` es
+el ZIP físico, `member` el nombre dentro de su contenedor inmediato y `chain`
+la cadena completa; por ejemplo
+`contenedor.zip!/subcarpeta/otro.zip!/documento.txt`. La ruta productora no
+materializa esos miembros en disco y aplica límites explícitos de profundidad,
+miembros, directorio central, tamaño individual, expansión total, ratio de
+compresión, texto y PDF. Los controles se consultan en `Neocortex --help`; para
+un piloto use `--archive-max-count 20..50`.
+
 ### Knowledge Plane de sólo lectura (`0.7.2`)
 
 Knowledge ofrece tres acciones planas y mutuamente excluyentes. Todas leen el
@@ -571,7 +600,8 @@ Neocortex --knowledge-search 'protección de transformador' --knowledge-limit 50
 Neocortex --knowledge-context 'protección de transformador' --knowledge-limit 20 --knowledge-context-characters 24000
 ```
 
-`--knowledge-status` captura el estado lógico acotado de los diez propietarios.
+`--knowledge-status` captura los diez propietarios históricos y añade el owner
+`archive` sólo cuando `archive.sqlite3` existe.
 Si el directorio indicado por `--state-directory` no existe, informa cada
 propietario como `absent`, devuelve `0` y deja la ruta sin crear. Search y
 context compilan una consulta sobre los propietarios disponibles; con todo el
@@ -609,6 +639,11 @@ Neocortex --knowledge-search 'IEC-61850' --knowledge-mode discovery --knowledge-
 Neocortex --knowledge-search 'protección de relevador' --knowledge-history --knowledge-limit 100
 Neocortex --knowledge-context 'mantenimiento de interruptor' --knowledge-mode evidence --knowledge-json
 ```
+
+La salida humana marca cada hit normal como
+`location=physical inside_zip=0`. Los hits del owner Archive usan
+`location=archive_member inside_zip=1` y muestran `container`, `member` y
+`chain`; el JSON conserva los mismos datos en los identificadores de evidencia.
 
 El snapshot es lógico, no una transacción distribuida. Si cambia durante las
 dos observaciones se reintenta una vez el conjunto completo; un segundo cambio
@@ -729,6 +764,7 @@ Los overrides explícitos son:
 --retry-pdf-errors
 --retry-docx-errors
 --retry-office-errors
+--retry-archive-errors
 --retry-audio-errors
 --retry-image-errors
 --retry-code-errors
@@ -755,6 +791,7 @@ por familia:
 | `--code-json` | Estado, manifest/frescura de autoanálisis, revisión top-10, búsquedas, proyectos o reconstrucción conceptual de código. |
 | `--action-recovery-json` | JSON determinista por acción o evento; exige `--action-recovery-status` o `--action-recovery-record`. |
 | `--retention-json` | Un documento JSON del plan dry-run; exige `--retention-status`. |
+| `--archive-json` | Estado o resultados ZIP; exige exactamente una acción `--archive-*`. |
 | `--knowledge-json` | Snapshot, resultado de búsqueda o contexto Knowledge; exige exactamente una acción `--knowledge-*`. |
 | `doctor platform --json` | Un documento JSON versionado de política y capacidades de plataforma. |
 | `models prepare/status --json` | Un documento JSON versionado del conjunto de modelos gestionados. |
@@ -770,7 +807,7 @@ y compruebe siempre el código de salida.
 | `0` | Ayuda/versión o ejecución/consulta completada según su contrato. |
 | `1` | Excepción fatal no normalizada o fallo interno del worker de GUI. No es el código de una validación ordinaria de argumentos. |
 | `2` | Error de argumentos detectado por `argparse` o por la validación posterior, como una combinación incompatible o una solicitud Linux de `--apply`/`--organization-apply`; estado requerido ausente o incompatible; diagnóstico fallido —incluida abstención total de `--code-status`/`--code-review` ante sidecars, cerca inestable o publicación no elegible—; generación Semantic incompleta, truncada o no publicada; error de acciones u organización; conciliación con efecto ambiguo/imposible —incluso si su evento fue registrado—; plan de retención bloqueado; o, con `--strict-exit-codes`, errores/parciales retenidos por una ruta. El watcher también devuelve `2` si conserva corridas fallidas o errores de fuente. |
-| `3` | Knowledge terminó con snapshot estable y cobertura completa, pero search/context no obtuvo evidencia. |
+| `3` | Knowledge terminó con snapshot estable y cobertura completa, pero search/context no obtuvo evidencia; Archive search/list también lo usa cuando no hay miembros coincidentes. |
 | `4` | Knowledge produjo una respuesta parcial o no soportada; incluye propietarios necesarios ausentes. |
 | `5` | El snapshot Knowledge volvió a cambiar durante el único reintento global acotado. |
 | `6` | Knowledge status encontró un schema futuro/incompatible; en search/context, uno de esos owners figura en `blocking_owners` y obliga a abstenerse. |

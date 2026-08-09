@@ -47,6 +47,7 @@ class DirectOperationFamily(Enum):
     DOCX = auto()
     OFFICE = auto()
     AUDIO = auto()
+    ARCHIVE = auto()
     CODE = auto()
     KNOWLEDGE = auto()
 
@@ -98,6 +99,7 @@ _PDF = DirectOperationFamily.PDF
 _DOCX = DirectOperationFamily.DOCX
 _OFFICE = DirectOperationFamily.OFFICE
 _AUDIO = DirectOperationFamily.AUDIO
+_ARCHIVE = DirectOperationFamily.ARCHIVE
 _CODE = DirectOperationFamily.CODE
 _KNOWLEDGE = DirectOperationFamily.KNOWLEDGE
 
@@ -232,6 +234,26 @@ DIRECT_OPERATIONS: tuple[DirectOperation, ...] = (
     DirectOperation("docx_layout_groups", "run_docx_layout_groups", _DOCX, _VALUE),
     DirectOperation("docx_missing_pdf", "run_docx_missing_pdf", _DOCX, _VALUE),
     DirectOperation("office_search", "run_office_search", _OFFICE, _VALUE),
+    DirectOperation(
+        "archive_status",
+        "run_archive_status",
+        _ARCHIVE,
+        module_name=".cli_archive",
+    ),
+    DirectOperation(
+        "archive_search",
+        "run_archive_search",
+        _ARCHIVE,
+        _VALUE,
+        module_name=".cli_archive",
+    ),
+    DirectOperation(
+        "archive_list",
+        "run_archive_list",
+        _ARCHIVE,
+        _VALUE,
+        module_name=".cli_archive",
+    ),
     DirectOperation(
         "audio_search",
         "run_audio_search",

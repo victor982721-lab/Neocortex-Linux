@@ -106,6 +106,7 @@ a los archivos vivos.
 | `pdf.sqlite3` | `pdf_schema`, `pdf_state`, `PdfRoute`, `PdfDerivedIndexer` | 11 | inventario, documentos, páginas, staging, errores, warnings, FTS, firmas, similitud y layout | `metadata.schema_version`; migraciones secuenciales |
 | `docx.sqlite3` | `docx_schema`, `docx_state`, `DocxRoute` | 5 | inventario, documentos, partes, diagnósticos, FTS, layouts y contrapartes PDF | `metadata.schema_version`; migraciones secuenciales |
 | `office.sqlite3` | `office_state`, `OfficeRoute` | 1 | inventario, documentos y FTS | `metadata.schema_version` |
+| `archive.sqlite3` | `archive_state`, `ArchiveRoute` | 1 | contenedores ZIP, miembros y cadenas anidadas, incidencias, texto comprimido y FTS | `metadata.schema_version`; sin estado legacy |
 | `audio.sqlite3` | `audio_state`, `AudioRoute` | 1 | inventario, documentos, segmentos y FTS de transcripción | `metadata.schema_version` |
 | `image.sqlite3` | `image_state`, `ImageRoute` | 5 | imágenes, estado de extracción/clasificación y metadata | `metadata.schema_version`; migraciones aditivas |
 | `document_catalog.sqlite3` | `document_catalog_schema`, `document_catalog` | **6** | runs, generaciones/staging, publicación por fuente, proyección de documentos, historial y planes de organización | `metadata.schema_version`; migraciones secuenciales |
@@ -117,11 +118,13 @@ no forma parte de las propiedades predeterminadas de `FrameworkConfig`.
 `code.sqlite3` y `semantic.sqlite3` pueden no existir hasta usar esas
 capacidades.
 
-### Matriz exacta de propietarios del snapshot Knowledge `0.7.0`
+### Matriz de propietarios del snapshot Knowledge
 
-Knowledge registra diez propietarios; no incorpora la base auxiliar de
+Knowledge conserva los diez propietarios históricos y agrega `archive` sólo
+cuando `archive.sqlite3` existe. No incorpora la base auxiliar de
 `SqlitePathIndex`. Antes de leer datos valida la versión y el contrato del
-propietario correspondiente:
+propietario correspondiente; una instalación que todavía no ejecutó la ruta
+ZIP mantiene exactamente el vector histórico de diez owners:
 
 | Owner Knowledge | Archivo | Esquema esperado | Head o watermark lógico |
 |---|---|---:|---|
@@ -131,6 +134,7 @@ propietario correspondiente:
 | `pdf` | `pdf.sqlite3` | 11 | filas actuales, último update/run; `best_effort_non_generational` |
 | `docx` | `docx.sqlite3` | 5 | filas actuales, último update/run; `best_effort_non_generational` |
 | `office` | `office.sqlite3` | 1 | filas actuales, último update/run; `best_effort_non_generational` |
+| `archive` (aditivo si existe) | `archive.sqlite3` | 1 | miembros actuales, último update/run; `best_effort_non_generational` |
 | `audio` | `audio.sqlite3` | 1 | filas actuales, último update/run; `best_effort_non_generational` |
 | `image` | `image.sqlite3` | 5 | imágenes actuales, último update/run; `best_effort_non_generational` |
 | `semantic` | `semantic.sqlite3` | 6 | generación `ready` publicada por modelo, espacio y firma de procesamiento |
@@ -143,7 +147,7 @@ reconstruye bases.
 
 ### Interpretación de versiones
 
-- En path index, dedup, framework, PDF, DOCX, Office, audio, imagen y catálogo,
+- En path index, dedup, framework, PDF, DOCX, Office, Archive, audio, imagen y catálogo,
   la autoridad es `metadata.schema_version`.
 - En code y semantic, metadata debe coincidir con `PRAGMA user_version` y con
   todas las filas esperadas de `schema_migrations`.
@@ -161,8 +165,9 @@ consulta no lo crea. Este contrato evita DDL/DML y creación de bases; no promet
 neutralidad byte por byte de `-shm` cuando SQLite participa en un WAL existente,
 limitación documentada en la sección de inspección viva.
 
-No existe una transacción SQLite distribuida entre los diez archivos. El
-snapshot Knowledge es una observación lógica y acotada:
+No existe una transacción SQLite distribuida entre los diez archivos históricos
+ni el owner Archive aditivo. El snapshot Knowledge es una observación lógica y
+acotada:
 
 1. abre un propietario y valida su esquema;
 2. bajo una transacción de lectura registra heads/watermarks y
@@ -183,7 +188,7 @@ de la última ejecución, los marca incompletos y devuelve la condición
 
 Los heads están limitados a 1024 por propietario. Inventario, catálogo y
 semántica exponen publicaciones que fijan una generación concreta. En cambio,
-framework, PDF, DOCX, Office, audio, imagen y code exponen agregados con
+framework, PDF, DOCX, Office, Archive, audio, imagen y code exponen agregados con
 `visibility=best_effort_non_generational`: permiten detectar deriva entre las
 dos observaciones, pero no fijan cada fila consumida ni convierten la lectura
 cross-owner en atómica. Un resultado que requiere una fuente ausente,

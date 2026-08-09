@@ -15,6 +15,7 @@ _ADDITIVE_FIELDS = (
     "profile_errors",
     "catalog_errors",
     "adult_unavailable",
+    "safety_issues",
 )
 
 # A partial document can contribute page errors and a timeout at the same time.
@@ -40,8 +41,7 @@ def route_summary_mapping(summary: object) -> Mapping[str, Any]:
     if isinstance(summary, Mapping):
         return summary
     return {
-        field: getattr(summary, field, 0)
-        for field in (*_ADDITIVE_FIELDS, *_PARTIAL_RESULT_FIELDS)
+        field: getattr(summary, field, 0) for field in (*_ADDITIVE_FIELDS, *_PARTIAL_RESULT_FIELDS)
     }
 
 

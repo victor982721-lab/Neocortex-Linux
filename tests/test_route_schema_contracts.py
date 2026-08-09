@@ -11,6 +11,10 @@ from pathlib import Path
 
 import pytest
 
+from _04_Nucleo_Operativo.archive_state import (
+    ARCHIVE_SCHEMA_VERSION,
+    initialize_archive_state,
+)
 from _04_Nucleo_Operativo.audio_state import (
     AUDIO_SCHEMA_VERSION,
     initialize_audio_state,
@@ -31,6 +35,12 @@ Initializer = Callable[[Path], None]
 @pytest.fixture(
     params=(
         (
+            "archive",
+            initialize_archive_state,
+            ARCHIVE_SCHEMA_VERSION,
+            "archive_documents_status_idx",
+        ),
+        (
             "audio",
             initialize_audio_state,
             AUDIO_SCHEMA_VERSION,
@@ -43,7 +53,7 @@ Initializer = Callable[[Path], None]
             "office_documents_status_idx",
         ),
     ),
-    ids=("audio", "office"),
+    ids=("archive", "audio", "office"),
 )
 def route_schema(
     request: pytest.FixtureRequest,
@@ -136,9 +146,7 @@ def test_version_zero_route_schema_upgrade_preserves_existing_state(
     initialize(database)
     with sqlite3.connect(database) as connection:
         connection.execute("UPDATE metadata SET value='0' WHERE key='schema_version'")
-        connection.execute(
-            "INSERT INTO metadata(key,value) VALUES('legacy_marker','preserve-me')"
-        )
+        connection.execute("INSERT INTO metadata(key,value) VALUES('legacy_marker','preserve-me')")
 
     initialize(database)
 
@@ -180,4 +188,6 @@ def test_failed_route_schema_upgrade_rolls_back_all_schema_changes(
         "legacy_marker": "preserve-me",
         "schema_version": "0",
     }
+
+
 # endregion [02]

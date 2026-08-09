@@ -211,7 +211,15 @@ def _with_base(*requirements: RuntimeRequirement) -> tuple[RuntimeRequirement, .
     return (*_BASE_REQUIREMENTS, *requirements)
 
 
-ROUTE_CAPABILITY_NAMES = ("pdf", "docx", "office", "audio", "image", "code")
+ROUTE_CAPABILITY_NAMES = (
+    "pdf",
+    "docx",
+    "office",
+    "archive",
+    "audio",
+    "image",
+    "code",
+)
 
 CAPABILITY_SPECS: Mapping[str, RuntimeCapabilitySpec] = MappingProxyType(
     {
@@ -269,6 +277,20 @@ CAPABILITY_SPECS: Mapping[str, RuntimeCapabilitySpec] = MappingProxyType(
         ),
         "docx": RuntimeCapabilitySpec("docx", _with_base()),
         "office": RuntimeCapabilitySpec("office", _with_base()),
+        "archive": RuntimeCapabilitySpec(
+            "archive",
+            _with_base(
+                _distribution(
+                    "pymupdf",
+                    "PyMuPDF",
+                    "fitz",
+                    required=False,
+                    missing_reason="archive_pdf_text_extractor_unavailable",
+                    extra="documents",
+                ),
+            ),
+            extra="documents",
+        ),
         "audio": RuntimeCapabilitySpec(
             "audio",
             _with_base(

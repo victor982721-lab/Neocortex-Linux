@@ -19,6 +19,10 @@ from _02_Deduplicacion import FileSnapshot
 from _02_Deduplicacion.inventory_schema import initialize_inventory_schema
 from _04_Nucleo_Operativo import knowledge_search as knowledge_search_module
 from _04_Nucleo_Operativo import semantic_preparation, semantic_service
+from _04_Nucleo_Operativo.archive_state import (
+    archive_database,
+    initialize_archive_state,
+)
 from _04_Nucleo_Operativo.code_contracts import (
     CodeRelationEndpoint,
     CodeRouteConfig,
@@ -137,9 +141,7 @@ def _candidate(
         current_path="C:/docs/fixture.pdf",
         disposition=disposition,
         canonical_resource_id=(
-            "resource:pdf:canonical"
-            if disposition is ResourceDisposition.DUPLICATE
-            else None
+            "resource:pdf:canonical" if disposition is ResourceDisposition.DUPLICATE else None
         ),
     )
     revision = RevisionRef(
@@ -311,19 +313,14 @@ def test_title_discovery_signal_boosts_only_best_grounded_evidence() -> None:
     )
 
     title_signals = tuple(
-        (hit, signal)
-        for hit in hits
-        for signal in hit.signals
-        if signal.source == "semantic_title"
+        (hit, signal) for hit in hits for signal in hit.signals if signal.source == "semantic_title"
     )
     assert len(hits) == 2
     assert omitted == 0
     assert len(title_signals) == 1
     boosted_hit, title_signal = title_signals[0]
     assert boosted_hit.evidence.evidence_id == "page-1"
-    body_signal = next(
-        signal for signal in boosted_hit.signals if signal.source == "semantic_text"
-    )
+    body_signal = next(signal for signal in boosted_hit.signals if signal.source == "semantic_text")
     assert title_signal.contribution == pytest.approx(
         body_signal.contribution * title.fusion_weight
     )
@@ -466,9 +463,7 @@ def test_common_truncated_snippet_prefix_at_distinct_locators_is_not_merged() ->
 
 
 def test_pdf_fts_and_semantic_locators_normalize_into_one_cluster() -> None:
-    source_identity = (
-        "00000000000000000000000000000001:00000000000000000000000000000002"
-    )
+    source_identity = "00000000000000000000000000000001:00000000000000000000000000000002"
     source_revision = {
         "birthtime_ns": 10,
         "processing_signature": "pdf-v11:fixture",
@@ -625,9 +620,7 @@ def test_stale_published_semantic_revision_is_historical_and_opt_in() -> None:
         ),
         path="C:/docs/proteccion.pdf",
         source_kind="pdf",
-        source_identity=(
-            "00000000000000000000000000000001:00000000000000000000000000000002"
-        ),
+        source_identity=("00000000000000000000000000000001:00000000000000000000000000000002"),
         section_kind="pdf_page",
         section_id="1",
         start_char=0,
@@ -728,6 +721,42 @@ def _create_lexical_states(state: Path) -> None:
             );
             """
         )
+
+
+def _create_archive_lexical_state(state: Path) -> None:
+    state.mkdir(exist_ok=True)
+    database = state / "archive.sqlite3"
+    initialize_archive_state(database)
+    with archive_database(database, create=False) as connection:
+        connection.execute(
+            """INSERT INTO containers(
+            container_key,path,size,mtime_ns,birthtime_ns,processing_signature,status,
+            member_count,indexed_count,nested_archive_count,last_seen_run_id,updated_ns)
+            VALUES('container:key','C:/docs/contenedor.zip',100,20,-1,
+            'archive-v1','complete',2,1,1,9,30)"""
+        )
+        connection.execute(
+            """INSERT INTO documents(
+            file_key,container_key,path,container_path,member_chain,member_path,
+            archive_depth,content_kind,media_type,size,compressed_size,crc32,
+            mtime_ns,birthtime_ns,processing_signature,status,text_zlib,text_chars,
+            text_xxh3_128,last_seen_run_id,updated_ns)
+            VALUES('archive:member','container:key',
+            'C:/docs/contenedor.zip!/interno.zip!/proteccion.txt',
+            'C:/docs/contenedor.zip','interno.zip!/proteccion.txt','proteccion.txt',
+            2,'text','text/plain',45,20,1,20,-1,'archive-v1','indexed',NULL,45,
+            '00000000000000000000000000000000',9,30)"""
+        )
+        connection.execute(
+            """INSERT INTO document_fts(
+            file_key,path,container_path,container_name,member_chain,content_kind,body)
+            VALUES('archive:member',
+            'C:/docs/contenedor.zip!/interno.zip!/proteccion.txt',
+            'C:/docs/contenedor.zip','contenedor.zip',
+            'interno.zip!/proteccion.txt','text',
+            'protección diferencial dentro de un ZIP anidado')"""
+        )
+        connection.commit()
 
 
 def _deterministic_semantic_backend(
@@ -972,9 +1001,7 @@ def test_search_reuses_real_fts_owners_and_preserves_two_pdf_pages(
         snapshot,
     )
 
-    assert [
-        hit.evidence.page for hit in result.hits if hit.resource.source_kind == "pdf"
-    ] == [
+    assert [hit.evidence.page for hit in result.hits if hit.resource.source_kind == "pdf"] == [
         1,
         7,
     ]
@@ -991,6 +1018,43 @@ def test_search_reuses_real_fts_owners_and_preserves_two_pdf_pages(
         "docx-v5:fixture",
     }
     assert result.to_json() == result.to_json()
+
+
+def test_search_returns_archive_member_with_explicit_nested_zip_evidence(
+    tmp_path: Path,
+) -> None:
+    state = tmp_path / "state"
+    _create_archive_lexical_state(state)
+    snapshot = _snapshot(
+        OwnerSnapshot("pdf", OwnerAvailability.ABSENT, 11),
+        OwnerSnapshot("docx", OwnerAvailability.ABSENT, 5),
+        OwnerSnapshot("office", OwnerAvailability.ABSENT, 1),
+        OwnerSnapshot("audio", OwnerAvailability.ABSENT, 1),
+        OwnerSnapshot("archive", OwnerAvailability.AVAILABLE, 1, 1),
+        OwnerSnapshot("semantic", OwnerAvailability.ABSENT, 6),
+        OwnerSnapshot("code", OwnerAvailability.ABSENT, 2),
+        OwnerSnapshot("catalog", OwnerAvailability.ABSENT, 6),
+        OwnerSnapshot("inventory", OwnerAvailability.ABSENT, 7),
+    )
+
+    result = execute_knowledge_search(
+        KnowledgeStatePaths.from_directory(state),
+        plan_knowledge_query(KnowledgeQuery("protección diferencial", limit=5)),
+        snapshot,
+    )
+
+    assert len(result.hits) == 1
+    hit = result.hits[0]
+    identifiers = dict(hit.evidence.identifiers)
+    assert hit.resource.owner == "archive"
+    assert hit.resource.source_kind == "archive"
+    assert hit.resource.current_path == ("C:/docs/contenedor.zip!/interno.zip!/proteccion.txt")
+    assert hit.evidence.section_kind == "archive_member"
+    assert identifiers["inside_zip"] == "1"
+    assert identifiers["container_path"] == "C:/docs/contenedor.zip"
+    assert identifiers["member_chain"] == "interno.zip!/proteccion.txt"
+    assert identifiers["archive_depth"] == "2"
+    assert any(ranking.name == "fts_archive" for ranking in result.rankings)
 
 
 def test_real_lexical_and_semantic_sqlite_share_physical_resource_identity(
@@ -1046,9 +1110,7 @@ def test_real_lexical_and_semantic_sqlite_share_physical_resource_identity(
     )
 
     lexical_hits = tuple(
-        hit
-        for hit in result.hits
-        if any(signal.source == "fts_pdf" for signal in hit.signals)
+        hit for hit in result.hits if any(signal.source == "fts_pdf" for signal in hit.signals)
     )
     semantic_hits = tuple(
         hit
@@ -1080,12 +1142,8 @@ def test_real_lexical_and_semantic_sqlite_share_physical_resource_identity(
         for signal in hit.signals
         if signal.source == "semantic_text"
     }
-    assert {signal.model_signature for signal in semantic_signals} == {
-        model.model_signature
-    }
-    assert {signal.query_model_signature for signal in semantic_signals} == {
-        model.model_signature
-    }
+    assert {signal.model_signature for signal in semantic_signals} == {model.model_signature}
+    assert {signal.query_model_signature for signal in semantic_signals} == {model.model_signature}
     semantic_report = next(
         ranking for ranking in result.rankings if ranking.name == "semantic_text"
     )
@@ -1148,9 +1206,7 @@ def test_knowledge_discovery_uses_title_only_as_grounded_resource_signal(
         snapshot,
     )
 
-    title_report = next(
-        ranking for ranking in result.rankings if ranking.name == "semantic_title"
-    )
+    title_report = next(ranking for ranking in result.rankings if ranking.name == "semantic_title")
     title_signals = tuple(
         (hit, signal)
         for hit in result.hits
@@ -1214,9 +1270,7 @@ def test_semantic_text_and_title_share_vector_budget_and_query_embedding(
     assert set(rankings) == {"semantic_text", "semantic_title"}
     assert rankings["semantic_text"].scanned > 0
     assert sum(ranking.scanned for ranking in rankings.values()) == 2
-    query_requests = tuple(
-        request for request in requests if request.role is EmbeddingRole.QUERY
-    )
+    query_requests = tuple(request for request in requests if request.role is EmbeddingRole.QUERY)
     assert len(requests) == 1
     assert len(query_requests) == 1
     assert query_requests[0].text == "protección interruptor"
@@ -1277,9 +1331,7 @@ def test_missing_semantic_cache_preserves_lexical_and_creates_no_artifacts(
         snapshot,
     )
 
-    assert any(
-        signal.source == "fts_pdf" for hit in result.hits for signal in hit.signals
-    )
+    assert any(signal.source == "fts_pdf" for hit in result.hits for signal in hit.signals)
     semantic_report = next(
         ranking for ranking in result.rankings if ranking.name == "semantic_text"
     )
@@ -1288,9 +1340,7 @@ def test_missing_semantic_cache_preserves_lexical_and_creates_no_artifacts(
     assert not semantic_report.complete
     assert semantic_report.reason == "semantic_model_cache_missing"
     assert not result.complete
-    assert (
-        "ranking_partial:semantic_text:semantic_model_cache_missing" in result.warnings
-    )
+    assert "ranking_partial:semantic_text:semantic_model_cache_missing" in result.warnings
     assert not model_cache.exists()
     assert not (tmp_path / "models").exists()
 
@@ -1321,9 +1371,7 @@ def test_legacy_decimal_file_key_aligns_with_canonical_physical_resource(
     )
 
     assert result.hits
-    assert {hit.resource.resource_id for hit in result.hits} == {
-        "resource:file:26:43:30"
-    }
+    assert {hit.resource.resource_id for hit in result.hits} == {"resource:file:26:43:30"}
 
 
 def test_unknown_birthtime_never_claims_canonical_physical_identity(
@@ -1411,14 +1459,9 @@ def test_unverified_inventory_plan_is_exposed_but_never_filters_evidence(
     )
     assert redundant_hits
     assert all(hit.resource.disposition is None for hit in redundant_hits)
-    assert all(
-        "inventory_planned_duplicate_unverified" in hit.warnings
-        for hit in redundant_hits
-    )
+    assert all("inventory_planned_duplicate_unverified" in hit.warnings for hit in redundant_hits)
     duplicate_report = next(
-        ranking
-        for ranking in result.rankings
-        if ranking.name == "inventory_duplicate_plan"
+        ranking for ranking in result.rankings if ranking.name == "inventory_duplicate_plan"
     )
     assert duplicate_report.executed
     assert not duplicate_report.complete
@@ -1512,9 +1555,7 @@ def test_catalog_head_constrains_all_rankings_and_aligns_physical_resource(
     assert result.hits
     assert {hit.resource.source_kind for hit in result.hits} == {"pdf"}
     assert {hit.resource.resource_id for hit in result.hits} == {"resource:file:1:2:10"}
-    assert {signal.source for hit in result.hits for signal in hit.signals} == {
-        "fts_pdf"
-    }
+    assert {signal.source for hit in result.hits for signal in hit.signals} == {"fts_pdf"}
     assert next(
         ranking for ranking in result.rankings if ranking.name == "catalog_metadata"
     ).complete
@@ -1527,8 +1568,7 @@ def test_catalog_head_constrains_all_rankings_and_aligns_physical_resource(
 
     assert exact.hits
     assert any(
-        ("standard_identifier", "IEC-61850") in hit.evidence.identifiers
-        for hit in exact.hits
+        ("standard_identifier", "IEC-61850") in hit.evidence.identifiers for hit in exact.hits
     )
 
     prefix = execute_knowledge_search(
@@ -1588,9 +1628,7 @@ def test_unsupported_content_date_filter_abstains_instead_of_using_mtime(
     )
 
     assert result.hits == ()
-    catalog = next(
-        ranking for ranking in result.rankings if ranking.name == "catalog_metadata"
-    )
+    catalog = next(ranking for ranking in result.rankings if ranking.name == "catalog_metadata")
     assert not catalog.complete
     assert catalog.reason == "catalog_content_date_filter_unsupported"
 
@@ -1646,8 +1684,7 @@ def test_search_reuses_real_structured_code_owner(tmp_path: Path) -> None:
     assert hit.evidence.start_line == 1
     assert hit.evidence.symbol is not None
     assert hit.revision.processing_signature.startswith(
-        f"{config.processing_signature}|artifact-detector={DETECTOR_VERSION}|"
-        "code-analyzers-v1:"
+        f"{config.processing_signature}|artifact-detector={DETECTOR_VERSION}|code-analyzers-v1:"
     )
     assert next(
         ranking for ranking in result.rankings if ranking.name == "code_structural"
@@ -1662,9 +1699,7 @@ def test_search_reuses_real_structured_code_owner(tmp_path: Path) -> None:
         plan_knowledge_query(query),
         snapshot,
     )
-    unresolved_hit = next(
-        hit for hit in unresolved.hits if hit.resource.source_kind == "code"
-    )
+    unresolved_hit = next(hit for hit in unresolved.hits if hit.resource.source_kind == "code")
     assert unresolved_hit.resource.resource_id.startswith("resource:code:")
     assert not unresolved_hit.resource.resource_id.startswith("resource:file:")
     assert "physical_identity_unresolved" in unresolved_hit.warnings
@@ -1970,9 +2005,7 @@ def test_code_execution_uses_the_planned_candidate_limit(
         "_code_version_metadata",
         lambda *_args, **_kwargs: {},
     )
-    plan = plan_knowledge_query(
-        KnowledgeQuery("definition breaker", formats=("py",), limit=1)
-    )
+    plan = plan_knowledge_query(KnowledgeQuery("definition breaker", formats=("py",), limit=1))
     step = next(value for value in plan.steps if value.channel == "structural_code")
 
     candidates, report = knowledge_search_module._code_ranking(
@@ -1990,9 +2023,7 @@ def test_code_candidate_limit_bounds_relation_processing_and_reports_cutoff(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    plan = plan_knowledge_query(
-        KnowledgeQuery("definition breaker", formats=("py",), limit=1)
-    )
+    plan = plan_knowledge_query(KnowledgeQuery("definition breaker", formats=("py",), limit=1))
     step = next(value for value in plan.steps if value.channel == "structural_code")
     source = CodeRelationEndpoint(1, "C:/src/breaker.py")
     relations = tuple(

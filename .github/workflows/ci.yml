@@ -73,6 +73,8 @@ jobs:
           python -m pytest -q -p no:cacheprovider
           --basetemp "${RUNNER_TEMP}/pytest-fast"
           tests/test_packaging_entrypoint.py
+          tests/test_archive_cli.py
+          tests/test_archive_route.py
           tests/test_build_binary_inputs.py
           tests/test_cli_import_isolation.py
           tests/test_cli_capabilities.py
@@ -82,6 +84,8 @@ jobs:
           tests/test_model_management.py
           tests/test_posix_containment.py
           tests/test_release_linux.py
+          tests/test_route_schema_contracts.py
+          tests/test_zip_safety.py
 
   standard:
     name: Wheel · ${{ matrix.os }} · Python ${{ matrix.python }}
@@ -159,6 +163,8 @@ jobs:
           python -m pytest -q --import-mode=importlib -p no:cacheprovider \
             --basetemp "$RUNNER_TEMP/pytest-standard" \
             tests/test_app_paths.py \
+            tests/test_archive_cli.py \
+            tests/test_archive_route.py \
             tests/test_application_config.py \
             tests/test_bounded_subprocess.py \
             tests/test_cli_capabilities.py \
@@ -169,10 +175,12 @@ jobs:
             tests/test_linux_platform_policy.py \
             tests/test_model_management.py \
             tests/test_posix_containment.py \
+            tests/test_route_schema_contracts.py \
             tests/test_ui_elevation.py \
             tests/test_ui_linux.py \
             tests/test_ui_run_request.py \
-            tests/test_ui_smoke.py
+            tests/test_ui_smoke.py \
+            tests/test_zip_safety.py
 
   deep-windows:
     name: Deep Windows NTFS · Python 3.14

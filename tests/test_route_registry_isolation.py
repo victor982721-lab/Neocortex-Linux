@@ -15,9 +15,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
-def _run_isolated(
-    script: str, **environment_values: str
-) -> subprocess.CompletedProcess[str]:
+def _run_isolated(script: str, **environment_values: str) -> subprocess.CompletedProcess[str]:
     environment = os.environ.copy()
     environment["PYTHONDONTWRITEBYTECODE"] = "1"
     environment.update(environment_values)
@@ -49,7 +47,9 @@ class RouteRegistryIsolationTests(unittest.TestCase):
             )
 
             registry = builtin_route_registry()
-            if tuple(registry) != ("pdf", "docx", "office", "audio", "image", "code"):
+            if tuple(registry) != (
+                "pdf", "docx", "office", "archive", "audio", "image", "code"
+            ):
                 raise SystemExit(f"unexpected registry: {tuple(registry)!r}")
             forbidden = {
                 "_02_Deduplicacion",
@@ -58,6 +58,7 @@ class RouteRegistryIsolationTests(unittest.TestCase):
                 "_04_Nucleo_Operativo.docx_route",
                 "_04_Nucleo_Operativo.image_route",
                 "_04_Nucleo_Operativo.office_route",
+                "_04_Nucleo_Operativo.archive_route",
                 "_04_Nucleo_Operativo.audio_route",
                 "_04_Nucleo_Operativo.code_route",
                 "_04_Nucleo_Operativo.code_analyzers",

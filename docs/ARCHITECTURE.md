@@ -241,7 +241,7 @@ widgets ni escribir directamente a una terminal para informar avance.
 Núcleo de aplicación. Contiene:
 
 - configuración, parser, validación y reporte CLI;
-- fachada plana `ApplicationConfig` compatible con `FrameworkConfig`, seis
+- fachada plana `ApplicationConfig` compatible con `FrameworkConfig`, siete
   proyecciones de ruta y una proyección de límites globales calculadas desde el
   valor vigente;
 - superficies de registro/validación CLI separadas para Audio, Code, Semantic y
@@ -275,7 +275,7 @@ Frontend PySide6:
 - permite cancelación supervisada;
 - consulta estado mediante conexiones cortas de sólo lectura.
 
-La GUI ofrece PDF, DOCX, Office, audio, imagen y Code. En Linux presenta modo
+La GUI ofrece PDF, DOCX, Office, ZIP, audio, imagen y Code. En Linux presenta modo
 portátil, no solicita elevación y desactiva los controles de mutación, sin
 retirar inventario, procesamiento o búsqueda.
 
@@ -686,9 +686,10 @@ thread: creación, iteración y cierre ocurren en el thread propietario de la
 conexión SQLite. Un `finally` del productor lo cierra también ante error o
 cancelación; el coordinador no desenrolla ese generator desde otro thread.
 
-Las rutas PDF, DOCX, Office y audio alimentan el catálogo por lotes. Imagen y
-código conservan repositorios especializados; no deben presentarse como
-documentos catalogados si no existe ese consumidor.
+Las rutas PDF, DOCX, Office y audio alimentan el catálogo por lotes. Archive,
+imagen y código conservan repositorios especializados; no deben presentarse
+como documentos catalogados si no existe ese consumidor. Knowledge consume el
+FTS Archive directamente y conserva la cadena `ZIP!/miembro` como procedencia.
 
 ## Concurrencia y cancelación
 

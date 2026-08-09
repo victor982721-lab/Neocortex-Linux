@@ -71,6 +71,7 @@ from .state import FrameworkRouteState, FrameworkState
 # region [02] Implementación
 
 if TYPE_CHECKING:
+    from .archive_route import ArchiveRouteSummary
     from .audio_models import AudioRouteSummary
     from .code_contracts import CodeRouteSummary
     from .docx_route import DocxRouteSummary
@@ -1681,6 +1682,7 @@ class FrameworkOrchestrator:
             pdf=cast("PdfRouteSummary | None", routes.get("pdf")),
             docx=cast("DocxRouteSummary | None", routes.get("docx")),
             office=cast("OfficeRouteSummary | None", routes.get("office")),
+            archive=cast("ArchiveRouteSummary | None", routes.get("archive")),
             audio=cast("AudioRouteSummary | None", routes.get("audio")),
             image=work.image,
             code=cast("CodeRouteSummary | None", routes.get("code")),
@@ -2103,6 +2105,7 @@ class FrameworkOrchestrator:
             pdf=cast("PdfRouteSummary | None", routes.get("pdf")),
             docx=cast("DocxRouteSummary | None", routes.get("docx")),
             office=cast("OfficeRouteSummary | None", routes.get("office")),
+            archive=cast("ArchiveRouteSummary | None", routes.get("archive")),
             audio=cast("AudioRouteSummary | None", routes.get("audio")),
             image=cast("ImageRouteSummary | None", routes.get("image")),
             code=cast("CodeRouteSummary | None", routes.get("code")),

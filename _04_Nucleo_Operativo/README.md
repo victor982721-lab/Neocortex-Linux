@@ -217,6 +217,31 @@ revisión, nunca como una orden automática de borrado. Los límites se controla
 con `--office-max-mb`, `--office-max-count`, `--office-max-text-chars` y los
 parámetros `--office-*-memory-*`.
 
+La ruta `archive` consume los ZIP detectados por el inventario y publica sus
+miembros en `archive.sqlite3`, con FTS5 y procedencia completa. Recorre ZIP
+anidados de forma recursiva y representa la ubicación sin ambigüedad:
+
+```text
+contenedor.zip!/subcarpeta/otro.zip!/documento.txt
+```
+
+```powershell
+Neocortex --root C:\Corpus\Entrada --route archive --archive-max-count 25
+Neocortex --archive-status
+Neocortex --archive-search 'protección AND transformador'
+Neocortex --archive-list 50 --archive-container 'contenedor.zip'
+```
+
+El productor nunca extrae miembros al filesystem. Valida el directorio central,
+nombres portables, duplicados, cifrado, tipo de miembro, compresión, tamaños y
+presupuestos acumulados antes de leer. Los límites predeterminados son cinco
+niveles, 20 000 miembros visibles, 64 MiB por miembro, 512 MiB expandidos por
+contenedor y ratio 200. Texto/código, HTML/XML, PDF con texto nativo,
+DOCX/XLSX/PPTX, ODT/ODS/ODP y EPUB son consultables; otros miembros permanecen
+como metadatos. `location=archive_member inside_zip=1`, `container`, `member`,
+`chain` y `virtual_path` distinguen siempre estos resultados de un archivo
+físico.
+
 La ruta `audio` transcribe de forma incremental el audio detectado por contenido
 en PTT/Opus/Ogg, MP3, WAV, FLAC, M4A/MP4 y las pistas de audio de los vídeos
 MP4, MOV y AVI. Usa `faster-whisper` dentro de un proceso persistente aislado,
@@ -1199,16 +1224,17 @@ documento completado y el siguiente. Los demás controles son
 `--pdf-commit-backpressure-bytes` y `--pdf-memory-wait-timeout`; el valor `0`
 desactiva únicamente el margen físico o de commit indicado.
 
-Las rutas PDF, DOCX, Office, audio, imágenes y código pueden ejecutarse juntas. Comparten el mismo
-inventario, bloqueo operativo, registro de ejecución y coordinador global de
-memoria, commit y CPU. `Neocortex --all` selecciona las seis y deja que el
+Las rutas PDF, DOCX, Office, ZIP, audio, imágenes y código pueden ejecutarse
+juntas. Comparten el mismo inventario, bloqueo operativo, registro de ejecución
+y coordinador global de memoria, commit y CPU. `Neocortex --all` selecciona las
+siete y deja que el
 coordinador dimensione dinámicamente memoria, margen libre y CPU según el equipo;
 opciones compatibles indicadas explícitamente por el usuario tienen precedencia.
 Una combinación contradictoria como
 `--all --route pdf` se rechaza. `--all` no fuerza errores permanentes ya
 cacheados; los flags `--retry-pdf-errors`, `--retry-docx-errors`,
-`--retry-office-errors`, `--retry-audio-errors`, `--retry-image-errors` y
-`--retry-code-errors` siguen disponibles como
+`--retry-office-errors`, `--retry-archive-errors`, `--retry-audio-errors`,
+`--retry-image-errors` y `--retry-code-errors` siguen disponibles como
 overrides manuales.
 
 Durante las rutas de contenido, Rich muestra contadores vivos junto a cada

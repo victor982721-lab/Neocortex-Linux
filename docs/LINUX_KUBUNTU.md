@@ -162,7 +162,7 @@ artefactos.
 
 La entrada de aplicaciones se llama **NeoCortex**. La ventana muestra
 “modo portátil Linux”, no solicita elevación y mantiene desactivados los
-controles de mutación. Inventario, PDF, DOCX, Office, audio, imagen, Code,
+controles de mutación. Inventario, PDF, DOCX, Office, ZIP, audio, imagen, Code,
 catálogo y búsqueda siguen disponibles.
 
 La primera ejecución debe usar una raíz de laboratorio con 20–50 fixtures, una

@@ -33,6 +33,7 @@ class _DeferredTypeModule:
 
 
 if TYPE_CHECKING:
+    from . import archive_route as _archive_contracts
     from . import audio_models as _audio_contracts
     from . import code_contracts as _code_contracts
     from . import docx_models as _docx_contracts
@@ -43,6 +44,7 @@ if TYPE_CHECKING:
     from . import pdf_route_models as _pdf_contracts
 else:
     _application_contracts = _DeferredTypeModule(".models")
+    _archive_contracts = _DeferredTypeModule(".archive_route")
     _audio_contracts = _DeferredTypeModule(".audio_models")
     _code_contracts = _DeferredTypeModule(".code_contracts")
     _docx_contracts = _DeferredTypeModule(".docx_models")
@@ -52,6 +54,7 @@ else:
     _resource_contracts = _DeferredTypeModule(".global_resources")
 
 __all__ = [
+    "archive_route_config_from_application",
     "audio_route_config_from_application",
     "code_route_config_from_application",
     "docx_route_config_from_application",
@@ -65,6 +68,33 @@ __all__ = [
 
 
 # region [02] Import-local owner projections
+
+
+def archive_route_config_from_application(
+    config: _application_contracts.FrameworkConfig,
+) -> _archive_contracts.ArchiveRouteConfig:
+    """Project current application values into recursive ZIP indexing."""
+
+    from .archive_route import ArchiveRouteConfig
+
+    return ArchiveRouteConfig(
+        state_path=config.archive_database,
+        max_file_bytes=config.archive_max_file_bytes,
+        max_documents=config.archive_max_documents,
+        retry_errors=config.archive_retry_errors,
+        selection=config.selection,
+        max_depth=config.archive_max_depth,
+        max_members=config.archive_max_members,
+        max_central_directory_bytes=config.archive_max_central_directory_bytes,
+        max_member_bytes=config.archive_max_member_bytes,
+        max_total_uncompressed_bytes=config.archive_max_total_uncompressed_bytes,
+        max_text_chars=config.archive_max_text_chars,
+        max_total_text_chars=config.archive_max_total_text_chars,
+        max_compression_ratio=config.archive_max_compression_ratio,
+        pdf_max_pages=config.archive_pdf_max_pages,
+        pdf_timeout_seconds=config.archive_pdf_timeout_seconds,
+        pdf_worker_memory_bytes=config.archive_pdf_worker_memory_bytes,
+    )
 
 
 def audio_route_config_from_application(

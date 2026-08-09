@@ -157,6 +157,46 @@ def _create_audio_state(path: Path) -> None:
         )
 
 
+def _create_archive_state(path: Path) -> None:
+    with sqlite3.connect(path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE documents(
+                file_key TEXT PRIMARY KEY,
+                path TEXT NOT NULL,
+                container_path TEXT NOT NULL,
+                member_chain TEXT NOT NULL,
+                member_path TEXT NOT NULL,
+                archive_depth INTEGER NOT NULL,
+                content_kind TEXT NOT NULL,
+                status TEXT NOT NULL,
+                text_chars INTEGER NOT NULL,
+                size INTEGER NOT NULL,
+                mtime_ns INTEGER NOT NULL,
+                birthtime_ns INTEGER NOT NULL,
+                processing_signature TEXT NOT NULL,
+                last_seen_run_id INTEGER NOT NULL
+            );
+            CREATE VIRTUAL TABLE document_fts USING fts5(
+                file_key UNINDEXED,path UNINDEXED,container_path UNINDEXED,
+                container_name,member_chain,content_kind,body,
+                tokenize='unicode61 remove_diacritics 2'
+            );
+            INSERT INTO documents VALUES(
+                'archive:key','C:/docs/contenedor.zip!/interno.zip!/proteccion.txt',
+                'C:/docs/contenedor.zip','interno.zip!/proteccion.txt',
+                'proteccion.txt',2,'text','indexed',45,45,60,-1,'archive-v1',11
+            );
+            INSERT INTO document_fts VALUES(
+                'archive:key','C:/docs/contenedor.zip!/interno.zip!/proteccion.txt',
+                'C:/docs/contenedor.zip','contenedor.zip',
+                'interno.zip!/proteccion.txt','text',
+                'Protección diferencial dentro de un ZIP anidado'
+            );
+            """
+        )
+
+
 # endregion [01]
 
 
@@ -230,14 +270,9 @@ def test_searches_all_fts_sources_as_separate_resolved_rankings(
         "fts_office",
         "fts_audio",
     )
-    assert all(
-        result.availability is LexicalAvailability.AVAILABLE for result in results
-    )
+    assert all(result.availability is LexicalAvailability.AVAILABLE for result in results)
     assert all(len(result.hits) == 1 for result in results)
-    assert all(
-        result.normalized_query == '"protección" AND "interruptor"'
-        for result in results
-    )
+    assert all(result.normalized_query == '"protección" AND "interruptor"' for result in results)
 
     by_ranking = {result.ranking_name: result.hits[0] for result in results}
     assert by_ranking["fts_pdf"].hit.item_id == "item:pdf:pdf-key"
@@ -262,6 +297,40 @@ def test_searches_all_fts_sources_as_separate_resolved_rankings(
         assert resolved.hit.provenance["backend"] == "sqlite_fts5"
         assert resolved.hit.provenance["rank_position"] == 1
         assert isinstance(resolved.hit.provenance["raw_bm25"], float)
+
+
+def test_archive_source_is_additive_and_preserves_nested_member_provenance(
+    tmp_path: Path,
+) -> None:
+    archive = tmp_path / "archive.sqlite3"
+    _create_archive_state(archive)
+
+    legacy = search_lexical_sources(LexicalStatePaths(), "protección")
+    results = search_lexical_sources(
+        LexicalStatePaths(archive=archive),
+        "protección",
+    )
+
+    assert len(legacy) == 4
+    assert tuple(result.ranking_name for result in results) == (
+        "fts_pdf",
+        "fts_docx",
+        "fts_office",
+        "fts_audio",
+        "fts_archive",
+    )
+    hit = results[-1].hits[0]
+    assert hit.source_kind == "archive"
+    assert hit.path == "C:/docs/contenedor.zip!/interno.zip!/proteccion.txt"
+    assert hit.section_kind == "archive_member"
+    assert hit.section_provenance == {
+        "inside_zip": True,
+        "container_path": "C:/docs/contenedor.zip",
+        "member_chain": "interno.zip!/proteccion.txt",
+        "member_path": "proteccion.txt",
+        "archive_depth": 2,
+        "content_kind": "text",
+    }
 
 
 def test_docx_materializes_ranking_before_generating_snippets(
@@ -390,10 +459,7 @@ def test_missing_and_unconfigured_sources_are_reported(tmp_path: Path) -> None:
     assert results[0].availability is LexicalAvailability.DATABASE_MISSING
     assert results[0].unavailable_reason == "state_database_missing"
     assert results[0].hits == ()
-    assert all(
-        result.availability is LexicalAvailability.NOT_CONFIGURED
-        for result in results[1:]
-    )
+    assert all(result.availability is LexicalAvailability.NOT_CONFIGURED for result in results[1:])
 
 
 @pytest.mark.parametrize("limit", [0, 1_001])

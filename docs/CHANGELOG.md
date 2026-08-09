@@ -4,7 +4,7 @@ Este archivo registra cambios observables del producto. Las cifras de pruebas,
 cobertura y rendimiento pertenecen al informe técnico fechado de cada auditoría;
 no se copian aquí para evitar que se conviertan en datos históricos sin contexto.
 
-## [Sin publicar] - 2026-08-08
+## [Sin publicar] - 2026-08-09
 
 ### Añadido
 
@@ -24,6 +24,10 @@ no se copian aquí para evitar que se conviertan en datos históricos sin contex
   conserva `--only-binary=:all:`.
 - Modo portátil Linux en la interfaz: sin elevación falsa, con inventario,
   búsqueda y procesamiento disponibles y controles de mutación deshabilitados.
+- Ruta `archive` incremental para ZIP y ZIP anidados, con cadenas visibles
+  `contenedor.zip!/otro.zip!/miembro`, límites contra expansión maliciosa,
+  extracción textual acotada, FTS5, consultas directas y owner Knowledge
+  aditivo. Los miembros nunca se materializan en el filesystem.
 
 ### Cambiado
 

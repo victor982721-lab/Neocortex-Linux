@@ -12,6 +12,10 @@ from .cli_audio_surface import (
     validate_audio_arguments,
     validate_audio_direct_operation,
 )
+from .cli_archive_surface import (
+    validate_archive_arguments,
+    validate_archive_direct_operation,
+)
 from .cli_capabilities_surface import validate_capabilities_arguments
 from .cli_code_surface import validate_code_arguments
 from .cli_docx_surface import validate_docx_arguments
@@ -55,12 +59,14 @@ ALL_PRESET = {
 }
 
 _SELF_ANALYSIS_UNUSED_PREFIXES = (
+    "archive_",
     "audio_",
     "docx_",
     "image_",
     "office_",
     "pdf_",
     "retry_audio_",
+    "retry_archive_",
     "retry_docx_",
     "retry_image_",
     "retry_office_",
@@ -463,7 +469,7 @@ def _validate_direct_operation_selection(args: argparse.Namespace) -> None:
     direct_operations = selected_direct_operations(args)
     if len(direct_operations) > 1:
         raise SystemExit(
-            "direct status/recovery/review/semantic/PDF/DOCX/Office/audio/code/"
+            "direct status/recovery/review/semantic/PDF/DOCX/Office/ZIP/audio/code/"
             "Knowledge "
             "operations are mutually exclusive"
         )
@@ -837,6 +843,7 @@ def _validate_direct_operations(args: argparse.Namespace) -> None:
     _validate_watcher_operation(args, explicit)
     _validate_review_operations(args, explicit)
     validate_office_direct_operation(args, explicit)
+    validate_archive_direct_operation(args, explicit)
     _validate_organization_operations(args, explicit)
     validate_audio_direct_operation(args)
 
@@ -900,6 +907,7 @@ def validate_arguments(args: argparse.Namespace) -> None:
     _validate_pdf(args)
     validate_docx_arguments(args)
     validate_office_arguments(args)
+    validate_archive_arguments(args)
     validate_audio_arguments(args)
     validate_semantic_arguments(args)
     validate_code_arguments(args)

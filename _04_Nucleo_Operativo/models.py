@@ -29,6 +29,7 @@ from .route_filters import CandidateSelection
 # region [02] Implementación
 
 if TYPE_CHECKING:
+    from .archive_route import ArchiveRouteSummary
     from .audio_models import AudioRouteSummary
     from .code_contracts import CodeRouteSummary
     from .document_organization import (
@@ -111,6 +112,20 @@ class FrameworkConfig:
     office_min_free_memory_bytes: int = 1024 * 1024 * 1024
     office_min_free_commit_bytes: int = 1024 * 1024 * 1024
     office_memory_wait_timeout_seconds: float = 60.0
+    archive_max_file_bytes: int | None = None
+    archive_max_documents: int | None = None
+    archive_retry_errors: bool = False
+    archive_max_depth: int = 5
+    archive_max_members: int = 20_000
+    archive_max_central_directory_bytes: int = 32 * 1024 * 1024
+    archive_max_member_bytes: int = 64 * 1024 * 1024
+    archive_max_total_uncompressed_bytes: int = 512 * 1024 * 1024
+    archive_max_text_chars: int = 2_000_000
+    archive_max_total_text_chars: int = 20_000_000
+    archive_max_compression_ratio: float = 200.0
+    archive_pdf_max_pages: int = 500
+    archive_pdf_timeout_seconds: float = 60.0
+    archive_pdf_worker_memory_bytes: int = 768 * 1024 * 1024
     audio_model_name: str = "small"
     audio_device: Literal["auto", "cpu", "cuda"] = field(default_factory=default_whisper_device)
     audio_compute_type: str = field(default_factory=default_whisper_compute_type)
@@ -202,6 +217,10 @@ class FrameworkConfig:
         return self.state_directory / "office.sqlite3"
 
     @property
+    def archive_database(self) -> Path:
+        return self.state_directory / "archive.sqlite3"
+
+    @property
     def audio_database(self) -> Path:
         return self.state_directory / "audio.sqlite3"
 
@@ -228,6 +247,7 @@ class InitialRunResult:
     pdf: PdfRouteSummary | None = None
     docx: DocxRouteSummary | None = None
     office: OfficeRouteSummary | None = None
+    archive: ArchiveRouteSummary | None = None
     audio: AudioRouteSummary | None = None
     image: ImageRouteSummary | None = None
     code: CodeRouteSummary | None = None
@@ -279,6 +299,7 @@ class RouteOnlyRunResult:
     pdf: PdfRouteSummary | None = None
     docx: DocxRouteSummary | None = None
     office: OfficeRouteSummary | None = None
+    archive: ArchiveRouteSummary | None = None
     audio: AudioRouteSummary | None = None
     image: ImageRouteSummary | None = None
     code: CodeRouteSummary | None = None
