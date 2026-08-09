@@ -59,7 +59,6 @@ from .image_isolation import (
 from .image_state import (
     EncodedOcrText,
     candidate_counts,
-    candidate_work_counts,
     file_key,
     initialize_image_state,
     iter_candidates,
@@ -858,19 +857,14 @@ class ImageRoute:
             self.config.max_file_bytes,
             self.config.selection,
         )
-        planned_cache_hits, planned_cached_errors, work_total = candidate_work_counts(
-            self.config.state_path,
-            self.run_id,
-            self.config.max_file_bytes,
-            self.processing_signature,
-            retry_selected,
-            self.config.selection,
+        selection_total = min(
+            eligible,
+            self.config.max_documents if self.config.max_documents is not None else eligible,
         )
-        selected_work = min(
-            work_total,
-            self.config.max_documents if self.config.max_documents is not None else work_total,
-        )
-        selection_total = planned_cache_hits + planned_cached_errors + selected_work
+        # ``max_documents`` is a hard candidate limit, not merely a limit on
+        # decoder work.  This also bounds full-byte fingerprinting introduced
+        # for Semantic when otherwise-current cache rows do not have one yet.
+        selected_work = selection_total
         processed = cache_hits = cached_errors = 0
         work = _ImageWorkState()
         classified = errors = 0
@@ -888,7 +882,7 @@ class ImageRoute:
             self.config.state_path,
             self.run_id,
             self.config.max_file_bytes,
-            None,
+            self.config.max_documents,
             processing_signature=self.processing_signature,
             retry_errors=retry_selected,
             selection=self.config.selection,
@@ -1011,7 +1005,7 @@ class ImageRoute:
             candidate_pool=candidate_pool,
             candidates=selection_total,
             skipped_by_size=max(0, candidate_pool - eligible),
-            skipped_by_count=max(0, work_total - selected_work),
+            skipped_by_count=max(0, eligible - selection_total),
             processed=processed,
             cache_hits=cache_hits,
             feature_cache_hits=work.feature_cache_hits,

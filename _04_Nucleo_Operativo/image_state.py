@@ -218,15 +218,11 @@ def image_database(path: Path, *, readonly: bool = False):
 
 
 def _add_missing_image_columns(connection: sqlite3.Connection) -> None:
-    columns = {
-        str(column[1]) for column in connection.execute("PRAGMA table_info(images)")
-    }
+    columns = {str(column[1]) for column in connection.execute("PRAGMA table_info(images)")}
     for _target_version, additions in _IMAGE_COLUMN_MIGRATIONS:
         for column, declaration in additions:
             if column not in columns:
-                connection.execute(
-                    f'ALTER TABLE images ADD COLUMN "{column}" {declaration}'
-                )
+                connection.execute(f'ALTER TABLE images ADD COLUMN "{column}" {declaration}')
                 columns.add(column)
 
 
@@ -253,8 +249,7 @@ def initialize_image_state(path: Path) -> None:
             prior = read_metadata_schema_version(connection, label="image")
             if prior is not None and prior > SCHEMA_VERSION:
                 raise RuntimeError(
-                    f"image schema {prior} is newer than supported "
-                    f"schema {SCHEMA_VERSION}"
+                    f"image schema {prior} is newer than supported schema {SCHEMA_VERSION}"
                 )
             if prior == SCHEMA_VERSION:
                 _validate_current_image_schema(connection)
@@ -353,44 +348,6 @@ def candidate_counts(
         return total, eligible
 
 
-def candidate_work_counts(
-    path: Path,
-    run_id: int,
-    max_file_bytes: int | None,
-    processing_signature: str,
-    retry_errors: bool,
-    selection: CandidateSelection | None = None,
-) -> tuple[int, int, int]:
-    """Return exact cache hits, retained errors and rows requiring work."""
-
-    clauses = ["last_seen_run_id=?"]
-    parameters: list[object] = [run_id]
-    if max_file_bytes is not None:
-        clauses.append("size<=?")
-        parameters.append(max_file_bytes)
-    selected_clauses, selected_parameters = _selection_clauses(selection)
-    clauses.extend(selected_clauses)
-    parameters.extend(selected_parameters)
-    where = " AND ".join(clauses)
-    with image_database(path) as connection:
-        row = connection.execute(
-            f"""SELECT
-            SUM(status='done' AND processing_signature=?) AS cache_hits,
-            SUM(status='error' AND processing_signature=? AND ?=0) AS cached_errors,
-            COUNT(*) AS eligible
-            FROM images WHERE {where}""",
-            (
-                processing_signature,
-                processing_signature,
-                int(retry_errors),
-                *parameters,
-            ),
-        ).fetchone()
-    cache_hits = int(row[0] or 0)
-    cached_errors = int(row[1] or 0)
-    return cache_hits, cached_errors, int(row[2]) - cache_hits - cached_errors
-
-
 def iter_candidates(
     path: Path,
     run_id: int,
@@ -432,9 +389,7 @@ def iter_candidates(
             ]
         snapshot_sql = (
             "INSERT INTO image_route_candidates "
-            "SELECT file_key,"
-            + priority_sql
-            + ",path FROM images WHERE last_seen_run_id=?"
+            "SELECT file_key," + priority_sql + ",path FROM images WHERE last_seen_run_id=?"
         )
         parameters = [*priority_parameters, run_id]
         if max_file_bytes is not None:
@@ -611,7 +566,7 @@ def iter_explicit_adult_candidates(
                 evidence = (
                     f"classification=explicit;confidence="
                     f"{float(row['adult_confidence'] or 0.0):.4f};"
-                    f"provenance={str(row['adult_provenance'] or 'unknown')}"
+                    f"provenance={row['adult_provenance'] or 'unknown'!s}"
                 )
                 yield snapshot_from_row(row), evidence
 
@@ -693,9 +648,7 @@ def _decode_ocr_text(row: sqlite3.Row) -> ImageOcrTextRecord:
         file_key=str(row["file_key"]),
         path=str(row["path"]),
         processing_signature=(
-            None
-            if row["processing_signature"] is None
-            else str(row["processing_signature"])
+            None if row["processing_signature"] is None else str(row["processing_signature"])
         ),
         text=text,
         characters=characters,

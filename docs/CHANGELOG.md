@@ -82,6 +82,9 @@ no se copian aquí para evitar que se conviertan en datos históricos sin contex
 
 ### Corregido
 
+- `--image-max-count` limita ahora toda la selección de imágenes, incluidos
+  aciertos de caché y huellas completas pendientes; el orden estable prioriza
+  trabajo nuevo, incompleto o desactualizado antes de reutilizar caché vigente.
 - El probe de FFprobe usa su argumento real `-version`, evitando un falso
   `unavailable` cuando el ejecutable está instalado.
 - Las comprobaciones de snapshot aceptan `birthtime_ns=-1` como sentinel Linux

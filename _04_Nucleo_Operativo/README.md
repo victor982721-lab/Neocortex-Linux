@@ -942,7 +942,9 @@ Neocortex --route image
 Los resultados, evidencia, incertidumbre, atributos y errores quedan en
 `image.sqlite3`. La ruta es incremental y reanuda por identidad y metadatos del
 archivo. `--image-max-mb`, `--image-max-count` y `--retry-image-errors` controlan
-la selección. El presupuesto agregado y los márgenes se ajustan mediante
+la selección. `--image-max-count` es un límite duro de candidatos, incluidos
+los aciertos de caché y el cálculo/reuso de huellas completas. El presupuesto
+agregado y los márgenes se ajustan mediante
 `--image-memory-budget-mb`, `--image-min-free-memory-mb`,
 `--image-min-free-commit-mb` y `--image-memory-wait-timeout`. Esta ruta clasifica
 e indexa; no mueve ni elimina imágenes.

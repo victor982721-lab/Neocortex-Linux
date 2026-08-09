@@ -609,6 +609,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         metavar="N",
+        help="select at most N eligible images, including cache hits",
     )
     image.add_argument(
         "--retry-image-errors",
