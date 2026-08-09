@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from typing import cast
 from typing import Any
 
@@ -122,6 +123,39 @@ def test_bounded_diagnostic_preserves_the_root_cause_tail(tmp_path: Path) -> Non
 )
 def test_portable_nodeid_normalizes_only_the_path(nodeid: str, expected: str) -> None:
     assert worker._portable_nodeid(nodeid) == expected
+
+
+def test_test_evidence_uses_the_canonical_casefold_nodeid_order(tmp_path: Path) -> None:
+    nodeids = (
+        "tests/test_logic.py::test_case[KeyboardInterrupt]",
+        "tests/test_logic.py::test_case[RuntimeError]",
+        "tests/test_logic.py::test_case[_FatalRequestConstruction]",
+    )
+    reports = [
+        SimpleNamespace(nodeid=nodeid, when="call", outcome="passed", failed=False)
+        for nodeid in reversed(nodeids)
+    ]
+
+    tests, failures = worker._test_evidence(
+        reports,
+        project_root=tmp_path,
+        scratch_root=tmp_path / "scratch",
+        limits=worker.WorkerLimits(
+            max_tests=20,
+            time_budget_seconds=30,
+            shard_size=20,
+            max_output_bytes=2 * 1024 * 1024,
+            max_failures=20,
+            max_contexts=10_000,
+        ),
+    )
+
+    assert failures == []
+    assert [item["nodeid"] for item in tests] == [
+        "tests/test_logic.py::test_case[_FatalRequestConstruction]",
+        "tests/test_logic.py::test_case[KeyboardInterrupt]",
+        "tests/test_logic.py::test_case[RuntimeError]",
+    ]
 
 
 def _project(root: Path) -> tuple[Path, Path]:

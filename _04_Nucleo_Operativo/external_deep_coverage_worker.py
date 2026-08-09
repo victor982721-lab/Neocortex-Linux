@@ -797,7 +797,7 @@ def _test_evidence(
         by_nodeid.setdefault(nodeid, []).append(report)
     tests: list[dict[str, object]] = []
     failures: list[dict[str, object]] = []
-    for nodeid in sorted(by_nodeid):
+    for nodeid in sorted(by_nodeid, key=lambda item: (item.casefold(), item)):
         phase_reports = sorted(
             by_nodeid[nodeid], key=lambda item: ("setup", "call", "teardown").index(item.when)
         )
