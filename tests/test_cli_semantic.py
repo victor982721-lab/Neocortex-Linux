@@ -943,11 +943,13 @@ def test_semantic_index_reports_budget_truncation_as_nonzero(
     assert "truncation_reason=max_items" in output
 
 
-def test_all_advances_document_semantic_without_broad_code_by_default(
+def test_all_advances_physical_semantic_without_broad_archive_or_code_by_default(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     (tmp_path / "pdf.sqlite3").touch()
+    (tmp_path / "archive.sqlite3").touch()
+    (tmp_path / "text.sqlite3").touch()
     (tmp_path / "code.sqlite3").touch()
     args = build_parser().parse_args(["--all", "--state-directory", str(tmp_path)])
     validate_arguments(args)
@@ -955,7 +957,7 @@ def test_all_advances_document_semantic_without_broad_code_by_default(
         "_04_Nucleo_Operativo.semantic_service.index_text_embeddings",
         return_value=_index_result(
             tmp_path,
-            ("pdf",),
+            ("pdf", "text"),
             pending=1,
             truncated=True,
             truncation_reason="time_budget",
@@ -964,11 +966,11 @@ def test_all_advances_document_semantic_without_broad_code_by_default(
         assert run_integrated_all_semantic_index(args) == 0
 
     kwargs = operation.call_args.kwargs
-    assert kwargs["source_kinds"] == ("pdf",)
+    assert kwargs["source_kinds"] == ("pdf", "text")
     assert kwargs["work_budget"].max_items == 100_000
     assert kwargs["work_budget"].max_new_jobs == 1_000_000
     output = capsys.readouterr().out
-    assert "SEMANTIC_ALL status=starting sources=pdf" in output
+    assert "SEMANTIC_ALL status=starting sources=pdf,text" in output
     assert "code_explicit=0" in output
     assert "truncated=1" in output
 
@@ -1038,6 +1040,27 @@ def test_all_accepts_explicit_code_semantic_selection(tmp_path: Path) -> None:
 
     assert operation.call_args.kwargs["source_kinds"] == ("code",)
     assert operation.call_args.kwargs["work_budget"].deadline is not None
+
+
+def test_all_accepts_explicit_archive_semantic_selection(tmp_path: Path) -> None:
+    (tmp_path / "archive.sqlite3").touch()
+    args = build_parser().parse_args(
+        [
+            "--all",
+            "--state-directory",
+            str(tmp_path),
+            "--semantic-source",
+            "archive",
+        ]
+    )
+    validate_arguments(args)
+    with patch(
+        "_04_Nucleo_Operativo.semantic_service.index_text_embeddings",
+        return_value=_index_result(tmp_path, ("archive",)),
+    ) as operation:
+        assert run_integrated_all_semantic_index(args) == 0
+
+    assert operation.call_args.kwargs["source_kinds"] == ("archive",)
 
 
 def test_semantic_index_without_available_text_cache_fails_explicitly(

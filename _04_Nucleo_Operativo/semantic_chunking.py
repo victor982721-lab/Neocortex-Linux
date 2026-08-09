@@ -9,7 +9,13 @@ from typing import Callable, Iterable, Iterator, Sequence
 
 import xxhash
 
-from .semantic_models import TextChunk, TextSection, fingerprint_text
+from .semantic_models import (
+    ContentFingerprint,
+    TextChunk,
+    TextSection,
+    canonical_json,
+    fingerprint_text,
+)
 
 
 # region [01] Configuration and explicit limits
@@ -17,6 +23,7 @@ from .semantic_models import TextChunk, TextSection, fingerprint_text
 
 _TERM = re.compile(r"\S+", re.UNICODE)
 _SENTENCE_BREAK = re.compile(r"[.!?;:]\s+|[。！？]\s*", re.UNICODE)
+_CHUNK_IDENTITY_VERSION = "semantic-text-chunk-identity-v2"
 
 
 class ChunkLimitExceeded(RuntimeError):
@@ -162,15 +169,28 @@ def _next_start(
 
 def _chunk_identifier(
     item_id: str,
+    ordinal: int,
     section: TextSection,
     start: int,
     end: int,
-    text_xxh3_128: str,
+    fingerprint: ContentFingerprint,
     chunking_signature: str,
 ) -> str:
-    identity = (
-        f"{item_id}\0{section.section_kind}\0{section.section_id}\0{start}\0{end}"
-        f"\0{text_xxh3_128}\0{chunking_signature}"
+    identity = canonical_json(
+        {
+            "schema": _CHUNK_IDENTITY_VERSION,
+            "item_id": item_id,
+            "ordinal": ordinal,
+            "section_kind": section.section_kind,
+            "section_id": section.section_id,
+            "start_char": start,
+            "end_char": end,
+            "content_xxh3_128": fingerprint.xxh3_128,
+            "content_bytes": fingerprint.byte_count,
+            "content_xxh3_64_guard": fingerprint.xxh3_64_guard,
+            "chunking_signature": chunking_signature,
+            "provenance": section.provenance,
+        }
     )
     return f"chunk-xxh3-128:{xxhash.xxh3_128_hexdigest(identity.encode('utf-8'))}"
 
@@ -311,10 +331,11 @@ def iter_text_chunks(
                 yield TextChunk(
                     chunk_id=_chunk_identifier(
                         item_id,
+                        ordinal,
                         section,
                         cursor,
                         end,
-                        fingerprint.xxh3_128,
+                        fingerprint,
                         active_config.signature,
                     ),
                     item_id=item_id,

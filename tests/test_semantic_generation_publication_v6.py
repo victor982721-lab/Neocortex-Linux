@@ -46,6 +46,7 @@ from _04_Nucleo_Operativo.semantic_state import (
     prepare_embedding_generation,
     register_embedding_model,
     resolve_search_hits,
+    reuse_cached_jobs,
     search_exact_page,
     semantic_database,
     stage_text_chunks,
@@ -309,6 +310,99 @@ def _complete_jobs(path: Path, generation_id: int, *, now_ns: int) -> None:
         )
 
 
+def test_provenance_refresh_gets_new_chunk_identity_and_reuses_vector(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "semantic.sqlite3"
+    model = _initialize(database)
+    item_id = "adapter-upgrade-document"
+    text = "protección diferencial de transformador"
+    item = SemanticItem(
+        item_id,
+        "pdf",
+        f"identity:{item_id}",
+        "fixture-v1",
+        fingerprint_text(text),
+        path=f"C:/fixtures/{item_id}.pdf",
+    )
+    upsert_semantic_item(database, item, refresh_token="item", updated_ns=10)
+    config = TextChunkingConfig(
+        max_chars=256,
+        max_terms=64,
+        overlap_chars=0,
+        overlap_terms=0,
+        min_natural_break_chars=32,
+    )
+
+    original = chunk_text_sections(
+        item_id,
+        (TextSection("pdf_page", "1", text, {"adapter": "v2"}),),
+        config,
+    )[0]
+    stage_text_chunks(database, (original,), refresh_token="adapter-v2", updated_ns=11)
+    finalize_text_chunk_refresh(
+        database,
+        item_id=item_id,
+        chunking_signature=config.signature,
+        refresh_token="adapter-v2",
+        updated_ns=12,
+    )
+    baseline = start_embedding_generation(
+        database,
+        model_signature=model.model_signature,
+        processing_signature="adapter-v2",
+        provenance={"sources": ["pdf"], "chunking_signature": config.signature},
+        started_ns=20,
+    )
+    assert enqueue_text_chunk_jobs(database, baseline, (original.chunk_id,), now_ns=21) == 1
+    _complete_jobs(database, baseline, now_ns=22)
+    finalize_embedding_generation(database, baseline, completed_ns=30)
+
+    upgraded = chunk_text_sections(
+        item_id,
+        (TextSection("pdf_page", "1", text, {"adapter": "v3"}),),
+        config,
+    )[0]
+    assert upgraded.fingerprint == original.fingerprint
+    assert upgraded.chunk_id != original.chunk_id
+    stage_text_chunks(database, (upgraded,), refresh_token="adapter-v3", updated_ns=31)
+    finalize_text_chunk_refresh(
+        database,
+        item_id=item_id,
+        chunking_signature=config.signature,
+        refresh_token="adapter-v3",
+        updated_ns=32,
+    )
+    successor = start_embedding_generation(
+        database,
+        model_signature=model.model_signature,
+        processing_signature="adapter-v3",
+        provenance={"sources": ["pdf"], "chunking_signature": config.signature},
+        started_ns=40,
+    )
+    assert enqueue_text_chunk_jobs(database, successor, (upgraded.chunk_id,), now_ns=41) == 1
+    assert reuse_cached_jobs(database, successor, now_ns=42) == 1
+    summary = finalize_embedding_generation(database, successor, completed_ns=50)
+
+    with semantic_database(database, readonly=True) as connection:
+        payloads = int(connection.execute("SELECT COUNT(*) FROM vector_payloads").fetchone()[0])
+        revisions = int(
+            connection.execute("SELECT COUNT(*) FROM semantic_chunk_revisions").fetchone()[0]
+        )
+        members = tuple(
+            str(row[0])
+            for row in connection.execute(
+                "SELECT entity_id FROM embedding_generation_members "
+                "WHERE generation_id=? ORDER BY entity_id",
+                (successor,),
+            )
+        )
+    assert summary.status == "ready"
+    assert payloads == 1
+    assert revisions == 2
+    assert members == (upgraded.chunk_id,)
+
+
 def _finalize_with_trace(
     path: Path,
     generation_id: int,
@@ -507,6 +601,54 @@ def _published_fixture_with_members(
         count=extra_members,
     )
     return model, generation_id
+
+
+def test_new_processing_signature_closes_empty_uncloned_candidate(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "semantic.sqlite3"
+    model, baseline = _published_fixture_with_members(database, extra_members=0)
+    stale = start_embedding_generation(
+        database,
+        model_signature=model.model_signature,
+        processing_signature="sources=pdf,archive",
+        provenance={"sources": ["pdf", "archive"]},
+        cursor={"selected_sources": ["pdf", "archive"]},
+        materialize_base=False,
+        started_ns=120,
+    )
+    successor = start_embedding_generation(
+        database,
+        model_signature=model.model_signature,
+        processing_signature="sources=pdf",
+        provenance={"sources": ["pdf"]},
+        cursor={"selected_sources": ["pdf"]},
+        materialize_base=False,
+        started_ns=130,
+    )
+
+    with semantic_database(database, readonly=True) as connection:
+        stale_row = connection.execute(
+            "SELECT status,completed_ns,cursor_json FROM embedding_generations "
+            "WHERE generation_id=?",
+            (stale,),
+        ).fetchone()
+        successor_row = connection.execute(
+            "SELECT status,base_generation_id FROM embedding_generations WHERE generation_id=?",
+            (successor,),
+        ).fetchone()
+    assert stale_row is not None
+    assert str(stale_row["status"]) == "failed"
+    assert int(stale_row["completed_ns"]) == 130
+    assert json.loads(str(stale_row["cursor_json"])) == {
+        "failure_reason": "processing_signature_superseded_before_work",
+        "retryable": False,
+        "selected_sources": ["pdf", "archive"],
+        "superseded_by_processing_signature": "sources=pdf",
+    }
+    assert successor_row is not None
+    assert str(successor_row["status"]) == "building"
+    assert int(successor_row["base_generation_id"]) == baseline
 
 
 def test_base_clone_deadline_persists_cursor_and_replays_to_completion(

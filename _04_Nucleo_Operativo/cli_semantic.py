@@ -556,10 +556,11 @@ def run_integrated_all_semantic_index(
 ) -> int:
     """Advance bounded document and image embeddings after ``--all`` routes.
 
-    Broad code inventories can contain millions of chunks, so Code remains an
-    explicit ``--semantic-source code`` choice.  The default integrated stage
-    prioritizes durable document/audio caches and treats a bounded truncation as
-    resumable progress rather than as a failed framework run.
+    Broad Archive and Code inventories can contain thousands or millions of
+    chunks, so both remain explicit ``--semantic-source`` choices.  The default
+    integrated stage advances physical document/audio caches and treats a
+    bounded truncation as resumable progress rather than as a failed framework
+    run.
     """
 
     if not args.all:
@@ -575,7 +576,7 @@ def run_integrated_all_semantic_index(
         integrated_args.semantic_source = tuple(
             source_kind
             for source_kind in TEXT_SOURCE_KINDS
-            if source_kind != "code"
+            if source_kind not in {"archive", "code"}
             and semantic_source_database(args.state_directory, source_kind).is_file()
         )
     selected_sources = tuple(integrated_args.semantic_source or ())

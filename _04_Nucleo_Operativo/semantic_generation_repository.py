@@ -484,6 +484,52 @@ def _mark_generation_head_conflict(
     return conflict
 
 
+def _fail_empty_superseded_generations(
+    connection: sqlite3.Connection,
+    *,
+    model_signature: str,
+    processing_signature: str,
+    completed_ns: int,
+) -> None:
+    """Close incompatible candidates that never cloned or queued durable work."""
+
+    rows = connection.execute(
+        """SELECT generation_id,cursor_json FROM embedding_generations AS generation
+        WHERE generation.model_signature=? AND generation.status='building'
+          AND generation.processing_signature<>?
+          AND generation.base_clone_complete=0
+          AND NOT EXISTS(
+            SELECT 1 FROM embedding_generation_members AS member
+            WHERE member.generation_id=generation.generation_id)
+          AND NOT EXISTS(
+            SELECT 1 FROM embedding_jobs AS job
+            WHERE job.generation_id=generation.generation_id)
+        ORDER BY generation.generation_id""",
+        (model_signature, processing_signature),
+    ).fetchall()
+    for row in rows:
+        cursor = _decode_base_clone_cursor(row["cursor_json"])
+        cursor.update(
+            {
+                "failure_reason": "processing_signature_superseded_before_work",
+                "retryable": False,
+                "superseded_by_processing_signature": processing_signature,
+            }
+        )
+        updated = connection.execute(
+            """UPDATE embedding_generations
+            SET status='failed',completed_ns=?,cursor_json=?
+            WHERE generation_id=? AND status='building'""",
+            (
+                completed_ns,
+                canonical_json(cursor),
+                int(row["generation_id"]),
+            ),
+        )
+        if updated.rowcount != 1:
+            raise SemanticStateError("empty embedding generation changed while being superseded")
+
+
 def start_embedding_generation(
     path: Path,
     *,
@@ -509,6 +555,12 @@ def start_embedding_generation(
         connection.execute("BEGIN IMMEDIATE")
         _load_model(connection, model_signature)
         base_generation_id = _published_head_id(connection, model_signature)
+        _fail_empty_superseded_generations(
+            connection,
+            model_signature=model_signature,
+            processing_signature=processing_signature,
+            completed_ns=selected_ns,
+        )
         existing = connection.execute(
             """SELECT generation_id,provenance_json,base_generation_id,
                 base_clone_complete FROM embedding_generations

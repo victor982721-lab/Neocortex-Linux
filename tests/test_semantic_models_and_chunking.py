@@ -164,6 +164,40 @@ def test_chunker_normalizes_whitespace_without_losing_diacritics() -> None:
     assert chunks[0].text == "tensión eléctrica industrial"
 
 
+def test_chunk_identity_binds_immutable_provenance_and_ordinal() -> None:
+    config = TextChunkingConfig(
+        max_chars=128,
+        max_terms=16,
+        overlap_chars=0,
+        overlap_terms=0,
+        min_natural_break_chars=16,
+    )
+    original = chunk_text_sections(
+        "pdf:identity",
+        (TextSection("pdf_page", "1", "protección diferencial", {"adapter": "v2"}),),
+        config,
+    )[0]
+    changed_provenance = chunk_text_sections(
+        "pdf:identity",
+        (TextSection("pdf_page", "1", "protección diferencial", {"adapter": "v3"}),),
+        config,
+    )[0]
+    shifted = chunk_text_sections(
+        "pdf:identity",
+        (
+            TextSection("metadata", "title", "transformador"),
+            TextSection("pdf_page", "1", "protección diferencial", {"adapter": "v2"}),
+        ),
+        config,
+    )[1]
+
+    assert original.text == changed_provenance.text == shifted.text
+    assert original.start_char == changed_provenance.start_char == shifted.start_char
+    assert original.end_char == changed_provenance.end_char == shifted.end_char
+    assert original.chunk_id != changed_provenance.chunk_id
+    assert original.chunk_id != shifted.chunk_id
+
+
 def _normalized_span_chunk() -> TextChunk:
     source_text = "  tensión\n\n  eléctrica\tindustrial  "
     normalized_text = "tensión eléctrica industrial"
