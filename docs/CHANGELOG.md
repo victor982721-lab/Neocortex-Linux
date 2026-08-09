@@ -4,13 +4,35 @@ Este archivo registra cambios observables del producto. Las cifras de pruebas,
 cobertura y rendimiento pertenecen al informe técnico fechado de cada auditoría;
 no se copian aquí para evitar que se conviertan en datos históricos sin contexto.
 
-## [Sin publicar]
+## [Sin publicar] - 2026-08-08
+
+### Añadido
+
+- Soporte de producto para Kubuntu/Ubuntu 26.04: política XDG central,
+  inventario portable case-sensitive sin symlinks, identidad POSIX
+  `st_dev`/`st_ino` con `birthtime_ns=-1` cuando no existe nacimiento real,
+  contención por grupos de proceso y límites de memoria, y doctor de plataforma
+  versionado.
+- `Neocortex models prepare/status` para preparar secuencialmente y revisar de
+  forma local el conjunto Jina, MiniLM, CLIP, Whisper y NudeNet compartido entre
+  releases.
+- `tools/release_linux.py` para instalar, verificar y revertir releases
+  inmutables CPython 3.14 con wheel `full`, Node/Pyright aislados, activación
+  atómica, recibos y publicación KDE.
+- Normalización reproducible de la dependencia source-only `yattag 1.16.1` a
+  un wheel local después de validar el hash de su sdist; la instalación final
+  conserva `--only-binary=:all:`.
+- Modo portátil Linux en la interfaz: sin elevación falsa, con inventario,
+  búsqueda y procesamiento disponibles y controles de mutación deshabilitados.
 
 ### Cambiado
 
-- El paquete admite CPython 3.13 y 3.14 en Windows (`>=3.13,<3.15`); el carril
-  `standard` instala el perfil `full`, comprueba sus imports nativos y prueba el
-  wheel con ambas versiones.
+- El paquete admite CPython 3.13 y 3.14 en Windows y Linux
+  (`>=3.13,<3.15`); el carril `standard` instala el perfil `full`, comprueba sus
+  imports nativos y prueba el wheel con ambas versiones y sistemas.
+- `--apply` y `--organization-apply` se abstienen en Linux antes de crear
+  estado con razón estable `linux_mutation_backend_unavailable`; Windows
+  conserva USN, Job Objects, `ReplaceFileW` y mutaciones ligadas a handles.
 - La instalación documenta y valida el Microsoft Visual C++ v14 Redistributable
   x64 requerido por los wheels nativos; `pip check` permanece como una barrera
   distinta y no sustituye el probe de carga de DLL.

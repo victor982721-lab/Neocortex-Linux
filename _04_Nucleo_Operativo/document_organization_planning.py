@@ -4,7 +4,6 @@
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
-
 # region [01] Dependencias del módulo
 from __future__ import annotations
 
@@ -164,9 +163,7 @@ def plan_document_organization(
         considered = planned = review = blocked = organized = 0
         try:
             total = int(
-                connection.execute(
-                    "SELECT COUNT(*) FROM documents WHERE active=1"
-                ).fetchone()[0]
+                connection.execute("SELECT COUNT(*) FROM documents WHERE active=1").fetchone()[0]
             )
             managed_locations = {
                 (
@@ -215,10 +212,7 @@ def plan_document_organization(
                     blocked += 1
                 elif status == "already_organized":
                     organized += 1
-                if (
-                    considered % ORGANIZATION_PROGRESS_INTERVAL == 0
-                    or considered == total
-                ):
+                if considered % ORGANIZATION_PROGRESS_INTERVAL == 0 or considered == total:
                     _emit_organization_plan_progress(
                         progress,
                         operation=progress_operation,
@@ -480,13 +474,9 @@ def _proposed_destination(
         review_reasons = {
             "audio_transcrito": "generic_audio_requires_review",
             "expediente_personal": "personal_or_sensitive_document_requires_review",
-            "instruccion_cuenta_bancaria": (
-                "financial_or_sensitive_document_requires_review"
-            ),
+            "instruccion_cuenta_bancaria": ("financial_or_sensitive_document_requires_review"),
             "otro": "document_kind_not_safe_for_automatic_organization",
-            "reporte_inventario_archivo": (
-                "generated_file_inventory_report_requires_review"
-            ),
+            "reporte_inventario_archivo": ("generated_file_inventory_report_requires_review"),
         }
         if kind in _REVIEW_ONLY_KINDS:
             return review(review_reasons[kind])
@@ -766,9 +756,8 @@ def _proposed_filename(row: sqlite3.Row) -> str:
     if not isinstance(suggested, str) or not suggested.strip():
         return source.name
     primary_kind = str(classification.get("primary_kind") or "")
-    if (
-        primary_kind not in _SEMANTIC_RENAME_KINDS
-        and not _filename_needs_semantic_rename(original_stem)
+    if primary_kind not in _SEMANTIC_RENAME_KINDS and not _filename_needs_semantic_rename(
+        original_stem
     ):
         return source.name
     safe_stem = _safe_filename_stem(suggested, extension=source.suffix)
@@ -781,10 +770,7 @@ def _filename_needs_semantic_rename(stem: str) -> bool:
     normalized = unicodedata.normalize("NFKC", stem).strip()
     if "�" in normalized or len(normalized) > 180:
         return True
-    return any(
-        pattern.search(normalized) is not None
-        for pattern in _LOW_QUALITY_FILENAME_PATTERNS
-    )
+    return any(pattern.search(normalized) is not None for pattern in _LOW_QUALITY_FILENAME_PATTERNS)
 
 
 def _safe_filename_stem(value: str, *, extension: str) -> str:
@@ -822,9 +808,7 @@ def _validate_destination(root: Path, destination: Path) -> None:
 
 
 def _same_path(left: Path, right: Path) -> bool:
-    return os.path.normcase(os.path.abspath(left)) == os.path.normcase(
-        os.path.abspath(right)
-    )
+    return os.path.normcase(os.path.abspath(left)) == os.path.normcase(os.path.abspath(right))
 
 
 def _reject_state_destination(catalog_path: Path, root: Path) -> None:
@@ -832,10 +816,10 @@ def _reject_state_destination(catalog_path: Path, root: Path) -> None:
         intersects = path_trees_intersect(catalog_path.parent, root)
     except (OSError, ValueError) as exc:
         raise ValueError(
-            "organization root/framework state boundary cannot be verified"
+            "organization root/framework state directory boundary cannot be verified"
         ) from exc
     if intersects:
-        raise ValueError(
-            "organization root and framework state directory must be disjoint"
-        )
+        raise ValueError("organization root and framework state directory must be disjoint")
+
+
 # endregion [02]

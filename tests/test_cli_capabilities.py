@@ -4,7 +4,6 @@
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
-
 # region [01] Dependencias del módulo
 from __future__ import annotations
 
@@ -122,9 +121,7 @@ def test_canonical_argv_translates_to_hidden_flat_compatibility_flags() -> None:
         result = entrypoint(("doctor", "capabilities", "--json"))
 
     assert result == 7
-    run_cli.assert_called_once_with(
-        ["--doctor-capabilities", "--doctor-capabilities-json"]
-    )
+    run_cli.assert_called_once_with(["--doctor-capabilities", "--doctor-capabilities-json"])
     assert _translate_canonical_arguments(("doctor", "other")) == [
         "doctor",
         "other",
@@ -143,9 +140,7 @@ def test_flat_alias_is_explicit_but_hidden_from_global_help() -> None:
     assert parser.allow_abbrev is False
     assert args.doctor_capabilities is True
     assert args.doctor_capabilities_json is True
-    assert args._explicit_options == frozenset(
-        {"doctor_capabilities", "doctor_capabilities_json"}
-    )
+    assert args._explicit_options == frozenset({"doctor_capabilities", "doctor_capabilities_json"})
     help_text = parser.format_help()
     assert "--doctor-capabilities" not in help_text
     assert "--doctor-capabilities-json" not in help_text
@@ -193,9 +188,7 @@ def test_available_capabilities_emit_canonical_json_and_exit_zero(
         "schema_version": 1,
     }
     assert payload["capabilities"][0]["components"][0]["version"] == "1.2.3"
-    assert payload["capabilities"][0]["components"][1]["path"] == (
-        "C:/fixture/fixture.exe"
-    )
+    assert payload["capabilities"][0]["components"][1]["path"] == ("C:/fixture/fixture.exe")
     assert captured.out == (
         json.dumps(
             payload,
@@ -260,9 +253,7 @@ def test_fatal_probe_error_exits_one_without_partial_stdout(
     assert code == 1
     captured = capsys.readouterr()
     assert captured.out == ""
-    assert (
-        "ERROR doctor-capabilities RuntimeError: fixture probe failed" in captured.err
-    )
+    assert "ERROR doctor-capabilities RuntimeError: fixture probe failed" in captured.err
 
 
 @pytest.mark.parametrize(
@@ -278,7 +269,11 @@ def test_fatal_probe_error_exits_one_without_partial_stdout(
         ),
         (
             ("--doctor-capabilities", "--apply"),
-            "doctor capabilities is read-only and rejects --apply",
+            (
+                "doctor capabilities is read-only and rejects --apply"
+                if os.name == "nt"
+                else "linux_mutation_backend_unavailable"
+            ),
         ),
         (
             ("--doctor-capabilities", "--route", "pdf"),
@@ -401,4 +396,6 @@ def test_cold_canonical_probe_loads_no_optional_engine_and_creates_no_state(
 
     assert completed.returncode == 0, completed.stderr
     assert "CAPABILITIES_COLD_OK" in completed.stdout
+
+
 # endregion [02]

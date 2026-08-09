@@ -9,6 +9,13 @@ import argparse
 from collections.abc import Callable
 from pathlib import Path
 
+from neocortex.platform_policy import (
+    default_local_models_only,
+    default_whisper_compute_type,
+    default_whisper_device,
+    default_whisper_model_cache,
+)
+
 from .cli_operations import DirectOperationFamily, selected_direct_operations
 
 __all__ = [
@@ -63,9 +70,12 @@ def register_audio_arguments(
     audio.add_argument(
         "--whisper-device",
         choices=("auto", "cpu", "cuda"),
-        default="auto",
+        default=default_whisper_device(),
     )
-    audio.add_argument("--whisper-compute-type", default="auto")
+    audio.add_argument(
+        "--whisper-compute-type",
+        default=default_whisper_compute_type(),
+    )
     audio.add_argument(
         "--audio-language",
         default="auto",
@@ -89,10 +99,16 @@ def register_audio_arguments(
     audio.add_argument("--audio-min-free-memory-mb", type=int, default=2048)
     audio.add_argument("--audio-min-free-commit-mb", type=int, default=2048)
     audio.add_argument("--audio-memory-wait-timeout", type=float, default=300.0)
-    audio.add_argument("--audio-model-cache", type=Path, metavar="DIRECTORY")
+    audio.add_argument(
+        "--audio-model-cache",
+        type=Path,
+        default=default_whisper_model_cache(),
+        metavar="DIRECTORY",
+    )
     audio.add_argument(
         "--audio-local-models-only",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=default_local_models_only(),
         help="never download model weights; require an existing local model cache",
     )
     audio.add_argument(
@@ -152,15 +168,11 @@ def validate_audio_arguments(args: argparse.Namespace) -> None:
 def validate_audio_direct_operation(args: argparse.Namespace) -> None:
     """Reject framework mutations silently ignored by direct Audio actions."""
 
-    audio_actions = bool(
-        selected_direct_operations(args, family=DirectOperationFamily.AUDIO)
-    )
+    audio_actions = bool(selected_direct_operations(args, family=DirectOperationFamily.AUDIO))
     if not audio_actions:
         return
     if args.apply:
-        raise SystemExit(
-            "audio direct actions cannot be combined with file-action --apply"
-        )
+        raise SystemExit("audio direct actions cannot be combined with file-action --apply")
     if args.route != "none":
         raise SystemExit("audio direct actions cannot be combined with --route")
 

@@ -4,7 +4,6 @@
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
-
 # region [01] Dependencias del módulo
 from __future__ import annotations
 
@@ -18,9 +17,30 @@ from pathlib import Path
 # region [02] Implementación
 
 
-_CAPABILITIES_COMMAND = ("doctor", "capabilities")
-_CAPABILITIES_FLAT_FLAG = "--doctor-capabilities"
-_CAPABILITIES_JSON_FLAT_FLAG = "--doctor-capabilities-json"
+_CANONICAL_COMMANDS = {
+    ("doctor", "capabilities"): (
+        "--doctor-capabilities",
+        "--doctor-capabilities-json",
+        "Inspect declared runtime capabilities without importing optional engines, "
+        "loading models or creating state.",
+    ),
+    ("doctor", "platform"): (
+        "--doctor-platform",
+        "--doctor-platform-json",
+        "Inspect platform paths, inventory, identity, containment, elevation and "
+        "mutation capabilities without creating state.",
+    ),
+    ("models", "prepare"): (
+        "--models-prepare",
+        "--models-json",
+        "Explicitly and sequentially download and validate all production models.",
+    ),
+    ("models", "status"): (
+        "--models-status",
+        "--models-json",
+        "Inspect all production model caches locally without downloads or writes.",
+    ),
+}
 
 
 def _prepend_owned_executable_directories() -> None:
@@ -29,6 +49,8 @@ def _prepend_owned_executable_directories() -> None:
     prefix = Path(sys.prefix)
     candidates = (
         prefix / "tools" / "pyright" / "node_modules" / ".bin",
+        prefix / "tools" / "node" / "bin",
+        prefix / "tools" / "node",
         prefix.parent / "tools" / "node",
     )
     path_entries = [entry for entry in os.environ.get("PATH", "").split(os.pathsep) if entry]
@@ -44,12 +66,13 @@ def _prepend_owned_executable_directories() -> None:
         os.environ["PATH"] = os.pathsep.join((*additions, *path_entries))
 
 
-def _is_capabilities_command(arguments: Sequence[str]) -> bool:
-    return tuple(arguments[:2]) == _CAPABILITIES_COMMAND
+def _canonical_command(arguments: Sequence[str]) -> tuple[str, str] | None:
+    command = tuple(arguments[:2])
+    return command if command in _CANONICAL_COMMANDS else None
 
 
 def _canonical_help_requested(arguments: Sequence[str]) -> bool:
-    if not _is_capabilities_command(arguments):
+    if _canonical_command(arguments) is None:
         return False
     for token in arguments[2:]:
         if token == "--":
@@ -59,13 +82,11 @@ def _canonical_help_requested(arguments: Sequence[str]) -> bool:
     return False
 
 
-def _print_capabilities_help() -> None:
+def _print_canonical_help(command: tuple[str, str]) -> None:
+    _flat, _json_flat, description = _CANONICAL_COMMANDS[command]
     parser = argparse.ArgumentParser(
-        prog="Neocortex doctor capabilities",
-        description=(
-            "Inspect declared runtime capabilities without importing optional "
-            "engines, loading models or creating state."
-        ),
+        prog="Neocortex " + " ".join(command),
+        description=description,
         allow_abbrev=False,
     )
     parser.add_argument(
@@ -80,16 +101,18 @@ def _translate_canonical_arguments(arguments: Sequence[str]) -> list[str]:
     """Translate one exact canonical facade into hidden flat compatibility flags."""
 
     forwarded = list(arguments)
-    if not _is_capabilities_command(forwarded):
+    command = _canonical_command(forwarded)
+    if command is None:
         return forwarded
-    translated = [_CAPABILITIES_FLAT_FLAG]
+    flat_flag, json_flat_flag, _description = _CANONICAL_COMMANDS[command]
+    translated = [flat_flag]
     translate_options = True
     for token in forwarded[2:]:
         if token == "--":
             translate_options = False
             translated.append(token)
         elif translate_options and token == "--json":
-            translated.append(_CAPABILITIES_JSON_FLAT_FLAG)
+            translated.append(json_flat_flag)
         else:
             translated.append(token)
     return translated
@@ -117,7 +140,9 @@ def entrypoint(arguments: Sequence[str] | None = None) -> int:
         if special_exit_code is not None:
             return special_exit_code
         if _canonical_help_requested(forwarded):
-            _print_capabilities_help()
+            command = _canonical_command(forwarded)
+            assert command is not None
+            _print_canonical_help(command)
             return 0
         forwarded = _translate_canonical_arguments(forwarded)
         from _04_Nucleo_Operativo.cli_app import main as run_cli

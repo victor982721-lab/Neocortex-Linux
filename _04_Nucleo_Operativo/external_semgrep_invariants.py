@@ -360,6 +360,7 @@ def _semgrep_environment(
         "http_proxy",
         "https_proxy",
         "no_proxy",
+        "path",
         "userprofile",
     }
     controlled: dict[str, str] = {}
@@ -370,6 +371,11 @@ def _semgrep_environment(
         if folded in blocked or folded.startswith(("semgrep_", "otel_")):
             continue
         controlled[key] = value
+    if os.name != "nt":
+        # Semgrep's native telemetry client probes the platform with
+        # ``uname -s`` even when telemetry is disabled.  Supply only Python's
+        # fixed POSIX default instead of inheriting a caller-controlled PATH.
+        controlled["PATH"] = os.defpath
     settings = stage_root / "semgrep-settings.yml"
     settings.write_bytes(b"{}\n")
     cache = stage_root / "semgrep-xdg-cache"

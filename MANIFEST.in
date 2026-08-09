@@ -12,6 +12,7 @@ include docs/AUDIT_REPORTING_STANDARD.md
 include docs/CHANGELOG.md
 include docs/CLI.md
 include docs/KNOWLEDGE.md
+include docs/LINUX_KUBUNTU.md
 include docs/OPERATIONS.md
 include docs/OFFLINE_INSTALLATION.md
 include docs/PERSISTENCE.md
@@ -20,4 +21,6 @@ include docs/SELF_ANALYSIS.md
 include docs/SECURITY.md
 include docs/THIRD_PARTY_LICENSE_INVENTORY.md
 include tools/__init__.py
+include tools/build_binary_inputs.py
+include tools/source_only_requirements.txt
 recursive-include tools release_*.py

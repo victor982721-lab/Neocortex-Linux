@@ -4,7 +4,6 @@
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
-
 # region [01] Dependencias del módulo
 from __future__ import annotations
 
@@ -12,6 +11,12 @@ import argparse
 from pathlib import Path
 
 import pytest
+from neocortex.platform_policy import (
+    default_local_models_only,
+    default_whisper_compute_type,
+    default_whisper_device,
+    default_whisper_model_cache,
+)
 
 from _04_Nucleo_Operativo.cli_parser import build_parser, decimal_megabytes
 from _04_Nucleo_Operativo.cli_validation import validate_arguments
@@ -76,6 +81,8 @@ def _expected_boolean_optional(
     negative_option: str,
     destination: str,
     help_text: str,
+    *,
+    default: bool = True,
 ) -> tuple[object, ...]:
     return (
         (option, negative_option),
@@ -83,7 +90,7 @@ def _expected_boolean_optional(
         "BooleanOptionalAction",
         0,
         None,
-        True,
+        default,
         None,
         None,
         None,
@@ -134,13 +141,13 @@ EXPECTED_AUDIO_ACTIONS = (
     _expected_store(
         "--whisper-device",
         "whisper_device",
-        default="auto",
+        default=default_whisper_device(),
         choices=("auto", "cpu", "cuda"),
     ),
     _expected_store(
         "--whisper-compute-type",
         "whisper_compute_type",
-        default="auto",
+        default=default_whisper_compute_type(),
     ),
     _expected_store(
         "--audio-language",
@@ -205,13 +212,16 @@ EXPECTED_AUDIO_ACTIONS = (
     _expected_store(
         "--audio-model-cache",
         "audio_model_cache",
+        default=default_whisper_model_cache(),
         type_name="Path",
         metavar="DIRECTORY",
     ),
-    _expected_flag(
+    _expected_boolean_optional(
         "--audio-local-models-only",
+        "--no-audio-local-models-only",
         "audio_local_models_only",
         "never download model weights; require an existing local model cache",
+        default=default_local_models_only(),
     ),
     _expected_flag(
         "--retry-audio-errors",
@@ -261,7 +271,7 @@ EXPECTED_AUDIO_HELP = (
     "  --audio-min-free-commit-mb AUDIO_MIN_FREE_COMMIT_MB\n"
     "  --audio-memory-wait-timeout AUDIO_MEMORY_WAIT_TIMEOUT\n"
     "  --audio-model-cache DIRECTORY\n"
-    "  --audio-local-models-only\n"
+    "  --audio-local-models-only, --no-audio-local-models-only\n"
     "                        never download model weights; require an existing\n"
     "                        local model cache\n"
     "  --retry-audio-errors  force one new attempt for unchanged cached audio\n"
@@ -295,9 +305,7 @@ def _normalized_action(action: argparse.Action) -> tuple[object, ...]:
 
 def test_audio_actions_aliases_and_help_preserve_the_normalized_contract() -> None:
     parser = build_parser()
-    group = next(
-        item for item in parser._action_groups if item.title == AUDIO_GROUP_TITLE
-    )
+    group = next(item for item in parser._action_groups if item.title == AUDIO_GROUP_TITLE)
 
     assert group is parser._action_groups[-4]
     assert parser._action_groups[-3].title == CODE_GROUP_TITLE
@@ -307,9 +315,7 @@ def test_audio_actions_aliases_and_help_preserve_the_normalized_contract() -> No
         EXPECTED_AUDIO_ACTIONS
     )
     max_file_action = next(
-        action
-        for action in group._group_actions
-        if action.dest == "audio_max_file_bytes"
+        action for action in group._group_actions if action.dest == "audio_max_file_bytes"
     )
     assert max_file_action.type is decimal_megabytes
     help_text = parser.format_help()
@@ -387,4 +393,6 @@ def test_audio_validation_error_precedence_remains_stable(
         validate_arguments(args)
 
     assert str(raised.value) == message
+
+
 # endregion [02]

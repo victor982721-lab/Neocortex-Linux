@@ -22,7 +22,7 @@ class ElevationLaunchSpec:
 
 def is_elevated() -> bool:
     if os.name != "nt":
-        return True
+        return False
     return bool(ctypes.windll.shell32.IsUserAnAdmin())
 
 

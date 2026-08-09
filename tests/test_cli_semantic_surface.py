@@ -8,11 +8,13 @@
 from __future__ import annotations
 
 import argparse
+import os
 
 import pytest
 
 from _04_Nucleo_Operativo.cli_parser import build_parser
 from _04_Nucleo_Operativo.cli_validation import validate_arguments
+from neocortex.platform_policy import LINUX_MUTATION_REASON
 # endregion [01]
 
 # region [02] Implementación
@@ -20,6 +22,11 @@ from _04_Nucleo_Operativo.cli_validation import validate_arguments
 
 SEMANTIC_GROUP_TITLE = "Multimodal semantic index"
 KNOWLEDGE_GROUP_TITLE = "Read-only Knowledge Plane"
+_APPLY_PRECEDENCE_MESSAGE = (
+    "--semantic-plan-json requires --semantic-plan"
+    if os.name == "nt"
+    else f"{LINUX_MUTATION_REASON}: corpus mutation is intentionally unavailable on Linux"
+)
 
 
 def _expected_store(
@@ -168,9 +175,7 @@ EXPECTED_SEMANTIC_ACTIONS = (
         "--semantic-source",
         "semantic_source",
         choices=("pdf", "docx", "xlsx", "pptx", "odt", "audio", "code"),
-        help_text=(
-            "repeat to select durable text caches for text/all planning or indexing"
-        ),
+        help_text=("repeat to select durable text caches for text/all planning or indexing"),
         action_name="_AppendAction",
     ),
     _expected_store(
@@ -310,9 +315,7 @@ def _normalized_action(action: argparse.Action) -> tuple[object, ...]:
 
 def test_semantic_actions_and_help_preserve_the_normalized_flat_contract() -> None:
     parser = build_parser()
-    group = next(
-        item for item in parser._action_groups if item.title == SEMANTIC_GROUP_TITLE
-    )
+    group = next(item for item in parser._action_groups if item.title == SEMANTIC_GROUP_TITLE)
 
     assert group is parser._action_groups[-2]
     assert parser._action_groups[-1].title == KNOWLEDGE_GROUP_TITLE
@@ -375,7 +378,7 @@ def test_semantic_explicit_options_and_abbreviation_policy_remain_stable() -> No
         ),
         (
             ("--semantic-status", "--semantic-plan-json", "--apply"),
-            "--semantic-plan-json requires --semantic-plan",
+            _APPLY_PRECEDENCE_MESSAGE,
         ),
         (
             ("--semantic-status", "--semantic-plan-max-scratch-bytes", "131072"),
@@ -383,10 +386,7 @@ def test_semantic_explicit_options_and_abbreviation_policy_remain_stable() -> No
         ),
         (
             ("--semantic-plan", "text", "--semantic-model-cache", "models"),
-            (
-                "semantic model cache/thread options require prepare, index, "
-                "search, or classify"
-            ),
+            ("semantic model cache/thread options require prepare, index, search, or classify"),
         ),
     ),
 )

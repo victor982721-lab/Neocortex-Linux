@@ -24,10 +24,18 @@ observado y la siguiente acción única, está en el
 [handoff operativo 0.7.2](.codex/handoffs/NEOCORTEX_0.7.2_PAUSE_2026-07-30.md).
 
 Esta precaución aplica al arranque y diagnóstico, no elimina la experiencia
-simple buscada: una vez validado el entorno, `Neocortex --all --apply` debe ser
-el comando cotidiano integrado que haga todo lo soportado y aplique sólo
-acciones seguras. Las etapas aún no conectadas deben integrarse al comando, no
-convertirse en trabajo manual para Victor.
+simple buscada. En Windows, una vez validado el entorno,
+`Neocortex --all --apply` sigue siendo el comando cotidiano integrado y sólo
+aplica acciones ligadas al backend seguro NTFS. En Linux el flujo cotidiano es
+`Neocortex --all`: inventario, procesamiento y búsqueda están disponibles, pero
+`--apply` y `--organization-apply` se abstienen deliberadamente hasta que exista
+un backend ext4 con garantías equivalentes.
+
+En ambos sistemas `--all` inicia primero el autoanálisis protegido del checkout
+canónico y guarda esa evidencia en el estado separado de autoanálisis. Después
+continúa con el corpus documental. Si la raíz documental fue eliminada o no es
+utilizable, el autoanálisis todavía se ejecuta y la etapa de corpus termina con
+un error controlado `corpus_unavailable`, nunca con un traceback.
 
 Después de esa validación, `Neocortex --all` también avanza y publica Semantic
 textual a partir de los caches durables de PDF, DOCX, XLSX, PPTX, ODT y audio.
@@ -47,7 +55,7 @@ descartes por causa para que la cobertura no quede implícita.
 
 ## Topología canónica por usuario
 
-La fuente, el runtime y el estado ocupan árboles separados:
+La fuente, el runtime y el estado ocupan árboles separados. En Windows:
 
 ```text
 Fuente:       %USERPROFILE%\Neocortex\Repository
@@ -57,17 +65,62 @@ Estado:       %LOCALAPPDATA%\Neocortex\state
 Autoanálisis: %LOCALAPPDATA%\Neocortex\self-analysis
 ```
 
-Cada runtime es versionado e inmutable. El ejecutable de `bin` es la única ruta
-estable que debe incorporarse al `PATH`; sólo se promueve después de validar el
-artefacto y su entorno aislado. La invocación pública continúa siendo
-`Neocortex`.
+En Kubuntu/Linux:
+
+```text
+Fuente:       ~/Neocortex/Repository
+Corpus:       ~/Documentos/NeoCortex/Corpus
+Release:      ~/.local/share/Neocortex/releases/<version>-<sha12>-cp314-linux-x86_64
+Activa:       ~/.local/share/Neocortex/current
+Launcher:     ~/.local/share/Neocortex/bin/Neocortex
+Alias:        ~/.local/bin/Neocortex
+Estado:       ~/.local/state/Neocortex/state
+Modelos:      ~/.local/share/Neocortex/models
+```
+
+Las rutas Linux respetan `XDG_CONFIG_HOME`, `XDG_STATE_HOME` y
+`XDG_DATA_HOME`; el directorio Documentos se resuelve de forma segura desde
+`user-dirs.dirs`. Cada runtime es versionado e inmutable. El launcher estable
+sólo se promueve después de validar el artefacto y su entorno aislado. En ambos
+sistemas la invocación pública continúa siendo `Neocortex`.
 
 ## Instalación compatible
 
-El paquete actual requiere Windows y CPython `>=3.13,<3.15`; se valida con
-CPython 3.13 y 3.14. Instálelo primero
-en un entorno virtual aislado fuera del repositorio; no ejecute `pip install .`
-contra el Python global:
+El paquete admite Windows 11 y Linux con CPython `>=3.13,<3.15`; CI valida
+Python 3.13 y 3.14 en ambos sistemas. No instale el paquete, `pip`, Node ni sus
+dependencias contra runtimes globales.
+
+### Kubuntu/Linux
+
+La referencia local es Kubuntu/Ubuntu 26.04, Linux x86-64 y CPython 3.14.4. El
+instalador mantenido construye el wheel, crea una release inmutable, instala el
+extra `full` sólo desde wheels binarios, integra Node/Pyright, prepara modelos
+de forma explícita y publica KDE al final:
+
+```bash
+cd "$HOME/Neocortex/Repository"
+python3.14 tools/release_linux.py install \
+  --corpus-root "$HOME/Documentos/NeoCortex/Corpus" \
+  --prepare-models \
+  --desktop
+python3.14 tools/release_linux.py verify
+```
+
+La instalación prepara `--corpus-root` como directorio real si todavía no
+existe. No copia documentos ni inicia procesamiento; sólo garantiza que el
+comando cotidiano tenga una raíz válida desde su primera ejecución.
+
+Los modelos se comparten entre releases. `Neocortex models status --json` es
+local y de sólo lectura; `Neocortex models prepare --json` es la única fachada
+que descarga el conjunto de producción deliberadamente. La entrada KDE muestra
+“modo portátil Linux”, no solicita elevación y mantiene desactivadas las
+mutaciones. Consulte [Kubuntu/Linux](docs/LINUX_KUBUNTU.md) para requisitos,
+rutas XDG, recibos y rollback.
+
+### Windows
+
+Instale primero en un entorno virtual aislado fuera del repositorio; no ejecute
+`pip install .` contra el Python global:
 
 ```powershell
 $Repository = Join-Path $HOME 'Neocortex\Repository'
@@ -134,11 +187,15 @@ La misma inspección está disponible como doctor canónico de sólo lectura:
 ```powershell
 Neocortex doctor capabilities
 Neocortex doctor capabilities --json
+Neocortex doctor platform --json
 ```
 
 El doctor usa únicamente declaraciones, metadata de distribuciones, specs de
 import y resolución de ejecutables. No importa engines opcionales, no carga o
 descarga modelos y no crea estado.
+`doctor platform` añade un contrato versionado de sistema, rutas, inventario,
+identidad, contención, elevación y backend de mutación. Una plataforma Linux es
+compatible aunque informe la mutación como intencionalmente no disponible.
 
 `available` significa que todos los componentes declarados están presentes;
 `degraded`, que falta sólo una función opcional —por ejemplo OCR, fallback PDF
@@ -421,12 +478,15 @@ descendientes. `--code-query-limit` acepta 1–500 (50 por defecto) y
 conservan dimensiones, evidencia y limitaciones por separado: no calculan un
 score agregado ni una probabilidad de defecto, y nunca autorizan una mutación.
 
-El único workflow `Neocortex CI` en `.github/workflows/ci.yml` valida Windows.
-Los carriles `fast` y `standard` corren en pull requests y pushes; `standard`
-construye, instala y prueba el wheel tanto con Python 3.13 como con 3.14.
-`deep` queda reservado al cron semanal o a `workflow_dispatch`. Deep ejecuta
-sólo fixtures y contratos acotados, no suplanta la identidad física local
-exigida por una corrida real `trusted-deep`.
+El workflow `Neocortex CI` en `.github/workflows/ci.yml` tiene un lint rápido en
+Ubuntu/Python 3.14 y una matriz estándar Windows/Ubuntu con Python 3.13 y 3.14.
+La matriz construye e instala el wheel con extras completos y wheels binarios.
+Los carriles profundos Windows (NTFS) y Linux
+(inventario/contención/instalador) quedan reservados al cron semanal o a
+`workflow_dispatch`. CI usa dobles para los contratos de modelos y nunca
+descarga los pesos reales; éstos se verifican únicamente en la instalación
+local. Los fixtures profundos no sustituyen la identidad física local exigida
+por una corrida real `trusted-deep`.
 
 La validación H6 sobre la raíz canónica produjo el work package
 `_04_Nucleo_Operativo.external_deep_coverage` /
@@ -564,6 +624,10 @@ entre volúmenes provocan abstención. La planeación en seco conserva candidato
 de Papelera, pero la aplicación por ruta está deshabilitada y se registra como
 `skipped`; `Send2Trash` ya no es una dependencia.
 
+En Linux ambas autorizaciones se rechazan antes de crear estado, con código `2`
+y razón `linux_mutation_backend_unavailable`. No se degrada el contrato NTFS a
+una operación basada sólo en rutas.
+
 Una acción que cruzó la frontera de mutación sin poder confirmar el registro
 queda `recovery_required` y nunca se repite automáticamente. `status` sólo
 clasifica; `record` persiste explícitamente esa observación append-only, sin
@@ -598,6 +662,9 @@ consistente mediante la API SQLite; no copie sólo el `.sqlite3` si puede existi
 WAL.
 
 ## Documentación
+
+- [Kubuntu/Linux](docs/LINUX_KUBUNTU.md): instalación versionada, XDG, modelos,
+  KDE, verificación y límite de mutación.
 
 - [Guía de CLI](docs/CLI.md)
 - [Operación y watcher](docs/OPERATIONS.md)

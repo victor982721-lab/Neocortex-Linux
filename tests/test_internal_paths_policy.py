@@ -4,7 +4,6 @@
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
-
 # region [01] Dependencias del módulo
 from __future__ import annotations
 
@@ -156,9 +155,7 @@ def test_missing_internal_reservation_with_aliased_prefix_is_rejected(
     original_physical = internal_paths_module._physical_normalized
 
     def redirect_reserved(path: str | os.PathLike[str]) -> Path:
-        if os.path.normcase(os.path.abspath(path)) == os.path.normcase(
-            os.path.abspath(reserved)
-        ):
+        if os.path.normcase(os.path.abspath(path)) == os.path.normcase(os.path.abspath(reserved)):
             return redirected
         return original_physical(path)
 
@@ -187,9 +184,7 @@ def test_normal_profile_root_prunes_internal_trees_but_internal_root_fails(
     }
 
     with pytest.raises(InternalPathProtectionError, match="normal corpus root"):
-        policy.validate_corpus_access(
-            CorpusAccessPolicy.capture("normal", layout.repository)
-        )
+        policy.validate_corpus_access(CorpusAccessPolicy.capture("normal", layout.repository))
     child = layout.repository / "package"
     child.mkdir()
     with pytest.raises(InternalPathProtectionError, match="normal corpus root"):
@@ -204,18 +199,14 @@ def test_analyze_only_allows_exact_repository_or_disjoint_external_root(
     external = tmp_path / "external-source"
     external.mkdir()
 
-    policy.validate_corpus_access(
-        CorpusAccessPolicy.capture("analyze_only", layout.repository)
-    )
+    policy.validate_corpus_access(CorpusAccessPolicy.capture("analyze_only", layout.repository))
     policy.validate_corpus_access(CorpusAccessPolicy.capture("analyze_only", external))
 
     with pytest.raises(
         InternalPathProtectionError,
         match="non-repository internal path",
     ):
-        policy.validate_corpus_access(
-            CorpusAccessPolicy.capture("analyze_only", layout.profile)
-        )
+        policy.validate_corpus_access(CorpusAccessPolicy.capture("analyze_only", layout.profile))
     with pytest.raises(
         InternalPathProtectionError,
         match="non-repository internal path",
@@ -247,6 +238,7 @@ def test_mutation_guard_rejects_internal_paths_and_their_ancestors(
             policy.require_mutation_paths_allowed(blocked)
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows extended-path contract")
 def test_normal_composite_guard_rejects_internal_extended_alias(
     tmp_path: Path,
 ) -> None:
@@ -388,4 +380,6 @@ def test_effective_inventory_signature_binds_both_layers() -> None:
     assert protected == protected_repeated
     assert protected.startswith("effective-inventory-policy-v2:xxh3_128:")
     assert protected not in {first, protected_changed}
+
+
 # endregion [02]

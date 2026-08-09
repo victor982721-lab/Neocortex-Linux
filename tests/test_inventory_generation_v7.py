@@ -58,13 +58,9 @@ def _create_populated_v6(database: Path, root: Path) -> None:
     with sqlite3.connect(database) as connection:
         for statement in inventory_schema_module._V6_GENERATIONAL_DDL:
             connection.execute(statement)
-        for statement in inventory_schema_module._CURRENT_DDL[
-            inventory_schema_module._CURRENT_SHARED_DDL_START :
-        ]:
+        for statement in inventory_schema_module._LEGACY_SHARED_DDL:
             connection.execute(statement)
-        connection.execute(
-            "INSERT INTO metadata(key,value) VALUES('schema_version','6')"
-        )
+        connection.execute("INSERT INTO metadata(key,value) VALUES('schema_version','6')")
         connection.execute(
             """INSERT INTO scans(
             scan_id,root,root_volume_id,root_file_id,root_birthtime_ns,
@@ -207,9 +203,7 @@ def test_partial_scan_persists_partial_state_and_raises(
     real_scandir = os.scandir
 
     def fail_blocked(path: str | os.PathLike[str]):
-        if os.path.normcase(os.path.abspath(path)) == os.path.normcase(
-            os.path.abspath(blocked)
-        ):
+        if os.path.normcase(os.path.abspath(path)) == os.path.normcase(os.path.abspath(blocked)):
             raise PermissionError("synthetic denied directory")
         return real_scandir(path)
 
@@ -235,8 +229,7 @@ def test_bind_rejects_internally_inconsistent_complete_scan(tmp_path: Path) -> N
         scan = index.scan(root, excluded_paths=())
         with index._connection:
             index._connection.execute(
-                "UPDATE scans SET files_seen=files_seen+1,bytes_seen=bytes_seen+1 "
-                "WHERE scan_id=?",
+                "UPDATE scans SET files_seen=files_seen+1,bytes_seen=bytes_seen+1 WHERE scan_id=?",
                 (scan.scan_id,),
             )
 
@@ -271,9 +264,11 @@ def test_published_snapshots_holds_reader_generation_across_publish_and_prune(
             old_names.extend(Path(item.path).name for item in old_rows)
             assert old_names == ["a.bin", "b.bin"]
             assert publisher.file_count(first.scan_id) == 2
-            assert [
-                Path(item.path).name for item in reader.published_snapshots(root)
-            ] == ["a.bin", "b.bin", "c.bin"]
+            assert [Path(item.path).name for item in reader.published_snapshots(root)] == [
+                "a.bin",
+                "b.bin",
+                "c.bin",
+            ]
 
 
 def test_prune_retains_building_and_complete_publish_candidate(tmp_path: Path) -> None:

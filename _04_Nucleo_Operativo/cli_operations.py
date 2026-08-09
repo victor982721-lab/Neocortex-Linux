@@ -35,6 +35,8 @@ class DirectOperationFamily(Enum):
     """Validation domain for related direct operations."""
 
     CAPABILITIES = auto()
+    PLATFORM = auto()
+    MODELS = auto()
     STATUS = auto()
     RECOVERY = auto()
     WATCH = auto()
@@ -84,6 +86,8 @@ class DirectOperation:
 
 _VALUE = SelectionMode.NOT_NONE
 _CAPABILITIES = DirectOperationFamily.CAPABILITIES
+_PLATFORM = DirectOperationFamily.PLATFORM
+_MODELS = DirectOperationFamily.MODELS
 _STATUS = DirectOperationFamily.STATUS
 _RECOVERY = DirectOperationFamily.RECOVERY
 _WATCH = DirectOperationFamily.WATCH
@@ -103,6 +107,24 @@ DIRECT_OPERATIONS: tuple[DirectOperation, ...] = (
         "run_doctor_capabilities",
         _CAPABILITIES,
         module_name=".cli_capabilities",
+    ),
+    DirectOperation(
+        "doctor_platform",
+        "run_doctor_platform",
+        _PLATFORM,
+        module_name=".cli_platform",
+    ),
+    DirectOperation(
+        "models_prepare",
+        "run_models_prepare",
+        _MODELS,
+        module_name=".cli_models",
+    ),
+    DirectOperation(
+        "models_status",
+        "run_models_status",
+        _MODELS,
+        module_name=".cli_models",
     ),
     DirectOperation("status", "run_operational_status", _STATUS),
     DirectOperation(

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import io
 import runpy
+import tempfile
 import unittest
 from types import SimpleNamespace
 from contextlib import redirect_stderr
@@ -14,6 +15,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import Orquestador
+from _02_Deduplicacion import InventoryError
 from _04_Nucleo_Operativo.cli_app import main, run_framework
 from _04_Nucleo_Operativo.cli_config import framework_config_from_args
 from _04_Nucleo_Operativo.cli_parser import (
@@ -62,6 +64,11 @@ class ModularParserTests(unittest.TestCase):
         self.assertEqual(config.image_document_ocr_lang, "spa")
         self.assertEqual(config.pdf_max_file_bytes, 1_500_000)
 
+    def test_all_help_exposes_integrated_protected_self_analysis(self) -> None:
+        action = build_parser()._option_string_actions["--all"]
+
+        self.assertIn("protected self-analysis", action.help or "")
+
 
 # endregion [02]
 
@@ -98,6 +105,10 @@ class OrchestratorShimTests(unittest.TestCase):
     def test_all_runs_integrated_semantic_after_framework(self) -> None:
         result = SimpleNamespace(actions=None)
         with (
+            patch(
+                "_04_Nucleo_Operativo.cli_app._run_integrated_self_analysis",
+                return_value=0,
+            ) as self_analysis,
             patch("_04_Nucleo_Operativo.cli_app.run_framework", return_value=result),
             patch("_04_Nucleo_Operativo.cli_reporting.print_reports"),
             patch(
@@ -117,6 +128,105 @@ class OrchestratorShimTests(unittest.TestCase):
 
         semantic.assert_called_once()
         self.assertTrue(semantic.call_args.args[0].all)
+        self_analysis.assert_called_once_with()
+
+    def test_all_reuses_the_canonical_self_analysis_service(self) -> None:
+        result = SimpleNamespace(actions=None)
+        observed_modes: list[bool] = []
+
+        def record_framework(args, **_kwargs):
+            observed_modes.append(bool(args.self_analysis))
+            return result
+
+        with tempfile.TemporaryDirectory() as directory:
+            temporary = Path(directory)
+            repository = temporary / "Repository"
+            repository.mkdir()
+            corpus = temporary / "Corpus"
+            corpus.mkdir()
+            with (
+                patch(
+                    "_04_Nucleo_Operativo.app_paths.source_repository_directory",
+                    return_value=repository,
+                ),
+                patch(
+                    "_04_Nucleo_Operativo.app_paths.self_analysis_data_directory",
+                    return_value=temporary / "self-analysis-state",
+                ),
+                patch(
+                    "_04_Nucleo_Operativo.cli_app.run_framework",
+                    side_effect=record_framework,
+                ),
+                patch("_04_Nucleo_Operativo.cli_reporting.print_reports"),
+                patch(
+                    "_04_Nucleo_Operativo.cli_reporting.has_organization_errors",
+                    return_value=False,
+                ),
+                patch(
+                    "_04_Nucleo_Operativo.cli_reporting.has_strict_route_errors",
+                    return_value=False,
+                ),
+                patch(
+                    "_04_Nucleo_Operativo.cli_semantic.run_integrated_all_semantic_index",
+                    return_value=0,
+                ),
+            ):
+                self.assertEqual(main(["--all", "--root", str(corpus)]), 0)
+
+        self.assertEqual(observed_modes, [True, False])
+
+    def test_all_runs_self_analysis_before_a_missing_corpus_is_reported(self) -> None:
+        events: list[str] = []
+        stderr = io.StringIO()
+
+        def run_self_analysis() -> int:
+            events.append("self-analysis")
+            return 0
+
+        def fail_corpus(*_args, **_kwargs):
+            events.append("corpus")
+            raise InventoryError("cannot inspect inventory root: missing")
+
+        with (
+            patch(
+                "_04_Nucleo_Operativo.cli_app._run_integrated_self_analysis",
+                side_effect=run_self_analysis,
+            ),
+            patch(
+                "_04_Nucleo_Operativo.cli_app.run_framework",
+                side_effect=fail_corpus,
+            ),
+            redirect_stderr(stderr),
+        ):
+            self.assertEqual(main(["--all"]), 2)
+
+        self.assertEqual(events, ["self-analysis", "corpus"])
+        self.assertIn("ERROR corpus_unavailable:", stderr.getvalue())
+        self.assertNotIn("Traceback", stderr.getvalue())
+
+    def test_all_propagates_integrated_self_analysis_failure(self) -> None:
+        result = SimpleNamespace(actions=None)
+        with (
+            patch(
+                "_04_Nucleo_Operativo.cli_app._run_integrated_self_analysis",
+                return_value=2,
+            ),
+            patch("_04_Nucleo_Operativo.cli_app.run_framework", return_value=result),
+            patch("_04_Nucleo_Operativo.cli_reporting.print_reports"),
+            patch(
+                "_04_Nucleo_Operativo.cli_reporting.has_organization_errors",
+                return_value=False,
+            ),
+            patch(
+                "_04_Nucleo_Operativo.cli_reporting.has_strict_route_errors",
+                return_value=False,
+            ),
+            patch(
+                "_04_Nucleo_Operativo.cli_semantic.run_integrated_all_semantic_index",
+                return_value=0,
+            ),
+        ):
+            self.assertEqual(main(["--all"]), 2)
 
 
 # endregion [03]

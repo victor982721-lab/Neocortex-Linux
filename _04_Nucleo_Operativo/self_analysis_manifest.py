@@ -18,6 +18,7 @@ from _02_Deduplicacion.inventory_scan import (
     MAX_INVENTORY_EXCLUSION_RULE_CHARS,
     MAX_INVENTORY_EXCLUSION_RULES,
 )
+from neocortex.platform_policy import UNAVAILABLE_BIRTHTIME_NS
 
 from .self_analysis import (
     LEGACY_SELF_ANALYSIS_MANIFEST_SCHEMAS,
@@ -56,6 +57,18 @@ def manifest_integer(value: object, *, label: str, minimum: int = 0) -> int:
     if type(value) is not int or value < minimum:
         raise InvalidSelfAnalysisManifest(f"{label} must be an integer >= {minimum}")
     return value
+
+
+def manifest_birthtime_ns(value: object, *, label: str, schema: str) -> int:
+    """Validate the creation-time domain supported by one manifest schema."""
+
+    if schema == SELF_ANALYSIS_MANIFEST_SCHEMA:
+        minimum = UNAVAILABLE_BIRTHTIME_NS
+    elif schema in LEGACY_SELF_ANALYSIS_MANIFEST_SCHEMAS:
+        minimum = 0
+    else:
+        raise InvalidSelfAnalysisManifest("manifest birthtime schema is unsupported")
+    return manifest_integer(value, label=label, minimum=minimum)
 
 
 def manifest_text(value: object, *, label: str, maximum: int = 32_768) -> str:
@@ -114,9 +127,7 @@ def _normalize_recorded_rules(
     label: str,
     suffixes: bool = False,
 ) -> tuple[str, ...]:
-    normalized = {
-        _validate_recorded_rule(value, label=label, suffix=suffixes) for value in values
-    }
+    normalized = {_validate_recorded_rule(value, label=label, suffix=suffixes) for value in values}
     if len(normalized) > MAX_INVENTORY_EXCLUSION_RULES:
         raise InvalidSelfAnalysisManifest(f"recorded {label} rules exceed their bound")
     result = tuple(sorted(normalized))
@@ -144,9 +155,7 @@ def _canonical_explicit_roots(value: object) -> tuple[str, ...]:
         canonical_by_key[key] = root
     root_keys = tuple(sorted(canonical_by_key))
     if [canonical_by_key[key] for key in root_keys] != roots:
-        raise InvalidSelfAnalysisManifest(
-            "manifest explicit roots are not canonically ordered"
-        )
+        raise InvalidSelfAnalysisManifest("manifest explicit roots are not canonically ordered")
     return root_keys
 
 
@@ -213,9 +222,7 @@ def _validate_recorded_policy(policy: Mapping[str, object]) -> None:
     if policy.get("profile") != SELF_ANALYSIS_PROFILE_VERSION:
         raise InvalidSelfAnalysisManifest("manifest policy profile is unsupported")
     if policy.get("signature_version") != INVENTORY_EXCLUSION_SIGNATURE_VERSION:
-        raise InvalidSelfAnalysisManifest(
-            "manifest policy signature version is unsupported"
-        )
+        raise InvalidSelfAnalysisManifest("manifest policy signature version is unsupported")
     root_keys = _canonical_explicit_roots(policy.get("explicit_roots"))
     (
         directory_names,
@@ -249,9 +256,7 @@ def _validate_recorded_policy(policy: Mapping[str, object]) -> None:
         f"{xxhash.xxh3_128_hexdigest(signature_payload)}"
     )
     if policy.get("signature") != expected_signature:
-        raise InvalidSelfAnalysisManifest(
-            "manifest inventory policy signature is inconsistent"
-        )
+        raise InvalidSelfAnalysisManifest("manifest inventory policy signature is inconsistent")
 
 
 # endregion [02]
@@ -260,7 +265,7 @@ def _validate_recorded_policy(policy: Mapping[str, object]) -> None:
 # region [03] Manifest sections
 
 
-def _validate_run(manifest: Mapping[str, object]) -> None:
+def _validate_run(manifest: Mapping[str, object], *, schema: str) -> None:
     run = manifest_mapping(
         manifest.get("run"),
         label="manifest run",
@@ -286,7 +291,11 @@ def _validate_run(manifest: Mapping[str, object]) -> None:
     )
     _canonical_hex(identity.get("device_id_hex"), label="manifest root device")
     _canonical_hex(identity.get("file_id_hex"), label="manifest root file identity")
-    manifest_integer(identity.get("birthtime_ns"), label="manifest root birthtime")
+    manifest_birthtime_ns(
+        identity.get("birthtime_ns"),
+        label="manifest root birthtime",
+        schema=schema,
+    )
 
 
 def _validate_available_journal(journal: Mapping[str, object]) -> None:
@@ -295,13 +304,9 @@ def _validate_available_journal(journal: Mapping[str, object]) -> None:
     manifest_text(journal.get("volume"), label="manifest journal volume")
     journal_id = manifest_text(journal.get("journal_id"), label="manifest journal id")
     if not journal_id.isascii() or not journal_id.isdecimal():
-        raise InvalidSelfAnalysisManifest(
-            "manifest journal id is not canonical decimal text"
-        )
+        raise InvalidSelfAnalysisManifest("manifest journal id is not canonical decimal text")
     if journal_id != str(int(journal_id)):
-        raise InvalidSelfAnalysisManifest(
-            "manifest journal id is not canonical decimal text"
-        )
+        raise InvalidSelfAnalysisManifest("manifest journal id is not canonical decimal text")
     start_usn = manifest_integer(journal.get("start_usn"), label="manifest start USN")
     end_usn = manifest_integer(journal.get("end_usn"), label="manifest end USN")
     if end_usn < start_usn:
@@ -319,9 +324,7 @@ def _validate_journal(
     )
     if schema in LEGACY_SELF_ANALYSIS_MANIFEST_SCHEMAS:
         if set(journal) != {"volume", "journal_id", "start_usn", "end_usn"}:
-            raise InvalidSelfAnalysisManifest(
-                "manifest journal has an incompatible shape"
-            )
+            raise InvalidSelfAnalysisManifest("manifest journal has an incompatible shape")
         _validate_available_journal(journal)
         return
     status = journal.get("status")
@@ -393,9 +396,7 @@ def _validate_inventory(manifest: Mapping[str, object], *, schema: str) -> None:
     )
     manifest_text(policy.get("profile"), label="manifest policy profile")
     manifest_text(policy.get("signature"), label="manifest policy signature")
-    manifest_text(
-        policy.get("signature_version"), label="manifest policy signature version"
-    )
+    manifest_text(policy.get("signature_version"), label="manifest policy signature version")
     _validate_recorded_policy(policy)
 
 
@@ -403,9 +404,7 @@ def _validate_code(manifest: Mapping[str, object]) -> None:
     code = manifest_mapping(
         manifest.get("code"),
         label="manifest code evidence",
-        keys=frozenset(
-            {"route_name", "input_source", "processing_signature", "summary"}
-        ),
+        keys=frozenset({"route_name", "input_source", "processing_signature", "summary"}),
     )
     if code.get("route_name") != "code":
         raise InvalidSelfAnalysisManifest("manifest code route binding is incompatible")
@@ -423,14 +422,10 @@ def _validate_safety(manifest: Mapping[str, object]) -> None:
     safety = manifest_mapping(
         manifest.get("safety"),
         label="manifest safety evidence",
-        keys=frozenset(
-            {"route_candidates", "file_actions", "run_actions", "organization_events"}
-        ),
+        keys=frozenset({"route_candidates", "file_actions", "run_actions", "organization_events"}),
     )
     if any(type(value) is not int or value != 0 for value in safety.values()):
-        raise InvalidSelfAnalysisManifest(
-            "manifest safety evidence is not exact zeroes"
-        )
+        raise InvalidSelfAnalysisManifest("manifest safety evidence is not exact zeroes")
 
 
 def _validate_commands(manifest: Mapping[str, object]) -> None:
@@ -442,9 +437,7 @@ def _validate_commands(manifest: Mapping[str, object]) -> None:
     for name in ("analyze", "status"):
         argv = _string_list(commands.get(name), label=f"manifest {name} command")
         if not argv or argv[0] != "Neocortex":
-            raise InvalidSelfAnalysisManifest(
-                f"manifest {name} command is incompatible"
-            )
+            raise InvalidSelfAnalysisManifest(f"manifest {name} command is incompatible")
 
 
 def _validate_deep_analysis(
@@ -462,9 +455,7 @@ def _validate_deep_analysis(
     try:
         expected = _deep_analysis_from_argv(analyze)
     except ValueError as exc:
-        raise InvalidSelfAnalysisManifest(
-            "manifest deep analysis command is incompatible"
-        ) from exc
+        raise InvalidSelfAnalysisManifest("manifest deep analysis command is incompatible") from exc
     recorded = manifest.get("deep_analysis")
     if schema in LEGACY_SELF_ANALYSIS_MANIFEST_SCHEMAS:
         if "deep_analysis" in manifest or expected is not None:
@@ -474,9 +465,7 @@ def _validate_deep_analysis(
         return
     if expected is None:
         if "deep_analysis" in manifest:
-            raise InvalidSelfAnalysisManifest(
-                "manifest deep analysis evidence is unexpected"
-            )
+            raise InvalidSelfAnalysisManifest("manifest deep analysis evidence is unexpected")
         return
     recorded_mapping = manifest_mapping(
         recorded,
@@ -495,9 +484,7 @@ def _validate_deep_analysis(
         sort_keys=True,
     )
     if recorded_canonical != expected_canonical:
-        raise InvalidSelfAnalysisManifest(
-            "manifest deep analysis evidence is inconsistent"
-        )
+        raise InvalidSelfAnalysisManifest("manifest deep analysis evidence is inconsistent")
 
 
 # endregion [03]
@@ -519,34 +506,22 @@ def canonical_self_analysis_manifest(manifest: Mapping[str, object]) -> str:
 
 def _decode_bounded_json(raw: object, byte_count: object) -> Mapping[str, object]:
     if not isinstance(raw, str) or type(byte_count) is not int:
-        raise InvalidSelfAnalysisManifest(
-            "self-analysis manifest has an invalid byte bound"
-        )
+        raise InvalidSelfAnalysisManifest("self-analysis manifest has an invalid byte bound")
     if not 0 < byte_count <= MAX_SELF_ANALYSIS_MANIFEST_BYTES:
-        raise InvalidSelfAnalysisManifest(
-            "self-analysis manifest has an invalid byte bound"
-        )
+        raise InvalidSelfAnalysisManifest("self-analysis manifest has an invalid byte bound")
     if len(raw.encode("utf-8")) != byte_count:
-        raise InvalidSelfAnalysisManifest(
-            "self-analysis manifest has an invalid byte bound"
-        )
+        raise InvalidSelfAnalysisManifest("self-analysis manifest has an invalid byte bound")
     try:
         decoded = json.loads(raw)
     except (TypeError, ValueError, json.JSONDecodeError) as exc:
-        raise InvalidSelfAnalysisManifest(
-            "self-analysis manifest is malformed JSON"
-        ) from exc
+        raise InvalidSelfAnalysisManifest("self-analysis manifest is malformed JSON") from exc
     manifest = manifest_mapping(
         decoded,
         label="self-analysis manifest",
     )
-    common_keys = frozenset(
-        {"schema", "run", "inventory", "code", "safety", "commands"}
-    )
+    common_keys = frozenset({"schema", "run", "inventory", "code", "safety", "commands"})
     if set(manifest) not in {common_keys, common_keys | {"deep_analysis"}}:
-        raise InvalidSelfAnalysisManifest(
-            "self-analysis manifest has an incompatible shape"
-        )
+        raise InvalidSelfAnalysisManifest("self-analysis manifest has an incompatible shape")
     return manifest
 
 
@@ -559,10 +534,8 @@ def decode_self_analysis_manifest(raw: object, byte_count: object) -> dict[str, 
         SELF_ANALYSIS_MANIFEST_SCHEMA,
         *LEGACY_SELF_ANALYSIS_MANIFEST_SCHEMAS,
     }:
-        raise InvalidSelfAnalysisManifest(
-            "self-analysis manifest schema is unsupported"
-        )
-    _validate_run(manifest)
+        raise InvalidSelfAnalysisManifest("self-analysis manifest schema is unsupported")
+    _validate_run(manifest, schema=str(schema))
     _validate_inventory(manifest, schema=str(schema))
     _validate_code(manifest)
     _validate_safety(manifest)
@@ -570,9 +543,7 @@ def decode_self_analysis_manifest(raw: object, byte_count: object) -> dict[str, 
     _validate_deep_analysis(manifest, schema=str(schema))
     canonical = canonical_self_analysis_manifest(manifest)
     if canonical != raw:
-        raise InvalidSelfAnalysisManifest(
-            "self-analysis manifest is not canonical JSON"
-        )
+        raise InvalidSelfAnalysisManifest("self-analysis manifest is not canonical JSON")
     return dict(manifest)
 
 
@@ -580,6 +551,7 @@ __all__ = [
     "InvalidSelfAnalysisManifest",
     "canonical_self_analysis_manifest",
     "decode_self_analysis_manifest",
+    "manifest_birthtime_ns",
     "manifest_integer",
     "manifest_mapping",
     "manifest_text",

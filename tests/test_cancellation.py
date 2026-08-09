@@ -212,6 +212,7 @@ class FrameworkCancellationTests(unittest.TestCase):
                 {"waiting": "cancelled", "interrupt": "cancelled"},
             )
 
+    @unittest.skipUnless(os.name == "nt", "USN acceleration is Windows-only")
     def test_incremental_run_reports_current_inventory_separately_from_usn_delta(
         self,
     ) -> None:
@@ -223,9 +224,7 @@ class FrameworkCancellationTests(unittest.TestCase):
             journal = SyntheticUsnJournal(corpus).start()
             self.addCleanup(journal.close)
             (corpus / "one.bin").write_bytes(b"1")
-            FrameworkOrchestrator(
-                FrameworkConfig(root=corpus, state_directory=state)
-            ).run_initial()
+            FrameworkOrchestrator(FrameworkConfig(root=corpus, state_directory=state)).run_initial()
 
             progress = RecordingProgress()
             result = FrameworkOrchestrator(

@@ -1,11 +1,73 @@
 # Neocortex — handoff operativo actual
 
-> Actualizado: 2026-08-05, salida real 74 corregida, empaquetada y promovida.
+> Actualizado: 2026-08-08, soporte Kubuntu/Linux implementado en la rama
+> `codex/linux-kubuntu-compat`; validación del runtime instalado y PR borrador
+> deben comprobarse siempre contra el entorno vivo y sus recibos.
 > Este archivo conserva su nombre anterior sólo para mantener la ruta conocida.
 > `Resultado actual` y `Próximos pasos` son la única guía vigente; los
 > checkpoints restantes conservan evidencia histórica y no son planes activos.
 
 ## Resultado actual
+
+### Frontera vigente — Windows + Kubuntu/Linux
+
+La rama parte de `main` en `9cfa94500f46832e595eecb1ee01613303bedf95` y se
+organiza en cuatro commits intencionales: reparación CI, núcleo
+multiplataforma, distribución Kubuntu y documentación/CI. Los tres primeros son
+`3b44336`, `cb9a4d1` y `5f7b0c3`; el cuarto es el `HEAD` que contiene esta
+actualización. No reutilizar la PR antigua #1 ni fusionar la nueva PR mientras
+no estén verdes la matriz remota y el piloto local aprobado.
+
+Windows conserva sus contratos nativos: USN como acelerador, identidad NTFS,
+Job Objects, `ReplaceFileW`, mutaciones ligadas a handles y rutas bajo
+`%LOCALAPPDATA%`. Linux usa política XDG central, inventario completo portable,
+collation case-sensitive, exclusión de árboles internos y symlinks, identidad
+`st_dev`/`st_ino` y `birthtime_ns=-1` cuando no existe nacimiento real. Nunca se
+presenta `ctime` como nacimiento.
+
+Los subprocesos POSIX tienen sesión/grupo propios, cancelación de todo el árbol
+con `SIGTERM`/`SIGKILL` y límites de memoria mediante `RLIMIT_AS` o
+`/usr/bin/prlimit`; un límite solicitado que no pueda imponerse produce
+abstención. `--apply` y `--organization-apply` se rechazan en Linux antes de
+crear estado con salida `2` y razón estable
+`linux_mutation_backend_unavailable`. No implementar un `Path.rename` como
+sustituto del backend Windows.
+
+La interfaz KDE expone “modo portátil Linux”, no finge elevación, mantiene
+inventario, PDF, DOCX, Office, audio, imagen, Code y búsqueda, y desactiva la
+mutación. `doctor platform [--json]` reporta la política versionada.
+`models prepare/status [--json]` gestiona secuencialmente Jina, MiniLM, CLIP,
+Whisper `small` CPU/int8 y el modelo NudeNet incluido, con caché compartido
+entre releases y status estrictamente local.
+
+`tools/release_linux.py` construye e instala el wheel `full` sólo desde wheels
+binarios, integra Node `24.18.1` y Pyright `1.1.411`, crea releases inmutables
+`<version>-<sha12>-cp314-linux-x86_64`, activa `current` atómicamente bajo
+`flock`, conserva releases anteriores, publica launcher/alias/KDE al final y
+escribe recibos en el estado. Una preparación incompleta de modelos conserva
+el cache reanudable y el candidato, pero no promueve ni publica KDE.
+
+La validación inicial de Víctor reveló que el instalador registraba la raíz del
+corpus sin crearla y que `Neocortex --all` abortaba en el inventario antes de
+alcanzar el autoanálisis. La corrección vigente prepara `--corpus-root` como
+directorio real y hace que `--all` reutilice primero el servicio de autoanálisis
+protegido sobre `~/Neocortex/Repository`, con su estado separado. Si el corpus
+falta después, conserva el resultado del autoanálisis y devuelve un error
+controlado `corpus_unavailable` con código `2`, sin traceback ni estado
+documental parcial.
+
+La evidencia fuente previa a la instalación incluye 223 pruebas del corte
+precommit, 167 pruebas focales core, una barrera amplia de 440 aprobadas y 65
+omitidas que aisló tres contratos de migración histórica, y 17/17 pruebas de
+migración aprobadas después de repararlos. Los contratos del instalador y de
+normalización binaria pasan 12/12. Ruff, formato y los diffs de los cortes
+funcionales quedaron limpios.
+En el host Kubuntu se verificaron CPython 3.14.4, qpdf 12.3.2, FFprobe 8.0.1 y
+Tesseract con `spa` + `eng`; sólo se instalaron por apt los faltantes `qpdf` y
+`tesseract-ocr-spa`. No se tocó el corpus personal ni se migró estado Windows.
+
+Los párrafos históricos siguientes describen la última entrega Windows y se
+conservan como evidencia; no revocan esta frontera multiplataforma.
 
 La corrida real 74 terminó con exit `2` después de 58 minutos. Code no fue el
 fallo: reutilizó 170/170 archivos, publicó 4 933 símbolos y 31 029 referencias
@@ -1563,47 +1625,36 @@ ausentes y su candidate limit, no evidencia inventada.
 
 ## Próximos pasos, en orden
 
-Actualización local `2026-08-07`: el árbol `9d6fa1c` más el cambio pendiente de
-compatibilidad CPython 3.14 produjo el wheel `0.7.2` SHA-256
-`c390d9505758bebe2daa17a2a491ca7dea88070da700b6908dc6259c8e3f3b8d`.
-Se instaló `full` con Python `3.14.6` en el runtime versionado
-`0.7.2-py314-c390d950`, se promovió el launcher estable y no existían estado ni
-corpus vivos que migrar. Pasaron 52 pruebas contractuales, 385 pruebas core
-desde el wheel y el slice PDF sintético con replay de caché; los imports nativos
-también pasaron después de instalar el Visual C++ v14 Redistributable x64. Audio,
-Code, Semantic, UI, DOCX y Office están disponibles; PDF e imagen conservan sólo
-la degradación opcional por Tesseract/qpdf ausentes.
+1. **Consultar primero el estado vivo.** Leer `git status`, el SHA de `HEAD`, la
+   PR borrador, sus checks y el recibo más reciente bajo
+   `${XDG_STATE_HOME:-~/.local/state}/Neocortex/state/installation-receipts`.
+   No inferir una release activa desde este texto.
+2. **Mantener la PR en borrador hasta dos barreras.** La matriz estándar debe
+   estar verde en Windows/Ubuntu × Python 3.13/3.14 y los carriles profundos
+   deben conservarse semanales/manuales. Además, Víctor debe aprobar el piloto
+   Linux local. No fusionar antes.
+3. **Verificar la instalación Kubuntu desde el launcher público.** Ejecutar
+   `python3.14 tools/release_linux.py verify`, `doctor capabilities --json`,
+   `doctor platform --json`, `models status --json`, imports nativos,
+   Node/Pyright, qpdf, `spa+eng`, FFprobe, PySide6 offscreen y validación del
+   `.desktop`. Confirmar además que la raíz canónica existe y que una aceptación
+   acotada de `Neocortex --all` entra primero al autoanálisis. Si cambia el
+   commit, construir otra release; no reutilizar un runtime cuyo identificador
+   ya no corresponda al SHA.
+4. **Conservar el piloto aislado y no mutador.** Usar 20–50 fixtures durante
+   10–15 minutos para PDF, DOCX/Office, audio, imagen, Code, catálogo y búsqueda
+   léxica/semántica. Comparar hashes antes/después. Nunca usar `--apply`,
+   `--organization-apply`, `--all`, el corpus personal ni el estado Windows.
+5. **Preservar la separación de plataformas.** Windows mantiene su backend
+   seguro y `Neocortex --all --apply`; Linux mantiene `Neocortex --all` sin
+   mutación. No migrar SQLite ni identidades NTFS. Cuando exista un volumen
+   Windows, copiar únicamente originales a ext4 con `rsync` sin `--delete` y
+   verificar con un segundo pase `--checksum --dry-run`.
+6. **Rollback sin poda automática.** Si una activación falla, usar
+   `python3.14 tools/release_linux.py rollback`, comprobar otra vez el launcher
+   y conservar releases, modelos y recibos para trazabilidad.
 
-1. **Versionar y publicar el cambio de compatibilidad.** Revisar el diff
-   pendiente, crear una frontera Git intencional y no atribuirla al commit base
-   `9d6fa1c`.
-2. **Confirmar la matriz instalada en GitHub.** El carril `standard` debe
-   construir e instalar `full`, importar sus wheels nativos y pasar la suite
-   core tanto con Python 3.13 como con 3.14 antes de una entrega remota.
-3. **Repetir la corrida real sólo cuando Victor lo decida.** Ejecutar
-   `Neocortex --all`, sin `--apply`, sobre la raíz y estado canónicos. Las
-   corridas 27 y 28 ya están `partial`; Code seleccionará proyectos por defecto
-   y Semantic implícito priorizará documentos/audio.
-4. **Consumir la publicación, no sólo observar progreso.** Al terminar, comprobar
-   `--semantic-status` y consultas representativas en modo textual; registrar
-   head, embeddings, errores, tiempo y cobertura faltante. Si se interrumpe,
-   repetir el mismo `--all`: la generación es durable y reanudable.
-5. **Retomar el siguiente work package publicado.** Caracterizar y reducir
-   `external_mutation_cosmic_ray.execute_cosmic_ray_mutation` con regresiones de
-   orden de fases y cancelación; conservar la publicación atómica y el estado
-   sólo publicado.
-   Mantener la evidencia de proveedores ausentes como abstención; no convertirla
-   en una autorización de mutación ni en una instalación global.
-6. **Cerrar la siguiente brecha de actionability sólo cuando bloquee el paquete.**
-   Diff ya separa relocations, pero los findings realmente `added/resolved` aún
-   exponen conteos y no ejemplos tipados públicos. Esta aceptación necesitó una
-   lectura diagnóstica interna para localizar cuatro additions; si el siguiente
-   paquete falla ese gate, añadir ejemplos acotados y consultables antes de
-   seguir corrigiendo código.
-7. **Tratar la latencia sólo como bloqueo medido.** Status/review/diff tardan
-   34-71 s; una proyección publicada de consultas es trabajo futuro justificable,
-   pero no invalida la entrega funcional actual.
-
-Imagen, calibración Semantic y soak del watcher quedan detrás del programa de
-autoanálisis. Preservar `Neocortex --all --apply` como interfaz cotidiana
-simplificada después de pilotos y protecciones.
+Imagen, calibración Semantic y soak del watcher continúan detrás de pilotos
+acotados. Un backend seguro de mutación ext4, migración del estado Windows y
+una corrida completa sobre el corpus personal quedan explícitamente fuera de
+esta primera entrega Linux.

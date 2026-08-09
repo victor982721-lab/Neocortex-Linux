@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Literal
 
 import xxhash
+from neocortex.platform_policy import UNAVAILABLE_BIRTHTIME_NS
 
 from .app_paths import (
     local_application_data_directory,
@@ -54,9 +55,7 @@ EFFECTIVE_INVENTORY_POLICY_VERSION_V2 = "effective-inventory-policy-v2"
 INTERNAL_PATH_PROTECTION_REASON = "internal_framework_root"
 MAX_INTERNAL_PATH_ENTRIES = 16
 MAX_INTERNAL_PATH_MANIFEST_BYTES = 64 * 1024
-_VALID_ROLES = frozenset(
-    {"repository", "runtime", "application_data", "self_analysis", "launcher"}
-)
+_VALID_ROLES = frozenset({"repository", "runtime", "application_data", "self_analysis", "launcher"})
 _REQUIRED_ROLE_KINDS: dict[InternalPathRole, InternalPathKind] = {
     "repository": "tree",
     "runtime": "tree",
@@ -111,15 +110,17 @@ class InternalPathIdentity:
             raise ValueError("physical internal path must be canonical and absolute")
         object.__setattr__(self, "configured_path", configured)
         object.__setattr__(self, "canonical_path", canonical)
-        identity = (self.device_id, self.file_id, self.birthtime_ns)
-        if any(
-            value is not None and (type(value) is not int or value < 0)
-            for value in identity
-        ):
+        identity = (self.device_id, self.file_id)
+        if any(value is not None and (type(value) is not int or value < 0) for value in identity):
             raise ValueError("internal path identity values must be non-negative")
-        if self.exists and not all(value is not None for value in identity):
+        if self.birthtime_ns is not None and (
+            type(self.birthtime_ns) is not int or self.birthtime_ns < UNAVAILABLE_BIRTHTIME_NS
+        ):
+            raise ValueError("internal path birthtime must be -1 or non-negative")
+        complete_identity = (*identity, self.birthtime_ns)
+        if self.exists and not all(value is not None for value in complete_identity):
             raise ValueError("internal path existence and identity are inconsistent")
-        if not self.exists and any(value is not None for value in identity):
+        if not self.exists and any(value is not None for value in complete_identity):
             raise ValueError("internal path existence and identity are inconsistent")
 
     @classmethod
@@ -157,9 +158,7 @@ class InternalPathIdentity:
             raise ValueError(f"internal launcher is not a regular file: {configured}")
         canonical = _absolute_normalized(os.path.realpath(configured))
         if _path_key(configured) != _path_key(canonical):
-            raise ValueError(
-                f"internal path traverses an alias or reparse: {configured}"
-            )
+            raise ValueError(f"internal path traverses an alias or reparse: {configured}")
         canonical_metadata = os.stat(canonical, follow_symlinks=False)
         requested_identity = (
             int(metadata.st_dev),
@@ -261,9 +260,7 @@ class InternalPathsPolicy:
         required_count = len(_REQUIRED_ROLE_KINDS)
         bounded_specs = tuple(islice(specs, required_count + 1))
         if len(bounded_specs) < required_count:
-            raise ValueError(
-                "internal path policy must contain every role exactly once"
-            )
+            raise ValueError("internal path policy must contain every role exactly once")
         if len(bounded_specs) > required_count:
             raise ValueError("internal path policy entry count is invalid")
         captured = tuple(
@@ -281,10 +278,7 @@ class InternalPathsPolicy:
         )
         _validate_policy_topology(captured)
         payload = _manifest_payload(captured)
-        signature = (
-            f"{INTERNAL_PATHS_POLICY_VERSION}:xxh3_128:"
-            f"{xxhash.xxh3_128_hexdigest(payload)}"
-        )
+        signature = f"{INTERNAL_PATHS_POLICY_VERSION}:xxh3_128:{xxhash.xxh3_128_hexdigest(payload)}"
         return cls(captured, signature)
 
     def __post_init__(self) -> None:
@@ -336,9 +330,7 @@ class InternalPathsPolicy:
                 if _is_same_or_descendant(access.root, entry.canonical_path)
             )
             if nested:
-                raise InternalPathProtectionError(
-                    f"normal corpus root is internal: {access.root}"
-                )
+                raise InternalPathProtectionError(f"normal corpus root is internal: {access.root}")
             access.verify_root_identity()
             self.verify_identities()
             return
@@ -413,11 +405,7 @@ class InternalPathsPolicy:
                 )
                 if blocked is None and os.path.lexists(candidate):
                     blocked = next(
-                        (
-                            entry
-                            for entry in self.entries
-                            if entry.matches_file_identity(candidate)
-                        ),
+                        (entry for entry in self.entries if entry.matches_file_identity(candidate)),
                         None,
                     )
             except (OSError, ValueError) as exc:
@@ -445,8 +433,7 @@ def _validate_policy_topology(
     if set(by_role) != set(_REQUIRED_ROLE_KINDS) or len(by_role) != len(entries):
         raise ValueError("internal path policy must contain every role exactly once")
     if any(
-        by_role[role].kind != expected_kind
-        for role, expected_kind in _REQUIRED_ROLE_KINDS.items()
+        by_role[role].kind != expected_kind for role, expected_kind in _REQUIRED_ROLE_KINDS.items()
     ):
         raise ValueError("internal path policy role kind is invalid")
 
@@ -559,8 +546,8 @@ def canonical_internal_paths_policy() -> InternalPathsPolicy:
 __all__ = [
     "EFFECTIVE_INVENTORY_POLICY_VERSION",
     "EFFECTIVE_INVENTORY_POLICY_VERSION_V2",
-    "INTERNAL_PATH_PROTECTION_REASON",
     "INTERNAL_PATHS_POLICY_VERSION",
+    "INTERNAL_PATH_PROTECTION_REASON",
     "InternalPathIdentity",
     "InternalPathKind",
     "InternalPathProtectionError",

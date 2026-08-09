@@ -14,341 +14,247 @@ concurrency:
   group: neocortex-ci-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
-defaults:
-  run:
-    shell: pwsh
-
 jobs:
   fast:
-    # Fast proves source formatting plus a small set of packaging and safety contracts.
+    name: Fast lint · Ubuntu · Python 3.14
     if: github.event_name == 'pull_request' || github.event_name == 'push'
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - name: Check out the candidate
+      - name: Check out candidate history
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Set up CPython 3.13
+      - name: Set up CPython 3.14
         uses: actions/setup-python@v7
         with:
-          python-version: "3.13"
+          python-version: "3.14"
 
-      - name: Install the constrained base package
-        run: >-
-          python -m pip install --disable-pip-version-check --no-cache-dir
-          --constraint constraints.txt .
+      - name: Install constrained base runtime
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check --no-cache-dir \
+            --only-binary=:all: --constraint constraints.txt \
+            build==1.5.0 setuptools==83.0.0 wheel
+          python tools/build_binary_inputs.py \
+            --wheel-dir "$RUNNER_TEMP/neocortex-input-wheels" \
+            --constraints constraints.txt
+          python -m pip install --disable-pip-version-check --no-cache-dir \
+            --only-binary=:all: \
+            --find-links "$RUNNER_TEMP/neocortex-input-wheels" \
+            --constraint constraints.txt .
 
-      - name: Ruff lint and format contracts
+      - name: Ruff changed-source contracts
         env:
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PUSH_BEFORE_SHA: ${{ github.event.before }}
+        shell: bash
         run: |
-          $base = if ($env:PR_BASE_SHA) { $env:PR_BASE_SHA } else { $env:PUSH_BEFORE_SHA }
-          if ($base -match "^[0-9a-f]{40}$" -and $base -notmatch "^0+$") {
-            $changed = @(git diff --name-only --diff-filter=ACMRT $base $env:GITHUB_SHA -- "*.py")
-          }
-          else {
-            $changed = @(git diff-tree --no-commit-id --name-only -r HEAD -- "*.py")
-          }
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $pythonFiles = @(
-            $changed | Where-Object {
-              $_ -match "\.py$" -and (Test-Path -LiteralPath $_ -PathType Leaf)
-            }
-          )
-          if ($pythonFiles.Count -eq 0) {
-            $pythonFiles = @("_04_Nucleo_Operativo/code_contracts.py")
-          }
-          Write-Host "Ruff targets: $($pythonFiles -join ', ')"
-          python -m ruff check --no-cache @pythonFiles
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python -m ruff format --check --no-cache @pythonFiles
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          set -euo pipefail
+          base="${PR_BASE_SHA:-${PUSH_BEFORE_SHA:-}}"
+          if [[ "$base" =~ ^[0-9a-f]{40}$ && ! "$base" =~ ^0+$ ]]; then
+            mapfile -t changed < <(git diff --name-only --diff-filter=ACMRT "$base" "$GITHUB_SHA" -- '*.py')
+          else
+            mapfile -t changed < <(git diff-tree --no-commit-id --name-only -r HEAD -- '*.py')
+          fi
+          targets=()
+          for candidate in "${changed[@]}"; do
+            [[ -f "$candidate" ]] && targets+=("$candidate")
+          done
+          ((${#targets[@]})) || targets=("_04_Nucleo_Operativo/code_contracts.py")
+          printf 'Ruff target: %s\n' "${targets[@]}"
+          python -m ruff check --no-cache "${targets[@]}"
+          python -m ruff format --check --no-cache "${targets[@]}"
 
-      - name: Fast contractual tests
-        run: |
-          python -m pytest -q -p no:cacheprovider `
-            --basetemp "$env:RUNNER_TEMP\pytest-fast" `
-            tests/test_packaging_entrypoint.py `
-            tests/test_cli_import_isolation.py `
-            tests/test_code_architecture_contracts.py `
-            tests/test_dependency_capabilities.py::test_every_builtin_route_has_one_static_capability_declaration `
-            tests/test_dependency_capabilities.py::test_semantic_facades_cold_import_no_owner_or_image_runtime `
-            tests/test_corpus_access_policy.py::test_analyze_only_guard_distinguishes_root_descendants_and_siblings `
-            tests/test_corpus_access_policy.py::test_physical_boundary_inspection_error_fails_closed `
-            tests/test_code_analysis_query.py `
-            tests/test_code_analysis_query_cli.py `
-            tests/test_code_analysis_query_surface.py
+      - name: Fast cross-platform contracts
+        run: >-
+          python -m pytest -q -p no:cacheprovider
+          --basetemp "${RUNNER_TEMP}/pytest-fast"
+          tests/test_packaging_entrypoint.py
+          tests/test_build_binary_inputs.py
+          tests/test_cli_import_isolation.py
+          tests/test_cli_capabilities.py
+          tests/test_cli_modularization.py
+          tests/test_linux_memory_probe.py
+          tests/test_linux_platform_policy.py
+          tests/test_model_management.py
+          tests/test_posix_containment.py
+          tests/test_release_linux.py
 
   standard:
-    # Standard proves the built wheel, public launcher and core runtime from site-packages.
+    name: Wheel · ${{ matrix.os }} · Python ${{ matrix.python }}
     if: github.event_name == 'pull_request' || github.event_name == 'push'
-    runs-on: windows-latest
-    timeout-minutes: 35
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.13", "3.14"]
     steps:
-      - name: Check out the candidate
+      - name: Check out candidate
         uses: actions/checkout@v7
         with:
           persist-credentials: false
 
-      - name: Set up CPython 3.13
+      - name: Set up CPython
         uses: actions/setup-python@v7
         with:
-          python-version: "3.13"
+          python-version: ${{ matrix.python }}
 
-      - name: Build one constrained wheel
+      - name: Install Ubuntu Qt runtime
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libegl1
+
+      - name: Build constrained wheel
+        shell: bash
         run: |
-          python -m pip install --disable-pip-version-check --no-cache-dir `
-            --constraint constraints.txt "build==1.5.0" "setuptools==82.0.1"
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $wheelRoot = Join-Path $env:RUNNER_TEMP "neocortex-wheel"
-          New-Item -ItemType Directory -Path $wheelRoot -Force | Out-Null
-          python -m build --wheel --no-isolation --outdir $wheelRoot
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check --no-cache-dir \
+            --only-binary=:all: --constraint constraints.txt \
+            build==1.5.0 setuptools==83.0.0 wheel
+          mkdir -p "$RUNNER_TEMP/neocortex-wheel"
+          python tools/build_binary_inputs.py \
+            --wheel-dir "$RUNNER_TEMP/neocortex-wheel" \
+            --constraints constraints.txt
+          python -m build --wheel --no-isolation --outdir "$RUNNER_TEMP/neocortex-wheel"
+          [[ $(find "$RUNNER_TEMP/neocortex-wheel" -maxdepth 1 -name 'neocortex_framework-*.whl' | wc -l) -eq 1 ]]
 
-      - name: Install the wheel in an isolated venv
+      - name: Install full wheel using binary artifacts only
+        shell: bash
         run: |
-          $wheelRoot = Join-Path $env:RUNNER_TEMP "neocortex-wheel"
-          $wheels = @(Get-ChildItem -LiteralPath $wheelRoot -Filter "*.whl" -File)
-          if ($wheels.Count -ne 1) {
-            throw "Expected exactly one wheel, found $($wheels.Count)"
-          }
-          $venv = Join-Path $env:RUNNER_TEMP "neocortex-standard-venv"
-          python -m venv $venv
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $venvPython = Join-Path $venv "Scripts\python.exe"
-          & $venvPython -m pip install --disable-pip-version-check --no-cache-dir `
-            --constraint "$env:GITHUB_WORKSPACE\constraints.txt" $wheels[0].FullName "Pillow>=12.2,<13"
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $scripts = Join-Path $venv "Scripts"
-          "STANDARD_PYTHON=$venvPython" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          "STANDARD_SCRIPTS=$scripts" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          $scripts | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          set -euo pipefail
+          wheel=$(find "$RUNNER_TEMP/neocortex-wheel" -maxdepth 1 -name 'neocortex_framework-*.whl' -print -quit)
+          python -m pip install --disable-pip-version-check --no-cache-dir \
+            --only-binary=:all: --find-links "$RUNNER_TEMP/neocortex-wheel" \
+            --constraint constraints.txt "${wheel}[full]"
+          python -m pip check
 
-      - name: Verify installed provenance and dependencies
+      - name: Verify site-packages imports and public entrypoint
+        shell: bash
         run: |
-          & $env:STANDARD_PYTHON -m pip check
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $probeRoot = Join-Path $env:RUNNER_TEMP "wheel-origin-probe"
-          New-Item -ItemType Directory -Path $probeRoot -Force | Out-Null
-          Push-Location $probeRoot
-          try {
-            $probe = @'
-          import pathlib
-          import sys
-          import neocortex
-          import _04_Nucleo_Operativo
-
-          site_packages = (pathlib.Path(sys.prefix) / "Lib" / "site-packages").resolve()
-          for module in (neocortex, _04_Nucleo_Operativo):
-              origin = pathlib.Path(module.__file__).resolve()
-              if not origin.is_relative_to(site_packages):
-                  raise SystemExit(f"non-wheel import: {module.__name__} from {origin}")
-              print(f"INSTALLED_IMPORT {module.__name__}={origin}")
-          '@
-            & $env:STANDARD_PYTHON -I -c $probe
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            $launcher = (Get-Command Neocortex -CommandType Application -ErrorAction Stop).Source
-            $expected = Join-Path $env:STANDARD_SCRIPTS "Neocortex.exe"
-            if (-not [System.IO.Path]::GetFullPath($launcher).Equals(
-              [System.IO.Path]::GetFullPath($expected),
-              [System.StringComparison]::OrdinalIgnoreCase
-            )) {
-              throw "Neocortex resolved outside the isolated venv: $launcher"
-            }
-            & $launcher --version
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          }
-          finally {
-            Pop-Location
-          }
+          set -euo pipefail
+          probe="$RUNNER_TEMP/wheel-origin-probe"
+          mkdir -p "$probe"
+          cd "$probe"
+          python -I -c "import pathlib,neocortex,_04_Nucleo_Operativo; p=pathlib.Path(neocortex.__file__).resolve(); assert 'site-packages' in p.parts, p"
+          python -I -m neocortex --version
+          python -I -m neocortex doctor platform --json
+          python -I -c "import PIL,PySide6,ctranslate2,fastembed,faster_whisper,fitz,nudenet,numpy,pytesseract"
 
       - name: Installed-wheel standard suite
+        shell: bash
+        env:
+          QT_QPA_PLATFORM: offscreen
+          PYTHONDONTWRITEBYTECODE: "1"
         run: |
-          $suiteRoot = Join-Path $env:RUNNER_TEMP "neocortex-standard-suite"
-          New-Item -ItemType Directory -Path $suiteRoot -Force | Out-Null
-          Copy-Item -LiteralPath "$env:GITHUB_WORKSPACE\tests" `
-            -Destination "$suiteRoot\tests" -Recurse
-          $pythonTemp = Join-Path $env:RUNNER_TEMP "python-temp-standard"
-          New-Item -ItemType Directory -Path $pythonTemp -Force | Out-Null
-          $env:TEMP = $pythonTemp
-          $env:TMP = $pythonTemp
-          $env:PYTHONPATH = $suiteRoot
-          Push-Location $suiteRoot
-          try {
-            $targets = @(
-              "tests/test_application_config.py"
-              "tests/test_bounded_subprocess.py"
-              "tests/test_cancellation.py"
-              "tests/test_code_cache_signature.py"
-              "tests/test_code_analysis_query.py"
-              "tests/test_code_analysis_query_cli.py"
-              "tests/test_code_analysis_query_surface.py"
-              "tests/test_code_schema_migration_v1_v2.py"
-              "tests/test_code_search_relations.py"
-              "tests/test_code_semantic_search.py"
-              "tests/test_code_state_persistence_regressions.py"
-              "tests/test_document_catalog_generation_publication.py"
-              "tests/test_document_organization_application.py"
-              "tests/test_file_action_reconciliation_store.py"
-              "tests/test_framework_schema_contract.py"
-              "tests/test_framework_state_facade.py"
-              "tests/test_incremental_gate.py"
-              "tests/test_inventory_generation_v9.py"
-              "tests/test_knowledge_contracts.py"
-              "tests/test_knowledge_exact.py"
-              "tests/test_processing_provenance.py"
-              "tests/test_retry_policy.py"
-              "tests/test_route_schema_contracts.py"
-              "tests/test_run_control.py"
-              "tests/test_semantic_generation_publication_v6.py"
-              "tests/test_semantic_schema_contract.py"
-              "tests/test_sqlite_connection_contracts.py"
-              "tests/test_sqlite_schema_contract.py"
-              "tests/test_zip_safety.py"
-            )
-            # The existing Code owner still opens with journal_mode=delete; the
-            # operational handoff tracks that defect. Keep every other SQLite
-            # contract active instead of making this new lane permanently red.
-            & $env:STANDARD_PYTHON -m pytest -q --import-mode=importlib `
-              -p no:cacheprovider `
-              --basetemp "$env:RUNNER_TEMP\pytest-standard" `
-              --deselect "tests/test_sqlite_connection_contracts.py::test_public_sqlite_factories_enforce_connection_pragmas[code]" `
-              @targets
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          }
-          finally {
-            Pop-Location
-          }
+          set -euo pipefail
+          suite="$RUNNER_TEMP/neocortex-standard-suite"
+          mkdir -p "$suite"
+          cp -R tests "$suite/tests"
+          cd "$suite"
+          export PYTHONPATH="$suite"
+          python -m pytest -q --import-mode=importlib -p no:cacheprovider \
+            --basetemp "$RUNNER_TEMP/pytest-standard" \
+            tests/test_app_paths.py \
+            tests/test_application_config.py \
+            tests/test_bounded_subprocess.py \
+            tests/test_cli_capabilities.py \
+            tests/test_cli_modularization.py \
+            tests/test_cli_operations_registry.py \
+            tests/test_framework_schema_contract.py \
+            tests/test_inventory_exclusion_policy.py \
+            tests/test_linux_platform_policy.py \
+            tests/test_model_management.py \
+            tests/test_posix_containment.py \
+            tests/test_ui_elevation.py \
+            tests/test_ui_linux.py \
+            tests/test_ui_run_request.py \
+            tests/test_ui_smoke.py
 
-  deep:
-    # Deep is opt-in/weekly: it validates trusted-deep contracts and focal workers on fixtures.
+  deep-windows:
+    name: Deep Windows NTFS · Python 3.14
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
-      - name: Check out full history for fixture-backed analysis
-        uses: actions/checkout@v7
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           persist-credentials: false
-
-      - name: Set up CPython 3.13
-        uses: actions/setup-python@v7
+      - uses: actions/setup-python@v7
         with:
-          python-version: "3.13"
-
-      - name: Set up official Node.js
-        uses: actions/setup-node@v7
+          python-version: "3.14"
+      - uses: actions/setup-node@v7
         with:
-          node-version: "24"
+          node-version: "24.18.1"
           package-manager-cache: false
-
-      - name: Install constrained Neocortex in an isolated venv
+      - name: Install full constrained source and Pyright
+        shell: pwsh
         run: |
-          $venv = Join-Path $env:RUNNER_TEMP "neocortex-deep-venv"
-          python -m venv $venv
+          python -m pip install --disable-pip-version-check --no-cache-dir --only-binary=:all: --constraint constraints.txt build==1.5.0 setuptools==83.0.0 wheel
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $venvPython = Join-Path $venv "Scripts\python.exe"
-          & $venvPython -m pip install --disable-pip-version-check --no-cache-dir `
-            --constraint "$env:GITHUB_WORKSPACE\constraints.txt" $env:GITHUB_WORKSPACE
+          python tools/build_binary_inputs.py --wheel-dir "$env:RUNNER_TEMP\neocortex-input-wheels" --constraints constraints.txt
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $scripts = Join-Path $venv "Scripts"
-          "DEEP_PYTHON=$venvPython" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          "DEEP_SCRIPTS=$scripts" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          $scripts | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
-
-      - name: Install isolated Pyright 1.1.411
-        run: |
-          $pyrightRoot = Join-Path $env:RUNNER_TEMP "pyright-1.1.411"
-          New-Item -ItemType Directory -Path $pyrightRoot -Force | Out-Null
-          npm install --prefix $pyrightRoot --no-audit --no-fund --no-package-lock `
-            --ignore-scripts --no-save "pyright@1.1.411"
+          python -m pip install --disable-pip-version-check --no-cache-dir --only-binary=:all: --find-links "$env:RUNNER_TEMP\neocortex-input-wheels" --constraint constraints.txt ".[full]"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $pyrightBin = Join-Path $pyrightRoot "node_modules\.bin"
-          $version = & (Join-Path $pyrightBin "pyright.cmd") --version
-          if ($LASTEXITCODE -ne 0 -or $version -notmatch "1\.1\.411") {
-            throw "Unexpected Pyright version: $version"
-          }
-          $pyrightBin | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
-
-      - name: Verify the public launcher without changing trusted-root identity
-        run: |
-          $launcher = (Get-Command Neocortex -CommandType Application -ErrorAction Stop).Source
-          $expected = Join-Path $env:DEEP_SCRIPTS "Neocortex.exe"
-          if (-not [System.IO.Path]::GetFullPath($launcher).Equals(
-            [System.IO.Path]::GetFullPath($expected),
-            [System.StringComparison]::OrdinalIgnoreCase
-          )) {
-            throw "Neocortex resolved outside the isolated venv: $launcher"
-          }
-          & $launcher --version
+          npm install --prefix "$env:RUNNER_TEMP\pyright" --ignore-scripts --no-audit --no-fund "pyright@1.1.411"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-      - name: Trusted-deep and focal-mutation fixture suite
+          "$env:RUNNER_TEMP\pyright\node_modules\.bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+      - name: Windows identity, Job Object, NTFS and trusted-deep fixtures
+        shell: pwsh
         env:
           NEOCORTEX_RUN_REAL_MUTATION_ACCEPTANCE: "1"
         run: |
-          $artifactRoot = Join-Path $env:RUNNER_TEMP "neocortex-deep-artifacts"
-          New-Item -ItemType Directory -Path $artifactRoot -Force | Out-Null
-          $rawLog = Join-Path $env:RUNNER_TEMP "neocortex-deep-pytest.raw.txt"
-          $targets = @(
-            "tests/test_self_analysis_cli.py"
-            "tests/test_trusted_deep_configuration.py"
-            "tests/test_external_deep_coverage.py"
-            "tests/test_external_deep_coverage_worker.py"
-            "tests/test_external_deep_provider_registry.py"
-            "tests/test_external_mutation_cosmic_ray.py"
-            "tests/test_external_mutation_cosmic_ray_worker.py"
-            "tests/test_external_mutation_provider_registry.py"
-          )
-          & $env:DEEP_PYTHON -m pytest -q -p no:cacheprovider `
-            --basetemp "$env:RUNNER_TEMP\pytest-deep" `
-            @targets *>&1 | Tee-Object -FilePath $rawLog
-          $testExitCode = $LASTEXITCODE
+          python -m pytest -q -p no:cacheprovider --basetemp "$env:RUNNER_TEMP\pytest-deep-windows" `
+            tests/test_bounded_subprocess.py `
+            tests/test_corpus_access_policy.py `
+            tests/test_durable_mutation_boundary.py `
+            tests/test_framework_actions_identity_bound.py `
+            tests/test_release_windows.py `
+            tests/test_release_windows_ntfs.py `
+            tests/test_trusted_deep_configuration.py
 
-          $text = [System.IO.File]::ReadAllText($rawLog)
-          $truncated = $false
-          if ($text.Length -gt 500000) {
-            $text = "[truncated to final 500000 characters]`n" + $text.Substring($text.Length - 500000)
-            $truncated = $true
-          }
-          $utf8 = [System.Text.UTF8Encoding]::new($false)
-          [System.IO.File]::WriteAllText(
-            (Join-Path $artifactRoot "deep-pytest.txt"), $text, $utf8
-          )
-          $summary = [ordered]@{
-            schema = "neocortex.ci-deep-summary/v1"
-            event = $env:GITHUB_EVENT_NAME
-            commit = $env:GITHUB_SHA
-            result = $(if ($testExitCode -eq 0) { "passed" } else { "failed" })
-            output_truncated = $truncated
-            canonical_trusted_root_executed = $false
-            execution_scope = "checkout contracts plus isolated fixtures"
-            pyright_version = "1.1.411"
-            configured_contract_max_mutants = 20
-            configured_contract_time_budget_seconds = 600
-            real_work_package_mutants = 2
-            real_work_package_time_budget_seconds = 180
-            fixture_acceptance_is_stricter = $true
-          }
-          [System.IO.File]::WriteAllText(
-            (Join-Path $artifactRoot "deep-summary.json"),
-            ($summary | ConvertTo-Json -Depth 4),
-            $utf8
-          )
-          if ($testExitCode -ne 0) { exit $testExitCode }
-
-      - name: Upload bounded deep evidence
-        if: ${{ always() }}
-        uses: actions/upload-artifact@v7
+  deep-linux:
+    name: Deep Linux portable/containment/installer · Python 3.14
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
         with:
-          name: neocortex-deep-${{ github.run_id }}
-          path: |
-            ${{ runner.temp }}\neocortex-deep-artifacts\deep-pytest.txt
-            ${{ runner.temp }}\neocortex-deep-artifacts\deep-summary.json
-          if-no-files-found: error
-          retention-days: 7
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+      - name: Install system fixture dependencies
+        run: sudo apt-get update && sudo apt-get install -y qpdf tesseract-ocr tesseract-ocr-spa desktop-file-utils libegl1
+      - name: Install full constrained source from wheels
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check --no-cache-dir \
+            --only-binary=:all: --constraint constraints.txt \
+            build==1.5.0 setuptools==83.0.0 wheel
+          python tools/build_binary_inputs.py \
+            --wheel-dir "$RUNNER_TEMP/neocortex-input-wheels" \
+            --constraints constraints.txt
+          python -m pip install --disable-pip-version-check --no-cache-dir \
+            --only-binary=:all: \
+            --find-links "$RUNNER_TEMP/neocortex-input-wheels" \
+            --constraint constraints.txt ".[full]"
+      - name: Portable inventory, POSIX containment and installer contracts
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: >-
+          python -m pytest -q -p no:cacheprovider
+          --basetemp "${RUNNER_TEMP}/pytest-deep-linux"
+          tests/test_linux_platform_policy.py
+          tests/test_posix_containment.py
+          tests/test_release_linux.py
+          tests/test_inventory_exclusion_policy.py
+          tests/test_bounded_subprocess.py
+          tests/test_ui_linux.py
+          tests/test_ui_smoke.py

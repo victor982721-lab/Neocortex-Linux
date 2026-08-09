@@ -386,6 +386,7 @@ class ActionTests(unittest.TestCase):
             recycle.assert_not_called()
             self.assertEqual(len(list(corpus.iterdir())), 258)
 
+    @unittest.skipUnless(os.name == "nt", "identity-bound rename is Windows-only")
     def test_abstains_exact_trash_and_applies_safe_extension_rename(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)

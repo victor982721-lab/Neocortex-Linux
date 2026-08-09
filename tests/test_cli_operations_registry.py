@@ -34,6 +34,9 @@ DIRECT_ARGUMENT_CASES = (
         "run_doctor_capabilities",
         ("--doctor-capabilities",),
     ),
+    ("doctor_platform", "run_doctor_platform", ("--doctor-platform",)),
+    ("models_prepare", "run_models_prepare", ("--models-prepare",)),
+    ("models_status", "run_models_status", ("--models-status",)),
     ("status", "run_operational_status", ("--status",)),
     ("retention_status", "run_retention_status", ("--retention-status",)),
     (

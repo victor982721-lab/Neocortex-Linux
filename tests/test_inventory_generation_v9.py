@@ -27,13 +27,9 @@ def _create_populated_v8(
     with sqlite3.connect(database) as connection:
         for statement in inventory_schema_module._V8_GENERATIONAL_DDL:
             connection.execute(statement)
-        for statement in inventory_schema_module._CURRENT_DDL[
-            inventory_schema_module._CURRENT_SHARED_DDL_START :
-        ]:
+        for statement in inventory_schema_module._LEGACY_SHARED_DDL:
             connection.execute(statement)
-        connection.execute(
-            "INSERT INTO metadata(key,value) VALUES('schema_version','8')"
-        )
+        connection.execute("INSERT INTO metadata(key,value) VALUES('schema_version','8')")
         connection.execute(
             """INSERT INTO scans(
             scan_id,root,root_volume_id,root_file_id,root_birthtime_ns,
@@ -70,12 +66,8 @@ def _create_populated_v8(
             (str(root),),
         )
         if unexpected_checkpoint_column:
-            connection.execute(
-                "ALTER TABLE inventory_checkpoints ADD COLUMN unexpected TEXT"
-            )
-            connection.execute(
-                "UPDATE inventory_checkpoints SET unexpected='preserve-me'"
-            )
+            connection.execute("ALTER TABLE inventory_checkpoints ADD COLUMN unexpected TEXT")
+            connection.execute("UPDATE inventory_checkpoints SET unexpected='preserve-me'")
 
 
 def test_fresh_v9_publishes_a_snapshot_without_inventing_usn(
@@ -188,7 +180,7 @@ def test_unknown_v8_structure_abstains_without_changing_state(
         assert connection.execute(
             "SELECT value FROM metadata WHERE key='schema_version'"
         ).fetchone() == ("8",)
-        assert connection.execute(
-            "SELECT unexpected FROM inventory_checkpoints"
-        ).fetchone() == ("preserve-me",)
+        assert connection.execute("SELECT unexpected FROM inventory_checkpoints").fetchone() == (
+            "preserve-me",
+        )
         assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)

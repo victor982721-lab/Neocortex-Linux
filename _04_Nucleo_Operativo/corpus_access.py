@@ -18,6 +18,8 @@ import stat
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, cast
+
+from neocortex.platform_policy import UNAVAILABLE_BIRTHTIME_NS, stat_birthtime_ns
 # endregion [01]
 
 # region [02] Implementación
@@ -29,9 +31,7 @@ if TYPE_CHECKING:
 
 CorpusAccessMode = Literal["normal", "analyze_only"]
 PROTECTED_ANALYSIS_REASON = "protected_analysis_root"
-_REPARSE_POINT_ATTRIBUTE = int(
-    getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x00000400)
-)
+_REPARSE_POINT_ATTRIBUTE = int(getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x00000400))
 _WIN32_EXTENDED_PREFIX = "\\\\?\\"
 _WIN32_DEVICE_PREFIX = "\\\\.\\"
 _NT_OBJECT_PREFIXES = ("\\??\\", "\\\\??\\")
@@ -58,7 +58,7 @@ class ProtectedAnalysisRootError(PermissionError):
 
 
 def _birthtime_ns(metadata: os.stat_result) -> int:
-    return int(getattr(metadata, "st_birthtime_ns", metadata.st_ctime_ns))
+    return stat_birthtime_ns(metadata)
 
 
 def _has_reparse_semantics(path: Path, metadata: os.stat_result) -> bool:
@@ -79,9 +79,7 @@ def _reject_non_equivalent_extended_tail(tail: str) -> None:
             or ":" in component
             or device_stem in _DOS_DEVICE_NAMES
         ):
-            raise ValueError(
-                "extended Windows path is not unambiguously Win32-equivalent"
-            )
+            raise ValueError("extended Windows path is not unambiguously Win32-equivalent")
 
 
 def _equivalent_win32_path(path: str | os.PathLike[str]) -> str:
@@ -171,9 +169,9 @@ def path_trees_intersect(
         return True
     physical_left = _physical_normalized(left_path)
     physical_right = _physical_normalized(right_path)
-    return _is_same_or_descendant(
-        physical_left, physical_right
-    ) or _is_same_or_descendant(physical_right, physical_left)
+    return _is_same_or_descendant(physical_left, physical_right) or _is_same_or_descendant(
+        physical_right, physical_left
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -193,22 +191,16 @@ class CorpusAccessPolicy:
         if _path_key(normalized) != _path_key(self.root):
             raise ValueError("corpus access root must be canonical and absolute")
         object.__setattr__(self, "root", normalized)
-        identity = (
-            self.root_device_id,
-            self.root_file_id,
-            self.root_birthtime_ns,
-        )
-        if any(
-            value is not None and (type(value) is not int or value < 0)
-            for value in identity
+        identity = (self.root_device_id, self.root_file_id)
+        if any(value is not None and (type(value) is not int or value < 0) for value in identity):
+            raise ValueError("corpus root identity values must be non-negative integers")
+        if self.root_birthtime_ns is not None and (
+            type(self.root_birthtime_ns) is not int
+            or self.root_birthtime_ns < UNAVAILABLE_BIRTHTIME_NS
         ):
-            raise ValueError(
-                "corpus root identity values must be non-negative integers"
-            )
+            raise ValueError("corpus root birthtime must be -1 or a non-negative integer")
         if self.mode == "analyze_only" and any(value is None for value in identity):
-            raise ValueError(
-                "analyze-only corpus policy requires a complete root identity"
-            )
+            raise ValueError("analyze-only corpus policy requires a complete root identity")
 
     @classmethod
     def capture(
@@ -254,9 +246,7 @@ class CorpusAccessPolicy:
         if mode not in {"normal", "analyze_only"}:
             raise ValueError(f"unsupported persisted corpus access mode: {mode!r}")
         try:
-            device_id = (
-                None if root_device_id_hex is None else int(root_device_id_hex, 16)
-            )
+            device_id = None if root_device_id_hex is None else int(root_device_id_hex, 16)
             file_id = None if root_file_id_hex is None else int(root_file_id_hex, 16)
         except ValueError as exc:
             raise ValueError("persisted corpus root identity is malformed") from exc
@@ -293,9 +283,7 @@ class CorpusAccessPolicy:
             raise ProtectedAnalysisRootError(
                 f"protected root identity cannot be verified: {type(exc).__name__}"
             ) from exc
-        if not stat.S_ISDIR(metadata.st_mode) or _has_reparse_semantics(
-            self.root, metadata
-        ):
+        if not stat.S_ISDIR(metadata.st_mode) or _has_reparse_semantics(self.root, metadata):
             raise ProtectedAnalysisRootError(
                 "protected root is no longer a real non-reparse directory"
             )
@@ -381,10 +369,10 @@ class CorpusMutationGuard:
 
 
 __all__ = [
+    "PROTECTED_ANALYSIS_REASON",
     "CorpusAccessMode",
     "CorpusAccessPolicy",
     "CorpusMutationGuard",
-    "PROTECTED_ANALYSIS_REASON",
     "ProtectedAnalysisRootError",
     "path_trees_intersect",
 ]

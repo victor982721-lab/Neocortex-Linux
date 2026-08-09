@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from _04_Nucleo_Operativo.route_selection import (
@@ -29,13 +30,14 @@ class UiRunRequestTests(unittest.TestCase):
                 apply=True,
             )
 
-            arguments = request.cli_arguments()
+            with patch("_05_Interfaz.run_request.os.name", "nt"):
+                arguments = request.cli_arguments()
 
             self.assertNotIn("--all", arguments)
             self.assertIn("--apply", arguments)
             selected = arguments[arguments.index("--route") + 1]
             self.assertEqual(selected, ",".join(ROUTE_ORDER))
-            self.assertNotIn("code", selected.split(","))
+            self.assertIn("code", selected.split(","))
             self.assertEqual(
                 normalize_route_selection(selected, BUILTIN_ROUTE_ORDER),
                 ROUTE_ORDER,
@@ -80,7 +82,7 @@ class UiRunRequestTests(unittest.TestCase):
             selected = arguments[arguments.index("--route") + 1]
             self.assertEqual(selected, ",".join(ROUTE_ORDER))
             self.assertNotEqual(selected, "all")
-            self.assertNotIn("code", selected.split(","))
+            self.assertIn("code", selected.split(","))
             self.assertIn("--route-only", arguments)
 
     def test_route_only_rejects_apply_before_starting_a_worker(self) -> None:
@@ -93,6 +95,19 @@ class UiRunRequestTests(unittest.TestCase):
             )
 
             with self.assertRaisesRegex(ValueError, "siempre no destructiva"):
+                request.validated()
+
+    def test_linux_rejects_apply_before_starting_a_worker(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            request = RunRequest(
+                root=Path(directory),
+                routes=("pdf",),
+                apply=True,
+            )
+            with (
+                patch("_05_Interfaz.run_request.os.name", "posix"),
+                self.assertRaisesRegex(ValueError, "linux_mutation_backend_unavailable"),
+            ):
                 request.validated()
 
 

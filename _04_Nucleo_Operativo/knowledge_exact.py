@@ -23,6 +23,11 @@ from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
 
+from neocortex.platform_policy import (
+    UNAVAILABLE_BIRTHTIME_NS,
+    physical_identity_scheme_for_birthtime,
+)
+
 from .code_detection import LANGUAGE_EXTENSIONS
 from .code_schema import readonly_code_database
 from .document_catalog import connect_document_catalog
@@ -108,9 +113,7 @@ class ExactLookupTerm:
         if not value:
             raise ValueError("exact lookup value cannot be blank")
         if len(value) > MAX_EXACT_VALUE_CHARS:
-            raise ValueError(
-                f"exact lookup value cannot exceed {MAX_EXACT_VALUE_CHARS} characters"
-            )
+            raise ValueError(f"exact lookup value cannot exceed {MAX_EXACT_VALUE_CHARS} characters")
         algorithm = None if self.algorithm is None else self.algorithm.strip()
         if self.algorithm is not None and not algorithm:
             raise ValueError("exact lookup algorithm cannot be blank")
@@ -120,9 +123,7 @@ class ExactLookupTerm:
             raise ValueError("only hash lookup terms may name an algorithm")
         if self.kind is ExactLookupKind.HASH:
             if not 16 <= len(value) <= 64 or len(value) % 2:
-                raise ValueError(
-                    "exact hash values must contain 16..64 even hex digits"
-                )
+                raise ValueError("exact hash values must contain 16..64 even hex digits")
             if any(character not in "0123456789abcdefABCDEF" for character in value):
                 raise ValueError("exact hash values must be hexadecimal")
             value = value.casefold()
@@ -203,9 +204,7 @@ class ExactLookupRequest:
                 if label == "formats":
                     value = value.removeprefix(".")
                 if not value or len(value) > 128:
-                    raise ValueError(
-                        f"exact lookup {label} values must contain 1..128 characters"
-                    )
+                    raise ValueError(f"exact lookup {label} values must contain 1..128 characters")
                 if value not in normalized:
                     normalized.append(value)
             object.__setattr__(self, label, tuple(normalized))
@@ -218,13 +217,9 @@ class ExactLookupRequest:
             raise ValueError("exact max_observed_rows must be between limit and 10000")
         if (
             isinstance(self.max_sqlite_steps, bool)
-            or not SQLITE_PROGRESS_INTERVAL
-            <= self.max_sqlite_steps
-            <= MAX_EXACT_SQLITE_STEPS
+            or not SQLITE_PROGRESS_INTERVAL <= self.max_sqlite_steps <= MAX_EXACT_SQLITE_STEPS
         ):
-            raise ValueError(
-                "exact max_sqlite_steps must be between 1000 and 100000000"
-            )
+            raise ValueError("exact max_sqlite_steps must be between 1000 and 100000000")
 
 
 @dataclass(frozen=True, slots=True)
@@ -427,9 +422,7 @@ class ExactLookupResult:
         if self.warnings:
             payload["warnings"] = list(self.warnings)
         if self.owner_timings:
-            payload["owner_timings"] = [
-                timing.to_dict() for timing in self.owner_timings
-            ]
+            payload["owner_timings"] = [timing.to_dict() for timing in self.owner_timings]
         return payload
 
     def to_json(self) -> str:
@@ -453,23 +446,15 @@ _SERIAL_TERM = re.compile(
     re.IGNORECASE,
 )
 _HEX_TERM = re.compile(r"^[0-9a-fA-F]{16,64}$")
-_QUALIFIED_SYMBOL = re.compile(
-    r"^[A-Za-z_][A-Za-z0-9_]*(?:(?:::|\.)[A-Za-z_][A-Za-z0-9_]*)+$"
-)
+_QUALIFIED_SYMBOL = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:(?:::|\.)[A-Za-z_][A-Za-z0-9_]*)+$")
 _BARE_CODE_TOKEN = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*\b")
-_NUMBERED_UNDERSCORE_IDENTIFIER = re.compile(
-    r"^[A-Za-z][A-Za-z0-9.]*_[0-9][A-Za-z0-9_.-]*$"
-)
+_NUMBERED_UNDERSCORE_IDENTIFIER = re.compile(r"^[A-Za-z][A-Za-z0-9.]*_[0-9][A-Za-z0-9_.-]*$")
 _CODE_EXTENSIONS = frozenset(
     extension.removeprefix(".").casefold() for extension in LANGUAGE_EXTENSIONS
 )
-_CODE_LANGUAGES = frozenset(
-    language.casefold() for language in LANGUAGE_EXTENSIONS.values()
-)
+_CODE_LANGUAGES = frozenset(language.casefold() for language in LANGUAGE_EXTENSIONS.values())
 _CODE_EXACT_FORMATS = frozenset(_CODE_EXTENSIONS | _CODE_LANGUAGES)
-_CATALOG_EXACT_SOURCE_KINDS = frozenset(
-    {"audio", "docx", "office", "pdf", "pptx", "xlsx"}
-)
+_CATALOG_EXACT_SOURCE_KINDS = frozenset({"audio", "docx", "office", "pdf", "pptx", "xlsx"})
 _CATALOG_EXACT_FORMATS = frozenset(
     {
         "aac",
@@ -496,9 +481,7 @@ _CATALOG_EXACT_FORMATS = frozenset(
 _IMAGE_EXACT_FORMATS = frozenset(
     {"avif", "bmp", "gif", "heic", "heif", "jpeg", "jpg", "png", "tif", "tiff", "webp"}
 )
-_AUDIO_EXACT_FORMATS = frozenset(
-    {"aac", "flac", "m4a", "mp3", "ogg", "opus", "wav", "wma"}
-)
+_AUDIO_EXACT_FORMATS = frozenset({"aac", "flac", "m4a", "mp3", "ogg", "opus", "wav", "wma"})
 _OFFICE_EXACT_FORMATS = frozenset(
     {"doc", "odt", "ods", "odp", "xls", "xlsx", "xlsm", "ppt", "pptx"}
 )
@@ -683,9 +666,7 @@ def _inventory_path_scope(
     formats: Sequence[str],
 ) -> tuple[str, ...] | None:
     source_scope: frozenset[str] | None
-    if not source_kinds or any(
-        value in {"file", "inventory"} for value in source_kinds
-    ):
+    if not source_kinds or any(value in {"file", "inventory"} for value in source_kinds):
         source_scope = None
     else:
         source_scope = frozenset(
@@ -727,11 +708,7 @@ def _catalog_row_scopes(
         )
     if formats:
         path_scope: tuple[str, ...] | None = tuple(
-            sorted(
-                _expanded_format_extensions(formats).intersection(
-                    _CATALOG_EXACT_FORMATS
-                )
-            )
+            sorted(_expanded_format_extensions(formats).intersection(_CATALOG_EXACT_FORMATS))
         )
     else:
         path_scope = None
@@ -844,9 +821,7 @@ def classify_plan_exact_terms(plan: KnowledgePlan) -> tuple[ExactLookupTerm, ...
         else:
             kind = ExactLookupKind.IDENTIFIER
             canonical = value
-        key_value = (
-            canonical if kind is ExactLookupKind.SYMBOL else canonical.casefold()
-        )
+        key_value = canonical if kind is ExactLookupKind.SYMBOL else canonical.casefold()
         key = (kind, key_value, None)
         if key in seen:
             continue
@@ -929,9 +904,7 @@ class _QueryControl:
                 if self.cancellation_failure is not None:
                     raise self.cancellation_failure from None
                 if exhausted:
-                    raise _WorkBudgetExceeded(
-                        "exact SQLite work budget exhausted"
-                    ) from exc
+                    raise _WorkBudgetExceeded("exact SQLite work budget exhausted") from exc
                 raise
         finally:
             connection.set_progress_handler(None, 0)
@@ -1073,14 +1046,14 @@ def _physical_resource(
         if isinstance(birthtime_ns, int) and not isinstance(birthtime_ns, bool)
         else None
     )
-    if birthtime is not None and birthtime >= 0:
+    if birthtime is not None and birthtime >= UNAVAILABLE_BIRTHTIME_NS:
         physical = f"{identity.volume_id}:{identity.file_id}:{birthtime}"
         return (
             ResourceRef(
                 f"resource:file:{physical}",
                 source_kind,
                 owner,
-                PhysicalIdentityRef("windows_file_id_birthtime", physical, 1),
+                PhysicalIdentityRef(physical_identity_scheme_for_birthtime(birthtime), physical, 1),
                 path,
             ),
             (),
@@ -1154,9 +1127,7 @@ def _catalog_identity(row: sqlite3.Row) -> FileIdentity:
     file_key = str(row["file_key"])
     decimal = f"{identity.volume_id}:{identity.file_id}"
     if file_key not in {identity.packed_key, decimal}:
-        raise FileIdentityError(
-            "catalog file_key disagrees with its neutral identity fields"
-        )
+        raise FileIdentityError("catalog file_key disagrees with its neutral identity fields")
     return identity
 
 
@@ -1218,11 +1189,7 @@ def _catalog_revision(row: sqlite3.Row, resource_id: str) -> RevisionRef:
         "mtime_ns": int(row["mtime_ns"]),
     }
     identity = fingerprint_text(canonical_json(payload))
-    state = (
-        RevisionState.PARTIAL
-        if _catalog_quality_warnings(row)
-        else RevisionState.CURRENT
-    )
+    state = RevisionState.PARTIAL if _catalog_quality_warnings(row) else RevisionState.CURRENT
     return RevisionRef(
         resource_id,
         f"revision:catalog:{identity.xxh3_128}",
@@ -1268,9 +1235,7 @@ def _rank_matches(
             match.evidence.evidence_id,
         ),
     )
-    return tuple(
-        replace(match, source_rank=rank) for rank, match in enumerate(ordered, 1)
-    )
+    return tuple(replace(match, source_rank=rank) for rank, match in enumerate(ordered, 1))
 
 
 def _basename_predicate(column: str) -> str:
@@ -1302,9 +1267,7 @@ def _non_ascii_case_warning(term: ExactLookupTerm) -> tuple[str, ...]:
 # region [04] Inventory v7 adapter
 
 
-_INVENTORY_KINDS = frozenset(
-    {ExactLookupKind.PATH, ExactLookupKind.NAME, ExactLookupKind.HASH}
-)
+_INVENTORY_KINDS = frozenset({ExactLookupKind.PATH, ExactLookupKind.NAME, ExactLookupKind.HASH})
 _FULL_INVENTORY_HASH = "xxh3_128_full_v1"
 
 
@@ -1378,9 +1341,7 @@ def _inventory_row_match(
         reason = "published inventory full fingerprint matched exactly"
     elif term.kind is ExactLookupKind.NAME:
         observed_path = str(row["path"])
-        identifiers = (
-            ("file_name", observed_path.replace("\\", "/").rsplit("/", 1)[-1]),
-        )
+        identifiers = (("file_name", observed_path.replace("\\", "/").rsplit("/", 1)[-1]),)
         section_kind = "current_path"
         section_id = observed_path
         reason = "published inventory file name matched exactly"
@@ -1503,9 +1464,7 @@ def _lookup_inventory(
 ) -> tuple[list[ExactEvidenceMatch], list[ExactOwnerReport]]:
     matches: list[ExactEvidenceMatch] = []
     reports: list[ExactOwnerReport] = []
-    snapshot_heads = tuple(
-        sorted((head.scope, head.generation) for head in owner.publications)
-    )
+    snapshot_heads = tuple(sorted((head.scope, head.generation) for head in owner.publications))
     try:
         with _inventory_database(path) as connection:
             connection.execute("BEGIN")
@@ -1598,9 +1557,7 @@ def _lookup_inventory(
                 for row in rows:
                     control.checkpoint()
                     try:
-                        term_matches.append(
-                            _inventory_row_match(row, term, len(term_matches) + 1)
-                        )
+                        term_matches.append(_inventory_row_match(row, term, len(term_matches) + 1))
                     except (FileIdentityError, TypeError, ValueError):
                         invalid += 1
                 all_ranked = _rank_matches(term_matches)
@@ -1630,9 +1587,7 @@ def _lookup_inventory(
                         sqlite_steps=steps + preflight_steps,
                         truncated=was_truncated,
                         omitted_matches=known_omitted,
-                        reason=(
-                            "exact_result_limit_reached" if was_truncated else reason
-                        ),
+                        reason=("exact_result_limit_reached" if was_truncated else reason),
                         warnings=tuple(warnings),
                     )
                 )
@@ -1680,9 +1635,7 @@ _CODE_WATERMARK_NAMES = (
     "latest_version_id",
     "latest_analysis_run_id",
 )
-_CODE_HASH_ALGORITHMS = frozenset(
-    {None, "xxh3_128", "raw_xxh3_128", "xxh3_128_raw_v1"}
-)
+_CODE_HASH_ALGORITHMS = frozenset({None, "xxh3_128", "raw_xxh3_128", "xxh3_128_raw_v1"})
 
 
 def _code_current_vector(
@@ -1803,9 +1756,7 @@ def _code_row_match(
         reason = "current code raw-content fingerprint matched exactly"
     elif term.kind is ExactLookupKind.NAME:
         observed_path = str(row["current_path"])
-        identifiers.append(
-            ("file_name", observed_path.replace("\\", "/").rsplit("/", 1)[-1])
-        )
+        identifiers.append(("file_name", observed_path.replace("\\", "/").rsplit("/", 1)[-1]))
         section_kind = "current_path"
         section_id = observed_path
         reason = "current structured code file name matched exactly"
@@ -1815,9 +1766,7 @@ def _code_row_match(
         section_kind = "current_path"
         section_id = observed_path
         reason = "current structured code path matched exactly"
-    symbol_unconfirmed = bool(
-        term.kind is ExactLookupKind.SYMBOL and int(row["confirmed"]) != 1
-    )
+    symbol_unconfirmed = bool(term.kind is ExactLookupKind.SYMBOL and int(row["confirmed"]) != 1)
     if symbol_unconfirmed:
         revision = replace(revision, state=RevisionState.PARTIAL)
         reason = "unconfirmed structured code symbol matched exactly"
@@ -1981,9 +1930,7 @@ def _code_ranked_outcome(
     ranked = tuple(all_ranked[:per_term_limit])
     omitted = max(0, len(all_ranked) - len(ranked))
     truncated = query_truncated or omitted > 0
-    symbol_unconfirmed = any(
-        "code_symbol_unconfirmed" in match.warnings for match in ranked
-    )
+    symbol_unconfirmed = any("code_symbol_unconfirmed" in match.warnings for match in ranked)
     report = _report(
         "code",
         term,
@@ -2105,9 +2052,7 @@ def _code_failure_reports(
 ) -> list[ExactOwnerReport]:
     exhausted = isinstance(exc, _WorkBudgetExceeded)
     reason = (
-        "exact_work_budget_exhausted"
-        if exhausted
-        else f"owner_read_failed:{type(exc).__name__}"
+        "exact_work_budget_exhausted" if exhausted else f"owner_read_failed:{type(exc).__name__}"
     )
     return [
         _report(
@@ -2167,9 +2112,7 @@ def _lookup_code(
 # region [06] Catalog v6 generational adapter
 
 
-_CATALOG_KINDS = frozenset(
-    {ExactLookupKind.PATH, ExactLookupKind.NAME, ExactLookupKind.IDENTIFIER}
-)
+_CATALOG_KINDS = frozenset({ExactLookupKind.PATH, ExactLookupKind.NAME, ExactLookupKind.IDENTIFIER})
 
 
 _CATALOG_SELECT = """SELECT d.generation_id,d.source_kind,d.file_key,d.path,
@@ -2202,9 +2145,7 @@ def _catalog_valid_heads(
         steps += used
         if limit < len(batch) and len(rows) == limit:
             raise _WorkBudgetExceeded("catalog heads exceed row observation budget")
-        by_head = {
-            (str(row["source_kind"]), int(row["generation_id"])): row for row in rows
-        }
+        by_head = {(str(row["source_kind"]), int(row["generation_id"])): row for row in rows}
         for head in batch:
             row = by_head.get(head)
             if (
@@ -2380,9 +2321,7 @@ def _catalog_row_match(
         reason = "published catalog standard identifier matched exactly"
     elif term.kind is ExactLookupKind.NAME:
         observed_path = str(row["path"])
-        identifiers = [
-            ("file_name", observed_path.replace("\\", "/").rsplit("/", 1)[-1])
-        ]
+        identifiers = [("file_name", observed_path.replace("\\", "/").rsplit("/", 1)[-1])]
         evidence_method = EvidenceMethod.STRUCTURAL
         section_kind = "current_path"
         section_id = observed_path
@@ -2481,13 +2420,11 @@ def _catalog_preflight(
     invalid_identifier_json = False
     identifier_coverage_incomplete = False
     if valid_heads and any(term.kind is ExactLookupKind.IDENTIFIER for term in terms):
-        invalid_identifier_json, identifier_probe_steps = (
-            _catalog_has_invalid_identifier_json(
-                connection,
-                control,
-                valid_heads,
-                path_scope,
-            )
+        invalid_identifier_json, identifier_probe_steps = _catalog_has_invalid_identifier_json(
+            connection,
+            control,
+            valid_heads,
+            path_scope,
         )
         identifier_coverage_incomplete, identifier_quality_steps = (
             _catalog_identifier_coverage_incomplete(
@@ -2623,8 +2560,7 @@ def _catalog_term_result(
         term.kind is ExactLookupKind.IDENTIFIER and preflight.invalid_identifier_json
     )
     identifier_coverage_incomplete = (
-        term.kind is ExactLookupKind.IDENTIFIER
-        and preflight.identifier_coverage_incomplete
+        term.kind is ExactLookupKind.IDENTIFIER and preflight.identifier_coverage_incomplete
     )
     incomplete = bool(
         preflight.missing_heads
@@ -2734,9 +2670,7 @@ def _catalog_failure_reports(
 ) -> list[ExactOwnerReport]:
     exhausted = isinstance(exc, _WorkBudgetExceeded)
     reason = (
-        "exact_work_budget_exhausted"
-        if exhausted
-        else f"owner_read_failed:{type(exc).__name__}"
+        "exact_work_budget_exhausted" if exhausted else f"owner_read_failed:{type(exc).__name__}"
     )
     return [
         _report(
@@ -3004,9 +2938,7 @@ def _lookup_exact_owners(
     for owner_name, supported_kinds in _OWNER_KINDS:
         if owner_name not in selected_owners:
             continue
-        terms = tuple(
-            term for term in context.request.terms if term.kind in supported_kinds
-        )
+        terms = tuple(term for term in context.request.terms if term.kind in supported_kinds)
         if not terms:
             continue
         owner_matches, owner_reports, timing = _execute_exact_owner(
@@ -3027,9 +2959,7 @@ def _materialize_exact_result(
     owner_timings: Sequence[ExactOwnerTiming],
 ) -> ExactLookupResult:
     context.control.checkpoint()
-    term_order = {
-        term.term_id: index for index, term in enumerate(context.request.terms)
-    }
+    term_order = {term.term_id: index for index, term in enumerate(context.request.terms)}
     owner_order = {name: index for index, (name, _) in enumerate(_OWNER_KINDS)}
     ordered_matches = sorted(
         matches,

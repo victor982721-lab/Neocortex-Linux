@@ -35,11 +35,15 @@ esperadas, deténgase: el launcher instalado y el árbol fuente no representan l
 misma entrega. No use una ruta nueva hasta actualizar y volver a comprobar el
 entrypoint.
 
-Esta fuente declara `0.7.2`. La fuente canónica está en
+Esta fuente declara `0.7.2`. En Windows, la fuente canónica está en
 `%USERPROFILE%\Neocortex\Repository`; los runtimes versionados viven bajo
 `%LOCALAPPDATA%\Programs\Neocortex\versions` y el launcher estable es
-`%LOCALAPPDATA%\Programs\Neocortex\bin\Neocortex.exe`. Valide primero el
-ejecutable exacto del runtime y promueva `bin` sólo después de esa barrera.
+`%LOCALAPPDATA%\Programs\Neocortex\bin\Neocortex.exe`. En Linux, la fuente está
+en `~/Neocortex/Repository`, las releases en
+`${XDG_DATA_HOME:-~/.local/share}/Neocortex/releases`, `current` selecciona la
+activa y `~/.local/bin/Neocortex` es el alias público. Valide primero el
+ejecutable exacto del runtime y promueva el launcher sólo después de esa
+barrera.
 
 Desde la raíz del repositorio, el siguiente comando sirve únicamente para
 diagnosticar el árbol fuente; no sustituye la validación del ejecutable
@@ -48,6 +52,10 @@ instalado:
 ```powershell
 py -3 -m neocortex --version
 ```
+
+En Linux, el diagnóstico equivalente del árbol fuente es
+`python3.14 -m neocortex --version`; la instalación canónica se gestiona con
+`python3.14 tools/release_linux.py`.
 
 ## Sintaxis y rutas
 
@@ -91,14 +99,22 @@ Después de aprobar cada ruta y su proyección se acepta una lista separada por
 comas o `--all`. `--all` no se combina con `--route` ni con operaciones
 directas de consulta o diagnóstico.
 
-La corrida `--all` ejecuta primero las seis rutas y, si no hubo errores de
-acciones u organización, avanza Semantic textual sobre los caches disponibles
-de PDF, DOCX, XLSX, PPTX, ODT y audio. Sus límites integrados son 100 000 items,
-1 000 000 de jobs y 172 800 segundos. Una truncación limpia se informa como
-progreso reanudable y conserva exit `0`; errores o estado stale conservan exit
-`2`. Code sólo participa cuando se selecciona expresamente con
-`--semantic-source code`, para no reintroducir inventarios de millones de chunks
-en la publicación documental cotidiana.
+La corrida `--all` ejecuta primero el autoanálisis protegido de
+`~/Neocortex/Repository` —o su equivalente canónico Windows— usando el estado
+separado `self-analysis`. Después ejecuta las seis rutas del corpus y, si no
+hubo errores de acciones u organización, avanza Semantic textual sobre los
+caches disponibles de PDF, DOCX, XLSX, PPTX, ODT y audio. Sus límites
+integrados son 100 000 items, 1 000 000 de jobs y 172 800 segundos. Una
+truncación limpia se informa como progreso reanudable y conserva exit `0`;
+errores o estado stale conservan exit `2`. Code sólo participa en Semantic
+cuando se selecciona expresamente con `--semantic-source code`, para no
+reintroducir inventarios de millones de chunks en la publicación documental
+cotidiana.
+
+El autoanálisis y la etapa documental son fronteras independientes. Si la raíz
+del corpus no existe, `--all` conserva el autoanálisis ya ejecutado, informa
+`ERROR corpus_unavailable: ...` y sale con código `2` sin traceback ni creación
+parcial del estado documental.
 
 ## Modos de ejecución
 
@@ -124,6 +140,9 @@ internas.
 El preset `--self-analysis` exige raíz y estado explícitos, fuerza exactamente
 la ruta `code` en modo `analyze_only` y rechaza `--all`, `--apply`,
 route-only/resume, selección, catálogo, organización y opciones que no consume.
+Ese rechazo protege la invocación manual combinada; `--all` reutiliza el mismo
+servicio mediante una invocación interna separada y canónica, sin mezclar sus
+raíces ni sus bases.
 Los árboles de raíz y estado deben ser completamente disjuntos:
 
 ```powershell
@@ -381,9 +400,11 @@ Neocortex --ui
 Neocortex --ui --root $Root
 ```
 
-La GUI supervisa el mismo orquestador, pero expone deliberadamente cinco rutas:
-PDF, DOCX, Office, audio e imagen. La ruta `code` se opera mediante la CLI. El
-worker `--gui-worker` es un contrato interno y no debe invocarse manualmente.
+La GUI supervisa el mismo orquestador y expone PDF, DOCX, Office, audio, imagen
+y Code. En Linux muestra “modo portátil Linux”, no solicita elevación y
+desactiva los controles de mutación; inventario, procesamiento y búsqueda se
+conservan. El worker `--gui-worker` es un contrato interno y no debe invocarse
+manualmente.
 
 ## Consultas y diagnósticos sin recorrido
 
@@ -394,6 +415,10 @@ corpus:
 Neocortex --status
 Neocortex --status --status-run 40 --status-json
 Neocortex doctor capabilities
+Neocortex doctor platform
+Neocortex doctor platform --json
+Neocortex models status
+Neocortex models status --json
 Neocortex --pdf-doctor
 Neocortex --pdf-verify
 Neocortex --audio-doctor
@@ -410,6 +435,24 @@ eso no convierte el diagnóstico en una operación de reparación.
 `doctor capabilities` comprueba la presencia de dependencias sin cargar
 modelos; los diagnósticos profundos siguen siendo específicos de PDF/OCR,
 audio, código y estado semántico.
+
+`doctor platform` tampoco crea estado. Su esquema versionado informa sistema,
+rutas, backend de inventario, identidad, contención, elevación y mutación. En
+Linux debe indicar `portable-full-scan`, `posix-st_dev-st_ino`, contención por
+sesión/grupo/rlimit, elevación no requerida y mutación intencionalmente no
+disponible; esto no vuelve incompatible a la plataforma.
+
+`models status` sólo inspecciona cachés locales y metadata instalada. La
+adquisición es una operación distinta y explícita:
+
+```bash
+Neocortex models prepare
+Neocortex models prepare --json
+```
+
+Prepara secuencialmente Jina, MiniLM compacto, CLIP texto, CLIP visión y
+Whisper `small` CPU/int8, y valida NudeNet. Conserva descargas parciales
+reanudables si no puede completar el conjunto.
 
 `--code-doctor --code-json` proyecta además
 `external_evidence_providers` para `ruff-protected-basic`,
@@ -713,6 +756,8 @@ por familia:
 | `--action-recovery-json` | JSON determinista por acción o evento; exige `--action-recovery-status` o `--action-recovery-record`. |
 | `--retention-json` | Un documento JSON del plan dry-run; exige `--retention-status`. |
 | `--knowledge-json` | Snapshot, resultado de búsqueda o contexto Knowledge; exige exactamente una acción `--knowledge-*`. |
+| `doctor platform --json` | Un documento JSON versionado de política y capacidades de plataforma. |
+| `models prepare/status --json` | Un documento JSON versionado del conjunto de modelos gestionados. |
 
 No combine una opción JSON con una operación de otra familia. La salida humana
 puede evolucionar; para automatización use sólo el contrato JSON correspondiente
@@ -724,7 +769,7 @@ y compruebe siempre el código de salida.
 |---:|---|
 | `0` | Ayuda/versión o ejecución/consulta completada según su contrato. |
 | `1` | Excepción fatal no normalizada o fallo interno del worker de GUI. No es el código de una validación ordinaria de argumentos. |
-| `2` | Error de argumentos detectado por `argparse` o por la validación posterior, como una combinación incompatible; estado requerido ausente o incompatible; diagnóstico fallido —incluida abstención total de `--code-status`/`--code-review` ante sidecars, cerca inestable o publicación no elegible—; generación Semantic incompleta, truncada o no publicada; error de acciones u organización; conciliación con efecto ambiguo/imposible —incluso si su evento fue registrado—; plan de retención bloqueado; o, con `--strict-exit-codes`, errores/parciales retenidos por una ruta. El watcher también devuelve `2` si conserva corridas fallidas o errores de fuente. |
+| `2` | Error de argumentos detectado por `argparse` o por la validación posterior, como una combinación incompatible o una solicitud Linux de `--apply`/`--organization-apply`; estado requerido ausente o incompatible; diagnóstico fallido —incluida abstención total de `--code-status`/`--code-review` ante sidecars, cerca inestable o publicación no elegible—; generación Semantic incompleta, truncada o no publicada; error de acciones u organización; conciliación con efecto ambiguo/imposible —incluso si su evento fue registrado—; plan de retención bloqueado; o, con `--strict-exit-codes`, errores/parciales retenidos por una ruta. El watcher también devuelve `2` si conserva corridas fallidas o errores de fuente. |
 | `3` | Knowledge terminó con snapshot estable y cobertura completa, pero search/context no obtuvo evidencia. |
 | `4` | Knowledge produjo una respuesta parcial o no soportada; incluye propietarios necesarios ausentes. |
 | `5` | El snapshot Knowledge volvió a cambiar durante el único reintento global acotado. |
@@ -750,6 +795,12 @@ Neocortex --root $Root --route pdf --MaxCount 25 --strict-exit-codes
 ```
 
 ## Operaciones que requieren autorización explícita
+
+Esta sección describe exclusivamente el backend seguro de Windows. En Linux,
+`--apply` y `--organization-apply` se rechazan antes de validar la raíz o crear
+estado con código `2` y razón estable
+`linux_mutation_backend_unavailable`. Inventario, procesamiento, catálogo y
+búsqueda permanecen disponibles; no se usa `Path.rename` como sustituto.
 
 `--apply` permite que una corrida integrada ejecute únicamente las mutaciones
 que satisfacen el contrato físico de `0.7.2`. Los rename de extensión y los
@@ -785,9 +836,13 @@ y los planes. El watcher y `--route-only` rechazan `--apply`.
 
 ## Operaciones con otros efectos laterales
 
+- `models prepare` descarga explícita y secuencialmente los modelos gestionados;
+  `models status` no descarga ni crea rutas.
 - `--semantic-prepare-models` adquiere o carga explícitamente modelos.
-- Una primera ruta de audio puede descargar el modelo Whisper salvo que se use
-  `--audio-local-models-only`.
+- En Linux, audio es local-only por defecto y usa Whisper CPU/int8 del cache
+  compartido; no descarga implícitamente durante una ruta.
+- En Windows, una primera ruta de audio puede descargar el modelo Whisper salvo
+  que se use `--audio-local-models-only`.
 - `--semantic-index`, `--semantic-classify`, `--catalog-documents`,
   `--organization-plan`, `--review-record` y `--review-evidence-sync` escriben
   estado, aunque no muten archivos originales.

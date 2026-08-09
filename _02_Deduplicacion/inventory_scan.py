@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import ClassVar, Protocol
 
 import xxhash
+from neocortex.platform_policy import current_platform_policy, stat_birthtime_ns
 
 from .errors import InventoryError
 from .models import ScanSummary
@@ -35,6 +36,11 @@ DEFAULT_EXCLUDED_PATHS = (
     Path.home() / "Neocortex" / "Repository" / "Laboratory",
     Path.home() / "Neocortex" / "Laboratories",
     Path.home() / "Neocortex" / "TestTemp",
+    current_platform_policy().state_directory,
+    current_platform_policy().config_directory,
+    current_platform_policy().data_directory,
+    Path.home() / ".local" / "bin",
+    Path.home() / ".local" / "share" / "applications",
 )
 DEFAULT_GENERATED_DIRECTORY_NAMES = (
     ".cdx",
@@ -61,16 +67,23 @@ DEFAULT_GENERATED_DIRECTORY_PREFIXES = (
 )
 DEFAULT_GENERATED_DIRECTORY_FRAGMENTS = ("pytest",)
 DEFAULT_GENERATED_FILE_SUFFIXES = (
+    ".desktop",
     ".pyc",
     ".pyo",
 )
 INTERNAL_DIRECTORY_PREFIXES = (".dedupe-quarantine-",)
-INVENTORY_EXCLUSION_SIGNATURE_VERSION = "inventory-exclusion-policy-v3"
+INVENTORY_EXCLUSION_SIGNATURE_VERSION = "inventory-exclusion-policy-v4"
 MAX_INVENTORY_EXCLUSION_RULES = 1024
 MAX_INVENTORY_EXCLUSION_RULE_CHARS = 255
 MAX_INVENTORY_EXCLUSION_PATH_CHARS = 32_767
 FILE_ATTRIBUTE_HIDDEN = getattr(stat_module, "FILE_ATTRIBUTE_HIDDEN", 0x00000002)
 FILE_ATTRIBUTE_REPARSE_POINT = getattr(stat_module, "FILE_ATTRIBUTE_REPARSE_POINT", 0x00000400)
+
+
+def _name_key(value: str) -> str:
+    """Normalize safety exclusions conservatively on every platform."""
+
+    return value.casefold()
 
 
 def _normalize_named_rules(
@@ -79,7 +92,7 @@ def _normalize_named_rules(
     kind: str,
     suffixes: bool = False,
 ) -> tuple[str, ...]:
-    """Validate and case-fold bounded exact-name or suffix rules."""
+    """Validate and normalize bounded exact-name or suffix rules."""
 
     normalized: set[str] = set()
     for value in values:
@@ -94,7 +107,7 @@ def _normalize_named_rules(
             raise ValueError(f"invalid {kind} rule: {value!r}")
         if suffixes and (not value.startswith(".") or value == "."):
             raise ValueError(f"{kind} rules must be non-empty dotted suffixes")
-        normalized.add(value.casefold())
+        normalized.add(_name_key(value))
         if len(normalized) > MAX_INVENTORY_EXCLUSION_RULES:
             raise ValueError(f"{kind} rules exceed {MAX_INVENTORY_EXCLUSION_RULES} entries")
     return tuple(sorted(normalized))
@@ -380,7 +393,7 @@ class InventoryExclusionPolicy:
             self.restricted_path_keys,
         )
         if restricted_root is not None:
-            directory_name = os.path.basename(os.path.abspath(os.fspath(path))).casefold()
+            directory_name = _name_key(os.path.basename(os.path.abspath(os.fspath(path))))
             if directory_name in self.restricted_directory_names:
                 return True
             is_inside_allowed_tree = (
@@ -415,9 +428,9 @@ class InventoryExclusionPolicy:
         )
 
     def excludes_file(self, path: str | Path) -> bool:
-        """Match exact file names and bounded suffixes case-insensitively."""
+        """Match exact file names and bounded suffixes with native semantics."""
 
-        name = os.path.basename(os.path.abspath(os.fspath(path))).casefold()
+        name = _name_key(os.path.basename(os.path.abspath(os.fspath(path))))
         if name in self.file_names or any(name.endswith(suffix) for suffix in self.file_suffixes):
             return True
         path_key = _absolute_path_key(path)
@@ -480,7 +493,7 @@ def is_excluded_directory(
     absolute = os.path.abspath(os.fspath(path))
     if os.path.normcase(absolute) in excluded_path_keys:
         return True
-    directory_name = os.path.basename(absolute).casefold()
+    directory_name = _name_key(os.path.basename(absolute))
     if (
         directory_name in excluded_directory_names
         or any(directory_name.startswith(prefix) for prefix in excluded_directory_prefixes)
@@ -578,7 +591,7 @@ class _RootIdentity:
             path=path,
             volume_id=root_stat.st_dev,
             file_id=root_stat.st_ino,
-            birthtime_ns=getattr(root_stat, "st_birthtime_ns", root_stat.st_ctime_ns),
+            birthtime_ns=stat_birthtime_ns(root_stat),
         )
 
     def verify_unchanged(self) -> None:
@@ -588,7 +601,7 @@ class _RootIdentity:
             raise InventoryError(
                 f"inventory root disappeared while scanning: {self.path}: {exc}"
             ) from exc
-        current_birthtime_ns = getattr(current, "st_birthtime_ns", current.st_ctime_ns)
+        current_birthtime_ns = stat_birthtime_ns(current)
         if (
             current.st_dev != self.volume_id
             or current.st_ino != self.file_id
@@ -637,7 +650,7 @@ class _InventoryBatch:
         self._rows: list[InventoryRow] = []
 
     def append(self, entry: os.DirEntry[str], item_stat: os.stat_result) -> None:
-        birthtime_ns = getattr(item_stat, "st_birthtime_ns", item_stat.st_ctime_ns)
+        birthtime_ns = stat_birthtime_ns(item_stat)
         self._rows.append(
             (
                 os.path.abspath(entry.path),

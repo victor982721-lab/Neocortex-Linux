@@ -11,6 +11,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
+from neocortex.platform_policy import current_platform_policy
 
 from _01_Enumeracion import JournalCursor, NtfsEntry, UsnChangeBatch
 from _02_Deduplicacion import (
@@ -103,7 +104,7 @@ def test_policy_signature_is_versioned_canonical_and_non_cryptographic(
     )
 
     assert first.signature == second.signature
-    assert first.signature.startswith("inventory-exclusion-policy-v3:xxh3_128:")
+    assert first.signature.startswith("inventory-exclusion-policy-v4:xxh3_128:")
     assert len(first.signature.rsplit(":", 1)[1]) == 32
     assert first.directory_names == frozenset({"build", "node_modules"})
     assert first.directory_prefixes == ("basetemp", "tmp")
@@ -138,6 +139,11 @@ def test_default_paths_exclude_codex_cache_and_sandbox_infrastructure() -> None:
         home / "Neocortex" / "Repository" / "Laboratory",
         home / "Neocortex" / "Laboratories",
         home / "Neocortex" / "TestTemp",
+        current_platform_policy().state_directory,
+        current_platform_policy().config_directory,
+        current_platform_policy().data_directory,
+        home / ".local" / "bin",
+        home / ".local" / "share" / "applications",
     )
 
 

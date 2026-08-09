@@ -41,9 +41,7 @@ class HashingTests(unittest.TestCase):
             left_snapshot = snapshot_path(left)
             right_snapshot = snapshot_path(right)
             other_snapshot = snapshot_path(other)
-            self.assertEqual(
-                full_fingerprint(left_snapshot), full_fingerprint(right_snapshot)
-            )
+            self.assertEqual(full_fingerprint(left_snapshot), full_fingerprint(right_snapshot))
             self.assertEqual(
                 partial_fingerprint(left_snapshot), partial_fingerprint(right_snapshot)
             )
@@ -70,9 +68,7 @@ class PlannerTests(unittest.TestCase):
             ).fetchone()[0]
             tables = {
                 row[0]
-                for row in connection.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table'"
-                )
+                for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
             }
             connection.close()
             self.assertEqual(version, "9")
@@ -80,6 +76,7 @@ class PlannerTests(unittest.TestCase):
             self.assertIn("planned_duplicate_members", tables)
             self.assertIn("inventory_checkpoints", tables)
 
+    @unittest.skipUnless(os.name == "nt", "legacy drive-letter checkpoint is Windows-only")
     def test_schema_three_fixture_invalidates_the_old_inventory_checkpoint(
         self,
     ) -> None:
@@ -141,9 +138,7 @@ class PlannerTests(unittest.TestCase):
                 index.apply_reconciliation(
                     scan.scan_id,
                     upserts=(snapshot_path(created),),
-                    checkpoint=InventoryCheckpoint(
-                        str(root), scan.scan_id, "C:", 7, 120
-                    ),
+                    checkpoint=InventoryCheckpoint(str(root), scan.scan_id, "C:", 7, 120),
                 )
                 index.refresh_scan_aggregates(scan.scan_id)
                 checkpoint = index.inventory_checkpoint(root)
@@ -164,9 +159,7 @@ class PlannerTests(unittest.TestCase):
             (root / "Workspace" / ".codex").mkdir(parents=True)
             (root / "AppData" / "Local" / "direct_appdata.bin").write_bytes(b"ignored")
             (root / ".CoDeX" / "state" / "direct_codex.bin").write_bytes(b"ignored")
-            (root / "Workspace" / "AppData" / "nested_appdata.bin").write_bytes(
-                b"visible"
-            )
+            (root / "Workspace" / "AppData" / "nested_appdata.bin").write_bytes(b"visible")
             (root / "Workspace" / ".codex" / "nested_codex.bin").write_bytes(b"visible")
             with DedupIndex(Path(directory) / "state.db") as index:
                 # Defaults point at the actual user profile, not this corpus.
@@ -178,11 +171,16 @@ class PlannerTests(unittest.TestCase):
                     excluded_paths=(root / "AppData", root / ".codex"),
                 )
                 names = {Path(item.path).name for item in index.snapshots(scan.scan_id)}
+                expected_names = {"nested_appdata.bin", "nested_codex.bin"}
+                expected_exclusions = 2
+                if os.name != "nt":
+                    expected_names.add("direct_codex.bin")
+                    expected_exclusions = 1
                 self.assertEqual(
                     names,
-                    {"nested_appdata.bin", "nested_codex.bin"},
+                    expected_names,
                 )
-                self.assertEqual(scan.excluded_directories, 2)
+                self.assertEqual(scan.excluded_directories, expected_exclusions)
 
     def test_scan_always_excludes_internal_quarantine_directories(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -216,9 +214,7 @@ class PlannerTests(unittest.TestCase):
             try:
                 with DedupIndex(Path(directory) / "state.db") as index:
                     scan = index.scan(root, excluded_paths=())
-                    names = {
-                        Path(item.path).name for item in index.snapshots(scan.scan_id)
-                    }
+                    names = {Path(item.path).name for item in index.snapshots(scan.scan_id)}
                 self.assertEqual(names, {"visible.bin"})
                 self.assertEqual(scan.excluded_directories, 1)
             finally:
@@ -242,16 +238,12 @@ class PlannerTests(unittest.TestCase):
             database = Path(directory) / "state.db"
             with DedupIndex(database) as index:
                 scan = index.scan(root, batch_size=2)
-                plan = DedupPlanner(index, partial_threshold=0).plan(
-                    scan.scan_id, preview_limit=1
-                )
+                plan = DedupPlanner(index, partial_threshold=0).plan(scan.scan_id, preview_limit=1)
                 self.assertEqual(scan.files_seen, 4)
                 self.assertEqual(len(plan.groups), 1)
                 group = plan.groups[0]
                 self.assertEqual(Path(group.keep.path).name, "newer.dat")
-                self.assertEqual(
-                    [Path(item.path).name for item in group.redundant], ["older.dat"]
-                )
+                self.assertEqual([Path(item.path).name for item in group.redundant], ["older.dat"])
                 self.assertEqual(group.reclaimable_bytes, len(b"duplicate-content"))
                 self.assertNotIn(
                     "same_size_not_duplicate.dat",
@@ -293,9 +285,7 @@ class PlannerTests(unittest.TestCase):
             self.assertEqual(plan.redundant_files, 2)
             self.assertEqual(len(plan.groups), 1)
             self.assertEqual(len(streamed), 2)
-            self.assertGreaterEqual(
-                streamed[0].reclaimable_bytes, streamed[1].reclaimable_bytes
-            )
+            self.assertGreaterEqual(streamed[0].reclaimable_bytes, streamed[1].reclaimable_bytes)
 
     def test_large_duplicate_group_uses_bounded_member_chunks(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

@@ -16,6 +16,11 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
+from neocortex.platform_policy import (
+    UNAVAILABLE_BIRTHTIME_NS,
+    physical_identity_scheme_for_birthtime,
+)
+
 from .file_identity import FileIdentity, FileIdentityEncoding
 from .knowledge_contracts import (
     EvidenceMethod,
@@ -157,7 +162,7 @@ def resolved_physical_identity(
     identity_errors: tuple[type[Exception], ...],
 ) -> str | None:
     birthtime_ns = int_provenance_fn(resolved.source_revision, "birthtime_ns")
-    if birthtime_ns is None or birthtime_ns < 0:
+    if birthtime_ns is None or birthtime_ns < UNAVAILABLE_BIRTHTIME_NS:
         return None
     try:
         if resolved.source_kind == "code":
@@ -189,7 +194,7 @@ def direct_resource_ref(
         if isinstance(birthtime_ns, int) and not isinstance(birthtime_ns, bool)
         else None
     )
-    if birthtime is not None and birthtime >= 0:
+    if birthtime is not None and birthtime >= UNAVAILABLE_BIRTHTIME_NS:
         physical = f"{identity.volume_id}:{identity.file_id}:{birthtime}"
         return (
             resource_ref_type(
@@ -197,9 +202,7 @@ def direct_resource_ref(
                 source_kind,
                 owner,
                 physical_identity_ref_type(
-                    "windows_file_id_birthtime",
-                    physical,
-                    1,
+                    physical_identity_scheme_for_birthtime(birthtime), physical, 1
                 ),
                 path,
                 None,
@@ -243,15 +246,15 @@ def _resource_from_resolved(
     birthtime_ns = int_provenance_fn(resolved.source_revision, "birthtime_ns")
     if canonical_physical is not None:
         physical_value = canonical_physical
-        physical_scheme = "windows_file_id_birthtime"
+        assert birthtime_ns is not None
+        physical_scheme = physical_identity_scheme_for_birthtime(birthtime_ns)
         resource_id = f"resource:file:{canonical_physical}"
         identity_warnings: tuple[str, ...] = ()
     elif birthtime_ns is not None and birthtime_ns >= 0:
         physical_value = f"{resolved.source_identity}:birthtime:{birthtime_ns}"
         physical_scheme = "owner_file_key_birthtime"
         resource_id = (
-            f"resource:{resolved.source_kind}:{resolved.source_identity}:"
-            f"birthtime:{birthtime_ns}"
+            f"resource:{resolved.source_kind}:{resolved.source_identity}:birthtime:{birthtime_ns}"
         )
         identity_warnings = ("physical_identity_unresolved",)
     else:
@@ -596,10 +599,7 @@ def lexical_rankings(
                 executed=available,
                 available=available,
                 complete=not candidate_window_reached
-                and all(
-                    candidate.revision.state is revision_current
-                    for candidate in candidates
-                ),
+                and all(candidate.revision.state is revision_current for candidate in candidates),
                 returned=len(candidates),
                 rows_scanned=len(result.hits),
                 reason=_lexical_reason(
@@ -627,16 +627,11 @@ def _validated_semantic_steps(
     if len({step.ranking_name for step in semantic_steps}) != len(semantic_steps):
         raise ValueError("Knowledge plan contains duplicate semantic rankings")
     discovery_steps = planned_steps(plan, "semantic_discovery")
-    if any(
-        step.ranking_name != "semantic_title" or step.required
-        for step in discovery_steps
-    ):
+    if any(step.ranking_name != "semantic_title" or step.required for step in discovery_steps):
         raise ValueError("Knowledge plan contains an unsupported discovery ranking")
     if len(discovery_steps) > 1:
         raise ValueError("Knowledge plan contains duplicate discovery rankings")
-    if discovery_steps and not any(
-        step.ranking_name == "semantic_text" for step in semantic_steps
-    ):
+    if discovery_steps and not any(step.ranking_name == "semantic_text" for step in semantic_steps):
         raise ValueError("semantic title discovery requires semantic text retrieval")
     return semantic_steps, discovery_steps
 
@@ -665,9 +660,7 @@ def _semantic_vector_budgets(
     step_count: int,
 ) -> tuple[int, ...]:
     base_budget, extra_budgets = divmod(max_vectors, step_count)
-    return tuple(
-        base_budget + (1 if index < extra_budgets else 0) for index in range(step_count)
-    )
+    return tuple(base_budget + (1 if index < extra_budgets else 0) for index in range(step_count))
 
 
 def _semantic_no_budget_report(
@@ -726,9 +719,7 @@ def _semantic_missing_report(
         False,
         False,
         0,
-        reason=(
-            "semantic_ranking_ambiguous" if ambiguous else "semantic_ranking_missing"
-        ),
+        reason=("semantic_ranking_ambiguous" if ambiguous else "semantic_ranking_missing"),
         owner="semantic",
         elapsed_ns=duration_ns(clock, started_ns),
     )
@@ -769,10 +760,7 @@ def _semantic_result_report(
         executed=True,
         available=ranking.available,
         complete=(
-            ranking.available
-            and ranking.complete
-            and not vector_cutoff
-            and not candidate_cutoff
+            ranking.available and ranking.complete and not vector_cutoff and not candidate_cutoff
         ),
         returned=returned,
         vectors_scanned=ranking.scanned,
@@ -965,9 +953,7 @@ def _append_semantic_title_result(
     started_ns: int,
 ) -> None:
     title_matches = tuple(
-        ranking
-        for ranking in result.rankings
-        if ranking.name == discovery_step.ranking_name
+        ranking for ranking in result.rankings if ranking.name == discovery_step.ranking_name
     )
     if len(title_matches) != 1:
         output.reports.append(
@@ -1219,9 +1205,7 @@ def exact_rankings(
         )
     visible_counts: dict[str, int] = {}
     for match in result.matches:
-        visible_counts[match.ranking_name] = (
-            visible_counts.get(match.ranking_name, 0) + 1
-        )
+        visible_counts[match.ranking_name] = visible_counts.get(match.ranking_name, 0) + 1
     reports = [
         RankingExecution(
             report.name,

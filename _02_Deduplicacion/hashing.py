@@ -4,13 +4,14 @@
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
-
 # region [01] Dependencias del módulo
 from __future__ import annotations
 
 import os
 import struct
 from pathlib import Path
+
+from neocortex.platform_policy import stat_birthtime_ns
 
 from .errors import FileChangedError, MissingDependencyError
 from .models import FileSnapshot
@@ -36,7 +37,7 @@ DEFAULT_SAMPLE_SIZE = 256 * 1024
 def stat_matches_snapshot(snapshot: FileSnapshot, stat: os.stat_result) -> bool:
     """Match one captured stat result to the durable mutation invariant."""
 
-    birthtime_ns = getattr(stat, "st_birthtime_ns", stat.st_ctime_ns)
+    birthtime_ns = stat_birthtime_ns(stat)
     return (
         stat.st_dev == snapshot.volume_id
         and stat.st_ino == snapshot.file_id
@@ -51,9 +52,7 @@ def _assert_unchanged(snapshot: FileSnapshot, stat: os.stat_result) -> None:
         raise FileChangedError(f"file changed while processing: {snapshot.path}")
 
 
-def full_fingerprint(
-    snapshot: FileSnapshot, *, chunk_size: int = DEFAULT_IO_CHUNK_SIZE
-) -> bytes:
+def full_fingerprint(snapshot: FileSnapshot, *, chunk_size: int = DEFAULT_IO_CHUNK_SIZE) -> bytes:
     """Return an XXH3-128 digest after streaming the entire file once."""
 
     if chunk_size < 64 * 1024:
@@ -74,9 +73,7 @@ def full_fingerprint(
     return hasher.digest()
 
 
-def partial_fingerprint(
-    snapshot: FileSnapshot, *, sample_size: int = DEFAULT_SAMPLE_SIZE
-) -> bytes:
+def partial_fingerprint(snapshot: FileSnapshot, *, sample_size: int = DEFAULT_SAMPLE_SIZE) -> bytes:
     """Hash deterministic first/middle/last ranges, including their offsets."""
 
     if sample_size < 4096:
@@ -130,10 +127,7 @@ def files_equal_exact(
                     return False
                 if left_count == 0:
                     break
-                if (
-                    memoryview(left_buffer)[:left_count]
-                    != memoryview(right_buffer)[:right_count]
-                ):
+                if memoryview(left_buffer)[:left_count] != memoryview(right_buffer)[:right_count]:
                     return False
             _assert_unchanged(left, os.fstat(left_stream.fileno()))
             _assert_unchanged(right, os.fstat(right_stream.fileno()))
@@ -141,9 +135,7 @@ def files_equal_exact(
     except FileChangedError:
         raise
     except OSError as exc:
-        raise FileChangedError(
-            f"cannot compare {left.path!r} and {right.path!r}: {exc}"
-        ) from exc
+        raise FileChangedError(f"cannot compare {left.path!r} and {right.path!r}: {exc}") from exc
 
 
 def snapshot_path(path: str | Path) -> FileSnapshot:
@@ -151,7 +143,7 @@ def snapshot_path(path: str | Path) -> FileSnapshot:
 
     resolved = absolute_display_path(path)
     stat = os.stat(native_io_path(resolved), follow_symlinks=False)
-    birthtime_ns = getattr(stat, "st_birthtime_ns", stat.st_ctime_ns)
+    birthtime_ns = stat_birthtime_ns(stat)
     return FileSnapshot(
         path=resolved,
         volume_id=stat.st_dev,
@@ -160,4 +152,6 @@ def snapshot_path(path: str | Path) -> FileSnapshot:
         mtime_ns=stat.st_mtime_ns,
         birthtime_ns=birthtime_ns,
     )
+
+
 # endregion [02]

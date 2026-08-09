@@ -6,6 +6,8 @@ import argparse
 import math
 from pathlib import Path
 
+from neocortex.platform_policy import LINUX_MUTATION_REASON, linux_mutation_requested
+
 from .cli_audio_surface import (
     validate_audio_arguments,
     validate_audio_direct_operation,
@@ -14,11 +16,13 @@ from .cli_capabilities_surface import validate_capabilities_arguments
 from .cli_code_surface import validate_code_arguments
 from .cli_docx_surface import validate_docx_arguments
 from .cli_knowledge_surface import validate_knowledge_arguments
+from .cli_models_surface import validate_models_arguments
 from .cli_office_surface import (
     validate_office_arguments,
     validate_office_direct_operation,
 )
 from .cli_operations import DirectOperationFamily, selected_direct_operations
+from .cli_platform_surface import validate_platform_arguments
 from .cli_semantic_surface import validate_semantic_arguments
 from .code_contracts import (
     DEFAULT_DEEP_MUTATION_MAX_MUTANTS,
@@ -876,6 +880,13 @@ def _validate_route_only(args: argparse.Namespace) -> None:
 
 
 def validate_arguments(args: argparse.Namespace) -> None:
+    if linux_mutation_requested(
+        apply=bool(getattr(args, "apply", False)),
+        organization_apply=bool(getattr(args, "organization_apply", False)),
+    ):
+        raise SystemExit(
+            f"{LINUX_MUTATION_REASON}: corpus mutation is intentionally unavailable on Linux"
+        )
     apply_self_analysis_preset(args)
     apply_all_preset(args)
     if args.show_groups < 0:
@@ -892,6 +903,8 @@ def validate_arguments(args: argparse.Namespace) -> None:
     validate_audio_arguments(args)
     validate_semantic_arguments(args)
     validate_code_arguments(args)
+    validate_platform_arguments(args)
+    validate_models_arguments(args)
     _validate_direct_operations(args)
     _validate_route_only(args)
 

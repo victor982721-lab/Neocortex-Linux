@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import os
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
+
+import pytest
 
 from _02_Deduplicacion import FileSnapshot, snapshot_path
 from _04_Nucleo_Operativo.audio_models import (
@@ -249,9 +252,7 @@ def test_audio_route_transcribes_segments_and_reuses_cache(tmp_path: Path) -> No
             """SELECT status,language,model_name,device,compute_type,text_chars,
             segment_count FROM documents"""
         ).fetchone()
-        segment = connection.execute(
-            "SELECT start_ms,end_ms,text FROM segments"
-        ).fetchone()
+        segment = connection.execute("SELECT start_ms,end_ms,text FROM segments").fetchone()
     assert tuple(document) == (
         "complete",
         "es",
@@ -285,9 +286,7 @@ def test_audio_route_caches_valid_media_without_speech(tmp_path: Path) -> None:
     assert framework.reviews == []
     assert len(transcriber.calls) == 1
     with audio_database(database, readonly=True) as connection:
-        row = connection.execute(
-            "SELECT status,text_chars,segment_count FROM documents"
-        ).fetchone()
+        row = connection.execute("SELECT status,text_chars,segment_count FROM documents").fetchone()
     assert tuple(row) == ("no_speech", 0, 0)
 
 
@@ -485,6 +484,10 @@ def test_isolated_whisper_supervisor_reuses_one_worker_without_model_download(
 # region [03] Catalog, organization and synchronized audio paths
 
 
+@pytest.mark.skipif(
+    os.name != "nt",
+    reason="identity-bound corpus mutation is available only on Windows",
+)
 def test_transcript_is_classified_organized_and_audio_cache_is_updated(
     tmp_path: Path,
 ) -> None:
@@ -494,9 +497,7 @@ def test_transcript_is_classified_organized_and_audio_cache_is_updated(
     state.mkdir()
     source = corpus / "Procedimiento SERINTRA.opus"
     source.write_bytes(b"OggS deterministic fixture")
-    transcript = (
-        "Procedimiento e instructivo SERINTRA para mantenimiento de subestaciones"
-    )
+    transcript = "Procedimiento e instructivo SERINTRA para mantenimiento de subestaciones"
     route, _framework, _transcriber, _calls = _audio_route(
         state / "audio.sqlite3", source, result=_result(transcript)
     )
@@ -539,15 +540,13 @@ def test_transcript_is_classified_organized_and_audio_cache_is_updated(
     assert applied.cache_synced == 1
     assert destination.is_file()
     with audio_database(state / "audio.sqlite3", readonly=True) as connection:
-        assert connection.execute("SELECT path FROM documents").fetchone()[0] == str(
+        assert connection.execute("SELECT path FROM documents").fetchone()[0] == str(destination)
+        assert connection.execute("SELECT path FROM audio_inventory").fetchone()[0] == str(
             destination
         )
-        assert connection.execute("SELECT path FROM audio_inventory").fetchone()[
-            0
-        ] == str(destination)
-        assert connection.execute("SELECT path FROM transcript_fts").fetchone()[
-            0
-        ] == str(destination)
+        assert connection.execute("SELECT path FROM transcript_fts").fetchone()[0] == str(
+            destination
+        )
 
 
 # endregion [03]

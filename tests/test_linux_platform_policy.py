@@ -1,0 +1,240 @@
+"""Linux policy, portable identity, inventory, and mutation regressions."""
+
+from __future__ import annotations
+
+import json
+import os
+import sqlite3
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+
+import pytest
+
+from _02_Deduplicacion import DedupIndex, InventoryExclusionPolicy
+from _04_Nucleo_Operativo.cli_app import main
+from _04_Nucleo_Operativo.file_identity import FileIdentity
+from _04_Nucleo_Operativo.knowledge_contracts import PhysicalIdentityRef, ResourceRef
+from _04_Nucleo_Operativo.knowledge_search_inventory import physical_identity_tuple
+from neocortex.cli import _translate_canonical_arguments, entrypoint
+from neocortex.platform_policy import (
+    LINUX_MUTATION_REASON,
+    POSIX_PHYSICAL_IDENTITY_SCHEME,
+    current_platform_policy,
+    resolve_xdg_documents_directory,
+    stat_birthtime_ns,
+)
+
+
+def test_xdg_documents_parser_accepts_accents_spaces_and_never_evaluates_shell(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "Perfil con espacio"
+    config = tmp_path / "config"
+    config.mkdir()
+    user_dirs = config / "user-dirs.dirs"
+    user_dirs.write_text('XDG_DOCUMENTS_DIR="$HOME/Documentos con acento á"\n', encoding="utf-8")
+
+    assert resolve_xdg_documents_directory(home=home, config_home=config) == (
+        home / "Documentos con acento á"
+    )
+
+    marker = tmp_path / "must-not-exist"
+    user_dirs.write_text(
+        f'XDG_DOCUMENTS_DIR="$(touch {marker})"\n',
+        encoding="utf-8",
+    )
+    assert resolve_xdg_documents_directory(home=home, config_home=config) == home / "Documents"
+    assert not marker.exists()
+
+
+def test_linux_policy_uses_xdg_roots_and_safe_documents_file(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    config_home = tmp_path / "config home"
+    state_home = tmp_path / "state home"
+    data_home = tmp_path / "data home"
+    config_home.mkdir()
+    (config_home / "user-dirs.dirs").write_text(
+        'XDG_DOCUMENTS_DIR="$HOME/Documentos"\n',
+        encoding="utf-8",
+    )
+    with (
+        patch.object(Path, "home", return_value=home),
+        patch.dict(
+            os.environ,
+            {
+                "XDG_CONFIG_HOME": str(config_home),
+                "XDG_STATE_HOME": str(state_home),
+                "XDG_DATA_HOME": str(data_home),
+            },
+            clear=False,
+        ),
+    ):
+        policy = current_platform_policy(platform_name="posix")
+
+    assert policy.corpus_root == home / "Documentos" / "NeoCortex" / "Corpus"
+    assert policy.state_directory == state_home / "Neocortex" / "state"
+    assert policy.config_directory == config_home / "Neocortex"
+    assert policy.data_directory == data_home / "Neocortex"
+    assert policy.models_directory == data_home / "Neocortex" / "models"
+    assert policy.stable_launcher == data_home / "Neocortex" / "bin" / "Neocortex"
+    assert policy.user_alias == home / ".local" / "bin" / "Neocortex"
+    assert policy.inventory_backend == "portable-full-scan"
+    assert policy.mutation_available is False
+
+
+def test_windows_policy_preserves_profile_and_localappdata_contract(tmp_path: Path) -> None:
+    profile = tmp_path / "profile"
+    local = tmp_path / "local"
+    with (
+        patch.object(Path, "home", return_value=profile),
+        patch.dict(os.environ, {"LOCALAPPDATA": str(local)}, clear=False),
+    ):
+        policy = current_platform_policy(platform_name="nt")
+
+    assert policy.corpus_root == profile
+    assert policy.state_directory == local / "Neocortex" / "state"
+    assert policy.stable_launcher == local / "Programs" / "Neocortex" / "bin" / "Neocortex.exe"
+    assert policy.inventory_backend == "ntfs-usn"
+    assert policy.mutation_available is True
+
+
+def test_posix_birthtime_is_explicitly_unavailable_and_windows_fallback_is_preserved() -> None:
+    metadata = SimpleNamespace(st_ctime_ns=987_654_321)
+    assert stat_birthtime_ns(metadata, platform_name="posix") == -1
+    assert stat_birthtime_ns(metadata, platform_name="nt") == 987_654_321
+
+
+def test_posix_device_inode_with_unavailable_birthtime_is_resolved_identity() -> None:
+    value = "17:29:-1"
+    resource = ResourceRef(
+        f"resource:file:{value}",
+        "pdf",
+        "pdf",
+        PhysicalIdentityRef(POSIX_PHYSICAL_IDENTITY_SCHEME, value, 1),
+        "/corpus/Informe.pdf",
+    )
+
+    assert physical_identity_tuple(
+        resource,
+        file_identity_type=FileIdentity,
+        file_identity_errors=(ValueError,),
+    ) == (17, 29, -1)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Linux portable inventory contract")
+def test_linux_inventory_preserves_case_and_accents_and_skips_symlinks(tmp_path: Path) -> None:
+    root = tmp_path / "Corpus con espacio"
+    root.mkdir()
+    upper = root / "Árbol.txt"
+    lower = root / "árbol.txt"
+    upper.write_text("uno", encoding="utf-8")
+    lower.write_text("dos", encoding="utf-8")
+    (root / "alias.txt").symlink_to(upper)
+    policy = InventoryExclusionPolicy.compile(())
+
+    with DedupIndex(tmp_path / "inventory.sqlite3") as index:
+        scan = index.scan(root, exclusion_policy=policy)
+        snapshots = tuple(index.snapshots_by_size(scan.scan_id, 3))
+
+    assert {Path(snapshot.path).name for snapshot in snapshots} == {"Árbol.txt", "árbol.txt"}
+    assert all(snapshot.birthtime_ns == -1 for snapshot in snapshots)
+    assert scan.skipped_links == 1
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Linux mutation abstention contract")
+@pytest.mark.parametrize("flag", ("--apply", "--organization-apply"))
+def test_linux_mutation_abstains_with_exit_two_before_state(
+    tmp_path: Path,
+    flag: str,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    root = tmp_path / "corpus"
+    root.mkdir()
+    state = tmp_path / "state"
+    arguments = ["--root", str(root), "--state-directory", str(state), "--route", "none", flag]
+    if flag == "--organization-apply":
+        arguments.extend(("--organization-root", str(root / "organized")))
+    with pytest.raises(SystemExit) as raised:
+        main(arguments)
+    assert raised.value.code == 2
+    assert LINUX_MUTATION_REASON in capsys.readouterr().err
+    assert not state.exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Linux mutation abstention contract")
+def test_linux_mutation_reason_precedes_direct_operation_validation(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as raised:
+        main(("--doctor-platform", "--apply"))
+    assert raised.value.code == 2
+    assert LINUX_MUTATION_REASON in capsys.readouterr().err
+
+
+def test_missing_corpus_root_is_a_controlled_error_before_state_creation(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    state = tmp_path / "state"
+
+    assert (
+        main(
+            (
+                "--root",
+                str(tmp_path / "missing-corpus"),
+                "--state-directory",
+                str(state),
+            )
+        )
+        == 2
+    )
+
+    captured = capsys.readouterr()
+    assert "ERROR corpus_unavailable:" in captured.err
+    assert "Traceback" not in captured.err
+    assert not state.exists()
+
+
+def test_platform_doctor_is_canonical_versioned_and_read_only(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with patch.dict(
+        os.environ,
+        {
+            "XDG_STATE_HOME": str(tmp_path / "state"),
+            "XDG_CONFIG_HOME": str(tmp_path / "config"),
+            "XDG_DATA_HOME": str(tmp_path / "data"),
+        },
+        clear=False,
+    ):
+        assert entrypoint(("doctor", "platform", "--json")) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["schema_version"] == 1
+    assert payload["kind"] == "platform_report"
+    assert payload["compatible"] is True
+    assert payload["identity"]["birthtime_unavailable_sentinel"] == -1
+    assert payload["mutation"]["reason"] in {None, LINUX_MUTATION_REASON}
+    assert not (tmp_path / "state").exists()
+    assert _translate_canonical_arguments(("doctor", "platform", "--json")) == [
+        "--doctor-platform",
+        "--doctor-platform-json",
+    ]
+
+
+def test_existing_windows_shaped_inventory_schema_remains_readable_when_windows_contract_is_built(
+    tmp_path: Path,
+) -> None:
+    """The Windows DDL remains NOCASE even though live Linux state is BINARY."""
+
+    database = tmp_path / "windows-state.sqlite3"
+    with sqlite3.connect(database) as connection:
+        connection.execute("CREATE TABLE files(path TEXT PRIMARY KEY COLLATE NOCASE)")
+        connection.execute("INSERT INTO files VALUES(?)", (r"C:\Users\Víctor\A.txt",))
+        assert (
+            connection.execute(
+                "SELECT path FROM files WHERE path=?", (r"c:\users\víctor\a.TXT",)
+            ).fetchone()
+            is not None
+        )

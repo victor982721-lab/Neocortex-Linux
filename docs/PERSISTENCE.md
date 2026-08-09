@@ -1,6 +1,6 @@
 # Persistencia, esquemas y migraciones
 
-> **Estado del documento.** Contrato actualizado el 31 de julio de 2026. El
+> **Estado del documento.** Contrato actualizado el 8 de agosto de 2026. El
 > árbol fuente `0.7.2` declara inventario Dedup v9, framework v20,
 > catálogo v6 y semántica v6; la barrera integral y el paquete final se registran
 > por separado. En una auditoría histórica, bases vivas se inspeccionaron sin
@@ -28,7 +28,8 @@ ejecutable de backup y restauración se mantiene en
 
 ## Ubicaciones
 
-`app_paths.py` define la topología canónica por usuario:
+`neocortex/platform_policy.py` y `app_paths.py` definen la topología canónica
+por usuario. En Windows:
 
 ```text
 Fuente:       %USERPROFILE%\Neocortex\Repository
@@ -49,6 +50,21 @@ La caché predeterminada de FastEmbed está en el directorio hermano:
 ```text
 %LOCALAPPDATA%\Neocortex\models\fastembed
 ```
+
+En Linux:
+
+```text
+Fuente:        ~/Neocortex/Repository
+Release:       ${XDG_DATA_HOME:-~/.local/share}/Neocortex/releases/<release-id>
+Launcher:      ~/.local/share/Neocortex/bin/Neocortex
+Estado:        ${XDG_STATE_HOME:-~/.local/state}/Neocortex/state
+Configuración: ${XDG_CONFIG_HOME:-~/.config}/Neocortex
+Modelos:       ${XDG_DATA_HOME:-~/.local/share}/Neocortex/models
+```
+
+No migre bases ni identidades NTFS a Linux. Copie únicamente originales y
+construya un estado Linux nuevo; `birthtime_ns=-1` es el sentinel portable
+cuando no existe nacimiento real.
 
 `--state-directory` puede seleccionar otra ubicación para una invocación. No
 mezcle bases de dos directorios de estado ni restaure una sola base sin revisar
@@ -477,7 +493,8 @@ mismo estado, pero no impide que otra aplicación abra SQLite ni convierte varia
 bases en una transacción distribuida.
 
 No borre `framework.lock`, `-wal` o `-shm`. Cierre de forma cooperativa el
-proceso propietario y deje que Windows/SQLite liberen sus handles.
+proceso propietario y deje que el sistema operativo y SQLite liberen sus
+handles.
 
 El watcher añade un lease de vida independiente,
 `watcher-life-xxh3-128-<digest>.lock`, derivado de raíz+estado. El byte lock del
