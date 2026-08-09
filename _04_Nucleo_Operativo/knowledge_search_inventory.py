@@ -4,7 +4,6 @@
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
-
 # region [01] Dependencias del módulo
 from __future__ import annotations
 
@@ -13,6 +12,8 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
+
+from neocortex import platform_policy
 
 from .knowledge_contracts import KnowledgeSnapshot, ResourceRef
 from .knowledge_search_contracts import KnowledgeCandidate, RankingExecution
@@ -73,9 +74,7 @@ class _CancellationCapture:
 
 @dataclass(slots=True)
 class _InventoryReadState:
-    decisions: dict[InventoryIdentity, set[InventoryChoice]] = field(
-        default_factory=dict
-    )
+    decisions: dict[InventoryIdentity, set[InventoryChoice]] = field(default_factory=dict)
     covered_identities: set[InventoryIdentity] = field(default_factory=set)
     invalid_identities: set[InventoryIdentity] = field(default_factory=set)
     rows_scanned: int = 0
@@ -156,9 +155,7 @@ def open_direct_readonly_sqlite(
             or query_only is None
             or int(query_only[0]) != 1
         ):
-            raise sqlite_operational_error(
-                "read-only SQLite safeguards could not be enabled"
-            )
+            raise sqlite_operational_error("read-only SQLite safeguards could not be enabled")
         return connection
     except BaseException as exc:
         cleanup_preserving_primary(
@@ -178,7 +175,7 @@ def physical_identity_tuple(
     identity = resource.physical_identity
     if (
         identity is None
-        or identity.scheme != "windows_file_id_birthtime"
+        or identity.scheme not in platform_policy.PHYSICAL_IDENTITY_SCHEMES
         or identity.identity_version != 1
         or resource.resource_id != f"resource:file:{identity.value}"
     ):
@@ -187,13 +184,16 @@ def physical_identity_tuple(
     if len(components) != 3:
         return None
     try:
-        volume_id, file_id, birthtime_ns = (
-            int(component, 10) for component in components
-        )
+        volume_id, file_id, birthtime_ns = (int(component, 10) for component in components)
         file_identity_type(volume_id, file_id)
     except file_identity_errors:
         return None
-    if birthtime_ns < 0 or any(
+    valid_birthtime = (
+        birthtime_ns >= 0
+        if identity.scheme == platform_policy.WINDOWS_PHYSICAL_IDENTITY_SCHEME
+        else birthtime_ns == platform_policy.UNAVAILABLE_BIRTHTIME_NS
+    )
+    if not valid_birthtime or any(
         component != str(value)
         for component, value in zip(
             components,
@@ -230,7 +230,7 @@ def inventory_plan_heads(
                 or parts[0] != "duplicate-plan-v1"
                 or len(values) != 4
                 or any(value < 0 for value in values)
-                or any(part != str(value) for part, value in zip(parts[1:], values))
+                or any(part != str(value) for part, value in zip(parts[1:], values, strict=True))
             ):
                 malformed = True
                 continue
@@ -408,9 +408,7 @@ def _inventory_rows(
     head_values = ",".join("(?,?,?,?,?)" for _ in head_batch)
     parameters: list[object] = []
     for volume_id, file_id, birthtime_ns in identity_batch:
-        parameters.extend(
-            (identity_blob(volume_id), identity_blob(file_id), birthtime_ns)
-        )
+        parameters.extend((identity_blob(volume_id), identity_blob(file_id), birthtime_ns))
     for head in head_batch:
         parameters.extend(head)
     result = connection.execute(
@@ -469,9 +467,7 @@ def _record_inventory_row(
             if name in row_keys
         )
         member_present = (
-            row["member_present"]
-            if "member_present" in row_keys
-            else int(member_evidence)
+            row["member_present"] if "member_present" in row_keys else int(member_evidence)
         )
         if type(member_present) is not int or member_present not in (0, 1):
             raise ValueError
@@ -509,9 +505,7 @@ def _scan_inventory_batches(
         ]
         for head_start in range(0, len(plan_heads), dependencies.head_batch_size):
             cancellation.checkpoint()
-            head_batch = plan_heads[
-                head_start : head_start + dependencies.head_batch_size
-            ]
+            head_batch = plan_heads[head_start : head_start + dependencies.head_batch_size]
             remaining = dependencies.max_relations - state.rows_scanned
             rows = _inventory_rows(
                 connection,
@@ -663,14 +657,10 @@ def _planned_candidate(
 ) -> KnowledgeCandidate:
     keeper_id = f"resource:file:{keeper[0]}:{keeper[1]}:{keeper[2]}"
     identifiers = tuple(
-        dict.fromkeys(
-            (*candidate.evidence.identifiers, ("planned_duplicate_of", keeper_id))
-        )
+        dict.fromkeys((*candidate.evidence.identifiers, ("planned_duplicate_of", keeper_id)))
     )
     evidence = replace_fn(candidate.evidence, identifiers=identifiers)
-    warnings = tuple(
-        sorted({*candidate.warnings, "inventory_planned_duplicate_unverified"})
-    )
+    warnings = tuple(sorted({*candidate.warnings, "inventory_planned_duplicate_unverified"}))
     return replace_fn(candidate, evidence=evidence, warnings=warnings)
 
 

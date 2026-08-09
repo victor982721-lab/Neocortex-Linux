@@ -5,7 +5,41 @@ from __future__ import annotations
 import multiprocessing
 import importlib
 import os
+import signal
 import subprocess
+
+
+def _posix_resource_module():
+    try:
+        return importlib.import_module("resource")
+    except ImportError as exc:  # pragma: no cover - non-POSIX defensive branch
+        raise RuntimeError(
+            "posix_memory_containment_unavailable: resource module is required"
+        ) from exc
+
+
+def _validate_posix_memory_limit(memory_limit_bytes: int | None) -> None:
+    if memory_limit_bytes is None:
+        return
+    resource = _posix_resource_module()
+    if not hasattr(resource, "RLIMIT_AS"):
+        raise RuntimeError("posix_memory_containment_unavailable: RLIMIT_AS is required")
+    _soft, hard = resource.getrlimit(resource.RLIMIT_AS)
+    if hard != resource.RLIM_INFINITY and memory_limit_bytes > hard:
+        raise RuntimeError(
+            "posix_memory_containment_unavailable: requested limit exceeds hard RLIMIT_AS"
+        )
+
+
+def _posix_isolated_target(target, args: tuple, memory_limit_bytes: int | None) -> None:
+    """Create the child session and limits before invoking untrusted work."""
+
+    os.setsid()
+    if memory_limit_bytes is not None:
+        resource = _posix_resource_module()
+        _soft, hard = resource.getrlimit(resource.RLIMIT_AS)
+        resource.setrlimit(resource.RLIMIT_AS, (memory_limit_bytes, hard))
+    target(*args)
 
 
 # region [01] Cross-platform process factory
@@ -23,9 +57,10 @@ def isolated_spawn_process(
     if memory_limit_bytes is not None and memory_limit_bytes < 1:
         raise ValueError("isolated process memory limit must be positive")
     if os.name != "nt":
+        _validate_posix_memory_limit(memory_limit_bytes)
         return multiprocessing.get_context("spawn").Process(
-            target=target,
-            args=args,
+            target=_posix_isolated_target,
+            args=(target, args, memory_limit_bytes),
             daemon=daemon,
         )
     return _WindowsIsolatedSpawnProcess(
@@ -173,13 +208,9 @@ if os.name == "nt":
         memory_limit_bytes: int | None,
     ) -> None:
         information = _JobObjectExtendedLimitInformation()
-        information.basic_limit_information.limit_flags = (
-            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-        )
+        information.basic_limit_information.limit_flags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
         if memory_limit_bytes is not None:
-            information.basic_limit_information.limit_flags |= (
-                JOB_OBJECT_LIMIT_JOB_MEMORY
-            )
+            information.basic_limit_information.limit_flags |= JOB_OBJECT_LIMIT_JOB_MEMORY
             information.job_memory_limit = memory_limit_bytes
         if not _kernel32.SetInformationJobObject(
             job_handle,
@@ -203,9 +234,7 @@ if os.name == "nt":
     def _resume_suspended_process(process_handle: int, process_id: int) -> None:
         observed_process_id = int(_kernel32.GetProcessId(process_handle))
         if observed_process_id != process_id:
-            raise RuntimeError(
-                "suspended process handle does not match the expected process ID"
-            )
+            raise RuntimeError("suspended process handle does not match the expected process ID")
         snapshot = _kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0)
         if int(snapshot) == INVALID_HANDLE_VALUE:
             raise OSError(
@@ -224,9 +253,7 @@ if os.name == "nt":
         finally:
             _winapi.CloseHandle(snapshot)
         if len(thread_ids) != 1:
-            raise RuntimeError(
-                "suspended process must expose exactly one primary thread"
-            )
+            raise RuntimeError("suspended process must expose exactly one primary thread")
         thread_handle = _kernel32.OpenThread(
             THREAD_SUSPEND_RESUME,
             False,
@@ -263,9 +290,7 @@ if os.name == "nt":
                 environment["__PYVENV_LAUNCHER__"] = sys.executable
             command_line = " ".join(f'"{item}"' for item in command)
             creation_flags = (
-                subprocess.CREATE_NEW_PROCESS_GROUP
-                | subprocess.CREATE_NO_WINDOW
-                | CREATE_SUSPENDED
+                subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW | CREATE_SUSPENDED
             )
 
             with open(write_fd, "wb", closefd=True) as child_stream:
@@ -283,17 +308,12 @@ if os.name == "nt":
                         None,
                         STARTUPINFO(dwFlags=STARTF_FORCEOFFFEEDBACK),
                     )
-                    if not _kernel32.AssignProcessToJobObject(
-                        job_handle, int(process_handle)
-                    ):
+                    if not _kernel32.AssignProcessToJobObject(job_handle, int(process_handle)):
                         raise OSError(
                             ctypes.get_last_error(),
                             "AssignProcessToJobObject failed",
                         )
-                    if (
-                        _kernel32.ResumeThread(int(thread_handle))
-                        == RESUME_THREAD_FAILED
-                    ):
+                    if _kernel32.ResumeThread(int(thread_handle)) == RESUME_THREAD_FAILED:
                         raise OSError(ctypes.get_last_error(), "ResumeThread failed")
                     _winapi.CloseHandle(thread_handle)
                     thread_handle = None
@@ -466,6 +486,21 @@ def set_isolated_process_memory_limit(
         setter(memory_limit_bytes)
     elif os.name == "nt":
         raise RuntimeError("isolated Windows process has no supervised job handle")
+    else:
+        _validate_posix_memory_limit(memory_limit_bytes)
+        if process.pid is None or not process.is_alive():
+            raise RuntimeError("isolated POSIX process is not running")
+        resource = _posix_resource_module()
+        prlimit = getattr(resource, "prlimit", None)
+        if not callable(prlimit):
+            raise RuntimeError("posix_memory_containment_unavailable: resource.prlimit is required")
+        _soft, hard = prlimit(process.pid, resource.RLIMIT_AS)
+        requested = hard if memory_limit_bytes is None else memory_limit_bytes
+        if hard != resource.RLIM_INFINITY and requested > hard:
+            raise RuntimeError(
+                "posix_memory_containment_unavailable: requested limit exceeds hard RLIMIT_AS"
+            )
+        prlimit(process.pid, resource.RLIMIT_AS, (requested, hard))
 
 
 def terminate_isolated_process(process, timeout_seconds: float = 5.0) -> None:
@@ -477,7 +512,19 @@ def terminate_isolated_process(process, timeout_seconds: float = 5.0) -> None:
     if callable(terminate_tree):
         terminate_tree()
     elif os.name != "nt":
-        process.kill()
+        process_group_id = process.pid
+        if process_group_id is None or process_group_id <= 1:
+            raise RuntimeError("isolated POSIX process has no safe process group")
+        try:
+            os.killpg(process_group_id, signal.SIGTERM)
+        except ProcessLookupError:
+            process.terminate()
+        process.join(timeout=max(0.0, timeout_seconds))
+        if process.is_alive():
+            try:
+                os.killpg(process_group_id, signal.SIGKILL)
+            except ProcessLookupError:
+                process.kill()
     else:
         raise RuntimeError("isolated Windows process has no supervised job handle")
     process.join(timeout=max(0.0, timeout_seconds))

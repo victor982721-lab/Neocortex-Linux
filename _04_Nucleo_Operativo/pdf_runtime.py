@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .cancellation import CancellationToken
+from .memory_runtime import posix_physical_memory_snapshot
 
 
 # region [01] Limits, snapshots and errors
@@ -79,18 +80,10 @@ def memory_snapshot() -> MemorySnapshot:
             )
         return MemorySnapshot(None, None, None, None)
 
-    sysconf = getattr(os, "sysconf", None)
-    if sysconf is None:
-        return MemorySnapshot(None, None, None, None)
-    try:
-        page_size = int(sysconf("SC_PAGE_SIZE"))
-        total_pages = int(sysconf("SC_PHYS_PAGES"))
-        available_pages = int(sysconf("SC_AVPHYS_PAGES"))
-    except (OSError, TypeError, ValueError):
-        return MemorySnapshot(None, None, None, None)
+    total_physical, available_physical = posix_physical_memory_snapshot()
     return MemorySnapshot(
-        page_size * total_pages,
-        page_size * available_pages,
+        total_physical,
+        available_physical,
         None,
         None,
     )
@@ -231,9 +224,7 @@ class PdfResourceGate:
             limits.memory_budget_bytes is not None
             and limits.memory_budget_bytes < limits.worker_memory_bytes
         ):
-            raise ValueError(
-                "memory_budget_bytes cannot be smaller than worker_memory_bytes"
-            )
+            raise ValueError("memory_budget_bytes cannot be smaller than worker_memory_bytes")
 
         snapshot = memory_snapshot()
         automatic = _automatic_limit(snapshot.total_physical, 512 * MIB, 2 * GIB)

@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import tempfile
 import time
+import gc
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+
+from neocortex.platform_policy import stat_birthtime_ns
 from typing import Protocol, cast
 
 import xxhash
@@ -80,14 +83,11 @@ def resolve_text_token_guard(
         tokenizer_signature, token_limit = contract_provider()
     else:
         if model.provider.startswith("fastembed"):
-            raise RuntimeError(
-                "FastEmbed text backend has no signed tokenizer contract"
-            )
+            raise RuntimeError("FastEmbed text backend has no signed tokenizer contract")
         _counts, token_limit = counter(("Neocortex fixture tokenizer contract",))
         identity = f"exact-token-fit-v1\0{model.model_signature}\0{token_limit}"
-        tokenizer_signature = (
-            "exact-token-fit-v1:fixture-xxh3-128:"
-            + xxhash.xxh3_128_hexdigest(identity.encode("utf-8"))
+        tokenizer_signature = "exact-token-fit-v1:fixture-xxh3-128:" + xxhash.xxh3_128_hexdigest(
+            identity.encode("utf-8")
         )
     if not isinstance(tokenizer_signature, str) or not tokenizer_signature.strip():
         raise RuntimeError("text backend returned an invalid tokenizer signature")
@@ -157,9 +157,7 @@ class _ReadOnlyFastEmbedBackend:
         except Exception as exc:  # optional runtime types are dependency-defined
             if not _is_local_model_runtime_error(exc):
                 raise
-            raise SemanticModelUnavailableError(
-                "semantic_query_model_unloadable"
-            ) from exc
+            raise SemanticModelUnavailableError("semantic_query_model_unloadable") from exc
 
     def text_token_counts(
         self,
@@ -170,9 +168,7 @@ class _ReadOnlyFastEmbedBackend:
         except Exception as exc:  # optional runtime types are dependency-defined
             if not _is_local_model_runtime_error(exc):
                 raise
-            raise SemanticModelUnavailableError(
-                "semantic_query_model_unloadable"
-            ) from exc
+            raise SemanticModelUnavailableError("semantic_query_model_unloadable") from exc
 
     def text_tokenizer_contract(self) -> tuple[str, int]:
         try:
@@ -180,15 +176,11 @@ class _ReadOnlyFastEmbedBackend:
         except Exception as exc:  # optional runtime types are dependency-defined
             if not _is_local_model_runtime_error(exc):
                 raise
-            raise SemanticModelUnavailableError(
-                "semantic_query_model_unloadable"
-            ) from exc
+            raise SemanticModelUnavailableError("semantic_query_model_unloadable") from exc
 
 
 def model_cache(state_directory: Path, override: Path | None) -> Path:
-    return (
-        default_semantic_model_cache(state_directory) if override is None else override
-    )
+    return default_semantic_model_cache(state_directory) if override is None else override
 
 
 def require_local_fastembed_model(
@@ -219,9 +211,7 @@ def require_local_fastembed_model(
             raise SemanticModelUnavailableError("semantic_query_model_cache_invalid")
         commit = reference.read_text(encoding="ascii").strip()
     except (OSError, UnicodeError) as exc:
-        raise SemanticModelUnavailableError(
-            "semantic_query_model_cache_invalid"
-        ) from exc
+        raise SemanticModelUnavailableError("semantic_query_model_cache_invalid") from exc
     if not 40 <= len(commit) <= 64 or any(
         character not in "0123456789abcdef" for character in commit
     ):
@@ -235,9 +225,7 @@ def require_local_fastembed_model(
         try:
             valid = candidate.is_file() and candidate.stat().st_size > 0
         except OSError as exc:
-            raise SemanticModelUnavailableError(
-                "semantic_query_model_cache_invalid"
-            ) from exc
+            raise SemanticModelUnavailableError("semantic_query_model_cache_invalid") from exc
         if not valid:
             raise SemanticModelUnavailableError("semantic_query_model_cache_incomplete")
 
@@ -263,11 +251,7 @@ def backend(
         if not local_files_only or not _is_local_model_runtime_error(exc):
             raise
         raise SemanticModelUnavailableError("semantic_query_model_unloadable") from exc
-    return (
-        _ReadOnlyFastEmbedBackend(embedding_backend)
-        if local_files_only
-        else embedding_backend
-    )
+    return _ReadOnlyFastEmbedBackend(embedding_backend) if local_files_only else embedding_backend
 
 
 # endregion [01]
@@ -318,11 +302,7 @@ def image_probe(embedding_backend: EmbeddingBackend) -> None:
                     source_revision={
                         "size_bytes": source_stat.st_size,
                         "mtime_ns": source_stat.st_mtime_ns,
-                        "birthtime_ns": getattr(
-                            source_stat,
-                            "st_birthtime_ns",
-                            source_stat.st_ctime_ns,
-                        ),
+                        "birthtime_ns": stat_birthtime_ns(source_stat),
                         "raw_content_xxh3_128": fingerprint.xxh3_128,
                     },
                 ),
@@ -371,6 +351,8 @@ def prepare_semantic_models(
                 time.perf_counter() - started,
             )
         )
+        del embedding_backend
+        gc.collect()
     return tuple(results)
 
 
@@ -403,19 +385,13 @@ def require_source_databases(
         if path.exists() and not path.is_file()
     }
     if invalid:
-        details = ", ".join(
-            f"{source_kind}={path}" for source_kind, path in invalid.items()
-        )
+        details = ", ".join(f"{source_kind}={path}" for source_kind, path in invalid.items())
         raise ValueError(f"semantic source state is not a regular file: {details}")
     missing = {
-        source_kind: path
-        for source_kind, path in selected_paths.items()
-        if not path.is_file()
+        source_kind: path for source_kind, path in selected_paths.items() if not path.is_file()
     }
     if missing:
-        details = ", ".join(
-            f"{source_kind}={path}" for source_kind, path in missing.items()
-        )
+        details = ", ".join(f"{source_kind}={path}" for source_kind, path in missing.items())
         raise FileNotFoundError(f"semantic source state is missing: {details}")
 
 

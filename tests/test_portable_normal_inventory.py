@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -166,7 +167,8 @@ def test_portable_snapshot_matches_the_usn_inventory_for_the_same_tree(
         usn_checkpoint = usn_index.inventory_checkpoint(root)
     assert portable_checkpoint is not None and usn_checkpoint is not None
     assert not portable_checkpoint.journal_available
-    assert usn_checkpoint.journal_available
+    assert usn_checkpoint.journal_available is (os.name == "nt")
+    assert usn.inventory_mode == ("incremental" if os.name == "nt" else "full")
 
 
 def test_portable_run_recovers_after_an_interruption(tmp_path: Path) -> None:
@@ -204,9 +206,7 @@ def test_portable_run_recovers_after_an_interruption(tmp_path: Path) -> None:
     with sqlite3.connect(state / "framework.sqlite3") as connection:
         statuses = [
             str(row[0])
-            for row in connection.execute(
-                "SELECT status FROM initial_runs ORDER BY run_id"
-            )
+            for row in connection.execute("SELECT status FROM initial_runs ORDER BY run_id")
         ]
     assert statuses == ["cancelled", "completed"]
     with DedupIndex(state / "dedup.sqlite3") as index:

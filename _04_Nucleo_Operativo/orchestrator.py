@@ -13,6 +13,8 @@ import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
+
+from neocortex.platform_policy import stat_birthtime_ns
 from typing import TYPE_CHECKING, Mapping, cast
 
 from _01_Enumeracion import JournalCursor, NtfsUsnError, query_journal_cursor
@@ -209,7 +211,7 @@ class FrameworkOrchestrator:
 
     def _validated_root(self) -> Path:
         root = validate_inventory_root(self.config.root)
-        if not root.drive:
+        if os.name == "nt" and not root.drive:
             raise ValueError(f"framework root is not on a drive-letter volume: {root}")
         return root
 
@@ -770,13 +772,15 @@ class FrameworkOrchestrator:
             ),
         )
         journal_error: str | None = None
-        try:
-            journal_before: JournalCursor | None = query_journal_cursor(
-                access_policy.root.drive
-            )
-        except (NtfsUsnError, OSError) as exc:
+        if os.name != "nt":
             journal_before = None
-            journal_error = f"{type(exc).__name__}: {exc}"
+            journal_error = "portable_inventory_backend"
+        else:
+            try:
+                journal_before = query_journal_cursor(access_policy.root.drive)
+            except (NtfsUsnError, OSError) as exc:
+                journal_before = None
+                journal_error = f"{type(exc).__name__}: {exc}"
         emit_progress(
             self.progress,
             ProgressEvent(
@@ -841,9 +845,7 @@ class FrameworkOrchestrator:
         transition_name = "cancellation" if cancelled else "failure"
         try:
             transitioned = (
-                state.cancel_initial_run(run_id)
-                if cancelled
-                else state.fail_initial_run(run_id)
+                state.cancel_initial_run(run_id) if cancelled else state.fail_initial_run(run_id)
             )
         except Exception as transition_exc:
             exc.add_note(
@@ -858,14 +860,8 @@ class FrameworkOrchestrator:
                 run_id,
                 "warning" if cancelled else "error",
                 "run",
-                (
-                    "Autoanálisis cancelado por el usuario"
-                    if cancelled
-                    else "Autoanálisis fallido"
-                ),
-                None
-                if cancelled
-                else {"error_type": type(exc).__name__, "detail": str(exc)},
+                ("Autoanálisis cancelado por el usuario" if cancelled else "Autoanálisis fallido"),
+                None if cancelled else {"error_type": type(exc).__name__, "detail": str(exc)},
             )
         except Exception as event_exc:
             exc.add_note(
@@ -952,9 +948,7 @@ class FrameworkOrchestrator:
                 "state_directory": str(self.config.state_directory),
                 "corpus_access_mode": "analyze_only",
                 "inventory_policy_signature": inventory_policy.signature,
-                "journal_status": (
-                    "available" if journal_before is not None else "unavailable"
-                ),
+                "journal_status": ("available" if journal_before is not None else "unavailable"),
                 "journal_error": journal_error,
                 "internal_paths_policy": internal_paths_policy.manifest(),
                 "selected_routes": ["code"],
@@ -1168,13 +1162,15 @@ class FrameworkOrchestrator:
             ProgressEvent("framework", "prepare", "Preparando ejecución", 0, 1, "fase"),
         )
         journal_error: str | None = None
-        try:
-            journal_before: JournalCursor | None = query_journal_cursor(
-                boundary.access_policy.root.drive
-            )
-        except (NtfsUsnError, OSError) as exc:
+        if os.name != "nt":
             journal_before = None
-            journal_error = f"{type(exc).__name__}: {exc}"
+            journal_error = "portable_inventory_backend"
+        else:
+            try:
+                journal_before = query_journal_cursor(boundary.access_policy.root.drive)
+            except (NtfsUsnError, OSError) as exc:
+                journal_before = None
+                journal_error = f"{type(exc).__name__}: {exc}"
         boundary.verify()
         emit_progress(
             self.progress,
@@ -1224,9 +1220,7 @@ class FrameworkOrchestrator:
                 if self.config.document_taxonomy_path is None
                 else str(self.config.document_taxonomy_path)
             ),
-            "document_classification_max_chars": (
-                self.config.document_classification_max_chars
-            ),
+            "document_classification_max_chars": (self.config.document_classification_max_chars),
             "organization_root": (
                 None
                 if self.config.organization_root is None
@@ -1245,9 +1239,7 @@ class FrameworkOrchestrator:
             "pdf_cache_validation": self.config.pdf_cache_validation,
             "pdf_document_timeout_seconds": self.config.pdf_document_timeout_seconds,
             "pdf_timeout_mode": self.config.pdf_timeout_mode,
-            "pdf_max_document_timeout_seconds": (
-                self.config.pdf_max_document_timeout_seconds
-            ),
+            "pdf_max_document_timeout_seconds": (self.config.pdf_max_document_timeout_seconds),
             "pdf_memory_backpressure_bytes": self.config.pdf_memory_backpressure_bytes,
             "pdf_commit_backpressure_bytes": self.config.pdf_commit_backpressure_bytes,
             "pdf_memory_budget_bytes": self.config.pdf_memory_budget_bytes,
@@ -1293,9 +1285,7 @@ class FrameworkOrchestrator:
             {
                 "root": str(boundary.access_policy.root),
                 "apply_actions": self.config.apply_actions,
-                "journal_status": (
-                    "available" if journal_before is not None else "unavailable"
-                ),
+                "journal_status": ("available" if journal_before is not None else "unavailable"),
                 "journal_error": journal_error,
                 "inventory_exclusion_signature": boundary.exclusion_policy.signature,
                 "internal_paths_policy": boundary.internal_paths_policy.manifest(),
@@ -1630,9 +1620,7 @@ class FrameworkOrchestrator:
             "warning" if cancelled else "error",
             "run",
             "Ejecución cancelada por el usuario" if cancelled else "Ejecución fallida",
-            None
-            if cancelled
-            else {"error_type": type(exc).__name__, "detail": str(exc)},
+            None if cancelled else {"error_type": type(exc).__name__, "detail": str(exc)},
         )
         if cancelled:
             state.cancel_initial_run(run_id)
@@ -1706,9 +1694,7 @@ class FrameworkOrchestrator:
         self,
         boundary: NormalInventoryBoundary,
     ) -> InitialRunResult:
-        excluded_paths = tuple(
-            Path(path) for path in boundary.exclusion_policy.explicit_roots
-        )
+        excluded_paths = tuple(Path(path) for path in boundary.exclusion_policy.explicit_roots)
         journal_before, journal_error = self._prepare_initial_run(boundary)
         with FrameworkState(self.config.framework_database) as state:
             state.mark_abandoned_runs()
@@ -1780,7 +1766,7 @@ class FrameworkOrchestrator:
         return (
             int(current.st_dev),
             int(current.st_ino),
-            int(getattr(current, "st_birthtime_ns", current.st_ctime_ns)),
+            stat_birthtime_ns(current),
         )
 
     def _reusable_source_scan_id(
@@ -1900,8 +1886,7 @@ class FrameworkOrchestrator:
         )
         if latest_inventory is None:
             raise ValueError(
-                "no compatible durable inventory snapshot is available; "
-                "run normal inventory first"
+                "no compatible durable inventory snapshot is available; run normal inventory first"
             )
         return latest_inventory
 
@@ -1988,9 +1973,7 @@ class FrameworkOrchestrator:
             },
             "pdf_timeout_mode": self.config.pdf_timeout_mode,
             "pdf_document_timeout_seconds": self.config.pdf_document_timeout_seconds,
-            "pdf_max_document_timeout_seconds": (
-                self.config.pdf_max_document_timeout_seconds
-            ),
+            "pdf_max_document_timeout_seconds": (self.config.pdf_max_document_timeout_seconds),
         }
 
     def _begin_route_only_execution(

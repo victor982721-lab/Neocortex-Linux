@@ -44,6 +44,8 @@ from _03_Progreso import ProgressCallback
 
 # region [02] Implementación
 
+_PATH_COLLATION = "NOCASE" if os.name == "nt" else "BINARY"
+
 
 PRUNE_BATCH_SIZE = 1000
 
@@ -74,8 +76,9 @@ class DedupIndex:
 
         The default policy excludes internal Neocortex work trees, dependency
         environments, generated caches, and Python bytecode. Path matching
-        follows Windows case-insensitive normalization. Links and junctions are
-        never followed. ``excluded_paths`` remains compatible; callers needing
+        uses the filesystem's native path collation (case-insensitive on
+        Windows, case-sensitive on Linux). Links and junctions are never
+        followed. ``excluded_paths`` remains compatible; callers needing
         recursive names or file rules pass ``exclusion_policy``.
         """
 
@@ -745,7 +748,7 @@ class DedupIndex:
         self._connection.execute("PRAGMA temp_store=FILE")
         self._connection.execute("PRAGMA cache_size=-32768")
         self._connection.executescript(
-            """
+            f"""
             DROP TABLE IF EXISTS temp.planning_seen;
             DROP TABLE IF EXISTS temp.planning_fingerprints;
             CREATE TEMP TABLE planning_seen(
@@ -756,7 +759,7 @@ class DedupIndex:
             CREATE TEMP TABLE planning_fingerprints(
                 stage TEXT NOT NULL,
                 digest BLOB NOT NULL,
-                path TEXT NOT NULL COLLATE NOCASE,
+                path TEXT NOT NULL COLLATE {_PATH_COLLATION},
                 volume_id BLOB NOT NULL,
                 file_id BLOB NOT NULL,
                 size INTEGER NOT NULL,
@@ -817,13 +820,13 @@ class DedupIndex:
 
     def iter_planning_collision_members(self, stage: str) -> Iterator[tuple[bytes, FileSnapshot]]:
         rows = self._connection.execute(
-            """SELECT w.digest,w.path,w.volume_id,w.file_id,w.size,w.mtime_ns,
+            f"""SELECT w.digest,w.path,w.volume_id,w.file_id,w.size,w.mtime_ns,
             w.birthtime_ns FROM planning_fingerprints w JOIN(
                 SELECT digest FROM planning_fingerprints WHERE stage=?
                 GROUP BY digest HAVING COUNT(*)>1
             ) collisions ON collisions.digest=w.digest
             WHERE w.stage=? ORDER BY w.digest,w.mtime_ns DESC,
-            w.birthtime_ns DESC,w.path COLLATE NOCASE DESC""",
+            w.birthtime_ns DESC,w.path COLLATE {_PATH_COLLATION} DESC""",
             (stage, stage),
         )
         for digest, path, volume, file_id, size, mtime, birth in rows:
@@ -949,7 +952,7 @@ class DedupIndex:
             "m.volume_id,m.file_id,m.size,m.mtime_ns,m.birthtime_ns "
             "FROM planned_duplicate_groups g JOIN planned_duplicate_members m "
             "ON m.group_id=g.group_id WHERE g.scan_id=? "
-            "ORDER BY g.reclaimable_bytes DESC,g.keep_path COLLATE NOCASE,"
+            f"ORDER BY g.reclaimable_bytes DESC,g.keep_path COLLATE {_PATH_COLLATION},"
             "g.group_id,m.member_order",
             (scan_id,),
         )
@@ -997,7 +1000,7 @@ class DedupIndex:
             "SELECT 1 FROM planned_duplicate_groups g "
             "JOIN planned_duplicate_members m ON m.group_id=g.group_id "
             "WHERE g.scan_id=f.scan_id AND m.role='redundant' "
-            "AND m.path=f.path COLLATE NOCASE) ORDER BY f.path",
+            "AND m.path=f.path) ORDER BY f.path",
             (scan_id,),
         )
         for path, volume, file_id, size, mtime, birth in rows:

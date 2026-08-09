@@ -8,12 +8,15 @@
 from __future__ import annotations
 
 import os
+import signal
 import subprocess
 import tempfile
 import threading
+import time
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import ExitStack
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import IO
 
 from .isolated_process import WindowsKillOnCloseJob
@@ -25,6 +28,8 @@ from .isolated_process import WindowsKillOnCloseJob
 _READ_CHUNK_BYTES = 64 * 1024
 _READER_JOIN_SECONDS = 5.0
 _PROCESS_REAP_SECONDS = 5.0
+_POSIX_TERMINATION_GRACE_SECONDS = 0.5
+_PRLIMIT_PATH = "/usr/bin/prlimit"
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,6 +60,28 @@ class _TerminationController:
     termination_lock: threading.Lock = field(default_factory=threading.Lock)
     terminated: bool = False
 
+    def _terminate_posix_group(self) -> None:
+        process_group_id = self.process.pid
+        if process_group_id is None or process_group_id <= 1:
+            raise RuntimeError("subprocess did not expose a safe POSIX process group")
+        if process_group_id == os.getpgrp():
+            raise RuntimeError("refusing to signal the supervisor process group")
+        try:
+            os.killpg(process_group_id, signal.SIGTERM)
+        except ProcessLookupError:
+            return
+        deadline = time.monotonic() + _POSIX_TERMINATION_GRACE_SECONDS
+        while time.monotonic() < deadline:
+            try:
+                os.killpg(process_group_id, 0)
+            except ProcessLookupError:
+                return
+            time.sleep(0.02)
+        try:
+            os.killpg(process_group_id, signal.SIGKILL)
+        except ProcessLookupError:
+            return
+
     def terminate(self) -> None:
         with self.termination_lock:
             if self.terminated:
@@ -67,9 +94,11 @@ class _TerminationController:
                 except OSError as error:
                     self.termination_errors.append(error)
             try:
-                if self.process.poll() is None:
+                if os.name != "nt":
+                    self._terminate_posix_group()
+                elif self.process.poll() is None:
                     self.process.kill()
-            except OSError as error:
+            except (OSError, RuntimeError) as error:
                 self.termination_errors.append(error)
 
 
@@ -138,15 +167,27 @@ def _start_bounded_process(
     if os.name == "nt":
         job = WindowsKillOnCloseJob(memory_limit_bytes)
         effective_creationflags |= job.suspended_creation_flag()
+    effective_command = command
+    if os.name != "nt" and memory_limit_bytes is not None:
+        prlimit = Path(_PRLIMIT_PATH)
+        if not prlimit.is_file() or not os.access(prlimit, os.X_OK):
+            raise RuntimeError("posix_memory_containment_unavailable: /usr/bin/prlimit is required")
+        effective_command = (
+            _PRLIMIT_PATH,
+            f"--as={memory_limit_bytes}",
+            "--",
+            *command,
+        )
     try:
         process = subprocess.Popen(
-            command,
+            effective_command,
             stdin=stdin,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             creationflags=effective_creationflags,
             cwd=cwd,
             env=environment,
+            start_new_session=os.name != "nt",
         )
     except BaseException:
         if job is not None:
@@ -404,6 +445,11 @@ def _execute_bounded_capture(
         controller,
         timeout_seconds=timeout_seconds,
     )
+    if os.name != "nt":
+        # A command can exit after spawning descendants that inherited the
+        # capture pipes. Always close the dedicated process group before
+        # joining readers, including on an otherwise successful return.
+        controller.terminate()
     returncode, cleanup_errors = _finalize_capture(
         process,
         job,

@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Literal
 
 import xxhash
+from neocortex.platform_policy import UNAVAILABLE_BIRTHTIME_NS
 
 from .corpus_access import (
     CorpusAccessPolicy,
@@ -81,9 +82,7 @@ class ProtectedPathIdentity:
         if self.kind not in {"tree", "file"}:
             raise ValueError(f"unsupported protected path kind: {self.kind!r}")
         if self.disposition not in {"analyze_read_only", "exclude"}:
-            raise ValueError(
-                f"unsupported protected path disposition: {self.disposition!r}"
-            )
+            raise ValueError(f"unsupported protected path disposition: {self.disposition!r}")
         configured = _absolute_normalized(self.configured_path)
         canonical = _absolute_normalized(self.canonical_path)
         if _path_key(configured) != _path_key(self.configured_path):
@@ -92,15 +91,17 @@ class ProtectedPathIdentity:
             raise ValueError("physical protected path must be canonical and absolute")
         object.__setattr__(self, "configured_path", configured)
         object.__setattr__(self, "canonical_path", canonical)
-        identity = (self.device_id, self.file_id, self.birthtime_ns)
-        if any(
-            value is not None and (type(value) is not int or value < 0)
-            for value in identity
-        ):
+        identity = (self.device_id, self.file_id)
+        if any(value is not None and (type(value) is not int or value < 0) for value in identity):
             raise ValueError("protected path identity values must be non-negative")
-        if self.exists and not all(value is not None for value in identity):
+        if self.birthtime_ns is not None and (
+            type(self.birthtime_ns) is not int or self.birthtime_ns < UNAVAILABLE_BIRTHTIME_NS
+        ):
+            raise ValueError("protected path birthtime must be -1 or non-negative")
+        complete_identity = (*identity, self.birthtime_ns)
+        if self.exists and not all(value is not None for value in complete_identity):
             raise ValueError("protected path existence and identity are inconsistent")
-        if not self.exists and any(value is not None for value in identity):
+        if not self.exists and any(value is not None for value in complete_identity):
             raise ValueError("protected path existence and identity are inconsistent")
 
     @classmethod
@@ -131,8 +132,7 @@ class ProtectedPathIdentity:
                 raise FileNotFoundError(os.fspath(configured))
             if _path_key(configured) != _path_key(physical):
                 raise ValueError(
-                    "missing protected path traverses an alias or reparse: "
-                    f"{configured}"
+                    f"missing protected path traverses an alias or reparse: {configured}"
                 )
             return cls(
                 role,
@@ -155,9 +155,7 @@ class ProtectedPathIdentity:
             raise ValueError(f"protected file is not a regular file: {configured}")
         canonical = _absolute_normalized(os.path.realpath(configured))
         if _path_key(configured) != _path_key(canonical):
-            raise ValueError(
-                f"protected path traverses an alias or reparse: {configured}"
-            )
+            raise ValueError(f"protected path traverses an alias or reparse: {configured}")
         canonical_metadata = os.stat(canonical, follow_symlinks=False)
         requested_identity = (
             int(metadata.st_dev),
@@ -201,13 +199,11 @@ class ProtectedPathIdentity:
                 physical = _physical_normalized(self.configured_path)
             except (OSError, ValueError) as exc:
                 raise ProtectedContentError(
-                    "reserved protected path cannot be verified: "
-                    f"{self.configured_path}"
+                    f"reserved protected path cannot be verified: {self.configured_path}"
                 ) from exc
             if _path_key(physical) != _path_key(self.canonical_path):
                 raise ProtectedContentError(
-                    "reserved protected path resolution changed: "
-                    f"{self.configured_path}"
+                    f"reserved protected path resolution changed: {self.configured_path}"
                 )
             return
         try:
@@ -223,9 +219,7 @@ class ProtectedPathIdentity:
                 f"protected path identity cannot be verified: {self.configured_path}"
             ) from exc
         if observed != self:
-            raise ProtectedContentError(
-                f"protected path identity changed: {self.configured_path}"
-            )
+            raise ProtectedContentError(f"protected path identity changed: {self.configured_path}")
 
     def matches_file_identity(self, path: Path) -> bool:
         """Detect a hardlink alias of a protected regular file."""
@@ -310,9 +304,7 @@ class ProtectedContentPolicy:
         ordered = tuple(sorted(self.entries, key=_entry_sort_key))
         _validate_policy_topology(ordered)
         if ordered != self.entries or self.signature != _signature(ordered):
-            raise ValueError(
-                "protected content policy is inconsistent with its signature"
-            )
+            raise ValueError("protected content policy is inconsistent with its signature")
 
     def manifest(self) -> dict[str, object]:
         return {
@@ -392,11 +384,7 @@ class ProtectedContentPolicy:
                 )
                 if blocked is None and os.path.lexists(candidate):
                     blocked = next(
-                        (
-                            entry
-                            for entry in self.entries
-                            if entry.matches_file_identity(candidate)
-                        ),
+                        (entry for entry in self.entries if entry.matches_file_identity(candidate)),
                         None,
                     )
             except (OSError, ValueError) as exc:
@@ -406,8 +394,7 @@ class ProtectedContentPolicy:
                 ) from exc
             if blocked is not None:
                 raise ProtectedContentError(
-                    "mutation path intersects protected content "
-                    f"{blocked.role}: {candidate}"
+                    f"mutation path intersects protected content {blocked.role}: {candidate}"
                 )
         self.verify_identities()
 
@@ -435,8 +422,7 @@ class ProtectedContentPolicy:
         candidates = [
             entry
             for entry in self.entries
-            if entry.kind == "tree"
-            and _is_same_or_descendant(path, entry.canonical_path)
+            if entry.kind == "tree" and _is_same_or_descendant(path, entry.canonical_path)
         ]
         if not candidates:
             return None
@@ -542,7 +528,7 @@ def _windows_documents_directory() -> Path:
 
     guid = _Guid.from_buffer_copy(_DOCUMENTS_FOLDER_ID.bytes_le)
     allocated = ctypes.c_wchar_p()
-    win_dll = getattr(ctypes, "WinDLL")
+    win_dll = ctypes.WinDLL
     shell32 = win_dll("shell32", use_last_error=True)
     ole32 = win_dll("ole32", use_last_error=True)
     shell32.SHGetKnownFolderPath.argtypes = (

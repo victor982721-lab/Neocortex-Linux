@@ -40,13 +40,9 @@ def _create_populated_v7(
     with sqlite3.connect(database) as connection:
         for statement in inventory_schema_module._V7_GENERATIONAL_DDL:
             connection.execute(statement)
-        for statement in inventory_schema_module._CURRENT_DDL[
-            inventory_schema_module._CURRENT_SHARED_DDL_START :
-        ]:
+        for statement in inventory_schema_module._LEGACY_SHARED_DDL:
             connection.execute(statement)
-        connection.execute(
-            "INSERT INTO metadata(key,value) VALUES('schema_version','7')"
-        )
+        connection.execute("INSERT INTO metadata(key,value) VALUES('schema_version','7')")
         connection.execute(
             """INSERT INTO scans(
             scan_id,root,root_volume_id,root_file_id,root_birthtime_ns,
@@ -72,9 +68,7 @@ def _create_populated_v7(
         )
         if unexpected_scan_column:
             connection.execute("ALTER TABLE scans ADD COLUMN unexpected TEXT")
-            connection.execute(
-                "UPDATE scans SET unexpected='preserve-me' WHERE scan_id=7"
-            )
+            connection.execute("UPDATE scans SET unexpected='preserve-me' WHERE scan_id=7")
 
 
 def test_fresh_v8_persists_policy_signature_and_is_idempotent(
@@ -112,9 +106,10 @@ def test_fresh_v8_persists_policy_signature_and_is_idempotent(
             "SELECT inventory_policy_signature FROM scans WHERE scan_id=?",
             (scan.scan_id,),
         ).fetchone() == (policy.signature,)
-        assert connection.execute(
-            "SELECT scan_id,valid FROM inventory_checkpoints"
-        ).fetchone() == (scan.scan_id, 1)
+        assert connection.execute("SELECT scan_id,valid FROM inventory_checkpoints").fetchone() == (
+            scan.scan_id,
+            1,
+        )
         assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
         inventory_schema_module.validate_inventory_schema(connection)
@@ -167,15 +162,13 @@ def test_v7_unknown_structure_abstains_without_changing_legacy_state(
         assert connection.execute(
             "SELECT value FROM metadata WHERE key='schema_version'"
         ).fetchone() == ("7",)
-        assert connection.execute(
-            "SELECT unexpected FROM scans WHERE scan_id=7"
-        ).fetchone() == ("preserve-me",)
+        assert connection.execute("SELECT unexpected FROM scans WHERE scan_id=7").fetchone() == (
+            "preserve-me",
+        )
         assert connection.execute(
             "SELECT COUNT(*),COALESCE(SUM(size),0) FROM files"
         ).fetchone() == (2, 7)
-        assert connection.execute(
-            "SELECT valid FROM inventory_checkpoints"
-        ).fetchone() == (1,)
+        assert connection.execute("SELECT valid FROM inventory_checkpoints").fetchone() == (1,)
         assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
 
 

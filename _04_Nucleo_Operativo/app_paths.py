@@ -5,6 +5,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from neocortex.platform_policy import current_platform_policy
+
 
 # region [01] Per-user paths
 
@@ -30,6 +32,8 @@ def local_application_data_directory() -> Path:
 def default_state_directory() -> Path:
     """Return the fixed durable state location for normal application use."""
 
+    if os.name != "nt" and "LOCALAPPDATA" not in os.environ:
+        return current_platform_policy().state_directory
     return local_application_data_directory() / "state"
 
 
@@ -56,6 +60,8 @@ def default_generated_artifact_directories() -> tuple[Path, ...]:
 
 
 def default_ui_settings_path() -> Path:
+    if os.name != "nt" and "LOCALAPPDATA" not in os.environ:
+        return current_platform_policy().config_directory / "ui.ini"
     return local_application_data_directory() / "ui.ini"
 
 
@@ -68,6 +74,8 @@ def source_repository_directory() -> Path:
 def program_installation_directory() -> Path:
     """Return the per-user root for immutable, versioned installations."""
 
+    if os.name != "nt" and "LOCALAPPDATA" not in os.environ:
+        return current_platform_policy().data_directory
     return local_application_data_directory().parent / "Programs" / APPLICATION_DIRECTORY_NAME
 
 
@@ -80,6 +88,8 @@ def self_analysis_data_directory() -> Path:
 def stable_launcher_path() -> Path:
     """Return the stable per-user launcher path outside version directories."""
 
+    if os.name != "nt" and "LOCALAPPDATA" not in os.environ:
+        return current_platform_policy().stable_launcher
     return program_installation_directory() / "bin" / "Neocortex.exe"
 
 

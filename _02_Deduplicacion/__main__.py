@@ -4,7 +4,6 @@
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
-
 # region [01] Dependencias del módulo
 from __future__ import annotations
 
@@ -12,6 +11,8 @@ import argparse
 import sys
 from collections.abc import Sequence
 from pathlib import Path
+
+from neocortex.platform_policy import default_corpus_root
 
 from _04_Nucleo_Operativo.app_paths import default_state_directory
 # endregion [01]
@@ -26,7 +27,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
             "inventory and deduplication"
         )
     )
-    parser.add_argument("--root", type=Path, default=Path.home())
+    parser.add_argument("--root", type=Path, default=default_corpus_root())
     parser.add_argument(
         "--state-database",
         type=Path,
@@ -47,8 +48,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
             )
         state_directory = database.parent
     print(
-        "python -m _02_Deduplicacion está obsoleto; use Neocortex con los "
-        "mismos argumentos.",
+        "python -m _02_Deduplicacion está obsoleto; use Neocortex con los mismos argumentos.",
         file=sys.stderr,
     )
     from _04_Nucleo_Operativo.cli_app import main as run_integrated

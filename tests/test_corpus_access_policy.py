@@ -4,7 +4,6 @@
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
-
 # region [01] Dependencias del módulo
 from __future__ import annotations
 
@@ -87,9 +86,10 @@ def test_analyze_only_guard_distinguishes_root_descendants_and_siblings(
         root,
         child,
         root / "pkg" / ".." / "pkg" / "new.py",
-        Path(str(child).swapcase()),
         root / "missing" / "target.py",
     )
+    if os.name == "nt":
+        protected_paths = (*protected_paths, Path(str(child).swapcase()))
     for protected in protected_paths:
         with pytest.raises(
             ProtectedAnalysisRootError,
@@ -102,6 +102,7 @@ def test_analyze_only_guard_distinguishes_root_descendants_and_siblings(
         guard.require_paths_allowed(sibling, child)
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows extended-path contract")
 def test_extended_drive_alias_preserves_identity_and_is_guarded(
     tmp_path: Path,
 ) -> None:
@@ -122,6 +123,7 @@ def test_extended_drive_alias_preserves_identity_and_is_guarded(
         ).require_paths_allowed(alias)
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows extended-path contract")
 def test_extended_unc_alias_is_lexically_equivalent() -> None:
     assert path_trees_intersect(
         r"\\server\share\corpus",
@@ -137,6 +139,7 @@ def test_extended_unc_alias_is_lexically_equivalent() -> None:
         r"\??\C:\Users\Neocortex",
     ),
 )
+@pytest.mark.skipif(os.name != "nt", reason="Windows namespace contract")
 def test_non_equivalent_windows_namespace_fails_before_physical_open(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -151,9 +154,7 @@ def test_non_equivalent_windows_namespace_fails_before_physical_open(
     def guarded_lstat(path: str | os.PathLike[str]) -> os.stat_result:
         path_key = os.path.normcase(os.path.abspath(path))
         try:
-            within_test_parent = (
-                os.path.commonpath((path_key, test_parent_key)) == test_parent_key
-            )
+            within_test_parent = os.path.commonpath((path_key, test_parent_key)) == test_parent_key
         except ValueError:
             within_test_parent = False
         if not within_test_parent:
@@ -239,6 +240,7 @@ def test_normal_guard_enforces_protected_content_paths_and_read_only_run(
             ordinary_guard.require_paths_allowed(blocked)
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows extended-path aliases in fixture")
 def test_self_analysis_owner_rejects_intersecting_state_trees(
     tmp_path: Path,
 ) -> None:
@@ -273,9 +275,7 @@ def test_self_analysis_owner_rejects_intersecting_state_trees(
                     state_directory=state_directory,
                     inventory_policy_signature="inventory-self-analysis-v1",
                 )
-            assert state._connection.execute(
-                "SELECT COUNT(*) FROM initial_runs"
-            ).fetchone() == (0,)
+            assert state._connection.execute("SELECT COUNT(*) FROM initial_runs").fetchone() == (0,)
 
 
 def test_self_analysis_owner_persists_policy_and_publishes_zero_candidates(
@@ -309,9 +309,7 @@ def test_self_analysis_owner_persists_policy_and_publishes_zero_candidates(
             str(state_directory),
             inventory_policy.signature,
         )
-        assert state.corpus_mutation_guard(run_id).reason_code == (
-            "protected_analysis_root"
-        )
+        assert state.corpus_mutation_guard(run_id).reason_code == ("protected_analysis_root")
         with pytest.raises(ProtectedAnalysisRootError):
             state.begin_file_action(
                 run_id,
@@ -370,9 +368,7 @@ def test_self_analysis_owner_persists_policy_and_publishes_zero_candidates(
         )
 
     route_state = FrameworkRouteState(database)
-    assert route_state.corpus_mutation_guard(run_id).reason_code == (
-        "protected_analysis_root"
-    )
+    assert route_state.corpus_mutation_guard(run_id).reason_code == ("protected_analysis_root")
 
 
 def test_latest_durable_inventory_validates_policy_after_selecting_newest(
@@ -558,8 +554,7 @@ def test_normal_actions_remain_compatible_and_policy_columns_are_immutable(
         state.mark_file_actions_applying(((action_id, "{}"),))
         with pytest.raises(sqlite3.IntegrityError, match="corpus policy is immutable"):
             state._connection.execute(
-                "UPDATE file_actions SET corpus_access_mode='analyze_only' "
-                "WHERE action_id=?",
+                "UPDATE file_actions SET corpus_access_mode='analyze_only' WHERE action_id=?",
                 (action_id,),
             )
         with pytest.raises(sqlite3.IntegrityError, match="corpus policy is immutable"):
@@ -619,7 +614,7 @@ def test_physical_boundary_inspection_error_fails_closed(
         InternalPathProtectionError,
         match="internal mutation boundary cannot be verified",
     ):
-        CorpusMutationGuard(policy, internal_policy).require_paths_allowed(
-            outside / "new.py"
-        )
+        CorpusMutationGuard(policy, internal_policy).require_paths_allowed(outside / "new.py")
+
+
 # endregion [02]

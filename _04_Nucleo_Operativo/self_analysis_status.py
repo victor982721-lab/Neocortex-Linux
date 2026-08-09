@@ -38,6 +38,7 @@ from .self_analysis_manifest import (
     InvalidSelfAnalysisManifest,
     canonical_self_analysis_manifest,
     decode_self_analysis_manifest,
+    manifest_birthtime_ns,
     manifest_integer,
     manifest_mapping,
 )
@@ -72,22 +73,16 @@ def _sqlite_sidecars(database: Path) -> tuple[Path, ...]:
 def require_sqlite_sidecars_absent(database: Path) -> None:
     """Abstain when WAL, SHM, or rollback evidence is present."""
 
-    sidecars = tuple(
-        sidecar for sidecar in _sqlite_sidecars(database) if os.path.lexists(sidecar)
-    )
+    sidecars = tuple(sidecar for sidecar in _sqlite_sidecars(database) if os.path.lexists(sidecar))
     if sidecars:
-        raise QuiescentSQLiteUnavailable(
-            f"SQLite state has active sidecars: {database}"
-        )
+        raise QuiescentSQLiteUnavailable(f"SQLite state has active sidecars: {database}")
 
 
 def _capture_sqlite_fence(database: Path) -> _SQLiteFileFence:
     try:
         metadata = os.stat(database, follow_symlinks=False)
     except OSError as exc:
-        raise QuiescentSQLiteUnavailable(
-            f"SQLite state is unavailable: {database}"
-        ) from exc
+        raise QuiescentSQLiteUnavailable(f"SQLite state is unavailable: {database}") from exc
     attributes = int(getattr(metadata, "st_file_attributes", 0))
     reparse = int(getattr(stat_module, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
     if (
@@ -96,9 +91,7 @@ def _capture_sqlite_fence(database: Path) -> _SQLiteFileFence:
         or attributes & reparse
         or metadata.st_size <= 0
     ):
-        raise QuiescentSQLiteUnavailable(
-            f"SQLite state is not a stable regular file: {database}"
-        )
+        raise QuiescentSQLiteUnavailable(f"SQLite state is not a stable regular file: {database}")
     birthtime = getattr(metadata, "st_birthtime_ns", None)
     return _SQLiteFileFence(
         int(metadata.st_dev),
@@ -133,9 +126,7 @@ def quiescent_sqlite_database(database: Path, *, timeout_seconds: float = 10.0):
     connection = sqlite3.connect(uri, uri=True, timeout=timeout_seconds)
     try:
         connection.row_factory = sqlite3.Row
-        connection.execute(
-            f"PRAGMA busy_timeout={max(1, round(timeout_seconds * 1000))}"
-        )
+        connection.execute(f"PRAGMA busy_timeout={max(1, round(timeout_seconds * 1000))}")
         connection.execute("PRAGMA foreign_keys=ON")
         if int(connection.execute("PRAGMA foreign_keys").fetchone()[0]) != 1:
             raise RuntimeError("SQLite status could not enable foreign keys")
@@ -275,9 +266,7 @@ def _table_columns(
     connection: sqlite3.Connection,
     table: str,
 ) -> frozenset[str]:
-    return frozenset(
-        str(row["name"]) for row in connection.execute(f"PRAGMA table_info({table})")
-    )
+    return frozenset(str(row["name"]) for row in connection.execute(f"PRAGMA table_info({table})"))
 
 
 def _framework_run_rows(
@@ -353,8 +342,7 @@ def _journal_matches_framework(
             for name in ("journal_volume", "journal_id", "start_usn", "end_usn")
         )
     if any(
-        run_row[name] is None
-        for name in ("journal_volume", "journal_id", "start_usn", "end_usn")
+        run_row[name] is None for name in ("journal_volume", "journal_id", "start_usn", "end_usn")
     ):
         return False
     return all(
@@ -378,9 +366,7 @@ def _manifest_matches_framework(
     inventory = _mapping(manifest["inventory"], label="manifest inventory")
     journal = _mapping(inventory["journal"], label="manifest journal")
     policy = _mapping(inventory["policy"], label="manifest policy")
-    expected_state = os.path.normcase(
-        os.path.realpath(os.path.abspath(os.fspath(state_directory)))
-    )
+    expected_state = os.path.normcase(os.path.realpath(os.path.abspath(os.fspath(state_directory))))
     recorded_state = os.path.normcase(
         os.path.realpath(os.path.abspath(str(run_row["state_directory"])))
     )
@@ -391,9 +377,7 @@ def _manifest_matches_framework(
             int(event_row["occurred_ns"]) == int(run_row["completed_ns"]),
             str(run_row["run_kind"]) == run["run_kind"] == "self_analysis",
             str(run_row["status"]) == run["status"] == "completed",
-            str(run_row["corpus_access_mode"])
-            == run["corpus_access_mode"]
-            == "analyze_only",
+            str(run_row["corpus_access_mode"]) == run["corpus_access_mode"] == "analyze_only",
             str(run_row["root"]) == run["root"],
             str(run_row["root_device_id_hex"]) == identity["device_id_hex"],
             str(run_row["root_file_id_hex"]) == identity["file_id_hex"],
@@ -403,8 +387,7 @@ def _manifest_matches_framework(
             int(run_row["scan_id"]) == inventory["scan_id"],
             str(run_row["inventory_mode"]) == inventory["mode"],
             int(run_row["inventory_attempts"]) == inventory["attempts"],
-            int(run_row["reconciliation_records"])
-            == inventory["reconciliation_records"],
+            int(run_row["reconciliation_records"]) == inventory["reconciliation_records"],
             _journal_matches_framework(journal, run_row),
             str(run_row["inventory_policy_signature"]) == policy["signature"],
         )
@@ -860,9 +843,7 @@ def _probe_manifest_journal(
         int(str(journal["journal_id"])),
         _integer(journal["end_usn"], label="manifest end USN"),
     )
-    effective_probe = (
-        probe_self_analysis_journal if journal_probe is None else journal_probe
-    )
+    effective_probe = probe_self_analysis_journal if journal_probe is None else journal_probe
     try:
         observed = effective_probe(cursor)
     except Exception:
@@ -919,7 +900,11 @@ def _evaluate_manifest_freshness(
         str(run["root"]),
         str(identity["device_id_hex"]),
         str(identity["file_id_hex"]),
-        _integer(identity["birthtime_ns"], label="manifest root birthtime"),
+        manifest_birthtime_ns(
+            identity["birthtime_ns"],
+            label="manifest root birthtime",
+            schema=str(manifest["schema"]),
+        ),
     )
     root_before = _root_identity_is_current(access_policy)
     current_policy_signature = _current_inventory_policy_signature(run)
@@ -932,9 +917,7 @@ def _evaluate_manifest_freshness(
     )
     journal_status = _probe_manifest_journal(journal, journal_probe)
     checkpoint_after = _read_checkpoint(inventory_database, str(run["root"]))
-    checkpoint_unchanged = (
-        checkpoint_after is not None and checkpoint_after == checkpoint_before
-    )
+    checkpoint_unchanged = checkpoint_after is not None and checkpoint_after == checkpoint_before
     root_after = _root_identity_is_current(access_policy)
     link_matches = _framework_link_matches(latest_code_run, manifest)
     code_before, framework_current, code_after = _linked_framework_fences(

@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from collections.abc import Sequence
 
 from .cli_operations import dispatch_direct_operation
@@ -56,6 +57,29 @@ def run_framework(args: argparse.Namespace, *, progress=None):
         return _run_framework_with_progress(args, progress)
 
 
+def _integrated_self_analysis_arguments() -> tuple[str, ...]:
+    """Return the canonical protected self-analysis invocation owned by ``--all``."""
+
+    from .app_paths import self_analysis_data_directory, source_repository_directory
+
+    return (
+        "--self-analysis",
+        "--root",
+        str(source_repository_directory()),
+        "--state-directory",
+        str(self_analysis_data_directory()),
+    )
+
+
+def _run_integrated_self_analysis() -> int:
+    """Execute the existing protected service before the document ``--all`` flow."""
+
+    try:
+        return main(_integrated_self_analysis_arguments())
+    except SystemExit as exc:
+        return exc.code if isinstance(exc.code, int) else 2
+
+
 # endregion [03]
 
 
@@ -82,8 +106,13 @@ def main(arguments: Sequence[str] | None = None) -> int:
     if direct_exit_code is not None:
         return direct_exit_code
 
+    self_analysis_exit_code = 0
+    if args.all:
+        self_analysis_exit_code = _run_integrated_self_analysis()
+
     from _03_Progreso import RichProgress
     from rich.console import Console
+    from _02_Deduplicacion import InventoryError
 
     from .cli_reporting import (
         has_organization_errors,
@@ -96,22 +125,26 @@ def main(arguments: Sequence[str] | None = None) -> int:
     semantic_results: list[tuple[str, object]] = []
     semantic_exit_code = 0
     semantic_attempted = False
-    with RichProgress() as progress:
-        result = run_framework(args, progress=progress)
-        actions = getattr(result, "actions", None)
-        framework_failed = bool(
-            (actions is not None and actions.errors) or has_organization_errors(result)
-        )
-        if args.all and not framework_failed:
-            from .cli_semantic import run_integrated_all_semantic_index
-
-            semantic_attempted = True
-            semantic_exit_code = run_integrated_all_semantic_index(
-                args,
-                progress=progress,
-                result_sink=lambda scope, value: semantic_results.append((scope, value)),
-                print_output=not professional_output,
+    try:
+        with RichProgress() as progress:
+            result = run_framework(args, progress=progress)
+            actions = getattr(result, "actions", None)
+            framework_failed = bool(
+                (actions is not None and actions.errors) or has_organization_errors(result)
             )
+            if args.all and not framework_failed:
+                from .cli_semantic import run_integrated_all_semantic_index
+
+                semantic_attempted = True
+                semantic_exit_code = run_integrated_all_semantic_index(
+                    args,
+                    progress=progress,
+                    result_sink=lambda scope, value: semantic_results.append((scope, value)),
+                    print_output=not professional_output,
+                )
+    except InventoryError as exc:
+        print(f"ERROR corpus_unavailable: {exc}", file=sys.stderr)
+        return 2
 
     if professional_output:
         print_professional_summary(
@@ -127,6 +160,8 @@ def main(arguments: Sequence[str] | None = None) -> int:
     if (actions is not None and actions.errors) or has_organization_errors(result):
         return 2
     if semantic_exit_code != 0:
+        return 2
+    if self_analysis_exit_code != 0:
         return 2
     if args.strict_exit_codes and has_strict_route_errors(result):
         return 2

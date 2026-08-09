@@ -12,6 +12,8 @@ import sys
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
+from neocortex.platform_policy import default_corpus_root
+
 from neocortex import __version__
 
 from .app_paths import default_state_directory
@@ -20,7 +22,9 @@ from .cli_capabilities_surface import register_capabilities_arguments
 from .cli_code_surface import register_code_arguments
 from .cli_docx_surface import register_docx_arguments
 from .cli_knowledge_surface import register_knowledge_arguments
+from .cli_models_surface import register_models_arguments
 from .cli_office_surface import register_office_arguments
+from .cli_platform_surface import register_platform_arguments
 from .cli_semantic_surface import register_semantic_arguments
 
 __all__ = [
@@ -117,6 +121,8 @@ def build_parser() -> argparse.ArgumentParser:
         description="Run the integrated NeoCortex pre-index framework.",
         allow_abbrev=False,
     )
+    register_platform_arguments(parser)
+    register_models_arguments(parser)
     parser.add_argument(
         "--version",
         action="version",
@@ -212,8 +218,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--root",
         type=Path,
-        default=Path.home(),
-        help="root directory to scan; defaults to the current user profile",
+        default=default_corpus_root(),
+        help="root directory to scan; defaults to the platform corpus root",
     )
     parser.add_argument(
         "--state-directory",
@@ -232,10 +238,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--all",
         action="store_true",
         help=(
-            "run every PDF, DOCX, Office, audio, image and code route using the "
-            "existing cache, update the technical catalog and prune stale cache "
-            "state; with --apply, also organize every safely classified technical "
-            "document; cached errors are "
+            "run protected self-analysis of the canonical source repository, then "
+            "every PDF, DOCX, Office, audio, image and code route using the existing "
+            "cache, update the technical catalog and prune stale cache state; with "
+            "--apply, also organize every safely classified technical document; "
+            "cached errors are "
             "retried only when their explicit --retry-*-errors flag is supplied; "
             "compatible options supplied explicitly override preset defaults"
         ),

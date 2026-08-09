@@ -22,9 +22,7 @@ FASTEMBED_RUNTIME_VERSION = "fastembed-0.8.0"
 TEXT_ENCODER_CONTRACT_VERSION = (
     f"{FASTEMBED_RUNTIME_VERSION}|explicit-l2-v1|reject-token-truncation-v1"
 )
-IMAGE_ENCODER_CONTRACT_VERSION = (
-    f"{FASTEMBED_RUNTIME_VERSION}|explicit-l2-v1|source-xxh3-verify-v1"
-)
+IMAGE_ENCODER_CONTRACT_VERSION = f"{FASTEMBED_RUNTIME_VERSION}|explicit-l2-v1|source-xxh3-verify-v1"
 
 TEXT_MODEL_ID = "jinaai/jina-embeddings-v2-base-es"
 TEXT_MODEL_SIGNATURE = f"{TEXT_ENCODER_CONTRACT_VERSION}|{TEXT_MODEL_ID}|float16"
@@ -35,9 +33,7 @@ TEXT_VECTOR_SPACE = "jina-embeddings-v2-base-es-v1"
 # pipeline below; scores remain cosine similarities, never probabilities or
 # classification confidence.  Owners without representative qrels remain
 # unfiltered until they receive their own calibration.
-TEXT_RETRIEVAL_CALIBRATION_SIGNATURE = (
-    "semantic-text-retrieval-abstention-jina-pdf-code-v1"
-)
+TEXT_RETRIEVAL_CALIBRATION_SIGNATURE = "semantic-text-retrieval-abstention-jina-pdf-code-v1"
 TEXT_RETRIEVAL_CALIBRATION_BACKEND = "fastembed"
 TEXT_RETRIEVAL_SCORE_FLOORS = (
     ("code", 0.46),
@@ -53,12 +49,8 @@ COMPACT_TEXT_VECTOR_SPACE = "paraphrase-multilingual-minilm-l12-v2-mean-pooling"
 CLIP_TEXT_MODEL_ID = "Qdrant/clip-ViT-B-32-text"
 CLIP_IMAGE_MODEL_ID = "Qdrant/clip-ViT-B-32-vision"
 CLIP_VECTOR_SPACE = "openai-clip-vit-b-32-shared-v1"
-CLIP_TEXT_MODEL_SIGNATURE = (
-    f"{TEXT_ENCODER_CONTRACT_VERSION}|{CLIP_TEXT_MODEL_ID}|float16"
-)
-CLIP_IMAGE_MODEL_SIGNATURE = (
-    f"{IMAGE_ENCODER_CONTRACT_VERSION}|{CLIP_IMAGE_MODEL_ID}|float16"
-)
+CLIP_TEXT_MODEL_SIGNATURE = f"{TEXT_ENCODER_CONTRACT_VERSION}|{CLIP_TEXT_MODEL_ID}|float16"
+CLIP_IMAGE_MODEL_SIGNATURE = f"{IMAGE_ENCODER_CONTRACT_VERSION}|{CLIP_IMAGE_MODEL_ID}|float16"
 
 
 # endregion [01]
@@ -250,9 +242,7 @@ class FastEmbedCacheContract:
             len(repository_parts) != 2
             or "\\" in self.repository_id
             or any(
-                not part
-                or any(character.isspace() for character in part)
-                or part in {".", ".."}
+                not part or any(character.isspace() for character in part) or part in {".", ".."}
                 for part in repository_parts
             )
         ):
@@ -307,9 +297,7 @@ def fastembed_cache_contract(model_signature: str) -> FastEmbedCacheContract:
     try:
         return _FASTEMBED_CACHE_CONTRACTS[model_signature]
     except KeyError as exc:
-        raise ValueError(
-            f"no FastEmbed cache contract for model: {model_signature}"
-        ) from exc
+        raise ValueError(f"no FastEmbed cache contract for model: {model_signature}") from exc
 
 
 # endregion [03]
@@ -319,6 +307,10 @@ def fastembed_cache_contract(model_signature: str) -> FastEmbedCacheContract:
 
 
 def default_semantic_model_cache(state_directory: Path) -> Path:
+    if os.name != "nt":
+        from neocortex.platform_policy import current_platform_policy
+
+        return current_platform_policy().models_directory / "fastembed"
     return state_directory.parent / "models" / "fastembed"
 
 

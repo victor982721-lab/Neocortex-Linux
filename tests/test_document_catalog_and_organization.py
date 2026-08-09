@@ -71,7 +71,13 @@ from _04_Nucleo_Operativo.semantic_state import (
     start_embedding_generation,
     upsert_semantic_item,
 )
+from neocortex.platform_policy import LINUX_MUTATION_REASON
 from tests.internal_paths_test_support import disjoint_internal_paths_policy
+
+WINDOWS_MUTATION_ONLY = pytest.mark.skipif(
+    os.name != "nt",
+    reason="identity-bound corpus mutation is available only on Windows",
+)
 
 
 def _normal_mutation_guard(root: Path) -> CorpusMutationGuard:
@@ -105,10 +111,7 @@ def _protected_mutation_guard(
 
 
 def test_framework_uses_bounded_document_classification_prefix() -> None:
-    assert (
-        FrameworkConfig().document_classification_max_chars
-        == MAX_CLASSIFICATION_TEXT_CHARS
-    )
+    assert FrameworkConfig().document_classification_max_chars == MAX_CLASSIFICATION_TEXT_CHARS
 
 
 @pytest.mark.parametrize(
@@ -133,8 +136,7 @@ def test_framework_uses_bounded_document_classification_prefix() -> None:
                 "done",
                 title="Curso CFE de mantenimiento de transformadores",
                 leading_text=(
-                    "Comisión Federal de Electricidad. Material didáctico de "
-                    "capacitación."
+                    "Comisión Federal de Electricidad. Material didáctico de capacitación."
                 ),
             ),
             "curso_capacitacion",
@@ -194,9 +196,7 @@ def test_sector_taxonomy_classifies_with_provenance(
     assert classification.primary_authority == authority
     assert classification.primary_organization == organization
     assert classification.evidence
-    assert classification.classifier_signature.startswith(
-        "technical-document-classifier-v14|"
-    )
+    assert classification.classifier_signature.startswith("technical-document-classifier-v14|")
     assert classification.classifier_signature.endswith("|technical-document-naming-v9")
 
 
@@ -288,9 +288,9 @@ def test_sector_standard_identifiers_are_normalized_once(
 
     assert classification.primary_kind == "normativa"
     assert classification.primary_authority == authority
-    assert tuple(
-        reference.identifier for reference in classification.standard_references
-    ) == (identifier.upper(),)
+    assert tuple(reference.identifier for reference in classification.standard_references) == (
+        identifier.upper(),
+    )
 
 
 def test_cover_issuer_wins_over_cited_authorities_and_managed_folder() -> None:
@@ -312,8 +312,7 @@ def test_cover_issuer_wins_over_cited_authorities_and_managed_folder() -> None:
     assert classification.primary_subtype == "norma"
     assert classification.primary_equipment == "transformadores_potencia"
     assert any(
-        "autoridad_emisora=IEC" in evidence
-        for evidence in classification.authorities[0].evidence
+        "autoridad_emisora=IEC" in evidence for evidence in classification.authorities[0].evidence
     )
 
 
@@ -358,9 +357,7 @@ def test_electronic_invoice_citing_neta_is_not_a_standard() -> None:
 
     assert classification.primary_kind == "correspondencia"
     assert classification.primary_authority == "NETA"
-    assert all(
-        candidate.label != "normativa" for candidate in classification.kind_candidates
-    )
+    assert all(candidate.label != "normativa" for candidate in classification.kind_candidates)
 
 
 def test_ieee_trademarked_current_edition_precedes_revision_reference() -> None:
@@ -417,9 +414,9 @@ def test_cfe_identifier_repairs_common_letter_o_ocr() -> None:
 
     assert classification.primary_kind == "normativa"
     assert classification.primary_authority == "CFE"
-    assert tuple(
-        reference.identifier for reference in classification.standard_references
-    ) == ("CFE K0000-15",)
+    assert tuple(reference.identifier for reference in classification.standard_references) == (
+        "CFE K0000-15",
+    )
     assert classification.suggested_stem == "CFE K0000-15 - TRANSFORMADORES"
 
 
@@ -443,9 +440,7 @@ def test_iec_cover_edition_beats_later_series_references() -> None:
     assert "IEC 60076-1:2011" in {
         reference.identifier for reference in classification.standard_references
     }
-    assert classification.suggested_stem == (
-        "IEC 60076-1 2011 - POWER TRANSFORMERS PART 1 GENERAL"
-    )
+    assert classification.suggested_stem == ("IEC 60076-1 2011 - POWER TRANSFORMERS PART 1 GENERAL")
 
 
 def test_mexican_standard_identifier_does_not_consume_following_reference() -> None:
@@ -464,9 +459,7 @@ def test_mexican_standard_identifier_does_not_consume_following_reference() -> N
 
     assert classification.primary_authority == "NMX"
     assert classification.primary_subtype == "metodo_prueba"
-    assert {
-        reference.identifier for reference in classification.standard_references
-    } == {
+    assert {reference.identifier for reference in classification.standard_references} == {
         "IEC 60076-1:2011",
         "NMX-J-169-ANCE-2015",
     }
@@ -491,9 +484,7 @@ def test_cfe_specification_retains_issuer_and_rich_operational_facets() -> None:
     assert classification.primary_authority == "CFE"
     assert classification.primary_subtype == "especificacion"
     assert classification.primary_equipment == "transformadores_potencia"
-    assert tuple(
-        reference.identifier for reference in classification.standard_references
-    ) == (
+    assert tuple(reference.identifier for reference in classification.standard_references) == (
         "CFE K0000-06",
         "IEC 60076-5:2006",
         "NMX-J-169-ANCE-2015",
@@ -592,9 +583,7 @@ def test_som_3531_with_spaces_is_normalized_without_losing_procedure_context() -
     assert classification.primary_authority == "CFE"
     assert classification.primary_equipment == "equipo_primario_subestacion"
     assert classification.primary_activity == "pruebas_campo"
-    assert [item.identifier for item in classification.standard_references] == [
-        "SOM-3531"
-    ]
+    assert [item.identifier for item in classification.standard_references] == ["SOM-3531"]
 
 
 def test_scanned_som_3531_index_recovers_procedure_without_cover_title() -> None:
@@ -772,9 +761,7 @@ def test_lapem_singular_test_report_is_not_misclassified_as_ieee_standard() -> N
     )
 
 
-def test_formal_standard_cover_is_not_sent_to_review_for_internal_procedure_text() -> (
-    None
-):
+def test_formal_standard_cover_is_not_sent_to_review_for_internal_procedure_text() -> None:
     classification = classify_document(
         DocumentSignals(
             "pdf",
@@ -793,9 +780,7 @@ def test_formal_standard_cover_is_not_sent_to_review_for_internal_procedure_text
     assert classification.primary_authority == "NMX"
     assert classification.confidence >= 0.92
     assert classification.uncertainty == "baja"
-    assert classification.suggested_stem.startswith(
-        "NMX-CC-9001-IMNC-2015 - Sistemas de gestión"
-    )
+    assert classification.suggested_stem.startswith("NMX-CC-9001-IMNC-2015 - Sistemas de gestión")
 
 
 def test_normative_traceability_report_is_analysis_not_nmx_standard() -> None:
@@ -847,9 +832,7 @@ def test_sat_compliance_certificate_is_not_iec_standard() -> None:
     assert classification.primary_authority == "IEC"
     assert classification.primary_client == "ANDRITZ"
     assert classification.primary_project == "Malpaso"
-    assert {item.identifier for item in classification.standard_references} == {
-        "IEC 60076-1:2011"
-    }
+    assert {item.identifier for item in classification.standard_references} == {"IEC 60076-1:2011"}
 
 
 def test_lapem_prototype_acceptance_is_quality_certificate_not_cfe_norm() -> None:
@@ -872,9 +855,7 @@ def test_lapem_prototype_acceptance_is_quality_certificate_not_cfe_norm() -> Non
     assert classification.primary_kind == "certificado_calidad"
     assert classification.primary_organization == "LAPEM"
     assert classification.primary_authority == "CFE"
-    assert {item.identifier for item in classification.standard_references} == {
-        "CFE V4200-25"
-    }
+    assert {item.identifier for item in classification.standard_references} == {"CFE V4200-25"}
     assert classification.uncertainty == "baja"
 
 
@@ -897,9 +878,7 @@ def test_completed_cfe_questionnaire_is_project_specification_not_norm() -> None
     assert classification.primary_authority == "CFE"
     assert classification.primary_client == "ANDRITZ"
     assert classification.primary_project == "Malpaso"
-    assert {item.identifier for item in classification.standard_references} == {
-        "CFE W4101-16"
-    }
+    assert {item.identifier for item in classification.standard_references} == {"CFE W4101-16"}
 
 
 def test_andritz_technical_offer_is_proposal_not_cfe_standard() -> None:
@@ -940,9 +919,7 @@ def test_nonconformity_report_is_not_norm_from_iso_reference() -> None:
 
     assert classification.primary_kind == "reporte_no_conformidad"
     assert classification.primary_authority == "ISO"
-    assert {item.identifier for item in classification.standard_references} == {
-        "ISO 9001:2015"
-    }
+    assert {item.identifier for item in classification.standard_references} == {"ISO 9001:2015"}
 
 
 def test_malpaso_hcn_documents_receive_client_project_and_workstream() -> None:
@@ -1236,9 +1213,7 @@ def test_ocr_number_with_leading_zero_is_not_an_en_standard() -> None:
         )
     )
 
-    assert not any(
-        item.authority == "EN" for item in classification.standard_references
-    )
+    assert not any(item.authority == "EN" for item in classification.standard_references)
 
 
 def test_standard_study_is_analysis_not_the_standard_it_discusses() -> None:
@@ -1363,9 +1338,7 @@ def test_operational_forms_keep_standards_as_references(
     kind: str,
 ) -> None:
     classification = classify_document(
-        DocumentSignals(
-            Path(path).suffix.lstrip("."), path, "complete", leading_text=text
-        )
+        DocumentSignals(Path(path).suffix.lstrip("."), path, "complete", leading_text=text)
     )
 
     assert classification.primary_kind == kind
@@ -1463,9 +1436,7 @@ def test_international_normative_forms_are_distinguished(
     equipment: str | None,
 ) -> None:
     classification = classify_document(
-        DocumentSignals(
-            "pdf", rf"C:\Normativa\{authority}.pdf", "done", leading_text=text
-        )
+        DocumentSignals("pdf", rf"C:\Normativa\{authority}.pdf", "done", leading_text=text)
     )
 
     assert classification.primary_kind == "normativa"
@@ -1539,9 +1510,7 @@ def test_standard_references_do_not_replace_the_primary_document_type() -> None:
             r"C:\Consulta\IEEE Std C37.20.2-2015.pdf",
             "done",
             title="IEEE Std C37.20.2-2015",
-            leading_text=(
-                "IEEE Std C37.20.2-2015. IEEE Standard for Metal-Clad Switchgear."
-            ),
+            leading_text=("IEEE Std C37.20.2-2015. IEEE Standard for Metal-Clad Switchgear."),
         )
     )
 
@@ -1639,8 +1608,7 @@ def test_managed_category_directories_do_not_reinforce_the_previous_kind() -> No
             "instruccion_cuenta_bancaria",
         ),
         (
-            "N° de contrato / cotización. Alcance del proyecto. "
-            "HOJA DE ASIGNACIÓN DE PROYECTO.",
+            "N° de contrato / cotización. Alcance del proyecto. HOJA DE ASIGNACIÓN DE PROYECTO.",
             "hoja_asignacion_proyecto",
         ),
         (
@@ -1732,9 +1700,7 @@ def test_second_pass_semantic_names_use_operational_identity() -> None:
     travel = suggest_document_stem(
         path=r"C:\Gastos\x.docx",
         title="",
-        leading_text=(
-            "14 de septiembre de 2023 Gracias por elegir Uber. Total 309,90 MXN."
-        ),
+        leading_text=("14 de septiembre de 2023 Gracias por elegir Uber. Total 309,90 MXN."),
         primary_kind="comprobante_viaje",
     )
 
@@ -1743,9 +1709,7 @@ def test_second_pass_semantic_names_use_operational_identity() -> None:
         "Reporte de actividades - FO-CIE-SS-01-R00 - Malpaso - 2025-06-23 "
         "- SERINTRA - pruebas electricas"
     )
-    assert manual.stem == (
-        "Manual del sistema de gestion - AC-F-02-02 - Octubre 2021 - SEMIC"
-    )
+    assert manual.stem == ("Manual del sistema de gestion - AC-F-02-02 - Octubre 2021 - SEMIC")
     assert travel.stem == "Comprobante de viaje - 2023-09-14 - 309,90 MXN"
 
 
@@ -1898,8 +1862,7 @@ def test_purchase_order_fields_override_the_generic_form_label() -> None:
             "programa_seguridad_salud",
         ),
         (
-            "Actividad, aspecto ambiental Objetivo Meta Responsables del "
-            "cumplimiento Año mes.",
+            "Actividad, aspecto ambiental Objetivo Meta Responsables del cumplimiento Año mes.",
             "programa_gestion_ambiental",
         ),
     ),
@@ -1921,9 +1884,7 @@ def test_corpus_observed_controlled_document_families(
     assert classification.confidence >= 0.82
 
 
-def test_controlled_record_name_prefers_type_code_and_revision_over_blank_fields() -> (
-    None
-):
+def test_controlled_record_name_prefers_type_code_and_revision_over_blank_fields() -> None:
     suggestion = suggest_document_stem(
         path=r"C:\Recuperados\x_16b.docx",
         title="",
@@ -1935,9 +1896,7 @@ def test_controlled_record_name_prefers_type_code_and_revision_over_blank_fields
         organization="SERINTRA",
     )
 
-    assert suggestion.stem == (
-        "Registro de auditores internos - FCAS04-04 - Abril 2025 - SERINTRA"
-    )
+    assert suggestion.stem == ("Registro de auditores internos - FCAS04-04 - Abril 2025 - SERINTRA")
     assert "Nombre del Auditor" not in suggestion.stem
 
 
@@ -1983,9 +1942,7 @@ def test_calibration_certificate_requires_dedicated_structural_evidence() -> Non
     assert passing_mention.primary_kind != "certificado_calibracion"
 
 
-def test_calibration_filename_recovers_a_certificate_with_missing_first_page_text() -> (
-    None
-):
+def test_calibration_filename_recovers_a_certificate_with_missing_first_page_text() -> None:
     classification = classify_document(
         DocumentSignals(
             "pdf",
@@ -2130,8 +2087,7 @@ def test_appendix_and_photographic_column_do_not_override_primary_document() -> 
             r"C:\Listas\Accesorios.docx",
             "complete",
             leading_text=(
-                "TABLA DE ACCESORIOS A SUMINISTRAR. Descripción, cantidad y "
-                "evidencia fotográfica."
+                "TABLA DE ACCESORIOS A SUMINISTRAR. Descripción, cantidad y evidencia fotográfica."
             ),
         )
     )
@@ -2412,9 +2368,7 @@ def test_catalog_reads_existing_caches_and_reuses_classification(
             """SELECT primary_kind,primary_authority,primary_organization,
             classifier_signature FROM documents ORDER BY path"""
         ).fetchall()
-        history = connection.execute(
-            "SELECT COUNT(*) FROM classification_history"
-        ).fetchone()[0]
+        history = connection.execute("SELECT COUNT(*) FROM classification_history").fetchone()[0]
     assert history == 2
     assert {row["primary_kind"] for row in rows} == {
         "normativa",
@@ -2463,9 +2417,7 @@ def test_catalog_emits_real_time_bounded_progress(tmp_path: Path) -> None:
     assert events[-1].completed == 1
     assert events[-1].total == 1
     assert events[-1].finished
-    assert {metric.name: metric.value for metric in events[-1].metrics}[
-        "classified"
-    ] == 1
+    assert {metric.name: metric.value for metric in events[-1].metrics}["classified"] == 1
 
 
 def test_catalog_records_corrupt_cached_text_as_classification_error(
@@ -2490,12 +2442,8 @@ def test_catalog_records_corrupt_cached_text_as_classification_error(
     _pdf, docx, *_office = update_document_catalog(tmp_path)
 
     assert docx.errors == 1
-    with document_catalog_database(
-        tmp_path / "document_catalog.sqlite3", readonly=True
-    ) as catalog:
-        row = catalog.execute(
-            "SELECT catalog_status,error_type FROM documents"
-        ).fetchone()
+    with document_catalog_database(tmp_path / "document_catalog.sqlite3", readonly=True) as catalog:
+        row = catalog.execute("SELECT catalog_status,error_type FROM documents").fetchone()
     assert row["catalog_status"] == "error"
     assert row["error_type"] == "error"
 
@@ -2520,9 +2468,7 @@ def test_direct_catalog_marks_stale_source_cache_without_reclassifying(
     assert docx.source_stale == 1
     assert docx.classified == 0
     assert docx.stale_marked == 1
-    with document_catalog_database(
-        tmp_path / "document_catalog.sqlite3", readonly=True
-    ) as catalog:
+    with document_catalog_database(tmp_path / "document_catalog.sqlite3", readonly=True) as catalog:
         active = catalog.execute("SELECT active FROM documents").fetchone()[0]
     assert active == 0
 
@@ -2559,9 +2505,7 @@ def test_catalog_schema_migration_preserves_classification_history(
         organization_columns = {
             row[1] for row in migrated.execute("PRAGMA table_info(organization_plans)")
         }
-        document_columns = {
-            row[1] for row in migrated.execute("PRAGMA table_info(documents)")
-        }
+        document_columns = {row[1] for row in migrated.execute("PRAGMA table_info(documents)")}
     assert version == "6"
     assert [row["path"] for row in history] == [r"C:\Normativa\IEEE.pdf"]
     assert primary_key[-1] == "path"
@@ -2677,9 +2621,7 @@ def test_catalog_v2_migration_normalizes_hex_identity_fields(tmp_path: Path) -> 
     initialize_document_catalog(catalog_path)
 
     with document_catalog_database(catalog_path, readonly=True) as migrated:
-        document_identity = migrated.execute(
-            "SELECT volume_id,file_id FROM documents"
-        ).fetchone()
+        document_identity = migrated.execute("SELECT volume_id,file_id FROM documents").fetchone()
         plan_identity = migrated.execute(
             "SELECT volume_id,file_id FROM organization_plans"
         ).fetchone()
@@ -2844,9 +2786,7 @@ def test_plan_organizes_standards_and_company_formats_without_moving(
     assert pdf_source.exists()
     assert docx_source.exists()
     assert not destination_root.exists()
-    destinations = {
-        Path(plan.destination_path) for plan in plans if plan.destination_path
-    }
+    destinations = {Path(plan.destination_path) for plan in plans if plan.destination_path}
     normative_destinations = {
         destination
         for destination in destinations
@@ -3115,8 +3055,7 @@ def test_plan_routes_second_pass_families_and_reviews_sensitive_artifacts(
         ),
         (
             "inventory.docx",
-            "Reporte de archivo: tool.dll Ruta relativa: .Toolbox/bin "
-            "Timestamp (UTC): 2025-10-09.",
+            "Reporte de archivo: tool.dll Ruta relativa: .Toolbox/bin Timestamp (UTC): 2025-10-09.",
         ),
     )
     for filename, text in fixtures:
@@ -3152,14 +3091,8 @@ def test_plan_routes_second_pass_families_and_reviews_sensitive_artifacts(
     assert len(review) == 2
     parents = {Path(item.destination_path or "").parent for item in planned}
     assert destination_root / "Pruebas_y_calidad" / "Calidad" in parents
-    assert (
-        destination_root / "Ingenieria_y_documentacion" / "Ingenieria_y_calculos"
-        in parents
-    )
-    assert (
-        destination_root / "Gestion_y_administracion" / "Proyecto_y_correspondencia"
-        in parents
-    )
+    assert destination_root / "Ingenieria_y_documentacion" / "Ingenieria_y_calculos" in parents
+    assert destination_root / "Gestion_y_administracion" / "Proyecto_y_correspondencia" in parents
     assert destination_root / "Gestion_y_administracion" / "Administracion" in parents
     assert {item.reason for item in review} == {
         "financial_or_sensitive_document_requires_review",
@@ -3213,12 +3146,11 @@ def test_plan_semantically_renames_low_quality_calibration_certificate(
         / "Pruebas_y_calidad"
         / "Laboratorio_y_metrologia"
     )
-    assert destination.name.startswith(
-        "Certificado de calibracion - MEDIDOR DE RELACION - MEGGER"
-    )
+    assert destination.name.startswith("Certificado de calibracion - MEDIDOR DE RELACION - MEGGER")
     assert destination.suffix == ".docx"
 
 
+@WINDOWS_MUTATION_ONLY
 def test_plan_relocates_only_framework_managed_misclassification_to_review(
     tmp_path: Path,
 ) -> None:
@@ -3261,6 +3193,7 @@ def test_plan_relocates_only_framework_managed_misclassification_to_review(
     assert planned[0].reason.startswith("managed_reclassification:")
 
 
+@WINDOWS_MUTATION_ONLY
 def test_plan_disambiguates_same_named_documents_without_blocking(
     tmp_path: Path,
 ) -> None:
@@ -3305,11 +3238,10 @@ def test_plan_disambiguates_same_named_documents_without_blocking(
     assert applied.applied == 2
     assert applied.blocked == 0
     assert all(not source.exists() for source in sources)
-    assert all(
-        Path(destination).is_file() for destination in destinations if destination
-    )
+    assert all(Path(destination).is_file() for destination in destinations if destination)
 
 
+@WINDOWS_MUTATION_ONLY
 def test_apply_moves_only_snapshot_valid_plan_without_overwrite(tmp_path: Path) -> None:
     state_directory = tmp_path / "state"
     state_directory.mkdir()
@@ -3352,6 +3284,7 @@ def test_apply_moves_only_snapshot_valid_plan_without_overwrite(tmp_path: Path) 
     assert summary.cache_pending == 0
 
 
+@WINDOWS_MUTATION_ONLY
 def test_apply_all_consumes_every_plan_in_bounded_batches(tmp_path: Path) -> None:
     state_directory = tmp_path / "state"
     state_directory.mkdir()
@@ -3392,9 +3325,11 @@ def test_apply_all_consumes_every_plan_in_bounded_batches(tmp_path: Path) -> Non
     assert plan_progress.events[-1].completed == 3
     assert plan_progress.events[-1].finished
     assert apply_progress.events[0].completed == 0
-    assert [event.completed for event in apply_progress.events if not event.finished][
-        -3:
-    ] == [1, 2, 3]
+    assert [event.completed for event in apply_progress.events if not event.finished][-3:] == [
+        1,
+        2,
+        3,
+    ]
     assert apply_progress.events[-1].completed == 3
     assert apply_progress.events[-1].finished
     for source in sources:
@@ -3410,6 +3345,7 @@ def test_apply_all_consumes_every_plan_in_bounded_batches(tmp_path: Path) -> Non
         assert destination.is_file()
 
 
+@WINDOWS_MUTATION_ONLY
 def test_apply_synchronizes_current_and_pending_path_caches(tmp_path: Path) -> None:
     state_directory = tmp_path / "state"
     state_directory.mkdir()
@@ -3440,8 +3376,7 @@ def test_apply_synchronizes_current_and_pending_path_caches(tmp_path: Path) -> N
             ),
         )
         connection.execute(
-            "INSERT INTO document_fts(file_key,path,title,author,body) "
-            "VALUES(?,?,?,?,?)",
+            "INSERT INTO document_fts(file_key,path,title,author,body) VALUES(?,?,?,?,?)",
             (file_key, str(source), "Formato SERINTRA", "SERINTRA", "contenido"),
         )
         connection.commit()
@@ -3508,9 +3443,7 @@ def test_apply_synchronizes_current_and_pending_path_caches(tmp_path: Path) -> N
             """
         )
         dedup.execute("INSERT INTO files VALUES(?,?,?)", (str(source), *identity))
-        dedup.execute(
-            "INSERT INTO planned_duplicate_groups VALUES(1,?)", (str(source),)
-        )
+        dedup.execute("INSERT INTO planned_duplicate_groups VALUES(1,?)", (str(source),))
         dedup.execute(
             "INSERT INTO planned_duplicate_members VALUES(1,'keep',?,?,?)",
             (str(source), *identity),
@@ -3556,16 +3489,10 @@ def test_apply_synchronizes_current_and_pending_path_caches(tmp_path: Path) -> N
         state_directory / "document_catalog.sqlite3", readonly=True
     ) as catalog:
         sync_payload = json.loads(
-            str(
-                catalog.execute(
-                    "SELECT cache_sync_json FROM organization_plans"
-                ).fetchone()[0]
-            )
+            str(catalog.execute("SELECT cache_sync_json FROM organization_plans").fetchone()[0])
         )
     assert next(
-        result
-        for result in sync_payload["databases"]
-        if result["database"] == "semantic"
+        result for result in sync_payload["databases"] if result["database"] == "semantic"
     ) == {
         "database": "semantic",
         "detail": None,
@@ -3577,21 +3504,15 @@ def test_apply_synchronizes_current_and_pending_path_caches(tmp_path: Path) -> N
     dedup = sqlite3.connect(state_directory / "dedup.sqlite3")
     semantic = sqlite3.connect(state_directory / "semantic.sqlite3")
     try:
-        assert docx.execute("SELECT path FROM documents").fetchone()[0] == str(
+        assert docx.execute("SELECT path FROM documents").fetchone()[0] == str(destination)
+        assert docx.execute("SELECT path FROM docx_inventory").fetchone()[0] == str(destination)
+        assert docx.execute("SELECT path FROM document_fts").fetchone()[0] == str(destination)
+        assert framework.execute("SELECT path FROM route_candidates").fetchone()[0] == str(
             destination
         )
-        assert docx.execute("SELECT path FROM docx_inventory").fetchone()[0] == str(
+        assert framework.execute("SELECT path FROM review_candidates").fetchone()[0] == str(
             destination
         )
-        assert docx.execute("SELECT path FROM document_fts").fetchone()[0] == str(
-            destination
-        )
-        assert framework.execute("SELECT path FROM route_candidates").fetchone()[
-            0
-        ] == str(destination)
-        assert framework.execute("SELECT path FROM review_candidates").fetchone()[
-            0
-        ] == str(destination)
         corrected = framework.execute(
             "SELECT source_path,target_path FROM file_actions WHERE action_id=1"
         ).fetchone()
@@ -3601,12 +3522,12 @@ def test_apply_synchronizes_current_and_pending_path_caches(tmp_path: Path) -> N
         assert corrected == (str(destination), str(destination.with_suffix(".pdf")))
         assert referenced == str(destination)
         assert dedup.execute("SELECT path FROM files").fetchone()[0] == str(destination)
-        assert dedup.execute("SELECT path FROM planned_duplicate_members").fetchone()[
-            0
-        ] == str(destination)
-        assert dedup.execute(
-            "SELECT keep_path FROM planned_duplicate_groups"
-        ).fetchone()[0] == str(destination)
+        assert dedup.execute("SELECT path FROM planned_duplicate_members").fetchone()[0] == str(
+            destination
+        )
+        assert dedup.execute("SELECT keep_path FROM planned_duplicate_groups").fetchone()[0] == str(
+            destination
+        )
         semantic_path, semantic_updated_ns = semantic.execute(
             "SELECT path,updated_ns FROM semantic_items WHERE item_id=?",
             (semantic_item_id,),
@@ -3639,9 +3560,7 @@ def test_apply_synchronizes_current_and_pending_path_caches(tmp_path: Path) -> N
         volume_id=str(snapshot.volume_id),
         file_id=str(snapshot.file_id),
     )
-    semantic_retry = next(
-        result for result in retry.databases if result.database == "semantic"
-    )
+    semantic_retry = next(result for result in retry.databases if result.database == "semantic")
     assert retry.complete
     assert semantic_retry.status == "synced"
     assert semantic_retry.updated_rows == 0
@@ -3652,6 +3571,7 @@ def test_apply_synchronizes_current_and_pending_path_caches(tmp_path: Path) -> N
         ).fetchone() == (str(destination), semantic_updated_ns)
 
 
+@WINDOWS_MUTATION_ONLY
 def test_apply_reports_unexpected_semantic_path_without_rewriting_it(
     tmp_path: Path,
 ) -> None:
@@ -3701,9 +3621,9 @@ def test_apply_reports_unexpected_semantic_path_without_rewriting_it(
     assert not source.exists()
     assert destination.is_file()
     with sqlite3.connect(state_directory / "docx.sqlite3") as docx:
-        assert docx.execute(
-            "SELECT path FROM documents WHERE file_key=?", (file_key,)
-        ).fetchone()[0] == str(destination)
+        assert docx.execute("SELECT path FROM documents WHERE file_key=?", (file_key,)).fetchone()[
+            0
+        ] == str(destination)
     with sqlite3.connect(state_directory / "semantic.sqlite3") as semantic:
         assert semantic.execute(
             "SELECT path FROM semantic_items WHERE item_id=?", (item_id,)
@@ -3714,9 +3634,7 @@ def test_apply_reports_unexpected_semantic_path_without_rewriting_it(
         ).fetchone()
     sync_payload = json.loads(str(plan["cache_sync_json"]))
     semantic_result = next(
-        result
-        for result in sync_payload["databases"]
-        if result["database"] == "semantic"
+        result for result in sync_payload["databases"] if result["database"] == "semantic"
     )
     assert tuple(plan)[:2] == ("moved_cache_pending", "pending")
     assert semantic_result["status"] == "error"
@@ -3732,15 +3650,16 @@ def test_apply_reports_unexpected_semantic_path_without_rewriting_it(
     assert second.applied == 0
     assert second.cache_pending == 1
     with sqlite3.connect(state_directory / "docx.sqlite3") as docx:
-        assert docx.execute(
-            "SELECT path FROM documents WHERE file_key=?", (file_key,)
-        ).fetchone()[0] == str(destination)
+        assert docx.execute("SELECT path FROM documents WHERE file_key=?", (file_key,)).fetchone()[
+            0
+        ] == str(destination)
     with sqlite3.connect(state_directory / "semantic.sqlite3") as semantic:
         assert semantic.execute(
             "SELECT path FROM semantic_items WHERE item_id=?", (item_id,)
         ).fetchone()[0] == str(unexpected_path)
 
 
+@WINDOWS_MUTATION_ONLY
 def test_apply_recovers_cache_sync_after_database_becomes_available(
     tmp_path: Path,
 ) -> None:
@@ -3790,9 +3709,7 @@ def test_apply_recovers_cache_sync_after_database_becomes_available(
         ).fetchone()
     sync_payload = json.loads(str(plan["cache_sync_json"]))
     semantic_result = next(
-        result
-        for result in sync_payload["databases"]
-        if result["database"] == "semantic"
+        result for result in sync_payload["databases"] if result["database"] == "semantic"
     )
     assert tuple(plan)[:3] == ("applied", "synced", None)
     assert semantic_result == {
@@ -3843,9 +3760,7 @@ def test_cache_sync_accepts_valid_semantic_state_without_indexed_item(
     assert semantic_result.status == "synced"
     assert semantic_result.updated_rows == 0
     with sqlite3.connect(semantic_path) as semantic:
-        assert (
-            semantic.execute("SELECT COUNT(*) FROM semantic_items").fetchone()[0] == 0
-        )
+        assert semantic.execute("SELECT COUNT(*) FROM semantic_items").fetchone()[0] == 0
 
 
 def test_cache_sync_rejects_incompatible_semantic_schema_transactionally(
@@ -3895,9 +3810,7 @@ def test_cache_sync_rejects_incompatible_semantic_schema_transactionally(
         file_id=str(snapshot.file_id),
     )
 
-    source_result = next(
-        database for database in result.databases if database.database == "docx"
-    )
+    source_result = next(database for database in result.databases if database.database == "docx")
     semantic_result = next(
         database for database in result.databases if database.database == "semantic"
     )
@@ -3906,13 +3819,14 @@ def test_cache_sync_rejects_incompatible_semantic_schema_transactionally(
     assert semantic_result.status == "error"
     assert "schema version is not compatible" in str(semantic_result.detail)
     with sqlite3.connect(state_directory / "docx.sqlite3") as docx:
-        assert docx.execute(
-            "SELECT path FROM documents WHERE file_key=?", (file_key,)
-        ).fetchone()[0] == str(destination)
+        assert docx.execute("SELECT path FROM documents WHERE file_key=?", (file_key,)).fetchone()[
+            0
+        ] == str(destination)
     with sqlite3.connect(semantic_path) as semantic:
-        assert semantic.execute(
-            "SELECT path,updated_ns FROM semantic_items"
-        ).fetchone() == (str(source), 10)
+        assert semantic.execute("SELECT path,updated_ns FROM semantic_items").fetchone() == (
+            str(source),
+            10,
+        )
 
 
 def test_apply_without_plans_does_not_create_default_directory(
@@ -3934,6 +3848,7 @@ def test_apply_without_plans_does_not_create_default_directory(
     assert not destination_root.exists()
 
 
+@WINDOWS_MUTATION_ONLY
 def test_apply_disambiguates_destination_that_appears_after_plan(
     tmp_path: Path,
 ) -> None:
@@ -3997,11 +3912,12 @@ def test_plan_rejects_destination_intersecting_framework_state(tmp_path: Path) -
     catalog_path = state_directory / "document_catalog.sqlite3"
     extended_catalog = Path("\\\\?\\" + os.path.abspath(catalog_path))
     roots = (state_directory / "organized", tmp_path)
-    cases = (
-        *((catalog_path, root) for root in roots),
-        *((catalog_path, Path("\\\\?\\" + os.path.abspath(root))) for root in roots),
-        (extended_catalog, state_directory / "organized"),
-    )
+    cases = tuple((catalog_path, root) for root in roots)
+    if os.name == "nt":
+        cases += (
+            *((catalog_path, Path("\\\\?\\" + os.path.abspath(root))) for root in roots),
+            (extended_catalog, state_directory / "organized"),
+        )
 
     for requested_catalog, organization_root in cases:
         with pytest.raises(ValueError, match="framework state directory"):
@@ -4081,7 +3997,8 @@ def test_organization_cli_allows_default_root_and_keeps_apply_separate() -> None
     default_plan = parser.parse_args(["--organization-plan"])
     validate_arguments(default_plan)
     assert default_plan.organization_root is None
-    with pytest.raises(SystemExit, match="cannot be combined with --apply"):
+    apply_error = "cannot be combined with --apply" if os.name == "nt" else LINUX_MUTATION_REASON
+    with pytest.raises(SystemExit, match=apply_error):
         validate_arguments(
             parser.parse_args(
                 [
@@ -4116,14 +4033,19 @@ def test_organization_cli_allows_default_root_and_keeps_apply_separate() -> None
             "0.8",
         ]
     )
-    validate_arguments(integrated)
-    assert integrated.apply
-    assert integrated.organization_root == Path(r"C:\Organizados")
+    if os.name == "nt":
+        validate_arguments(integrated)
+        assert integrated.apply
+        assert integrated.organization_root == Path(r"C:\Organizados")
+    else:
+        with pytest.raises(SystemExit, match=LINUX_MUTATION_REASON):
+            validate_arguments(integrated)
     with pytest.raises(SystemExit, match="requires an organization command"):
-        validate_arguments(
-            parser.parse_args(["--all", "--organization-root", r"C:\Organizados"])
-        )
-    with pytest.raises(SystemExit, match="requires an organization command"):
+        validate_arguments(parser.parse_args(["--all", "--organization-root", r"C:\Organizados"]))
+    route_apply_error = (
+        "requires an organization command" if os.name == "nt" else LINUX_MUTATION_REASON
+    )
+    with pytest.raises(SystemExit, match=route_apply_error):
         validate_arguments(
             parser.parse_args(
                 [

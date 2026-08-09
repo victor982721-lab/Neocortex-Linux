@@ -4,7 +4,6 @@
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
-
 # region [01] Dependencias del módulo
 from __future__ import annotations
 
@@ -14,6 +13,8 @@ import stat as stat_module
 import time
 from dataclasses import dataclass
 from pathlib import Path
+
+from neocortex.platform_policy import stat_birthtime_ns
 
 from _02_Deduplicacion import FileSnapshot, snapshot_path
 from _03_Progreso import (
@@ -234,9 +235,7 @@ def _prepare_selected_organization_plans(
     mutation_guard: CorpusMutationGuard,
 ) -> tuple[dict[str, str], os.stat_result | None]:
     protected_denials = _protected_organization_plan_denials(rows, mutation_guard)
-    admitted_rows = [
-        row for row in rows if str(row["plan_id"]) not in protected_denials
-    ]
+    admitted_rows = [row for row in rows if str(row["plan_id"]) not in protected_denials]
     if not admitted_rows:
         return protected_denials, None
     _preflight_selected_organization_boundaries(
@@ -316,10 +315,7 @@ def _report_organization_apply_progress(
 ) -> None:
     if on_progress is None:
         return
-    if (
-        selected_index % ORGANIZATION_PROGRESS_INTERVAL != 0
-        and selected_index != selected_total
-    ):
+    if selected_index % ORGANIZATION_PROGRESS_INTERVAL != 0 and selected_index != selected_total:
         return
     on_progress(counters.progress(selected_index))
 
@@ -360,11 +356,7 @@ def _protected_organization_plan_denials(
     for row in rows:
         source = Path(str(row["source_path"]))
         destination_value = row["destination_path"]
-        paths = (
-            (source,)
-            if destination_value is None
-            else (source, Path(str(destination_value)))
-        )
+        paths = (source,) if destination_value is None else (source, Path(str(destination_value)))
         ordered_paths = tuple(
             sorted(
                 paths,
@@ -861,9 +853,7 @@ def _create_validated_apply_root(
         root.mkdir()
     except FileExistsError:
         if not root.is_dir() or root.is_symlink() or _is_junction(root):
-            raise ValueError(
-                "organization root appeared as an unsafe filesystem object"
-            ) from None
+            raise ValueError("organization root appeared as an unsafe filesystem object") from None
     _require_directory_identity(
         parent,
         parent_stat,
@@ -987,11 +977,7 @@ def _recover_organization_destination(
         return None
     if source_present:
         return "blocked", "both source and destination exist during recovery"
-    if (
-        destination.is_symlink()
-        or _is_junction(destination)
-        or not destination.is_file()
-    ):
+    if destination.is_symlink() or _is_junction(destination) or not destination.is_file():
         return "blocked", "recovery destination is not a regular file"
     try:
         recovered = snapshot_path(destination)
@@ -1115,9 +1101,7 @@ def _disambiguate_apply_destination(
     if destination_value is None or not os.path.lexists(source):
         return row
     destination = Path(str(destination_value))
-    if not os.path.lexists(destination) and not _catalog_destination_conflict(
-        connection, row
-    ):
+    if not os.path.lexists(destination) and not _catalog_destination_conflict(connection, row):
         return row
     resolved, disambiguated = _resolve_plan_destination(
         connection,
@@ -1225,12 +1209,12 @@ def _require_directory_identity(
         current = os.stat(path, follow_symlinks=False)
     except OSError as exc:
         raise ValueError(f"{role} is unavailable: {exc}") from exc
-    expected_birthtime = getattr(expected, "st_birthtime_ns", None)
-    current_birthtime = getattr(current, "st_birthtime_ns", None)
+    expected_birthtime = stat_birthtime_ns(expected)
+    current_birthtime = stat_birthtime_ns(current)
     identity_changed = (
         int(current.st_dev) != int(expected.st_dev)
         or int(current.st_ino) != int(expected.st_ino)
-        or (expected_birthtime is not None and current_birthtime != expected_birthtime)
+        or current_birthtime != expected_birthtime
     )
     if identity_changed:
         raise ValueError(f"{role} identity changed during apply")
@@ -1344,9 +1328,7 @@ def _create_destination_parent(
         except RuntimeError as exc:
             raise ValueError(str(exc)) from exc
         if entry is None or not stat_module.S_ISDIR(entry.st_mode):
-            raise ValueError(
-                f"organization destination component is not a directory: {current}"
-            )
+            raise ValueError(f"organization destination component is not a directory: {current}")
 
 
 def _require_organization_tree_allowed(
@@ -1365,4 +1347,6 @@ def _require_organization_tree_allowed(
 def _is_junction(path: Path) -> bool:
     checker = getattr(path, "is_junction", None)
     return bool(checker is not None and checker())
+
+
 # endregion [02]

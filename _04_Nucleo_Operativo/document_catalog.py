@@ -12,6 +12,8 @@ import zlib
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
+
+from neocortex.platform_policy import stat_birthtime_ns
 from typing import TYPE_CHECKING, Iterator, Literal
 
 from _03_Progreso import (
@@ -275,12 +277,8 @@ def _migrate_identity_text_to_decimal(connection: sqlite3.Connection) -> None:
         updates: list[tuple[str, str, str, str]] = []
         for row in rows:
             volume_id, file_id = _split_file_key(str(row["file_key"]))
-            if volume_id and (
-                volume_id != str(row["volume_id"]) or file_id != str(row["file_id"])
-            ):
-                updates.append(
-                    (volume_id, file_id, str(row["source_kind"]), str(row["file_key"]))
-                )
+            if volume_id and (volume_id != str(row["volume_id"]) or file_id != str(row["file_id"])):
+                updates.append((volume_id, file_id, str(row["source_kind"]), str(row["file_key"])))
         connection.executemany(
             """UPDATE documents SET volume_id=?,file_id=?
             WHERE source_kind=? AND file_key=?""",
@@ -300,9 +298,7 @@ def _migrate_identity_text_to_decimal(connection: sqlite3.Connection) -> None:
         plan_updates: list[tuple[str, str, int]] = []
         for row in rows:
             volume_id, file_id = _split_file_key(str(row["file_key"]))
-            if volume_id and (
-                volume_id != str(row["volume_id"]) or file_id != str(row["file_id"])
-            ):
+            if volume_id and (volume_id != str(row["volume_id"]) or file_id != str(row["file_id"])):
                 plan_updates.append((volume_id, file_id, int(row["plan_id"])))
         connection.executemany(
             "UPDATE organization_plans SET volume_id=?,file_id=? WHERE plan_id=?",
@@ -382,9 +378,7 @@ def update_document_catalog_source(
                     if cancellation is not None:
                         cancellation.checkpoint()
                     candidates += 1
-                    if verify_source_paths and not _source_snapshot_is_current(
-                        document
-                    ):
+                    if verify_source_paths and not _source_snapshot_is_current(document):
                         source_stale += 1
                         continue
                     if _catalog_cache_hit(catalog, document, taxonomy):
@@ -428,10 +422,7 @@ def update_document_catalog_source(
                                 exc,
                             )
                             errors += 1
-                    if (
-                        candidates % CATALOG_PROGRESS_INTERVAL == 0
-                        or candidates == candidate_total
-                    ):
+                    if candidates % CATALOG_PROGRESS_INTERVAL == 0 or candidates == candidate_total:
                         _emit_catalog_progress(
                             progress,
                             operation=progress_operation or source_kind,
@@ -745,9 +736,7 @@ def _publish_catalog_build(
             WHERE catalog_run_id=? AND status='running'""",
             (
                 now,
-                json.dumps(
-                    asdict(published_summary), sort_keys=True, separators=(",", ":")
-                ),
+                json.dumps(asdict(published_summary), sort_keys=True, separators=(",", ":")),
                 build.catalog_run_id,
             ),
         )
@@ -872,9 +861,7 @@ def _iter_source_documents(
                 title=str(metadata.get("title") or ""),
                 author=str(metadata.get("author") or ""),
                 metadata=_metadata_text(metadata),
-                page_count=(
-                    None if row["page_count"] is None else int(row["page_count"])
-                ),
+                page_count=(None if row["page_count"] is None else int(row["page_count"])),
             )
         return
     if source_kind == "docx":
@@ -949,9 +936,7 @@ def _iter_source_documents(
             birthtime_ns=int(row["birthtime_ns"]),
             source_status=str(row["status"]),
             processing_signature=str(row["processing_signature"]),
-            text_fingerprint=(
-                None if row["text_xxh3_128"] is None else str(row["text_xxh3_128"])
-            ),
+            text_fingerprint=(None if row["text_xxh3_128"] is None else str(row["text_xxh3_128"])),
             title=str(row["title"] or ""),
             author=str(row["author"] or ""),
             metadata=_metadata_text(metadata),
@@ -1008,9 +993,7 @@ def _json_mapping(value: object) -> dict[str, object]:
 
 def _metadata_text(metadata: dict[str, object]) -> str:
     return " ".join(
-        f"{key}={value}"
-        for key, value in sorted(metadata.items())
-        if value not in (None, "")
+        f"{key}={value}" for key, value in sorted(metadata.items()) if value not in (None, "")
     )[:20_000]
 
 
@@ -1023,7 +1006,7 @@ def _source_snapshot_is_current(document: SourceDocument) -> bool:
         stat = os.stat(document.path, follow_symlinks=False)
     except OSError:
         return False
-    birthtime_ns = getattr(stat, "st_birthtime_ns", stat.st_ctime_ns)
+    birthtime_ns = stat_birthtime_ns(stat)
     return (
         str(stat.st_dev) == document.volume_id
         and str(stat.st_ino) == document.file_id
@@ -1415,9 +1398,7 @@ def list_catalog_documents(
         raise ValueError("limit must be between 1 and 10000")
     connection = connect_document_catalog(catalog_path, readonly=True)
     try:
-        columns = {
-            str(row[1]) for row in connection.execute("PRAGMA table_info(documents)")
-        }
+        columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(documents)")}
         predicates = _catalog_query_predicates(
             columns,
             primary_kind=primary_kind,

@@ -6,8 +6,10 @@ import ctypes
 import os
 import threading
 import time
+from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import dataclass
+from pathlib import Path
 
 from .cancellation import CancellationToken
 
@@ -21,6 +23,62 @@ class MemorySnapshot:
     available_commit: int | None
     total_physical: int | None = None
     total_commit: int | None = None
+
+
+_PROC_MEMINFO = Path("/proc/meminfo")
+
+
+def _linux_meminfo_physical_bytes(text: str) -> tuple[int, int] | None:
+    """Return total and reclaimable physical bytes from Linux meminfo text."""
+
+    values: dict[str, int] = {}
+    for line in text.splitlines():
+        name, separator, raw_value = line.partition(":")
+        if not separator or name not in {"MemTotal", "MemAvailable"}:
+            continue
+        parts = raw_value.split()
+        if len(parts) != 2 or parts[1] != "kB":
+            return None
+        try:
+            value_kib = int(parts[0])
+        except ValueError:
+            return None
+        if value_kib < 0:
+            return None
+        values[name] = value_kib * 1024
+    total = values.get("MemTotal")
+    available = values.get("MemAvailable")
+    if total is None or available is None or total <= 0 or available > total:
+        return None
+    return total, available
+
+
+def posix_physical_memory_snapshot(
+    meminfo_path: Path = _PROC_MEMINFO,
+    *,
+    sysconf: Callable[[str], int] | None = None,
+) -> tuple[int | None, int | None]:
+    """Return total and available POSIX memory, preferring Linux MemAvailable."""
+
+    try:
+        parsed = _linux_meminfo_physical_bytes(meminfo_path.read_text(encoding="ascii"))
+    except (OSError, UnicodeError):
+        parsed = None
+    if parsed is not None:
+        return parsed
+
+    probe = getattr(os, "sysconf", None) if sysconf is None else sysconf
+    if probe is None:
+        return None, None
+    try:
+        page_size = int(probe("SC_PAGE_SIZE"))
+        total_pages = int(probe("SC_PHYS_PAGES"))
+        available_pages = int(probe("SC_AVPHYS_PAGES"))
+    except (AttributeError, OSError, TypeError, ValueError):
+        return None, None
+    if page_size <= 0 or total_pages <= 0 or available_pages < 0:
+        return None, None
+    return page_size * total_pages, page_size * available_pages
 
 
 def memory_snapshot() -> MemorySnapshot:
@@ -52,22 +110,11 @@ def memory_snapshot() -> MemorySnapshot:
             )
         return MemorySnapshot(None, None)
 
-    sysconf = getattr(os, "sysconf", None)
-    if sysconf is None:
-        return MemorySnapshot(None, None)
-    try:
-        page_size = int(sysconf("SC_PAGE_SIZE"))
-        available_pages = int(sysconf("SC_AVPHYS_PAGES"))
-    except (AttributeError, OSError, TypeError, ValueError):
-        return MemorySnapshot(None, None)
-    try:
-        total_pages = int(sysconf("SC_PHYS_PAGES"))
-    except (AttributeError, OSError, TypeError, ValueError):
-        total_pages = 0
+    total_physical, available_physical = posix_physical_memory_snapshot()
     return MemorySnapshot(
-        page_size * available_pages,
+        available_physical,
         None,
-        page_size * total_pages if total_pages > 0 else None,
+        total_physical,
         None,
     )
 
@@ -161,9 +208,7 @@ class WeightedMemoryGate:
                 return
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                raise MemoryHeadroomTimeout(
-                    "timeout esperando turno de admision de memoria"
-                )
+                raise MemoryHeadroomTimeout("timeout esperando turno de admision de memoria")
             if self.cancellation.wait(min(remaining, 0.25)):
                 self.cancellation.checkpoint()
 
@@ -184,9 +229,7 @@ class WeightedMemoryGate:
             self._acquire_headroom_admission(deadline)
             try:
                 with self._condition:
-                    while (
-                        self._reserved + reservation > self.limits.memory_budget_bytes
-                    ):
+                    while self._reserved + reservation > self.limits.memory_budget_bytes:
                         self.cancellation.checkpoint()
                         if not waited:
                             self.wait_count += 1
@@ -200,9 +243,7 @@ class WeightedMemoryGate:
                     self.cancellation.checkpoint()
                     self._reserved += reservation
                     reserved = True
-                    self.peak_reserved_bytes = max(
-                        self.peak_reserved_bytes, self._reserved
-                    )
+                    self.peak_reserved_bytes = max(self.peak_reserved_bytes, self._reserved)
                 self._wait_for_headroom(deadline)
             finally:
                 self._headroom_admission_lock.release()

@@ -9,6 +9,8 @@ import math
 import threading
 from dataclasses import dataclass
 from pathlib import Path
+
+from neocortex.platform_policy import stat_birthtime_ns
 from typing import Any, Iterable, Iterator, Mapping, Protocol, Sequence
 
 import xxhash
@@ -50,9 +52,7 @@ def _validated_backend_results(
     results: Sequence[BackendEmbedding],
 ) -> tuple[BackendEmbedding, ...]:
     if len(results) != len(requests):
-        raise RuntimeError(
-            f"backend returned {len(results)} results for {len(requests)} requests"
-        )
+        raise RuntimeError(f"backend returned {len(results)} results for {len(requests)} requests")
     validated: list[BackendEmbedding] = []
     for request, result in zip(requests, results, strict=True):
         if request.request_id != result.request_id:
@@ -91,8 +91,7 @@ def iter_embedding_batches(
         for request in batch:
             if request.role not in backend.model.supported_roles:
                 raise ValueError(
-                    f"role {request.role.value!r} is unsupported by "
-                    f"{backend.model.model_signature}"
+                    f"role {request.role.value!r} is unsupported by {backend.model.model_signature}"
                 )
         yield from _validated_backend_results(
             backend.model,
@@ -147,7 +146,7 @@ class TextTokenLimitExceededError(ValueError):
 
 def _path_revision(path: Path) -> tuple[int, int, int]:
     stat = path.stat()
-    birthtime_ns = int(getattr(stat, "st_birthtime_ns", stat.st_ctime_ns))
+    birthtime_ns = stat_birthtime_ns(stat)
     return int(stat.st_size), int(stat.st_mtime_ns), birthtime_ns
 
 
@@ -175,9 +174,7 @@ def _verify_declared_revision(
         try:
             expected = int(candidate)
         except ValueError as exc:
-            raise ValueError(
-                f"source revision field {name!r} must be an integer"
-            ) from exc
+            raise ValueError(f"source revision field {name!r} must be an integer") from exc
         if expected != value:
             raise SourceRevisionMismatchError(
                 f"declared {name} no longer matches image source: {path}"
@@ -211,9 +208,7 @@ def _verify_image_source(
             or len(expected_digest) != 32
             or any(character not in "0123456789abcdef" for character in expected_digest)
         ):
-            raise ValueError(
-                "image requests require source_revision.raw_content_xxh3_128"
-            )
+            raise ValueError("image requests require source_revision.raw_content_xxh3_128")
         actual_digest = _raw_file_xxh3_128(path)
         after = _path_revision(path)
     except (SourceRevisionMismatchError, ValueError):
@@ -253,9 +248,7 @@ class FastEmbedBackend:
         parallel: int | None = None,
     ) -> None:
         if importlib.util.find_spec("fastembed") is None:
-            raise RuntimeError(
-                "FastEmbedBackend requires the optional fastembed package"
-            )
+            raise RuntimeError("FastEmbedBackend requires the optional fastembed package")
         if threads is not None and threads < 1:
             raise ValueError("threads must be positive")
         if parallel is not None and parallel < 1:
@@ -271,9 +264,9 @@ class FastEmbedBackend:
             raise ValueError("batch_size must be between 1 and 4096")
         runtime = importlib.import_module("fastembed")
         embedding_type = (
-            getattr(runtime, "TextEmbedding")
+            runtime.TextEmbedding
             if model.modality is EmbeddingModality.TEXT
-            else getattr(runtime, "ImageEmbedding")
+            else runtime.ImageEmbedding
         )
         supported = {
             str(candidate["model"]): int(candidate["dim"])
@@ -282,8 +275,7 @@ class FastEmbedBackend:
         actual_dimensions = supported.get(model.model_id)
         if actual_dimensions is None:
             raise ValueError(
-                f"FastEmbed does not list {model.model_id!r} for "
-                f"{model.modality.value} embeddings"
+                f"FastEmbed does not list {model.model_id!r} for {model.modality.value} embeddings"
             )
         if actual_dimensions != model.dimensions:
             raise ValueError(
@@ -318,9 +310,7 @@ class FastEmbedBackend:
         requests: Sequence[EmbeddingRequest],
     ) -> list[tuple[int, BackendEmbedding]]:
         indexed = [
-            (index, request)
-            for index, request in enumerate(requests)
-            if request.role is role
+            (index, request) for index, request in enumerate(requests) if request.role is role
         ]
         if not indexed:
             return []
@@ -343,13 +333,9 @@ class FastEmbedBackend:
                 )
             kwargs = {"batch_size": self._batch_size, "parallel": self._parallel}
             if role is EmbeddingRole.QUERY:
-                vectors = tuple(
-                    self._runtime_model.query_embed(selected_texts, **kwargs)
-                )
+                vectors = tuple(self._runtime_model.query_embed(selected_texts, **kwargs))
             else:
-                vectors = tuple(
-                    self._runtime_model.passage_embed(selected_texts, **kwargs)
-                )
+                vectors = tuple(self._runtime_model.passage_embed(selected_texts, **kwargs))
         output: list[tuple[int, BackendEmbedding]] = []
         for (index, request), vector, token_count in zip(
             indexed,
@@ -406,9 +392,7 @@ class FastEmbedBackend:
         try:
             revision = reference.read_text(encoding="ascii").strip()
         except (OSError, UnicodeError) as exc:
-            raise RuntimeError(
-                "FastEmbed tokenizer cache revision is unavailable"
-            ) from exc
+            raise RuntimeError("FastEmbed tokenizer cache revision is unavailable") from exc
         if not 40 <= len(revision) <= 64 or any(
             character not in "0123456789abcdef" for character in revision
         ):
@@ -437,16 +421,12 @@ class FastEmbedBackend:
             if not isinstance(truncation, dict) or not isinstance(
                 truncation.get("max_length"), int
             ):
-                raise RuntimeError(
-                    "FastEmbed tokenizer has no explicit truncation contract"
-                )
+                raise RuntimeError("FastEmbed tokenizer has no explicit truncation contract")
             token_limit = int(truncation["max_length"])
             tokenizer.no_truncation()
             try:
                 encodings = tokenizer.encode_batch(list(texts))
-                counts = tuple(
-                    int(sum(encoding.attention_mask)) for encoding in encodings
-                )
+                counts = tuple(int(sum(encoding.attention_mask)) for encoding in encodings)
             finally:
                 tokenizer.enable_truncation(**truncation)
         return counts, token_limit
@@ -496,8 +476,7 @@ class FastEmbedBackend:
             after = _verify_image_source(request, verify_content_digest=False)
             if after != before:
                 raise SourceRevisionMismatchError(
-                    f"image source revision changed during embedding: "
-                    f"{request.image_path}"
+                    f"image source revision changed during embedding: {request.image_path}"
                 )
             provenance = dict(result.provenance)
             provenance["source_revision_verified_before_after"] = True
@@ -564,9 +543,7 @@ def merge_exact_search_pages(
             ):
                 best[hit.item_id] = hit
     return tuple(
-        sorted(best.values(), key=lambda hit: (-hit.score, hit.item_id, hit.entity_id))[
-            :limit
-        ]
+        sorted(best.values(), key=lambda hit: (-hit.score, hit.item_id, hit.entity_id))[:limit]
     )
 
 

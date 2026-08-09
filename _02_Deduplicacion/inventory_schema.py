@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sqlite3
 from functools import lru_cache
 from pathlib import Path
@@ -22,6 +23,7 @@ from .errors import InventoryError
 
 SCHEMA_VERSION = 9
 _SCHEMA_LABEL = "dedup inventory"
+_PATH_COLLATION = "NOCASE" if os.name == "nt" else "BINARY"
 _METADATA_DDL = """
 CREATE TABLE metadata (
     key TEXT PRIMARY KEY,
@@ -40,9 +42,9 @@ CREATE TABLE inventory_checkpoints (
     FOREIGN KEY(scan_id) REFERENCES scans(scan_id) ON DELETE RESTRICT
 ) WITHOUT ROWID
 """
-_CURRENT_CHECKPOINT_DDL = """
+_CURRENT_CHECKPOINT_DDL = f"""
 CREATE TABLE inventory_checkpoints (
-    root TEXT PRIMARY KEY COLLATE NOCASE,
+    root TEXT PRIMARY KEY COLLATE {_PATH_COLLATION},
     scan_id INTEGER NOT NULL,
     volume TEXT,
     journal_id TEXT,
@@ -80,10 +82,10 @@ _CURRENT_DDL = (
     )
     """,
     _CURRENT_CHECKPOINT_DDL,
-    """
+    f"""
     CREATE TABLE files (
         scan_id INTEGER NOT NULL,
-        path TEXT NOT NULL COLLATE NOCASE,
+        path TEXT NOT NULL COLLATE {_PATH_COLLATION},
         volume_id BLOB NOT NULL,
         file_id BLOB NOT NULL,
         size INTEGER NOT NULL,
@@ -95,7 +97,7 @@ _CURRENT_DDL = (
     """,
     "CREATE INDEX files_scan_size_idx ON files(scan_id, size)",
     "CREATE INDEX files_identity_idx ON files(volume_id, file_id)",
-    "CREATE INDEX files_path_scan_idx ON files(path COLLATE NOCASE, scan_id)",
+    f"CREATE INDEX files_path_scan_idx ON files(path COLLATE {_PATH_COLLATION}, scan_id)",
     """
     CREATE TABLE fingerprints (
         volume_id BLOB NOT NULL,
@@ -146,9 +148,9 @@ _CURRENT_DDL = (
         PRIMARY KEY(group_id, member_order)
     ) WITHOUT ROWID
     """,
-    """
+    f"""
     CREATE INDEX planned_members_path_idx
-    ON planned_duplicate_members(path COLLATE NOCASE, role)
+    ON planned_duplicate_members(path COLLATE {_PATH_COLLATION}, role)
     """,
 )
 
@@ -156,6 +158,13 @@ _CURRENT_DDL = (
 # are unchanged cache/plan objects shared with v6 and v7. Explicit legacy
 # builders let migrations abstain on unknown source structures.
 _CURRENT_SHARED_DDL_START = 7
+# Schemas v1-v8 were Windows-only and therefore always used NOCASE for the
+# persisted plan-path index.  Keep that historical contract independent from
+# the host performing a migration; fresh v9 Linux state uses BINARY instead.
+_LEGACY_SHARED_DDL = tuple(
+    statement.replace(f"COLLATE {_PATH_COLLATION}", "COLLATE NOCASE")
+    for statement in _CURRENT_DDL[_CURRENT_SHARED_DDL_START:]
+)
 _V8_GENERATIONAL_DDL = (
     _METADATA_DDL,
     _CURRENT_DDL[1],
@@ -388,17 +397,17 @@ def _build_current_schema(connection: sqlite3.Connection) -> None:
 
 def _build_v6_schema(connection: sqlite3.Connection) -> None:
     _execute_ddl(connection, _V6_GENERATIONAL_DDL)
-    _execute_ddl(connection, _CURRENT_DDL[_CURRENT_SHARED_DDL_START:])
+    _execute_ddl(connection, _LEGACY_SHARED_DDL)
 
 
 def _build_v7_schema(connection: sqlite3.Connection) -> None:
     _execute_ddl(connection, _V7_GENERATIONAL_DDL)
-    _execute_ddl(connection, _CURRENT_DDL[_CURRENT_SHARED_DDL_START:])
+    _execute_ddl(connection, _LEGACY_SHARED_DDL)
 
 
 def _build_v8_schema(connection: sqlite3.Connection) -> None:
     _execute_ddl(connection, _V8_GENERATIONAL_DDL)
-    _execute_ddl(connection, _CURRENT_DDL[_CURRENT_SHARED_DDL_START:])
+    _execute_ddl(connection, _LEGACY_SHARED_DDL)
 
 
 @lru_cache(maxsize=1)
@@ -562,9 +571,7 @@ def _migrate_six_to_seven(connection: sqlite3.Connection) -> None:
         connection.execute("SELECT COUNT(*) FROM inventory_checkpoints").fetchone()[0]
     )
     connection.execute("ALTER TABLE files RENAME TO files_v6")
-    connection.execute(
-        "ALTER TABLE inventory_checkpoints RENAME TO inventory_checkpoints_v6"
-    )
+    connection.execute("ALTER TABLE inventory_checkpoints RENAME TO inventory_checkpoints_v6")
     connection.execute(
         """ALTER TABLE scans ADD COLUMN status TEXT NOT NULL DEFAULT 'building'
         CHECK(status IN ('building','complete','partial'))"""
@@ -601,22 +608,13 @@ def _migrate_six_to_seven(connection: sqlite3.Connection) -> None:
         FROM inventory_checkpoints_v6 c
         JOIN scans s ON s.scan_id=c.scan_id"""
     )
-    if (
-        int(connection.execute("SELECT COUNT(*) FROM files").fetchone()[0])
-        != file_count
-    ):
+    if int(connection.execute("SELECT COUNT(*) FROM files").fetchone()[0]) != file_count:
         raise InventoryError("dedup inventory v7 file count changed during migration")
     if (
-        int(
-            connection.execute("SELECT COUNT(*) FROM inventory_checkpoints").fetchone()[
-                0
-            ]
-        )
+        int(connection.execute("SELECT COUNT(*) FROM inventory_checkpoints").fetchone()[0])
         != checkpoint_count
     ):
-        raise InventoryError(
-            "dedup inventory v7 checkpoint count changed during migration"
-        )
+        raise InventoryError("dedup inventory v7 checkpoint count changed during migration")
     connection.execute("DROP TABLE inventory_checkpoints_v6")
     connection.execute("DROP TABLE files_v6")
     for statement in _CURRENT_DDL[4:_CURRENT_SHARED_DDL_START]:
@@ -649,22 +647,13 @@ def _migrate_seven_to_eight(connection: sqlite3.Connection) -> None:
     )
     _invalidate_checkpoints(connection)
 
-    if (
-        int(connection.execute("SELECT COUNT(*) FROM scans").fetchone()[0])
-        != scan_count
-    ):
+    if int(connection.execute("SELECT COUNT(*) FROM scans").fetchone()[0]) != scan_count:
         raise InventoryError("dedup inventory v8 scan count changed during migration")
     if (
-        int(
-            connection.execute("SELECT COUNT(*) FROM inventory_checkpoints").fetchone()[
-                0
-            ]
-        )
+        int(connection.execute("SELECT COUNT(*) FROM inventory_checkpoints").fetchone()[0])
         != checkpoint_count
     ):
-        raise InventoryError(
-            "dedup inventory v8 checkpoint count changed during migration"
-        )
+        raise InventoryError("dedup inventory v8 checkpoint count changed during migration")
     migrated_file_count, migrated_total_bytes = connection.execute(
         "SELECT COUNT(*),COALESCE(SUM(size),0) FROM files"
     ).fetchone()
@@ -672,13 +661,9 @@ def _migrate_seven_to_eight(connection: sqlite3.Connection) -> None:
         int(file_count),
         int(total_bytes),
     ):
-        raise InventoryError(
-            "dedup inventory v8 file evidence changed during migration"
-        )
+        raise InventoryError("dedup inventory v8 file evidence changed during migration")
     if (
-        connection.execute(
-            "SELECT 1 FROM inventory_checkpoints WHERE valid<>0 LIMIT 1"
-        ).fetchone()
+        connection.execute("SELECT 1 FROM inventory_checkpoints WHERE valid<>0 LIMIT 1").fetchone()
         is not None
     ):
         raise InventoryError("dedup inventory v8 retained an unbound checkpoint")
@@ -698,9 +683,7 @@ def _migrate_eight_to_nine(connection: sqlite3.Connection) -> None:
     checkpoint_count = int(
         connection.execute("SELECT COUNT(*) FROM inventory_checkpoints").fetchone()[0]
     )
-    connection.execute(
-        "ALTER TABLE inventory_checkpoints RENAME TO inventory_checkpoints_v8"
-    )
+    connection.execute("ALTER TABLE inventory_checkpoints RENAME TO inventory_checkpoints_v8")
     connection.execute(_CURRENT_CHECKPOINT_DDL)
     connection.execute(
         """INSERT INTO inventory_checkpoints(
@@ -709,17 +692,14 @@ def _migrate_eight_to_nine(connection: sqlite3.Connection) -> None:
         FROM inventory_checkpoints_v8"""
     )
     if (
-        int(
-            connection.execute("SELECT COUNT(*) FROM inventory_checkpoints").fetchone()[
-                0
-            ]
-        )
+        int(connection.execute("SELECT COUNT(*) FROM inventory_checkpoints").fetchone()[0])
         != checkpoint_count
     ):
-        raise InventoryError(
-            "dedup inventory v9 publication count changed during migration"
-        )
+        raise InventoryError("dedup inventory v9 publication count changed during migration")
     connection.execute("DROP TABLE inventory_checkpoints_v8")
+    if _PATH_COLLATION != "NOCASE":
+        connection.execute("DROP INDEX planned_members_path_idx")
+        connection.execute(_CURRENT_DDL[-1])
     if connection.execute("PRAGMA foreign_key_check").fetchone() is not None:
         raise InventoryError("dedup inventory v9 foreign-key validation failed")
 

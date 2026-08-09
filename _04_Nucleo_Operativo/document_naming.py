@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Iterable
 
 
@@ -94,9 +94,7 @@ def suggest_document_stem(
     """Build one bounded human-readable stem without touching the source file."""
 
     identifiers = tuple(
-        token
-        for value in standard_identifiers
-        if (token := _clean_standard_identifier(value))
+        token for value in standard_identifiers if (token := _clean_standard_identifier(value))
     )
     specialized = _specialized_suggestion(
         path=path,
@@ -258,7 +256,7 @@ def _generic_suggestion(
     primary_kind: str,
     organization: str | None,
 ) -> NamingSuggestion:
-    original_stem = Path(path).stem
+    original_stem = _portable_path_stem(path)
     descriptive = _meaningful_title(title, original_stem)
     evidence: list[str] = []
     if descriptive:
@@ -395,14 +393,12 @@ def _normative_suggestion(
 
     primary = identifiers[0] if identifiers else _KIND_LABELS["normativa"]
     evidence = [
-        "classification:standard_identifier"
-        if identifiers
-        else "classification:document_kind"
+        "classification:standard_identifier" if identifiers else "classification:document_kind"
     ]
     canonical_title = _canonical_standard_title(primary)
     candidates = (
         (_clean_token(title), "metadata:title"),
-        (_meaningful_original_stem(Path(path).stem), "path:original_stem"),
+        (_meaningful_original_stem(_portable_path_stem(path)), "path:original_stem"),
         (_normative_leading_candidate(leading_text), "text:leading_heading"),
     )
     description = canonical_title
@@ -507,13 +503,13 @@ def _normative_description(
         "",
         candidate,
     )
-    candidate = candidate.lstrip(" .,_-—;:–")
+    candidate = candidate.lstrip(" .,_-—;:–")  # noqa: RUF001 - accepted typography
     candidate = re.split(r"\.\s+(?=[A-ZÁÉÍÓÚÑ])", candidate, maxsplit=1)[0]
     candidate = re.sub(r"\s+", " ", candidate).strip(" .,_-—;“”'\"")
     if not candidate or _NORMATIVE_BOILERPLATE.match(candidate):
         return None
     readable = sum(
-        character.isalnum() or character.isspace() or character in "-–—,().áéíóúÁÉÍÓÚñÑ"
+        character.isalnum() or character.isspace() or character in "-–—,().áéíóúÁÉÍÓÚñÑ"  # noqa: RUF001 - accepted typography
         for character in candidate
     ) / len(candidate)
     words = re.findall(r"[A-Za-zÁÉÍÓÚáéíóúÑñ]{3,}", candidate)
@@ -572,7 +568,7 @@ def _identifier_match_expression(identifier: str) -> str:
     if astm is not None:
         return (
             rf"(?:ASTM\s*)?{astm.group(1)}\s*{astm.group(2)}"
-            r"(?:\s*[-–:]\s*\d{2,4})?"
+            r"(?:\s*[-–:]\s*\d{2,4})?"  # noqa: RUF001 - accepted identifier punctuation
         )
     expression = _flexible_identifier_literal(identifier)
     if identifier.upper().startswith("CFE "):
@@ -591,9 +587,8 @@ def _identifier_base_match_expression(identifier: str) -> str | None:
     if ieee is not None:
         dated = re.fullmatch(r"(.+?)([-:]\d{4})", ieee.group(1))
         if dated is not None:
-            return (
-                r"(?:ANSI\s*/\s*)?IEEE(?:\s+STD\.?)?\s+"
-                + _flexible_identifier_literal(dated.group(1))
+            return r"(?:ANSI\s*/\s*)?IEEE(?:\s+STD\.?)?\s+" + _flexible_identifier_literal(
+                dated.group(1)
             )
     dated = re.fullmatch(r"(.+?)[-:]((?:19|20)\d{2})", identifier)
     return None if dated is None else _flexible_identifier_literal(dated.group(1))
@@ -610,7 +605,7 @@ def _flexible_identifier_literal(value: str) -> str:
 
 def _audio_transcript_suggestion(path: str) -> NamingSuggestion:
     managed = "consulta_tecnica_organizada" in path.replace(" ", "_").casefold()
-    original = None if managed else _meaningful_original_stem(Path(path).stem)
+    original = None if managed else _meaningful_original_stem(_portable_path_stem(path))
     if original is not None and len(original.split()) <= 12:
         return NamingSuggestion(
             _join_stem((_KIND_LABELS["audio_transcrito"], original)),
@@ -620,6 +615,14 @@ def _audio_transcript_suggestion(path: str) -> NamingSuggestion:
         _KIND_LABELS["audio_transcrito"],
         ("classification:document_kind",),
     )
+
+
+def _portable_path_stem(path: str) -> str:
+    """Read persisted Windows paths without changing native POSIX filenames."""
+
+    if re.match(r"^(?:[A-Za-z]:[\\/]|\\\\)", path):
+        return PureWindowsPath(path).stem
+    return Path(path).stem
 
 
 def _measurement_record_suggestion(
@@ -813,9 +816,7 @@ def _calibration_suggestion(
     *,
     organization: str | None,
 ) -> NamingSuggestion | None:
-    description = _field_value(
-        text, ("DESCRIPCIÓN", "DESCRIPCION"), _CALIBRATION_TERMINATORS
-    )
+    description = _field_value(text, ("DESCRIPCIÓN", "DESCRIPCION"), _CALIBRATION_TERMINATORS)
     if description is None:
         description = _field_value(text, ("DESCRIPTION",), _CALIBRATION_TERMINATORS)
     description = _canonical_instrument_description(description)
@@ -851,9 +852,7 @@ def _calibration_suggestion(
         ),
     )
     extracted = tuple(
-        value
-        for value in (description, brand, model, serial, report_id, calibration_date)
-        if value
+        value for value in (description, brand, model, serial, report_id, calibration_date) if value
     )
     if not extracted:
         return None

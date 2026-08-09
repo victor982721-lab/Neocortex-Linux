@@ -13,6 +13,8 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+from neocortex.platform_policy import stat_birthtime_ns
+
 from _02_Deduplicacion import (
     DedupIndex,
     DedupPlan,
@@ -652,8 +654,8 @@ class FrameworkActions:
         )
         if any(getattr(original, name) != getattr(current, name) for name in identity):
             return False
-        original_birthtime = getattr(original, "st_birthtime_ns", original.st_ctime_ns)
-        current_birthtime = getattr(current, "st_birthtime_ns", current.st_ctime_ns)
+        original_birthtime = stat_birthtime_ns(original)
+        current_birthtime = stat_birthtime_ns(current)
         return bool(original_birthtime == current_birthtime)
 
     def _trash_empty_files(self, plan: DedupPlan, summary: ActionSummary) -> ActionSummary:
@@ -1189,9 +1191,7 @@ class FrameworkActions:
         self._revalidate_rename_boundary(planned, source, target)
         frontier_snapshot = snapshot_path(source)
         if not _same_snapshot(planned, frontier_snapshot):
-            raise RuntimeError(
-                "rename source changed immediately before mutation frontier"
-            )
+            raise RuntimeError("rename source changed immediately before mutation frontier")
         return frontier_snapshot
 
     def _mark_rename_frontier(

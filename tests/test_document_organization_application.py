@@ -38,6 +38,11 @@ from tests.internal_paths_test_support import disjoint_internal_paths_policy
 
 # region [02] Implementación
 
+pytestmark = pytest.mark.skipif(
+    os.name != "nt",
+    reason="identity-bound corpus mutation is available only on Windows",
+)
+
 
 def _normal_mutation_guard(root: Path) -> CorpusMutationGuard:
     return CorpusMutationGuard(
@@ -180,9 +185,7 @@ def test_apply_blocks_stale_protected_row_without_path_syscalls_and_continues(
                 if is_forbidden(value):
                     path_value = cast(str | os.PathLike[str], value)
                     forbidden_calls.append((name, os.fspath(path_value)))
-                    raise AssertionError(
-                        f"{name} must remain unreachable for protected plan paths"
-                    )
+                    raise AssertionError(f"{name} must remain unreachable for protected plan paths")
             return original(*args, **kwargs)
 
         return guarded
@@ -309,9 +312,7 @@ def test_apply_propagates_systemic_preadmission_failure(
     assert source.is_file()
     assert not destination_root.exists()
     with document_catalog_database(catalog_path, readonly=True) as catalog:
-        row = catalog.execute(
-            "SELECT status,completed_ns FROM organization_plans"
-        ).fetchone()
+        row = catalog.execute("SELECT status,completed_ns FROM organization_plans").fetchone()
         run = catalog.execute(
             """SELECT status,error_type,error_message FROM catalog_runs
             WHERE mode='apply' ORDER BY catalog_run_id DESC LIMIT 1"""
@@ -345,9 +346,7 @@ def test_apply_preserves_validation_and_publication_phase_order(
     original_initialize = organization_application.initialize_document_catalog
     original_begin = organization_application._begin_organization_run
     original_denials = organization_application._protected_organization_plan_denials
-    original_preflight = (
-        organization_application._preflight_selected_organization_boundaries
-    )
+    original_preflight = organization_application._preflight_selected_organization_boundaries
     original_prepare = organization_application._prepare_apply_root
     original_apply = organization_application._apply_selected_organization_plan
     original_complete = organization_application._complete_organization_run
@@ -526,4 +525,6 @@ def test_apply_progress_cancellation_keeps_row_durable_and_fails_run(
         "KeyboardInterrupt",
         "injected apply progress cancellation",
     )
+
+
 # endregion [02]

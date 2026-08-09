@@ -159,7 +159,7 @@ def prepared_status(tmp_path: Path) -> _PreparedStatus:
     state = tmp_path / "state"
     state.mkdir()
     inventory_policy = build_self_analysis_inventory_policy(root, state)
-    cursor = JournalCursor(root.drive, 7, 100)
+    cursor = JournalCursor(root.drive or root.anchor, 7, 100)
     with DedupIndex(state / "dedup.sqlite3") as inventory:
         scan = inventory.scan(root, exclusion_policy=inventory_policy)
         inventory.bind_inventory_checkpoint(
@@ -369,6 +369,62 @@ def test_journal_free_manifest_is_valid_but_never_claimed_current(
     }
 
 
+@pytest.mark.parametrize(
+    ("schema", "birthtime_ns", "valid"),
+    (
+        ("neocortex.self-analysis-manifest/v2", -2, False),
+        ("neocortex.self-analysis-manifest/v2", -1, True),
+        ("neocortex.self-analysis-manifest/v2", 0, True),
+        ("neocortex.self-analysis-manifest/v2", 987_654_321, True),
+        ("neocortex.self-analysis-manifest/v2", True, False),
+        ("neocortex.self-analysis-manifest/v1", -1, False),
+        ("neocortex.self-analysis-manifest/v1", 0, True),
+    ),
+)
+def test_manifest_root_birthtime_domain_is_schema_compatible(
+    tmp_path: Path,
+    schema: str,
+    birthtime_ns: object,
+    valid: bool,
+) -> None:
+    prepared_status = _prepare_unavailable_status(tmp_path)
+    database = prepared_status.state / "framework.sqlite3"
+    with quiescent_sqlite_database(database) as connection:
+        row = connection.execute(
+            """SELECT details_json FROM run_events
+            WHERE run_id=? AND phase=? AND message=?""",
+            (
+                prepared_status.run_id,
+                SELF_ANALYSIS_MANIFEST_PHASE,
+                SELF_ANALYSIS_MANIFEST_MESSAGE,
+            ),
+        ).fetchone()
+    assert row is not None and isinstance(row[0], str)
+    manifest = json.loads(row[0])
+    manifest["schema"] = schema
+    manifest["run"]["root_identity"]["birthtime_ns"] = birthtime_ns
+    if schema == "neocortex.self-analysis-manifest/v1":
+        manifest["inventory"]["journal"] = {
+            "volume": "C:",
+            "journal_id": "7",
+            "start_usn": 0,
+            "end_usn": 100,
+        }
+    raw = json.dumps(
+        manifest,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+    if valid:
+        decoded = status_module._decode_manifest(raw, len(raw.encode("utf-8")))
+        assert decoded["run"]["root_identity"]["birthtime_ns"] == birthtime_ns  # type: ignore[index]
+    else:
+        with pytest.raises(ValueError, match="manifest root birthtime"):
+            status_module._decode_manifest(raw, len(raw.encode("utf-8")))
+
+
 def test_code_status_json_exposes_valid_current_manifest_read_only(
     prepared_status: _PreparedStatus,
     monkeypatch: pytest.MonkeyPatch,
@@ -562,7 +618,11 @@ def test_historical_manifests_are_not_ambiguous(
 ) -> None:
     newest = _append_completed_run(
         prepared_status,
-        cursor=JournalCursor(prepared_status.root.drive, 7, 100),
+        cursor=JournalCursor(
+            prepared_status.root.drive or prepared_status.root.anchor,
+            7,
+            100,
+        ),
     )
 
     result = read_self_analysis_status(
@@ -583,7 +643,11 @@ def test_latest_code_link_never_falls_back_to_historical_manifest(
     prepared_status: _PreparedStatus,
     terminal_status: str | None,
 ) -> None:
-    cursor = JournalCursor(prepared_status.root.drive, 7, 100)
+    cursor = JournalCursor(
+        prepared_status.root.drive or prepared_status.root.anchor,
+        7,
+        100,
+    )
     policy = CorpusAccessPolicy.capture("analyze_only", prepared_status.root)
     inventory_policy = build_self_analysis_inventory_policy(
         prepared_status.root, prepared_status.state
@@ -628,7 +692,11 @@ def test_latest_code_link_never_falls_back_to_historical_manifest(
 def test_newer_framework_self_analysis_breaks_historical_current_fence(
     prepared_status: _PreparedStatus,
 ) -> None:
-    cursor = JournalCursor(prepared_status.root.drive, 7, 100)
+    cursor = JournalCursor(
+        prepared_status.root.drive or prepared_status.root.anchor,
+        7,
+        100,
+    )
     policy = CorpusAccessPolicy.capture("analyze_only", prepared_status.root)
     inventory_policy = build_self_analysis_inventory_policy(
         prepared_status.root, prepared_status.state
@@ -948,7 +1016,11 @@ def test_latest_normal_code_run_keeps_self_analysis_addition_null(
     prepared_status: _PreparedStatus,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    cursor = JournalCursor(prepared_status.root.drive, 7, 100)
+    cursor = JournalCursor(
+        prepared_status.root.drive or prepared_status.root.anchor,
+        7,
+        100,
+    )
     with FrameworkState(prepared_status.state / "framework.sqlite3") as framework:
         normal_run_id = framework.begin_initial_run(prepared_status.root, cursor)
     with CodeState(prepared_status.state / "code.sqlite3") as code:
@@ -1106,7 +1178,13 @@ def test_historical_manifest_decode_does_not_probe_filesystem(
     assert row is not None and isinstance(row[0], str)
     manifest = json.loads(row[0])
     manifest["schema"] = "neocortex.self-analysis-manifest/v1"
-    manifest["inventory"]["journal"].pop("status")
+    manifest["run"]["root_identity"]["birthtime_ns"] = 0
+    manifest["inventory"]["journal"] = {
+        "volume": "C:",
+        "journal_id": "7",
+        "start_usn": 0,
+        "end_usn": 100,
+    }
     raw = json.dumps(
         manifest,
         ensure_ascii=False,

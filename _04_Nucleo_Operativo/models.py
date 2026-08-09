@@ -13,6 +13,13 @@ from typing import TYPE_CHECKING, Literal
 
 from _01_Enumeracion import JournalCursor
 from _02_Deduplicacion import DedupPlan, ScanSummary
+from neocortex.platform_policy import (
+    default_corpus_root,
+    default_local_models_only,
+    default_whisper_compute_type,
+    default_whisper_device,
+    default_whisper_model_cache,
+)
 
 from .app_paths import default_code_project_roots, default_state_directory
 from .route_filters import CandidateSelection
@@ -37,7 +44,7 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True, slots=True)
 class FrameworkConfig:
-    root: Path = field(default_factory=Path.home)
+    root: Path = field(default_factory=default_corpus_root)
     state_directory: Path = field(default_factory=default_state_directory)
     self_analysis: bool = False
     analysis_profile: Literal["protected", "trusted-static", "trusted-deep"] = "protected"
@@ -105,8 +112,8 @@ class FrameworkConfig:
     office_min_free_commit_bytes: int = 1024 * 1024 * 1024
     office_memory_wait_timeout_seconds: float = 60.0
     audio_model_name: str = "small"
-    audio_device: Literal["auto", "cpu", "cuda"] = "auto"
-    audio_compute_type: str = "auto"
+    audio_device: Literal["auto", "cpu", "cuda"] = field(default_factory=default_whisper_device)
+    audio_compute_type: str = field(default_factory=default_whisper_compute_type)
     audio_language: str | None = None
     audio_beam_size: int = 5
     audio_vad_filter: bool = True
@@ -121,8 +128,8 @@ class FrameworkConfig:
     audio_worker_memory_bytes: int = 4 * 1024 * 1024 * 1024
     audio_retry_errors: bool = False
     audio_ffprobe_path: str | None = None
-    audio_model_cache_directory: Path | None = None
-    audio_local_models_only: bool = False
+    audio_model_cache_directory: Path | None = field(default_factory=default_whisper_model_cache)
+    audio_local_models_only: bool = field(default_factory=default_local_models_only)
     audio_memory_budget_bytes: int = 2 * 1024 * 1024 * 1024
     audio_min_free_memory_bytes: int = 2 * 1024 * 1024 * 1024
     audio_min_free_commit_bytes: int = 2 * 1024 * 1024 * 1024
