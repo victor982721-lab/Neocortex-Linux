@@ -5,9 +5,15 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "neocortex-framework"
 dynamic = ["version"]
-description = "Windows-first incremental personal content framework"
+description = "Cross-platform incremental personal content framework for Windows and Linux"
 readme = "README.md"
 requires-python = ">=3.13,<3.15"
+classifiers = [
+    "Operating System :: Microsoft :: Windows :: Windows 11",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+]
 dependencies = [
     "complexipy>=6.2,<7",
     "cosmic-ray>=8.4.6,<8.5",
@@ -111,7 +117,6 @@ exclude = "(?x)(^|/)(build|dist|node_modules|\\.venv|\\.mypy_cache|\\.pytest_cac
 [tool.pyright]
 # Preserve 3.13-compatible source while runtime validation covers CPython 3.14.
 pythonVersion = "3.13"
-pythonPlatform = "Windows"
 typeCheckingMode = "basic"
 reportUnusedFunction = "warning"
 reportUnusedClass = "warning"

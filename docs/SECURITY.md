@@ -36,8 +36,8 @@ PDF, OCR, Office, audio, código, metadatos o relaciones como autorización.
 |---|---|---|
 | Consulta | `--help`, `--version`, `--status`, `--action-recovery-status`, `--retention-status`, `--knowledge-status`, `--knowledge-search`, `--knowledge-context`, búsquedas, previews y doctors | No debe recorrer ni modificar el corpus; puede fallar si falta estado. SQLite read-only puede participar en WAL/SHM. |
 | Estado sin mutación del corpus | Corrida sin `--apply`, `--self-analysis`, `--semantic-index`, `--semantic-classify`, `--catalog-documents`, `--organization-plan`, `--review-record`, `--action-recovery-record` | Lee contenido o cachés y escribe bases, evidencia o planes. |
-| Descarga/carga externa | `--semantic-prepare-models`; primera transcripción sin `--audio-local-models-only` | Puede adquirir modelos y ampliar cachés. |
-| Mutación de archivos | Corrida integrada con `--apply`; `--organization-apply` | Puede renombrar extensiones o mover documentos sólo bajo el contrato NTFS ligado a handles; Papelera se abstiene en `0.6.0`. |
+| Descarga/carga externa | `models prepare`; `--semantic-prepare-models`; primera transcripción Windows sin `--audio-local-models-only` | Puede adquirir modelos y ampliar cachés. `models status` es local y read-only. |
+| Mutación de archivos | Corrida integrada con `--apply`; `--organization-apply` | En Windows puede renombrar extensiones o mover documentos sólo bajo el contrato NTFS ligado a handles; en Linux se rechaza antes de crear estado. |
 
 “No destructivo” significa que una corrida sin autorización no debe mutar los
 originales. No significa que sea de sólo lectura: el estado y las cachés sí se
@@ -62,6 +62,11 @@ situada dentro de un árbol propio se rechaza; los árboles propios descendiente
 de un corpus permitido se excluyen. El estado no puede ser igual ni ancestro
 del corpus. Dedup v9 conserva la firma cruda de exclusión y Framework v20 liga
 la firma efectiva que también incorpora las rutas internas.
+
+En Linux, la política protege además estado/configuración/datos XDG, releases,
+modelos, runtimes, el launcher `~/.local/share/Neocortex/bin/Neocortex`, el alias
+`~/.local/bin/Neocortex` y los archivos `.desktop`; el inventario nunca sigue
+symlinks.
 
 ### Autoanálisis de código
 
@@ -218,6 +223,12 @@ se abstiene ante UNC, filesystem distinto de NTFS, symlink/junction/reparse,
 directorio, hard links múltiples, movimiento cross-volume o garantía nativa no
 disponible. No cae a `Path.rename`, `MoveFileW` por ruta ni reemplazo.
 
+Linux no intenta ejecutar ese contrato NTFS: cualquier `--apply` o
+`--organization-apply` se rechaza antes de crear estado con código `2` y razón
+`linux_mutation_backend_unavailable`. Para observación, la identidad portable
+usa `st_dev`/`st_ino`; cuando no existe nacimiento real persiste
+`birthtime_ns=-1` y nunca disfraza `ctime` como nacimiento.
+
 Esto reduce la sustitución entre validación y syscall dentro del subconjunto
 soportado; no vuelve atómica la posterior escritura SQLite. Un fallo después de
 la llamada queda `recovery_required`, con evidencia append-only, y se concilia
@@ -325,11 +336,17 @@ esas fronteras; los proveedores estáticos añaden límites de memoria, cwd y en
 explícitos. Esto no autoriza matar procesos por nombre ni debe atribuirse a un
 callsite que no use esos supervisores.
 
+En POSIX, esos supervisores crean una sesión/grupo propio, terminan el árbol con
+`SIGTERM`/`SIGKILL` y aplican memoria con `RLIMIT_AS` o `/usr/bin/prlimit`. Si se
+solicita un límite que no puede imponerse, fallan cerrado antes de ejecutar.
+
 ## Modelos y red
 
-`--semantic-prepare-models` es la frontera explícita de adquisición de modelos
-semánticos. En audio, la primera carga de Whisper puede descargar pesos salvo
-`--audio-local-models-only`.
+`models prepare` es la frontera integrada explícita de adquisición secuencial;
+`models status` sólo inspecciona archivos locales y metadata instalada.
+`--semantic-prepare-models` conserva la frontera específica de Semantic. En
+Linux, audio usa Whisper CPU/int8 y local-only por defecto; en Windows, la
+primera carga puede descargar pesos salvo `--audio-local-models-only`.
 
 El perfil `trusted-static` también puede acceder a la red únicamente mediante
 pip-audit para capturar el snapshot de vulnerabilidades. Esa consulta no

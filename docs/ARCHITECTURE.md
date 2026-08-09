@@ -1,7 +1,7 @@
 # Arquitectura de NeoCortex
 
 > **Estado del documento.** Contrato derivado del árbol inspeccionado el
-> 31 de julio de 2026. Describe el comportamiento observado y separa los
+> 8 de agosto de 2026. Describe el comportamiento observado y separa los
 > cambios previstos de los ya implementados. No certifica por sí solo la suite
 > completa ni la instalación empaquetada. El árbol auditado declara la versión
 > `0.7.2`; la versión instalada debe comprobarse con
@@ -9,7 +9,7 @@
 
 ## Finalidad y principios
 
-NeoCortex es un framework Windows-first para descubrir, identificar, extraer,
+NeoCortex es un framework local para Windows y Linux que permite descubrir, identificar, extraer,
 indexar, relacionar, clasificar, revisar y buscar contenido personal de forma
 incremental. Sus rutas actuales cubren PDF, DOCX, otros documentos Office,
 audio, imágenes y código.
@@ -37,7 +37,7 @@ eludirlo.
 | Entry point instalado | `[project.scripts]` de `pyproject.toml` y `neocortex.cli` |
 | Parser y validación CLI | `cli_parser.py` y `cli_validation.py`, con superficies extraídas `cli_{audio,code,semantic,knowledge}_surface.py` |
 | Configuración efectiva de una corrida | `models.py`; fachada plana compatible `application_config.py`, proyecciones en `application_config_projections.py` y construcción CLI en `cli_config.py` |
-| Rutas canónicas por usuario | `app_paths.py` |
+| Plataforma y rutas canónicas por usuario | `neocortex/platform_policy.py` y `app_paths.py` |
 | Protección de rutas propias | `internal_paths.py`, `inventory_boundary.py` e `incremental_gate.py` |
 | Orden y adaptadores de rutas | `route_selection.py` y `route_registry.py` |
 | Coordinación de corridas | `orchestrator.py` |
@@ -46,10 +46,11 @@ eludirlo.
 | SDK y capacidades públicas | `neocortex/sdk`, `neocortex/capabilities.py` y markers `py.typed` |
 | Apertura SQLite compartida | `neocortex/sqlite_connection.py`; su adopción actual no es universal |
 | Esquemas persistentes | módulos `*_schema.py` y propietarios `*_state.py`/repositorios |
-| Estado operacional | bases bajo `%LOCALAPPDATA%\Neocortex\state` |
+| Estado operacional | Windows: `%LOCALAPPDATA%\Neocortex\state`; Linux: `${XDG_STATE_HOME:-~/.local/state}/Neocortex/state` |
 | Comportamiento comprobable | código ejecutado y pruebas; la documentación no lo sustituye |
 
-La topología derivada de `app_paths.py` separa los árboles propios:
+La topología Windows derivada de la política central y `app_paths.py` separa
+los árboles propios:
 
 ```text
 Fuente:       %USERPROFILE%\Neocortex\Repository
@@ -62,6 +63,12 @@ Autoanálisis: %LOCALAPPDATA%\Neocortex\self-analysis
 Los runtimes son versionados; `bin\Neocortex.exe` es la única ruta estable de
 promoción y se valida contra el artefacto exacto antes de incorporarla al
 `PATH`.
+
+En Linux, estado, configuración y datos respetan XDG. Las releases inmutables
+viven en `~/.local/share/Neocortex/releases`, `current` selecciona la activa,
+los modelos compartidos viven en `~/.local/share/Neocortex/models`, el launcher
+estable es `~/.local/share/Neocortex/bin/Neocortex` y el alias público es
+`~/.local/bin/Neocortex`.
 
 La guía de bases, migraciones, backup y retención es
 [PERSISTENCE.md](PERSISTENCE.md). La operación diaria se explica en
@@ -188,12 +195,16 @@ y evitar imports pesados durante ayuda, versión o selección de modo.
 
 ### `_01_Enumeracion`
 
-Frontera Windows/NTFS:
+Frontera de enumeración por plataforma:
 
-- enumeración MFT;
-- lectura y resolución de registros USN;
-- snapshots con identidad durable y metadatos;
-- índice SQLite auxiliar de rutas.
+- Windows conserva enumeración MFT y lectura/resolución de registros USN;
+- Linux ejecuta un recorrido completo portable, case-sensitive y sin seguir
+  enlaces simbólicos;
+- los snapshots conservan identidad durable y metadatos: FileId/volumen en
+  Windows, `st_dev`/`st_ino` en Linux;
+- Linux persiste `birthtime_ns=-1` si el filesystem no expone nacimiento real;
+  nunca usa `ctime` como sustituto;
+- el índice SQLite auxiliar de rutas usa la collation de cada plataforma.
 
 Produce observaciones; no decide eliminación ni clasificación. El
 `SqlitePathIndex` es una API auxiliar soportada y probada, pero no se confirmó
@@ -264,8 +275,9 @@ Frontend PySide6:
 - permite cancelación supervisada;
 - consulta estado mediante conexiones cortas de sólo lectura.
 
-La GUI ofrece PDF, DOCX, Office, audio e imagen. La ruta `code` permanece
-CLI-only por decisión observable, no por ausencia en el núcleo.
+La GUI ofrece PDF, DOCX, Office, audio, imagen y Code. En Linux presenta modo
+portátil, no solicita elevación y desactiva los controles de mutación, sin
+retirar inventario, procesamiento o búsqueda.
 
 ### Compatibilidad de raíz
 
@@ -566,6 +578,10 @@ solo hard link y mismo volumen. UNC, otros filesystems, reparses, directorios,
 hard links múltiples y movimientos entre volúmenes provocan abstención; no hay
 fallback permisivo por ruta.
 
+Ese backend es exclusivamente Windows. En Linux, `--apply` y
+`--organization-apply` se rechazan antes de crear estado con código `2` y razón
+`linux_mutation_backend_unavailable`; no existe un fallback con `Path.rename`.
+
 `file_actions` conserva en el esquema framework v20 la frontera incorporada en v18:
 
 ```text
@@ -752,11 +768,21 @@ Autoanálisis:  %LOCALAPPDATA%\Neocortex\self-analysis
 Modelos:       %LOCALAPPDATA%\Neocortex\models
 ```
 
+En Linux:
+
+```text
+Estado normal: ${XDG_STATE_HOME:-~/.local/state}/Neocortex/state
+Configuración: ${XDG_CONFIG_HOME:-~/.config}/Neocortex
+Releases:      ${XDG_DATA_HOME:-~/.local/share}/Neocortex/releases
+Modelos:       ${XDG_DATA_HOME:-~/.local/share}/Neocortex/models
+```
+
 Las bases principales son `dedup`, `framework`, `pdf`, `docx`, `office`,
 `audio`, `image`, `document_catalog`, `code` y `semantic`. No todas existen
 antes de usar su ruta. La UI persiste configuración aparte, en
 `%LOCALAPPDATA%\Neocortex\ui.ini`, y FastEmbed usa el directorio hermano
-`models\fastembed`.
+`models\fastembed`. En Linux la UI usa el árbol de configuración XDG y
+FastEmbed el cache compartido `models/fastembed`.
 
 La Knowledge Plane no es otro owner persistente: lee esas diez bases, conserva
 su snapshot y resultados sólo en memoria y no introduce una migración en
@@ -872,6 +898,12 @@ overflow, cancelación y excepciones terminan el Job, esperan al hijo directo,
 cierran pipes y liberan el handle; así los descendientes propios no sobreviven
 a la frontera supervisada.
 
+En POSIX, el hijo usa sesión/grupo de proceso propio. Timeout, overflow,
+cancelación y excepciones alcanzan todo el árbol con `SIGTERM` y después
+`SIGKILL`. Un límite de memoria solicitado se impone mediante `RLIMIT_AS` o
+`/usr/bin/prlimit`; si ninguna vía está disponible, la operación se abstiene en
+vez de ejecutar sin contención.
+
 Herramientas externas posibles:
 
 - Tesseract para OCR;
@@ -897,7 +929,7 @@ equivale a sandbox completo; véase [SECURITY.md](SECURITY.md).
 ## Empaquetado y dependencias opcionales
 
 El paquete se construye con setuptools y exige Python `>=3.13,<3.15`, validado
-en Windows con CPython 3.13 y 3.14. Incluye
+en Windows y Linux con CPython 3.13 y 3.14. Incluye
 los seis paquetes de producción, `neocortex`, el shim `Orquestador.py`, las
 reglas Semgrep y assets de la GUI. La base exacta incluye Complexipy, Coverage,
 Deptry, Grimp, Mypy, Packaging, pip-audit, Pytest, Rich, Ruff, Semgrep, Vulture
@@ -909,6 +941,12 @@ certifica inferencia, caché de modelos ni compatibilidad resuelta.
 La ayuda y versión deben arrancar sin cargar rutas pesadas. La instalación, el
 wheel y el sdist deben validarse en un entorno limpio antes de publicar; este
 documento no afirma que esa barrera final ya haya ocurrido.
+
+En Linux, `tools/release_linux.py` instala el wheel `full` desde artefactos
+binarios, integra Node/Pyright dentro de una release inmutable, activa
+`current` bajo `flock`, conserva releases anteriores y publica launcher, alias
+y KDE sólo después de validar modelos y runtime. Los recibos viven en el estado
+XDG.
 
 El inventario técnico de metadata/licencias y archivos redistribuidos está en
 [THIRD_PARTY_LICENSE_INVENTORY.md](THIRD_PARTY_LICENSE_INVENTORY.md). No declara

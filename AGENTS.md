@@ -37,10 +37,26 @@ un productor y un consumidor reales dentro del flujo integrado.
 
 ## Entorno canónico
 
-- Fuente: C:\Users\Victor\Neocortex\Repository
-- Runtime versionado: %LOCALAPPDATA%\Programs\Neocortex
-- Estado durable: %LOCALAPPDATA%\Neocortex
-- Comando público: Neocortex
+- Windows:
+  - Fuente: `C:\Users\Victor\Neocortex\Repository`
+  - Runtime versionado: `%LOCALAPPDATA%\Programs\Neocortex`
+  - Estado durable: `%LOCALAPPDATA%\Neocortex`
+  - Backend de inventario/mutación: USN y NTFS ligado a handles
+- Kubuntu/Linux:
+  - Fuente: `~/Neocortex/Repository`
+  - Corpus: `~/Documentos/NeoCortex/Corpus`, resuelto por `user-dirs.dirs`
+  - Releases/modelos: `${XDG_DATA_HOME:-~/.local/share}/Neocortex`
+  - Estado durable: `${XDG_STATE_HOME:-~/.local/state}/Neocortex/state`
+  - Launcher estable: `~/.local/share/Neocortex/bin/Neocortex`
+  - Alias público: `~/.local/bin/Neocortex`
+- Comando público en ambos sistemas: `Neocortex`
+
+El instalador Linux prepara la raíz de corpus seleccionada como directorio real.
+El comando `Neocortex --all` reutiliza primero el servicio de autoanálisis
+protegido sobre la fuente canónica y su estado separado, y después ejecuta el
+flujo documental. Si el corpus falta, el autoanálisis debe completarse o
+abstenerse por su propia causa y la etapa documental debe informar
+`corpus_unavailable` con salida `2`, nunca abortar antes con un traceback.
 
 El runtime personal canónico debe instalar y exponer la capacidad completa. Los
 extras individuales existen para empaquetado y desarrollo; no son decisiones
@@ -88,6 +104,11 @@ no pueda resolverse en la arquitectura existente.
 8. Mutación explícita. Separa observación, propuesta, revisión, autorización,
    aplicación y verificación. Usa preview y límites pequeños antes de cualquier
    acción.
+9. Contratos por plataforma. En Windows conserva USN, Job Objects,
+   `ReplaceFileW`, identidad NTFS y mutaciones ligadas a handles. En Linux usa
+   inventario portable, identidad `st_dev`/`st_ino`, `birthtime_ns=-1` cuando
+   no exista nacimiento real y contención POSIX; nunca presentes `ctime` como
+   nacimiento ni implementes mutación con una operación basada sólo en rutas.
 
 ## Acceso al estado y al corpus
 
@@ -101,6 +122,12 @@ explícitos. Modificar estado durable o archivos del corpus exige además backup
 consistente cuando aplique, preview, autorización inequívoca y verificación.
 La opción --apply sólo se usa para la mutación de corpus expresamente revisada;
 no es necesaria para indexar o buscar.
+
+En Linux, `--apply` y `--organization-apply` deben rechazarse antes de crear
+estado con código 2 y razón `linux_mutation_backend_unavailable`. La GUI debe
+mostrar modo portátil Linux, no fingir elevación y desactivar sus controles de
+mutación. Inventario, procesamiento, catálogo y búsqueda siguen siendo
+capacidades de producto.
 
 Las pruebas y migraciones se ejecutan en fixtures o copias aisladas, nunca sobre
 el único estado vivo. No transmitas corpus, secretos ni estado a servicios
@@ -165,12 +192,13 @@ humana. Sólo después de autorización explícita procede organization-apply co
 un máximo pequeño de acciones y verificación de destinos. Nunca uses --all
 --apply como smoke o piloto.
 
-Después de la validación inicial, Neocortex --all --apply debe conservarse como
-la interfaz cotidiana simplificada: un solo comando que ejecuta el flujo
-integrado y aplica únicamente acciones que superen sus protecciones internas.
-No lo elimines ni obligues a Victor a sustituirlo por una secuencia manual. Si
-alguna etapa todavía no está integrada, corrige esa brecha y descríbela con
-honestidad.
+Después de la validación inicial, `Neocortex --all --apply` debe conservarse en
+Windows como la interfaz cotidiana simplificada: un solo comando que ejecuta el
+flujo integrado y aplica únicamente acciones que superen sus protecciones
+internas. En Linux, la interfaz equivalente es `Neocortex --all` sin mutación.
+No elimines flags Windows ni obligues a Victor a sustituirlos por una secuencia
+manual. Si alguna etapa todavía no está integrada, corrige esa brecha y
+descríbela con honestidad.
 
 ### Watcher
 
@@ -183,7 +211,7 @@ fuera de su recorrido real.
 ## Prioridad vigente
 
 La continuación operativa está en
-.codex\handoffs\NEOCORTEX_0.7.2_PAUSE_2026-07-30.md.
+`.codex/handoffs/NEOCORTEX_0.7.2_PAUSE_2026-07-30.md`.
 
 Ese handoff es la fuente única del estado y del orden vigente. Lee su sección
 `Próximos pasos, en orden` antes de continuar y actualízala cuando cambie la
@@ -211,11 +239,12 @@ fronteras que no modificó.
 
 ## Dependencias, código y herramientas
 
-- Mantén compatibilidad con Windows 11 y CPython 3.13–3.14; conserva 3.13 como
-  piso sintáctico mientras ambos intérpretes estén soportados.
-- Usa PowerShell para la capa externa. Para trabajo pequeño elige la solución
-  más simple y legible; usa Python cuando la lógica por elemento o el volumen lo
-  justifiquen.
+- Mantén compatibilidad con Windows 11 y Kubuntu/Ubuntu 26.04, CPython
+  3.13–3.14; conserva 3.13 como piso sintáctico mientras ambos intérpretes
+  estén soportados.
+- Usa PowerShell para la capa externa Windows y Bash para Linux. Para trabajo
+  pequeño elige la solución más simple y legible; usa Python cuando la lógica
+  por elemento o el volumen lo justifiquen.
 - Usa rg o rg --files para búsquedas acotadas.
 - Prefiere apply_patch para ediciones y revisa siempre el diff.
 - No sustituyas el launcher público con imports desde el árbol al validar la
@@ -223,6 +252,9 @@ fronteras que no modificó.
 - Añade una regresión al corregir un defecto. No cambies expectativas sólo para
   hacer pasar la prueba.
 - No crees un venv permanente alternativo al runtime personal.
+- No instales `pip`, Node ni dependencias Python globalmente. En Linux usa
+  `tools/release_linux.py`; conserva releases anteriores para rollback y no
+  publiques KDE si los modelos solicitados están incompletos.
 
 ## Colaboración, Git y documentación
 

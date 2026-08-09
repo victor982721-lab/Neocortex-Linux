@@ -39,6 +39,9 @@ auditoría integral no son el punto de partida.
    Esta guía corresponde a la fuente `0.7.2`. Si `--version` no existe o no
    informa `0.7.2`, el launcher operativo no coincide con esta entrega: no use
    sus contratos nuevos sobre estado real hasta validar el artefacto correcto.
+   En Linux añada `Neocortex doctor platform --json` y confirme
+   `compatible=true`, inventario portable y contención POSIX antes de abrir
+   estado real.
 
 3. Confirme la raíz exacta y que no sea un symlink, junction o punto de
    reanálisis.
@@ -50,7 +53,7 @@ auditoría integral no son el punto de partida.
 5. Antes de una actualización, migración o acción sobre archivos, siga
    [RECOVERY.md](RECOVERY.md).
 
-La topología canónica por usuario es:
+La topología canónica Windows por usuario es:
 
 ```text
 Fuente:       %USERPROFILE%\Neocortex\Repository
@@ -62,6 +65,22 @@ Autoanálisis: %LOCALAPPDATA%\Neocortex\self-analysis
 
 El launcher de `bin` se promueve sólo después de validar el runtime exacto. No
 copie, sustituya ni compacte bases mientras exista un writer activo.
+
+En Linux, fuente, estado y release también permanecen separados:
+
+```text
+Fuente:    ~/Neocortex/Repository
+Corpus:    ~/Documentos/NeoCortex/Corpus
+Release:   ~/.local/share/Neocortex/releases/<release-id>
+Activa:    ~/.local/share/Neocortex/current
+Launcher:  ~/.local/share/Neocortex/bin/Neocortex
+Alias:     ~/.local/bin/Neocortex
+Estado:    ~/.local/state/Neocortex/state
+Modelos:   ~/.local/share/Neocortex/models
+```
+
+`XDG_CONFIG_HOME`, `XDG_STATE_HOME` y `XDG_DATA_HOME` sustituyen sus defaults
+cuando están definidos. Consulte [LINUX_KUBUNTU.md](LINUX_KUBUNTU.md).
 
 ## Flujo normal no mutador del corpus
 
@@ -75,6 +94,14 @@ if (-not (Test-Path -LiteralPath $Root -PathType Container)) {
     throw "La raíz no existe o no es un directorio: $Root"
 }
 Neocortex --root $Root --route pdf --MaxCount 25 --strict-exit-codes
+```
+
+Equivalente Linux, siempre sin flags de mutación:
+
+```bash
+Root="$HOME/Documentos/NeoCortex/Pilot"
+test -d "$Root"
+Neocortex --root "$Root" --route pdf --MaxCount 25 --strict-exit-codes
 ```
 
 La frontera normal captura `InternalPathsPolicy`: una raíz situada dentro del
@@ -93,7 +120,11 @@ Neocortex --status --status-json
 
 Después de aprobar cada ruta por separado se puede probar una lista aún
 acotada. `--all` selecciona PDF, DOCX, Office, audio, imagen y código, actualiza
-el catálogo técnico y se reserva para cuando exista una proyección aceptada:
+el catálogo técnico y se reserva para cuando exista una proyección aceptada.
+Antes de esa etapa, reutiliza el servicio de autoanálisis protegido sobre el
+checkout canónico y su estado separado. Si el corpus no está disponible, ese
+autoanálisis se conserva y el comando devuelve `2` con
+`corpus_unavailable`, sin traceback:
 
 ```powershell
 Neocortex --root $Root --route pdf,docx --MaxCount 25 --docx-max-count 25 --strict-exit-codes
@@ -524,6 +555,7 @@ al salir; esto no convierte el grafo en una publicación generacional.
 Neocortex --pdf-doctor
 Neocortex --audio-doctor
 Neocortex --code-doctor
+Neocortex models status --json
 ```
 
 - Tesseract y los idiomas `spa`/`eng` son externos a Python.
@@ -558,10 +590,12 @@ Neocortex --code-doctor
   inventario instalado es local y no emite conclusiones jurídicas.
 - Git alimenta únicamente la historia local; Cosmic Ray `8.4.6` pertenece al
   runtime base y sólo se activa con target y tests focales en `trusted-deep`.
-- La primera transcripción puede descargar el modelo Whisper. Use
-  `--audio-local-models-only` para prohibir descargas.
-- Los modelos semánticos sólo se adquieren mediante
-  `--semantic-prepare-models`; indexar y clasificar son pasos separados.
+- En Linux operativo, audio usa Whisper `small` CPU/int8 y sólo modelos
+  locales. `Neocortex models prepare --json` adquiere explícita y
+  secuencialmente Whisper, Jina, MiniLM compacto y CLIP texto/visión, y valida
+  el modelo NudeNet incluido. `models status` nunca crea rutas ni descarga.
+- La fachada histórica `--semantic-prepare-models` se conserva para el dominio
+  Semantic; indexar y clasificar siguen siendo pasos separados.
 
 `--semantic-index` aplica por defecto 50 items nuevos o cambiados, 1 500 jobs
 durables nuevos o reactivados y 900 segundos. El presupuesto es compartido por
@@ -616,30 +650,28 @@ que se haya omitido la comprobación de frescura.
 ## Integración continua por carriles
 
 `.github/workflows/ci.yml` es el único workflow de producto y se presenta como
-`Neocortex CI`. Todos sus jobs usan Windows; el carril instalado cubre Python
-3.13 y 3.14:
+`Neocortex CI`:
 
-- `fast` corre en pull requests y pushes: Ruff check/format y el subconjunto
-  contractual rápido;
-- `standard` corre en pull requests y pushes sobre Python 3.13 y 3.14:
-  construye el wheel sin aislar la resolución ya declarada, instala `full` con
-  constraints en un entorno temporal, ejecuta `pip check` y los imports nativos,
-  verifica que imports y `Neocortex` provengan de `site-packages`/`Scripts` y
-  prueba la suite core desde una copia temporal;
-- `deep` sólo corre por el cron semanal o `workflow_dispatch`: prepara Pyright
-  `1.1.411` aislado y ejecuta las pruebas opt-in de los workers
-  trusted-deep/mutación sobre fixtures acotados.
+- `fast` corre en Ubuntu/Python 3.14 para pull requests y pushes: Ruff
+  check/format y el subconjunto contractual rápido;
+- `standard` corre en Windows y Ubuntu sobre Python 3.13 y 3.14: construye el
+  wheel sin aislar la resolución ya declarada, instala `full` con constraints y
+  sólo wheels binarios, ejecuta `pip check` e imports nativos y prueba la suite
+  core desde una copia temporal;
+- `deep-windows` sólo corre por cron semanal o `workflow_dispatch`: prepara
+  Pyright `1.1.411` aislado y prueba NTFS, Job Objects y workers trusted-deep;
+- `deep-linux`, con la misma cadencia, prueba inventario portable, identidad,
+  contención POSIX, instalador y UI sobre fixtures acotados.
 
-El checkout efímero del runner no posee la identidad física exacta de
-`C:\Users\Victor\Neocortex\Repository`; por eso `deep` verifica contratos y
-fixtures, pero no intenta una corrida real de `--analysis-profile trusted-deep`
-ni debilita ese lock. El workflow usa las majors oficiales vigentes
-`actions/checkout@v7`, `actions/setup-python@v7`, `actions/setup-node@v7` y
-`actions/upload-artifact@v7`. Sus fuentes canónicas son los repositorios
-oficiales de [checkout](https://github.com/actions/checkout),
-[setup-python](https://github.com/actions/setup-python),
-[setup-node](https://github.com/actions/setup-node) y
-[upload-artifact](https://github.com/actions/upload-artifact).
+Ningún carril descarga pesos de modelos reales; los contratos usan dobles y la
+conformidad de los pesos se comprueba durante la instalación local. El checkout
+efímero tampoco posee la identidad física exacta del repositorio personal; las
+pruebas profundas no debilitan ese lock ni sustituyen una corrida local real.
+El workflow usa las majors oficiales vigentes `actions/checkout@v7`,
+`actions/setup-python@v7` y `actions/setup-node@v7`. Sus fuentes canónicas son
+los repositorios oficiales de [checkout](https://github.com/actions/checkout),
+[setup-python](https://github.com/actions/setup-python) y
+[setup-node](https://github.com/actions/setup-node).
 
 ## Cancelación de una corrida normal
 
@@ -654,6 +686,11 @@ timeout, overflow o excepción termina ese árbol propio, espera al hijo directo
 y cierra pipes/handles; no sustituya este contrato con terminaciones amplias por
 nombre de ejecutable.
 
+En Linux, cada subproceso usa una sesión/grupo propio; timeout y cancelación
+terminan hijos y nietos con `SIGTERM` y después `SIGKILL`. Los límites de memoria
+se imponen con `RLIMIT_AS` o `/usr/bin/prlimit`; si se solicita uno y no puede
+imponerse, la operación se abstiene en vez de ejecutar sin contención.
+
 Si se interrumpió una operación autorizada sobre archivos, **no la repita
 automáticamente**. Siga la sección de acciones inciertas de
 [RECOVERY.md](RECOVERY.md).
@@ -664,6 +701,10 @@ retenidos y sin reemplazo. Los demás casos se abstienen. La aplicación de
 candidatos de Papelera está deshabilitada; el dry-run continúa registrando el
 plan y un `--apply` los marca `skipped` sin llamar a `Send2Trash`.
 
+Linux no expone aún ese backend de mutación. `--apply` y
+`--organization-apply` se rechazan antes de crear estado con salida `2` y razón
+`linux_mutation_backend_unavailable`.
+
 ## Diagnóstico operativo
 
 Diagnóstico cotidiano mínimo, sin modificar el corpus:
@@ -671,6 +712,8 @@ Diagnóstico cotidiano mínimo, sin modificar el corpus:
 ```powershell
 Neocortex --version
 Neocortex doctor capabilities
+Neocortex doctor platform --json
+Neocortex models status --json
 Neocortex --status --status-limit 20
 ```
 
@@ -760,6 +803,22 @@ idempotente. SQLite no proporciona una transacción atómica entre esas bases.
 
 Esta sección se usa sólo al instalar, promover, migrar o restaurar una versión.
 No forma parte del flujo cotidiano ni de una corrección focal.
+
+En Kubuntu/Linux, la herramienta mantenida construye y verifica una release
+inmutable, activa `current` bajo `flock`, conserva las anteriores y escribe un
+recibo en el estado:
+
+```bash
+python3.14 tools/release_linux.py install \
+  --corpus-root "$HOME/Documentos/NeoCortex/Corpus" \
+  --prepare-models --desktop
+python3.14 tools/release_linux.py verify
+python3.14 tools/release_linux.py rollback
+```
+
+Una preparación incompleta de modelos no promueve el runtime ni publica KDE.
+Rollback cambia sólo el enlace activo; no elimina releases ni sustituye la
+recuperación de bases.
 
 1. Termine sólo los procesos propios de NeoCortex y confirme que no quede un
    watcher activo.

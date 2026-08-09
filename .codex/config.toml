@@ -6,10 +6,5 @@ sandbox_mode = "workspace-write"
 
 [sandbox_workspace_write]
 network_access = true
-writable_roots = [
-  "C:\\Users\\Victor\\Neocortex\\Laboratory",
-  "C:\\Users\\Victor\\Neocortex\\Checkpoints",
-]
-
-[windows]
-sandbox = "elevated"
+# Machine-specific writable roots and elevation policy belong in the local user
+# configuration, not in this portable repository.

@@ -19,8 +19,10 @@ pytestmark = pytest.mark.skipif(os.name == "nt", reason="Linux desktop mode cont
 
 def test_linux_window_is_portable_non_elevated_and_non_mutating(tmp_path: Path) -> None:
     application = QApplication.instance() or QApplication([])
+    root = tmp_path / "Corpus con espacio"
+    root.mkdir()
     window = MainWindow(
-        initial_root=tmp_path / "Corpus con espacio",
+        initial_root=root,
         state_directory=tmp_path / "state",
         settings_path=tmp_path / "config" / "ui.ini",
     )
