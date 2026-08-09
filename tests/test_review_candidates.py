@@ -6,6 +6,7 @@ import argparse
 import sqlite3
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from typing import Any
 
 import pytest
 
@@ -15,6 +16,7 @@ from _04_Nucleo_Operativo.review import (
     MAX_EVIDENCE_BYTES,
     ReviewCandidate,
     ReviewDecision,
+    ReviewDecisionStatus,
     get_review_decision_by_key,
     list_review_candidates,
     list_review_decisions,
@@ -159,14 +161,12 @@ def test_reconciliation_is_scoped_by_reason_and_generation(tmp_path) -> None:
         == 1
     )
 
-    open_reasons = {
-        record.reason_code for record in list_review_candidates(database, limit=10)
-    }
+    open_reasons = {record.reason_code for record in list_review_candidates(database, limit=10)}
     assert open_reasons == {"document_candidate", "damaged_content"}
     resolved = list_review_candidates(database, limit=10, status="resolved")
-    assert [
-        (record.reason_code, record.resolved_generation) for record in resolved
-    ] == [("adult_content", 11)]
+    assert [(record.reason_code, record.resolved_generation) for record in resolved] == [
+        ("adult_content", 11)
+    ]
     assert resolved[0].last_detected_generation == 10
 
     # Reconciliation is idempotent and never resolves a current-generation row.
@@ -206,13 +206,13 @@ def test_exact_generation_resolution_does_not_close_other_reasons(tmp_path) -> N
         )
         == 1
     )
-    assert {
-        record.reason_code for record in list_review_candidates(database, limit=10)
-    } == {"document_candidate"}
+    assert {record.reason_code for record in list_review_candidates(database, limit=10)} == {
+        "document_candidate"
+    }
     resolved = list_review_candidates(database, limit=10, status="resolved")
-    assert [
-        (record.reason_code, record.resolved_generation) for record in resolved
-    ] == [("adult_content", 12)]
+    assert [(record.reason_code, record.resolved_generation) for record in resolved] == [
+        ("adult_content", 12)
+    ]
     assert (
         route_state.resolve_review_candidate_generation(
             11,
@@ -266,9 +266,9 @@ def test_batched_reconciliation_is_bounded_atomic_and_idempotent(tmp_path) -> No
             "image",
             (reconciliation for _ in range(REVIEW_RECONCILIATION_BATCH_SIZE + 1)),
         )
-    assert {
-        record.reason_code for record in list_review_candidates(database, limit=10)
-    } == {"document_candidate"}
+    assert {record.reason_code for record in list_review_candidates(database, limit=10)} == {
+        "document_candidate"
+    }
 
 
 def test_concurrent_older_reconciliation_cannot_close_newer_finding(tmp_path) -> None:
@@ -649,6 +649,157 @@ def test_decision_listing_and_exact_lookup_are_read_only(tmp_path) -> None:
     assert database.read_bytes() == before
 
 
+@pytest.mark.parametrize(
+    ("filters", "message"),
+    (
+        ({"limit": 0}, "review decision limit must be between 1 and 10000"),
+        ({"limit": 10_001}, "review decision limit must be between 1 and 10000"),
+        ({"limit": 10, "route_name": ""}, "review route_name must be non-empty"),
+        (
+            {"limit": 10, "route_name": " image"},
+            "review route_name must be non-empty and trimmed",
+        ),
+        (
+            {"limit": 10, "route_name": "image "},
+            "review route_name must be non-empty and trimmed",
+        ),
+        (
+            {"limit": 10, "route_name": "r" * 257},
+            "review route_name exceeds 256 characters",
+        ),
+        ({"limit": 10, "reason_code": ""}, "review reason_code must be non-empty"),
+        (
+            {"limit": 10, "reason_code": "document_candidate "},
+            "review reason_code must be non-empty and trimmed",
+        ),
+        (
+            {"limit": 10, "reason_code": "r" * 257},
+            "review reason_code exceeds 256 characters",
+        ),
+        (
+            {"limit": 10, "status": "open"},
+            "invalid review decision status: open",
+        ),
+        (
+            {"limit": 10, "volume_id": 0xAA},
+            "review identity filtering requires volume_id and file_id",
+        ),
+        (
+            {"limit": 10, "file_id": 0xBB},
+            "review identity filtering requires volume_id and file_id",
+        ),
+        (
+            {"limit": 10, "candidate_generation": -1},
+            "review candidate_generation must be non-negative",
+        ),
+        (
+            {"limit": 10, "candidate_generation": True},
+            "review candidate_generation must be non-negative",
+        ),
+    ),
+)
+def test_decision_listing_validates_filters_before_opening_state(
+    tmp_path,
+    filters: dict[str, Any],
+    message: str,
+) -> None:
+    database = tmp_path / "missing.sqlite3"
+
+    with pytest.raises(ValueError, match=message):
+        list_review_decisions(database, **filters)
+
+    assert not database.exists()
+
+
+def test_decision_listing_filters_and_tie_break_order_are_exact(tmp_path) -> None:
+    database = tmp_path / "framework.sqlite3"
+    with FrameworkState(database):
+        pass
+    route_state = FrameworkRouteState(database)
+    decision_ids: list[int] = []
+    cases: tuple[tuple[str, str, ReviewDecisionStatus, int, int, int], ...] = (
+        ("image", "document_candidate", "confirmed", 21, 0xA1, 0xB1),
+        ("pdf", "corrupt_container", "dismissed", 22, 0xA2, 0xB2),
+        ("image", "adult_content", "deferred", 23, 0xA3, 0xB3),
+        ("image", "document_candidate", "confirmed", 24, 0xA4, 0xB4),
+    )
+    for index, (route_name, reason_code, status, generation, volume_id, file_id) in enumerate(
+        cases,
+        start=1,
+    ):
+        snapshot = FileSnapshot(
+            f"C:\\corpus\\case-{index}.pdf",
+            volume_id,
+            file_id,
+            1_000 + index,
+            2_000 + index,
+            3_000 + index,
+        )
+        candidate = ReviewCandidate(
+            route_name=route_name,
+            snapshot=snapshot,
+            reason_code=reason_code,
+            source_status="done",
+            recommendation="manual_review",
+            retryable=False,
+            confidence=0.9,
+            evidence={"case": index},
+            detector_version="review-filter-characterization-v1",
+        )
+        route_state.store_review_candidates(generation, (candidate,))
+        decision_ids.append(
+            route_state.record_review_decision(
+                ReviewDecision(
+                    idempotency_key=f"review-filter-characterization:{index}",
+                    route_name=route_name,
+                    snapshot=snapshot,
+                    reason_code=reason_code,
+                    candidate_generation=generation,
+                    source_status=candidate.source_status,
+                    recommendation=candidate.recommendation,
+                    retryable=candidate.retryable,
+                    confidence=candidate.confidence,
+                    evidence=candidate.evidence,
+                    detector_version=candidate.detector_version,
+                    status=status,
+                    actor="victor",
+                    provenance={"source": "filter-characterization"},
+                    decided_ns=10_000 + index,
+                )
+            )
+        )
+
+    with sqlite3.connect(database) as connection:
+        connection.execute("UPDATE review_decisions SET recorded_ns=123456789")
+    before = database.read_bytes()
+
+    def ids(**filters: Any) -> list[int]:
+        return [
+            record.decision_id for record in list_review_decisions(database, limit=10, **filters)
+        ]
+
+    expected = list(reversed(decision_ids))
+    assert ids() == expected
+    assert [record.decision_id for record in list_review_decisions(database, limit=2)] == expected[
+        :2
+    ]
+    assert ids(route_name="image") == [decision_ids[3], decision_ids[2], decision_ids[0]]
+    assert ids(reason_code="document_candidate") == [decision_ids[3], decision_ids[0]]
+    assert ids(status="dismissed") == [decision_ids[1]]
+    assert ids(volume_id=0xA3, file_id=0xB3) == [decision_ids[2]]
+    assert ids(candidate_generation=21) == [decision_ids[0]]
+    assert ids(
+        route_name="image",
+        reason_code="document_candidate",
+        status="confirmed",
+        volume_id=0xA4,
+        file_id=0xB4,
+        candidate_generation=24,
+    ) == [decision_ids[3]]
+    assert ids(route_name="audio") == []
+    assert database.read_bytes() == before
+
+
 def test_decision_waiting_on_resolution_rejects_closed_candidate(tmp_path) -> None:
     database = tmp_path / "framework.sqlite3"
     with FrameworkState(database):
@@ -842,9 +993,7 @@ def test_schema_13_migration_preserves_findings_and_adds_feedback(tmp_path) -> N
         assert connection.execute(
             "SELECT reason_code,last_seen_run_id FROM review_candidates"
         ).fetchone() == ("document_candidate", 13)
-        columns = {
-            row[1] for row in connection.execute("PRAGMA table_info(review_candidates)")
-        }
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(review_candidates)")}
         assert "resolved_run_id" in columns
         assert connection.execute(
             "SELECT name FROM sqlite_master WHERE name='review_decisions'"
@@ -860,9 +1009,7 @@ def test_schema_16_migration_rejects_unknown_columns_without_losing_them(
     with FrameworkState(database):
         pass
     with sqlite3.connect(database) as connection:
-        connection.execute(
-            "ALTER TABLE review_candidates ADD COLUMN external_note TEXT"
-        )
+        connection.execute("ALTER TABLE review_candidates ADD COLUMN external_note TEXT")
         connection.execute(
             """INSERT INTO review_candidates(
             route_name,volume_id,file_id,reason_code,path,size,mtime_ns,birthtime_ns,
@@ -873,9 +1020,7 @@ def test_schema_16_migration_rejects_unknown_columns_without_losing_them(
             10,20,30,'done','manual_review',0,0.9,'{}','legacy-v16','open',
             1,2,16,'must survive')"""
         )
-        connection.execute(
-            "UPDATE metadata SET value='16' WHERE key='schema_version'"
-        )
+        connection.execute("UPDATE metadata SET value='16' WHERE key='schema_version'")
 
     with pytest.raises(RuntimeError, match="unexpected legacy column layout"):
         FrameworkState(database)
@@ -884,17 +1029,19 @@ def test_schema_16_migration_rejects_unknown_columns_without_losing_them(
         assert connection.execute(
             "SELECT value FROM metadata WHERE key='schema_version'"
         ).fetchone() == ("16",)
-        assert connection.execute(
-            "SELECT external_note FROM review_candidates"
-        ).fetchone() == ("must survive",)
+        assert connection.execute("SELECT external_note FROM review_candidates").fetchone() == (
+            "must survive",
+        )
         assert "external_note" in {
-            str(row[1])
-            for row in connection.execute("PRAGMA table_info(review_candidates)")
+            str(row[1]) for row in connection.execute("PRAGMA table_info(review_candidates)")
         }
-        assert connection.execute(
-            "SELECT name FROM sqlite_master "
-            "WHERE name='__neocortex_schema_17_review_candidates'"
-        ).fetchone() is None
+        assert (
+            connection.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE name='__neocortex_schema_17_review_candidates'"
+            ).fetchone()
+            is None
+        )
 
 
 # endregion [02]
