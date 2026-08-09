@@ -120,8 +120,7 @@ def _serialized_canonical_tokens(source: str) -> str:
     """Serialize canonical tokens without delimiter-collision ambiguity."""
 
     return "".join(
-        f"{len(token)}:{token}"
-        for token in _canonical_tokens(_tokenize_schema_sql(source))
+        f"{len(token)}:{token}" for token in _canonical_tokens(_tokenize_schema_sql(source))
     )
 
 
@@ -261,9 +260,7 @@ def _read_quoted_sql_token(
 
 def _consume_decimal_sql_digits(source: str, start: int) -> int:
     index = start
-    while index < len(source) and (
-        source[index].isdigit() or source[index] == "_"
-    ):
+    while index < len(source) and (source[index].isdigit() or source[index] == "_"):
         index += 1
     return index
 
@@ -271,9 +268,7 @@ def _consume_decimal_sql_digits(source: str, start: int) -> int:
 def _consume_hexadecimal_sql_digits(source: str, start: int) -> int:
     index = start
     while index < len(source) and (
-        source[index].isdigit()
-        or source[index].lower() in "abcdef"
-        or source[index] == "_"
+        source[index].isdigit() or source[index].lower() in "abcdef" or source[index] == "_"
     ):
         index += 1
     return index
@@ -341,11 +336,7 @@ def _tokenize_schema_sql(source: str) -> tuple[_SQLToken, ...]:
             _append_sql_token(tokens, token)
             continue
         operator = next(
-            (
-                value
-                for value in _MULTI_CHARACTER_OPERATORS
-                if source.startswith(value, index)
-            ),
+            (value for value in _MULTI_CHARACTER_OPERATORS if source.startswith(value, index)),
             None,
         )
         if operator is not None:
@@ -430,9 +421,7 @@ def _matching_body(
     tokens: tuple[_SQLToken, ...],
     opening_index: int,
 ) -> tuple[tuple[_SQLToken, ...], tuple[_SQLToken, ...]]:
-    if opening_index >= len(tokens) or tokens[opening_index] != _SQLToken(
-        "symbol", "("
-    ):
+    if opening_index >= len(tokens) or tokens[opening_index] != _SQLToken("symbol", "("):
         raise _schema_definition_error("parenthesized table body is missing")
     depth = 0
     for index in range(opening_index, len(tokens)):
@@ -531,21 +520,14 @@ def _ordinary_table_definition(
         part = _remove_constraint_names(raw_part)
         if not part:
             raise _schema_definition_error("empty constraint after normalization")
-        first_name = (
-            _identifier_value(part[0])
-            if part[0].kind in {"word", "identifier"}
-            else None
-        )
+        first_name = _identifier_value(part[0]) if part[0].kind in {"word", "identifier"} else None
         if first_name is not None and first_name in known_columns:
             if first_name in seen_columns:
                 raise _schema_definition_error(f"duplicate column {first_name!r}")
             seen_columns.add(first_name)
             columns.append((first_name, _canonical_tokens(part[1:])))
             continue
-        if (
-            part[0].kind != "word"
-            or _ascii_casefold(part[0].value) not in _TABLE_CONSTRAINT_START
-        ):
+        if part[0].kind != "word" or _ascii_casefold(part[0].value) not in _TABLE_CONSTRAINT_START:
             raise _schema_definition_error("unrecognized table definition item")
         constraints.append(_canonical_tokens(part))
     if seen_columns != set(known_columns):
@@ -729,17 +711,13 @@ def _column_contracts(
     connection: sqlite3.Connection,
     table: str,
 ) -> tuple[ColumnContract, ...]:
-    rows = connection.execute(
-        f"PRAGMA table_xinfo({_quoted_identifier(table)})"
-    ).fetchall()
+    rows = connection.execute(f"PRAGMA table_xinfo({_quoted_identifier(table)})").fetchall()
     return tuple(
         ColumnContract(
             name=str(row[1]),
             declared_type=_normalized_type(row[2]),
             not_null=bool(row[3]),
-            default_sql=(
-                None if row[4] is None else _serialized_canonical_tokens(str(row[4]))
-            ),
+            default_sql=(None if row[4] is None else _serialized_canonical_tokens(str(row[4]))),
             primary_key_ordinal=int(row[5]),
             hidden=int(row[6]),
         )
@@ -751,9 +729,7 @@ def _foreign_key_contracts(
     connection: sqlite3.Connection,
     table: str,
 ) -> tuple[ForeignKeyContract, ...]:
-    rows = connection.execute(
-        f"PRAGMA foreign_key_list({_quoted_identifier(table)})"
-    ).fetchall()
+    rows = connection.execute(f"PRAGMA foreign_key_list({_quoted_identifier(table)})").fetchall()
     groups: dict[int, list[ForeignKeyContract]] = {}
     for row in rows:
         identifier = int(row[0])
@@ -770,10 +746,7 @@ def _foreign_key_contracts(
             )
         )
     ordered_groups = sorted(
-        (
-            tuple(sorted(group, key=lambda item: item.sequence))
-            for group in groups.values()
-        ),
+        (tuple(sorted(group, key=lambda item: item.sequence)) for group in groups.values()),
         key=lambda group: tuple(
             (
                 item.sequence,
@@ -807,13 +780,10 @@ def _index_details(
     connection: sqlite3.Connection,
     index: str,
 ) -> tuple[tuple[str, ...], tuple[bool, ...], tuple[str, ...]]:
-    rows = connection.execute(
-        f"PRAGMA index_xinfo({_quoted_identifier(index)})"
-    ).fetchall()
+    rows = connection.execute(f"PRAGMA index_xinfo({_quoted_identifier(index)})").fetchall()
     key_rows = [row for row in rows if bool(row[5])]
     columns = tuple(
-        str(row[2]) if row[2] is not None else f"<expression:{int(row[1])}>"
-        for row in key_rows
+        str(row[2]) if row[2] is not None else f"<expression:{int(row[1])}>" for row in key_rows
     )
     descending = tuple(bool(row[3]) for row in key_rows)
     collations = tuple(str(row[4] or "BINARY").upper() for row in key_rows)
@@ -833,17 +803,13 @@ def _index_contracts(
     table: str,
 ) -> tuple[IndexContract, ...]:
     contracts: list[IndexContract] = []
-    rows = connection.execute(
-        f"PRAGMA index_list({_quoted_identifier(table)})"
-    ).fetchall()
+    rows = connection.execute(f"PRAGMA index_list({_quoted_identifier(table)})").fetchall()
     for row in rows:
         index_name = str(row[1])
         columns, descending, collations = _index_details(connection, index_name)
         contracts.append(
             IndexContract(
-                name=(
-                    None if index_name.startswith("sqlite_autoindex_") else index_name
-                ),
+                name=(None if index_name.startswith("sqlite_autoindex_") else index_name),
                 unique=bool(row[2]),
                 origin=str(row[3]),
                 partial=bool(row[4]),
@@ -966,9 +932,9 @@ def _table_errors(
         errors.append(f"table {expected.name!r} has incompatible definition")
     missing_indexes = set(expected.indexes) - set(actual.indexes)
     actual_only_indexes = set(actual.indexes) - set(expected.indexes)
-    incompatible_names = {
-        index.name for index in missing_indexes if index.name is not None
-    } & {index.name for index in actual_only_indexes if index.name is not None}
+    incompatible_names = {index.name for index in missing_indexes if index.name is not None} & {
+        index.name for index in actual_only_indexes if index.name is not None
+    }
     if incompatible_names:
         errors.append(
             f"table {expected.name!r} has incompatible indexes "
@@ -978,9 +944,7 @@ def _table_errors(
             index for index in missing_indexes if index.name not in incompatible_names
         }
         actual_only_indexes = {
-            index
-            for index in actual_only_indexes
-            if index.name not in incompatible_names
+            index for index in actual_only_indexes if index.name not in incompatible_names
         }
     extra_indexes = actual_only_indexes if exact else set()
     if missing_indexes:
@@ -988,9 +952,7 @@ def _table_errors(
         errors.append(f"table {expected.name!r} lacks indexes {', '.join(names)}")
     if extra_indexes:
         names = sorted(index.name or "<automatic>" for index in extra_indexes)
-        errors.append(
-            f"table {expected.name!r} has unexpected indexes {', '.join(names)}"
-        )
+        errors.append(f"table {expected.name!r} has unexpected indexes {', '.join(names)}")
     return errors
 
 
@@ -1003,7 +965,41 @@ def validate_sqlite_schema_contract(
 ) -> None:
     """Reject incompatible required objects without changing persisted state."""
 
-    actual = capture_sqlite_schema_contract(connection)
+    # Detect missing tables before introspecting virtual tables.  A damaged FTS
+    # shadow set can make ``PRAGMA table_xinfo`` fail while constructing the
+    # parent virtual table, obscuring the actual missing durable object behind
+    # a raw sqlite3.DatabaseError.
+    expected_names = {table.name for table in expected.tables}
+    observed_names = {
+        str(row[0])
+        for row in connection.execute(
+            """SELECT name FROM sqlite_master
+            WHERE type='table' AND name NOT LIKE 'sqlite_%'"""
+        )
+    }
+    missing_names = sorted(expected_names - observed_names)
+    if missing_names:
+        raise SQLiteSchemaContractError(
+            f"{label} schema contract is invalid: "
+            + "; ".join(f"missing table {name!r}" for name in missing_names)
+        )
+    if exact:
+        actual = capture_sqlite_schema_contract(connection)
+    else:
+        options = _application_table_options(connection)
+        actual = SQLiteSchemaContract(
+            tables=tuple(
+                _table_contract(connection, name, *options[name]) for name in sorted(expected_names)
+            ),
+            sql_objects=tuple(
+                SQLObjectContract(str(row[0]), str(row[1]), _normalized_sql(row[2]))
+                for row in connection.execute(
+                    """SELECT type,name,sql FROM sqlite_master
+                    WHERE type IN ('view','trigger') AND name NOT LIKE 'sqlite_%'
+                    ORDER BY type,name"""
+                )
+            ),
+        )
     actual_tables = {table.name: table for table in actual.tables}
     expected_tables = {table.name: table for table in expected.tables}
     errors: list[str] = []
@@ -1027,13 +1023,10 @@ def validate_sqlite_schema_contract(
     if exact:
         extra_objects = set(actual.sql_objects) - set(expected.sql_objects)
         errors.extend(
-            f"unexpected {item.object_type} {item.name!r}"
-            for item in sorted(extra_objects)
+            f"unexpected {item.object_type} {item.name!r}" for item in sorted(extra_objects)
         )
     if errors:
-        raise SQLiteSchemaContractError(
-            f"{label} schema contract is invalid: " + "; ".join(errors)
-        )
+        raise SQLiteSchemaContractError(f"{label} schema contract is invalid: " + "; ".join(errors))
 
 
 def read_metadata_schema_version(
@@ -1054,15 +1047,11 @@ def read_metadata_schema_version(
             "SELECT value FROM metadata WHERE key='schema_version' LIMIT 2"
         ).fetchall()
     except sqlite3.Error as exc:
-        raise SQLiteSchemaContractError(
-            f"{label} metadata table is incompatible: {exc}"
-        ) from exc
+        raise SQLiteSchemaContractError(f"{label} metadata table is incompatible: {exc}") from exc
     if not rows:
         return None
     if len(rows) != 1:
-        raise SQLiteSchemaContractError(
-            f"{label} metadata has no unique schema_version"
-        )
+        raise SQLiteSchemaContractError(f"{label} metadata has no unique schema_version")
     raw = str(rows[0][0])
     if not raw.isascii() or not raw.isdecimal() or (raw != "0" and raw.startswith("0")):
         raise SQLiteSchemaContractError(

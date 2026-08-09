@@ -1250,12 +1250,12 @@ def test_text_retrieval_calibration_abstains_below_exact_owner_floors() -> None:
     pdf_hit, pdf_resolved = _calibrated_ranking_hit(
         1,
         source_kind="pdf",
-        score=0.499999,
+        score=0.419999,
     )
     code_hit, code_resolved = _calibrated_ranking_hit(
         2,
         source_kind="code",
-        score=0.459999,
+        score=0.419999,
     )
     ranking = service.SemanticRanking(
         name="semantic_text",
@@ -1276,15 +1276,52 @@ def test_text_retrieval_calibration_abstains_below_exact_owner_floors() -> None:
     assert metadata["status"] == "applied"
     assert metadata["query_abstained"] is True
     assert metadata["rejected_by_source_kind"] == {"pdf": 1, "code": 1}
-    assert metadata["score_floor_by_source_kind"] == {"code": 0.46, "pdf": 0.5}
+    assert metadata["score_floor_by_source_kind"] == {
+        "archive": 0.42,
+        "audio": 0.42,
+        "code": 0.42,
+        "docx": 0.42,
+        "image": 0.42,
+        "odt": 0.42,
+        "pdf": 0.42,
+        "pptx": 0.42,
+        "text": 0.42,
+        "xlsx": 0.42,
+    }
     assert metadata["score_interpretation"].endswith("not_probability")
+
+
+def test_title_retrieval_uses_the_same_calibrated_abstention_floor() -> None:
+    hit, resolved = _calibrated_ranking_hit(
+        1,
+        source_kind="text",
+        score=0.419999,
+    )
+    ranking = service.SemanticRanking(
+        name="semantic_title",
+        hits=(hit,),
+        resolved=(replace(resolved, section_kind="semantic_metadata_title"),),
+        scanned=1,
+        complete=True,
+        fusion_weight=0.5,
+    )
+
+    calibrated = search_implementation.apply_text_retrieval_calibration(
+        ranking,
+        selected_model=service.multilingual_text_model(),
+    )
+
+    assert calibrated.name == "semantic_title"
+    assert calibrated.hits == ()
+    assert calibrated.resolved == ()
+    assert calibrated.provenance["retrieval_abstention"]["query_abstained"] is True
 
 
 def test_text_retrieval_calibration_accepts_exact_reused_payload_provenance() -> None:
     hit, resolved = _calibrated_ranking_hit(
         1,
         source_kind="pdf",
-        score=0.499999,
+        score=0.419999,
     )
     hit = replace(
         hit,
@@ -1353,12 +1390,12 @@ def test_text_retrieval_calibration_keeps_boundaries_and_unknown_contracts() -> 
     pdf_hit, pdf_resolved = _calibrated_ranking_hit(
         1,
         source_kind="pdf",
-        score=0.50,
+        score=0.42,
     )
     code_hit, code_resolved = _calibrated_ranking_hit(
         2,
         source_kind="code",
-        score=0.46,
+        score=0.42,
     )
     docx_hit, docx_resolved = _calibrated_ranking_hit(
         3,
@@ -1384,14 +1421,14 @@ def test_text_retrieval_calibration_keeps_boundaries_and_unknown_contracts() -> 
         selected_model=service.multilingual_text_model(),
     )
 
-    assert calibrated.hits == ranking.hits
+    assert calibrated.hits == (pdf_hit, code_hit, fixture_hit)
     metadata = calibrated.provenance["retrieval_abstention"]
     assert metadata["status"] == "partial"
-    assert metadata["calibrated_hits"] == 2
+    assert metadata["calibrated_hits"] == 3
     assert metadata["uncalibrated_by_reason"] == {
-        "source_kind_not_calibrated": 1,
         "backend_not_calibrated": 1,
     }
+    assert metadata["rejected_by_source_kind"] == {"docx": 1}
     assert metadata["query_abstained"] is False
 
 
@@ -1555,8 +1592,8 @@ def test_text_search_reuses_one_query_vector_and_fuses_durable_title_at_half_wei
     body, title = result.rankings
     assert body.fusion_weight == 1.0
     assert title.fusion_weight == 0.5
-    assert title.provenance["expected_policy_signature"] == ("semantic-basename-title-v1")
-    assert title.provenance["observed_policy_signatures"] == ["semantic-basename-title-v1"]
+    assert title.provenance["expected_policy_signature"] == ("semantic-content-aware-title-v3")
+    assert title.provenance["observed_policy_signatures"] == ["semantic-content-aware-title-v3"]
     assert title.scanned == 1
     assert title.resolved[0].section_kind == "semantic_metadata_title"
     assert [(request.role, request.text) for request in backend.requests] == [

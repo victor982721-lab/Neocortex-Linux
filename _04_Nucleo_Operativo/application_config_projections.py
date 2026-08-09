@@ -42,6 +42,7 @@ if TYPE_CHECKING:
     from . import models as _application_contracts
     from . import office_route as _office_contracts
     from . import pdf_route_models as _pdf_contracts
+    from . import text_route as _text_contracts
 else:
     _application_contracts = _DeferredTypeModule(".models")
     _archive_contracts = _DeferredTypeModule(".archive_route")
@@ -51,6 +52,7 @@ else:
     _image_contracts = _DeferredTypeModule(".image_route")
     _office_contracts = _DeferredTypeModule(".office_route")
     _pdf_contracts = _DeferredTypeModule(".pdf_route_models")
+    _text_contracts = _DeferredTypeModule(".text_route")
     _resource_contracts = _DeferredTypeModule(".global_resources")
 
 __all__ = [
@@ -62,6 +64,7 @@ __all__ = [
     "image_route_config_from_application",
     "office_route_config_from_application",
     "pdf_route_config_from_application",
+    "text_route_config_from_application",
 ]
 
 # endregion [01]
@@ -94,6 +97,34 @@ def archive_route_config_from_application(
         pdf_max_pages=config.archive_pdf_max_pages,
         pdf_timeout_seconds=config.archive_pdf_timeout_seconds,
         pdf_worker_memory_bytes=config.archive_pdf_worker_memory_bytes,
+        ocr_mode=config.archive_ocr_mode,
+        ocr_lang=config.archive_ocr_lang,
+        ocr_dpi=config.archive_ocr_dpi,
+        ocr_max_pages=config.archive_ocr_max_pages,
+        ocr_max_render_pixels=config.archive_ocr_max_render_pixels,
+        ocr_timeout_seconds=config.archive_ocr_timeout_seconds,
+        tesseract_cmd=config.archive_tesseract_cmd,
+        tessdata_dir=config.archive_tessdata_dir,
+    )
+
+
+def text_route_config_from_application(
+    config: _application_contracts.FrameworkConfig,
+) -> _text_contracts.TextRouteConfig:
+    """Project generic text and legacy Office extraction limits."""
+
+    from .text_route import TextRouteConfig
+
+    return TextRouteConfig(
+        state_path=config.text_database,
+        max_file_bytes=config.text_max_file_bytes,
+        max_documents=config.text_max_documents,
+        max_text_chars=config.text_max_text_chars,
+        worker_timeout_seconds=config.text_worker_timeout_seconds,
+        worker_memory_bytes=config.text_worker_memory_bytes,
+        retry_errors=config.text_retry_errors,
+        libreoffice_cmd=config.text_libreoffice_cmd,
+        selection=config.selection,
     )
 
 

@@ -27,7 +27,13 @@ from neocortex.sqlite_schema_contract import (
     validate_sqlite_schema_contract,
 )
 
-from . import archive_state, audio_state, document_catalog_schema, office_state
+from . import (
+    archive_state,
+    audio_state,
+    document_catalog_schema,
+    office_state,
+    text_state,
+)
 from . import semantic_schema as semantic_schema_module
 from .code_schema import CODE_SCHEMA_VERSION, validate_code_schema
 from .docx_schema import DOCX_SCHEMA_VERSION, validate_docx_schema
@@ -96,6 +102,7 @@ _STATE_PATH_NAMES = (
     "semantic",
     "code",
     "archive",
+    "text",
 )
 
 
@@ -159,6 +166,7 @@ class KnowledgeStatePaths:
     semantic: Path
     code: Path
     archive: Path | None = None
+    text: Path | None = None
 
     def validate_roots(self) -> tuple[Path, ...]:
         """Permit missing roots but fail closed for unusable existing roots."""
@@ -219,6 +227,7 @@ class KnowledgeStatePaths:
             semantic=root / "semantic.sqlite3",
             code=root / "code.sqlite3",
             archive=root / "archive.sqlite3",
+            text=root / "text.sqlite3",
         )
 
 
@@ -282,6 +291,15 @@ def _validate_archive(connection: sqlite3.Connection) -> None:
     )
 
 
+def _validate_text(connection: sqlite3.Connection) -> None:
+    validate_sqlite_schema_contract(
+        connection,
+        text_state.text_schema_contract(),
+        label="text state",
+        exact=True,
+    )
+
+
 def _validate_image(connection: sqlite3.Connection) -> None:
     from . import image_state
 
@@ -328,21 +346,33 @@ _ARCHIVE_OWNER_SPEC = _OwnerSpec(
     "documents",
 )
 
+_TEXT_OWNER_SPEC = _OwnerSpec(
+    "text",
+    text_state.TEXT_SCHEMA_VERSION,
+    _validate_text,
+    "documents",
+)
+
 
 def _owner_specs(paths: KnowledgeStatePaths) -> tuple[_OwnerSpec, ...]:
-    """Expose the additive archive owner only after its database exists."""
+    """Expose additive owners only after their databases exist."""
 
-    path = paths.archive
-    if path is None:
-        return _OWNER_SPECS
-    try:
-        path.stat()
-    except FileNotFoundError:
-        return _OWNER_SPECS
-    except OSError:
-        # Let the normal owner capture classify an inaccessible configured path.
-        return (*_OWNER_SPECS, _ARCHIVE_OWNER_SPEC)
-    return (*_OWNER_SPECS, _ARCHIVE_OWNER_SPEC)
+    specs = list(_OWNER_SPECS)
+    for path, spec in (
+        (paths.archive, _ARCHIVE_OWNER_SPEC),
+        (paths.text, _TEXT_OWNER_SPEC),
+    ):
+        if path is None:
+            continue
+        try:
+            path.stat()
+        except FileNotFoundError:
+            continue
+        except OSError:
+            # Let normal owner capture classify an inaccessible configured path.
+            pass
+        specs.append(spec)
+    return tuple(specs)
 
 
 # endregion [01]

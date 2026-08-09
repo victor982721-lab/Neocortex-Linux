@@ -497,7 +497,17 @@ def test_operational_constants_are_exact() -> None:
     assert contracts.MIN_ADVISORY_EVIDENCE_SCORE == 0.0
     assert contracts.IMAGE_OCR_TEXT_CHANNEL == "image_ocr"
     assert contracts.SEMANTIC_PLAN_TEXT_SOURCE_KINDS == frozenset(
-        {"pdf", "docx", "xlsx", "pptx", "odt", "audio", "code"}
+        {
+            "pdf",
+            "docx",
+            "xlsx",
+            "pptx",
+            "odt",
+            "audio",
+            "archive",
+            "text",
+            "code",
+        }
     )
 
 

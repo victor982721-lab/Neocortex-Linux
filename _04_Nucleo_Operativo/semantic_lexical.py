@@ -35,7 +35,7 @@ MAX_SNIPPET_CHARS = 1_024
 _CANCELLATION_BATCH_ROWS = 128
 
 LEXICAL_MODEL_SIGNATURE = "sqlite-fts5-unicode61-rd2-v1"
-_SOURCE_ORDER = ("pdf", "docx", "office", "audio", "archive")
+_SOURCE_ORDER = ("pdf", "docx", "office", "audio", "archive", "text")
 
 
 class LexicalAvailability(StrEnum):
@@ -56,6 +56,7 @@ class LexicalStatePaths:
     office: Path | None = None
     audio: Path | None = None
     archive: Path | None = None
+    text: Path | None = None
 
     def ordered(self) -> tuple[tuple[str, Path | None], ...]:
         base = (
@@ -64,9 +65,12 @@ class LexicalStatePaths:
             ("office", self.office),
             ("audio", self.audio),
         )
-        if self.archive is None:
-            return base
-        return (*base, ("archive", self.archive))
+        optional: list[tuple[str, Path | None]] = []
+        if self.archive is not None:
+            optional.append(("archive", self.archive))
+        if self.text is not None:
+            optional.append(("text", self.text))
+        return (*base, *optional)
 
 
 @dataclass(frozen=True, slots=True)
@@ -242,6 +246,20 @@ _SPECS = {
         FROM document_fts AS f JOIN documents AS d ON d.file_key=f.file_key
         WHERE document_fts MATCH ?
         AND d.status IN ('indexed','metadata_only','archive')
+        ORDER BY raw_bm25,f.path COLLATE NOCASE LIMIT ?""",
+    ),
+    "text": _SourceSpec(
+        source_kind="text",
+        fts_table="document_fts",
+        section_kind="document",
+        sql="""SELECT f.rowid AS fts_rowid,f.file_key,f.path,
+        snippet(document_fts,5,'[',']',' ... ',24) AS snippet,
+        bm25(document_fts) AS raw_bm25,d.size AS source_size,
+        d.mtime_ns AS source_mtime_ns,d.birthtime_ns AS source_birthtime_ns,
+        d.processing_signature AS source_processing_signature,
+        d.last_seen_run_id AS source_last_seen_run_id,d.status AS source_status
+        FROM document_fts AS f JOIN documents AS d ON d.file_key=f.file_key
+        WHERE document_fts MATCH ? AND d.status='complete'
         ORDER BY raw_bm25,f.path COLLATE NOCASE LIMIT ?""",
     ),
 }

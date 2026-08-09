@@ -37,6 +37,7 @@ from .processing_provenance import (
     ProcessingProvenance,
     build_processing_provenance,
     distribution_component,
+    resolve_tesseract_runtime,
     python_runtime_component,
 )
 from .route_filters import CandidateSelection
@@ -53,7 +54,7 @@ from .zip_safety import (
 
 
 ARCHIVE_MIME = "application/zip"
-ARCHIVE_ROUTE_VERSION = "archive-route-v1"
+ARCHIVE_ROUTE_VERSION = "archive-route-v2"
 DEFAULT_MAX_DEPTH = 5
 DEFAULT_MAX_MEMBERS = 20_000
 DEFAULT_MAX_MEMBER_BYTES = 64 * 1024 * 1024
@@ -64,6 +65,10 @@ DEFAULT_MAX_COMPRESSION_RATIO = 200.0
 DEFAULT_PDF_MAX_PAGES = 500
 DEFAULT_PDF_TIMEOUT_SECONDS = 60.0
 DEFAULT_PDF_WORKER_MEMORY_BYTES = 768 * 1024 * 1024
+DEFAULT_OCR_MAX_PAGES = 50
+DEFAULT_OCR_DPI = 200
+DEFAULT_OCR_MAX_RENDER_PIXELS = 40_000_000
+DEFAULT_OCR_TIMEOUT_SECONDS = 30.0
 MAX_MEMBER_NAME_CHARS = 2_048
 MAX_MEMBER_SEGMENT_CHARS = 255
 MAX_EMBEDDED_DOCUMENT_MEMBERS = 20_000
@@ -89,6 +94,14 @@ class ArchiveRouteConfig:
     pdf_max_pages: int = DEFAULT_PDF_MAX_PAGES
     pdf_timeout_seconds: float = DEFAULT_PDF_TIMEOUT_SECONDS
     pdf_worker_memory_bytes: int = DEFAULT_PDF_WORKER_MEMORY_BYTES
+    ocr_mode: Literal["auto", "never", "always"] = "auto"
+    ocr_lang: str = "spa+eng"
+    ocr_dpi: int = DEFAULT_OCR_DPI
+    ocr_max_pages: int = DEFAULT_OCR_MAX_PAGES
+    ocr_max_render_pixels: int = DEFAULT_OCR_MAX_RENDER_PIXELS
+    ocr_timeout_seconds: float = DEFAULT_OCR_TIMEOUT_SECONDS
+    tesseract_cmd: str | None = None
+    tessdata_dir: str | None = None
 
     @property
     def processing_signature(self) -> str:
@@ -108,6 +121,14 @@ class ArchiveRouteConfig:
             self.pdf_max_pages,
             self.pdf_timeout_seconds,
             self.pdf_worker_memory_bytes,
+            self.ocr_mode,
+            self.ocr_lang,
+            self.ocr_dpi,
+            self.ocr_max_pages,
+            self.ocr_max_render_pixels,
+            self.ocr_timeout_seconds,
+            self.tesseract_cmd,
+            self.tessdata_dir,
         )
 
 
@@ -124,7 +145,29 @@ def _archive_processing_provenance(
     pdf_max_pages: int,
     pdf_timeout_seconds: float,
     pdf_worker_memory_bytes: int,
+    ocr_mode: str,
+    ocr_lang: str,
+    ocr_dpi: int,
+    ocr_max_pages: int,
+    ocr_max_render_pixels: int,
+    ocr_timeout_seconds: float,
+    tesseract_cmd: str | None,
+    tessdata_dir: str | None,
 ) -> ProcessingProvenance:
+    ocr_component = (
+        {
+            "name": "tesseract-runtime",
+            "kind": "native-executable",
+            "status": "disabled",
+        }
+        if ocr_mode == "never"
+        else resolve_tesseract_runtime(
+            command=tesseract_cmd,
+            tessdata_dir=tessdata_dir,
+            language=ocr_lang,
+            timeout_seconds=min(30.0, ocr_timeout_seconds),
+        ).component
+    )
     return build_processing_provenance(
         "archive-route",
         ARCHIVE_ROUTE_VERSION,
@@ -140,6 +183,14 @@ def _archive_processing_provenance(
             "pdf_max_pages": pdf_max_pages,
             "pdf_timeout_seconds": pdf_timeout_seconds,
             "pdf_worker_memory_bytes": pdf_worker_memory_bytes,
+            "ocr_mode": ocr_mode,
+            "ocr_language": ocr_lang,
+            "ocr_dpi": ocr_dpi,
+            "ocr_max_pages": ocr_max_pages,
+            "ocr_max_render_pixels": ocr_max_render_pixels,
+            "ocr_timeout_seconds": ocr_timeout_seconds,
+            "tesseract_source": "explicit" if tesseract_cmd else "path",
+            "tessdata_source": "explicit" if tessdata_dir else "default",
             "member_name_policy": "portable-posix-no-traversal-exact-case-v1",
             "nested_path_notation": "container.zip!/member.zip!/file",
         },
@@ -147,6 +198,9 @@ def _archive_processing_provenance(
             python_runtime_component(),
             distribution_component("xxhash", "xxhash"),
             distribution_component("pymupdf", "PyMuPDF"),
+            distribution_component("pillow", "Pillow"),
+            distribution_component("pytesseract", "pytesseract"),
+            ocr_component,
         ),
         compatibility_tag=ARCHIVE_ROUTE_VERSION,
     )
@@ -241,6 +295,16 @@ _PLAIN_TEXT_EXTENSIONS = frozenset(
 _HTML_EXTENSIONS = frozenset({".htm", ".html", ".xhtml"})
 _NESTED_ARCHIVE_EXTENSIONS = frozenset({".cbz", ".zip", ".zipx"})
 _ZIP_MAGIC_PREFIXES = (b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08")
+_IMAGE_SIGNATURES: tuple[tuple[bytes, str], ...] = (
+    (b"\x89PNG\r\n\x1a\n", "image/png"),
+    (b"\xff\xd8\xff", "image/jpeg"),
+    (b"GIF87a", "image/gif"),
+    (b"GIF89a", "image/gif"),
+    (b"II*\x00", "image/tiff"),
+    (b"MM\x00*", "image/tiff"),
+    (b"BM", "image/bmp"),
+)
+_IMAGE_EXTENSIONS = frozenset({".bmp", ".gif", ".jpeg", ".jpg", ".png", ".tif", ".tiff", ".webp"})
 _SUPPORTED_COMPRESSIONS = frozenset(
     {
         zipfile.ZIP_STORED,
@@ -564,22 +628,39 @@ def _extract_embedded_zip_document(
     return "\n".join(parts), truncated
 
 
-def _extract_pdf_text(
+def _extract_media_text(
     payload: bytes,
     *,
+    kind: Literal["pdf", "image"],
     char_limit: int,
     config: ArchiveRouteConfig,
-) -> tuple[str | None, bool, str | None]:
+) -> tuple[str | None, bool, str | None, str | None]:
     command = (
         sys.executable,
         "-m",
         "_04_Nucleo_Operativo.archive_text_worker",
+        "--kind",
+        kind,
         "--max-input-bytes",
         str(config.max_member_bytes),
         "--max-pages",
         str(config.pdf_max_pages),
         "--max-chars",
         str(char_limit),
+        "--ocr-mode",
+        config.ocr_mode,
+        "--ocr-lang",
+        config.ocr_lang,
+        "--ocr-dpi",
+        str(config.ocr_dpi),
+        "--ocr-max-pages",
+        str(config.ocr_max_pages),
+        "--max-render-pixels",
+        str(config.ocr_max_render_pixels),
+        "--ocr-timeout",
+        str(config.ocr_timeout_seconds),
+        *(("--tesseract-cmd", config.tesseract_cmd) if config.tesseract_cmd else ()),
+        *(("--tessdata-dir", config.tessdata_dir) if config.tessdata_dir else ()),
     )
     try:
         completed = run_bounded_capture(
@@ -588,21 +669,55 @@ def _extract_pdf_text(
             timeout_seconds=config.pdf_timeout_seconds,
             stdout_limit_bytes=max(64 * 1024, char_limit * 6 + 64 * 1024),
             stderr_limit_bytes=256 * 1024,
+            environment={
+                **os.environ,
+                "OPENBLAS_NUM_THREADS": "1",
+                "OMP_NUM_THREADS": "1",
+                "MKL_NUM_THREADS": "1",
+                "NUMEXPR_NUM_THREADS": "1",
+            },
             memory_limit_bytes=config.pdf_worker_memory_bytes,
         )
     except (OSError, RuntimeError, SubprocessOutputLimitError) as exc:
-        return None, False, f"pdf_worker_error:{type(exc).__name__}"
+        return None, False, f"{kind}_worker_error:{type(exc).__name__}", None
     try:
         result = json.loads(completed.stdout.decode("utf-8", "strict"))
     except (UnicodeError, json.JSONDecodeError):
-        return None, False, "pdf_worker_invalid_output"
+        return None, False, f"{kind}_worker_invalid_output", None
     if completed.returncode != 0 or not isinstance(result, dict) or not result.get("ok"):
         reason = result.get("reason") if isinstance(result, dict) else None
-        return None, False, str(reason or f"pdf_worker_exit_{completed.returncode}")
+        detail = str(reason or f"{kind}_worker_exit_{completed.returncode}")
+        return None, False, detail, None
     text = result.get("text")
     if not isinstance(text, str) or not text.strip():
-        return None, False, "pdf_no_native_text"
-    return text, bool(result.get("truncated")), None
+        return None, False, f"{kind}_ocr_no_text", str(result.get("extraction_mode") or "metadata")
+    return (
+        text,
+        bool(result.get("truncated")),
+        None,
+        str(result.get("extraction_mode") or "native"),
+    )
+
+
+def _image_media_type(name: str, payload: bytes) -> str | None:
+    for signature, media_type in _IMAGE_SIGNATURES:
+        if payload.startswith(signature):
+            return media_type
+    if payload.startswith(b"RIFF") and len(payload) >= 12 and payload[8:12] == b"WEBP":
+        return "image/webp"
+    suffix = PurePosixPath(name).suffix.casefold()
+    if suffix in _IMAGE_EXTENSIONS:
+        return {
+            ".bmp": "image/bmp",
+            ".gif": "image/gif",
+            ".jpeg": "image/jpeg",
+            ".jpg": "image/jpeg",
+            ".png": "image/png",
+            ".tif": "image/tiff",
+            ".tiff": "image/tiff",
+            ".webp": "image/webp",
+        }[suffix]
+    return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -649,17 +764,47 @@ def _extract_member_content(
             "archive_text_limit" if truncated else None,
         )
     if payload.startswith(b"%PDF-") or suffix == ".pdf":
-        pdf_text, truncated, detail = _extract_pdf_text(
+        pdf_text, truncated, detail, extraction_mode = _extract_media_text(
             payload,
+            kind="pdf",
             char_limit=char_limit,
             config=config,
         )
+        issue_code = None
+        if detail and detail not in {"pdf_ocr_no_text"}:
+            issue_code = "archive_pdf_extraction_error"
         return _ExtractedContent(
             pdf_text,
             "pdf",
             "application/pdf",
-            detail or ("text_truncated" if truncated else None),
-            "archive_text_limit" if truncated else None,
+            (
+                detail
+                or ("text_truncated" if truncated else None)
+                or (f"extraction={extraction_mode}" if extraction_mode else None)
+            ),
+            "archive_text_limit" if truncated else issue_code,
+        )
+    image_media_type = _image_media_type(name, payload)
+    if image_media_type is not None:
+        image_text, truncated, detail, extraction_mode = _extract_media_text(
+            payload,
+            kind="image",
+            char_limit=char_limit,
+            config=config,
+        )
+        issue_code = None
+        if detail and detail not in {"image_ocr_no_text"}:
+            issue_code = "archive_image_ocr_error"
+        return _ExtractedContent(
+            image_text,
+            "image",
+            image_media_type,
+            (
+                detail
+                or ("text_truncated" if truncated else None)
+                or (f"extraction={extraction_mode}" if extraction_mode else None)
+            ),
+            "archive_text_limit" if truncated else issue_code,
         )
     if suffix in _HTML_EXTENSIONS:
         try:
@@ -1349,12 +1494,20 @@ class ArchiveRoute:
             "pdf_max_pages": self.config.pdf_max_pages,
             "pdf_timeout_seconds": self.config.pdf_timeout_seconds,
             "pdf_worker_memory_bytes": self.config.pdf_worker_memory_bytes,
+            "ocr_dpi": self.config.ocr_dpi,
+            "ocr_max_pages": self.config.ocr_max_pages,
+            "ocr_max_render_pixels": self.config.ocr_max_render_pixels,
+            "ocr_timeout_seconds": self.config.ocr_timeout_seconds,
         }
         for name, value in positive.items():
             if value <= 0:
                 raise ValueError(f"archive {name} must be positive")
         if self.config.max_documents is not None and self.config.max_documents < 1:
             raise ValueError("archive max_documents must be positive")
+        if self.config.ocr_mode not in {"auto", "never", "always"}:
+            raise ValueError("archive ocr_mode is invalid")
+        if not self.config.ocr_lang.strip():
+            raise ValueError("archive ocr_lang must not be blank")
 
     def _selected_counts(self) -> tuple[int, int, int]:
         pool, eligible = self.framework_state.selected_route_candidate_counts(

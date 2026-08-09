@@ -11,6 +11,7 @@ import time
 import unittest
 import zlib
 from contextlib import closing
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -80,9 +81,7 @@ class PdfBirthtimeInvariantTests(unittest.TestCase):
             snapshot = FileSnapshot("large.pdf", 1, 9, 100, 11, 12)
             config = PdfRouteConfig(state)
             with closing(sqlite3.connect(state)) as connection:
-                connection.execute(
-                    "UPDATE metadata SET value='10' WHERE key='schema_version'"
-                )
+                connection.execute("UPDATE metadata SET value='10' WHERE key='schema_version'")
                 connection.execute(
                     """INSERT INTO documents(
                     file_key,path,size,mtime_ns,birthtime_ns,processing_signature,
@@ -114,9 +113,7 @@ class PdfBirthtimeInvariantTests(unittest.TestCase):
             initialize_pdf_state(state)
 
             with closing(sqlite3.connect(state)) as connection:
-                stored = connection.execute(
-                    "SELECT status,is_partial FROM documents"
-                ).fetchone()
+                stored = connection.execute("SELECT status,is_partial FROM documents").fetchone()
                 migrated = connection.execute(
                     "SELECT value FROM metadata WHERE key='durable_timeout_rows_migrated'"
                 ).fetchone()[0]
@@ -187,8 +184,7 @@ class PdfBirthtimeInvariantTests(unittest.TestCase):
 
             with closing(sqlite3.connect(state)) as connection:
                 rows = connection.execute(
-                    "SELECT path,status,completed_pages,error_type FROM documents "
-                    "ORDER BY path"
+                    "SELECT path,status,completed_pages,error_type FROM documents ORDER BY path"
                 ).fetchall()
             self.assertEqual(rows[0], ("complete.pdf", "done", 2, None))
             self.assertEqual(
@@ -243,9 +239,9 @@ class PdfBirthtimeInvariantTests(unittest.TestCase):
                 )
 
             with closing(sqlite3.connect(state)) as connection:
-                last_seen = connection.execute(
-                    "SELECT last_seen_run_id FROM documents"
-                ).fetchone()[0]
+                last_seen = connection.execute("SELECT last_seen_run_id FROM documents").fetchone()[
+                    0
+                ]
             self.assertEqual(last_seen, 9)
 
     def test_schema_eight_migrates_additively_with_unknown_sentinel(self) -> None:
@@ -293,8 +289,7 @@ class PdfBirthtimeInvariantTests(unittest.TestCase):
                     ).fetchone()[0]
                 )
                 document = connection.execute(
-                    "SELECT path,status,birthtime_ns FROM documents "
-                    "WHERE file_key='volume:file'"
+                    "SELECT path,status,birthtime_ns FROM documents WHERE file_key='volume:file'"
                 ).fetchone()
                 inventory = connection.execute(
                     "SELECT path,last_seen_run_id,birthtime_ns FROM pdf_inventory "
@@ -312,7 +307,10 @@ class PdfBirthtimeInvariantTests(unittest.TestCase):
             root = Path(temporary)
             source = root / "legacy.pdf"
             source.write_bytes(b"legacy PDF cache evidence")
-            snapshot = snapshot_path(source)
+            snapshot = replace(
+                snapshot_path(source),
+                birthtime_ns=source.stat().st_ctime_ns,
+            )
             expected_digest = full_fingerprint(snapshot).hex()
             state = root / "pdf.sqlite3"
             initialize_pdf_state(state)
@@ -440,7 +438,10 @@ class PdfBirthtimeInvariantTests(unittest.TestCase):
             root = Path(temporary)
             source = root / "legacy.pdf"
             source.write_bytes(b"current bytes differ from legacy evidence")
-            snapshot = snapshot_path(source)
+            snapshot = replace(
+                snapshot_path(source),
+                birthtime_ns=source.stat().st_ctime_ns,
+            )
             state = root / "pdf.sqlite3"
             initialize_pdf_state(state)
             config = PdfRouteConfig(state, ocr_mode="never")
@@ -485,7 +486,10 @@ class PdfBirthtimeInvariantTests(unittest.TestCase):
             root = Path(temporary)
             source = root / "legacy.pdf"
             source.write_bytes(b"legacy evidence")
-            snapshot = snapshot_path(source)
+            snapshot = replace(
+                snapshot_path(source),
+                birthtime_ns=source.stat().st_ctime_ns,
+            )
             state = root / "pdf.sqlite3"
             initialize_pdf_state(state)
             config = PdfRouteConfig(state, ocr_mode="never")
@@ -735,10 +739,7 @@ class PdfBirthtimeInvariantTests(unittest.TestCase):
             documents_pruned, _ = route._prune_pdf_cache()
 
             with closing(sqlite3.connect(state)) as connection:
-                surviving = {
-                    row[0]
-                    for row in connection.execute("SELECT file_key FROM documents")
-                }
+                surviving = {row[0] for row in connection.execute("SELECT file_key FROM documents")}
             self.assertEqual(documents_pruned, 1)
             self.assertIn(file_key(legacy), surviving)
             self.assertNotIn(file_key(replaced), surviving)

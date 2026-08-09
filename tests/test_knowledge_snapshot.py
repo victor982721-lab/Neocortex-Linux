@@ -39,6 +39,7 @@ from _04_Nucleo_Operativo.semantic_state import (
     register_embedding_model,
     semantic_database,
 )
+from _04_Nucleo_Operativo.text_state import initialize_text_state
 # endregion [01]
 
 # region [02] Implementación
@@ -973,6 +974,23 @@ def test_archive_owner_is_additive_only_after_archive_state_exists(
     assert archive.state is OwnerAvailability.AVAILABLE
     assert archive.observed_schema_version == 1
     assert {mark.name: mark.value for mark in archive.watermarks}["current_rows"] == "0"
+
+
+def test_text_owner_is_additive_only_after_text_state_exists(tmp_path: Path) -> None:
+    state = tmp_path / "state"
+    state.mkdir()
+    paths = KnowledgeStatePaths.from_directory(state)
+
+    absent = collect_knowledge_snapshot(paths, source_version="0.7.0")
+    assert all(owner.owner != "text" for owner in absent.owners)
+
+    initialize_text_state(state / "text.sqlite3")
+    available = collect_knowledge_snapshot(paths, source_version="0.7.0")
+
+    text = _owner(available, "text")
+    assert text.state is OwnerAvailability.AVAILABLE
+    assert text.observed_schema_version == 1
+    assert {mark.name: mark.value for mark in text.watermarks}["current_rows"] == "0"
 
 
 # endregion [02]

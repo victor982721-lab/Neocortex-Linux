@@ -262,7 +262,7 @@ def apply_text_retrieval_calibration(
     *,
     selected_model: EmbeddingModelSpec,
 ) -> SemanticRanking:
-    """Filter only exact-contract low-evidence PDF/Code text neighbours."""
+    """Filter low-evidence neighbours under the exact mixed-source contract."""
 
     calibration: dict[str, object] = {
         "policy_signature": TEXT_RETRIEVAL_CALIBRATION_SIGNATURE,
@@ -353,6 +353,44 @@ def apply_text_retrieval_calibration(
     )
 
 
+def apply_document_result_diversity(
+    ranking: SemanticRanking,
+    *,
+    max_evidence_per_item: int,
+) -> SemanticRanking:
+    """Cap repeated chunks without discarding the best evidence for a document."""
+
+    if max_evidence_per_item < 1:
+        raise ValueError("max_evidence_per_item must be positive")
+    retained_keys: set[tuple[int, str, str, int]] = set()
+    counts: dict[str, int] = {}
+    for hit in ranking.hits:
+        observed = counts.get(hit.item_id, 0)
+        if observed >= max_evidence_per_item:
+            continue
+        counts[hit.item_id] = observed + 1
+        retained_keys.add(_search_hit_key(hit))
+    retained_hits = tuple(hit for hit in ranking.hits if _search_hit_key(hit) in retained_keys)
+    retained_resolved = tuple(
+        value for value in ranking.resolved if _search_hit_key(value.hit) in retained_keys
+    )
+    return replace(
+        ranking,
+        hits=retained_hits,
+        resolved=retained_resolved,
+        provenance={
+            **ranking.provenance,
+            "document_result_diversity": {
+                "policy_signature": "semantic-document-diversity-v1",
+                "max_evidence_per_item": max_evidence_per_item,
+                "raw_hits": len(ranking.hits),
+                "retained_hits": len(retained_hits),
+                "distinct_items": len(counts),
+            },
+        },
+    )
+
+
 def registered_model_available(
     database: Path,
     expected: EmbeddingModelSpec,
@@ -400,6 +438,8 @@ def default_lexical_paths(state_directory: Path) -> LexicalStatePaths:
         docx=state_directory / "docx.sqlite3",
         office=state_directory / "office.sqlite3",
         audio=state_directory / "audio.sqlite3",
+        archive=state_directory / "archive.sqlite3",
+        text=state_directory / "text.sqlite3",
     )
 
 
@@ -505,6 +545,10 @@ def text_search_rankings(
         body_ranking,
         selected_model=selected_model,
     )
+    body_ranking = apply_document_result_diversity(
+        body_ranking,
+        max_evidence_per_item=2 if evidence_mode else 1,
+    )
     if evidence_mode or not include_title:
         return (body_ranking,)
 
@@ -518,7 +562,7 @@ def text_search_rankings(
             fusion_weight=SEMANTIC_TITLE_FUSION_WEIGHT,
             provenance={
                 "expected_policy_signature": SEMANTIC_TITLE_POLICY,
-                "expected_basis": "basename_without_final_extension",
+                "expected_basis": ("durable_source_title_or_bounded_heading_or_basename"),
                 "mutable_metadata": True,
                 "advisory_only": True,
             },
@@ -537,7 +581,7 @@ def text_search_rankings(
         fusion_weight=SEMANTIC_TITLE_FUSION_WEIGHT,
         provenance={
             "expected_policy_signature": SEMANTIC_TITLE_POLICY,
-            "expected_basis": "basename_without_final_extension",
+            "expected_basis": ("durable_source_title_or_bounded_heading_or_basename"),
             "mutable_metadata": True,
             "advisory_only": True,
         },
@@ -569,6 +613,14 @@ def text_search_rankings(
                 or not policy.strip()
             ),
         },
+    )
+    title_ranking = apply_text_retrieval_calibration(
+        title_ranking,
+        selected_model=selected_model,
+    )
+    title_ranking = apply_document_result_diversity(
+        title_ranking,
+        max_evidence_per_item=1,
     )
     if title_ranking.scanned == 0:
         return (body_ranking,)

@@ -14,7 +14,7 @@ import sqlite3
 from collections import deque
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Literal, Protocol, cast
 
 from .code_schema import CODE_SCHEMA_VERSION, readonly_code_database, validate_code_schema
@@ -317,8 +317,17 @@ def _root_hint(connection: sqlite3.Connection) -> Path:
 def module_id_from_path(path: str, root: str | Path) -> str | None:
     """Map one Python path to the dotted module identity used by providers."""
 
-    selected = Path(path)
-    base = Path(root)
+    path_value = os.fspath(path)
+    root_value = os.fspath(root)
+    windows_syntax = (
+        "\\" in path_value
+        or "\\" in root_value
+        or PureWindowsPath(path_value).drive != ""
+        or PureWindowsPath(root_value).drive != ""
+    )
+    path_type = PureWindowsPath if windows_syntax else PurePosixPath
+    selected = path_type(path_value)
+    base = path_type(root_value)
     try:
         relative = selected.relative_to(base) if selected.is_absolute() else selected
     except ValueError:

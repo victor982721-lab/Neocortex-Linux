@@ -493,7 +493,8 @@ diferencia entre PATH persistido y PATH congelado, no reinstalar por reflejo.
 - UI nueva.
 - Automatización autónoma de movimientos, renombres o eliminación.
 - Migración masiva de BLOBs históricos sin medición y dual-read.
-- Finalizar la cola Semantic histórica de 5.13 millones de jobs.
+- Finalizar la cola Semantic histórica entonces pendiente; su conteo fechado no
+  debe usarse como estado actual y queda reemplazado por `--semantic-status`.
 
 ## 10. Definición de éxito
 

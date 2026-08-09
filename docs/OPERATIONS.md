@@ -119,8 +119,11 @@ Neocortex --status --status-json
 ```
 
 Después de aprobar cada ruta por separado se puede probar una lista aún
-acotada. `--all` selecciona PDF, DOCX, Office, ZIP, audio, imagen y código, actualiza
-el catálogo técnico y se reserva para cuando exista una proyección aceptada.
+acotada. `--all` selecciona PDF, DOCX, Office, ZIP, texto/correo, audio, imagen
+y código, actualiza el catálogo técnico y se reserva para cuando exista una
+proyección aceptada. Al final avanza Semantic sobre las cachés documentales y,
+si existe la caché de imagen, también sobre CLIP visión/OCR; Code requiere
+`--semantic-source code` explícito.
 Antes de esa etapa, reutiliza el servicio de autoanálisis protegido sobre el
 checkout canónico y su estado separado. Si el corpus no está disponible, ese
 autoanálisis se conserva y el comando devuelve `2` con
@@ -151,6 +154,29 @@ ruta profunda como `contenedor.zip!/otro.zip!/documento.txt` y confirme
 profundidad o expansión deja el contenedor `partial` y el miembro inseguro sin
 leer; no se relajan límites para convertir ese resultado en éxito. La ruta no
 extrae archivos, no usa `--apply` y no organiza físicamente el corpus.
+
+Incluya en el fixture al menos un PDF con texto nativo, un PDF escaneado y una
+imagen con texto dentro de un ZIP anidado. Con `--ocr auto`, las páginas con
+menos de 40 caracteres nativos y las imágenes admitidas pasan por el worker
+aislado. Compruebe que una dependencia/idioma OCR ausente se informe como
+incidencia y que el miembro siga visible, en lugar de aceptar texto ficticio.
+
+### Piloto de texto, EML y Office heredado
+
+```bash
+Neocortex --root "$Root" --state-directory "$State" --route text \
+  --text-max-count 25 --strict-exit-codes
+Neocortex --state-directory "$State" --knowledge-status
+Neocortex --state-directory "$State" --knowledge-search "término representativo"
+Neocortex --state-directory "$State" --catalog-preview 25
+```
+
+La muestra debe combinar texto plano/Markdown, CSV o TSV, HTML/XML/JSON, un EML
+multipart y DOC/XLS/PPT reales. Repita el productor: el segundo resumen debe
+convertir los documentos sin cambios en `cache_hits`. El asunto del EML debe
+aparecer como título/nombre sugerido cuando sea más útil que el basename. Un
+Office heredado sin LibreOffice ni fallback local queda como error explícito;
+no se intenta interpretar el CFB como texto plano.
 
 ## Autoanálisis de código en laboratorio
 
@@ -516,10 +542,11 @@ nativas y procesos hijos también consumen memoria.
 | PDF | 4 workers y 2 permisos OCR; render máximo 40 000 000 píxeles por página; texto máximo 5 000 000 caracteres por página; timeout base 600 s en modo adaptativo, máximo 1200 s; reserva mínima 512 MiB por worker; máximo 2 documentos sobre 128 MiB. No hay límite predeterminado de cantidad, tamaño ni páginas. |
 | DOCX | Texto máximo 20 000 000 caracteres; presupuesto 512 MiB; margen físico y de commit de 1024 MiB; espera 60 s. Sin límite predeterminado de tamaño o cantidad. |
 | Office | Texto máximo 20 000 000 caracteres; presupuesto 512 MiB; margen físico y de commit de 1024 MiB; espera 60 s. Sin límite predeterminado de tamaño o cantidad. |
-| ZIP | Profundidad 5; 20 000 miembros visibles; directorio central 32 MiB; 64 MiB por miembro; 512 MiB expandidos y 20 000 000 caracteres por contenedor; ratio 200; PDF interno de hasta 500 páginas con worker de 768 MiB/60 s. Sin límite predeterminado de ZIP físicos. |
-| Imagen | 4 workers; presupuesto 512 MiB; margen físico y de commit de 1024 MiB; espera 60 s; timeout de worker 120 s y OCR documental 12 s. Sin límite predeterminado de tamaño o cantidad. |
+| ZIP | Profundidad 5; 20 000 miembros visibles; directorio central 32 MiB; 64 MiB por miembro; 512 MiB expandidos y 20 000 000 caracteres por contenedor; ratio 200; PDF interno de hasta 500 páginas con worker de 768 MiB/60 s; OCR hasta 50 páginas, 200 dpi, 40 000 000 píxeles y 30 s por llamada. Sin límite predeterminado de ZIP físicos. |
+| Texto | 64 MB decimales por archivo; 4 000 000 caracteres; conversor Office heredado aislado con 1024 MiB y 60 s. Sin límite predeterminado de cantidad. |
+| Imagen | 4 workers; presupuesto 512 MiB; margen físico y de commit de 1024 MiB; espera 60 s; timeout de worker 120 s y OCR documental 12 s; cada imagen elegible obtiene/reutiliza huella completa XXH3-128 en Dedup. Sin límite predeterminado de tamaño o cantidad. |
 | Audio | Duración máxima 6 h; transcripción máxima 5 000 000 caracteres y 100 000 segmentos; timeout por archivo 3600 s; arranque de worker 1800 s; reserva declarada de worker 4096 MiB, presupuesto de ruta 2048 MiB, márgenes físico/commit de 2048 MiB y espera 300 s. Sin límite predeterminado de tamaño o cantidad. |
-| Código | Archivo máximo 8 MiB; texto máximo 4 000 000 caracteres; chunks de 12 000 caracteres; sin límite predeterminado de cantidad; incluye generado y vendorizado salvo override. |
+| Código | Archivo máximo 8 MiB; texto máximo 4 000 000 caracteres; chunks de 12 000 caracteres; sin límite predeterminado de cantidad; scope `projects` excluye dependencias, generado y vendorizado salvo inclusión explícita. |
 
 El coordinador global usa por defecto un máximo de carga CPU del 90 % y una
 espera de recursos de 300 s; los presupuestos globales de memoria, commit y
@@ -532,6 +559,7 @@ a 1 GB:
 ```powershell
 Neocortex --root $Root --route pdf --MaxMB 1000 --MaxCount 25
 Neocortex --root $Root --route archive --archive-max-mb 1000 --archive-max-count 25
+Neocortex --root $Root --route text --text-max-mb 64 --text-max-count 25
 Neocortex --root $Root --route image --image-max-mb 100 --image-max-count 100
 Neocortex --root $Root --route code --code-max-count 500
 ```
@@ -583,6 +611,9 @@ Neocortex models status --json
 - FFprobe se requiere para el sondeo de audio; FFmpeg se informa en el
   diagnóstico de audio.
 - qpdf es opcional y sólo participa en recuperación estructural PDF.
+- LibreOffice es el backend preferido para extraer DOC/XLS/PPT heredados;
+  `catdoc`, `xls2csv` y `catppt` son fallbacks locales. Todos se ejecutan con
+  entrada, salida, memoria y tiempo acotados.
 - El cierre `full` requiere el Microsoft Visual C++ v14 Redistributable x64
   vigente para sus wheels nativos. Antes de promover, importa PyMuPDF, ONNX
   Runtime, PySide6, PyAV, CTranslate2 y OpenCV desde el runtime candidato;
@@ -633,16 +664,22 @@ cancelación o deadline conservan el prefijo reanudable sin mover el head. Sólo
 una enumeración `bounded-v1` completa puede publicar. Si se agota un límite, la
 CLI informa `truncated=1`, devuelve `2` y conserva el head anterior.
 
+Antes de crear jobs, `semantic-text-quality-v1` rechaza únicamente ruido de
+alta confianza: Base64/binario codificado, dumps densos de fórmulas, mojibake,
+tokens desmedidos y repetición mecánica. También colapsa chunks idénticos del
+mismo item. La caché fuente permanece completa y reconstruible. La recuperación
+Jina mixta aplica piso `0.42` a cuerpo y título de todos los owners textuales
+soportados; es abstención de retrieval, no probabilidad de relevancia.
+
 Cada item textual incorpora al final una sección de título
-`semantic_metadata_title`, derivada sólo del basename y firmada por
-`semantic-basename-title-v1`. El orden cuerpo→título preserva IDs y ordinales
-corporales en una actualización de política; el cache puede reutilizar cuerpos
-sin inferencia. Un cambio de nombre sí cambia la revisión del item y hoy puede
-crear trabajo durable corporal aunque la inferencia se reutilice: mida y
-optimice esa ruta antes de integrarla al watcher. La búsqueda pondera título
-`0.5` frente a cuerpo `1.0`; clasificación, evidencia y Knowledge `evidence`
-usan sólo el cuerpo. Knowledge `discovery` admite el título únicamente como
-prior de un recurso y revisión ya sustentados por evidencia corporal.
+`semantic_metadata_title`, firmada por `semantic-content-aware-title-v3`.
+Prefiere un título propio de la fuente, usa un encabezado inicial humano cuando
+el basename es genérico y conserva el basename como fallback. El orden
+cuerpo→título preserva IDs y ordinales corporales; el cache puede reutilizar
+cuerpos sin inferencia. La búsqueda pondera título `0.5` frente a cuerpo `1.0`,
+aplica la misma abstención y limita la repetición por documento; clasificación,
+evidencia y Knowledge `evidence` usan sólo el cuerpo. Knowledge `discovery`
+admite el título únicamente como prior de un recurso ya sustentado por cuerpo.
 
 No ejecute una cola operativa grande antes de demostrar en un estado aislado
 20–50 elementos, publicación, búsquedas representativas y segunda corrida

@@ -13,7 +13,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Iterator, cast
 
-from _02_Deduplicacion import FileChangedError, FileSnapshot, snapshot_path
+from _02_Deduplicacion import (
+    FileChangedError,
+    FileSnapshot,
+    snapshot_path,
+    stat_matches_snapshot,
+)
+from _02_Deduplicacion.path_io import native_io_path
 from _03_Progreso import (
     ProgressCallback,
     ProgressEvent,
@@ -113,10 +119,8 @@ DC = "{http://purl.org/dc/elements/1.1/}"
 DCTERMS = "{http://purl.org/dc/terms/}"
 WORD_MAIN_CONTENT_TYPES = frozenset(
     {
-        "application/vnd.openxmlformats-officedocument."
-        "wordprocessingml.document.main+xml",
-        "application/vnd.openxmlformats-officedocument."
-        "wordprocessingml.template.main+xml",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.template.main+xml",
         "application/vnd.ms-word.document.macroEnabled.main+xml",
         "application/vnd.ms-word.template.macroEnabledTemplate.main+xml",
     }
@@ -210,11 +214,7 @@ def _compress_text(text: str) -> bytes:
     compressor = zlib.compressobj(6)
     output = bytearray()
     for offset in range(0, len(text), TEXT_CHUNK_CHARS):
-        output.extend(
-            compressor.compress(
-                text[offset : offset + TEXT_CHUNK_CHARS].encode("utf-8")
-            )
-        )
+        output.extend(compressor.compress(text[offset : offset + TEXT_CHUNK_CHARS].encode("utf-8")))
     output.extend(compressor.flush())
     return bytes(output)
 
@@ -239,9 +239,7 @@ def _estimated_docx_memory_bytes(
     infos: list[zipfile.ZipInfo],
     max_text_chars: int,
 ) -> int:
-    relevant = sum(
-        info.file_size for info in infos if _part_kind(info.filename) is not None
-    )
+    relevant = sum(info.file_size for info in infos if _part_kind(info.filename) is not None)
     retained_chars = min(max_text_chars, max(1024 * 1024, relevant * 2))
     return DOCX_BASE_WORKSPACE_BYTES + relevant * 2 + retained_chars * 4
 
@@ -318,9 +316,7 @@ def _read_xml_root(
                 info,
                 upper_bound=upper_bound,
                 max_member_bytes=limit,
-                checkpoint=(
-                    cancellation.checkpoint if cancellation is not None else None
-                ),
+                checkpoint=(cancellation.checkpoint if cancellation is not None else None),
             )
             root = ET.fromstring(recovered.payload)
         except CancellationRequested:
@@ -335,15 +331,11 @@ def _read_xml_root(
             NotImplementedError,
         ) as recovery:
             effective = _effective_recovery_error(primary, recovery)
-            diagnostic = diagnostic_for_member(
-                info, effective, stage=stage, required=required
-            )
+            diagnostic = diagnostic_for_member(info, effective, stage=stage, required=required)
             if required:
                 raise fatal_member_error(info, effective, stage=stage) from primary
             return None, diagnostic
-        return root, recovered_member_diagnostic(
-            info, recovered, stage=stage, required=required
-        )
+        return root, recovered_member_diagnostic(info, recovered, stage=stage, required=required)
 
 
 def _parse_word_member(
@@ -369,9 +361,7 @@ def _parse_word_member(
         return text, layout, None
     except ValueError as exc:
         budget.consumed = prior_consumed
-        diagnostic = diagnostic_for_member(
-            info, exc, stage="word_xml", required=required
-        )
+        diagnostic = diagnostic_for_member(info, exc, stage="word_xml", required=required)
         if required:
             raise fatal_member_error(info, exc, stage="word_xml") from exc
         return None, None, diagnostic
@@ -390,9 +380,7 @@ def _parse_word_member(
                 info,
                 upper_bound=upper_bound,
                 max_member_bytes=MAX_MEMBER_BYTES,
-                checkpoint=(
-                    cancellation.checkpoint if cancellation is not None else None
-                ),
+                checkpoint=(cancellation.checkpoint if cancellation is not None else None),
             )
             text, layout = _xml_text_and_layout(
                 io.BytesIO(recovered.payload),
@@ -413,18 +401,14 @@ def _parse_word_member(
         ) as recovery:
             budget.consumed = prior_consumed
             effective = _effective_recovery_error(primary, recovery)
-            diagnostic = diagnostic_for_member(
-                info, effective, stage="word_xml", required=required
-            )
+            diagnostic = diagnostic_for_member(info, effective, stage="word_xml", required=required)
             if required:
                 raise fatal_member_error(info, effective, stage="word_xml") from primary
             return None, None, diagnostic
         return (
             text,
             layout,
-            recovered_member_diagnostic(
-                info, recovered, stage="word_xml", required=required
-            ),
+            recovered_member_diagnostic(info, recovered, stage="word_xml", required=required),
         )
 
 
@@ -442,9 +426,7 @@ class _DocxExtractionAccumulator:
             return
         self.text_chunks.append(text)
         self.parts.append(
-            _Part(
-                info.filename, "body", len(self.parts), _compress_text(text), len(text)
-            )
+            _Part(info.filename, "body", len(self.parts), _compress_text(text), len(text))
         )
 
     def add_optional(
@@ -608,8 +590,7 @@ def _validate_docx_relationship(
     valid = any(
         node.tag.rsplit("}", 1)[-1] == "Relationship"
         and node.get("Type", "").endswith(OFFICE_DOCUMENT_REL_SUFFIX)
-        and node.get("Target", "").replace("\\", "/").lstrip("/").casefold()
-        == "word/document.xml"
+        and node.get("Target", "").replace("\\", "/").lstrip("/").casefold() == "word/document.xml"
         for node in root.iter()
     )
     if valid:
@@ -652,11 +633,7 @@ def _extract_docx_parts(
         diagnostics.append(diagnostic)
     accumulator.add_body(body_info, body_text)
     optional_infos = sorted(
-        (
-            info
-            for info in infos
-            if info is not body_info and _part_kind(info.filename) is not None
-        ),
+        (info for info in infos if info is not body_info and _part_kind(info.filename) is not None),
         key=lambda item: item.filename.casefold(),
     )
     for info in optional_infos:
@@ -836,8 +813,7 @@ def extract_docx(
             image_count = sum(
                 1
                 for info in infos
-                if info.filename.casefold().startswith("word/media/")
-                and not info.is_dir()
+                if info.filename.casefold().startswith("word/media/") and not info.is_dir()
             )
             body = "".join(accumulator.text_chunks)
     return _build_extracted_docx(
@@ -910,9 +886,7 @@ class DocxRoute:
     def _candidates(self, connection) -> Iterator[FileSnapshot]:
         """Yield bounded work with errors and degraded documents first."""
 
-        row_limit = (
-            self.config.max_documents if self.config.max_documents is not None else -1
-        )
+        row_limit = self.config.max_documents if self.config.max_documents is not None else -1
         selection_sql, selection_parameters = self._selection_sql()
         rows = connection.execute(
             """SELECT i.file_key,i.path,i.size,i.mtime_ns,i.birthtime_ns
@@ -994,9 +968,7 @@ class DocxRoute:
                 selection,
             )
         else:
-            iterator = self.framework_state.iter_route_candidates(
-                self.run_id, DOCX_MIME
-            )
+            iterator = self.framework_state.iter_route_candidates(self.run_id, DOCX_MIME)
         for snapshot in iterator:
             self.cancellation.checkpoint()
             batch.append(
@@ -1025,9 +997,7 @@ class DocxRoute:
             ).fetchall()
             if not stale_keys:
                 break
-            connection.executemany(
-                "DELETE FROM docx_inventory WHERE file_key=?", stale_keys
-            )
+            connection.executemany("DELETE FROM docx_inventory WHERE file_key=?", stale_keys)
             connection.commit()
         connection.execute(
             """UPDATE documents SET last_seen_run_id=? WHERE EXISTS(
@@ -1059,9 +1029,7 @@ class DocxRoute:
                 return removed
             connection.executemany("DELETE FROM document_fts WHERE file_key=?", keys)
             removed += int(
-                connection.executemany(
-                    "DELETE FROM documents WHERE file_key=?", keys
-                ).rowcount
+                connection.executemany("DELETE FROM documents WHERE file_key=?", keys).rowcount
             )
             connection.commit()
 
@@ -1097,19 +1065,12 @@ class DocxRoute:
             return "miss"
         if row["status"] == "complete":
             return "complete"
-        if (
-            row["status"] == "error"
-            and row["failure_code"] == "ooxml_content_type_mismatch"
-        ):
+        if row["status"] == "error" and row["failure_code"] == "ooxml_content_type_mismatch":
             # One-time compatibility retry for rows written before Word
             # templates and macro-enabled packages were accepted.
             return "retry"
         force_retry = self.config.selection.force_incomplete_retry
-        if (
-            row["status"] == "partial"
-            and not self.config.retry_errors
-            and not force_retry
-        ):
+        if row["status"] == "partial" and not self.config.retry_errors and not force_retry:
             return "partial"
         if (
             row["status"] == "error"
@@ -1150,8 +1111,7 @@ class DocxRoute:
             owner_key = str(conflict["file_key"])
             if bool(conflict["owner_is_live"]):
                 raise _LiveDocxCachePathConflict(
-                    "cached DOCX path is still owned by a live inventory identity: "
-                    f"{snapshot.path}"
+                    f"cached DOCX path is still owned by a live inventory identity: {snapshot.path}"
                 )
             connection.execute(
                 "DELETE FROM document_fts WHERE file_key=?",
@@ -1290,9 +1250,7 @@ class DocxRoute:
             ),
         )
 
-    def _store_success(
-        self, connection, snapshot: FileSnapshot, result: _Extracted
-    ) -> None:
+    def _store_success(self, connection, snapshot: FileSnapshot, result: _Extracted) -> None:
         key = _file_key(snapshot)
         now = time.time_ns()
         failure_code = result.diagnostics[0].code if result.diagnostics else None
@@ -1472,8 +1430,7 @@ class DocxRoute:
             ),
         )
         candidate_stems = frozenset(
-            str(row[0])
-            for row in connection.execute("SELECT DISTINCT stem FROM current_docx")
+            str(row[0]) for row in connection.execute("SELECT DISTINCT stem FROM current_docx")
         )
         connection.execute(
             "CREATE TEMP TABLE IF NOT EXISTS current_pdfs(path TEXT PRIMARY KEY,stem TEXT NOT NULL,parent TEXT NOT NULL) WITHOUT ROWID"
@@ -1483,9 +1440,7 @@ class DocxRoute:
 
         def current_pdf_rows():
             nonlocal stale_candidates
-            for planned in self.framework_state.iter_route_candidates(
-                self.run_id, PDF_MIME
-            ):
+            for planned in self.framework_state.iter_route_candidates(self.run_id, PDF_MIME):
                 self.cancellation.checkpoint()
                 planned_path = Path(planned.path)
                 stem = planned_path.stem.casefold()
@@ -1681,8 +1636,10 @@ class DocxRoute:
         review_batch: list[ReviewCandidate],
         reconciliations: list[ReviewCandidateReconciliation],
     ) -> _DocxCandidateOutcome:
-        current = snapshot_path(snapshot.path)
-        if current != snapshot:
+        if not stat_matches_snapshot(
+            snapshot,
+            os.stat(native_io_path(snapshot.path), follow_symlinks=False),
+        ):
             raise RuntimeError("DOCX metadata changed after inventory")
         result = extract_docx(
             snapshot.path,
@@ -1690,8 +1647,10 @@ class DocxRoute:
             self.memory_gate,
             self.cancellation,
         )
-        current = snapshot_path(snapshot.path)
-        if current != snapshot:
+        if not stat_matches_snapshot(
+            snapshot,
+            os.stat(native_io_path(snapshot.path), follow_symlinks=False),
+        ):
             raise RuntimeError("DOCX metadata changed during extraction")
         self._store_success(connection, snapshot, result)
         if result.status != "partial":
@@ -1873,11 +1832,7 @@ class DocxRoute:
 
             flush_reviews()
             connection.commit()
-            stale = (
-                0
-                if self.config.selection.active
-                else self._prune_stale_documents(connection)
-            )
+            stale = 0 if self.config.selection.active else self._prune_stale_documents(connection)
             matched, ambiguous, missing, stale_pdfs = self._pair_pdfs(connection)
             connection.execute("DELETE FROM layout_groups")
             connection.execute(
@@ -1888,9 +1843,7 @@ class DocxRoute:
                 GROUP BY layout_signature""",
                 (self.run_id,),
             )
-            groups = int(
-                connection.execute("SELECT COUNT(*) FROM layout_groups").fetchone()[0]
-            )
+            groups = int(connection.execute("SELECT COUNT(*) FROM layout_groups").fetchone()[0])
         report(finished=True)
         count_skipped = max(0, eligible - selected_count)
         processing = self.config.processing_provenance

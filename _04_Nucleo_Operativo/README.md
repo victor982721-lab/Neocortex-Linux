@@ -236,11 +236,32 @@ El productor nunca extrae miembros al filesystem. Valida el directorio central,
 nombres portables, duplicados, cifrado, tipo de miembro, compresión, tamaños y
 presupuestos acumulados antes de leer. Los límites predeterminados son cinco
 niveles, 20 000 miembros visibles, 64 MiB por miembro, 512 MiB expandidos por
-contenedor y ratio 200. Texto/código, HTML/XML, PDF con texto nativo,
-DOCX/XLSX/PPTX, ODT/ODS/ODP y EPUB son consultables; otros miembros permanecen
-como metadatos. `location=archive_member inside_zip=1`, `container`, `member`,
-`chain` y `virtual_path` distinguen siempre estos resultados de un archivo
-físico.
+contenedor y ratio 200. Texto/código, HTML/XML, DOCX/XLSX/PPTX, ODT/ODS/ODP y
+EPUB son consultables. Los PDF conservan texto nativo y, en modo OCR `auto`, las
+páginas con poco texto se rasterizan de forma acotada; las imágenes
+BMP/GIF/JPEG/PNG/TIFF/WebP también pueden pasar por OCR. Así, un PDF escaneado o
+una imagen dentro de un ZIP anidado puede ser buscable sin materializarse. Si
+falta Pillow, PyMuPDF, Tesseract o el idioma requerido, el miembro y la
+incidencia siguen visibles y no se inventa texto.
+`location=archive_member inside_zip=1`, `container`, `member`, `chain` y
+`virtual_path` distinguen siempre estos resultados de un archivo físico.
+
+La ruta `text` cubre archivos físicos imprimibles que antes sólo aparecían en
+el inventario: TXT, Markdown, CSV/TSV, HTML, XML, JSON y formatos equivalentes.
+También interpreta EML y conserva asunto, remitente y encabezados acotados. Los
+DOC/XLS/PPT binarios heredados se extraen en un proceso aislado mediante
+LibreOffice o los fallbacks disponibles `catdoc`/`xls2csv`/`catppt`; una
+extensión por sí sola no convierte bytes arbitrarios en texto:
+
+```powershell
+Neocortex --root C:\Corpus\Entrada --route text --text-max-count 25
+Neocortex --knowledge-search 'protección AND transformador'
+```
+
+`text.sqlite3` conserva texto, tipo, título, autor, firma, errores y FTS5. El
+catálogo puede proponer clasificación y nombres, por ejemplo a partir del
+asunto de un EML, pero no ejecuta mutaciones. Semantic consume esta caché con
+`--semantic-source text`.
 
 La ruta `audio` transcribe de forma incremental el audio detectado por contenido
 en PTT/Opus/Ogg, MP3, WAV, FLAC, M4A/MP4 y las pistas de audio de los vídeos
@@ -305,7 +326,7 @@ qualified name. El resultado separa altas, correcciones, pérdidas y cambios de
 evidencia, conserva límites duros y trata `probable_dead` sólo como conteo no
 calibrado.
 
-La transacción global se conserva deliberadamente en el esquema 2. Pruebas con
+La transacción global se conserva deliberadamente en el esquema 4. Pruebas con
 lectores concurrentes y fault injection confirmaron snapshot precommit y
 rollback completo; no debe fragmentarse hasta definir generación, membresía,
 head/CAS, reanudación, migración y poda como un único contrato.
@@ -423,9 +444,10 @@ Neocortex --code-search "dónde se valida el acceso a SQLite" --code-search-mode
 La capa semántica complementa los índices y clasificadores deterministas; no
 los sustituye ni mezcla espacios vectoriales incompatibles. Consume de forma
 incremental las bases durables que ya producen las rutas PDF, DOCX, Office
-(XLSX/PPTX/ODT), audio y código, sin volver a abrir esos archivos. Para imágenes
-consume `image.sqlite3`, verifica el snapshot del archivo original y reutiliza
-la huella completa del deduplicador cuando está disponible; también puede
+(XLSX/PPTX/ODT), audio, Archive, texto físico y código, sin volver a abrir esos
+archivos. Para imágenes consume `image.sqlite3`, verifica el snapshot del
+archivo original y reutiliza la huella completa que la ruta de imagen garantiza
+en el deduplicador; también puede
 incorporar como texto independiente el OCR acotado y verificado que conserva la
 ruta de imagen. El resultado vive en `semantic.sqlite3` y no crea
 representaciones visibles ni modifica los archivos de origen.
@@ -498,13 +520,18 @@ persistido, no contra la afirmación del hit. SQL externo sobre tablas legacy no
 todavía poda global para builds fallidos, parciales o abandonados.
 
 La búsqueda mantiene rankings independientes para contenido textual Jina o
-MiniLM, título textual, CLIP y los índices FTS5 de PDF/DOCX/Office/audio. El
-título se deriva sólo del basename, sin directorios ni extensión final, y se
-publica como sección durable `semantic_metadata_title` bajo la política
-`semantic-basename-title-v1`. Es una señal mutable, advisory y separada del
-cuerpo: no se usa para clasificación ni como evidencia materializada. Un head
-legado sin títulos declara `title_channel_not_indexed`, sin ocultar el ranking
-corporal disponible.
+MiniLM, título textual, CLIP y los índices FTS5 de PDF/DOCX/Office/audio/
+Archive/texto. Antes de indexar, un filtro conservador rechaza Base64 o binario
+de alta confianza, volcados de fórmulas, mojibake, tokens desmesurados y texto
+de máquina muy repetitivo; además colapsa chunks exactamente duplicados dentro
+de un elemento sin alterar la caché fuente. El título usa primero un título de
+origen fiable —por ejemplo el asunto EML—, después un encabezado acotado cuando
+el basename es genérico y, como fallback, el basename sin directorios ni
+extensión final. Se publica como sección durable `semantic_metadata_title` bajo
+la política `semantic-content-aware-title-v3`. Es una señal mutable, advisory y
+separada del cuerpo: no se usa para clasificación ni como evidencia
+materializada. Un head legado sin títulos declara `title_channel_not_indexed`,
+sin ocultar el ranking corporal disponible.
 
 La fusión usa reciprocal rank fusion (RRF): combina posiciones y conserva la
 contribución de cada ranking, sin tratar sus puntuaciones crudas como si
@@ -514,13 +541,14 @@ fusionado prefiere el snippet corporal. El backend vectorial actual es una
 búsqueda exacta con un límite explícito de vectores; informa cuando el recorrido
 queda incompleto. No existe todavía un índice ANN.
 
-Para el contrato exacto Jina/body ya evaluado, PDF y Code aplican pisos de
-recuperación separados (`0.50` y `0.46`). Un vecino inferior se informa como
-`abstained`, no como hit. Esos pisos sólo filtran evidencia débil dentro de esa
-firma exacta: no son probabilidades, no se extrapolan a títulos, otros owners,
-modelos o backends y no autorizan clasificación ni mutación. La reutilización
-exacta conserva el contrato dentro de `payload_provenance`; un conflicto entre
-ese payload y el miembro evita aplicar el piso.
+El contrato mixto vigente de Jina aplica un piso uniforme `0.42` al cuerpo y al
+título de Archive, audio, Code, DOCX, imagen/OCR, ODT, PDF, PPTX, texto y XLSX.
+Un vecino inferior se informa como `abstained`, no como hit. El piso sólo
+filtra evidencia débil dentro de esa firma exacta: no es una probabilidad, no
+se extrapola a otros modelos o backends y no autoriza clasificación ni
+mutación. La reutilización exacta conserva el contrato dentro de
+`payload_provenance`; un conflicto entre ese payload y el miembro evita
+aplicarlo.
 
 La clasificación compara embeddings activos con prototipos versionados de la
 ontología industrial compartida y materializa evidencia trazable por elemento,
@@ -565,9 +593,10 @@ correcto sin embeddings publicados y consultables no es una entrega Semantic.
 
 Sin `--semantic-source`, la ruta de texto selecciona solo las bases durables que
 ya existen. La opción se repite para acotar las fuentes y acepta `pdf`, `docx`,
-`xlsx`, `pptx`, `odt`, `audio` y `code`. La ruta de imagen siempre genera evidencia
-visual CLIP; por defecto añade el OCR retenido en su espacio textual y
-`--semantic-no-ocr` lo excluye reconciliando también el estado previo.
+`xlsx`, `pptx`, `odt`, `audio`, `archive`, `text` y `code`. La ruta de imagen
+siempre genera evidencia visual CLIP; por defecto añade el OCR retenido en su
+espacio textual y `--semantic-no-ocr` lo excluye reconciliando también el
+estado previo.
 
 Las consultas admiten los modos independientes `all`, `text`, `image` y
 `lexical`; `all` fusiona los rankings disponibles. El límite de resultados es
@@ -599,11 +628,12 @@ desea evidencia de ontología actualizada, la clasificación correspondiente.
 
 ## Knowledge Plane de solo lectura
 
-La versión `0.7.2` conserva una fachada coherente de consulta sobre los propietarios
-durables ya existentes: inventario, FTS de PDF/DOCX/Office/audio, catálogo
-técnico, índice estructural de código y, cuando está publicado, evidencia
-semántica. Knowledge no descubre ni reprocesa el corpus, no crea o migra bases y
-no autoriza borrados, movimientos ni renombres.
+La versión `0.7.2` conserva una fachada coherente de consulta sobre los
+propietarios durables ya existentes: inventario, FTS de PDF/DOCX/Office/audio,
+Archive y texto físico cuando sus bases existen, catálogo técnico, índice
+estructural de código y, cuando está publicado, evidencia semántica. Knowledge
+no descubre ni reprocesa el corpus, no crea o migra bases y no autoriza
+borrados, movimientos ni renombres.
 
 Cada operación fija un snapshot lógico cross-owner, incluidos los heads
 generacionales disponibles, observa los propietarios antes y después de la
@@ -639,8 +669,9 @@ cancelación (`130`). El contrato, las garantías y los límites se detallan en
 
 ## Catálogo técnico y organización documental
 
-Después de una ruta PDF, DOCX, Office o audio, el framework clasifica incrementalmente el
-texto y los metadatos ya extraídos; no vuelve a abrir los documentos originales.
+Después de una ruta PDF, DOCX, Office, texto o audio, el framework clasifica
+incrementalmente el texto y los metadatos ya extraídos; no vuelve a abrir los
+documentos originales.
 `document_catalog.sqlite3` conserva la clasificación vigente y su historial,
 con versión, puntuación, incertidumbre y evidencia. El muestreo textual está
 acotado a un prefijo de 64 000 caracteres por documento y una clasificación sin cambios se
@@ -761,7 +792,7 @@ Neocortex --catalog-preview 100 --catalog-workstream embarques_hcn
 Neocortex --catalog-documents --document-taxonomy C:\Configuracion\taxonomia.toml
 ```
 
-La clasificación es automática tras PDF/DOCX/Office/audio;
+La clasificación es automática tras PDF/DOCX/Office/texto/audio;
 `--no-document-catalog` la desactiva explícitamente. Cada formato expone una
 barra propia con documentos clasificados, reutilizados desde caché, enviados a
 revisión, errores y pendientes. Los filtros de catálogo son consultas de solo
@@ -849,7 +880,7 @@ sistema, el directorio de estado, UNC, otros filesystems, symlinks y junctions.
 Registra `applied`, `stale`, `blocked`, `recovery_required` o `failed`. La carpeta predeterminada no se crea al planear ni consultar: se crea
 únicamente cuando `--organization-apply` o el `--apply` integral encuentra planes vigentes;
 su directorio padre debe existir. El plan solo llega a `applied` después de
-actualizar de forma idempotente el catálogo, PDF/DOCX/Office/audio, FTS, inventario
+actualizar de forma idempotente el catálogo, PDF/DOCX/Office/texto/audio, FTS, inventario
 actual, revisiones abiertas, planes pendientes de deduplicación y, cuando ya
 existe, la ruta durable del elemento en `semantic.sqlite3`. Si el proceso
 se interrumpe después del movimiento, queda `moved_cache_pending` y la siguiente
@@ -1224,17 +1255,17 @@ documento completado y el siguiente. Los demás controles son
 `--pdf-commit-backpressure-bytes` y `--pdf-memory-wait-timeout`; el valor `0`
 desactiva únicamente el margen físico o de commit indicado.
 
-Las rutas PDF, DOCX, Office, ZIP, audio, imágenes y código pueden ejecutarse
+Las rutas PDF, DOCX, Office, ZIP, texto/correo, audio, imágenes y código pueden ejecutarse
 juntas. Comparten el mismo inventario, bloqueo operativo, registro de ejecución
 y coordinador global de memoria, commit y CPU. `Neocortex --all` selecciona las
-siete y deja que el
+ocho y deja que el
 coordinador dimensione dinámicamente memoria, margen libre y CPU según el equipo;
 opciones compatibles indicadas explícitamente por el usuario tienen precedencia.
 Una combinación contradictoria como
 `--all --route pdf` se rechaza. `--all` no fuerza errores permanentes ya
 cacheados; los flags `--retry-pdf-errors`, `--retry-docx-errors`,
-`--retry-office-errors`, `--retry-archive-errors`, `--retry-audio-errors`,
-`--retry-image-errors` y `--retry-code-errors` siguen disponibles como
+`--retry-office-errors`, `--retry-archive-errors`, `--retry-text-errors`,
+`--retry-audio-errors`, `--retry-image-errors` y `--retry-code-errors` siguen disponibles como
 overrides manuales.
 
 Durante las rutas de contenido, Rich muestra contadores vivos junto a cada

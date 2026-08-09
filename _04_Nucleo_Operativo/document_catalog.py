@@ -63,7 +63,7 @@ if TYPE_CHECKING:
 MAX_CLASSIFICATION_TEXT_CHARS = 64_000
 CATALOG_WRITE_BATCH = 100
 CATALOG_PROGRESS_INTERVAL = 25
-SourceKind = Literal["pdf", "docx", "xlsx", "pptx", "odt", "audio"]
+SourceKind = Literal["pdf", "docx", "xlsx", "pptx", "odt", "text", "audio"]
 _CATALOG_WRITE_LOCK = threading.RLock()
 _CATALOG_DOCUMENT_COLUMNS = (
     "source_kind",
@@ -480,6 +480,9 @@ def _source_document_count(
     elif source_kind == "audio":
         predicate = "status='complete'"
         parameters = ()
+    elif source_kind == "text":
+        predicate = "status='complete'"
+        parameters = ()
     else:
         predicate = "format=? AND status='complete'"
         parameters = (source_kind,)
@@ -541,6 +544,7 @@ def update_document_catalog(
         (state_directory / "office.sqlite3", "xlsx"),
         (state_directory / "office.sqlite3", "pptx"),
         (state_directory / "office.sqlite3", "odt"),
+        (state_directory / "text.sqlite3", "text"),
         (state_directory / "audio.sqlite3", "audio"),
     )
     return tuple(
@@ -870,6 +874,33 @@ def _iter_source_documents(
             processing_signature,text_xxh3_128,title,author,created,modified
             FROM documents WHERE status IN ('complete','partial') ORDER BY path"""
         )
+    elif source_kind == "text":
+        rows = connection.execute(
+            """SELECT file_key,path,size,mtime_ns,birthtime_ns,status,
+            processing_signature,text_xxh3_128,title,author,metadata_json
+            FROM documents WHERE status='complete' ORDER BY path"""
+        )
+        for row in rows:
+            volume_id, file_id = _split_file_key(str(row["file_key"]))
+            yield SourceDocument(
+                source_kind="text",
+                file_key=str(row["file_key"]),
+                path=str(row["path"]),
+                volume_id=volume_id,
+                file_id=file_id,
+                size=int(row["size"]),
+                mtime_ns=int(row["mtime_ns"]),
+                birthtime_ns=int(row["birthtime_ns"]),
+                source_status=str(row["status"]),
+                processing_signature=str(row["processing_signature"]),
+                text_fingerprint=(
+                    None if row["text_xxh3_128"] is None else str(row["text_xxh3_128"])
+                ),
+                title=str(row["title"] or ""),
+                author=str(row["author"] or ""),
+                metadata=_metadata_text(_json_mapping(row["metadata_json"])),
+            )
+        return
     elif source_kind == "audio":
         rows = connection.execute(
             """SELECT file_key,path,size,mtime_ns,birthtime_ns,status,

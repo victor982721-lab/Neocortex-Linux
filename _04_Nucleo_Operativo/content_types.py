@@ -12,6 +12,7 @@ strong enough evidence.  Guessing from an extension would defeat validation.
 # region [01] Dependencias del módulo
 from __future__ import annotations
 
+import re
 import struct
 import zipfile
 import zlib
@@ -30,7 +31,69 @@ HEADER_LIMIT = 64 * 1024
 ZIP_MEMBER_LIMIT = 4096
 ZIP_STRUCTURE_MEMBER_LIMIT = 10_000
 ZIP_MIMETYPE_LIMIT = 256
-DETECTOR_VERSION = "content-types-v1"
+DETECTOR_VERSION = "content-types-v2"
+
+_TEXT_EXTENSIONS = frozenset(
+    {
+        "",
+        ".adoc",
+        ".bash",
+        ".bat",
+        ".before",
+        ".c",
+        ".cfg",
+        ".cmd",
+        ".conf",
+        ".cpp",
+        ".cs",
+        ".css",
+        ".csv",
+        ".directory",
+        ".env",
+        ".example",
+        ".gitignore",
+        ".go",
+        ".h",
+        ".hpp",
+        ".htm",
+        ".html",
+        ".ini",
+        ".java",
+        ".js",
+        ".json",
+        ".jsonl",
+        ".local",
+        ".log",
+        ".lua",
+        ".md",
+        ".php",
+        ".properties",
+        ".ps1",
+        ".py",
+        ".r",
+        ".rb",
+        ".rels",
+        ".rs",
+        ".rst",
+        ".service",
+        ".sh",
+        ".sql",
+        ".swift",
+        ".tex",
+        ".toml",
+        ".ts",
+        ".tsv",
+        ".txt",
+        ".vbs",
+        ".xml",
+        ".yaml",
+        ".yml",
+    }
+)
+_OLE_SIGNATURE = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+_RFC5322_HEADER = re.compile(
+    rb"(?im)^(?:from|to|date|subject|message-id|mime-version):[^\r\n]+\r?$"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,9 +107,7 @@ class DetectedType:
         return Path(path).suffix.casefold() in self.accepted_extensions
 
 
-def _type(
-    mime: str, canonical: str, accepted: tuple[str, ...], evidence: str
-) -> DetectedType:
+def _type(mime: str, canonical: str, accepted: tuple[str, ...], evidence: str) -> DetectedType:
     return DetectedType(
         mime,
         canonical,
@@ -93,9 +154,7 @@ def _detect_zip(path: str | Path) -> DetectedType:
             if "mimetype" in names:
                 try:
                     with archive.open("mimetype") as member:
-                        value = member.read(ZIP_MIMETYPE_LIMIT).decode(
-                            "ascii", "strict"
-                        )
+                        value = member.read(ZIP_MIMETYPE_LIMIT).decode("ascii", "strict")
                 except (KeyError, OSError, UnicodeError, RuntimeError):
                     value = ""
                 open_formats = {
@@ -125,9 +184,7 @@ def _detect_zip(path: str | Path) -> DetectedType:
                     "zip:android-manifest",
                 )
             if "meta-inf/manifest.mf" in names:
-                return _type(
-                    "application/java-archive", ".jar", (".jar",), "zip:java-manifest"
-                )
+                return _type("application/java-archive", ".jar", (".jar",), "zip:java-manifest")
     except (
         OSError,
         RuntimeError,
@@ -144,9 +201,7 @@ def _detect_iso_bmff(header: bytes) -> DetectedType | None:
     if len(header) < 12 or header[4:8] != b"ftyp":
         return None
     brands = {header[8:12]}
-    brands.update(
-        header[offset : offset + 4] for offset in range(16, min(len(header), 64), 4)
-    )
+    brands.update(header[offset : offset + 4] for offset in range(16, min(len(header), 64), 4))
     if brands & {b"avif", b"avis"}:
         return _type("image/avif", ".avif", (".avif",), "isobmff:avif")
     if brands & {
@@ -184,9 +239,7 @@ def _detect_pe(path: str | Path, header: bytes) -> DetectedType:
                 evidence = "magic:pe"
         except OSError:
             pass
-    return _type(
-        "application/vnd.microsoft.portable-executable", canonical, accepted, evidence
-    )
+    return _type("application/vnd.microsoft.portable-executable", canonical, accepted, evidence)
 
 
 def _detect_document_or_image(header: bytes) -> DetectedType | None:
@@ -198,7 +251,7 @@ def _detect_document_or_image(header: bytes) -> DetectedType | None:
         return _type("image/jpeg", ".jpg", (".jpg", ".jpeg", ".jpe"), "magic:jpeg")
     if header.startswith((b"GIF87a", b"GIF89a")):
         return _type("image/gif", ".gif", (".gif",), "magic:gif")
-    if header.startswith(b"II*\x00") or header.startswith(b"MM\x00*"):
+    if header.startswith((b"II*\x00", b"MM\x00*")):
         if header[8:10] == b"CR":
             return _type("image/x-canon-cr2", ".cr2", (".cr2",), "magic:cr2")
         return _type(
@@ -217,17 +270,9 @@ def _detect_document_or_image(header: bytes) -> DetectedType | None:
         return _type("image/bmp", ".bmp", (".bmp", ".dib"), "magic:bmp")
     if header.startswith(b"8BPS"):
         return _type("image/vnd.adobe.photoshop", ".psd", (".psd",), "magic:psd")
-    if (
-        len(header) >= 6
-        and header.startswith(b"\x00\x00\x01\x00")
-        and header[4:6] != b"\0\0"
-    ):
+    if len(header) >= 6 and header.startswith(b"\x00\x00\x01\x00") and header[4:6] != b"\0\0":
         return _type("image/x-icon", ".ico", (".ico",), "magic:ico")
-    if (
-        len(header) >= 6
-        and header.startswith(b"\x00\x00\x02\x00")
-        and header[4:6] != b"\0\0"
-    ):
+    if len(header) >= 6 and header.startswith(b"\x00\x00\x02\x00") and header[4:6] != b"\0\0":
         return _type("image/x-win-bitmap", ".cur", (".cur",), "magic:cursor")
     return None
 
@@ -246,9 +291,7 @@ def _detect_media(header: bytes) -> DetectedType | None:
     if header.startswith(b"fLaC"):
         return _type("audio/flac", ".flac", (".flac",), "magic:flac")
     if header.startswith(b"OggS"):
-        return _type(
-            "application/ogg", ".ogg", (".ogg", ".oga", ".ogv", ".opus"), "magic:ogg"
-        )
+        return _type("application/ogg", ".ogg", (".ogg", ".oga", ".ogv", ".opus"), "magic:ogg")
     mpeg_header = int.from_bytes(header[:4], "big") if len(header) >= 4 else 0
     valid_mpeg_frame = (
         mpeg_header >> 21 == 0x7FF
@@ -263,11 +306,7 @@ def _detect_media(header: bytes) -> DetectedType | None:
 
 
 def _detect_archive(path: str, header: bytes) -> DetectedType | None:
-    if (
-        header.startswith(b"PK\x03\x04")
-        or header.startswith(b"PK\x05\x06")
-        or header.startswith(b"PK\x07\x08")
-    ):
+    if header.startswith((b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08")):
         return _detect_zip(path)
     if header.startswith(b"7z\xbc\xaf\x27\x1c"):
         return _type("application/x-7z-compressed", ".7z", (".7z",), "magic:7z")
@@ -302,6 +341,120 @@ def _detect_database_or_executable(
     return None
 
 
+def _detect_legacy_office(path: str, header: bytes) -> DetectedType | None:
+    if not header.startswith(_OLE_SIGNATURE):
+        return None
+    suffix = Path(path).suffix.casefold()
+    legacy = {
+        ".doc": (
+            "application/msword",
+            ".doc",
+            (".doc", ".dot"),
+            "cfb:word-extension",
+        ),
+        ".dot": (
+            "application/msword",
+            ".doc",
+            (".doc", ".dot"),
+            "cfb:word-extension",
+        ),
+        ".xls": (
+            "application/vnd.ms-excel",
+            ".xls",
+            (".xls", ".xlt"),
+            "cfb:excel-extension",
+        ),
+        ".xlt": (
+            "application/vnd.ms-excel",
+            ".xls",
+            (".xls", ".xlt"),
+            "cfb:excel-extension",
+        ),
+        ".ppt": (
+            "application/vnd.ms-powerpoint",
+            ".ppt",
+            (".ppt", ".pot", ".pps"),
+            "cfb:powerpoint-extension",
+        ),
+        ".pot": (
+            "application/vnd.ms-powerpoint",
+            ".ppt",
+            (".ppt", ".pot", ".pps"),
+            "cfb:powerpoint-extension",
+        ),
+        ".pps": (
+            "application/vnd.ms-powerpoint",
+            ".ppt",
+            (".ppt", ".pot", ".pps"),
+            "cfb:powerpoint-extension",
+        ),
+    }
+    value = legacy.get(suffix)
+    return None if value is None else _type(*value)
+
+
+def _text_decoding(header: bytes) -> tuple[str, str] | None:
+    encodings = (
+        ("utf-32",)
+        if header.startswith((b"\xff\xfe\x00\x00", b"\x00\x00\xfe\xff"))
+        else ("utf-16",)
+        if header.startswith((b"\xff\xfe", b"\xfe\xff"))
+        else ("utf-8-sig", "cp1252")
+    )
+    for encoding in encodings:
+        try:
+            value = header.decode(encoding, "strict")
+        except UnicodeError:
+            continue
+        sample = value[:32_768]
+        if not sample:
+            return None
+        printable = sum(character.isprintable() or character.isspace() for character in sample)
+        controls = sum(
+            ord(character) < 32 and character not in "\b\t\n\f\r\x1b" for character in sample
+        )
+        if printable / len(sample) >= 0.90 and controls / len(sample) <= 0.01:
+            return value, encoding
+    return None
+
+
+def _detect_text(path: str, header: bytes) -> DetectedType | None:
+    suffix = Path(path).suffix.casefold()
+    if suffix == ".eml" and len(_RFC5322_HEADER.findall(header)) >= 2:
+        return _type("message/rfc822", ".eml", (".eml",), "rfc5322:headers")
+    if suffix not in _TEXT_EXTENSIONS:
+        return None
+    decoded = _text_decoding(header)
+    if decoded is None:
+        return None
+    value, encoding = decoded
+    stripped = value.lstrip("\ufeff \t\r\n")
+    if suffix in {".htm", ".html"} and re.match(r"(?is)<!doctype\s+html|<html\b", stripped):
+        return _type("text/html", ".html", (".htm", ".html"), f"text:{encoding}:html")
+    if suffix in {".xml", ".rels"} and stripped.startswith(("<?xml", "<")):
+        return _type("application/xml", ".xml", (".xml", ".rels"), f"text:{encoding}:xml")
+    if suffix in {".json", ".jsonl"} and stripped.startswith(("{", "[")):
+        return _type("application/json", ".json", (".json", ".jsonl"), f"text:{encoding}:json")
+    if suffix == ".csv":
+        return _type("text/csv", ".csv", (".csv",), f"text:{encoding}:csv")
+    if suffix == ".tsv":
+        return _type(
+            "text/tab-separated-values",
+            ".tsv",
+            (".tsv",),
+            f"text:{encoding}:tsv",
+        )
+    if suffix in {".md", ".rst", ".adoc"}:
+        return _type(
+            "text/markdown",
+            ".md",
+            (".md", ".rst", ".adoc"),
+            f"text:{encoding}:markup",
+        )
+    accepted = tuple(sorted(_TEXT_EXTENSIONS))
+    return _type("text/plain", ".txt", accepted, f"text:{encoding}:printable")
+
+
 def detect_content_type(path: str | Path) -> DetectedType | None:
     """Detect a known type from bounded header/container evidence."""
 
@@ -321,5 +474,13 @@ def detect_content_type(path: str | Path) -> DetectedType | None:
     archive = _detect_archive(native, header)
     if archive is not None:
         return archive
-    return _detect_database_or_executable(native, header)
+    legacy_office = _detect_legacy_office(native, header)
+    if legacy_office is not None:
+        return legacy_office
+    database_or_executable = _detect_database_or_executable(native, header)
+    if database_or_executable is not None:
+        return database_or_executable
+    return _detect_text(native, header)
+
+
 # endregion [02]

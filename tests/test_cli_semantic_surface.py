@@ -8,13 +8,11 @@
 from __future__ import annotations
 
 import argparse
-import os
 
 import pytest
 
 from _04_Nucleo_Operativo.cli_parser import build_parser
 from _04_Nucleo_Operativo.cli_validation import validate_arguments
-from neocortex.platform_policy import LINUX_MUTATION_REASON
 # endregion [01]
 
 # region [02] Implementación
@@ -22,11 +20,7 @@ from neocortex.platform_policy import LINUX_MUTATION_REASON
 
 SEMANTIC_GROUP_TITLE = "Multimodal semantic index"
 KNOWLEDGE_GROUP_TITLE = "Read-only Knowledge Plane"
-_APPLY_PRECEDENCE_MESSAGE = (
-    "--semantic-plan-json requires --semantic-plan"
-    if os.name == "nt"
-    else f"{LINUX_MUTATION_REASON}: corpus mutation is intentionally unavailable on Linux"
-)
+_APPLY_PRECEDENCE_MESSAGE = "--semantic-plan-json requires --semantic-plan"
 
 
 def _expected_store(
@@ -174,7 +168,17 @@ EXPECTED_SEMANTIC_ACTIONS = (
     _expected_store(
         "--semantic-source",
         "semantic_source",
-        choices=("pdf", "docx", "xlsx", "pptx", "odt", "audio", "code"),
+        choices=(
+            "pdf",
+            "docx",
+            "xlsx",
+            "pptx",
+            "odt",
+            "audio",
+            "archive",
+            "text",
+            "code",
+        ),
         help_text=("repeat to select durable text caches for text/all planning or indexing"),
         action_name="_AppendAction",
     ),
@@ -271,7 +275,7 @@ EXPECTED_SEMANTIC_HELP = (
     "  --semantic-evidence-limit N\n"
     "                        maximum advisory evidence rows to display; truncation\n"
     "                        is reported\n"
-    "  --semantic-source {pdf,docx,xlsx,pptx,odt,audio,code}\n"
+    "  --semantic-source {pdf,docx,xlsx,pptx,odt,audio,archive,text,code}\n"
     "                        repeat to select durable text caches for text/all\n"
     "                        planning or indexing\n"
     "  --semantic-text-profile {quality,compact}\n"

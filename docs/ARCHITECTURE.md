@@ -1,7 +1,7 @@
 # Arquitectura de NeoCortex
 
 > **Estado del documento.** Contrato derivado del árbol inspeccionado el
-> 8 de agosto de 2026. Describe el comportamiento observado y separa los
+> 9 de agosto de 2026. Describe el comportamiento observado y separa los
 > cambios previstos de los ya implementados. No certifica por sí solo la suite
 > completa ni la instalación empaquetada. El árbol auditado declara la versión
 > `0.7.2`; la versión instalada debe comprobarse con
@@ -12,7 +12,7 @@
 NeoCortex es un framework local para Windows y Linux que permite descubrir, identificar, extraer,
 indexar, relacionar, clasificar, revisar y buscar contenido personal de forma
 incremental. Sus rutas actuales cubren PDF, DOCX, otros documentos Office,
-audio, imágenes y código.
+ZIP anidados, texto físico/correo/Office heredado, audio, imágenes y código.
 
 La arquitectura persigue estos invariantes:
 
@@ -98,9 +98,9 @@ conocimiento se documentan en [KNOWLEDGE.md](KNOWLEDGE.md).
        ┌─────────────┴─────────────────────────────┐
        │                                           │
  enumeración portable + USN opcional        rutas de contenido
-       │                               ┌────┬────┬────┬────┬────┐
- inventario y deduplicación            PDF DOCX Office Audio Image Code
-       │                               └────┴────┴────┴────┴────┘
+       │                         ┌────┬────┬────┬────┬────┬────┬────┬────┐
+ inventario y deduplicación      PDF DOCX Office ZIP Text Audio Image Code
+       │                         └────┴────┴────┴────┴────┴────┴────┴────┘
  checkpoint durable                          │
        │                     catálogo documental / revisión / semántica
        └───────────────────────────────┬─────┘
@@ -241,7 +241,7 @@ widgets ni escribir directamente a una terminal para informar avance.
 Núcleo de aplicación. Contiene:
 
 - configuración, parser, validación y reporte CLI;
-- fachada plana `ApplicationConfig` compatible con `FrameworkConfig`, siete
+- fachada plana `ApplicationConfig` compatible con `FrameworkConfig`, ocho
   proyecciones de ruta y una proyección de límites globales calculadas desde el
   valor vigente;
 - superficies de registro/validación CLI separadas para Audio, Code, Semantic y
@@ -275,9 +275,9 @@ Frontend PySide6:
 - permite cancelación supervisada;
 - consulta estado mediante conexiones cortas de sólo lectura.
 
-La GUI ofrece PDF, DOCX, Office, ZIP, audio, imagen y Code. En Linux presenta modo
-portátil, no solicita elevación y desactiva los controles de mutación, sin
-retirar inventario, procesamiento o búsqueda.
+La GUI ofrece PDF, DOCX, Office, ZIP, texto/correo, audio, imagen y Code. En
+Linux presenta modo portátil, no solicita elevación y desactiva los controles
+de mutación, sin retirar inventario, procesamiento o búsqueda.
 
 ### Compatibilidad de raíz
 
@@ -304,8 +304,9 @@ Neocortex --help
 3. `--gui-worker`: protocolo interno del frontend, no comando de usuario.
 
 Las operaciones directas se registran declarativamente y cargan su handler de
-forma lazy. Audio, Code, Semantic y Knowledge separan registro y validación en
-sus módulos `cli_*_surface.py`; los handlers conservan sus módulos de dominio.
+forma lazy. Archive, texto, audio, Code, Semantic y Knowledge separan registro
+y validación en sus módulos `cli_*_surface.py`; los handlers conservan sus
+módulos de dominio.
 Las operaciones que escriben estado adquieren el lock común cuando su contrato
 lo requiere. La lista de comandos y códigos de salida está en
 [CLI.md](CLI.md).
@@ -624,14 +625,16 @@ El orden estable es:
 | `pdf` | snapshots identificados como PDF | texto, páginas, OCR, warnings, FTS, similitud y layout | catálogo documental |
 | `docx` | OOXML Word validado | partes, texto, diagnósticos, FTS, layout y vínculos PDF | catálogo documental |
 | `office` | OOXML/ODF de otros documentos | texto, estado y FTS | catálogo documental |
+| `archive` | ZIP y ZIP anidados validados | miembros virtuales, cadena de contenedores, texto nativo/OCR, incidencias y FTS | Knowledge y Semantic; no organización física |
+| `text` | texto imprimible, EML y CFB DOC/XLS/PPT | texto visible, título/autor, metadata, errores y FTS | catálogo documental, Knowledge y Semantic |
 | `audio` | audio/vídeo sondeado | transcripción, segmentos y FTS | catálogo documental |
-| `image` | imágenes no documentales o candidatas de documento | clasificación, OCR/evidencia y estado | revisión; no catálogo documental actual |
+| `image` | imágenes no documentales o candidatas de documento | clasificación, OCR/evidencia, estado y huella completa Dedup | revisión y Semantic; no catálogo documental actual |
 | `code` | archivos de texto/código acotados | proyectos, versiones, AST/símbolos, referencias, grafo, chunks y FTS | búsqueda y puente semántico |
 
-El grafo de código conserva esquema 2 y una transacción global en
+El grafo de código conserva esquema 4 y una transacción global en
 `finalize_graph`. Lectores concurrentes observan el snapshot anterior hasta el
 commit y los fallos por fase revierten el estado completo. Se descartó
-fragmentar esa transacción: antes se requiere un esquema 3 que defina build,
+fragmentar esa transacción: antes se requiere un esquema sucesor que defina build,
 membresía, head/CAS, writer, reanudación, publicación, migración, rollback y
 poda como un único contrato.
 
@@ -686,10 +689,11 @@ thread: creación, iteración y cierre ocurren en el thread propietario de la
 conexión SQLite. Un `finally` del productor lo cierra también ante error o
 cancelación; el coordinador no desenrolla ese generator desde otro thread.
 
-Las rutas PDF, DOCX, Office y audio alimentan el catálogo por lotes. Archive,
-imagen y código conservan repositorios especializados; no deben presentarse
-como documentos catalogados si no existe ese consumidor. Knowledge consume el
-FTS Archive directamente y conserva la cadena `ZIP!/miembro` como procedencia.
+Las rutas PDF, DOCX, Office, texto y audio alimentan el catálogo por lotes.
+Archive, imagen y código conservan repositorios especializados; no deben
+presentarse como documentos catalogados si no existe ese consumidor. Knowledge
+consume FTS de Archive y texto directamente; Archive conserva la cadena
+`ZIP!/miembro` como procedencia y no entra a organización física.
 
 ## Concurrencia y cancelación
 
@@ -779,15 +783,15 @@ Modelos:       ${XDG_DATA_HOME:-~/.local/share}/Neocortex/models
 ```
 
 Las bases principales son `dedup`, `framework`, `pdf`, `docx`, `office`,
-`audio`, `image`, `document_catalog`, `code` y `semantic`. No todas existen
-antes de usar su ruta. La UI persiste configuración aparte, en
+`archive`, `text`, `audio`, `image`, `document_catalog`, `code` y `semantic`.
+No todas existen antes de usar su ruta. La UI persiste configuración aparte, en
 `%LOCALAPPDATA%\Neocortex\ui.ini`, y FastEmbed usa el directorio hermano
 `models\fastembed`. En Linux la UI usa el árbol de configuración XDG y
 FastEmbed el cache compartido `models/fastembed`.
 
-La Knowledge Plane no es otro owner persistente: lee esas diez bases, conserva
-su snapshot y resultados sólo en memoria y no introduce una migración en
-`0.7.0`.
+La Knowledge Plane no es otro owner persistente: conserva los diez owners
+históricos y agrega Archive y texto sólo cuando existen sus bases. Su snapshot
+y resultados viven en memoria y no introducen una migración propia.
 
 En Dedup v9, `DedupIndex.published_snapshots(root)` es el lector público para
 recorrer la generación vigente: checkpoint y filas se seleccionan en una sola
@@ -887,6 +891,8 @@ Controles observados:
   sesión SQLite por fuente;
 - colas multiprocessing pequeñas para PDF, imagen y Whisper;
 - límites de miembros, expansión y central directory antes de abrir ZIP/OOXML;
+- OCR de PDF e imágenes dentro de ZIP y conversión de Office heredado en
+  procesos aislados con tiempo, memoria y salida acotados;
 - límites de píxeles, texto, páginas, duración y segmentos por ruta;
 - subprocess con argumentos, timeout, drenaje concurrente y límite de salida;
 - limpieza de temporales después de cerrar procesos y handles;
@@ -1002,7 +1008,7 @@ Los siguientes límites deben permanecer visibles:
 - semántica v6 y catálogo v6 aíslan el staging y publican por puntero/CAS para
   sus lectores oficiales (`NC-AUD-012` y `NC-AUD-013`); SQL externo sobre
   tablas legacy no hereda el contrato;
-- el grafo de código conserva esquema 2 no generacional y una transacción global
+- el grafo de código conserva esquema 4 no generacional y una transacción global
   extensa (`NC-AUD-015`); es atómica para lectores, pero carece de reanudación y
   de cancelación dentro de una sentencia SQL. Los empates permanecen ambiguos y
   la firma global del registro puede invalidar lenguajes no afectados; no debe

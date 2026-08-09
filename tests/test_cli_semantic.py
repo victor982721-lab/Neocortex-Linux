@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import inspect
 import json
-import os
 import sys
 import time
 from collections.abc import Callable
@@ -30,7 +29,6 @@ from _04_Nucleo_Operativo.semantic_lexical import (
     LexicalAvailability,
     LexicalRanking,
 )
-from neocortex.platform_policy import LINUX_MUTATION_REASON
 from _04_Nucleo_Operativo.protected_content import (
     ProtectedContentPolicy,
     ProtectedPathSpec,
@@ -290,11 +288,7 @@ def test_semantic_cli_defaults_are_offline_bounded_and_quality_first() -> None:
         ),
         (
             ["--semantic-index", "text", "--apply"],
-            (
-                "cannot be combined with file-action --apply"
-                if os.name == "nt"
-                else LINUX_MUTATION_REASON
-            ),
+            "cannot be combined with file-action --apply",
         ),
         (
             ["--semantic-search-mode", "lexical"],

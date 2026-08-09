@@ -520,12 +520,7 @@ def _semantic_index_result_failed(
     *,
     incomplete_is_error: bool,
 ) -> bool:
-    if (
-        not incomplete_is_error
-        and result.truncated
-        and result.errors == 0
-        and result.stale == 0
-    ):
+    if not incomplete_is_error and result.truncated and result.errors == 0 and result.stale == 0:
         return False
     return not result.complete
 
@@ -559,7 +554,7 @@ def run_integrated_all_semantic_index(
     result_sink: Callable[[str, object], None] | None = None,
     print_output: bool = True,
 ) -> int:
-    """Advance bounded document embeddings after the six ``--all`` routes.
+    """Advance bounded document and image embeddings after ``--all`` routes.
 
     Broad code inventories can contain millions of chunks, so Code remains an
     explicit ``--semantic-source code`` choice.  The default integrated stage
@@ -572,7 +567,10 @@ def run_integrated_all_semantic_index(
     from .semantic_sources import TEXT_SOURCE_KINDS, semantic_source_database
 
     integrated_args = argparse.Namespace(**vars(args))
-    integrated_args.semantic_index = "text"
+    image_available = semantic_source_database(
+        args.state_directory,
+        "image",
+    ).is_file()
     if args.semantic_source is None:
         integrated_args.semantic_source = tuple(
             source_kind
@@ -581,9 +579,12 @@ def run_integrated_all_semantic_index(
             and semantic_source_database(args.state_directory, source_kind).is_file()
         )
     selected_sources = tuple(integrated_args.semantic_source or ())
-    if not selected_sources:
+    integrated_args.semantic_index = (
+        "all" if selected_sources and image_available else "text" if selected_sources else "image"
+    )
+    if not selected_sources and not image_available:
         if print_output:
-            print("SEMANTIC_ALL status=skipped reason=no_document_or_audio_text_cache")
+            print("SEMANTIC_ALL status=skipped reason=no_durable_text_or_image_cache")
         emit_progress(
             progress,
             ProgressEvent(
@@ -604,6 +605,7 @@ def run_integrated_all_semantic_index(
             f"max_items={args.semantic_max_items} "
             f"max_new_jobs={args.semantic_max_new_jobs} "
             f"time_budget_seconds={args.semantic_time_budget_seconds:g} "
+            f"images={int(image_available)} "
             f"code_explicit={int('code' in selected_sources)}"
         )
     emit_progress(

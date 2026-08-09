@@ -25,6 +25,7 @@ from _04_Nucleo_Operativo.semantic_sources import (
     iter_text_source_records,
     semantic_item_title_section,
 )
+from _04_Nucleo_Operativo.text_state import initialize_text_state, text_database
 
 
 # region [01] Minimal durable image and dedup states
@@ -67,6 +68,41 @@ def test_semantic_title_uses_only_bounded_basename_and_appends_after_content() -
         content,
         title,
     )
+
+
+def test_semantic_title_replaces_recovery_name_with_bounded_content_heading() -> None:
+    item = _title_item("C:/corpus/Archivo protegido recuperado 00820 - c8930027.pdf")
+    content = TextSection(
+        "pdf_page",
+        "1",
+        "BITÁCORA DIARIA DE TRABAJOS\nCentral Hidroeléctrica La Yesca",
+    )
+
+    sections = tuple(iter_text_sections_with_metadata(item, (content,)))
+
+    assert sections[0] == content
+    assert sections[1].text == "BITÁCORA DIARIA DE TRABAJOS"
+    assert sections[1].provenance["basis"] == "bounded_leading_content_heading"
+    assert sections[1].provenance["generic_basename_replaced"] is True
+
+
+def test_semantic_title_prefers_durable_email_subject() -> None:
+    item = SemanticItem(
+        item_id="item:text:email",
+        source_kind="text",
+        source_identity="email",
+        identity_version="fixture-v1",
+        fingerprint=fingerprint_text("email"),
+        path="C:/corpus/mensaje.eml",
+        provenance={"source_title": "Prueba funcional del alimentador norte"},
+    )
+
+    title = semantic_item_title_section(item, "Contenido visible del mensaje")
+
+    assert title is not None
+    assert title.text == "Prueba funcional del alimentador norte"
+    assert title.provenance["basis"] == "durable_source_title"
+    assert title.provenance["source_title_preferred"] is True
 
 
 @pytest.mark.parametrize(
@@ -480,6 +516,125 @@ def _create_code_text_state(state_directory: Path) -> str:
     return f"{volume_id}:{physical_file_id}"
 
 
+def _create_archive_text_state(state_directory: Path) -> str:
+    file_key = "archive:member-fixture"
+    text = "protección diferencial dentro de un ZIP anidado"
+    with sqlite3.connect(state_directory / "archive.sqlite3") as connection:
+        connection.executescript(
+            """
+            CREATE TABLE containers(
+                container_key TEXT PRIMARY KEY,path TEXT,status TEXT
+            );
+            CREATE TABLE documents(
+                file_key TEXT PRIMARY KEY,container_key TEXT,path TEXT,
+                container_path TEXT,member_chain TEXT,member_path TEXT,
+                archive_depth INTEGER,content_kind TEXT,media_type TEXT,
+                size INTEGER,mtime_ns INTEGER,birthtime_ns INTEGER,
+                processing_signature TEXT,status TEXT,text_xxh3_128 TEXT,
+                text_chars INTEGER,text_zlib BLOB,last_seen_run_id INTEGER
+            );
+            """
+        )
+        connection.execute(
+            "INSERT INTO containers VALUES(?,?,?)",
+            ("container-fixture", "C:/corpus/outer.zip", "complete"),
+        )
+        connection.execute(
+            "INSERT INTO documents VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                file_key,
+                "container-fixture",
+                "C:/corpus/outer.zip!/inner.zip!/relay.txt",
+                "C:/corpus/outer.zip",
+                "inner.zip!/relay.txt",
+                "relay.txt",
+                2,
+                "txt",
+                "text/plain",
+                48,
+                60,
+                -1,
+                "archive-route-fixture-v1",
+                "indexed",
+                fingerprint_text(text).xxh3_128,
+                len(text),
+                zlib.compress(text.encode("utf-8")),
+                9,
+            ),
+        )
+    return file_key
+
+
+def test_archive_text_adapter_preserves_nested_virtual_provenance(tmp_path: Path) -> None:
+    file_key = _create_archive_text_state(tmp_path)
+
+    records = tuple(iter_text_source_records(tmp_path, "archive"))
+
+    assert len(records) == 1
+    record = records[0]
+    assert record.item.item_id == f"item:archive:{file_key}"
+    assert record.item.path == "C:/corpus/outer.zip!/inner.zip!/relay.txt"
+    assert record.section.section_kind == "archive_member"
+    assert record.section.provenance["inside_zip"] is True
+    assert record.section.provenance["archive_depth"] == 2
+    assert record.section.provenance["member_chain"] == "inner.zip!/relay.txt"
+
+
+def test_generic_text_adapter_preserves_physical_provenance_and_email_title(
+    tmp_path: Path,
+) -> None:
+    state = tmp_path / "text.sqlite3"
+    initialize_text_state(state)
+    text = "resultado satisfactorio de la protección del alimentador"
+    file_key = "00000000000000000000000000000015:00000000000000000000000000000022"
+    with text_database(state, create=False) as connection:
+        connection.execute(
+            """INSERT INTO documents(
+            file_key,path,size,mtime_ns,birthtime_ns,processing_signature,status,
+            content_kind,media_type,title,author,metadata_json,text_zlib,text_chars,
+            text_xxh3_128,text_truncated,detail,last_seen_run_id,updated_ns)
+            VALUES(?,?,?,?,?,?,'complete',?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                file_key,
+                "C:/corpus/mensaje.eml",
+                500,
+                700,
+                900,
+                "text-route-v1",
+                "email",
+                "message/rfc822",
+                "Prueba funcional del alimentador norte",
+                "Operacion <operacion@example.test>",
+                '{"date":"2026-08-09"}',
+                zlib.compress(text.encode("utf-8")),
+                len(text),
+                fingerprint_text(text).xxh3_128,
+                0,
+                "stdlib_email_visible_text",
+                12,
+                1_000,
+            ),
+        )
+        connection.commit()
+
+    records = tuple(iter_text_source_records(tmp_path, "text"))
+
+    assert len(records) == 1
+    record = records[0]
+    assert record.item.item_id == f"item:text:{file_key}"
+    assert record.item.source_revision == {
+        "size": 500,
+        "mtime_ns": 700,
+        "birthtime_ns": 900,
+        "processing_signature": "text-route-v1",
+        "last_seen_run_id": 12,
+    }
+    assert record.item.provenance["source_title"] == ("Prueba funcional del alimentador norte")
+    assert record.item.provenance["source_author"] == ("Operacion <operacion@example.test>")
+    assert record.section.text == text
+    assert record.section.provenance["inside_zip"] is False
+
+
 # endregion [01]
 
 
@@ -498,15 +653,11 @@ def test_image_fingerprint_is_stable_when_dedup_cache_appears(
     cached = tuple(iter_image_source_records(tmp_path))
 
     assert len(streamed) == len(cached) == 1
-    assert (
-        streamed[0].item.item_id == cached[0].item.item_id == f"item:image:{file_key}"
-    )
+    assert streamed[0].item.item_id == cached[0].item.item_id == f"item:image:{file_key}"
     assert streamed[0].item.fingerprint == cached[0].item.fingerprint
     assert streamed[0].item.source_revision["raw_content_xxh3_128"] == digest.hex()
     assert cached[0].item.source_revision["raw_content_xxh3_128"] == digest.hex()
-    assert streamed[0].item.source_revision["processing_signature"] == (
-        "image-route-fixture-v1"
-    )
+    assert streamed[0].item.source_revision["processing_signature"] == ("image-route-fixture-v1")
     assert streamed[0].item.source_revision["last_seen_run_id"] == 101
     assert cached[0].item.source_revision["last_seen_run_id"] == 101
     assert streamed[0].item.provenance["fingerprint_acquisition"] == "streamed-source"
@@ -557,9 +708,7 @@ def test_decode_text_rejects_valid_stream_with_garbage_suffix() -> None:
 
 def test_decode_text_rejects_concatenated_streams() -> None:
     first = "subestación"
-    payload = zlib.compress(first.encode("utf-8")) + zlib.compress(
-        "transformador".encode("utf-8")
-    )
+    payload = zlib.compress(first.encode("utf-8")) + zlib.compress("transformador".encode("utf-8"))
 
     with pytest.raises(SemanticSourceError, match="trailing or concatenated"):
         semantic_sources._decode_text(payload, len(first))
@@ -602,9 +751,7 @@ def test_image_schema_v5_reads_verified_ocr_without_unused_columns(
 
     assert len(records) == 1
     assert records[0].item.item_id == f"item:image:{file_key}"
-    assert records[0].item.source_revision["processing_signature"] == (
-        "image-route-fixture-v5"
-    )
+    assert records[0].item.source_revision["processing_signature"] == ("image-route-fixture-v5")
     assert records[0].item.source_revision["last_seen_run_id"] == 505
     assert records[0].ocr_section is not None
     assert records[0].ocr_section.text == text
@@ -704,9 +851,7 @@ def test_partial_text_sources_preserve_owner_status(
     records = tuple(iter_text_source_records(tmp_path, source_kind))
 
     assert len(records) == 4
-    assert all(
-        record.item.provenance["source_status"] == "partial" for record in records
-    )
+    assert all(record.item.provenance["source_status"] == "partial" for record in records)
 
 
 # endregion [04]

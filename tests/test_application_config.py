@@ -19,6 +19,7 @@ from _04_Nucleo_Operativo.application_config import (
     docx_route_config_from_application,
     global_resource_limits_from_application,
     pdf_route_config_from_application,
+    text_route_config_from_application,
 )
 from _04_Nucleo_Operativo.archive_route import ArchiveRouteConfig
 from _04_Nucleo_Operativo.cli_config import framework_config_from_args
@@ -36,7 +37,9 @@ from _04_Nucleo_Operativo.route_registry import (
     code_route_config_from_framework,
     docx_route_config_from_framework,
     pdf_route_config_from_framework,
+    text_route_config_from_framework,
 )
+from _04_Nucleo_Operativo.text_route import TextRouteConfig
 # endregion [01]
 
 # region [02] Implementación
@@ -45,7 +48,7 @@ from _04_Nucleo_Operativo.route_registry import (
 def test_application_config_preserves_the_complete_legacy_dataclass() -> None:
     assert ApplicationConfig is FrameworkConfig
     application_fields = fields(ApplicationConfig)
-    assert len(application_fields) == 146
+    assert len(application_fields) == 161
     assert {item.name for item in application_fields} >= {
         "analysis_profile",
         "deep_test_selectors",
@@ -62,6 +65,11 @@ def test_application_config_preserves_the_complete_legacy_dataclass() -> None:
         "archive_max_depth",
         "archive_max_members",
         "archive_max_total_uncompressed_bytes",
+        "archive_ocr_mode",
+        "archive_ocr_max_pages",
+        "text_max_file_bytes",
+        "text_max_text_chars",
+        "text_libreoffice_cmd",
     }
     base = Path("synthetic-application-config")
 
@@ -81,6 +89,7 @@ def test_application_config_preserves_the_complete_legacy_dataclass() -> None:
     assert canonical.framework_database == (base / "canonical-state" / "framework.sqlite3")
     assert canonical.code_database == base / "canonical-state" / "code.sqlite3"
     assert canonical.archive_database == base / "canonical-state" / "archive.sqlite3"
+    assert canonical.text_database == base / "canonical-state" / "text.sqlite3"
 
 
 def test_application_facade_reexports_the_runtime_projections() -> None:
@@ -101,6 +110,38 @@ def test_application_facade_reexports_the_runtime_projections() -> None:
     assert (
         pdf_route_config_from_application is runtime_projections.pdf_route_config_from_application
     )
+    assert (
+        text_route_config_from_application is runtime_projections.text_route_config_from_application
+    )
+
+
+def test_text_projection_preserves_all_limits_and_selection() -> None:
+    selection = CandidateSelection(paths=("mensaje.eml",))
+    config = ApplicationConfig(
+        state_directory=Path("text-state"),
+        selection=selection,
+        text_max_file_bytes=5_000_000,
+        text_max_documents=31,
+        text_max_text_chars=456_789,
+        text_worker_timeout_seconds=12.5,
+        text_worker_memory_bytes=678_000_000,
+        text_retry_errors=True,
+        text_libreoffice_cmd=r"C:\Program Files\LibreOffice\program\soffice.exe",
+    )
+    expected = TextRouteConfig(
+        state_path=Path("text-state") / "text.sqlite3",
+        max_file_bytes=5_000_000,
+        max_documents=31,
+        max_text_chars=456_789,
+        worker_timeout_seconds=12.5,
+        worker_memory_bytes=678_000_000,
+        retry_errors=True,
+        libreoffice_cmd=r"C:\Program Files\LibreOffice\program\soffice.exe",
+        selection=selection,
+    )
+
+    assert text_route_config_from_application(config) == expected
+    assert text_route_config_from_framework(config) == expected
 
 
 def test_archive_projection_preserves_recursive_limits_and_selection() -> None:

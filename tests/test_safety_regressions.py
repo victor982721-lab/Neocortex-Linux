@@ -92,9 +92,7 @@ class InventoryRootSafetyTests(_DirectoryLinkTestCase):
             self.create_directory_link(target, link)
 
             with DedupIndex(base / "state.sqlite3") as index:
-                with self.assertRaisesRegex(
-                    InventoryError, "symlink, junction, or reparse point"
-                ):
+                with self.assertRaisesRegex(InventoryError, "symlink, junction, or reparse point"):
                     index.scan(link, excluded_paths=())
 
     def test_exclusion_alias_is_canonicalized_with_the_root(self) -> None:
@@ -134,9 +132,7 @@ class InventoryRootSafetyTests(_DirectoryLinkTestCase):
                 moved_root = base / "moved-corpus"
                 root.rename(moved_root)
                 self.create_directory_link(moved_root, root)
-                with self.assertRaisesRegex(
-                    ValueError, "cannot be a symlink or reparse point"
-                ):
+                with self.assertRaisesRegex(ValueError, "cannot be a symlink or reparse point"):
                     state.begin_initial_run(
                         root,
                         JournalCursor(root.drive, 1, 0),
@@ -559,9 +555,9 @@ class InventoryRootSafetyTests(_DirectoryLinkTestCase):
             real_check = action_policy._is_reparse_entry
 
             def simulated_reparse(path: Path, entry_stat: os.stat_result) -> bool:
-                return os.path.normcase(
-                    os.path.abspath(path)
-                ) == parent_key or real_check(path, entry_stat)
+                return os.path.normcase(os.path.abspath(path)) == parent_key or real_check(
+                    path, entry_stat
+                )
 
             with (
                 DedupIndex(base / "dedup.sqlite3") as index,
@@ -725,9 +721,9 @@ class InventoryRootSafetyTests(_DirectoryLinkTestCase):
             real_check = action_policy._is_reparse_entry
 
             def simulated_reparse(path: Path, entry_stat: os.stat_result) -> bool:
-                return os.path.normcase(
-                    os.path.abspath(path)
-                ) == keeper_parent_key or real_check(path, entry_stat)
+                return os.path.normcase(os.path.abspath(path)) == keeper_parent_key or real_check(
+                    path, entry_stat
+                )
 
             with (
                 DedupIndex(base / "dedup.sqlite3") as index,
@@ -781,9 +777,9 @@ class InventoryRootSafetyTests(_DirectoryLinkTestCase):
             )
 
             def simulated_reparse(path: Path, entry_stat: os.stat_result) -> bool:
-                return os.path.normcase(
-                    os.path.abspath(path)
-                ) == parent_key or real_check(path, entry_stat)
+                return os.path.normcase(os.path.abspath(path)) == parent_key or real_check(
+                    path, entry_stat
+                )
 
             with (
                 DedupIndex(base / "dedup.sqlite3") as index,
@@ -816,6 +812,7 @@ class InventoryRootSafetyTests(_DirectoryLinkTestCase):
             self.assertTrue(source.exists())
             self.assertFalse(source.with_suffix(".png").exists())
 
+    @unittest.skipUnless(os.name == "nt", "native mutation backend is Windows-only")
     def test_normal_in_root_rename_still_succeeds(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
@@ -878,8 +875,7 @@ class PlannerSnapshotSafetyTests(unittest.TestCase):
             with DedupIndex(base / "state.sqlite3") as index:
                 scan = index.scan(root, excluded_paths=())
                 recorded = {
-                    Path(snapshot.path).name: snapshot
-                    for snapshot in index.snapshots(scan.scan_id)
+                    Path(snapshot.path).name: snapshot for snapshot in index.snapshots(scan.scan_id)
                 }[left.name]
 
                 replacement = root / "replacement.bin"
@@ -1180,9 +1176,7 @@ class VerifiedRecycleSafetyTests(unittest.TestCase):
             trash.assert_not_called()
             self.assertEqual(result, (0, 0, 1))
             self.assertTrue(candidate.exists())
-            self.assertEqual(
-                tuple(snapshot.path for snapshot in remaining), (str(candidate),)
-            )
+            self.assertEqual(tuple(snapshot.path for snapshot in remaining), (str(candidate),))
             with closing(sqlite3.connect(framework_database)) as connection:
                 action = connection.execute(
                     "SELECT action_type,status,detail FROM file_actions"

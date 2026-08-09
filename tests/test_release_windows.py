@@ -137,9 +137,7 @@ class _FakeOps:
             security_descriptor=descriptor,
         )
 
-    def copy_create_new_and_flush(
-        self, source: Path, destination: Path
-    ) -> FileSnapshot:
+    def copy_create_new_and_flush(self, source: Path, destination: Path) -> FileSnapshot:
         source_key = self._key(source)
         destination_key = self._key(destination)
         self.copy_calls.append((source_key, destination_key))
@@ -168,9 +166,7 @@ class _FakeOps:
 
     def write_create_new_and_flush(self, path: Path, payload: bytes) -> None:
         key = self._key(path)
-        if self.write_error_suffix is not None and key.name.endswith(
-            self.write_error_suffix
-        ):
+        if self.write_error_suffix is not None and key.name.endswith(self.write_error_suffix):
             raise OSError("synthetic receipt write failure")
         with key.open("xb") as stream:
             stream.write(payload)
@@ -315,10 +311,7 @@ def _canonical_payload(path: Path) -> dict[str, Any]:
     assert (
         payload
         == (
-            json.dumps(
-                decoded, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-            )
-            + "\n"
+            json.dumps(decoded, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
         ).encode()
     )
     return decoded
@@ -404,15 +397,11 @@ def test_successful_transition_enforces_complete_atomic_contract(
     assert intent["stage_evidence_path"] == str(result.stage_evidence_path)
     stage_evidence = _canonical_payload(result.stage_evidence_path)
     assert stage_evidence["intent_sha256"] == result.intent_sha256
-    assert hashlib.sha256(result.intent_path.read_bytes()).hexdigest() == (
-        result.intent_sha256
-    )
+    assert hashlib.sha256(result.intent_path.read_bytes()).hexdigest() == (result.intent_sha256)
     assert hashlib.sha256(result.stage_evidence_path.read_bytes()).hexdigest() == (
         result.stage_evidence_sha256
     )
-    assert hashlib.sha256(result.result_path.read_bytes()).hexdigest() == (
-        result.receipt_sha256
-    )
+    assert hashlib.sha256(result.result_path.read_bytes()).hexdigest() == (result.receipt_sha256)
     assert fixture.ops.receipt_writes == [
         result.intent_path,
         result.stage_evidence_path,
@@ -429,9 +418,7 @@ def test_known_launcher_hash_is_input_not_hardcoded_authorization(
 
 
 @pytest.mark.parametrize("target", ["current", "desired"])
-def test_initial_exact_cas_failure_precedes_all_writes(
-    tmp_path: Path, target: str
-) -> None:
+def test_initial_exact_cas_failure_precedes_all_writes(tmp_path: Path, target: str) -> None:
     fixture = _fixture(tmp_path)
     field = "expected_current" if target == "current" else "expected_desired"
     bad = replace(getattr(fixture.request, field), sha256="0" * 64)
@@ -457,15 +444,11 @@ def test_second_exact_cas_drift_preserves_committed_stage(
         _result(fixture)
     assert fixture.native.calls == []
     staged = [
-        destination
-        for source, destination in fixture.ops.copy_calls
-        if source == fixture.desired
+        destination for source, destination in fixture.ops.copy_calls if source == fixture.desired
     ]
     assert len(staged) == 1
     assert staged[0].exists()
-    assert any(
-        "stage evidence" in note for note in getattr(caught.value, "__notes__", ())
-    )
+    assert any("stage evidence" in note for note in getattr(caught.value, "__notes__", ()))
 
 
 def test_corrupt_content_addressed_backup_is_never_overwritten(tmp_path: Path) -> None:
@@ -482,9 +465,7 @@ def test_corrupt_content_addressed_backup_is_never_overwritten(tmp_path: Path) -
 
 
 @pytest.mark.parametrize("fault", ["volume", "filesystem"])
-def test_staging_must_be_a_new_file_on_same_ntfs_volume(
-    tmp_path: Path, fault: str
-) -> None:
+def test_staging_must_be_a_new_file_on_same_ntfs_volume(tmp_path: Path, fault: str) -> None:
     fixture = _fixture(tmp_path)
     original_copy = fixture.ops.copy_create_new_and_flush
 
@@ -769,12 +750,8 @@ def test_promote_rollback_repromote_sequence_is_hash_exact_and_chained(
         operation="rollback",
         chain=fixture.request.receipt_chain.advance(promoted),
     )
-    rolled_back = transition_launcher(
-        rollback_request, ops=fixture.ops, native=fixture.native
-    )
-    assert (
-        fixture.ops.snapshot_by_handle(fixture.layout.launcher_path).sha256 == old_hash
-    )
+    rolled_back = transition_launcher(rollback_request, ops=fixture.ops, native=fixture.native)
+    assert fixture.ops.snapshot_by_handle(fixture.layout.launcher_path).sha256 == old_hash
     assert (
         _canonical_payload(rolled_back.intent_path)["previous_receipt_sha256"]
         == promoted.receipt_sha256
@@ -786,12 +763,8 @@ def test_promote_rollback_repromote_sequence_is_hash_exact_and_chained(
         operation="repromote",
         chain=rollback_request.receipt_chain.advance(rolled_back),
     )
-    repromoted = transition_launcher(
-        repromote_request, ops=fixture.ops, native=fixture.native
-    )
-    assert (
-        fixture.ops.snapshot_by_handle(fixture.layout.launcher_path).sha256 == new_hash
-    )
+    repromoted = transition_launcher(repromote_request, ops=fixture.ops, native=fixture.native)
+    assert fixture.ops.snapshot_by_handle(fixture.layout.launcher_path).sha256 == new_hash
     assert (
         _canonical_payload(repromoted.intent_path)["previous_receipt_sha256"]
         == rolled_back.receipt_sha256
@@ -799,12 +772,11 @@ def test_promote_rollback_repromote_sequence_is_hash_exact_and_chained(
     assert len(fixture.native.calls) == 3
     native_backups = [call[2] for call in fixture.native.calls]
     assert len(set(native_backups)) == 3
-    assert all(
-        path.parent == fixture.layout.launcher_path.parent for path in native_backups
-    )
-    assert {
-        path.name for path in fixture.layout.backup_directory.glob("*.launcher")
-    } == {f"{old_hash}.launcher", f"{new_hash}.launcher"}
+    assert all(path.parent == fixture.layout.launcher_path.parent for path in native_backups)
+    assert {path.name for path in fixture.layout.backup_directory.glob("*.launcher")} == {
+        f"{old_hash}.launcher",
+        f"{new_hash}.launcher",
+    }
     assert fixture.desired.read_bytes() == b"new-launcher-0.7.2\n"
 
 
@@ -848,9 +820,7 @@ def test_second_cas_rejects_desired_identity_content_and_current_acl_races(
             replacement.write_bytes(fixture.desired.read_bytes())
             fixture.ops.register(replacement, _NEW_DESCRIPTOR)
             os.replace(replacement, fixture.desired)
-            fixture.ops.descriptors[fixture.desired] = fixture.ops.descriptors.pop(
-                replacement
-            )
+            fixture.ops.descriptors[fixture.desired] = fixture.ops.descriptors.pop(replacement)
 
         fixture.ops.snapshot_hooks[fixture.desired] = desired_race
     else:
@@ -976,17 +946,11 @@ def test_recovery_rejects_untrusted_intent_without_mutation(
         other = _fixture(tmp_path / "other")
         with pytest.raises(ReceiptValidationError, match="outside"):
             recover_pending_transition(other.layout, intent_path, ops=fixture.ops)
-        assert (
-            fixture.ops.snapshot_by_handle(fixture.layout.launcher_path)
-            == original_launcher
-        )
+        assert fixture.ops.snapshot_by_handle(fixture.layout.launcher_path) == original_launcher
         return
     with pytest.raises(ReceiptValidationError):
         recover_pending_transition(fixture.layout, intent_path, ops=fixture.ops)
-    assert (
-        fixture.ops.snapshot_by_handle(fixture.layout.launcher_path)
-        == original_launcher
-    )
+    assert fixture.ops.snapshot_by_handle(fixture.layout.launcher_path) == original_launcher
     assert fixture.native.calls == []
 
 
@@ -1000,9 +964,7 @@ def test_existing_conflicting_result_is_not_overwritten(tmp_path: Path) -> None:
     with pytest.raises(_Crash):
         _result(fixture, checkpoint=crash)
     intent_path = next(fixture.layout.receipts_directory.glob("*.intent.json"))
-    result_path = intent_path.with_name(
-        intent_path.name.replace(".intent.", ".result.")
-    )
+    result_path = intent_path.with_name(intent_path.name.replace(".intent.", ".result."))
     result_path.write_bytes(b"{}")
     original = result_path.read_bytes()
     with pytest.raises(ReceiptValidationError):
@@ -1052,9 +1014,7 @@ def test_valid_content_addressed_backup_is_reused_without_overwrite(
     fixture.ops.copy_calls.clear()
     assert _result(fixture).status == "success"
     assert fixture.ops.snapshot_by_handle(backup) == existing
-    assert all(
-        source != fixture.layout.launcher_path for source, _ in fixture.ops.copy_calls
-    )
+    assert all(source != fixture.layout.launcher_path for source, _ in fixture.ops.copy_calls)
 
 
 def test_corrupt_new_backup_copy_is_removed_and_never_replaced(
@@ -1094,7 +1054,24 @@ def test_native_wrapper_rejects_zero_unknown_flags_and_translates_win32_error(
         with pytest.raises(ValueError, match="WRITE_THROUGH"):
             native.replace_file(current, stage, backup, flags=flags)
     monkeypatch.setattr(release_windows, "_replace_file_w", lambda *_args: 0)
-    monkeypatch.setattr(release_windows.ctypes, "get_last_error", lambda: 5)
+    monkeypatch.setattr(
+        release_windows.ctypes,
+        "get_last_error",
+        lambda: 5,
+        raising=False,
+    )
+
+    def win_error(code: int) -> OSError:
+        error = OSError(code, "fixture Win32 error")
+        error.winerror = code  # type: ignore[attr-defined]
+        return error
+
+    monkeypatch.setattr(
+        release_windows.ctypes,
+        "WinError",
+        win_error,
+        raising=False,
+    )
     with pytest.raises(OSError) as caught:
         native.replace_file(
             current,
@@ -1272,9 +1249,7 @@ def test_previous_receipt_requires_complete_result_semantics(
     )
     chain = ReceiptChain(
         previous_receipt_path=result.result_path,
-        previous_receipt_sha256=hashlib.sha256(
-            result.result_path.read_bytes()
-        ).hexdigest(),
+        previous_receipt_sha256=hashlib.sha256(result.result_path.read_bytes()).hexdigest(),
     )
     second = _fixture(tmp_path / "second")
 
@@ -1489,9 +1464,7 @@ def test_previous_result_unhashable_scalars_fail_as_receipt_validation(
     _write_canonical_payload(result.result_path, payload)
     chain = ReceiptChain(
         previous_receipt_path=result.result_path,
-        previous_receipt_sha256=hashlib.sha256(
-            result.result_path.read_bytes()
-        ).hexdigest(),
+        previous_receipt_sha256=hashlib.sha256(result.result_path.read_bytes()).hexdigest(),
     )
     second = _fixture(tmp_path / "second")
 
@@ -1674,9 +1647,7 @@ def test_atomic_cleanup_boundary_preserves_foreign_native_backup(
         def replace_before_atomic_remove() -> None:
             nonlocal foreign
             os.replace(foreign_path, native_backup)
-            fixture.ops.descriptors[native_backup] = fixture.ops.descriptors.pop(
-                foreign_path
-            )
+            fixture.ops.descriptors[native_backup] = fixture.ops.descriptors.pop(foreign_path)
             foreign = fixture.ops.snapshot_by_handle(native_backup)
 
         fixture.ops.remove_hooks[native_backup] = replace_before_atomic_remove
@@ -1694,17 +1665,13 @@ def test_atomic_remove_seam_is_idempotent_and_rejects_foreign_identity(
 ) -> None:
     fixture = _fixture(tmp_path)
     absent = tmp_path / "absent-owned.launcher"
-    absent_snapshot = fixture.ops.copy_create_new_and_flush(
-        fixture.layout.launcher_path, absent
-    )
+    absent_snapshot = fixture.ops.copy_create_new_and_flush(fixture.layout.launcher_path, absent)
     absent.unlink()
     fixture.ops.descriptors.pop(absent)
     fixture.ops.remove_file_if_snapshot(absent, absent_snapshot)
 
     target = tmp_path / "target-owned.launcher"
-    expected = fixture.ops.copy_create_new_and_flush(
-        fixture.layout.launcher_path, target
-    )
+    expected = fixture.ops.copy_create_new_and_flush(fixture.layout.launcher_path, target)
     foreign_path = tmp_path / "target-foreign.launcher"
     fixture.ops.copy_create_new_and_flush(fixture.layout.launcher_path, foreign_path)
     os.replace(foreign_path, target)
@@ -1819,9 +1786,7 @@ def test_success_cleanup_revalidates_evidence_after_target_observation(
             elif evidence == "intent":
                 intent_path.write_bytes(b'{"broken":true}\n')
             elif evidence == "result":
-                result_path = Path(
-                    str(intent_path).replace(".intent.json", ".result.json")
-                )
+                result_path = Path(str(intent_path).replace(".intent.json", ".result.json"))
                 result_path.write_bytes(b'{"broken":true}\n')
             else:
                 Path(intent["external_backup_path"]).write_bytes(b"broken backup\n")
@@ -1829,9 +1794,7 @@ def test_success_cleanup_revalidates_evidence_after_target_observation(
         fixture.ops.snapshot_hooks[native_backup] = damage_during_target_snapshot
 
     expected_message = (
-        "cleanup evidence"
-        if evidence in {"result", "external_backup"}
-        else "stage evidence"
+        "cleanup evidence" if evidence in {"result", "external_backup"} else "stage evidence"
     )
     with pytest.raises(TransitionEffectUncertainError, match=expected_message):
         _result(fixture, checkpoint=arm_target_observation)
@@ -1887,9 +1850,7 @@ def test_copy_creation_never_deletes_or_adopts_foreign_identity(
 ) -> None:
     fixture = _fixture(tmp_path)
     original_copy = fixture.ops.copy_create_new_and_flush
-    target_source = (
-        fixture.layout.launcher_path if target == "external_backup" else fixture.desired
-    )
+    target_source = fixture.layout.launcher_path if target == "external_backup" else fixture.desired
     foreign: tuple[Path, FileSnapshot] | None = None
 
     def race_copy(source: Path, destination: Path) -> FileSnapshot:
@@ -1910,9 +1871,7 @@ def test_copy_creation_never_deletes_or_adopts_foreign_identity(
         foreign_path.write_bytes(destination_key.read_bytes())
         fixture.ops.register(foreign_path, fixture.ops.descriptors[destination_key])
         os.replace(foreign_path, destination_key)
-        fixture.ops.descriptors[destination_key] = fixture.ops.descriptors.pop(
-            foreign_path
-        )
+        fixture.ops.descriptors[destination_key] = fixture.ops.descriptors.pop(foreign_path)
         foreign_snapshot = fixture.ops.snapshot_by_handle(destination_key)
         assert foreign_snapshot.file_id != owned.file_id
         foreign = destination_key, foreign_snapshot
@@ -1964,9 +1923,7 @@ def test_direct_pre_native_cleanup_revalidates_sidecar_after_target_cas(
     stage, sidecar, stage_before = armed
     assert fixture.ops.snapshot_by_handle(stage) == stage_before
     assert sidecar.read_bytes() == b'{"broken":true}\n'
-    assert any(
-        "stage evidence" in note for note in getattr(caught.value, "__notes__", ())
-    )
+    assert any("stage evidence" in note for note in getattr(caught.value, "__notes__", ()))
     assert fixture.native.calls == []
 
 
@@ -2245,9 +2202,7 @@ def test_pre_native_receipt_read_cannot_swap_exact_stage_identity(
             replacement.write_bytes(stage_path.read_bytes())
             fixture.ops.register(replacement, fixture.ops.descriptors[stage_path])
             os.replace(replacement, stage_path)
-            fixture.ops.descriptors[stage_path] = fixture.ops.descriptors.pop(
-                replacement
-            )
+            fixture.ops.descriptors[stage_path] = fixture.ops.descriptors.pop(replacement)
             foreign_stage = fixture.ops.snapshot_by_handle(stage_path)
 
         fixture.ops.read_hooks[target] = swap_stage_on_read
@@ -2256,10 +2211,7 @@ def test_pre_native_receipt_read_cannot_swap_exact_stage_identity(
         _result(fixture, checkpoint=arm_swap)
 
     assert fixture.native.calls == []
-    assert (
-        fixture.layout.launcher_path.read_bytes()
-        == b"old-launcher-arbitrary-baseline\n"
-    )
+    assert fixture.layout.launcher_path.read_bytes() == b"old-launcher-arbitrary-baseline\n"
     assert stage_path is not None
     assert original_stage is not None and foreign_stage is not None
     assert foreign_stage.file_id != original_stage.file_id
@@ -2363,4 +2315,6 @@ def test_stage_evidence_mismatch_after_native_preserves_backup_and_surfaces_unce
     assert (sidecar.exists(), sidecar.read_bytes() if sidecar.exists() else None) == (
         expected_state
     )
+
+
 # endregion [02]

@@ -45,8 +45,7 @@ class DocumentCacheSyncResult:
         if not errors:
             return None
         return "; ".join(
-            f"{item.database}: {item.detail or 'unknown synchronization error'}"
-            for item in errors
+            f"{item.database}: {item.detail or 'unknown synchronization error'}" for item in errors
         )
 
 
@@ -77,14 +76,14 @@ def synchronize_moved_document(
     retry because each path transition accepts either the old or final path.
     """
 
-    if source_kind not in {"pdf", "docx", "xlsx", "pptx", "odt", "audio"}:
+    if source_kind not in {"pdf", "docx", "xlsx", "pptx", "odt", "text", "audio"}:
         raise ValueError(f"unsupported document source kind: {source_kind}")
     if _path_key(old_path) == _path_key(new_path):
         raise ValueError("cache synchronization requires two distinct paths")
     now_ns = time.time_ns()
     source_database = state_directory / (
         f"{source_kind}.sqlite3"
-        if source_kind in {"pdf", "docx", "audio"}
+        if source_kind in {"pdf", "docx", "text", "audio"}
         else "office.sqlite3"
     )
     results = [
@@ -184,9 +183,7 @@ def _synchronize_database(
         return CacheDatabaseSync(label, "absent")
     connection: sqlite3.Connection | None = None
     try:
-        connection = sqlite3.connect(
-            existing_sqlite_uri(path), uri=True, timeout=60
-        )
+        connection = sqlite3.connect(existing_sqlite_uri(path), uri=True, timeout=60)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA busy_timeout=60000")
         connection.execute("PRAGMA foreign_keys=ON")
@@ -243,8 +240,10 @@ def _sync_source_cache(
         f"{source_kind}_inventory"
         if source_kind in {"pdf", "docx", "audio"}
         else "office_inventory"
+        if source_kind in {"xlsx", "pptx", "odt"}
+        else None
     )
-    if _table_exists(connection, inventory_table):
+    if inventory_table is not None and _table_exists(connection, inventory_table):
         _require_columns(connection, inventory_table, {"file_key", "path"})
         updated += _transition_keyed_path(
             connection,
@@ -327,9 +326,7 @@ def _transition_fts_paths(
         if _path_key(str(row["path"])) not in {_path_key(old_path), _path_key(new_path)}
     )
     if unexpected:
-        raise RuntimeError(
-            f"{table} contains an unexpected cached path: {unexpected[0]}"
-        )
+        raise RuntimeError(f"{table} contains an unexpected cached path: {unexpected[0]}")
     cursor = connection.execute(
         f"UPDATE {table} SET path=? WHERE file_key=? AND path=?",
         (new_path, file_key, old_path),
@@ -380,14 +377,9 @@ def _sync_semantic_cache(
     """Move one exact semantic identity without creating or reindexing state."""
 
     schema_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-    if not (
-        _MIN_COMPATIBLE_SEMANTIC_SCHEMA
-        <= schema_version
-        <= _MAX_COMPATIBLE_SEMANTIC_SCHEMA
-    ):
+    if not (_MIN_COMPATIBLE_SEMANTIC_SCHEMA <= schema_version <= _MAX_COMPATIBLE_SEMANTIC_SCHEMA):
         raise RuntimeError(
-            "semantic schema version is not compatible with path synchronization: "
-            f"{schema_version}"
+            f"semantic schema version is not compatible with path synchronization: {schema_version}"
         )
     _require_columns(connection, "metadata", {"key", "value"})
     metadata_version = connection.execute(
@@ -400,9 +392,7 @@ def _sync_semantic_cache(
     except (TypeError, ValueError) as exc:
         raise RuntimeError("semantic metadata schema_version is invalid") from exc
     if declared_version != schema_version:
-        raise RuntimeError(
-            "semantic schema version metadata does not match PRAGMA user_version"
-        )
+        raise RuntimeError("semantic schema version metadata does not match PRAGMA user_version")
     _require_columns(
         connection,
         "semantic_items",
@@ -416,13 +406,8 @@ def _sync_semantic_cache(
     ).fetchone()
     if row is None:
         return 0
-    if (
-        str(row["source_kind"]) != source_kind
-        or str(row["source_identity"]) != file_key
-    ):
-        raise RuntimeError(
-            f"semantic item identity does not match its item_id: {item_id!r}"
-        )
+    if str(row["source_kind"]) != source_kind or str(row["source_identity"]) != file_key:
+        raise RuntimeError(f"semantic item identity does not match its item_id: {item_id!r}")
     current_path = None if row["path"] is None else str(row["path"])
     if current_path is not None and _path_key(current_path) == _path_key(new_path):
         return 0
@@ -468,8 +453,7 @@ def _sync_framework_cache(
         running_predicate = ""
         if _table_exists(connection, "initial_runs"):
             running_predicate = (
-                " AND run_id IN (SELECT run_id FROM initial_runs "
-                "WHERE status='running')"
+                " AND run_id IN (SELECT run_id FROM initial_runs WHERE status='running')"
             )
         cursor = connection.execute(
             "UPDATE route_candidates SET path=? "
@@ -529,9 +513,7 @@ def _sync_pending_file_actions(
         for row in rows:
             target = None if row["target_path"] is None else str(row["target_path"])
             if str(row["action_type"]) == "correct_extension" and target is not None:
-                if _path_key(str(Path(target).parent)) != _path_key(
-                    str(Path(old_path).parent)
-                ):
+                if _path_key(str(Path(target).parent)) != _path_key(str(Path(old_path).parent)):
                     raise RuntimeError(
                         "pending extension-correction target is outside its source directory"
                     )
@@ -542,9 +524,7 @@ def _sync_pending_file_actions(
             )
             batch_updated += cursor.rowcount
         if batch_updated != len(rows):
-            raise RuntimeError(
-                "pending file actions changed during cache synchronization"
-            )
+            raise RuntimeError("pending file actions changed during cache synchronization")
         updated += batch_updated
     cursor = connection.execute(
         "UPDATE file_actions SET target_path=? WHERE status='planned' "
@@ -573,8 +553,7 @@ def _sync_dedup_cache(
         ).fetchall()
         if rows:
             if any(
-                bytes(row["volume_id"]) != volume_blob
-                or bytes(row["file_id"]) != file_blob
+                bytes(row["volume_id"]) != volume_blob or bytes(row["file_id"]) != file_blob
                 for row in rows
             ):
                 raise RuntimeError(
@@ -586,13 +565,10 @@ def _sync_dedup_cache(
                 (new_path,),
             ).fetchall()
             if any(
-                bytes(row["volume_id"]) != volume_blob
-                or bytes(row["file_id"]) != file_blob
+                bytes(row["volume_id"]) != volume_blob or bytes(row["file_id"]) != file_blob
                 for row in destination_rows
             ):
-                raise RuntimeError(
-                    "dedup files destination belongs to another identity"
-                )
+                raise RuntimeError("dedup files destination belongs to another identity")
             cursor = connection.execute(
                 "UPDATE files SET path=? WHERE path=? COLLATE NOCASE",
                 (new_path, old_path),
@@ -608,9 +584,7 @@ def _sync_dedup_cache(
                 or bytes(destination["file_id"]) != file_blob
                 for destination in destinations
             ):
-                raise RuntimeError(
-                    "dedup files destination belongs to another identity"
-                )
+                raise RuntimeError("dedup files destination belongs to another identity")
     keep_groups: tuple[int, ...] = ()
     if _table_exists(connection, "planned_duplicate_members"):
         _require_columns(
@@ -666,9 +640,7 @@ def _table_exists(connection: sqlite3.Connection, table: str) -> bool:
 
 
 def _table_columns(connection: sqlite3.Connection, table: str) -> frozenset[str]:
-    return frozenset(
-        str(row[1]) for row in connection.execute(f"PRAGMA table_info({table})")
-    )
+    return frozenset(str(row[1]) for row in connection.execute(f"PRAGMA table_info({table})"))
 
 
 def _require_columns(
@@ -691,9 +663,7 @@ def _identity_blob(value: str) -> bytes:
 
 def _identity_text_values(value: str) -> tuple[str, ...]:
     integer = int(value)
-    return tuple(
-        dict.fromkeys((value, str(integer), f"{integer:x}", f"{integer:032x}"))
-    )
+    return tuple(dict.fromkeys((value, str(integer), f"{integer:x}", f"{integer:032x}")))
 
 
 def _path_key(value: str) -> str:

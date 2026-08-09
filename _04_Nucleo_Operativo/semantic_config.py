@@ -28,16 +28,26 @@ TEXT_MODEL_ID = "jinaai/jina-embeddings-v2-base-es"
 TEXT_MODEL_SIGNATURE = f"{TEXT_ENCODER_CONTRACT_VERSION}|{TEXT_MODEL_ID}|float16"
 TEXT_VECTOR_SPACE = "jina-embeddings-v2-base-es-v1"
 
-# Retrieval-only abstention floors measured on the bounded 65-resource
-# PDF/Code pilot.  They are deliberately tied to the exact encoder and
-# pipeline below; scores remain cosine similarities, never probabilities or
-# classification confidence.  Owners without representative qrels remain
-# unfiltered until they receive their own calibration.
-TEXT_RETRIEVAL_CALIBRATION_SIGNATURE = "semantic-text-retrieval-abstention-jina-pdf-code-v1"
+# Retrieval-only abstention floor revalidated against the current mixed
+# document corpus with positive paraphrases and negative controls.  The lower
+# common floor retains relevant PDF siblings previously discarded at 0.50,
+# while applying the same fail-closed rule to Office/DOCX results that used to
+# bypass calibration entirely.  Index-time quality gates remove encoded binary
+# and formula dumps before this score policy is evaluated.  Scores remain
+# cosine similarities, never probabilities or classification confidence.
+TEXT_RETRIEVAL_CALIBRATION_SIGNATURE = "semantic-text-retrieval-abstention-jina-mixed-v2"
 TEXT_RETRIEVAL_CALIBRATION_BACKEND = "fastembed"
 TEXT_RETRIEVAL_SCORE_FLOORS = (
-    ("code", 0.46),
-    ("pdf", 0.50),
+    ("archive", 0.42),
+    ("audio", 0.42),
+    ("code", 0.42),
+    ("docx", 0.42),
+    ("image", 0.42),
+    ("odt", 0.42),
+    ("pdf", 0.42),
+    ("pptx", 0.42),
+    ("text", 0.42),
+    ("xlsx", 0.42),
 )
 
 COMPACT_TEXT_MODEL_ID = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"

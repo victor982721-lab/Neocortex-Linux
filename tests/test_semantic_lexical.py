@@ -197,6 +197,36 @@ def _create_archive_state(path: Path) -> None:
         )
 
 
+def _create_text_state(path: Path) -> None:
+    with sqlite3.connect(path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE documents(
+                file_key TEXT PRIMARY KEY,
+                path TEXT NOT NULL,
+                status TEXT NOT NULL,
+                size INTEGER NOT NULL,
+                mtime_ns INTEGER NOT NULL,
+                birthtime_ns INTEGER NOT NULL,
+                processing_signature TEXT NOT NULL,
+                last_seen_run_id INTEGER NOT NULL
+            );
+            CREATE VIRTUAL TABLE document_fts USING fts5(
+                file_key UNINDEXED,path UNINDEXED,content_kind,title,author,body,
+                tokenize='unicode61 remove_diacritics 2'
+            );
+            INSERT INTO documents VALUES(
+                '21:34','C:/docs/bitacora.eml','complete',500,70,14,
+                'text-route-v1',12
+            );
+            INSERT INTO document_fts VALUES(
+                '21:34','C:/docs/bitacora.eml','email','Alimentador norte','Victor',
+                'Protección diferencial del alimentador dentro del correo'
+            );
+            """
+        )
+
+
 # endregion [01]
 
 
@@ -330,6 +360,38 @@ def test_archive_source_is_additive_and_preserves_nested_member_provenance(
         "member_path": "proteccion.txt",
         "archive_depth": 2,
         "content_kind": "text",
+    }
+
+
+def test_generic_text_source_is_additive_and_preserves_physical_evidence(
+    tmp_path: Path,
+) -> None:
+    text = tmp_path / "text.sqlite3"
+    _create_text_state(text)
+
+    results = search_lexical_sources(
+        LexicalStatePaths(text=text),
+        "protección alimentador",
+    )
+
+    assert tuple(result.ranking_name for result in results) == (
+        "fts_pdf",
+        "fts_docx",
+        "fts_office",
+        "fts_audio",
+        "fts_text",
+    )
+    hit = results[-1].hits[0]
+    assert hit.source_kind == "text"
+    assert hit.path == "C:/docs/bitacora.eml"
+    assert hit.source_identity == "21:34"
+    assert hit.section_kind == "document"
+    assert hit.source_revision == {
+        "size": 500,
+        "mtime_ns": 70,
+        "birthtime_ns": 14,
+        "processing_signature": "text-route-v1",
+        "last_seen_run_id": 12,
     }
 
 

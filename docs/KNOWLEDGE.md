@@ -24,7 +24,7 @@ Neocortex --knowledge-status --knowledge-json
   owners; el resultado sigue marcándose parcial cuando falta cobertura.
 - El ranking Semantic de Knowledge sólo aporta evidencia corporal cuando existe
   un head publicado con embeddings compatibles; cero heads o cero embeddings no
-  es éxito semántico. `evidence` excluye basename/título. `discovery` puede
+  es éxito semántico. `evidence` excluye el título. `discovery` puede
   transportarlo como señal advisory separada y sólo refuerza un recurso y
   revisión que ya tengan evidencia corporal; un título no crea hits ni citas.
 
@@ -167,12 +167,15 @@ canonicalidad.
 
 ## Owners, schemas y visibilidad
 
-`KnowledgeStatePaths.from_directory()` registra diez bases. Una base ausente se
-representa como `absent`; no se crea su directorio ni el archivo.
+`KnowledgeStatePaths.from_directory()` registra diez owners históricos y las
+rutas aditivas de Archive y texto. Estas dos últimas sólo entran al vector si su
+base existe. Una base histórica ausente se representa como `absent`; no se crea
+su directorio ni el archivo.
 La raíz completa también puede no existir y conserva esa semántica sin
 creación. En cambio, una raíz existente que no sea directorio o que no pueda
 inspeccionarse en lectura falla antes de consultar owners mediante el error
-tipado `KnowledgeStateRootError`; no se disfraza como diez bases ausentes.
+tipado `KnowledgeStateRootError`; no se disfraza como un vector de bases
+ausentes.
 La misma barrera rechaza un enlace/reparse point roto y un cambio
 presente↔ausente entre los dos vectores de la captura. Un owner sólo es
 `absent` cuando su archivo realmente no existe; un path de owner existente que
@@ -183,20 +186,22 @@ control.
 
 | Owner | Archivo | Schema esperado | Frontera observada | Uso en recuperación |
 |---|---|---:|---|---|
-| `inventory` | `dedup.sqlite3` | 8 | Checkpoint válido por raíz y firma cruda a un scan `complete`, más token del plan dedup completo; máximo 1024 heads. | Exact typed de path, nombre o huella sobre heads publicados; identidad física y relaciones planeadas no verificadas. |
+| `inventory` | `dedup.sqlite3` | 9 | Checkpoint válido por raíz y firma cruda a un scan `complete`, con cursor USN opcional todo-o-nada y token del plan dedup completo; máximo 1024 heads. | Exact typed de path, nombre o huella sobre heads publicados; identidad física y relaciones planeadas no verificadas. |
 | `framework` | `framework.sqlite3` | 20 | Máximos de run, evento y acción; `best_effort_non_generational`. El schema 19 se admite sólo en lectura cuando pasa su validador estructural exacto y se marca `legacy_schema_read_compatible:19->20`. | Estado transversal; no produce ranking de contenido. |
 | `catalog` | `document_catalog.sqlite3` | 6 | Publicación `published` por `source_kind`. | Membership de filtros y exact typed de path, nombre o identificador en la generación publicada. |
 | `pdf` | `pdf.sqlite3` | 11 | Conteo, último `updated_ns` y run; no generacional. | FTS por página y fuentes semantic. |
 | `docx` | `docx.sqlite3` | 5 | Conteo, último `updated_ns` y run; no generacional. | FTS documental y partes semantic. |
 | `office` | `office.sqlite3` | 1 | Conteo, último `updated_ns` y run; no generacional. | FTS documental de XLSX/PPTX/ODT y semantic. |
+| `archive` (aditivo) | `archive.sqlite3` | 1 | Miembros virtuales actuales, último `updated_ns` y run; no generacional. | FTS y semantic con cadena ZIP y `inside_zip=1`. |
+| `text` (aditivo) | `text.sqlite3` | 1 | Documentos actuales, último `updated_ns` y run; no generacional. | FTS y semantic de texto, EML y Office heredado; clasificación vía catálogo. |
 | `audio` | `audio.sqlite3` | 1 | Conteo, último `updated_ns` y run; no generacional. | FTS de transcripción y segmentos semantic. |
 | `image` | `image.sqlite3` | 5 | Conteo, último `updated_ns` y run; no generacional. | Imagen y OCR retenido mediante semantic cuando están publicados. |
 | `semantic` | `semantic.sqlite3` | 6 | Head `ready` por firma de modelo. | Texto e imagen por espacio/modelo publicado, resueltos contra la revisión DB-local vigente. |
-| `code` | `code.sqlite3` | 2 | Archivos actuales, última versión y último run; `best_effort_non_generational`. | FTS, exact typed, estructura, símbolos, relaciones owner-local y enlaces exactos a chunks Semantic publicados. |
+| `code` | `code.sqlite3` | 4 | Archivos actuales, última versión y último run; `best_effort_non_generational`. | FTS, exact typed, estructura, símbolos, relaciones owner-local, evidencia externa y enlaces exactos a chunks Semantic publicados. |
 
 Los watermarks no generacionales son detectores acotados de cambio, no una
 publicación equivalente a inventario, catálogo o semantic. En particular,
-`code` schema 2 todavía no tiene generación/head de grafo.
+`code` schema 4 todavía no tiene generación/head de grafo.
 
 Cada head de inventario incluye, cuando existe un plan terminado, el token
 `duplicate-plan-v1:<completed_ns>:<groups>:<redundant>:<bytes>`. Así se detecta
@@ -314,9 +319,9 @@ La frontera `execute_knowledge_search()` reutiliza los owners existentes:
 | `exact_inventory_*` | Checkpoints y filas publicadas de inventario. | Coincidencia exacta; cobertura `partial`. |
 | `exact_code_*` | Estado actual de archivos, huellas y símbolos de code. | Coincidencia exacta; cobertura `partial`. |
 | `exact_catalog_*` | Generaciones publicadas del catálogo. | Coincidencia exacta y generación fijada. |
-| `fts_pdf`, `fts_docx`, `fts_office`, `fts_audio`, `fts_archive` | FTS5 de cada owner disponible; Archive conserva contenedor, miembro, cadena y profundidad. | BM25 del owner y posición original. |
+| `fts_pdf`, `fts_docx`, `fts_office`, `fts_audio`, `fts_archive`, `fts_text` | FTS5 de cada owner disponible; Archive conserva contenedor, miembro, cadena y profundidad; texto conserva tipo, título y autor. | BM25 del owner y posición original. |
 | `semantic_text`, `semantic_image` | Servicio semantic v6 local; `semantic_text` materializa sólo contenido corporal. | Coseno, firmas de modelo consultor/indexado, espacio y generación. |
-| `semantic_title` | Canal opcional sólo en planes `discovery` v3; basename durable, mutable y advisory. | Rango semántico con peso `0.5`; sólo refuerza evidencia corporal del mismo recurso y revisión. |
+| `semantic_title` | Canal opcional sólo en planes `discovery` v3; título de fuente, encabezado acotado o basename, siempre mutable y advisory. | Rango semántico con peso `0.5`; sólo refuerza evidencia corporal del mismo recurso y revisión. |
 | `code_structural` | `search_code` sin reentrar a semantic. | RRF propio de código y evidencia estructural. |
 | `catalog_metadata` | Generación de catálogo fijada por el snapshot. | Sin señal de relevancia: sólo membership/filtro y telemetría. |
 
@@ -408,7 +413,8 @@ Las fases se conservan en orden de ejecución:
 - `fusion` y `broker`, por intento;
 - `context_compile`, una vez y sólo en una operación de contexto.
 
-FTS publica una medición independiente para `pdf`, `docx`, `office` y `audio`.
+FTS publica una medición independiente para cada owner disponible entre `pdf`,
+`docx`, `office`, `audio`, `archive` y `text`.
 Semantic separa texto e imagen. Exact mide un batch por owner
 (`inventory`, `code` o `catalog`) y enumera los rankings por término cubiertos;
 no copia el mismo tiempo a cada término ni a `exact_coverage`. Código,
@@ -458,6 +464,8 @@ La precisión disponible depende del owner:
 | DOCX FTS | Documento completo (`fulltext`), sin página. |
 | DOCX semantic | Parte OOXML o cuerpo y, cuando existe, intervalo de caracteres; no página ficticia. |
 | Office FTS/semantic | Documento/cuerpo completo. No se afirma hoja o celda si el adapter no la conserva. |
+| Archive FTS/semantic | Miembro virtual con contenedor, cadena completa y profundidad; nunca una ruta física ficticia. |
+| Texto/EML/Office heredado | Documento completo con tipo; EML puede aportar asunto/autor. No se inventa página, hoja o diapositiva. |
 | Audio FTS | Transcripción completa, sin timestamp. |
 | Audio semantic | Segmento con `start_ms` y `end_ms`. |
 | Imagen | Imagen u OCR retenido mediante semantic; bbox sólo si una evidencia real lo aporta. |
@@ -757,21 +765,17 @@ Limitaciones abiertas:
 - Semantic es opcional. Sólo usa modelos locales ya preparados y heads
   publicados; si faltan, el ranking se declara indisponible. La búsqueda es
   exacta, comparte un presupuesto total `max_vectors` y no tiene ANN. Knowledge
-  `discovery` ya transporta `semantic_title` sin convertirlo en evidencia. El
-  contrato Jina/body exacto aplica pisos iniciales separados para PDF (`0.50`) y
-  Code (`0.46`) y reporta las exclusiones como abstención calibrada; títulos,
-  otros owners, modelos o backends no heredan esos cortes. Los vectores
-  reutilizados conservan el contrato en `payload_provenance`; un conflicto de
-  procedencia se mantiene explícitamente sin calibrar.
-  En el piloto combinado de 35 PDF y 30 archivos Code, 12 consultas/18 targets
-  obtuvieron `5/18` con FTS, `16/18` con cuerpo+FTS y `17/18` con
-  `discovery`+título; esta última variante logró 12/12 Hit@5, MRR `0.9167` y
-  cero títulos como evidencia. Tres consultas fuera de dominio sí se
-  abstuvieron con FTS; la campaña posterior añadió positivos, fuera de dominio y
-  negativos cercanos para fijar esos pisos sin perder los targets etiquetados.
-  Algunos negativos técnicamente cercanos permanecen por encima del piso, por
-  lo que el score sigue siendo similitud de recuperación, no probabilidad ni
-  certeza. El cuerpo continúa siendo la única evidencia citable y clasificable.
+  `discovery` transporta `semantic_title` sin convertirlo en evidencia. El
+  contrato Jina mixto aplica un piso `0.42` al cuerpo y al título de Archive,
+  audio, Code, DOCX, imagen OCR, ODT, PDF, PPTX, texto y XLSX, y reporta las
+  exclusiones como abstención calibrada. Otros modelos, pipelines o backends no
+  heredan el corte. Antes de indexar, `semantic-text-quality-v1` omite ruido
+  mecánico de alta confianza y duplicados exactos dentro del item sin alterar la
+  caché fuente. Los vectores reutilizados conservan el contrato en
+  `payload_provenance`; un conflicto de procedencia permanece explícitamente sin
+  calibrar. El score sigue siendo similitud de recuperación, no probabilidad ni
+  certeza, y el cuerpo continúa siendo la única evidencia citable y
+  clasificable.
 - Los seriales exactos son `unsupported`. Las coincidencias exactas de Inventory
   y code se reportan `partial` porque no ofrecen una publicación as-of
   inmutable.

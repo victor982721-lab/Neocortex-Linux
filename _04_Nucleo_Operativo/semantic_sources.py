@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sqlite3
 import unicodedata
 import zlib
@@ -25,12 +26,27 @@ from .semantic_models import (
     fingerprint_chunks,
     fingerprint_text,
 )
+from .semantic_quality import (
+    SEMANTIC_TEXT_QUALITY_POLICY,
+    clean_title_candidate,
+    content_title_from_sample,
+)
 from .sqlite_paths import readonly_sqlite_uri
 
 
 # region [01] Public records and explicit limits
 
-TEXT_SOURCE_KINDS = ("pdf", "docx", "xlsx", "pptx", "odt", "audio", "code")
+TEXT_SOURCE_KINDS = (
+    "pdf",
+    "docx",
+    "xlsx",
+    "pptx",
+    "odt",
+    "audio",
+    "archive",
+    "text",
+    "code",
+)
 IMAGE_SOURCE_KIND = "image"
 SOURCE_DATABASE_NAMES = {
     "pdf": "pdf.sqlite3",
@@ -39,13 +55,15 @@ SOURCE_DATABASE_NAMES = {
     "pptx": "office.sqlite3",
     "odt": "office.sqlite3",
     "audio": "audio.sqlite3",
+    "archive": "archive.sqlite3",
+    "text": "text.sqlite3",
     "code": "code.sqlite3",
     IMAGE_SOURCE_KIND: "image.sqlite3",
 }
-SOURCE_ADAPTER_VERSION = "semantic-source-adapters-v2"
+SOURCE_ADAPTER_VERSION = "semantic-source-adapters-v3"
 CODE_SOURCE_ADAPTER_VERSION = "semantic-code-source-v1"
 SEMANTIC_TITLE_SECTION_KIND = "semantic_metadata_title"
-SEMANTIC_TITLE_POLICY = "semantic-basename-title-v1"
+SEMANTIC_TITLE_POLICY = "semantic-content-aware-title-v3"
 SEMANTIC_TEXT_ENUMERATION_PROTOCOL = "bounded-v1"
 MAX_SEMANTIC_TITLE_CHARS = 512
 MAX_SECTION_TEXT_BYTES = 32 * 1024 * 1024
@@ -73,8 +91,16 @@ class SemanticSourceError(RuntimeError):
     """A durable route cache contains invalid or unsafe source evidence."""
 
 
-def semantic_item_title_section(item: SemanticItem) -> TextSection | None:
-    """Project bounded basename evidence without importing parent directories."""
+_GENERIC_BASENAME = re.compile(
+    r"(?i)^(?:(?:19|20)\d{2}\s*[-—]\s*)?"
+    r"(?:(?:documento|archivo)\s+(?:personal\s+)?(?:protegido\s+)?recuperado\b|"
+    r"scan(?:ned)?\b|img[_ -]?\d+\b|document\b|untitled\b|"
+    r"[0-9a-f]{16,}\b)"
+)
+
+
+def _basename_title(item: SemanticItem) -> str | None:
+    """Return bounded basename evidence without importing parent directories."""
 
     if item.path is None:
         return None
@@ -88,16 +114,51 @@ def semantic_item_title_section(item: SemanticItem) -> TextSection | None:
     title = " ".join(raw_title.split())
     if not title or len(title) > MAX_SEMANTIC_TITLE_CHARS:
         return None
+    return title
+
+
+def semantic_item_title_section(
+    item: SemanticItem,
+    content_sample: str | None = None,
+) -> TextSection | None:
+    """Project a useful title while retaining its exact evidence basis."""
+
+    source_title_value = item.provenance.get("source_title")
+    source_title = (
+        clean_title_candidate(source_title_value) if isinstance(source_title_value, str) else None
+    )
+    basename_title = _basename_title(item)
+    generic_basename = basename_title is None or bool(_GENERIC_BASENAME.match(basename_title))
+    content_title = (
+        content_title_from_sample(content_sample) if generic_basename and content_sample else None
+    )
+    title = source_title or content_title or basename_title
+    if title is None:
+        return None
+    basis = (
+        "durable_source_title"
+        if source_title is not None
+        else (
+            "bounded_leading_content_heading"
+            if content_title is not None
+            else "basename_without_final_extension"
+        )
+    )
+    provenance: dict[str, object] = {
+        "policy_signature": SEMANTIC_TITLE_POLICY,
+        "basis": basis,
+        "mutable_metadata": True,
+        "advisory_only": True,
+    }
+    if content_title is not None:
+        provenance["generic_basename_replaced"] = True
+    if source_title is not None:
+        provenance["source_title_preferred"] = True
     return TextSection(
         section_kind=SEMANTIC_TITLE_SECTION_KIND,
         section_id=SEMANTIC_TITLE_POLICY,
         text=title,
-        provenance={
-            "policy_signature": SEMANTIC_TITLE_POLICY,
-            "basis": "basename_without_final_extension",
-            "mutable_metadata": True,
-            "advisory_only": True,
-        },
+        provenance=provenance,
     )
 
 
@@ -107,8 +168,15 @@ def iter_text_sections_with_metadata(
 ) -> Iterator[TextSection]:
     """Append optional metadata evidence after all source-owned sections."""
 
-    yield from sections
-    title = semantic_item_title_section(item)
+    sample_parts: list[str] = []
+    remaining = 32_768
+    for section in sections:
+        if remaining > 0 and section.text:
+            fragment = section.text[:remaining]
+            sample_parts.append(fragment)
+            remaining -= len(fragment)
+        yield section
+    title = semantic_item_title_section(item, "\n".join(sample_parts))
     if title is not None:
         yield title
 
@@ -132,6 +200,7 @@ def semantic_text_processing_signature(
     return (
         f"{pipeline_version}|{SOURCE_ADAPTER_VERSION}|{chunking_signature}|"
         f"sources={','.join(selected_sources)}|title-policy={SEMANTIC_TITLE_POLICY}|"
+        f"quality-policy={SEMANTIC_TEXT_QUALITY_POLICY}|"
         f"enumeration={SEMANTIC_TEXT_ENUMERATION_PROTOCOL}"
     )
 
@@ -143,9 +212,7 @@ def semantic_source_database(state_directory: Path, source_kind: str) -> Path:
         database_name = SOURCE_DATABASE_NAMES[source_kind]
     except KeyError as exc:
         supported = ", ".join(SOURCE_DATABASE_NAMES)
-        raise ValueError(
-            f"unsupported semantic source {source_kind!r}; use {supported}"
-        ) from exc
+        raise ValueError(f"unsupported semantic source {source_kind!r}; use {supported}") from exc
     return state_directory / database_name
 
 
@@ -208,9 +275,7 @@ def _decode_text(payload: bytes | memoryview, expected_chars: int) -> str:
     if not decompressor.eof:
         raise SemanticSourceError("compressed section is incomplete or truncated")
     if decompressor.unused_data:
-        raise SemanticSourceError(
-            "compressed section contains trailing or concatenated data"
-        )
+        raise SemanticSourceError("compressed section contains trailing or concatenated data")
     try:
         text = decoded.decode("utf-8")
     except UnicodeDecodeError as exc:
@@ -218,9 +283,7 @@ def _decode_text(payload: bytes | memoryview, expected_chars: int) -> str:
     if len(text) > MAX_SECTION_TEXT_CHARS:
         raise SemanticSourceError("decoded section exceeds the character limit")
     if len(text) != expected_chars:
-        raise SemanticSourceError(
-            "decoded section length does not match its durable metadata"
-        )
+        raise SemanticSourceError("decoded section length does not match its durable metadata")
     return text
 
 
@@ -273,6 +336,16 @@ def _source_item(
 ) -> SemanticItem:
     processing_signature = str(row["processing_signature"])
     source_identity = str(row["file_key"])
+    provenance: dict[str, object] = {
+        "adapter": SOURCE_ADAPTER_VERSION,
+        "processing_signature": processing_signature,
+        "source_status": str(row["status"]),
+        "fingerprint_basis": "durable-source-text-descriptor",
+    }
+    if "title" in row.keys() and row["title"] is not None:
+        provenance["source_title"] = str(row["title"])
+    if "author" in row.keys() and row["author"] is not None:
+        provenance["source_author"] = str(row["author"])
     return SemanticItem(
         item_id=_item_id(source_kind, source_identity),
         source_kind=source_kind,
@@ -281,21 +354,14 @@ def _source_item(
         fingerprint=_descriptor_fingerprint(
             source_kind=source_kind,
             stored_xxh3_128=(
-                None
-                if row[text_fingerprint_column] is None
-                else str(row[text_fingerprint_column])
+                None if row[text_fingerprint_column] is None else str(row[text_fingerprint_column])
             ),
             byte_or_char_count=int(row[text_count_column]),
             processing_signature=processing_signature,
         ),
         path=str(row["path"]),
         source_revision=_text_source_revision(row),
-        provenance={
-            "adapter": SOURCE_ADAPTER_VERSION,
-            "processing_signature": processing_signature,
-            "source_status": str(row["status"]),
-            "fingerprint_basis": "durable-source-text-descriptor",
-        },
+        provenance=provenance,
     )
 
 
@@ -488,6 +554,96 @@ def _iter_audio(
             )
 
 
+def _iter_archive(
+    path: Path,
+    connection: sqlite3.Connection | None = None,
+) -> Iterator[TextSourceRecord]:
+    """Stream text-bearing virtual members with explicit ZIP provenance."""
+
+    with _borrow_or_open_database(path, connection) as connection:
+        rows = connection.execute(
+            """SELECT d.file_key,d.path,d.processing_signature,d.status,
+            d.size,d.mtime_ns,d.birthtime_ns,d.last_seen_run_id,
+            d.text_xxh3_128,d.text_chars,d.text_zlib,
+            d.container_path,d.container_key,d.member_chain,d.member_path,
+            d.archive_depth,d.content_kind,d.media_type,c.status AS container_status
+            FROM documents d JOIN containers c ON c.container_key=d.container_key
+            WHERE d.status='indexed' AND d.text_zlib IS NOT NULL AND d.text_chars>0
+            AND c.status IN ('complete','partial')
+            ORDER BY d.file_key"""
+        )
+        for row in rows:
+            item = _source_item(
+                row,
+                source_kind="archive",
+                text_fingerprint_column="text_xxh3_128",
+                text_count_column="text_chars",
+            )
+            provenance = {
+                "adapter": SOURCE_ADAPTER_VERSION,
+                "inside_zip": True,
+                "container_path": str(row["container_path"]),
+                "container_key": str(row["container_key"]),
+                "member_chain": str(row["member_chain"]),
+                "member_path": str(row["member_path"]),
+                "archive_depth": int(row["archive_depth"]),
+                "content_kind": str(row["content_kind"]),
+                "media_type": str(row["media_type"]),
+                "container_status": str(row["container_status"]),
+            }
+            yield TextSourceRecord(
+                item,
+                TextSection(
+                    section_kind="archive_member",
+                    section_id=str(row["member_chain"]),
+                    text=_decode_text(row["text_zlib"], int(row["text_chars"])),
+                    provenance=provenance,
+                ),
+            )
+
+
+def _iter_text(
+    path: Path,
+    connection: sqlite3.Connection | None = None,
+) -> Iterator[TextSourceRecord]:
+    """Stream physical generic-text bodies and typed extraction evidence."""
+
+    with _borrow_or_open_database(path, connection) as connection:
+        rows = connection.execute(
+            """SELECT file_key,path,processing_signature,status,size,mtime_ns,
+            birthtime_ns,last_seen_run_id,text_xxh3_128,text_chars,text_zlib,
+            content_kind,media_type,title,author,metadata_json,text_truncated,detail
+            FROM documents WHERE status='complete' AND text_zlib IS NOT NULL
+            AND text_chars>0 ORDER BY file_key"""
+        )
+        for row in rows:
+            item = _source_item(
+                row,
+                source_kind="text",
+                text_fingerprint_column="text_xxh3_128",
+                text_count_column="text_chars",
+            )
+            yield TextSourceRecord(
+                item,
+                TextSection(
+                    section_kind="document",
+                    section_id="fulltext",
+                    text=_decode_text(row["text_zlib"], int(row["text_chars"])),
+                    provenance={
+                        "adapter": SOURCE_ADAPTER_VERSION,
+                        "content_kind": str(row["content_kind"]),
+                        "media_type": str(row["media_type"]),
+                        "title": str(row["title"] or ""),
+                        "author": str(row["author"] or ""),
+                        "metadata_json": str(row["metadata_json"]),
+                        "text_truncated": bool(row["text_truncated"]),
+                        "detail": str(row["detail"] or ""),
+                        "inside_zip": False,
+                    },
+                ),
+            )
+
+
 def _iter_code(
     path: Path,
     connection: sqlite3.Connection | None = None,
@@ -595,6 +751,10 @@ def iter_text_source_records(
         yield from _iter_docx(database, connection)
     elif source_kind == "audio":
         yield from _iter_audio(database, connection)
+    elif source_kind == "archive":
+        yield from _iter_archive(database, connection)
+    elif source_kind == "text":
+        yield from _iter_text(database, connection)
     elif source_kind == "code":
         yield from _iter_code(database, connection)
     else:
@@ -652,9 +812,7 @@ def _image_descriptor_fingerprint(
     if len(value) != 16:
         raise SemanticSourceError("dedup full fingerprint must contain 16 bytes")
     return fingerprint_bytes(
-        b"dedup-full-xxh3-128-descriptor-v1\0"
-        + value
-        + size.to_bytes(8, "little", signed=False)
+        b"dedup-full-xxh3-128-descriptor-v1\0" + value + size.to_bytes(8, "little", signed=False)
     )
 
 
@@ -678,9 +836,7 @@ def _image_rows(
     dedup_attached: bool = False,
 ) -> Iterator[sqlite3.Row]:
     with _borrow_or_open_database(image_database, connection) as connection:
-        image_columns = {
-            str(row[1]) for row in connection.execute("PRAGMA table_info(images)")
-        }
+        image_columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(images)")}
         run_projection = (
             ",i.last_seen_run_id"
             if "last_seen_run_id" in image_columns
@@ -774,8 +930,7 @@ def iter_image_source_records(
                 stat = os.stat(native_io_path(snapshot.path), follow_symlinks=False)
             except OSError as exc:
                 raise SemanticSourceError(
-                    f"image source is unavailable during semantic refresh: "
-                    f"{snapshot.path}"
+                    f"image source is unavailable during semantic refresh: {snapshot.path}"
                 ) from exc
             if not stat_matches_snapshot(snapshot, stat):
                 raise SemanticSourceError(
@@ -835,9 +990,7 @@ def iter_image_source_records(
             )
             ocr_fingerprint = fingerprint_text(ocr_text).xxh3_128
             if ocr_fingerprint != str(row["ocr_text_xxh3_128"]):
-                raise SemanticSourceError(
-                    f"image OCR fingerprint mismatch: {snapshot.path}"
-                )
+                raise SemanticSourceError(f"image OCR fingerprint mismatch: {snapshot.path}")
             ocr_section = TextSection(
                 section_kind="image_ocr",
                 section_id="ocr",

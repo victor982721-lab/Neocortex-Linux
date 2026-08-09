@@ -8,7 +8,7 @@ from pathlib import Path
 
 from _03_Progreso import ProgressCallback, ProgressEvent, ProgressMetric, emit_progress
 
-from .semantic_chunking import TextChunkingConfig, TextTokenCounter, iter_text_chunks
+from .semantic_chunking import TextChunkingConfig, TextTokenCounter
 from .semantic_backends import EmbeddingBackend
 from .semantic_config import (
     SEMANTIC_PIPELINE_VERSION,
@@ -33,6 +33,7 @@ from .semantic_preparation import (
     resolve_text_token_guard,
     text_probe,
 )
+from .semantic_quality import SEMANTIC_TEXT_QUALITY_POLICY, iter_semantic_text_chunks
 from .semantic_service_contracts import (
     IMAGE_OCR_TEXT_CHANNEL,
     SEMANTIC_DATABASE_NAME,
@@ -157,7 +158,7 @@ def stage_image_batch(
         )
         sections: tuple[TextSection, ...] = (record.ocr_section,)
         chunks = tuple(
-            iter_text_chunks(
+            iter_semantic_text_chunks(
                 record.item.item_id,
                 sections,
                 chunking,
@@ -228,7 +229,8 @@ def _start_image_generations(
         model_signature=text_model.model_signature,
         processing_signature=(
             f"{SEMANTIC_PIPELINE_VERSION}|{SOURCE_ADAPTER_VERSION}|image-ocr|"
-            f"{chunking.signature}|enumeration=bounded-v1"
+            f"{chunking.signature}|quality-policy={SEMANTIC_TEXT_QUALITY_POLICY}|"
+            "enumeration=bounded-v1"
         ),
         provenance={
             "pipeline": SEMANTIC_PIPELINE_VERSION,
@@ -236,6 +238,7 @@ def _start_image_generations(
             "chunking_signature": chunking.signature,
             "tokenizer_signature": chunking.tokenizer_signature,
             "model_token_limit": chunking.model_token_limit,
+            "text_quality_policy": SEMANTIC_TEXT_QUALITY_POLICY,
         },
         materialize_base=False,
     )

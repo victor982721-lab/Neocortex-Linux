@@ -52,9 +52,7 @@ def test_inventory_batch_boundaries_preserve_scan_and_progress_parity(
 
     first_summary, first_snapshots, first_events = results[0]
     second_summary, second_snapshots, second_events = results[1]
-    assert _summary_without_identifier(first_summary) == _summary_without_identifier(
-        second_summary
-    )
+    assert _summary_without_identifier(first_summary) == _summary_without_identifier(second_summary)
     assert first_snapshots == second_snapshots
     assert first_summary.files_seen == 3
     assert first_summary.excluded_directories == 1
@@ -66,7 +64,7 @@ def test_inventory_batch_boundaries_preserve_scan_and_progress_parity(
         assert events[-1].finished
 
 
-def test_inventory_cancellation_before_batch_commit_remains_resumable(
+def test_inventory_cancellation_flushes_a_durable_partial_checkpoint(
     tmp_path: Path,
 ) -> None:
     class StopScan(Exception):
@@ -93,11 +91,13 @@ def test_inventory_cancellation_before_batch_commit_remains_resumable(
 
     with sqlite3.connect(database) as connection:
         scan = connection.execute(
-            "SELECT completed_ns FROM scans ORDER BY scan_id DESC LIMIT 1"
+            "SELECT completed_ns,status FROM scans ORDER BY scan_id DESC LIMIT 1"
         ).fetchone()
         retained_rows = connection.execute("SELECT COUNT(*) FROM files").fetchone()[0]
-    assert scan == (None,)
-    assert retained_rows == 0
+    assert scan is not None
+    assert isinstance(scan[0], int)
+    assert scan[1] == "partial"
+    assert retained_rows == 512
 
 
 def test_exact_verification_separates_adversarial_full_hash_collisions(
@@ -131,9 +131,7 @@ def test_exact_verification_separates_adversarial_full_hash_collisions(
     assert plan.statistics.full_hash_files == 4
     assert plan.statistics.changed_or_unreadable_files == 0
     assert Path(plan.groups[0].keep.path).name == "newest-duplicate.bin"
-    assert [Path(item.path).name for item in plan.groups[0].redundant] == [
-        "older-duplicate.bin"
-    ]
+    assert [Path(item.path).name for item in plan.groups[0].redundant] == ["older-duplicate.bin"]
 
 
 def test_exact_collision_set_limit_abstains_instead_of_merging_distinct_files(
@@ -169,4 +167,6 @@ def test_exact_collision_set_limit_abstains_instead_of_merging_distinct_files(
     assert plan.statistics.full_hash_files == 4
     assert plan.statistics.exact_compare_files == 5
     assert plan.statistics.changed_or_unreadable_files == 2
+
+
 # endregion [02]

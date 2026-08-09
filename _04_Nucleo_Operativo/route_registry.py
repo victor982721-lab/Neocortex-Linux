@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, is_dataclass, replace
 from importlib import import_module
 from pathlib import Path
-from typing import Any, Callable, cast, Literal, Mapping, TYPE_CHECKING
+from typing import Any, Callable, Literal, Mapping, TYPE_CHECKING
 from warnings import warn
 
 from .route_selection import BUILTIN_ROUTE_ORDER as BUILTIN_ROUTE_ORDER
@@ -33,6 +33,8 @@ if TYPE_CHECKING:
     from .pdf_route import PdfRoute as PdfRoute
     from .pdf_route import PdfRouteConfig as PdfRouteConfig
     from .state import FrameworkRouteState
+    from .text_route import TextRoute as TextRoute
+    from .text_route import TextRouteConfig as TextRouteConfig
 
 
 # region [01] Generic route contracts and selection reexports
@@ -87,6 +89,8 @@ _DEFERRED_ROUTE_EXPORTS = {
     "ImageRouteConfig": (".image_route", "ImageRouteConfig"),
     "OfficeRoute": (".office_route", "OfficeRoute"),
     "OfficeRouteConfig": (".office_route", "OfficeRouteConfig"),
+    "TextRoute": (".text_route", "TextRoute"),
+    "TextRouteConfig": (".text_route", "TextRouteConfig"),
 }
 
 
@@ -163,6 +167,8 @@ def image_route_config_from_framework(
 
 
 def _run_image(context: RouteExecutionContext) -> object:
+    from _02_Deduplicacion import DedupIndex
+
     from .global_resources import CoordinatedMemoryGate
     from .image_route import ImageRoute
 
@@ -172,14 +178,16 @@ def _run_image(context: RouteExecutionContext) -> object:
         if context.resource_coordinator is None
         else CoordinatedMemoryGate(context.resource_coordinator, "image")
     )
-    return ImageRoute(
-        image_route_config_from_framework(config, root=context.root),
-        context.framework_state,
-        context.run_id,
-        progress=context.progress,
-        memory_gate=gate,
-        cancellation=context.cancellation,
-    ).run()
+    with DedupIndex(config.dedup_database) as dedup_index:
+        return ImageRoute(
+            image_route_config_from_framework(config, root=context.root),
+            context.framework_state,
+            context.run_id,
+            progress=context.progress,
+            memory_gate=gate,
+            cancellation=context.cancellation,
+            dedup_index=dedup_index,
+        ).run()
 
 
 def docx_route_config_from_framework(config: "FrameworkConfig") -> "DocxRouteConfig":
@@ -276,6 +284,37 @@ def _run_archive(context: RouteExecutionContext) -> object:
     ).run()
 
 
+def text_route_config_from_framework(config: "FrameworkConfig") -> "TextRouteConfig":
+    """Project application limits into generic text extraction."""
+
+    from .application_config_projections import text_route_config_from_application
+
+    return text_route_config_from_application(config)
+
+
+def _run_text(context: RouteExecutionContext) -> object:
+    from .global_resources import CoordinatedMemoryGate
+    from .text_route import TextRoute
+
+    gate = (
+        None
+        if context.resource_coordinator is None
+        else CoordinatedMemoryGate(context.resource_coordinator, "text")
+    )
+    summary = TextRoute(
+        text_route_config_from_framework(context.config),
+        context.framework_state,
+        context.run_id,
+        progress=context.progress,
+        memory_gate=gate,
+        cancellation=context.cancellation,
+    ).run()
+    catalog = _update_document_catalog_after_route(context, "text")
+    if catalog:
+        summary = _summary_with_catalog(summary, catalog)
+    return summary
+
+
 def audio_route_config_from_framework(config: "FrameworkConfig") -> "AudioRouteConfig":
     """Preserve the route-registry projection boundary for audio execution."""
 
@@ -342,7 +381,7 @@ def _run_code(context: RouteExecutionContext) -> object:
 
 def _update_document_catalog_after_route(
     context: RouteExecutionContext,
-    source_kind: Literal["pdf", "docx", "office", "audio"],
+    source_kind: Literal["pdf", "docx", "office", "text", "audio"],
 ) -> "tuple[CatalogUpdateSummary, ...]":
     """Classify only the source cache completed by this route."""
 
@@ -350,23 +389,21 @@ def _update_document_catalog_after_route(
         return ()
     from .document_catalog import update_document_catalog_source
 
-    sources = (
-        ((context.config.pdf_database, "pdf"),)
-        if source_kind == "pdf"
-        else (
-            ((context.config.docx_database, "docx"),)
-            if source_kind == "docx"
-            else (
-                ((context.config.audio_database, "audio"),)
-                if source_kind == "audio"
-                else (
-                    (context.config.office_database, "xlsx"),
-                    (context.config.office_database, "pptx"),
-                    (context.config.office_database, "odt"),
-                )
-            )
+    sources: tuple[tuple[Path, "SourceKind"], ...]
+    if source_kind == "pdf":
+        sources = ((context.config.pdf_database, "pdf"),)
+    elif source_kind == "docx":
+        sources = ((context.config.docx_database, "docx"),)
+    elif source_kind == "audio":
+        sources = ((context.config.audio_database, "audio"),)
+    elif source_kind == "text":
+        sources = ((context.config.text_database, "text"),)
+    else:
+        sources = (
+            (context.config.office_database, "xlsx"),
+            (context.config.office_database, "pptx"),
+            (context.config.office_database, "odt"),
         )
-    )
     phase_name = "catalog"
     begin_phase = getattr(context.framework_state, "begin_route_phase", None)
     complete_phase = getattr(context.framework_state, "complete_route_phase", None)
@@ -383,7 +420,7 @@ def _update_document_catalog_after_route(
             update_document_catalog_source(
                 context.config.document_catalog_database,
                 source_path,
-                cast("SourceKind", document_kind),
+                document_kind,
                 framework_run_id=context.run_id,
                 taxonomy_path=context.config.document_taxonomy_path,
                 max_text_chars=context.config.document_classification_max_chars,
@@ -437,6 +474,7 @@ def builtin_route_registry() -> dict[str, RouteAdapter]:
         RouteAdapter("docx", _run_docx),
         RouteAdapter("office", _run_office),
         RouteAdapter("archive", _run_archive),
+        RouteAdapter("text", _run_text),
         RouteAdapter("audio", _run_audio),
         RouteAdapter("image", _run_image),
         RouteAdapter("code", _run_code, input_source="inventory_snapshot"),

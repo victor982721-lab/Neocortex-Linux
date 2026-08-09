@@ -1,5 +1,10 @@
 # Evolución técnica integral de NeoCortex
 
+> **DOCUMENTO HISTÓRICO.** Los conteos de chunks, jobs, vectores, tiempos e I/O
+> son snapshots de esta campaña y no describen el estado vigente. Consulte
+> [README.md](../README.md), [CLI.md](CLI.md), `Neocortex --semantic-status` y
+> `Neocortex --knowledge-status` para el producto actual.
+
 **Corte documental:** 2026-07-26 17:30:00 -06:00  
 **Fuente recibida:** `neocortex-framework 0.7.0`  
 **Fuente integrada final:** `neocortex-framework 0.7.1`  

@@ -95,8 +95,11 @@ al Ruff `0.15.17` ya fijado; no es otra distribución.
 También se debe preparar y validar por separado `ffprobe` en `PATH` para la
 capacidad `audio`. La ausencia
 de `tesseract` o `qpdf` deja degradadas las funciones OCR/recuperación PDF de
-`documents`, y la ausencia de `tesseract` degrada el OCR documental de
-`image`. El probe estático de capacidades busca estos ejecutables únicamente
+`documents`, incluido el OCR de PDF e imágenes dentro de ZIP; la ausencia de
+`tesseract` también degrada el OCR documental de `image`. LibreOffice
+(`soffice`) es opcional pero necesario para el backend preferido de DOC/XLS/PPT
+heredados; `catdoc`, `xls2csv` y `catppt` pueden cubrir individualmente esos
+formatos. El probe estático de capacidades busca estos ejecutables únicamente
 en `PATH`; no interpreta overrides de una invocación operativa. Sus estados
 declaran presencia, no validan los rangos de versiones: el resolver hermético y
 `pip check` son las barreras de compatibilidad antes de promover el runtime.

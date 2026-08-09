@@ -28,6 +28,22 @@ no se copian aquí para evitar que se conviertan en datos históricos sin contex
   `contenedor.zip!/otro.zip!/miembro`, límites contra expansión maliciosa,
   extracción textual acotada, FTS5, consultas directas y owner Knowledge
   aditivo. Los miembros nunca se materializan en el filesystem.
+- OCR aislado y acotado dentro de Archive para imágenes BMP/GIF/JPEG/PNG/
+  TIFF/WebP y para páginas PDF con texto nativo insuficiente, incluidas cadenas
+  de ZIP anidados. Conserva miembro, contenedor, profundidad, modo de extracción
+  e incidencias cuando el runtime OCR no está disponible.
+- Ruta `text` incremental para texto imprimible, Markdown, CSV/TSV, HTML, XML,
+  JSON, EML y Office heredado DOC/XLS/PPT. Publica `text.sqlite3` schema 1 con
+  FTS, título/autor, metadata y errores; alimenta catálogo, Knowledge y
+  Semantic. LibreOffice corre en worker aislado y existen fallbacks locales
+  `catdoc`/`xls2csv`/`catppt`.
+- Política Semantic `semantic-text-quality-v1` que omite ruido de alta confianza
+  —binario codificado, volcados de fórmulas, mojibake, tokens desmedidos y
+  repetición mecánica— y colapsa chunks exactos repetidos sin alterar las
+  cachés fuente.
+- Huella completa XXH3-128 de cada imagen elegible o reutilizada, persistida en
+  Dedup para que la planificación y publicación CLIP no pierdan cobertura por
+  fingerprints ausentes.
 
 ### Cambiado
 
@@ -52,6 +68,32 @@ no se copian aquí para evitar que se conviertan en datos históricos sin contex
   mismas versiones.
 - El entrypoint del runtime versionado incorpora su directorio Node propiedad
   de la instalación junto al shim de Pyright, sin depender del `PATH` heredado.
+- `--all` incorpora las cachés Archive/texto al canal textual y publica también
+  imagen CLIP/OCR cuando existe `image.sqlite3`; Code permanece como inclusión
+  explícita. La documentación deja de congelar conteos históricos de millones
+  de chunks o vectores y remite a `--semantic-status`.
+- La abstención Jina usa el contrato mixto v2 y piso `0.42` para todos los
+  owners textuales admitidos, incluido el canal de título. La diversidad limita
+  resultados repetidos a un documento en discovery y dos evidencias en
+  evidence.
+- El título Semantic v3 prefiere metadata propia —como el asunto EML—, usa un
+  encabezado acotado cuando el basename es genérico y conserva el basename como
+  fallback, siempre como señal advisory sin autoridad de organización.
+
+### Corregido
+
+- El probe de FFprobe usa su argumento real `-version`, evitando un falso
+  `unavailable` cuando el ejecutable está instalado.
+- Las comprobaciones de snapshot aceptan `birthtime_ns=-1` como sentinel Linux
+  y conservan el `ctime` positivo exacto sólo para verificar estado legacy;
+  Windows mantiene birthtime positivo y cualquier deriva sigue fallando.
+- La validación SQLite informa primero tablas durables ausentes y no deja que
+  un FTS ajeno dañado oculte el contrato requerido; los módulos de work package
+  interpretan rutas Windows correctamente aun cuando el análisis corre en
+  POSIX.
+- La aplicación autorizada de organización en Windows sincroniza también la
+  ruta física y el FTS de `text.sqlite3`; el replay es idempotente y conserva
+  el mismo documento identificado.
 
 ## [0.7.2] - 2026-07-31
 

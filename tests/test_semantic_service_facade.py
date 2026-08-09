@@ -52,7 +52,8 @@ EXPECTED_SIGNATURES = {
     "plan_semantic_index": (
         "(state_directory: 'Path', *, scope: 'str' = 'all', source_kinds: "
         "'Sequence[str]' = ('pdf', 'docx', 'xlsx', 'pptx', 'odt', 'audio', "
-        "'code'), text_model: 'EmbeddingModelSpec | None' = None, "
+        "'archive', 'text', 'code'), text_model: "
+        "'EmbeddingModelSpec | None' = None, "
         "embed_ocr_text: 'bool' = True, chunking: "
         "'TextChunkingConfig | None' = None, cost_calibrations: "
         "'Sequence[SemanticCostCalibration]' = (), execution_signature: "
@@ -69,7 +70,8 @@ EXPECTED_SIGNATURES = {
     ),
     "index_text_embeddings": (
         "(state_directory: 'Path', *, source_kinds: 'Sequence[str]' = "
-        "('pdf', 'docx', 'xlsx', 'pptx', 'odt', 'audio', 'code'), model: "
+        "('pdf', 'docx', 'xlsx', 'pptx', 'odt', 'audio', 'archive', 'text', "
+        "'code'), model: "
         "'EmbeddingModelSpec | None' = None, model_cache: 'Path | None' = None, "
         "local_files_only: 'bool' = True, threads: 'int | None' = None, "
         "chunking: 'TextChunkingConfig | None' = None, work_budget: "
@@ -118,10 +120,7 @@ def test_semantic_service_public_facade_contract() -> None:
 
 
 def test_semantic_service_public_signatures_are_stable() -> None:
-    actual = {
-        name: str(inspect.signature(getattr(service, name)))
-        for name in EXPECTED_SIGNATURES
-    }
+    actual = {name: str(inspect.signature(getattr(service, name))) for name in EXPECTED_SIGNATURES}
     assert actual == EXPECTED_SIGNATURES
 
 

@@ -1,5 +1,9 @@
 # Auditoría técnica integral y evolución arquitectónica de NeoCortex
 
+> **DOCUMENTO HISTÓRICO.** Conserva evidencia del corte indicado y no describe
+> el estado vigente. Consulte [README.md](../README.md), [CLI.md](CLI.md) y el
+> comando `Neocortex --knowledge-status` para el producto actual.
+
 **Fecha de corte:** 2026-07-24  
 **Repositorio auditado:** `C:\Users\Neocortex`  
 **Interfaz pública canónica:** `Neocortex ...`  

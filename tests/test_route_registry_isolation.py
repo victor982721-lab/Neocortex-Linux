@@ -48,7 +48,7 @@ class RouteRegistryIsolationTests(unittest.TestCase):
 
             registry = builtin_route_registry()
             if tuple(registry) != (
-                "pdf", "docx", "office", "archive", "audio", "image", "code"
+                "pdf", "docx", "office", "archive", "text", "audio", "image", "code"
             ):
                 raise SystemExit(f"unexpected registry: {tuple(registry)!r}")
             forbidden = {
@@ -59,6 +59,7 @@ class RouteRegistryIsolationTests(unittest.TestCase):
                 "_04_Nucleo_Operativo.image_route",
                 "_04_Nucleo_Operativo.office_route",
                 "_04_Nucleo_Operativo.archive_route",
+                "_04_Nucleo_Operativo.text_route",
                 "_04_Nucleo_Operativo.audio_route",
                 "_04_Nucleo_Operativo.code_route",
                 "_04_Nucleo_Operativo.code_analyzers",
@@ -191,6 +192,7 @@ class RouteRegistryIsolationTests(unittest.TestCase):
                 "image": "_04_Nucleo_Operativo.image_route",
                 "office": "_04_Nucleo_Operativo.office_route",
                 "audio": "_04_Nucleo_Operativo.audio_route",
+                "text": "_04_Nucleo_Operativo.text_route",
             }
             class_names = {
                 "pdf": ("PdfRoute", "PdfRouteConfig"),
@@ -198,6 +200,7 @@ class RouteRegistryIsolationTests(unittest.TestCase):
                 "image": ("ImageRoute", "ImageRouteConfig"),
                 "office": ("OfficeRoute", "OfficeRouteConfig"),
                 "audio": ("AudioRoute", "AudioRouteConfig"),
+                "text": ("TextRoute", "TextRouteConfig"),
             }
 
             calls = []
@@ -235,7 +238,7 @@ class RouteRegistryIsolationTests(unittest.TestCase):
             setattr(selected_module, route_class_name, FakeRoute)
             setattr(selected_module, config_class_name, FakeRouteConfig)
             sys.modules[module_names[route_name]] = selected_module
-            if route_name == "pdf":
+            if route_name in {"pdf", "image"}:
                 dedup_module = types.ModuleType("_02_Deduplicacion")
                 dedup_module.DedupIndex = FakeDedupIndex
                 sys.modules["_02_Deduplicacion"] = dedup_module
@@ -274,16 +277,18 @@ class RouteRegistryIsolationTests(unittest.TestCase):
                 unrelated_dependency = (
                     "_04_Nucleo_Operativo.global_resources"
                 )
+            elif route_name == "image":
+                unrelated_dependency = None
             else:
                 unrelated_dependency = "_02_Deduplicacion"
-            if unrelated_dependency in sys.modules:
+            if unrelated_dependency is not None and unrelated_dependency in sys.modules:
                 raise SystemExit(
                     f"{route_name} adapter loaded: {unrelated_dependency}"
                 )
             print("ADAPTER_ISOLATED:" + route_name)
         """
 
-        for route_name in ("pdf", "docx", "office", "audio", "image"):
+        for route_name in ("pdf", "docx", "office", "text", "audio", "image"):
             with self.subTest(route=route_name):
                 completed = _run_isolated(script, NEOCORTEX_TEST_ROUTE=route_name)
                 self.assertEqual(completed.returncode, 0, completed.stderr)

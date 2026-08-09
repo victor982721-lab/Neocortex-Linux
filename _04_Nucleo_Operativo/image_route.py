@@ -10,7 +10,12 @@ from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator, Literal, Protocol
 
-from _02_Deduplicacion import FileSnapshot, snapshot_path
+from _02_Deduplicacion import (
+    FULL_ALGORITHM,
+    FileSnapshot,
+    full_fingerprint,
+    snapshot_path,
+)
 from _03_Progreso import (
     ProgressCallback,
     ProgressEvent,
@@ -106,6 +111,19 @@ class ImageRouteState(Protocol):
         route_name: str,
         reconciliations: Iterable[ReviewCandidateReconciliation],
     ) -> int: ...
+
+
+class ImageFingerprintIndex(Protocol):
+    """Minimal durable full-fingerprint cache used by Semantic planning."""
+
+    def cached_fingerprint(self, snapshot: FileSnapshot, algorithm: str) -> bytes | None: ...
+
+    def store_fingerprint(
+        self,
+        snapshot: FileSnapshot,
+        algorithm: str,
+        digest: bytes,
+    ) -> None: ...
 
 
 # region [01] Configuration and results
@@ -271,6 +289,8 @@ class ImageRouteSummary:
     cache_rows_pruned: int = 0
     peak_reserved_bytes: int = 0
     memory_waits: int = 0
+    full_fingerprint_cache_hits: int = 0
+    full_fingerprints_computed: int = 0
     processing_provenance: dict[str, Any] | None = None
     summary_schema: str = ROUTE_SUMMARY_SCHEMA
 
@@ -335,6 +355,7 @@ class ImageRoute:
         progress: ProgressCallback | None = None,
         memory_gate=None,
         cancellation: CancellationToken | None = None,
+        dedup_index: ImageFingerprintIndex | None = None,
     ):
         if config.workers < 1:
             raise ValueError("image workers must be positive")
@@ -349,12 +370,13 @@ class ImageRoute:
         self.run_id = run_id
         self.progress = progress
         self.cancellation = cancellation or CancellationToken()
+        self.dedup_index = dedup_index
+        self._full_fingerprint_cache_hits = 0
+        self._full_fingerprints_computed = 0
         self._worker_local = threading.local()
         self._supervisor_lock = threading.Lock()
         self._supervisors: set[ImageWorkerSupervisor] = set()
-        self.document_verifier = resolve_document_verifier(
-            _document_verifier_config(config)
-        )
+        self.document_verifier = resolve_document_verifier(_document_verifier_config(config))
         self.processing_provenance = _image_processing_provenance(
             config,
             self.document_verifier,
@@ -375,6 +397,21 @@ class ImageRoute:
         )
         initialize_image_state(config.state_path)
 
+    def _ensure_full_fingerprint(self, snapshot: FileSnapshot) -> None:
+        """Persist the exact image bytes identity already required by Semantic."""
+
+        if self.dedup_index is None:
+            return
+        cached = self.dedup_index.cached_fingerprint(snapshot, FULL_ALGORITHM)
+        if cached is not None:
+            if len(cached) != 16:
+                raise RuntimeError("cached image full fingerprint has an invalid length")
+            self._full_fingerprint_cache_hits += 1
+            return
+        digest = full_fingerprint(snapshot)
+        self.dedup_index.store_fingerprint(snapshot, FULL_ALGORITHM, digest)
+        self._full_fingerprints_computed += 1
+
     def _cached_row_delta(
         self,
         row: Any,
@@ -385,6 +422,7 @@ class ImageRoute:
         signature_matches = row["processing_signature"] == self.processing_signature
         if row["status"] == "done" and signature_matches:
             snapshot = snapshot_from_row(row)
+            self._ensure_full_fingerprint(snapshot)
             cached_reviews = _cached_success_review_candidates(row, snapshot)
             review_batch.extend(cached_reviews)
             reconciliations.append(
@@ -529,18 +567,14 @@ class ImageRoute:
         attempted = int(document_text.attempted) if document_text is not None else 0
         positive = int(document_text.dense_text) if document_text is not None else 0
         ocr_failure = int(
-            document_text is not None
-            and document_text.attempted
-            and not document_text.available
+            document_text is not None and document_text.attempted and not document_text.available
         )
         return _ImageCounterDelta(
             processed=1,
             classified=1,
             document_candidates=int(decision.document_candidate.is_candidate),
             photo_candidates=int(decision.category == "foto"),
-            recovered_decodes=int(
-                decision.features.decode_quality == "recovered_truncated"
-            ),
+            recovered_decodes=int(decision.features.decode_quality == "recovered_truncated"),
             industrial_context_candidates=int(decision.industrial_context.has_evidence),
             adult_heuristic_candidates=int(adult.candidate),
             adult_analyzed=int(adult.analyzed),
@@ -730,6 +764,8 @@ class ImageRoute:
         if work.work_submitted >= selected_work:
             return
         work.work_submitted += 1
+        snapshot = snapshot_from_row(row)
+        self._ensure_full_fingerprint(snapshot)
         cached_features = _cached_features_from_row(row)
         if cached_features is not None:
             work.feature_cache_hits += 1
@@ -742,7 +778,7 @@ class ImageRoute:
         work.pending.add(
             executor.submit(
                 self._analyze,
-                snapshot_from_row(row),
+                snapshot,
                 cached_features,
             )
         )
@@ -777,10 +813,7 @@ class ImageRoute:
                 )
             )
             if (
-                len(success_batch)
-                + len(error_batch)
-                + len(review_batch)
-                + len(reconciliations)
+                len(success_batch) + len(error_batch) + len(review_batch) + len(reconciliations)
                 >= RESULT_BATCH_SIZE
             ):
                 flush_results()
@@ -818,9 +851,7 @@ class ImageRoute:
     def run(self) -> ImageRouteSummary:
         self.cancellation.checkpoint()
         self._stage_inventory()
-        retry_selected = (
-            self.config.retry_errors or self.config.selection.force_incomplete_retry
-        )
+        retry_selected = self.config.retry_errors or self.config.selection.force_incomplete_retry
         candidate_pool, eligible = candidate_counts(
             self.config.state_path,
             self.run_id,
@@ -837,9 +868,7 @@ class ImageRoute:
         )
         selected_work = min(
             work_total,
-            self.config.max_documents
-            if self.config.max_documents is not None
-            else work_total,
+            self.config.max_documents if self.config.max_documents is not None else work_total,
         )
         selection_total = planned_cache_hits + planned_cached_errors + selected_work
         processed = cache_hits = cached_errors = 0
@@ -927,9 +956,7 @@ class ImageRoute:
                         ProgressMetric("reclassified", work.reclassified_images),
                         ProgressMetric("errors", errors),
                         ProgressMetric("in_flight", len(work.pending)),
-                        ProgressMetric(
-                            "remaining", max(0, selection_total - processed)
-                        ),
+                        ProgressMetric("remaining", max(0, selection_total - processed)),
                         ProgressMetric("cached_errors", cached_errors),
                         ProgressMetric("completed_work", classified),
                         ProgressMetric("adult_unavailable", adult_unavailable),
@@ -1015,6 +1042,8 @@ class ImageRoute:
             cache_rows_pruned=pruned,
             peak_reserved_bytes=self.memory_gate.peak_reserved_bytes,
             memory_waits=self.memory_gate.wait_count,
+            full_fingerprint_cache_hits=self._full_fingerprint_cache_hits,
+            full_fingerprints_computed=self._full_fingerprints_computed,
         )
 
     def _stage_inventory(self) -> None:
@@ -1028,9 +1057,7 @@ class ImageRoute:
                 selection,
             )
         else:
-            iterator = self.framework_state.iter_route_candidates_by_prefix(
-                self.run_id, "image/"
-            )
+            iterator = self.framework_state.iter_route_candidates_by_prefix(self.run_id, "image/")
         for mime, snapshot in iterator:
             self.cancellation.checkpoint()
             pending.append((mime, snapshot))
@@ -1399,9 +1426,7 @@ def _cached_success_review_candidates(
                     "decode_provenance": str(row["decode_provenance"]),
                     "classification_confidence": float(row["confidence"]),
                 },
-                detector_version=str(
-                    row["decode_provenance"] or "pillow-truncated-recovery-v1"
-                ),
+                detector_version=str(row["decode_provenance"] or "pillow-truncated-recovery-v1"),
             )
         )
     classification = str(row["adult_classification"] or "not_analyzed")
@@ -1427,9 +1452,7 @@ def _cached_success_review_candidates(
                 recommendation=("deletion_candidate" if explicit else "manual_review"),
                 retryable=classification == "unavailable",
                 confidence=(
-                    float(row["adult_confidence"] or 0.0)
-                    if bool(row["adult_analyzed"])
-                    else 0.50
+                    float(row["adult_confidence"] or 0.0) if bool(row["adult_analyzed"]) else 0.50
                 ),
                 evidence={
                     "classification": classification,
@@ -1462,9 +1485,7 @@ def _semantic_json_has_evidence(payload: str | None) -> bool:
 def _cached_features_from_row(row: Any) -> Features | None:
     """Rehydrate only feature schemas known to be decision-compatible."""
 
-    if row["status"] != "done" or not cached_features_are_compatible(
-        row["processing_signature"]
-    ):
+    if row["status"] != "done" or not cached_features_are_compatible(row["processing_signature"]):
         return None
     payload = row["features_json"]
     if not payload:
@@ -1476,11 +1497,7 @@ def _cached_features_from_row(row: Any) -> Features | None:
         features = Features(**values)
     except (TypeError, ValueError):
         return None
-    if (
-        features.width <= 0
-        or features.height <= 0
-        or features.file_size != int(row["size"])
-    ):
+    if features.width <= 0 or features.height <= 0 or features.file_size != int(row["size"]):
         return None
     return features
 

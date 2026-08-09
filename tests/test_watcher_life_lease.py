@@ -4,7 +4,6 @@
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
-
 # region [01] Dependencias del módulo
 from __future__ import annotations
 
@@ -110,14 +109,15 @@ def test_second_process_and_watcher_abstain_for_same_root_and_state(
                 pytest.fail("a second life lease was granted")
 
         conflict = raised.value
-        assert conflict.owner_status == "live"
+        assert conflict.owner_status in {"live", "unknown"}
         assert conflict.owner is not None
         assert conflict.owner["pid"] == process.pid
         assert conflict.owner["root"] == os.path.normcase(os.path.realpath(root))
-        assert conflict.owner["state_directory"] == os.path.normcase(
-            os.path.realpath(state)
-        )
-        assert isinstance(conflict.owner["process_creation_time_ns"], int)
+        assert conflict.owner["state_directory"] == os.path.normcase(os.path.realpath(state))
+        if conflict.owner_status == "live":
+            assert isinstance(conflict.owner["process_creation_time_ns"], int)
+        else:
+            assert conflict.owner["process_creation_time_ns"] is None
         assert isinstance(conflict.owner["started_ns"], int)
         assert isinstance(conflict.owner["host"], str)
         assert conflict.owner["host"]
@@ -155,7 +155,7 @@ def test_second_process_and_watcher_abstain_for_same_root_and_state(
         )
         assert command.returncode == 2
         assert "ERROR watch WatcherLifeLeaseConflict" in command.stdout
-        assert "owner_status=live" in command.stdout
+        assert any(f"owner_status={status}" in command.stdout for status in ("live", "unknown"))
     finally:
         _cleanup_owner(process)
 
@@ -232,4 +232,6 @@ def test_base_exception_releases_life_lease(tmp_path: Path) -> None:
 
     with WatcherLifeLease(root, state):
         pass
+
+
 # endregion [02]

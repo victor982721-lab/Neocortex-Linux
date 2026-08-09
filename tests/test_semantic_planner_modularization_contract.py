@@ -4,7 +4,6 @@
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
-
 # region [01] Dependencias del módulo
 from __future__ import annotations
 
@@ -34,7 +33,8 @@ EXPECTED_PLANNER_ALL = [
 EXPECTED_PLANNER_SIGNATURE = (
     "(state_directory: 'Path', *, scope: 'str' = 'all', "
     "source_kinds: 'Sequence[str]' = ('pdf', 'docx', 'xlsx', 'pptx', 'odt', "
-    "'audio', 'code'), text_model: 'EmbeddingModelSpec | None' = None, "
+    "'audio', 'archive', 'text', 'code'), text_model: "
+    "'EmbeddingModelSpec | None' = None, "
     "embed_ocr_text: 'bool' = True, chunking: 'TextChunkingConfig | None' = "
     "None, cost_calibrations: 'Sequence[SemanticCostCalibration]' = (), "
     "execution_signature: 'str | None' = None, scratch_directory: 'Path | "
@@ -61,12 +61,8 @@ def test_planner_and_service_facades_keep_exact_distinct_wrappers() -> None:
     assert semantic_service.plan_semantic_index.__module__ == (
         "_04_Nucleo_Operativo.semantic_service"
     )
-    assert semantic_service.plan_semantic_index is not (
-        semantic_planner.plan_semantic_index
-    )
-    assert semantic_service.semantic_plan_payload is not (
-        semantic_planner.semantic_plan_payload
-    )
+    assert semantic_service.plan_semantic_index is not (semantic_planner.plan_semantic_index)
+    assert semantic_service.semantic_plan_payload is not (semantic_planner.semantic_plan_payload)
 
 
 def test_planner_exception_identity_module_and_pickle_are_stable() -> None:
@@ -95,12 +91,8 @@ def test_extracted_error_module_reexports_exact_exception_objects() -> None:
         "SemanticScratchLimitExceeded",
     ]
     assert errors.SemanticPlanBlocked is semantic_planner.SemanticPlanBlocked
-    assert errors.SemanticScratchLimitExceeded is (
-        semantic_planner.SemanticScratchLimitExceeded
-    )
-    assert errors.SemanticPlanBlocked.__module__ == (
-        "_04_Nucleo_Operativo.semantic_planner"
-    )
+    assert errors.SemanticScratchLimitExceeded is (semantic_planner.SemanticScratchLimitExceeded)
+    assert errors.SemanticPlanBlocked.__module__ == ("_04_Nucleo_Operativo.semantic_planner")
     assert errors.SemanticScratchLimitExceeded.__module__ == (
         "_04_Nucleo_Operativo.semantic_planner"
     )
@@ -117,14 +109,10 @@ def test_extracted_scratch_module_keeps_planner_compatibility_aliases() -> None:
         "DEFAULT_MAX_SCRATCH_BYTES",
     ]
     assert scratch.CONTENT_BATCH_SIZE == semantic_planner.CONTENT_BATCH_SIZE
-    assert scratch.DEFAULT_MAX_SCRATCH_BYTES == (
-        semantic_planner.DEFAULT_MAX_SCRATCH_BYTES
-    )
+    assert scratch.DEFAULT_MAX_SCRATCH_BYTES == (semantic_planner.DEFAULT_MAX_SCRATCH_BYTES)
     assert scratch._ScratchBudget is semantic_planner._ScratchBudget
     assert scratch._ContentAccumulator is semantic_planner._ContentAccumulator
-    assert scratch._create_scratch_database is (
-        semantic_planner._create_scratch_database
-    )
+    assert scratch._create_scratch_database is (semantic_planner._create_scratch_database)
 
 
 def test_extracted_results_module_keeps_required_compatibility_aliases() -> None:
@@ -147,9 +135,7 @@ def test_extracted_results_module_keeps_required_compatibility_aliases() -> None
     assert results.build_plan_signature_payload is not (
         semantic_planner._plan_payload_for_signature
     )
-    assert results.assemble_semantic_plan is not (
-        semantic_planner._assemble_semantic_plan
-    )
+    assert results.assemble_semantic_plan is not (semantic_planner._assemble_semantic_plan)
     for wrapper in (
         semantic_planner._plan_payload_for_signature,
         semantic_planner._assemble_semantic_plan,
@@ -303,4 +289,6 @@ def test_owner_planner_cold_import_orders_keep_live_facade_bindings(
     )
     assert completed.returncode == 0, completed.stderr
     assert completed.stdout.strip() == "ok"
+
+
 # endregion [02]

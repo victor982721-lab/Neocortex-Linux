@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 from PIL import Image
 
-from _02_Deduplicacion import snapshot_path
+from _02_Deduplicacion import FULL_ALGORITHM, snapshot_path
 from _04_Nucleo_Operativo.image_document import (
     DocumentTextEvidence,
     DocumentVerifierRuntime,
@@ -38,14 +38,10 @@ class _State:
 
     def iter_route_candidates_by_prefix(self, run_id, mime_prefix):
         yield from (
-            (mime, snapshot)
-            for mime, snapshot in self.rows
-            if mime.startswith(mime_prefix)
+            (mime, snapshot) for mime, snapshot in self.rows if mime.startswith(mime_prefix)
         )
 
-    def iter_selected_route_candidates_by_prefix(
-        self, run_id, mime_prefix, route_name, selection
-    ):
+    def iter_selected_route_candidates_by_prefix(self, run_id, mime_prefix, route_name, selection):
         del route_name, selection
         yield from self.iter_route_candidates_by_prefix(run_id, mime_prefix)
 
@@ -104,6 +100,7 @@ def _route(
     run_id: int,
     **overrides: Any,
 ) -> ImageRoute:
+    dedup_index = overrides.pop("dedup_index", None)
     config = ImageRouteConfig(
         state_path=root / "state" / "image.sqlite3",
         root=root,
@@ -113,7 +110,34 @@ def _route(
         min_free_commit_bytes=0,
         document_ocr_mode="never",
     )
-    return ImageRoute(replace(config, **overrides), state, run_id)
+    return ImageRoute(
+        replace(config, **overrides),
+        state,
+        run_id,
+        dedup_index=dedup_index,
+    )
+
+
+class _FingerprintIndex:
+    def __init__(self) -> None:
+        self.values: dict[tuple[int, int, int, int, int, str], bytes] = {}
+
+    @staticmethod
+    def _key(snapshot, algorithm: str) -> tuple[int, int, int, int, int, str]:
+        return (
+            snapshot.volume_id,
+            snapshot.file_id,
+            snapshot.size,
+            snapshot.mtime_ns,
+            snapshot.birthtime_ns,
+            algorithm,
+        )
+
+    def cached_fingerprint(self, snapshot, algorithm: str) -> bytes | None:
+        return self.values.get(self._key(snapshot, algorithm))
+
+    def store_fingerprint(self, snapshot, algorithm: str, digest: bytes) -> None:
+        self.values[self._key(snapshot, algorithm)] = digest
 
 
 class _UnavailableAdultClassifier:
@@ -163,9 +187,7 @@ class ImageRouteTests(unittest.TestCase):
 
             initialize_image_state(database)
             with closing(sqlite3.connect(database)) as connection:
-                columns = {
-                    row[1] for row in connection.execute("PRAGMA table_info(images)")
-                }
+                columns = {row[1] for row in connection.execute("PRAGMA table_info(images)")}
                 version = connection.execute(
                     "SELECT value FROM metadata WHERE key='schema_version'"
                 ).fetchone()[0]
@@ -202,9 +224,7 @@ class ImageRouteTests(unittest.TestCase):
                     "ocr_text_truncated",
                 ):
                     connection.execute(f"ALTER TABLE images DROP COLUMN {column}")
-                connection.execute(
-                    "UPDATE metadata SET value='4' WHERE key='schema_version'"
-                )
+                connection.execute("UPDATE metadata SET value='4' WHERE key='schema_version'")
                 connection.commit()
 
             migrated = _route(root, state, 2).run()
@@ -272,15 +292,35 @@ class ImageRouteTests(unittest.TestCase):
             self.assertEqual(third.candidates, 2)
             self.assertEqual(third.cache_hits, 2)
             self.assertEqual(third.skipped_by_count, 0)
-            with closing(
-                sqlite3.connect(root / "state" / "image.sqlite3")
-            ) as connection:
+            with closing(sqlite3.connect(root / "state" / "image.sqlite3")) as connection:
                 rows = connection.execute(
                     "SELECT status,features_json,evidence_json FROM images ORDER BY path"
                 ).fetchall()
             self.assertEqual(len(rows), 2)
             self.assertTrue(all(row[0] == "done" for row in rows))
             self.assertTrue(all(row[1] and row[2] for row in rows))
+
+    def test_persists_full_image_fingerprint_and_reuses_it_on_cache_replay(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "panel.png"
+            with Image.new("RGB", (640, 480), "navy") as image:
+                image.save(source)
+            state = _State((("image/png", snapshot_path(source)),))
+            fingerprints = _FingerprintIndex()
+
+            first = _route(root, state, 1, dedup_index=fingerprints).run()
+            second = _route(root, state, 2, dedup_index=fingerprints).run()
+
+            self.assertEqual(first.full_fingerprints_computed, 1)
+            self.assertEqual(first.full_fingerprint_cache_hits, 0)
+            self.assertEqual(second.full_fingerprints_computed, 0)
+            self.assertEqual(second.full_fingerprint_cache_hits, 1)
+            self.assertEqual(second.cache_hits, 1)
+            self.assertEqual(len(fingerprints.values), 1)
+            ((key, digest),) = fingerprints.values.items()
+            self.assertEqual(key[-1], FULL_ALGORITHM)
+            self.assertEqual(len(digest), 16)
 
     def test_work_limit_does_not_let_cache_hits_starve_new_tail_rows(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -302,9 +342,7 @@ class ImageRouteTests(unittest.TestCase):
             self.assertEqual(resumed.classified, 1)
             self.assertEqual(resumed.processed, 2)
             self.assertEqual(resumed.skipped_by_count, 0)
-            with closing(
-                sqlite3.connect(root / "state" / "image.sqlite3")
-            ) as connection:
+            with closing(sqlite3.connect(root / "state" / "image.sqlite3")) as connection:
                 statuses = dict(connection.execute("SELECT path,status FROM images"))
             self.assertEqual(statuses[str(tail_path)], "done")
 
@@ -326,9 +364,7 @@ class ImageRouteTests(unittest.TestCase):
             self.assertEqual((first.classified, first.errors), (1, 1))
             database = root / "state" / "image.sqlite3"
             with closing(sqlite3.connect(database)) as connection:
-                connection.execute(
-                    "UPDATE images SET processing_signature='legacy-signature'"
-                )
+                connection.execute("UPDATE images SET processing_signature='legacy-signature'")
                 connection.commit()
 
             retried = _route(
@@ -370,12 +406,8 @@ class ImageRouteTests(unittest.TestCase):
             self.assertEqual(summary.candidate_pool, 2)
             self.assertEqual(summary.candidates, 1)
             self.assertEqual(summary.skipped_by_size, 1)
-            with closing(
-                sqlite3.connect(root / "state" / "image.sqlite3")
-            ) as connection:
-                self.assertEqual(
-                    connection.execute("SELECT COUNT(*) FROM images").fetchone()[0], 2
-                )
+            with closing(sqlite3.connect(root / "state" / "image.sqlite3")) as connection:
+                self.assertEqual(connection.execute("SELECT COUNT(*) FROM images").fetchone()[0], 2)
 
     def test_decision_upgrade_reuses_features_without_decoding_images(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -477,19 +509,13 @@ class ImageRouteTests(unittest.TestCase):
 
             summary = _route(root, state, 1).run()
             self.assertEqual(summary.industrial_context_candidates, 1)
-            with closing(
-                sqlite3.connect(root / "state" / "image.sqlite3")
-            ) as connection:
+            with closing(sqlite3.connect(root / "state" / "image.sqlite3")) as connection:
                 payload = connection.execute(
                     "SELECT semantic_json FROM images WHERE path=?", (str(path),)
                 ).fetchone()[0]
             semantic = json.loads(payload)
-            self.assertIn(
-                "transformador", [item["label"] for item in semantic["entities"]]
-            )
-            self.assertIn(
-                "mantenimiento", [item["label"] for item in semantic["activities"]]
-            )
+            self.assertIn("transformador", [item["label"] for item in semantic["entities"]])
+            self.assertIn("mantenimiento", [item["label"] for item in semantic["activities"]])
             self.assertEqual(
                 semantic["uncertainty"],
                 "evidencia_semantica_limitada_a_nombre_y_ruta",
@@ -506,9 +532,7 @@ class ImageRouteTests(unittest.TestCase):
             summary = _route(root, state, 1).run()
             self.assertEqual(summary.photo_candidates, 1)
             self.assertEqual(summary.document_candidates, 0)
-            with closing(
-                sqlite3.connect(root / "state" / "image.sqlite3")
-            ) as connection:
+            with closing(sqlite3.connect(root / "state" / "image.sqlite3")) as connection:
                 category = connection.execute(
                     "SELECT category FROM images WHERE path=?", (str(path),)
                 ).fetchone()[0]
@@ -556,9 +580,7 @@ class ImageRouteTests(unittest.TestCase):
             with Image.new("RGB", (1200, 900), "white") as image:
                 image.save(path)
             state = _State((("image/png", snapshot_path(path)),))
-            recognized = (
-                "Inspección de subestación: transformador y protección eléctrica"
-            )
+            recognized = "Inspección de subestación: transformador y protección eléctrica"
             runtime = DocumentVerifierRuntime(
                 enabled=True,
                 lang="spa+eng",
@@ -609,9 +631,7 @@ class ImageRouteTests(unittest.TestCase):
             self.assertEqual(record.characters, len(recognized))
             self.assertFalse(record.truncated)
 
-            with closing(
-                sqlite3.connect(root / "state" / "image.sqlite3")
-            ) as connection:
+            with closing(sqlite3.connect(root / "state" / "image.sqlite3")) as connection:
                 row = connection.execute(
                     "SELECT ocr_text_chars,ocr_text_xxh3_128,evidence_json,semantic_json "
                     "FROM images WHERE path=?",

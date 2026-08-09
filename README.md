@@ -37,12 +37,16 @@ continúa con el corpus documental. Si la raíz documental fue eliminada o no es
 utilizable, el autoanálisis todavía se ejecuta y la etapa de corpus termina con
 un error controlado `corpus_unavailable`, nunca con un traceback.
 
-Después de esa validación, `Neocortex --all` también avanza y publica Semantic
-textual a partir de los caches durables de PDF, DOCX, XLSX, PPTX, ODT y audio.
+Después de esa validación, `Neocortex --all` también avanza Semantic sobre las
+cachés durables disponibles. El canal textual incluye PDF, DOCX, XLSX, PPTX,
+ODT, audio, miembros de ZIP y la ruta de texto/correo; si existe la caché de
+imágenes, el mismo presupuesto publica además CLIP visión y el OCR retenido.
 Usa límites reanudables de 100 000 items, 1 000 000 de jobs y 48 horas. Code no
-entra implícitamente en esa etapa: el estado histórico contiene 4.89 millones
-de chunks Code y mezclarlo volvería a bloquear la publicación documental. Para
-un corpus Code deliberado se usa `--all --semantic-source code`.
+entra implícitamente: es un corpus de análisis distinto que puede dominar el
+presupuesto documental. Para incluirlo deliberadamente se usa
+`--all --semantic-source code`. No se presupone ningún conteo histórico de
+vectores o chunks: `--semantic-status` es la lectura del estado realmente
+publicado.
 
 La ruta Code usa `--code-scope projects` de forma predeterminada: descubre
 raíces por manifiestos de proyecto (`pyproject.toml`, `package.json`,
@@ -239,8 +243,8 @@ archivos originales. El primer uso debe cubrir una sola ruta y como máximo
 Neocortex --root C:\Datos --route pdf --MaxCount 25
 ```
 
-Las rutas vigentes son `pdf`, `docx`, `office`, `archive`, `audio`, `image` y
-`code`.
+Las rutas vigentes son `pdf`, `docx`, `office`, `archive`, `text`, `audio`,
+`image` y `code`.
 Las listas y `--all` se reservan para después de aprobar cada ruta y su
 proyección. Las búsquedas operan sobre estado ya construido, por ejemplo:
 
@@ -253,9 +257,14 @@ Neocortex --pdf-search "transformador AND mantenimiento"
 
 La ruta `archive` indexa los miembros de cada ZIP y recorre ZIP anidados sin
 extraerlos al filesystem. Conserva nombres, tamaños, profundidad y texto
-consultable de archivos de texto, HTML/XML, PDF con texto nativo, documentos
-OOXML/ODF y EPUB; formatos binarios o sin texto permanecen visibles como
-metadatos. El primer piloto debe seguir acotado:
+consultable de archivos de texto, HTML/XML, documentos OOXML/ODF y EPUB. Los
+PDF conservan el texto nativo y, en modo OCR `auto`, las páginas con menos de
+40 caracteres se renderizan de forma acotada; las imágenes BMP/GIF/JPEG/PNG/
+TIFF/WebP también se someten a OCR. Así un PDF escaneado o una imagen dentro de
+un ZIP anidado puede ser buscable sin materializarse. Si Pillow, PyMuPDF,
+Tesseract o los idiomas solicitados no están disponibles, el miembro y la
+incidencia siguen visibles y no se inventa texto. El primer piloto debe seguir
+acotado:
 
 ```bash
 Neocortex --root "$Root" --route archive --archive-max-count 25 --strict-exit-codes
@@ -272,6 +281,38 @@ cadena de contenedores. Las salidas de Archive y Knowledge muestran
 traversal, miembros cifrados o especiales y expansiones fuera de los límites de
 profundidad, cantidad, tamaño, ratio y texto. Nunca mueve, borra ni materializa
 los miembros del ZIP.
+
+### Texto físico, correo y Office heredado
+
+La ruta `text` cubre archivos imprimibles que antes sólo aparecían en el
+inventario: TXT, Markdown, CSV/TSV, HTML, XML, JSON y formatos de texto
+equivalentes. También interpreta la estructura visible de correo EML y conserva
+asunto, remitente y encabezados acotados. Los DOC/XLS/PPT binarios heredados se
+extraen en un proceso aislado mediante LibreOffice y, si existe, el extractor
+específico `catdoc`/`xls2csv`/`catppt`. La detección exige evidencia de bytes
+imprimibles, RFC 5322 o contenedor CFB; una extensión por sí sola no convierte
+binarios arbitrarios en texto.
+
+```bash
+Neocortex --root "$Root" --route text --text-max-count 25 --strict-exit-codes
+Neocortex --knowledge-status
+Neocortex --knowledge-search "término representativo" --knowledge-limit 20
+Neocortex --catalog-preview 25
+```
+
+`text.sqlite3` conserva texto, tipo, título, autor, firma, errores y FTS. El
+catálogo puede proponer clasificación y nombres —por ejemplo, el asunto de un
+EML—, pero en Linux sigue sin existir autoridad de movimiento. Semantic acepta
+esta caché mediante `--semantic-source text`.
+
+### Imágenes completas y búsqueda multimodal
+
+La ruta `image` garantiza un XXH3-128 completo de cada imagen elegible, incluso
+cuando reutiliza el análisis visual, y lo guarda en el índice Dedup compartido.
+Eso permite que el plan Semantic resuelva identidad exacta en lugar de omitir
+imágenes por falta de huella. Tras una ruta de imagen, `--all` incluye CLIP
+visión y el OCR documental retenido cuando la caché y los modelos locales están
+disponibles; texto e imagen permanecen en espacios vectoriales separados.
 
 ### Código con recuperación semántica integrada
 
@@ -620,15 +661,17 @@ entregada. `--semantic-index` usa por defecto un único presupuesto compartido
 de 50 items nuevos o cambiados, 1 500 jobs durables nuevos o reactivados y
 900 segundos. Los replays exactos no consumen los dos primeros límites.
 
-La indexación textual publica también un título durable derivado únicamente del
-basename, sin directorios ni la extensión final. La búsqueda lo mantiene como
-señal semántica separada y advisory: fusiona cuerpo (peso `1.0`) y título (peso
-`0.5`) por RRF, conserva la procedencia de ambos y devuelve el snippet corporal
-cuando existe. Clasificación, evidencia materializada y el modo Knowledge
-`evidence` continúan consumiendo sólo contenido. El modo Knowledge `discovery`
-puede usar el título únicamente como prior de recurso con peso `0.5`, y sólo si
-ese mismo recurso y revisión ya tienen evidencia corporal; nunca lo serializa
-como evidencia. Un título nunca autoriza mover, renombrar o borrar.
+La indexación textual publica también un título durable y explica su base:
+prefiere un título propio de la fuente —por ejemplo el asunto EML—; si el
+basename es genérico o de recuperación, usa un encabezado humano acotado del
+contenido; en último término usa el basename sin directorios ni extensión. La
+búsqueda lo mantiene como señal semántica separada y advisory: fusiona cuerpo
+(peso `1.0`) y título (peso `0.5`) por RRF, aplica la misma abstención calibrada,
+conserva la procedencia y devuelve el snippet corporal cuando existe.
+Clasificación, evidencia materializada y Knowledge `evidence` continúan
+consumiendo sólo contenido. Knowledge `discovery` puede usar el título sólo
+como prior de un recurso ya sustentado por evidencia corporal. Un título nunca
+autoriza mover, renombrar o borrar.
 Un head legado sin ese canal informa `title_channel_not_indexed` hasta una
 publicación acotada compatible.
 

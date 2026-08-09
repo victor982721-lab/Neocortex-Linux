@@ -1,5 +1,9 @@
 # Evolución Knowledge Plane — Fase 1
 
+> **DOCUMENTO HISTÓRICO.** Conserva evidencia del corte indicado y no describe
+> el estado vigente. Consulte [README.md](../README.md), [KNOWLEDGE.md](KNOWLEDGE.md)
+> y el comando `Neocortex --knowledge-status` para el producto actual.
+
 **Corte:** 2026-07-26 01:00:33 -06:00  
 **Fuente validada:** `neocortex-framework 0.7.0`  
 **Estado operativo global observado:** `neocortex-framework 0.3.0`; su launcher

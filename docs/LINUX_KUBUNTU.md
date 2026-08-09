@@ -162,8 +162,11 @@ artefactos.
 
 La entrada de aplicaciones se llama **NeoCortex**. La ventana muestra
 “modo portátil Linux”, no solicita elevación y mantiene desactivados los
-controles de mutación. Inventario, PDF, DOCX, Office, ZIP, audio, imagen, Code,
-catálogo y búsqueda siguen disponibles.
+controles de mutación. Inventario, PDF, DOCX, Office, ZIP anidados con OCR,
+texto/correo/Office heredado, audio, imagen, Code, catálogo, Semantic y
+búsqueda siguen disponibles. LibreOffice permite extraer DOC/XLS/PPT sin
+modificar el original; Tesseract `spa+eng` cubre PDF e imágenes tanto físicas
+como contenidas en ZIP.
 
 La primera ejecución debe usar una raíz de laboratorio con 20–50 fixtures, una
 sola ruta por vez y un máximo de 10–15 minutos. Compare hashes antes y después;

@@ -263,7 +263,7 @@ class RouteProcessingSignatureTests(unittest.TestCase):
         with patch(
             "_04_Nucleo_Operativo.audio_models.executable_component",
             return_value=ffprobe,
-        ):
+        ) as executable:
             initial = config.processing_provenance(
                 backend_version="1.2.1",
                 ctranslate2_version="4.8.0",
@@ -279,6 +279,12 @@ class RouteProcessingSignatureTests(unittest.TestCase):
 
         self.assertNotEqual(initial.signature, changed.signature)
         self.assertIn("ffprobe", {item["name"] for item in initial.manifest["components"]})
+        executable.assert_called_with(
+            "ffprobe",
+            default_name="ffprobe",
+            explicit=None,
+            version_arguments=("-version",),
+        )
 
     def test_every_route_summary_exposes_one_schema_contract(self) -> None:
         summaries = (

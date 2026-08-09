@@ -43,7 +43,7 @@ EVIDENCE_PAGE_SIZE = 256
 MIN_ADVISORY_EVIDENCE_SCORE = 0.0
 IMAGE_OCR_TEXT_CHANNEL = "image_ocr"
 SEMANTIC_PLAN_TEXT_SOURCE_KINDS = frozenset(
-    {"pdf", "docx", "xlsx", "pptx", "odt", "audio", "code"}
+    {"pdf", "docx", "xlsx", "pptx", "odt", "audio", "archive", "text", "code"}
 )
 
 # endregion [01]
@@ -185,9 +185,7 @@ class SemanticWorkloadPlan:
 
     @property
     def estimated_model_seconds(self) -> float | None:
-        if self.estimated_model_seconds_lower_bound != (
-            self.estimated_model_seconds_upper_bound
-        ):
+        if self.estimated_model_seconds_lower_bound != (self.estimated_model_seconds_upper_bound):
             return None
         return self.estimated_model_seconds_lower_bound
 
@@ -240,8 +238,7 @@ class SemanticPlan:
     estimate_kind: str = "model_only_request_range_from_exact_content_projection"
     vector_bytes_kind: str = "lower_bound_vector_blob_only"
     snapshot_scope: str = (
-        "read_transaction_per_database_with_data_version_fence_"
-        "not_cross_database_atomic"
+        "read_transaction_per_database_with_data_version_fence_not_cross_database_atomic"
     )
     sqlite_read_snapshot_may_touch_shm: bool = True
 
@@ -256,9 +253,7 @@ class SemanticPlan:
 
     @property
     def estimated_model_seconds(self) -> float | None:
-        if self.estimated_model_seconds_lower_bound != (
-            self.estimated_model_seconds_upper_bound
-        ):
+        if self.estimated_model_seconds_lower_bound != (self.estimated_model_seconds_upper_bound):
             return None
         return self.estimated_model_seconds_lower_bound
 
@@ -316,9 +311,7 @@ class SemanticSearchResult:
 
     @property
     def complete(self) -> bool:
-        semantic_complete = all(
-            ranking.available and ranking.complete for ranking in self.rankings
-        )
+        semantic_complete = all(ranking.available and ranking.complete for ranking in self.rankings)
         lexical_complete = all(
             ranking.availability is LexicalAvailability.AVAILABLE
             for ranking in self.lexical_rankings

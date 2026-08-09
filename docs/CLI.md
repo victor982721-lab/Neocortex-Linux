@@ -80,9 +80,10 @@ Las rutas de contenido vigentes en la CLI son:
 | `pdf` | Extracción, OCR, FTS, perfiles y relaciones PDF. |
 | `docx` | Documentos y plantillas OOXML de texto. |
 | `office` | XLSX, PPTX y ODT. |
-| `archive` | Miembros de ZIP y ZIP anidados con texto, metadatos y procedencia. |
+| `archive` | Miembros de ZIP y ZIP anidados, incluido OCR acotado de imágenes y PDF escaneados. |
+| `text` | Texto imprimible, EML y Office heredado DOC/XLS/PPT. |
 | `audio` | Audio y pistas de vídeo admitidas mediante Whisper. |
-| `image` | Clasificación y evidencia de imágenes. |
+| `image` | Clasificación, OCR, huella completa y evidencia de imágenes. |
 | `code` | Texto, estructura, símbolos y relaciones de código fuente. |
 
 El primer piloto usa una sola ruta y un límite explícito:
@@ -102,15 +103,17 @@ directas de consulta o diagnóstico.
 
 La corrida `--all` ejecuta primero el autoanálisis protegido de
 `~/Neocortex/Repository` —o su equivalente canónico Windows— usando el estado
-separado `self-analysis`. Después ejecuta las siete rutas del corpus y, si no
-hubo errores de acciones u organización, avanza Semantic textual sobre los
-caches disponibles de PDF, DOCX, XLSX, PPTX, ODT y audio. Sus límites
-integrados son 100 000 items, 1 000 000 de jobs y 172 800 segundos. Una
-truncación limpia se informa como progreso reanudable y conserva exit `0`;
-errores o estado stale conservan exit `2`. Code sólo participa en Semantic
-cuando se selecciona expresamente con `--semantic-source code`, para no
-reintroducir inventarios de millones de chunks en la publicación documental
-cotidiana.
+separado `self-analysis`. Después ejecuta las ocho rutas del corpus y, si no
+hubo errores de acciones u organización, avanza Semantic sobre las cachés
+disponibles de PDF, DOCX, XLSX, PPTX, ODT, audio, Archive, texto/correo e
+imágenes. El canal visual sólo se ejecuta cuando existe `image.sqlite3`. Sus
+límites integrados son 100 000 items, 1 000 000 de jobs y 172 800 segundos.
+Una truncación limpia se informa como progreso reanudable y conserva exit `0`;
+errores o estado stale conservan exit `2`. Code sólo participa cuando se
+selecciona expresamente con `--semantic-source code`, porque es una carga de
+análisis distinta y no debe consumir implícitamente el presupuesto documental.
+El conteo real se consulta con `--semantic-status`; la guía no fija cifras
+históricas de vectores o chunks como si fueran estado vigente.
 
 El autoanálisis y la etapa documental son fronteras independientes. Si la raíz
 del corpus no existe, `--all` conserva el autoanálisis ya ejecutado, informa
@@ -401,11 +404,11 @@ Neocortex --ui
 Neocortex --ui --root $Root
 ```
 
-La GUI supervisa el mismo orquestador y expone PDF, DOCX, Office, ZIP, audio,
-imagen y Code. En Linux muestra “modo portátil Linux”, no solicita elevación y
-desactiva los controles de mutación; inventario, procesamiento y búsqueda se
-conservan. El worker `--gui-worker` es un contrato interno y no debe invocarse
-manualmente.
+La GUI supervisa el mismo orquestador y expone PDF, DOCX, Office, ZIP,
+texto/correo, audio, imagen y Code. En Linux muestra “modo portátil Linux”, no
+solicita elevación y desactiva los controles de mutación; inventario,
+procesamiento y búsqueda se conservan. El worker `--gui-worker` es un contrato
+interno y no debe invocarse manualmente.
 
 ## Consultas y diagnósticos sin recorrido
 
@@ -474,6 +477,8 @@ Neocortex --pdf-search 'transformador AND mantenimiento'
 Neocortex --docx-search 'transformador AND mantenimiento'
 Neocortex --office-search 'transformador AND mantenimiento'
 Neocortex --audio-search 'transformador AND mantenimiento'
+Neocortex --archive-search 'transformador AND mantenimiento'
+Neocortex --knowledge-search 'transformador mantenimiento' --knowledge-limit 20
 Neocortex --code-search 'sqlite3' --code-search-mode import --code-language python
 Neocortex --semantic-search 'transformador mantenimiento' --semantic-search-mode all
 Neocortex --catalog-preview 100
@@ -490,11 +495,15 @@ no autoriza una descarga implícita. Ejecute primero `--semantic-status`:
 `--semantic-search` sólo lee embeddings y modelos publicados. Cero heads o cero
 embeddings significa que esa señal está indisponible, no que Semantic haya sido
 entregado.
-En el contrato exacto Jina/body de PDF y Code, resultados por debajo de sus
-pisos medidos (`0.50` y `0.46`) aparecen como abstenciones y la salida agrega
-`calibrated_abstentions`. Son filtros de recuperación por owner, no confianza ni
-probabilidad; otros contratos conservan su etiqueta no calibrada. Si un vector
-fue reutilizado por contenido exacto, el contrato se toma de su
+El contrato exacto Jina/body mixto aplica un piso de recuperación `0.42` a
+Archive, audio, Code, DOCX, imagen OCR, ODT, PDF, PPTX, texto y XLSX; el canal de
+título pasa por la misma barrera. Las exclusiones aparecen como
+`calibrated_abstentions`. Es un filtro de vecinos de baja evidencia, no
+confianza ni probabilidad. Antes de persistir embeddings, la política
+`semantic-text-quality-v1` omite Base64/binario codificado, volcados densos de
+fórmulas, mojibake, tokens desmedidos y repetición mecánica, y colapsa chunks
+idénticos del mismo item. Las cachés de extracción completas no se borran. Si
+un vector fue reutilizado por contenido exacto, el contrato se toma de su
 `payload_provenance`; valores contradictorios no reciben el piso.
 
 Code integra el canal Semantic mediante enlaces persistidos exactos, no por una
@@ -524,14 +533,17 @@ renombrar, mover o eliminar.
 
 En modo `text`, la salida separa los rankings `semantic_text` y
 `semantic_title`. El primero busca contenido con peso RRF `1.0`; el segundo usa
-el basename durable sin directorios ni extensión final con peso `0.5`. Ambos
-declaran peso y procedencia, comparten una sola vectorización de consulta y el
-resultado fusionado conserva de preferencia el snippet corporal. El título es
-advisory: no participa en clasificación ni evidencia materializada. Knowledge
-`evidence` lo excluye; Knowledge `discovery` puede usarlo sólo para reforzar un
-recurso y revisión que ya tengan evidencia corporal, nunca como cita. Un head
-anterior a esta política mantiene la búsqueda corporal y declara
-`title_channel_not_indexed` hasta ser republicado de forma acotada.
+con peso `0.5` el título durable de la fuente, un encabezado humano acotado si
+el basename es genérico o, como último recurso, el basename sin directorios ni
+extensión. Ambos declaran peso, base y procedencia, comparten una sola
+vectorización de consulta, aplican la misma abstención y conservan de
+preferencia el snippet corporal. La diversidad retiene un recurso por documento
+en discovery y hasta dos evidencias en evidence. El título es advisory: no
+participa en clasificación ni evidencia materializada. Knowledge `evidence` lo
+excluye; Knowledge `discovery` puede reforzar sólo un recurso y revisión ya
+sustentados por cuerpo, nunca crear una cita. Un head anterior a esta política
+mantiene la búsqueda corporal y declara `title_channel_not_indexed` hasta ser
+republicado de forma acotada.
 
 ### Indexación Semantic acotada
 
@@ -584,8 +596,36 @@ la cadena completa; por ejemplo
 `contenedor.zip!/subcarpeta/otro.zip!/documento.txt`. La ruta productora no
 materializa esos miembros en disco y aplica límites explícitos de profundidad,
 miembros, directorio central, tamaño individual, expansión total, ratio de
-compresión, texto y PDF. Los controles se consultan en `Neocortex --help`; para
-un piloto use `--archive-max-count 20..50`.
+compresión, texto y PDF. En OCR `auto`, cada página PDF con menos de 40
+caracteres de texto nativo y cada imagen BMP/GIF/JPEG/PNG/TIFF/WebP admitida se
+procesan dentro del worker aislado. Se respetan `--ocr`, `--ocr-lang`,
+`--pdf-dpi`, `--max-ocr-pages`, `--pdf-max-render-pixels`, `--ocr-timeout` y
+los límites Archive; una dependencia o idioma ausente queda como incidencia,
+no como texto vacío presentado como éxito. Los controles se consultan en
+`Neocortex --help`; para un piloto use `--archive-max-count 20..50`.
+
+### Texto, correo y Office heredado
+
+La ruta `text` detecta por contenido texto imprimible, HTML/XML/JSON, CSV/TSV,
+Markdown, EML con estructura RFC 5322 y contenedores CFB con extensión conocida
+DOC/XLS/PPT. Es una ruta productora, por lo que recorre el corpus y escribe
+`text.sqlite3`:
+
+```powershell
+Neocortex --root $Root --route text --text-max-count 25 --strict-exit-codes
+Neocortex --knowledge-search 'mantenimiento de transformador' --knowledge-limit 20
+Neocortex --semantic-index text --semantic-source text --semantic-max-items 25
+Neocortex --catalog-preview 25
+```
+
+`--text-max-mb` limita cada archivo; `--text-max-count`, cantidad;
+`--text-max-chars`, texto persistido; y `--text-worker-timeout`/
+`--text-worker-memory-mb`, el conversor aislado. `--libreoffice-path` permite un
+ejecutable explícito y `--retry-text-errors` vuelve a intentar errores sin
+cambios. EML conserva asunto y autor; LibreOffice es el backend preferido para
+Office heredado y `catdoc`/`xls2csv`/`catppt` son fallbacks locales. No existe
+una operación directa `--text-search`: FTS se consume por Knowledge, el catálogo
+y Semantic para no crear otra superficie paralela.
 
 ### Knowledge Plane de sólo lectura (`0.7.2`)
 
@@ -600,14 +640,14 @@ Neocortex --knowledge-search 'protección de transformador' --knowledge-limit 50
 Neocortex --knowledge-context 'protección de transformador' --knowledge-limit 20 --knowledge-context-characters 24000
 ```
 
-`--knowledge-status` captura los diez propietarios históricos y añade el owner
-`archive` sólo cuando `archive.sqlite3` existe.
+`--knowledge-status` captura los diez propietarios históricos y añade los
+owners `archive` y `text` sólo cuando sus bases existen.
 Si el directorio indicado por `--state-directory` no existe, informa cada
 propietario como `absent`, devuelve `0` y deja la ruta sin crear. Search y
 context compilan una consulta sobre los propietarios disponibles; con todo el
 estado ausente devuelven `4` (parcial), no un falso “sin resultados”.
 Si la ruta existe pero no es un directorio, o no puede abrirse y enumerarse en
-lectura, Knowledge falla de forma cerrada: no la transforma en diez owners
+lectura, Knowledge falla de forma cerrada: no la transforma en owners
 `absent`, no emite un JSON engañoso y la CLI devuelve el código fatal `1` con
 `KnowledgeStateRootError`. Esto incluye enlaces o reparse points cuyo destino
 ya no existe y cambios de presencia de la raíz durante una captura. Un archivo
@@ -765,6 +805,7 @@ Los overrides explícitos son:
 --retry-docx-errors
 --retry-office-errors
 --retry-archive-errors
+--retry-text-errors
 --retry-audio-errors
 --retry-image-errors
 --retry-code-errors

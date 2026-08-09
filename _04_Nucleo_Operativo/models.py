@@ -41,6 +41,7 @@ if TYPE_CHECKING:
     from .image_route import ImageRouteSummary
     from .office_route import OfficeRouteSummary
     from .pdf_route import PdfRouteSummary
+    from .text_route import TextRouteSummary
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,6 +127,21 @@ class FrameworkConfig:
     archive_pdf_max_pages: int = 500
     archive_pdf_timeout_seconds: float = 60.0
     archive_pdf_worker_memory_bytes: int = 768 * 1024 * 1024
+    archive_ocr_mode: Literal["auto", "never", "always"] = "auto"
+    archive_ocr_lang: str = "spa+eng"
+    archive_ocr_dpi: int = 200
+    archive_ocr_max_pages: int = 50
+    archive_ocr_max_render_pixels: int = 40_000_000
+    archive_ocr_timeout_seconds: float = 30.0
+    archive_tesseract_cmd: str | None = None
+    archive_tessdata_dir: str | None = None
+    text_max_file_bytes: int | None = 64 * 1024 * 1024
+    text_max_documents: int | None = None
+    text_max_text_chars: int = 4_000_000
+    text_worker_timeout_seconds: float = 60.0
+    text_worker_memory_bytes: int = 1024 * 1024 * 1024
+    text_retry_errors: bool = False
+    text_libreoffice_cmd: str | None = None
     audio_model_name: str = "small"
     audio_device: Literal["auto", "cpu", "cuda"] = field(default_factory=default_whisper_device)
     audio_compute_type: str = field(default_factory=default_whisper_compute_type)
@@ -221,6 +237,10 @@ class FrameworkConfig:
         return self.state_directory / "archive.sqlite3"
 
     @property
+    def text_database(self) -> Path:
+        return self.state_directory / "text.sqlite3"
+
+    @property
     def audio_database(self) -> Path:
         return self.state_directory / "audio.sqlite3"
 
@@ -248,6 +268,7 @@ class InitialRunResult:
     docx: DocxRouteSummary | None = None
     office: OfficeRouteSummary | None = None
     archive: ArchiveRouteSummary | None = None
+    text: TextRouteSummary | None = None
     audio: AudioRouteSummary | None = None
     image: ImageRouteSummary | None = None
     code: CodeRouteSummary | None = None
@@ -300,6 +321,7 @@ class RouteOnlyRunResult:
     docx: DocxRouteSummary | None = None
     office: OfficeRouteSummary | None = None
     archive: ArchiveRouteSummary | None = None
+    text: TextRouteSummary | None = None
     audio: AudioRouteSummary | None = None
     image: ImageRouteSummary | None = None
     code: CodeRouteSummary | None = None

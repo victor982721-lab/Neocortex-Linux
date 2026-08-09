@@ -473,10 +473,13 @@ def test_self_analysis_rejects_intersecting_state_directory(
     root = tmp_path / "root"
     root.mkdir()
     state_directories = (root, tmp_path, root / "state")
-    for state_directory in (
-        *state_directories,
-        *(_extended_drive_alias(path) for path in state_directories),
-    ):
+    candidates = state_directories
+    if os.name == "nt":
+        candidates = (
+            *state_directories,
+            *(_extended_drive_alias(path) for path in state_directories),
+        )
+    for state_directory in candidates:
         with pytest.raises(SystemExit, match="must be disjoint"):
             _validate(
                 "--self-analysis",
@@ -485,14 +488,15 @@ def test_self_analysis_rejects_intersecting_state_directory(
                 "--state-directory",
                 str(state_directory),
             )
-    with pytest.raises(SystemExit, match="must be disjoint"):
-        _validate(
-            "--self-analysis",
-            "--root",
-            str(_extended_drive_alias(root)),
-            "--state-directory",
-            str(root / "state"),
-        )
+    if os.name == "nt":
+        with pytest.raises(SystemExit, match="must be disjoint"):
+            _validate(
+                "--self-analysis",
+                "--root",
+                str(_extended_drive_alias(root)),
+                "--state-directory",
+                str(root / "state"),
+            )
 
 
 def test_self_analysis_rejects_unsupported_state_namespace(tmp_path: Path) -> None:

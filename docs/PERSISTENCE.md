@@ -1,6 +1,6 @@
 # Persistencia, esquemas y migraciones
 
-> **Estado del documento.** Contrato actualizado el 8 de agosto de 2026. El
+> **Estado del documento.** Contrato actualizado el 9 de agosto de 2026. El
 > árbol fuente `0.7.2` declara inventario Dedup v9, framework v20,
 > catálogo v6 y semántica v6; la barrera integral y el paquete final se registran
 > por separado. En una auditoría histórica, bases vivas se inspeccionaron sin
@@ -101,16 +101,17 @@ a los archivos vivos.
 | Base o API | Propietario | Versión declarada | Finalidad y tablas principales | Versionado |
 |---|---|---:|---|---|
 | Base de `SqlitePathIndex` | `_01_Enumeracion.path_index_schema` / `path_index` | 1 | índice auxiliar MFT de `nodes` y `metadata` | `metadata.schema_version`; no migraciones legacy admitidas |
-| `dedup.sqlite3` | `_02_Deduplicacion.inventory_schema` / `DedupIndex` | **8 en fuente**; 6 en la base viva inspeccionada | scans generacionales ligados a firma de inventario, checkpoint, archivos, fingerprints, summaries y grupos/miembros de plan | `metadata.schema_version`; migraciones 1→8 |
+| `dedup.sqlite3` | `_02_Deduplicacion.inventory_schema` / `DedupIndex` | **9 en fuente**; 6 en la base viva histórica inspeccionada | scans generacionales ligados a firma de inventario, checkpoint portable/USN opcional, archivos, fingerprints, summaries y grupos/miembros de plan | `metadata.schema_version`; migraciones 1→9 |
 | `framework.sqlite3` | `framework_schema`, `FrameworkState`, `FrameworkRouteState` | **20** | runs, fases, policy/identidad de corpus, acciones con snapshot protegido, eventos append-only de transición/conciliación/manifest, candidatos de ruta, caché de tipo, revisión y evidencia | `metadata.schema_version`; migraciones secuenciales |
 | `pdf.sqlite3` | `pdf_schema`, `pdf_state`, `PdfRoute`, `PdfDerivedIndexer` | 11 | inventario, documentos, páginas, staging, errores, warnings, FTS, firmas, similitud y layout | `metadata.schema_version`; migraciones secuenciales |
 | `docx.sqlite3` | `docx_schema`, `docx_state`, `DocxRoute` | 5 | inventario, documentos, partes, diagnósticos, FTS, layouts y contrapartes PDF | `metadata.schema_version`; migraciones secuenciales |
 | `office.sqlite3` | `office_state`, `OfficeRoute` | 1 | inventario, documentos y FTS | `metadata.schema_version` |
 | `archive.sqlite3` | `archive_state`, `ArchiveRoute` | 1 | contenedores ZIP, miembros y cadenas anidadas, incidencias, texto comprimido y FTS | `metadata.schema_version`; sin estado legacy |
+| `text.sqlite3` | `text_state`, `TextRoute` | 1 | texto físico, EML y Office heredado; título/autor, metadata, texto comprimido, errores y FTS | `metadata.schema_version`; sin estado legacy |
 | `audio.sqlite3` | `audio_state`, `AudioRoute` | 1 | inventario, documentos, segmentos y FTS de transcripción | `metadata.schema_version` |
 | `image.sqlite3` | `image_state`, `ImageRoute` | 5 | imágenes, estado de extracción/clasificación y metadata | `metadata.schema_version`; migraciones aditivas |
 | `document_catalog.sqlite3` | `document_catalog_schema`, `document_catalog` | **6** | runs, generaciones/staging, publicación por fuente, proyección de documentos, historial y planes de organización | `metadata.schema_version`; migraciones secuenciales |
-| `code.sqlite3` | `code_schema`, `code_state` | 3 | proyectos, runs, archivos/versiones, símbolos, referencias, dependencias, grafo, chunks, FTS y evidencia externa normalizada | metadata + `PRAGMA user_version` + `schema_migrations` exacto; migraciones 1→2→3 y 2→3 |
+| `code.sqlite3` | `code_schema`, `code_state` | 4 | proyectos, runs, archivos/versiones, símbolos, referencias, dependencias, grafo, chunks, FTS, métricas/relaciones y evidencia externa normalizada | metadata + `PRAGMA user_version` + `schema_migrations` exacto; migraciones secuenciales 1→4 |
 | `semantic.sqlite3` | `semantic_schema`, repositorios y servicio semántico | **6** | espacios/modelos, revisiones inmutables, miembros de generación, heads publicados, jobs, payloads, prototipos y evidencia | metadata + `PRAGMA user_version` + `schema_migrations` exacto |
 
 La base del índice MFT es una API auxiliar con ruta elegida por el llamador y
@@ -120,25 +121,26 @@ capacidades.
 
 ### Matriz de propietarios del snapshot Knowledge
 
-Knowledge conserva los diez propietarios históricos y agrega `archive` sólo
-cuando `archive.sqlite3` existe. No incorpora la base auxiliar de
-`SqlitePathIndex`. Antes de leer datos valida la versión y el contrato del
-propietario correspondiente; una instalación que todavía no ejecutó la ruta
-ZIP mantiene exactamente el vector histórico de diez owners:
+Knowledge conserva los diez propietarios históricos y agrega `archive` y
+`text` sólo cuando existe la base correspondiente. No incorpora la base
+auxiliar de `SqlitePathIndex`. Antes de leer datos valida la versión y el
+contrato del propietario correspondiente; una instalación que todavía no
+ejecutó esas rutas mantiene el vector histórico de diez owners:
 
 | Owner Knowledge | Archivo | Esquema esperado | Head o watermark lógico |
 |---|---|---:|---|
-| `inventory` | `dedup.sqlite3` | 8 | scan publicado por raíz y firma, checkpoint y señal de plan de duplicados completado |
+| `inventory` | `dedup.sqlite3` | 9 | scan publicado por raíz y firma, checkpoint portable/USN opcional y señal de plan de duplicados completado |
 | `framework` | `framework.sqlite3` | 20 | máximos de run, evento y acción; `best_effort_non_generational` |
 | `catalog` | `document_catalog.sqlite3` | 6 | generación publicada por `source_kind` |
 | `pdf` | `pdf.sqlite3` | 11 | filas actuales, último update/run; `best_effort_non_generational` |
 | `docx` | `docx.sqlite3` | 5 | filas actuales, último update/run; `best_effort_non_generational` |
 | `office` | `office.sqlite3` | 1 | filas actuales, último update/run; `best_effort_non_generational` |
 | `archive` (aditivo si existe) | `archive.sqlite3` | 1 | miembros actuales, último update/run; `best_effort_non_generational` |
+| `text` (aditivo si existe) | `text.sqlite3` | 1 | documentos actuales, último update/run; `best_effort_non_generational` |
 | `audio` | `audio.sqlite3` | 1 | filas actuales, último update/run; `best_effort_non_generational` |
 | `image` | `image.sqlite3` | 5 | imágenes actuales, último update/run; `best_effort_non_generational` |
 | `semantic` | `semantic.sqlite3` | 6 | generación `ready` publicada por modelo, espacio y firma de procesamiento |
-| `code` | `code.sqlite3` | 2 | archivos actuales, última versión/run; `best_effort_non_generational` |
+| `code` | `code.sqlite3` | 4 | archivos actuales, última versión/run; `best_effort_non_generational` |
 
 Una base ausente se representa como `absent`; no se crea para completar la
 matriz. Una versión menor, futura, inconsistente o un contrato malformado
@@ -147,7 +149,8 @@ reconstruye bases.
 
 ### Interpretación de versiones
 
-- En path index, dedup, framework, PDF, DOCX, Office, Archive, audio, imagen y catálogo,
+- En path index, dedup, framework, PDF, DOCX, Office, Archive, texto, audio,
+  imagen y catálogo,
   la autoridad es `metadata.schema_version`.
 - En code y semantic, metadata debe coincidir con `PRAGMA user_version` y con
   todas las filas esperadas de `schema_migrations`.
@@ -166,8 +169,8 @@ neutralidad byte por byte de `-shm` cuando SQLite participa en un WAL existente,
 limitación documentada en la sección de inspección viva.
 
 No existe una transacción SQLite distribuida entre los diez archivos históricos
-ni el owner Archive aditivo. El snapshot Knowledge es una observación lógica y
-acotada:
+ni los owners aditivos Archive/texto. El snapshot Knowledge es una observación
+lógica y acotada:
 
 1. abre un propietario y valida su esquema;
 2. bajo una transacción de lectura registra heads/watermarks y
@@ -188,7 +191,7 @@ de la última ejecución, los marca incompletos y devuelve la condición
 
 Los heads están limitados a 1024 por propietario. Inventario, catálogo y
 semántica exponen publicaciones que fijan una generación concreta. En cambio,
-framework, PDF, DOCX, Office, Archive, audio, imagen y code exponen agregados con
+framework, PDF, DOCX, Office, Archive, texto, audio, imagen y code exponen agregados con
 `visibility=best_effort_non_generational`: permiten detectar deriva entre las
 dos observaciones, pero no fijan cada fila consumida ni convierten la lectura
 cross-owner en atómica. Un resultado que requiere una fuente ausente,
@@ -307,19 +310,23 @@ misma transacción; una ambigüedad o conflicto de metadatos provoca abstención
 
 ### Cachés por formato
 
-PDF, DOCX, Office, audio e imagen conservan resultados especializados para no
-reprocesar archivos sin cambios. Sus claves se derivan de identidad durable,
-metadatos y firmas de procesamiento. Una caché no es respaldo del original.
+PDF, DOCX, Office, Archive, texto, audio e imagen conservan resultados
+especializados para no reprocesar archivos sin cambios. Sus claves se derivan
+de identidad durable, metadatos y firmas de procesamiento. Una caché no es
+respaldo del original.
 
-PDF y DOCX incluyen FTS y estructuras derivadas; audio almacena segmentos;
-imagen almacena clasificación y evidencia. La poda de una caché sólo debe
+PDF y DOCX incluyen FTS y estructuras derivadas; Archive conserva miembros
+virtuales/cadenas ZIP y OCR; texto conserva cuerpo, asunto/autor y tipo; audio
+almacena segmentos; imagen almacena clasificación/evidencia y su ruta productora
+garantiza la huella completa XXH3-128 en Dedup. La poda de una caché sólo debe
 ocurrir después de una reconciliación que demuestre qué filas dejaron de ser
 vigentes.
 
 ### Catálogo documental
 
-El catálogo unifica resultados de PDF, DOCX, Office y audio para clasificación
-y organización. `catalog_runs` registra ejecuciones; `documents` contiene la
+El catálogo unifica resultados de PDF, DOCX, Office, texto y audio para
+clasificación y organización. Archive permanece fuera porque sus miembros no
+son archivos físicos organizables. `catalog_runs` registra ejecuciones; `documents` contiene la
 vista actual; `classification_history` conserva resultados por firma y ruta;
 `organization_plans` registra intención y sincronización posterior.
 
@@ -415,7 +422,7 @@ revisiones y miembros por generación y selecciona una generación completa por
 modelo mediante `published_embedding_heads`. La búsqueda oficial sólo consulta
 esos heads; `ready_partial` y `building` no son visibles.
 
-`code.embedding_links`, introducida en Code v2 y conservada por v3, tiene un
+`code.embedding_links`, introducida en Code v2 y conservada por v4, tiene un
 productor y un consumidor integrados. Tras publicar por completo texto de
 `source_kind=code`, `code-semantic-link-v1` prepara en una tabla TEMP la
 cobertura exacta del head y exige que cada chunk vigente no vacío resuelva por
@@ -456,6 +463,8 @@ a una conexión auxiliar.
 | PDF | 60 s / 60 000 ms | WAL, NORMAL | -32768, 4096, 256 MiB | `foreign_keys=ON`; lector URI ro + query_only |
 | DOCX | 60 s / 60 000 ms | WAL, NORMAL | -32768, 4096, 256 MiB | FK ON; lector URI ro + query_only |
 | Office | 60 s / 60 000 ms | WAL, NORMAL | -32768, 2048, 128 MiB | FK ON; lector URI ro + query_only |
+| Archive | 60 s / 60 000 ms | WAL, NORMAL | -32768, 2048, 128 MiB | FK ON; lector URI ro + query_only |
+| Texto | 60 s / 60 000 ms | WAL, NORMAL | -32768, 2048, 128 MiB | FK ON; lector URI ro + query_only |
 | Audio | 60 s / 60 000 ms | WAL, NORMAL | -65536, 2048, 256 MiB | FK ON; lector URI ro + query_only |
 | Imagen | 30 s / 30 000 ms | WAL, NORMAL | sin cache/autocheckpoint/journal limit explícitos | FK ON; lector URI ro + query_only |
 | Catálogo | 60 s / 60 000 ms | WAL, NORMAL | -32768, 4096, 256 MiB | FK ON para runs/generaciones/publicación; lector URI ro + query_only |
@@ -1095,7 +1104,7 @@ Se observó poda acotada de:
   conserva publicación vigente y anterior, todo `building`, candidatos
   `complete` más nuevos y holds cross-store explícitos. La llamada falla
   cerrado sin esos holds y no expira un building abandonado;
-- cachés PDF/DOCX/Office/audio/imagen que una reconciliación satisfactoria marca
+- cachés PDF/DOCX/Office/Archive/texto/audio/imagen que una reconciliación satisfactoria marca
   como ausentes;
 - candidatos de ruta transitorios;
 - caché de detección de tipo.
@@ -1209,7 +1218,7 @@ Antes de aceptar una migración:
 | NC-AUD-012 | corregido para lectores oficiales v6 | heads por modelo, revisiones congeladas y publicación CAS completa |
 | NC-AUD-013 | corregido para lectores oficiales v6 | staging por fuente y proyección/publicación CAS atómica |
 | NC-AUD-014 | corregido parcialmente | planner dry-run keyset protege estado crítico, evidencia semántica y último run completado; la poda dedup exige holds explícitos y conserva dos publicaciones, pero no hay ejecución genérica, cuotas ni poda global |
-| NC-AUD-015 | pendiente reproducido | fastpath estable y reconstrucción fail-closed reducen trabajo repetido, pero esquema 3 sigue no generacional, global, sin reanudación ni cancelación dentro de sentencia; no se fragmentó sin contrato completo |
+| NC-AUD-015 | pendiente reproducido | fastpath estable y reconstrucción fail-closed reducen trabajo repetido, pero esquema 4 sigue no generacional, global, sin reanudación ni cancelación dentro de sentencia; no se fragmentó sin contrato completo |
 | NC-AUD-017 | corregido y revalidado para propietarios oficiales | 37 llamadas directas/21 módulos y 132 adquisiciones/20 factories clasificadas; SQL externo y relaciones no declaradas quedan fuera |
 | NC-AUD-018 | corregido y conservado | migración catálogo se abstiene ante estructura/trigger/objeto desconocido y compara conteos |
 | NC-AUD-019 | corregido estructuralmente | un solo snapshot/conexión; permanecen nueve conteos completos cuyo costo se mide aparte |

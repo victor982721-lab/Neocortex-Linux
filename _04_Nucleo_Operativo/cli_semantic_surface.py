@@ -111,7 +111,7 @@ def register_semantic_arguments(parser: argparse.ArgumentParser) -> None:
     semantic.add_argument(
         "--semantic-source",
         action="append",
-        choices=("pdf", "docx", "xlsx", "pptx", "odt", "audio", "code"),
+        choices=("pdf", "docx", "xlsx", "pptx", "odt", "audio", "archive", "text", "code"),
         help="repeat to select durable text caches for text/all planning or indexing",
     )
     semantic.add_argument(

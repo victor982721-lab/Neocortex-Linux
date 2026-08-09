@@ -1290,6 +1290,11 @@ def test_missing_semantic_cache_preserves_lexical_and_creates_no_artifacts(
     model, generation_id = _create_published_semantic_pdf_state(state)
     model_cache = tmp_path / "models" / "fastembed"
     assert not model_cache.exists()
+    monkeypatch.setattr(
+        semantic_preparation,
+        "default_semantic_model_cache",
+        lambda _state_directory: model_cache,
+    )
 
     def unexpected_backend(*args: object, **kwargs: object) -> None:
         del args, kwargs
@@ -1374,7 +1379,7 @@ def test_legacy_decimal_file_key_aligns_with_canonical_physical_resource(
     assert {hit.resource.resource_id for hit in result.hits} == {"resource:file:26:43:30"}
 
 
-def test_unknown_birthtime_never_claims_canonical_physical_identity(
+def test_linux_birthtime_sentinel_claims_posix_physical_identity(
     tmp_path: Path,
 ) -> None:
     state = tmp_path / "state"
@@ -1400,10 +1405,10 @@ def test_unknown_birthtime_never_claims_canonical_physical_identity(
 
     assert result.hits
     hit = result.hits[0]
-    assert not hit.resource.resource_id.startswith("resource:file:")
+    assert hit.resource.resource_id == "resource:file:1:2:-1"
     assert hit.resource.physical_identity is not None
-    assert hit.resource.physical_identity.scheme == "owner_file_key"
-    assert "physical_identity_unresolved" in hit.warnings
+    assert hit.resource.physical_identity.scheme == "posix_device_inode_birthtime"
+    assert "physical_identity_unresolved" not in hit.warnings
 
 
 def test_unverified_inventory_plan_is_exposed_but_never_filters_evidence(
@@ -1588,9 +1593,10 @@ def test_catalog_head_constrains_all_rankings_and_aligns_physical_resource(
     unresolved_hit = next(
         hit for hit in unresolved.hits if hit.evidence.method is EvidenceMethod.INFERRED
     )
-    assert unresolved_hit.resource.resource_id.startswith("resource:catalog:")
-    assert not unresolved_hit.resource.resource_id.startswith("resource:file:")
-    assert "physical_identity_unresolved" in unresolved_hit.warnings
+    assert unresolved_hit.resource.resource_id == "resource:file:1:2:-1"
+    assert unresolved_hit.resource.physical_identity is not None
+    assert unresolved_hit.resource.physical_identity.scheme == ("posix_device_inode_birthtime")
+    assert "physical_identity_unresolved" not in unresolved_hit.warnings
 
 
 def test_unsupported_content_date_filter_abstains_instead_of_using_mtime(
@@ -1700,12 +1706,15 @@ def test_search_reuses_real_structured_code_owner(tmp_path: Path) -> None:
         snapshot,
     )
     unresolved_hit = next(hit for hit in unresolved.hits if hit.resource.source_kind == "code")
-    assert unresolved_hit.resource.resource_id.startswith("resource:code:")
-    assert not unresolved_hit.resource.resource_id.startswith("resource:file:")
-    assert "physical_identity_unresolved" in unresolved_hit.warnings
+    assert unresolved_hit.resource.resource_id == (
+        f"resource:file:{source_snapshot.volume_id}:{source_snapshot.file_id}:-1"
+    )
+    assert unresolved_hit.resource.physical_identity is not None
+    assert unresolved_hit.resource.physical_identity.scheme == ("posix_device_inode_birthtime")
+    assert "physical_identity_unresolved" not in unresolved_hit.warnings
 
 
-def test_inventory_unknown_birthtime_uses_owner_local_namespace(
+def test_inventory_linux_birthtime_sentinel_uses_posix_namespace(
     tmp_path: Path,
 ) -> None:
     state = tmp_path / "state"
@@ -1752,9 +1761,10 @@ def test_inventory_unknown_birthtime_uses_owner_local_namespace(
     )
 
     hit = next(hit for hit in result.hits if hit.resource.owner == "inventory")
-    assert hit.resource.resource_id.startswith("resource:inventory:")
-    assert not hit.resource.resource_id.startswith("resource:file:")
-    assert "physical_identity_unresolved" in hit.warnings
+    assert hit.resource.resource_id == "resource:file:1:2:-1"
+    assert hit.resource.physical_identity is not None
+    assert hit.resource.physical_identity.scheme == "posix_device_inode_birthtime"
+    assert "physical_identity_unresolved" not in hit.warnings
 
 
 def test_explicit_filters_keep_exact_inventory_aliases_and_real_image_ocr() -> None:

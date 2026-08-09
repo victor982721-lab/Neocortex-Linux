@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from collections.abc import Iterator
 from contextlib import closing
@@ -61,10 +62,7 @@ def _create_version_17_database(
                 continue
             if "CREATE TABLE IF NOT EXISTS file_action_events (" in statement:
                 continue
-            if (
-                "CREATE TABLE IF NOT EXISTS file_action_reconciliation_events ("
-                in statement
-            ):
+            if "CREATE TABLE IF NOT EXISTS file_action_reconciliation_events (" in statement:
                 continue
             connection.execute(statement)
         connection.execute(
@@ -171,9 +169,7 @@ def test_current_schema_migrates_version_17_without_reinterpreting_legacy(
             root_birthtime_ns,state_directory,inventory_policy_signature
             FROM initial_runs WHERE run_id=7"""
         ).fetchone()
-        event_count = connection.execute(
-            "SELECT COUNT(*) FROM file_action_events"
-        ).fetchone()[0]
+        event_count = connection.execute("SELECT COUNT(*) FROM file_action_events").fetchone()[0]
         integrity = connection.execute("PRAGMA integrity_check").fetchone()[0]
         foreign_keys = connection.execute("PRAGMA foreign_key_check").fetchall()
 
@@ -230,7 +226,7 @@ def test_current_schema_abstains_on_unknown_version_17_objects(
 
     with pytest.raises(
         RuntimeError,
-        match="initialization from version 17 failed|schema contract validation failed",
+        match=r"initialization from version 17 failed|schema contract validation failed",
     ):
         FrameworkState(database)
 
@@ -238,18 +234,14 @@ def test_current_schema_abstains_on_unknown_version_17_objects(
         assert connection.execute(
             "SELECT value FROM metadata WHERE key='schema_version'"
         ).fetchone() == ("17",)
-        assert connection.execute("SELECT COUNT(*) FROM file_actions").fetchone() == (
-            1,
-        )
+        assert connection.execute("SELECT COUNT(*) FROM file_actions").fetchone() == (1,)
         assert (
             connection.execute(
                 "SELECT name FROM sqlite_master WHERE name='file_action_events'"
             ).fetchone()
             is None
         )
-        columns = {
-            str(row[1]) for row in connection.execute("PRAGMA table_info(file_actions)")
-        }
+        columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(file_actions)")}
         if unknown_object is not None:
             assert connection.execute(
                 "SELECT name FROM sqlite_master WHERE name=?", (unknown_object,)
@@ -272,9 +264,7 @@ def test_current_schema_rolls_back_base_exception_from_version_17(
         assert connection.execute(
             "SELECT value FROM metadata WHERE key='schema_version'"
         ).fetchone() == ("17",)
-        columns = {
-            str(row[1]) for row in connection.execute("PRAGMA table_info(file_actions)")
-        }
+        columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(file_actions)")}
         assert "idempotency_key" not in columns
         assert (
             connection.execute(
@@ -348,9 +338,7 @@ def test_file_action_transitions_are_cas_traced_and_events_are_append_only(
                 (action_id,),
             )
         with pytest.raises(sqlite3.IntegrityError, match="append-only"):
-            connection.execute(
-                "DELETE FROM file_action_events WHERE action_id=?", (action_id,)
-            )
+            connection.execute("DELETE FROM file_action_events WHERE action_id=?", (action_id,))
 
     assert row[0] == "recovery_required"
     assert row[1] is None
@@ -581,6 +569,7 @@ def test_trash_apply_abstains_before_effect_confirmation(
     assert "cannot bind the observed file identity" in detail
 
 
+@pytest.mark.skipif(os.name != "nt", reason="native mutation backend is Windows-only")
 @pytest.mark.parametrize(
     "injected",
     (RuntimeError("receipt write failed"), KeyboardInterrupt()),

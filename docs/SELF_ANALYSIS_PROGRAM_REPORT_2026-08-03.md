@@ -1,8 +1,10 @@
 # Cierre del programa de autoanálisis multianalizador
 
-> Fecha de aceptación: 2026-08-03. Este informe describe el candidato 0.7.2
+> **DOCUMENTO HISTÓRICO.** Fecha de aceptación: 2026-08-03. Este informe describe el candidato 0.7.2
 > instalado desde wheel y el estado aislado del laboratorio. No describe una
-> promoción del launcher estable ni una ejecución sobre corpus personal.
+> promoción del launcher estable ni una ejecución sobre corpus personal. El
+> estado actual se consulta con `Neocortex --code-status` y
+> `Neocortex --knowledge-status`.
 
 ## Veredicto
 

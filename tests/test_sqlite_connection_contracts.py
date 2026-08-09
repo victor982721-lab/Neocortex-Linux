@@ -115,7 +115,8 @@ def test_public_sqlite_factories_enforce_connection_pragmas(
         assert reader.execute("PRAGMA foreign_keys").fetchone()[0] == 1
         assert reader.execute("PRAGMA query_only").fetchone()[0] == 1
         assert reader.execute("PRAGMA busy_timeout").fetchone()[0] > 0
-        assert reader.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+        expected_reader_journal = "delete" if case.name == "code" else "wal"
+        assert reader.execute("PRAGMA journal_mode").fetchone()[0] == (expected_reader_journal)
         assert reader.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
         assert reader.execute("PRAGMA foreign_key_check").fetchall() == []
         with pytest.raises(sqlite3.OperationalError, match="readonly"):
@@ -279,4 +280,6 @@ def test_framework_connections_close_if_configuration_aborts(
             FrameworkRouteState(tmp_path / "framework.sqlite3")._connect(readonly=False)
 
     assert connection.closed is True
+
+
 # endregion [02]

@@ -465,7 +465,12 @@ def resource_discovery_signal_from_resolved(
     if (
         resolved.section_kind != SEMANTIC_TITLE_SECTION_KIND
         or provenance.get("policy_signature") != SEMANTIC_TITLE_POLICY
-        or provenance.get("basis") != "basename_without_final_extension"
+        or provenance.get("basis")
+        not in {
+            "basename_without_final_extension",
+            "bounded_leading_content_heading",
+            "durable_source_title",
+        }
         or provenance.get("advisory_only") is not True
     ):
         raise ValueError("semantic title hit has incompatible advisory provenance")
@@ -505,7 +510,7 @@ def resource_discovery_signal_from_resolved(
             generation=generation,
             query_model_signature=resolved.hit.query_model_signature,
         ),
-        reason="semantic_title matched durable advisory basename metadata",
+        reason="semantic_title matched durable advisory title metadata",
         fusion_weight=fusion_weight,
         warnings=tuple(
             sorted(
@@ -532,6 +537,7 @@ def _lexical_state_paths(
         office=paths.office if owner_available(snapshot, "office") else None,
         audio=paths.audio if owner_available(snapshot, "audio") else None,
         archive=(paths.archive if owner_available(snapshot, "archive") else None),
+        text=(paths.text if owner_available(snapshot, "text") else None),
     )
 
 

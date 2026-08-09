@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import os
 import sqlite3
 import zipfile
 import zlib
 from pathlib import Path
 from typing import Any
+
+import pytest
 
 import _04_Nucleo_Operativo.office_route as office_route_module
 from _02_Deduplicacion import FileSnapshot, snapshot_path
@@ -135,9 +138,7 @@ def _core(title: str, author: str) -> str:
 def _write_xlsx(path: Path) -> None:
     with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("[Content_Types].xml", "<Types/>")
-        archive.writestr(
-            "docProps/core.xml", _core("Orden de compra CHINT", "CHINT Electric")
-        )
+        archive.writestr("docProps/core.xml", _core("Orden de compra CHINT", "CHINT Electric"))
         archive.writestr(
             "xl/workbook.xml",
             """<workbook xmlns="urn:test"><sheets>
@@ -249,10 +250,9 @@ def test_office_route_extracts_caches_and_classifies_all_supported_formats(
         "pptx",
         "odt",
         "audio",
+        "text",
     }
-    with document_catalog_database(
-        tmp_path / "document_catalog.sqlite3", readonly=True
-    ) as catalog:
+    with document_catalog_database(tmp_path / "document_catalog.sqlite3", readonly=True) as catalog:
         classified = catalog.execute(
             """SELECT source_kind,primary_kind,primary_organization
             FROM documents ORDER BY source_kind"""
@@ -339,6 +339,7 @@ def test_corrupt_deflate_stream_isolated_to_one_office_candidate(
 # region [03] Organization move and office-cache synchronization
 
 
+@pytest.mark.skipif(os.name != "nt", reason="document mutation backend is Windows-only")
 def test_organized_xlsx_move_updates_office_cache_and_fts(tmp_path: Path) -> None:
     corpus = tmp_path / "corpus"
     state = tmp_path / "state"
@@ -376,15 +377,11 @@ def test_organized_xlsx_move_updates_office_cache_and_fts(tmp_path: Path) -> Non
     assert summary.cache_synced == 1
     assert destination.is_file()
     with office_database(office_path, readonly=True) as connection:
-        assert connection.execute("SELECT path FROM documents").fetchone()[0] == str(
+        assert connection.execute("SELECT path FROM documents").fetchone()[0] == str(destination)
+        assert connection.execute("SELECT path FROM office_inventory").fetchone()[0] == str(
             destination
         )
-        assert connection.execute("SELECT path FROM office_inventory").fetchone()[
-            0
-        ] == str(destination)
-        assert connection.execute("SELECT path FROM document_fts").fetchone()[0] == str(
-            destination
-        )
+        assert connection.execute("SELECT path FROM document_fts").fetchone()[0] == str(destination)
 
 
 def test_office_mime_contract_covers_indexed_formats() -> None:

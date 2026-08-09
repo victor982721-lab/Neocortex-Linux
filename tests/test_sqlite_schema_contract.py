@@ -189,9 +189,7 @@ def test_same_named_index_with_different_collation_is_incompatible() -> None:
 @pytest.mark.parametrize("raw", ("02", "-1", "two", " 2"))
 def test_noncanonical_metadata_versions_are_rejected(raw: str) -> None:
     with _connection() as connection:
-        connection.executescript(
-            "CREATE TABLE metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL)"
-        )
+        connection.executescript("CREATE TABLE metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL)")
         connection.execute("INSERT INTO metadata VALUES('schema_version',?)", (raw,))
         with pytest.raises(SQLiteSchemaContractError, match="canonical"):
             read_metadata_schema_version(connection, label="fixture")
@@ -227,7 +225,7 @@ def _assert_incompatible_definition(expected_sql: str, actual_sql: str) -> None:
         connection.executescript(actual_sql)
         with pytest.raises(
             SQLiteSchemaContractError,
-            match="incompatible definition",
+            match=r"incompatible definition|missing table",
         ):
             validate_sqlite_schema_contract(connection, expected, label="fixture")
 

@@ -104,6 +104,7 @@ class AudioRouteConfig:
                     "ffprobe",
                     default_name="ffprobe",
                     explicit=self.ffprobe_path,
+                    version_arguments=("-version",),
                 ),
             ),
             compatibility_tag=AUDIO_ROUTE_VERSION,

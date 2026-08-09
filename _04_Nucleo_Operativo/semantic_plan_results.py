@@ -22,7 +22,7 @@ from pathlib import Path
 import xxhash
 
 from . import semantic_sources as _sources
-from .semantic_chunking import TextChunkingConfig, iter_text_chunks
+from .semantic_chunking import TextChunkingConfig
 from .semantic_config import (
     SEMANTIC_PIPELINE_VERSION,
     clip_image_model,
@@ -33,6 +33,7 @@ from .semantic_models import (
     EmbeddingModality,
     EmbeddingModelSpec,
     EmbeddingRole,
+    SemanticItem,
     TextSection,
     VectorDType,
     canonical_json,
@@ -40,6 +41,7 @@ from .semantic_models import (
 )
 from .semantic_plan_errors import SemanticPlanBlocked
 from .semantic_plan_scratch import MIN_MAX_SCRATCH_BYTES, _ContentAccumulator
+from .semantic_quality import SEMANTIC_TEXT_QUALITY_POLICY, iter_semantic_text_chunks
 from .semantic_service_contracts import (
     SemanticCostCalibration,
     SemanticPlan,
@@ -51,6 +53,7 @@ from .semantic_sources import (
     SEMANTIC_TEXT_ENUMERATION_PROTOCOL,
     SOURCE_ADAPTER_VERSION,
     TEXT_SOURCE_KINDS,
+    TextSourceRecord,
     iter_text_source_records,
     semantic_text_processing_signature,
     semantic_source_database,
@@ -168,13 +171,12 @@ def _validate_workload_specs(specs: Sequence[_WorkloadSpec]) -> None:
     )
     if collision is not None:
         raise SemanticPlanBlocked(
-            "vector payload identity cannot distinguish model roles for signature: "
-            f"{collision}"
+            f"vector payload identity cannot distinguish model roles for signature: {collision}"
         )
 
 
-def _resource_size(item: object) -> int:
-    revision = getattr(item, "source_revision")
+def _resource_size(item: SemanticItem) -> int:
+    revision = item.source_revision
     raw = revision.get("size", revision.get("size_bytes"))
     if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
         raise SemanticPlanBlocked("semantic source resource has no valid byte size")
@@ -215,28 +217,40 @@ def _plan_text_source(
         checkpoint()
         iterator = iter(grouped)
         first = next(iterator)
+        item = first.item
+        source_records = itertools.chain((first,), iterator)
         counters.resources += 1
-        counters.source_bytes += _resource_size(first.item)
+        counters.source_bytes += _resource_size(item)
 
-        def sections() -> Iterator[TextSection]:
-            for record in itertools.chain((first,), iterator):
+        def source_sections(
+            records: Iterator[TextSourceRecord] = source_records,
+        ) -> Iterator[TextSection]:
+            for record in records:
                 checkpoint()
-                encoded_bytes = len(record.section.text.encode("utf-8"))
-                section_fingerprint = fingerprint_text(record.section.text)
+                yield record.section
+
+        def sections(item_value: SemanticItem = item) -> Iterator[TextSection]:
+            for section in _sources.iter_text_sections_with_metadata(
+                item_value,
+                source_sections(),
+            ):
+                checkpoint()
+                encoded_bytes = len(section.text.encode("utf-8"))
+                section_fingerprint = fingerprint_text(section.text)
                 snapshot_hasher.update(b"\n")
                 snapshot_hasher.update(
                     canonical_json(
                         {
-                            "item_id": record.item.item_id,
+                            "item_id": item_value.item_id,
                             "item_fingerprint": {
-                                "xxh3_128": record.item.fingerprint.xxh3_128,
-                                "bytes": record.item.fingerprint.byte_count,
-                                "guard": record.item.fingerprint.xxh3_64_guard,
+                                "xxh3_128": item_value.fingerprint.xxh3_128,
+                                "bytes": item_value.fingerprint.byte_count,
+                                "guard": item_value.fingerprint.xxh3_64_guard,
                             },
-                            "path": record.item.path,
-                            "source_revision": dict(record.item.source_revision),
-                            "section_kind": record.section.section_kind,
-                            "section_id": record.section.section_id,
+                            "path": item_value.path,
+                            "source_revision": dict(item_value.source_revision),
+                            "section_kind": section.section_kind,
+                            "section_id": section.section_id,
                             "section_fingerprint": {
                                 "xxh3_128": section_fingerprint.xxh3_128,
                                 "bytes": section_fingerprint.byte_count,
@@ -247,34 +261,10 @@ def _plan_text_source(
                 )
                 counters.sections += 1
                 counters.section_text_bytes += encoded_bytes
-                yield record.section
-            title = _sources.semantic_item_title_section(first.item)
-            if title is None:
-                return
-            checkpoint()
-            title_fingerprint = fingerprint_text(title.text)
-            snapshot_hasher.update(b"\n")
-            snapshot_hasher.update(
-                canonical_json(
-                    {
-                        "item_id": first.item.item_id,
-                        "path": first.item.path,
-                        "section_kind": title.section_kind,
-                        "section_id": title.section_id,
-                        "section_fingerprint": {
-                            "xxh3_128": title_fingerprint.xxh3_128,
-                            "bytes": title_fingerprint.byte_count,
-                            "guard": title_fingerprint.xxh3_64_guard,
-                        },
-                    }
-                ).encode("utf-8")
-            )
-            counters.sections += 1
-            counters.section_text_bytes += title_fingerprint.byte_count
-            yield title
+                yield section
 
-        for chunk in iter_text_chunks(
-            first.item.item_id,
+        for chunk in iter_semantic_text_chunks(
+            item.item_id,
             sections(),
             chunking,
         ):
@@ -371,9 +361,7 @@ def _plan_images(
             int(row["ocr_text_chars"]),
         )
         if fingerprint_text(ocr_text).xxh3_128 != str(row["ocr_text_xxh3_128"]):
-            raise SemanticPlanBlocked(
-                f"image OCR fingerprint mismatch: {snapshot.path}"
-            )
+            raise SemanticPlanBlocked(f"image OCR fingerprint mismatch: {snapshot.path}")
         ocr_fingerprint = fingerprint_text(ocr_text)
         snapshot_hasher.update(b"\n")
         snapshot_hasher.update(
@@ -398,7 +386,7 @@ def _plan_images(
             provenance={"adapter": SOURCE_ADAPTER_VERSION},
         )
         item_id = _sources._item_id(IMAGE_SOURCE_KIND, str(row["file_key"]))
-        for chunk in iter_text_chunks(item_id, (section,), chunking):
+        for chunk in iter_semantic_text_chunks(item_id, (section,), chunking):
             checkpoint()
             input_bytes = chunk.fingerprint.byte_count
             counters.chunks += 1
@@ -420,8 +408,7 @@ def _select_plan_sources(
         raise ValueError("semantic plan scope must be text, image or all")
     selected_sources = tuple(dict.fromkeys(source_kinds)) if scope != "image" else ()
     if scope in {"text", "all"} and (
-        not selected_sources
-        or any(source not in TEXT_SOURCE_KINDS for source in selected_sources)
+        not selected_sources or any(source not in TEXT_SOURCE_KINDS for source in selected_sources)
     ):
         raise ValueError("semantic plan text sources must name durable text caches")
     return selected_sources
@@ -439,17 +426,11 @@ def _validate_plan_runtime_options(
     if (
         isinstance(max_scratch_bytes, bool)
         or not isinstance(max_scratch_bytes, int)
-        or not MIN_MAX_SCRATCH_BYTES
-        <= max_scratch_bytes
-        <= 16 * 1024 * 1024 * 1024 * 1024
+        or not MIN_MAX_SCRATCH_BYTES <= max_scratch_bytes <= 16 * 1024 * 1024 * 1024 * 1024
     ):
-        raise ValueError(
-            "max_scratch_bytes must be an integer between 65536 and 16 TiB"
-        )
+        raise ValueError("max_scratch_bytes must be an integer between 65536 and 16 TiB")
     if scratch_directory is not None and not scratch_directory.is_dir():
-        raise ValueError(
-            "semantic plan scratch_directory must be an existing directory"
-        )
+        raise ValueError("semantic plan scratch_directory must be an existing directory")
     if not isinstance(embed_ocr_text, bool):
         raise ValueError("embed_ocr_text must be a boolean")
 
@@ -480,12 +461,8 @@ def _resolve_text_contract(
     embed_ocr_text: bool,
     chunking: TextChunkingConfig | None,
 ) -> tuple[EmbeddingModelSpec | None, TextChunkingConfig | None]:
-    needs_text_contract = scope in {"text", "all"} or (
-        scope in {"image", "all"} and embed_ocr_text
-    )
-    selected_text_model = (
-        text_model or multilingual_text_model() if needs_text_contract else None
-    )
+    needs_text_contract = scope in {"text", "all"} or (scope in {"image", "all"} and embed_ocr_text)
+    selected_text_model = text_model or multilingual_text_model() if needs_text_contract else None
     if selected_text_model is not None and (
         selected_text_model.modality is not EmbeddingModality.TEXT
     ):
@@ -554,6 +531,7 @@ def _build_workload_specs(
                     (
                         f"{SEMANTIC_PIPELINE_VERSION}|{SOURCE_ADAPTER_VERSION}|"
                         f"image-ocr|{planning_chunking_signature}|"
+                        f"quality-policy={SEMANTIC_TEXT_QUALITY_POLICY}|"
                         f"enumeration={SEMANTIC_TEXT_ENUMERATION_PROTOCOL}"
                     ),
                 )
@@ -782,13 +760,9 @@ def build_plan_signature_payload(
                     else {
                         "signature": workload.cost_calibration_signature,
                         "execution": workload.cost_execution_signature,
-                        "contents_per_second": (
-                            workload.cost_calibration_contents_per_second
-                        ),
+                        "contents_per_second": (workload.cost_calibration_contents_per_second),
                         "sample_contents": (workload.cost_calibration_sample_contents),
-                        "sample_input_bytes": (
-                            workload.cost_calibration_sample_input_bytes
-                        ),
+                        "sample_input_bytes": (workload.cost_calibration_sample_input_bytes),
                     }
                 ),
                 "cost_unavailable_reason": workload.cost_unavailable_reason,
@@ -802,20 +776,13 @@ def _model_second_bounds(
     workloads: Sequence[SemanticWorkloadPlan],
 ) -> tuple[float | None, float | None]:
     available = all(
-        workload.estimated_model_seconds_lower_bound is not None
-        for workload in workloads
+        workload.estimated_model_seconds_lower_bound is not None for workload in workloads
     )
     if not available:
         return None, None
     return (
-        sum(
-            workload.estimated_model_seconds_lower_bound or 0.0
-            for workload in workloads
-        ),
-        sum(
-            workload.estimated_model_seconds_upper_bound or 0.0
-            for workload in workloads
-        ),
+        sum(workload.estimated_model_seconds_lower_bound or 0.0 for workload in workloads),
+        sum(workload.estimated_model_seconds_upper_bound or 0.0 for workload in workloads),
     )
 
 
@@ -828,19 +795,13 @@ def assemble_semantic_plan(
     plan_algorithm_version: str,
     checkpoint: Callable[[], None],
 ) -> SemanticPlan:
-    estimated_seconds_lower, estimated_seconds_upper = _model_second_bounds(
-        result.workloads
-    )
+    estimated_seconds_lower, estimated_seconds_upper = _model_second_bounds(result.workloads)
     resources = sum(source.resources for source in result.source_plans)
     sections = sum(source.sections for source in result.source_plans)
     chunks = sum(source.chunks for source in result.source_plans)
-    embedding_entities = sum(
-        source.embedding_entities for source in result.source_plans
-    )
+    embedding_entities = sum(source.embedding_entities for source in result.source_plans)
     source_bytes = sum(source.source_bytes for source in result.source_plans)
-    section_text_bytes = sum(
-        source.section_text_bytes for source in result.source_plans
-    )
+    section_text_bytes = sum(source.section_text_bytes for source in result.source_plans)
     checkpoint()
     return SemanticPlan(
         scope=configuration.scope,

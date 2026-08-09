@@ -333,6 +333,7 @@ class MainWindow(QMainWindow):
             "docx": "Word",
             "office": "Office",
             "archive": "ZIP",
+            "text": "Texto y correo",
             "audio": "Audio",
             "image": "Imágenes",
             "code": "Código",

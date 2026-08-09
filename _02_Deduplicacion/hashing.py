@@ -38,12 +38,23 @@ def stat_matches_snapshot(snapshot: FileSnapshot, stat: os.stat_result) -> bool:
     """Match one captured stat result to the durable mutation invariant."""
 
     birthtime_ns = stat_birthtime_ns(stat)
+    # Older callers (and durable observations written before the Linux
+    # sentinel contract) used ``ctime`` when a platform did not expose a real
+    # birth time.  Keep those observations verifiable without manufacturing a
+    # birth time for new Linux snapshots: current captures still persist -1,
+    # while an exact legacy ctime value is accepted only for this mutation
+    # check.
+    birthtime_matches = birthtime_ns == snapshot.birthtime_ns or (
+        birthtime_ns == -1
+        and snapshot.birthtime_ns >= 0
+        and snapshot.birthtime_ns == stat.st_ctime_ns
+    )
     return (
         stat.st_dev == snapshot.volume_id
         and stat.st_ino == snapshot.file_id
         and stat.st_size == snapshot.size
         and stat.st_mtime_ns == snapshot.mtime_ns
-        and birthtime_ns == snapshot.birthtime_ns
+        and birthtime_matches
     )
 
 

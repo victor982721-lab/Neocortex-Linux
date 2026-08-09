@@ -269,11 +269,7 @@ def test_fatal_probe_error_exits_one_without_partial_stdout(
         ),
         (
             ("--doctor-capabilities", "--apply"),
-            (
-                "doctor capabilities is read-only and rejects --apply"
-                if os.name == "nt"
-                else "linux_mutation_backend_unavailable"
-            ),
+            "doctor capabilities is read-only and rejects --apply",
         ),
         (
             ("--doctor-capabilities", "--route", "pdf"),

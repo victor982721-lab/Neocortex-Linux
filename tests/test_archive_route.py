@@ -79,6 +79,23 @@ def _docx_bytes() -> bytes:
     )
 
 
+def _ocr_png_bytes(text: str) -> bytes:
+    pillow = pytest.importorskip("PIL.Image")
+    image_draw = pytest.importorskip("PIL.ImageDraw")
+    image_font = pytest.importorskip("PIL.ImageFont")
+    font_path = Path("/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf")
+    if not font_path.is_file():
+        pytest.skip("representative OCR font is unavailable")
+    image = pillow.new("RGB", (1800, 260), "white")
+    draw = image_draw.Draw(image)
+    font = image_font.truetype(os.fspath(font_path), 72)
+    draw.text((45, 75), text, fill="black", font=font)
+    output = io.BytesIO()
+    image.save(output, format="PNG")
+    image.close()
+    return output.getvalue()
+
+
 def _representative_archive(path: Path) -> int:
     deepest = _zip_bytes({"documento-profundo.txt": "evidencia dentro del tercer ZIP"})
     inner = _zip_bytes(
@@ -394,3 +411,47 @@ def test_pdf_inside_zip_indexes_native_text_in_isolated_worker(tmp_path: Path) -
     hit = search_archive_state(state, "diferencial interno")[0]
     assert hit.content_kind == "pdf"
     assert hit.member_chain == "manuales/proteccion.pdf"
+
+
+def test_nested_zip_indexes_image_ocr_with_explicit_virtual_path(tmp_path: Path) -> None:
+    pytest.importorskip("pytesseract")
+    if not Path("/usr/bin/tesseract").is_file():
+        pytest.skip("Tesseract is unavailable")
+    inner = _zip_bytes({"imagenes/tablero.png": _ocr_png_bytes("RELEVADOR ARCO ELECTRICO NORTE")})
+    source = tmp_path / "evidencia.zip"
+    source.write_bytes(_zip_bytes({"anidado/inspeccion.zip": inner}))
+    state = tmp_path / "archive.sqlite3"
+
+    summary = _route(state, source).run()
+
+    assert summary.errors == 0
+    assert summary.nested_archives == 1
+    hit = search_archive_state(state, "relevador electrico", 10)[0]
+    assert hit.content_kind == "image"
+    assert hit.archive_depth == 2
+    assert hit.virtual_path.endswith("evidencia.zip!/anidado/inspeccion.zip!/imagenes/tablero.png")
+    assert hit.container_path == os.fspath(source)
+
+
+def test_zip_indexes_scanned_pdf_through_bounded_ocr(tmp_path: Path) -> None:
+    fitz = pytest.importorskip("fitz")
+    pytest.importorskip("pytesseract")
+    if not Path("/usr/bin/tesseract").is_file():
+        pytest.skip("Tesseract is unavailable")
+    image = _ocr_png_bytes("TRANSFORMADOR POTENCIA DELTA")
+    document = fitz.open()
+    page = document.new_page(width=1800, height=260)
+    page.insert_image(page.rect, stream=image)
+    payload = document.tobytes()
+    document.close()
+    source = tmp_path / "escaneos.zip"
+    source.write_bytes(_zip_bytes({"reportes/placa.pdf": payload}))
+    state = tmp_path / "archive.sqlite3"
+
+    summary = _route(state, source).run()
+
+    assert summary.errors == 0
+    hit = search_archive_state(state, "transformador potencia", 10)[0]
+    assert hit.content_kind == "pdf"
+    assert hit.virtual_path.endswith("escaneos.zip!/reportes/placa.pdf")
+    assert hit.archive_depth == 1

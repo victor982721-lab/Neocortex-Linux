@@ -1,16 +1,10 @@
 """Code-owner retrieval support for the Knowledge Search facade.
-# region [00] Contexto del módulo
-# Módulo: _04_Nucleo_Operativo/knowledge_search_code.py
-# Propósito: documentación embebida y separación visual de regiones.
-# endregion [00]
-
 
 Facade seams and mutable runtime collaborators are injected on every call.  The
 module deliberately has no dependency on :mod:`knowledge_search`, so either
 side can be imported first without creating a cycle.
 """
 
-# region [01] Dependencias del módulo
 from __future__ import annotations
 
 import sqlite3
@@ -35,9 +29,6 @@ from .knowledge_search_contracts import KnowledgeCandidate, RankingExecution
 from .knowledge_snapshot import KnowledgeStatePaths
 from .semantic_models import ContentFingerprint
 from .sqlite_cancellation import SQLiteCancellationBridge
-# endregion [01]
-
-# region [02] Implementación
 
 
 _CleanupPreservingPrimary = Callable[..., None]
@@ -114,9 +105,7 @@ def code_version_metadata(
         with sqlite_cancellation_scope_fn(connection, cancellation):
             for offset in range(0, len(version_ids), sqlite_batch_size):
                 cancellation.checkpoint()
-                batch = tuple(
-                    dict.fromkeys(version_ids[offset : offset + sqlite_batch_size])
-                )
+                batch = tuple(dict.fromkeys(version_ids[offset : offset + sqlite_batch_size]))
                 if not batch:
                     continue
                 placeholders = ",".join("?" for _ in batch)
@@ -218,10 +207,7 @@ def bounded_code_relation_value(
         return value
     fingerprint = fingerprint_text_fn(value)
     warnings.add(f"{namespace}_fingerprinted_due_to_contract_limit")
-    return (
-        f"xxh3-v1:{fingerprint.xxh3_128}:{fingerprint.byte_count}:"
-        f"{fingerprint.xxh3_64_guard}"
-    )
+    return f"xxh3-v1:{fingerprint.xxh3_128}:{fingerprint.byte_count}:{fingerprint.xxh3_64_guard}"
 
 
 def _append_relation_identifiers(
@@ -366,9 +352,7 @@ def _relation_identity_payload(
         "source_resource_id": source_resource.resource_id,
         "source_revision_id": source_revision.revision_id,
         "source_symbol": relation.source.symbol,
-        "target_resource_id": (
-            None if target_resource is None else target_resource.resource_id
-        ),
+        "target_resource_id": (None if target_resource is None else target_resource.resource_id),
         "target_symbol": (None if relation.target is None else relation.target.symbol),
         "target_hint": relation.target_hint,
         "confirmed": relation.confirmed,
@@ -637,19 +621,16 @@ def _read_code_owner(
         (source_rank, hit)
         for source_rank, hit in enumerate(materialized_hits, 1)
         if plan.project is None
-        or hit.project is not None
-        and hit.project.casefold() == plan.project.casefold()
+        or (hit.project is not None and hit.project.casefold() == plan.project.casefold())
     )[:target_limit]
     processing_limit = min(
         dependencies.max_relation_candidates,
         max(0, requested_limit - len(materialized_hits)),
     )
-    relation_entries, candidate_window_reached, relation_limit_reached = (
-        _collect_relation_entries(
-            ranked_hits,
-            processing_limit=processing_limit,
-            max_relation_candidates=dependencies.max_relation_candidates,
-        )
+    relation_entries, candidate_window_reached, relation_limit_reached = _collect_relation_entries(
+        ranked_hits,
+        processing_limit=processing_limit,
+        max_relation_candidates=dependencies.max_relation_candidates,
     )
     metadata = dependencies.code_version_metadata_fn(
         paths.code,
@@ -679,8 +660,8 @@ def _direct_candidates(
             invalid_rows += 1
             continue
         try:
-            resource, revision, identity_warnings = (
-                dependencies.code_resource_revision_fn(row, path=hit.path)
+            resource, revision, identity_warnings = dependencies.code_resource_revision_fn(
+                row, path=hit.path
             )
         except (dependencies.file_identity_error_type, ValueError):
             invalid_rows += 1
@@ -790,8 +771,10 @@ def _finish_code_ranking(
     candidates = [*direct_candidates, *relation_candidates]
     candidate_window_reached = (
         materialized.materialized_hit_count > materialized.target_limit
-        or materialized.target_limit == dependencies.max_candidates
-        and materialized.materialized_hit_count >= materialized.target_limit
+        or (
+            materialized.target_limit == dependencies.max_candidates
+            and materialized.materialized_hit_count >= materialized.target_limit
+        )
         or materialized.relation_candidate_window_reached
         or len(candidates) > materialized.target_limit
     )
@@ -808,9 +791,7 @@ def _finish_code_ranking(
         available=True,
         complete=reason is None,
         returned=len(visible_candidates),
-        rows_scanned=(
-            materialized.materialized_hit_count + len(materialized.relation_entries)
-        ),
+        rows_scanned=(materialized.materialized_hit_count + len(materialized.relation_entries)),
         reason=reason,
     )
     return visible_candidates, report
@@ -904,4 +885,3 @@ __all__ = [
     "code_resource_revision",
     "code_version_metadata",
 ]
-# endregion [02]

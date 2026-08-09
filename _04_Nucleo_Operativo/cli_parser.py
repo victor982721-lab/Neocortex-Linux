@@ -27,6 +27,7 @@ from .cli_models_surface import register_models_arguments
 from .cli_office_surface import register_office_arguments
 from .cli_platform_surface import register_platform_arguments
 from .cli_semantic_surface import register_semantic_arguments
+from .cli_text_surface import register_text_arguments
 
 __all__ = [
     "ExplicitArgumentParser",
@@ -1018,6 +1019,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     register_office_arguments(parser, megabyte_type=decimal_megabytes)
     register_archive_arguments(parser, megabyte_type=decimal_megabytes)
+    register_text_arguments(parser, megabyte_type=decimal_megabytes)
     register_audio_arguments(parser, megabyte_type=decimal_megabytes)
 
     register_code_arguments(parser, megabyte_type=decimal_megabytes)

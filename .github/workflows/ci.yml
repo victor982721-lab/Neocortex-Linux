@@ -85,6 +85,8 @@ jobs:
           tests/test_posix_containment.py
           tests/test_release_linux.py
           tests/test_route_schema_contracts.py
+          tests/test_semantic_quality.py
+          tests/test_text_route.py
           tests/test_zip_safety.py
 
   standard:
@@ -176,6 +178,10 @@ jobs:
             tests/test_model_management.py \
             tests/test_posix_containment.py \
             tests/test_route_schema_contracts.py \
+            tests/test_semantic_quality.py \
+            tests/test_semantic_sources.py \
+            tests/test_image_route.py \
+            tests/test_text_route.py \
             tests/test_ui_elevation.py \
             tests/test_ui_linux.py \
             tests/test_ui_run_request.py \

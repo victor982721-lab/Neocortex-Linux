@@ -50,10 +50,7 @@ _METADATA = (
     "Summary: Synthetic release fixture\n"
 ).encode()
 _WHEEL = (
-    "Wheel-Version: 1.0\n"
-    "Generator: Neocortex fixture\n"
-    "Root-Is-Purelib: true\n"
-    "Tag: py3-none-any\n"
+    "Wheel-Version: 1.0\nGenerator: Neocortex fixture\nRoot-Is-Purelib: true\nTag: py3-none-any\n"
 ).encode()
 _ENTRY_POINTS = ("[console_scripts]\nNeocortex = neocortex.cli:entrypoint\n").encode()
 _UI_ASSETS = (
@@ -69,9 +66,7 @@ _SOURCE_ONLY_TOOLS = (
     "tools/release_windows_receipts.py",
 )
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
-_UI_ASSET_PAYLOADS = {
-    asset: (_PROJECT_ROOT / asset).read_bytes() for asset in _UI_ASSETS
-}
+_UI_ASSET_PAYLOADS = {asset: (_PROJECT_ROOT / asset).read_bytes() for asset in _UI_ASSETS}
 
 
 def _record_bytes(files: Mapping[str, bytes]) -> bytes:
@@ -79,9 +74,7 @@ def _record_bytes(files: Mapping[str, bytes]) -> bytes:
     writer = csv.writer(output, lineterminator="\n")
     for name in sorted(files):
         digest = base64.urlsafe_b64encode(hashlib.sha256(files[name]).digest())
-        writer.writerow(
-            (name, f"sha256={digest.rstrip(b'=').decode()}", len(files[name]))
-        )
+        writer.writerow((name, f"sha256={digest.rstrip(b'=').decode()}", len(files[name])))
     writer.writerow((f"{_DIST_INFO}/RECORD", "", ""))
     return output.getvalue().encode()
 
@@ -126,9 +119,7 @@ def _write_wheel(
     record_name = f"{_DIST_INFO}/RECORD"
     if record_name not in remove:
         record = _record_bytes(files)
-        files[record_name] = (
-            record if record_transform is None else record_transform(record)
-        )
+        files[record_name] = record if record_transform is None else record_transform(record)
     names = sorted(files, reverse=reverse)
     with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         for name in names:
@@ -150,14 +141,9 @@ def _sdist_payloads(root: str = _SDIST_ROOT) -> dict[str, bytes]:
         f"{root}/neocortex/py.typed": b"",
         f"{root}/_04_Nucleo_Operativo/py.typed": b"",
     }
+    payloads.update({f"{root}/{path}": payload for path, payload in _UI_ASSET_PAYLOADS.items()})
     payloads.update(
-        {f"{root}/{path}": payload for path, payload in _UI_ASSET_PAYLOADS.items()}
-    )
-    payloads.update(
-        {
-            f"{root}/{path}": b"# synthetic source-only tool\n"
-            for path in _SOURCE_ONLY_TOOLS
-        }
+        {f"{root}/{path}": b"# synthetic source-only tool\n" for path in _SOURCE_ONLY_TOOLS}
     )
     return payloads
 
@@ -201,6 +187,8 @@ def _write_zip(path: Path, payloads: Mapping[str, bytes]) -> Path:
             continue
         normalized = name.replace("\\", "/").encode()
         encoded = name.encode()
+        if raw.count(encoded) == 2:
+            continue
         if len(normalized) != len(encoded) or raw.count(normalized) != 2:
             raise AssertionError("unable to preserve raw ZIP backslash fixture")
         raw = raw.replace(normalized, encoded)
@@ -368,9 +356,7 @@ def test_forbidden_artifact_member_categories_are_rejected(
             "private path",
         ),
         (
-            ("source=C:" + "\\" + "Us" + "ers\\Victor\\private.txt").encode(
-                "utf-16-le"
-            ),
+            ("source=C:" + "\\" + "Us" + "ers\\Victor\\private.txt").encode("utf-16-le"),
             "private path",
         ),
         (
@@ -386,16 +372,11 @@ def test_forbidden_artifact_member_categories_are_rejected(
         (importlib.util.MAGIC_NUMBER + b"disguised bytecode", "bytecode"),
         (
             b"\xff\xfe"
-            + ("source=C:" + "\\" + "Us" + "ers\\Victor\\private.txt").encode(
-                "utf-16-le"
-            ),
+            + ("source=C:" + "\\" + "Us" + "ers\\Victor\\private.txt").encode("utf-16-le"),
             "private path",
         ),
         (
-            b"x"
-            + ("api_" + "key=" + "sk" + "-offset-secret-value-123456").encode(
-                "utf-16-le"
-            ),
+            b"x" + ("api_" + "key=" + "sk" + "-offset-secret-value-123456").encode("utf-16-le"),
             "secret",
         ),
         (
@@ -601,9 +582,7 @@ def test_wheel_rejects_invalid_entrypoint(tmp_path: Path) -> None:
     path = _write_wheel(
         tmp_path / "neocortex_framework-0.7.2-py3-none-any.whl",
         updates={
-            f"{_DIST_INFO}/entry_points.txt": (
-                b"[console_scripts]\nNeocortex = legacy.cli:main\n"
-            )
+            f"{_DIST_INFO}/entry_points.txt": (b"[console_scripts]\nNeocortex = legacy.cli:main\n")
         },
     )
 
@@ -753,9 +732,7 @@ def test_logical_payload_ignores_container_order_and_timestamps(
         )
 
     left = validate_wheel(first) if artifact_kind == "wheel" else validate_sdist(first)
-    right = (
-        validate_wheel(second) if artifact_kind == "wheel" else validate_sdist(second)
-    )
+    right = validate_wheel(second) if artifact_kind == "wheel" else validate_sdist(second)
     expected = logical_payload(left)
 
     assert logical_payload(right) == expected
@@ -776,9 +753,7 @@ def test_logical_payload_comparison_rejects_changed_content(
     else:
         first = _write_sdist(tmp_path / "neocortex_framework-0.7.2.tar.gz")
         changed = _sdist_payloads()
-        changed[f"{_SDIST_ROOT}/neocortex/cli.py"] = (
-            b"def entrypoint():\n    return 1\n"
-        )
+        changed[f"{_SDIST_ROOT}/neocortex/cli.py"] = b"def entrypoint():\n    return 1\n"
         second = _write_sdist(
             tmp_path / "changed" / "neocortex_framework-0.7.2.tar.gz",
             payloads=changed,
@@ -829,9 +804,7 @@ def test_sdist_canonicalization_is_byte_deterministic(tmp_path: Path) -> None:
     with gzip.open(output_a, "rb") as stream:
         with tarfile.open(fileobj=stream, mode="r:") as archive:
             members = archive.getmembers()
-    assert [member.name for member in members] == sorted(
-        member.name for member in members
-    )
+    assert [member.name for member in members] == sorted(member.name for member in members)
     assert all(member.mtime == SOURCE_DATE_EPOCH for member in members)
     assert all(member.uid == member.gid == 0 for member in members)
     assert all(member.uname == member.gname == "" for member in members)
@@ -892,9 +865,7 @@ def test_archive_is_rehashed_on_the_same_handle_after_scan(
         return digest if calls == 1 else "0" * 64
 
     monkeypatch.setattr(release_archive_safety, "_hash_handle", changed_after_scan)
-    with pytest.raises(
-        ArtifactValidationError, match="bytes changed during inspection"
-    ):
+    with pytest.raises(ArtifactValidationError, match="bytes changed during inspection"):
         inspect_archive(path)
     assert calls == 2
 
@@ -999,9 +970,7 @@ def test_canonicalization_rejects_same_build_and_cleans_interruption(
     second = _write_sdist(_sdist_path(tmp_path, "build-two-interrupt"))
     expected = KeyboardInterrupt("canonical write interrupted")
 
-    def interrupt(
-        stream: BinaryIO, _payloads: Mapping[str, bytes], _epoch: int
-    ) -> None:
+    def interrupt(stream: BinaryIO, _payloads: Mapping[str, bytes], _epoch: int) -> None:
         stream.write(b"partial")
         raise expected
 
@@ -1019,7 +988,7 @@ def test_release_artifact_tests_do_not_self_contaminate(tmp_path: Path) -> None:
         {"package/test_source.py": Path(__file__).read_bytes()},
     )
     report = inspect_archive(path)
-    assert tuple(member.path for member in report.members) == (
-        "package/test_source.py",
-    )
+    assert tuple(member.path for member in report.members) == ("package/test_source.py",)
+
+
 # endregion [02]

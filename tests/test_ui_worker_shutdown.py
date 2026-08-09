@@ -52,9 +52,7 @@ class UiWorkerShutdownTests(unittest.TestCase):
                     process.wait(timeout=5)
 
         records = [
-            decoded
-            for line in stdout.splitlines()
-            if (decoded := decode_message(line)) is not None
+            decoded for line in stdout.splitlines() if (decoded := decode_message(line)) is not None
         ]
         self.assertEqual(exit_code, 1, stderr.decode("utf-8", errors="replace"))
         self.assertIn("failed", {record["type"] for record in records})
@@ -91,7 +89,8 @@ class UiWorkerShutdownTests(unittest.TestCase):
         self.assertEqual(len(terminal), 1)
         self.assertEqual(terminal[0]["error_type"], "InvalidArguments")
         self.assertEqual(terminal[0]["stage"], "preparation")
-        self.assertIn("remove --apply", terminal[0]["detail"])
+        expected = "remove --apply" if os.name == "nt" else "linux_mutation_backend_unavailable"
+        self.assertIn(expected, terminal[0]["detail"])
         self.assertNotIn("traceback", terminal[0])
 
     def test_summary_projects_cached_partial_and_catalog_issues(self) -> None:

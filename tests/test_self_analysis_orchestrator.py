@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import os
 import sqlite3
 from dataclasses import replace
 from pathlib import Path
@@ -146,17 +147,18 @@ def test_locked_self_analysis_signature_and_phase_order(
         ).run()
 
     assert isinstance(result, SelfAnalysisRunResult)
-    assert observed == [
+    expected = [
         "progress:prepare:0",
         "progress:prepare:1",
         "commands",
-        "incremental_gate",
+        *(["incremental_gate"] if os.name == "nt" else []),
         "inventory",
         "inventory_snapshot",
         "content_routes",
         "manifest_commit",
         "progress:complete:1",
     ]
+    assert observed == expected
 
 
 def test_locked_self_analysis_preserves_interrupt_identity_and_cancels_run(
@@ -171,18 +173,14 @@ def test_locked_self_analysis_preserves_interrupt_identity_and_cancels_run(
     def cancel(_context):
         raise cancellation
 
-    registry = {
-        "code": RouteAdapter("code", cancel, input_source="inventory_snapshot")
-    }
+    registry = {"code": RouteAdapter("code", cancel, input_source="inventory_snapshot")}
     with SyntheticUsnJournal(root):
         with pytest.raises(KeyboardInterrupt) as raised:
             FrameworkOrchestrator(_config(root, state), route_registry=registry).run()
 
     assert raised.value is cancellation
     with sqlite3.connect(state / "framework.sqlite3") as connection:
-        run = connection.execute(
-            "SELECT status,current_phase FROM initial_runs"
-        ).fetchone()
+        run = connection.execute("SELECT status,current_phase FROM initial_runs").fetchone()
         event = connection.execute(
             "SELECT level,message FROM run_events WHERE message='Autoanálisis cancelado por el usuario'"
         ).fetchone()
@@ -201,7 +199,7 @@ def test_self_analysis_policy_is_explicit_and_has_no_home_defaults(
         transient.mkdir()
     policy = build_self_analysis_inventory_policy(root, state)
 
-    assert policy.signature.startswith("inventory-exclusion-policy-v3:xxh3_128:")
+    assert policy.signature.startswith("inventory-exclusion-policy-v4:xxh3_128:")
     assert set(policy.explicit_roots) == {
         str(state.resolve()),
         str((root / ".codex-lab").resolve()),
@@ -428,15 +426,23 @@ def test_self_analysis_real_code_route_omits_common_work_and_publishes_manifest(
             """SELECT framework_run_id,scan_id,processing_signature,status
             FROM analysis_runs ORDER BY analysis_run_id DESC LIMIT 1"""
         ).fetchone()
-    assert result.journal_before is not None
-    assert result.journal_after is not None
+    if os.name == "nt":
+        assert result.journal_before is not None
+        assert result.journal_after is not None
+        expected_start_usn = result.journal_before.next_usn
+        expected_end_usn = result.journal_after.next_usn
+    else:
+        assert result.journal_before is None
+        assert result.journal_after is None
+        expected_start_usn = None
+        expected_end_usn = None
     assert run_row == (
         "self_analysis",
         "analyze_only",
         "completed",
         "completed",
-        result.journal_before.next_usn,
-        result.journal_after.next_usn,
+        expected_start_usn,
+        expected_end_usn,
     )
     assert counts == (0, 0, 0)
     assert route_row[0:2] == ("code", "completed")
@@ -445,8 +451,11 @@ def test_self_analysis_real_code_route_omits_common_work_and_publishes_manifest(
     route_summary = json.loads(route_row[2])
     assert manifest["run"]["run_id"] == result.run_id
     assert manifest["inventory"]["scan_id"] == result.scan.scan_id
-    assert manifest["inventory"]["journal"]["start_usn"] == (result.journal_before.next_usn)
-    assert manifest["inventory"]["journal"]["end_usn"] == (result.journal_after.next_usn)
+    if os.name == "nt":
+        assert manifest["inventory"]["journal"]["start_usn"] == expected_start_usn
+        assert manifest["inventory"]["journal"]["end_usn"] == expected_end_usn
+    else:
+        assert manifest["inventory"]["journal"] == {"status": "unavailable"}
     assert manifest["inventory"]["policy"]["signature"] == (result.inventory_policy_signature)
     assert manifest["code"]["processing_signature"] == (result.code.processing_signature)
     assert route_summary["processing_signature"] == result.code.processing_signature
@@ -593,12 +602,14 @@ def test_self_analysis_reuses_only_a_matching_durable_checkpoint(
     assert isinstance(first, SelfAnalysisRunResult)
     assert isinstance(second, SelfAnalysisRunResult)
     assert isinstance(third, SelfAnalysisRunResult)
-    assert (first.inventory_mode, second.inventory_mode, third.inventory_mode) == (
-        "full",
-        "incremental",
-        "incremental",
+    expected_modes = (
+        ("full", "incremental", "incremental") if os.name == "nt" else ("full", "full", "full")
     )
-    assert first.scan.scan_id == second.scan.scan_id == third.scan.scan_id
+    assert (first.inventory_mode, second.inventory_mode, third.inventory_mode) == expected_modes
+    if os.name == "nt":
+        assert first.scan.scan_id == second.scan.scan_id == third.scan.scan_id
+    else:
+        assert first.scan.scan_id < second.scan.scan_id < third.scan.scan_id
     assert seen[-1] == (str(renamed),)
     assert journal.raw_volume_open_attempts == 0
 
@@ -639,6 +650,7 @@ def test_failed_inventory_owner_checkpoint_cannot_authorize_incremental(
     assert journal.raw_volume_open_attempts == 0
 
 
+@pytest.mark.skipif(os.name != "nt", reason="incremental USN checkpoints are Windows-only")
 def test_failed_incremental_checkpoint_cannot_advance_past_durable_boundary(
     tmp_path: Path,
 ) -> None:

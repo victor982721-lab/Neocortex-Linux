@@ -25,6 +25,7 @@ from .application_config_projections import (
     image_route_config_from_application,
     office_route_config_from_application,
     pdf_route_config_from_application,
+    text_route_config_from_application,
 )
 from .models import FrameworkConfig
 # endregion [01]
@@ -42,6 +43,7 @@ __all__ = [
     "image_route_config_from_application",
     "office_route_config_from_application",
     "pdf_route_config_from_application",
+    "text_route_config_from_application",
 ]
 
 

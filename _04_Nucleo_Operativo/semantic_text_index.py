@@ -11,7 +11,7 @@ from pathlib import Path
 
 from _03_Progreso import ProgressCallback, ProgressEvent, ProgressMetric, emit_progress
 
-from .semantic_chunking import TextChunkingConfig, TextTokenCounter, iter_text_chunks
+from .semantic_chunking import TextChunkingConfig, TextTokenCounter
 from .semantic_config import (
     SEMANTIC_PIPELINE_VERSION,
     multilingual_text_model,
@@ -39,6 +39,7 @@ from .semantic_preparation import (
     resolve_text_token_guard,
     text_probe,
 )
+from .semantic_quality import SEMANTIC_TEXT_QUALITY_POLICY, iter_semantic_text_chunks
 from .semantic_service_contracts import (
     SEMANTIC_DATABASE_NAME,
     STAGING_BATCH_SIZE,
@@ -143,7 +144,7 @@ class _SemanticTextStagingSession:
             invalidate_text_on_fingerprint_change=True,
         )
         chunks_staged = queued = new_jobs = 0
-        chunks = iter_text_chunks(
+        chunks = iter_semantic_text_chunks(
             item.item_id,
             iter_text_sections_with_metadata(item, sections),
             self._chunking,
@@ -407,6 +408,7 @@ def index_text_embeddings(
             "sources": list(selected_sources),
             "chunking_signature": active_chunking.signature,
             "title_policy": SEMANTIC_TITLE_POLICY,
+            "text_quality_policy": SEMANTIC_TEXT_QUALITY_POLICY,
             "tokenizer_signature": token_guard.tokenizer_signature,
             "model_token_limit": token_guard.token_limit,
         },

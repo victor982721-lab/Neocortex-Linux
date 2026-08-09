@@ -46,6 +46,10 @@ def test_default_media_projections_use_current_canonical_paths_and_root() -> Non
     audio = audio_route_config_from_application(canonical)
     expected_audio = AudioRouteConfig(
         state_path=Path("canonical-media-state") / "audio.sqlite3",
+        device=canonical.audio_device,
+        compute_type=canonical.audio_compute_type,
+        model_cache_directory=canonical.audio_model_cache_directory,
+        local_models_only=canonical.audio_local_models_only,
     )
     office = office_route_config_from_application(canonical)
     expected_office = OfficeRouteConfig(
@@ -317,20 +321,17 @@ def test_route_registry_delegates_media_projections() -> None:
     )
 
     with patch(
-        "_04_Nucleo_Operativo.application_config_projections."
-        "audio_route_config_from_application",
+        "_04_Nucleo_Operativo.application_config_projections.audio_route_config_from_application",
         wraps=audio_route_config_from_application,
     ) as audio_projection:
         legacy_audio = audio_route_config_from_framework(config)
     with patch(
-        "_04_Nucleo_Operativo.application_config_projections."
-        "office_route_config_from_application",
+        "_04_Nucleo_Operativo.application_config_projections.office_route_config_from_application",
         wraps=office_route_config_from_application,
     ) as office_projection:
         legacy_office = office_route_config_from_framework(config)
     with patch(
-        "_04_Nucleo_Operativo.application_config_projections."
-        "image_route_config_from_application",
+        "_04_Nucleo_Operativo.application_config_projections.image_route_config_from_application",
         wraps=image_route_config_from_application,
     ) as image_projection:
         legacy_image = image_route_config_from_framework(

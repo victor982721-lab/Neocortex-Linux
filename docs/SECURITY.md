@@ -10,7 +10,8 @@ seguridad perfecta.
 Trate como no confiables:
 
 - nombres, rutas, metadatos y contenido del corpus;
-- PDF, ZIP/OOXML/ODT, imágenes, audio, vídeo y código analizado;
+- PDF, ZIP/OOXML/ODT, texto/EML, Office heredado, imágenes, audio, vídeo y
+  código analizado;
 - modelos, pesos y cachés descargados;
 - rutas de ejecutables externos;
 - taxonomías TOML aportadas por el usuario;
@@ -276,8 +277,12 @@ modelos o una ubicación cuya propiedad no esté clara.
 
 Los extractores aplican límites de tamaño, texto, miembros ZIP, expansión,
 píxeles, páginas, duración, segmentos, timeouts y memoria según la ruta. PDF,
-imagen y audio usan procesos supervisados en partes críticas; DOCX/Office aplican
-lectura acotada de contenedores.
+imagen y audio usan procesos supervisados en partes críticas; DOCX/Office
+aplican lectura acotada de contenedores. Archive valida cada nivel antes de
+descomprimir, conserva la cadena virtual y envía PDF/imágenes internas a un
+worker OCR aislado. La ruta `text` exige evidencia imprimible/RFC 5322/CFB y
+convierte DOC/XLS/PPT en un proceso aislado con perfil LibreOffice temporal;
+nunca carga macros ni ejecuta el documento original.
 
 Estos controles limitan impacto, pero no constituyen aislamiento de seguridad
 completo. Mantenga actualizadas las dependencias compatibles y no desactive
@@ -304,13 +309,16 @@ proveniencia.
 
 ## Herramientas externas
 
-NeoCortex puede localizar o usar Tesseract, FFprobe/FFmpeg y qpdf.
+NeoCortex puede localizar o usar Tesseract, FFprobe/FFmpeg, qpdf, LibreOffice y
+los fallbacks `catdoc`/`xls2csv`/`catppt`.
 
 - Use rutas absolutas verificadas cuando se proporcionen overrides.
 - No sustituya un binario mientras exista una corrida activa.
 - Registre versión y origen del ejecutable.
 - qpdf es un fallback opcional; su ausencia no debe provocar la ejecución de un
   binario alternativo no confiable.
+- LibreOffice y los extractores Office heredados sólo reciben una copia
+  temporal acotada; no se habilitan macros ni se reutiliza el perfil personal.
 - Ruff y Mypy son dependencias base del runtime y se invocan con el mismo
   intérprete (`python -I -m ...`), nunca mediante ejecutables encontrados en
   `PATH`.

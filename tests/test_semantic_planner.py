@@ -259,9 +259,10 @@ def test_text_plan_is_deterministic_bounded_and_creates_no_state(
     assert first.unique_contents == 3
     assert first.new_unique_contents == 3
     assert first.reusable_unique_contents == 0
-    assert "title-policy=semantic-basename-title-v1" in (
+    assert "title-policy=semantic-content-aware-title-v3" in (
         first.workloads[0].processing_signature
     )
+    assert "quality-policy=semantic-text-quality-v1" in (first.workloads[0].processing_signature)
     assert first.input_bytes == (2 * len(text.encode())) + 2
     assert first.unique_input_bytes == len(text.encode()) + 2
     assert first.new_vector_blob_bytes_lower_bound == 3 * 768 * 2
@@ -373,9 +374,7 @@ def test_cost_requires_one_exact_execution_calibration(tmp_path: Path) -> None:
     )
 
     assert mismatch.estimated_model_seconds is None
-    assert mismatch.workloads[0].cost_unavailable_reason == (
-        "no_exact_cost_calibration"
-    )
+    assert mismatch.workloads[0].cost_unavailable_reason == ("no_exact_cost_calibration")
     assert calibrated.estimated_model_seconds == pytest.approx(1.0)
     assert calibrated.estimated_model_seconds_lower_bound == pytest.approx(1.0)
     assert calibrated.estimated_model_seconds_upper_bound == pytest.approx(1.0)
@@ -513,23 +512,20 @@ def test_image_plan_processing_signatures_match_bounded_producer_contracts(
 
     plan = plan_semantic_index(tmp_path, scope="image")
 
-    signatures = {
-        workload.name: workload.processing_signature for workload in plan.workloads
-    }
+    signatures = {workload.name: workload.processing_signature for workload in plan.workloads}
     assert signatures == {
         "image": (
-            "neocortex-semantic-pipeline-v2|semantic-source-adapters-v2|"
+            "neocortex-semantic-pipeline-v2|semantic-source-adapters-v3|"
             "images|enumeration=bounded-v1"
         ),
         "image_ocr": (
-            "neocortex-semantic-pipeline-v2|semantic-source-adapters-v2|"
+            "neocortex-semantic-pipeline-v2|semantic-source-adapters-v3|"
             f"image-ocr|{plan.text_chunking_signature}|"
-            "tokenizer-contract=unresolved-v1|enumeration=bounded-v1"
+            "tokenizer-contract=unresolved-v1|"
+            "quality-policy=semantic-text-quality-v1|enumeration=bounded-v1"
         ),
     }
-    assert plan.estimate_kind == (
-        "model_only_request_range_from_pre_tokenizer_content_projection"
-    )
+    assert plan.estimate_kind == ("model_only_request_range_from_pre_tokenizer_content_projection")
 
 
 def test_image_plan_blocks_missing_digest_without_reading_original(
@@ -646,20 +642,11 @@ def test_preexisting_reuse_is_batched_on_the_bounded_scratch_connection(
 
     def observe_mark(accumulator, rows):
         batch_sizes.append(len(rows))
-        observed_names.update(
-            entry.name for entry in accumulator._budget.directory.iterdir()
-        )
-        assert (
-            accumulator._connection.execute("PRAGMA journal_mode").fetchone()[0]
-            == "memory"
-        )
-        assert (
-            int(accumulator._connection.execute("PRAGMA temp_store").fetchone()[0]) == 2
-        )
+        observed_names.update(entry.name for entry in accumulator._budget.directory.iterdir())
+        assert accumulator._connection.execute("PRAGMA journal_mode").fetchone()[0] == "memory"
+        assert int(accumulator._connection.execute("PRAGMA temp_store").fetchone()[0]) == 2
         result = real_mark(accumulator, rows)
-        observed_names.update(
-            entry.name for entry in accumulator._budget.directory.iterdir()
-        )
+        observed_names.update(entry.name for entry in accumulator._budget.directory.iterdir())
         return result
 
     with patch.object(
@@ -842,7 +829,7 @@ def test_text_workload_rejects_model_without_passage_role(tmp_path: Path) -> Non
         supported_roles=(EmbeddingRole.QUERY,),
     )
 
-    with pytest.raises(SemanticPlanBlocked, match="does not support.*passage"):
+    with pytest.raises(SemanticPlanBlocked, match=r"does not support.*passage"):
         plan_semantic_index(
             tmp_path,
             scope="text",
@@ -937,7 +924,7 @@ def test_semantic_cache_rejects_every_model_contract_drift(
             (value, model.model_signature),
         )
 
-    with pytest.raises(SemanticPlanBlocked, match="semantic model|vector-space"):
+    with pytest.raises(SemanticPlanBlocked, match=r"semantic model|vector-space"):
         plan_semantic_index(
             tmp_path,
             scope="text",
@@ -1059,8 +1046,7 @@ def test_office_group_fence_blocks_mutation_between_logical_views(
         if projections == 1:
             with sqlite3.connect(office, timeout=5.0) as writer:
                 writer.execute(
-                    "UPDATE documents SET path=path || '.changed' "
-                    "WHERE file_key='office-3'"
+                    "UPDATE documents SET path=path || '.changed' WHERE file_key='office-3'"
                 )
         return result
 
@@ -1096,9 +1082,7 @@ def test_semantic_data_version_fence_blocks_mid_plan_model_mutation(
         if not mutated:
             mutated = True
             with sqlite3.connect(semantic, timeout=5.0) as writer:
-                writer.execute(
-                    "UPDATE embedding_models SET provider='drifted-provider'"
-                )
+                writer.execute("UPDATE embedding_models SET provider='drifted-provider'")
         return version
 
     with patch.object(
@@ -1590,17 +1574,13 @@ def test_image_plan_attach_is_readonly_query_only_and_detaches_on_success(
             if normalized.startswith("ATTACH DATABASE"):
                 attach_parameters.append(tuple(parameters))
                 cursor = super().execute(sql, parameters)
-                query_only_values.append(
-                    int(super().execute("PRAGMA query_only").fetchone()[0])
-                )
+                query_only_values.append(int(super().execute("PRAGMA query_only").fetchone()[0]))
                 return cursor
             if normalized.startswith("DETACH DATABASE"):
                 detach_transactions.append(self.in_transaction)
                 cursor = super().execute(sql, parameters)
                 aliases_after_detach.append(
-                    tuple(
-                        str(row[1]) for row in super().execute("PRAGMA database_list")
-                    )
+                    tuple(str(row[1]) for row in super().execute("PRAGMA database_list"))
                 )
                 return cursor
             return super().execute(sql, parameters)
@@ -1673,7 +1653,7 @@ def test_attach_failure_is_controlled_closes_owner_and_cleans_scratch(
     ):
         with pytest.raises(
             SemanticPlanBlocked,
-            match="image owner projection failed.*forced attach failure",
+            match=r"image owner projection failed.*forced attach failure",
         ):
             plan_semantic_index(
                 tmp_path,
@@ -1704,9 +1684,7 @@ def test_image_data_version_fence_blocks_mid_plan_mutation(tmp_path: Path) -> No
         writer = sqlite3.connect(image_path, timeout=5.0)
         try:
             with writer:
-                writer.execute(
-                    "UPDATE images SET category='drifted' WHERE status='done'"
-                )
+                writer.execute("UPDATE images SET category='drifted' WHERE status='done'")
         finally:
             writer.close()
         return result
@@ -1740,10 +1718,7 @@ def test_attached_dedup_data_version_fence_blocks_mid_plan_mutation(
     scratch.mkdir()
     wal_connection = sqlite3.connect(dedup, timeout=5.0)
     try:
-        assert (
-            str(wal_connection.execute("PRAGMA journal_mode=WAL").fetchone()[0]).lower()
-            == "wal"
-        )
+        assert str(wal_connection.execute("PRAGMA journal_mode=WAL").fetchone()[0]).lower() == "wal"
     finally:
         wal_connection.close()
     from _04_Nucleo_Operativo import semantic_planner as planner_module
@@ -1800,9 +1775,7 @@ def test_dedup_schema_is_revalidated_between_probe_and_attach(
         writer = sqlite3.connect(dedup, timeout=5.0)
         try:
             with writer:
-                writer.execute(
-                    "CREATE TABLE planner_schema_drift(id INTEGER PRIMARY KEY)"
-                )
+                writer.execute("CREATE TABLE planner_schema_drift(id INTEGER PRIMARY KEY)")
         finally:
             writer.close()
         return result
@@ -1814,9 +1787,7 @@ def test_dedup_schema_is_revalidated_between_probe_and_attach(
     ):
         with pytest.raises(
             SemanticPlanBlocked,
-            match=(
-                "dedup schema changed between exact validation and image projection"
-            ),
+            match=("dedup schema changed between exact validation and image projection"),
         ):
             plan_semantic_index(
                 tmp_path,
@@ -2014,8 +1985,7 @@ def test_detach_failure_does_not_mask_exact_cancellation(tmp_path: Path) -> None
     assert raised.value is primary
     assert events == ["attach", "cancel", "detach", "close"]
     assert getattr(primary, "__notes__", ()) == [
-        "semantic planner dedup detach cleanup failed: "
-        "OperationalError: forced detach failure"
+        "semantic planner dedup detach cleanup failed: OperationalError: forced detach failure"
     ]
     assert list(scratch.iterdir()) == []
 
@@ -2087,8 +2057,7 @@ def test_detach_failure_does_not_mask_primary_projection_error(
     assert raised.value is primary
     assert events == ["attach", "detach", "close"]
     assert getattr(primary, "__notes__", ()) == [
-        "semantic planner dedup detach cleanup failed: "
-        "OperationalError: secondary detach failure"
+        "semantic planner dedup detach cleanup failed: OperationalError: secondary detach failure"
     ]
     assert list(scratch.iterdir()) == []
 
@@ -2138,7 +2107,7 @@ def test_detach_failure_without_primary_is_controlled_and_closes_owner(
     ):
         with pytest.raises(
             SemanticPlanBlocked,
-            match="image owner projection failed.*unique detach failure",
+            match=r"image owner projection failed.*unique detach failure",
         ) as raised:
             plan_semantic_index(
                 tmp_path,
@@ -2338,7 +2307,7 @@ def test_readonly_owner_close_failure_preserves_primary_or_surfaces_unique(
         else:
             with pytest.raises(
                 SemanticPlanBlocked,
-                match="owner projection failed.*secondary read-only owner close failure",
+                match=r"owner projection failed.*secondary read-only owner close failure",
             ) as unique_raised:
                 plan_semantic_index(
                     tmp_path,
@@ -2546,7 +2515,7 @@ def test_snapshot_rollback_failure_preserves_primary_or_surfaces_unique(
         else:
             with pytest.raises(
                 SemanticPlanBlocked,
-                match="owner projection failed.*snapshot rollback failure",
+                match=r"owner projection failed.*snapshot rollback failure",
             ) as unique_raised:
                 run_plan()
             assert unique_raised.value.__cause__ is cleanup

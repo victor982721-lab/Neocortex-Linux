@@ -3997,7 +3997,7 @@ def test_organization_cli_allows_default_root_and_keeps_apply_separate() -> None
     default_plan = parser.parse_args(["--organization-plan"])
     validate_arguments(default_plan)
     assert default_plan.organization_root is None
-    apply_error = "cannot be combined with --apply" if os.name == "nt" else LINUX_MUTATION_REASON
+    apply_error = "document catalog/organization commands cannot be combined with --apply"
     with pytest.raises(SystemExit, match=apply_error):
         validate_arguments(
             parser.parse_args(
@@ -4042,9 +4042,7 @@ def test_organization_cli_allows_default_root_and_keeps_apply_separate() -> None
             validate_arguments(integrated)
     with pytest.raises(SystemExit, match="requires an organization command"):
         validate_arguments(parser.parse_args(["--all", "--organization-root", r"C:\Organizados"]))
-    route_apply_error = (
-        "requires an organization command" if os.name == "nt" else LINUX_MUTATION_REASON
-    )
+    route_apply_error = "requires an organization command"
     with pytest.raises(SystemExit, match=route_apply_error):
         validate_arguments(
             parser.parse_args(

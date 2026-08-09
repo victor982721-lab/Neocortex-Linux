@@ -11,7 +11,12 @@ from unittest.mock import patch
 
 import pytest
 
-from _02_Deduplicacion import DedupIndex, InventoryExclusionPolicy
+from _02_Deduplicacion import (
+    DedupIndex,
+    FileSnapshot,
+    InventoryExclusionPolicy,
+    stat_matches_snapshot,
+)
 from _04_Nucleo_Operativo.cli_app import main
 from _04_Nucleo_Operativo.file_identity import FileIdentity
 from _04_Nucleo_Operativo.knowledge_contracts import PhysicalIdentityRef, ResourceRef
@@ -122,6 +127,34 @@ def test_posix_device_inode_with_unavailable_birthtime_is_resolved_identity() ->
     ) == (17, 29, -1)
 
 
+@pytest.mark.skipif(os.name == "nt", reason="legacy ctime compatibility is POSIX-only")
+def test_posix_mutation_check_accepts_only_the_exact_legacy_ctime(tmp_path: Path) -> None:
+    source = tmp_path / "legacy.txt"
+    source.write_text("legacy observation", encoding="utf-8")
+    metadata = source.stat()
+    snapshot = FileSnapshot(
+        str(source),
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    )
+
+    assert stat_matches_snapshot(snapshot, metadata)
+    assert not stat_matches_snapshot(
+        FileSnapshot(
+            snapshot.path,
+            snapshot.volume_id,
+            snapshot.file_id,
+            snapshot.size,
+            snapshot.mtime_ns,
+            snapshot.birthtime_ns + 1,
+        ),
+        metadata,
+    )
+
+
 @pytest.mark.skipif(os.name == "nt", reason="Linux portable inventory contract")
 def test_linux_inventory_preserves_case_and_accents_and_skips_symlinks(tmp_path: Path) -> None:
     root = tmp_path / "Corpus con espacio"
@@ -163,13 +196,13 @@ def test_linux_mutation_abstains_with_exit_two_before_state(
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Linux mutation abstention contract")
-def test_linux_mutation_reason_precedes_direct_operation_validation(
+def test_direct_operation_validation_precedes_linux_mutation_reason(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     with pytest.raises(SystemExit) as raised:
         main(("--doctor-platform", "--apply"))
     assert raised.value.code == 2
-    assert LINUX_MUTATION_REASON in capsys.readouterr().err
+    assert "doctor platform is read-only and rejects --apply" in capsys.readouterr().err
 
 
 def test_missing_corpus_root_is_a_controlled_error_before_state_creation(

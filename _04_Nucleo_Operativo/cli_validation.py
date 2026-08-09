@@ -28,6 +28,7 @@ from .cli_office_surface import (
 from .cli_operations import DirectOperationFamily, selected_direct_operations
 from .cli_platform_surface import validate_platform_arguments
 from .cli_semantic_surface import validate_semantic_arguments
+from .cli_text_surface import validate_text_arguments
 from .code_contracts import (
     DEFAULT_DEEP_MUTATION_MAX_MUTANTS,
     DEFAULT_DEEP_MUTATION_TIME_BUDGET_SECONDS,
@@ -65,12 +66,14 @@ _SELF_ANALYSIS_UNUSED_PREFIXES = (
     "image_",
     "office_",
     "pdf_",
+    "text_",
     "retry_audio_",
     "retry_archive_",
     "retry_docx_",
     "retry_image_",
     "retry_office_",
     "retry_pdf_",
+    "retry_text_",
     "semantic_",
     "whisper_",
 )
@@ -887,13 +890,6 @@ def _validate_route_only(args: argparse.Namespace) -> None:
 
 
 def validate_arguments(args: argparse.Namespace) -> None:
-    if linux_mutation_requested(
-        apply=bool(getattr(args, "apply", False)),
-        organization_apply=bool(getattr(args, "organization_apply", False)),
-    ):
-        raise SystemExit(
-            f"{LINUX_MUTATION_REASON}: corpus mutation is intentionally unavailable on Linux"
-        )
     apply_self_analysis_preset(args)
     apply_all_preset(args)
     if args.show_groups < 0:
@@ -908,12 +904,20 @@ def validate_arguments(args: argparse.Namespace) -> None:
     validate_docx_arguments(args)
     validate_office_arguments(args)
     validate_archive_arguments(args)
+    validate_text_arguments(args)
     validate_audio_arguments(args)
     validate_semantic_arguments(args)
     validate_code_arguments(args)
     validate_platform_arguments(args)
     validate_models_arguments(args)
     _validate_direct_operations(args)
+    if linux_mutation_requested(
+        apply=bool(getattr(args, "apply", False)),
+        organization_apply=bool(getattr(args, "organization_apply", False)),
+    ):
+        raise SystemExit(
+            f"{LINUX_MUTATION_REASON}: corpus mutation is intentionally unavailable on Linux"
+        )
     _validate_route_only(args)
 
 

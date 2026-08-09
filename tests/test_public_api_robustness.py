@@ -128,6 +128,7 @@ def test_projection_module_cold_import_keeps_owner_contracts_deferred() -> None:
             "_01_Enumeracion",
             "_02_Deduplicacion",
             "_04_Nucleo_Operativo.application_config",
+            "_04_Nucleo_Operativo.archive_route",
             "_04_Nucleo_Operativo.audio_models",
             "_04_Nucleo_Operativo.code_contracts",
             "_04_Nucleo_Operativo.docx_models",
@@ -136,11 +137,13 @@ def test_projection_module_cold_import_keeps_owner_contracts_deferred() -> None:
             "_04_Nucleo_Operativo.models",
             "_04_Nucleo_Operativo.office_route",
             "_04_Nucleo_Operativo.pdf_route_models",
+            "_04_Nucleo_Operativo.text_route",
         }
 
         import _04_Nucleo_Operativo.application_config_projections as projections
 
         if tuple(projections.__all__) != (
+            "archive_route_config_from_application",
             "audio_route_config_from_application",
             "code_route_config_from_application",
             "docx_route_config_from_application",
@@ -148,6 +151,7 @@ def test_projection_module_cold_import_keeps_owner_contracts_deferred() -> None:
             "image_route_config_from_application",
             "office_route_config_from_application",
             "pdf_route_config_from_application",
+            "text_route_config_from_application",
         ):
             raise SystemExit("projection public surface changed")
         loaded = sorted(forbidden.intersection(sys.modules))

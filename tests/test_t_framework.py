@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import io
 import inspect
+import os
 import sqlite3
 import tempfile
 import unittest
@@ -33,6 +34,7 @@ from _04_Nucleo_Operativo.document_organization import (
     OrganizationApplySummary,
     OrganizationPlanSummary,
 )
+from neocortex.platform_policy import default_corpus_root
 from _04_Nucleo_Operativo.route_selection import (
     BUILTIN_ROUTE_ORDER,
     normalize_route_selection,
@@ -61,14 +63,14 @@ class CommandLineTests(unittest.TestCase):
     def test_all_expands_to_complete_safe_maintenance_preset(self) -> None:
         parser = _parser()
         self.assertEqual(parser.prog, "Neocortex")
-        args = parser.parse_args(["--all", "--apply"])
+        args = parser.parse_args(["--all", *(["--apply"] if os.name == "nt" else [])])
         _validate_arguments(args)
-        self.assertTrue(args.apply)
+        self.assertEqual(args.apply, os.name == "nt")
         self.assertEqual(args.route, "all")
         selected_routes = normalize_route_selection(args.route, BUILTIN_ROUTE_ORDER)
         self.assertEqual(
             selected_routes,
-            ("pdf", "docx", "office", "audio", "image", "code"),
+            ("pdf", "docx", "office", "archive", "text", "audio", "image", "code"),
         )
         self.assertEqual(selected_routes, tuple(builtin_route_registry()))
         self.assertEqual(args.ocr, "auto")
@@ -182,9 +184,9 @@ class CommandLineTests(unittest.TestCase):
 
         self.assertIn("adult_unavailable=3", output.getvalue())
 
-    def test_defaults_to_user_profile_and_unlimited_pdf_controls(self) -> None:
+    def test_defaults_to_platform_corpus_and_unlimited_pdf_controls(self) -> None:
         args = _parser().parse_args([])
-        self.assertEqual(args.root, Path.home())
+        self.assertEqual(args.root, default_corpus_root())
         self.assertIsNone(args.pdf_max_file_bytes)
         self.assertIsNone(args.pdf_max_documents)
 
@@ -561,7 +563,7 @@ class OrchestratorTests(unittest.TestCase):
 
             self.assertEqual(
                 set(result.route_results),
-                {"pdf", "docx", "office", "audio", "image", "code"},
+                {"pdf", "docx", "office", "archive", "text", "audio", "image", "code"},
             )
             self.assertIsNotNone(result.pdf)
             self.assertIsNotNone(result.docx)
@@ -609,6 +611,8 @@ class OrchestratorTests(unittest.TestCase):
                     "pdf": "completed",
                     "docx": "completed",
                     "office": "completed",
+                    "archive": "completed",
+                    "text": "completed",
                     "audio": "completed",
                     "image": "completed",
                     "code": "completed",
@@ -805,9 +809,12 @@ class OrchestratorTests(unittest.TestCase):
             self.assertEqual(result.actions.duplicate_candidates, 1)
             self.assertEqual(result.dedup_plan.statistics.exact_compare_files, 0)
             journal_usn_span = result.journal_usn_span
-            self.assertIsNotNone(journal_usn_span)
-            assert journal_usn_span is not None
-            self.assertGreaterEqual(journal_usn_span, 0)
+            if os.name == "nt":
+                self.assertIsNotNone(journal_usn_span)
+                assert journal_usn_span is not None
+                self.assertGreaterEqual(journal_usn_span, 0)
+            else:
+                self.assertIsNone(journal_usn_span)
             self.assertTrue((state / "framework.sqlite3").is_file())
             self.assertTrue((state / "dedup.sqlite3").is_file())
             event_sequence = [event.key for event in progress.events]
@@ -822,21 +829,20 @@ class OrchestratorTests(unittest.TestCase):
                 ("dedup", "verify"),
                 ("framework", "complete"),
             )
-            phase_positions = [
-                event_sequence.index(key) for key in expected_phase_order
-            ]
+            phase_positions = [event_sequence.index(key) for key in expected_phase_order]
             self.assertEqual(phase_positions, sorted(phase_positions))
 
             second = FrameworkOrchestrator(
                 FrameworkConfig(root=corpus, state_directory=state)
             ).run_initial()
-            self.assertEqual(second.inventory_mode, "incremental")
-            self.assertEqual(second.inventory_attempts, 0)
+            expected_replay_mode = "incremental" if os.name == "nt" else "full"
+            self.assertEqual(second.inventory_mode, expected_replay_mode)
+            self.assertEqual(second.inventory_attempts, 0 if os.name == "nt" else 1)
             (corpus / "created-after-checkpoint.bin").write_bytes(b"new")
             third = FrameworkOrchestrator(
                 FrameworkConfig(root=corpus, state_directory=state)
             ).run_initial()
-            self.assertEqual(third.inventory_mode, "incremental")
+            self.assertEqual(third.inventory_mode, expected_replay_mode)
             self.assertEqual(third.scan.files_seen, 4)
             connection = sqlite3.connect(state / "framework.sqlite3")
             modes = [
@@ -847,7 +853,7 @@ class OrchestratorTests(unittest.TestCase):
             ]
             event_count = connection.execute("SELECT COUNT(*) FROM run_events").fetchone()[0]
             connection.close()
-            self.assertEqual(modes, ["full", "incremental", "incremental"])
+            self.assertEqual(modes, ["full", expected_replay_mode, expected_replay_mode])
             self.assertGreaterEqual(event_count, 9)
 
     def test_all_apply_runs_organization_after_routes(self) -> None:

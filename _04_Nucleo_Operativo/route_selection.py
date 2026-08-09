@@ -16,11 +16,12 @@ BUILTIN_ROUTE_ORDER = (
     "docx",
     "office",
     "archive",
+    "text",
     "audio",
     "image",
     "code",
 )
-ORGANIZABLE_ROUTE_NAMES = frozenset({"pdf", "docx", "office", "audio"})
+ORGANIZABLE_ROUTE_NAMES = frozenset({"pdf", "docx", "office", "text", "audio"})
 
 
 def normalize_route_selection(

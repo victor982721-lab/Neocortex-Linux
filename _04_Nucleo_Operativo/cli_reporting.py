@@ -158,6 +158,27 @@ def _print_archive_report(result) -> None:
     )
 
 
+def _print_text_report(result) -> None:
+    if result.text is None:
+        return
+    text = result.text
+    print(
+        f"route=text candidate_pool={text.candidate_pool} candidates={text.candidates} "
+        f"processed={text.processed} cache_hits={text.cache_hits} "
+        f"cached_errors={text.cached_errors} extracted={text.extracted} "
+        f"plain_text={text.plain_text} emails={text.emails} "
+        f"legacy_office={text.legacy_office} text_chars={text.text_chars} "
+        f"truncated={text.truncated} errors={text.errors} "
+        f"retryable_errors={text.retryable_errors} "
+        f"cache_documents_pruned={text.cache_documents_pruned} "
+        f"catalog_candidates={text.catalog_candidates} "
+        f"catalog_classified={text.catalog_classified} "
+        f"catalog_cache_hits={text.catalog_cache_hits} "
+        f"catalog_review={text.catalog_review_required} "
+        f"catalog_errors={text.catalog_errors}"
+    )
+
+
 def _print_audio_report(result) -> None:
     if result.audio is None:
         return
@@ -214,6 +235,8 @@ def _print_image_report(result) -> None:
         f"deletion_candidates={image.deletion_candidates} "
         f"review_candidates_stored={image.review_candidates_stored} "
         f"cache_rows_pruned={image.cache_rows_pruned} "
+        f"full_fingerprint_cache_hits={image.full_fingerprint_cache_hits} "
+        f"full_fingerprints_computed={image.full_fingerprints_computed} "
         f"peak_reserved_bytes={image.peak_reserved_bytes} "
         f"memory_waits={image.memory_waits}"
     )
@@ -398,6 +421,7 @@ def print_reports(result, args: argparse.Namespace) -> None:
         _print_docx_report(result)
         _print_office_report(result)
         _print_archive_report(result)
+        _print_text_report(result)
         _print_audio_report(result)
         _print_image_report(result)
         _print_code_report(result)
@@ -409,6 +433,7 @@ def print_reports(result, args: argparse.Namespace) -> None:
     _print_docx_report(result)
     _print_office_report(result)
     _print_archive_report(result)
+    _print_text_report(result)
     _print_audio_report(result)
     _print_image_report(result)
     _print_code_report(result)

@@ -195,9 +195,7 @@ def _require_current_schema(
     try:
         version = read_application_schema_version(connection, label=label)
         if version != expected_version:
-            raise SemanticPlanBlocked(
-                f"{label} schema is {version!r}; expected {expected_version}"
-            )
+            raise SemanticPlanBlocked(f"{label} schema is {version!r}; expected {expected_version}")
         validator(connection)
     except SemanticPlanBlocked:
         raise
@@ -272,6 +270,34 @@ def _validate_source_schema(
                 exact=True,
             ),
         )
+    if source_kind == "archive":
+        from . import archive_state
+
+        return _require_current_schema(
+            connection,
+            label="archive",
+            expected_version=archive_state.ARCHIVE_SCHEMA_VERSION,
+            validator=lambda connection: validate_sqlite_schema_contract(
+                connection,
+                archive_state.archive_schema_contract(),
+                label="archive semantic source",
+                exact=True,
+            ),
+        )
+    if source_kind == "text":
+        from . import text_state
+
+        return _require_current_schema(
+            connection,
+            label="text",
+            expected_version=text_state.TEXT_SCHEMA_VERSION,
+            validator=lambda connection: validate_sqlite_schema_contract(
+                connection,
+                text_state.text_schema_contract(),
+                label="text semantic source",
+                exact=True,
+            ),
+        )
     if source_kind == "code":
         from . import code_schema
 
@@ -334,8 +360,7 @@ def _validate_semantic_cache(
                 persisted = _model_from_row(row)
             except (TypeError, ValueError, RuntimeError) as exc:
                 raise SemanticPlanBlocked(
-                    "semantic model metadata is malformed: "
-                    f"{model.model_signature}: {exc}"
+                    f"semantic model metadata is malformed: {model.model_signature}: {exc}"
                 ) from exc
             if persisted != model:
                 raise SemanticPlanBlocked(
@@ -406,9 +431,7 @@ def _plan_text_database_group(
                             _cleanup_preserving_primary(
                                 owner.rollback,
                                 exc,
-                                label=(
-                                    "semantic planner text snapshot rollback cleanup"
-                                ),
+                                label=("semantic planner text snapshot rollback cleanup"),
                             )
                         raise
 
@@ -462,8 +485,7 @@ def _plan_text_database_group(
         raise
     except (RuntimeError, sqlite3.Error) as exc:
         raise SemanticPlanBlocked(
-            f"{','.join(source_kinds)} owner projection failed: "
-            f"{type(exc).__name__}: {exc}"
+            f"{','.join(source_kinds)} owner projection failed: {type(exc).__name__}: {exc}"
         ) from exc
 
 
@@ -501,9 +523,7 @@ def _validated_dedup_schema(
                             _cleanup_preserving_primary(
                                 connection.rollback,
                                 exc,
-                                label=(
-                                    "semantic planner dedup snapshot rollback cleanup"
-                                ),
+                                label=("semantic planner dedup snapshot rollback cleanup"),
                             )
                         raise
 
@@ -569,9 +589,7 @@ def _semantic_reuse_snapshot(
     if not semantic_path.exists():
         return None, fingerprint_text("semantic-cache-absent-v1").xxh3_128
     if not semantic_path.is_file():
-        raise SemanticPlanBlocked(
-            f"semantic state is not a regular file: {semantic_path}"
-        )
+        raise SemanticPlanBlocked(f"semantic state is not a regular file: {semantic_path}")
     try:
         with _planner_readonly_database(semantic_path, bridge) as connection:
             with sqlite_cancellation_scope(connection, bridge):
@@ -593,10 +611,7 @@ def _semantic_reuse_snapshot(
                             _cleanup_preserving_primary(
                                 connection.rollback,
                                 exc,
-                                label=(
-                                    "semantic planner semantic snapshot "
-                                    "rollback cleanup"
-                                ),
+                                label=("semantic planner semantic snapshot rollback cleanup"),
                             )
                         raise
 
@@ -733,9 +748,7 @@ def _attached_validated_dedup(
         attached_version_row = owner.execute(
             "SELECT value FROM dedup.metadata WHERE key='schema_version'"
         ).fetchone()
-        attached_version = (
-            None if attached_version_row is None else int(attached_version_row[0])
-        )
+        attached_version = None if attached_version_row is None else int(attached_version_row[0])
         attached_schema = _schema_snapshot_xxh3_128(owner, schema="dedup")
         if attached_version != dedup_version or attached_schema != validated_schema:
             raise SemanticPlanBlocked(
@@ -805,9 +818,7 @@ def _project_open_image_owner(
                 connection=owner,
                 schema_version=image_version,
                 schema_snapshot_xxh3_128=image_schema_snapshot,
-                dedup_schema_snapshot_xxh3_128=(
-                    dedup_snapshot.schema_snapshot_xxh3_128
-                ),
+                dedup_schema_snapshot_xxh3_128=(dedup_snapshot.schema_snapshot_xxh3_128),
                 chunking=chunking,
                 image_workload=image_workload,
                 ocr_workload=ocr_workload,
@@ -903,4 +914,6 @@ def _plan_source_snapshots(
             )
         )
     return tuple(source_plans)
+
+
 # endregion [02]

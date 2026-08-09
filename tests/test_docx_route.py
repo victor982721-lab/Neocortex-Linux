@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sqlite3
 import tempfile
 import unittest
@@ -94,8 +95,7 @@ def _make_docx(
     *,
     compression: int = zipfile.ZIP_STORED,
     main_content_type: str = (
-        "application/vnd.openxmlformats-officedocument."
-        "wordprocessingml.document.main+xml"
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"
     ),
 ) -> None:
     document = f"""<?xml version="1.0" encoding="UTF-8"?>
@@ -196,9 +196,7 @@ class DocxRouteTests(unittest.TestCase):
             self.assertEqual(migrated.retried_documents, 1)
             self.assertEqual((migrated.extracted, migrated.errors), (1, 0))
             with closing(sqlite3.connect(database)) as connection:
-                stored = connection.execute(
-                    "SELECT status,failure_code FROM documents"
-                ).fetchone()
+                stored = connection.execute("SELECT status,failure_code FROM documents").fetchone()
             self.assertEqual(stored, ("complete", None))
 
     def test_migrates_schema_one_without_discarding_document_rows(self):
@@ -221,12 +219,9 @@ class DocxRouteTests(unittest.TestCase):
             initialize_docx_state(database)
 
             with closing(sqlite3.connect(database)) as connection:
-                columns = {
-                    row[1] for row in connection.execute("PRAGMA table_info(documents)")
-                }
+                columns = {row[1] for row in connection.execute("PRAGMA table_info(documents)")}
                 inventory_columns = {
-                    row[1]
-                    for row in connection.execute("PRAGMA table_info(docx_inventory)")
+                    row[1] for row in connection.execute("PRAGMA table_info(docx_inventory)")
                 }
                 version = connection.execute(
                     "SELECT value FROM metadata WHERE key='schema_version'"
@@ -304,9 +299,7 @@ class DocxRouteTests(unittest.TestCase):
                 cache_status = route._cache_status(connection, snapshot)
                 path_collations = tuple(
                     str(row[4]).upper()
-                    for row in connection.execute(
-                        "PRAGMA index_xinfo(docx_documents_path_idx)"
-                    )
+                    for row in connection.execute("PRAGMA index_xinfo(docx_documents_path_idx)")
                     if row[5]
                 )
             self.assertEqual(version, "5")
@@ -411,6 +404,7 @@ class DocxRouteTests(unittest.TestCase):
             self.assertEqual(second.extracted, 0)
             live_snapshot.assert_called_once_with(str(pdf))
 
+    @unittest.skipUnless(os.name == "nt", "birth-time replacement is Windows-only")
     def test_changed_birthtime_reprocesses_same_identity_size_and_mtime(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -454,9 +448,7 @@ class DocxRouteTests(unittest.TestCase):
             bad = root / "Roto.docx"
             _make_docx(good, "Mantenimiento industrial")
             bad.write_bytes(b"PK\x03\x04broken")
-            state = _State(
-                {DOCX_MIME: [snapshot_path(good), snapshot_path(bad)], PDF_MIME: []}
-            )
+            state = _State({DOCX_MIME: [snapshot_path(good), snapshot_path(bad)], PDF_MIME: []})
             database = root / "docx.sqlite3"
             result = DocxRoute(DocxRouteConfig(database), state, 7).run()
             self.assertEqual(result.errors, 1)
@@ -579,9 +571,7 @@ class DocxRouteTests(unittest.TestCase):
 
             self.assertEqual(result.errors, 0)
             self.assertEqual(result.partial_documents, 1)
-            self.assertEqual(
-                search_docx_state(database, "transformador")[0]["path"], str(docx)
-            )
+            self.assertEqual(search_docx_state(database, "transformador")[0]["path"], str(docx))
             with closing(sqlite3.connect(database)) as connection:
                 outcome = connection.execute(
                     """SELECT status,integrity_status,failure_code,
@@ -708,9 +698,7 @@ class DocxRouteTests(unittest.TestCase):
                 path = root / f"{index:02d}.docx"
                 _make_docx(path, f"Documento {index}")
                 paths.append(path)
-            state = _State(
-                {DOCX_MIME: [snapshot_path(path) for path in paths], PDF_MIME: []}
-            )
+            state = _State({DOCX_MIME: [snapshot_path(path) for path in paths], PDF_MIME: []})
             database = root / "docx.sqlite3"
             calls = 0
 
@@ -749,7 +737,10 @@ class DocxRouteTests(unittest.TestCase):
             _make_docx(first_path, "Documento A")
             _make_docx(second_path, "Documento B")
             first_snapshot = snapshot_path(first_path)
-            second_snapshot = snapshot_path(second_path)
+            second_snapshot = replace(
+                snapshot_path(second_path),
+                birthtime_ns=second_path.stat().st_ctime_ns,
+            )
             database = root / "docx.sqlite3"
             initial = _State(
                 {
@@ -769,9 +760,7 @@ class DocxRouteTests(unittest.TestCase):
                     PDF_MIME: [],
                 }
             )
-            limited = DocxRoute(
-                DocxRouteConfig(database, max_documents=1), changed, 2
-            ).run()
+            limited = DocxRoute(DocxRouteConfig(database, max_documents=1), changed, 2).run()
 
             self.assertEqual(limited.skipped_by_count, 1)
             self.assertEqual(limited.cache_hits, 1)
@@ -795,7 +784,10 @@ class DocxRouteTests(unittest.TestCase):
             _make_docx(first_path, "Documento A")
             _make_docx(second_path, "Documento B")
             first_snapshot = snapshot_path(first_path)
-            second_snapshot = snapshot_path(second_path)
+            second_snapshot = replace(
+                snapshot_path(second_path),
+                birthtime_ns=second_path.stat().st_ctime_ns,
+            )
             database = root / "docx.sqlite3"
             both = _State(
                 {
@@ -811,9 +803,7 @@ class DocxRouteTests(unittest.TestCase):
                 )
                 connection.commit()
 
-            limited = DocxRoute(
-                DocxRouteConfig(database, max_documents=1), both, 2
-            ).run()
+            limited = DocxRoute(DocxRouteConfig(database, max_documents=1), both, 2).run()
 
             self.assertEqual(limited.skipped_by_count, 1)
             self.assertEqual(limited.cache_hits, 1)
@@ -825,9 +815,7 @@ class DocxRouteTests(unittest.TestCase):
                     WHERE d.path=?""",
                     (str(second_path),),
                 ).fetchone()
-                document_count = connection.execute(
-                    "SELECT COUNT(*) FROM documents"
-                ).fetchone()[0]
+                document_count = connection.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
             self.assertEqual(document_count, 2)
             self.assertEqual(
                 preserved,
@@ -862,9 +850,7 @@ class DocxRouteTests(unittest.TestCase):
             )
             DocxRoute(DocxRouteConfig(database), both, 1).run()
 
-            limited = DocxRoute(
-                DocxRouteConfig(database, max_documents=1), both, 2
-            ).run()
+            limited = DocxRoute(DocxRouteConfig(database, max_documents=1), both, 2).run()
             self.assertEqual(limited.skipped_by_count, 1)
             self.assertEqual(limited.cache_documents_pruned, 0)
             connection = sqlite3.connect(database)
@@ -882,9 +868,7 @@ class DocxRouteTests(unittest.TestCase):
             connection = sqlite3.connect(database)
             try:
                 self.assertEqual(
-                    connection.execute("SELECT COUNT(*) FROM document_fts").fetchone()[
-                        0
-                    ],
+                    connection.execute("SELECT COUNT(*) FROM document_fts").fetchone()[0],
                     1,
                 )
             finally:

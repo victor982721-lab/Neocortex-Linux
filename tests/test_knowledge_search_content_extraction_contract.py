@@ -63,9 +63,7 @@ EXPECTED_SIGNATURES = {
         "(resolved: 'ResolvedSearchHit', producer: 'str') -> "
         "'tuple[str, str, RevisionState, tuple[str, ...]]'"
     ),
-    "_int_provenance": (
-        "(provenance: 'Mapping[str, object]', name: 'str') -> 'int | None'"
-    ),
+    "_int_provenance": ("(provenance: 'Mapping[str, object]', name: 'str') -> 'int | None'"),
     "_resolved_physical_identity": ("(resolved: 'ResolvedSearchHit') -> 'str | None'"),
     "_direct_resource_ref": (
         "(*, source_kind: 'str', owner: 'str', source_identity: 'str', "
@@ -155,9 +153,7 @@ def _resolved(*, source_kind: str = "pdf") -> ResolvedSearchHit:
         ),
         path="C:/fixture/report.pdf",
         source_kind=source_kind,
-        source_identity=(
-            "00000000000000000000000000000001:00000000000000000000000000000002"
-        ),
+        source_identity=("00000000000000000000000000000001:00000000000000000000000000000002"),
         section_kind="pdf_page",
         section_id="1",
         start_char=0,
@@ -343,7 +339,7 @@ def test_lexical_wrapper_resolves_all_lower_dependencies_per_call(
         clock_ns=clock,
     )
 
-    assert owners == ["pdf", "docx", "office", "audio"]
+    assert owners == ["pdf", "docx", "office", "audio", "archive", "text"]
     assert candidate_calls == [(resolved, "fts_pdf", 1, "pdf-fts-v1")]
     assert rankings == {"fts_pdf": (candidate,)}
     assert len(reports) == 1
@@ -441,9 +437,7 @@ def test_semantic_wrapper_resolves_provider_materializer_clock_and_cancellation(
     monkeypatch.setattr(
         knowledge_search,
         "_owner_available",
-        lambda received_snapshot, owner: (
-            received_snapshot is snapshot and owner == "semantic"
-        ),
+        lambda received_snapshot, owner: received_snapshot is snapshot and owner == "semantic",
     )
     monkeypatch.setattr(knowledge_search, "_duration_ns", duration)
     monkeypatch.setattr(

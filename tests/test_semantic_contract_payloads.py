@@ -9,6 +9,7 @@ import hashlib
 import importlib
 import importlib.util
 import inspect
+import os
 from pathlib import Path
 
 from pytest import MonkeyPatch
@@ -221,9 +222,7 @@ def test_planner_payload_public_wrapper_identity_is_stable() -> None:
         "plan_semantic_index",
         "semantic_plan_payload",
     ]
-    assert semantic_service.semantic_plan_payload is not (
-        semantic_planner.semantic_plan_payload
-    )
+    assert semantic_service.semantic_plan_payload is not (semantic_planner.semantic_plan_payload)
     assert semantic_service.semantic_plan_payload.__module__ == (
         "_04_Nucleo_Operativo.semantic_service"
     )
@@ -243,9 +242,7 @@ def test_service_payload_wrapper_forwards_without_becoming_an_alias(
         calls.append(received)
         return sentinel
 
-    monkeypatch.setattr(
-        semantic_service._planner, "semantic_plan_payload", fake_payload
-    )
+    monkeypatch.setattr(semantic_service._planner, "semantic_plan_payload", fake_payload)
     assert semantic_service.semantic_plan_payload(plan) is sentinel
     assert calls == [plan]
     assert semantic_service.semantic_plan_payload is not fake_payload
@@ -357,18 +354,26 @@ def test_representative_payload_keysets_and_byte_golden_are_stable() -> None:
         "vector_dtype",
         "vector_space",
     )
-    assert payload["semantic_database"] == r"C:\fixture\semantic.sqlite3"
-    assert source_payloads[0]["database"] == r"C:\fixture\pdf.sqlite3"
+    expected_separator = "\\" if os.name == "nt" else "/"
+    assert payload["semantic_database"] == (
+        f"C:{expected_separator}fixture{expected_separator}semantic.sqlite3"
+    )
+    assert source_payloads[0]["database"] == (
+        f"C:{expected_separator}fixture{expected_separator}pdf.sqlite3"
+    )
     assert payload["selected_sources"] == ["pdf"]
     assert workload_payloads[0]["supported_roles"] == ["query", "passage"]
     assert plan.plan_signature.encode("utf-8") == (
         b"semantic-readonly-plan-v4:xxh3-128:6b600875ca8cf824c90437aaafb42e07"
     )
     encoded = canonical_json(payload).encode("utf-8")
-    assert len(encoded) == 2683
-    assert hashlib.sha256(encoded).hexdigest() == (
-        "7f9bd971da15b3fb7ce2f1f1128721102195b43b8c7155e0eca5020f4b24110a"
-    )
+    if os.name == "nt":
+        assert len(encoded) == 2683
+        expected_digest = "7f9bd971da15b3fb7ce2f1f1128721102195b43b8c7155e0eca5020f4b24110a"
+    else:
+        assert len(encoded) == 2679
+        expected_digest = "430ca856b97f5d3518864e120fbdb812ce2c1bdce281b98aafac5266e5870715"
+    assert hashlib.sha256(encoded).hexdigest() == expected_digest
     assert semantic_service.semantic_plan_payload(plan) == payload
 
 
@@ -439,9 +444,7 @@ def test_extracted_payload_builder_matches_wrapper_when_present() -> None:
         return
     module = importlib.import_module(module_name)
     builder = module.build_semantic_plan_payload
-    assert str(inspect.signature(builder)) == (
-        "(plan: 'SemanticPlan') -> 'dict[str, object]'"
-    )
+    assert str(inspect.signature(builder)) == ("(plan: 'SemanticPlan') -> 'dict[str, object]'")
     assert builder(_plan()) == semantic_planner.semantic_plan_payload(_plan())
 
 
