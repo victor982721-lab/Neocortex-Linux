@@ -76,12 +76,9 @@ class _FixtureBackend:
     ) -> Sequence[BackendEmbedding]:
         output: list[BackendEmbedding] = []
         for request in requests:
-            position = (
-                int(request.fingerprint.xxh3_128[:16], 16) % self.model.dimensions
-            )
+            position = int(request.fingerprint.xxh3_128[:16], 16) % self.model.dimensions
             vector = tuple(
-                1.0 if index == position else 0.0
-                for index in range(self.model.dimensions)
+                1.0 if index == position else 0.0 for index in range(self.model.dimensions)
             )
             output.append(
                 BackendEmbedding(
@@ -128,11 +125,7 @@ class _ConstantBackend(_FixtureBackend):
         self.requests.extend(requests)
         output: list[BackendEmbedding] = []
         for request in requests:
-            leading = (
-                -1.0
-                if self.oppose_queries and request.role is EmbeddingRole.QUERY
-                else 1.0
-            )
+            leading = -1.0 if self.oppose_queries and request.role is EmbeddingRole.QUERY else 1.0
             output.append(
                 BackendEmbedding(
                     request_id=request.request_id,
@@ -349,8 +342,7 @@ def test_exact_published_replay_is_free_across_item_and_job_budgets(
         assert (
             int(
                 connection.execute(
-                    "SELECT generation_id FROM published_embedding_heads "
-                    "WHERE model_signature=?",
+                    "SELECT generation_id FROM published_embedding_heads WHERE model_signature=?",
                     (model_signature,),
                 ).fetchone()[0]
             )
@@ -378,8 +370,7 @@ def test_exact_published_replay_is_free_across_item_and_job_budgets(
         assert (
             int(
                 connection.execute(
-                    "SELECT COUNT(*) FROM embedding_generation_members "
-                    "WHERE generation_id=?",
+                    "SELECT COUNT(*) FROM embedding_generation_members WHERE generation_id=?",
                     (baseline_generation_id,),
                 ).fetchone()[0]
             )
@@ -470,9 +461,7 @@ def test_title_policy_upgrade_embeds_only_title_and_preserves_body_revisions(
         include_images=False,
         include_lexical=False,
     )
-    assert tuple(ranking.name for ranking in legacy_search.rankings) == (
-        "semantic_text",
-    )
+    assert tuple(ranking.name for ranking in legacy_search.rankings) == ("semantic_text",)
     assert legacy_search.rankings[0].available is True
     assert legacy_search.complete
 
@@ -484,9 +473,7 @@ def test_title_policy_upgrade_embeds_only_title_and_preserves_body_revisions(
         include_images=False,
         include_lexical=False,
     )
-    assert tuple(ranking.name for ranking in legacy_discovery.rankings) == (
-        "semantic_text",
-    )
+    assert tuple(ranking.name for ranking in legacy_discovery.rankings) == ("semantic_text",)
     assert legacy_discovery.complete
     monkeypatch.setattr(
         service,
@@ -662,10 +649,7 @@ def test_title_policy_bump_prunes_old_title_and_retains_unselected_source(
         ("pdf", "pdf_page", "1"),
         ("pdf", SEMANTIC_TITLE_SECTION_KIND, SEMANTIC_TITLE_POLICY),
     }
-    assert (
-        after[("docx", "docx_body", "document")]
-        == before[("docx", "docx_body", "document")]
-    )
+    assert after[("docx", "docx_body", "document")] == before[("docx", "docx_body", "document")]
     assert after[("pdf", "pdf_page", "1")] == before[("pdf", "pdf_page", "1")]
     assert (
         "pdf",
@@ -720,9 +704,7 @@ def test_image_and_ocr_use_separate_embedding_generations(
     assert result.chunks_staged == 1
     assert len(result.generations) == 2
     assert all(generation.embedded == 1 for generation in result.generations)
-    assert {
-        generation.summary.model_signature for generation in result.generations
-    } == {
+    assert {generation.summary.model_signature for generation in result.generations} == {
         service.clip_image_model().model_signature,
         service.multilingual_text_model().model_signature,
     }
@@ -746,12 +728,8 @@ def test_image_and_ocr_use_separate_embedding_generations(
         service.clip_text_model().model_signature
     )
     fusion_evidence = search.fused[0].fused.evidence[0]
-    assert fusion_evidence.indexed_model_signature == (
-        service.clip_image_model().model_signature
-    )
-    assert fusion_evidence.query_model_signature == (
-        service.clip_text_model().model_signature
-    )
+    assert fusion_evidence.indexed_model_signature == (service.clip_image_model().model_signature)
+    assert fusion_evidence.query_model_signature == (service.clip_text_model().model_signature)
 
     compact_model = compact_multilingual_text_model()
     compact = service.index_image_embeddings(
@@ -874,23 +852,18 @@ def test_image_and_ocr_share_new_job_budget_and_resume_same_generations(
     assert len(paused.generations) == 2
     assert all(result.summary.status == "building" for result in paused.generations)
     assert all(
-        result.summary.cursor["enumeration_complete"] is False
-        for result in paused.generations
+        result.summary.cursor["enumeration_complete"] is False for result in paused.generations
     )
     database = tmp_path / service.SEMANTIC_DATABASE_NAME
     with semantic_database(database, readonly=True) as connection:
         counts = {
             int(row[0]): int(row[1])
             for row in connection.execute(
-                "SELECT generation_id,COUNT(*) FROM embedding_jobs "
-                "GROUP BY generation_id"
+                "SELECT generation_id,COUNT(*) FROM embedding_jobs GROUP BY generation_id"
             )
         }
         assert (
-            connection.execute(
-                "SELECT COUNT(*) FROM published_embedding_heads"
-            ).fetchone()[0]
-            == 0
+            connection.execute("SELECT COUNT(*) FROM published_embedding_heads").fetchone()[0] == 0
         )
     assert counts == {paused.generations[0].summary.generation_id: 1}
 
@@ -902,16 +875,15 @@ def test_image_and_ocr_share_new_job_budget_and_resume_same_generations(
 
     assert resumed.complete
     assert resumed.new_jobs_staged == 1
-    assert tuple(
-        result.summary.generation_id for result in resumed.generations
-    ) == tuple(result.summary.generation_id for result in paused.generations)
+    assert tuple(result.summary.generation_id for result in resumed.generations) == tuple(
+        result.summary.generation_id for result in paused.generations
+    )
     assert all(result.summary.status == "ready" for result in resumed.generations)
     with semantic_database(database, readonly=True) as connection:
         counts = {
             int(row[0]): int(row[1])
             for row in connection.execute(
-                "SELECT generation_id,COUNT(*) FROM embedding_jobs "
-                "GROUP BY generation_id"
+                "SELECT generation_id,COUNT(*) FROM embedding_jobs GROUP BY generation_id"
             )
         }
     assert counts == {result.summary.generation_id: 1 for result in resumed.generations}
@@ -939,8 +911,7 @@ def test_image_deadline_at_end_of_enumeration_preserves_unvisited_items(
     with semantic_database(database, readonly=True) as connection:
         baseline_head = int(
             connection.execute(
-                "SELECT generation_id FROM published_embedding_heads "
-                "WHERE model_signature=?",
+                "SELECT generation_id FROM published_embedding_heads WHERE model_signature=?",
                 (model_signature,),
             ).fetchone()[0]
         )
@@ -981,8 +952,7 @@ def test_image_deadline_at_end_of_enumeration_preserves_unvisited_items(
         assert (
             int(
                 connection.execute(
-                    "SELECT generation_id FROM published_embedding_heads "
-                    "WHERE model_signature=?",
+                    "SELECT generation_id FROM published_embedding_heads WHERE model_signature=?",
                     (model_signature,),
                 ).fetchone()[0]
             )
@@ -991,8 +961,7 @@ def test_image_deadline_at_end_of_enumeration_preserves_unvisited_items(
         assert (
             int(
                 connection.execute(
-                    "SELECT COUNT(*) FROM semantic_items "
-                    "WHERE source_kind='image' AND active=1"
+                    "SELECT COUNT(*) FROM semantic_items WHERE source_kind='image' AND active=1"
                 ).fetchone()[0]
             )
             == 2
@@ -1107,8 +1076,7 @@ def test_changed_ocr_revision_keeps_other_head_until_its_model_republishes(
     with semantic_database(database, readonly=True) as connection:
         prior_compact_head = int(
             connection.execute(
-                "SELECT generation_id FROM published_embedding_heads "
-                "WHERE model_signature=?",
+                "SELECT generation_id FROM published_embedding_heads WHERE model_signature=?",
                 (compact_model.model_signature,),
             ).fetchone()[0]
         )
@@ -1120,8 +1088,7 @@ def test_changed_ocr_revision_keeps_other_head_until_its_model_republishes(
     with semantic_database(database, readonly=True) as connection:
         current_compact_head = int(
             connection.execute(
-                "SELECT generation_id FROM published_embedding_heads "
-                "WHERE model_signature=?",
+                "SELECT generation_id FROM published_embedding_heads WHERE model_signature=?",
                 (compact_model.model_signature,),
             ).fetchone()[0]
         )
@@ -1444,9 +1411,80 @@ def test_compact_text_model_is_not_filtered_by_quality_calibration() -> None:
     )
 
     assert calibrated.hits == (hit,)
-    metadata = calibrated.provenance["retrieval_abstention"]
+    metadata = cast(dict[str, object], calibrated.provenance["retrieval_abstention"])
     assert metadata["status"] == "model_not_calibrated"
+    assert metadata["rejected_hits"] == 0
     assert metadata["query_abstained"] is False
+
+
+def test_lower_order_unknown_model_signature_is_not_calibrated() -> None:
+    hit, resolved = _calibrated_ranking_hit(1, source_kind="pdf", score=-1.0)
+    ranking = service.SemanticRanking(
+        name="semantic_text",
+        hits=(hit,),
+        resolved=(resolved,),
+        scanned=1,
+        complete=True,
+    )
+    selected_model = replace(
+        service.multilingual_text_model(),
+        model_signature="0|unregistered-text-model",
+    )
+    assert selected_model.model_signature < service.multilingual_text_model().model_signature
+
+    calibrated = search_implementation.apply_text_retrieval_calibration(
+        ranking,
+        selected_model=selected_model,
+    )
+
+    assert calibrated.hits == (hit,)
+    metadata = cast(dict[str, object], calibrated.provenance["retrieval_abstention"])
+    assert metadata["status"] == "model_not_calibrated"
+    assert metadata["rejected_hits"] == 0
+
+
+def test_equal_nonidentical_model_signature_is_calibrated() -> None:
+    hit, resolved = _calibrated_ranking_hit(1, source_kind="pdf", score=-1.0)
+    ranking = service.SemanticRanking(
+        name="semantic_text",
+        hits=(hit,),
+        resolved=(resolved,),
+        scanned=1,
+        complete=True,
+    )
+    expected_model = service.multilingual_text_model()
+    equal_signature = expected_model.model_signature.encode().decode()
+    assert equal_signature == expected_model.model_signature
+    assert equal_signature is not expected_model.model_signature
+    selected_model = replace(expected_model, model_signature=equal_signature)
+
+    calibrated = search_implementation.apply_text_retrieval_calibration(
+        ranking,
+        selected_model=selected_model,
+    )
+
+    assert calibrated.hits == ()
+    metadata = cast(dict[str, object], calibrated.provenance["retrieval_abstention"])
+    assert metadata["status"] == "applied"
+    assert metadata["query_abstained"] is True
+
+
+def test_text_retrieval_calibration_preserves_keyword_call_contract() -> None:
+    ranking = service.SemanticRanking(
+        name="semantic_text",
+        hits=(),
+        resolved=(),
+        scanned=0,
+        complete=True,
+    )
+
+    calibrated = search_implementation.apply_text_retrieval_calibration(
+        ranking=ranking,
+        selected_model=service.multilingual_text_model(),
+    )
+
+    assert calibrated.hits == ()
+    assert calibrated.resolved == ()
 
 
 def test_search_reports_unindexed_space_without_losing_available_results(
@@ -1517,12 +1555,8 @@ def test_text_search_reuses_one_query_vector_and_fuses_durable_title_at_half_wei
     body, title = result.rankings
     assert body.fusion_weight == 1.0
     assert title.fusion_weight == 0.5
-    assert title.provenance["expected_policy_signature"] == (
-        "semantic-basename-title-v1"
-    )
-    assert title.provenance["observed_policy_signatures"] == [
-        "semantic-basename-title-v1"
-    ]
+    assert title.provenance["expected_policy_signature"] == ("semantic-basename-title-v1")
+    assert title.provenance["observed_policy_signatures"] == ["semantic-basename-title-v1"]
     assert title.scanned == 1
     assert title.resolved[0].section_kind == "semantic_metadata_title"
     assert [(request.role, request.text) for request in backend.requests] == [
@@ -1542,9 +1576,7 @@ def test_text_search_reuses_one_query_vector_and_fuses_durable_title_at_half_wei
         include_lexical=False,
         evidence_mode=True,
     )
-    assert tuple(ranking.name for ranking in evidence_result.rankings) == (
-        "semantic_text",
-    )
+    assert tuple(ranking.name for ranking in evidence_result.rankings) == ("semantic_text",)
 
 
 def test_empty_requested_semantic_and_lexical_rankings_are_incomplete(
@@ -2258,9 +2290,7 @@ def test_semantic_status_reads_v4_state_without_migrating_or_missing_table_error
         state._migrate_to_v3(connection, 3)
         state._migrate_to_v4(connection, 4)
         connection.execute("PRAGMA user_version=4")
-        connection.execute(
-            "INSERT INTO metadata(key,value) VALUES('schema_version','4')"
-        )
+        connection.execute("INSERT INTO metadata(key,value) VALUES('schema_version','4')")
 
     status = service.semantic_status(tmp_path)
 
@@ -2664,8 +2694,7 @@ def test_embedding_heartbeat_is_joined_and_surfaces_failures(
     assert calls
     assert all(value == (lease.job_id,) for value in calls)
     assert not any(
-        thread.name.startswith("neocortex-semantic-lease:")
-        for thread in threading.enumerate()
+        thread.name.startswith("neocortex-semantic-lease:") for thread in threading.enumerate()
     )
 
     def failed_heartbeat(
@@ -2687,8 +2716,7 @@ def test_embedding_heartbeat_is_joined_and_surfaces_failures(
             heartbeat_interval_seconds=0.01,
         )
     assert not any(
-        thread.name.startswith("neocortex-semantic-lease:")
-        for thread in threading.enumerate()
+        thread.name.startswith("neocortex-semantic-lease:") for thread in threading.enumerate()
     )
 
 
