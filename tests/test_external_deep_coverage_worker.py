@@ -34,6 +34,96 @@ def test_bounded_diagnostic_preserves_the_root_cause_tail(tmp_path: Path) -> Non
     assert bounded.endswith("$SCRATCH: filename too long")
 
 
+@pytest.mark.parametrize(
+    ("nodeid", "expected"),
+    [
+        ("tests/test_logic.py", "tests/test_logic.py"),
+        (r"tests\test_logic.py", "tests/test_logic.py"),
+        (r"tests\nested\test_logic.py", "tests/nested/test_logic.py"),
+        ("tests/test_logic.py::test_plain", "tests/test_logic.py::test_plain"),
+        (r"tests\test_logic.py::test_plain", "tests/test_logic.py::test_plain"),
+        (
+            r"tests\test_logic.py::TestLogic::test_method",
+            "tests/test_logic.py::TestLogic::test_method",
+        ),
+        (
+            r"tests\test_logic.py::test_value[line\nbreak]",
+            r"tests/test_logic.py::test_value[line\nbreak]",
+        ),
+        (
+            r"tests\test_logic.py::test_value[tab\tbreak]",
+            r"tests/test_logic.py::test_value[tab\tbreak]",
+        ),
+        (
+            r"tests\test_logic.py::test_value[return\rbreak]",
+            r"tests/test_logic.py::test_value[return\rbreak]",
+        ),
+        (
+            r"tests\test_logic.py::test_value[form\fbreak]",
+            r"tests/test_logic.py::test_value[form\fbreak]",
+        ),
+        (
+            r"tests\test_logic.py::test_value[vertical\vbreak]",
+            r"tests/test_logic.py::test_value[vertical\vbreak]",
+        ),
+        (
+            r"tests\test_logic.py::test_value[null\0byte]",
+            r"tests/test_logic.py::test_value[null\0byte]",
+        ),
+        (
+            r"tests\test_logic.py::test_value[hex\x5cvalue]",
+            r"tests/test_logic.py::test_value[hex\x5cvalue]",
+        ),
+        (
+            r"tests\test_logic.py::test_value[unicode\u005cvalue]",
+            r"tests/test_logic.py::test_value[unicode\u005cvalue]",
+        ),
+        (
+            r"tests\test_logic.py::test_value[wide\U0000005cvalue]",
+            r"tests/test_logic.py::test_value[wide\U0000005cvalue]",
+        ),
+        (
+            r"tests\test_logic.py::test_value[double\\slash]",
+            r"tests/test_logic.py::test_value[double\\slash]",
+        ),
+        (
+            r"tests\test_logic.py::test_value[path\looking\id]",
+            r"tests/test_logic.py::test_value[path\looking\id]",
+        ),
+        (
+            r"tests\test_logic.py::test_value[quoted\'id]",
+            r"tests/test_logic.py::test_value[quoted\'id]",
+        ),
+        (
+            r"tests\test_logic.py::test_value[quoted\"id]",
+            r"tests/test_logic.py::test_value[quoted\"id]",
+        ),
+        (
+            r"tests\test_logic.py::test_value[bracket\[id\]]",
+            r"tests/test_logic.py::test_value[bracket\[id\]]",
+        ),
+        (
+            r"tests\test_logic.py::test_value[regex\d+\s]",
+            r"tests/test_logic.py::test_value[regex\d+\s]",
+        ),
+        (
+            r"tests\test_logic.py::test_value[namespace::member]",
+            r"tests/test_logic.py::test_value[namespace::member]",
+        ),
+        (
+            r"tests\test_logic.py::TestLogic::test_value[line\nbreak]",
+            r"tests/test_logic.py::TestLogic::test_value[line\nbreak]",
+        ),
+        (
+            "tests\\test_logic.py::test_value[actual\nnewline]",
+            "tests/test_logic.py::test_value[actual\nnewline]",
+        ),
+    ],
+)
+def test_portable_nodeid_normalizes_only_the_path(nodeid: str, expected: str) -> None:
+    assert worker._portable_nodeid(nodeid) == expected
+
+
 def _project(root: Path) -> tuple[Path, Path]:
     project = root / "project"
     tests = project / "tests"
@@ -52,7 +142,14 @@ def _project(root: Path) -> tuple[Path, Path]:
         encoding="utf-8",
     )
     (tests / "test_logic.py").write_text(
-        """from demo.logic import choose
+        """import pytest
+
+from demo.logic import choose
+
+
+@pytest.mark.parametrize("value", ["line\\nbreak"])
+def test_escaped_parameter(value):
+    assert value == "line\\nbreak"
 
 
 def test_positive(tmp_path):
@@ -189,6 +286,7 @@ def test_collect_returns_sorted_deterministic_nodeids(tmp_path: Path) -> None:
     payload = _payload(first)
     assert payload["schema"] == worker.COLLECT_SCHEMA
     assert payload["nodeids"] == [
+        "tests/test_logic.py::test_escaped_parameter[line\\nbreak]",
         "tests/test_logic.py::test_positive",
         "tests/test_logic.py::test_zero_failure",
     ]

@@ -1625,36 +1625,50 @@ ausentes y su candidate limit, no evidencia inventada.
 
 ## Próximos pasos, en orden
 
-1. **Consultar primero el estado vivo.** Leer `git status`, el SHA de `HEAD`, la
-   PR borrador, sus checks y el recibo más reciente bajo
-   `${XDG_STATE_HOME:-~/.local/state}/Neocortex/state/installation-receipts`.
-   No inferir una release activa desde este texto.
-2. **Mantener la PR en borrador hasta dos barreras.** La matriz estándar debe
-   estar verde en Windows/Ubuntu × Python 3.13/3.14 y los carriles profundos
-   deben conservarse semanales/manuales. Además, Víctor debe aprobar el piloto
-   Linux local. No fusionar antes.
-3. **Verificar la instalación Kubuntu desde el launcher público.** Ejecutar
-   `python3.14 tools/release_linux.py verify`, `doctor capabilities --json`,
-   `doctor platform --json`, `models status --json`, imports nativos,
-   Node/Pyright, qpdf, `spa+eng`, FFprobe, PySide6 offscreen y validación del
-   `.desktop`. Confirmar además que la raíz canónica existe y que una aceptación
-   acotada de `Neocortex --all` entra primero al autoanálisis. Si cambia el
-   commit, construir otra release; no reutilizar un runtime cuyo identificador
-   ya no corresponda al SHA.
-4. **Conservar el piloto aislado y no mutador.** Usar 20–50 fixtures durante
-   10–15 minutos para PDF, DOCX/Office, audio, imagen, Code, catálogo y búsqueda
-   léxica/semántica. Comparar hashes antes/después. Nunca usar `--apply`,
-   `--organization-apply`, `--all`, el corpus personal ni el estado Windows.
-5. **Preservar la separación de plataformas.** Windows mantiene su backend
-   seguro y `Neocortex --all --apply`; Linux mantiene `Neocortex --all` sin
-   mutación. No migrar SQLite ni identidades NTFS. Cuando exista un volumen
-   Windows, copiar únicamente originales a ext4 con `rsync` sin `--delete` y
-   verificar con un segundo pase `--checksum --dry-run`.
-6. **Rollback sin poda automática.** Si una activación falla, usar
-   `python3.14 tools/release_linux.py rollback`, comprobar otra vez el launcher
-   y conservar releases, modelos y recibos para trazabilidad.
+1. **Consultar primero el estado vivo.** Leer `git status`, rama/SHA de `HEAD`,
+   PR y checks, enlace `current` y el recibo de instalación más reciente. La PR
+   Linux #34 ya fue aprobada por Víctor y fusionada en `main` mediante
+   `341a926c352a44fbba78ef0651083f9e9b679f0a`; no inferir que ese corte sigue
+   activo desde este texto.
+2. **Trabajar sólo en la campaña independiente.** La rama es
+   `codex/autoanalysis-improvement-campaign` y debe mantener una única PR en
+   borrador. Cada mejora aceptada requiere un commit atómico, una release del
+   SHA exacto y CI verde en Windows/Ubuntu × Python 3.13/3.14 antes de avanzar.
+   No marcar la PR lista ni fusionarla sin aprobación final de Víctor.
+3. **Cerrar primero el prerrequisito de Coverage.** Normalizar únicamente el
+   tramo de ruta de los nodeids de pytest y preservar sin cambios la selección
+   posterior a `::`, incluidos escapes de ids parametrizados. Validar 20–50
+   fixtures, pruebas focales, Ruff, formato, Mypy aislado y Pyright; después
+   demostrar que `trusted-deep` publica Coverage en `ready` desde la release del
+   commit, no desde el checkout fuente.
+4. **Publicar una línea base canónica `trusted-static`.** Usar
+   `current/bin/python -m neocortex`, estado durable separado por orden y SHA,
+   publicación completa, replay exacto, status, review y diff. Una ausencia de
+   señal sólo es válida con todos los proveedores requeridos en `ready`; las
+   vulnerabilidades conocidas preexistentes no pueden confundirse con una
+   regresión nueva.
+5. **Aceptar sólo paquetes `act_now` válidos.** Exigir review y work package
+   `ready`, objetivo primario `act_now`, ninguna confirmación humana pendiente,
+   proveedores requeridos disponibles y una ruta mínima, compatible y medible.
+   Hotspots brutos, `characterize_first` y evidencia insuficiente no autorizan
+   cambios.
+6. **Aplicar el ciclo completo por commit.** Caracterizar contrato y
+   abstención; modificar el flujo existente; probar 20–50 fixtures si cambia
+   comportamiento; ejecutar controles focales/tipos; construir y activar la
+   release exacta; publicar/repetir estado; comparar contra el anterior; subir
+   el commit a la PR borrador y esperar su CI. Usar `trusted-deep` con selectores
+   y presupuesto máximo de 15 minutos para comportamiento, cobertura o
+   mutación.
+7. **Rechazar sin relajar barreras.** Ante una regresión, restaurar la release
+   anterior y corregir el mismo commit. Tras dos diseños mínimos rechazados,
+   documentar que el paquete no es razonable y evaluar el siguiente.
+8. **Detener sólo sin `act_now` válido.** Cerrar con `trusted-deep` sobre la
+   unión de objetivos, release exacta, doctors, modelos, `Neocortex --all`,
+   replay, piloto aislado, CI verde y resumen antes/después. Conservar los
+   restantes como `characterize_first`, diferidos o con evidencia insuficiente.
 
-Imagen, calibración Semantic y soak del watcher continúan detrás de pilotos
-acotados. Un backend seguro de mutación ext4, migración del estado Windows y
-una corrida completa sobre el corpus personal quedan explícitamente fuera de
-esta primera entrega Linux.
+La calibración Semantic observada durante la exploración sigue siendo sólo un
+prototipo y no es objetivo hasta que la nueva línea base canónica la confirme.
+No usar `--apply`, `--organization-apply`, el corpus personal ni el estado
+Windows. Un backend seguro de mutación ext4 y la migración del estado Windows
+siguen fuera de alcance.

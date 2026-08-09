@@ -333,6 +333,14 @@ def _nodeid_file(nodeid: str) -> str:
     return nodeid.partition("::")[0]
 
 
+def _portable_nodeid(nodeid: str) -> str:
+    """Normalize only the path portion without corrupting escaped parameter ids."""
+
+    path, separator, selection = nodeid.partition("::")
+    normalized = path.replace("\\", "/")
+    return normalized + (f"::{selection}" if separator else "")
+
+
 def _validate_nodeids(
     raw_nodeids: object,
     *,
@@ -362,7 +370,7 @@ def _validate_nodeids(
         if not path.is_file() or not _inside(path, test_root):
             raise WorkerContractError("unsafe_path", "nodeid test file escapes test_root")
         _require_plain_tree_path(path, test_root, label="nodeid test file")
-        normalized.add(raw.replace("\\", "/"))
+        normalized.add(_portable_nodeid(raw))
     if len(normalized) != len(raw_nodeids):
         raise WorkerContractError("invalid_request", "nodeids must be unique")
     return tuple(sorted(normalized, key=lambda item: (item.casefold(), item)))
@@ -589,7 +597,7 @@ class _PytestEvidencePlugin:
 
     def _switch(self, item: Any, phase: str) -> None:
         if self._coverage is not None:
-            self._coverage.switch_context(f"{item.nodeid}|{phase}")
+            self._coverage.switch_context(f"{_portable_nodeid(str(item.nodeid))}|{phase}")
 
     @property
     def pytest_runtest_setup(self) -> Any:
@@ -687,7 +695,7 @@ def _validate_collected(
         if not _inside(path, test_root):
             raise WorkerContractError("unsafe_collection", "pytest collected outside test_root")
         _require_plain_tree_path(path, test_root, label="collected test")
-        nodeids.append(nodeid.replace("\\", "/"))
+        nodeids.append(_portable_nodeid(nodeid))
     if len(set(nodeids)) != len(nodeids):
         raise WorkerContractError("invalid_collection", "pytest emitted duplicate nodeids")
     return tuple(sorted(nodeids, key=lambda item: (item.casefold(), item)))
@@ -785,7 +793,7 @@ def _test_evidence(
 ) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
     by_nodeid: dict[str, list[Any]] = {}
     for report in reports:
-        nodeid = str(report.nodeid).replace("\\", "/")
+        nodeid = _portable_nodeid(str(report.nodeid))
         by_nodeid.setdefault(nodeid, []).append(report)
     tests: list[dict[str, object]] = []
     failures: list[dict[str, object]] = []
