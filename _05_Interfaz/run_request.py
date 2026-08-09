@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
 
 # region [01] Request schema
 
-# The desktop UI intentionally exposes this bounded subset. Always serialize it
-# explicitly: the canonical CLI may register additional routes such as ``code``.
-ROUTE_ORDER = ("pdf", "docx", "office", "audio", "image")
+# Keep this explicit and stable so the UI cannot silently enable new mutation
+# surfaces merely because the canonical CLI gains another route.
+ROUTE_ORDER = ("pdf", "docx", "office", "audio", "image", "code")
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,14 +30,14 @@ class RunRequest:
         unknown = tuple(route for route in self.routes if route not in ROUTE_ORDER)
         if unknown:
             raise ValueError("Rutas desconocidas: " + ", ".join(unknown))
-        normalized_routes = tuple(
-            route for route in ROUTE_ORDER if route in frozenset(self.routes)
-        )
+        normalized_routes = tuple(route for route in ROUTE_ORDER if route in frozenset(self.routes))
         if self.route_only and not normalized_routes:
             raise ValueError("La ejecución aislada requiere al menos una ruta")
         if self.route_only and self.apply:
+            raise ValueError("La ejecución aislada es siempre no destructiva; desactiva Apply")
+        if os.name != "nt" and self.apply:
             raise ValueError(
-                "La ejecución aislada es siempre no destructiva; desactiva Apply"
+                "linux_mutation_backend_unavailable: el modo Apply no está disponible en Linux"
             )
         return RunRequest(
             root=root,

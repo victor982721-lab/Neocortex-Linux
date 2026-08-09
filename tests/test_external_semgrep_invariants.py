@@ -157,6 +157,20 @@ def test_real_semgrep_rules_report_only_the_positive_provider_fixture(tmp_path: 
     }
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX Semgrep probes uname through PATH")
+def test_real_semgrep_works_with_minimal_provider_environment(tmp_path: Path) -> None:
+    staged = _stage(
+        tmp_path,
+        {"_04_Nucleo_Operativo/external_safe.py": "value = 1\n"},
+    )
+
+    result = adapter.execute_semgrep_invariants(tmp_path, staged, {})
+
+    assert result.findings == ()
+    assert result.scanned_files == 1
+    assert result.cli_variant == "semgrep"
+
+
 def test_command_and_environment_disable_network_registry_and_autofix(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -167,6 +181,7 @@ def test_command_and_environment_disable_network_registry_and_autofix(
         "SystemRoot": os.environ.get("SystemRoot", "C:\\Windows"),
         "HOME": "C:\\personal-home",
         "USERPROFILE": "C:\\personal-profile",
+        "PATH": "/untrusted/bin",
         "HTTPS_PROXY": "https://proxy.invalid",
         "SEMGREP_APP_TOKEN": "secret",
         "SEMGREP_RULES": "p/default",
@@ -205,6 +220,10 @@ def test_command_and_environment_disable_network_registry_and_autofix(
             "otel_exporter_otlp_endpoint",
         ):
             assert forbidden not in folded
+        if os.name == "nt":
+            assert "path" not in folded
+        else:
+            assert folded["path"] == os.defpath
         assert folded["semgrep_send_metrics"] == "off"
         assert folded["semgrep_enable_version_check"] == "0"
         assert folded["otel_sdk_disabled"] == "true"

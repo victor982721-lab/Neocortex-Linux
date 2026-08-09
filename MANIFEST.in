@@ -20,4 +20,6 @@ include docs/SELF_ANALYSIS.md
 include docs/SECURITY.md
 include docs/THIRD_PARTY_LICENSE_INVENTORY.md
 include tools/__init__.py
+include tools/build_binary_inputs.py
+include tools/source_only_requirements.txt
 recursive-include tools release_*.py

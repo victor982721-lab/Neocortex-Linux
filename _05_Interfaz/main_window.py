@@ -7,6 +7,8 @@ import os
 import shutil
 from datetime import datetime
 from pathlib import Path
+
+from neocortex.platform_policy import default_corpus_root
 from typing import Any
 
 from PySide6.QtCore import QSettings, Qt, QTimer
@@ -88,6 +90,7 @@ class MainWindow(QMainWindow):
             QSettings.Format.IniFormat,
         )
         self._repository = StatusRepository(self._state_directory)
+        self._portable_linux = os.name != "nt"
         self._execution_elevated = is_elevated()
         self._controller = controller or WorkerController(self)
         self._nav_buttons: list[NavButton] = []
@@ -145,7 +148,7 @@ class MainWindow(QMainWindow):
         names.setSpacing(0)
         name = QLabel("NEOCORTEX")
         name.setObjectName("BrandName")
-        caption = QLabel("Control operativo")
+        caption = QLabel("Modo portátil Linux" if self._portable_linux else "Control operativo")
         caption.setObjectName("BrandCaption")
         names.addWidget(name)
         names.addWidget(caption)
@@ -160,9 +163,7 @@ class MainWindow(QMainWindow):
         group.setExclusive(True)
         for index, label in enumerate(labels):
             button = NavButton(label)
-            button.clicked.connect(
-                lambda _checked=False, page=index: self._select_page(page)
-            )
+            button.clicked.connect(lambda _checked=False, page=index: self._select_page(page))
             group.addButton(button, index)
             self._nav_buttons.append(button)
             layout.addWidget(button)
@@ -172,9 +173,7 @@ class MainWindow(QMainWindow):
         separator.setFrameShape(QFrame.Shape.HLine)
         separator.setStyleSheet("color: #243140;")
         layout.addWidget(separator)
-        footer = QLabel(
-            "Estado persistente\nSin trabajo en segundo plano no supervisado"
-        )
+        footer = QLabel("Estado persistente\nSin trabajo en segundo plano no supervisado")
         footer.setProperty("muted", True)
         footer.setWordWrap(True)
         layout.addWidget(footer)
@@ -199,9 +198,7 @@ class MainWindow(QMainWindow):
         self.header_root = QLabel()
         self.header_root.setProperty("muted", True)
         self.header_root.setMaximumWidth(430)
-        self.header_root.setTextInteractionFlags(
-            Qt.TextInteractionFlag.TextSelectableByMouse
-        )
+        self.header_root.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.header_status = StatusPill()
         layout.addWidget(self.header_root)
         layout.addSpacing(14)
@@ -295,9 +292,7 @@ class MainWindow(QMainWindow):
         config_layout.setContentsMargins(22, 20, 22, 22)
         config_layout.setSpacing(15)
         config_layout.addWidget(
-            self._section_heading(
-                "Configuración", "Define alcance y modo antes de iniciar"
-            )
+            self._section_heading("Configuración", "Define alcance y modo antes de iniciar")
         )
 
         root_row = QHBoxLayout()
@@ -320,7 +315,9 @@ class MainWindow(QMainWindow):
         state_path = QLabel(str(self._state_directory))
         state_path.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         state_note = QLabel(
-            "Ubicación fija dentro de AppData; queda fuera del inventario."
+            "Ubicación XDG aislada; queda fuera del inventario."
+            if self._portable_linux
+            else "Ubicación fija dentro de AppData; queda fuera del inventario."
         )
         state_note.setProperty("muted", True)
         state_layout.addWidget(state_path)
@@ -337,6 +334,7 @@ class MainWindow(QMainWindow):
             "office": "Office",
             "audio": "Audio",
             "image": "Imágenes",
+            "code": "Código",
         }
         self.route_toggles: dict[str, RouteToggle] = {}
         for index, route in enumerate(ROUTE_ORDER):
@@ -365,6 +363,11 @@ class MainWindow(QMainWindow):
         self.apply_radio = QRadioButton("Aplicar cambios")
         self.apply_radio.setObjectName("ModeButton")
         self.apply_radio.setProperty("danger", True)
+        if self._portable_linux:
+            self.apply_radio.setEnabled(False)
+            self.apply_radio.setToolTip(
+                "Las mutaciones del corpus requieren el backend seguro de Windows."
+            )
         mode_group = QButtonGroup(self)
         mode_group.addButton(self.analysis_radio)
         mode_group.addButton(self.apply_radio)
@@ -378,8 +381,15 @@ class MainWindow(QMainWindow):
         config_layout.addLayout(options_row)
 
         safety = QLabel(
-            "Analizar no modifica archivos. Aplicar usa las mismas validaciones, "
-            "protecciones y papelera del motor NeoCortex."
+            (
+                "Modo portátil Linux: inventario, búsqueda y procesamiento están "
+                "disponibles; las mutaciones del corpus permanecen deshabilitadas."
+            )
+            if self._portable_linux
+            else (
+                "Analizar no modifica archivos. Aplicar usa las mismas validaciones, "
+                "protecciones y papelera del motor NeoCortex."
+            )
         )
         safety.setProperty("muted", True)
         safety.setWordWrap(True)
@@ -387,7 +397,9 @@ class MainWindow(QMainWindow):
 
         actions = QHBoxLayout()
         self.start_button = QPushButton(
-            "Iniciar ejecución" if self._execution_elevated else "Habilitar ejecución"
+            "Iniciar ejecución"
+            if self._portable_linux or self._execution_elevated
+            else "Habilitar ejecución"
         )
         self.start_button.setObjectName("PrimaryButton")
         self.start_button.clicked.connect(self._start_execution)
@@ -407,9 +419,7 @@ class MainWindow(QMainWindow):
         live_layout.setSpacing(13)
         live_header = QHBoxLayout()
         live_header.addWidget(
-            self._section_heading(
-                "Progreso en vivo", "Eventos estructurados del motor"
-            ),
+            self._section_heading("Progreso en vivo", "Eventos estructurados del motor"),
             1,
         )
         self.live_status = StatusPill()
@@ -422,9 +432,7 @@ class MainWindow(QMainWindow):
         activity_layout.setSpacing(7)
         self.activity_title = QLabel("Sin ejecución activa")
         self.activity_title.setObjectName("ActivityTitle")
-        self.activity_detail = QLabel(
-            "La etapa actual y su tiempo activo aparecerán aquí."
-        )
+        self.activity_detail = QLabel("La etapa actual y su tiempo activo aparecerán aquí.")
         self.activity_detail.setObjectName("ActivityDetail")
         self.activity_detail.setWordWrap(True)
         self.activity_progress = QProgressBar()
@@ -443,9 +451,7 @@ class MainWindow(QMainWindow):
         self.progress_layout = QVBoxLayout(progress_canvas)
         self.progress_layout.setContentsMargins(0, 0, 4, 0)
         self.progress_layout.setSpacing(9)
-        self.progress_placeholder = QLabel(
-            "El progreso de la siguiente ejecución aparecerá aquí."
-        )
+        self.progress_placeholder = QLabel("El progreso de la siguiente ejecución aparecerá aquí.")
         self.progress_placeholder.setProperty("muted", True)
         self.progress_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.progress_layout.addWidget(self.progress_placeholder)
@@ -470,9 +476,7 @@ class MainWindow(QMainWindow):
         panel_layout.setContentsMargins(22, 20, 22, 22)
         heading_row = QHBoxLayout()
         heading_row.addWidget(
-            self._section_heading(
-                "Historial durable", "Lectura acotada del estado SQLite"
-            ),
+            self._section_heading("Historial durable", "Lectura acotada del estado SQLite"),
             1,
         )
         refresh = QPushButton("Actualizar")
@@ -511,12 +515,24 @@ class MainWindow(QMainWindow):
         note_layout.setContentsMargins(22, 18, 22, 18)
         note_layout.addWidget(
             self._section_heading(
-                "Empaquetado", "Se realizará únicamente después de aprobar esta UI"
+                "Distribución",
+                (
+                    "Runtime versionado y acceso integrado en KDE"
+                    if self._portable_linux
+                    else "Runtime personal versionado"
+                ),
             )
         )
         detail = QLabel(
-            "La interfaz ya separa el proceso operativo, el protocolo de progreso y "
-            "la persistencia. Esta frontera será la base del ejecutable portable."
+            (
+                "El launcher estable usa el release activo; los modelos y el estado "
+                "permanecen compartidos fuera de cada release inmutable."
+            )
+            if self._portable_linux
+            else (
+                "La interfaz separa el proceso operativo, el protocolo de progreso "
+                "y la persistencia del runtime versionado."
+            )
         )
         detail.setProperty("muted", True)
         detail.setWordWrap(True)
@@ -584,9 +600,7 @@ class MainWindow(QMainWindow):
 
     def _save_settings(self) -> None:
         self._settings.setValue("execution/root", self.root_edit.text().strip())
-        selected = [
-            route for route, toggle in self.route_toggles.items() if toggle.isChecked()
-        ]
+        selected = [route for route, toggle in self.route_toggles.items() if toggle.isChecked()]
         self._settings.setValue("execution/routes", ",".join(selected))
         self._settings.sync()
 
@@ -661,9 +675,7 @@ class MainWindow(QMainWindow):
             "acciones y rutas" if errors else "sin fallos operativos",
         )
 
-    def _populate_history(
-        self, table: QTableWidget, runs: tuple[RunStatus, ...]
-    ) -> None:
+    def _populate_history(self, table: QTableWidget, runs: tuple[RunStatus, ...]) -> None:
         table.setRowCount(len(runs))
         for row_index, run in enumerate(runs):
             started = datetime.fromtimestamp(run.started_ns / 1_000_000_000)
@@ -727,9 +739,7 @@ class MainWindow(QMainWindow):
         self._controller.startup_failed.connect(self._startup_failed)
 
     def _current_request(self) -> RunRequest:
-        routes = tuple(
-            route for route in ROUTE_ORDER if self.route_toggles[route].isChecked()
-        )
+        routes = tuple(route for route in ROUTE_ORDER if self.route_toggles[route].isChecked())
         return RunRequest(
             root=Path(self.root_edit.text().strip()),
             routes=routes,
@@ -741,7 +751,9 @@ class MainWindow(QMainWindow):
         route_only = bool(self.scope_combo.currentData())
         if route_only:
             self.analysis_radio.setChecked(True)
-        self.apply_radio.setEnabled(not route_only and not self._controller.is_running)
+        self.apply_radio.setEnabled(
+            not self._portable_linux and not route_only and not self._controller.is_running
+        )
 
     def _start_execution(self) -> None:
         try:
@@ -749,7 +761,7 @@ class MainWindow(QMainWindow):
         except (ValueError, OSError) as exc:
             QMessageBox.warning(self, "Configuración no válida", str(exc))
             return
-        if not self._execution_elevated:
+        if not self._portable_linux and not self._execution_elevated:
             self._offer_elevated_restart(request.root)
             return
         if request.apply:
@@ -812,9 +824,7 @@ class MainWindow(QMainWindow):
         if self._controller.request_cancellation():
             self.cancel_button.setEnabled(False)
             self.live_status.set_state("warning", "Cancelando…")
-            self._append_log(
-                "Cancelación cooperativa solicitada; esperando un límite seguro."
-            )
+            self._append_log("Cancelación cooperativa solicitada; esperando un límite seguro.")
 
     def _on_worker_message(self, record: dict[str, Any]) -> None:
         message_type = str(record.get("type", ""))
@@ -864,9 +874,7 @@ class MainWindow(QMainWindow):
                 "La ejecución falló",
                 f"{record.get('error_type', 'Error')}: {record.get('detail', '')}",
             )
-            self._append_log(
-                f"{record.get('error_type', 'Error')}: {record.get('detail', '')}"
-            )
+            self._append_log(f"{record.get('error_type', 'Error')}: {record.get('detail', '')}")
 
     def _update_progress(self, record: dict[str, Any]) -> None:
         key = (str(record.get("operation", "")), str(record.get("phase", "")))
@@ -923,9 +931,7 @@ class MainWindow(QMainWindow):
         if total is None:
             detail_parts.append(f"{format_count(completed)} {unit}")
         else:
-            detail_parts.append(
-                f"{format_count(completed)} de {format_count(total)} {unit}"
-            )
+            detail_parts.append(f"{format_count(completed)} de {format_count(total)} {unit}")
         in_flight = max(0, int(metrics.get("in_flight", 0)))
         if in_flight:
             detail_parts.append(f"{format_count(in_flight)} tareas internas activas")
@@ -971,7 +977,7 @@ class MainWindow(QMainWindow):
         self.scope_combo.setEnabled(not running)
         self.analysis_radio.setEnabled(not running)
         self.apply_radio.setEnabled(
-            not running and not bool(self.scope_combo.currentData())
+            not self._portable_linux and not running and not bool(self.scope_combo.currentData())
         )
         for toggle in self.route_toggles.values():
             toggle.setEnabled(not running)
@@ -1017,7 +1023,7 @@ class MainWindow(QMainWindow):
         selected = QFileDialog.getExistingDirectory(
             self,
             "Seleccionar directorio raíz",
-            self.root_edit.text().strip() or str(Path.home()),
+            self.root_edit.text().strip() or str(default_corpus_root()),
         )
         if selected:
             self.root_edit.setText(selected)
@@ -1030,14 +1036,21 @@ class MainWindow(QMainWindow):
             widget = item.widget()
             if widget is not None:
                 widget.deleteLater()
-        dependencies = (
+        platform_dependency = (
             (
+                "Modo de plataforma",
+                True,
+                "Portátil Linux · mutaciones deshabilitadas",
+            )
+            if self._portable_linux
+            else (
                 "Permisos USN",
                 self._execution_elevated,
-                "Administrador"
-                if self._execution_elevated
-                else "Se solicitarán antes de ejecutar",
-            ),
+                "Administrador" if self._execution_elevated else "Se solicitarán antes de ejecutar",
+            )
+        )
+        dependencies = (
+            platform_dependency,
             ("PySide6", importlib.util.find_spec("PySide6") is not None, "Interfaz Qt"),
             ("PyMuPDF", importlib.util.find_spec("fitz") is not None, "Extracción PDF"),
             (
@@ -1067,18 +1080,14 @@ class MainWindow(QMainWindow):
             row = QHBoxLayout(frame)
             row.setContentsMargins(15, 12, 15, 12)
             marker = QLabel("●")
-            marker.setStyleSheet(
-                f"color: {COLORS['accent'] if available else COLORS['danger']};"
-            )
+            marker.setStyleSheet(f"color: {COLORS['accent'] if available else COLORS['danger']};")
             labels = QVBoxLayout()
             labels.setSpacing(1)
             title = QLabel(name)
             title.setStyleSheet("font-weight: 700;")
             caption = QLabel(str(detail))
             caption.setProperty("muted", True)
-            caption.setTextInteractionFlags(
-                Qt.TextInteractionFlag.TextSelectableByMouse
-            )
+            caption.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
             labels.addWidget(title)
             labels.addWidget(caption)
             row.addWidget(marker)

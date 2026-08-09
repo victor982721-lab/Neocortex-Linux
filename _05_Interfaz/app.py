@@ -10,6 +10,8 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
+from neocortex.platform_policy import default_corpus_root
+
 from PySide6.QtCore import QCoreApplication, Qt
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
@@ -27,7 +29,7 @@ from .theme import STYLESHEET
 
 def _parse_arguments(arguments: Sequence[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="Neocortex --ui", allow_abbrev=False)
-    parser.add_argument("--root", type=Path, default=Path.home())
+    parser.add_argument("--root", type=Path, default=default_corpus_root())
     return parser.parse_args(list(arguments))
 
 
@@ -41,9 +43,7 @@ def create_window(arguments: Sequence[str] = ()) -> MainWindow:
 
 def _set_windows_application_identity() -> None:
     if os.name == "nt":
-        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
-            "Neocortex.Desktop"
-        )
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Neocortex.Desktop")
 
 
 def main(arguments: Sequence[str] | None = None) -> int:
