@@ -75,7 +75,10 @@ def test_public_stdio_server_completes_a_real_read_only_protocol_exchange(
     environment["XDG_STATE_HOME"] = str(tmp_path / "state")
     environment["XDG_DATA_HOME"] = str(tmp_path / "data")
     environment["XDG_CONFIG_HOME"] = str(tmp_path / "config")
-    environment.pop("LOCALAPPDATA", None)
+    if os.name == "nt":
+        environment["LOCALAPPDATA"] = str(tmp_path / "local")
+    else:
+        environment.pop("LOCALAPPDATA", None)
     process = subprocess.Popen(
         (sys.executable, "-m", "neocortex", "agent", "serve"),
         stdin=subprocess.PIPE,
