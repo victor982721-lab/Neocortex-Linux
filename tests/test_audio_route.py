@@ -90,6 +90,47 @@ def test_worker_rejects_a_non_string_model_cache_before_model_loading(
     )
 
 
+def test_worker_accepts_an_unset_model_cache_and_stops_cleanly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_model(model_name: str, **kwargs: object) -> object:
+        captured.update(model_name=model_name, **kwargs)
+        return object()
+
+    monkeypatch.setitem(
+        sys.modules,
+        "faster_whisper",
+        SimpleNamespace(WhisperModel=fake_model),
+    )
+    monkeypatch.setattr(audio_whisper, "resolve_whisper_runtime", lambda *_args: RUNTIME)
+    task_channel: queue.SimpleQueue[object] = queue.SimpleQueue()
+    result_channel: queue.SimpleQueue[tuple[object, ...]] = queue.SimpleQueue()
+    task_channel.put(None)
+
+    audio_whisper._whisper_worker(
+        task_channel,
+        result_channel,
+        {
+            "device": "cpu",
+            "compute_type": "int8",
+            "model_name": "small",
+            "model_cache_directory": None,
+            "local_models_only": True,
+        },
+    )
+
+    assert result_channel.get() == ("ready", RUNTIME)
+    assert captured == {
+        "model_name": "small",
+        "device": "cpu",
+        "compute_type": "int8",
+        "download_root": None,
+        "local_files_only": True,
+    }
+
+
 class FakeFrameworkRouteState:
     def __init__(self, candidates: dict[str, tuple[FileSnapshot, ...]]):
         self.candidates = candidates
