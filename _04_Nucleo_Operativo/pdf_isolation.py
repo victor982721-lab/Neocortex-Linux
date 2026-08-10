@@ -12,7 +12,7 @@ import subprocess
 import tempfile
 import time
 from contextlib import closing, contextmanager
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Iterator, Literal
 
@@ -32,6 +32,18 @@ from .pdf_route_models import (
     PDF_PAGE_SEQUENCE_ERROR_LIMIT,
     STRUCTURAL_RECOVERY_VERSION,
 )
+from .ocr_image_preprocess import orient_and_deskew
+from .ocr_profiles import (
+    OcrOrientation,
+    OcrProfileName,
+    contains_traditional_han,
+    native_text_quality,
+    parse_language_spec,
+    parse_osd_output,
+    resolve_ocr_profile,
+    route_ocr_languages,
+    should_use_ocr_fallback,
+)
 from .sqlite_paths import readonly_sqlite_uri
 
 
@@ -40,6 +52,7 @@ from .sqlite_paths import readonly_sqlite_uri
 
 ExtractionMessage = tuple
 MAX_CONSECUTIVE_PAGE_ERRORS = PDF_PAGE_SEQUENCE_ERROR_LIMIT
+OCR_PAGE_PROVENANCE_SCHEMA = "neocortex.ocr-page/v1"
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +77,37 @@ class IsolatedExtractionConfig:
     tessdata_dir: str | None
     ocr_scale_factor: float = 1.0
     structural_recovery_reason: str | None = None
+    ocr_profile: OcrProfileName = "configured"
+    ocr_processing_signature: str | None = None
+    ocr_traineddata_hashes: tuple[tuple[str, str | None], ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class PdfOcrPageResult:
+    text: str
+    provenance: dict[str, object]
+
+
+@dataclass(frozen=True, slots=True)
+class _PdfOcrAttempt:
+    languages: tuple[str, ...]
+    page_segmentation_mode: int
+    text: str
+    character_count: int
+    mean_confidence: float
+
+    @property
+    def quality_score(self) -> tuple[int, float, int]:
+        conservative_failure = should_use_ocr_fallback(
+            recognized_text=self.text,
+            character_count=self.character_count,
+            mean_confidence=self.mean_confidence,
+        )
+        return (
+            int(not conservative_failure),
+            round(self.mean_confidence, 3),
+            self.character_count,
+        )
 
 
 class PdfDocumentTimeout(TimeoutError):
@@ -155,15 +199,230 @@ def _run_tesseract(pytesseract, image, config: IsolatedExtractionConfig) -> str:
     raise RuntimeError("unreachable OCR retry state")
 
 
-def _ocr_page(page, fitz, config: IsolatedExtractionConfig, ocr_admission) -> str:
+def _profile_tesseract_config(
+    config: IsolatedExtractionConfig,
+    *,
+    page_segmentation_mode: int,
+) -> str:
+    values = [f"--psm {page_segmentation_mode}"]
+    if config.tessdata_dir:
+        values.append(f'--tessdata-dir "{config.tessdata_dir}"')
+    return " ".join(values)
+
+
+def _run_tesseract_osd(
+    pytesseract,
+    image,
+    config: IsolatedExtractionConfig,
+) -> OcrOrientation:
+    for attempt in range(2):
+        try:
+            output = pytesseract.image_to_osd(
+                image,
+                timeout=config.ocr_timeout_seconds,
+                config=_profile_tesseract_config(
+                    config,
+                    page_segmentation_mode=0,
+                ),
+            )
+            return parse_osd_output(str(output))
+        except PermissionError as exc:
+            if attempt or getattr(exc, "winerror", None) != 32:
+                raise
+            time.sleep(0.25)
+    raise RuntimeError("unreachable OSD retry state")
+
+
+def _run_tesseract_attempt(
+    pytesseract,
+    image,
+    config: IsolatedExtractionConfig,
+    *,
+    languages: tuple[str, ...],
+    page_segmentation_mode: int,
+) -> _PdfOcrAttempt:
+    for attempt in range(2):
+        try:
+            data = pytesseract.image_to_data(
+                image,
+                lang="+".join(languages),
+                timeout=config.ocr_timeout_seconds,
+                config=_profile_tesseract_config(
+                    config,
+                    page_segmentation_mode=page_segmentation_mode,
+                ),
+                output_type=pytesseract.Output.DICT,
+            )
+            break
+        except PermissionError as exc:
+            if attempt or getattr(exc, "winerror", None) != 32:
+                raise
+            time.sleep(0.25)
+    else:  # pragma: no cover - bounded loop invariant
+        raise RuntimeError("unreachable OCR data retry state")
+    if not isinstance(data, dict):
+        raise TypeError("pytesseract OCR data result must be a mapping")
+    raw_words = data.get("text", ())
+    raw_confidences = data.get("conf", ())
+    if not isinstance(raw_words, (list, tuple)):
+        raise TypeError("pytesseract OCR text data must be a sequence")
+    if not isinstance(raw_confidences, (list, tuple)):
+        raw_confidences = ()
+    words: list[str] = []
+    confidences: list[float] = []
+    for index, raw_word in enumerate(raw_words):
+        word = str(raw_word or "").strip()
+        if not word:
+            continue
+        confidence = 0.0
+        if index < len(raw_confidences):
+            try:
+                confidence = float(raw_confidences[index])
+            except (TypeError, ValueError):
+                confidence = 0.0
+        if confidence < 0:
+            continue
+        words.append(word)
+        confidences.append(confidence)
+    text = " ".join(words)
+    mean_confidence = sum(confidences) / len(confidences) if confidences else 0.0
+    return _PdfOcrAttempt(
+        languages,
+        page_segmentation_mode,
+        text,
+        sum(len(word) for word in words),
+        round(mean_confidence, 3),
+    )
+
+
+def _unavailable_osd(exc: Exception) -> OcrOrientation:
+    message = str(exc).encode("utf-8", "replace").decode("utf-8")[:500]
+    return OcrOrientation(
+        unavailable_reason=f"{type(exc).__name__}: {message}",
+    )
+
+
+def _traineddata_provenance(
+    config: IsolatedExtractionConfig,
+) -> list[dict[str, object]]:
+    return [
+        {"language": language, "xxh3_128": digest}
+        for language, digest in config.ocr_traineddata_hashes
+    ]
+
+
+def _ocr_profile_result(
+    pytesseract,
+    image,
+    config: IsolatedExtractionConfig,
+    *,
+    render_dpi: float,
+) -> PdfOcrPageResult:
+    plan = resolve_ocr_profile(config.ocr_profile, config.ocr_lang)
+    try:
+        orientation = _run_tesseract_osd(pytesseract, image, config)
+    except Exception as exc:
+        if is_ocr_scale_retryable_failure(exc):
+            raise
+        orientation = _unavailable_osd(exc)
+    preprocessed = orient_and_deskew(
+        image,
+        rotation_clockwise_degrees=orientation.rotate_degrees,
+    )
+    try:
+        decision = route_ocr_languages(plan, orientation)
+        primary = _run_tesseract_attempt(
+            pytesseract,
+            preprocessed.image,
+            config,
+            languages=decision.primary_languages,
+            page_segmentation_mode=6,
+        )
+        selected = primary
+        fallback_attempted = False
+        fallback_languages: tuple[str, ...] = ()
+        fallback_reason: str | None = None
+        fallback_error: dict[str, str] | None = None
+        recognition_attempts = 1
+        if decision.fallback_languages is not None:
+            low_quality = should_use_ocr_fallback(
+                recognized_text=primary.text,
+                character_count=primary.character_count,
+                mean_confidence=primary.mean_confidence,
+            )
+            traditional_signal = contains_traditional_han(primary.text)
+            if low_quality or traditional_signal:
+                fallback_attempted = True
+                fallback_languages = decision.fallback_languages
+                fallback_reason = (
+                    "traditional_han_signal" if traditional_signal else "low_primary_quality"
+                )
+                recognition_attempts += 1
+                try:
+                    fallback = _run_tesseract_attempt(
+                        pytesseract,
+                        preprocessed.image,
+                        config,
+                        languages=decision.fallback_languages,
+                        page_segmentation_mode=6,
+                    )
+                    if fallback.quality_score > primary.quality_score or (
+                        traditional_signal and fallback.quality_score == primary.quality_score
+                    ):
+                        selected = fallback
+                except Exception as exc:
+                    if is_ocr_scale_retryable_failure(exc):
+                        raise
+                    fallback_error = {
+                        "type": type(exc).__name__,
+                        "message": str(exc)[:500],
+                    }
+        provenance: dict[str, object] = {
+            "schema": OCR_PAGE_PROVENANCE_SCHEMA,
+            "profile": config.ocr_profile,
+            "configured_languages": list(plan.configured_languages),
+            "requested_languages": list(plan.required_languages),
+            "effective_languages": list(selected.languages),
+            "traineddata": _traineddata_provenance(config),
+            "processing_signature": config.ocr_processing_signature,
+            "render_dpi": round(render_dpi, 3),
+            "orientation_degrees": orientation.orientation_degrees,
+            "rotation_degrees": orientation.rotate_degrees,
+            "orientation_confidence": orientation.orientation_confidence,
+            "detected_script": orientation.script,
+            "script_confidence": orientation.script_confidence,
+            "osd_available": orientation.available,
+            "osd_unavailable_reason": orientation.unavailable_reason,
+            "deskew_degrees": preprocessed.deskew_degrees,
+            "page_segmentation_mode": selected.page_segmentation_mode,
+            "mean_confidence": selected.mean_confidence,
+            "fallback_attempted": fallback_attempted,
+            "fallback_languages": list(fallback_languages),
+            "fallback_reason": fallback_reason,
+            "fallback_error": fallback_error,
+            "recognition_attempts": recognition_attempts,
+        }
+        return PdfOcrPageResult(selected.text, provenance)
+    finally:
+        preprocessed.image.close()
+
+
+def _ocr_page_result(
+    page,
+    fitz,
+    config: IsolatedExtractionConfig,
+    ocr_admission,
+) -> PdfOcrPageResult:
     import pytesseract  # type: ignore[import-untyped]
     from PIL import Image
 
     if config.tesseract_cmd:
         pytesseract.pytesseract.tesseract_cmd = config.tesseract_cmd
+    plan = resolve_ocr_profile(config.ocr_profile, config.ocr_lang)
     if not 0.0 < config.ocr_scale_factor <= 1.0:
         raise ValueError("OCR scale factor must be within (0, 1]")
-    requested_scale = max(1.0, config.dpi / 72.0 * config.ocr_scale_factor)
+    target_dpi = config.dpi if not plan.osd_enabled else max(300, config.dpi)
+    requested_scale = max(1.0, target_dpi / 72.0 * config.ocr_scale_factor)
     base_pixels = max(1.0, float(page.rect.width) * float(page.rect.height))
     safe_scale = math.sqrt(config.max_render_pixels / base_pixels) * 0.999
     scale = min(requested_scale, safe_scale)
@@ -196,13 +455,54 @@ def _ocr_page(page, fitz, config: IsolatedExtractionConfig, ocr_admission) -> st
             )
             del pixmap
             try:
-                return _run_tesseract(pytesseract, image, config)
+                if not plan.osd_enabled:
+                    text = _run_tesseract(pytesseract, image, config)
+                    return PdfOcrPageResult(
+                        text,
+                        {
+                            "schema": OCR_PAGE_PROVENANCE_SCHEMA,
+                            "profile": config.ocr_profile,
+                            "configured_languages": list(plan.configured_languages),
+                            "requested_languages": list(plan.required_languages),
+                            "effective_languages": list(parse_language_spec(config.ocr_lang)),
+                            "traineddata": _traineddata_provenance(config),
+                            "processing_signature": config.ocr_processing_signature,
+                            "render_dpi": round(current_scale * 72.0, 3),
+                            "orientation_degrees": 0,
+                            "rotation_degrees": 0,
+                            "orientation_confidence": 0.0,
+                            "detected_script": "unknown",
+                            "script_confidence": 0.0,
+                            "osd_available": False,
+                            "osd_unavailable_reason": ("osd_disabled_for_configured_profile"),
+                            "deskew_degrees": 0.0,
+                            "page_segmentation_mode": 3,
+                            "mean_confidence": None,
+                            "fallback_attempted": False,
+                            "fallback_languages": [],
+                            "fallback_reason": None,
+                            "fallback_error": None,
+                            "recognition_attempts": 1,
+                        },
+                    )
+                return _ocr_profile_result(
+                    pytesseract,
+                    image,
+                    config,
+                    render_dpi=current_scale * 72.0,
+                )
             except Exception as exc:
                 if not is_ocr_scale_retryable_failure(exc) or current_scale <= 1.01:
                     raise
             finally:
                 image.close()
     raise RuntimeError("unreachable adaptive OCR state")
+
+
+def _ocr_page(page, fitz, config: IsolatedExtractionConfig, ocr_admission) -> str:
+    """Compatibility wrapper for callers that only consume recognized text."""
+
+    return _ocr_page_result(page, fitz, config, ocr_admission).text
 
 
 @contextmanager
@@ -425,29 +725,61 @@ class _ChildExtractionSession:
         fitz.TOOLS.mupdf_display_warnings(False)
         fitz.TOOLS.reset_mupdf_warnings()
 
-    def _page_text(self, page) -> tuple[str, str]:
+    def _page_text(self, page) -> tuple[str, str, dict[str, object]]:
         native_text = page.get_text("text") or ""
+        quality = native_text_quality(
+            native_text,
+            min_characters=self.config.min_page_chars,
+        )
+        plan = resolve_ocr_profile(
+            self.config.ocr_profile,
+            self.config.ocr_lang,
+        )
         source = "native"
         text = native_text
         should_ocr = self.config.ocr_mode == "always" or (
-            self.config.ocr_mode == "auto"
-            and _normalized_length(native_text) < self.config.min_page_chars
+            self.config.ocr_mode == "auto" and not quality.usable
         )
         ocr_available = (
             self.config.max_ocr_pages is None or self.ocr_attempted < self.config.max_ocr_pages
         )
+        provenance: dict[str, object] = {
+            "schema": OCR_PAGE_PROVENANCE_SCHEMA,
+            "profile": self.config.ocr_profile,
+            "configured_languages": list(plan.configured_languages),
+            "requested_languages": list(plan.required_languages),
+            "effective_languages": [],
+            "traineddata": _traineddata_provenance(self.config),
+            "processing_signature": self.config.ocr_processing_signature,
+            "native_text_quality": asdict(quality),
+            "ocr_attempted": False,
+            "ocr_selected": False,
+        }
         if should_ocr and ocr_available:
             self.ocr_attempted += 1
-            ocr_text = _ocr_page(
+            ocr_result = _ocr_page_result(
                 page,
                 self.fitz,
                 self.config,
                 _remote_ocr_admission(self.channel, self.ocr_control),
             )
-            if ocr_text.strip() or self.config.ocr_mode == "always":
-                text = ocr_text
+            provenance = dict(ocr_result.provenance)
+            provenance["native_text_quality"] = asdict(quality)
+            provenance["ocr_attempted"] = True
+            if ocr_result.text.strip() or self.config.ocr_mode == "always":
+                text = ocr_result.text
                 source = "ocr"
-        return source, text
+                provenance["ocr_selected"] = True
+            else:
+                provenance["ocr_selected"] = False
+                provenance["ocr_not_selected_reason"] = "empty_ocr_result"
+        elif should_ocr:
+            provenance["ocr_skipped_reason"] = "max_ocr_pages_reached"
+        else:
+            provenance["ocr_skipped_reason"] = (
+                "ocr_disabled" if self.config.ocr_mode == "never" else "native_text_usable"
+            )
+        return source, text, provenance
 
     def _emit_page_error(
         self,
@@ -494,13 +826,13 @@ class _ChildExtractionSession:
                 continue
             try:
                 page = self.document.load_page(page_number)
-                source, text = self._page_text(page)
+                source, text, provenance = self._page_text(page)
                 if len(text) > self.config.max_page_text_chars:
                     raise RuntimeError(
                         f"page text has {len(text)} characters; "
                         f"limit={self.config.max_page_text_chars}"
                     )
-                self.channel.put(("page", page_number, source, text))
+                self.channel.put(("page", page_number, source, text, provenance))
                 consecutive_errors = 0
             except Exception as exc:
                 consecutive_errors += 1

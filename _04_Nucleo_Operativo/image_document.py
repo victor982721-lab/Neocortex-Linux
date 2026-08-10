@@ -22,10 +22,21 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, cast
 
-from PIL import Image, ImageOps
+from PIL import Image
 
 from .bounded_subprocess import run_bounded_capture
 from .image_decode import pillow_decode_scope
+from .ocr_image_preprocess import bounded_grayscale, orient_and_deskew
+from .ocr_profiles import (
+    OcrOrientation,
+    OcrProfileName,
+    contains_traditional_han,
+    parse_language_spec,
+    parse_osd_output,
+    resolve_ocr_profile,
+    route_ocr_languages,
+    should_use_ocr_fallback,
+)
 from .image_policy import (
     DOCUMENT_OCR_TEXT_MAX_UTF8_BYTES,
     INDUSTRIAL_ACTIVITY_HINTS,
@@ -38,8 +49,17 @@ from .processing_provenance import (
     resolve_tesseract_runtime,
 )
 
-DOCUMENT_OCR_VERSION = "document-text-tesseract-v2"
-DOCUMENT_OCR_SAMPLE_SIDE = 768
+DOCUMENT_OCR_VERSION = "document-text-tesseract-v3"
+# Compatibility alias retained for callers which report the historical bound.
+# Recognition now preserves materially more source detail and is capped by both
+# dimensions and total pixels rather than blindly thumbnailing every image to 768px.
+DOCUMENT_OCR_SAMPLE_SIDE = 3_200
+DOCUMENT_OCR_MAX_PIXELS = 10_000_000
+# Keep the OCR add-on reservation compatible with the route's documented
+# 256 MiB single-worker budget (192 MiB decoder worker + 64 MiB OCR).  The
+# larger sampling bound is independently capped at ten megapixels and encoded
+# as grayscale before Tesseract is invoked, so increasing this fixed surcharge
+# would reject otherwise bounded inputs before any decode occurs.
 DOCUMENT_OCR_MEMORY_BYTES = 64 * 1024 * 1024
 DOCUMENT_OCR_TSV_MAX_BYTES = 8 * 1024 * 1024
 DOCUMENT_OCR_DIAGNOSTIC_MAX_BYTES = 256 * 1024
@@ -82,6 +102,7 @@ class DocumentVerifierConfig:
     timeout_seconds: float = 12.0
     tesseract_cmd: str | None = None
     tessdata_dir: str | None = None
+    profile: OcrProfileName = "configured"
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,6 +116,10 @@ class DocumentVerifierRuntime:
     provenance: str | None = None
     unavailable_reason: str | None = None
     processing_provenance_json: str | None = None
+    profile: OcrProfileName = "configured"
+    requested_languages: tuple[str, ...] = ()
+    traineddata_hashes: tuple[tuple[str, str | None], ...] = ()
+    osd_enabled: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,6 +142,25 @@ class DocumentTextEvidence:
     provenance: str | None = None
     error_type: str | None = None
     error_message: str | None = None
+    ocr_profile: OcrProfileName = "configured"
+    requested_languages: tuple[str, ...] = ()
+    effective_languages: tuple[str, ...] = ()
+    traineddata_hashes: tuple[tuple[str, str | None], ...] = ()
+    orientation_degrees: int = 0
+    rotation_degrees: int = 0
+    orientation_confidence: float = 0.0
+    detected_script: str = "unknown"
+    script_confidence: float = 0.0
+    osd_available: bool = False
+    osd_unavailable_reason: str | None = None
+    deskew_degrees: float = 0.0
+    page_segmentation_mode: int = 11
+    fallback_attempted: bool = False
+    fallback_languages: tuple[str, ...] = ()
+    fallback_reason: str | None = None
+    fallback_error_type: str | None = None
+    fallback_error_message: str | None = None
+    recognition_attempts: int = 0
 
     @property
     def dense_text(self) -> bool:
@@ -148,7 +192,9 @@ def _document_ocr_processing_provenance(
         {
             "language": config.lang,
             "mode": config.mode,
-            "sample_side": DOCUMENT_OCR_SAMPLE_SIDE,
+            "profile": config.profile,
+            "sample_max_pixels": DOCUMENT_OCR_MAX_PIXELS,
+            "sample_max_side": DOCUMENT_OCR_SAMPLE_SIDE,
             "text_max_utf8_bytes": DOCUMENT_OCR_TEXT_MAX_UTF8_BYTES,
         },
         (component,),
@@ -165,9 +211,7 @@ def resolve_document_verifier(
         raise ValueError(f"unsupported image document OCR mode: {config.mode}")
     if config.timeout_seconds <= 0:
         raise ValueError("image document OCR timeout must be positive")
-    requested = tuple(part for part in config.lang.split("+") if part)
-    if not requested:
-        raise ValueError("image document OCR language must not be empty")
+    plan = resolve_ocr_profile(config.profile, config.lang)
     if config.mode == "never":
         processing = _document_ocr_processing_provenance(
             config,
@@ -186,12 +230,15 @@ def resolve_document_verifier(
             processing.signature,
             unavailable_reason="disabled_by_configuration",
             processing_provenance_json=processing.manifest_json,
+            profile=plan.profile,
+            requested_languages=plan.required_languages,
+            osd_enabled=plan.osd_enabled,
         )
 
     runtime = resolve_tesseract_runtime(
         command=config.tesseract_cmd,
         tessdata_dir=config.tessdata_dir,
-        language=config.lang,
+        language=plan.required_language_spec,
         timeout_seconds=config.timeout_seconds,
     )
     processing = _document_ocr_processing_provenance(config, runtime.component)
@@ -206,6 +253,10 @@ def resolve_document_verifier(
             processing.signature,
             provenance=provenance,
             processing_provenance_json=processing.manifest_json,
+            profile=plan.profile,
+            requested_languages=runtime.requested_languages,
+            traineddata_hashes=runtime.traineddata_hashes,
+            osd_enabled=plan.osd_enabled,
         )
     return DocumentVerifierRuntime(
         False,
@@ -216,6 +267,10 @@ def resolve_document_verifier(
         processing.signature,
         unavailable_reason=runtime.unavailable_reason,
         processing_provenance_json=processing.manifest_json,
+        profile=plan.profile,
+        requested_languages=runtime.requested_languages or plan.required_languages,
+        traineddata_hashes=runtime.traineddata_hashes,
+        osd_enabled=plan.osd_enabled,
     )
 
 
@@ -252,6 +307,16 @@ class _DocumentOcrSample:
 type _TsvRow = Mapping[str, str | list[str] | None]
 
 
+def _contains_han_word(value: str) -> bool:
+    return any(
+        0x3400 <= ord(character) <= 0x4DBF
+        or 0x4E00 <= ord(character) <= 0x9FFF
+        or 0xF900 <= ord(character) <= 0xFAFF
+        or 0x20000 <= ord(character) <= 0x323AF
+        for character in value
+    )
+
+
 @dataclass(slots=True)
 class _DocumentTextAccumulator:
     retained_words: list[str] = field(default_factory=list)
@@ -280,7 +345,11 @@ class _DocumentTextAccumulator:
     def observe(self, row: _TsvRow) -> None:
         word = str(row.get("text") or "").strip()
         confidence = _ocr_confidence(row)
-        if not word or confidence < OCR_WORD_CONFIDENCE:
+        if (
+            not word
+            or confidence < 0.0
+            or (confidence < OCR_WORD_CONFIDENCE and not _contains_han_word(word))
+        ):
             return
         self.word_count += 1
         self.character_count += len(word)
@@ -307,26 +376,6 @@ def _ocr_integer(row: _TsvRow, name: str) -> int:
     return int(cast(str | int, row.get(name) or 0))
 
 
-def _gray_document_sample(source: Image.Image) -> Image.Image:
-    oriented = ImageOps.exif_transpose(source)
-    try:
-        return oriented.convert("L")
-    finally:
-        if oriented is not source:
-            oriented.close()
-
-
-def _contrast_document_sample(sample: Image.Image) -> Image.Image:
-    try:
-        sample.thumbnail(
-            (DOCUMENT_OCR_SAMPLE_SIDE, DOCUMENT_OCR_SAMPLE_SIDE),
-            Image.Resampling.LANCZOS,
-        )
-        return ImageOps.autocontrast(sample)
-    finally:
-        sample.close()
-
-
 def _encode_document_sample(contrasted: Image.Image) -> _DocumentOcrSample:
     try:
         width, height = contrasted.size
@@ -338,26 +387,32 @@ def _encode_document_sample(contrasted: Image.Image) -> _DocumentOcrSample:
         contrasted.close()
 
 
-def _sample_document_image(path: Path) -> _DocumentOcrSample:
+def _sample_document_image(path: Path) -> Image.Image:
     with pillow_decode_scope(allow_truncated=False):
         with Image.open(path) as source:
-            gray = _gray_document_sample(source)
-            contrasted = _contrast_document_sample(gray)
-            return _encode_document_sample(contrasted)
+            return bounded_grayscale(
+                source,
+                max_side=DOCUMENT_OCR_SAMPLE_SIDE,
+                max_pixels=DOCUMENT_OCR_MAX_PIXELS,
+            )
 
 
 def _document_ocr_command(
     runtime: DocumentVerifierRuntime,
     tesseract_cmd: str,
+    *,
+    languages: tuple[str, ...] | None = None,
+    page_segmentation_mode: int | None = None,
 ) -> list[str]:
+    effective_languages = languages or parse_language_spec(runtime.lang)
     command = [
         tesseract_cmd,
         "stdin",
         "stdout",
         "-l",
-        runtime.lang,
+        "+".join(effective_languages),
         "--psm",
-        "11",
+        str(11 if page_segmentation_mode is None else page_segmentation_mode),
     ]
     if runtime.tessdata_dir:
         command.extend(("--tessdata-dir", runtime.tessdata_dir))
@@ -369,9 +424,17 @@ def _run_document_ocr(
     sample: _DocumentOcrSample,
     runtime: DocumentVerifierRuntime,
     tesseract_cmd: str,
+    *,
+    languages: tuple[str, ...] | None = None,
+    page_segmentation_mode: int | None = None,
 ) -> bytes:
     result = run_bounded_capture(
-        _document_ocr_command(runtime, tesseract_cmd),
+        _document_ocr_command(
+            runtime,
+            tesseract_cmd,
+            languages=languages,
+            page_segmentation_mode=page_segmentation_mode,
+        ),
         input_bytes=sample.payload,
         timeout_seconds=runtime.timeout_seconds,
         stdout_limit_bytes=DOCUMENT_OCR_TSV_MAX_BYTES,
@@ -382,6 +445,44 @@ def _run_document_ocr(
         detail = result.stderr.decode("utf-8", "replace")[:500]
         raise RuntimeError(detail or f"tesseract exited with code {result.returncode}")
     return result.stdout
+
+
+def _document_osd_command(
+    runtime: DocumentVerifierRuntime,
+    tesseract_cmd: str,
+) -> list[str]:
+    command = [
+        tesseract_cmd,
+        "stdin",
+        "stdout",
+        "-l",
+        "osd",
+        "--psm",
+        "0",
+    ]
+    if runtime.tessdata_dir:
+        command.extend(("--tessdata-dir", runtime.tessdata_dir))
+    return command
+
+
+def _run_document_osd(
+    sample: _DocumentOcrSample,
+    runtime: DocumentVerifierRuntime,
+    tesseract_cmd: str,
+) -> OcrOrientation:
+    result = run_bounded_capture(
+        _document_osd_command(runtime, tesseract_cmd),
+        input_bytes=sample.payload,
+        timeout_seconds=runtime.timeout_seconds,
+        stdout_limit_bytes=DOCUMENT_OCR_DIAGNOSTIC_MAX_BYTES,
+        stderr_limit_bytes=DOCUMENT_OCR_DIAGNOSTIC_MAX_BYTES,
+        creationflags=CREATE_NO_WINDOW,
+    )
+    if result.returncode != 0:
+        detail = result.stderr.decode("utf-8", "replace")[:500]
+        raise RuntimeError(detail or f"tesseract OSD exited with code {result.returncode}")
+    output = (result.stdout + b"\n" + result.stderr).decode("utf-8", "replace")
+    return parse_osd_output(output)
 
 
 def _parse_document_tsv(payload: bytes) -> _DocumentTextAccumulator:
@@ -396,12 +497,58 @@ def _parse_document_tsv(payload: bytes) -> _DocumentTextAccumulator:
     return accumulator
 
 
+@dataclass(frozen=True, slots=True)
+class _DocumentOcrAttempt:
+    languages: tuple[str, ...]
+    page_segmentation_mode: int
+    text: _DocumentTextAccumulator
+
+    @property
+    def recognized_text(self) -> str:
+        return " ".join(self.text.retained_words)
+
+    @property
+    def mean_confidence(self) -> float:
+        if not self.text.word_count:
+            return 0.0
+        return self.text.confidence_total / self.text.word_count
+
+    @property
+    def quality_score(self) -> tuple[int, float, int, int]:
+        conservative_failure = should_use_ocr_fallback(
+            recognized_text=self.recognized_text,
+            character_count=self.text.character_count,
+            mean_confidence=self.mean_confidence,
+        )
+        return (
+            int(not conservative_failure),
+            round(self.mean_confidence, 3),
+            self.text.character_count,
+            self.text.word_count,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class _DocumentOcrMetadata:
+    orientation: OcrOrientation
+    deskew_degrees: float
+    fallback_attempted: bool
+    fallback_languages: tuple[str, ...]
+    fallback_reason: str | None
+    fallback_error_type: str | None
+    fallback_error_message: str | None
+    recognition_attempts: int
+
+
 def _available_document_evidence(
     sample: _DocumentOcrSample,
-    text: _DocumentTextAccumulator,
+    attempt: _DocumentOcrAttempt,
     runtime: DocumentVerifierRuntime,
+    metadata: _DocumentOcrMetadata,
 ) -> DocumentTextEvidence:
+    text = attempt.text
     recognized = " ".join(text.retained_words)
+    orientation = metadata.orientation
     return DocumentTextEvidence(
         attempted=True,
         available=True,
@@ -422,13 +569,28 @@ def _available_document_evidence(
         ui_terms=_semantic_hits(recognized, UI_TERMS),
         industrial_entities=_semantic_hits(recognized, INDUSTRIAL_ENTITY_HINTS),
         industrial_activities=_semantic_hits(recognized, INDUSTRIAL_ACTIVITY_HINTS),
-        industrial_operational_contexts=_semantic_hits(
-            recognized, OPERATIONAL_CONTEXT_HINTS
-        ),
-        industrial_safety_conditions=_semantic_hits(
-            recognized, SAFETY_CONDITION_HINTS
-        ),
+        industrial_operational_contexts=_semantic_hits(recognized, OPERATIONAL_CONTEXT_HINTS),
+        industrial_safety_conditions=_semantic_hits(recognized, SAFETY_CONDITION_HINTS),
         provenance=runtime.provenance,
+        ocr_profile=runtime.profile,
+        requested_languages=(runtime.requested_languages or parse_language_spec(runtime.lang)),
+        effective_languages=attempt.languages,
+        traineddata_hashes=runtime.traineddata_hashes,
+        orientation_degrees=orientation.orientation_degrees,
+        rotation_degrees=orientation.rotate_degrees,
+        orientation_confidence=orientation.orientation_confidence,
+        detected_script=orientation.script,
+        script_confidence=orientation.script_confidence,
+        osd_available=orientation.available,
+        osd_unavailable_reason=orientation.unavailable_reason,
+        deskew_degrees=metadata.deskew_degrees,
+        page_segmentation_mode=attempt.page_segmentation_mode,
+        fallback_attempted=metadata.fallback_attempted,
+        fallback_languages=metadata.fallback_languages,
+        fallback_reason=metadata.fallback_reason,
+        fallback_error_type=metadata.fallback_error_type,
+        fallback_error_message=metadata.fallback_error_message,
+        recognition_attempts=metadata.recognition_attempts,
     )
 
 
@@ -442,6 +604,144 @@ def _unavailable_document_evidence(
         provenance=runtime.provenance,
         error_type=type(exc).__name__,
         error_message=_safe_error(exc),
+        ocr_profile=runtime.profile,
+        requested_languages=(runtime.requested_languages or parse_language_spec(runtime.lang)),
+        traineddata_hashes=runtime.traineddata_hashes,
+    )
+
+
+def _osd_unavailable(exc: Exception) -> OcrOrientation:
+    return OcrOrientation(
+        unavailable_reason=f"{type(exc).__name__}: {_safe_error(exc)}",
+    )
+
+
+def _recognize_document_sample(
+    sample: _DocumentOcrSample,
+    runtime: DocumentVerifierRuntime,
+    *,
+    languages: tuple[str, ...],
+    page_segmentation_mode: int,
+) -> _DocumentOcrAttempt:
+    assert runtime.tesseract_cmd is not None
+    payload = _run_document_ocr(
+        sample,
+        runtime,
+        runtime.tesseract_cmd,
+        languages=languages,
+        page_segmentation_mode=page_segmentation_mode,
+    )
+    return _DocumentOcrAttempt(
+        languages,
+        page_segmentation_mode,
+        _parse_document_tsv(payload),
+    )
+
+
+def _execute_document_ocr(
+    image: Image.Image,
+    runtime: DocumentVerifierRuntime,
+) -> tuple[_DocumentOcrSample, _DocumentOcrAttempt, _DocumentOcrMetadata]:
+    """Run configured OCR unchanged or one OSD-routed bounded profile."""
+
+    plan = resolve_ocr_profile(runtime.profile, runtime.lang)
+    if not plan.osd_enabled:
+        sample = _encode_document_sample(image)
+        languages = parse_language_spec(runtime.lang)
+        attempt = _recognize_document_sample(
+            sample,
+            runtime,
+            languages=languages,
+            page_segmentation_mode=11,
+        )
+        return (
+            sample,
+            attempt,
+            _DocumentOcrMetadata(
+                OcrOrientation(unavailable_reason="osd_disabled_for_configured_profile"),
+                0.0,
+                False,
+                (),
+                None,
+                None,
+                None,
+                1,
+            ),
+        )
+
+    assert runtime.tesseract_cmd is not None
+    osd_sample = _encode_document_sample(image.copy())
+    try:
+        try:
+            orientation = _run_document_osd(
+                osd_sample,
+                runtime,
+                runtime.tesseract_cmd,
+            )
+        except Exception as exc:
+            orientation = _osd_unavailable(exc)
+        preprocessed = orient_and_deskew(
+            image,
+            rotation_clockwise_degrees=orientation.rotate_degrees,
+        )
+    finally:
+        image.close()
+    sample = _encode_document_sample(preprocessed.image)
+    decision = route_ocr_languages(plan, orientation)
+    primary = _recognize_document_sample(
+        sample,
+        runtime,
+        languages=decision.primary_languages,
+        page_segmentation_mode=6,
+    )
+    selected = primary
+    fallback_attempted = False
+    fallback_languages: tuple[str, ...] = ()
+    fallback_reason: str | None = None
+    fallback_error_type: str | None = None
+    fallback_error_message: str | None = None
+    attempts = 1
+    if decision.fallback_languages is not None:
+        low_quality = should_use_ocr_fallback(
+            recognized_text=primary.recognized_text,
+            character_count=primary.text.character_count,
+            mean_confidence=primary.mean_confidence,
+        )
+        traditional_signal = contains_traditional_han(primary.recognized_text)
+        if low_quality or traditional_signal:
+            fallback_attempted = True
+            fallback_languages = decision.fallback_languages
+            fallback_reason = (
+                "traditional_han_signal" if traditional_signal else "low_primary_quality"
+            )
+            attempts += 1
+            try:
+                fallback = _recognize_document_sample(
+                    sample,
+                    runtime,
+                    languages=decision.fallback_languages,
+                    page_segmentation_mode=6,
+                )
+                if fallback.quality_score > primary.quality_score or (
+                    traditional_signal and fallback.quality_score == primary.quality_score
+                ):
+                    selected = fallback
+            except Exception as exc:
+                fallback_error_type = type(exc).__name__
+                fallback_error_message = _safe_error(exc)
+    return (
+        sample,
+        selected,
+        _DocumentOcrMetadata(
+            orientation,
+            preprocessed.deskew_degrees,
+            fallback_attempted,
+            fallback_languages,
+            fallback_reason,
+            fallback_error_type,
+            fallback_error_message,
+            attempts,
+        ),
     )
 
 
@@ -458,24 +758,20 @@ def verify_document_text(
             available=False,
             error_type="VerifierUnavailable",
             error_message=runtime.unavailable_reason,
+            ocr_profile=runtime.profile,
+            requested_languages=runtime.requested_languages,
+            traineddata_hashes=runtime.traineddata_hashes,
         )
 
     admission = (
-        memory_gate.admit(DOCUMENT_OCR_MEMORY_BYTES)
-        if memory_gate is not None
-        else nullcontext()
+        memory_gate.admit(DOCUMENT_OCR_MEMORY_BYTES) if memory_gate is not None else nullcontext()
     )
     try:
         assert runtime.tesseract_cmd is not None
         with admission:
-            sample = _sample_document_image(path)
-            tsv = _run_document_ocr(
-                sample,
-                runtime,
-                runtime.tesseract_cmd,
-            )
-        text = _parse_document_tsv(tsv)
-        return _available_document_evidence(sample, text, runtime)
+            image = _sample_document_image(path)
+            sample, attempt, metadata = _execute_document_ocr(image, runtime)
+        return _available_document_evidence(sample, attempt, runtime, metadata)
     except Exception as exc:
         return _unavailable_document_evidence(runtime, exc)
 

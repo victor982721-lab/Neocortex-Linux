@@ -18,6 +18,7 @@ BUILTIN_ROUTE_ORDER = (
     "archive",
     "text",
     "audio",
+    "video",
     "image",
     "code",
 )

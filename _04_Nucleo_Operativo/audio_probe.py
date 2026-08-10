@@ -49,7 +49,7 @@ def probe_media(
         "json",
         str(path),
     )
-    creation_flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+    creation_flags = int(getattr(subprocess, "CREATE_NO_WINDOW", 0)) if os.name == "nt" else 0
     try:
         completed = run_bounded_capture(
             command,
@@ -123,15 +123,28 @@ def _decode_probe(payload: Any) -> MediaProbe:
     streams = tuple(item for item in raw_streams if isinstance(item, dict))
     audio = tuple(item for item in streams if item.get("codec_type") == "audio")
     video = tuple(item for item in streams if item.get("codec_type") == "video")
+    raw_format = payload.get("format")
+    format_values = raw_format if isinstance(raw_format, dict) else {}
     if not audio:
+        video_durations = tuple(
+            value
+            for value in (
+                _finite_float(format_values.get("duration")),
+                *(_finite_float(item.get("duration")) for item in video),
+            )
+            if value is not None and value >= 0
+        )
         raise AudioProcessingError(
             "media_without_audio_stream",
             "the media container has no audio stream",
             recommendation="manual_review",
             retryable=False,
+            evidence={
+                "format_name": str(format_values.get("format_name") or "unknown")[:200],
+                "duration_seconds": max(video_durations) if video_durations else None,
+                "video_streams": len(video),
+            },
         )
-    raw_format = payload.get("format")
-    format_values = raw_format if isinstance(raw_format, dict) else {}
     durations = [
         value
         for value in (
@@ -160,9 +173,7 @@ def _decode_probe(payload: Any) -> MediaProbe:
 
 
 def _finite_float(value: object) -> float | None:
-    if isinstance(value, bool) or not isinstance(
-        value, (int, float, str, bytes, bytearray)
-    ):
+    if isinstance(value, bool) or not isinstance(value, (int, float, str, bytes, bytearray)):
         return None
     try:
         result = float(value)
@@ -172,9 +183,7 @@ def _finite_float(value: object) -> float | None:
 
 
 def _positive_int(value: object) -> int | None:
-    if isinstance(value, bool) or not isinstance(
-        value, (int, float, str, bytes, bytearray)
-    ):
+    if isinstance(value, bool) or not isinstance(value, (int, float, str, bytes, bytearray)):
         return None
     try:
         result = int(value)

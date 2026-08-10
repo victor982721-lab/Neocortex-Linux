@@ -70,6 +70,7 @@ from .image_state import (
     store_success_batch,
 )
 from .memory_runtime import MemoryBudgetExceeded, MemoryHeadroomTimeout
+from .ocr_profiles import OcrProfileName
 from .processing_provenance import (
     ROUTE_SUMMARY_SCHEMA,
     ProcessingProvenance,
@@ -179,6 +180,7 @@ class ImageRouteConfig:
     document_ocr_timeout_seconds: float = 12.0
     tesseract_cmd: str | None = None
     tessdata_dir: str | None = None
+    document_ocr_profile: OcrProfileName = "configured"
 
     @property
     def processing_signature(self) -> str:
@@ -197,6 +199,7 @@ def _document_verifier_config(config: ImageRouteConfig) -> DocumentVerifierConfi
         timeout_seconds=config.document_ocr_timeout_seconds,
         tesseract_cmd=config.tesseract_cmd,
         tessdata_dir=config.tessdata_dir,
+        profile=config.document_ocr_profile,
     )
 
 
@@ -232,6 +235,7 @@ def _image_processing_provenance(
         {
             "document_ocr_language": config.document_ocr_lang,
             "document_ocr_mode": config.document_ocr_mode,
+            "document_ocr_profile": config.document_ocr_profile,
             "document_ocr_timeout_seconds": config.document_ocr_timeout_seconds,
         },
         (
@@ -246,6 +250,11 @@ def _image_processing_provenance(
         ),
         compatibility_tag=ANALYSIS_VERSION.split("|", 1)[0],
     )
+
+
+def _ocr_language_packs_missing(verifier: DocumentVerifierRuntime) -> bool:
+    reason = verifier.unavailable_reason or ""
+    return reason.startswith("missing OCR languages:")
 
 
 @dataclass(frozen=True, slots=True)
@@ -376,6 +385,18 @@ class ImageRoute:
         self._supervisor_lock = threading.Lock()
         self._supervisors: set[ImageWorkerSupervisor] = set()
         self.document_verifier = resolve_document_verifier(_document_verifier_config(config))
+        if (
+            config.document_ocr_mode != "never"
+            and not self.document_verifier.enabled
+            and (
+                config.document_ocr_profile != "configured"
+                or _ocr_language_packs_missing(self.document_verifier)
+            )
+        ):
+            raise RuntimeError(
+                "image OCR profile preflight failed: "
+                f"{self.document_verifier.unavailable_reason or 'runtime unavailable'}"
+            )
         self.processing_provenance = _image_processing_provenance(
             config,
             self.document_verifier,
@@ -1244,7 +1265,7 @@ def _cached_failure(row: Any) -> ImageFailure:
         message=str(row["error_message"] or "unknown image error")[:2000],
         phase=str(row["error_phase"] or "analysis"),
         retryable=bool(row["error_retryable"]),
-        disposition=disposition,  # type: ignore[arg-type]
+        disposition=disposition,
         provenance=str(row["error_provenance"] or "image-error-policy-v1"),
     )
 

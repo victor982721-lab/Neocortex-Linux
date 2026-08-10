@@ -218,6 +218,7 @@ ROUTE_CAPABILITY_NAMES = (
     "archive",
     "text",
     "audio",
+    "video",
     "image",
     "code",
 )
@@ -356,6 +357,40 @@ CAPABILITY_SPECS: Mapping[str, RuntimeCapabilitySpec] = MappingProxyType(
                 ),
             ),
             extra="audio",
+        ),
+        "video": RuntimeCapabilitySpec(
+            "video",
+            _with_base(
+                _executable(
+                    "ffmpeg",
+                    "ffmpeg",
+                    required=True,
+                    missing_reason="video_frame_extractor_unavailable",
+                    extra=None,
+                ),
+                _executable(
+                    "ffprobe",
+                    "ffprobe",
+                    required=True,
+                    missing_reason="video_probe_unavailable",
+                    extra=None,
+                ),
+                _distribution(
+                    "pillow",
+                    "Pillow",
+                    "PIL",
+                    required=False,
+                    missing_reason="video_frame_ocr_decoder_unavailable",
+                    extra="documents",
+                ),
+                _executable(
+                    "tesseract",
+                    "tesseract",
+                    required=False,
+                    missing_reason="video_frame_ocr_unavailable",
+                    extra="documents",
+                ),
+            ),
         ),
         "image": RuntimeCapabilitySpec(
             "image",

@@ -188,6 +188,7 @@ def _print_audio_report(result) -> None:
         f"candidates={audio.candidates} processed={audio.processed} "
         f"cache_hits={audio.cache_hits} cached_errors={audio.cached_errors} "
         f"transcribed={audio.transcribed} no_speech={audio.no_speech} "
+        f"no_audio={getattr(audio, 'no_audio', 0)} "
         f"errors={audio.errors} review_candidates={audio.review_candidates} "
         f"deletion_candidates={audio.deletion_candidates} "
         f"retryable_errors={audio.retryable_errors} "
@@ -239,6 +240,31 @@ def _print_image_report(result) -> None:
         f"full_fingerprints_computed={image.full_fingerprints_computed} "
         f"peak_reserved_bytes={image.peak_reserved_bytes} "
         f"memory_waits={image.memory_waits}"
+    )
+
+
+def _print_video_report(result) -> None:
+    video = getattr(result, "video", None)
+    if video is None:
+        return
+    print(
+        f"route=video candidate_pool={video.candidate_pool} "
+        f"candidates={video.candidates} processed={video.processed} "
+        f"cache_hits={video.cache_hits} cached_errors={video.cached_errors} "
+        f"complete={video.complete} partial={video.partial} errors={video.errors} "
+        f"visual_only={video.visual_only} frames_sampled={video.frames_sampled} "
+        f"scene_frames={video.scene_frames} keyframes={video.keyframes} "
+        f"interval_frames={video.interval_frames} ocr_attempts={video.ocr_attempts} "
+        f"ocr_positive={video.ocr_positive} ocr_failures={video.ocr_failures} "
+        f"ocr_text_chars={video.ocr_text_chars} audio_links={video.audio_links} "
+        f"audio_links_added_on_replay={video.audio_links_added_on_replay} "
+        f"review_candidates={video.review_candidates} "
+        f"deletion_candidates={video.deletion_candidates} "
+        f"retryable_errors={video.retryable_errors} "
+        f"cache_documents_pruned={video.cache_documents_pruned} "
+        f"peak_reserved_bytes={video.peak_reserved_bytes} "
+        f"memory_waits={video.memory_waits} "
+        f"ocr_available={int(video.ocr_available)}"
     )
 
 
@@ -423,6 +449,7 @@ def print_reports(result, args: argparse.Namespace) -> None:
         _print_archive_report(result)
         _print_text_report(result)
         _print_audio_report(result)
+        _print_video_report(result)
         _print_image_report(result)
         _print_code_report(result)
         _print_global_resource_report(result)
@@ -435,6 +462,7 @@ def print_reports(result, args: argparse.Namespace) -> None:
     _print_archive_report(result)
     _print_text_report(result)
     _print_audio_report(result)
+    _print_video_report(result)
     _print_image_report(result)
     _print_code_report(result)
     _print_global_resource_report(result)
@@ -464,6 +492,7 @@ def _route_issue_count(summary: object) -> int:
         "profile_errors",
         "page_errors",
         "partial_documents",
+        "partial",
         "document_timeouts",
         "catalog_errors",
         "adult_unavailable",
@@ -488,6 +517,7 @@ def _professional_route_rows(result) -> tuple[tuple[str, object], ...]:
         ("Office", "office"),
         ("ZIP", "archive"),
         ("Audio", "audio"),
+        ("Video", "video"),
         ("Imágenes", "image"),
         ("Código", "code"),
     )
@@ -811,6 +841,7 @@ STRICT_ROUTE_ERROR_FIELDS = (
     "profile_errors",
     "page_errors",
     "partial_documents",
+    "partial",
     "document_timeouts",
     "catalog_errors",
     "adult_unavailable",

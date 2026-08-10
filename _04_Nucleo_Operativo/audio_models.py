@@ -178,6 +178,7 @@ class AudioRouteSummary:
     cached_errors: int = 0
     transcribed: int = 0
     no_speech: int = 0
+    no_audio: int = 0
     errors: int = 0
     cache_documents_pruned: int = 0
     review_candidates: int = 0

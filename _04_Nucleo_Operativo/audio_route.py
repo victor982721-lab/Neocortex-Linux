@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 import time
 import zlib
@@ -131,6 +132,7 @@ class _AudioRunMetrics:
     cached_errors: int = 0
     transcribed: int = 0
     no_speech: int = 0
+    no_audio: int = 0
     errors: int = 0
     reviews: int = 0
     deletion_candidates: int = 0
@@ -206,9 +208,7 @@ class _TranscriberLease:
     def acquire(self) -> Transcriber:
         if self._transcriber is None:
             self._resources.enter_context(
-                self._route.memory_gate.admit(
-                    _estimated_audio_memory_bytes(self._route.config)
-                )
+                self._route.memory_gate.admit(_estimated_audio_memory_bytes(self._route.config))
             )
             self._transcriber = self._route.transcriber_factory(
                 self._route.config,
@@ -267,9 +267,7 @@ class AudioRoute:
             "max_segments": self.config.max_segments,
             "beam_size": self.config.beam_size,
             "file_timeout_seconds": self.config.file_timeout_seconds,
-            "worker_startup_timeout_seconds": (
-                self.config.worker_startup_timeout_seconds
-            ),
+            "worker_startup_timeout_seconds": (self.config.worker_startup_timeout_seconds),
             "worker_memory_bytes": self.config.worker_memory_bytes,
         }
         invalid = tuple(name for name, value in positive_values.items() if value <= 0)
@@ -321,6 +319,7 @@ class AudioRoute:
             cached_errors=metrics.cached_errors,
             transcribed=metrics.transcribed,
             no_speech=metrics.no_speech,
+            no_audio=metrics.no_audio,
             errors=metrics.errors,
             cache_documents_pruned=metrics.pruned,
             review_candidates=metrics.reviews,
@@ -386,9 +385,7 @@ class AudioRoute:
                     continue
                 _store_inventory(connection, snapshot, mime, self.run_id)
                 cached = _cached_document(connection, snapshot, signature)
-                if self._consume_cached(
-                    connection, snapshot, mime, cached, metrics, reviews
-                ):
+                if self._consume_cached(connection, snapshot, mime, cached, metrics, reviews):
                     self._commit_batch(connection, metrics, reviews)
                     continue
                 self._transcribe_candidate(
@@ -416,23 +413,23 @@ class AudioRoute:
         if cached is None:
             return False
         status = str(cached["status"])
-        if status not in {"complete", "no_speech"} and self.config.retry_errors:
+        benign_statuses = {"complete", "no_speech", "no_audio"}
+        if status not in benign_statuses and self.config.retry_errors:
             return False
         _refresh_cached_path(connection, snapshot, mime, self.run_id)
         metrics.cache_hits += 1
-        if status in {"complete", "no_speech"}:
+        if status in benign_statuses:
             reviews.queue_success(
                 snapshot,
                 "current media cache completed successfully",
             )
+            metrics.no_audio += int(status == "no_audio")
         else:
             failure = _cached_failure(cached)
             reviews.store_failure(snapshot, failure)
             metrics.cached_errors += 1
             metrics.reviews += 1
-            metrics.deletion_candidates += int(
-                failure.recommendation == "deletion_candidate"
-            )
+            metrics.deletion_candidates += int(failure.recommendation == "deletion_candidate")
             metrics.retryable_errors += int(failure.retryable)
         metrics.processed += 1
         return True
@@ -464,9 +461,30 @@ class AudioRoute:
             )
             metrics.record_result(probe, result)
         except AudioProcessingError as exc:
-            self._store_failure(
-                connection, snapshot, mime, signature, exc, metrics, reviews
+            video_streams = exc.evidence.get("video_streams")
+            visual_only_video = (
+                mime in VIDEO_MIME_TYPES
+                and exc.code == "media_without_audio_stream"
+                and not isinstance(video_streams, bool)
+                and isinstance(video_streams, int)
+                and video_streams > 0
             )
+            if visual_only_video:
+                _store_no_audio(
+                    connection,
+                    snapshot,
+                    mime,
+                    signature,
+                    self.run_id,
+                    exc,
+                )
+                reviews.queue_success(
+                    snapshot,
+                    "video has no audio stream; transcription abstained",
+                )
+                metrics.no_audio += 1
+            else:
+                self._store_failure(connection, snapshot, mime, signature, exc, metrics, reviews)
         except (OSError, sqlite3.Error) as exc:
             failure = AudioProcessingError(
                 "audio_io_error",
@@ -474,9 +492,7 @@ class AudioRoute:
                 recommendation="retry",
                 retryable=True,
             )
-            self._store_failure(
-                connection, snapshot, mime, signature, failure, metrics, reviews
-            )
+            self._store_failure(connection, snapshot, mime, signature, failure, metrics, reviews)
         metrics.processed += 1
 
     def _transcribe(
@@ -580,10 +596,7 @@ class AudioRoute:
         )
 
     def _exceeds_file_limit(self, snapshot: FileSnapshot) -> bool:
-        return (
-            self.config.max_file_bytes is not None
-            and snapshot.size > self.config.max_file_bytes
-        )
+        return self.config.max_file_bytes is not None and snapshot.size > self.config.max_file_bytes
 
     def _report(self, metrics: _AudioRunMetrics, *, finished: bool = False) -> None:
         emit_progress(
@@ -600,9 +613,7 @@ class AudioRoute:
                     ProgressMetric("cache_hits", metrics.cache_hits),
                     ProgressMetric("cached_errors", metrics.cached_errors),
                     ProgressMetric("errors", metrics.errors),
-                    ProgressMetric(
-                        "completed_work", metrics.transcribed + metrics.no_speech
-                    ),
+                    ProgressMetric("completed_work", metrics.transcribed + metrics.no_speech),
                     ProgressMetric("transcript_chars", metrics.transcript_chars),
                     ProgressMetric("memory_waits", self.memory_gate.wait_count),
                 ),
@@ -874,6 +885,45 @@ def _store_error(
     connection.execute("DELETE FROM transcript_fts WHERE file_key=?", (key,))
 
 
+def _store_no_audio(
+    connection: sqlite3.Connection,
+    snapshot: FileSnapshot,
+    mime: str,
+    processing_signature: str,
+    run_id: int,
+    error: AudioProcessingError,
+) -> None:
+    """Cache a benign abstention for a video container with no audio track."""
+
+    _store_error(
+        connection,
+        snapshot,
+        mime,
+        processing_signature,
+        run_id,
+        error,
+    )
+    duration = error.evidence.get("duration_seconds")
+    stored_duration = (
+        float(duration)
+        if not isinstance(duration, bool)
+        and isinstance(duration, (int, float))
+        and math.isfinite(duration)
+        and duration >= 0
+        else None
+    )
+    connection.execute(
+        """UPDATE documents SET status='no_audio',title=?,duration_seconds=?,
+        error_type=NULL,error_message=NULL,retryable=0,review_disposition='none'
+        WHERE file_key=?""",
+        (
+            Path(snapshot.path).stem,
+            stored_duration,
+            _file_key(snapshot),
+        ),
+    )
+
+
 def _cached_failure(row: sqlite3.Row) -> AudioProcessingError:
     stored_recommendation = str(row["review_disposition"])
     recommendation: Literal["retry", "manual_review", "deletion_candidate"]
@@ -923,15 +973,9 @@ def _prune_stale_documents(connection: sqlite3.Connection, run_id: int) -> int:
     for offset in range(0, len(stale_keys), 256):
         batch = stale_keys[offset : offset + 256]
         placeholders = ",".join("?" for _ in batch)
-        connection.execute(
-            f"DELETE FROM transcript_fts WHERE file_key IN ({placeholders})", batch
-        )
-        connection.execute(
-            f"DELETE FROM documents WHERE file_key IN ({placeholders})", batch
-        )
-    connection.execute(
-        "DELETE FROM audio_inventory WHERE last_seen_run_id<>?", (run_id,)
-    )
+        connection.execute(f"DELETE FROM transcript_fts WHERE file_key IN ({placeholders})", batch)
+        connection.execute(f"DELETE FROM documents WHERE file_key IN ({placeholders})", batch)
+    connection.execute("DELETE FROM audio_inventory WHERE last_seen_run_id<>?", (run_id,))
     return len(stale_keys)
 
 

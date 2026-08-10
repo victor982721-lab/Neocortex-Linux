@@ -290,6 +290,89 @@ def test_audio_route_caches_valid_media_without_speech(tmp_path: Path) -> None:
     assert tuple(row) == ("no_speech", 0, 0)
 
 
+def test_visual_only_video_abstains_benignly_without_loading_whisper_and_replays(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "visual-only.webm"
+    source.write_bytes(b"fixture video container")
+
+    def no_audio_probe(*_args, **_kwargs):
+        raise AudioProcessingError(
+            "media_without_audio_stream",
+            "the media container has no audio stream",
+            recommendation="manual_review",
+            retryable=False,
+            evidence={
+                "duration_seconds": 12.5,
+                "format_name": "matroska,webm",
+                "video_streams": 1,
+            },
+        )
+
+    database = tmp_path / "audio.sqlite3"
+    route, framework, transcriber, factory_calls = _audio_route(
+        database,
+        source,
+        mime="video/webm",
+        media_probe=no_audio_probe,
+    )
+
+    first = route.run()
+    second = route.run()
+
+    assert first.no_audio == 1
+    assert first.errors == first.review_candidates == 0
+    assert second.cache_hits == second.no_audio == 1
+    assert second.errors == second.review_candidates == 0
+    assert transcriber.calls == []
+    assert factory_calls == []
+    assert framework.reviews == []
+    with audio_database(database, readonly=True) as connection:
+        row = connection.execute(
+            """SELECT status,duration_seconds,error_type,error_message,
+            retryable,review_disposition FROM documents"""
+        ).fetchone()
+    assert tuple(row) == ("no_audio", 12.5, None, None, 0, "none")
+
+
+@pytest.mark.parametrize(
+    ("mime", "video_streams"),
+    (("audio/mp4", 1), ("video/webm", 0)),
+    ids=("audio-mime", "video-without-visual-track"),
+)
+def test_non_visual_only_media_without_an_audio_stream_remains_an_explicit_error(
+    tmp_path: Path,
+    mime: str,
+    video_streams: int,
+) -> None:
+    source = tmp_path / "misidentified.m4a"
+    source.write_bytes(b"fixture audio container")
+
+    def no_audio_probe(*_args, **_kwargs):
+        raise AudioProcessingError(
+            "media_without_audio_stream",
+            "the media container has no audio stream",
+            recommendation="manual_review",
+            retryable=False,
+            evidence={"video_streams": video_streams},
+        )
+
+    route, framework, transcriber, factory_calls = _audio_route(
+        tmp_path / "audio.sqlite3",
+        source,
+        mime=mime,
+        media_probe=no_audio_probe,
+    )
+
+    summary = route.run()
+
+    assert summary.no_audio == 0
+    assert summary.errors == summary.review_candidates == 1
+    assert transcriber.calls == []
+    assert factory_calls == []
+    assert framework.reviews[0].reason_code == "media_without_audio_stream"
+
+
 def test_audio_model_memory_is_reserved_once_until_worker_close(
     tmp_path: Path,
 ) -> None:

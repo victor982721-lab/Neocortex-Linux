@@ -278,9 +278,7 @@ def _executable_component_json(
         )
         output = _completed_output_lines(result)
         if result.returncode != 0 or not output:
-            raise RuntimeError(
-                f"{default_name} version probe exited {result.returncode}"
-            )
+            raise RuntimeError(f"{default_name} version probe exited {result.returncode}")
         component = {
             "name": name,
             "kind": "native-executable",
@@ -295,9 +293,7 @@ def _executable_component_json(
             "status": "unavailable",
             "error_type": type(exc).__name__,
         }
-    return json.dumps(
-        component, ensure_ascii=True, sort_keys=True, separators=(",", ":")
-    )
+    return json.dumps(component, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
 
 
 def executable_component(
@@ -337,6 +333,38 @@ class TesseractRuntimeProvenance:
         if not isinstance(value, dict):  # pragma: no cover - constructor invariant
             raise TypeError("Tesseract component must be an object")
         return value
+
+    @property
+    def requested_languages(self) -> tuple[str, ...]:
+        """Languages covered by the preflight, in deterministic caller order."""
+
+        raw = self.component.get("requested_languages", ())
+        if not isinstance(raw, list):
+            return ()
+        return tuple(value for value in raw if isinstance(value, str))
+
+    @property
+    def traineddata_hashes(self) -> tuple[tuple[str, str | None], ...]:
+        """Return compact model identities suitable for per-result provenance."""
+
+        raw = self.component.get("traineddata", ())
+        if not isinstance(raw, list):
+            return ()
+        hashes: list[tuple[str, str | None]] = []
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            filename = item.get("name")
+            if not isinstance(filename, str) or not filename.endswith(".traineddata"):
+                continue
+            digest = item.get("xxh3_128")
+            hashes.append(
+                (
+                    filename.removesuffix(".traineddata"),
+                    digest if isinstance(digest, str) else None,
+                )
+            )
+        return tuple(hashes)
 
 
 def _tessdata_path_from_listing(output: str) -> Path | None:
@@ -378,9 +406,7 @@ def _resolve_tesseract_runtime_cached(
         )
         version_lines = _completed_output_lines(version_result)
         if version_result.returncode != 0 or not version_lines:
-            raise RuntimeError(
-                f"tesseract --version exited {version_result.returncode}"
-            )
+            raise RuntimeError(f"tesseract --version exited {version_result.returncode}")
         version = version_lines[0].removeprefix("tesseract ").strip()[:300]
 
         language_command = [str(command)]
@@ -401,16 +427,10 @@ def _resolve_tesseract_runtime_cached(
             )
         language_output = language_result.stdout.decode("utf-8", "replace")
         available_languages = tuple(
-            sorted(
-                line.strip()
-                for line in language_output.splitlines()[1:]
-                if line.strip()
-            )
+            sorted(line.strip() for line in language_output.splitlines()[1:] if line.strip())
         )
         missing = tuple(
-            language
-            for language in requested_languages
-            if language not in available_languages
+            language for language in requested_languages if language not in available_languages
         )
         if resolved_tessdata is None:
             resolved_tessdata = _tessdata_path_from_listing(language_output)
@@ -418,9 +438,7 @@ def _resolve_tesseract_runtime_cached(
         artifacts: list[dict[str, Any]] = []
         for language in requested_languages:
             filename = f"{language}.traineddata"
-            artifact_path = (
-                resolved_tessdata / filename if resolved_tessdata is not None else None
-            )
+            artifact_path = resolved_tessdata / filename if resolved_tessdata is not None else None
             if artifact_path is not None and artifact_path.is_file():
                 artifacts.append(file_artifact(artifact_path, label=filename))
             else:

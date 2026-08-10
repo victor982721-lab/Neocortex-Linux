@@ -125,6 +125,9 @@ DIRECT_ARGUMENT_CASES = (
     ("archive_list", "run_archive_list", ("--archive-list", "1")),
     ("audio_search", "run_audio_search", ("--audio-search", "query")),
     ("audio_doctor", "run_audio_doctor", ("--audio-doctor",)),
+    ("video_status", "run_video_status", ("--video-status",)),
+    ("video_search", "run_video_search", ("--video-search", "query")),
+    ("video_doctor", "run_video_doctor", ("--video-doctor",)),
     ("code_status", "run_code_status", ("--code-status",)),
     ("code_review", "run_code_review", ("--code-review",)),
     (
@@ -175,6 +178,7 @@ def test_importing_dispatch_keeps_direct_handler_module_lazy() -> None:
                     "_04_Nucleo_Operativo.cli_watcher",
                     "_04_Nucleo_Operativo.cli_code",
                     "_04_Nucleo_Operativo.cli_knowledge",
+                    "_04_Nucleo_Operativo.cli_video",
                     "_04_Nucleo_Operativo.review_evidence",
                     "_04_Nucleo_Operativo.watcher",
                 }
@@ -255,7 +259,8 @@ def test_direct_operations_remain_mutually_exclusive_across_domains() -> None:
         validate_arguments(args)
 
     assert str(raised.value) == (
-        "direct status/recovery/review/semantic/PDF/DOCX/Office/ZIP/audio/code/Knowledge "
+        "direct status/recovery/review/semantic/PDF/DOCX/Office/ZIP/audio/video/code/"
+        "Knowledge "
         "operations are mutually exclusive"
     )
 

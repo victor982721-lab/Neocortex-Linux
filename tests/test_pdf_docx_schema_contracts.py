@@ -388,10 +388,12 @@ def test_pdf_legacy_migration_preserves_documents_pages_and_fts(
                 status,updated_ns
             ) VALUES('key','legacy.pdf',1,2,3,'sig','done',4)"""
         )
-        connection.execute("INSERT INTO pages VALUES('key',0,'native',X'78',1,NULL)")
         connection.execute(
-            "INSERT INTO page_fts VALUES('key','legacy.pdf',0,'transformador')"
+            """INSERT INTO pages(
+            file_key,page_number,source,text_zlib,text_chars,profile_json)
+            VALUES('key',0,'native',X'78',1,NULL)"""
         )
+        connection.execute("INSERT INTO page_fts VALUES('key','legacy.pdf',0,'transformador')")
         connection.execute("INSERT INTO page_fts_state VALUES('key',0,'digest')")
         connection.execute("UPDATE metadata SET value='10' WHERE key='schema_version'")
 
@@ -401,9 +403,13 @@ def test_pdf_legacy_migration_preserves_documents_pages_and_fts(
         assert connection.execute("SELECT COUNT(*) FROM documents").fetchone() == (1,)
         assert connection.execute("SELECT COUNT(*) FROM pages").fetchone() == (1,)
         assert connection.execute("SELECT COUNT(*) FROM page_fts").fetchone() == (1,)
-        assert connection.execute("SELECT COUNT(*) FROM page_fts_state").fetchone() == (
-            1,
-        )
+        assert connection.execute("SELECT COUNT(*) FROM page_fts_state").fetchone() == (1,)
+        assert connection.execute(
+            "SELECT ocr_provenance_json FROM pages WHERE file_key='key'"
+        ).fetchone() == (None,)
+        assert connection.execute(
+            "SELECT value FROM metadata WHERE key='schema_version'"
+        ).fetchone() == (str(pdf_state.SCHEMA_VERSION),)
 
 
 def test_docx_legacy_migration_preserves_parts_diagnostics_and_fts(
@@ -436,15 +442,9 @@ def test_docx_legacy_migration_preserves_parts_diagnostics_and_fts(
 
     with sqlite3.connect(database) as connection:
         assert connection.execute("SELECT COUNT(*) FROM documents").fetchone() == (1,)
-        assert connection.execute("SELECT COUNT(*) FROM document_parts").fetchone() == (
-            1,
-        )
-        assert connection.execute(
-            "SELECT COUNT(*) FROM document_diagnostics"
-        ).fetchone() == (1,)
-        assert connection.execute("SELECT COUNT(*) FROM document_fts").fetchone() == (
-            1,
-        )
+        assert connection.execute("SELECT COUNT(*) FROM document_parts").fetchone() == (1,)
+        assert connection.execute("SELECT COUNT(*) FROM document_diagnostics").fetchone() == (1,)
+        assert connection.execute("SELECT COUNT(*) FROM document_fts").fetchone() == (1,)
 
 
 # endregion [04]

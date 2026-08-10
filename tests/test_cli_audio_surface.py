@@ -26,6 +26,7 @@ from _04_Nucleo_Operativo.cli_validation import validate_arguments
 
 
 AUDIO_GROUP_TITLE = "Audio/video Whisper transcription route"
+VIDEO_GROUP_TITLE = "Visual video route"
 CODE_GROUP_TITLE = "Structured source-code intelligence route"
 SEMANTIC_GROUP_TITLE = "Multimodal semantic index"
 KNOWLEDGE_GROUP_TITLE = "Read-only Knowledge Plane"
@@ -307,7 +308,8 @@ def test_audio_actions_aliases_and_help_preserve_the_normalized_contract() -> No
     parser = build_parser()
     group = next(item for item in parser._action_groups if item.title == AUDIO_GROUP_TITLE)
 
-    assert group is parser._action_groups[-4]
+    assert group is parser._action_groups[-5]
+    assert parser._action_groups[-4].title == VIDEO_GROUP_TITLE
     assert parser._action_groups[-3].title == CODE_GROUP_TITLE
     assert parser._action_groups[-2].title == SEMANTIC_GROUP_TITLE
     assert parser._action_groups[-1].title == KNOWLEDGE_GROUP_TITLE
@@ -320,7 +322,7 @@ def test_audio_actions_aliases_and_help_preserve_the_normalized_contract() -> No
     assert max_file_action.type is decimal_megabytes
     help_text = parser.format_help()
     help_start = help_text.index(f"{AUDIO_GROUP_TITLE}:\n")
-    help_end = help_text.index(f"{CODE_GROUP_TITLE}:\n", help_start)
+    help_end = help_text.index(f"{VIDEO_GROUP_TITLE}:\n", help_start)
     assert help_text[help_start:help_end] == EXPECTED_AUDIO_HELP
 
 

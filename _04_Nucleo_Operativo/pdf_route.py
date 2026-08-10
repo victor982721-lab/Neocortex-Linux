@@ -14,12 +14,11 @@ page per active worker and interrupted documents can resume.
 from __future__ import annotations
 
 import json
-import math
 import sqlite3
 import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Iterator, Literal, Protocol, cast
 
@@ -39,8 +38,10 @@ from .pdf_isolation import (
     PdfChildReportedError,
     IsolatedExtractionConfig,
     PdfDocumentTimeout,
+    _ocr_page_result,
     stream_isolated_extraction,
 )
+from .ocr_profiles import native_text_quality, resolve_ocr_profile
 from .pdf_runtime import (
     PdfResourceError,
     PdfResourceGate,
@@ -56,6 +57,7 @@ from .pdf_route_models import (
     effective_document_timeout_seconds,
     effective_pdf_job_memory_limit_bytes,
     effective_pdf_worker_memory_bytes,
+    resolve_pdf_tesseract_runtime,
 )
 from .pdf_route_cache import (
     PDF_CACHE_TOUCH_BATCH,
@@ -65,7 +67,6 @@ from .pdf_route_cache import (
 from .pdf_route_storage import (
     PROMOTION_BATCH_BYTES,
     PdfRouteStorageMixin,
-    normalize_pdf_text as _normalize_text,
 )
 from .pdf_state import initialize_pdf_state, pdf_database
 from .pdf_writer import serialized_pdf_write
@@ -219,9 +220,7 @@ class _ExtractionRuntime:
     expected_total: int
     stats: _ExtractionStats = field(default_factory=_ExtractionStats)
     pending: set[Future[_DocumentResult]] = field(default_factory=set)
-    pending_snapshots: dict[Future[_DocumentResult], FileSnapshot] = field(
-        default_factory=dict
-    )
+    pending_snapshots: dict[Future[_DocumentResult], FileSnapshot] = field(default_factory=dict)
     cache_touches: list[FileSnapshot] = field(default_factory=list)
     exhausted: bool = False
     active_page_progress: str | int = 0
@@ -258,6 +257,21 @@ class _IsolatedExtractionState:
         self.page_diagnostic = None
         self.page_error_limit = None
         self.prepared = False
+
+
+class _OcrTextWithProvenance(str):
+    """Keep the legacy string contract while carrying local page evidence."""
+
+    provenance: dict[str, object]
+
+    def __new__(
+        cls,
+        value: str,
+        provenance: dict[str, object],
+    ) -> _OcrTextWithProvenance:
+        instance = super().__new__(cls, value)
+        instance.provenance = provenance
+        return instance
 
 
 @dataclass(slots=True)
@@ -310,10 +324,7 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
             and config.page_start > config.page_end
         ):
             raise ValueError("PDF page_start cannot exceed page_end")
-        if (
-            config.document_timeout_seconds is not None
-            and config.document_timeout_seconds <= 0
-        ):
+        if config.document_timeout_seconds is not None and config.document_timeout_seconds <= 0:
             raise ValueError("PDF document timeout must be positive")
         if config.timeout_mode not in {"fixed", "adaptive"}:
             raise ValueError("PDF timeout mode must be fixed or adaptive")
@@ -324,7 +335,24 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
             and config.max_document_timeout_seconds < config.document_timeout_seconds
         ):
             raise ValueError("PDF maximum timeout cannot be below its base timeout")
+        profile_plan = resolve_ocr_profile(config.ocr_profile, config.ocr_lang)
+        ocr_runtime = resolve_pdf_tesseract_runtime(config) if config.ocr_mode != "never" else None
+        if (
+            config.ocr_mode != "never"
+            and ocr_runtime is not None
+            and not ocr_runtime.available
+            and (
+                config.ocr_profile != "configured"
+                or ocr_runtime.component.get("status") == "missing-languages"
+            )
+        ):
+            raise RuntimeError(
+                "PDF OCR profile preflight failed: "
+                f"{ocr_runtime.unavailable_reason or 'runtime unavailable'}"
+            )
         self.config = config
+        self._ocr_profile_plan = profile_plan
+        self._ocr_runtime = ocr_runtime
         self.index = index
         self.framework_state = framework_state
         self.run_id = run_id
@@ -443,11 +471,7 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
                 metadata = json.loads(cache_decision.metadata_json)
             except (TypeError, ValueError):
                 metadata = None
-            recovery = (
-                metadata.get("neocortex_recovery")
-                if isinstance(metadata, dict)
-                else None
-            )
+            recovery = metadata.get("neocortex_recovery") if isinstance(metadata, dict) else None
             if isinstance(recovery, dict):
                 primary_error = str(
                     recovery.get("primary_error")
@@ -463,9 +487,7 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
                 evidence.update(
                     {
                         "message": "PDF recovered",
-                        "recovery_engine": str(recovery.get("engine") or "unknown")[
-                            :256
-                        ],
+                        "recovery_engine": str(recovery.get("engine") or "unknown")[:256],
                         "primary_error": primary_error,
                     }
                 )
@@ -484,18 +506,13 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
             diagnostic_message = error_message or "cached PDF requires review"
             if error_type == "PdfPageSequenceAborted":
                 phase = "page_extraction"
-                diagnostic_message = (
-                    "consecutive page extraction failures; " + diagnostic_message
-                )
+                diagnostic_message = "consecutive page extraction failures; " + diagnostic_message
             diagnostic = classify_pdf_failure(
                 error_type or "CachedPartialPdf",
                 diagnostic_message,
                 phase=phase,
             )
-            if (
-                status == "partial"
-                and diagnostic.recommendation == "deletion_candidate"
-            ):
+            if status == "partial" and diagnostic.recommendation == "deletion_candidate":
                 diagnostic = PdfFailureDiagnostic(
                     diagnostic.error_type,
                     diagnostic.phase,
@@ -923,9 +940,7 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
                 "elapsed_ns": time.perf_counter_ns() - extraction_started,
                 "selected_documents": stats.total,
                 "candidate_pool": plan.candidate_pool,
-                "skipped_by_size": max(
-                    0, plan.candidate_pool - plan.eligible_candidates
-                ),
+                "skipped_by_size": max(0, plan.candidate_pool - plan.eligible_candidates),
                 "skipped_by_count": max(0, plan.eligible_candidates - stats.total),
                 "processed": stats.processed,
                 "cache_hits": stats.cache_hits,
@@ -1147,9 +1162,7 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
                 selection,
             )
         else:
-            iterator = self.framework_state.iter_route_candidates(
-                self.run_id, "application/pdf"
-            )
+            iterator = self.framework_state.iter_route_candidates(self.run_id, "application/pdf")
         for snapshot in iterator:
             self.cancellation.checkpoint()
             batch.append(
@@ -1179,9 +1192,7 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
         if limit is not None:
             yield from self._limited_fallback_candidates(limit)
             return
-        for snapshot in self.framework_state.iter_route_candidates(
-            self.run_id, "application/pdf"
-        ):
+        for snapshot in self.framework_state.iter_route_candidates(self.run_id, "application/pdf"):
             if self._candidate_within_size_limit(snapshot):
                 yield snapshot
 
@@ -1193,9 +1204,7 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
         priority_rank = {key: rank for rank, key in enumerate(priority_keys)}
         prioritized: dict[str, FileSnapshot] = {}
         fallback: list[FileSnapshot] = []
-        for snapshot in self.framework_state.iter_route_candidates(
-            self.run_id, "application/pdf"
-        ):
+        for snapshot in self.framework_state.iter_route_candidates(self.run_id, "application/pdf"):
             if not self._candidate_within_size_limit(snapshot):
                 continue
             key = _file_key(snapshot)
@@ -1222,9 +1231,7 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
     def _database_candidate_snapshots(self) -> Iterator[FileSnapshot]:
         where_sql, parameters = self._candidate_where_sql()
         protected_priority = (
-            3
-            if self.config.retry_errors or self.config.selection.force_incomplete_retry
-            else 5
+            3 if self.config.retry_errors or self.config.selection.force_incomplete_retry else 5
         )
         limit_sql = "" if self.config.max_documents is None else " LIMIT ?"
         if self.config.max_documents is not None:
@@ -1339,9 +1346,7 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
 
     def _candidate_counts(self) -> tuple[int, int]:
         with _database(self.config.state_path, readonly=True) as connection:
-            total_where, total_parameters = self._candidate_where_sql(
-                include_size=False
-            )
+            total_where, total_parameters = self._candidate_where_sql(include_size=False)
             eligible_where, eligible_parameters = self._candidate_where_sql()
             total = int(
                 connection.execute(
@@ -1368,9 +1373,7 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
             return ()
         where_sql, parameters = self._candidate_where_sql()
         protected_priority = (
-            3
-            if self.config.retry_errors or self.config.selection.force_incomplete_retry
-            else 5
+            3 if self.config.retry_errors or self.config.selection.force_incomplete_retry else 5
         )
         parameters.append(limit)
         with _database(self.config.state_path, readonly=True) as connection:
@@ -1487,6 +1490,9 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
             self.config.tessdata_dir,
             ocr_scale_factor,
             structural_recovery_reason,
+            self.config.ocr_profile,
+            self.config.processing_signature,
+            (self._ocr_runtime.traineddata_hashes if self._ocr_runtime is not None else ()),
         )
 
     def _stream_isolated_document(
@@ -1514,8 +1520,7 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
             if result is not None:
                 return result
             if flush_eligible and (
-                len(state.batch) >= TEXT_BATCH_PAGES
-                or state.batch_bytes >= PROMOTION_BATCH_BYTES
+                len(state.batch) >= TEXT_BATCH_PAGES or state.batch_bytes >= PROMOTION_BATCH_BYTES
             ):
                 self._flush_isolated_batch(snapshot, state)
         return None
@@ -1529,9 +1534,7 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
         kind = message[0]
         if kind == "warnings":
             state.warning_count += int(message[1])
-            state.warning_samples = tuple(
-                dict.fromkeys((*state.warning_samples, *message[2]))
-            )[:20]
+            state.warning_samples = tuple(dict.fromkeys((*state.warning_samples, *message[2])))[:20]
             return None, False
         if kind == "recovery":
             state.recovery_evidence = dict(message[1])
@@ -1620,6 +1623,15 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
             source, text = message[2], message[3]
             state.batch.append(message)
             state.batch_bytes += len(text.encode("utf-8"))
+            if len(message) > 4 and message[4] is not None:
+                state.batch_bytes += len(
+                    json.dumps(
+                        message[4],
+                        ensure_ascii=True,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                )
             state.native_pages += int(source != "ocr")
             state.ocr_pages += int(source == "ocr")
         elif kind == "page_error":
@@ -1690,9 +1702,7 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
             raise RuntimeError("isolated extractor produced no document header")
         self._flush_isolated_batch(snapshot, state, clear=False)
         status: Literal["done", "partial"] = (
-            "partial"
-            if state.page_errors or state.page_error_limit is not None
-            else "done"
+            "partial" if state.page_errors or state.page_error_limit is not None else "done"
         )
         is_partial = (
             state.start > 0
@@ -1739,9 +1749,7 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
                 page_end=state.end,
                 is_partial=is_partial,
                 page_errors=state.page_errors,
-                document_error_type=(
-                    "PdfPageSequenceAborted" if error_limit is not None else None
-                ),
+                document_error_type=("PdfPageSequenceAborted" if error_limit is not None else None),
                 document_error_message=(
                     json.dumps(
                         error_limit,
@@ -1887,9 +1895,7 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
         exc: Exception,
     ) -> _DocumentResult:
         self._flush_isolated_batch(snapshot, state)
-        error_type, error_message, phase, exit_code = self._isolated_failure_details(
-            exc
-        )
+        error_type, error_message, phase, exit_code = self._isolated_failure_details(exc)
         diagnostic = classify_pdf_failure(
             error_type,
             error_message,
@@ -1898,13 +1904,10 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
         )
         transient = diagnostic.retryable
         staged_pages = self._successful_staged_page_count(snapshot)
-        stored_status = cast(
-            Literal["error", "partial"],
-            (
-                "partial"
-                if error_type == "PdfStructuralRecoveryFailed" and staged_pages > 0
-                else "error"
-            ),
+        stored_status: Literal["error", "partial"] = (
+            "partial"
+            if error_type == "PdfStructuralRecoveryFailed" and staged_pages > 0
+            else "error"
         )
         diagnostic = self._preserve_recoverable_page_diagnostic(
             diagnostic,
@@ -1966,10 +1969,7 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
         diagnostic: PdfFailureDiagnostic,
         stored_status: Literal["error", "partial"],
     ) -> PdfFailureDiagnostic:
-        if (
-            stored_status != "partial"
-            or diagnostic.recommendation != "deletion_candidate"
-        ):
+        if stored_status != "partial" or diagnostic.recommendation != "deletion_candidate":
             return diagnostic
         return PdfFailureDiagnostic(
             diagnostic.error_type,
@@ -2012,7 +2012,7 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
             return None
         error_type = str(row["error_type"] or "")
         if error_type == "PdfPageSequenceAborted":
-            return f"{error_type}: {str(row['error_message'] or '')}"[:2000]
+            return f"{error_type}: {row['error_message'] or ''!s}"[:2000]
         if not error_type and int(row["errors"] or 0) >= PDF_PAGE_SEQUENCE_ERROR_LIMIT:
             return (
                 "Legacy PdfPageSequenceAborted: retained at least "
@@ -2062,9 +2062,7 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
                     key = _file_key(snapshot)
                     self._delete_document_cache(connection, key)
                     connection.execute("DELETE FROM documents WHERE file_key=?", (key,))
-                    connection.execute(
-                        "DELETE FROM pdf_inventory WHERE file_key=?", (key,)
-                    )
+                    connection.execute("DELETE FROM pdf_inventory WHERE file_key=?", (key,))
                     connection.commit()
                 resolved_review = self._resolve_review_generation(
                     snapshot,
@@ -2132,16 +2130,15 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
                 ).fetchone()[0]
             )
 
-    def _flush_extraction_batch(
-        self, snapshot: FileSnapshot, messages: list[tuple]
-    ) -> None:
+    def _flush_extraction_batch(self, snapshot: FileSnapshot, messages: list[tuple]) -> None:
         """Promote a bounded child-message batch through the sole SQLite writer."""
 
         self._check_disk()
         with serialized_pdf_write(), _database(self.config.state_path) as connection:
             for message in messages:
                 if message[0] == "page":
-                    _, page_number, source, text = message
+                    _, page_number, source, text, *tail = message
+                    provenance = tail[0] if tail else None
                     self._store_staging_page(
                         connection,
                         _file_key(snapshot),
@@ -2149,6 +2146,7 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
                         page_number,
                         source,
                         text,
+                        provenance,
                     )
                 else:
                     _, page_number, error_type, error_message = message
@@ -2185,9 +2183,7 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
             if document.needs_pass:
                 document.close()
                 document = None
-                self._store_failure(
-                    snapshot, "protected", "EncryptedPdf", "password required"
-                )
+                self._store_failure(snapshot, "protected", "EncryptedPdf", "password required")
                 return _DocumentResult("protected")
             page_count = int(document.page_count)
             start, end = self._page_bounds(page_count)
@@ -2331,9 +2327,7 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
     ) -> None:
         for page_number in range(start, end):
             self.cancellation.checkpoint()
-            if page_number < skip_before or (
-                only_pages and page_number not in only_pages
-            ):
+            if page_number < skip_before or (only_pages and page_number not in only_pages):
                 continue
             source = self._extract_local_page(
                 connection,
@@ -2357,18 +2351,55 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
         try:
             page = document.load_page(page_number)
             native_text = page.get_text("text") or ""
+            quality = native_text_quality(
+                native_text,
+                min_characters=self.config.min_page_chars,
+            )
+            provenance: dict[str, object] = {
+                "schema": "neocortex.ocr-page/v1",
+                "profile": self.config.ocr_profile,
+                "configured_languages": list(self._ocr_profile_plan.configured_languages),
+                "requested_languages": list(self._ocr_profile_plan.required_languages),
+                "effective_languages": [],
+                "traineddata": [
+                    {"language": language, "xxh3_128": digest}
+                    for language, digest in (
+                        self._ocr_runtime.traineddata_hashes
+                        if self._ocr_runtime is not None
+                        else ()
+                    )
+                ],
+                "processing_signature": self.config.processing_signature,
+                "native_text_quality": asdict(quality),
+                "ocr_attempted": False,
+                "ocr_selected": False,
+            }
             source: Literal["native", "ocr", "error"] = "native"
             text = native_text
-            if self._should_ocr_local_page(native_text, state):
+            if self._should_ocr_local_page(quality.usable, state):
                 state.ocr_attempted += 1
                 ocr_text = self._ocr_page(page, fitz)
+                carried = getattr(ocr_text, "provenance", None)
+                if isinstance(carried, dict):
+                    provenance = dict(carried)
+                    provenance["native_text_quality"] = asdict(quality)
+                provenance["ocr_attempted"] = True
                 if ocr_text.strip() or self.config.ocr_mode == "always":
                     text = ocr_text
                     source = "ocr"
+                    provenance["ocr_selected"] = True
+                else:
+                    provenance["ocr_selected"] = False
+                    provenance["ocr_not_selected_reason"] = "empty_ocr_result"
+            elif self.config.ocr_mode == "never":
+                provenance["ocr_skipped_reason"] = "ocr_disabled"
+            elif quality.usable:
+                provenance["ocr_skipped_reason"] = "native_text_usable"
+            else:
+                provenance["ocr_skipped_reason"] = "max_ocr_pages_reached"
             if len(text) > self.config.max_page_text_chars:
                 raise RuntimeError(
-                    f"page text has {len(text)} characters; "
-                    f"limit={self.config.max_page_text_chars}"
+                    f"page text has {len(text)} characters; limit={self.config.max_page_text_chars}"
                 )
             self._store_staging_page(
                 connection,
@@ -2377,6 +2408,7 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
                 page_number,
                 source,
                 text,
+                provenance,
             )
             return source
         except CancellationRequested:
@@ -2396,16 +2428,14 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
 
     def _should_ocr_local_page(
         self,
-        native_text: str,
+        native_text_usable: bool,
         state: _LocalExtractionState,
     ) -> bool:
         wants_ocr = self.config.ocr_mode == "always" or (
-            self.config.ocr_mode == "auto"
-            and len(_normalize_text(native_text)) < self.config.min_page_chars
+            self.config.ocr_mode == "auto" and not native_text_usable
         )
         within_limit = (
-            self.config.max_ocr_pages is None
-            or state.ocr_attempted < self.config.max_ocr_pages
+            self.config.max_ocr_pages is None or state.ocr_attempted < self.config.max_ocr_pages
         )
         return wants_ocr and within_limit
 
@@ -2440,9 +2470,7 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
         start = 0 if self.config.page_start is None else self.config.page_start - 1
         end = self.config.page_end
         if self.config.max_pages is not None:
-            end = min(
-                end if end is not None else 2**63 - 1, start + self.config.max_pages
-            )
+            end = min(end if end is not None else 2**63 - 1, start + self.config.max_pages)
         metadata = {"engine": "pdfminer", "fallback": True}
         with serialized_pdf_write(), _database(self.config.state_path) as connection:
             self._prepare_document(connection, snapshot, 0, metadata)
@@ -2517,51 +2545,65 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
         )
 
     def _ocr_page(self, page: Any, fitz: Any) -> str:
-        import pytesseract  # type: ignore[import-untyped]
-        from PIL import Image
+        runtime_hashes = (
+            self._ocr_runtime.traineddata_hashes if self._ocr_runtime is not None else ()
+        )
+        extraction = IsolatedExtractionConfig(
+            ocr_mode=self.config.ocr_mode,
+            ocr_lang=self.config.ocr_lang,
+            dpi=self.config.dpi,
+            min_page_chars=self.config.min_page_chars,
+            max_page_text_chars=self.config.max_page_text_chars,
+            max_render_pixels=self.config.max_render_pixels,
+            max_ocr_pages=self.config.max_ocr_pages,
+            ocr_timeout_seconds=self.config.ocr_timeout_seconds,
+            pdfminer_fallback=self.config.pdfminer_fallback,
+            max_pages=self.config.max_pages,
+            page_start=self.config.page_start,
+            page_end=self.config.page_end,
+            fail_fast_pages=self.config.fail_fast_pages,
+            skip_before=0,
+            only_pages=frozenset(),
+            prior_ocr_pages=0,
+            tesseract_cmd=self.config.tesseract_cmd,
+            tessdata_dir=self.config.tessdata_dir,
+            ocr_profile=self.config.ocr_profile,
+            ocr_processing_signature=self.config.processing_signature,
+            ocr_traineddata_hashes=runtime_hashes,
+        )
+        result = _ocr_page_result(page, fitz, extraction, self._ocr_slots)
+        return _OcrTextWithProvenance(result.text, result.provenance)
 
-        with self._ocr_slots:
-            if self.config.tesseract_cmd:
-                pytesseract.pytesseract.tesseract_cmd = self.config.tesseract_cmd
-            requested_scale = self.config.dpi / 72.0
-            base_pixels = max(1.0, float(page.rect.width) * float(page.rect.height))
-            safe_scale = math.sqrt(self.config.max_render_pixels / base_pixels) * 0.999
-            scale = min(requested_scale, safe_scale)
-            if scale < 1.0:
-                raise RuntimeError(
-                    f"OCR page requires {int(base_pixels)} pixels even at 72 DPI; "
-                    f"limit={self.config.max_render_pixels}"
+    def _store_text_duplicate_batch(
+        self,
+        redundant_batch: list[sqlite3.Row],
+        evidence: str,
+    ) -> int:
+        if not redundant_batch:
+            return 0
+        rows = tuple(redundant_batch)
+        redundant_batch.clear()
+        action_ids = self.framework_state.begin_file_actions(
+            self.run_id,
+            (
+                (
+                    "review_pdf_text_duplicate",
+                    row["path"],
+                    None,
+                    "application/pdf",
+                    f"{evidence};policy=advisory-only",
+                    False,
                 )
-            render_pixels = int(page.rect.width * scale) * int(page.rect.height * scale)
-            if render_pixels > self.config.max_render_pixels:
-                raise RuntimeError(
-                    f"OCR render would require {render_pixels} pixels; "
-                    f"limit={self.config.max_render_pixels}"
-                )
-            pixmap = page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False)
-            mode = "RGB" if pixmap.n == 3 else "L"
-            image = Image.frombytes(mode, (pixmap.width, pixmap.height), pixmap.samples)
-            try:
-                for attempt in range(2):
-                    try:
-                        return pytesseract.image_to_string(
-                            image,
-                            lang=self.config.ocr_lang,
-                            timeout=self.config.ocr_timeout_seconds,
-                            config=(
-                                f'--tessdata-dir "{self.config.tessdata_dir}"'
-                                if self.config.tessdata_dir
-                                else ""
-                            ),
-                        )
-                    except PermissionError as exc:
-                        if attempt or getattr(exc, "winerror", None) != 32:
-                            raise
-                        if self.cancellation.wait(0.25):
-                            self.cancellation.checkpoint()
-                raise RuntimeError("unreachable OCR retry state")
-            finally:
-                image.close()
+                for row in rows
+            ),
+        )
+        self.framework_state.finish_file_actions(
+            action_ids,
+            "planned",
+            "Advisory only: equal normalized text does not establish "
+            "visual or document equivalence",
+        )
+        return len(rows)
 
     def _deduplicate_text(self) -> tuple[int, int, int, int]:
         """Persist review candidates without inferring visual equivalence.
@@ -2592,48 +2634,24 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
                 keep = next((row for row in rows if Path(row["path"]).is_file()), None)
                 if keep is None:
                     continue
-                evidence = (
-                    f"normalized-text-xxh3-128={key[0]};chars={key[1]};"
-                    f"keep={keep['path']}"
-                )
+                evidence = f"normalized-text-xxh3-128={key[0]};chars={key[1]};keep={keep['path']}"
                 redundant_batch: list[sqlite3.Row] = []
                 group_has_redundant = False
-
-                def flush_batch() -> None:
-                    nonlocal candidates, group_has_redundant
-                    if not redundant_batch:
-                        return
-                    group_has_redundant = True
-                    candidates += len(redundant_batch)
-                    action_ids = self.framework_state.begin_file_actions(
-                        self.run_id,
-                        (
-                            (
-                                "review_pdf_text_duplicate",
-                                row["path"],
-                                None,
-                                "application/pdf",
-                                f"{evidence};policy=advisory-only",
-                                False,
-                            )
-                            for row in redundant_batch
-                        ),
-                    )
-                    self.framework_state.finish_file_actions(
-                        action_ids,
-                        "planned",
-                        "Advisory only: equal normalized text does not establish "
-                        "visual or document equivalence",
-                    )
-                    redundant_batch.clear()
 
                 for row in rows:
                     if not Path(row["path"]).is_file():
                         continue
                     redundant_batch.append(row)
                     if len(redundant_batch) >= TEXT_DUPLICATE_ACTION_BATCH_SIZE:
-                        flush_batch()
-                flush_batch()
+                        stored = self._store_text_duplicate_batch(
+                            redundant_batch,
+                            evidence,
+                        )
+                        candidates += stored
+                        group_has_redundant = group_has_redundant or stored > 0
+                stored = self._store_text_duplicate_batch(redundant_batch, evidence)
+                candidates += stored
+                group_has_redundant = group_has_redundant or stored > 0
                 groups += int(group_has_redundant)
         return groups, candidates, trashed, skips
 
@@ -2727,4 +2745,6 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
                 ),
             ),
         )
+
+
 # endregion [02]

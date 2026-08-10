@@ -29,6 +29,10 @@ from .cli_operations import DirectOperationFamily, selected_direct_operations
 from .cli_platform_surface import validate_platform_arguments
 from .cli_semantic_surface import validate_semantic_arguments
 from .cli_text_surface import validate_text_arguments
+from .cli_video_surface import (
+    validate_video_arguments,
+    validate_video_direct_operation,
+)
 from .code_contracts import (
     DEFAULT_DEEP_MUTATION_MAX_MUTANTS,
     DEFAULT_DEEP_MUTATION_TIME_BUDGET_SECONDS,
@@ -38,6 +42,7 @@ from .code_contracts import (
     normalize_deep_test_selectors,
 )
 from .corpus_access import path_trees_intersect
+from .ocr_profiles import parse_language_spec
 from .route_selection import (
     BUILTIN_ROUTE_ORDER,
     ORGANIZABLE_ROUTE_NAMES,
@@ -67,6 +72,7 @@ _SELF_ANALYSIS_UNUSED_PREFIXES = (
     "office_",
     "pdf_",
     "text_",
+    "video_",
     "retry_audio_",
     "retry_archive_",
     "retry_docx_",
@@ -74,6 +80,7 @@ _SELF_ANALYSIS_UNUSED_PREFIXES = (
     "retry_office_",
     "retry_pdf_",
     "retry_text_",
+    "retry_video_",
     "semantic_",
     "whisper_",
 )
@@ -87,6 +94,7 @@ _SELF_ANALYSIS_UNUSED_OPTIONS = frozenset(
         "max_pdf_pages",
         "ocr",
         "ocr_lang",
+        "ocr_profile",
         "ocr_timeout",
         "ocr_workers",
         "organization_min_confidence",
@@ -387,9 +395,18 @@ def _validate_image(args: argparse.Namespace) -> None:
         raise SystemExit("--image-ocr-timeout must be positive")
     if args.image_ocr_lang is not None and not args.image_ocr_lang.strip("+"):
         raise SystemExit("--image-ocr-lang must name at least one language")
+    if args.image_ocr_lang is not None:
+        try:
+            parse_language_spec(args.image_ocr_lang)
+        except ValueError as exc:
+            raise SystemExit(f"--image-ocr-lang: {exc}") from exc
 
 
 def _validate_pdf_processing(args: argparse.Namespace) -> None:
+    try:
+        parse_language_spec(args.ocr_lang)
+    except ValueError as exc:
+        raise SystemExit(f"--ocr-lang: {exc}") from exc
     for name in (
         "pdf_workers",
         "ocr_workers",
@@ -472,7 +489,7 @@ def _validate_direct_operation_selection(args: argparse.Namespace) -> None:
     direct_operations = selected_direct_operations(args)
     if len(direct_operations) > 1:
         raise SystemExit(
-            "direct status/recovery/review/semantic/PDF/DOCX/Office/ZIP/audio/code/"
+            "direct status/recovery/review/semantic/PDF/DOCX/Office/ZIP/audio/video/code/"
             "Knowledge "
             "operations are mutually exclusive"
         )
@@ -849,6 +866,7 @@ def _validate_direct_operations(args: argparse.Namespace) -> None:
     validate_archive_direct_operation(args, explicit)
     _validate_organization_operations(args, explicit)
     validate_audio_direct_operation(args)
+    validate_video_direct_operation(args)
 
 
 def _validate_route_only(args: argparse.Namespace) -> None:
@@ -906,6 +924,7 @@ def validate_arguments(args: argparse.Namespace) -> None:
     validate_archive_arguments(args)
     validate_text_arguments(args)
     validate_audio_arguments(args)
+    validate_video_arguments(args)
     validate_semantic_arguments(args)
     validate_code_arguments(args)
     validate_platform_arguments(args)

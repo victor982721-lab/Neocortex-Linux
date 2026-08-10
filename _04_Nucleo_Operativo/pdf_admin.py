@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
-import shutil
 import json
 import sqlite3
 import zlib
 from dataclasses import dataclass
 from pathlib import Path
 
+from .ocr_profiles import OcrProfileName, resolve_ocr_profile
 from .pdf_state import connect_pdf_state
+from .processing_provenance import resolve_tesseract_runtime
 
 
 # region [01] Result models
@@ -72,6 +73,7 @@ def doctor_pdf_runtime(
     *,
     ocr_mode: str = "auto",
     ocr_lang: str = "spa+eng",
+    ocr_profile: OcrProfileName = "configured",
     tesseract_cmd: str | None = None,
     tessdata_dir: str | None = None,
 ) -> PdfDoctorReport:
@@ -104,23 +106,28 @@ def doctor_pdf_runtime(
 
     if ocr_mode != "never":
         try:
-            import pytesseract  # type: ignore[import-untyped]
+            import pytesseract  # type: ignore[import-untyped]  # noqa: F401
 
-            if tesseract_cmd:
-                pytesseract.pytesseract.tesseract_cmd = tesseract_cmd
-            command = tesseract_cmd or shutil.which("tesseract")
-            if command is None:
-                raise FileNotFoundError("tesseract executable was not found")
-            config = f'--tessdata-dir "{tessdata_dir}"' if tessdata_dir else ""
-            languages = set(pytesseract.get_languages(config=config))
-            requested = {part for part in ocr_lang.split("+") if part}
-            missing = sorted(requested - languages)
-            if missing:
-                available = ", ".join(sorted(languages)) or "none"
-                raise RuntimeError(
-                    f"missing OCR languages: {', '.join(missing)}; available: {available}"
+            plan = resolve_ocr_profile(ocr_profile, ocr_lang)
+            runtime = resolve_tesseract_runtime(
+                command=tesseract_cmd,
+                tessdata_dir=tessdata_dir,
+                language=plan.required_language_spec,
+                timeout_seconds=30.0,
+            )
+            if not runtime.available:
+                raise RuntimeError(runtime.unavailable_reason or "Tesseract runtime unavailable")
+            resolved_hashes = sum(
+                digest is not None for _language, digest in runtime.traineddata_hashes
+            )
+            checks.append(
+                PdfCheck(
+                    "tesseract",
+                    True,
+                    f"profile={ocr_profile} languages={plan.required_language_spec} "
+                    f"traineddata_hashes={resolved_hashes}",
                 )
-            checks.append(PdfCheck("tesseract", True, f"languages={ocr_lang}"))
+            )
         except Exception as exc:
             checks.append(PdfCheck("tesseract", False, f"{type(exc).__name__}: {exc}"))
 
@@ -146,9 +153,7 @@ def verify_pdf_state(path: Path) -> PdfVerifyReport:
                 break
             quick_values.append(str(row[0]))
         quick_check = "ok" if quick_values == ["ok"] else "; ".join(quick_values)
-        foreign_key_errors = sum(
-            1 for _ in connection.execute("PRAGMA foreign_key_check")
-        )
+        foreign_key_errors = sum(1 for _ in connection.execute("PRAGMA foreign_key_check"))
         page_count_mismatches = int(
             connection.execute(
                 """SELECT COUNT(*) FROM documents d
@@ -212,10 +217,7 @@ def verify_pdf_state(path: Path) -> PdfVerifyReport:
             for row in connection.execute("SELECT layout_zlib FROM page_layouts"):
                 try:
                     decoded = json.loads(zlib.decompress(row[0]).decode("utf-8"))
-                    if (
-                        not isinstance(decoded, dict)
-                        or "layout_simhash64" not in decoded
-                    ):
+                    if not isinstance(decoded, dict) or "layout_simhash64" not in decoded:
                         corrupt_layout_payloads += 1
                 except (UnicodeDecodeError, zlib.error, json.JSONDecodeError):
                     corrupt_layout_payloads += 1

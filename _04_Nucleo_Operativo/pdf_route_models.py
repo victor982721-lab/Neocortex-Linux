@@ -10,17 +10,19 @@ from typing import Any, Literal
 from .processing_provenance import (
     ROUTE_SUMMARY_SCHEMA,
     ProcessingProvenance,
+    TesseractRuntimeProvenance,
     build_processing_provenance,
     distribution_component,
     executable_component,
     resolve_tesseract_runtime,
 )
+from .ocr_profiles import OcrProfileName, resolve_ocr_profile
 from .route_filters import CandidateSelection
 
 
 # region [01] Versioned limits
 
-ALGORITHM_VERSION = "pdf-route-v2"
+ALGORITHM_VERSION = "pdf-route-v3"
 FAILURE_DETECTOR_VERSION = "pdf-failure-v3"
 STRUCTURAL_RECOVERY_VERSION = "pdf-structural-recovery-v2"
 PDF_PAGE_SEQUENCE_ERROR_LIMIT = 32
@@ -78,6 +80,7 @@ class PdfRouteConfig:
     memory_wait_timeout_seconds: float = 60.0
     large_document_bytes: int = 128 * 1024 * 1024
     large_document_workers: int = 2
+    ocr_profile: OcrProfileName = "configured"
 
     @property
     def processing_signature(self) -> str:
@@ -88,8 +91,29 @@ class PdfRouteConfig:
         return _pdf_processing_provenance(self)
 
 
+def resolve_pdf_tesseract_runtime(
+    config: PdfRouteConfig,
+) -> TesseractRuntimeProvenance:
+    """Preflight every pack that the selected bounded OCR profile may use.
+
+    The underlying runtime probe is already cached by executable, tessdata,
+    languages and timeout.  Keeping a second config-only cache here would hide
+    an explicit processing-provenance cache refresh after model artifacts
+    change in place.
+    """
+
+    plan = resolve_ocr_profile(config.ocr_profile, config.ocr_lang)
+    return resolve_tesseract_runtime(
+        command=config.tesseract_cmd,
+        tessdata_dir=config.tessdata_dir,
+        language=plan.required_language_spec,
+        timeout_seconds=min(30.0, float(config.ocr_timeout_seconds)),
+    )
+
+
 @lru_cache(maxsize=128)
 def _pdf_processing_provenance(config: PdfRouteConfig) -> ProcessingProvenance:
+    profile = resolve_ocr_profile(config.ocr_profile, config.ocr_lang)
     components: list[dict[str, Any]] = [
         distribution_component("pymupdf", "PyMuPDF"),
         executable_component("qpdf", default_name="qpdf"),
@@ -101,20 +125,12 @@ def _pdf_processing_provenance(config: PdfRouteConfig) -> ProcessingProvenance:
             (
                 distribution_component("pillow", "Pillow"),
                 distribution_component("pytesseract", "pytesseract"),
-                resolve_tesseract_runtime(
-                    command=config.tesseract_cmd,
-                    tessdata_dir=config.tessdata_dir,
-                    language=config.ocr_lang,
-                    timeout_seconds=min(30.0, float(config.ocr_timeout_seconds)),
-                ).component,
+                resolve_pdf_tesseract_runtime(config).component,
             )
         )
     return build_processing_provenance(
         "pdf",
-        (
-            f"{ALGORITHM_VERSION}|{FAILURE_DETECTOR_VERSION}|"
-            f"{STRUCTURAL_RECOVERY_VERSION}"
-        ),
+        (f"{ALGORITHM_VERSION}|{FAILURE_DETECTOR_VERSION}|{STRUCTURAL_RECOVERY_VERSION}"),
         {
             "document_timeout_seconds": config.document_timeout_seconds,
             "dpi": config.dpi,
@@ -127,6 +143,8 @@ def _pdf_processing_provenance(config: PdfRouteConfig) -> ProcessingProvenance:
             "min_page_chars": config.min_page_chars,
             "ocr_language": config.ocr_lang,
             "ocr_mode": config.ocr_mode,
+            "ocr_profile": config.ocr_profile,
+            "ocr_required_languages": profile.required_languages,
             "ocr_timeout_seconds": config.ocr_timeout_seconds,
             "page_end": config.page_end,
             "page_start": config.page_start,
@@ -154,10 +172,7 @@ def effective_pdf_worker_memory_bytes(config: PdfRouteConfig) -> int:
     return max(
         config.worker_memory_bytes,
         PDF_MIN_OCR_PROCESS_TREE_BYTES,
-        render_bytes
-        + text_bytes
-        + PDF_OCR_PROCESS_TREE_BYTES
-        + PDF_INTERPRETER_WORKSPACE_BYTES,
+        render_bytes + text_bytes + PDF_OCR_PROCESS_TREE_BYTES + PDF_INTERPRETER_WORKSPACE_BYTES,
     )
 
 

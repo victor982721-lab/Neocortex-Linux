@@ -8,7 +8,9 @@ from __future__ import annotations
 import io
 import inspect
 import os
+import shutil
 import sqlite3
+import subprocess
 import tempfile
 import unittest
 import zipfile
@@ -70,7 +72,17 @@ class CommandLineTests(unittest.TestCase):
         selected_routes = normalize_route_selection(args.route, BUILTIN_ROUTE_ORDER)
         self.assertEqual(
             selected_routes,
-            ("pdf", "docx", "office", "archive", "text", "audio", "image", "code"),
+            (
+                "pdf",
+                "docx",
+                "office",
+                "archive",
+                "text",
+                "audio",
+                "video",
+                "image",
+                "code",
+            ),
         )
         self.assertEqual(selected_routes, tuple(builtin_route_registry()))
         self.assertEqual(args.ocr, "auto")
@@ -80,6 +92,7 @@ class CommandLineTests(unittest.TestCase):
         self.assertFalse(args.retry_docx_errors)
         self.assertFalse(args.retry_office_errors)
         self.assertFalse(args.retry_audio_errors)
+        self.assertFalse(args.retry_video_errors)
         self.assertFalse(args.retry_image_errors)
         self.assertFalse(args.retry_code_errors)
         self.assertEqual(args.image_document_ocr, "auto")
@@ -94,6 +107,7 @@ class CommandLineTests(unittest.TestCase):
         self.assertIsNone(args.pdf_max_documents)
         self.assertIsNone(args.docx_max_documents)
         self.assertIsNone(args.image_max_documents)
+        self.assertIsNone(args.video_max_documents)
 
     def test_all_preserves_explicit_manual_retry_requests(self) -> None:
         args = _parser().parse_args(
@@ -563,18 +577,30 @@ class OrchestratorTests(unittest.TestCase):
 
             self.assertEqual(
                 set(result.route_results),
-                {"pdf", "docx", "office", "archive", "text", "audio", "image", "code"},
+                {
+                    "pdf",
+                    "docx",
+                    "office",
+                    "archive",
+                    "text",
+                    "audio",
+                    "video",
+                    "image",
+                    "code",
+                },
             )
             self.assertIsNotNone(result.pdf)
             self.assertIsNotNone(result.docx)
             self.assertIsNotNone(result.office)
             self.assertIsNotNone(result.audio)
+            self.assertIsNotNone(result.video)
             self.assertIsNotNone(result.image)
             self.assertIsNotNone(result.code)
             assert result.pdf is not None
             assert result.docx is not None
             assert result.office is not None
             assert result.audio is not None
+            assert result.video is not None
             assert result.image is not None
             assert result.code is not None
             self.assertEqual(result.pdf.errors, 0)
@@ -582,6 +608,7 @@ class OrchestratorTests(unittest.TestCase):
             self.assertEqual(result.office.errors, 0)
             self.assertEqual(result.office.extracted, 1)
             self.assertEqual(result.audio.errors, 0)
+            self.assertEqual(result.video.errors, 0)
             self.assertEqual(result.image.errors, 0)
             self.assertEqual(result.code.errors, 0)
             self.assertIsNotNone(result.global_resources)
@@ -614,10 +641,94 @@ class OrchestratorTests(unittest.TestCase):
                     "archive": "completed",
                     "text": "completed",
                     "audio": "completed",
+                    "video": "completed",
                     "image": "completed",
                     "code": "completed",
                 },
             )
+
+    @unittest.skipUnless(
+        shutil.which("ffmpeg") is not None
+        and shutil.which("ffprobe") is not None
+        and (os.name == "nt" or Path("/usr/bin/prlimit").is_file()),
+        "bounded FFmpeg video pilot is unavailable",
+    )
+    def test_all_abstains_benignly_from_audio_for_visual_only_video(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            corpus = base / "corpus"
+            state_directory = base / "state"
+            corpus.mkdir()
+            source = corpus / "visual-only.mkv"
+            created = subprocess.run(
+                (
+                    shutil.which("ffmpeg") or "ffmpeg",
+                    "-hide_banner",
+                    "-nostdin",
+                    "-nostats",
+                    "-loglevel",
+                    "error",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "testsrc2=size=320x180:rate=10:duration=1",
+                    "-an",
+                    "-c:v",
+                    "ffv1",
+                    "-y",
+                    str(source),
+                ),
+                capture_output=True,
+                timeout=20,
+                check=False,
+            )
+            self.assertEqual(
+                created.returncode,
+                0,
+                created.stderr.decode("utf-8", "replace"),
+            )
+            journal = SyntheticUsnJournal(corpus).start()
+            self.addCleanup(journal.close)
+            result = FrameworkOrchestrator(
+                FrameworkConfig(
+                    root=corpus,
+                    state_directory=state_directory,
+                    route="all",
+                    video_max_frames=2,
+                    video_include_scenes=False,
+                    video_include_keyframes=False,
+                    video_ocr_mode="never",
+                    global_memory_budget_bytes=3 * 1024 * 1024 * 1024,
+                    global_min_free_memory_bytes=0,
+                    global_min_free_commit_bytes=0,
+                    global_cpu_slots=2,
+                    audio_min_free_memory_bytes=0,
+                    audio_min_free_commit_bytes=0,
+                )
+            ).run_initial()
+
+            assert result.audio is not None
+            assert result.video is not None
+            self.assertEqual(result.audio.no_audio, 1)
+            self.assertEqual(result.audio.transcribed, 0)
+            self.assertEqual(result.audio.errors, 0)
+            self.assertEqual(result.audio.review_candidates, 0)
+            self.assertEqual(result.video.visual_only, 1)
+            self.assertEqual(result.video.complete, 1)
+            self.assertEqual(result.video.errors, 0)
+            self.assertFalse(_has_strict_route_errors(result))
+            with sqlite3.connect(state_directory / "audio.sqlite3") as connection:
+                self.assertEqual(
+                    connection.execute("SELECT status FROM documents").fetchone()[0],
+                    "no_audio",
+                )
+            with sqlite3.connect(state_directory / "video.sqlite3") as connection:
+                self.assertEqual(
+                    tuple(
+                        connection.execute("SELECT status,audio_status FROM documents").fetchone()
+                    ),
+                    ("complete", None),
+                )
 
     def test_marks_interrupted_pre_frontier_action_failed_without_effect(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -25,6 +25,7 @@ from _04_Nucleo_Operativo.office_state import (
 )
 from _04_Nucleo_Operativo.sqlite_schema_contract import SQLiteSchemaContractError
 from _04_Nucleo_Operativo.text_state import TEXT_SCHEMA_VERSION, initialize_text_state
+from _04_Nucleo_Operativo.video_state import VIDEO_SCHEMA_VERSION, initialize_video_state
 # endregion [01]
 
 # region [02] Implementación
@@ -59,8 +60,14 @@ Initializer = Callable[[Path], None]
             TEXT_SCHEMA_VERSION,
             "text_documents_status_idx",
         ),
+        (
+            "video",
+            initialize_video_state,
+            VIDEO_SCHEMA_VERSION,
+            "video_documents_status_idx",
+        ),
     ),
-    ids=("archive", "audio", "office", "text"),
+    ids=("archive", "audio", "office", "text", "video"),
 )
 def route_schema(
     request: pytest.FixtureRequest,

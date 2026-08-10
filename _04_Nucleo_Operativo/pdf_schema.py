@@ -18,7 +18,7 @@ from .sqlite_schema_contract import (
 # region [01] Versions and canonical DDL
 
 
-PDF_SCHEMA_VERSION = 11
+PDF_SCHEMA_VERSION = 12
 UNKNOWN_BIRTHTIME_NS = -1
 
 
@@ -63,6 +63,7 @@ _PDF_TABLE_DDL = (
         source TEXT NOT NULL,
         text_zlib BLOB NOT NULL,
         text_chars INTEGER NOT NULL,
+        ocr_provenance_json TEXT,
         PRIMARY KEY(file_key, processing_signature, page_number)
     ) WITHOUT ROWID""",
     """CREATE TABLE IF NOT EXISTS pages(
@@ -71,6 +72,7 @@ _PDF_TABLE_DDL = (
         source TEXT NOT NULL,
         text_zlib BLOB NOT NULL,
         text_chars INTEGER NOT NULL,
+        ocr_provenance_json TEXT,
         PRIMARY KEY(file_key, page_number),
         FOREIGN KEY(file_key) REFERENCES documents(file_key) ON DELETE CASCADE
     ) WITHOUT ROWID""",
@@ -141,6 +143,8 @@ _DOCUMENT_ADDITIONS = (
     ("updated_ns", "INTEGER NOT NULL DEFAULT 0"),
 )
 
+_PAGE_OCR_PROVENANCE_ADDITIONS = (("ocr_provenance_json", "TEXT"),)
+
 
 # endregion [01]
 
@@ -168,9 +172,7 @@ def _add_columns(
             continue
         quoted_table = _quoted_identifier(table)
         quoted_name = _quoted_identifier(name)
-        connection.execute(
-            f"ALTER TABLE {quoted_table} ADD COLUMN {quoted_name} {declaration}"
-        )
+        connection.execute(f"ALTER TABLE {quoted_table} ADD COLUMN {quoted_name} {declaration}")
 
 
 def _create_tables(connection: sqlite3.Connection) -> None:
@@ -186,6 +188,12 @@ def _create_indexes(connection: sqlite3.Connection) -> None:
 def _ensure_current_structure(connection: sqlite3.Connection) -> None:
     _create_tables(connection)
     _add_columns(connection, "documents", _DOCUMENT_ADDITIONS)
+    _add_columns(
+        connection,
+        "page_staging",
+        _PAGE_OCR_PROVENANCE_ADDITIONS,
+    )
+    _add_columns(connection, "pages", _PAGE_OCR_PROVENANCE_ADDITIONS)
     _add_columns(
         connection,
         "pdf_inventory",
@@ -265,6 +273,7 @@ _PDF_MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     8: _migrate_birthtime,
     9: _migrate_legacy_ocr_control,
     10: _migrate_durable_timeouts,
+    11: _no_data_migration,
 }
 
 

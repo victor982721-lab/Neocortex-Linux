@@ -31,7 +31,7 @@ HEADER_LIMIT = 64 * 1024
 ZIP_MEMBER_LIMIT = 4096
 ZIP_STRUCTURE_MEMBER_LIMIT = 10_000
 ZIP_MIMETYPE_LIMIT = 256
-DETECTOR_VERSION = "content-types-v2"
+DETECTOR_VERSION = "content-types-v3"
 
 _TEXT_EXTENSIONS = frozenset(
     {
@@ -222,6 +222,46 @@ def _detect_iso_bmff(header: bytes) -> DetectedType | None:
     return _type("video/mp4", ".mp4", (".mp4", ".m4v"), "isobmff:mp4")
 
 
+def _detect_ebml_video(header: bytes) -> DetectedType | None:
+    """Identify bounded Matroska/WebM EBML headers by their declared DocType.
+
+    Matroska-derived containers share the four-byte EBML signature.  The
+    signature alone is not enough to call arbitrary EBML data video, so this
+    detector also requires the DocType element (0x4282) and one bounded ASCII
+    value.  A one-byte EBML size is sufficient for the only accepted values
+    (``webm`` and ``matroska``) and avoids implementing a permissive container
+    parser at the content-routing boundary.
+    """
+
+    if not header.startswith(b"\x1aE\xdf\xa3"):
+        return None
+    marker = b"\x42\x82"
+    offset = header.find(marker, 4)
+    if offset < 0 or offset + len(marker) + 1 > len(header):
+        return None
+    size_marker = header[offset + len(marker)]
+    if size_marker & 0x80 == 0:
+        return None
+    size = size_marker & 0x7F
+    if size not in {4, 8}:
+        return None
+    start = offset + len(marker) + 1
+    end = start + size
+    if end > len(header):
+        return None
+    doc_type = header[start:end]
+    if doc_type == b"webm":
+        return _type("video/webm", ".webm", (".webm",), "ebml:doctype:webm")
+    if doc_type == b"matroska":
+        return _type(
+            "video/x-matroska",
+            ".mkv",
+            (".mkv", ".mka", ".mks", ".mk3d"),
+            "ebml:doctype:matroska",
+        )
+    return None
+
+
 def _detect_pe(path: str | Path, header: bytes) -> DetectedType:
     canonical = ".exe"
     accepted = (".exe", ".dll", ".sys", ".scr", ".cpl", ".ocx")
@@ -288,6 +328,9 @@ def _detect_media(header: bytes) -> DetectedType | None:
     bmff = _detect_iso_bmff(header)
     if bmff is not None:
         return bmff
+    ebml = _detect_ebml_video(header)
+    if ebml is not None:
+        return ebml
     if header.startswith(b"fLaC"):
         return _type("audio/flac", ".flac", (".flac",), "magic:flac")
     if header.startswith(b"OggS"):

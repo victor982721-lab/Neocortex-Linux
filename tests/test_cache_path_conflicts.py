@@ -196,7 +196,9 @@ class PdfCachePathConflictTests(unittest.TestCase):
                 _insert_pdf_document(connection, stale)
                 _insert_pdf_inventory(connection, moved, run_id)
                 connection.execute(
-                    "INSERT INTO pages VALUES(?,0,'native',?,4,NULL)",
+                    """INSERT INTO pages(
+                    file_key,page_number,source,text_zlib,text_chars,profile_json)
+                    VALUES(?,0,'native',?,4,NULL)""",
                     (file_key(stale), zlib.compress(b"text")),
                 )
                 connection.execute(
@@ -238,7 +240,9 @@ class PdfCachePathConflictTests(unittest.TestCase):
             with pdf_database(state) as connection:
                 _insert_pdf_document(connection, stale)
                 connection.execute(
-                    "INSERT INTO pages VALUES(?,0,'native',?,4,NULL)",
+                    """INSERT INTO pages(
+                    file_key,page_number,source,text_zlib,text_chars,profile_json)
+                    VALUES(?,0,'native',?,4,NULL)""",
                     (stale_key, zlib.compress(b"text")),
                 )
                 connection.execute(
@@ -250,7 +254,9 @@ class PdfCachePathConflictTests(unittest.TestCase):
                     (stale_key,),
                 )
                 connection.execute(
-                    "INSERT INTO page_staging VALUES(?,?,0,'native',?,4)",
+                    """INSERT INTO page_staging(
+                    file_key,processing_signature,page_number,source,text_zlib,text_chars)
+                    VALUES(?,?,0,'native',?,4)""",
                     (stale_key, "old-signature", zlib.compress(b"text")),
                 )
                 connection.execute(
@@ -297,9 +303,7 @@ class PdfCachePathConflictTests(unittest.TestCase):
         self._assert_live_owner_is_preserved(owner_birthtime_ns=302)
 
     def test_live_legacy_sentinel_omitted_by_limit_is_preserved(self):
-        self._assert_live_owner_is_preserved(
-            owner_birthtime_ns=PDF_UNKNOWN_BIRTHTIME_NS
-        )
+        self._assert_live_owner_is_preserved(owner_birthtime_ns=PDF_UNKNOWN_BIRTHTIME_NS)
 
     def _assert_live_owner_is_preserved(self, *, owner_birthtime_ns: int) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -398,9 +402,7 @@ class DocxCachePathConflictTests(unittest.TestCase):
         self._assert_live_owner_is_preserved(owner_birthtime_ns=402)
 
     def test_live_legacy_sentinel_omitted_by_limit_is_preserved(self):
-        self._assert_live_owner_is_preserved(
-            owner_birthtime_ns=DOCX_UNKNOWN_BIRTHTIME_NS
-        )
+        self._assert_live_owner_is_preserved(owner_birthtime_ns=DOCX_UNKNOWN_BIRTHTIME_NS)
 
     def _assert_live_owner_is_preserved(self, *, owner_birthtime_ns: int) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -467,9 +469,7 @@ class ReadOnlySqliteUriTests(unittest.TestCase):
                         connection.execute("INSERT INTO marker VALUES('exact')")
                         connection.commit()
                     with closing(connector(path, readonly=True)) as connection:
-                        value = connection.execute(
-                            "SELECT value FROM marker"
-                        ).fetchone()[0]
+                        value = connection.execute("SELECT value FROM marker").fetchone()[0]
                     self.assertEqual(value, "exact")
 
     def test_framework_route_state_escapes_readonly_database_path(self):
@@ -479,9 +479,7 @@ class ReadOnlySqliteUriTests(unittest.TestCase):
                 connection.execute("CREATE TABLE marker(value TEXT)")
                 connection.execute("INSERT INTO marker VALUES('exact')")
                 connection.commit()
-            with closing(
-                FrameworkRouteState(path)._connect(readonly=True)
-            ) as connection:
+            with closing(FrameworkRouteState(path)._connect(readonly=True)) as connection:
                 value = connection.execute("SELECT value FROM marker").fetchone()[0]
             self.assertEqual(value, "exact")
 

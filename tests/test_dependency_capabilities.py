@@ -195,6 +195,8 @@ def test_missing_optional_runtimes_are_explicitly_unavailable_or_degraded() -> N
     assert "pdf_extractor_unavailable" in statuses["pdf"].degradation_reasons
     assert statuses["audio"].state is CapabilityState.UNAVAILABLE
     assert "audio_backend_unavailable" in statuses["audio"].degradation_reasons
+    assert statuses["video"].state is CapabilityState.UNAVAILABLE
+    assert "video_frame_extractor_unavailable" in statuses["video"].degradation_reasons
     assert statuses["image"].state is CapabilityState.UNAVAILABLE
     assert "image_decode_unavailable" in statuses["image"].degradation_reasons
     assert statuses["semantic"].state is CapabilityState.UNAVAILABLE
@@ -230,6 +232,20 @@ def test_optional_route_components_produce_stable_degradation_reasons() -> None:
     )
     assert image.to_dict()["models_loaded"] is False
     assert image.to_dict()["models_downloaded"] is False
+
+    video = inspect_runtime_capability(
+        "video",
+        module_finder=(lambda name: object() if name in {"rich", "xxhash"} else None),
+        distribution_version=_version_reader({"rich", "xxhash"}),
+        executable_finder=(
+            lambda name: f"/fixture/{name}" if name in {"ffmpeg", "ffprobe"} else None
+        ),
+    )
+    assert video.state is CapabilityState.DEGRADED
+    assert video.degradation_reasons == (
+        "video_frame_ocr_decoder_unavailable",
+        "video_frame_ocr_unavailable",
+    )
 
 
 def test_all_declared_components_serialize_as_available_when_present() -> None:

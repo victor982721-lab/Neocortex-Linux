@@ -48,7 +48,7 @@ class RouteRegistryIsolationTests(unittest.TestCase):
 
             registry = builtin_route_registry()
             if tuple(registry) != (
-                "pdf", "docx", "office", "archive", "text", "audio", "image", "code"
+                "pdf", "docx", "office", "archive", "text", "audio", "video", "image", "code"
             ):
                 raise SystemExit(f"unexpected registry: {tuple(registry)!r}")
             forbidden = {
@@ -61,6 +61,7 @@ class RouteRegistryIsolationTests(unittest.TestCase):
                 "_04_Nucleo_Operativo.archive_route",
                 "_04_Nucleo_Operativo.text_route",
                 "_04_Nucleo_Operativo.audio_route",
+                "_04_Nucleo_Operativo.video_route",
                 "_04_Nucleo_Operativo.code_route",
                 "_04_Nucleo_Operativo.code_analyzers",
             }
@@ -87,6 +88,7 @@ class RouteRegistryIsolationTests(unittest.TestCase):
                 "_04_Nucleo_Operativo.image_route",
                 "_04_Nucleo_Operativo.office_route",
                 "_04_Nucleo_Operativo.audio_route",
+                "_04_Nucleo_Operativo.video_route",
             }
             if engines.intersection(sys.modules):
                 raise SystemExit("route engines loaded before deferred access")
@@ -126,6 +128,7 @@ class RouteRegistryIsolationTests(unittest.TestCase):
                 "_04_Nucleo_Operativo.docx_route",
                 "_04_Nucleo_Operativo.image_route",
                 "_04_Nucleo_Operativo.audio_route",
+                "_04_Nucleo_Operativo.video_route",
             }
             loaded = forbidden.intersection(sys.modules)
             if loaded:
@@ -170,7 +173,7 @@ class RouteRegistryIsolationTests(unittest.TestCase):
             print("SELECTION_ISOLATED:" + expression)
         """
 
-        for expression in ("pdf", "docx,office,audio,image"):
+        for expression in ("pdf", "docx,office,audio,video,image"):
             with self.subTest(selection=expression):
                 completed = _run_isolated(script, NEOCORTEX_TEST_SELECTION=expression)
                 self.assertEqual(completed.returncode, 0, completed.stderr)
@@ -192,6 +195,7 @@ class RouteRegistryIsolationTests(unittest.TestCase):
                 "image": "_04_Nucleo_Operativo.image_route",
                 "office": "_04_Nucleo_Operativo.office_route",
                 "audio": "_04_Nucleo_Operativo.audio_route",
+                "video": "_04_Nucleo_Operativo.video_route",
                 "text": "_04_Nucleo_Operativo.text_route",
             }
             class_names = {
@@ -200,6 +204,7 @@ class RouteRegistryIsolationTests(unittest.TestCase):
                 "image": ("ImageRoute", "ImageRouteConfig"),
                 "office": ("OfficeRoute", "OfficeRouteConfig"),
                 "audio": ("AudioRoute", "AudioRouteConfig"),
+                "video": ("VideoRoute", "VideoRouteConfig"),
                 "text": ("TextRoute", "TextRouteConfig"),
             }
 
@@ -288,7 +293,7 @@ class RouteRegistryIsolationTests(unittest.TestCase):
             print("ADAPTER_ISOLATED:" + route_name)
         """
 
-        for route_name in ("pdf", "docx", "office", "text", "audio", "image"):
+        for route_name in ("pdf", "docx", "office", "text", "audio", "video", "image"):
             with self.subTest(route=route_name):
                 completed = _run_isolated(script, NEOCORTEX_TEST_ROUTE=route_name)
                 self.assertEqual(completed.returncode, 0, completed.stderr)

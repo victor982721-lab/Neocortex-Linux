@@ -28,6 +28,8 @@ from .cli_office_surface import register_office_arguments
 from .cli_platform_surface import register_platform_arguments
 from .cli_semantic_surface import register_semantic_arguments
 from .cli_text_surface import register_text_arguments
+from .cli_video_surface import register_video_arguments
+from .ocr_profiles import OCR_PROFILE_CHOICES
 
 __all__ = [
     "ExplicitArgumentParser",
@@ -241,7 +243,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "run protected self-analysis of the canonical source repository, then "
-            "every PDF, DOCX, Office, ZIP (including nested ZIP), audio, image and "
+            "every PDF, DOCX, Office, ZIP (including nested ZIP), audio, video, image and "
             "code route using the existing "
             "cache, update the technical catalog and prune stale cache state; with "
             "--apply, also organize every safely classified technical document; "
@@ -256,7 +258,7 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="ROUTES",
         help=(
             "content routes after the common inventory: one name, a comma-separated "
-            "set such as pdf,docx,office,archive,audio,image,code, or all"
+            "set such as pdf,docx,office,archive,audio,video,image,code, or all"
         ),
     )
     parser.add_argument(
@@ -636,6 +638,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="image verifier languages; defaults to --ocr-lang",
     )
     image.add_argument(
+        "--image-ocr-profile",
+        choices=OCR_PROFILE_CHOICES,
+        default=None,
+        help="image OCR profile; defaults to --ocr-profile",
+    )
+    image.add_argument(
         "--image-ocr-timeout",
         type=float,
         default=12.0,
@@ -672,7 +680,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     review.add_argument(
         "--review-route",
-        choices=("pdf", "docx", "office", "audio", "image"),
+        choices=("pdf", "docx", "office", "audio", "video", "image"),
         help="content route for review queries and decisions",
     )
     review.add_argument(
@@ -765,7 +773,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     review.add_argument(
         "--review-evidence-route",
-        choices=("pdf", "docx", "office", "audio", "image"),
+        choices=("pdf", "docx", "office", "audio", "video", "image"),
     )
     review.add_argument("--review-evidence-reason", metavar="REASON_CODE")
     review.add_argument(
@@ -810,6 +818,15 @@ def build_parser() -> argparse.ArgumentParser:
     pdf.add_argument(
         "--ocr-lang",
         default="spa+eng",
+    )
+    pdf.add_argument(
+        "--ocr-profile",
+        choices=OCR_PROFILE_CHOICES,
+        default="configured",
+        help=(
+            "configured preserves --ocr-lang; multilingual profiles preflight "
+            "their exact Tesseract packs and use bounded OSD routing"
+        ),
     )
     pdf.add_argument(
         "--pdf-dpi",
@@ -911,7 +928,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pdf.add_argument(
         "--tesseract-cmd",
-        help="explicit tesseract.exe path used by PDF and image OCR",
+        help="explicit tesseract path used by PDF, image and video-frame OCR",
     )
     pdf.add_argument(
         "--tessdata-dir",
@@ -1022,6 +1039,7 @@ def build_parser() -> argparse.ArgumentParser:
     register_archive_arguments(parser, megabyte_type=decimal_megabytes)
     register_text_arguments(parser, megabyte_type=decimal_megabytes)
     register_audio_arguments(parser, megabyte_type=decimal_megabytes)
+    register_video_arguments(parser, megabyte_type=decimal_megabytes)
 
     register_code_arguments(parser, megabyte_type=decimal_megabytes)
 

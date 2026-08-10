@@ -79,6 +79,7 @@ if TYPE_CHECKING:
     from .office_route import OfficeRouteSummary
     from .pdf_route import PdfRouteSummary
     from .text_route import TextRouteSummary
+    from .video_route import VideoRouteSummary
     from .document_organization import (
         OrganizationApplySummary,
         OrganizationPlanSummary,
@@ -1686,6 +1687,7 @@ class FrameworkOrchestrator:
             archive=cast("ArchiveRouteSummary | None", routes.get("archive")),
             text=cast("TextRouteSummary | None", routes.get("text")),
             audio=cast("AudioRouteSummary | None", routes.get("audio")),
+            video=cast("VideoRouteSummary | None", routes.get("video")),
             image=work.image,
             code=cast("CodeRouteSummary | None", routes.get("code")),
             route_results=routes,
@@ -2110,6 +2112,7 @@ class FrameworkOrchestrator:
             archive=cast("ArchiveRouteSummary | None", routes.get("archive")),
             text=cast("TextRouteSummary | None", routes.get("text")),
             audio=cast("AudioRouteSummary | None", routes.get("audio")),
+            video=cast("VideoRouteSummary | None", routes.get("video")),
             image=cast("ImageRouteSummary | None", routes.get("image")),
             code=cast("CodeRouteSummary | None", routes.get("code")),
             route_results=routes,

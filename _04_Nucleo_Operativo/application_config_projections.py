@@ -43,6 +43,7 @@ if TYPE_CHECKING:
     from . import office_route as _office_contracts
     from . import pdf_route_models as _pdf_contracts
     from . import text_route as _text_contracts
+    from . import video_route as _video_contracts
 else:
     _application_contracts = _DeferredTypeModule(".models")
     _archive_contracts = _DeferredTypeModule(".archive_route")
@@ -53,6 +54,7 @@ else:
     _office_contracts = _DeferredTypeModule(".office_route")
     _pdf_contracts = _DeferredTypeModule(".pdf_route_models")
     _text_contracts = _DeferredTypeModule(".text_route")
+    _video_contracts = _DeferredTypeModule(".video_route")
     _resource_contracts = _DeferredTypeModule(".global_resources")
 
 __all__ = [
@@ -65,6 +67,7 @@ __all__ = [
     "office_route_config_from_application",
     "pdf_route_config_from_application",
     "text_route_config_from_application",
+    "video_route_config_from_application",
 ]
 
 # endregion [01]
@@ -164,6 +167,47 @@ def audio_route_config_from_application(
     )
 
 
+def video_route_config_from_application(
+    config: _application_contracts.FrameworkConfig,
+    *,
+    root: Path | None = None,
+) -> _video_contracts.VideoRouteConfig:
+    """Project current values into dedicated visual-video inspection."""
+
+    from .video_route import VideoRouteConfig
+
+    return VideoRouteConfig(
+        state_path=config.video_database,
+        root=config.root if root is None else root,
+        audio_state_path=config.audio_database,
+        max_file_bytes=config.video_max_file_bytes,
+        max_documents=config.video_max_documents,
+        max_duration_seconds=config.video_max_duration_seconds,
+        max_frames=config.video_max_frames,
+        interval_seconds=config.video_interval_seconds,
+        scene_threshold=config.video_scene_threshold,
+        include_scenes=config.video_include_scenes,
+        include_keyframes=config.video_include_keyframes,
+        max_frame_pixels=config.video_max_frame_pixels,
+        max_frame_side=config.video_max_frame_side,
+        probe_timeout_seconds=config.video_probe_timeout_seconds,
+        discovery_timeout_seconds=config.video_discovery_timeout_seconds,
+        frame_timeout_seconds=config.video_frame_timeout_seconds,
+        file_timeout_seconds=config.video_file_timeout_seconds,
+        worker_memory_bytes=config.video_worker_memory_bytes,
+        retry_errors=config.video_retry_errors,
+        ffmpeg_path=config.video_ffmpeg_path,
+        ffprobe_path=config.video_ffprobe_path,
+        ocr_mode=config.video_ocr_mode,
+        ocr_lang=config.video_ocr_lang,
+        ocr_profile=config.video_ocr_profile,
+        ocr_timeout_seconds=config.video_ocr_timeout_seconds,
+        tesseract_cmd=config.video_tesseract_cmd,
+        tessdata_dir=config.video_tessdata_dir,
+        selection=config.selection,
+    )
+
+
 def code_route_config_from_application(
     config: _application_contracts.FrameworkConfig,
 ) -> _code_contracts.CodeRouteConfig:
@@ -251,6 +295,7 @@ def image_route_config_from_application(
         document_ocr_timeout_seconds=config.image_document_ocr_timeout_seconds,
         tesseract_cmd=config.image_tesseract_cmd,
         tessdata_dir=config.image_tessdata_dir,
+        document_ocr_profile=config.image_document_ocr_profile,
     )
 
 
@@ -320,6 +365,7 @@ def pdf_route_config_from_application(
         memory_wait_timeout_seconds=config.pdf_memory_wait_timeout_seconds,
         large_document_bytes=config.pdf_large_document_bytes,
         large_document_workers=config.pdf_large_document_workers,
+        ocr_profile=config.pdf_ocr_profile,
     )
 
 

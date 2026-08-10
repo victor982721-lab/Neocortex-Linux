@@ -35,11 +35,7 @@ def _capture_authorized_direct_state_policies(
     protected_policy = canonical_protected_content_policy()
     mutation_paths = (
         *((state_directory / "framework.lock",) if lock else ()),
-        *(
-            target
-            for database in databases
-            for target in state_sqlite_mutation_paths(database)
-        ),
+        *(target for database in databases for target in state_sqlite_mutation_paths(database)),
     )
     validate_authorized_state_path(
         state_directory,
@@ -440,9 +436,7 @@ def run_review_record(args: argparse.Namespace) -> int:
                 reason_code=args.review_reason,
             )
             if candidate is None:
-                raise ValueError(
-                    "review decision does not identify a finding; refresh candidates"
-                )
+                raise ValueError("review decision does not identify a finding; refresh candidates")
             if candidate.last_detected_generation != args.review_generation:
                 raise ValueError(
                     "review decision is stale; refresh the finding generation "
@@ -475,9 +469,7 @@ def run_review_record(args: argparse.Namespace) -> int:
                 sort_keys=True,
                 separators=(",", ":"),
             ).encode("utf-8")
-            idempotency_key = "neocortex-cli:xxh3-128:" + xxhash.xxh3_128_hexdigest(
-                key_payload
-            )
+            idempotency_key = "neocortex-cli:xxh3-128:" + xxhash.xxh3_128_hexdigest(key_payload)
             existing = get_review_decision_by_key(database_path, idempotency_key)
             reused = existing is not None
             snapshot_match = "recorded"
@@ -513,9 +505,7 @@ def run_review_record(args: argparse.Namespace) -> int:
                     args.review_note,
                 )
                 if existing_identity != requested_identity:
-                    raise ValueError(
-                        "review decision key collision identifies different feedback"
-                    )
+                    raise ValueError("review decision key collision identifies different feedback")
                 if existing.source_status is None:
                     # Schema-14 rows cannot prove candidate-snapshot equality.
                     # Keep their historical retry behavior while making that
@@ -540,8 +530,7 @@ def run_review_record(args: argparse.Namespace) -> int:
                     )
                     if existing_snapshot != requested_snapshot:
                         raise ValueError(
-                            "review decision key collision identifies different "
-                            "candidate snapshot"
+                            "review decision key collision identifies different candidate snapshot"
                         )
                     snapshot_match = "exact"
                 decision_id = existing.decision_id
@@ -573,9 +562,7 @@ def run_review_record(args: argparse.Namespace) -> int:
                     note=args.review_note,
                     decided_ns=time.time_ns(),
                 )
-                decision_id = FrameworkRouteState(database_path).record_review_decision(
-                    decision
-                )
+                decision_id = FrameworkRouteState(database_path).record_review_decision(decision)
     except (OSError, sqlite3.Error, RuntimeError, TypeError, ValueError) as exc:
         print(f"ERROR review-record {exc}")
         return 2
@@ -821,9 +808,7 @@ def run_organization_apply(args: argparse.Namespace) -> int:
     )
     return (
         0
-        if not (
-            summary.stale or summary.blocked or summary.failed or summary.cache_pending
-        )
+        if not (summary.stale or summary.blocked or summary.failed or summary.cache_pending)
         else 2
     )
 
@@ -849,12 +834,7 @@ def run_pdf_search(args: argparse.Namespace) -> int:
         return 2
     for result in results:
         page_number = int(result["page_number"]) + 1
-        print(
-            f"{result['path']} "
-            f"page={page_number} "
-            f"rank={result['rank']:.6f} "
-            f"{result['snippet']}"
-        )
+        print(f"{result['path']} page={page_number} rank={result['rank']:.6f} {result['snippet']}")
     return 0
 
 
@@ -886,6 +866,7 @@ def run_pdf_doctor(args: argparse.Namespace) -> int:
     report = doctor_pdf_runtime(
         ocr_mode=args.ocr,
         ocr_lang=args.ocr_lang,
+        ocr_profile=args.ocr_profile,
         tesseract_cmd=args.tesseract_cmd,
         tessdata_dir=args.tessdata_dir,
     )

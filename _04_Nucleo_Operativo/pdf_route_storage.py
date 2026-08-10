@@ -25,6 +25,7 @@ from .retry_policy import retry_delay_seconds
 
 PROMOTION_BATCH_PAGES = 16
 PROMOTION_BATCH_BYTES = 8 * 1024 * 1024
+OCR_PROVENANCE_MAX_UTF8_BYTES = 64 * 1024
 
 
 class _DocumentCacheDeleter(Protocol):
@@ -165,13 +166,40 @@ class PdfRouteStorageMixin:
         page_number: int,
         source: str,
         text: str,
+        ocr_provenance: dict[str, object] | None = None,
     ) -> None:
         encoded = zlib.compress(text.encode("utf-8"), level=3)
+        provenance_json = (
+            None
+            if ocr_provenance is None
+            else json.dumps(
+                ocr_provenance,
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+        )
+        if (
+            provenance_json is not None
+            and len(provenance_json.encode("utf-8")) > OCR_PROVENANCE_MAX_UTF8_BYTES
+        ):
+            raise ValueError(
+                f"PDF OCR provenance exceeds {OCR_PROVENANCE_MAX_UTF8_BYTES} UTF-8 bytes"
+            )
         connection.execute(
             """INSERT OR REPLACE INTO page_staging(
-                    file_key,processing_signature,page_number,source,text_zlib,text_chars)
-                    VALUES(?,?,?,?,?,?)""",
-            (key, signature, page_number, source, encoded, len(text)),
+                    file_key,processing_signature,page_number,source,text_zlib,text_chars,
+                    ocr_provenance_json) VALUES(?,?,?,?,?,?,?)""",
+            (
+                key,
+                signature,
+                page_number,
+                source,
+                encoded,
+                len(text),
+                provenance_json,
+            ),
         )
         connection.execute(
             "UPDATE documents SET completed_pages=(SELECT COUNT(*) FROM page_staging "
@@ -311,10 +339,11 @@ class PdfRouteStorageMixin:
         connection.execute("DELETE FROM text_signatures WHERE file_key=?", (key,))
         connection.commit()
 
-        page_batch: list[tuple[str, int, str, bytes, int]] = []
+        page_batch: list[tuple[str, int, str, bytes, int, str | None]] = []
         batch_bytes = 0
         staging_rows = connection.execute(
-            "SELECT page_number,source,text_zlib,text_chars FROM page_staging "
+            "SELECT page_number,source,text_zlib,text_chars,ocr_provenance_json "
+            "FROM page_staging "
             "WHERE file_key=? AND processing_signature=? ORDER BY page_number",
             (key, signature),
         )
@@ -327,17 +356,19 @@ class PdfRouteStorageMixin:
                     str(row["source"]),
                     blob,
                     int(row["text_chars"]),
+                    (
+                        str(row["ocr_provenance_json"])
+                        if row["ocr_provenance_json"] is not None
+                        else None
+                    ),
                 )
             )
             batch_bytes += len(blob)
-            if (
-                len(page_batch) >= PROMOTION_BATCH_PAGES
-                or batch_bytes >= PROMOTION_BATCH_BYTES
-            ):
+            if len(page_batch) >= PROMOTION_BATCH_PAGES or batch_bytes >= PROMOTION_BATCH_BYTES:
                 self._check_disk()
                 connection.executemany(
-                    "INSERT INTO pages(file_key,page_number,source,text_zlib,text_chars) "
-                    "VALUES(?,?,?,?,?)",
+                    "INSERT INTO pages(file_key,page_number,source,text_zlib,text_chars,"
+                    "ocr_provenance_json) VALUES(?,?,?,?,?,?)",
                     page_batch,
                 )
                 connection.commit()
@@ -346,8 +377,8 @@ class PdfRouteStorageMixin:
         if page_batch:
             self._check_disk()
             connection.executemany(
-                "INSERT INTO pages(file_key,page_number,source,text_zlib,text_chars) "
-                "VALUES(?,?,?,?,?)",
+                "INSERT INTO pages(file_key,page_number,source,text_zlib,text_chars,"
+                "ocr_provenance_json) VALUES(?,?,?,?,?,?)",
                 page_batch,
             )
             connection.commit()
@@ -502,23 +533,15 @@ class PdfRouteStorageMixin:
                     (key,),
                 )
             prior_retry_count = (
-                0
-                if old is None or source_changed
-                else int(old["transient_retry_count"])
+                0 if old is None or source_changed else int(old["transient_retry_count"])
             )
             retry_count = (
-                0
-                if transient and reset_retry_count
-                else prior_retry_count + 1
-                if transient
-                else 0
+                0 if transient and reset_retry_count else prior_retry_count + 1 if transient else 0
             )
             if not transient or reset_retry_count:
                 next_retry_ns = None
             else:
-                next_retry_ns = (
-                    time.time_ns() + retry_delay_seconds(retry_count) * 1_000_000_000
-                )
+                next_retry_ns = time.time_ns() + retry_delay_seconds(retry_count) * 1_000_000_000
             connection.execute(
                 """INSERT INTO documents(
                     file_key,path,size,mtime_ns,birthtime_ns,processing_signature,

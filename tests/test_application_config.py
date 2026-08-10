@@ -48,7 +48,7 @@ from _04_Nucleo_Operativo.text_route import TextRouteConfig
 def test_application_config_preserves_the_complete_legacy_dataclass() -> None:
     assert ApplicationConfig is FrameworkConfig
     application_fields = fields(ApplicationConfig)
-    assert len(application_fields) == 161
+    assert len(application_fields) == 187
     assert {item.name for item in application_fields} >= {
         "analysis_profile",
         "deep_test_selectors",
@@ -70,6 +70,13 @@ def test_application_config_preserves_the_complete_legacy_dataclass() -> None:
         "text_max_file_bytes",
         "text_max_text_chars",
         "text_libreoffice_cmd",
+        "video_max_frames",
+        "video_interval_seconds",
+        "video_worker_memory_bytes",
+        "video_ocr_lang",
+        "video_ocr_profile",
+        "image_document_ocr_profile",
+        "pdf_ocr_profile",
     }
     base = Path("synthetic-application-config")
 
@@ -90,6 +97,7 @@ def test_application_config_preserves_the_complete_legacy_dataclass() -> None:
     assert canonical.code_database == base / "canonical-state" / "code.sqlite3"
     assert canonical.archive_database == base / "canonical-state" / "archive.sqlite3"
     assert canonical.text_database == base / "canonical-state" / "text.sqlite3"
+    assert canonical.video_database == base / "canonical-state" / "video.sqlite3"
 
 
 def test_application_facade_reexports_the_runtime_projections() -> None:

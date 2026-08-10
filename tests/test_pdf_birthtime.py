@@ -98,7 +98,9 @@ class PdfBirthtimeInvariantTests(unittest.TestCase):
                     ),
                 )
                 connection.execute(
-                    """INSERT INTO page_staging VALUES(?,?,?,?,?,?)""",
+                    """INSERT INTO page_staging(
+                    file_key,processing_signature,page_number,source,text_zlib,text_chars)
+                    VALUES(?,?,?,?,?,?)""",
                     (
                         file_key(snapshot),
                         config.processing_signature,
@@ -164,7 +166,9 @@ class PdfBirthtimeInvariantTests(unittest.TestCase):
                     ),
                 )
                 connection.execute(
-                    "INSERT INTO page_staging VALUES(?,?,?,?,?,?)",
+                    """INSERT INTO page_staging(
+                    file_key,processing_signature,page_number,source,text_zlib,text_chars)
+                    VALUES(?,?,?,?,?,?)""",
                     (
                         file_key(partial),
                         config.processing_signature,

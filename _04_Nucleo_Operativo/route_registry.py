@@ -35,6 +35,8 @@ if TYPE_CHECKING:
     from .state import FrameworkRouteState
     from .text_route import TextRoute as TextRoute
     from .text_route import TextRouteConfig as TextRouteConfig
+    from .video_route import VideoRoute as VideoRoute
+    from .video_route import VideoRouteConfig as VideoRouteConfig
 
 
 # region [01] Generic route contracts and selection reexports
@@ -91,6 +93,8 @@ _DEFERRED_ROUTE_EXPORTS = {
     "OfficeRouteConfig": (".office_route", "OfficeRouteConfig"),
     "TextRoute": (".text_route", "TextRoute"),
     "TextRouteConfig": (".text_route", "TextRouteConfig"),
+    "VideoRoute": (".video_route", "VideoRoute"),
+    "VideoRouteConfig": (".video_route", "VideoRouteConfig"),
 }
 
 
@@ -347,6 +351,37 @@ def _run_audio(context: RouteExecutionContext) -> object:
     return summary
 
 
+def video_route_config_from_framework(
+    config: "FrameworkConfig",
+    *,
+    root: Path | None = None,
+) -> "VideoRouteConfig":
+    """Project application limits into dedicated visual-video inspection."""
+
+    from .application_config_projections import video_route_config_from_application
+
+    return video_route_config_from_application(config, root=root)
+
+
+def _run_video(context: RouteExecutionContext) -> object:
+    from .global_resources import CoordinatedMemoryGate
+    from .video_route import VideoRoute
+
+    gate = (
+        None
+        if context.resource_coordinator is None
+        else CoordinatedMemoryGate(context.resource_coordinator, "video")
+    )
+    return VideoRoute(
+        video_route_config_from_framework(context.config, root=context.root),
+        context.framework_state,
+        context.run_id,
+        progress=context.progress,
+        memory_gate=gate,
+        cancellation=context.cancellation,
+    ).run()
+
+
 def code_route_config_from_framework(config: "FrameworkConfig") -> "CodeRouteConfig":
     """Preserve the historical projection name at the route-registry boundary."""
 
@@ -476,6 +511,7 @@ def builtin_route_registry() -> dict[str, RouteAdapter]:
         RouteAdapter("archive", _run_archive),
         RouteAdapter("text", _run_text),
         RouteAdapter("audio", _run_audio),
+        RouteAdapter("video", _run_video),
         RouteAdapter("image", _run_image),
         RouteAdapter("code", _run_code, input_source="inventory_snapshot"),
     )

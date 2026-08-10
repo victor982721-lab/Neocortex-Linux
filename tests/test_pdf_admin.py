@@ -29,12 +29,12 @@ class PdfAdminTests(unittest.TestCase):
                     VALUES('key','one.pdf',1,1,'test','done',1,1,1,1)"""
                 )
                 connection.execute(
-                    "INSERT INTO pages VALUES('key',0,'native',?,23,NULL)",
+                    """INSERT INTO pages(
+                    file_key,page_number,source,text_zlib,text_chars,profile_json)
+                    VALUES('key',0,'native',?,23,NULL)""",
                     (encoded,),
                 )
-                connection.execute(
-                    "INSERT INTO page_fts_state VALUES('key',0,'digest')"
-                )
+                connection.execute("INSERT INTO page_fts_state VALUES('key',0,'digest')")
                 connection.commit()
             self.assertTrue(verify_pdf_state(state).ok)
 
