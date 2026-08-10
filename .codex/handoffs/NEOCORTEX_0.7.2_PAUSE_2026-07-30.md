@@ -91,6 +91,12 @@ existe cuando se cumplen juntos los criterios dinámicos de la última sección.
 - Una primera optimización reveló dos regresiones de sustitución entre preflight
   y uso. Se corrigieron antes de aceptar el cambio y ambas pruebas TOCTOU pasan;
   el batching no convirtió una mejora de velocidad en autorización por ruta.
+- La verificación sobre el estado vivo reveló además una poda cuadrática en la
+  ruta Text: eliminar 30,248 filas antiguas hacía un scan completo del FTS por
+  cada identidad y excedió dos límites de 15 minutos. La poda ahora usa dos
+  `DELETE` set-based, conserva atomicidad y quedó protegida por una regresión
+  que exige un número constante de sentencias. La corrida integral terminó en
+  aproximadamente 3 min 56 s y el replay enteramente cacheado en 43 s.
 
 ### Fase 3 — arquitectura acíclica
 
@@ -155,6 +161,13 @@ existe cuando se cumplen juntos los criterios dinámicos de la última sección.
   instalador Python integral equivalente a `tools/release_linux.py`.
 - Las excepciones Semgrep dejan de ser válidas el 2026-09-30. Antes de esa fecha
   se actualiza o sustituye Semgrep; no se prolonga el vencimiento por rutina.
+- La poda Text deja páginas libres reutilizables dentro de `text.sqlite3`; no se
+  ejecutó `VACUUM` automático sobre el estado vivo. Cualquier compactación debe
+  ser una ventana de mantenimiento explícita, con backup y verificación.
+- `review value --scope personal` se abstiene con `scope_too_broad` ante los 844
+  archivos actuales. La revisión de Framework sí responde en modo advisory y
+  sin mutación; ampliar Personal requiere una preselección durable y acotada,
+  no retirar el límite de seguridad.
 
 ## Próximos pasos, en orden
 
