@@ -1,1 +1,2 @@
 _05_Interfaz/assets/neocortex-app-icon.svg text eol=lf
+tools/pyright_runtime_lock/*.json text eol=lf

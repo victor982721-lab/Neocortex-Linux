@@ -46,14 +46,21 @@ from neocortex.semgrep_tool_contract import (
     SEMGREP_TOOL_VERSION,
 )
 from tools.build_binary_inputs import build_source_only_wheels
+from tools.pyright_runtime import (
+    NODE_VERSION,
+    PYRIGHT_LOCK_SHA256,
+    PYRIGHT_PACKAGE_INTEGRITY,
+    PYRIGHT_VERSION,
+    PyrightRuntimeError,
+    install_pyright_runtime,
+    verify_pyright_runtime,
+)
 from tools.semgrep_tool_runtime import (
     SemgrepToolRuntimeError,
     install_semgrep_tool_runtime,
     verify_semgrep_tool_runtime,
 )
 
-NODE_VERSION = "24.18.1"
-PYRIGHT_VERSION = "1.1.411"
 RECEIPT_SCHEMA_VERSION = 1
 RELEASE_PLATFORM_TAG = "linux-x86_64"
 RELEASE_MANIFEST_NAME = "neocortex-release.json"
@@ -431,20 +438,16 @@ def _install_node_pyright(
     node_bin = tools_root / "node" / "bin"
     environment = os.environ.copy()
     environment["PATH"] = os.pathsep.join((str(node_bin), environment.get("PATH", "")))
-    runner(
-        (
-            node_bin / "npm",
-            "install",
-            "--prefix",
+    try:
+        install_pyright_runtime(
             tools_root / "pyright",
-            "--ignore-scripts",
-            "--no-audit",
-            "--no-fund",
-            f"pyright@{PYRIGHT_VERSION}",
-        ),
-        timeout=1800,
-        environment=environment,
-    )
+            npm=node_bin / "npm",
+            node=node_bin / "node",
+            runner=runner,
+            environment=environment,
+        )
+    except PyrightRuntimeError as exc:
+        raise LinuxReleaseError(f"Pyright runtime installation failed: {exc}") from exc
     return archive_sha
 
 
@@ -498,15 +501,15 @@ def _verify_python_release(
         environment=environment,
     )
     node = release_root / "tools" / "node" / "bin" / "node"
-    pyright = release_root / "tools" / "pyright" / "node_modules" / ".bin" / "pyright"
-    node_version = runner((node, "--version"), timeout=60, environment=environment).stdout.strip()
-    pyright_version = runner(
-        (pyright, "--version"), timeout=60, environment=environment
-    ).stdout.strip()
-    if node_version != f"v{NODE_VERSION}":
-        raise LinuxReleaseError(f"unexpected Node version: {node_version}")
-    if PYRIGHT_VERSION not in pyright_version:
-        raise LinuxReleaseError(f"unexpected Pyright version: {pyright_version}")
+    try:
+        pyright_runtime = verify_pyright_runtime(
+            release_root / "tools" / "pyright",
+            node=node,
+            runner=runner,
+            environment=environment,
+        )
+    except PyrightRuntimeError as exc:
+        raise LinuxReleaseError(f"Pyright runtime verification failed: {exc}") from exc
     runner((_venv_command(release_root), "--version"), timeout=60, environment=environment)
     runner(
         (_venv_command(release_root), "doctor", "platform", "--json"),
@@ -523,9 +526,11 @@ def _verify_python_release(
         environment={**environment, "QT_QPA_PLATFORM": "offscreen"},
     )
     return {
-        "node": node_version,
+        "node": pyright_runtime["node"],
         "pip": pip_version,
-        "pyright": pyright_version,
+        "pyright": pyright_runtime["pyright"],
+        "pyright_integrity": pyright_runtime["pyright_integrity"],
+        "pyright_lock_sha256": pyright_runtime["pyright_lock_sha256"],
         "semgrep": semgrep_runtime["semgrep"],
         "semgrep_runtime_sha256": semgrep_runtime["runtime_digest_sha256"],
     }
@@ -801,6 +806,9 @@ def _read_release_manifest(
         or payload.get("pip_bootstrap_wheel_sha256") != PIP_BOOTSTRAP_SHA256
         or payload.get("pip") != PIP_BOOTSTRAP_VERSION
         or payload.get("semgrep") != SEMGREP_TOOL_VERSION
+        or payload.get("pyright") != f"pyright {PYRIGHT_VERSION}"
+        or payload.get("pyright_integrity") != PYRIGHT_PACKAGE_INTEGRITY
+        or payload.get("pyright_lock_sha256") != PYRIGHT_LOCK_SHA256
         or not isinstance(payload.get("semgrep_runtime_sha256"), str)
         or not _SHA256.fullmatch(str(payload["semgrep_runtime_sha256"]))
         or not isinstance(payload.get("source_only_wheels"), dict)
@@ -1064,6 +1072,8 @@ def verify_release(
         "node": versions["node"],
         "pip": versions["pip"],
         "pyright": versions["pyright"],
+        "pyright_integrity": versions["pyright_integrity"],
+        "pyright_lock_sha256": versions["pyright_lock_sha256"],
         "semgrep": versions["semgrep"],
         "semgrep_runtime_sha256": versions["semgrep_runtime_sha256"],
         "qpdf": qpdf,

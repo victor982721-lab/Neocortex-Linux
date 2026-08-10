@@ -63,6 +63,9 @@ def test_sdist_manifest_includes_active_docs_and_release_tools() -> None:
 
     assert "include docs/SELF_ANALYSIS.md" in manifest_lines
     assert "include tools/__init__.py" in manifest_lines
+    assert "include tools/pyright_runtime.py" in manifest_lines
+    assert "include tools/pyright_runtime_lock/package-lock.json" in manifest_lines
+    assert "include tools/pyright_runtime_lock/package.json" in manifest_lines
     assert "recursive-include tools release_*.py" in manifest_lines
 
     with (project_root / "pyproject.toml").open("rb") as stream:
