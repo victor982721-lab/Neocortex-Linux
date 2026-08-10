@@ -19,6 +19,7 @@ from dataclasses import asdict, replace
 from pathlib import Path, PurePosixPath
 
 from packaging.utils import canonicalize_name
+from neocortex.semgrep_tool_contract import managed_semgrep_version
 
 from .bounded_subprocess import SubprocessOutputLimitError, run_bounded_capture
 from .code_architecture_contracts import (
@@ -1682,7 +1683,7 @@ def provider_tool_versions() -> dict[str, str | None]:
         GRIMP_ARCHITECTURE_PROVIDER_ID: _package_version("grimp"),
         COMPLEXIPY_COGNITIVE_PROVIDER_ID: _package_version("complexipy"),
         VULTURE_UNUSED_PROVIDER_ID: _package_version("vulture"),
-        SEMGREP_INVARIANTS_PROVIDER_ID: _package_version("semgrep"),
+        SEMGREP_INVARIANTS_PROVIDER_ID: managed_semgrep_version(),
         DEPTRY_PROVIDER_ID: _package_version("deptry"),
         PIP_AUDIT_PROVIDER_ID: _package_version("pip-audit"),
         INSTALLED_PACKAGE_PROVIDER_ID: _package_version("neocortex-framework"),
@@ -2017,7 +2018,7 @@ class SemgrepNeocortexInvariantsProvider:
     ) -> None:
         self.root = root
         self.executor = executor
-        self._version = _package_version("semgrep")
+        self._version = managed_semgrep_version()
         version = self._version or "unavailable"
         self.descriptor = _provider_descriptor(
             provider_id=SEMGREP_INVARIANTS_PROVIDER_ID,

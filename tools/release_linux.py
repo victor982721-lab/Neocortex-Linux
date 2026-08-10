@@ -36,10 +36,23 @@ if __package__ in {None, ""}:
 
 from neocortex import __version__
 from neocortex.platform_policy import PlatformPolicy, current_platform_policy
+from neocortex.semgrep_tool_contract import (
+    PIP_BOOTSTRAP_FILENAME,
+    PIP_BOOTSTRAP_SHA256,
+    PIP_BOOTSTRAP_URL,
+    SEMGREP_TOOL_PIP_VERSION,
+    SEMGREP_TOOL_VERSION,
+)
 from tools.build_binary_inputs import build_source_only_wheels
+from tools.semgrep_tool_runtime import (
+    SemgrepToolRuntimeError,
+    install_semgrep_tool_runtime,
+    verify_semgrep_tool_runtime,
+)
 
 NODE_VERSION = "24.18.1"
 PYRIGHT_VERSION = "1.1.411"
+PIP_BOOTSTRAP_VERSION = SEMGREP_TOOL_PIP_VERSION
 RECEIPT_SCHEMA_VERSION = 1
 RELEASE_PLATFORM_TAG = "linux-x86_64"
 RELEASE_MANIFEST_NAME = "neocortex-release.json"
@@ -215,14 +228,73 @@ def _venv_command(root: Path) -> Path:
     return root / "bin" / "Neocortex"
 
 
+def _prepare_pip_bootstrap(workspace: Path) -> Path:
+    """Download the pinned pip wheel without invoking the bundled venv pip."""
+
+    wheel = workspace / PIP_BOOTSTRAP_FILENAME
+    _download(PIP_BOOTSTRAP_URL, wheel)
+    _require_pip_bootstrap(wheel)
+    return wheel
+
+
+def _require_pip_bootstrap(wheel: Path) -> None:
+    if wheel.name != PIP_BOOTSTRAP_FILENAME or _sha256_file(wheel) != PIP_BOOTSTRAP_SHA256:
+        raise LinuxReleaseError("pip bootstrap wheel failed exact SHA-256 validation")
+
+
+_PIP_WHEEL_RUNNER = (
+    "import runpy,sys;"
+    "wheel=sys.argv[1];"
+    "sys.path.insert(0,wheel);"
+    "sys.argv=sys.argv[1:];"
+    "runpy.run_module('pip',run_name='__main__')"
+)
+
+
+def _create_pip_environment(
+    root: Path,
+    pip_wheel: Path,
+    *,
+    runner: CommandRunner = _run,
+) -> None:
+    """Create a venv and seed only the verified pip wheel into it."""
+
+    _require_pip_bootstrap(pip_wheel)
+    venv.EnvBuilder(with_pip=False, clear=False, symlinks=True).create(root)
+    python = _venv_python(root)
+    runner(
+        (
+            python,
+            "-I",
+            "-c",
+            _PIP_WHEEL_RUNNER,
+            pip_wheel,
+            "install",
+            "--disable-pip-version-check",
+            "--no-cache-dir",
+            "--no-index",
+            "--no-deps",
+            pip_wheel,
+        ),
+        timeout=300,
+    )
+    installed = runner(
+        (python, "-I", "-c", "import pip; print(pip.__version__)"),
+        timeout=60,
+    ).stdout.strip()
+    if installed != PIP_BOOTSTRAP_VERSION:
+        raise LinuxReleaseError(f"unexpected bootstrapped pip version: {installed}")
+
+
 def _build_wheel(
     layout: LinuxReleaseLayout,
     workspace: Path,
     *,
+    pip_wheel: Path,
     runner: CommandRunner = _run,
 ) -> tuple[Path, tuple[Path, ...]]:
     build_environment = workspace / "build-environment"
-    venv.EnvBuilder(with_pip=True, clear=False, symlinks=True).create(build_environment)
+    _create_pip_environment(build_environment, pip_wheel, runner=runner)
     python = _venv_python(build_environment)
     constraints = layout.source_root / "constraints.txt"
     runner(
@@ -273,9 +345,10 @@ def _install_wheel(
     wheel: Path,
     constraints: Path,
     *,
+    pip_wheel: Path,
     runner: CommandRunner = _run,
 ) -> None:
-    venv.EnvBuilder(with_pip=True, clear=False, symlinks=True).create(release_root)
+    _create_pip_environment(release_root, pip_wheel, runner=runner)
     runner(
         (
             _venv_python(release_root),
@@ -292,6 +365,25 @@ def _install_wheel(
         ),
         timeout=3600,
     )
+
+
+def _install_semgrep_runtime(
+    release_root: Path,
+    pip_wheel: Path,
+    *,
+    runner: CommandRunner = _run,
+) -> None:
+    """Install the exact scan-only tool env without polluting the main venv."""
+
+    try:
+        install_semgrep_tool_runtime(
+            release_root,
+            pip_wheel=pip_wheel,
+            constraints=Path(__file__).with_name("semgrep_tool_constraints.txt"),
+            runner=runner,
+        )
+    except SemgrepToolRuntimeError as exc:
+        raise LinuxReleaseError(f"Semgrep tool runtime installation failed: {exc}") from exc
 
 
 def _download(url: str, destination: Path) -> None:
@@ -391,6 +483,17 @@ def _verify_python_release(
     environment = _candidate_environment(layout, corpus_root, release_root=release_root)
     python = _venv_python(release_root)
     runner((python, "-m", "pip", "check"), timeout=300, environment=environment)
+    pip_version = runner(
+        (python, "-I", "-c", "import pip; print(pip.__version__)"),
+        timeout=60,
+        environment=environment,
+    ).stdout.strip()
+    if pip_version != PIP_BOOTSTRAP_VERSION:
+        raise LinuxReleaseError(f"unexpected release pip version: {pip_version}")
+    try:
+        semgrep_runtime = verify_semgrep_tool_runtime(release_root, runner=runner)
+    except SemgrepToolRuntimeError as exc:
+        raise LinuxReleaseError(f"Semgrep tool runtime verification failed: {exc}") from exc
     runner(
         (python, "-c", ";".join(f"import {module}" for module in _IMPORT_MODULES)),
         timeout=300,
@@ -421,7 +524,13 @@ def _verify_python_release(
         timeout=120,
         environment={**environment, "QT_QPA_PLATFORM": "offscreen"},
     )
-    return {"node": node_version, "pyright": pyright_version}
+    return {
+        "node": node_version,
+        "pip": pip_version,
+        "pyright": pyright_version,
+        "semgrep": semgrep_runtime["semgrep"],
+        "semgrep_runtime_sha256": semgrep_runtime["runtime_digest_sha256"],
+    }
 
 
 def _make_immutable(root: Path) -> None:
@@ -658,6 +767,8 @@ def _release_manifest(
         "python": platform.python_version(),
         "wheel_filename": wheel.name,
         "wheel_sha256": wheel_sha,
+        "pip_bootstrap_wheel_filename": PIP_BOOTSTRAP_FILENAME,
+        "pip_bootstrap_wheel_sha256": PIP_BOOTSTRAP_SHA256,
         "source_only_wheels": source_only_wheels,
         "node_archive_filename": f"node-v{NODE_VERSION}-linux-x64.tar.xz",
         "node_archive_sha256": node_sha,
@@ -688,6 +799,12 @@ def _read_release_manifest(
         or not isinstance(payload.get("node_archive_filename"), str)
         or not isinstance(payload.get("wheel_sha256"), str)
         or not _SHA256.fullmatch(str(payload["wheel_sha256"]))
+        or payload.get("pip_bootstrap_wheel_filename") != PIP_BOOTSTRAP_FILENAME
+        or payload.get("pip_bootstrap_wheel_sha256") != PIP_BOOTSTRAP_SHA256
+        or payload.get("pip") != PIP_BOOTSTRAP_VERSION
+        or payload.get("semgrep") != SEMGREP_TOOL_VERSION
+        or not isinstance(payload.get("semgrep_runtime_sha256"), str)
+        or not _SHA256.fullmatch(str(payload["semgrep_runtime_sha256"]))
         or not isinstance(payload.get("source_only_wheels"), dict)
         or not payload["source_only_wheels"]
         or not all(
@@ -765,15 +882,23 @@ def install_release(
     else:
         with tempfile.TemporaryDirectory(prefix=f"{name}-", dir=layout.staging) as temporary:
             workspace = Path(temporary)
-            wheel, source_only_wheels = _build_wheel(layout, workspace, runner=runner)
+            pip_wheel = _prepare_pip_bootstrap(workspace)
+            wheel, source_only_wheels = _build_wheel(
+                layout,
+                workspace,
+                pip_wheel=pip_wheel,
+                runner=runner,
+            )
             wheel_sha = _sha256_file(wheel)
             try:
                 _install_wheel(
                     final_release,
                     wheel,
                     layout.source_root / "constraints.txt",
+                    pip_wheel=pip_wheel,
                     runner=runner,
                 )
+                _install_semgrep_runtime(final_release, pip_wheel, runner=runner)
                 node_sha = _install_node_pyright(final_release, workspace, runner=runner)
                 candidate_versions = _verify_python_release(
                     final_release,
@@ -939,7 +1064,10 @@ def verify_release(
         "release_path": str(current),
         "receipt_path": receipt.get("_path"),
         "node": versions["node"],
+        "pip": versions["pip"],
         "pyright": versions["pyright"],
+        "semgrep": versions["semgrep"],
+        "semgrep_runtime_sha256": versions["semgrep_runtime_sha256"],
         "qpdf": qpdf,
         "ffprobe": ffprobe,
         "tesseract_languages": sorted(languages),

@@ -107,6 +107,7 @@ def test_semgrep_and_deptry_use_their_exact_python_domains_and_replay(
         for version_id, path in enumerate((py_file, stub_file, pyw_file, rule_fixture), start=1)
     )
     monkeypatch.setattr(providers_module, "_package_version", lambda _name: "test-1")
+    monkeypatch.setattr(providers_module, "managed_semgrep_version", lambda: "1.172.0")
 
     semgrep_paths: list[tuple[str, ...]] = []
 

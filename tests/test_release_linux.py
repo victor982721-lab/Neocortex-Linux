@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import shutil
 import subprocess
@@ -72,6 +73,80 @@ def test_build_workspace_staging_shares_the_release_filesystem(tmp_path: Path) -
     assert layout.staging.parent == layout.releases
 
 
+def test_pip_bootstrap_policy_is_hash_pinned_and_matches_constraints() -> None:
+    constraints = (PROJECT_ROOT / "constraints.txt").read_text(encoding="utf-8").splitlines()
+
+    assert f"pip=={release_linux.PIP_BOOTSTRAP_VERSION}" in constraints
+    assert release_linux.PIP_BOOTSTRAP_URL.startswith("https://files.pythonhosted.org/")
+    assert release_linux.PIP_BOOTSTRAP_URL.endswith(release_linux.PIP_BOOTSTRAP_FILENAME)
+    assert len(release_linux.PIP_BOOTSTRAP_SHA256) == 64
+
+
+def test_pip_bootstrap_rejects_wrong_artifact_before_creating_venv(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    wheel = tmp_path / release_linux.PIP_BOOTSTRAP_FILENAME
+    wheel.write_bytes(b"not the pinned pip wheel")
+    created = False
+
+    class RejectBuilder:
+        def __init__(self, **_kwargs: object) -> None:
+            nonlocal created
+            created = True
+
+    monkeypatch.setattr(release_linux.venv, "EnvBuilder", RejectBuilder)
+
+    with pytest.raises(release_linux.LinuxReleaseError, match="exact SHA-256"):
+        release_linux._create_pip_environment(tmp_path / "environment", wheel)
+
+    assert created is False
+
+
+def test_pip_bootstrap_never_invokes_the_bundled_venv_pip(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = b"synthetic verified pip wheel"
+    wheel = tmp_path / "pip-safe-py3-none-any.whl"
+    wheel.write_bytes(payload)
+    monkeypatch.setattr(release_linux, "PIP_BOOTSTRAP_FILENAME", wheel.name)
+    monkeypatch.setattr(release_linux, "PIP_BOOTSTRAP_SHA256", hashlib.sha256(payload).hexdigest())
+    builders: list[dict[str, object]] = []
+
+    class FakeBuilder:
+        def __init__(self, **kwargs: object) -> None:
+            builders.append(kwargs)
+
+        def create(self, root: Path) -> None:
+            (root / "bin").mkdir(parents=True)
+            (root / "bin" / "python").write_bytes(b"")
+
+    calls: list[tuple[str, ...]] = []
+
+    def runner(arguments, **_kwargs):
+        call = tuple(os.fspath(argument) for argument in arguments)
+        calls.append(call)
+        stdout = (
+            f"{release_linux.PIP_BOOTSTRAP_VERSION}\n"
+            if any("import pip" in argument for argument in call)
+            else ""
+        )
+        return subprocess.CompletedProcess(call, 0, stdout, "")
+
+    monkeypatch.setattr(release_linux.venv, "EnvBuilder", FakeBuilder)
+
+    release_linux._create_pip_environment(tmp_path / "environment", wheel, runner=runner)
+
+    assert builders == [{"with_pip": False, "clear": False, "symlinks": True}]
+    install = calls[0]
+    assert install[1:4] == ("-I", "-c", release_linux._PIP_WHEEL_RUNNER)
+    assert "-m" not in install
+    assert "--no-index" in install
+    assert "--no-deps" in install
+    assert calls[1][1:3] == ("-I", "-c")
+
+
 def test_corpus_root_preparation_creates_once_and_rejects_non_directories(
     tmp_path: Path,
 ) -> None:
@@ -100,6 +175,11 @@ def test_new_virtual_environment_is_created_at_its_final_non_movable_path(
 
     monkeypatch.setattr(release_linux, "_require_reference_platform", lambda: None)
     monkeypatch.setattr(release_linux, "_source_sha", lambda *_args, **_kwargs: sha)
+    monkeypatch.setattr(
+        release_linux,
+        "_prepare_pip_bootstrap",
+        lambda workspace: workspace / release_linux.PIP_BOOTSTRAP_FILENAME,
+    )
 
     def build_wheel(_layout, workspace, **_kwargs):
         wheelhouse = workspace / "wheelhouse"
@@ -119,6 +199,7 @@ def test_new_virtual_environment_is_created_at_its_final_non_movable_path(
 
     monkeypatch.setattr(release_linux, "_build_wheel", build_wheel)
     monkeypatch.setattr(release_linux, "_install_wheel", install_wheel)
+    monkeypatch.setattr(release_linux, "_install_semgrep_runtime", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(release_linux, "_install_node_pyright", lambda *_args, **_kwargs: "1" * 64)
     monkeypatch.setattr(
         release_linux,

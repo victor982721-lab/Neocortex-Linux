@@ -29,7 +29,7 @@ BASE_DEPENDENCIES = (
     "coverage>=7.14,<8",
     "deptry>=0.25,<0.26",
     "grimp>=3.15,<4",
-    "mcp==1.23.3",
+    "mcp==1.29.0",
     "mypy>=2.1,<3",
     "packaging>=26,<27",
     "pip-audit>=2.10,<2.11",
@@ -37,7 +37,6 @@ BASE_DEPENDENCIES = (
     "radon>=6.0.1,<7",
     "rich>=15,<16",
     "ruff>=0.15,<0.16",
-    "semgrep>=1.172,<1.173",
     "vulture>=2.16,<2.17",
     "xxhash>=3.8,<4",
 )

@@ -8,13 +8,10 @@ telemetry, applies fixes, or grants mutation authority.
 from __future__ import annotations
 
 import hashlib
-import importlib.metadata
 import json
 import os
-import shutil
 import stat
 import subprocess
-import sysconfig
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -25,6 +22,10 @@ from .bounded_subprocess import run_bounded_capture
 from .code_external_evidence import ExternalEvidenceFile
 from .external_evidence_models import ExternalProviderFinding, external_signature
 from .semantic_models import fingerprint_bytes
+from neocortex.semgrep_tool_contract import (
+    ManagedSemgrepRuntime,
+    resolve_semgrep_tool_runtime,
+)
 
 SEMGREP_INVARIANTS_PROVIDER_ID = "semgrep-neocortex-invariants"
 SEMGREP_INVARIANTS_PROVIDER_SCHEMA = "neocortex.semgrep-neocortex-invariants/v1"
@@ -171,13 +172,10 @@ def _validate_tool_version(value: str) -> None:
         raise ValueError("Semgrep version is outside the supported 1.172 line")
 
 
-def _installed_semgrep_version() -> str:
-    try:
-        version = importlib.metadata.version("semgrep")
-    except importlib.metadata.PackageNotFoundError as exc:
-        raise ValueError("Semgrep runtime dependency is unavailable") from exc
-    _validate_tool_version(version)
-    return version
+def _managed_semgrep_runtime() -> ManagedSemgrepRuntime:
+    runtime = resolve_semgrep_tool_runtime()
+    _validate_tool_version(runtime.version)
+    return runtime
 
 
 def _ruleset_digest(raw: bytes) -> str:
@@ -332,24 +330,6 @@ def _staged_contract(
     )
 
 
-def _resolve_semgrep_executable() -> tuple[Path, SemgrepCliVariant]:
-    variant: SemgrepCliVariant = "pysemgrep" if os.name == "nt" else "semgrep"
-    executable_name = variant + (".exe" if os.name == "nt" else "")
-    candidates = [Path(sysconfig.get_path("scripts")) / executable_name]
-    discovered = shutil.which(variant)
-    if discovered is not None:
-        candidates.append(Path(discovered))
-    for candidate in candidates:
-        try:
-            metadata = os.lstat(candidate)
-        except OSError:
-            continue
-        if _is_reparse(candidate, metadata) or not stat.S_ISREG(metadata.st_mode):
-            continue
-        return candidate.resolve(strict=True), variant
-    raise ValueError(f"Semgrep {variant} executable is unavailable")
-
-
 def _semgrep_environment(
     environment: Mapping[str, str],
     stage_root: Path,
@@ -450,10 +430,9 @@ def _batches(paths: Sequence[str]) -> tuple[tuple[str, ...], ...]:
     return tuple(batches)
 
 
-def _command_prefix(executable: Path, ruleset: Path) -> tuple[str, ...]:
+def _command_prefix(runtime: ManagedSemgrepRuntime, ruleset: Path) -> tuple[str, ...]:
     return (
-        str(executable),
-        "scan",
+        *runtime.command_prefix,
         "--config",
         str(ruleset),
         "--json",
@@ -713,10 +692,11 @@ def execute_semgrep_invariants(
     stage_root = stage_root.absolute()
     contract = _staged_contract(stage_root, staged)
     ruleset = _ruleset_path()
-    version = _installed_semgrep_version()
-    executable, cli_variant = _resolve_semgrep_executable()
+    runtime = _managed_semgrep_runtime()
+    version = runtime.version
+    cli_variant: SemgrepCliVariant = "pysemgrep"
     controlled_environment = _semgrep_environment(environment, stage_root)
-    prefix = _command_prefix(executable, ruleset)
+    prefix = _command_prefix(runtime, ruleset)
     deadline = time.monotonic() + _TIMEOUT_SECONDS
     stdout_bytes = 0
     stderr_bytes = 0
@@ -765,7 +745,7 @@ def execute_semgrep_invariants(
     if _ruleset_path() != ruleset:
         raise ValueError("Semgrep ruleset identity changed during analysis")
     limitations: tuple[str, ...] = _BASE_LIMITATIONS
-    if cli_variant == "pysemgrep":
+    if os.name == "nt":
         limitations += ("windows_pysemgrep_x509_compatibility",)
     return SemgrepInvariantExecution(
         tuple(sorted(findings_by_id.values(), key=lambda item: item.portable_finding_id)),

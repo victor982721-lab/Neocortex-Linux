@@ -15,6 +15,10 @@ import pytest
 import _04_Nucleo_Operativo.external_semgrep_invariants as adapter
 from _04_Nucleo_Operativo.code_external_evidence import ExternalEvidenceFile
 from _04_Nucleo_Operativo.semantic_models import fingerprint_bytes
+from neocortex.semgrep_tool_contract import (
+    ManagedSemgrepRuntime,
+    resolve_semgrep_tool_runtime,
+)
 
 _FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "semgrep_invariants"
 
@@ -105,14 +109,30 @@ def _raw_finding(
 
 
 def _mock_runtime(monkeypatch: pytest.MonkeyPatch) -> adapter.SemgrepCliVariant:
-    cli_variant: adapter.SemgrepCliVariant = "pysemgrep" if os.name == "nt" else "semgrep"
-    monkeypatch.setattr(adapter, "_installed_semgrep_version", lambda: "1.172.0")
+    cli_variant: adapter.SemgrepCliVariant = "pysemgrep"
+    runtime = ManagedSemgrepRuntime(
+        tool_root=Path(sys.executable).parent,
+        python=Path(sys.executable),
+        wrapper=Path(sys.executable).parent / "neocortex_semgrep_scan.py",
+        receipt=Path(sys.executable).parent / "neocortex-tool-runtime.json",
+        receipt_sha256="0" * 64,
+        version="1.172.0",
+    )
     monkeypatch.setattr(
         adapter,
-        "_resolve_semgrep_executable",
-        lambda: (Path(sys.executable), cli_variant),
+        "_managed_semgrep_runtime",
+        lambda: runtime,
     )
     return cli_variant
+
+
+def _require_real_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
+    configured = os.environ.get("NEOCORTEX_TEST_SEMGREP_RUNTIME_ROOT")
+    try:
+        runtime = resolve_semgrep_tool_runtime(None if configured is None else Path(configured))
+    except ValueError as exc:
+        pytest.skip(f"managed Semgrep test runtime is unavailable: {exc}")
+    monkeypatch.setattr(adapter, "_managed_semgrep_runtime", lambda: runtime)
 
 
 def _hashes(root: Path) -> dict[str, str]:
@@ -122,7 +142,11 @@ def _hashes(root: Path) -> dict[str, str]:
     }
 
 
-def test_real_semgrep_rules_report_only_the_positive_provider_fixture(tmp_path: Path) -> None:
+def test_real_semgrep_rules_report_only_the_positive_provider_fixture(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _require_real_runtime(monkeypatch)
     staged = _stage(tmp_path, _fixture_sources())
     source = tmp_path / "source"
     before = _hashes(source)
@@ -136,7 +160,7 @@ def test_real_semgrep_rules_report_only_the_positive_provider_fixture(tmp_path: 
     assert result.stdout_bytes > 0
     assert result.ruleset_sha256 == adapter.SEMGREP_RULESET_SHA256
     assert len(result.input_manifest_sha256) == 64
-    assert result.cli_variant == ("pysemgrep" if os.name == "nt" else "semgrep")
+    assert result.cli_variant == "pysemgrep"
     if os.name == "nt":
         assert "windows_pysemgrep_x509_compatibility" in result.limitations
     assert _hashes(source) == before
@@ -158,7 +182,11 @@ def test_real_semgrep_rules_report_only_the_positive_provider_fixture(tmp_path: 
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX Semgrep probes uname through PATH")
-def test_real_semgrep_works_with_minimal_provider_environment(tmp_path: Path) -> None:
+def test_real_semgrep_works_with_minimal_provider_environment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _require_real_runtime(monkeypatch)
     staged = _stage(
         tmp_path,
         {"_04_Nucleo_Operativo/external_safe.py": "value = 1\n"},
@@ -168,7 +196,7 @@ def test_real_semgrep_works_with_minimal_provider_environment(tmp_path: Path) ->
 
     assert result.findings == ()
     assert result.scanned_files == 1
-    assert result.cli_variant == "semgrep"
+    assert result.cli_variant == "pysemgrep"
 
 
 def test_command_and_environment_disable_network_registry_and_autofix(
@@ -192,7 +220,11 @@ def test_command_and_environment_disable_network_registry_and_autofix(
     def run(arguments, **kwargs):
         command = tuple(str(item) for item in arguments)
         assert command[0] == sys.executable
-        assert command[1] == "scan"
+        assert command[1:3] == (
+            "-I",
+            str(Path(sys.executable).parent / "neocortex_semgrep_scan.py"),
+        )
+        assert "scan" not in command
         assert command[command.index("--config") + 1] == str(adapter._ruleset_path())
         assert "--json" in command
         assert "--metrics" in command
