@@ -7,35 +7,48 @@ name = "neocortex-framework"
 dynamic = ["version"]
 description = "Cross-platform incremental personal content framework for Windows and Linux"
 readme = "README.md"
+authors = [{name = "Víctor"}]
+maintainers = [{name = "Víctor"}]
+license = "LicenseRef-Proprietary"
 requires-python = ">=3.13,<3.15"
 classifiers = [
+    "Private :: Do Not Upload",
     "Operating System :: Microsoft :: Windows :: Windows 11",
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
 ]
 dependencies = [
-    "complexipy>=6.2,<7",
-    "cosmic-ray>=8.4.6,<8.5",
-    "coverage>=7.14,<8",
-    "deptry>=0.25,<0.26",
-    "grimp>=3.15,<4",
-    "mcp==1.29.0",
-    "mypy>=2.1,<3",
     "packaging>=26,<27",
-    "pip-audit>=2.10,<2.11",
-    "pytest>=9.1,<10",
-    "radon>=6.0.1,<7",
     "rich>=15,<16",
-    "ruff>=0.15,<0.16",
-    "vulture>=2.16,<2.17",
     "xxhash>=3.8,<4",
 ]
+
+[project.urls]
+Homepage = "https://github.com/victor982721-lab/Neocortex"
+Repository = "https://github.com/victor982721-lab/Neocortex.git"
+Issues = "https://github.com/victor982721-lab/Neocortex/issues"
 
 [project.scripts]
 Neocortex = "neocortex.cli:entrypoint"
 
 [project.optional-dependencies]
+agent = [
+    "mcp==1.29.0",
+]
+analysis = [
+    "complexipy>=6.2,<7",
+    "cosmic-ray>=8.4.6,<8.5",
+    "coverage>=7.14,<8",
+    "deptry>=0.25,<0.26",
+    "grimp>=3.15,<4",
+    "mypy>=2.1,<3",
+    "pip-audit>=2.10,<2.11",
+    "pytest>=9.1,<10",
+    "radon>=6.0.1,<7",
+    "ruff>=0.15,<0.16",
+    "vulture>=2.16,<2.17",
+]
 documents = [
     "Pillow>=12.3,<13",
     "PyMuPDF>=1.27,<2",
@@ -59,16 +72,28 @@ ui = [
     "PySide6>=6.11,<7",
 ]
 full = [
+    "complexipy>=6.2,<7",
+    "cosmic-ray>=8.4.6,<8.5",
+    "coverage>=7.14,<8",
     "ctranslate2>=4.8,<5",
+    "deptry>=0.25,<0.26",
     "fastembed==0.8.0",
     "faster-whisper>=1.2,<2",
+    "grimp>=3.15,<4",
+    "mcp==1.29.0",
+    "mypy>=2.1,<3",
     "nudenet>=3.4.2,<4",
     "numpy>=2.1,<3",
     "Pillow>=12.3,<13",
+    "pip-audit>=2.10,<2.11",
     "PyMuPDF>=1.27,<2",
     "pdfminer.six>=20260107",
     "PySide6>=6.11,<7",
+    "pytest>=9.1,<10",
     "pytesseract>=0.3.13,<0.4",
+    "radon>=6.0.1,<7",
+    "ruff>=0.15,<0.16",
+    "vulture>=2.16,<2.17",
 ]
 dev = [
     "build>=1.5,<2",

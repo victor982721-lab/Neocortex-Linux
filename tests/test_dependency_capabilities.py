@@ -24,26 +24,57 @@ from neocortex.capabilities import (
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 BASE_DEPENDENCIES = (
+    "packaging>=26,<27",
+    "rich>=15,<16",
+    "xxhash>=3.8,<4",
+)
+
+AGENT_DEPENDENCIES = ("mcp==1.29.0",)
+
+ANALYSIS_DEPENDENCIES = (
     "complexipy>=6.2,<7",
     "cosmic-ray>=8.4.6,<8.5",
     "coverage>=7.14,<8",
     "deptry>=0.25,<0.26",
     "grimp>=3.15,<4",
-    "mcp==1.29.0",
     "mypy>=2.1,<3",
-    "packaging>=26,<27",
     "pip-audit>=2.10,<2.11",
     "pytest>=9.1,<10",
     "radon>=6.0.1,<7",
-    "rich>=15,<16",
     "ruff>=0.15,<0.16",
     "vulture>=2.16,<2.17",
-    "xxhash>=3.8,<4",
 )
 
 DEV_DEPENDENCIES = ("build>=1.5,<2",)
 
+FULL_DEPENDENCIES = (
+    "complexipy>=6.2,<7",
+    "cosmic-ray>=8.4.6,<8.5",
+    "coverage>=7.14,<8",
+    "ctranslate2>=4.8,<5",
+    "deptry>=0.25,<0.26",
+    "fastembed==0.8.0",
+    "faster-whisper>=1.2,<2",
+    "grimp>=3.15,<4",
+    "mcp==1.29.0",
+    "mypy>=2.1,<3",
+    "nudenet>=3.4.2,<4",
+    "numpy>=2.1,<3",
+    "Pillow>=12.3,<13",
+    "pip-audit>=2.10,<2.11",
+    "PyMuPDF>=1.27,<2",
+    "pdfminer.six>=20260107",
+    "PySide6>=6.11,<7",
+    "pytest>=9.1,<10",
+    "pytesseract>=0.3.13,<0.4",
+    "radon>=6.0.1,<7",
+    "ruff>=0.15,<0.16",
+    "vulture>=2.16,<2.17",
+)
+
 OPTIONAL_DEPENDENCIES = {
+    "agent": AGENT_DEPENDENCIES,
+    "analysis": ANALYSIS_DEPENDENCIES,
     "documents": (
         "Pillow>=12.3,<13",
         "PyMuPDF>=1.27,<2",
@@ -61,18 +92,7 @@ OPTIONAL_DEPENDENCIES = {
         "Pillow>=12.3,<13",
     ),
     "ui": ("PySide6>=6.11,<7",),
-    "full": (
-        "ctranslate2>=4.8,<5",
-        "fastembed==0.8.0",
-        "faster-whisper>=1.2,<2",
-        "nudenet>=3.4.2,<4",
-        "numpy>=2.1,<3",
-        "Pillow>=12.3,<13",
-        "PyMuPDF>=1.27,<2",
-        "pdfminer.six>=20260107",
-        "PySide6>=6.11,<7",
-        "pytesseract>=0.3.13,<0.4",
-    ),
+    "full": FULL_DEPENDENCIES,
 }
 
 
@@ -106,17 +126,29 @@ def test_project_metadata_separates_canonical_runtime_and_extras() -> None:
     project = metadata_document["project"]
 
     assert tuple(project["dependencies"]) == BASE_DEPENDENCIES
+    assert project["authors"] == [{"name": "Víctor"}]
+    assert project["maintainers"] == [{"name": "Víctor"}]
+    assert project["license"] == "LicenseRef-Proprietary"
+    assert "Private :: Do Not Upload" in project["classifiers"]
+    assert project["urls"] == {
+        "Homepage": "https://github.com/victor982721-lab/Neocortex",
+        "Repository": "https://github.com/victor982721-lab/Neocortex.git",
+        "Issues": "https://github.com/victor982721-lab/Neocortex/issues",
+    }
     extras = project["optional-dependencies"]
     assert tuple(extras) == (*OPTIONAL_DEPENDENCIES, "dev")
     for name, expected in OPTIONAL_DEPENDENCIES.items():
         assert tuple(extras[name]) == expected
     assert tuple(extras["dev"]) == DEV_DEPENDENCIES
-    assert {"coverage>=7.14,<8", "pytest>=9.1,<10"} <= set(project["dependencies"])
+    assert {"coverage>=7.14,<8", "pytest>=9.1,<10"} <= set(extras["analysis"])
+    assert {"coverage>=7.14,<8", "pytest>=9.1,<10"}.isdisjoint(project["dependencies"])
+    assert set(extras["agent"]).isdisjoint(project["dependencies"])
+    assert set(extras["analysis"]).isdisjoint(project["dependencies"])
     assert {"coverage>=7.14,<8", "pytest>=9.1,<10"}.isdisjoint(extras["dev"])
 
     full_union = {
         dependency
-        for name in ("documents", "audio", "image", "semantic", "ui")
+        for name in ("agent", "analysis", "documents", "audio", "image", "semantic", "ui")
         for dependency in extras[name]
     }
     assert set(extras["full"]) == full_union
