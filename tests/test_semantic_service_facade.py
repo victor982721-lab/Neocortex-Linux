@@ -23,6 +23,7 @@ EXPECTED_PUBLIC_API = {
     "FusedResolvedHit",
     "GenerationWorkResult",
     "IMAGE_OCR_TEXT_CHANNEL",
+    "ImageRetrievalCalibration",
     "ModelPreparation",
     "SEMANTIC_DATABASE_NAME",
     "SEMANTIC_ONTOLOGY_ID",
@@ -97,7 +98,8 @@ EXPECTED_SIGNATURES = {
         "'Path | None' = None, text_model: 'EmbeddingModelSpec | None' = None, "
         "model_cache: 'Path | None' = None, "
         "local_files_only: 'bool' = True, threads: 'int | None' = None, "
-        "evidence_mode: 'bool' = False, cancellation_check: "
+        "evidence_mode: 'bool' = False, image_calibration: "
+        "'ImageRetrievalCalibration | None' = None, cancellation_check: "
         "'Callable[[], None] | None' = None) -> "
         "'SemanticSearchResult'"
     ),
@@ -178,6 +180,7 @@ def test_semantic_search_facade_forwards_exact_database_and_candidate_limit() ->
         backend_factory=service._backend,
         lexical_search=service.search_lexical_sources,
         evidence_mode=True,
+        image_calibration=None,
         cancellation_check=cancel,
     )
 

@@ -144,6 +144,23 @@ def _patch_backend(monkeypatch) -> None:
     )
 
 
+def _fixture_image_calibration(
+    *,
+    minimum_score: float = -1.0,
+) -> service.ImageRetrievalCalibration:
+    return service.ImageRetrievalCalibration(
+        calibration_signature="fixture-positive-negative-v1",
+        query_model_signature=service.clip_text_model().model_signature,
+        indexed_model_signature=service.clip_image_model().model_signature,
+        pipeline=service.SEMANTIC_PIPELINE_VERSION,
+        backend="semantic-service-fixture",
+        minimum_score=minimum_score,
+        positive_queries=12,
+        negative_queries=12,
+        sample_items=20,
+    )
+
+
 def _text_record() -> TextSourceRecord:
     text = "Mantenimiento y diagnóstico de un transformador de potencia."
     item = SemanticItem(
@@ -708,12 +725,41 @@ def test_image_and_ocr_use_separate_embedding_generations(
         service.clip_image_model().model_signature,
         service.multilingual_text_model().model_signature,
     }
+    def unexpected_query_vector(*_args, **_kwargs):
+        raise AssertionError("CLIP query backend must not load while retrieval is uncalibrated")
+
+    with monkeypatch.context() as no_uncalibrated_clip:
+        no_uncalibrated_clip.setattr(
+            search_implementation,
+            "query_vector",
+            unexpected_query_vector,
+        )
+        uncalibrated = service.search_semantic_index(
+            tmp_path,
+            "subestación con transformador",
+            include_text=False,
+            include_images=True,
+            include_lexical=False,
+        )
+    assert uncalibrated.rankings[0].hits == ()
+    assert uncalibrated.rankings[0].scanned == 0
+    assert uncalibrated.rankings[0].complete is True
+    assert uncalibrated.rankings[0].provenance["retrieval_abstention"] == {
+        "status": "not_calibrated",
+        "query_abstained": True,
+        "abstention_reason": "image_retrieval_not_calibrated",
+        "score_interpretation": "cosine_similarity_retrieval_floor_not_probability",
+        "raw_hits": 0,
+        "retained_hits": 0,
+        "rejected_hits": 0,
+    }
     search = service.search_semantic_index(
         tmp_path,
         "subestación con transformador",
         include_text=False,
         include_images=True,
         include_lexical=False,
+        image_calibration=_fixture_image_calibration(),
     )
     image_ranking = search.rankings[0]
     assert image_ranking.available
@@ -730,6 +776,30 @@ def test_image_and_ocr_use_separate_embedding_generations(
     fusion_evidence = search.fused[0].fused.evidence[0]
     assert fusion_evidence.indexed_model_signature == (service.clip_image_model().model_signature)
     assert fusion_evidence.query_model_signature == (service.clip_text_model().model_signature)
+
+    with monkeypatch.context() as no_textual_clip:
+        no_textual_clip.setattr(
+            search_implementation,
+            "query_vector",
+            unexpected_query_vector,
+        )
+        textual = service.search_semantic_index(
+            tmp_path,
+            "qué dice el documento del transformador",
+            include_text=False,
+            include_images=True,
+            include_lexical=True,
+            image_calibration=_fixture_image_calibration(),
+        )
+    textual_image = textual.rankings[0]
+    assert textual_image.hits == ()
+    assert textual_image.scanned == 0
+    assert textual_image.provenance["image_query_routing"] == {
+        "policy_signature": "semantic-image-query-routing-v1",
+        "intent": "explicit_textual",
+        "executed": False,
+        "reason": "textual_query_routed_away_from_clip",
+    }
 
     compact_model = compact_multilingual_text_model()
     compact = service.index_image_embeddings(
@@ -1244,6 +1314,104 @@ def _calibrated_ranking_hit(
         end_char=10,
         snippet="fixture",
     )
+
+
+def _calibrated_image_ranking_hit(
+    ref_id: int,
+    *,
+    score: float,
+    backend: str = "semantic-service-fixture",
+) -> tuple[SearchHit, ResolvedSearchHit]:
+    indexed_model = service.clip_image_model()
+    hit = SearchHit(
+        ref_id=ref_id,
+        entity_id=f"image:{ref_id}",
+        item_id=f"item:image:{ref_id}",
+        indexed_model_signature=indexed_model.model_signature,
+        vector_space=indexed_model.vector_space,
+        modality=EmbeddingModality.IMAGE,
+        score=score,
+        generation_id=9,
+        provenance={
+            "backend": backend,
+            "pipeline": service.SEMANTIC_PIPELINE_VERSION,
+        },
+        query_model_signature=service.clip_text_model().model_signature,
+    )
+    return hit, ResolvedSearchHit(
+        hit=hit,
+        path=f"C:/fixtures/image-{ref_id}.png",
+        source_kind="image",
+        source_identity=f"image-{ref_id}",
+        section_kind=None,
+        section_id=None,
+        start_char=None,
+        end_char=None,
+        snippet=None,
+    )
+
+
+def test_image_retrieval_calibration_filters_floor_and_unknown_contracts_closed() -> None:
+    kept_hit, kept_resolved = _calibrated_image_ranking_hit(1, score=0.61)
+    low_hit, low_resolved = _calibrated_image_ranking_hit(2, score=0.59)
+    unknown_hit, unknown_resolved = _calibrated_image_ranking_hit(
+        3,
+        score=0.95,
+        backend="unknown-backend",
+    )
+    ranking = service.SemanticRanking(
+        name="semantic_image",
+        hits=(kept_hit, low_hit, unknown_hit),
+        resolved=(kept_resolved, low_resolved, unknown_resolved),
+        scanned=3,
+        complete=True,
+    )
+
+    calibrated = search_implementation.apply_image_retrieval_calibration(
+        ranking,
+        calibration=_fixture_image_calibration(minimum_score=0.60),
+    )
+
+    assert calibrated.hits == (kept_hit,)
+    assert calibrated.resolved == (kept_resolved,)
+    metadata = calibrated.provenance["retrieval_abstention"]
+    assert metadata["status"] == "applied"
+    assert metadata["rejected_by_reason"] == {
+        "below_calibrated_score_floor": 1,
+        "backend_not_calibrated": 1,
+    }
+    assert metadata["query_abstained"] is False
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "match"),
+    (
+        ("minimum_score", 1.1, "minimum_score"),
+        ("positive_queries", 0, "positive_queries"),
+        ("negative_queries", 0, "negative_queries"),
+        ("sample_items", 0, "sample_items"),
+    ),
+)
+def test_image_retrieval_calibration_requires_measured_bounded_evidence(
+    field: str,
+    value: object,
+    match: str,
+) -> None:
+    kwargs = {
+        "calibration_signature": "fixture-v1",
+        "query_model_signature": service.clip_text_model().model_signature,
+        "indexed_model_signature": service.clip_image_model().model_signature,
+        "pipeline": service.SEMANTIC_PIPELINE_VERSION,
+        "backend": "semantic-service-fixture",
+        "minimum_score": 0.5,
+        "positive_queries": 1,
+        "negative_queries": 1,
+        "sample_items": 1,
+    }
+    kwargs[field] = value
+
+    with pytest.raises(ValueError, match=match):
+        service.ImageRetrievalCalibration(**kwargs)
 
 
 def test_text_retrieval_calibration_abstains_below_exact_owner_floors() -> None:

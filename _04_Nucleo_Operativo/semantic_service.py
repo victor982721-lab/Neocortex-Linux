@@ -92,6 +92,7 @@ from .semantic_service_contracts import (
     WORKER_LEASE_SECONDS as WORKER_LEASE_SECONDS,
     FusedResolvedHit as FusedResolvedHit,
     GenerationWorkResult as GenerationWorkResult,
+    ImageRetrievalCalibration as ImageRetrievalCalibration,
     ModelPreparation as ModelPreparation,
     SemanticClassificationResult as SemanticClassificationResult,
     SemanticEvidencePassResult as SemanticEvidencePassResult,
@@ -160,6 +161,7 @@ __all__ = (
     "SEMANTIC_PROTOTYPE_VERSION",
     "FusedResolvedHit",
     "GenerationWorkResult",
+    "ImageRetrievalCalibration",
     "ModelPreparation",
     "SemanticClassificationResult",
     "SemanticCostCalibration",
@@ -646,6 +648,7 @@ def search_semantic_index(
     local_files_only: bool = True,
     threads: int | None = None,
     evidence_mode: bool = False,
+    image_calibration: ImageRetrievalCalibration | None = None,
     cancellation_check: Callable[[], None] | None = None,
 ) -> SemanticSearchResult:
     """Search incompatible spaces with discovery or concrete-evidence retention."""
@@ -669,6 +672,7 @@ def search_semantic_index(
         backend_factory=_backend,
         lexical_search=search_lexical_sources,
         evidence_mode=evidence_mode,
+        image_calibration=image_calibration,
         cancellation_check=cancellation_check,
     )
 

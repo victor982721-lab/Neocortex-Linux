@@ -8,7 +8,7 @@ import sqlite3
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from .semantic_item_repository import _decode_chunk_text
 from .semantic_models import (
@@ -34,6 +34,8 @@ from .semantic_schema import SemanticStateError, semantic_database
 from .semantic_sources import SEMANTIC_TITLE_SECTION_KIND
 
 TextEmbeddingScope = Literal["all", "content", "title"]
+
+_VECTORIZED_SEARCH_MIN_ROWS = 8
 
 # region [06] Bounded exact cosine fallback
 
@@ -215,6 +217,110 @@ def _exact_search_hit(
     )
 
 
+def _search_hit_from_score(
+    row: sqlite3.Row,
+    query: ExactSearchQuery,
+    score: float,
+) -> SearchHit:
+    """Materialize one hit after a batch scorer validated its vector payload."""
+
+    raw_provenance = json.loads(str(row["provenance_json"]))
+    if not isinstance(raw_provenance, dict):
+        raise SemanticStateError("embedding provenance is not a JSON object")
+    return SearchHit(
+        ref_id=int(row["ref_id"]),
+        entity_id=str(row["entity_id"]),
+        item_id=str(row["item_id"]),
+        indexed_model_signature=str(row["model_signature"]),
+        vector_space=str(row["vector_space"]),
+        modality=EmbeddingModality(str(row["modality"])),
+        score=max(-1.0, min(1.0, float(score))),
+        generation_id=int(row["generation_id"]),
+        provenance=raw_provenance,
+        query_model_signature=query.query_model_signature,
+    )
+
+
+def _numpy_exact_search_hits(
+    rows: Sequence[sqlite3.Row],
+    query: ExactSearchQuery,
+    query_vector: tuple[float, ...],
+    numpy: Any,
+) -> tuple[SearchHit, ...]:
+    """Score a SQLite page exactly with bounded NumPy/BLAS batches.
+
+    This remains an exhaustive cosine scan over every selected published
+    vector.  NumPy replaces per-value Python unpacking and arithmetic; SQLite
+    remains the source of truth and all identity/provenance checks stay on the
+    existing path.
+    """
+
+    query_values = numpy.asarray(query_vector, dtype=numpy.float64)
+    query_norm = float(numpy.linalg.norm(query_values))
+    if not numpy.isfinite(query_norm) or query_norm <= 0.0:
+        raise ValueError("embedding vectors must have a finite non-zero L2 norm")
+
+    scores: list[float | None] = [None] * len(rows)
+    positions_by_dtype: dict[VectorDType, list[int]] = {}
+    for position, row in enumerate(rows):
+        dimensions = int(row["dimensions"])
+        if dimensions != query.dimensions:
+            raise SemanticStateError("persisted vector dimension violates its space")
+        dtype = VectorDType(str(row["vector_dtype"]))
+        payload = bytes(row["vector_blob"])
+        width = 2 if dtype is VectorDType.FLOAT16 else 4
+        expected_bytes = dimensions * width
+        if len(payload) != expected_bytes:
+            raise ValueError(
+                f"invalid vector payload length: expected {expected_bytes}, got {len(payload)}"
+            )
+        positions_by_dtype.setdefault(dtype, []).append(position)
+
+    for dtype, positions in positions_by_dtype.items():
+        numpy_dtype = numpy.dtype("<f2" if dtype is VectorDType.FLOAT16 else "<f4")
+        matrix = numpy.empty((len(positions), query.dimensions), dtype=numpy.float64)
+        for matrix_row, source_position in enumerate(positions):
+            matrix[matrix_row] = numpy.frombuffer(
+                bytes(rows[source_position]["vector_blob"]),
+                dtype=numpy_dtype,
+                count=query.dimensions,
+            )
+        if not bool(numpy.all(numpy.isfinite(matrix))):
+            raise ValueError("embedding vectors must contain only finite values")
+        norms = numpy.linalg.norm(matrix, axis=1)
+        if not bool(numpy.all(numpy.isfinite(norms))) or bool(numpy.any(norms <= 0.0)):
+            raise ValueError("embedding vectors must have a finite non-zero L2 norm")
+        batch_scores = (matrix @ query_values) / (norms * query_norm)
+        if not bool(numpy.all(numpy.isfinite(batch_scores))):
+            raise ValueError("cosine similarity must be finite")
+        for source_position, score in zip(positions, batch_scores, strict=True):
+            scores[source_position] = float(score)
+
+    if any(score is None for score in scores):
+        raise SemanticStateError("vectorized exact search omitted a selected row")
+    return tuple(
+        _search_hit_from_score(row, query, score)
+        for row, score in zip(rows, scores, strict=True)
+        if score is not None
+    )
+
+
+def _exact_search_hits(
+    rows: Sequence[sqlite3.Row],
+    query: ExactSearchQuery,
+    query_vector: tuple[float, ...],
+) -> tuple[SearchHit, ...]:
+    """Score one bounded page, retaining the scalar path as a safe fallback."""
+
+    if len(rows) < _VECTORIZED_SEARCH_MIN_ROWS:
+        return tuple(_exact_search_hit(row, query, query_vector) for row in rows)
+    try:
+        import numpy
+    except ImportError:  # Base/source-only installs may omit the Semantic extra.
+        return tuple(_exact_search_hit(row, query, query_vector) for row in rows)
+    return _numpy_exact_search_hits(rows, query, query_vector, numpy)
+
+
 def _retain_exact_search_hit(
     hit: SearchHit,
     *,
@@ -333,13 +439,15 @@ def _search_exact_page(
         while rows := cursor.fetchmany(batch_size):
             if cancellation_check is not None:
                 cancellation_check()
-            for row in rows:
-                if scanned >= max_vectors:
-                    has_more = True
-                    break
+            remaining = max_vectors - scanned
+            if remaining <= 0:
+                has_more = True
+                break
+            selected_rows = rows[:remaining]
+            page_hits = _exact_search_hits(selected_rows, query, query_vector)
+            for hit in page_hits:
                 if cancellation_check is not None and scanned % 128 == 0:
                     cancellation_check()
-                hit = _exact_search_hit(row, query, query_vector)
                 if evidence_mode:
                     _retain_exact_evidence_hit(
                         hit,
@@ -356,7 +464,8 @@ def _search_exact_page(
                     )
                 scanned += 1
                 last_ref_id = hit.ref_id
-            if has_more:
+            if len(rows) > remaining:
+                has_more = True
                 break
     selected = best_by_evidence.values() if evidence_mode else best_by_item.values()
     hits = tuple(

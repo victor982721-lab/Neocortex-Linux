@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 import threading
 from collections.abc import Iterator
@@ -10,6 +11,7 @@ import pytest
 
 from _04_Nucleo_Operativo import semantic_state as state_module
 from _04_Nucleo_Operativo import semantic_generation_repository
+from _04_Nucleo_Operativo import semantic_search_repository
 from _04_Nucleo_Operativo.semantic_backends import merge_exact_search_pages
 from _04_Nucleo_Operativo.semantic_chunking import (
     TextChunkingConfig,
@@ -25,6 +27,8 @@ from _04_Nucleo_Operativo.semantic_models import (
     SemanticItem,
     TextChunk,
     TextSection,
+    VectorDType,
+    encode_vector,
     fingerprint_bytes,
     fingerprint_text,
 )
@@ -955,6 +959,60 @@ def test_exact_search_keeps_best_chunk_per_item_before_top_k(tmp_path: Path) -> 
         chunks[0].chunk_id,
         chunks[1].chunk_id,
     }
+
+
+def test_vectorized_exact_scoring_preserves_scalar_scores_ties_and_provenance() -> None:
+    model = _text_model(dimensions=4)
+    query = ExactSearchQuery(
+        model.model_signature,
+        model.vector_space,
+        model.dimensions,
+        (1.0, 0.0, 0.0, 0.0),
+        EmbeddingModality.TEXT,
+    )
+    rows = []
+    for index in range(16):
+        dtype = VectorDType.FLOAT16 if index % 2 == 0 else VectorDType.FLOAT32
+        vector = (
+            (1.0, 0.0, 0.0, 0.0)
+            if index < 2
+            else (1.0, float(index), 0.5, -0.25)
+        )
+        payload, _ = encode_vector(vector, model.dimensions, dtype)
+        rows.append(
+            {
+                "ref_id": index + 1,
+                "entity_id": f"chunk:{index}",
+                "item_id": f"item:{index // 2}",
+                "model_signature": model.model_signature,
+                "vector_space": model.vector_space,
+                "modality": EmbeddingModality.TEXT.value,
+                "generation_id": 7,
+                "provenance_json": json.dumps({"fixture": index}),
+                "vector_blob": payload,
+                "dimensions": model.dimensions,
+                "vector_dtype": dtype.value,
+            }
+        )
+    normalized_query = (1.0, 0.0, 0.0, 0.0)
+
+    expected = tuple(
+        semantic_search_repository._exact_search_hit(row, query, normalized_query)
+        for row in rows
+    )
+    actual = semantic_search_repository._exact_search_hits(
+        rows,
+        query,
+        normalized_query,
+    )
+
+    assert [hit.ref_id for hit in actual] == [hit.ref_id for hit in expected]
+    assert [hit.provenance for hit in actual] == [hit.provenance for hit in expected]
+    assert actual[0].score == actual[1].score == 1.0
+    assert [hit.score for hit in actual] == pytest.approx(
+        [hit.score for hit in expected],
+        abs=1e-12,
+    )
 
 
 @pytest.mark.parametrize(

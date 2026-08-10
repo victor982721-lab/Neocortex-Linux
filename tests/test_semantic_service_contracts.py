@@ -20,6 +20,7 @@ from _04_Nucleo_Operativo.semantic_models import canonical_json
 from _04_Nucleo_Operativo.semantic_service_contracts import (
     FusedResolvedHit,
     GenerationWorkResult,
+    ImageRetrievalCalibration,
     ModelPreparation,
     SemanticClassificationResult,
     SemanticCostCalibration,
@@ -45,6 +46,7 @@ CONTRACT_CLASSES = (
     SemanticWorkloadPlan,
     SemanticPlan,
     SemanticRanking,
+    ImageRetrievalCalibration,
     FusedResolvedHit,
     SemanticSearchResult,
     ModelPreparation,
@@ -61,6 +63,7 @@ EXPECTED_VISIBLE_SURFACE = {
     "GenerationSummary",
     "GenerationWorkResult",
     "IMAGE_OCR_TEXT_CHANNEL",
+    "ImageRetrievalCalibration",
     "JOB_BATCH_SIZE",
     "LEASE_HEARTBEAT_INTERVAL_SECONDS",
     "LEASE_HEARTBEAT_JOIN_TIMEOUT_SECONDS",
@@ -222,6 +225,17 @@ EXPECTED_FIELDS = {
         "fusion_weight",
         "provenance",
     ),
+    "ImageRetrievalCalibration": (
+        "calibration_signature",
+        "query_model_signature",
+        "indexed_model_signature",
+        "pipeline",
+        "backend",
+        "minimum_score",
+        "positive_queries",
+        "negative_queries",
+        "sample_items",
+    ),
     "FusedResolvedHit": ("fused", "path", "source_kind", "source_identity", "snippet"),
     "SemanticSearchResult": ("query", "rankings", "lexical_rankings", "fused"),
     "ModelPreparation": (
@@ -331,6 +345,12 @@ EXPECTED_SIGNATURES = {
         "cutoff_reason: 'str | None' = None, next_cursor: 'int | None' = None, "
         "cutoff_score: 'float | None' = None, fusion_weight: 'float' = 1.0, "
         "provenance: 'Mapping[str, object]' = <factory>) -> None"
+    ),
+    "ImageRetrievalCalibration": (
+        "(calibration_signature: 'str', query_model_signature: 'str', "
+        "indexed_model_signature: 'str', pipeline: 'str', backend: 'str', "
+        "minimum_score: 'float', positive_queries: 'int', "
+        "negative_queries: 'int', sample_items: 'int') -> None"
     ),
     "FusedResolvedHit": (
         "(fused: 'FusedHit', path: 'str | None', source_kind: 'str', "
@@ -594,6 +614,7 @@ def test_semantic_service_reexports_contract_objects_by_identity() -> None:
         "SEMANTIC_PROTOTYPE_VERSION",
         "FusedResolvedHit",
         "GenerationWorkResult",
+        "ImageRetrievalCalibration",
         "ModelPreparation",
         "SemanticClassificationResult",
         "SemanticCostCalibration",

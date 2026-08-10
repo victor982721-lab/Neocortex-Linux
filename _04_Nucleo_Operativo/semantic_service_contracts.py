@@ -294,6 +294,49 @@ class SemanticRanking:
 
 
 @dataclass(frozen=True, slots=True)
+class ImageRetrievalCalibration:
+    """Measured CLIP retrieval floor bound to one exact runtime contract.
+
+    NeoCortex deliberately has no built-in visual score threshold.  A caller
+    may supply this contract only after evaluating both positive and negative
+    queries on a representative fixture; otherwise image retrieval abstains.
+    """
+
+    calibration_signature: str
+    query_model_signature: str
+    indexed_model_signature: str
+    pipeline: str
+    backend: str
+    minimum_score: float
+    positive_queries: int
+    negative_queries: int
+    sample_items: int
+
+    def __post_init__(self) -> None:
+        for name in (
+            "calibration_signature",
+            "query_model_signature",
+            "indexed_model_signature",
+            "pipeline",
+            "backend",
+        ):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"image retrieval {name} cannot be blank")
+        if (
+            isinstance(self.minimum_score, bool)
+            or not isinstance(self.minimum_score, (int, float))
+            or not math.isfinite(float(self.minimum_score))
+            or not -1.0 <= float(self.minimum_score) <= 1.0
+        ):
+            raise ValueError("image retrieval minimum_score must be finite between -1 and 1")
+        for name in ("positive_queries", "negative_queries", "sample_items"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise ValueError(f"image retrieval {name} must be positive")
+
+
+@dataclass(frozen=True, slots=True)
 class FusedResolvedHit:
     fused: FusedHit
     path: str | None

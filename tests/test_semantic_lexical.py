@@ -255,6 +255,76 @@ def test_punctuation_rich_query_cannot_inject_fts_or_sql(tmp_path: Path) -> None
         assert connection.execute("SELECT COUNT(*) FROM documents").fetchone() == (1,)
 
 
+def test_strict_all_term_match_remains_primary_and_observable(tmp_path: Path) -> None:
+    state = tmp_path / "pdf.sqlite3"
+    _create_pdf_state(state)
+
+    result = search_lexical_source(
+        "pdf",
+        state,
+        "protección interruptor relevador",
+    )
+
+    assert len(result.hits) == 1
+    provenance = result.hits[0].hit.provenance
+    assert provenance["query_strategy"] == "strict_all_terms"
+    assert provenance["query_fallback_used"] is False
+    assert provenance["applied_query"] == result.normalized_query
+
+
+def test_stopword_elision_recovers_natural_query_without_weakening_primary(
+    tmp_path: Path,
+) -> None:
+    state = tmp_path / "pdf.sqlite3"
+    _create_pdf_state(state)
+
+    result = search_lexical_source(
+        "pdf",
+        state,
+        "la protección de interruptor",
+    )
+
+    assert result.normalized_query == '"la" AND "protección" AND "de" AND "interruptor"'
+    assert len(result.hits) == 1
+    provenance = result.hits[0].hit.provenance
+    assert provenance["query_strategy"] == "content_terms_all"
+    assert provenance["query_fallback_used"] is True
+    assert provenance["applied_query"] == '"protección" AND "interruptor"'
+
+
+def test_soft_fallback_requires_two_content_terms_and_remains_bounded(
+    tmp_path: Path,
+) -> None:
+    state = tmp_path / "pdf.sqlite3"
+    _create_pdf_state(state)
+
+    recovered = search_lexical_source(
+        "pdf",
+        state,
+        "protección interruptor transformador",
+    )
+    unrelated = search_lexical_source(
+        "pdf",
+        state,
+        "protección transformador capacitor",
+    )
+
+    assert len(recovered.hits) == 1
+    assert recovered.hits[0].hit.provenance["query_strategy"] == (
+        "content_terms_any_two"
+    )
+    assert unrelated.hits == ()
+
+
+def test_stopword_only_query_is_not_broadened(tmp_path: Path) -> None:
+    state = tmp_path / "pdf.sqlite3"
+    _create_pdf_state(state)
+
+    result = search_lexical_source("pdf", state, "de la y el")
+
+    assert result.hits == ()
+
+
 @pytest.mark.parametrize(
     "query,match",
     [

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import unicodedata
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -44,6 +45,7 @@ from .semantic_service_contracts import (
     SEARCH_RESOLUTION_BATCH_SIZE,
     SEMANTIC_DATABASE_NAME,
     FusedResolvedHit,
+    ImageRetrievalCalibration,
     SemanticRanking,
     SemanticSearchResult,
 )
@@ -71,6 +73,61 @@ class LexicalSearch(Protocol):
 SEMANTIC_TEXT_RANKING = "semantic_text"
 SEMANTIC_TITLE_RANKING = "semantic_title"
 SEMANTIC_TITLE_FUSION_WEIGHT = 0.5
+
+_QUERY_INTENT_TERM = re.compile(r"[^\W_]+", flags=re.UNICODE)
+_EXPLICIT_VISUAL_TERMS = frozenset(
+    {
+        "abbildung",
+        "bild",
+        "captura",
+        "diagram",
+        "diagrama",
+        "diagramm",
+        "drawing",
+        "esquema",
+        "foto",
+        "fotografía",
+        "fotografia",
+        "fotografie",
+        "image",
+        "imagen",
+        "photograph",
+        "photo",
+        "picture",
+        "plano",
+        "schaltplan",
+        "schematic",
+        "screenshot",
+        "visual",
+        "zeichnung",
+    }
+)
+_EXPLICIT_TEXTUAL_TERMS = frozenset(
+    {
+        "absatz",
+        "archivo",
+        "datei",
+        "dice",
+        "document",
+        "documento",
+        "dokument",
+        "erwähnt",
+        "erwahnt",
+        "file",
+        "menciona",
+        "page",
+        "paragraph",
+        "página",
+        "pagina",
+        "seite",
+        "says",
+        "steht",
+        "text",
+        "texto",
+    }
+)
+_EXPLICIT_VISUAL_SUBSTRINGS = ("图片", "图像", "照片", "相片", "截图", "图表", "示意图")
+_EXPLICIT_TEXTUAL_SUBSTRINGS = ("文本", "文档", "文件", "段落", "页面", "内容")
 
 
 @dataclass(frozen=True, slots=True)
@@ -426,6 +483,170 @@ def unavailable_semantic_ranking(name: str, reason: str) -> SemanticRanking:
     )
 
 
+def classify_image_query_intent(
+    query: str,
+    *,
+    image_only: bool,
+) -> Literal["explicit_visual", "explicit_textual", "ambiguous"]:
+    """Classify only strong modality cues; absence of a cue stays ambiguous."""
+
+    if image_only:
+        return "explicit_visual"
+    terms = {term.casefold() for term in _QUERY_INTENT_TERM.findall(query)}
+    if terms.intersection(_EXPLICIT_VISUAL_TERMS) or any(
+        marker in query for marker in _EXPLICIT_VISUAL_SUBSTRINGS
+    ):
+        return "explicit_visual"
+    if terms.intersection(_EXPLICIT_TEXTUAL_TERMS) or any(
+        marker in query for marker in _EXPLICIT_TEXTUAL_SUBSTRINGS
+    ):
+        return "explicit_textual"
+    return "ambiguous"
+
+
+def _image_routing_provenance(
+    *,
+    intent: str,
+    executed: bool,
+    reason: str | None,
+) -> dict[str, object]:
+    return {
+        "policy_signature": "semantic-image-query-routing-v1",
+        "intent": intent,
+        "executed": executed,
+        "reason": reason,
+    }
+
+
+def _image_abstention_ranking(
+    *,
+    intent: str,
+    reason: str,
+    calibration: ImageRetrievalCalibration | None,
+) -> SemanticRanking:
+    calibration_metadata: dict[str, object] = {
+        "status": "not_calibrated" if calibration is None else "contract_mismatch",
+        "query_abstained": True,
+        "abstention_reason": reason,
+        "score_interpretation": "cosine_similarity_retrieval_floor_not_probability",
+        "raw_hits": 0,
+        "retained_hits": 0,
+        "rejected_hits": 0,
+    }
+    if calibration is not None:
+        calibration_metadata.update(
+            {
+                "calibration_signature": calibration.calibration_signature,
+                "query_model_signature": calibration.query_model_signature,
+                "indexed_model_signature": calibration.indexed_model_signature,
+                "pipeline": calibration.pipeline,
+                "backend": calibration.backend,
+                "minimum_score": calibration.minimum_score,
+                "positive_queries": calibration.positive_queries,
+                "negative_queries": calibration.negative_queries,
+                "sample_items": calibration.sample_items,
+            }
+        )
+    return SemanticRanking(
+        name="semantic_image",
+        hits=(),
+        resolved=(),
+        scanned=0,
+        complete=True,
+        provenance={
+            "image_query_routing": _image_routing_provenance(
+                intent=intent,
+                executed=False,
+                reason=reason,
+            ),
+            "retrieval_abstention": calibration_metadata,
+        },
+    )
+
+
+def _image_calibration_mismatch(
+    calibration: ImageRetrievalCalibration,
+    *,
+    query_model: EmbeddingModelSpec,
+    indexed_model: EmbeddingModelSpec,
+) -> str | None:
+    if calibration.query_model_signature != query_model.model_signature:
+        return "query_model_not_calibrated"
+    if calibration.indexed_model_signature != indexed_model.model_signature:
+        return "indexed_model_not_calibrated"
+    if calibration.pipeline != SEMANTIC_PIPELINE_VERSION:
+        return "pipeline_not_calibrated"
+    return None
+
+
+def apply_image_retrieval_calibration(
+    ranking: SemanticRanking,
+    *,
+    calibration: ImageRetrievalCalibration,
+) -> SemanticRanking:
+    """Fail closed for CLIP neighbours outside one measured exact contract."""
+
+    retained_keys: set[tuple[int, str, str, int]] = set()
+    rejected_by_reason: dict[str, int] = {}
+    for hit in ranking.hits:
+        backend, pipeline, provenance_conflict = _retrieval_contract_provenance(
+            hit.provenance
+        )
+        reason: str | None = None
+        if provenance_conflict:
+            reason = "provenance_contract_conflict"
+        elif pipeline != calibration.pipeline:
+            reason = "pipeline_not_calibrated"
+        elif backend != calibration.backend:
+            reason = "backend_not_calibrated"
+        elif hit.score < calibration.minimum_score:
+            reason = "below_calibrated_score_floor"
+        if reason is None:
+            retained_keys.add(_search_hit_key(hit))
+        else:
+            rejected_by_reason[reason] = rejected_by_reason.get(reason, 0) + 1
+
+    retained_hits = tuple(
+        hit for hit in ranking.hits if _search_hit_key(hit) in retained_keys
+    )
+    retained_resolved = tuple(
+        value
+        for value in ranking.resolved
+        if _search_hit_key(value.hit) in retained_keys
+    )
+    query_abstained = bool(ranking.hits) and not retained_hits
+    calibration_metadata = {
+        "status": "applied",
+        "calibration_signature": calibration.calibration_signature,
+        "query_model_signature": calibration.query_model_signature,
+        "indexed_model_signature": calibration.indexed_model_signature,
+        "pipeline": calibration.pipeline,
+        "backend": calibration.backend,
+        "minimum_score": calibration.minimum_score,
+        "positive_queries": calibration.positive_queries,
+        "negative_queries": calibration.negative_queries,
+        "sample_items": calibration.sample_items,
+        "score_interpretation": "cosine_similarity_retrieval_floor_not_probability",
+        "raw_hits": len(ranking.hits),
+        "retained_hits": len(retained_hits),
+        "rejected_hits": len(ranking.hits) - len(retained_hits),
+        "rejected_by_reason": rejected_by_reason,
+        "query_abstained": query_abstained,
+        "abstention_reason": (
+            "all_visual_candidates_rejected_by_calibration" if query_abstained else None
+        ),
+    }
+    return replace(
+        ranking,
+        hits=retained_hits,
+        resolved=retained_resolved,
+        provenance={
+            **ranking.provenance,
+            "retrieval_abstention": calibration_metadata,
+        },
+    )
+
+
 # endregion [01]
 
 
@@ -639,6 +860,8 @@ def image_search_ranking(
     max_vectors: int,
     backend_factory: BackendFactory,
     evidence_mode: bool = False,
+    query_intent: Literal["explicit_visual", "explicit_textual", "ambiguous"] = "ambiguous",
+    calibration: ImageRetrievalCalibration | None = None,
     cancellation_check: Callable[[], None] | None = None,
 ) -> SemanticRanking:
     query_model = clip_text_model()
@@ -656,6 +879,28 @@ def image_search_ranking(
             "semantic_image",
             "clip_models_not_indexed",
         )
+    if query_intent == "explicit_textual":
+        return _image_abstention_ranking(
+            intent=query_intent,
+            reason="textual_query_routed_away_from_clip",
+            calibration=calibration,
+        )
+    if calibration is None:
+        return _image_abstention_ranking(
+            intent=query_intent,
+            reason="image_retrieval_not_calibrated",
+            calibration=None,
+        )
+    if mismatch := _image_calibration_mismatch(
+        calibration,
+        query_model=query_model,
+        indexed_model=indexed_model,
+    ):
+        return _image_abstention_ranking(
+            intent=query_intent,
+            reason=mismatch,
+            calibration=calibration,
+        )
     try:
         vector = query_vector(
             query_model,
@@ -668,7 +913,7 @@ def image_search_ranking(
         )
     except SemanticModelUnavailableError as exc:
         return unavailable_semantic_ranking("semantic_image", exc.reason)
-    return semantic_ranking(
+    ranking = semantic_ranking(
         database,
         name="semantic_image",
         query_model=query_model,
@@ -678,7 +923,18 @@ def image_search_ranking(
         limit=limit,
         max_vectors=max_vectors,
         evidence_mode=evidence_mode,
+        provenance={
+            "image_query_routing": _image_routing_provenance(
+                intent=query_intent,
+                executed=True,
+                reason=None,
+            ),
+        },
         cancellation_check=cancellation_check,
+    )
+    return apply_image_retrieval_calibration(
+        ranking,
+        calibration=calibration,
     )
 
 
@@ -830,6 +1086,8 @@ def _semantic_search_rankings(
     include_text: bool,
     include_title: bool,
     include_images: bool,
+    image_only: bool,
+    image_calibration: ImageRetrievalCalibration | None,
     text_model: EmbeddingModelSpec | None,
     local_files_only: bool,
     threads: int | None,
@@ -857,6 +1115,10 @@ def _semantic_search_rankings(
             )
         )
     if include_images:
+        query_intent = classify_image_query_intent(
+            context.query,
+            image_only=image_only,
+        )
         rankings.append(
             image_search_ranking(
                 context.database,
@@ -869,6 +1131,8 @@ def _semantic_search_rankings(
                 max_vectors=context.max_vectors,
                 backend_factory=backend_factory,
                 evidence_mode=evidence_mode,
+                query_intent=query_intent,
+                calibration=image_calibration,
                 cancellation_check=cancellation_check,
             )
         )
@@ -920,6 +1184,7 @@ def search_semantic_index(
     backend_factory: BackendFactory,
     lexical_search: LexicalSearch,
     evidence_mode: bool = False,
+    image_calibration: ImageRetrievalCalibration | None = None,
     cancellation_check: Callable[[], None] | None = None,
 ) -> SemanticSearchResult:
     """Search incompatible spaces independently, then fuse only their ranks."""
@@ -942,6 +1207,8 @@ def search_semantic_index(
         include_text=include_text,
         include_title=include_title,
         include_images=include_images,
+        image_only=include_images and not include_text and not include_lexical,
+        image_calibration=image_calibration,
         text_model=text_model,
         local_files_only=local_files_only,
         threads=threads,

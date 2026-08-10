@@ -15,6 +15,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
+from itertools import combinations
 from pathlib import Path
 
 from .semantic_models import EmbeddingModality, ResolvedSearchHit, SearchHit
@@ -34,7 +35,8 @@ MAX_QUERY_TERM_CHARS = 128
 MAX_SNIPPET_CHARS = 1_024
 _CANCELLATION_BATCH_ROWS = 128
 
-LEXICAL_MODEL_SIGNATURE = "sqlite-fts5-unicode61-rd2-v1"
+LEXICAL_MODEL_SIGNATURE = "sqlite-fts5-unicode61-rd2-v2"
+LEXICAL_QUERY_POLICY_SIGNATURE = "sqlite-fts5-natural-strict-soft-v2"
 _SOURCE_ORDER = ("pdf", "docx", "office", "audio", "archive", "text")
 
 
@@ -119,14 +121,83 @@ class _SourceSpec:
 
 _NATURAL_TERM = re.compile(r"[^\W_]+", flags=re.UNICODE)
 
+# These are grammar words, not domain concepts.  They are removed only after
+# the strict all-term query returns no rows, so existing exact matches and FTS
+# operator escaping retain their historical behavior.
+_NATURAL_STOPWORDS = frozenset(
+    {
+        # Spanish
+        "a",
+        "al",
+        "como",
+        "con",
+        "de",
+        "del",
+        "el",
+        "en",
+        "la",
+        "las",
+        "lo",
+        "los",
+        "o",
+        "para",
+        "por",
+        "que",
+        "sobre",
+        "un",
+        "una",
+        "y",
+        # English
+        "an",
+        "and",
+        "are",
+        "as",
+        "at",
+        "by",
+        "for",
+        "from",
+        "in",
+        "is",
+        "of",
+        "on",
+        "or",
+        "the",
+        "to",
+        "with",
+        # German
+        "auf",
+        "das",
+        "dem",
+        "den",
+        "der",
+        "des",
+        "die",
+        "ein",
+        "eine",
+        "einem",
+        "einen",
+        "einer",
+        "eines",
+        "für",
+        "im",
+        "mit",
+        "oder",
+        "und",
+        "von",
+        "zu",
+    }
+)
+_MAX_SOFT_FALLBACK_TERMS = 5
 
-def compile_natural_fts_query(query: str) -> str:
-    """Convert punctuation-rich natural text into a quoted FTS5 AND query.
 
-    Only Unicode letter and number runs become terms.  Quoting every term keeps
-    words such as ``OR`` or ``NEAR`` literal and prevents user punctuation from
-    entering the FTS5 query grammar.
-    """
+@dataclass(frozen=True, slots=True)
+class _NaturalFTSQueryPlan:
+    strict_query: str
+    fallbacks: tuple[tuple[str, str], ...]
+
+
+def _natural_query_terms(query: str) -> tuple[str, ...]:
+    """Validate one natural query and return stable case-insensitive terms."""
 
     value = query.strip()
     if not value:
@@ -149,7 +220,53 @@ def compile_natural_fts_query(query: str) -> str:
             continue
         seen.add(key)
         unique_terms.append(term)
-    return " AND ".join(f'"{term}"' for term in unique_terms)
+    return tuple(unique_terms)
+
+
+def _quoted_fts_term(term: str) -> str:
+    return f'"{term}"'
+
+
+def _all_terms_query(terms: tuple[str, ...]) -> str:
+    return " AND ".join(_quoted_fts_term(term) for term in terms)
+
+
+def _soft_content_query(terms: tuple[str, ...]) -> str | None:
+    """Require any two content terms for a bounded, deterministic fallback."""
+
+    if not 3 <= len(terms) <= _MAX_SOFT_FALLBACK_TERMS:
+        return None
+    pairs = (
+        f"({_quoted_fts_term(left)} AND {_quoted_fts_term(right)})"
+        for left, right in combinations(terms, 2)
+    )
+    return " OR ".join(pairs)
+
+
+def _compile_natural_fts_query_plan(query: str) -> _NaturalFTSQueryPlan:
+    terms = _natural_query_terms(query)
+    strict = _all_terms_query(terms)
+    content_terms = tuple(
+        term for term in terms if term.casefold() not in _NATURAL_STOPWORDS
+    )
+    fallbacks: list[tuple[str, str]] = []
+    if content_terms and content_terms != terms:
+        fallbacks.append(("content_terms_all", _all_terms_query(content_terms)))
+    soft = _soft_content_query(content_terms)
+    if soft is not None and soft not in {strict, *(query for _, query in fallbacks)}:
+        fallbacks.append(("content_terms_any_two", soft))
+    return _NaturalFTSQueryPlan(strict, tuple(fallbacks))
+
+
+def compile_natural_fts_query(query: str) -> str:
+    """Convert punctuation-rich natural text into a quoted FTS5 AND query.
+
+    Only Unicode letter and number runs become terms.  Quoting every term keeps
+    words such as ``OR`` or ``NEAR`` literal and prevents user punctuation from
+    entering the FTS5 query grammar.
+    """
+
+    return _compile_natural_fts_query_plan(query).strict_query
 
 
 def _validate_limit(limit: int) -> None:
@@ -277,7 +394,9 @@ def _bounded_snippet(value: object) -> str | None:
 def _resolved_hit(
     spec: _SourceSpec,
     state_path: Path,
-    normalized_query: str,
+    query_plan: _NaturalFTSQueryPlan,
+    applied_query: str,
+    query_strategy: str,
     row: sqlite3.Row,
     rank_position: int,
 ) -> ResolvedSearchHit:
@@ -304,7 +423,11 @@ def _resolved_hit(
     provenance: dict[str, object] = {
         "backend": "sqlite_fts5",
         "fts_table": spec.fts_table,
-        "normalized_query": normalized_query,
+        "normalized_query": query_plan.strict_query,
+        "applied_query": applied_query,
+        "query_policy_signature": LEXICAL_QUERY_POLICY_SIGNATURE,
+        "query_strategy": query_strategy,
+        "query_fallback_used": query_strategy != "strict_all_terms",
         "rank_position": rank_position,
         "raw_bm25": raw_bm25,
         "score_transform": "negative_raw_bm25",
@@ -377,7 +500,7 @@ def _unavailable_ranking(
 def _search_compiled_source(
     source_kind: str,
     state_path: Path | None,
-    normalized_query: str,
+    query_plan: _NaturalFTSQueryPlan,
     limit: int,
     cancellation: SQLiteCancellationBridge,
 ) -> LexicalRanking:
@@ -392,7 +515,7 @@ def _search_compiled_source(
         return _unavailable_ranking(
             source_kind,
             None,
-            normalized_query,
+            query_plan.strict_query,
             LexicalAvailability.NOT_CONFIGURED,
             "state_database_not_configured",
         )
@@ -403,7 +526,7 @@ def _search_compiled_source(
         return _unavailable_ranking(
             source_kind,
             path,
-            normalized_query,
+            query_plan.strict_query,
             LexicalAvailability.DATABASE_MISSING,
             "state_database_missing",
         )
@@ -425,20 +548,40 @@ def _search_compiled_source(
             connection.execute("PRAGMA query_only=ON")
             if int(connection.execute("PRAGMA query_only").fetchone()[0]) != 1:
                 raise RuntimeError("lexical source reader is not query-only")
-            rows = connection.execute(spec.sql, (normalized_query, limit)).fetchall()
+            applied_query = query_plan.strict_query
+            query_strategy = "strict_all_terms"
+            rows = connection.execute(spec.sql, (applied_query, limit)).fetchall()
+            for fallback_strategy, fallback_query in query_plan.fallbacks:
+                if rows:
+                    break
+                cancellation.checkpoint()
+                rows = connection.execute(spec.sql, (fallback_query, limit)).fetchall()
+                if rows:
+                    applied_query = fallback_query
+                    query_strategy = fallback_strategy
     finally:
         connection.close()
     hits: list[ResolvedSearchHit] = []
     for rank_position, row in enumerate(rows, start=1):
         if rank_position % _CANCELLATION_BATCH_ROWS == 0:
             cancellation.checkpoint()
-        hits.append(_resolved_hit(spec, path, normalized_query, row, rank_position))
+        hits.append(
+            _resolved_hit(
+                spec,
+                path,
+                query_plan,
+                applied_query,
+                query_strategy,
+                row,
+                rank_position,
+            )
+        )
     cancellation.checkpoint()
     return LexicalRanking(
         source_kind=source_kind,
         state_path=path,
         availability=LexicalAvailability.AVAILABLE,
-        normalized_query=normalized_query,
+        normalized_query=query_plan.strict_query,
         hits=tuple(hits),
     )
 
@@ -472,14 +615,14 @@ def search_lexical_source(
     """Search one FTS source without creating or modifying its database."""
 
     _validate_limit(limit)
-    normalized_query = compile_natural_fts_query(query)
+    query_plan = _compile_natural_fts_query_plan(query)
     cancellation = SQLiteCancellationBridge(cancellation_check)
     clock = clock_ns or time.perf_counter_ns
     started_ns = clock()
     ranking = _search_compiled_source(
         source_kind,
         state_path,
-        normalized_query,
+        query_plan,
         limit,
         cancellation,
     )
@@ -497,7 +640,7 @@ def search_lexical_sources(
     """Return independent, availability-aware rankings in stable order."""
 
     _validate_limit(limit)
-    normalized_query = compile_natural_fts_query(query)
+    query_plan = _compile_natural_fts_query_plan(query)
     cancellation = SQLiteCancellationBridge(cancellation_check)
     clock = clock_ns or time.perf_counter_ns
     rankings: list[LexicalRanking] = []
@@ -507,7 +650,7 @@ def search_lexical_sources(
             ranking = _search_compiled_source(
                 source_kind,
                 state_path,
-                normalized_query,
+                query_plan,
                 limit,
                 cancellation,
             )
@@ -518,7 +661,7 @@ def search_lexical_sources(
             ranking = _unavailable_ranking(
                 source_kind,
                 state_path,
-                normalized_query,
+                query_plan.strict_query,
                 LexicalAvailability.READ_FAILED,
                 f"state_database_read_failed:{type(exc).__name__}",
             )
