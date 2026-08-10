@@ -5,6 +5,7 @@
 # region [01] Dependencias del módulo
 from __future__ import annotations
 
+import ast
 import inspect
 import subprocess
 import sys
@@ -15,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from _04_Nucleo_Operativo import semantic_service
+from _04_Nucleo_Operativo import semantic_contract_validation as validation
 from _04_Nucleo_Operativo import semantic_service_contracts as contracts
 from _04_Nucleo_Operativo.semantic_models import canonical_json
 from _04_Nucleo_Operativo.semantic_service_contracts import (
@@ -560,6 +562,37 @@ def test_contract_cold_import_stays_free_of_owners_pil_planner_and_service() -> 
     assert loaded in (
         baseline,
         baseline | {"_04_Nucleo_Operativo.semantic_contract_validation"},
+    )
+
+
+def test_validation_is_structural_and_does_not_import_its_contract_owner() -> None:
+    assert validation.__file__ is not None
+    source_path = Path(validation.__file__)
+    tree = ast.parse(source_path.read_text(encoding="utf-8"), filename=str(source_path))
+    owner_imports = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+        and (node.module or "").endswith("semantic_service_contracts")
+    ]
+    assert owner_imports == []
+
+    calibration = _calibration()
+    source = _source_plan()
+    workload = _workload_plan()
+    plan = _semantic_plan()
+    validation.validate_semantic_cost_calibration(calibration)
+    validation.validate_semantic_source_plan(
+        source,
+        text_source_kinds=contracts.SEMANTIC_PLAN_TEXT_SOURCE_KINDS,
+    )
+    validation.validate_semantic_workload_plan(workload)
+    validation.validate_semantic_plan(
+        plan,
+        text_source_kinds=contracts.SEMANTIC_PLAN_TEXT_SOURCE_KINDS,
+        image_ocr_text_channel=contracts.IMAGE_OCR_TEXT_CHANNEL,
+        source_plan_type=SemanticSourcePlan,
+        workload_plan_type=SemanticWorkloadPlan,
     )
 
 

@@ -12,18 +12,287 @@ import json
 import math
 from collections.abc import Set
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import Protocol
 # endregion [01]
 
 # region [02] Implementación
 
-if TYPE_CHECKING:
-    from .semantic_service_contracts import (
-        SemanticCostCalibration,
-        SemanticPlan,
-        SemanticSourcePlan,
-        SemanticWorkloadPlan,
-    )
+
+class _SemanticCostCalibration(Protocol):
+    """Structural input required by the cost-calibration validator."""
+
+    @property
+    def calibration_signature(self) -> str: ...
+
+    @property
+    def execution_signature(self) -> str: ...
+
+    @property
+    def processing_signature(self) -> str: ...
+
+    @property
+    def workload(self) -> str: ...
+
+    @property
+    def model_signature(self) -> str: ...
+
+    @property
+    def role(self) -> str: ...
+
+    @property
+    def contents_per_second(self) -> float: ...
+
+    @property
+    def sample_contents(self) -> int: ...
+
+    @property
+    def sample_input_bytes(self) -> int: ...
+
+
+class _SemanticSourcePlan(Protocol):
+    """Structural input required by source and plan validation."""
+
+    @property
+    def source_kind(self) -> str: ...
+
+    @property
+    def database(self) -> Path: ...
+
+    @property
+    def schema_version(self) -> int: ...
+
+    @property
+    def resources(self) -> int: ...
+
+    @property
+    def sections(self) -> int: ...
+
+    @property
+    def chunks(self) -> int: ...
+
+    @property
+    def embedding_entities(self) -> int: ...
+
+    @property
+    def source_bytes(self) -> int: ...
+
+    @property
+    def section_text_bytes(self) -> int: ...
+
+    @property
+    def input_bytes(self) -> int: ...
+
+    @property
+    def snapshot_xxh3_128(self) -> str: ...
+
+
+class _SemanticWorkloadPlan(Protocol):
+    """Structural input required by workload and plan validation."""
+
+    @property
+    def name(self) -> str: ...
+
+    @property
+    def modality(self) -> str: ...
+
+    @property
+    def role(self) -> str: ...
+
+    @property
+    def model_signature(self) -> str: ...
+
+    @property
+    def vector_space(self) -> str: ...
+
+    @property
+    def model_id(self) -> str: ...
+
+    @property
+    def model_version(self) -> str: ...
+
+    @property
+    def dimensions(self) -> int: ...
+
+    @property
+    def provider(self) -> str: ...
+
+    @property
+    def supported_roles(self) -> tuple[str, ...]: ...
+
+    @property
+    def vector_dtype(self) -> str: ...
+
+    @property
+    def normalization(self) -> str: ...
+
+    @property
+    def distance(self) -> str: ...
+
+    @property
+    def model_provenance_json(self) -> str: ...
+
+    @property
+    def processing_signature(self) -> str: ...
+
+    @property
+    def embedding_entities(self) -> int: ...
+
+    @property
+    def unique_contents(self) -> int: ...
+
+    @property
+    def preexisting_reusable_contents(self) -> int: ...
+
+    @property
+    def planned_reusable_contents(self) -> int: ...
+
+    @property
+    def new_unique_contents(self) -> int: ...
+
+    @property
+    def input_bytes(self) -> int: ...
+
+    @property
+    def unique_input_bytes(self) -> int: ...
+
+    @property
+    def new_vector_blob_bytes_lower_bound(self) -> int: ...
+
+    @property
+    def model_request_contents_lower_bound(self) -> int: ...
+
+    @property
+    def model_request_contents_upper_bound(self) -> int: ...
+
+    @property
+    def estimated_model_seconds_lower_bound(self) -> float | None: ...
+
+    @property
+    def estimated_model_seconds_upper_bound(self) -> float | None: ...
+
+    @property
+    def cost_calibration_signature(self) -> str | None: ...
+
+    @property
+    def cost_execution_signature(self) -> str | None: ...
+
+    @property
+    def cost_calibration_contents_per_second(self) -> float | None: ...
+
+    @property
+    def cost_calibration_sample_contents(self) -> int | None: ...
+
+    @property
+    def cost_calibration_sample_input_bytes(self) -> int | None: ...
+
+    @property
+    def cost_unavailable_reason(self) -> str | None: ...
+
+
+class _SemanticPlan(Protocol):
+    """Structural input required by the aggregate plan validator."""
+
+    @property
+    def scope(self) -> str: ...
+
+    @property
+    def selected_sources(self) -> tuple[str, ...]: ...
+
+    @property
+    def semantic_database(self) -> Path: ...
+
+    @property
+    def semantic_schema_version(self) -> int | None: ...
+
+    @property
+    def source_plans(self) -> tuple[_SemanticSourcePlan, ...]: ...
+
+    @property
+    def workloads(self) -> tuple[_SemanticWorkloadPlan, ...]: ...
+
+    @property
+    def text_chunking_signature(self) -> str | None: ...
+
+    @property
+    def content_set_xxh3_128(self) -> str: ...
+
+    @property
+    def semantic_snapshot_xxh3_128(self) -> str: ...
+
+    @property
+    def plan_signature(self) -> str: ...
+
+    @property
+    def resources(self) -> int: ...
+
+    @property
+    def sections(self) -> int: ...
+
+    @property
+    def chunks(self) -> int: ...
+
+    @property
+    def embedding_entities(self) -> int: ...
+
+    @property
+    def source_bytes(self) -> int: ...
+
+    @property
+    def section_text_bytes(self) -> int: ...
+
+    @property
+    def input_bytes(self) -> int: ...
+
+    @property
+    def unique_contents(self) -> int: ...
+
+    @property
+    def unique_input_bytes(self) -> int: ...
+
+    @property
+    def reusable_unique_contents(self) -> int: ...
+
+    @property
+    def new_unique_contents(self) -> int: ...
+
+    @property
+    def new_vector_blob_bytes_lower_bound(self) -> int: ...
+
+    @property
+    def model_request_contents_lower_bound(self) -> int: ...
+
+    @property
+    def model_request_contents_upper_bound(self) -> int: ...
+
+    @property
+    def estimated_model_seconds_lower_bound(self) -> float | None: ...
+
+    @property
+    def estimated_model_seconds_upper_bound(self) -> float | None: ...
+
+    @property
+    def scratch_storage_bytes(self) -> int: ...
+
+    @property
+    def max_scratch_bytes(self) -> int: ...
+
+    @property
+    def originals_verified(self) -> bool | None: ...
+
+    @property
+    def execution_ready(self) -> bool | None: ...
+
+    @property
+    def dry_run(self) -> bool: ...
+
+    @property
+    def jobs_created(self) -> int: ...
+
+    @property
+    def state_mutated(self) -> bool: ...
+
+    @property
+    def sqlite_read_snapshot_may_touch_shm(self) -> bool: ...
 
 
 def _require_nonnegative_int(name: str, value: int) -> None:
@@ -48,7 +317,7 @@ def _require_optional_seconds(name: str, value: float | None) -> None:
 
 
 def _validate_cost_calibration_identity(
-    calibration: SemanticCostCalibration,
+    calibration: _SemanticCostCalibration,
 ) -> None:
     for name, value in (
         ("calibration_signature", calibration.calibration_signature),
@@ -64,7 +333,7 @@ def _validate_cost_calibration_identity(
         raise ValueError("semantic cost calibration role is unsupported")
 
 
-def _validate_cost_calibration_rate(calibration: SemanticCostCalibration) -> None:
+def _validate_cost_calibration_rate(calibration: _SemanticCostCalibration) -> None:
     if isinstance(calibration.contents_per_second, bool) or not isinstance(
         calibration.contents_per_second,
         (int, float),
@@ -78,7 +347,7 @@ def _validate_cost_calibration_rate(calibration: SemanticCostCalibration) -> Non
 
 
 def _validate_cost_calibration_sample(
-    calibration: SemanticCostCalibration,
+    calibration: _SemanticCostCalibration,
 ) -> None:
     if (
         isinstance(calibration.sample_contents, bool)
@@ -92,7 +361,7 @@ def _validate_cost_calibration_sample(
 
 
 def validate_semantic_cost_calibration(
-    calibration: SemanticCostCalibration,
+    calibration: _SemanticCostCalibration,
 ) -> None:
     """Validate one measured cost calibration without external state."""
 
@@ -102,7 +371,7 @@ def validate_semantic_cost_calibration(
 
 
 def _validate_source_identity(
-    source: SemanticSourcePlan,
+    source: _SemanticSourcePlan,
     *,
     text_source_kinds: Set[str],
 ) -> None:
@@ -120,7 +389,7 @@ def _validate_source_identity(
         raise ValueError("schema_version must be positive")
 
 
-def _validate_source_counts(source: SemanticSourcePlan) -> None:
+def _validate_source_counts(source: _SemanticSourcePlan) -> None:
     for name in (
         "resources",
         "sections",
@@ -154,7 +423,7 @@ def _validate_source_counts(source: SemanticSourcePlan) -> None:
 
 
 def validate_semantic_source_plan(
-    source: SemanticSourcePlan,
+    source: _SemanticSourcePlan,
     *,
     text_source_kinds: Set[str],
 ) -> None:
@@ -165,7 +434,7 @@ def validate_semantic_source_plan(
     _require_xxh3_128("snapshot_xxh3_128", source.snapshot_xxh3_128)
 
 
-def _validate_workload_identity(workload: SemanticWorkloadPlan) -> None:
+def _validate_workload_identity(workload: _SemanticWorkloadPlan) -> None:
     for name in (
         "name",
         "role",
@@ -220,7 +489,7 @@ def _validate_workload_identity(workload: SemanticWorkloadPlan) -> None:
         raise ValueError("model_provenance_json must be canonical")
 
 
-def _validate_workload_counts(workload: SemanticWorkloadPlan) -> None:
+def _validate_workload_counts(workload: _SemanticWorkloadPlan) -> None:
     for name in (
         "embedding_entities",
         "unique_contents",
@@ -266,7 +535,7 @@ def _validate_workload_counts(workload: SemanticWorkloadPlan) -> None:
         raise ValueError("vector blob lower bound is inconsistent")
 
 
-def _validate_workload_seconds(workload: SemanticWorkloadPlan) -> None:
+def _validate_workload_seconds(workload: _SemanticWorkloadPlan) -> None:
     _require_optional_seconds(
         "estimated_model_seconds_lower_bound",
         workload.estimated_model_seconds_lower_bound,
@@ -288,7 +557,7 @@ def _validate_workload_seconds(workload: SemanticWorkloadPlan) -> None:
         raise ValueError("model-second range is inverted")
 
 
-def _validate_complete_workload_calibration(workload: SemanticWorkloadPlan) -> None:
+def _validate_complete_workload_calibration(workload: _SemanticWorkloadPlan) -> None:
     assert workload.cost_calibration_signature is not None
     assert workload.cost_execution_signature is not None
     assert workload.cost_calibration_contents_per_second is not None
@@ -324,7 +593,7 @@ def _validate_complete_workload_calibration(workload: SemanticWorkloadPlan) -> N
         raise ValueError("calibrated cost cannot be marked unavailable")
 
 
-def _validate_workload_calibration(workload: SemanticWorkloadPlan) -> None:
+def _validate_workload_calibration(workload: _SemanticWorkloadPlan) -> None:
     calibration_values = (
         workload.cost_calibration_signature,
         workload.cost_execution_signature,
@@ -355,7 +624,7 @@ def _validate_workload_calibration(workload: SemanticWorkloadPlan) -> None:
         raise ValueError("zero-work cost bounds must be exact zero")
 
 
-def validate_semantic_workload_plan(workload: SemanticWorkloadPlan) -> None:
+def validate_semantic_workload_plan(workload: _SemanticWorkloadPlan) -> None:
     """Validate one model/role work projection without external state."""
 
     _validate_workload_identity(workload)
@@ -365,11 +634,11 @@ def validate_semantic_workload_plan(workload: SemanticWorkloadPlan) -> None:
 
 
 def _validate_plan_identity(
-    plan: SemanticPlan,
+    plan: _SemanticPlan,
     *,
     text_source_kinds: Set[str],
-    source_plan_type: type[SemanticSourcePlan],
-    workload_plan_type: type[SemanticWorkloadPlan],
+    source_plan_type: type[object],
+    workload_plan_type: type[object],
 ) -> None:
     if not isinstance(plan.scope, str):
         raise ValueError("semantic plan scope must be a string")
@@ -406,7 +675,7 @@ def _validate_plan_identity(
 
 
 def _validate_plan_topology(
-    plan: SemanticPlan,
+    plan: _SemanticPlan,
     *,
     image_ocr_text_channel: str,
 ) -> None:
@@ -449,7 +718,7 @@ def _validate_plan_topology(
         raise ValueError("workload role or modality is inconsistent with its owner")
 
 
-def _validate_plan_snapshots_and_signatures(plan: SemanticPlan) -> None:
+def _validate_plan_snapshots_and_signatures(plan: _SemanticPlan) -> None:
     physical_snapshots: dict[Path, tuple[int, str]] = {}
     for source in plan.source_plans:
         snapshot = (source.schema_version, source.snapshot_xxh3_128)
@@ -471,7 +740,7 @@ def _validate_plan_snapshots_and_signatures(plan: SemanticPlan) -> None:
     )
 
 
-def _validate_plan_numeric_bounds(plan: SemanticPlan) -> None:
+def _validate_plan_numeric_bounds(plan: _SemanticPlan) -> None:
     for name in (
         "resources",
         "sections",
@@ -502,7 +771,7 @@ def _validate_plan_numeric_bounds(plan: SemanticPlan) -> None:
         raise ValueError("scratch storage exceeds its hard bound")
 
 
-def _validate_plan_source_aggregates(plan: SemanticPlan) -> None:
+def _validate_plan_source_aggregates(plan: _SemanticPlan) -> None:
     if plan.resources != sum(source.resources for source in plan.source_plans):
         raise ValueError("plan resource aggregate is inconsistent")
     if plan.sections != sum(source.sections for source in plan.source_plans):
@@ -529,7 +798,7 @@ def _validate_plan_source_aggregates(plan: SemanticPlan) -> None:
         raise ValueError("plan workload input-byte aggregate is inconsistent")
 
 
-def _validate_plan_content_aggregates(plan: SemanticPlan) -> None:
+def _validate_plan_content_aggregates(plan: _SemanticPlan) -> None:
     if plan.unique_input_bytes > plan.input_bytes:
         raise ValueError("unique input bytes cannot exceed total input bytes")
     if plan.unique_input_bytes > sum(
@@ -573,7 +842,7 @@ def _validate_plan_content_aggregates(plan: SemanticPlan) -> None:
         raise ValueError("global vector lower bound is inconsistent")
 
 
-def _validate_plan_cost_aggregates(plan: SemanticPlan) -> None:
+def _validate_plan_cost_aggregates(plan: _SemanticPlan) -> None:
     _require_optional_seconds(
         "estimated_model_seconds_lower_bound",
         plan.estimated_model_seconds_lower_bound,
@@ -608,7 +877,7 @@ def _validate_plan_cost_aggregates(plan: SemanticPlan) -> None:
         raise ValueError("plan model-second aggregates are inconsistent")
 
 
-def _validate_plan_operational_state(plan: SemanticPlan) -> None:
+def _validate_plan_operational_state(plan: _SemanticPlan) -> None:
     if plan.dry_run is not True or plan.jobs_created != 0 or plan.state_mutated:
         raise ValueError("semantic plans must remain non-mutating dry runs")
     if plan.originals_verified is not None and not isinstance(
@@ -625,12 +894,12 @@ def _validate_plan_operational_state(plan: SemanticPlan) -> None:
 
 
 def validate_semantic_plan(
-    plan: SemanticPlan,
+    plan: _SemanticPlan,
     *,
     text_source_kinds: Set[str],
     image_ocr_text_channel: str,
-    source_plan_type: type[SemanticSourcePlan],
-    workload_plan_type: type[SemanticWorkloadPlan],
+    source_plan_type: type[object],
+    workload_plan_type: type[object],
 ) -> None:
     """Validate a complete read-only Semantic plan without external state."""
 
