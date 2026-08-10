@@ -36,7 +36,7 @@ MAX_SNIPPET_CHARS = 1_024
 _CANCELLATION_BATCH_ROWS = 128
 
 LEXICAL_MODEL_SIGNATURE = "sqlite-fts5-unicode61-rd2-v2"
-LEXICAL_QUERY_POLICY_SIGNATURE = "sqlite-fts5-natural-strict-soft-v2"
+LEXICAL_QUERY_POLICY_SIGNATURE = "sqlite-fts5-natural-strict-soft-v3"
 _SOURCE_ORDER = ("pdf", "docx", "office", "audio", "archive", "text")
 
 
@@ -121,9 +121,10 @@ class _SourceSpec:
 
 _NATURAL_TERM = re.compile(r"[^\W_]+", flags=re.UNICODE)
 
-# These are grammar words, not domain concepts.  They are removed only after
-# the strict all-term query returns no rows, so existing exact matches and FTS
-# operator escaping retain their historical behavior.
+# These are grammar words, not domain concepts.  Ordinary queries remove them
+# only after the strict all-term query returns no rows.  Explicit question
+# requests remove them up front so generic prompt language cannot outrank the
+# requested subject.  FTS operator escaping retains its historical behavior.
 _NATURAL_STOPWORDS = frozenset(
     {
         # Spanish
@@ -131,18 +132,35 @@ _NATURAL_STOPWORDS = frozenset(
         "al",
         "como",
         "con",
+        "cual",
+        "cuales",
+        "cuál",
+        "cuáles",
         "de",
         "del",
+        "donde",
+        "dónde",
         "el",
         "en",
+        "encuentra",
+        "encontrar",
+        "evidencia",
+        "existe",
+        "existen",
         "la",
         "las",
+        "hay",
+        "informacion",
+        "información",
         "lo",
         "los",
+        "muestra",
+        "mostrar",
         "o",
         "para",
         "por",
         "que",
+        "qué",
         "sobre",
         "un",
         "una",
@@ -153,16 +171,25 @@ _NATURAL_STOPWORDS = frozenset(
         "are",
         "as",
         "at",
+        "about",
         "by",
+        "evidence",
+        "find",
         "for",
         "from",
         "in",
+        "information",
         "is",
         "of",
         "on",
         "or",
+        "show",
         "the",
+        "there",
         "to",
+        "what",
+        "where",
+        "which",
         "with",
         # German
         "auf",
@@ -178,12 +205,27 @@ _NATURAL_STOPWORDS = frozenset(
         "einen",
         "einer",
         "eines",
+        "es",
+        "evidenz",
         "für",
+        "finde",
+        "finden",
+        "gibt",
         "im",
         "mit",
+        "nachweis",
         "oder",
+        "uber",
         "und",
+        "über",
         "von",
+        "was",
+        "welche",
+        "welcher",
+        "welches",
+        "wo",
+        "zeige",
+        "zeigen",
         "zu",
     }
 )
@@ -192,8 +234,41 @@ _MAX_SOFT_FALLBACK_TERMS = 5
 
 @dataclass(frozen=True, slots=True)
 class _NaturalFTSQueryPlan:
-    strict_query: str
+    normalized_query: str
+    primary_query: str
+    primary_strategy: str
     fallbacks: tuple[tuple[str, str], ...]
+
+
+_QUESTION_OPENERS = frozenset(
+    {
+        # Spanish
+        "cual",
+        "cuales",
+        "cuál",
+        "cuáles",
+        "donde",
+        "dónde",
+        "encuentra",
+        "muestra",
+        "que",
+        "qué",
+        # English
+        "find",
+        "show",
+        "what",
+        "where",
+        "which",
+        # German
+        "finde",
+        "was",
+        "welche",
+        "welcher",
+        "welches",
+        "wo",
+        "zeige",
+    }
+)
 
 
 def _natural_query_terms(query: str) -> tuple[str, ...]:
@@ -245,17 +320,37 @@ def _soft_content_query(terms: tuple[str, ...]) -> str | None:
 
 def _compile_natural_fts_query_plan(query: str) -> _NaturalFTSQueryPlan:
     terms = _natural_query_terms(query)
-    strict = _all_terms_query(terms)
+    normalized = _all_terms_query(terms)
     content_terms = tuple(
         term for term in terms if term.casefold() not in _NATURAL_STOPWORDS
     )
+    is_question_request = terms[0].casefold() in _QUESTION_OPENERS
+    if is_question_request and content_terms:
+        primary_query = _all_terms_query(content_terms)
+        primary_strategy = "question_content_terms_all"
+    else:
+        primary_query = normalized
+        primary_strategy = "strict_all_terms"
+
     fallbacks: list[tuple[str, str]] = []
-    if content_terms and content_terms != terms:
+    if (
+        primary_strategy == "strict_all_terms"
+        and content_terms
+        and content_terms != terms
+    ):
         fallbacks.append(("content_terms_all", _all_terms_query(content_terms)))
     soft = _soft_content_query(content_terms)
-    if soft is not None and soft not in {strict, *(query for _, query in fallbacks)}:
+    if soft is not None and soft not in {
+        primary_query,
+        *(fallback_query for _, fallback_query in fallbacks),
+    }:
         fallbacks.append(("content_terms_any_two", soft))
-    return _NaturalFTSQueryPlan(strict, tuple(fallbacks))
+    return _NaturalFTSQueryPlan(
+        normalized_query=normalized,
+        primary_query=primary_query,
+        primary_strategy=primary_strategy,
+        fallbacks=tuple(fallbacks),
+    )
 
 
 def compile_natural_fts_query(query: str) -> str:
@@ -266,7 +361,7 @@ def compile_natural_fts_query(query: str) -> str:
     entering the FTS5 query grammar.
     """
 
-    return _compile_natural_fts_query_plan(query).strict_query
+    return _compile_natural_fts_query_plan(query).normalized_query
 
 
 def _validate_limit(limit: int) -> None:
@@ -423,11 +518,15 @@ def _resolved_hit(
     provenance: dict[str, object] = {
         "backend": "sqlite_fts5",
         "fts_table": spec.fts_table,
-        "normalized_query": query_plan.strict_query,
+        "normalized_query": query_plan.normalized_query,
         "applied_query": applied_query,
         "query_policy_signature": LEXICAL_QUERY_POLICY_SIGNATURE,
         "query_strategy": query_strategy,
-        "query_fallback_used": query_strategy != "strict_all_terms",
+        "query_fallback_used": query_strategy not in {
+            "strict_all_terms",
+            "question_content_terms_all",
+        },
+        "query_rewrite_used": query_strategy == "question_content_terms_all",
         "rank_position": rank_position,
         "raw_bm25": raw_bm25,
         "score_transform": "negative_raw_bm25",
@@ -515,7 +614,7 @@ def _search_compiled_source(
         return _unavailable_ranking(
             source_kind,
             None,
-            query_plan.strict_query,
+            query_plan.normalized_query,
             LexicalAvailability.NOT_CONFIGURED,
             "state_database_not_configured",
         )
@@ -526,7 +625,7 @@ def _search_compiled_source(
         return _unavailable_ranking(
             source_kind,
             path,
-            query_plan.strict_query,
+            query_plan.normalized_query,
             LexicalAvailability.DATABASE_MISSING,
             "state_database_missing",
         )
@@ -548,8 +647,8 @@ def _search_compiled_source(
             connection.execute("PRAGMA query_only=ON")
             if int(connection.execute("PRAGMA query_only").fetchone()[0]) != 1:
                 raise RuntimeError("lexical source reader is not query-only")
-            applied_query = query_plan.strict_query
-            query_strategy = "strict_all_terms"
+            applied_query = query_plan.primary_query
+            query_strategy = query_plan.primary_strategy
             rows = connection.execute(spec.sql, (applied_query, limit)).fetchall()
             for fallback_strategy, fallback_query in query_plan.fallbacks:
                 if rows:
@@ -581,7 +680,7 @@ def _search_compiled_source(
         source_kind=source_kind,
         state_path=path,
         availability=LexicalAvailability.AVAILABLE,
-        normalized_query=query_plan.strict_query,
+        normalized_query=query_plan.normalized_query,
         hits=tuple(hits),
     )
 
@@ -661,7 +760,7 @@ def search_lexical_sources(
             ranking = _unavailable_ranking(
                 source_kind,
                 state_path,
-                query_plan.strict_query,
+                query_plan.normalized_query,
                 LexicalAvailability.READ_FAILED,
                 f"state_database_read_failed:{type(exc).__name__}",
             )

@@ -325,6 +325,108 @@ def test_stopword_only_query_is_not_broadened(tmp_path: Path) -> None:
     assert result.hits == ()
 
 
+def test_question_scaffolding_cannot_outrank_the_requested_subject(
+    tmp_path: Path,
+) -> None:
+    state = tmp_path / "pdf.sqlite3"
+    with sqlite3.connect(state) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE documents(
+                file_key TEXT PRIMARY KEY,path TEXT NOT NULL,status TEXT NOT NULL,
+                is_partial INTEGER NOT NULL,size INTEGER NOT NULL,mtime_ns INTEGER NOT NULL,
+                birthtime_ns INTEGER NOT NULL,processing_signature TEXT NOT NULL,
+                last_seen_run_id INTEGER NOT NULL
+            );
+            CREATE VIRTUAL TABLE page_fts USING fts5(
+                file_key UNINDEXED,path UNINDEXED,page_number UNINDEXED,text,
+                tokenize='unicode61 remove_diacritics 2'
+            );
+            INSERT INTO documents VALUES
+                ('relevant','C:/docs/transformador.pdf','done',0,100,20,10,'pdf-v11',7),
+                ('noise','C:/docs/historial.pdf','done',0,100,20,10,'pdf-v11',7);
+            INSERT INTO page_fts VALUES
+                ('relevant','C:/docs/transformador.pdf',2,
+                 'Pruebas de transformadores de potencia y tratamiento de aceite'),
+                ('noise','C:/docs/historial.pdf',1,
+                 'Qué evidencia hay disponible en el historial general');
+            """
+        )
+
+    result = search_lexical_source(
+        "pdf",
+        state,
+        "¿Qué evidencia hay sobre transformadores de potencia?",
+    )
+
+    assert [hit.path for hit in result.hits] == [
+        "C:/docs/transformador.pdf"
+    ]
+    provenance = result.hits[0].hit.provenance
+    assert result.normalized_query == (
+        '"Qué" AND "evidencia" AND "hay" AND "sobre" AND '
+        '"transformadores" AND "de" AND "potencia"'
+    )
+    assert provenance["query_strategy"] == "question_content_terms_all"
+    assert provenance["query_fallback_used"] is False
+    assert provenance["query_rewrite_used"] is True
+    assert result.hits[0].hit.provenance["applied_query"] == (
+        '"transformadores" AND "potencia"'
+    )
+
+
+@pytest.mark.parametrize(
+    ("query", "document_text", "applied_query"),
+    [
+        (
+            "What evidence is there about power transformers?",
+            "Power transformers require dielectric testing",
+            '"power" AND "transformers"',
+        ),
+        (
+            "Welche Evidenz gibt es über Leistungstransformatoren?",
+            "Leistungstransformatoren benötigen eine Isolationsprüfung",
+            '"Leistungstransformatoren"',
+        ),
+    ],
+)
+def test_question_rewrite_preserves_english_and_german_subjects(
+    tmp_path: Path,
+    query: str,
+    document_text: str,
+    applied_query: str,
+) -> None:
+    state = tmp_path / "pdf.sqlite3"
+    with sqlite3.connect(state) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE documents(
+                file_key TEXT PRIMARY KEY,path TEXT NOT NULL,status TEXT NOT NULL,
+                is_partial INTEGER NOT NULL,size INTEGER NOT NULL,mtime_ns INTEGER NOT NULL,
+                birthtime_ns INTEGER NOT NULL,processing_signature TEXT NOT NULL,
+                last_seen_run_id INTEGER NOT NULL
+            );
+            CREATE VIRTUAL TABLE page_fts USING fts5(
+                file_key UNINDEXED,path UNINDEXED,page_number UNINDEXED,text,
+                tokenize='unicode61 remove_diacritics 2'
+            );
+            INSERT INTO documents VALUES
+                ('relevant','C:/docs/relevant.pdf','done',0,100,20,10,'pdf-v11',7);
+            """
+        )
+        connection.execute(
+            "INSERT INTO page_fts VALUES('relevant','C:/docs/relevant.pdf',1,?)",
+            (document_text,),
+        )
+
+    result = search_lexical_source("pdf", state, query)
+
+    assert [hit.path for hit in result.hits] == ["C:/docs/relevant.pdf"]
+    provenance = result.hits[0].hit.provenance
+    assert provenance["query_strategy"] == "question_content_terms_all"
+    assert provenance["applied_query"] == applied_query
+
+
 @pytest.mark.parametrize(
     "query,match",
     [
