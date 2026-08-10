@@ -9,11 +9,53 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtGui import QColor, QImage
 from PySide6.QtWidgets import QApplication, QLabel
 
 from _05_Interfaz.main_window import MainWindow
 from _05_Interfaz.read_client import ReadRequest
-from _05_Interfaz.theme import STYLESHEET
+from _05_Interfaz.theme import COLORS, STYLESHEET
+
+
+def _rgb_distance(first: QColor, second: QColor) -> int:
+    return max(
+        abs(first.red() - second.red()),
+        abs(first.green() - second.green()),
+        abs(first.blue() - second.blue()),
+    )
+
+
+def _assert_meaningful_consultation_capture(
+    image: QImage,
+    window: MainWindow,
+) -> None:
+    """Reject blank/mis-styled captures without depending on PNG compression."""
+
+    assert not image.isNull()
+    assert image.width() == window.width() == 1440
+    assert image.height() == window.height() == 900
+
+    sampled_colors: set[tuple[int, int, int]] = set()
+    sampled_luminance: list[int] = []
+    for y in range(0, image.height(), 24):
+        for x in range(0, image.width(), 24):
+            color = image.pixelColor(x, y)
+            sampled_colors.add((color.red() // 8, color.green() // 8, color.blue() // 8))
+            sampled_luminance.append(
+                (299 * color.red() + 587 * color.green() + 114 * color.blue()) // 1000
+            )
+    assert len(sampled_colors) >= 8
+    assert max(sampled_luminance) - min(sampled_luminance) >= 80
+
+    button = window.consult_button
+    top_left = button.mapTo(window, button.rect().topLeft())
+    expected_accent = QColor(COLORS["accent"])
+    accent_pixels = 0
+    for y in range(top_left.y() + 6, top_left.y() + button.height() - 6, 3):
+        for x in range(top_left.x() + 6, top_left.x() + button.width() - 6, 3):
+            if _rgb_distance(image.pixelColor(x, y), expected_accent) <= 8:
+                accent_pixels += 1
+    assert accent_pixels >= 30
 
 
 class _FixtureReadClient:
@@ -243,7 +285,11 @@ def test_consultation_page_renders_reproducibly_offscreen(
         assert pixmap.width() == 1440
         assert pixmap.height() == 900
         assert pixmap.save(str(output), "PNG")
-        assert output.stat().st_size > 20_000
+        assert output.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+        encoded = QImage(str(output))
+        _assert_meaningful_consultation_capture(encoded, window)
+        assert window.consult_result_title.text() == "Búsqueda de evidencia"
+        assert "Pruebas eléctricas U5.pdf" in window.consult_result.toPlainText()
     finally:
         window.close()
         application.processEvents()
