@@ -14,12 +14,12 @@ Esta guía distingue validación de artefactos, reutilización del entorno del s
 
 No cambies constraints para sortear un paquete ausente. Completa y valida el wheelhouse para la versión de Python, arquitectura y extras que se desplegarán.
 
-## Preparación vigente de la entrega `0.7.2`
+## Preparación vigente de la entrega `0.8.0`
 
-El árbol fuente vigente declara `0.7.2`; eso no convierte en evidencia de esa
+El árbol fuente vigente declara `0.8.0`; eso no convierte en evidencia de esa
 versión la validación fechada anterior. Los bloques posteriores que fijan
 literalmente `0.6.0` conservan el ejercicio reproducido el 2026-07-25 y no deben
-reescribirse al citarlo. Para promover `0.7.2`, construye sus artefactos y repite
+reescribirse al citarlo. Para promover `0.8.0`, construye sus artefactos y repite
 las mismas barreras con nombres y requisitos exactos de la entrega actual:
 
 La metadata vigente admite CPython `>=3.13,<3.15`. El wheelhouse y la
@@ -30,7 +30,7 @@ referencias posteriores a `setuptools==82.0.1` pertenecen exclusivamente a la
 reproducción histórica de `0.6.0` y se conservan como evidencia fechada.
 
 ```powershell
-$Version = '0.7.2'
+$Version = '0.8.0'
 $Wheel = "C:\Ruta\Dist\neocortex_framework-$Version-py3-none-any.whl"
 $Sdist = "C:\Ruta\Dist\neocortex_framework-$Version.tar.gz"
 
@@ -43,8 +43,8 @@ C:\Ruta\VenvValidacion072\Scripts\Neocortex.exe --help
 
 La prueba `--no-deps` sigue siendo sólo una barrera de empaquetado ligero. Para
 una instalación operativa hermética, el requisito debe ser
-`neocortex-framework==0.7.2` para la base mínima, uno o más extras de dominio,
-o `neocortex-framework[full]==0.7.2` para conservar el runtime integrado
+`neocortex-framework==0.8.0` para la base mínima, uno o más extras de dominio,
+o `neocortex-framework[full]==0.8.0` para conservar el runtime integrado
 completo. Todo su cierre transitivo debe resolverse exclusivamente desde el
 wheelhouse autorizado. Después de `pip check`, comprueba además que Knowledge
 pueda inspeccionar un directorio de estado deliberadamente ausente sin crearlo:
@@ -56,7 +56,7 @@ C:\Ruta\VenvValidacion072\Scripts\Neocortex.exe --state-directory $StateProbe --
 if (Test-Path -LiteralPath $StateProbe) { throw 'Knowledge creó estado durante la consulta.' }
 ```
 
-La METADATA de `0.7.2` separa el cierre de runtime así:
+La METADATA de `0.8.0` separa el cierre de runtime así:
 
 | Selección | Requisitos directos |
 |---|---|
@@ -121,7 +121,7 @@ consenso de tipos degradados. Ningún probe de instalación debe cargar o
 descargar modelos; la disponibilidad de modelos
 se valida después, de forma offline y contra cachés explícitas.
 
-Conserva el wheel y sdist `0.7.2`, su `constraints.txt`, el inventario del
+Conserva el wheel y sdist `0.8.0`, su `constraints.txt`, el inventario del
 wheelhouse, hashes de procedencia y resultados de las barreras como evidencia
 separada; no atribuyas a esos artefactos los resultados históricos de `0.6.0`.
 

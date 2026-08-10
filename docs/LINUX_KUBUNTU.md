@@ -1,6 +1,6 @@
 # Kubuntu/Linux
 
-NeoCortex `0.7.2` admite Kubuntu/Ubuntu 26.04 sobre Linux x86-64 con CPython
+NeoCortex `0.8.0` admite Kubuntu/Ubuntu 26.04 sobre Linux x86-64 con CPython
 3.14 como entorno personal de referencia. Python 3.13 permanece cubierto por
 la matriz de CI. El modo Linux conserva inventario, procesamiento, catálogo,
 búsqueda, Semantic y la interfaz KDE; las mutaciones del corpus continúan
@@ -50,7 +50,9 @@ runtime aislado y obtiene Node dentro de la release. En el host de referencia:
 
 ```bash
 sudo apt install python3.14-venv qpdf tesseract-ocr tesseract-ocr-spa \
-  ffmpeg libreoffice rsync desktop-file-utils
+  tesseract-ocr-eng tesseract-ocr-deu tesseract-ocr-chi-sim \
+  tesseract-ocr-chi-tra tesseract-ocr-osd ffmpeg libreoffice rsync \
+  desktop-file-utils
 ```
 
 La instalación necesita red para resolver wheels binarios, Node y, cuando se
@@ -134,8 +136,17 @@ python3.14 tools/release_linux.py verify
 Neocortex doctor capabilities --json
 Neocortex doctor platform --json
 Neocortex models status --json
+Neocortex status --scope all
+Neocortex search "consulta representativa" --scope personal --limit 5
+Neocortex review value --scope personal --limit 10
 desktop-file-validate "$HOME/.local/share/applications/neocortex.desktop"
 ```
+
+La barrera del agente local inicia `Neocortex agent serve` desde un cliente MCP
+por stdio y exige initialize, `tools/list` y una llamada read-only real. No debe
+abrir puertos ni crear rutas. Para la GUI, capture la ventana activa y verifique
+visualmente la página Consulta; un test offscreen por sí solo no sustituye la
+comprobación KDE pública.
 
 `doctor platform` tiene un esquema versionado e informa sistema, rutas,
 inventario, identidad, contención, elevación y mutación. En Linux debe declarar
@@ -152,7 +163,7 @@ También puede elegir una release conservada:
 
 ```bash
 python3.14 tools/release_linux.py rollback \
-  --release 0.7.2-0123456789ab-cp314-linux-x86_64
+  --release 0.8.0-0123456789ab-cp314-linux-x86_64
 ```
 
 Rollback sólo cambia atómicamente el enlace activo y deja un recibo; no elimina
@@ -163,10 +174,12 @@ artefactos.
 La entrada de aplicaciones se llama **NeoCortex**. La ventana muestra
 “modo portátil Linux”, no solicita elevación y mantiene desactivados los
 controles de mutación. Inventario, PDF, DOCX, Office, ZIP anidados con OCR,
-texto/correo/Office heredado, audio, imagen, Code, catálogo, Semantic y
-búsqueda siguen disponibles. LibreOffice permite extraer DOC/XLS/PPT sin
-modificar el original; Tesseract `spa+eng` cubre PDF e imágenes tanto físicas
-como contenidas en ZIP.
+texto/correo/Office heredado, audio, video, imagen, Code, catálogo, Semantic y
+búsqueda siguen disponibles. La página **Consulta** ofrece status, search, ask
+y review value sobre scopes fijos, sin modificar estado. LibreOffice permite
+extraer DOC/XLS/PPT sin modificar el original; Tesseract conserva `spa+eng`
+como default y permite perfiles latín/Han/auto con alemán, chino simplificado,
+tradicional y OSD. FFmpeg/FFprobe sostienen la ruta Video acotada.
 
 La primera ejecución debe usar una raíz de laboratorio con 20–50 fixtures, una
 sola ruta por vez y un máximo de 10–15 minutos. Compare hashes antes y después;

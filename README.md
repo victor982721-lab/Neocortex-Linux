@@ -21,7 +21,7 @@ El flujo personal normal es deliberadamente corto:
 un ciclo de release no son pruebas iniciales. Si el piloto no produce algo útil,
 se detiene y se corrige. La continuación técnica vigente, con el estado
 observado y la siguiente acción única, está en el
-[handoff operativo 0.7.2](.codex/handoffs/NEOCORTEX_0.7.2_PAUSE_2026-07-30.md).
+[handoff operativo vigente](.codex/handoffs/NEOCORTEX_0.7.2_PAUSE_2026-07-30.md).
 
 Esta precaución aplica al arranque y diagnóstico, no elimina la experiencia
 simple buscada. En Windows, una vez validado el entorno,
@@ -56,6 +56,29 @@ build quedan fuera; `--code-generated` y `--code-vendored` son inclusiones
 deliberadas. `--code-scope broad` conserva únicamente como override explícito
 la selección textual histórica de todo el perfil. La salida informa raíces y
 descartes por causa para que la cobertura no quede implícita.
+
+### Consulta cotidiana de solo lectura
+
+La experiencia normal ya no exige recordar los flags internos. Estos comandos
+consultan únicamente publicaciones existentes, usan scopes fijos y no crean,
+migran ni reprocesan estado:
+
+```bash
+Neocortex help
+Neocortex status --scope all
+Neocortex search "pruebas eléctricas del transformador U5" --scope personal
+Neocortex ask "¿qué evidencia existe sobre el tratamiento de aceite?" --scope personal
+Neocortex inspect code "dónde se valida SQLite" --scope framework
+Neocortex review value --scope personal --limit 50
+```
+
+`personal` consulta el corpus, `framework` el autoanálisis y `all` devuelve
+ambos rankings por separado: nunca mezcla scores de snapshots distintos. La
+página **Consulta** de `Neocortex --ui` ofrece las mismas acciones, evidencia,
+citas, cobertura e incertidumbre sin controles de mutación. Para clientes
+locales, `Neocortex agent serve` expone por MCP/stdio sólo `status`, `search`,
+`context`, `evidence` e `inspect_code`, todos marcados read-only. Los flags
+históricos siguen disponibles para automatización y producción de estado.
 
 ## Topología canónica por usuario
 
@@ -128,7 +151,7 @@ Instale primero en un entorno virtual aislado fuera del repositorio; no ejecute
 
 ```powershell
 $Repository = Join-Path $HOME 'Neocortex\Repository'
-$RuntimeId = '0.7.2-artifact-id' # sustituya por el identificador validado
+$RuntimeId = '0.8.0-artifact-id' # sustituya por el identificador validado
 $Venv = Join-Path $env:LOCALAPPDATA "Programs\Neocortex\versions\$RuntimeId\venv"
 py -3 -m venv $Venv
 Set-Location -LiteralPath $Repository
@@ -229,8 +252,8 @@ por su ruta exacta:
 instalación: en un entorno nuevo sin `framework.sqlite3` devuelve `2` de forma
 esperada y no crea la base.
 
-La versión fuente de esta entrega es `0.7.2`. Si el ejecutable exacto del
-runtime no informa `0.7.2` o no reconoce las opciones de esta guía, deténgase y
+La versión fuente de esta entrega es `0.8.0`. Si el ejecutable exacto del
+runtime no informa `0.8.0` o no reconoce las opciones de esta guía, deténgase y
 valide el artefacto en un entorno aislado antes de promover el launcher estable.
 
 ## Primer uso y rutas
@@ -244,7 +267,7 @@ Neocortex --root C:\Datos --route pdf --MaxCount 25
 ```
 
 Las rutas vigentes son `pdf`, `docx`, `office`, `archive`, `text`, `audio`,
-`image` y `code`.
+`video`, `image` y `code`.
 Las listas y `--all` se reservan para después de aprobar cada ruta y su
 proyección. Las búsquedas operan sobre estado ya construido, por ejemplo:
 
@@ -313,6 +336,35 @@ Eso permite que el plan Semantic resuelva identidad exacta en lugar de omitir
 imágenes por falta de huella. Tras una ruta de imagen, `--all` incluye CLIP
 visión y el OCR documental retenido cuando la caché y los modelos locales están
 disponibles; texto e imagen permanecen en espacios vectoriales separados.
+
+La recuperación visual es deliberadamente *fail-closed*: sin una calibración
+positiva y negativa compatible con modelo, pipeline y backend no carga CLIP ni
+devuelve vecinos. La evaluación humana actual encontró solapamiento entre
+positivos y negativos; un piso suficientemente conservador sobre el estado vivo
+retendría sólo 32% de los positivos. Por ello `0.8.0` no inventa un umbral ni
+presenta similitud visual como confianza.
+
+Los OCR de PDF, imagen y video conservan `spa+eng` como contrato predeterminado.
+Los perfiles explícitos `latin`, `han-simplified`, `han-traditional` y
+`auto-multilingual` añaden alemán, chino simplificado/tradicional y OSD con una
+ruta primaria y como máximo un fallback medido; nunca envían todos los idiomas
+a cada reconocimiento.
+
+### Video acotado y trazable
+
+La ruta `video` usa FFprobe/FFmpeg en workers contenidos para conservar streams,
+duración, escenas, keyframes, frames muestreados, OCR y timestamps. Acepta tanto
+video con audio como visual-only; en este último caso Audio publica `no_audio`
+benigno sin cargar Whisper. Sus límites predeterminados incluyen 48 frames,
+40 megapíxeles totales de OCR, 16 KiB por OCR de frame, 512 MiB de scratch y
+2 GiB de memoria virtual del worker:
+
+```bash
+Neocortex --root "$Root" --route video --video-max-count 25 --strict-exit-codes
+Neocortex --video-status
+Neocortex --video-search "placa del transformador" --video-search-limit 20
+Neocortex --video-doctor --video-ocr-profile auto-multilingual
+```
 
 ### Código con recuperación semántica integrada
 
@@ -624,8 +676,9 @@ La API Python canónica y tipada PEP 561 `neocortex.sdk` expone los mismos
 contratos, planner, snapshot y `KnowledgeSearchService` sin retirar los imports
 legacy. El golden actual usa candidatos de owner scripted: valida contratos y
 orquestación, pero no sustituye una evaluación humana ni demuestra calidad
-sobre el corpus real. El grafo transversal entre owners y una superficie MCP
-pertenecen a una fase posterior. Consulte
+sobre el corpus real. El grafo transversal entre owners continúa como
+evolución futura; la CLI humana y MCP/stdio read-only ya consumen esta
+publicación mediante scopes fijos. Consulte
 [Knowledge Plane](docs/KNOWLEDGE.md) para contratos, completitud, códigos de
 salida y límites verificables.
 
@@ -675,6 +728,16 @@ autoriza mover, renombrar o borrar.
 Un head legado sin ese canal informa `title_channel_not_indexed` hasta una
 publicación acotada compatible.
 
+La recuperación léxica intenta primero la intersección estricta. Sólo si no hay
+hits elimina stopwords ES/EN/DE y aplica un fallback acotado; para consultas Han
+de al menos dos caracteres, y únicamente después de fallar FTS, recorre como
+máximo 50 000 filas por fuente mediante substring exacto con procedencia
+separada. Los escaneos vectoriales exactos se agrupan con NumPy sin cambiar
+scores, empates ni provenance. Un bakeoff offline ES/EN/DE/ZH dejó a MiniLM
+como candidato *shadow* —mejoró calidad agregada y latencia caliente, pero
+retrocedió en inglés y el fixture fue pequeño—; Jina continúa como modelo
+publicado. No se mezclan espacios ni se transfiere el piso de un modelo a otro.
+
 Si se agota un límite, la salida marca `truncated=1`, devuelve `2` y conserva la
 generación sin publicar; el head anterior no cambia. Una generación
 `bounded-v1` sólo puede publicarse después de confirmar la enumeración completa.
@@ -684,7 +747,7 @@ y segunda corrida incremental.
 ## Uso seguro
 
 `--apply` y `--organization-apply` son autorizaciones explícitas para mutar
-archivos; no son necesarias para indexar o buscar. En `0.7.2`, rename y
+archivos; no son necesarias para indexar o buscar. En `0.8.0`, rename y
 organización sólo operan sobre un archivo regular con un único hard link, en
 NTFS local y en el mismo volumen, mediante handles retenidos y semántica
 *no-replace*. Rutas UNC, otros filesystems, reparses, directorios y movimientos

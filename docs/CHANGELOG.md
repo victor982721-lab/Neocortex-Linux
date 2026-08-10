@@ -4,7 +4,7 @@ Este archivo registra cambios observables del producto. Las cifras de pruebas,
 cobertura y rendimiento pertenecen al informe técnico fechado de cada auditoría;
 no se copian aquí para evitar que se conviertan en datos históricos sin contexto.
 
-## [Sin publicar] - 2026-08-09
+## [0.8.0] - 2026-08-09
 
 ### Añadido
 
@@ -44,6 +44,24 @@ no se copian aquí para evitar que se conviertan en datos históricos sin contex
 - Huella completa XXH3-128 de cada imagen elegible o reutilizada, persistida en
   Dedup para que la planificación y publicación CLIP no pierdan cobertura por
   fingerprints ausentes.
+- Fachada humana read-only `status`, `search`, `ask`, `inspect code` y
+  `review value`, con scopes fijos Personal/Framework, salida trazable y JSON;
+  los flags históricos permanecen compatibles.
+- API `neocortex.read_api` y servidor MCP local exclusivamente por stdio con
+  tools read-only `status`, `search`, `context`, `evidence` e `inspect_code`.
+- Revisión `value-preview` advisory, explicable y acotada sobre SQLite
+  publicado; nunca autoriza mover, archivar o borrar.
+- Ruta `video` v1 con FFprobe/FFmpeg, escenas, keyframes, muestreo periódico,
+  OCR por frame, timestamps, FTS, métricas, límites y vínculos a Audio.
+- Perfiles OCR `latin`, `han-simplified`, `han-traditional` y
+  `auto-multilingual` para PDF, imagen y video, con alemán, chino simplificado/
+  tradicional, OSD, fallback acotado y procedencia por página/frame.
+- Persistencia Office v2 de cada celda XLSX no vacía: libro, hoja, A1, tipo,
+  valor lógico/raw, fórmula, cache, estilo/formato y proyección FTS.
+- Fallback lexical CJK de substring exacto, posterior a FTS y limitado a
+  50 000 filas por fuente, más fixtures positivos/negativos ES/EN/DE/ZH.
+- Página GUI **Consulta** para estado, búsqueda, contexto y revisión de valor,
+  con evidencia seleccionable, límites y abstención visible.
 
 ### Cambiado
 
@@ -79,6 +97,19 @@ no se copian aquí para evitar que se conviertan en datos históricos sin contex
 - El título Semantic v3 prefiere metadata propia —como el asunto EML—, usa un
   encabezado acotado cuando el basename es genérico y conserva el basename como
   fallback, siempre como señal advisory sin autoridad de organización.
+- Knowledge distingue una ventana top-k normal del truncamiento duro:
+  `result_window_full`/`window_omitted_candidates` no degradan completitud;
+  los cortes reales propagan `next_cursor` y `cutoff_score`.
+- La búsqueda lexical usa strict-first, stopwords ES/EN/DE y fallback acotado;
+  el escaneo exacto de vectores se agrupa con NumPy conservando scores,
+  empates, identidad y provenance.
+- MiniLM queda como candidato shadow tras un bakeoff medido, no como reemplazo
+  automático de Jina; cada espacio y calibración permanecen separados.
+- Recuperación visual CLIP pasa a fail-closed sin calibración positiva/negativa
+  compatible. El fixture humano mostró solapamiento y no justificó un umbral
+  escalar productivo.
+- PDF schema 12 y Office schema 2 agregan migraciones aditivas; Video inicia en
+  schema 1. La evidencia nueva se materializa sólo al reprocesar.
 
 ### Corregido
 
@@ -97,6 +128,17 @@ no se copian aquí para evitar que se conviertan en datos históricos sin contex
 - La aplicación autorizada de organización en Windows sincroniza también la
   ruta física y el FTS de `text.sqlite3`; el replay es idempotente y conserva
   el mismo documento identificado.
+- Code search ordena valores opcionales `None`/texto de forma determinista;
+  ContextBundle reserva una cita útil antes de consumir el presupuesto en
+  diagnósticos.
+- Video visual-only deja de producir un error Audio global: publica `no_audio`
+  benigno y no carga Whisper; MIME de audio conserva el fallo.
+- Los readers read-only pueden abrir bases SQLite inactivas sin crear sidecars,
+  pero se abstienen ante actividad o contratos incompatibles.
+- El transporte MCP usa pipes asyncio nativos en CPython 3.14 y completa
+  initialize, listado y llamada real; el transporte upstream basado en workers
+  AnyIO podía quedar
+  bloqueado tras recibir stdin.
 
 ## [0.7.2] - 2026-07-31
 

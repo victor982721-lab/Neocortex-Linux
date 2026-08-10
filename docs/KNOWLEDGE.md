@@ -2,7 +2,7 @@
 
 > **Estado del documento.** Esta es la fuente de verdad funcional de la
 > Knowledge Plane read-only introducida en NeoCortex `0.7.0` y actualizada para
-> los contratos de `0.7.2`. Describe el código y los contratos observables del
+> los contratos de `0.8.0`. Describe el código y los contratos observables del
 > árbol; no sustituye las pruebas ni convierte una evaluación scripted en
 > evidencia de calidad sobre el corpus real.
 
@@ -29,7 +29,7 @@ Neocortex --knowledge-status --knowledge-json
   revisión que ya tengan evidencia corporal; un título no crea hits ni citas.
 
 El checkpoint operativo actual se conserva en el
-[handoff 0.7.2](../.codex/handoffs/NEOCORTEX_0.7.2_PAUSE_2026-07-30.md), no en
+[handoff vigente](../.codex/handoffs/NEOCORTEX_0.7.2_PAUSE_2026-07-30.md), no en
 este contrato estable.
 
 Para el uso personal, Knowledge queda aceptado cuando tres preguntas
@@ -94,7 +94,7 @@ o regiones.
 | `EvidenceRef` | Una evidencia concreta y su localizador heterogéneo. |
 | `RankingSignal` | Ranking de origen, tipo de score, score crudo, posición, modelo/generación y contribución RRF. |
 | `KnowledgeHit` | Recurso, revisión, evidencia, señales, score fusionado, razones y warnings. |
-| `KnowledgeSearchResult` | Resultado completo/parcial, rankings ejecutados, filas/vectores observados, `blocking_owners` y warnings. |
+| `KnowledgeSearchResult` | Resultado completo/parcial, ventana top-k, truncamiento real, cursor/cutoff, rankings ejecutados, filas/vectores observados, `blocking_owners` y warnings. |
 | `KnowledgeSnapshot` | Schemas, publicaciones, watermarks y modelos activos de la vista consultada. |
 | `ContextPlanRef` / `ContextPlanStepRef` | Copia validada del plan normalizado completo y de cada paso requerido u opcional. |
 | `ContextEntityRef` / `ContextRelationRef` | Grafo acotado y grounded en evidencias citadas, con método, procedencia y confianza opcional. |
@@ -348,6 +348,16 @@ añaden sus propios límites de filas y pasos SQLite. La clave de fusión es
 `(resource_id, revision_id, evidence_id)`, no sólo el recurso. El hit final
 conserva todas las señales, posiciones, contribuciones, razones y warnings.
 
+Una ventana top-k llena no equivale a truncamiento. `result_window_full=true`
+y `window_omitted_candidates` informan candidatos sanos fuera del límite
+solicitado, mientras `complete` puede permanecer verdadero. `truncated=true` se
+reserva para un corte duro de ejecución —por ejemplo `max_vectors`— y entonces
+`next_cursor`/`cutoff_score` describen la frontera reanudable. El ContextBundle
+descuenta las omisiones normales de ventana de su cálculo de completitud y, si
+hay hits, reserva primero la cita K1 antes de gastar caracteres en plan/status;
+si el presupuesto no alcanza, usa un diagnóstico compacto en vez de perder la
+única evidencia utilizable.
+
 Después de recuperar evidencia suficiente se aplican:
 
 1. exclusión de recursos marcados `duplicate`;
@@ -393,6 +403,24 @@ el número físico de filas examinadas por el motor: cada ranking publica
 y exact cuenta filas observadas bajo su ventana; por tanto estos valores —y los
 omitidos sólo observables dentro de ventanas acotadas— son cotas inferiores, no
 prueba de cobertura completa ni un benchmark de I/O.
+
+El escaneo exacto agrupa páginas float16/float32 con NumPy, valida dimensión,
+bytes, finitud y norma, y conserva scores, identidad, empates y procedencia; si
+NumPy no está disponible vuelve al camino escalar. La ruta lexical ejecuta
+primero AND estricto, luego stopwords ES/EN/DE y un fallback acotado. Para Han,
+tras cero hits FTS, permite substring exacto de al menos dos caracteres sobre un
+máximo de 50 000 filas por fuente y lo etiqueta
+`sqlite_bounded_cjk_substring`.
+
+El ranking visual permanece fail-closed sin `ImageRetrievalCalibration` medida
+y compatible: no carga CLIP, devuelve `scanned=0` y explica
+`image_retrieval_not_calibrated`. El fixture humano visual ES/EN mostró
+solapamiento positivo/negativo; el piso conservador contra los 431 vectores
+publicados retendría sólo 32% de positivos. No se cableó un umbral ficticio.
+En el bakeoff textual de 24 consultas, MiniLM mejoró métricas agregadas y
+latencia caliente frente a Jina, pero retrocedió en inglés y el conjunto fue
+pequeño; queda como candidato shadow. Cada promoción exige generación y
+calibración propias, nunca mezcla de espacios ni transferencia del piso Jina.
 
 ### Telemetría de consulta por fase
 
@@ -571,7 +599,21 @@ usarlo y debe conservar las citas.
 
 ## CLI instalada
 
-La interfaz sigue siendo option-based. No existen subcomandos `knowledge`.
+La interfaz técnica Knowledge sigue siendo option-based; no existe un
+subcomando `knowledge`. La fachada cotidiana ofrece aliases read-only con
+scopes fijos:
+
+```powershell
+Neocortex status --scope all
+Neocortex search "mantenimiento de transformadores" --scope personal
+Neocortex ask "¿qué evidencia existe de la prueba FAT?" --scope personal
+```
+
+`Neocortex agent serve` publica las mismas operaciones por MCP/stdio con tools
+read-only `status`, `search`, `context`, `evidence` e `inspect_code`. No acepta
+rutas arbitrarias, no abre red y no registra herramientas de mutación.
+
+Los flags técnicos permanecen disponibles:
 
 ```powershell
 Neocortex --knowledge-status
@@ -751,6 +793,15 @@ etiquetados autorizados y una línea base comparable. Por tanto, el golden
 sintético no es una medición de calidad del corpus real; la evaluación real se
 mantiene como una campaña separada, con estado, ground truth y métricas propios.
 
+La campaña 0.8 agrega pruebas separadas, sin convertirlas en el golden de Fase
+1: 18 documentos/24 consultas CJK con positivos y negativos; 25 imágenes/50
+consultas para abstención visual; y un bakeoff offline de 24 consultas/48
+candidatos ES/EN/DE/ZH para Jina frente a MiniLM. En ese bakeoff MiniLM obtuvo
+top-1 58.3% frente a 41.7%, MRR 0.736 frente a 0.505 y mediana caliente 6.31 ms
+frente a 24.70 ms, pero empeoró una partición inglesa y los intervalos se
+solapan. Es evidencia para un shadow A/B con consultas reales etiquetadas, no
+autorización para cambiar el modelo publicado.
+
 ## Alcance probado, límites y rollback
 
 Las regresiones automatizadas del árbol ejercitan el tipado exacto y sus
@@ -793,8 +844,8 @@ Limitaciones abiertas:
   SQLite puede coordinar auxiliares WAL/SHM y una espera de lock puede diferir
   la cancelación hasta 60 s; `stat` o enumeración UNC también pueden bloquear
   hasta que Windows devuelva el control.
-- No existe servidor MCP ni `QueryObservation` durable en Fase 1.
-- No existe feedback writer desde las operaciones read-only.
+- No existe `QueryObservation` durable ni feedback writer. MCP/stdio es una
+  fachada efímera read-only sobre los mismos contratos.
 - Scores semantic, catálogo y heurísticas no son verdad ni probabilidades
   calibradas.
 - La ruta actual puede quedar obsoleta después del snapshot; antes de cualquier

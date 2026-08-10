@@ -21,6 +21,18 @@ cuando una frontera concreta lo requiera:
    incrementalidad.
 5. Una búsqueda o revisión real y una proyección antes de escalar.
 
+Para el preflight y la consulta cotidiana prefiera la fachada corta:
+
+```bash
+Neocortex status --scope all
+Neocortex search "consulta representativa" --scope personal
+Neocortex ask "pregunta concreta" --scope personal
+Neocortex review value --scope personal
+```
+
+Esos comandos no crean o migran estado. En cambio una corrida sin `--apply`
+preserva el corpus, pero sí escribe inventario y cachés.
+
 Si el piloto falla o excede el límite, deténgalo y corrija la causa. `--all`, un
 watcher, una indexación Semantic completa, una migración, un rollback o una
 auditoría integral no son el punto de partida.
@@ -36,8 +48,8 @@ auditoría integral no son el punto de partida.
    Neocortex --help
    ```
 
-   Esta guía corresponde a la fuente `0.7.2`. Si `--version` no existe o no
-   informa `0.7.2`, el launcher operativo no coincide con esta entrega: no use
+   Esta guía corresponde a la fuente `0.8.0`. Si `--version` no existe o no
+   informa `0.8.0`, el launcher operativo no coincide con esta entrega: no use
    sus contratos nuevos sobre estado real hasta validar el artefacto correcto.
    En Linux añada `Neocortex doctor platform --json` y confirme
    `compatible=true`, inventario portable y contención POSIX antes de abrir
@@ -119,8 +131,8 @@ Neocortex --status --status-json
 ```
 
 Después de aprobar cada ruta por separado se puede probar una lista aún
-acotada. `--all` selecciona PDF, DOCX, Office, ZIP, texto/correo, audio, imagen
-y código, actualiza el catálogo técnico y se reserva para cuando exista una
+acotada. `--all` selecciona PDF, DOCX, Office, ZIP, texto/correo, audio, video,
+imagen y código, actualiza el catálogo técnico y se reserva para cuando exista una
 proyección aceptada. Al final avanza Semantic sobre las cachés documentales y,
 si existe la caché de imagen, también sobre CLIP visión/OCR; Code requiere
 `--semantic-source code` explícito.
@@ -546,7 +558,14 @@ nativas y procesos hijos también consumen memoria.
 | Texto | 64 MB decimales por archivo; 4 000 000 caracteres; conversor Office heredado aislado con 1024 MiB y 60 s. Sin límite predeterminado de cantidad. |
 | Imagen | 4 workers; presupuesto 512 MiB; margen físico y de commit de 1024 MiB; espera 60 s; timeout de worker 120 s y OCR documental 12 s; cada imagen seleccionada obtiene/reutiliza huella completa XXH3-128 en Dedup. `--image-max-count` limita candidatos completos, incluidos cache hits. Sin límite predeterminado de tamaño o cantidad. |
 | Audio | Duración máxima 6 h; transcripción máxima 5 000 000 caracteres y 100 000 segmentos; timeout por archivo 3600 s; arranque de worker 1800 s; reserva declarada de worker 4096 MiB, presupuesto de ruta 2048 MiB, márgenes físico/commit de 2048 MiB y espera 300 s. Sin límite predeterminado de tamaño o cantidad. |
+| Video | Duración máxima 6 h; 48 frames; intervalos de 30 s más escenas/keyframes; 2 073 600 píxeles por frame y lado 1920; 40 MP OCR totales, 16 KiB OCR por frame, scratch máximo 512 MiB; probe 30 s, discovery 60 s, frame 20 s, archivo 300 s y worker 2 GiB. |
 | Código | Archivo máximo 8 MiB; texto máximo 4 000 000 caracteres; chunks de 12 000 caracteres; sin límite predeterminado de cantidad; scope `projects` excluye dependencias, generado y vendorizado salvo inclusión explícita. |
+
+Un piloto Video debe incluir al menos un clip audio+visual y uno visual-only,
+comprobar timestamps contra FFprobe y repetir la corrida. En visual-only, Audio
+debe publicar `no_audio` sin cargar Whisper y Video debe terminar completo; un
+archivo cuyo MIME sea realmente audio conserva el error si carece de stream.
+`--video-doctor` verifica FFmpeg/FFprobe y los idiomas OCR sin crear estado.
 
 El coordinador global usa por defecto un máximo de carga CPU del 90 % y una
 espera de recursos de 300 s; los presupuestos globales de memoria, commit y
@@ -561,6 +580,7 @@ Neocortex --root $Root --route pdf --MaxMB 1000 --MaxCount 25
 Neocortex --root $Root --route archive --archive-max-mb 1000 --archive-max-count 25
 Neocortex --root $Root --route text --text-max-mb 64 --text-max-count 25
 Neocortex --root $Root --route image --image-max-mb 100 --image-max-count 100
+Neocortex --root $Root --route video --video-max-count 25
 Neocortex --root $Root --route code --code-max-count 500
 ```
 
@@ -593,7 +613,7 @@ evidencia malformada fuerzan `finalize_graph` y reconstruyen membresías y FTS.
 
 La primera corrida completa posterior a esta actualización puede por ello
 realizar una finalización larga; las siguientes sólo prueban estado estable si
-usan el mismo corpus, configuración y firma. El esquema sigue en 2. Durante
+usan el mismo corpus, configuración y firma. El esquema vigente es 4. Durante
 `finalize_graph`, un progress handler SQLite acotado consulta cancelación dentro
 de la transacción, revierte antes de propagar la excepción original y se retira
 al salir; esto no convierte el grafo en una publicación generacional.
@@ -603,13 +623,16 @@ al salir; esto no convierte el grafo en una publicación generacional.
 ```powershell
 Neocortex --pdf-doctor
 Neocortex --audio-doctor
+Neocortex --video-doctor --video-ocr-profile auto-multilingual
 Neocortex --code-doctor
 Neocortex models status --json
 ```
 
-- Tesseract y los idiomas `spa`/`eng` son externos a Python.
-- FFprobe se requiere para el sondeo de audio; FFmpeg se informa en el
-  diagnóstico de audio.
+- Tesseract y los idiomas `spa`, `eng`, `deu`, `chi_sim`, `chi_tra` y `osd`
+  son externos a Python. Los perfiles multilingües seleccionan un conjunto
+  acotado y persisten idiomas efectivos, OSD, confianza y fallback.
+- FFprobe se requiere para el sondeo de audio y video; Video necesita FFmpeg
+  para escenas, keyframes y frames. Ambos se informan en sus doctors.
 - qpdf es opcional y sólo participa en recuperación estructural PDF.
 - LibreOffice es el backend preferido para extraer DOC/XLS/PPT heredados;
   `catdoc`, `xls2csv` y `catppt` son fallbacks locales. Todos se ejecutan con
@@ -646,6 +669,10 @@ Neocortex models status --json
   locales. `Neocortex models prepare --json` adquiere explícita y
   secuencialmente Whisper, Jina, MiniLM compacto y CLIP texto/visión, y valida
   el modelo NudeNet incluido. `models status` nunca crea rutas ni descarga.
+- El bakeoff offline ES/EN/DE/ZH dejó MiniLM como candidato shadow: mejoró
+  top-1/MRR/recall y latencia caliente agregados, pero retrocedió en inglés.
+  Jina sigue publicado hasta un A/B real etiquetado y calibración propia; no se
+  mezclan dimensiones ni scores entre modelos.
 - La fachada histórica `--semantic-prepare-models` se conserva para el dominio
   Semantic; indexar y clasificar siguen siendo pasos separados.
 
@@ -670,6 +697,11 @@ tokens desmedidos y repetición mecánica. También colapsa chunks idénticos de
 mismo item. La caché fuente permanece completa y reconstruible. La recuperación
 Jina mixta aplica piso `0.42` a cuerpo y título de todos los owners textuales
 soportados; es abstención de retrieval, no probabilidad de relevancia.
+
+CLIP no hereda ese piso. La calibración humana positiva/negativa actual mostró
+solapamiento y el corte seguro sobre el estado vivo conservaría sólo 32% de los
+positivos; por ello la búsqueda visual se abstiene sin cargar el backend hasta
+recibir un contrato de calibración compatible y medido.
 
 Cada item textual incorpora al final una sección de título
 `semantic_metadata_title`, firmada por `semantic-content-aware-title-v3`.
@@ -753,7 +785,7 @@ Si se interrumpió una operación autorizada sobre archivos, **no la repita
 automáticamente**. Siga la sección de acciones inciertas de
 [RECOVERY.md](RECOVERY.md).
 
-En `0.7.2`, los rename y movimientos admitidos son únicamente de archivos
+En `0.8.0`, los rename y movimientos admitidos son únicamente de archivos
 regulares con un hard link en NTFS local y mismo volumen, mediante handles
 retenidos y sin reemplazo. Los demás casos se abstienen. La aplicación de
 candidatos de Papelera está deshabilitada; el dry-run continúa registrando el
@@ -913,12 +945,15 @@ downgrade de base atribuible a Knowledge; cualquier otra migración o cambio de
 estado realizado por comandos distintos conserva su propio contrato de
 recuperación.
 
-La fuente `0.7.2` declara framework v20 y Dedup v9. Framework 19→20 preserva
+La fuente `0.8.0` declara framework v20, Dedup v9, PDF v12, Office v2 y Video
+v1. Framework 19→20 preserva
 filas legacy como `normal`; Dedup 7→8 agrega la firma cruda de inventario a los
 scans, conserva scans/archivos/bytes e invalida checkpoints sin firma en vez de
 inventar evidencia. Dedup 8→9 conserva esas publicaciones y permite que
 `volume`, `journal_id` y `next_usn` sean todos `NULL` o todos presentes, para
-separar publicación de aceleración USN. Ninguna migración ofrece downgrade. Abra bases vivas sólo
+separar publicación de aceleración USN. PDF 11→12 y Office 1→2 son migraciones
+aditivas; la evidencia OCR/celda nueva se completa al reprocesar. Video v1 se
+crea sólo al ejecutar su ruta. Ninguna migración ofrece downgrade. Abra bases vivas sólo
 con el runtime versionado validado; el rollback exige paquete compatible y
 backup completo, nunca editar `schema_version`.
 

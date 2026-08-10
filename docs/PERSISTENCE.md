@@ -1,7 +1,7 @@
 # Persistencia, esquemas y migraciones
 
 > **Estado del documento.** Contrato actualizado el 9 de agosto de 2026. El
-> árbol fuente `0.7.2` declara inventario Dedup v9, framework v20,
+> árbol fuente `0.8.0` declara inventario Dedup v9, framework v20,
 > catálogo v6 y semántica v6; la barrera integral y el paquete final se registran
 > por separado. En una auditoría histórica, bases vivas se inspeccionaron sin
 > migrarlas: dedup permanecía
@@ -103,12 +103,13 @@ a los archivos vivos.
 | Base de `SqlitePathIndex` | `_01_Enumeracion.path_index_schema` / `path_index` | 1 | índice auxiliar MFT de `nodes` y `metadata` | `metadata.schema_version`; no migraciones legacy admitidas |
 | `dedup.sqlite3` | `_02_Deduplicacion.inventory_schema` / `DedupIndex` | **9 en fuente**; 6 en la base viva histórica inspeccionada | scans generacionales ligados a firma de inventario, checkpoint portable/USN opcional, archivos, fingerprints, summaries y grupos/miembros de plan | `metadata.schema_version`; migraciones 1→9 |
 | `framework.sqlite3` | `framework_schema`, `FrameworkState`, `FrameworkRouteState` | **20** | runs, fases, policy/identidad de corpus, acciones con snapshot protegido, eventos append-only de transición/conciliación/manifest, candidatos de ruta, caché de tipo, revisión y evidencia | `metadata.schema_version`; migraciones secuenciales |
-| `pdf.sqlite3` | `pdf_schema`, `pdf_state`, `PdfRoute`, `PdfDerivedIndexer` | 11 | inventario, documentos, páginas, staging, errores, warnings, FTS, firmas, similitud y layout | `metadata.schema_version`; migraciones secuenciales |
+| `pdf.sqlite3` | `pdf_schema`, `pdf_state`, `PdfRoute`, `PdfDerivedIndexer` | 12 | inventario, documentos, páginas, OCR efectivo/OSD/confianza/fallback, staging, errores, warnings, FTS, firmas, similitud y layout | `metadata.schema_version`; migraciones secuenciales |
 | `docx.sqlite3` | `docx_schema`, `docx_state`, `DocxRoute` | 5 | inventario, documentos, partes, diagnósticos, FTS, layouts y contrapartes PDF | `metadata.schema_version`; migraciones secuenciales |
 | `office.sqlite3` | `office_state`, `OfficeRoute` | 2 | inventario, documentos, celdas XLSX tipadas y FTS | `metadata.schema_version` |
 | `archive.sqlite3` | `archive_state`, `ArchiveRoute` | 1 | contenedores ZIP, miembros y cadenas anidadas, incidencias, texto comprimido y FTS | `metadata.schema_version`; sin estado legacy |
 | `text.sqlite3` | `text_state`, `TextRoute` | 1 | texto físico, EML y Office heredado; título/autor, metadata, texto comprimido, errores y FTS | `metadata.schema_version`; sin estado legacy |
 | `audio.sqlite3` | `audio_state`, `AudioRoute` | 1 | inventario, documentos, segmentos y FTS de transcripción | `metadata.schema_version` |
+| `video.sqlite3` | `video_state`, `VideoRoute` | 1 | documentos, streams, frames, selección, OCR, timestamps, métricas y FTS | `metadata.schema_version`; sin estado legacy |
 | `image.sqlite3` | `image_state`, `ImageRoute` | 5 | imágenes, estado de extracción/clasificación y metadata | `metadata.schema_version`; migraciones aditivas |
 | `document_catalog.sqlite3` | `document_catalog_schema`, `document_catalog` | **6** | runs, generaciones/staging, publicación por fuente, proyección de documentos, historial y planes de organización | `metadata.schema_version`; migraciones secuenciales |
 | `code.sqlite3` | `code_schema`, `code_state` | 4 | proyectos, runs, archivos/versiones, símbolos, referencias, dependencias, grafo, chunks, FTS, métricas/relaciones y evidencia externa normalizada | metadata + `PRAGMA user_version` + `schema_migrations` exacto; migraciones secuenciales 1→4 |
@@ -132,7 +133,7 @@ ejecutó esas rutas mantiene el vector histórico de diez owners:
 | `inventory` | `dedup.sqlite3` | 9 | scan publicado por raíz y firma, checkpoint portable/USN opcional y señal de plan de duplicados completado |
 | `framework` | `framework.sqlite3` | 20 | máximos de run, evento y acción; `best_effort_non_generational` |
 | `catalog` | `document_catalog.sqlite3` | 6 | generación publicada por `source_kind` |
-| `pdf` | `pdf.sqlite3` | 11 | filas actuales, último update/run; `best_effort_non_generational` |
+| `pdf` | `pdf.sqlite3` | 12 | filas actuales, último update/run; `best_effort_non_generational` |
 | `docx` | `docx.sqlite3` | 5 | filas actuales, último update/run; `best_effort_non_generational` |
 | `office` | `office.sqlite3` | 2 | filas actuales, último update/run; `best_effort_non_generational` |
 | `archive` (aditivo si existe) | `archive.sqlite3` | 1 | miembros actuales, último update/run; `best_effort_non_generational` |
@@ -310,15 +311,25 @@ misma transacción; una ambigüedad o conflicto de metadatos provoca abstención
 
 ### Cachés por formato
 
-PDF, DOCX, Office, Archive, texto, audio e imagen conservan resultados
+PDF, DOCX, Office, Archive, texto, audio, video e imagen conservan resultados
 especializados para no reprocesar archivos sin cambios. Sus claves se derivan
 de identidad durable, metadatos y firmas de procesamiento. Una caché no es
 respaldo del original.
 
+PDF v12 añade por página perfil/idiomas OCR efectivos, resultado OSD,
+confianza, fallback y procedencia; su migración 11→12 es aditiva y la
+reextracción actualiza la firma. Office v2 conserva cada celda XLSX no vacía con
+libro, hoja/ordinal, A1, tipo, valor lógico y raw, fórmula, valor cacheado,
+estilo/formato y proyección `XLSX_CELL` a texto/FTS; la migración v1→v2 no
+inventa celdas legacy, que aparecen al reprocesar.
+
 PDF y DOCX incluyen FTS y estructuras derivadas; Archive conserva miembros
 virtuales/cadenas ZIP y OCR; texto conserva cuerpo, asunto/autor y tipo; audio
-almacena segmentos; imagen almacena clasificación/evidencia y su ruta productora
-garantiza la huella completa XXH3-128 en Dedup. La poda de una caché sólo debe
+almacena segmentos. Video v1 conserva documentos, inventario, streams/probe,
+frames con razones de muestreo, timestamp, dimensiones, XXH3, OCR/provenance y
+FTS, además del vínculo exacto al transcript Audio cuando existe. Imagen
+almacena clasificación/evidencia y su ruta productora garantiza la huella
+completa XXH3-128 en Dedup. La poda de una caché sólo debe
 ocurrir después de una reconciliación que demuestre qué filas dejaron de ser
 vigentes.
 
@@ -349,7 +360,7 @@ publica actualmente dentro de una transacción global de finalización; hacer
 batches sin una generación y un puntero publicados no sería una corrección
 segura (`NC-AUD-015`).
 
-El esquema vigente es 3. Un cache hit con ruta exacta actualiza los run IDs de
+El esquema vigente es 4. Un cache hit con ruta exacta actualiza los run IDs de
 presencia/observación sin DML sobre `code_fts`. Una ruta distinta no reutiliza la
 versión: la publicación normal invalida la vigente y crea una sucesora con su
 propio `path_observed`, FTS y evidencia, conservando la versión anterior.
@@ -570,6 +581,16 @@ Un reader limitado a v19 debe abstenerse ante v20. No hay downgrade por DDL: el
 rollback exige restaurar base consistente y paquete compatible. Abra o migre
 bases operativas sólo con el runtime versionado validado para esta fuente.
 
+### Migraciones PDF v11→v12 y Office v1→v2
+
+PDF 11→12 añade columnas de procedencia OCR por página y las deja nulas para
+filas legacy; no atribuye idioma, OSD, confianza o fallback retroactivamente.
+Office 1→2 valida primero el esquema exacto, crea `xlsx_cells` con FK/cascade y
+el trigger que sincroniza `workbook` al cambiar `documents.path`; conserva
+documentos, texto y FTS legacy. En ambos casos la evidencia nueva requiere un
+reproceso productor con la firma vigente. Una publicación parcial nunca se
+presenta como celdas o OCR completos.
+
 ### Migración Dedup v7→v8
 
 La migración añade `scans.inventory_policy_signature` sin inventar evidencia
@@ -611,9 +632,9 @@ registra la barrera ejecutada.
 
 ### Estado de fuente y estado vivo
 
-La fuente `0.7.2` declara esquema v9. La base viva inspeccionada históricamente conservaba
+La fuente `0.8.0` declara esquema v9. La base viva inspeccionada históricamente conservaba
 `metadata.schema_version='6'`; se abrió sólo para checks y no se permitió que el
-initializer la migrara. Antes de usar esa base con `0.7.2` debe aplicarse el
+initializer la migrara. Antes de usar esa base con `0.8.0` debe aplicarse el
 procedimiento de backup y actualización de este documento.
 
 Los hallazgos `NC-AUD-001`, `NC-AUD-002` y `NC-AUD-003` quedaron corregidos en

@@ -9,11 +9,13 @@ que conviene conocer antes de usar `--help`.
 
 | Necesidad | Comando |
 |---|---|
-| Estado general | `Neocortex --status` |
-| Disponibilidad de Knowledge | `Neocortex --knowledge-status --knowledge-json` |
-| Buscar evidencia | `Neocortex --knowledge-search "consulta" --knowledge-limit 20` |
-| Compilar contexto citado | `Neocortex --knowledge-context "consulta" --knowledge-limit 12` |
-| Buscar en un owner concreto | `Neocortex --pdf-search "consulta"` o `Neocortex --code-search "consulta"` |
+| Guía humana breve | `Neocortex help` |
+| Estado publicado | `Neocortex status --scope all` |
+| Buscar evidencia | `Neocortex search "consulta" --scope personal --limit 20` |
+| Preparar contexto citado | `Neocortex ask "consulta" --scope personal --limit 12` |
+| Inspeccionar Code | `Neocortex inspect code "consulta" --scope framework` |
+| Revisar valor sin cambios | `Neocortex review value --scope personal` |
+| Diagnóstico de una corrida | `Neocortex --status --status-json` |
 
 Empiece por consultas sobre estado publicado. Si debe producir cobertura nueva,
 siga el piloto de 20–50 elementos y 10–15 minutos de
@@ -35,7 +37,7 @@ esperadas, deténgase: el launcher instalado y el árbol fuente no representan l
 misma entrega. No use una ruta nueva hasta actualizar y volver a comprobar el
 entrypoint.
 
-Esta fuente declara `0.7.2`. En Windows, la fuente canónica está en
+Esta fuente declara `0.8.0`. En Windows, la fuente canónica está en
 `%USERPROFILE%\Neocortex\Repository`; los runtimes versionados viven bajo
 `%LOCALAPPDATA%\Programs\Neocortex\versions` y el launcher estable es
 `%LOCALAPPDATA%\Programs\Neocortex\bin\Neocortex.exe`. En Linux, la fuente está
@@ -83,6 +85,7 @@ Las rutas de contenido vigentes en la CLI son:
 | `archive` | Miembros de ZIP y ZIP anidados, incluido OCR acotado de imágenes y PDF escaneados. |
 | `text` | Texto imprimible, EML y Office heredado DOC/XLS/PPT. |
 | `audio` | Audio y pistas de vídeo admitidas mediante Whisper. |
+| `video` | Streams, escenas, keyframes, frames, OCR y timestamps mediante FFmpeg. |
 | `image` | Clasificación, OCR, huella completa y evidencia de imágenes. |
 | `code` | Texto, estructura, símbolos y relaciones de código fuente. |
 
@@ -103,7 +106,7 @@ directas de consulta o diagnóstico.
 
 La corrida `--all` ejecuta primero el autoanálisis protegido de
 `~/Neocortex/Repository` —o su equivalente canónico Windows— usando el estado
-separado `self-analysis`. Después ejecuta las ocho rutas del corpus y, si no
+separado `self-analysis`. Después ejecuta las nueve rutas del corpus y, si no
 hubo errores de acciones u organización, avanza Semantic sobre las cachés
 disponibles de PDF, DOCX, XLSX, PPTX, ODT, audio, Archive, texto/correo e
 imágenes. El canal visual sólo se ejecuta cuando existe `image.sqlite3`. Sus
@@ -405,10 +408,41 @@ Neocortex --ui --root $Root
 ```
 
 La GUI supervisa el mismo orquestador y expone PDF, DOCX, Office, ZIP,
-texto/correo, audio, imagen y Code. En Linux muestra “modo portátil Linux”, no
+texto/correo, audio, video, imagen y Code. Su quinta página **Consulta** consume
+los mismos contratos `status`, `search`, `ask` y `review value` de sólo lectura,
+con scopes fijos, citas, cobertura e incertidumbre; no acepta rutas de estado ni
+presenta controles de mutación. En Linux muestra “modo portátil Linux”, no
 solicita elevación y desactiva los controles de mutación; inventario,
 procesamiento y búsqueda se conservan. El worker `--gui-worker` es un contrato
 interno y no debe invocarse manualmente.
+
+### Consulta humana y agentes locales
+
+Los subcomandos humanos son una fachada sobre las APIs publicadas; no sustituyen
+las rutas productoras ni retiran los flags históricos:
+
+```bash
+Neocortex status --scope personal
+Neocortex search "protección diferencial" --scope all --limit 10
+Neocortex ask "¿qué evidencia existe de la prueba FAT?" --scope personal
+Neocortex inspect code "validación de schema" --scope framework --mode hybrid
+Neocortex review value --scope personal --limit 50
+```
+
+Los scopes válidos son `personal`, `framework` y `all`. `all` ejecuta cada
+snapshot independientemente y no fusiona scores. `status`, `search`, `ask` e
+`inspect code` aceptan `--json`; `search`/`ask` acotan la consulta a 4096
+caracteres y como máximo 100 resultados por scope. `review value` es advisory,
+declara `mutation_authorized=false` y no mueve, archiva ni elimina.
+
+```bash
+Neocortex agent serve
+```
+
+Ese comando inicia un servidor MCP local sólo por stdio. Expone exclusivamente
+`status`, `search`, `context`, `evidence` e `inspect_code`; no abre un listener,
+no acepta paths arbitrarios y marca todas las tools read-only, no destructivas e
+idempotentes. El texto del corpus se trata siempre como datos no confiables.
 
 ## Consultas y diagnósticos sin recorrido
 
@@ -426,6 +460,8 @@ Neocortex models status --json
 Neocortex --pdf-doctor
 Neocortex --pdf-verify
 Neocortex --audio-doctor
+Neocortex --video-doctor
+Neocortex --video-status
 Neocortex --code-status
 Neocortex --code-review
 Neocortex --code-doctor
@@ -477,6 +513,7 @@ Neocortex --pdf-search 'transformador AND mantenimiento'
 Neocortex --docx-search 'transformador AND mantenimiento'
 Neocortex --office-search 'transformador AND mantenimiento'
 Neocortex --audio-search 'transformador AND mantenimiento'
+Neocortex --video-search 'placa del transformador' --video-search-limit 20
 Neocortex --archive-search 'transformador AND mantenimiento'
 Neocortex --knowledge-search 'transformador mantenimiento' --knowledge-limit 20
 Neocortex --code-search 'sqlite3' --code-search-mode import --code-language python
@@ -505,6 +542,18 @@ fórmulas, mojibake, tokens desmedidos y repetición mecánica, y colapsa chunks
 idénticos del mismo item. Las cachés de extracción completas no se borran. Si
 un vector fue reutilizado por contenido exacto, el contrato se toma de su
 `payload_provenance`; valores contradictorios no reciben el piso.
+
+La búsqueda lexical conserva la intersección estricta como primera estrategia.
+Sólo ante cero hits elimina stopwords ES/EN/DE y permite un fallback acotado;
+las consultas Han de al menos dos caracteres activan, después de fallar FTS,
+substring exacto sobre un máximo de 50 000 filas por fuente. La procedencia
+declara `sqlite_bounded_cjk_substring` y no se compara como si fuera un score
+vectorial.
+
+La recuperación CLIP requiere un contrato de calibración positivo/negativo
+ligado a firma de modelo, pipeline y backend. Sin él devuelve cero hits,
+`scanned=0` y no carga el backend. La evaluación humana actual no produjo un
+umbral escalar robusto, por lo que la CLI no suministra uno por defecto.
 
 Code integra el canal Semantic mediante enlaces persistidos exactos, no por una
 coincidencia posterior de rutas:
@@ -627,7 +676,34 @@ Office heredado y `catdoc`/`xls2csv`/`catppt` son fallbacks locales. No existe
 una operación directa `--text-search`: FTS se consume por Knowledge, el catálogo
 y Semantic para no crear otra superficie paralela.
 
-### Knowledge Plane de sólo lectura (`0.7.2`)
+### Video y OCR multilingüe
+
+`video` es una ruta productora separada de Audio. FFprobe valida streams y
+FFmpeg selecciona escenas, keyframes y muestras periódicas dentro de límites
+duros; cada evidencia conserva timestamp, ordinal, razón de selección y OCR:
+
+```bash
+Neocortex --root "$Root" --route video --video-max-count 25 --strict-exit-codes
+Neocortex --video-status
+Neocortex --video-search "placa de datos" --video-search-limit 20
+Neocortex --video-doctor --video-ocr-profile auto-multilingual
+```
+
+Un video sin audio termina `visual_only` y Audio registra `no_audio` benigno sin
+cargar el transcriber. MIME de audio sin stream conserva el error. Los límites
+de producto son 48 frames, 40 MP totales de OCR, 16 KiB de OCR por frame,
+512 MiB de scratch y 2 GiB de memoria virtual del worker; los overrides siguen
+validados por la CLI.
+
+`--ocr-profile`, `--image-ocr-profile` y `--video-ocr-profile` aceptan
+`configured`, `latin`, `han-simplified`, `han-traditional` o
+`auto-multilingual`. El default conserva el `--*-ocr-lang` configurado. Los
+otros perfiles exigen OSD y seleccionan `spa+eng+deu`, `chi_sim+eng` o
+`chi_tra+eng`; auto usa el script detectado y como máximo un fallback de
+variante. Perfil, idiomas efectivos, OSD, confianza, fallback y huellas de
+traineddata quedan ligados a la procedencia y a la caché.
+
+### Knowledge Plane de sólo lectura (`0.8.0`)
 
 Knowledge ofrece tres acciones planas y mutuamente excluyentes. Todas leen el
 estado ya publicado; no recorren el corpus, crean directorios o bases, migran
@@ -667,6 +743,17 @@ Las opciones de consulta son:
 | `--knowledge-mode discovery` | En el canal semántico conserva la mejor coincidencia por item para una vista más colapsada. |
 | `--knowledge-history` | Incluye revisiones `historical`/`superseded`, excluidas de forma predeterminada, y activa la ruta temporal del plan. |
 | `--knowledge-json` | Emite el contrato JSON de la acción seleccionada en lugar de la presentación humana. |
+
+El top-k solicitado es una ventana normal, no truncamiento. Cuando existen más
+candidatos, `result_window_full=true` y `window_omitted_candidates` lo declaran,
+pero `complete` puede seguir siendo verdadero y la CLI no convierte ese caso en
+código 4. Sólo un corte duro —por ejemplo `max_vectors`— marca `truncated=true`,
+propaga `next_cursor`/`cutoff_score` y vuelve parcial la respuesta. Si existen
+hits, el compilador reserva primero una cita utilizable antes de diagnósticos.
+
+Los aliases humanos `Neocortex status/search/ask` consumen estos contratos con
+scopes fijos. No aceptan `--state-directory`; esa restricción evita que una GUI
+o un agente elijan una base arbitraria.
 
 Search y context exigen una consulta no vacía de hasta 4096 caracteres. Las
 opciones limit/history/mode sólo se admiten con esas dos acciones;
@@ -881,7 +968,7 @@ estado con código `2` y razón estable
 búsqueda permanecen disponibles; no se usa `Path.rename` como sustituto.
 
 `--apply` permite que una corrida integrada ejecute únicamente las mutaciones
-que satisfacen el contrato físico de `0.7.2`. Los rename de extensión y los
+que satisfacen el contrato físico de `0.8.0`. Los rename de extensión y los
 movimientos de organización requieren NTFS local, mismo volumen, archivo
 regular con un único hard link, ausencia de reparse y operación ligada a handles
 retenidos con *no-replace*. UNC, otros filesystems, directorios, múltiples hard

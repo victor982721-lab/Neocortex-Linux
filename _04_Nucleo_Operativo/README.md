@@ -79,7 +79,7 @@ mismo tamaño y XXH3-128 completo. El plan vuelve a validar identidad, tamaño,
 a una frontera de mutación. `--dedup-policy exact` realiza además la comparación
 durante la planeación.
 
-En `0.6.0` la aplicación de Papelera se abstiene siempre: el backend disponible
+En `0.8.0` la aplicación de Papelera se abstiene siempre: el backend disponible
 opera por ruta y no puede ligar el efecto a la identidad autorizada. El dry-run
 conserva candidatos de duplicados, vacíos, directorios vacíos y PDF
 irrecuperables, pero `--apply` los termina como `skipped` con evidencia; no se
@@ -134,7 +134,7 @@ seguridad están en [`docs/KNOWLEDGE.md`](../docs/KNOWLEDGE.md),
 [`docs/SECURITY.md`](../docs/SECURITY.md).
 
 La detección de directorios y archivos vacíos sigue siendo acotada y conserva
-sus candidatos, pero no muta esas rutas en `0.6.0`. El plan de archivos no
+sus candidatos, pero no muta esas rutas en `0.8.0`. El plan de archivos no
 vacíos se persiste en SQLite y se consume como flujo; en memoria sólo se
 conservan los grupos solicitados mediante `--show-groups` y el grupo en proceso.
 
@@ -297,6 +297,27 @@ Los límites se controlan con `--audio-max-mb`, `--audio-max-count`,
 `--audio-max-duration-seconds`, `--audio-max-transcript-chars`,
 `--audio-max-segments`, `--audio-file-timeout` y `--audio-*-memory-*`.
 
+La ruta `video` es un productor visual separado. FFprobe valida contenedor y
+streams; FFmpeg selecciona escenas, keyframes y muestras periódicas sin
+materializar un video derivado. `video.sqlite3` conserva cada frame con
+timestamp, ordinal, razones de selección, dimensiones, XXH3, OCR y procedencia,
+además del enlace exacto a la transcripción Audio publicada cuando existe:
+
+```powershell
+Neocortex --root C:\Corpus\Entrada --route video --video-max-count 25
+Neocortex --video-status
+Neocortex --video-search "placa del transformador" --video-search-limit 20
+Neocortex --video-doctor --video-ocr-profile auto-multilingual
+```
+
+Un video visual-only termina correctamente y Audio publica `no_audio` benigno
+sin cargar Whisper. Los límites predeterminados incluyen 48 frames, 40 MP de
+OCR total, 16 KiB de OCR por frame, 512 MiB de scratch y 2 GiB de memoria
+virtual del worker. Los perfiles OCR compartidos conservan `configured`
+(`spa+eng`) como default y ofrecen `latin`, `han-simplified`,
+`han-traditional` y `auto-multilingual`; perfil, idiomas efectivos, OSD,
+confianza, fallback y huellas de traineddata forman parte de la procedencia.
+
 ## Inteligencia estructurada de código fuente
 
 La ruta `code` consume los `FileSnapshot` del inventario/deduplicador común; no
@@ -385,7 +406,7 @@ intermedio o la primera corrida sobre una base existente sin fence fuerzan
 reconstrucción completa. Los cache hits retienen los contadores `partial`,
 `text_only`, `binary`, `skipped_limit` y `error` del resultado vigente.
 
-El esquema continúa no generacional en versión 2: la cancelación sólo tiene
+El esquema continúa no generacional en versión 4: la cancelación sólo tiene
 checkpoints alrededor de la transacción global, no dentro de una sentencia
 SQLite; los empates se conservan ambiguos y la firma global del registro puede
 invalidar lenguajes cuyo analizador no cambió.
@@ -543,7 +564,9 @@ estuvieran calibradas entre sí. En texto, el cuerpo aporta peso `1.0` y el
 título `0.5`; ambos reutilizan una sola vectorización de la consulta y el hit
 fusionado prefiere el snippet corporal. El backend vectorial actual es una
 búsqueda exacta con un límite explícito de vectores; informa cuando el recorrido
-queda incompleto. No existe todavía un índice ANN.
+queda incompleto. El recorrido agrupa páginas float16/float32 con NumPy,
+conserva scores, empates e identidad exactos y vuelve al camino escalar si
+NumPy no está disponible. No existe todavía un índice ANN.
 
 El contrato mixto vigente de Jina aplica un piso uniforme `0.42` al cuerpo y al
 título de Archive, audio, Code, DOCX, imagen/OCR, ODT, PDF, PPTX, texto y XLSX.
@@ -553,6 +576,21 @@ se extrapola a otros modelos o backends y no autoriza clasificación ni
 mutación. La reutilización exacta conserva el contrato dentro de
 `payload_provenance`; un conflicto entre ese payload y el miembro evita
 aplicarlo.
+
+La recuperación lexical conserva AND estricto como primera estrategia. Sólo
+ante cero hits elimina stopwords ES/EN/DE y aplica un fallback acotado; para
+consultas Han de al menos dos caracteres puede recorrer, después de fallar FTS,
+un máximo de 50 000 filas por fuente mediante substring exacto y procedencia
+`sqlite_bounded_cjk_substring`.
+
+CLIP no hereda el piso textual. Sin una calibración positiva/negativa ligada a
+modelo, pipeline y backend, la búsqueda visual no carga el backend, devuelve
+cero vecinos y explica `image_retrieval_not_calibrated`. La medición humana de
+esta entrega mostró solapamiento: el corte conservador contra el estado vivo
+retendría sólo 32 % de positivos, por lo que no se inventó un umbral. MiniLM
+permanece como candidato shadow después de mejorar calidad agregada y latencia
+en un fixture pequeño ES/EN/DE/ZH, pero Jina sigue siendo el head productivo y
+los espacios nunca se mezclan.
 
 La clasificación compara embeddings activos con prototipos versionados de la
 ontología industrial compartida y materializa evidencia trazable por elemento,
@@ -625,14 +663,16 @@ salida no acotada y el comando informa si la lista fue truncada:
 Neocortex --semantic-evidence "item:pdf:IDENTIDAD" --semantic-evidence-limit 100
 ```
 
-Actualmente estos comandos no se disparan al ejecutar las rutas normales y no
-hay watcher semántico automático. Después de incorporar o cambiar contenido se
-debe volver a ejecutar `--semantic-index` con sus límites explícitos y, si se
-desea evidencia de ontología actualizada, la clasificación correspondiente.
+Las rutas individuales no disparan esos comandos y no hay watcher semántico
+automático. `Neocortex --all` sí ejecuta al final su indexación semántica
+integrada sobre las cachés publicadas. Después de incorporar contenido mediante
+una ruta aislada se debe volver a ejecutar `--semantic-index` con límites
+explícitos y, si se desea ontología actualizada, la clasificación
+correspondiente.
 
 ## Knowledge Plane de solo lectura
 
-La versión `0.7.2` conserva una fachada coherente de consulta sobre los
+La versión `0.8.0` conserva una fachada coherente de consulta sobre los
 propietarios durables ya existentes: inventario, FTS de PDF/DOCX/Office/audio,
 Archive y texto físico cuando sus bases existen, catálogo técnico, índice
 estructural de código y, cuando está publicado, evidencia semántica. Knowledge
@@ -652,6 +692,25 @@ Neocortex --knowledge-search "IEC 61850 protección diferencial"
 Neocortex --knowledge-context "mantenimiento de transformadores" --knowledge-limit 12
 Neocortex --knowledge-search "validate_sqlite_access" --knowledge-mode discovery --knowledge-json
 ```
+
+La fachada cotidiana ofrece los mismos lectores mediante scopes fijos, sin
+aceptar rutas de estado arbitrarias:
+
+```powershell
+Neocortex status --scope all
+Neocortex search "mantenimiento de transformadores" --scope personal
+Neocortex ask "¿qué evidencia existe de la prueba FAT?" --scope personal
+Neocortex inspect code "validación de SQLite" --scope framework
+Neocortex review value --scope personal
+Neocortex agent serve
+```
+
+El último comando expone por MCP/stdio únicamente tools read-only. No abre red,
+no registra productores ni mutaciones y trata el corpus como datos no
+confiables. Una ventana top-k llena no implica truncamiento:
+`result_window_full`/`window_omitted_candidates` informan omisiones normales;
+sólo un corte duro marca `truncated` y propaga `next_cursor`/`cutoff_score`. El
+contexto reserva primero una cita K1 utilizable antes de diagnósticos.
 
 El modo predeterminado `evidence` conserva evidencias distintas de una misma
 fuente; `discovery` reduce esas repeticiones cuando el propietario lo permite.
@@ -1104,7 +1163,7 @@ completa queda `done`; sólo una recuperación incompleta con páginas fallidas
 queda `partial` y `manual_review`. Un PDF cifrado queda `keep_protected`, nunca
 como candidato de eliminación. Si qpdf y los extractores de fallback confirman
 que la estructura no es recuperable, se registra `deletion_candidate`; en modo
-normal el original se conserva. En `0.6.0`, incluso con `--apply`, la acción de
+normal el original se conserva. En `0.8.0`, incluso con `--apply`, la acción de
 Papelera se registra `skipped` porque no existe una primitiva ligada a identidad.
 
 Una secuencia de 32 páginas consecutivas que no existen o no pueden cargarse
@@ -1261,18 +1320,18 @@ documento completado y el siguiente. Los demás controles son
 `--pdf-commit-backpressure-bytes` y `--pdf-memory-wait-timeout`; el valor `0`
 desactiva únicamente el margen físico o de commit indicado.
 
-Las rutas PDF, DOCX, Office, ZIP, texto/correo, audio, imágenes y código pueden ejecutarse
-juntas. Comparten el mismo inventario, bloqueo operativo, registro de ejecución
-y coordinador global de memoria, commit y CPU. `Neocortex --all` selecciona las
-ocho y deja que el
+Las rutas PDF, DOCX, Office, ZIP, texto/correo, audio, video, imágenes y código
+pueden ejecutarse juntas. Comparten el mismo inventario, bloqueo operativo,
+registro de ejecución y coordinador global de memoria, commit y CPU.
+`Neocortex --all` selecciona las nueve y deja que el
 coordinador dimensione dinámicamente memoria, margen libre y CPU según el equipo;
 opciones compatibles indicadas explícitamente por el usuario tienen precedencia.
 Una combinación contradictoria como
 `--all --route pdf` se rechaza. `--all` no fuerza errores permanentes ya
 cacheados; los flags `--retry-pdf-errors`, `--retry-docx-errors`,
 `--retry-office-errors`, `--retry-archive-errors`, `--retry-text-errors`,
-`--retry-audio-errors`, `--retry-image-errors` y `--retry-code-errors` siguen disponibles como
-overrides manuales.
+`--retry-audio-errors`, `--retry-video-errors`, `--retry-image-errors` y
+`--retry-code-errors` siguen disponibles como overrides manuales.
 
 Durante las rutas de contenido, Rich muestra contadores vivos junto a cada
 barra: hits de caché, errores cacheados, elementos nuevos, actualizaciones de

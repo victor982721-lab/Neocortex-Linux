@@ -4,7 +4,7 @@
 > 9 de agosto de 2026. Describe el comportamiento observado y separa los
 > cambios previstos de los ya implementados. No certifica por sí solo la suite
 > completa ni la instalación empaquetada. El árbol auditado declara la versión
-> `0.7.2`; la versión instalada debe comprobarse con
+> `0.8.0`; la versión instalada debe comprobarse con
 > `Neocortex --version`.
 
 ## Finalidad y principios
@@ -12,7 +12,8 @@
 NeoCortex es un framework local para Windows y Linux que permite descubrir, identificar, extraer,
 indexar, relacionar, clasificar, revisar y buscar contenido personal de forma
 incremental. Sus rutas actuales cubren PDF, DOCX, otros documentos Office,
-ZIP anidados, texto físico/correo/Office heredado, audio, imágenes y código.
+ZIP anidados, texto físico/correo/Office heredado, audio, video, imágenes y
+código.
 
 La arquitectura persigue estos invariantes:
 
@@ -43,7 +44,7 @@ eludirlo.
 | Coordinación de corridas | `orchestrator.py` |
 | Knowledge Plane read-only | `knowledge_contracts.py`, `knowledge_snapshot.py`, `knowledge_planner.py`, `knowledge_search.py`, `knowledge_context.py` y `knowledge_service.py` |
 | Planner semántico read-only | `semantic_planner.py` y contratos en `semantic_service_contracts.py` |
-| SDK y capacidades públicas | `neocortex/sdk`, `neocortex/capabilities.py` y markers `py.typed` |
+| SDK, consulta y capacidades públicas | `neocortex/sdk`, `neocortex/read_api.py`, `neocortex/human_cli.py`, `neocortex/agent_server.py`, `neocortex/capabilities.py` y markers `py.typed` |
 | Apertura SQLite compartida | `neocortex/sqlite_connection.py`; su adopción actual no es universal |
 | Esquemas persistentes | módulos `*_schema.py` y propietarios `*_state.py`/repositorios |
 | Estado operacional | Windows: `%LOCALAPPDATA%\Neocortex\state`; Linux: `${XDG_STATE_HOME:-~/.local/state}/Neocortex/state` |
@@ -98,9 +99,9 @@ conocimiento se documentan en [KNOWLEDGE.md](KNOWLEDGE.md).
        ┌─────────────┴─────────────────────────────┐
        │                                           │
  enumeración portable + USN opcional        rutas de contenido
-       │                         ┌────┬────┬────┬────┬────┬────┬────┬────┐
- inventario y deduplicación      PDF DOCX Office ZIP Text Audio Image Code
-       │                         └────┴────┴────┴────┴────┴────┴────┴────┘
+       │                       ┌────┬────┬────┬────┬────┬────┬─────┬─────┬────┐
+ inventario y deduplicación    PDF DOCX Office ZIP Text Audio Video Image Code
+       │                       └────┴────┴────┴────┴────┴────┴─────┴─────┴────┘
  checkpoint durable                          │
        │                     catálogo documental / revisión / semántica
        └───────────────────────────────┬─────┘
@@ -139,10 +140,12 @@ semántica compatible de un mejor hit semantic por recurso. El compilador de
 contexto aplica un presupuesto duro, citas estables, contradicciones
 estructuradas y estados de ausencia o abstención.
 
-La API Python y los comandos `--knowledge-status`, `--knowledge-search` y
-`--knowledge-context` consumen esa misma frontera. Un grafo transversal entre
-owners y una superficie MCP no forman parte de la Fase 1 y permanecen para una
-fase posterior. La especificación completa está en
+La API Python, los comandos `--knowledge-*`, los aliases humanos
+`status/search/ask` y MCP/stdio consumen esa misma frontera. `read_api` sólo
+resuelve los scopes fijos `personal` y `framework`; `all` conserva rankings
+independientes. `agent_server` registra únicamente tools read-only y no abre
+red. Un grafo transversal entre owners permanece para una fase posterior. La
+especificación completa está en
 [KNOWLEDGE.md](KNOWLEDGE.md).
 
 La telemetría Knowledge schema 1 ya se especifica allí: usa nanosegundos y
@@ -188,6 +191,7 @@ Paquete de instalación mínimo:
 - declara la versión pública en `neocortex.__version__`;
 - expone `neocortex.cli:entrypoint`;
 - soporta `python -m neocortex`;
+- ofrece la fachada read-only de scopes, CLI humana y MCP/stdio;
 - contiene utilidades compartidas de ciclo de vida y contrato SQLite.
 
 No implementa el pipeline completo. Su función es ofrecer una frontera estable
@@ -241,17 +245,17 @@ widgets ni escribir directamente a una terminal para informar avance.
 Núcleo de aplicación. Contiene:
 
 - configuración, parser, validación y reporte CLI;
-- fachada plana `ApplicationConfig` compatible con `FrameworkConfig`, ocho
+- fachada plana `ApplicationConfig` compatible con `FrameworkConfig`, nueve
   proyecciones de ruta y una proyección de límites globales calculadas desde el
   valor vigente;
-- superficies de registro/validación CLI separadas para Audio, Code, Semantic y
-  Knowledge, sin cambiar sus flags planos;
+- superficies de registro/validación CLI separadas para Audio, Video, Code,
+  Semantic y Knowledge, sin cambiar sus flags planos;
 - orquestador, locking, cancelación y heartbeat;
 - selección y registro de rutas;
 - coordinador global de recursos;
 - extractores, clasificadores, cachés y repositorios por formato;
 - catálogo documental, organización, revisión y evidencia;
-- búsqueda PDF/DOCX/audio/código y servicio semántico;
+- búsqueda PDF/DOCX/audio/video/código y servicio semántico;
 - plataforma de evidencia externa, métricas/relaciones portables, contratos de
   arquitectura y proyecciones de status/review/diff para el autoanálisis;
 - contratos, snapshot lógico, planner, recuperación, fusión y contexto de la
@@ -273,9 +277,11 @@ Frontend PySide6:
 - inicia un único worker hijo mediante `QProcess`;
 - intercambia eventos estructurados y acotados;
 - permite cancelación supervisada;
-- consulta estado mediante conexiones cortas de sólo lectura.
+- consulta estado mediante conexiones cortas de sólo lectura;
+- añade una página Consulta sobre `read_api` y `value_cli_adapter`, con scopes
+  fijos, presentación acotada y sin controles de mutación.
 
-La GUI ofrece PDF, DOCX, Office, ZIP, texto/correo, audio, imagen y Code. En
+La GUI ofrece PDF, DOCX, Office, ZIP, texto/correo, audio, video, imagen y Code. En
 Linux presenta modo portátil, no solicita elevación y desactiva los controles
 de mutación, sin retirar inventario, procesamiento o búsqueda.
 
@@ -297,11 +303,12 @@ La invocación canónica es:
 Neocortex --help
 ```
 
-`neocortex.cli` selecciona perezosamente tres modos:
+`neocortex.cli` selecciona perezosamente cuatro modos:
 
-1. CLI normal: delega en `_04_Nucleo_Operativo.cli_app`;
-2. `--ui`: inicia la aplicación de escritorio;
-3. `--gui-worker`: protocolo interno del frontend, no comando de usuario.
+1. subcomandos humanos `help/status/search/ask/inspect/review/agent`;
+2. CLI normal: delega en `_04_Nucleo_Operativo.cli_app`;
+3. `--ui`: inicia la aplicación de escritorio;
+4. `--gui-worker`: protocolo interno del frontend, no comando de usuario.
 
 Las operaciones directas se registran declarativamente y cargan su handler de
 forma lazy. Archive, texto, audio, Code, Semantic y Knowledge separan registro
@@ -329,6 +336,11 @@ Estas operaciones sólo abren estado existente y pueden informar owners
 ausentes, incompatibles, futuros o corruptos sin crearlos ni migrarlos. Sus
 formatos, opciones auxiliares y códigos de salida se detallan en
 [KNOWLEDGE.md](KNOWLEDGE.md).
+
+`Neocortex agent serve` adapta la misma API a MCP por stdio. El transporte
+CPython 3.14 usa pipes asyncio nativos para evitar delegar stdin/stdout a
+workers AnyIO; limita cada línea a 1 MiB y termina limpiamente al cerrar stdin.
+No registra HTTP, rutas de estado ni productores.
 
 `--action-recovery-status` es una excepción deliberada: abre
 `framework.sqlite3` sin crearla ni migrarla y clasifica acciones inciertas sin
@@ -624,10 +636,11 @@ El orden estable es:
 |---|---|---|---|
 | `pdf` | snapshots identificados como PDF | texto, páginas, OCR, warnings, FTS, similitud y layout | catálogo documental |
 | `docx` | OOXML Word validado | partes, texto, diagnósticos, FTS, layout y vínculos PDF | catálogo documental |
-| `office` | OOXML/ODF de otros documentos | texto, estado y FTS | catálogo documental |
+| `office` | OOXML/ODF de otros documentos | texto, XLSX por celda tipada, estado y FTS | catálogo documental |
 | `archive` | ZIP y ZIP anidados validados | miembros virtuales, cadena de contenedores, texto nativo/OCR, incidencias y FTS | Knowledge y Semantic; no organización física |
 | `text` | texto imprimible, EML y CFB DOC/XLS/PPT | texto visible, título/autor, metadata, errores y FTS | catálogo documental, Knowledge y Semantic |
 | `audio` | audio/vídeo sondeado | transcripción, segmentos y FTS | catálogo documental |
+| `video` | streams visuales sondeados | escenas/keyframes, frames, OCR, timestamps, métricas y FTS | búsqueda directa y revisión; visual-only admitido |
 | `image` | imágenes no documentales o candidatas de documento | clasificación, OCR/evidencia, estado y huella completa Dedup | revisión y Semantic; no catálogo documental actual |
 | `code` | archivos de texto/código acotados | proyectos, versiones, AST/símbolos, referencias, grafo, chunks y FTS | búsqueda y puente semántico |
 
@@ -763,6 +776,12 @@ El worker:
 Las líneas y buffers están limitados. La ventana conserva un historial visual
 acotado; ese historial no sustituye las tablas persistentes de eventos.
 
+La página Consulta no usa el worker productor: llama de forma diferida a la API
+read-only compartida, valida schema/kind/scope/exit code y limita la
+presentación a 200 filas y 128 KiB. Status y revisión no requieren texto;
+search/ask aceptan hasta 4096 caracteres. Una incompatibilidad provoca
+abstención visible y no intenta migrar ni reparar.
+
 ## Persistencia y flujo de datos
 
 Las ubicaciones persistentes por usuario son:
@@ -783,7 +802,8 @@ Modelos:       ${XDG_DATA_HOME:-~/.local/share}/Neocortex/models
 ```
 
 Las bases principales son `dedup`, `framework`, `pdf`, `docx`, `office`,
-`archive`, `text`, `audio`, `image`, `document_catalog`, `code` y `semantic`.
+`archive`, `text`, `audio`, `video`, `image`, `document_catalog`, `code` y
+`semantic`.
 No todas existen antes de usar su ruta. La UI persiste configuración aparte, en
 `%LOCALAPPDATA%\Neocortex\ui.ini`, y FastEmbed usa el directorio hermano
 `models\fastembed`. En Linux la UI usa el árbol de configuración XDG y
@@ -1013,12 +1033,16 @@ Los siguientes límites deben permanecer visibles:
   de cancelación dentro de una sentencia SQL. Los empates permanecen ambiguos y
   la firma global del registro puede invalidar lenguajes no afectados; no debe
   fragmentarse sin el diseño generacional completo;
-- la Knowledge Plane Fase 1 no implementa un grafo transversal entre owners ni
-  una superficie MCP; relaciones verificadas e historial transversal se
-  reportan como capacidades incompletas en vez de inferirse;
+- la Knowledge Plane no implementa un grafo transversal entre owners;
+  relaciones verificadas e historial transversal se reportan como capacidades
+  incompletas en vez de inferirse. MCP es sólo una fachada read-only y no añade
+  ese grafo;
 - el golden Knowledge vigente ejecuta candidatos de owner scripted; comprueba
   contratos y fórmulas, no una evaluación humana ni calidad representativa del
   corpus;
+- la calibración visual medida no separa positivos y negativos con un umbral
+  escalar robusto, de modo que CLIP permanece fail-closed; MiniLM sigue como
+  shadow hasta un A/B real etiquetado y una generación propia;
 - el planner semántico valida tipo y longitud de payloads reutilizados, pero el
   writer `semantic_generation_repository.reuse_cached_jobs` aún no replica esa
   guarda; esa convergencia pertenece a Fase 2;
