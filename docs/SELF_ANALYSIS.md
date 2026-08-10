@@ -58,13 +58,14 @@ con el subconjunto permitido fijado por el adaptador; no es una invitación a
 ejecutar todas las reglas configuradas en el repositorio.
 
 Ruff y Mypy se resuelven desde el mismo intérprete de NeoCortex; ambos forman
-parte de la base Python. Pyright `1.1.411` se mantiene como paquete npm aislado
+parte de `analysis` y de la release canónica `full`, no de la base mínima.
+Pyright `1.1.411` se mantiene como paquete npm aislado
 junto al runtime y se ejecuta mediante Node, no mediante scripts del proyecto.
 El entrypoint expone tanto el shim bajo
 `venv\tools\pyright\node_modules\.bin` como el Node propiedad del runtime bajo
 `tools\node`; la disponibilidad de Pyright no depende del `PATH` heredado del
 shell que invoque el launcher.
-Grimp `3.15` y Complexipy `6.2.0` pertenecen también a la base Python. La
+Grimp `3.15` y Complexipy `6.2.0` pertenecen también a `analysis`/`full`. La
 selección focal conservó Grimp directo en lugar de envolver Import Linter
 `2.13`: ambos resultaron viables, pero Grimp entrega el grafo directamente en
 una API legible por máquina, mientras el reporte de contratos de Import Linter
@@ -73,7 +74,7 @@ mediante su API `file_complexity`; su CLI devuelve un código distinto de cero a
 superar su umbral predeterminado, semántica que no equivale por sí misma a un
 fallo de proveedor.
 
-Vulture `2.16` pertenece a la base Python y se invoca mediante su API
+Vulture `2.16` pertenece a `analysis`/`full` y se invoca mediante su API
 `Vulture.scavenge/get_unused_code` sobre el input staged exacto. No carga
 configuración del proyecto ni ejecuta contenido. Sus findings `unused_code` y
 confidence son señales heurísticas que requieren correlación posterior.
@@ -91,9 +92,10 @@ El dominio arquitectónico exacto son `neocortex`, `_01_Enumeracion`,
 `_02_Deduplicacion`, `_03_Progreso`, `_04_Nucleo_Operativo` y
 `_05_Interfaz`. `tests`, `tools`, `benchmarks` y el módulo de compatibilidad
 independiente `Orquestador.py` quedan fuera de ese grafo de producción. Los
-contratos `neocortex.code-architecture-contracts/v1` fijan fronteras reales,
-allowlists explícitas y la membresía exacta de los SCC ya conocidos como
-baseline `no-new`; no afirman que la arquitectura actual sea acíclica.
+contratos `neocortex.code-architecture-contracts/v1` fijan fronteras reales y
+allowlists explícitas. Su baseline
+`neocortex-production-imports-2026-08-10/v2` es vacío: el grafo vigente tiene
+cero SCC y cualquier ciclo nuevo o histórico reintroducido falla cerrado.
 
 Cada adaptador usa salida estructurada, cwd/entorno controlados, caché efímera o
 deshabilitada, límites de proceso, tiempo, memoria, inputs, diagnósticos y
@@ -270,7 +272,7 @@ propietarios:
    `analyze_only`, tiene la misma firma de política y conserva la misma
    identidad física; no se retrocede a un run histórico compatible si el más
    reciente no coincide;
-2. el checkpoint publicado por Dedup v9 es válido, referencia exactamente el
+2. el checkpoint publicado por Dedup v10 es válido, referencia exactamente el
    mismo `scan_id`, firma cruda de exclusión y cursor durable, y el scan
    completo conserva raíz, identidad y conteo de archivos coherentes;
 3. la raíz viva mantiene identidad y el cursor USN vivo es compatible con el
@@ -288,7 +290,7 @@ un snapshot atómico ni se presenta como inventario incremental. La ruta `code`
 sí conserva su caché por identidad/metadatos, de modo que un replay sin cambios
 relee el árbol pero no vuelve a extraer ni analizar contenido. La corrida normal
 usa la misma enumeración portable cuando USN no está disponible, pero sí publica
-un checkpoint Dedup v9 con cursor nulo para que sus consumidores comparen el
+un checkpoint Dedup v10 con cursor nulo para que sus consumidores comparen el
 snapshot contra sus caches; USN es sólo un acelerador opcional.
 
 ## Ceros durables y guards de mutación

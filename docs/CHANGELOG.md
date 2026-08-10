@@ -17,6 +17,9 @@ no se copian aquí para evitar que se conviertan en datos históricos sin contex
   `scan`, con lock exacto, inventario y hashes en un recibo verificable. Sus
   tres excepciones MCP quedan confinadas, declaradas como no alcanzables y con
   vencimiento; el entorno de aplicación no las hereda.
+- Bootstrap compartido y autenticado de `pip 26.1.2` para CI, release Linux y
+  entornos Windows/offline: verifica el wheel fijado antes de ejecutarlo,
+  elimina configuración `PIP_*` ambiental e instala sin índice ni dependencias.
 - Dedup schema 10 con índices de identidad para las relaciones de Knowledge y
   migración 9→10 aditiva, exacta, transaccional e idempotente.
 
@@ -33,6 +36,9 @@ no se copian aquí para evitar que se conviertan en datos históricos sin contex
 - Los contratos de Archive/Video, Semantic, Knowledge y políticas de corpus
   invierten dependencias hacia modelos o Protocols neutrales; las fachadas y
   reexports públicos conservan su identidad.
+- El grafo de imports de producción pasa de cuatro SCC conocidos a cero. El
+  baseline arquitectónico v2 es vacío, de modo que reintroducir cualquiera de
+  los ciclos resueltos vuelve a fallar el gate principal.
 - Los guards de mutación se reconstruyen por lote, no por candidato, sin quitar
   la revalidación de raíz, componentes e identidad inmediatamente antes de la
   frontera de acción.

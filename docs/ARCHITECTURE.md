@@ -411,7 +411,7 @@ física el repositorio, runtime, datos de aplicación, autoanálisis y launcher;
 detecta aliases/reparses y el hardlink del launcher. Los árboles internos que
 quedan bajo un corpus permitido se excluyen, pero una raíz situada dentro de
 ellos se rechaza. El estado tampoco puede ser igual ni ancestro del corpus. La
-firma cruda de `InventoryExclusionPolicy` se guarda en Dedup v9; Framework y
+firma cruda de `InventoryExclusionPolicy` se guarda desde Dedup v9; Framework y
 watcher usan la firma efectiva versionada que combina esa firma con la de
 `InternalPathsPolicy`.
 
@@ -434,7 +434,7 @@ firma histórica detrás de un run durable más reciente incompatible.
 El autoanálisis admite además un full scan portable cuando USN es inaccesible.
 Ese camino no publica checkpoint, conserva nulos los cursores y falla cerrado
 en frescura. La corrida normal usa la misma enumeración portable y publica un
-checkpoint Dedup v9 con cursor nulo; sus consumidores obtienen incrementalidad
+checkpoint Dedup v10 con cursor nulo; sus consumidores obtienen incrementalidad
 comparando el snapshot contra caches por identidad y metadatos. USN es una
 optimización durable, no un requisito de corrección ni una identidad ficticia
 del fallback.
@@ -477,18 +477,20 @@ El dominio versionado incluye exactamente los seis paquetes de producción;
 excluye `tests`, `tools`, `benchmarks` y el módulo de compatibilidad independiente
 `Orquestador.py`. Los contratos impiden dependencias transitivas Core→UI y
 Foundation→Core/UI, imports de producción hacia namespaces no productivos,
-restringen las fronteras Dedup→Core y `neocortex`→Core/UI mediante allowlists, y
-fijan los SCC conocidos como baseline de `no-new-production-import-cycles-v1`.
-Por tanto un ciclo conocido es una observación versionada, no un aprobado ni la
-afirmación de que el grafo sea acíclico.
+restringen las fronteras Dedup→Core y `neocortex`→Core/UI mediante allowlists.
+El baseline `neocortex-production-imports-2026-08-10/v2` de
+`no-new-production-import-cycles-v1` es vacío: el grafo de producción es
+acíclico y reintroducir incluso uno de los cuatro SCC históricos falla el
+contrato principal.
 
 La proyección `neocortex.code-architecture-analysis/v2` conserva por módulo un
 `owner_id` —el primer componente del módulo, no ownership del repositorio—,
 los SCC y sus ciclos explícitos. Sobre el mismo grafo publica
 `dependency_reach` y `blast_radius`, con banderas `*_truncated` cuando el límite
 convierte el valor en una cota inferior, `directed_degree_centrality` y cruces
-de owner entrantes y salientes. El corte real aceptado resolvió `283` módulos,
-`1115` imports y `4` SCC cíclicos; sus `6` contratos no registraron fallos.
+de owner entrantes y salientes. El corte vivo de NeoCortex 0.9 resolvió `325`
+módulos, `1316` relaciones de import y `0` SCC cíclicos; no registró violaciones
+de contratos.
 
 Import Linter `2.13` se midió viable sobre el mismo dominio, pero no quedó en la
 ruta productiva: envolverlo repetiría el grafo que ya entrega Grimp y su salida
@@ -813,13 +815,15 @@ La Knowledge Plane no es otro owner persistente: conserva los diez owners
 históricos y agrega Archive y texto sólo cuando existen sus bases. Su snapshot
 y resultados viven en memoria y no introducen una migración propia.
 
-En Dedup v9, `DedupIndex.published_snapshots(root)` es el lector público para
-recorrer la generación vigente: checkpoint y filas se seleccionan en una sola
-sentencia SQL y conservan el snapshot del lector ante una publicación y poda
-concurrentes. Cada scan nuevo conserva su firma cruda de exclusión. La migración
+En Dedup v10, `DedupIndex.published_snapshots(root)` conserva el lector público
+introducido en v9. Para recorrer la generación vigente, checkpoint y filas se
+seleccionan en una sola sentencia SQL y conservan el snapshot del lector ante
+una publicación y poda concurrentes. Cada scan nuevo conserva su firma cruda de
+exclusión. La migración
 7→8 preserva scans, archivos y bytes, pero invalida checkpoints legacy sin firma
 en vez de inventar evidencia; 8→9 conserva publicaciones y vuelve opcional el
-cursor USN como una terna indivisible. No combine por cuenta propia
+cursor USN como una terna indivisible. La migración 9→10 sólo agrega índices
+para joins ligados a identidad. No combine por cuenta propia
 `inventory_checkpoint(root)` con `snapshots(scan_id)`; entre ambas llamadas otro
 writer puede publicar y podar la generación elegida.
 
@@ -945,9 +949,9 @@ Herramientas externas posibles:
 - Grimp `3.15` y Complexipy `6.2.0` como productores Python aislados de grafo,
   contratos y complejidad cognitiva en `trusted-static`;
 - Vulture `2.16` para candidatos heurísticos de código potencialmente no usado;
-- Semgrep `1.172.0` con tres reglas locales y autofix deshabilitado, Deptry
-  `0.25.1`, pip-audit `2.10.1` y Packaging `26.2` para la evidencia separada de
-  supply chain;
+- Semgrep `1.172.0` con tres reglas locales y autofix deshabilitado, desde un
+  tool-runtime scan-only separado y verificado; Deptry `0.25.1`, pip-audit
+  `2.10.1` y Packaging `26.2` para la evidencia separada de supply chain;
 - FastEmbed y Faster-Whisper para inferencia local.
 
 No se observó `shell=True` en el motor auditado. La presencia de límites no
@@ -958,10 +962,12 @@ equivale a sandbox completo; véase [SECURITY.md](SECURITY.md).
 El paquete se construye con setuptools y exige Python `>=3.13,<3.15`, validado
 en Windows y Linux con CPython 3.13 y 3.14. Incluye
 los seis paquetes de producción, `neocortex`, el shim `Orquestador.py`, las
-reglas Semgrep y assets de la GUI. La base exacta incluye Complexipy, Coverage,
-Deptry, Grimp, Mypy, Packaging, pip-audit, Pytest, Rich, Ruff, Semgrep, Vulture
-y xxHash; `documents`, `audio`,
-`image`, `semantic` y `ui` declaran runtimes opcionales, y `full` es su unión compatible.
+reglas Semgrep y assets de la GUI. La base exacta incluye Packaging, Rich y
+xxHash; `agent` declara MCP y `analysis` agrupa Complexipy, Cosmic Ray,
+Coverage, Deptry, Grimp, Mypy, pip-audit, Pytest, Radon, Ruff y Vulture.
+`documents`, `audio`, `image`, `semantic` y `ui` declaran runtimes de dominio;
+`full` es la unión canónica. Semgrep no pertenece a base, `analysis` ni `full`:
+la release lo provisiona en su entorno administrado separado.
 `neocortex.capabilities` inspecciona esa disponibilidad de forma estática; no
 certifica inferencia, caché de modelos ni compatibilidad resuelta.
 
@@ -976,8 +982,9 @@ y KDE sólo después de validar modelos y runtime. Los recibos viven en el estad
 XDG.
 
 El inventario técnico de metadata/licencias y archivos redistribuidos está en
-[THIRD_PARTY_LICENSE_INVENTORY.md](THIRD_PARTY_LICENSE_INVENTORY.md). No declara
-una licencia propia ni concede permisos; las decisiones de licencia/NOTICE
+[THIRD_PARTY_LICENSE_INVENTORY.md](THIRD_PARTY_LICENSE_INVENTORY.md). La metadata
+declara `LicenseRef-Proprietary` y `Private :: Do Not Upload`; no concede
+permisos. Las decisiones de licencia/NOTICE
 pertenecen al propietario.
 
 ## Extensibilidad

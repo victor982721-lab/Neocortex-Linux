@@ -61,7 +61,7 @@ La topología reservada es
 aliases/reparses y protege también un hardlink del launcher. Una raíz normal
 situada dentro de un árbol propio se rechaza; los árboles propios descendientes
 de un corpus permitido se excluyen. El estado no puede ser igual ni ancestro
-del corpus. Dedup v9 conserva la firma cruda de exclusión y Framework v20 liga
+del corpus. Dedup v10 conserva la firma cruda de exclusión y Framework v20 liga
 la firma efectiva que también incorpora las rutas internas.
 
 En Linux, la política protege además estado/configuración/datos XDG, releases,
@@ -93,8 +93,11 @@ pip-audit declara red porque consulta PyPI para crear un snapshot fechado y su
 replay exacto vigente reutiliza ese snapshot sin otra consulta. Todos declaran
 `imports_content=false`, `executes_content=false`, `authority=advisory` y
 `mutation_authority=false`. Semgrep usa sólo tres reglas empaquetadas, desactiva
-autofix y excluye sus fixtures propios del gate del proyecto. Deptry no instala
-ni retira dependencias; el inventario sólo verifica metadata y `RECORD`. Esto
+autofix y excluye sus fixtures propios del gate del proyecto. Su proveedor sólo
+acepta el wrapper `scan` contenido en el tool-runtime separado cuyo recibo,
+inventario y hashes aprueban; nunca resuelve Semgrep desde el runtime principal
+ni desde `PATH`. Deptry no instala ni retira dependencias; el inventario sólo
+verifica metadata y `RECORD`. Esto
 incluye `vulture-unused-static`: su confidence no prueba ausencia de uso y ni
 siquiera el consenso alto tiene autoridad de borrado. Ningún gate de supply
 chain autoriza actualizar, desinstalar o modificar paquetes.
@@ -121,7 +124,7 @@ declara `uses_network=true` porque los tests podrían usar red; no es una
 autorización para modificar la raíz canónica.
 
 La finalización no confía únicamente en la CLI: Framework v20 impide enlazar
-acciones a un run protegido, Dedup v9 exige el scan ligado a su firma y Code v4
+acciones a un run protegido, Dedup v10 exige el scan ligado a su firma y Code v4
 conserva el run analítico. Los owners de mutación reciben
 `CorpusMutationGuard` y el commit exige ceros durables en candidatos, acciones
 y organización. Una identidad cambiada, un árbol intersectante o una frontera
