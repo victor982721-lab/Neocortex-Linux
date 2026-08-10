@@ -44,6 +44,7 @@ from .value_review_contracts import (
 MAX_PUBLISHED_HEADS = 1_024
 MAX_SQLITE_CANDIDATES = 25_000
 _SQLITE_BATCH = 300
+_INACTIVE_SHM_SIZE_BYTES = 32_768
 _T = TypeVar("_T")
 
 
@@ -141,6 +142,22 @@ class _OwnerSpec:
     expected_version: int
     path: Path | None
     validator: Callable[[sqlite3.Connection], None]
+
+
+@dataclass(frozen=True, slots=True)
+class _SQLiteFileIdentity:
+    device: int
+    inode: int
+    mode: int
+    size: int
+    mtime_ns: int
+    ctime_ns: int
+
+
+@dataclass(frozen=True, slots=True)
+class _SQLiteReadSnapshot:
+    main: _SQLiteFileIdentity
+    sidecars: tuple[tuple[str, _SQLiteFileIdentity], ...]
 
 
 class _StateContractError(RuntimeError):
@@ -338,19 +355,21 @@ def _unavailable(
 
 @contextmanager
 def _readonly_connection(path: Path) -> Iterator[sqlite3.Connection]:
-    before = _stable_database_identity(path)
-    if _sqlite_sidecars(path):
-        raise _StateContractError("SQLite owner has active sidecar files")
-    # ``immutable=1`` is used only after proving that no WAL/journal sidecar is
-    # present.  Unlike a normal read-only WAL connection it cannot create or
-    # update ``-shm``.  The primary file and sidecars are observed again after
-    # the read; any concurrent change fails closed.
-    connection = sqlite3.connect(
-        f"{readonly_sqlite_uri(path)}&immutable=1",
-        uri=True,
-        timeout=60.0,
-    )
+    before = _sqlite_read_snapshot(path)
+    confirmed = _sqlite_read_snapshot(path)
+    if before != confirmed:
+        raise _StateContractError("SQLite owner changed before immutable read")
+    _validate_inactive_sidecar_layout(before)
+    # ``immutable=1`` ignores the proven-inactive WAL/SHM pair and therefore
+    # cannot create or update ``-shm``.  Main and every sidecar are observed
+    # twice before opening and once after close; concurrent change fails closed.
+    connection: sqlite3.Connection | None = None
     try:
+        connection = sqlite3.connect(
+            f"{readonly_sqlite_uri(path)}&immutable=1",
+            uri=True,
+            timeout=60.0,
+        )
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA busy_timeout=60000")
         connection.execute("PRAGMA foreign_keys=ON")
@@ -370,39 +389,65 @@ def _readonly_connection(path: Path) -> Iterator[sqlite3.Connection]:
             raise _StateContractError("SQLite read-only safeguards could not be enabled")
         yield connection
     finally:
-        connection.close()
-        after = _stable_database_identity(path)
-        if before != after or _sqlite_sidecars(path):
+        if connection is not None:
+            connection.close()
+        after = _sqlite_read_snapshot(path)
+        if before != after:
             raise _StateContractError("SQLite owner changed during immutable read")
 
 
-def _stable_database_identity(path: Path) -> tuple[int, int, int, int, int]:
-    value = path.stat()
+def _sqlite_read_snapshot(path: Path) -> _SQLiteReadSnapshot:
+    main = _sqlite_file_identity(path, label="SQLite owner")
+    sidecars: list[tuple[str, _SQLiteFileIdentity]] = []
+    for suffix in ("-journal", "-wal", "-shm"):
+        candidate = Path(f"{path}{suffix}")
+        try:
+            identity = _sqlite_file_identity(candidate, label=f"SQLite sidecar {suffix}")
+        except FileNotFoundError:
+            continue
+        sidecars.append((suffix, identity))
+    return _SQLiteReadSnapshot(main=main, sidecars=tuple(sidecars))
+
+
+def _sqlite_file_identity(path: Path, *, label: str) -> _SQLiteFileIdentity:
+    try:
+        value = path.stat()
+    except FileNotFoundError:
+        raise
+    except OSError as exc:
+        raise _StateContractError(f"{label} cannot be inspected: {path.name}") from exc
     if not stat.S_ISREG(value.st_mode):
-        raise _StateContractError("SQLite owner is not a regular file")
-    return (
-        int(value.st_dev),
-        int(value.st_ino),
-        int(value.st_size),
-        int(value.st_mtime_ns),
-        int(value.st_ctime_ns),
+        raise _StateContractError(f"{label} is not a regular file: {path.name}")
+    return _SQLiteFileIdentity(
+        device=int(value.st_dev),
+        inode=int(value.st_ino),
+        mode=int(value.st_mode),
+        size=int(value.st_size),
+        mtime_ns=int(value.st_mtime_ns),
+        ctime_ns=int(value.st_ctime_ns),
     )
 
 
-def _sqlite_sidecars(path: Path) -> tuple[Path, ...]:
-    candidates = tuple(Path(f"{path}{suffix}") for suffix in ("-journal", "-wal", "-shm"))
-    present: list[Path] = []
-    for candidate in candidates:
-        try:
-            candidate.stat()
-        except FileNotFoundError:
-            continue
-        except OSError as exc:
-            raise _StateContractError(
-                f"SQLite sidecar cannot be inspected: {candidate.name}"
-            ) from exc
-        present.append(candidate)
-    return tuple(present)
+def _validate_inactive_sidecar_layout(snapshot: _SQLiteReadSnapshot) -> None:
+    sidecars = dict(snapshot.sidecars)
+    journal = sidecars.get("-journal")
+    wal = sidecars.get("-wal")
+    shm = sidecars.get("-shm")
+    if journal is not None and journal.size > 0:
+        raise _StateContractError("SQLite owner has a non-empty rollback journal")
+    if wal is not None and wal.size > 0:
+        raise _StateContractError("SQLite owner has a non-empty WAL")
+    if not sidecars:
+        return
+    if (
+        set(sidecars) == {"-wal", "-shm"}
+        and wal is not None
+        and wal.size == 0
+        and shm is not None
+        and shm.size == _INACTIVE_SHM_SIZE_BYTES
+    ):
+        return
+    raise _StateContractError("SQLite owner sidecars are not a proven-inactive layout")
 
 
 def _validate_owner_schema(

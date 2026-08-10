@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from _02_Deduplicacion.inventory_schema import initialize_inventory_schema
+from _04_Nucleo_Operativo import value_review_repository
 from _04_Nucleo_Operativo.document_catalog_schema import (
     CATALOG_SCHEMA_VERSION,
     create_document_catalog_schema,
@@ -288,13 +292,35 @@ def test_absent_catalog_is_not_created_and_absence_is_not_low_value(
     assert _filesystem_snapshot(root) == before
 
 
-def test_existing_sqlite_sidecar_fails_closed_without_changing_files(
+def test_inactive_empty_wal_and_32k_shm_are_allowed_without_writes(
     tmp_path: Path,
 ) -> None:
     root = tmp_path / "state"
     paths = _create_state(root)
-    sidecar = Path(f"{paths.inventory}-wal")
-    sidecar.write_bytes(b"fixture-sidecar")
+    assert paths.text is not None
+    for database in (paths.inventory, paths.catalog, paths.text):
+        Path(f"{database}-wal").write_bytes(b"")
+        Path(f"{database}-shm").write_bytes(b"\0" * 32_768)
+    before = _filesystem_snapshot(root)
+
+    report = preview_value_review(
+        paths,
+        ValueReviewQuery(limit=100, reference_time_ns=REFERENCE_NS),
+    )
+
+    assert report.availability is ValueReviewAvailability.READY
+    assert report.candidate_count == 7
+    assert _filesystem_snapshot(root) == before
+
+
+@pytest.mark.parametrize("suffix", ("-wal", "-journal"))
+def test_non_empty_wal_or_journal_fails_closed_without_changing_files(
+    tmp_path: Path,
+    suffix: str,
+) -> None:
+    root = tmp_path / "state"
+    paths = _create_state(root)
+    Path(f"{paths.inventory}{suffix}").write_bytes(b"active-frame-or-journal")
     before = _filesystem_snapshot(root)
 
     report = preview_value_review(paths, ValueReviewQuery())
@@ -302,6 +328,46 @@ def test_existing_sqlite_sidecar_fails_closed_without_changing_files(
     assert report.availability is ValueReviewAvailability.UNAVAILABLE
     assert report.reason == "inventory_state_invalid"
     assert _filesystem_snapshot(root) == before
+
+
+@pytest.mark.parametrize("changed_target", ("main", "shm"))
+def test_main_or_sidecar_change_during_immutable_read_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    changed_target: str,
+) -> None:
+    root = tmp_path / "state"
+    paths = _create_state(root)
+    wal = Path(f"{paths.inventory}-wal")
+    shm = Path(f"{paths.inventory}-shm")
+    wal.write_bytes(b"")
+    shm.write_bytes(b"\0" * 32_768)
+    original_snapshot = value_review_repository._sqlite_read_snapshot
+    calls = 0
+
+    def changing_snapshot(path: Path) -> object:
+        nonlocal calls
+        calls += 1
+        if calls == 3:
+            target = paths.inventory if changed_target == "main" else shm
+            target_stat = target.stat()
+            os.utime(
+                target,
+                ns=(target_stat.st_atime_ns, target_stat.st_mtime_ns + 1),
+            )
+        return original_snapshot(path)
+
+    monkeypatch.setattr(
+        value_review_repository,
+        "_sqlite_read_snapshot",
+        changing_snapshot,
+    )
+
+    report = preview_value_review(paths, ValueReviewQuery())
+
+    assert calls == 3
+    assert report.availability is ValueReviewAvailability.UNAVAILABLE
+    assert report.reason == "inventory_state_invalid"
 
 
 def test_future_catalog_schema_protects_every_file_and_is_not_changed(
