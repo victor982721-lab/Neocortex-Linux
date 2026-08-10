@@ -14,26 +14,24 @@ from dataclasses import asdict, dataclass
 from enum import StrEnum
 from pathlib import Path
 
-from _04_Nucleo_Operativo.app_paths import (
-    default_state_directory,
-    self_analysis_data_directory,
-)
-from _04_Nucleo_Operativo.cli_knowledge import (
+from _04_Nucleo_Operativo.read_api_port import (
+    CodeSearchQuery,
+    KnowledgeCompleteness,
     KnowledgeExitCode,
+    KnowledgeQuery,
+    KnowledgeSearchService,
+    KnowledgeSnapshot,
+    KnowledgeStatePaths,
+    OwnerAvailability,
+    RetrievalMode,
+    SnapshotConsistency,
+    available_search_modes,
+    default_state_directory,
     knowledge_context_exit_code,
     knowledge_search_exit_code,
+    search_code,
+    self_analysis_data_directory,
 )
-from _04_Nucleo_Operativo.code_contracts import CodeSearchQuery
-from _04_Nucleo_Operativo.code_search import available_search_modes, search_code
-from _04_Nucleo_Operativo.knowledge_contracts import (
-    KnowledgeCompleteness,
-    KnowledgeSnapshot,
-    OwnerAvailability,
-    SnapshotConsistency,
-)
-from _04_Nucleo_Operativo.knowledge_planner import KnowledgeQuery, RetrievalMode
-from _04_Nucleo_Operativo.knowledge_service import KnowledgeSearchService
-from _04_Nucleo_Operativo.knowledge_snapshot import KnowledgeStatePaths
 
 
 READ_API_SCHEMA = "neocortex.read-api/v1"

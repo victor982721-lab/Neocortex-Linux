@@ -19,7 +19,6 @@ from .cancellation import CancellationToken
 from .file_identity import file_key_from_snapshot
 from .ocr_profiles import OCR_PROFILE_CHOICES, OcrProfileName
 from .processing_provenance import (
-    ROUTE_SUMMARY_SCHEMA,
     ProcessingProvenance,
     build_processing_provenance,
     executable_component,
@@ -35,7 +34,12 @@ from .video_frames import (
     resolve_video_ffmpeg,
     sampled_video_frames,
 )
-from .video_models import VIDEO_ROUTE_VERSION, VideoMediaProbe, VideoProcessingError
+from .video_models import (
+    VIDEO_ROUTE_VERSION,
+    VideoMediaProbe,
+    VideoProcessingError,
+    VideoRouteSummary,
+)
 from .video_probe import probe_video, resolve_video_ffprobe
 from .video_state import (
     VideoFrameEvidence,
@@ -281,41 +285,6 @@ class VideoRouteConfig:
             ),
             compatibility_tag=VIDEO_ROUTE_VERSION,
         )
-
-
-@dataclass(frozen=True, slots=True)
-class VideoRouteSummary:
-    candidate_pool: int = 0
-    candidates: int = 0
-    skipped_by_size: int = 0
-    skipped_by_count: int = 0
-    processed: int = 0
-    cache_hits: int = 0
-    cached_errors: int = 0
-    complete: int = 0
-    partial: int = 0
-    errors: int = 0
-    visual_only: int = 0
-    frames_sampled: int = 0
-    scene_frames: int = 0
-    keyframes: int = 0
-    interval_frames: int = 0
-    ocr_attempts: int = 0
-    ocr_positive: int = 0
-    ocr_failures: int = 0
-    ocr_text_chars: int = 0
-    audio_links: int = 0
-    audio_links_added_on_replay: int = 0
-    review_candidates: int = 0
-    deletion_candidates: int = 0
-    retryable_errors: int = 0
-    cache_documents_pruned: int = 0
-    peak_reserved_bytes: int = 0
-    memory_waits: int = 0
-    ocr_available: bool = False
-    processing_signature: str | None = None
-    processing_provenance: dict[str, Any] | None = None
-    summary_schema: str = ROUTE_SUMMARY_SCHEMA
 
 
 @dataclass(slots=True)

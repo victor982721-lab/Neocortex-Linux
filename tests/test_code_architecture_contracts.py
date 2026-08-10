@@ -2,6 +2,13 @@
 
 from __future__ import annotations
 
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+import _04_Nucleo_Operativo.external_architecture_worker as architecture_worker
 from _04_Nucleo_Operativo.code_architecture_contracts import (
     ARCHITECTURE_BASELINE_ID,
     ARCHITECTURE_CONTRACT_SCHEMA,
@@ -99,3 +106,58 @@ def test_violations_expose_shortest_chains_lines_and_new_cycle() -> None:
     cycles = evaluations["no-new-production-import-cycles-v1"]
     assert cycles.status == "failed"
     assert cycles.violations[0].import_chain[0] == cycles.violations[0].import_chain[-1]
+
+
+def test_live_repository_graph_satisfies_published_architecture_contracts() -> None:
+    """Keep the versioned policy connected to the production graph it gates."""
+
+    assert architecture_worker.__file__ is not None
+    root = Path(__file__).resolve().parents[1]
+    executable = os.environ.get("NEOCORTEX_ARCHITECTURE_TEST_PYTHON", sys.executable)
+    completed = subprocess.run(
+        [
+            executable,
+            "-I",
+            architecture_worker.__file__,
+            "grimp",
+            "--root",
+            os.fspath(root),
+        ],
+        cwd=root,
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=30,
+    )
+
+    assert completed.returncode == 0, completed.stderr or completed.stdout
+    payload = json.loads(completed.stdout)
+    failures = [item for item in payload["contract_evaluations"] if item["status"] == "failed"]
+    assert failures == []
+
+    public_facades = {"neocortex.read_api", "neocortex.value_cli_adapter"}
+    crossings = {
+        (item["importer"], item["imported"])
+        for item in payload["relations"]
+        if item["importer"] in public_facades
+        and item["imported"].partition(".")[0] in {"_04_Nucleo_Operativo", "_05_Interfaz"}
+    }
+    assert crossings == {
+        ("neocortex.read_api", "_04_Nucleo_Operativo.read_api_port"),
+        (
+            "neocortex.value_cli_adapter",
+            "_04_Nucleo_Operativo.value_review_port",
+        ),
+    }
+
+    central_component = next(
+        (
+            item["modules"]
+            for item in payload["cycles"]
+            if "_04_Nucleo_Operativo.actions" in item["modules"]
+        ),
+        (),
+    )
+    assert "_04_Nucleo_Operativo.archive_route" not in central_component
+    assert "_04_Nucleo_Operativo.video_route" not in central_component

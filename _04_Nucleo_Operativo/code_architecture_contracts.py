@@ -39,7 +39,12 @@ _NEOCORTEX_CORE_UI_ALLOWLIST = (
     ("neocortex.cli", "_04_Nucleo_Operativo.cli_app"),
     ("neocortex.cli", "_05_Interfaz.app"),
     ("neocortex.cli", "_05_Interfaz.worker"),
+    # Fixed-scope read operations cross through one declared core port instead
+    # of coupling the public adapter to each operational owner.
+    ("neocortex.read_api", "_04_Nucleo_Operativo.read_api_port"),
     ("neocortex.sdk", "_04_Nucleo_Operativo"),
+    # Value review is a separate advisory-only public contract.
+    ("neocortex.value_cli_adapter", "_04_Nucleo_Operativo.value_review_port"),
 )
 
 # Existing cycles are observations, not claims that the architecture is

@@ -8,13 +8,13 @@ import time
 from collections.abc import Callable, Mapping
 from typing import TextIO
 
-from _04_Nucleo_Operativo.cli_knowledge import KnowledgeExitCode
-from _04_Nucleo_Operativo.value_review import preview_value_review
-from _04_Nucleo_Operativo.value_review_contracts import (
+from _04_Nucleo_Operativo.value_review_port import (
+    KnowledgeExitCode,
     ValueReviewAvailability,
     ValueReviewPaths,
     ValueReviewQuery,
     ValueReviewReport,
+    preview_value_review,
 )
 
 from .read_api import (

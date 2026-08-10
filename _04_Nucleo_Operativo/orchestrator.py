@@ -71,7 +71,7 @@ from .state import FrameworkRouteState, FrameworkState
 # region [02] Implementación
 
 if TYPE_CHECKING:
-    from .archive_route import ArchiveRouteSummary
+    from .archive_models import ArchiveRouteSummary
     from .audio_models import AudioRouteSummary
     from .code_contracts import CodeRouteSummary
     from .docx_route import DocxRouteSummary
@@ -79,7 +79,7 @@ if TYPE_CHECKING:
     from .office_route import OfficeRouteSummary
     from .pdf_route import PdfRouteSummary
     from .text_route import TextRouteSummary
-    from .video_route import VideoRouteSummary
+    from .video_models import VideoRouteSummary
     from .document_organization import (
         OrganizationApplySummary,
         OrganizationPlanSummary,

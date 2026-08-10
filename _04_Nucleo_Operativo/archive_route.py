@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from html.parser import HTMLParser
 from pathlib import Path, PurePosixPath
-from typing import Any, Literal
+from typing import Literal
 
 import xxhash
 
@@ -28,12 +28,12 @@ from _02_Deduplicacion.path_io import native_io_path
 from _03_Progreso import ProgressCallback, ProgressEvent, ProgressMetric, emit_progress
 
 from .action_policy import same_snapshot
+from .archive_models import ArchiveRouteSummary
 from .archive_state import archive_database, initialize_archive_state
 from .bounded_subprocess import SubprocessOutputLimitError, run_bounded_capture
 from .cancellation import CancellationToken
 from .file_identity import file_key_from_snapshot
 from .processing_provenance import (
-    ROUTE_SUMMARY_SCHEMA,
     ProcessingProvenance,
     build_processing_provenance,
     distribution_component,
@@ -204,33 +204,6 @@ def _archive_processing_provenance(
         ),
         compatibility_tag=ARCHIVE_ROUTE_VERSION,
     )
-
-
-@dataclass(frozen=True, slots=True)
-class ArchiveRouteSummary:
-    candidate_pool: int = 0
-    candidates: int = 0
-    skipped_by_size: int = 0
-    skipped_by_count: int = 0
-    processed: int = 0
-    cache_hits: int = 0
-    cached_errors: int = 0
-    containers_complete: int = 0
-    containers_partial: int = 0
-    errors: int = 0
-    members_seen: int = 0
-    members_indexed: int = 0
-    metadata_only: int = 0
-    nested_archives: int = 0
-    text_chars: int = 0
-    safety_issues: int = 0
-    cache_containers_pruned: int = 0
-    cache_members_pruned: int = 0
-    peak_reserved_bytes: int = 0
-    memory_waits: int = 0
-    processing_signature: str | None = None
-    processing_provenance: dict[str, Any] | None = None
-    summary_schema: str = ROUTE_SUMMARY_SCHEMA
 
 
 class ArchiveExtractionError(ValueError):
