@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import os
+import queue
+import sys
 from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -22,6 +25,7 @@ from _04_Nucleo_Operativo.audio_route import (
     search_audio_state,
 )
 from _04_Nucleo_Operativo.audio_state import audio_database
+from _04_Nucleo_Operativo import audio_whisper
 from _04_Nucleo_Operativo.cli_config import framework_config_from_args
 from _04_Nucleo_Operativo.cli_parser import build_parser
 from _04_Nucleo_Operativo.cli_validation import validate_arguments
@@ -51,6 +55,39 @@ from tests.internal_paths_test_support import disjoint_internal_paths_policy
 
 RUNTIME = WhisperRuntime("1.2.1", "4.8.1", 0, "cpu", "int8")
 PROBE = MediaProbe(12.5, "ogg", "opus", 48_000, 1, 1, 0)
+
+
+def test_worker_rejects_a_non_string_model_cache_before_model_loading(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def forbidden_model(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("WhisperModel must not load invalid settings")
+
+    monkeypatch.setitem(
+        sys.modules,
+        "faster_whisper",
+        SimpleNamespace(WhisperModel=forbidden_model),
+    )
+    monkeypatch.setattr(audio_whisper, "resolve_whisper_runtime", lambda *_args: RUNTIME)
+    result_channel: queue.SimpleQueue[tuple[object, ...]] = queue.SimpleQueue()
+
+    audio_whisper._whisper_worker(
+        queue.SimpleQueue(),
+        result_channel,
+        {
+            "device": "cpu",
+            "compute_type": "int8",
+            "model_name": "small",
+            "model_cache_directory": object(),
+            "local_models_only": True,
+        },
+    )
+
+    assert result_channel.get() == (
+        "init_error",
+        "ValueError",
+        "invalid Whisper model cache directory",
+    )
 
 
 class FakeFrameworkRouteState:

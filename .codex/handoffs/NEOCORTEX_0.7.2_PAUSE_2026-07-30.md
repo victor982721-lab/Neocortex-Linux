@@ -71,7 +71,9 @@ existe cuando se cumplen juntos los criterios dinámicos de la última sección.
   entrypoint, y después prueba el árbol fuente completo. Cada job revalida SHA
   y worktree limpio al final; `quality` también lo hace tras Coverage.
 - El gate estático versionado conserva deuda sin permitir crecimiento:
-  Ruff **76**, Mypy **94**, Pyright **214**. No significa “cero deuda”; significa
+  Ruff **76**, Mypy **94**, Pyright **142**. Pyright queda ligado explícitamente
+  a los paquetes del intérprete canónico y eliminó 72 falsos missing-import. No
+  significa “cero deuda”; significa
   cero diagnósticos nuevos por ruta/regla y versión exacta de cada herramienta.
 - Grimp exige el baseline acíclico v2, seis contratos exactos y evidencia viva.
   Estado final: **325 módulos, 1,316 relaciones, 0 violaciones y 0 SCC**.
@@ -140,7 +142,7 @@ existe cuando se cumplen juntos los criterios dinámicos de la última sección.
 
 ## Deuda residual explícita
 
-- El baseline estático contiene 76/94/214 hallazgos y agrupa por ruta/regla, no
+- El baseline estático contiene 76/94/142 hallazgos y agrupa por ruta/regla, no
   por fingerprint de cada mensaje. Debe reducirse gradualmente y nunca usarse
   para intercambiar deuda nueva por vieja.
 - Permanecen hotspots grandes en evidencia externa, validaciones Knowledge y el

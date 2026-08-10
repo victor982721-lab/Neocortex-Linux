@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sysconfig
 from collections import Counter
 from datetime import date
 from pathlib import Path
@@ -239,6 +240,19 @@ def test_static_baseline_rejects_new_rule_even_when_total_is_lower() -> None:
         compare_static_observations(current, baseline)
 
     assert baseline["schema"] == BASELINE_SCHEMA
+
+
+def test_pyright_policy_uses_the_live_interpreter_packages_not_missing_import_debt() -> None:
+    root = Path(__file__).parents[1]
+
+    payload = quality_gate._pyright_config_payload(root)
+
+    extra_paths = payload["extraPaths"]
+    assert isinstance(extra_paths, list)
+    assert extra_paths[0] == str(root)
+    assert str(Path(sysconfig.get_path("purelib")).resolve()) in extra_paths
+    assert payload["pythonVersion"] == "3.13"
+    assert payload["typeCheckingMode"] == "basic"
 
 
 def test_coverage_baseline_is_branch_aware_versioned_and_uses_production_scope() -> None:

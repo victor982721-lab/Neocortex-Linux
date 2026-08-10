@@ -212,11 +212,14 @@ def _whisper_worker(
         runtime = resolve_whisper_runtime(
             str(settings["device"]), str(settings["compute_type"])
         )
+        download_root = settings.get("model_cache_directory")
+        if download_root is not None and not isinstance(download_root, str):
+            raise ValueError("invalid Whisper model cache directory")
         model = WhisperModel(
             str(settings["model_name"]),
             device=runtime.resolved_device,
             compute_type=runtime.resolved_compute_type,
-            download_root=settings.get("model_cache_directory"),
+            download_root=download_root,
             local_files_only=bool(settings["local_models_only"]),
         )
     except BaseException as exc:

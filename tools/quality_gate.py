@@ -20,6 +20,7 @@ import subprocess
 import sys
 import sysconfig
 import tempfile
+import tomllib
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -631,6 +632,35 @@ def _pyright_command() -> tuple[Path, dict[str, str]]:
     return executable, environment
 
 
+def _pyright_config_payload(root: Path) -> dict[str, object]:
+    """Bind Pyright to the project policy and this interpreter's installed packages."""
+
+    try:
+        with (root / "pyproject.toml").open("rb") as stream:
+            project = tomllib.load(stream)
+    except (OSError, tomllib.TOMLDecodeError) as error:
+        _fail(f"could not read Pyright project policy: {error}")
+    raw_tool = project.get("tool")
+    raw_pyright = raw_tool.get("pyright") if isinstance(raw_tool, Mapping) else None
+    if not isinstance(raw_pyright, Mapping):
+        _fail("pyproject.toml omits [tool.pyright]")
+    if "extraPaths" in raw_pyright:
+        _fail("[tool.pyright].extraPaths is owned by the canonical quality gate")
+    package_paths: set[str] = set()
+    for name in ("purelib", "platlib"):
+        raw_path = sysconfig.get_path(name)
+        if not raw_path:
+            _fail(f"Python did not report its {name} package directory")
+        package_path = Path(raw_path).resolve()
+        if not package_path.is_dir():
+            _fail(f"Python {name} package directory is unavailable: {package_path}")
+        package_paths.add(os.fspath(package_path))
+    return {
+        **dict(raw_pyright),
+        "extraPaths": [os.fspath(root), *sorted(package_paths)],
+    }
+
+
 def _pyright_observation(root: Path) -> StaticObservation:
     executable, environment = _pyright_command()
     version_run = _run_captured(
@@ -640,21 +670,27 @@ def _pyright_observation(root: Path) -> StaticObservation:
         allowed_codes=frozenset({0}),
         environment=environment,
     )
-    completed = _run_captured(
-        (
-            os.fspath(executable),
-            "--outputjson",
-            "--pythonpath",
-            sys.executable,
-            "--project",
-            os.fspath(root),
-            *PRODUCTION_TYPE_TARGETS,
-        ),
-        root=root,
-        timeout=STATIC_TIMEOUT_SECONDS,
-        allowed_codes=frozenset({0, 1}),
-        environment=environment,
-    )
+    with tempfile.TemporaryDirectory(prefix="neocortex-pyright-policy-") as temporary:
+        project = Path(temporary) / "pyrightconfig.json"
+        project.write_text(
+            json.dumps(_pyright_config_payload(root), sort_keys=True),
+            encoding="utf-8",
+        )
+        completed = _run_captured(
+            (
+                os.fspath(executable),
+                "--outputjson",
+                "--pythonpath",
+                sys.executable,
+                "--project",
+                os.fspath(project),
+                *PRODUCTION_TYPE_TARGETS,
+            ),
+            root=root,
+            timeout=STATIC_TIMEOUT_SECONDS,
+            allowed_codes=frozenset({0, 1}),
+            environment=environment,
+        )
     try:
         payload = json.loads(completed.stdout)
     except json.JSONDecodeError as error:

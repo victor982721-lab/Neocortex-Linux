@@ -164,18 +164,6 @@
         },
         {
           "count": 1,
-          "path": "_02_Deduplicacion/hashing.py",
-          "rule": "reportMissingImports",
-          "severity": "error"
-        },
-        {
-          "count": 1,
-          "path": "_02_Deduplicacion/inventory_scan.py",
-          "rule": "reportMissingImports",
-          "severity": "error"
-        },
-        {
-          "count": 1,
           "path": "_02_Deduplicacion/inventory_scan.py",
           "rule": "reportOptionalOperand",
           "severity": "error"
@@ -187,12 +175,6 @@
           "severity": "warning"
         },
         {
-          "count": 3,
-          "path": "_03_Progreso/reporters.py",
-          "rule": "reportMissingImports",
-          "severity": "error"
-        },
-        {
           "count": 4,
           "path": "_04_Nucleo_Operativo/__init__.py",
           "rule": "reportImportCycles",
@@ -200,50 +182,14 @@
         },
         {
           "count": 1,
-          "path": "_04_Nucleo_Operativo/archive_route.py",
-          "rule": "reportMissingImports",
-          "severity": "error"
-        },
-        {
-          "count": 2,
-          "path": "_04_Nucleo_Operativo/archive_text_worker.py",
-          "rule": "reportMissingImports",
-          "severity": "error"
-        },
-        {
-          "count": 1,
           "path": "_04_Nucleo_Operativo/audio_route.py",
           "rule": "reportArgumentType",
-          "severity": "error"
-        },
-        {
-          "count": 1,
-          "path": "_04_Nucleo_Operativo/audio_route.py",
-          "rule": "reportMissingImports",
-          "severity": "error"
-        },
-        {
-          "count": 1,
-          "path": "_04_Nucleo_Operativo/cli_app.py",
-          "rule": "reportMissingImports",
           "severity": "error"
         },
         {
           "count": 2,
           "path": "_04_Nucleo_Operativo/cli_code_surface.py",
           "rule": "reportArgumentType",
-          "severity": "error"
-        },
-        {
-          "count": 1,
-          "path": "_04_Nucleo_Operativo/cli_direct.py",
-          "rule": "reportMissingImports",
-          "severity": "error"
-        },
-        {
-          "count": 4,
-          "path": "_04_Nucleo_Operativo/cli_reporting.py",
-          "rule": "reportMissingImports",
           "severity": "error"
         },
         {
@@ -319,28 +265,10 @@
           "severity": "warning"
         },
         {
-          "count": 1,
-          "path": "_04_Nucleo_Operativo/document_taxonomy_overlay.py",
-          "rule": "reportMissingImports",
-          "severity": "error"
-        },
-        {
           "count": 3,
           "path": "_04_Nucleo_Operativo/document_taxonomy_references.py",
           "rule": "reportUnusedFunction",
           "severity": "warning"
-        },
-        {
-          "count": 1,
-          "path": "_04_Nucleo_Operativo/docx_layout.py",
-          "rule": "reportMissingImports",
-          "severity": "error"
-        },
-        {
-          "count": 3,
-          "path": "_04_Nucleo_Operativo/external_deep_coverage_worker.py",
-          "rule": "reportMissingImports",
-          "severity": "error"
         },
         {
           "count": 1,
@@ -349,75 +277,9 @@
           "severity": "error"
         },
         {
-          "count": 1,
-          "path": "_04_Nucleo_Operativo/external_evidence_providers.py",
-          "rule": "reportMissingImports",
-          "severity": "error"
-        },
-        {
           "count": 2,
           "path": "_04_Nucleo_Operativo/external_mutation_cosmic_ray_worker.py",
           "rule": "reportArgumentType",
-          "severity": "error"
-        },
-        {
-          "count": 3,
-          "path": "_04_Nucleo_Operativo/external_supply_chain_audit.py",
-          "rule": "reportMissingImports",
-          "severity": "error"
-        },
-        {
-          "count": 1,
-          "path": "_04_Nucleo_Operativo/file_action_reconciliation_store.py",
-          "rule": "reportMissingImports",
-          "severity": "error"
-        },
-        {
-          "count": 1,
-          "path": "_04_Nucleo_Operativo/framework_state_common.py",
-          "rule": "reportMissingImports",
-          "severity": "error"
-        },
-        {
-          "count": 1,
-          "path": "_04_Nucleo_Operativo/image_decode.py",
-          "rule": "reportMissingImports",
-          "severity": "error"
-        },
-        {
-          "count": 1,
-          "path": "_04_Nucleo_Operativo/image_document.py",
-          "rule": "reportMissingImports",
-          "severity": "error"
-        },
-        {
-          "count": 1,
-          "path": "_04_Nucleo_Operativo/image_errors.py",
-          "rule": "reportMissingImports",
-          "severity": "error"
-        },
-        {
-          "count": 1,
-          "path": "_04_Nucleo_Operativo/image_features.py",
-          "rule": "reportMissingImports",
-          "severity": "error"
-        },
-        {
-          "count": 1,
-          "path": "_04_Nucleo_Operativo/image_isolation.py",
-          "rule": "reportMissingImports",
-          "severity": "error"
-        },
-        {
-          "count": 1,
-          "path": "_04_Nucleo_Operativo/image_state.py",
-          "rule": "reportMissingImports",
-          "severity": "error"
-        },
-        {
-          "count": 1,
-          "path": "_04_Nucleo_Operativo/internal_paths.py",
-          "rule": "reportMissingImports",
           "severity": "error"
         },
         {
@@ -446,38 +308,8 @@
         },
         {
           "count": 1,
-          "path": "_04_Nucleo_Operativo/ocr_image_preprocess.py",
-          "rule": "reportMissingImports",
-          "severity": "error"
-        },
-        {
-          "count": 1,
           "path": "_04_Nucleo_Operativo/office_route.py",
           "rule": "reportArgumentType",
-          "severity": "error"
-        },
-        {
-          "count": 1,
-          "path": "_04_Nucleo_Operativo/office_route.py",
-          "rule": "reportMissingImports",
-          "severity": "error"
-        },
-        {
-          "count": 1,
-          "path": "_04_Nucleo_Operativo/pdf_admin.py",
-          "rule": "reportMissingImports",
-          "severity": "error"
-        },
-        {
-          "count": 1,
-          "path": "_04_Nucleo_Operativo/pdf_derived.py",
-          "rule": "reportMissingImports",
-          "severity": "error"
-        },
-        {
-          "count": 4,
-          "path": "_04_Nucleo_Operativo/pdf_isolation.py",
-          "rule": "reportMissingImports",
           "severity": "error"
         },
         {
@@ -487,33 +319,9 @@
           "severity": "warning"
         },
         {
-          "count": 1,
-          "path": "_04_Nucleo_Operativo/pdf_layout.py",
-          "rule": "reportMissingImports",
-          "severity": "error"
-        },
-        {
-          "count": 2,
-          "path": "_04_Nucleo_Operativo/pdf_route.py",
-          "rule": "reportMissingImports",
-          "severity": "error"
-        },
-        {
-          "count": 1,
-          "path": "_04_Nucleo_Operativo/pdf_route_storage.py",
-          "rule": "reportMissingImports",
-          "severity": "error"
-        },
-        {
           "count": 3,
           "path": "_04_Nucleo_Operativo/pdf_route_storage.py",
           "rule": "reportOptionalSubscript",
-          "severity": "error"
-        },
-        {
-          "count": 1,
-          "path": "_04_Nucleo_Operativo/processing_provenance.py",
-          "rule": "reportMissingImports",
           "severity": "error"
         },
         {
@@ -524,44 +332,14 @@
         },
         {
           "count": 1,
-          "path": "_04_Nucleo_Operativo/protected_content.py",
-          "rule": "reportMissingImports",
-          "severity": "error"
-        },
-        {
-          "count": 1,
           "path": "_04_Nucleo_Operativo/review_evidence.py",
           "rule": "reportUnusedFunction",
           "severity": "warning"
         },
         {
           "count": 1,
-          "path": "_04_Nucleo_Operativo/self_analysis_manifest.py",
-          "rule": "reportMissingImports",
-          "severity": "error"
-        },
-        {
-          "count": 1,
-          "path": "_04_Nucleo_Operativo/semantic_backends.py",
-          "rule": "reportMissingImports",
-          "severity": "error"
-        },
-        {
-          "count": 1,
           "path": "_04_Nucleo_Operativo/semantic_backends.py",
           "rule": "reportReturnType",
-          "severity": "error"
-        },
-        {
-          "count": 1,
-          "path": "_04_Nucleo_Operativo/semantic_chunking.py",
-          "rule": "reportMissingImports",
-          "severity": "error"
-        },
-        {
-          "count": 1,
-          "path": "_04_Nucleo_Operativo/semantic_classification_service.py",
-          "rule": "reportMissingImports",
           "severity": "error"
         },
         {
@@ -577,28 +355,10 @@
           "severity": "warning"
         },
         {
-          "count": 1,
-          "path": "_04_Nucleo_Operativo/semantic_models.py",
-          "rule": "reportMissingImports",
-          "severity": "error"
-        },
-        {
-          "count": 1,
-          "path": "_04_Nucleo_Operativo/semantic_plan_owners.py",
-          "rule": "reportMissingImports",
-          "severity": "error"
-        },
-        {
           "count": 7,
           "path": "_04_Nucleo_Operativo/semantic_plan_owners.py",
           "rule": "reportUnusedFunction",
           "severity": "warning"
-        },
-        {
-          "count": 1,
-          "path": "_04_Nucleo_Operativo/semantic_plan_results.py",
-          "rule": "reportMissingImports",
-          "severity": "error"
         },
         {
           "count": 6,
@@ -625,22 +385,10 @@
           "severity": "error"
         },
         {
-          "count": 2,
-          "path": "_04_Nucleo_Operativo/semantic_preparation.py",
-          "rule": "reportMissingImports",
-          "severity": "error"
-        },
-        {
           "count": 6,
           "path": "_04_Nucleo_Operativo/semantic_repository_common.py",
           "rule": "reportUnusedFunction",
           "severity": "warning"
-        },
-        {
-          "count": 1,
-          "path": "_04_Nucleo_Operativo/semantic_search_repository.py",
-          "rule": "reportMissingImports",
-          "severity": "error"
         },
         {
           "count": 23,
@@ -650,20 +398,8 @@
         },
         {
           "count": 1,
-          "path": "_04_Nucleo_Operativo/text_route.py",
-          "rule": "reportMissingImports",
-          "severity": "error"
-        },
-        {
-          "count": 1,
           "path": "_04_Nucleo_Operativo/value_review_repository.py",
           "rule": "reportReturnType",
-          "severity": "error"
-        },
-        {
-          "count": 1,
-          "path": "_04_Nucleo_Operativo/video_frames.py",
-          "rule": "reportMissingImports",
           "severity": "error"
         },
         {
@@ -673,45 +409,9 @@
           "severity": "error"
         },
         {
-          "count": 1,
-          "path": "_04_Nucleo_Operativo/watcher_life_lease.py",
-          "rule": "reportMissingImports",
-          "severity": "error"
-        },
-        {
           "count": 9,
           "path": "_04_Nucleo_Operativo/windows_handle_mutation.py",
           "rule": "reportAttributeAccessIssue",
-          "severity": "error"
-        },
-        {
-          "count": 3,
-          "path": "_05_Interfaz/app.py",
-          "rule": "reportMissingImports",
-          "severity": "error"
-        },
-        {
-          "count": 1,
-          "path": "_05_Interfaz/controller.py",
-          "rule": "reportMissingImports",
-          "severity": "error"
-        },
-        {
-          "count": 3,
-          "path": "_05_Interfaz/main_window.py",
-          "rule": "reportMissingImports",
-          "severity": "error"
-        },
-        {
-          "count": 2,
-          "path": "_05_Interfaz/widgets.py",
-          "rule": "reportMissingImports",
-          "severity": "error"
-        },
-        {
-          "count": 3,
-          "path": "neocortex/agent_server.py",
-          "rule": "reportMissingImports",
           "severity": "error"
         },
         {
@@ -727,7 +427,7 @@
           "severity": "error"
         }
       ],
-      "total": 214,
+      "total": 142,
       "version": "1.1.411"
     },
     "ruff": {

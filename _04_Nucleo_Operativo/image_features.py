@@ -31,6 +31,7 @@ except ImportError as exc:  # pragma: no cover
 
 ImageResourceLimits: TypeAlias = MemoryResourceLimits
 ImageMemoryGate: TypeAlias = WeightedMemoryGate
+_EDGE_BINARY_LUT = (0,) * 48 + (1,) * (256 - 48)
 
 
 def estimated_image_memory_bytes(
@@ -64,7 +65,7 @@ def entropy(gray: Image.Image) -> float:
 def projection_features(edges: Image.Image) -> tuple[float, float, float]:
     """Measure long lines and text-like bands using edge-map projections."""
 
-    with edges.point(lambda value: 1 if value >= 48 else 0) as binary:
+    with edges.point(_EDGE_BINARY_LUT) as binary:
         width, height = binary.size
         pixels = binary.tobytes()
     column_counts = [0] * width
