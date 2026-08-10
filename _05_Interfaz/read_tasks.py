@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from threading import Event
 
-from PySide6.QtCore import (  # type: ignore[import-not-found]
+from PySide6.QtCore import (  # pyright: ignore[reportMissingImports]
     QObject,
     QRunnable,
     QThreadPool,
