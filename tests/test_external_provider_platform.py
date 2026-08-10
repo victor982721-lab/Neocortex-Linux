@@ -167,6 +167,7 @@ def test_trusted_static_runs_independent_provider_matrix(
         "_package_version",
         lambda name: None if name in unavailable else package_version(name),
     )
+    monkeypatch.setattr(providers_module, "managed_semgrep_version", lambda: None)
 
     summary = _run(root, state, paths, 1, "trusted-static")
     replay_summary = _run(root, state, paths, 2, "trusted-static")
