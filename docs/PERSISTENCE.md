@@ -105,7 +105,7 @@ a los archivos vivos.
 | `framework.sqlite3` | `framework_schema`, `FrameworkState`, `FrameworkRouteState` | **20** | runs, fases, policy/identidad de corpus, acciones con snapshot protegido, eventos append-only de transición/conciliación/manifest, candidatos de ruta, caché de tipo, revisión y evidencia | `metadata.schema_version`; migraciones secuenciales |
 | `pdf.sqlite3` | `pdf_schema`, `pdf_state`, `PdfRoute`, `PdfDerivedIndexer` | 11 | inventario, documentos, páginas, staging, errores, warnings, FTS, firmas, similitud y layout | `metadata.schema_version`; migraciones secuenciales |
 | `docx.sqlite3` | `docx_schema`, `docx_state`, `DocxRoute` | 5 | inventario, documentos, partes, diagnósticos, FTS, layouts y contrapartes PDF | `metadata.schema_version`; migraciones secuenciales |
-| `office.sqlite3` | `office_state`, `OfficeRoute` | 1 | inventario, documentos y FTS | `metadata.schema_version` |
+| `office.sqlite3` | `office_state`, `OfficeRoute` | 2 | inventario, documentos, celdas XLSX tipadas y FTS | `metadata.schema_version` |
 | `archive.sqlite3` | `archive_state`, `ArchiveRoute` | 1 | contenedores ZIP, miembros y cadenas anidadas, incidencias, texto comprimido y FTS | `metadata.schema_version`; sin estado legacy |
 | `text.sqlite3` | `text_state`, `TextRoute` | 1 | texto físico, EML y Office heredado; título/autor, metadata, texto comprimido, errores y FTS | `metadata.schema_version`; sin estado legacy |
 | `audio.sqlite3` | `audio_state`, `AudioRoute` | 1 | inventario, documentos, segmentos y FTS de transcripción | `metadata.schema_version` |
@@ -134,7 +134,7 @@ ejecutó esas rutas mantiene el vector histórico de diez owners:
 | `catalog` | `document_catalog.sqlite3` | 6 | generación publicada por `source_kind` |
 | `pdf` | `pdf.sqlite3` | 11 | filas actuales, último update/run; `best_effort_non_generational` |
 | `docx` | `docx.sqlite3` | 5 | filas actuales, último update/run; `best_effort_non_generational` |
-| `office` | `office.sqlite3` | 1 | filas actuales, último update/run; `best_effort_non_generational` |
+| `office` | `office.sqlite3` | 2 | filas actuales, último update/run; `best_effort_non_generational` |
 | `archive` (aditivo si existe) | `archive.sqlite3` | 1 | miembros actuales, último update/run; `best_effort_non_generational` |
 | `text` (aditivo si existe) | `text.sqlite3` | 1 | documentos actuales, último update/run; `best_effort_non_generational` |
 | `audio` | `audio.sqlite3` | 1 | filas actuales, último update/run; `best_effort_non_generational` |

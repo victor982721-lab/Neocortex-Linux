@@ -117,7 +117,7 @@ def test_current_route_schema_corruption_is_rejected_without_writes(
 @pytest.mark.parametrize(
     ("declared_version", "exception", "message"),
     (
-        ("2", RuntimeError, "newer than supported"),
+        ("future", RuntimeError, "newer than supported"),
         ("01", SQLiteSchemaContractError, "not canonical"),
     ),
 )
@@ -128,13 +128,14 @@ def test_invalid_route_schema_versions_are_rejected_without_writes(
     exception: type[Exception],
     message: str,
 ) -> None:
-    label, initialize, _version, _index_name = route_schema
+    label, initialize, version, _index_name = route_schema
     database = tmp_path / f"{label}.sqlite3"
     initialize(database)
+    stored_version = str(version + 1) if declared_version == "future" else declared_version
     with sqlite3.connect(database) as connection:
         connection.execute(
             "UPDATE metadata SET value=? WHERE key='schema_version'",
-            (declared_version,),
+            (stored_version,),
         )
     before = database.read_bytes()
 

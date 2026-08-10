@@ -191,7 +191,7 @@ control.
 | `catalog` | `document_catalog.sqlite3` | 6 | Publicación `published` por `source_kind`. | Membership de filtros y exact typed de path, nombre o identificador en la generación publicada. |
 | `pdf` | `pdf.sqlite3` | 11 | Conteo, último `updated_ns` y run; no generacional. | FTS por página y fuentes semantic. |
 | `docx` | `docx.sqlite3` | 5 | Conteo, último `updated_ns` y run; no generacional. | FTS documental y partes semantic. |
-| `office` | `office.sqlite3` | 1 | Conteo, último `updated_ns` y run; no generacional. | FTS documental de XLSX/PPTX/ODT y semantic. |
+| `office` | `office.sqlite3` | 2 | Conteo, último `updated_ns` y run; no generacional. | FTS documental de XLSX/PPTX/ODT y semantic. |
 | `archive` (aditivo) | `archive.sqlite3` | 1 | Miembros virtuales actuales, último `updated_ns` y run; no generacional. | FTS y semantic con cadena ZIP y `inside_zip=1`. |
 | `text` (aditivo) | `text.sqlite3` | 1 | Documentos actuales, último `updated_ns` y run; no generacional. | FTS y semantic de texto, EML y Office heredado; clasificación vía catálogo. |
 | `audio` | `audio.sqlite3` | 1 | Conteo, último `updated_ns` y run; no generacional. | FTS de transcripción y segmentos semantic. |

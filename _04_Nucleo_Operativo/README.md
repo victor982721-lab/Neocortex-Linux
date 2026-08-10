@@ -208,14 +208,18 @@ Neocortex --office-search 'transformador AND mantenimiento'
 ```
 
 Extrae de forma incremental propiedades, nombres de hojas, cadenas compartidas,
-texto de celdas, diapositivas, notas y contenido ODT. La lectura XML es
-streaming, con límites por miembro, expansión ZIP, texto y memoria coordinada;
-no abre Excel o PowerPoint ni crea representaciones visibles. El estado
-`office.sqlite3` conserva texto comprimido, FTS5, firma XXH3, formato y evidencia
-de error. Una estructura corrupta se registra como `deletion_candidate` para
-revisión, nunca como una orden automática de borrado. Los límites se controlan
+celdas XLSX con libro, hoja, referencia A1, tipo y valor —más fórmula y valor
+cacheado en campos separados—, diapositivas, notas y contenido ODT. La lectura
+XML es streaming, con límites por miembro, expansión ZIP, texto y memoria
+coordinada; no abre Excel o PowerPoint ni crea representaciones visibles. El
+estado `office.sqlite3` conserva esa evidencia XLSX tipada en `xlsx_cells`,
+además de texto comprimido, FTS5, firma XXH3, formato y evidencia de error. Una
+estructura corrupta se registra como `deletion_candidate` para revisión, nunca
+como una orden automática de borrado. Los límites se controlan
 con `--office-max-mb`, `--office-max-count`, `--office-max-text-chars` y los
-parámetros `--office-*-memory-*`.
+parámetros `--office-*-memory-*`; un XLSX con más de 250,000 celdas no vacías o
+cadenas compartidas se abstiene como revisión manual en vez de publicar una
+representación parcial.
 
 La ruta `archive` consume los ZIP detectados por el inventario y publica sus
 miembros en `archive.sqlite3`, con FTS5 y procedencia completa. Recorre ZIP

@@ -27,7 +27,7 @@ from .sqlite_schema_contract import (
 # region [01] Connections and schema
 
 
-OFFICE_SCHEMA_VERSION = 1
+OFFICE_SCHEMA_VERSION = 2
 
 _OFFICE_SQLITE_POLICY = SQLiteConnectionPolicy(
     label="Office state",
@@ -43,7 +43,7 @@ _OFFICE_SQLITE_POLICY = SQLiteConnectionPolicy(
 )
 
 
-_OFFICE_SCHEMA_DDL = (
+_OFFICE_V1_SCHEMA_DDL = (
     """CREATE TABLE IF NOT EXISTS metadata(
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
@@ -99,15 +99,54 @@ _OFFICE_SCHEMA_DDL = (
     )""",
 )
 
+_OFFICE_V2_SCHEMA_DDL = (
+    """CREATE TABLE IF NOT EXISTS xlsx_cells(
+        file_key TEXT NOT NULL,
+        workbook TEXT NOT NULL,
+        sheet TEXT NOT NULL,
+        sheet_ordinal INTEGER NOT NULL,
+        cell_reference TEXT NOT NULL,
+        cell_type TEXT NOT NULL,
+        value TEXT NOT NULL,
+        raw_value TEXT,
+        formula TEXT,
+        cached_value TEXT,
+        style_index INTEGER,
+        number_format TEXT,
+        PRIMARY KEY(file_key,sheet_ordinal,cell_reference),
+        FOREIGN KEY(file_key) REFERENCES documents(file_key) ON DELETE CASCADE
+    ) WITHOUT ROWID""",
+    """CREATE INDEX IF NOT EXISTS xlsx_cells_location_idx
+        ON xlsx_cells(workbook COLLATE NOCASE,sheet_ordinal,cell_reference)""",
+    """CREATE TRIGGER IF NOT EXISTS xlsx_cells_document_path_update
+        AFTER UPDATE OF path ON documents
+        WHEN OLD.path<>NEW.path
+        BEGIN
+            UPDATE xlsx_cells SET workbook=NEW.path WHERE file_key=NEW.file_key;
+        END""",
+)
+
+_OFFICE_SCHEMA_DDL = _OFFICE_V1_SCHEMA_DDL + _OFFICE_V2_SCHEMA_DDL
+
 
 def _create_office_schema(connection: sqlite3.Connection) -> None:
     for statement in _OFFICE_SCHEMA_DDL:
         connection.execute(statement)
 
 
+def _create_office_v1_schema(connection: sqlite3.Connection) -> None:
+    for statement in _OFFICE_V1_SCHEMA_DDL:
+        connection.execute(statement)
+
+
 @lru_cache(maxsize=1)
 def _office_schema_contract() -> SQLiteSchemaContract:
     return schema_contract_from_builder(_create_office_schema)
+
+
+@lru_cache(maxsize=1)
+def _office_v1_schema_contract() -> SQLiteSchemaContract:
+    return schema_contract_from_builder(_create_office_v1_schema)
 
 
 @contextmanager
@@ -119,13 +158,7 @@ def office_database(
 ):
     """Open Office state, optionally refusing creation after initialization."""
 
-    mode = (
-        READONLY_EXISTING
-        if readonly
-        else READWRITE_CREATE
-        if create
-        else READWRITE_EXISTING
-    )
+    mode = READONLY_EXISTING if readonly else READWRITE_CREATE if create else READWRITE_EXISTING
     connection = connect_sqlite(
         path,
         mode=mode,
@@ -138,7 +171,7 @@ def office_database(
 
 
 def initialize_office_state(path: Path) -> None:
-    """Create the office cache additively and reject unknown future schemas."""
+    """Create or additively migrate Office state after a read-only probe."""
 
     prior: int | None = None
     if path.is_file():
@@ -146,8 +179,7 @@ def initialize_office_state(path: Path) -> None:
             prior = read_metadata_schema_version(connection, label="office")
             if prior is not None and prior > OFFICE_SCHEMA_VERSION:
                 raise RuntimeError(
-                    f"office schema {prior} is newer than supported "
-                    f"schema {OFFICE_SCHEMA_VERSION}"
+                    f"office schema {prior} is newer than supported schema {OFFICE_SCHEMA_VERSION}"
                 )
             if prior == OFFICE_SCHEMA_VERSION:
                 validate_sqlite_schema_contract(
@@ -157,10 +189,29 @@ def initialize_office_state(path: Path) -> None:
                     exact=True,
                 )
                 return
+            if prior == 1:
+                validate_sqlite_schema_contract(
+                    connection,
+                    _office_v1_schema_contract(),
+                    label="office schema 1 migration source",
+                    exact=True,
+                )
+            elif prior not in {None, 0}:
+                raise RuntimeError(f"unsupported office migration start: {prior}")
 
     with office_database(path, create=True) as connection:
         connection.execute("BEGIN IMMEDIATE")
         try:
+            locked_prior = read_metadata_schema_version(connection, label="office")
+            if locked_prior == 1:
+                validate_sqlite_schema_contract(
+                    connection,
+                    _office_v1_schema_contract(),
+                    label="office schema 1 migration source",
+                    exact=True,
+                )
+            elif locked_prior not in {None, 0, OFFICE_SCHEMA_VERSION}:
+                raise RuntimeError(f"unsupported office migration start: {locked_prior}")
             _create_office_schema(connection)
             connection.execute(
                 "INSERT INTO metadata(key,value) VALUES('schema_version',?) "

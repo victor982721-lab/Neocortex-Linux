@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 
 import _04_Nucleo_Operativo.office_route as office_route_module
+import _04_Nucleo_Operativo.office_state as office_state_module
 from _02_Deduplicacion import FileSnapshot, snapshot_path
 from _04_Nucleo_Operativo.cancellation import CancellationToken
 from _04_Nucleo_Operativo.cli_config import framework_config_from_args
@@ -35,7 +36,11 @@ from _04_Nucleo_Operativo.office_route import (
     OfficeRoute,
     OfficeRouteConfig,
 )
-from _04_Nucleo_Operativo.office_state import office_database
+from _04_Nucleo_Operativo.office_state import (
+    OFFICE_SCHEMA_VERSION,
+    initialize_office_state,
+    office_database,
+)
 from _04_Nucleo_Operativo.route_filters import CandidateSelection
 from tests.internal_paths_test_support import disjoint_internal_paths_policy
 
@@ -148,6 +153,61 @@ def _write_xlsx(path: Path) -> None:
             "xl/sharedStrings.xml",
             """<sst xmlns="urn:test"><si><t>Requisición de materiales</t></si>
             <si><t>Interruptor de potencia y transformador</t></si></sst>""",
+        )
+
+
+def _write_typed_xlsx(path: Path) -> None:
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("[Content_Types].xml", "<Types/>")
+        archive.writestr("docProps/core.xml", _core("Mediciones U2", "ANDRITZ"))
+        archive.writestr(
+            "xl/workbook.xml",
+            """<workbook
+             xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+             xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+              <workbookPr date1904="0"/>
+              <sheets><sheet name="Mediciones U2" sheetId="9" r:id="rId7"/></sheets>
+              <definedNames><definedName name="Entrada">'Mediciones U2'!$C$3</definedName></definedNames>
+            </workbook>""",
+        )
+        archive.writestr(
+            "xl/_rels/workbook.xml.rels",
+            """<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+              <Relationship Id="rId7"
+               Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet"
+               Target="worksheets/measurements.xml"/>
+            </Relationships>""",
+        )
+        archive.writestr(
+            "xl/sharedStrings.xml",
+            """<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+              <si><r><t>Interruptor</t></r><r><t xml:space="preserve"> principal</t></r></si>
+            </sst>""",
+        )
+        archive.writestr(
+            "xl/styles.xml",
+            """<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+              <numFmts count="1"><numFmt numFmtId="164" formatCode="yyyy-mm-dd"/></numFmts>
+              <cellXfs count="2"><xf numFmtId="0"/><xf numFmtId="164" applyNumberFormat="1"/></cellXfs>
+            </styleSheet>""",
+        )
+        archive.writestr(
+            "xl/worksheets/measurements.xml",
+            """<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+              <sheetData>
+                <row r="1"><c r="A1" t="s"><v>0</v></c></row>
+                <row r="2"><c r="B2" t="inlineStr"><is><r><t>Tratamiento</t></r><r><t xml:space="preserve"> de aceite</t></r></is></c></row>
+                <row r="3"><c r="C3" t="n"><v>1234.50</v></c></row>
+                <row r="4"><c r="D4" s="1"><v>45292</v></c></row>
+                <row r="5"><c r="E5" t="b"><v>1</v></c></row>
+                <row r="6"><c r="F6" t="e"><v>#DIV/0!</v></c></row>
+                <row r="7"><c r="G7" t="str"><f>CONCAT(&quot;O&quot;,&quot;K&quot;)</f><v>OK</v></c></row>
+                <row r="8"><c r="H8"><f>SUM(C3,1)</f><v>1235.5</v></c></row>
+                <row r="9"><c r="I9" t="d"><v>2026-08-09T17:49:00Z</v></c></row>
+                <row r="10"><c r="J10"/></row>
+                <row r="11"><c r="K11"><f>NOW()</f></c></row>
+              </sheetData>
+            </worksheet>""",
         )
 
 
@@ -269,6 +329,167 @@ def test_office_route_extracts_caches_and_classifies_all_supported_formats(
     }
 
 
+def test_xlsx_cells_preserve_location_types_values_and_formula_cache(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "Mediciones transformador.xlsx"
+    _write_typed_xlsx(source)
+    state_path = tmp_path / "office.sqlite3"
+    route, _framework = _route_for(state_path, {XLSX_MIME: source})
+
+    first = route.run()
+    cached = route.run()
+
+    assert first.extracted == 1
+    assert first.errors == 0
+    assert cached.cache_hits == 1
+    with office_database(state_path, readonly=True) as connection:
+        rows = connection.execute(
+            """SELECT workbook,sheet,sheet_ordinal,cell_reference,cell_type,value,
+            raw_value,formula,cached_value,style_index,number_format
+            FROM xlsx_cells ORDER BY sheet_ordinal,cell_reference"""
+        ).fetchall()
+        body = zlib.decompress(
+            connection.execute("SELECT text_zlib FROM documents").fetchone()[0]
+        ).decode("utf-8")
+        fts_hits = connection.execute(
+            "SELECT COUNT(*) FROM document_fts WHERE document_fts MATCH 'C3'"
+        ).fetchone()[0]
+
+    assert len(rows) == 10
+    by_reference = {row["cell_reference"]: row for row in rows}
+    assert set(by_reference) == {
+        "A1",
+        "B2",
+        "C3",
+        "D4",
+        "E5",
+        "F6",
+        "G7",
+        "H8",
+        "I9",
+        "K11",
+    }
+    assert all(row["workbook"] == str(source) for row in rows)
+    assert all((row["sheet"], row["sheet_ordinal"]) == ("Mediciones U2", 1) for row in rows)
+    assert (by_reference["A1"]["cell_type"], by_reference["A1"]["value"]) == (
+        "shared_string",
+        "Interruptor principal",
+    )
+    assert by_reference["A1"]["raw_value"] == "0"
+    assert (by_reference["B2"]["cell_type"], by_reference["B2"]["value"]) == (
+        "inline_string",
+        "Tratamiento de aceite",
+    )
+    assert (by_reference["C3"]["cell_type"], by_reference["C3"]["value"]) == (
+        "number",
+        "1234.50",
+    )
+    assert (
+        by_reference["D4"]["cell_type"],
+        by_reference["D4"]["value"],
+        by_reference["D4"]["raw_value"],
+        by_reference["D4"]["style_index"],
+        by_reference["D4"]["number_format"],
+    ) == ("date", "2024-01-01", "45292", 1, "yyyy-mm-dd")
+    assert (by_reference["E5"]["cell_type"], by_reference["E5"]["value"]) == (
+        "boolean",
+        "true",
+    )
+    assert (by_reference["F6"]["cell_type"], by_reference["F6"]["value"]) == (
+        "error",
+        "#DIV/0!",
+    )
+    assert (
+        by_reference["G7"]["value"],
+        by_reference["G7"]["formula"],
+        by_reference["G7"]["cached_value"],
+    ) == ("OK", 'CONCAT("O","K")', "OK")
+    assert (
+        by_reference["H8"]["value"],
+        by_reference["H8"]["formula"],
+        by_reference["H8"]["cached_value"],
+    ) == ("1235.5", "SUM(C3,1)", "1235.5")
+    assert (by_reference["I9"]["cell_type"], by_reference["I9"]["value"]) == (
+        "date",
+        "2026-08-09T17:49:00Z",
+    )
+    assert (
+        by_reference["K11"]["value"],
+        by_reference["K11"]["formula"],
+        by_reference["K11"]["cached_value"],
+    ) == ("", "NOW()", None)
+    assert "Interruptor" in body
+    assert "'Mediciones U2'!$C$3" in body
+    assert '"sheet":"Mediciones U2","a1":"C3","type":"number"' in body
+    assert fts_hits == 1
+
+
+def test_xlsx_non_empty_cell_limit_fails_closed_without_partial_rows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "demasiadas-celdas.xlsx"
+    _write_typed_xlsx(source)
+    state_path = tmp_path / "office.sqlite3"
+    route, framework = _route_for(state_path, {XLSX_MIME: source})
+    monkeypatch.setattr(office_route_module, "MAX_XLSX_CELLS", 1)
+
+    summary = route.run()
+
+    assert summary.errors == 1
+    assert summary.extracted == 0
+    assert framework.reviews[0].reason_code == "office_xlsx_cell_limit"
+    assert framework.reviews[0].recommendation == "manual_review"
+    with office_database(state_path, readonly=True) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM xlsx_cells").fetchone()[0] == 0
+        assert connection.execute("SELECT status FROM documents").fetchone()[0] == "error"
+
+
+def test_office_v1_migration_is_additive_and_preserves_existing_text(
+    tmp_path: Path,
+) -> None:
+    state_path = tmp_path / "office-v1.sqlite3"
+    with sqlite3.connect(state_path) as connection:
+        for statement in office_state_module._OFFICE_V1_SCHEMA_DDL:
+            connection.execute(statement)
+        connection.execute("INSERT INTO metadata(key,value) VALUES('schema_version','1')")
+        body = "contenido XLSX heredado"
+        connection.execute(
+            """INSERT INTO documents(
+            file_key,format,path,size,mtime_ns,birthtime_ns,processing_signature,status,
+            text_zlib,text_chars,text_xxh3_128,part_count,last_seen_run_id,updated_ns)
+            VALUES('legacy','xlsx','C:/Corpus/legacy.xlsx',10,20,30,'legacy-v1',
+            'complete',?,?,?,1,1,1)""",
+            (
+                zlib.compress(body.encode("utf-8")),
+                len(body),
+                "legacy-fingerprint",
+            ),
+        )
+        connection.execute(
+            """INSERT INTO document_fts(file_key,format,path,title,author,body)
+            VALUES('legacy','xlsx','C:/Corpus/legacy.xlsx','','',?)""",
+            (body,),
+        )
+        connection.commit()
+
+    initialize_office_state(state_path)
+
+    with office_database(state_path, readonly=True) as connection:
+        assert connection.execute(
+            "SELECT value FROM metadata WHERE key='schema_version'"
+        ).fetchone()[0] == str(OFFICE_SCHEMA_VERSION)
+        assert (
+            zlib.decompress(
+                connection.execute("SELECT text_zlib FROM documents").fetchone()[0]
+            ).decode("utf-8")
+            == body
+        )
+        assert connection.execute("SELECT COUNT(*) FROM document_fts").fetchone()[0] == 1
+        assert connection.execute("SELECT COUNT(*) FROM xlsx_cells").fetchone()[0] == 0
+
+
 def test_corrupt_office_container_is_cached_as_deletion_candidate(
     tmp_path: Path,
 ) -> None:
@@ -320,7 +541,7 @@ def test_corrupt_deflate_stream_isolated_to_one_office_candidate(
 
     monkeypatch.setattr(
         office_route_module,
-        "_extract_part_text",
+        "_extract_xlsx_shared_strings",
         raise_zlib_error,
     )
 
