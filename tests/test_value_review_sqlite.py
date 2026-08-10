@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import os
 import sqlite3
 from pathlib import Path
 
@@ -350,11 +349,11 @@ def test_main_or_sidecar_change_during_immutable_read_fails_closed(
         calls += 1
         if calls == 3:
             target = paths.inventory if changed_target == "main" else shm
-            target_stat = target.stat()
-            os.utime(
-                target,
-                ns=(target_stat.st_atime_ns, target_stat.st_mtime_ns + 1),
-            )
+            # A one-nanosecond ``utime`` delta can round back to the same NTFS
+            # timestamp on Windows.  Changing size gives the identity fence a
+            # deterministic, cross-platform mutation to reject.
+            with target.open("ab") as stream:
+                stream.write(b"\0")
         return original_snapshot(path)
 
     monkeypatch.setattr(
