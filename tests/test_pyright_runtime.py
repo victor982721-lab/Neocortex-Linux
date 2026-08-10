@@ -269,6 +269,9 @@ def test_linux_release_reuses_lock_installer_and_preserves_node_archive_hash(
     workspace = tmp_path / "workspace"
     release_root = tmp_path / "release"
     release_root.mkdir()
+    semgrep_marker = release_root / "tools" / "semgrep" / "owned-marker"
+    semgrep_marker.parent.mkdir(parents=True)
+    semgrep_marker.write_text("preserve\n", encoding="utf-8")
     extracted_root = workspace / f"node-v{pyright_runtime.NODE_VERSION}-linux-x64"
     (extracted_root / "bin").mkdir(parents=True)
     (extracted_root / "bin" / "node").write_bytes(b"node")
@@ -292,12 +295,43 @@ def test_linux_release_reuses_lock_installer_and_preserves_node_archive_hash(
 
     node_bin = release_root / "tools" / "node" / "bin"
     assert observed == archive_sha
+    assert semgrep_marker.read_text(encoding="utf-8") == "preserve\n"
     assert installed["target"] == release_root / "tools" / "pyright"
     assert installed["node"] == node_bin / "node"
     assert installed["npm"] == node_bin / "npm"
     environment = installed["environment"]
     assert isinstance(environment, Mapping)
     assert environment["PATH"].split(os.pathsep)[0] == os.fspath(node_bin)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Linux release directory contract")
+@pytest.mark.parametrize(
+    ("tools_kind", "message"),
+    (("file", "unavailable"), ("symlink", "real directory")),
+)
+def test_linux_release_rejects_an_unsafe_tools_parent_before_extraction(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tools_kind: str,
+    message: str,
+) -> None:
+    release_root = tmp_path / "release"
+    release_root.mkdir()
+    tools_root = release_root / "tools"
+    if tools_kind == "file":
+        tools_root.write_text("unsafe\n", encoding="utf-8")
+    else:
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        tools_root.symlink_to(outside, target_is_directory=True)
+    monkeypatch.setattr(
+        release_linux,
+        "_node_archive",
+        lambda _workspace: (tmp_path / "unused.tar.xz", "a" * 64),
+    )
+
+    with pytest.raises(release_linux.LinuxReleaseError, match=message):
+        release_linux._install_node_pyright(release_root, tmp_path / "workspace")
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Linux release manifest contract")

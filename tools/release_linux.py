@@ -428,7 +428,13 @@ def _install_node_pyright(
 ) -> str:
     archive, archive_sha = _node_archive(workspace)
     tools_root = release_root / "tools"
-    tools_root.mkdir()
+    try:
+        tools_root.mkdir(exist_ok=True)
+        tools_metadata = tools_root.lstat()
+    except OSError as exc:
+        raise LinuxReleaseError("release tools directory is unavailable") from exc
+    if not stat.S_ISDIR(tools_metadata.st_mode):
+        raise LinuxReleaseError("release tools directory must be a real directory")
     with tarfile.open(archive, mode="r:xz") as source:
         source.extractall(workspace / "node-extract", filter="data")
     extracted = workspace / "node-extract" / f"node-v{NODE_VERSION}-linux-x64"
