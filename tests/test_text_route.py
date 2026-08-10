@@ -3,10 +3,12 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
 
+import _04_Nucleo_Operativo.text_route as text_route_module
 from _02_Deduplicacion import FileSnapshot, snapshot_path
 from _04_Nucleo_Operativo.cancellation import CancellationToken
 from _04_Nucleo_Operativo.document_catalog import (
@@ -222,6 +224,37 @@ def test_text_route_records_malformed_input_and_prunes_stale_rows(tmp_path: Path
     pruned = _route(state, {}, run_id=2).run()
     assert pruned.cache_documents_pruned == 2
     assert read_text_status(state).documents == 0
+
+
+def test_text_route_prunes_stale_fts_rows_with_two_set_based_deletes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = tmp_path / "text.sqlite3"
+    candidates = _fixture_corpus(tmp_path / "corpus")
+    _route(state, candidates).run()
+    statements: list[str] = []
+    original_database = text_route_module.text_database
+
+    @contextmanager
+    def traced_database(*args, **kwargs):
+        with original_database(*args, **kwargs) as connection:
+            connection.set_trace_callback(statements.append)
+            yield connection
+
+    monkeypatch.setattr(text_route_module, "text_database", traced_database)
+
+    summary = _route(state, {}, run_id=2).run()
+
+    deletes = [
+        statement
+        for statement in statements
+        if statement.lstrip().upper().startswith("DELETE FROM DOCUMENT")
+    ]
+    assert summary.cache_documents_pruned == 25
+    assert len(deletes) == 2
+    assert read_text_status(state).documents == 0
+    assert search_text_state(state, "relevador", 5) == ()
 
 
 def test_text_route_enforces_size_and_count_limits(tmp_path: Path) -> None:

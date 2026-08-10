@@ -498,6 +498,25 @@ class TextRoute:
         connection.execute("DELETE FROM document_fts WHERE file_key=?", (key,))
         connection.execute("DELETE FROM documents WHERE file_key=?", (key,))
 
+    def _prune_stale_documents(self, connection: sqlite3.Connection) -> int:
+        row = connection.execute(
+            "SELECT COUNT(*) FROM documents WHERE last_seen_run_id<>?",
+            (self.run_id,),
+        ).fetchone()
+        stale = int(row[0])
+        if stale == 0:
+            return 0
+        connection.execute(
+            "DELETE FROM document_fts WHERE file_key IN "
+            "(SELECT file_key FROM documents WHERE last_seen_run_id<>?)",
+            (self.run_id,),
+        )
+        connection.execute(
+            "DELETE FROM documents WHERE last_seen_run_id<>?",
+            (self.run_id,),
+        )
+        return stale
+
     def _store_success(
         self,
         connection: sqlite3.Connection,
@@ -684,16 +703,7 @@ class TextRoute:
                 self._emit(completed, selected, counters)
             pruned = 0
             if self.config.max_documents is None and not self.config.selection.active:
-                stale = tuple(
-                    str(row[0])
-                    for row in connection.execute(
-                        "SELECT file_key FROM documents WHERE last_seen_run_id<>?",
-                        (self.run_id,),
-                    )
-                )
-                for key in stale:
-                    self._delete_document(connection, key)
-                pruned = len(stale)
+                pruned = self._prune_stale_documents(connection)
                 connection.commit()
         self._emit(selected, selected, counters, finished=True)
         peak = int(getattr(self.memory_gate, "peak_reserved_bytes", 0))
