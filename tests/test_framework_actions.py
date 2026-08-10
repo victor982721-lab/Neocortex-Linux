@@ -429,8 +429,22 @@ class ActionTests(unittest.TestCase):
                 scan = index.scan(corpus)
                 plan = DedupPlanner(index).plan(scan.scan_id, exact_compare=False, preview_limit=0)
                 run_id = begin_signed_normal_run(state, corpus)
+                load_guard = state.corpus_mutation_guard
+                guard_rebuilds = 0
 
-                with patch("_04_Nucleo_Operativo.actions.send2trash") as recycle:
+                def counted_guard(current_run_id: int):
+                    nonlocal guard_rebuilds
+                    guard_rebuilds += 1
+                    return load_guard(current_run_id)
+
+                with (
+                    patch("_04_Nucleo_Operativo.actions.send2trash") as recycle,
+                    patch.object(
+                        state,
+                        "corpus_mutation_guard",
+                        side_effect=counted_guard,
+                    ),
+                ):
                     summary = FrameworkActions(
                         index,
                         state,
@@ -443,6 +457,7 @@ class ActionTests(unittest.TestCase):
             self.assertEqual(summary.duplicate_skips, 257)
             self.assertEqual(summary.errors, 0)
             recycle.assert_not_called()
+            self.assertLessEqual(guard_rebuilds, 6)
             self.assertEqual(len(list(corpus.iterdir())), 258)
 
     @unittest.skipUnless(os.name == "nt", "identity-bound rename is Windows-only")

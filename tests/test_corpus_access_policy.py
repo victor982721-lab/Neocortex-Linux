@@ -240,6 +240,51 @@ def test_normal_guard_enforces_protected_content_paths_and_read_only_run(
             ordinary_guard.require_paths_allowed(blocked)
 
 
+def test_normal_guard_classifies_a_path_batch_with_one_policy_revalidation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ordinary = tmp_path / "ordinary"
+    protected = tmp_path / "protected"
+    ordinary.mkdir()
+    protected.mkdir()
+    policy = ProtectedContentPolicy.capture(
+        (
+            ProtectedPathSpec(
+                "read-only",
+                "tree",
+                "analyze_read_only",
+                protected,
+            ),
+        )
+    )
+    guard = CorpusMutationGuard(
+        CorpusAccessPolicy.capture("normal", ordinary),
+        disjoint_internal_paths_policy(tmp_path),
+        policy,
+    )
+    identity_revalidations = 0
+    original_verify = ProtectedContentPolicy.verify_identities
+
+    def counted_verify(current: ProtectedContentPolicy) -> None:
+        nonlocal identity_revalidations
+        identity_revalidations += 1
+        original_verify(current)
+
+    monkeypatch.setattr(ProtectedContentPolicy, "verify_identities", counted_verify)
+
+    reasons = guard.mutation_path_protection_reasons(
+        ordinary / "first.bin",
+        protected / "blocked.bin",
+        ordinary / "second.bin",
+    )
+
+    assert reasons[0] is None
+    assert reasons[1] is not None and "read-only" in reasons[1]
+    assert reasons[2] is None
+    assert identity_revalidations == 2
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows extended-path aliases in fixture")
 def test_self_analysis_owner_rejects_intersecting_state_trees(
     tmp_path: Path,

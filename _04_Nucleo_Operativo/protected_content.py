@@ -368,9 +368,22 @@ class ProtectedContentPolicy:
     ) -> None:
         """Reject every lexical or physical intersection with protected content."""
 
+        reasons = self.mutation_path_protection_reasons(*paths)
+        for reason in reasons:
+            if reason is not None:
+                raise ProtectedContentError(reason)
+
+    def mutation_path_protection_reasons(
+        self,
+        *paths: str | os.PathLike[str] | None,
+    ) -> tuple[str | None, ...]:
+        """Classify a bounded path batch with one policy identity revalidation."""
+
         self.verify_identities()
+        reasons: list[str | None] = []
         for raw_path in paths:
             if raw_path is None:
+                reasons.append(None)
                 continue
             try:
                 candidate = _absolute_normalized(raw_path)
@@ -392,11 +405,13 @@ class ProtectedContentPolicy:
                     "protected mutation boundary cannot be verified: "
                     f"{os.fspath(raw_path)}: {type(exc).__name__}"
                 ) from exc
-            if blocked is not None:
-                raise ProtectedContentError(
-                    f"mutation path intersects protected content {blocked.role}: {candidate}"
-                )
+            reasons.append(
+                None
+                if blocked is None
+                else f"mutation path intersects protected content {blocked.role}: {candidate}"
+            )
         self.verify_identities()
+        return tuple(reasons)
 
     def run_is_read_only(self, access: CorpusAccessPolicy) -> bool:
         """Return whether the selected root or access mode forbids the whole run."""

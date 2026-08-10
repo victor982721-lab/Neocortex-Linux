@@ -342,12 +342,34 @@ class CorpusMutationGuard:
     ) -> None:
         """Reject internal, protected-content and analyze-only intersections."""
 
+        protected_reasons = self.mutation_path_protection_reasons(*paths)
+        for reason in protected_reasons:
+            if reason is not None:
+                from .protected_content import ProtectedContentError
+
+                raise ProtectedContentError(reason)
+
+    def mutation_path_protection_reasons(
+        self,
+        *paths: str | os.PathLike[str] | None,
+    ) -> tuple[str | None, ...]:
+        """Classify one path batch while revalidating each policy only once."""
+
         self.internal_paths_policy.require_mutation_paths_allowed(*paths)
         if self.protected_content_policy is not None:
-            self.protected_content_policy.require_mutation_paths_allowed(*paths)
+            protected_reasons = self.protected_content_policy.mutation_path_protection_reasons(
+                *paths
+            )
+        else:
+            protected_reasons = (None,) * len(paths)
 
         if self.policy.mode != "analyze_only":
-            return
+            return protected_reasons
+        for reason in protected_reasons:
+            if reason is not None:
+                from .protected_content import ProtectedContentError
+
+                raise ProtectedContentError(reason)
         root = self.policy.root
         self.policy.verify_root_identity()
         for raw_path in paths:
@@ -366,6 +388,7 @@ class CorpusMutationGuard:
                     f"mutation path intersects protected root: {candidate}"
                 )
         self.policy.verify_root_identity()
+        return protected_reasons
 
 
 __all__ = [

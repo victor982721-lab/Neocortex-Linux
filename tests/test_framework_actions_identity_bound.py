@@ -325,10 +325,17 @@ def test_mixed_trash_batch_filters_protected_source_before_action_rows(
         scan = index.scan(corpus, excluded_paths=())
         run_id = _begin_normal_run(state, corpus)
         guard = _protected_mutation_guard(corpus, protected_root)
+        guard_rebuilds = 0
+
+        def load_guard(_run_id: int) -> CorpusMutationGuard:
+            nonlocal guard_rebuilds
+            guard_rebuilds += 1
+            return guard
+
         monkeypatch.setattr(
             state,
             "corpus_mutation_guard",
-            lambda _run_id: guard,
+            load_guard,
         )
         actions = FrameworkActions(
             index,
@@ -353,6 +360,7 @@ def test_mixed_trash_batch_filters_protected_source_before_action_rows(
         ).fetchall()
 
     assert result == (0, 0, 2)
+    assert guard_rebuilds == 1
     assert [tuple(row) for row in rows] == [(str(safe_source), "skipped")]
     assert protected_source.read_bytes() == b"protected"
     assert safe_source.read_bytes() == b"safe"

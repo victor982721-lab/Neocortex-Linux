@@ -341,7 +341,8 @@ class FrameworkActions:
     ) -> tuple[int, int, int]:
         """Apply one bounded batch and isolate partial Recycle Bin failures."""
 
-        self._validate_apply_root()
+        mutation_guard = self._effective_mutation_guard()
+        validated_root = self._validate_apply_root(mutation_guard=mutation_guard)
         expected, references = self._normalize_trash_snapshots(
             batch,
             expected_snapshots,
@@ -352,6 +353,7 @@ class FrameworkActions:
             batch,
             expected,
             references,
+            mutation_guard=mutation_guard,
         )
         if not self._apply:
             self._state.finish_file_actions(
@@ -362,24 +364,21 @@ class FrameworkActions:
         active, preflight_failures = self._preflight_trash_candidates(
             action_type,
             eligible,
+            validated_root=validated_root,
         )
-        ready, revalidation_failures = self._revalidate_trash_candidates(
-            action_type,
-            active,
-        )
-        preflight_failures += revalidation_failures
-        if not ready:
+        if not active:
             return 0, preflight_failures, protected
         # Send2Trash accepts paths only. Revalidation cannot prevent another
         # process from replacing the directory entry before its syscall, so
-        # destructive mode fails closed until a handle-bound Recycle Bin
-        # primitive is available and tested.
+        # there is deliberately no second mutation-frontier pass: no syscall
+        # follows it.  Destructive mode fails closed until a handle-bound
+        # Recycle Bin primitive is available and tested.
         self._state.finish_file_actions(
-            (candidate[0] for candidate in ready),
+            (candidate[0] for candidate in active),
             "skipped",
             TRASH_IDENTITY_ABSTENTION,
         )
-        return 0, preflight_failures, protected + len(ready)
+        return 0, preflight_failures, protected + len(active)
 
     def _best_effort_require_recovery(
         self,
@@ -418,6 +417,8 @@ class FrameworkActions:
         batch: tuple[tuple[str, str], ...],
         expected: tuple[FileSnapshot | None, ...],
         references: tuple[FileSnapshot | None, ...],
+        *,
+        mutation_guard: CorpusMutationGuard | None = None,
     ) -> tuple[
         list[tuple[int, str, FileSnapshot | None, FileSnapshot | None]],
         int,
@@ -431,14 +432,16 @@ class FrameworkActions:
             ]
         ] = []
         filtered_protected = 0
-        mutation_guard = self._effective_mutation_guard()
+        mutation_guard = mutation_guard or self._effective_mutation_guard()
+        guard_paths = tuple(
+            path for path, _evidence in batch if _protected_path_reason(path) is None
+        )
+        guard_reasons = iter(mutation_guard.mutation_path_protection_reasons(*guard_paths))
         for item, planned, reference in zip(batch, expected, references, strict=True):
             path, _evidence = item
             reason = _protected_path_reason(path)
             if reason is None:
-                try:
-                    mutation_guard.require_paths_allowed(path)
-                except ProtectedContentError:
+                if next(guard_reasons) is not None:
                     # A declared Protected Content root is outside the action
                     # domain altogether; it must not acquire a file_actions row.
                     filtered_protected += 1
@@ -481,6 +484,8 @@ class FrameworkActions:
         self,
         action_type: str,
         eligible: list[tuple[int, str, FileSnapshot | None, FileSnapshot | None]],
+        *,
+        validated_root: Path | None = None,
     ) -> tuple[
         list[
             tuple[
@@ -510,6 +515,7 @@ class FrameworkActions:
                     path,
                     planned,
                     reference,
+                    validated_root=validated_root,
                 )
             except (InternalPathProtectionError, ProtectedAnalysisRootError):
                 raise
@@ -583,10 +589,15 @@ class FrameworkActions:
         reference: FileSnapshot | None,
         *,
         original_stat: os.stat_result | None = None,
+        validated_root: Path | None = None,
     ) -> os.stat_result:
         """Revalidate one source and its keeper without following reparses."""
 
-        current_stat = self._validate_action_path(path, role="trash source")
+        current_stat = (
+            self._validate_action_path(path, role="trash source")
+            if validated_root is None
+            else _validate_mutation_path(validated_root, path, role="trash source")
+        )
         if current_stat is None:
             raise RuntimeError("trash source disappeared before the operation")
         if planned is not None and not stat_matches_snapshot(planned, current_stat):
@@ -600,9 +611,17 @@ class FrameworkActions:
                 if next(entries, None) is not None:
                     raise RuntimeError("directory is no longer physically empty")
         if reference is not None:
-            reference_stat = self._validate_observation_path(
-                reference.path,
-                role="trash keeper/reference",
+            reference_stat = (
+                self._validate_observation_path(
+                    reference.path,
+                    role="trash keeper/reference",
+                )
+                if validated_root is None
+                else _validate_mutation_path(
+                    validated_root,
+                    reference.path,
+                    role="trash keeper/reference",
+                )
             )
             if reference_stat is None or not stat_matches_snapshot(reference, reference_stat):
                 raise RuntimeError("keeper changed after exact duplicate comparison")
@@ -1394,12 +1413,16 @@ class FrameworkActions:
             return str(exc)
         return None
 
-    def _validate_apply_root(self) -> Path | None:
+    def _validate_apply_root(
+        self,
+        *,
+        mutation_guard: CorpusMutationGuard | None = None,
+    ) -> Path | None:
         """Revalidate the mutation boundary immediately before an action."""
 
         if not self._apply:
             return None
-        mutation_guard = self._effective_mutation_guard()
+        mutation_guard = mutation_guard or self._effective_mutation_guard()
         mutation_guard.reject_run_mutation()
         recorded_root = self._index.scan_root(self._scan_id)
         recorded_volume, recorded_file, recorded_birthtime = self._index.scan_root_identity(
