@@ -142,8 +142,8 @@ documento exige igualdad dinámica entre Git, release, launcher y GitHub.
 
 ## Barreras de release ejecutadas
 
-- Suite integral local: **4,033 passed, 144 skipped, 98 subtests passed** en
-  268.25 s. Quedó una advertencia upstream de Pydantic Settings al construir
+- Suite integral local: **4,034 passed, 144 skipped, 98 subtests passed** en
+  267.40 s. Quedó una advertencia upstream de Pydantic Settings al construir
   FastMCP; el protocolo MCP y su cierre real sí aprobaron.
 - Ruff y `ruff format --check` aprobaron los 112 archivos Python modificados;
   mypy focal aprobó las superficies de agente, imagen y Knowledge; YAML de CI,
