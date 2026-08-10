@@ -7,14 +7,15 @@ import os
 import shutil
 from datetime import datetime
 from pathlib import Path
+from typing import Any, cast
 
 from neocortex.platform_policy import default_corpus_root
-from typing import Any
 
 from PySide6.QtCore import QSettings, Qt, QTimer
-from PySide6.QtGui import QCloseEvent, QColor
+from PySide6.QtGui import QCloseEvent, QColor, QTextCursor
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QButtonGroup,
     QComboBox,
     QFileDialog,
@@ -31,6 +32,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QRadioButton,
     QScrollArea,
+    QSpinBox,
     QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
@@ -42,6 +44,15 @@ from _04_Nucleo_Operativo.app_paths import default_ui_settings_path
 
 from .controller import WorkerController
 from .elevation import is_elevated, start_elevated_ui
+from .read_client import (
+    MAX_QUERY_CHARACTERS,
+    ReadClient,
+    ReadClientError,
+    ReadOperation,
+    ReadRequest,
+    SharedReadClient,
+    present_read_payload,
+)
 from .run_request import ROUTE_ORDER, RunRequest
 from .status_repository import RunStatus, StatusRepository, StatusRepositoryError
 from .theme import COLORS
@@ -67,6 +78,7 @@ class MainWindow(QMainWindow):
         ("Ejecución", "Configura y supervisa una ejecución"),
         ("Historial", "Últimas ejecuciones registradas"),
         ("Sistema", "Dependencias y preparación del entorno"),
+        ("Consulta", "Busca y revisa evidencia publicada sin modificar archivos"),
     )
 
     def __init__(
@@ -76,6 +88,7 @@ class MainWindow(QMainWindow):
         state_directory: Path,
         settings_path: Path | None = None,
         controller: WorkerController | None = None,
+        read_client: ReadClient | None = None,
         parent=None,
     ):
         super().__init__(parent)
@@ -93,6 +106,7 @@ class MainWindow(QMainWindow):
         self._portable_linux = os.name != "nt"
         self._execution_elevated = is_elevated()
         self._controller = controller or WorkerController(self)
+        self._read_client = read_client or SharedReadClient()
         self._nav_buttons: list[NavButton] = []
         self._progress_items: dict[tuple[str, str], ProgressItem] = {}
         self._last_status_error: str | None = None
@@ -129,6 +143,7 @@ class MainWindow(QMainWindow):
         self.pages.addWidget(self._build_execution_page())
         self.pages.addWidget(self._build_history_page())
         self.pages.addWidget(self._build_system_page())
+        self.pages.addWidget(self._build_consultation_page())
         content_layout.addWidget(self.pages, 1)
         layout.addWidget(content, 1)
         self._select_page(0)
@@ -158,7 +173,13 @@ class MainWindow(QMainWindow):
         layout.addLayout(brand)
         layout.addSpacing(30)
 
-        labels = ("⌂  Inicio", "▶  Ejecución", "≡  Historial", "◇  Sistema")
+        labels = (
+            "⌂  Inicio",
+            "▶  Ejecución",
+            "≡  Historial",
+            "◇  Sistema",
+            "⌕  Consulta",
+        )
         group = QButtonGroup(self)
         group.setExclusive(True)
         for index, label in enumerate(labels):
@@ -222,9 +243,11 @@ class MainWindow(QMainWindow):
 
     def _page_canvas(self) -> tuple[QScrollArea, QWidget, QVBoxLayout]:
         scroll = QScrollArea()
+        scroll.setObjectName("PageScroll")
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         canvas = QWidget()
+        canvas.setObjectName("PageCanvas")
         layout = QVBoxLayout(canvas)
         layout.setContentsMargins(28, 25, 30, 30)
         layout.setSpacing(18)
@@ -542,6 +565,120 @@ class MainWindow(QMainWindow):
         layout.addStretch(1)
         return scroll
 
+    def _build_consultation_page(self) -> QWidget:
+        scroll, _canvas, layout = self._page_canvas()
+
+        request_panel = QFrame()
+        request_panel.setObjectName("Panel")
+        request_layout = QVBoxLayout(request_panel)
+        request_layout.setContentsMargins(22, 20, 22, 22)
+        request_layout.setSpacing(14)
+
+        heading_row = QHBoxLayout()
+        heading_row.addWidget(
+            self._section_heading(
+                "Consulta tu información",
+                "Estado, búsqueda, contexto citado y revisión consultiva",
+            ),
+            1,
+        )
+        self.consult_status = StatusPill("idle")
+        self.consult_status.setText("Solo lectura")
+        heading_row.addWidget(self.consult_status)
+        request_layout.addLayout(heading_row)
+
+        controls = QGridLayout()
+        controls.setHorizontalSpacing(12)
+        controls.setVerticalSpacing(6)
+
+        controls.addWidget(self._field_label("Acción"), 0, 0)
+        controls.addWidget(self._field_label("Alcance publicado"), 0, 1)
+        controls.addWidget(self._field_label("Resultados por alcance"), 0, 2)
+
+        self.consult_operation = QComboBox()
+        self.consult_operation.setObjectName("ConsultOperation")
+        self.consult_operation.addItem("Buscar evidencia", "search")
+        self.consult_operation.addItem("Preparar respuesta citada", "ask")
+        self.consult_operation.addItem("Estado publicado", "status")
+        self.consult_operation.addItem("Revisar valor", "review")
+        controls.addWidget(self.consult_operation, 1, 0)
+
+        self.consult_scope = QComboBox()
+        self.consult_scope.setObjectName("ConsultScope")
+        self.consult_scope.addItem("Personal + Framework (separados)", "all")
+        self.consult_scope.addItem("Personal", "personal")
+        self.consult_scope.addItem("Framework", "framework")
+        controls.addWidget(self.consult_scope, 1, 1)
+
+        self.consult_limit = QSpinBox()
+        self.consult_limit.setObjectName("ConsultLimit")
+        self.consult_limit.setRange(1, 100)
+        self.consult_limit.setValue(10)
+        self.consult_limit.setSuffix(" máx.")
+        controls.addWidget(self.consult_limit, 1, 2)
+        controls.setColumnStretch(0, 3)
+        controls.setColumnStretch(1, 3)
+        controls.setColumnStretch(2, 1)
+        request_layout.addLayout(controls)
+
+        self.consult_operation_note = QLabel()
+        self.consult_operation_note.setProperty("muted", True)
+        self.consult_operation_note.setWordWrap(True)
+        request_layout.addWidget(self.consult_operation_note)
+
+        query_row = QHBoxLayout()
+        self.consult_query = QLineEdit()
+        self.consult_query.setObjectName("ConsultQuery")
+        self.consult_query.setMaxLength(MAX_QUERY_CHARACTERS)
+        self.consult_query.setClearButtonEnabled(True)
+        self.consult_query.returnPressed.connect(self._run_read_request)
+        self.consult_button = QPushButton("Buscar")
+        self.consult_button.setObjectName("PrimaryButton")
+        self.consult_button.clicked.connect(self._run_read_request)
+        query_row.addWidget(self.consult_query, 1)
+        query_row.addWidget(self.consult_button)
+        request_layout.addLayout(query_row)
+
+        safety = QLabel(
+            "Esta superficie usa exclusivamente snapshots publicados y scopes fijos. "
+            "No acepta rutas de estado, no procesa el corpus y no autoriza mutaciones."
+        )
+        safety.setObjectName("ReadOnlyNotice")
+        safety.setProperty("muted", True)
+        safety.setWordWrap(True)
+        request_layout.addWidget(safety)
+        layout.addWidget(request_panel)
+
+        result_panel = QFrame()
+        result_panel.setObjectName("Panel")
+        result_layout = QVBoxLayout(result_panel)
+        result_layout.setContentsMargins(22, 20, 22, 22)
+        result_layout.setSpacing(10)
+        self.consult_result_title = QLabel("Resultado")
+        self.consult_result_title.setObjectName("SectionTitle")
+        self.consult_result_summary = QLabel(
+            "Escribe una consulta o elige una acción que no requiere texto."
+        )
+        self.consult_result_summary.setObjectName("SectionCaption")
+        self.consult_result_summary.setWordWrap(True)
+        self.consult_result = QPlainTextEdit()
+        self.consult_result.setObjectName("ConsultResult")
+        self.consult_result.setReadOnly(True)
+        self.consult_result.setMaximumBlockCount(3_000)
+        self.consult_result.setMinimumHeight(310)
+        self.consult_result.setPlainText(
+            "NeoCortex mostrará aquí evidencia, citas y límites de cobertura en lenguaje legible."
+        )
+        result_layout.addWidget(self.consult_result_title)
+        result_layout.addWidget(self.consult_result_summary)
+        result_layout.addWidget(self.consult_result, 1)
+        layout.addWidget(result_panel)
+        layout.addStretch(1)
+
+        self.consult_operation.currentIndexChanged.connect(self._consult_operation_changed)
+        self._consult_operation_changed()
+        return scroll
+
     def _section_heading(self, title: str, caption: str) -> QWidget:
         widget = QWidget()
         layout = QVBoxLayout(widget)
@@ -585,6 +722,104 @@ class MainWindow(QMainWindow):
         if limit_height is not None:
             table.setMaximumHeight(limit_height)
         return table
+
+    def _consult_operation_changed(self, _index: int = -1) -> None:
+        operation = str(self.consult_operation.currentData())
+        needs_query = operation in {"search", "ask"}
+        self.consult_query.setEnabled(needs_query)
+        self.consult_limit.setEnabled(operation != "status")
+
+        defaults = {"status": 1, "search": 10, "ask": 8, "review": 50}
+        self.consult_limit.setValue(defaults.get(operation, 10))
+        placeholders = {
+            "search": "Ejemplo: pruebas eléctricas del transformador U5",
+            "ask": "Ejemplo: ¿qué evidencia existe sobre el tratamiento de aceite?",
+            "status": "El estado publicado no requiere una consulta",
+            "review": "La revisión de valor no requiere una consulta",
+        }
+        notes = {
+            "search": (
+                "Devuelve evidencia concreta con ruta y ubicación. Los resultados "
+                "de Personal y Framework conservan rankings independientes."
+            ),
+            "ask": (
+                "Prepara citas locales para sustentar una respuesta; si falta evidencia, "
+                "lo indica en lugar de completarla por inferencia."
+            ),
+            "status": (
+                "Resume disponibilidad, compatibilidad y snapshot de las fuentes "
+                "publicadas sin abrir productores."
+            ),
+            "review": (
+                "Muestra candidatos conservadores y su incertidumbre. Es una vista "
+                "consultiva: no mueve, archiva ni elimina archivos."
+            ),
+        }
+        button_labels = {
+            "search": "Buscar",
+            "ask": "Preparar evidencia",
+            "status": "Consultar estado",
+            "review": "Revisar sin cambios",
+        }
+        self.consult_query.setPlaceholderText(placeholders.get(operation, ""))
+        self.consult_operation_note.setText(notes.get(operation, ""))
+        self.consult_button.setText(button_labels.get(operation, "Consultar"))
+
+    def _run_read_request(self) -> None:
+        operation = cast(ReadOperation, str(self.consult_operation.currentData()))
+        request = ReadRequest(
+            operation=operation,
+            scope=str(self.consult_scope.currentData()),
+            query=self.consult_query.text(),
+            limit=self.consult_limit.value(),
+        )
+        try:
+            request = request.validated()
+        except ValueError as exc:
+            self.consult_status.set_state("warning", "Falta información")
+            self.consult_result_title.setText("Consulta incompleta")
+            self.consult_result_summary.setText(str(exc))
+            self.consult_result.setPlainText(
+                "No se consultó ningún estado ni se modificó ningún archivo."
+            )
+            return
+
+        self.consult_status.set_state("running", "Consultando…")
+        self.consult_button.setEnabled(False)
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            payload = self._read_client.execute(request)
+            presentation = present_read_payload(request, payload)
+        except (
+            AttributeError,
+            ImportError,
+            OSError,
+            ReadClientError,
+            RuntimeError,
+            TypeError,
+            ValueError,
+        ) as exc:
+            detail = " ".join(str(exc).split())[:800] or type(exc).__name__
+            self.consult_status.set_state("failed", "No disponible")
+            self.consult_result_title.setText("No fue posible consultar")
+            self.consult_result_summary.setText(detail)
+            self.consult_result.setPlainText(
+                "La consulta se abstuvo de continuar. No se creó, migró ni modificó estado."
+            )
+        else:
+            status_text = {
+                "completed": "Consulta lista",
+                "warning": "Cobertura parcial",
+                "failed": "Requiere atención",
+            }[presentation.state]
+            self.consult_status.set_state(presentation.state, status_text)
+            self.consult_result_title.setText(presentation.title)
+            self.consult_result_summary.setText(presentation.summary)
+            self.consult_result.setPlainText(presentation.body)
+            self.consult_result.moveCursor(QTextCursor.MoveOperation.Start)
+        finally:
+            QApplication.restoreOverrideCursor()
+            self.consult_button.setEnabled(True)
 
     # endregion [02]
 

@@ -17,10 +17,10 @@ from typing import ClassVar
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication  # noqa: E402
+from PySide6.QtWidgets import QApplication
 
-from _05_Interfaz.main_window import MainWindow  # noqa: E402
-from _05_Interfaz.run_request import ROUTE_ORDER  # noqa: E402
+from _05_Interfaz.main_window import MainWindow
+from _05_Interfaz.run_request import ROUTE_ORDER
 
 
 class UiSmokeTests(unittest.TestCase):
@@ -44,7 +44,7 @@ class UiSmokeTests(unittest.TestCase):
             window.show()
             self.application.processEvents()
 
-            self.assertEqual(window.pages.count(), 4)
+            self.assertEqual(window.pages.count(), 5)
             self.assertEqual(tuple(window.route_toggles), ROUTE_ORDER)
             self.assertTrue(window.analysis_radio.isChecked())
             self.assertFalse(window.controller.is_running)
@@ -130,12 +130,8 @@ class UiSmokeTests(unittest.TestCase):
             self.application.processEvents()
 
             self.assertEqual(window.header_status.property("state"), "failed")
-            self.assertEqual(
-                window.overview_run_card.value_label.text(), "No disponible"
-            )
-            self.assertIn(
-                "Estado durable no disponible", window.session_log.toPlainText()
-            )
+            self.assertEqual(window.overview_run_card.value_label.text(), "No disponible")
+            self.assertIn("Estado durable no disponible", window.session_log.toPlainText())
             window.close()
             self.application.processEvents()
 

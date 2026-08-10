@@ -27,6 +27,7 @@ STYLESHEET = """
     color: #F4F7FA;
 }
 QMainWindow, QWidget#AppRoot { background: #090D12; }
+QScrollArea#PageScroll, QWidget#PageCanvas { background: #090D12; }
 QFrame#Sidebar {
     background: #0C1219;
     border-right: 1px solid #1E2936;
@@ -107,7 +108,7 @@ QPushButton#PrimaryButton {
 QPushButton#PrimaryButton:hover { background: #96E65B; }
 QPushButton#DangerButton { background: #3A1D24; color: #FF8992; border-color: #64303A; }
 QPushButton#DangerButton:hover { background: #4A222B; }
-QLineEdit, QComboBox {
+QLineEdit, QComboBox, QSpinBox {
     background: #0C1219;
     border: 1px solid #2A3948;
     border-radius: 8px;
@@ -115,8 +116,13 @@ QLineEdit, QComboBox {
     padding: 0 11px;
     selection-background-color: #496F2E;
 }
-QLineEdit:focus, QComboBox:focus { border-color: #83D944; }
+QLineEdit:focus, QComboBox:focus, QSpinBox:focus { border-color: #83D944; }
 QComboBox::drop-down { border: 0; width: 28px; }
+QSpinBox::up-button, QSpinBox::down-button {
+    background: #18222D;
+    border-left: 1px solid #2A3948;
+    width: 18px;
+}
 QComboBox QAbstractItemView {
     background: #111821;
     border: 1px solid #2A3948;
