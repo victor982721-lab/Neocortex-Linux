@@ -44,6 +44,9 @@ def test_contract_field_topology_and_class_pickle_bytes_are_stable() -> None:
             "reason",
             "owner",
             "elapsed_ns",
+            "result_window_full",
+            "next_cursor",
+            "cutoff_score",
         ),
         KnowledgeSearchResult: (
             "plan",
@@ -59,6 +62,8 @@ def test_contract_field_topology_and_class_pickle_bytes_are_stable() -> None:
             "warnings",
             "telemetry",
             "blocking_owners",
+            "result_window_full",
+            "window_omitted_candidates",
         ),
     }
     pickle_sha256 = {

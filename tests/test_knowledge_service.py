@@ -426,7 +426,7 @@ def test_default_context_builder_accepts_service_budget_vocabulary(
     assert bundle.budget.character_limit == 2_048
     assert len(bundle.rendered_context) <= 2_048
 
-    omitted = _service(
+    evidence_first = _service(
         tmp_path,
         _SnapshotSequence([stable, stable]),
         execute,
@@ -435,15 +435,16 @@ def test_default_context_builder_accepts_service_budget_vocabulary(
         max_characters=1_800,
     )
 
-    assert omitted.selected_hits == ()
-    assert omitted.citation_ids == ()
-    assert omitted.completeness is KnowledgeCompleteness.PARTIAL
-    assert omitted.budget.omitted_candidates == 1
-    assert omitted.missing_information == (
-        "No exact citation target fit within the context character budget.",
-        "Context omitted 1 retrieved hit(s) because of its bounds.",
+    assert evidence_first.selected_hits
+    assert evidence_first.citation_ids == (("K1", "evidence:stable"),)
+    assert evidence_first.completeness is KnowledgeCompleteness.COMPLETE
+    assert evidence_first.budget.omitted_candidates == 0
+    assert evidence_first.missing_information == ()
+    assert "[K1] target=" in evidence_first.rendered_context
+    assert "diagnostics=[omitted: character budget]" in (
+        evidence_first.rendered_context
     )
-    assert len(omitted.rendered_context) <= 1_800
+    assert len(evidence_first.rendered_context) <= 1_800
 
 
 def test_default_status_and_search_do_not_create_absent_owner_state(

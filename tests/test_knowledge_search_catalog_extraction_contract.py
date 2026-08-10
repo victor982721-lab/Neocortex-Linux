@@ -747,7 +747,7 @@ def test_catalog_materialization_preserves_exact_identity_and_provenance(
         (2, (_row(1), _row(2))),
     ),
 )
-def test_catalog_candidate_limit_uses_one_row_lookahead_and_exact_rows_scanned(
+def test_catalog_top_k_window_uses_one_row_lookahead_without_becoming_partial(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     max_candidates: int,
@@ -769,8 +769,9 @@ def test_catalog_candidate_limit_uses_one_row_lookahead_and_exact_rows_scanned(
     assert len(candidates) == 2
     assert report.returned == 2
     assert report.rows_scanned == len(rows)
-    assert not report.complete
-    assert report.reason == "catalog_candidate_limit_reached"
+    assert report.complete
+    assert report.reason is None
+    assert report.result_window_full
     query = next(item for item in connection.queries if item[0] == "QUERY")
     assert query[2][-1] == min(max_candidates, 3)
 
@@ -898,14 +899,14 @@ def test_catalog_invalid_provenance_skips_only_bad_row_and_reports_incomplete(
         ("identifier", "catalog_identifier_json_invalid", 1),
         ("partial", "catalog_partial_or_review", 1),
         ("date", "catalog_content_date_filter_unsupported", 1),
-        ("limit", "catalog_candidate_limit_reached", 1),
+        ("limit", None, 1),
     ),
 )
 def test_catalog_reason_precedence_is_identity_identifier_partial_date_limit(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     case: str,
-    expected_reason: str,
+    expected_reason: str | None,
     expected_count: int,
 ) -> None:
     first = _row(1)
@@ -933,8 +934,9 @@ def test_catalog_reason_precedence_is_identity_identifier_partial_date_limit(
 
     assert len(candidates) == expected_count
     assert report.rows_scanned == 2
-    assert not report.complete
     assert report.reason == expected_reason
+    assert report.complete is (expected_reason is None)
+    assert report.result_window_full
 
 
 # endregion [04]

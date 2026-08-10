@@ -17,6 +17,7 @@ from _04_Nucleo_Operativo import knowledge_search
 from _04_Nucleo_Operativo.knowledge_contracts import (
     EvidenceMethod,
     EvidenceRef,
+    KnowledgeHit,
     KnowledgeSnapshot,
     OwnerAvailability,
     OwnerSnapshot,
@@ -37,6 +38,10 @@ from _04_Nucleo_Operativo.knowledge_search import (
     execute_knowledge_search,
 )
 from _04_Nucleo_Operativo.knowledge_snapshot import KnowledgeStatePaths
+from _04_Nucleo_Operativo.cli_knowledge import (
+    KnowledgeExitCode,
+    knowledge_search_exit_code,
+)
 from _04_Nucleo_Operativo.semantic_service_contracts import (
     SemanticRanking,
     SemanticSearchResult,
@@ -538,7 +543,7 @@ def test_optional_title_absence_is_reported_without_blocking_discovery(
 
 
 @pytest.mark.parametrize("cutoff_reason", ("top_k", "candidate_limit_reached"))
-def test_semantic_candidate_cutoff_is_deterministically_incomplete(
+def test_semantic_candidate_cutoff_is_a_complete_bounded_window(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     cutoff_reason: str,
@@ -584,14 +589,143 @@ def test_semantic_candidate_cutoff_is_deterministically_incomplete(
     )
 
     report = next(value for value in result.rankings if value.name == "semantic_text")
-    assert not report.complete
-    assert report.reason == "semantic_candidate_limit_reached"
-    assert result.warnings == (
-        "ranking_partial:semantic_text:semantic_candidate_limit_reached",
+    assert report.complete
+    assert report.reason is None
+    assert report.result_window_full
+    assert report.next_cursor is None
+    assert result.warnings == ()
+    assert not result.truncated
+    assert result.omitted_candidates == 0
+    assert result.result_window_full
+    assert result.window_omitted_candidates == 0
+    assert result.complete
+
+
+def test_semantic_vector_cutoff_remains_incomplete_and_exposes_continuation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_complete_lexical(monkeypatch)
+    _install_complete_catalog(monkeypatch)
+
+    def cutoff_semantic_search(
+        _state_directory: Path,
+        query_text: str,
+        **_kwargs: object,
+    ) -> SemanticSearchResult:
+        return SemanticSearchResult(
+            query=query_text,
+            rankings=(
+                SemanticRanking(
+                    name="semantic_text",
+                    hits=(),
+                    resolved=(),
+                    scanned=7,
+                    complete=False,
+                    available=True,
+                    cutoff_reason="max_vectors_reached",
+                    next_cursor=25,
+                    cutoff_score=0.25,
+                ),
+            ),
+            lexical_rankings=(),
+            fused=(),
+        )
+
+    monkeypatch.setattr(
+        knowledge_search.semantic_service,
+        "search_semantic_index",
+        cutoff_semantic_search,
     )
+    plan = plan_knowledge_query(
+        KnowledgeQuery("proteccion interruptor", source_kinds=("pdf",))
+    )
+
+    result = execute_knowledge_search(
+        KnowledgeStatePaths.from_directory(tmp_path / "state"),
+        plan,
+        _snapshot(semantic=OwnerAvailability.AVAILABLE),
+    )
+
+    report = next(value for value in result.rankings if value.name == "semantic_text")
+    assert not report.complete
+    assert report.reason == "semantic_vector_limit_reached"
+    assert report.next_cursor == 25
+    assert report.cutoff_score == 0.25
+    assert report.to_dict()["next_cursor"] == 25
+    assert report.to_dict()["cutoff_score"] == 0.25
     assert result.truncated
     assert result.omitted_candidates == 1
     assert not result.complete
+
+
+def test_final_top_k_window_does_not_turn_a_stable_search_into_exit_four(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_complete_lexical(monkeypatch)
+    _install_complete_catalog(monkeypatch)
+    monkeypatch.setattr(
+        knowledge_search,
+        "_semantic_rankings",
+        _ranking_stub(
+            (
+                _ranking(
+                    "semantic_text",
+                    "semantic",
+                    available=True,
+                    complete=True,
+                ),
+            )
+        ),
+    )
+    resource = ResourceRef("resource:fixture", "pdf", "pdf")
+    revision = RevisionRef(
+        resource.resource_id,
+        "revision:fixture",
+        "pdf-v1",
+        "fixture-signature",
+        1,
+        RevisionState.CURRENT,
+    )
+    evidence = EvidenceRef(
+        "evidence:fixture",
+        resource.resource_id,
+        revision.revision_id,
+        EvidenceMethod.EXTRACTED,
+        page=1,
+        snippet="Q52 shall remain open.",
+    )
+    hit = KnowledgeHit(
+        1,
+        resource,
+        revision,
+        evidence,
+        (RankingSignal("fts_pdf", "bm25", 1.0, 1, contribution=0.1),),
+        0.1,
+        ("fixture matched",),
+    )
+    monkeypatch.setattr(
+        knowledge_search,
+        "fuse_evidence_rankings",
+        lambda _rankings, **_kwargs: ((hit,), 7),
+    )
+    plan = plan_knowledge_query(
+        KnowledgeQuery("proteccion interruptor", source_kinds=("pdf",), limit=1)
+    )
+
+    result = execute_knowledge_search(
+        KnowledgeStatePaths.from_directory(tmp_path / "state"),
+        plan,
+        _snapshot(semantic=OwnerAvailability.AVAILABLE),
+    )
+
+    assert result.complete
+    assert not result.truncated
+    assert result.result_window_full
+    assert result.omitted_candidates == 7
+    assert result.window_omitted_candidates == 7
+    assert knowledge_search_exit_code(result) is KnowledgeExitCode.SUCCESS
 
 
 def test_code_only_required_semantic_failure_degrades_completeness(

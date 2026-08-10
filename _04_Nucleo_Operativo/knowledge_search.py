@@ -1170,7 +1170,7 @@ def _fuse_search_rankings(
         )
     )
     execution.check_cancelled()
-    return hits, omitted + execution.exact_omitted
+    return hits, omitted
 
 
 def _required_ranking_gaps(
@@ -1267,7 +1267,8 @@ def _upstream_cutoff_count(
     required_channels: set[str],
 ) -> int:
     return sum(
-        report.reason is not None
+        not report.complete
+        and report.reason is not None
         and "limit_reached" in report.reason
         and report.channel != "exact"
         and (report.name in execution.rankings or report.channel in required_channels)
@@ -1319,13 +1320,18 @@ def _finalize_search(
         execution.reports,
         blocking_names,
     )
-    omitted += _upstream_cutoff_count(execution, required_channels)
+    upstream_cutoffs = _upstream_cutoff_count(execution, required_channels)
+    truncated_omissions = execution.exact_omitted + upstream_cutoffs
+    total_omissions = omitted + truncated_omissions
+    truncated = execution.exact_truncated or upstream_cutoffs > 0
+    result_window_full = omitted > 0 or any(
+        report.result_window_full for report in execution.reports
+    )
     complete = (
         execution.snapshot.consistency is SnapshotConsistency.STABLE
         and not unavailable_required
         and not incomplete_required
-        and omitted == 0
-        and not execution.exact_truncated
+        and not truncated
     )
     warnings = _completion_warnings(
         execution.reports,
@@ -1346,8 +1352,8 @@ def _finalize_search(
         hits=hits,
         rankings=tuple(execution.reports),
         complete=complete,
-        truncated=omitted > 0 or execution.exact_truncated,
-        omitted_candidates=omitted,
+        truncated=truncated,
+        omitted_candidates=total_omissions,
         rows_scanned=sum(report.rows_scanned for report in execution.reports),
         vectors_scanned=sum(report.vectors_scanned for report in execution.reports),
         elapsed_milliseconds=broker_duration_ns // 1_000_000,
@@ -1359,6 +1365,8 @@ def _finalize_search(
             clock_signature=execution.clock_contract.signature,
         ),
         blocking_owners=blocking_owners,
+        result_window_full=result_window_full,
+        window_omitted_candidates=omitted,
     )
 
 

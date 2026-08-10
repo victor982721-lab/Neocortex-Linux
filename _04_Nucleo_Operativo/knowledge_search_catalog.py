@@ -120,6 +120,7 @@ def _ranking_report(
     returned: int = 0,
     rows_scanned: int = 0,
     reason: str | None = None,
+    result_window_full: bool = False,
 ) -> RankingExecution:
     return ranking_execution_type(
         "catalog_metadata",
@@ -130,6 +131,7 @@ def _ranking_report(
         returned,
         rows_scanned=rows_scanned,
         reason=reason,
+        result_window_full=result_window_full,
     )
 
 
@@ -490,8 +492,10 @@ def catalog_ranking(
 
     candidate_window_reached = (
         len(materialized_rows) > target_limit
-        or target_limit == max_candidates
-        and len(materialized_rows) >= target_limit
+        or (
+            target_limit == max_candidates
+            and len(materialized_rows) >= target_limit
+        )
     )
     rows = materialized_rows[:target_limit]
     candidates: list[KnowledgeCandidate] = []
@@ -545,8 +549,6 @@ def catalog_ranking(
         reason = "catalog_partial_or_review"
     elif plan.date_from or plan.date_to:
         reason = "catalog_content_date_filter_unsupported"
-    elif candidate_window_reached:
-        reason = "catalog_candidate_limit_reached"
     else:
         reason = None
     return tuple(candidates), _ranking_report(
@@ -557,6 +559,7 @@ def catalog_ranking(
         returned=len(candidates),
         rows_scanned=len(materialized_rows),
         reason=reason,
+        result_window_full=candidate_window_reached,
     )
 
 

@@ -911,9 +911,26 @@ def _rank_search_rows(
                 relations[key].setdefault(relation_key, row.relation)
 
     cancellation.checkpoint()
+
+    def deterministic_identity_order(key: tuple[object, ...]) -> tuple[object, ...]:
+        """Order nullable symbol identities without comparing ``None`` to text."""
+
+        version_id, symbol, start_line, end_line = key
+        return (
+            version_id,
+            symbol is not None,
+            "" if symbol is None else str(symbol),
+            start_line,
+            end_line,
+        )
+
     ordered = sorted(
         projected,
-        key=lambda key: (-score[key], projected[key].path.casefold(), key),
+        key=lambda key: (
+            -score[key],
+            projected[key].path.casefold(),
+            deterministic_identity_order(key),
+        ),
     )[: query.limit]
     cancellation.checkpoint()
     hits: list[CodeSearchHit] = []

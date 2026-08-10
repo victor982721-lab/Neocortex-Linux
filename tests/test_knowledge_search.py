@@ -1840,7 +1840,7 @@ def test_explicit_filters_keep_exact_inventory_aliases_and_real_image_ocr() -> N
     )
 
 
-def test_exact_omitted_is_transported_once_without_duplicate_cutoff(
+def test_final_result_window_omission_is_transported_once_without_truncation(
     tmp_path: Path,
 ) -> None:
     state = tmp_path / "state"
@@ -1877,8 +1877,10 @@ def test_exact_omitted_is_transported_once_without_duplicate_cutoff(
     )
 
     assert len(result.hits) == 1
-    assert result.truncated
+    assert not result.truncated
     assert result.omitted_candidates == 1
+    assert result.result_window_full
+    assert result.window_omitted_candidates == 1
 
 
 def test_invalid_exact_lookahead_preserves_truncation_without_inventing_omitted(
@@ -2029,7 +2031,7 @@ def test_code_execution_uses_the_planned_candidate_limit(
     assert observed_limits == [step.candidate_limit + 1]
 
 
-def test_code_candidate_limit_bounds_relation_processing_and_reports_cutoff(
+def test_code_candidate_limit_bounds_relation_processing_as_complete_top_k(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2153,8 +2155,9 @@ def test_code_candidate_limit_bounds_relation_processing_and_reports_cutoff(
     assert processed_relations == [1, 2, 3]
     assert len(observed_version_ids) == step.candidate_limit + 1
     assert report.rows_scanned == step.candidate_limit + 1
-    assert not report.complete
-    assert report.reason == "code_candidate_limit_reached"
+    assert report.complete
+    assert report.reason is None
+    assert report.result_window_full
 
 
 def test_exact_execution_passes_the_planned_candidate_limit(

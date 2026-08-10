@@ -1153,7 +1153,7 @@ def test_code_ranking_ordinary_owner_errors_still_report_incomplete(
         (True, 1, True, 4, 2, "code_identity_invalid_or_stale"),
         (False, 1, True, 4, 2, "code_relation_limit_reached"),
         (False, 4000, True, 1, 1, "code_relation_unresolved_or_unconfirmed"),
-        (False, 4000, False, 1, 1, "code_candidate_limit_reached"),
+        (False, 4000, False, 1, 1, None),
     ),
 )
 def test_code_ranking_reason_precedence_and_direct_before_relation_order(
@@ -1162,7 +1162,7 @@ def test_code_ranking_reason_precedence_and_direct_before_relation_order(
     relation_incomplete: bool,
     target_limit: int,
     relation_count: int,
-    expected_reason: str,
+    expected_reason: str | None,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1237,8 +1237,10 @@ def test_code_ranking_reason_precedence_and_direct_before_relation_order(
         _snapshot(),
     )
 
-    assert not report.complete
     assert report.reason == expected_reason
+    assert report.complete is (expected_reason is None)
+    if expected_reason is None:
+        assert report.result_window_full
     assert report.rows_scanned == 2
     if not invalid_hit:
         assert candidates[0].evidence.section_kind == "code_search_hit"

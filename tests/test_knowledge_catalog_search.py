@@ -445,6 +445,7 @@ def test_catalog_execution_uses_the_planned_candidate_limit(
     assert len(candidates) == step.candidate_limit
     assert report.returned == step.candidate_limit
     assert report.rows_scanned == step.candidate_limit + 1
-    assert not report.complete
-    assert report.reason == "catalog_candidate_limit_reached"
+    assert report.complete
+    assert report.reason is None
+    assert report.result_window_full
 # endregion [02]

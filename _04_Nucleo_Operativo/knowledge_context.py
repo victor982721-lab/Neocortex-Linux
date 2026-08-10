@@ -761,7 +761,13 @@ def _context_state(
     contradictions = _contradictions(entries)
     source_hit_count = len(result.hits)
     context_omitted = max(0, source_hit_count - len(entries))
-    search_omitted = max(0, result.omitted_candidates)
+    # The planned top-k presentation window is complete for its requested
+    # scope.  Only omissions caused by real upstream truncation make context
+    # evidence incomplete.
+    search_omitted = max(
+        0,
+        result.omitted_candidates - result.window_omitted_candidates,
+    )
     available_execution = any(
         ranking.executed and ranking.available for ranking in result.rankings
     )
@@ -931,6 +937,19 @@ def _render_header(
     )
 
 
+def _render_evidence_header(result: KnowledgeSearchResult) -> str:
+    """Render the minimum trust/query envelope needed before cited evidence."""
+
+    return "\n".join(
+        (
+            "KNOWLEDGE CONTEXT v1",
+            _TRUST_BOUNDARY_MARKER,
+            f"query={_json_string(result.plan.normalized_query)}",
+            f"snapshot_id={_json_string(result.snapshot.snapshot_id)}",
+        )
+    )
+
+
 def _render_graph(
     entities: tuple[ContextEntityRef, ...],
     relations: tuple[ContextRelationRef, ...],
@@ -968,6 +987,31 @@ def _render_status(state: _ContextState) -> str:
     return "\n".join(sections)
 
 
+def _render_compact_status(state: _ContextState) -> str:
+    """Keep essential status after evidence when diagnostics do not fit."""
+
+    sections = [
+        "\n".join(
+            (
+                "STATUS",
+                f"completeness={state.completeness.value}",
+                "diagnostics=[omitted: character budget]",
+            )
+        )
+    ]
+    # Contradictions are evidence-bearing and ContextBundle requires them to
+    # remain visible whenever their citations are selected.
+    if state.contradictions:
+        sections.append(
+            "CONTRADICTIONS\n"
+            + "\n".join(
+                f"- {contradiction.summary} [{', '.join(contradiction.citation_ids)}]"
+                for contradiction in state.contradictions
+            )
+        )
+    return "\n".join(sections)
+
+
 def _compose(
     result: KnowledgeSearchResult,
     entries: tuple[_ContextEntry, ...],
@@ -975,6 +1019,7 @@ def _compose(
     plan: ContextPlanRef,
     graph: tuple[tuple[ContextEntityRef, ...], tuple[ContextRelationRef, ...]],
     duplicate_or_overflow_hits: int,
+    include_diagnostics: bool = True,
 ) -> tuple[str, _ContextState]:
     state = _context_state(
         result,
@@ -982,11 +1027,19 @@ def _compose(
         duplicate_or_overflow_hits=duplicate_or_overflow_hits,
     )
     entities, relations = graph
-    blocks = [_render_header(result, plan)]
+    blocks = [
+        _render_header(result, plan)
+        if include_diagnostics
+        else _render_evidence_header(result)
+    ]
     if entries:
         blocks.append("EVIDENCE\n" + "\n\n".join(map(_render_entry, entries)))
     blocks.extend(_render_graph(entities, relations))
-    blocks.append(_render_status(state))
+    blocks.append(
+        _render_status(state)
+        if include_diagnostics
+        else _render_compact_status(state)
+    )
     return "\n\n".join(blocks), state
 
 
@@ -1016,6 +1069,7 @@ def _try_full_or_truncated_snippet(
     graph: tuple[tuple[ContextEntityRef, ...], tuple[ContextRelationRef, ...]],
     character_limit: int,
     duplicate_or_overflow_hits: int,
+    include_diagnostics: bool = True,
 ) -> tuple[_ContextEntry, ...]:
     entry = entries[index]
     snippet = entry.normalized_snippet
@@ -1034,6 +1088,7 @@ def _try_full_or_truncated_snippet(
         plan=plan,
         graph=graph,
         duplicate_or_overflow_hits=duplicate_or_overflow_hits,
+        include_diagnostics=include_diagnostics,
     )
     if len(rendered) <= character_limit:
         return proposal
@@ -1056,6 +1111,7 @@ def _try_full_or_truncated_snippet(
             plan=plan,
             graph=graph,
             duplicate_or_overflow_hits=duplicate_or_overflow_hits,
+            include_diagnostics=include_diagnostics,
         )
         if len(rendered) <= character_limit:
             best = proposal
@@ -1101,12 +1157,16 @@ def build_context_bundle(
             _new_entry(f"K{len(entries) + 1}", hit),
         )
         proposal_graph = _derive_context_graph(proposal)
+        # Select citations against the evidence-first representation.  Full
+        # plan/status diagnostics are added only after the bounded evidence is
+        # secured, so they can never consume the entire budget ahead of K1.
         rendered, _state = _compose(
             result,
             proposal,
             plan=plan,
             graph=proposal_graph,
             duplicate_or_overflow_hits=duplicate_or_overflow_hits,
+            include_diagnostics=False,
         )
         if len(rendered) > character_limit:
             proposal = _try_full_or_truncated_snippet(
@@ -1117,6 +1177,7 @@ def build_context_bundle(
                 graph=proposal_graph,
                 character_limit=character_limit,
                 duplicate_or_overflow_hits=duplicate_or_overflow_hits,
+                include_diagnostics=False,
             )
             rendered, _state = _compose(
                 result,
@@ -1124,6 +1185,7 @@ def build_context_bundle(
                 plan=plan,
                 graph=proposal_graph,
                 duplicate_or_overflow_hits=duplicate_or_overflow_hits,
+                include_diagnostics=False,
             )
         if len(rendered) > character_limit:
             break
@@ -1139,6 +1201,7 @@ def build_context_bundle(
             graph=graph,
             character_limit=character_limit,
             duplicate_or_overflow_hits=duplicate_or_overflow_hits,
+            include_diagnostics=False,
         )
 
     rendered_context, state = _compose(
@@ -1148,6 +1211,15 @@ def build_context_bundle(
         graph=graph,
         duplicate_or_overflow_hits=duplicate_or_overflow_hits,
     )
+    if len(rendered_context) > character_limit:
+        rendered_context, state = _compose(
+            result,
+            entries,
+            plan=plan,
+            graph=graph,
+            duplicate_or_overflow_hits=duplicate_or_overflow_hits,
+            include_diagnostics=False,
+        )
     if len(rendered_context) > character_limit:
         entries = ()
         graph = ((), ())

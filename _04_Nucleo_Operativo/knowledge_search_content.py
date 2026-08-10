@@ -555,14 +555,11 @@ def _lexical_candidate_window_reached(
 def _lexical_reason(
     candidates: tuple[KnowledgeCandidate, ...],
     *,
-    candidate_window_reached: bool,
     unavailable_reason: str | None,
     revision_partial: RevisionState,
 ) -> str | None:
     if any(candidate.revision.state is revision_partial for candidate in candidates):
         return "owner_partial_documents"
-    if candidate_window_reached:
-        return "lexical_candidate_limit_reached"
     return unavailable_reason
 
 
@@ -619,24 +616,29 @@ def lexical_rankings(
         )
         if candidates:
             rankings[name] = candidates
+        # A filled, stable top-k window is a successful bounded query, not an
+        # incomplete owner scan.  ``result_window_full`` carries that
+        # information without turning useful limited retrieval into partial.
         reports.append(
             RankingExecution(
                 name=name,
                 channel="lexical",
                 executed=available,
                 available=available,
-                complete=not candidate_window_reached
-                and all(candidate.revision.state is revision_current for candidate in candidates),
+                complete=all(
+                    candidate.revision.state is revision_current
+                    for candidate in candidates
+                ),
                 returned=len(candidates),
                 rows_scanned=len(result.hits),
                 reason=_lexical_reason(
                     candidates,
-                    candidate_window_reached=candidate_window_reached,
                     unavailable_reason=result.unavailable_reason,
                     revision_partial=revision_partial,
                 ),
                 owner=result.source_kind,
                 elapsed_ns=result.elapsed_ns,
+                result_window_full=candidate_window_reached,
             )
         )
     return rankings, reports
@@ -781,13 +783,21 @@ def _semantic_result_report(
         }
         or len(ranking.resolved) > candidate_limit
     )
+    unexpected_cutoff = (
+        ranking.cutoff_reason is not None
+        and not vector_cutoff
+        and not candidate_cutoff
+    )
     return RankingExecution(
         name=expected_name,
         channel=channel,
         executed=True,
         available=ranking.available,
         complete=(
-            ranking.available and ranking.complete and not vector_cutoff and not candidate_cutoff
+            ranking.available
+            and ranking.complete
+            and not vector_cutoff
+            and not unexpected_cutoff
         ),
         returned=returned,
         vectors_scanned=ranking.scanned,
@@ -797,22 +807,21 @@ def _semantic_result_report(
                 "semantic_vector_limit_reached"
                 if vector_cutoff
                 else (
-                    "semantic_candidate_limit_reached_after_calibrated_abstention"
-                    if candidate_cutoff and calibrated_abstained
+                    f"semantic_unexpected_cutoff:{ranking.cutoff_reason}"
+                    if unexpected_cutoff
                     else (
-                        "semantic_candidate_limit_reached"
-                        if candidate_cutoff
-                        else (
-                            "semantic_retrieval_abstained_below_calibrated_floor"
-                            if calibrated_abstained
-                            else None
-                        )
+                        "semantic_retrieval_abstained_below_calibrated_floor"
+                        if calibrated_abstained
+                        else None
                     )
                 )
             )
         ),
         owner="semantic",
         elapsed_ns=duration_ns(clock, started_ns),
+        result_window_full=candidate_cutoff,
+        next_cursor=ranking.next_cursor,
+        cutoff_score=ranking.cutoff_score,
     )
 
 

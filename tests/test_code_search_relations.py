@@ -11,7 +11,10 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from _02_Deduplicacion import FileSnapshot
+from _04_Nucleo_Operativo import code_search as code_search_module
 from _04_Nucleo_Operativo.code_contracts import (
     AnalysisStatus,
     ArtifactClassification,
@@ -51,6 +54,53 @@ from _04_Nucleo_Operativo.semantic_models import fingerprint_bytes, fingerprint_
 
 def _range(line: int) -> SourceRange:
     return SourceRange(line, 0, line, 8, line * 10, line * 10 + 8)
+
+
+def test_tied_file_and_symbol_hits_have_a_total_deterministic_order(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def row(symbol: str | None) -> code_search_module._SearchRow:
+        return code_search_module._SearchRow(
+            version_id=1,
+            path=str(tmp_path / "knowledge.py"),
+            project=None,
+            language="python",
+            artifact_kind="source",
+            symbol=symbol,
+            signature=None,
+            start_line=1,
+            end_line=2,
+            snippet="def knowledge_search(): ...",
+            size=32,
+            mtime_ns=1,
+            status="complete",
+            evidence="fixture",
+        )
+
+    rankings = (
+        ("literal", (row(None),)),
+        ("symbol", (row("knowledge.knowledge_search"),)),
+    )
+    monkeypatch.setattr(
+        code_search_module,
+        "_search_rankings",
+        lambda *_args, **_kwargs: rankings,
+    )
+    query = CodeSearchQuery(
+        text="function knowledge_search",
+        modes=("literal", "symbol"),
+        limit=5,
+    )
+
+    first = search_code(tmp_path / "isolated-code.sqlite3", query)
+    second = search_code(tmp_path / "isolated-code.sqlite3", query)
+
+    assert tuple(hit.symbol for hit in first) == (
+        None,
+        "knowledge.knowledge_search",
+    )
+    assert second == first
 
 
 def _analysis(

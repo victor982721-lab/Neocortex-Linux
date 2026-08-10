@@ -505,6 +505,7 @@ def _ranking_report(
     returned: int = 0,
     rows_scanned: int = 0,
     reason: str | None = None,
+    result_window_full: bool = False,
 ) -> RankingExecution:
     return dependencies.ranking_execution_type(
         "code_structural",
@@ -515,6 +516,7 @@ def _ranking_report(
         returned,
         rows_scanned=rows_scanned,
         reason=reason,
+        result_window_full=result_window_full,
     )
 
 
@@ -746,7 +748,6 @@ def _ranking_reason(
     invalid_rows: int,
     relation_limit_reached: bool,
     incomplete_relations: int,
-    candidate_window_reached: bool,
 ) -> str | None:
     if invalid_rows:
         return "code_identity_invalid_or_stale"
@@ -754,8 +755,6 @@ def _ranking_reason(
         return "code_relation_limit_reached"
     if incomplete_relations:
         return "code_relation_unresolved_or_unconfirmed"
-    if candidate_window_reached:
-        return "code_candidate_limit_reached"
     return None
 
 
@@ -779,11 +778,12 @@ def _finish_code_ranking(
         or len(candidates) > materialized.target_limit
     )
     visible_candidates = tuple(candidates[: materialized.target_limit])
+    # A candidate window filled to the requested top-k is successful bounded
+    # retrieval.  It is separate from hard relation-budget exhaustion.
     reason = _ranking_reason(
         invalid_rows=invalid_rows,
         relation_limit_reached=materialized.relation_limit_reached,
         incomplete_relations=incomplete_relations,
-        candidate_window_reached=candidate_window_reached,
     )
     report = _ranking_report(
         dependencies,
@@ -793,6 +793,7 @@ def _finish_code_ranking(
         returned=len(visible_candidates),
         rows_scanned=(materialized.materialized_hit_count + len(materialized.relation_entries)),
         reason=reason,
+        result_window_full=candidate_window_reached,
     )
     return visible_candidates, report
 

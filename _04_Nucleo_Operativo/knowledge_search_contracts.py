@@ -107,6 +107,9 @@ class RankingExecution:
     reason: str | None = None
     owner: str | None = None
     elapsed_ns: int | None = None
+    result_window_full: bool = False
+    next_cursor: int | None = None
+    cutoff_score: float | None = None
 
     def __post_init__(self) -> None:
         if not self.name.strip() or not self.channel.strip():
@@ -124,6 +127,20 @@ class RankingExecution:
             or self.elapsed_ns < 0
         ):
             raise ValueError("ranking execution elapsed_ns cannot be negative")
+        if not isinstance(self.result_window_full, bool):
+            raise ValueError("ranking result_window_full must be a boolean")
+        if self.next_cursor is not None and (
+            isinstance(self.next_cursor, bool)
+            or not isinstance(self.next_cursor, int)
+            or self.next_cursor < 0
+        ):
+            raise ValueError("ranking next_cursor cannot be negative")
+        if self.cutoff_score is not None and (
+            isinstance(self.cutoff_score, bool)
+            or not isinstance(self.cutoff_score, (int, float))
+            or not math.isfinite(self.cutoff_score)
+        ):
+            raise ValueError("ranking cutoff_score must be finite")
 
     def to_dict(self) -> dict[str, object]:
         payload: dict[str, object] = {
@@ -143,6 +160,12 @@ class RankingExecution:
             payload["owner"] = self.owner
         if self.elapsed_ns is not None:
             payload["elapsed_ns"] = self.elapsed_ns
+        if self.result_window_full:
+            payload["result_window_full"] = True
+        if self.next_cursor is not None:
+            payload["next_cursor"] = self.next_cursor
+        if self.cutoff_score is not None:
+            payload["cutoff_score"] = self.cutoff_score
         return payload
 
 
@@ -165,6 +188,8 @@ class KnowledgeSearchResult:
         repr=False,
     )
     blocking_owners: tuple[str, ...] = ()
+    result_window_full: bool = False
+    window_omitted_candidates: int = 0
 
     def __post_init__(self) -> None:
         if self.telemetry is not None and (
@@ -181,6 +206,20 @@ class KnowledgeSearchResult:
             raise ValueError("search blocking owners cannot be blank")
         if self.blocking_owners != tuple(sorted(set(self.blocking_owners))):
             raise ValueError("search blocking owners must be unique and ordered")
+        if not isinstance(self.result_window_full, bool):
+            raise ValueError("search result_window_full must be a boolean")
+        if (
+            isinstance(self.window_omitted_candidates, bool)
+            or not isinstance(self.window_omitted_candidates, int)
+            or self.window_omitted_candidates < 0
+        ):
+            raise ValueError("search window omission count cannot be negative")
+        if self.window_omitted_candidates > self.omitted_candidates:
+            raise ValueError(
+                "search window omissions cannot exceed total omitted candidates"
+            )
+        if self.window_omitted_candidates and not self.result_window_full:
+            raise ValueError("search window omissions require a full result window")
 
     def to_dict(self) -> dict[str, object]:
         payload: dict[str, object] = {
@@ -199,6 +238,9 @@ class KnowledgeSearchResult:
             "vectors_scanned": self.vectors_scanned,
             "elapsed_milliseconds": self.elapsed_milliseconds,
         }
+        if self.result_window_full:
+            payload["result_window_full"] = True
+            payload["window_omitted_candidates"] = self.window_omitted_candidates
         if self.warnings:
             payload["warnings"] = list(self.warnings)
         if self.telemetry is not None:

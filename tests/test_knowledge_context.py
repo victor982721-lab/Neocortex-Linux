@@ -359,6 +359,23 @@ def test_character_and_hit_budgets_make_truncation_and_omission_visible() -> Non
         assert bundle.budget.truncated_evidence_ids == (first_hit.evidence.evidence_id,)
 
 
+def test_evidence_is_reserved_before_large_diagnostic_sections() -> None:
+    hit = _hit(1, suffix="reserved", snippet="Q52 shall remain open.", page=7)
+    result = replace(
+        _result(hit),
+        warnings=tuple(f"diagnostic-{index}:" + "x" * 480 for index in range(64)),
+    )
+
+    bundle = build_context_bundle(result, character_limit=3_500, max_hits=1)
+
+    assert bundle.selected_hits == (hit,)
+    assert bundle.citation_ids == (("K1", hit.evidence.evidence_id),)
+    assert "[K1] target=" in bundle.rendered_context
+    assert '"evidence_id":"evidence:reserved:section"' in bundle.rendered_context
+    assert "diagnostics=[omitted: character budget]" in bundle.rendered_context
+    assert len(bundle.rendered_context) <= 3_500
+
+
 def test_complete_no_hit_and_incomplete_no_hit_are_not_conflated() -> None:
     no_evidence = build_context_bundle(_result(), character_limit=2_000)
     incomplete = build_context_bundle(
@@ -551,8 +568,10 @@ def test_builder_rejects_inconsistent_code_relations_atomically() -> None:
         resolved,
         evidence=replace(
             resolved.evidence,
-            identifiers=resolved.evidence.identifiers
-            + (("CODE_RELATION_FAMILY", "reference"),),
+            identifiers=(
+                *resolved.evidence.identifiers,
+                ("CODE_RELATION_FAMILY", "reference"),
+            ),
         ),
     )
     noncanonical_row = replace(
@@ -601,7 +620,7 @@ def test_builder_rejects_inconsistent_code_relations_atomically() -> None:
         assert bundle.relations == ()
 
 
-def test_graph_bounds_are_complete_and_reject_a_hit_atomically() -> None:
+def test_graph_bounds_keep_evidence_atomically_ahead_of_diagnostics() -> None:
     identifiers = tuple(("serial", f"SN-{index:02d}") for index in range(64))
     graph_rich = _hit(
         1,
@@ -624,14 +643,22 @@ def test_graph_bounds_are_complete_and_reject_a_hit_atomically() -> None:
         result,
         character_limit=len(full.rendered_context) - 1,
     )
-    assert too_small.selected_hits == ()
-    assert too_small.entities == ()
+    assert too_small.selected_hits == (graph_rich,)
+    assert len(too_small.entities) == 64
     assert too_small.relations == ()
-    assert too_small.graph_budget.identifiers_considered == 0
+    assert too_small.graph_budget.identifiers_considered == 64
     assert too_small.graph_budget.omitted_total == 0
-    assert too_small.budget.omitted_candidates == 1
-    assert too_small.completeness is KnowledgeCompleteness.PARTIAL
-    assert "Context omitted 1 retrieved hit" in " ".join(too_small.missing_information)
+    assert too_small.budget.omitted_candidates == 0
+    assert "diagnostics=[omitted: character budget]" in too_small.rendered_context
+    assert all(entity.to_json() in too_small.rendered_context for entity in too_small.entities)
+
+    graph_does_not_fit = build_context_bundle(result, character_limit=500)
+    assert graph_does_not_fit.selected_hits == ()
+    assert graph_does_not_fit.entities == ()
+    assert graph_does_not_fit.relations == ()
+    assert graph_does_not_fit.graph_budget.identifiers_considered == 0
+    assert graph_does_not_fit.budget.omitted_candidates == 1
+    assert graph_does_not_fit.completeness is KnowledgeCompleteness.PARTIAL
 
 
 def test_more_than_32_structured_contradictions_are_not_silently_cut() -> None:

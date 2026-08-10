@@ -72,13 +72,17 @@ PUBLIC_SIGNATURES = {
         "rows_scanned: 'int', vectors_scanned: 'int', "
         "elapsed_milliseconds: 'int', warnings: 'tuple[str, ...]' = (), "
         "telemetry: 'KnowledgeQueryTelemetry | None' = None, "
-        "blocking_owners: 'tuple[str, ...]' = ()) -> None"
+        "blocking_owners: 'tuple[str, ...]' = (), "
+        "result_window_full: 'bool' = False, "
+        "window_omitted_candidates: 'int' = 0) -> None"
     ),
     "RankingExecution": (
         "(name: 'str', channel: 'str', executed: 'bool', available: 'bool', "
         "complete: 'bool', returned: 'int', rows_scanned: 'int' = 0, "
         "vectors_scanned: 'int' = 0, reason: 'str | None' = None, "
-        "owner: 'str | None' = None, elapsed_ns: 'int | None' = None) -> None"
+        "owner: 'str | None' = None, elapsed_ns: 'int | None' = None, "
+        "result_window_full: 'bool' = False, next_cursor: 'int | None' = None, "
+        "cutoff_score: 'float | None' = None) -> None"
     ),
     "execute_knowledge_search": (
         "(paths: 'KnowledgeStatePaths', plan: 'KnowledgePlan', "
