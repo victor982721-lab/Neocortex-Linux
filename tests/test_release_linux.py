@@ -60,7 +60,7 @@ def _activate(layout: LinuxReleaseLayout, release: Path) -> None:
 
 
 def test_release_identifier_is_version_sha_python_and_platform_bound() -> None:
-    assert release_linux.release_id("a" * 40) == (f"0.7.2-{'a' * 12}-cp314-linux-x86_64")
+    assert release_linux.release_id("a" * 40) == (f"0.8.0-{'a' * 12}-cp314-linux-x86_64")
     with pytest.raises(ValueError):
         release_linux.release_id("A" * 40)
 
@@ -104,7 +104,7 @@ def test_new_virtual_environment_is_created_at_its_final_non_movable_path(
     def build_wheel(_layout, workspace, **_kwargs):
         wheelhouse = workspace / "wheelhouse"
         wheelhouse.mkdir()
-        wheel = wheelhouse / "neocortex_framework-0.7.2-py3-none-any.whl"
+        wheel = wheelhouse / "neocortex_framework-0.8.0-py3-none-any.whl"
         dependency = wheelhouse / "yattag-1.16.1-py3-none-any.whl"
         wheel.write_bytes(b"project")
         dependency.write_bytes(b"dependency")

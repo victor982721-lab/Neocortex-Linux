@@ -11,7 +11,7 @@ from __future__ import annotations
 
 # region [02] Implementación
 
-__version__ = "0.7.2"
+__version__ = "0.8.0"
 
 __all__ = ["__version__"]
 # endregion [02]
