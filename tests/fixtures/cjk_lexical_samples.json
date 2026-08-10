@@ -1,0 +1,216 @@
+{
+  "documents": [
+    {
+      "id": "zh-s01",
+      "path": "C:/fixtures/zh-s01.pdf",
+      "text": "主变压器油处理试验记录包含真空脱气和含水量结果"
+    },
+    {
+      "id": "zh-s02",
+      "path": "C:/fixtures/zh-s02.pdf",
+      "text": "绝缘油溶解气体分析报告记录氢气甲烷和乙炔浓度"
+    },
+    {
+      "id": "zh-s03",
+      "path": "C:/fixtures/zh-s03.pdf",
+      "text": "变压器绕组直流电阻测量采用四线法并校正温度"
+    },
+    {
+      "id": "zh-s04",
+      "path": "C:/fixtures/zh-s04.pdf",
+      "text": "电力变压器变比测试核对分接位置和相位关系"
+    },
+    {
+      "id": "zh-s05",
+      "path": "C:/fixtures/zh-s05.pdf",
+      "text": "高压绕组绝缘电阻试验记录吸收比和极化指数"
+    },
+    {
+      "id": "zh-s06",
+      "path": "C:/fixtures/zh-s06.pdf",
+      "text": "高压套管介损测量结果符合设备验收限值"
+    },
+    {
+      "id": "zh-s07",
+      "path": "C:/fixtures/zh-s07.pdf",
+      "text": "冷却器风机联动测试验证温度控制逻辑"
+    },
+    {
+      "id": "zh-s08",
+      "path": "C:/fixtures/zh-s08.pdf",
+      "text": "高压断路器动作时间测试记录合闸和分闸同期性"
+    },
+    {
+      "id": "zh-s09",
+      "path": "C:/fixtures/zh-s09.pdf",
+      "text": "差动保护继电器整定计算包含制动曲线和谐波闭锁"
+    },
+    {
+      "id": "zh-s10",
+      "path": "C:/fixtures/zh-s10.pdf",
+      "text": "升压站接地网电阻测量采用电位降法"
+    },
+    {
+      "id": "zh-s11",
+      "path": "C:/fixtures/zh-s11.pdf",
+      "text": "变压器局部放电试验记录视在放电量和背景噪声"
+    },
+    {
+      "id": "zh-s12",
+      "path": "C:/fixtures/zh-s12.pdf",
+      "text": "空载试验测量励磁电流和铁芯损耗"
+    },
+    {
+      "id": "zh-t01",
+      "path": "C:/fixtures/zh-t01.pdf",
+      "text": "主變壓器絕緣油處理紀錄包含真空脫氣與含水量結果"
+    },
+    {
+      "id": "zh-t02",
+      "path": "C:/fixtures/zh-t02.pdf",
+      "text": "變壓器繞組電阻量測採用四線法並換算參考溫度"
+    },
+    {
+      "id": "zh-t03",
+      "path": "C:/fixtures/zh-t03.pdf",
+      "text": "變壓器匝數比試驗核對分接位置與相位關係"
+    },
+    {
+      "id": "zh-t04",
+      "path": "C:/fixtures/zh-t04.pdf",
+      "text": "高壓套管功率因數量測結果符合驗收標準"
+    },
+    {
+      "id": "zh-t05",
+      "path": "C:/fixtures/zh-t05.pdf",
+      "text": "局部放電量試驗同時記錄背景雜訊與校正脈衝"
+    },
+    {
+      "id": "zh-t06",
+      "path": "C:/fixtures/zh-t06.pdf",
+      "text": "冷卻風扇聯動測試驗證油溫控制邏輯"
+    }
+  ],
+  "queries": [
+    {
+      "language": "zh-Hans",
+      "query": "有哪些关于变压器油处理的证据",
+      "expected_id": "zh-s01"
+    },
+    {
+      "language": "zh-Hans",
+      "query": "油处理",
+      "expected_id": "zh-s01"
+    },
+    {
+      "language": "zh-Hans",
+      "query": "溶解气体分析",
+      "expected_id": "zh-s02"
+    },
+    {
+      "language": "zh-Hans",
+      "query": "绕组直流电阻",
+      "expected_id": "zh-s03"
+    },
+    {
+      "language": "zh-Hans",
+      "query": "变比测试",
+      "expected_id": "zh-s04"
+    },
+    {
+      "language": "zh-Hans",
+      "query": "绝缘电阻",
+      "expected_id": "zh-s05"
+    },
+    {
+      "language": "zh-Hans",
+      "query": "套管介损",
+      "expected_id": "zh-s06"
+    },
+    {
+      "language": "zh-Hans",
+      "query": "冷却器风机",
+      "expected_id": "zh-s07"
+    },
+    {
+      "language": "zh-Hans",
+      "query": "断路器动作时间",
+      "expected_id": "zh-s08"
+    },
+    {
+      "language": "zh-Hans",
+      "query": "保护继电器整定",
+      "expected_id": "zh-s09"
+    },
+    {
+      "language": "zh-Hans",
+      "query": "接地网电阻",
+      "expected_id": "zh-s10"
+    },
+    {
+      "language": "zh-Hans",
+      "query": "局部放电",
+      "expected_id": "zh-s11"
+    },
+    {
+      "language": "zh-Hans",
+      "query": "励磁电流",
+      "expected_id": "zh-s12"
+    },
+    {
+      "language": "zh-Hant",
+      "query": "絕緣油處理",
+      "expected_id": "zh-t01"
+    },
+    {
+      "language": "zh-Hant",
+      "query": "有哪些關於繞組電阻的證據",
+      "expected_id": "zh-t02"
+    },
+    {
+      "language": "zh-Hant",
+      "query": "變壓器匝數比",
+      "expected_id": "zh-t03"
+    },
+    {
+      "language": "zh-Hant",
+      "query": "套管功率因數",
+      "expected_id": "zh-t04"
+    },
+    {
+      "language": "zh-Hant",
+      "query": "局部放電量",
+      "expected_id": "zh-t05"
+    },
+    {
+      "language": "zh-Hant",
+      "query": "冷卻風扇",
+      "expected_id": "zh-t06"
+    },
+    {
+      "language": "zh-Hans",
+      "query": "量子蛋糕配方",
+      "expected_id": null
+    },
+    {
+      "language": "zh-Hans",
+      "query": "海洋生物分类",
+      "expected_id": null
+    },
+    {
+      "language": "zh-Hans",
+      "query": "火星农业灌溉",
+      "expected_id": null
+    },
+    {
+      "language": "zh-Hant",
+      "query": "古典音樂演奏",
+      "expected_id": null
+    },
+    {
+      "language": "zh-Hant",
+      "query": "太空旅館菜單",
+      "expected_id": null
+    }
+  ]
+}

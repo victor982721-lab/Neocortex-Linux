@@ -33,10 +33,12 @@ MAX_QUERY_CHARS = 4_096
 MAX_QUERY_TERMS = 64
 MAX_QUERY_TERM_CHARS = 128
 MAX_SNIPPET_CHARS = 1_024
+MAX_CJK_SUBSTRING_SCAN_ROWS = 50_000
+MAX_CJK_SUBSTRING_TERMS = 8
 _CANCELLATION_BATCH_ROWS = 128
 
-LEXICAL_MODEL_SIGNATURE = "sqlite-fts5-unicode61-rd2-v2"
-LEXICAL_QUERY_POLICY_SIGNATURE = "sqlite-fts5-natural-strict-soft-v3"
+LEXICAL_MODEL_SIGNATURE = "sqlite-fts5-unicode61-rd2-cjk-substring-v3"
+LEXICAL_QUERY_POLICY_SIGNATURE = "sqlite-fts5-natural-strict-soft-cjk-v4"
 _SOURCE_ORDER = ("pdf", "docx", "office", "audio", "archive", "text")
 
 
@@ -111,6 +113,8 @@ class _SourceSpec:
     source_kind: str
     fts_table: str
     sql: str
+    cjk_sql: str
+    cjk_content_expression: str
     section_kind: str
 
 
@@ -120,6 +124,49 @@ class _SourceSpec:
 # region [02] Safe natural-query compilation
 
 _NATURAL_TERM = re.compile(r"[^\W_]+", flags=re.UNICODE)
+_HAN_RUN = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]+")
+_NON_HAN_NATURAL_TERM = re.compile(
+    r"[0-9A-Za-zÀ-ÖØ-öø-ÿĀ-ž]+",
+    flags=re.UNICODE,
+)
+
+# FTS5's unicode61 tokenizer treats an uninterrupted Han run as one token.
+# Consequently, a safe MATCH query cannot find a shorter technical term inside
+# a longer Chinese token.  These phrases are removed only for the bounded,
+# read-only substring fallback below; they never alter the primary FTS query.
+# Keep the list deliberately small and grammar-only so domain concepts are not
+# silently weakened.
+_CJK_QUERY_SCAFFOLDING = (
+    "请告诉我",
+    "請告訴我",
+    "请查找",
+    "請查找",
+    "请显示",
+    "請顯示",
+    "有什么",
+    "有什麼",
+    "有哪些",
+    "哪一些",
+    "相关的",
+    "相關的",
+    "关于",
+    "關於",
+    "是否有",
+    "是否存在",
+    "在哪里",
+    "在哪裡",
+    "哪里",
+    "哪裡",
+    "证据",
+    "證據",
+    "信息",
+    "資訊",
+    "资料",
+    "資料",
+    "文档",
+    "文件",
+)
+_CJK_GRAMMAR_PARTICLES = frozenset({"的", "了", "吗", "嗎", "呢"})
 
 # These are grammar words, not domain concepts.  Ordinary queries remove them
 # only after the strict all-term query returns no rows.  Explicit question
@@ -238,6 +285,8 @@ class _NaturalFTSQueryPlan:
     primary_query: str
     primary_strategy: str
     fallbacks: tuple[tuple[str, str], ...]
+    cjk_substring_terms: tuple[str, ...]
+    cjk_query_rewritten: bool
 
 
 _QUESTION_OPENERS = frozenset(
@@ -318,12 +367,56 @@ def _soft_content_query(terms: tuple[str, ...]) -> str | None:
     return " OR ".join(pairs)
 
 
+def _cjk_substring_terms(query: str) -> tuple[tuple[str, ...], bool]:
+    """Return conservative exact substrings for a Han-aware fallback.
+
+    The fallback requires every returned term.  A one-character Han query is
+    intentionally rejected because scanning for it would be both broad and
+    noisy.  Latin/digit terms in a mixed query remain mandatory rather than
+    being discarded merely because Han text is present.
+    """
+
+    han_runs = _HAN_RUN.findall(query)
+    if not han_runs:
+        return (), False
+
+    rewritten = False
+    candidates: list[str] = []
+    for run in han_runs:
+        cleaned = run
+        for phrase in _CJK_QUERY_SCAFFOLDING:
+            if phrase in cleaned:
+                cleaned = cleaned.replace(phrase, "")
+                rewritten = True
+        without_particles = "".join(
+            character for character in cleaned if character not in _CJK_GRAMMAR_PARTICLES
+        )
+        if without_particles != cleaned:
+            rewritten = True
+        if len(without_particles) >= 2:
+            candidates.append(without_particles)
+
+    for term in _NON_HAN_NATURAL_TERM.findall(query):
+        if term.casefold() not in _NATURAL_STOPWORDS:
+            candidates.append(term)
+
+    unique: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = candidate.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(candidate)
+    if not unique or len(unique) > MAX_CJK_SUBSTRING_TERMS:
+        return (), rewritten
+    return tuple(unique), rewritten
+
+
 def _compile_natural_fts_query_plan(query: str) -> _NaturalFTSQueryPlan:
     terms = _natural_query_terms(query)
     normalized = _all_terms_query(terms)
-    content_terms = tuple(
-        term for term in terms if term.casefold() not in _NATURAL_STOPWORDS
-    )
+    content_terms = tuple(term for term in terms if term.casefold() not in _NATURAL_STOPWORDS)
     is_question_request = terms[0].casefold() in _QUESTION_OPENERS
     if is_question_request and content_terms:
         primary_query = _all_terms_query(content_terms)
@@ -333,23 +426,26 @@ def _compile_natural_fts_query_plan(query: str) -> _NaturalFTSQueryPlan:
         primary_strategy = "strict_all_terms"
 
     fallbacks: list[tuple[str, str]] = []
-    if (
-        primary_strategy == "strict_all_terms"
-        and content_terms
-        and content_terms != terms
-    ):
+    if primary_strategy == "strict_all_terms" and content_terms and content_terms != terms:
         fallbacks.append(("content_terms_all", _all_terms_query(content_terms)))
-    soft = _soft_content_query(content_terms)
-    if soft is not None and soft not in {
-        primary_query,
-        *(fallback_query for _, fallback_query in fallbacks),
-    }:
-        fallbacks.append(("content_terms_any_two", soft))
+    cjk_terms, cjk_rewritten = _cjk_substring_terms(query)
+    # Never let the Latin any-two recovery path discard the Han subject of a
+    # mixed query.  If exact FTS matching fails, the CJK fallback below keeps
+    # every Han, Latin and numeric content term mandatory.
+    if not cjk_terms:
+        soft = _soft_content_query(content_terms)
+        if soft is not None and soft not in {
+            primary_query,
+            *(fallback_query for _, fallback_query in fallbacks),
+        }:
+            fallbacks.append(("content_terms_any_two", soft))
     return _NaturalFTSQueryPlan(
         normalized_query=normalized,
         primary_query=primary_query,
         primary_strategy=primary_strategy,
         fallbacks=tuple(fallbacks),
+        cjk_substring_terms=cjk_terms,
+        cjk_query_rewritten=cjk_rewritten,
     )
 
 
@@ -379,6 +475,7 @@ _SPECS = {
         source_kind="pdf",
         fts_table="page_fts",
         section_kind="page",
+        cjk_content_expression="f.text",
         sql="""SELECT f.rowid AS fts_rowid,f.file_key,f.path,f.page_number,
         snippet(page_fts,3,'[',']',' ... ',24) AS snippet,
         bm25(page_fts) AS raw_bm25,d.size AS source_size,
@@ -389,11 +486,22 @@ _SPECS = {
         FROM page_fts AS f JOIN documents AS d ON d.file_key=f.file_key
         WHERE page_fts MATCH ? AND d.status IN ('done','partial')
         ORDER BY raw_bm25,f.path COLLATE NOCASE,f.page_number LIMIT ?""",
+        cjk_sql="""SELECT f.rowid AS fts_rowid,f.file_key,f.path,f.page_number,
+        substr(f.text,max(1,instr(f.text,?)-80),240) AS snippet,
+        CAST(length(f.text) AS REAL) AS raw_bm25,d.size AS source_size,
+        d.mtime_ns AS source_mtime_ns,d.birthtime_ns AS source_birthtime_ns,
+        d.processing_signature AS source_processing_signature,
+        d.last_seen_run_id AS source_last_seen_run_id,d.status AS source_status,
+        d.is_partial AS source_is_partial
+        FROM page_fts AS f JOIN documents AS d ON d.file_key=f.file_key
+        WHERE d.status IN ('done','partial') AND {conditions}
+        ORDER BY length(f.text),f.path COLLATE NOCASE,f.page_number LIMIT ?""",
     ),
     "docx": _SourceSpec(
         source_kind="docx",
         fts_table="document_fts",
         section_kind="document",
+        cjk_content_expression="f.body",
         sql="""WITH ranked AS MATERIALIZED (
         SELECT f.rowid AS fts_rowid,f.file_key,f.path,
         bm25(document_fts) AS raw_bm25,d.size AS source_size,
@@ -413,11 +521,21 @@ _SPECS = {
         ON document_fts.rowid=ranked.fts_rowid
         WHERE document_fts MATCH ?1
         ORDER BY ranked.raw_bm25,ranked.path COLLATE NOCASE""",
+        cjk_sql="""SELECT f.rowid AS fts_rowid,f.file_key,f.path,
+        substr(f.body,max(1,instr(f.body,?)-80),240) AS snippet,
+        CAST(length(f.body) AS REAL) AS raw_bm25,d.size AS source_size,
+        d.mtime_ns AS source_mtime_ns,d.birthtime_ns AS source_birthtime_ns,
+        d.processing_signature AS source_processing_signature,
+        d.last_seen_run_id AS source_last_seen_run_id,d.status AS source_status
+        FROM document_fts AS f JOIN documents AS d ON d.file_key=f.file_key
+        WHERE d.status IN ('complete','partial') AND {conditions}
+        ORDER BY length(f.body),f.path COLLATE NOCASE LIMIT ?""",
     ),
     "office": _SourceSpec(
         source_kind="office",
         fts_table="document_fts",
         section_kind="document",
+        cjk_content_expression="f.body",
         sql="""SELECT f.rowid AS fts_rowid,f.file_key,f.path,f.format,
         snippet(document_fts,5,'[',']',' ... ',24) AS snippet,
         bm25(document_fts) AS raw_bm25,d.size AS source_size,
@@ -427,11 +545,21 @@ _SPECS = {
         FROM document_fts AS f JOIN documents AS d ON d.file_key=f.file_key
         WHERE document_fts MATCH ? AND d.status='complete'
         ORDER BY raw_bm25,f.path COLLATE NOCASE LIMIT ?""",
+        cjk_sql="""SELECT f.rowid AS fts_rowid,f.file_key,f.path,f.format,
+        substr(f.body,max(1,instr(f.body,?)-80),240) AS snippet,
+        CAST(length(f.body) AS REAL) AS raw_bm25,d.size AS source_size,
+        d.mtime_ns AS source_mtime_ns,d.birthtime_ns AS source_birthtime_ns,
+        d.processing_signature AS source_processing_signature,
+        d.last_seen_run_id AS source_last_seen_run_id,d.status AS source_status
+        FROM document_fts AS f JOIN documents AS d ON d.file_key=f.file_key
+        WHERE d.status='complete' AND {conditions}
+        ORDER BY length(f.body),f.path COLLATE NOCASE LIMIT ?""",
     ),
     "audio": _SourceSpec(
         source_kind="audio",
         fts_table="transcript_fts",
         section_kind="transcript",
+        cjk_content_expression="f.body",
         sql="""SELECT f.rowid AS fts_rowid,f.file_key,f.path,
         snippet(transcript_fts,3,'[',']',' ... ',24) AS snippet,
         bm25(transcript_fts) AS raw_bm25,d.size AS source_size,
@@ -441,11 +569,21 @@ _SPECS = {
         FROM transcript_fts AS f JOIN documents AS d ON d.file_key=f.file_key
         WHERE transcript_fts MATCH ? AND d.status='complete'
         ORDER BY raw_bm25,f.path COLLATE NOCASE LIMIT ?""",
+        cjk_sql="""SELECT f.rowid AS fts_rowid,f.file_key,f.path,
+        substr(f.body,max(1,instr(f.body,?)-80),240) AS snippet,
+        CAST(length(f.body) AS REAL) AS raw_bm25,d.size AS source_size,
+        d.mtime_ns AS source_mtime_ns,d.birthtime_ns AS source_birthtime_ns,
+        d.processing_signature AS source_processing_signature,
+        d.last_seen_run_id AS source_last_seen_run_id,d.status AS source_status
+        FROM transcript_fts AS f JOIN documents AS d ON d.file_key=f.file_key
+        WHERE d.status='complete' AND {conditions}
+        ORDER BY length(f.body),f.path COLLATE NOCASE LIMIT ?""",
     ),
     "archive": _SourceSpec(
         source_kind="archive",
         fts_table="document_fts",
         section_kind="archive_member",
+        cjk_content_expression="f.body",
         sql="""SELECT f.rowid AS fts_rowid,f.file_key,f.path,
         CASE WHEN d.text_chars>0
         THEN snippet(document_fts,6,'[',']',' ... ',24)
@@ -459,11 +597,24 @@ _SPECS = {
         WHERE document_fts MATCH ?
         AND d.status IN ('indexed','metadata_only','archive')
         ORDER BY raw_bm25,f.path COLLATE NOCASE LIMIT ?""",
+        cjk_sql="""SELECT f.rowid AS fts_rowid,f.file_key,f.path,
+        CASE WHEN d.text_chars>0
+        THEN substr(f.body,max(1,instr(f.body,?)-80),240)
+        ELSE d.member_chain END AS snippet,
+        CAST(length(f.body) AS REAL) AS raw_bm25,d.size AS source_size,
+        d.mtime_ns AS source_mtime_ns,d.birthtime_ns AS source_birthtime_ns,
+        d.processing_signature AS source_processing_signature,
+        d.last_seen_run_id AS source_last_seen_run_id,d.status AS source_status,
+        d.container_path,d.member_chain,d.member_path,d.archive_depth,d.content_kind
+        FROM document_fts AS f JOIN documents AS d ON d.file_key=f.file_key
+        WHERE d.status IN ('indexed','metadata_only','archive') AND {conditions}
+        ORDER BY length(f.body),f.path COLLATE NOCASE LIMIT ?""",
     ),
     "text": _SourceSpec(
         source_kind="text",
         fts_table="document_fts",
         section_kind="document",
+        cjk_content_expression="f.body",
         sql="""SELECT f.rowid AS fts_rowid,f.file_key,f.path,
         snippet(document_fts,5,'[',']',' ... ',24) AS snippet,
         bm25(document_fts) AS raw_bm25,d.size AS source_size,
@@ -473,6 +624,15 @@ _SPECS = {
         FROM document_fts AS f JOIN documents AS d ON d.file_key=f.file_key
         WHERE document_fts MATCH ? AND d.status='complete'
         ORDER BY raw_bm25,f.path COLLATE NOCASE LIMIT ?""",
+        cjk_sql="""SELECT f.rowid AS fts_rowid,f.file_key,f.path,
+        substr(f.body,max(1,instr(f.body,?)-80),240) AS snippet,
+        CAST(length(f.body) AS REAL) AS raw_bm25,d.size AS source_size,
+        d.mtime_ns AS source_mtime_ns,d.birthtime_ns AS source_birthtime_ns,
+        d.processing_signature AS source_processing_signature,
+        d.last_seen_run_id AS source_last_seen_run_id,d.status AS source_status
+        FROM document_fts AS f JOIN documents AS d ON d.file_key=f.file_key
+        WHERE d.status='complete' AND {conditions}
+        ORDER BY length(f.body),f.path COLLATE NOCASE LIMIT ?""",
     ),
 }
 
@@ -494,6 +654,9 @@ def _resolved_hit(
     query_strategy: str,
     row: sqlite3.Row,
     rank_position: int,
+    *,
+    retrieval_backend: str = "sqlite_fts5",
+    cjk_scanned_rows: int | None = None,
 ) -> ResolvedSearchHit:
     file_key = str(row["file_key"])
     item_source_kind = (
@@ -515,25 +678,44 @@ def _resolved_hit(
         section_id = "fulltext"
         entity_id = f"lexical:{item_source_kind}:{file_key}:fulltext"
 
+    is_cjk_substring = retrieval_backend == "sqlite_bounded_cjk_substring"
     provenance: dict[str, object] = {
-        "backend": "sqlite_fts5",
+        "backend": retrieval_backend,
         "fts_table": spec.fts_table,
         "normalized_query": query_plan.normalized_query,
         "applied_query": applied_query,
         "query_policy_signature": LEXICAL_QUERY_POLICY_SIGNATURE,
         "query_strategy": query_strategy,
-        "query_fallback_used": query_strategy not in {
+        "query_fallback_used": is_cjk_substring
+        or query_strategy
+        not in {
             "strict_all_terms",
             "question_content_terms_all",
         },
-        "query_rewrite_used": query_strategy == "question_content_terms_all",
+        "query_rewrite_used": query_strategy == "question_content_terms_all"
+        or (is_cjk_substring and query_plan.cjk_query_rewritten),
         "rank_position": rank_position,
-        "raw_bm25": raw_bm25,
-        "score_transform": "negative_raw_bm25",
         "ranking_source_kind": spec.source_kind,
         "source_kind": item_source_kind,
         "state_path": str(state_path.resolve(strict=False)),
     }
+    if is_cjk_substring:
+        provenance.update(
+            {
+                "candidate_text_chars": int(raw_bm25),
+                "score_transform": "negative_candidate_text_chars",
+                "substring_terms": query_plan.cjk_substring_terms,
+                "scanned_rows": cjk_scanned_rows,
+                "scan_row_limit": MAX_CJK_SUBSTRING_SCAN_ROWS,
+            }
+        )
+    else:
+        provenance.update(
+            {
+                "raw_bm25": raw_bm25,
+                "score_transform": "negative_raw_bm25",
+            }
+        )
     source_revision: dict[str, object] = {
         "size": int(row["source_size"]),
         "mtime_ns": int(row["source_mtime_ns"]),
@@ -559,7 +741,11 @@ def _resolved_hit(
             entity_id=entity_id,
             item_id=f"item:{item_source_kind}:{file_key}",
             indexed_model_signature=LEXICAL_MODEL_SIGNATURE,
-            vector_space=f"lexical:fts5:{spec.source_kind}:v1",
+            vector_space=(
+                f"lexical:substring-cjk:{spec.source_kind}:v1"
+                if is_cjk_substring
+                else f"lexical:fts5:{spec.source_kind}:v1"
+            ),
             modality=EmbeddingModality.TEXT,
             score=-raw_bm25,
             generation_id=0,
@@ -594,6 +780,24 @@ def _unavailable_ranking(
         hits=(),
         unavailable_reason=reason,
     )
+
+
+def _search_cjk_substrings(
+    connection: sqlite3.Connection,
+    spec: _SourceSpec,
+    terms: tuple[str, ...],
+    limit: int,
+) -> tuple[list[sqlite3.Row], int]:
+    """Run one exact, bounded Han substring scan over FTS-owned text."""
+
+    scanned_rows = int(connection.execute(f"SELECT COUNT(*) FROM {spec.fts_table}").fetchone()[0])
+    if scanned_rows > MAX_CJK_SUBSTRING_SCAN_ROWS:
+        return [], scanned_rows
+    content = spec.cjk_content_expression
+    conditions = " AND ".join(f"instr(lower({content}),lower(?))>0" for _term in terms)
+    sql = spec.cjk_sql.format(conditions=conditions)
+    parameters: tuple[object, ...] = (terms[0], *terms, limit)
+    return connection.execute(sql, parameters).fetchall(), scanned_rows
 
 
 def _search_compiled_source(
@@ -637,6 +841,8 @@ def _search_compiled_source(
         uri=True,
         timeout=60,
     )
+    retrieval_backend = "sqlite_fts5"
+    cjk_scanned_rows: int | None = None
     try:
         connection.row_factory = sqlite3.Row
         with sqlite_cancellation_scope(connection, cancellation):
@@ -658,6 +864,26 @@ def _search_compiled_source(
                 if rows:
                     applied_query = fallback_query
                     query_strategy = fallback_strategy
+            if not rows and query_plan.cjk_substring_terms:
+                cancellation.checkpoint()
+                rows, cjk_scanned_rows = _search_cjk_substrings(
+                    connection,
+                    spec,
+                    query_plan.cjk_substring_terms,
+                    limit,
+                )
+                if cjk_scanned_rows > MAX_CJK_SUBSTRING_SCAN_ROWS:
+                    return _unavailable_ranking(
+                        source_kind,
+                        path,
+                        query_plan.normalized_query,
+                        LexicalAvailability.READ_FAILED,
+                        "cjk_substring_scan_limit_exceeded",
+                    )
+                if rows:
+                    applied_query = _all_terms_query(query_plan.cjk_substring_terms)
+                    query_strategy = "cjk_substring_all_terms"
+                    retrieval_backend = "sqlite_bounded_cjk_substring"
     finally:
         connection.close()
     hits: list[ResolvedSearchHit] = []
@@ -673,6 +899,8 @@ def _search_compiled_source(
                 query_strategy,
                 row,
                 rank_position,
+                retrieval_backend=retrieval_backend,
+                cjk_scanned_rows=cjk_scanned_rows,
             )
         )
     cancellation.checkpoint()

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import sqlite3
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -310,9 +313,7 @@ def test_soft_fallback_requires_two_content_terms_and_remains_bounded(
     )
 
     assert len(recovered.hits) == 1
-    assert recovered.hits[0].hit.provenance["query_strategy"] == (
-        "content_terms_any_two"
-    )
+    assert recovered.hits[0].hit.provenance["query_strategy"] == ("content_terms_any_two")
     assert unrelated.hits == ()
 
 
@@ -359,20 +360,15 @@ def test_question_scaffolding_cannot_outrank_the_requested_subject(
         "¿Qué evidencia hay sobre transformadores de potencia?",
     )
 
-    assert [hit.path for hit in result.hits] == [
-        "C:/docs/transformador.pdf"
-    ]
+    assert [hit.path for hit in result.hits] == ["C:/docs/transformador.pdf"]
     provenance = result.hits[0].hit.provenance
     assert result.normalized_query == (
-        '"Qué" AND "evidencia" AND "hay" AND "sobre" AND '
-        '"transformadores" AND "de" AND "potencia"'
+        '"Qué" AND "evidencia" AND "hay" AND "sobre" AND "transformadores" AND "de" AND "potencia"'
     )
     assert provenance["query_strategy"] == "question_content_terms_all"
     assert provenance["query_fallback_used"] is False
     assert provenance["query_rewrite_used"] is True
-    assert result.hits[0].hit.provenance["applied_query"] == (
-        '"transformadores" AND "potencia"'
-    )
+    assert result.hits[0].hit.provenance["applied_query"] == ('"transformadores" AND "potencia"')
 
 
 @pytest.mark.parametrize(
@@ -425,6 +421,211 @@ def test_question_rewrite_preserves_english_and_german_subjects(
     provenance = result.hits[0].hit.provenance
     assert provenance["query_strategy"] == "question_content_terms_all"
     assert provenance["applied_query"] == applied_query
+
+
+@pytest.mark.parametrize(
+    ("source_kind", "factory", "table", "column"),
+    [
+        ("pdf", _create_pdf_state, "page_fts", "text"),
+        ("docx", _create_docx_state, "document_fts", "body"),
+        ("office", _create_office_state, "document_fts", "body"),
+        ("audio", _create_audio_state, "transcript_fts", "body"),
+        ("archive", _create_archive_state, "document_fts", "body"),
+        ("text", _create_text_state, "document_fts", "body"),
+    ],
+)
+def test_bounded_cjk_substring_fallback_covers_every_lexical_owner(
+    tmp_path: Path,
+    source_kind: str,
+    factory: Callable[[Path], None],
+    table: str,
+    column: str,
+) -> None:
+    state = tmp_path / f"{source_kind}.sqlite3"
+    factory(state)
+    with sqlite3.connect(state) as connection:
+        connection.execute(
+            f"UPDATE {table} SET {column}=?",
+            ("年度变压器油处理试验记录",),
+        )
+    before = hashlib.sha256(state.read_bytes()).hexdigest()
+
+    result = search_lexical_source(source_kind, state, "油处理")
+
+    assert hashlib.sha256(state.read_bytes()).hexdigest() == before
+    assert len(result.hits) == 1
+    provenance = result.hits[0].hit.provenance
+    assert provenance["backend"] == "sqlite_bounded_cjk_substring"
+    assert provenance["query_strategy"] == "cjk_substring_all_terms"
+    assert provenance["substring_terms"] == ("油处理",)
+    assert provenance["scanned_rows"] == 1
+    assert provenance["scan_row_limit"] == 50_000
+    assert result.hits[0].hit.vector_space == (f"lexical:substring-cjk:{source_kind}:v1")
+
+
+def test_cjk_question_scaffolding_preserves_exact_technical_subject(
+    tmp_path: Path,
+) -> None:
+    state = tmp_path / "pdf.sqlite3"
+    _create_pdf_state(state)
+    with sqlite3.connect(state) as connection:
+        connection.execute(
+            "UPDATE page_fts SET text=?",
+            ("年度变压器油处理试验记录与绝缘油分析",),
+        )
+
+    result = search_lexical_source(
+        "pdf",
+        state,
+        "有哪些关于变压器油处理的证据\N{FULLWIDTH QUESTION MARK}",
+    )
+
+    assert len(result.hits) == 1
+    provenance = result.hits[0].hit.provenance
+    assert provenance["applied_query"] == '"变压器油处理"'
+    assert provenance["substring_terms"] == ("变压器油处理",)
+    assert provenance["query_rewrite_used"] is True
+    assert provenance["query_fallback_used"] is True
+
+
+def test_mixed_cjk_fallback_keeps_latin_and_numeric_terms_mandatory(
+    tmp_path: Path,
+) -> None:
+    state = tmp_path / "pdf.sqlite3"
+    _create_pdf_state(state)
+    with sqlite3.connect(state) as connection:
+        connection.execute(
+            "UPDATE page_fts SET text=?",
+            ("IEC 60076 年度变压器油处理例行试验和绝缘测试",),
+        )
+        connection.execute(
+            "INSERT INTO documents VALUES(?,?,?,?,?,?,?,?,?)",
+            ("noise", "C:/docs/noise.pdf", "done", 0, 50, 2, 1, "pdf-v11", 7),
+        )
+        connection.execute(
+            "INSERT INTO page_fts VALUES(?,?,?,?)",
+            ("noise", "C:/docs/noise.pdf", 1, "年度变压器油处理维护记录"),
+        )
+
+    result = search_lexical_source("pdf", state, "IEC 60076 油处理")
+
+    assert [hit.path for hit in result.hits] == ["C:/docs/proteccion.pdf"]
+    assert result.hits[0].hit.provenance["substring_terms"] == (
+        "油处理",
+        "IEC",
+        "60076",
+    )
+
+
+def test_single_han_character_never_triggers_broad_substring_scan(
+    tmp_path: Path,
+) -> None:
+    state = tmp_path / "pdf.sqlite3"
+    _create_pdf_state(state)
+    with sqlite3.connect(state) as connection:
+        connection.execute(
+            "UPDATE page_fts SET text=?",
+            ("年度变压器油处理试验记录",),
+        )
+
+    result = search_lexical_source("pdf", state, "油")
+
+    assert result.availability is LexicalAvailability.AVAILABLE
+    assert result.hits == ()
+
+
+def test_cjk_substring_scan_fails_closed_above_the_row_bound(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = tmp_path / "pdf.sqlite3"
+    _create_pdf_state(state)
+    with sqlite3.connect(state) as connection:
+        connection.execute(
+            "UPDATE page_fts SET text=?",
+            ("年度变压器油处理试验记录",),
+        )
+        connection.execute(
+            "INSERT INTO documents VALUES(?,?,?,?,?,?,?,?,?)",
+            ("second", "C:/docs/second.pdf", "done", 0, 50, 2, 1, "pdf-v11", 7),
+        )
+        connection.execute(
+            "INSERT INTO page_fts VALUES(?,?,?,?)",
+            ("second", "C:/docs/second.pdf", 1, "其他变压器油处理记录"),
+        )
+    monkeypatch.setattr(semantic_lexical, "MAX_CJK_SUBSTRING_SCAN_ROWS", 1)
+
+    result = search_lexical_source("pdf", state, "油处理")
+
+    assert result.availability is LexicalAvailability.READ_FAILED
+    assert result.unavailable_reason == "cjk_substring_scan_limit_exceeded"
+    assert result.hits == ()
+
+
+def test_cjk_golden_set_has_top1_precision_and_negative_abstention(
+    tmp_path: Path,
+) -> None:
+    fixture_path = Path(__file__).parent / "fixtures" / "cjk_lexical_samples.json"
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    documents = fixture["documents"]
+    queries = fixture["queries"]
+    assert len(documents) == 18
+    assert len(queries) == 24
+    assert sum(query["expected_id"] is not None for query in queries) == 19
+    assert sum(query["expected_id"] is None for query in queries) == 5
+
+    state = tmp_path / "cjk-golden.sqlite3"
+    with sqlite3.connect(state) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE documents(
+                file_key TEXT PRIMARY KEY,path TEXT NOT NULL,status TEXT NOT NULL,
+                is_partial INTEGER NOT NULL,size INTEGER NOT NULL,mtime_ns INTEGER NOT NULL,
+                birthtime_ns INTEGER NOT NULL,processing_signature TEXT NOT NULL,
+                last_seen_run_id INTEGER NOT NULL
+            );
+            CREATE VIRTUAL TABLE page_fts USING fts5(
+                file_key UNINDEXED,path UNINDEXED,page_number UNINDEXED,text,
+                tokenize='unicode61 remove_diacritics 2'
+            );
+            """
+        )
+        for ordinal, document in enumerate(documents, start=1):
+            text = str(document["text"])
+            connection.execute(
+                "INSERT INTO documents VALUES(?,?,?,?,?,?,?,?,?)",
+                (
+                    document["id"],
+                    document["path"],
+                    "done",
+                    0,
+                    len(text.encode("utf-8")),
+                    ordinal,
+                    -1,
+                    "pdf-v12-cjk-fixture",
+                    1,
+                ),
+            )
+            connection.execute(
+                "INSERT INTO page_fts VALUES(?,?,?,?)",
+                (document["id"], document["path"], 1, text),
+            )
+    before = hashlib.sha256(state.read_bytes()).hexdigest()
+    cjk_fallbacks = 0
+
+    for query in queries:
+        result = search_lexical_source("pdf", state, str(query["query"]), limit=3)
+        expected_id = query["expected_id"]
+        if expected_id is None:
+            assert result.hits == (), query
+            continue
+        assert result.hits, query
+        assert result.hits[0].source_identity == expected_id, query
+        if result.hits[0].hit.provenance["backend"] == ("sqlite_bounded_cjk_substring"):
+            cjk_fallbacks += 1
+
+    assert cjk_fallbacks >= 2
+    assert hashlib.sha256(state.read_bytes()).hexdigest() == before
 
 
 @pytest.mark.parametrize(
