@@ -22,7 +22,12 @@ from .semantic_models import (
 
 
 _TERM = re.compile(r"\S+", re.UNICODE)
-_SENTENCE_BREAK = re.compile(r"[.!?;:]\s+|[。！？]\s*", re.UNICODE)
+_SENTENCE_BREAK = re.compile(
+    r"[.!?;:]\s+|"
+    r"[\N{IDEOGRAPHIC FULL STOP}\N{FULLWIDTH EXCLAMATION MARK}"
+    r"\N{FULLWIDTH QUESTION MARK}]\s*",
+    re.UNICODE,
+)
 _CHUNK_IDENTITY_VERSION = "semantic-text-chunk-identity-v2"
 
 
@@ -68,9 +73,7 @@ class TextChunkingConfig:
         if not self.algorithm_version.strip():
             raise ValueError("algorithm_version cannot be blank")
         if (self.model_token_limit is None) != (self.tokenizer_signature is None):
-            raise ValueError(
-                "model_token_limit and tokenizer_signature must be set together"
-            )
+            raise ValueError("model_token_limit and tokenizer_signature must be set together")
         if self.model_token_limit is not None and (
             isinstance(self.model_token_limit, bool)
             or not isinstance(self.model_token_limit, int)
@@ -78,8 +81,7 @@ class TextChunkingConfig:
         ):
             raise ValueError("model_token_limit must be between 1 and 1000000")
         if self.tokenizer_signature is not None and (
-            not isinstance(self.tokenizer_signature, str)
-            or not self.tokenizer_signature.strip()
+            not isinstance(self.tokenizer_signature, str) or not self.tokenizer_signature.strip()
         ):
             raise ValueError("tokenizer_signature cannot be blank")
 
@@ -96,8 +98,7 @@ class TextChunkingConfig:
         )
         if self.model_token_limit is not None:
             signature += (
-                f"|model-token-limit={self.model_token_limit}"
-                f"|tokenizer={self.tokenizer_signature}"
+                f"|model-token-limit={self.model_token_limit}|tokenizer={self.tokenizer_signature}"
             )
         return signature
 
@@ -201,11 +202,7 @@ def _exact_token_count(
     expected_token_limit: int,
 ) -> tuple[int, int]:
     counts, token_limit = token_counter((text,))
-    if (
-        isinstance(token_limit, bool)
-        or not isinstance(token_limit, int)
-        or token_limit < 1
-    ):
+    if isinstance(token_limit, bool) or not isinstance(token_limit, int) or token_limit < 1:
         raise RuntimeError("text tokenizer returned an invalid token limit")
     if len(counts) != 1:
         raise RuntimeError("text tokenizer returned an invalid result count")
@@ -240,9 +237,7 @@ def _fit_exact_token_budget(
             return end, normalized
         span = end - start
         if span <= 1:
-            raise ChunkLimitExceeded(
-                "one source character exceeds the production tokenizer limit"
-            )
+            raise ChunkLimitExceeded("one source character exceeds the production tokenizer limit")
 
         # Exact token counts are not assumed to be monotonic under every BPE
         # vocabulary.  Reduce by at least five percent on each rejection and
@@ -324,8 +319,7 @@ def iter_text_chunks(
             if normalized:
                 if ordinal >= active_config.max_chunks_per_item:
                     raise ChunkLimitExceeded(
-                        f"item {item_id!r} exceeds "
-                        f"{active_config.max_chunks_per_item} chunks"
+                        f"item {item_id!r} exceeds {active_config.max_chunks_per_item} chunks"
                     )
                 fingerprint = fingerprint_text(normalized)
                 yield TextChunk(

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import replace
+from itertools import pairwise
 from typing import Sequence, cast
 
 import pytest
@@ -49,9 +50,7 @@ def test_xxh3_stream_fingerprint_matches_contiguous_payload() -> None:
         ContentFingerprint("ABC", 3, "bad")
 
 
-@pytest.mark.parametrize(
-    "dtype,width", [(VectorDType.FLOAT16, 2), (VectorDType.FLOAT32, 4)]
-)
+@pytest.mark.parametrize("dtype,width", [(VectorDType.FLOAT16, 2), (VectorDType.FLOAT32, 4)])
 def test_vector_codec_normalizes_and_has_explicit_compact_width(
     dtype: VectorDType,
     width: int,
@@ -329,10 +328,7 @@ def test_chunker_fits_subword_heavy_windows_with_exact_token_counter() -> None:
     assert all(subword_heavy_counts((chunk.text,))[0][0] <= 512 for chunk in chunks)
     assert chunks[0].start_char == 0
     assert chunks[-1].end_char == len(source)
-    assert all(
-        current.start_char <= previous.end_char
-        for previous, current in zip(chunks, chunks[1:])
-    )
+    assert all(current.start_char <= previous.end_char for previous, current in pairwise(chunks))
 
 
 def test_chunker_rejects_payload_that_cannot_fit_one_source_character() -> None:
