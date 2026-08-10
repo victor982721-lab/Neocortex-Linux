@@ -104,9 +104,7 @@ def test_native_pdf_quality_gate_ocr_replaces_long_mojibake() -> None:
 )
 def test_clean_german_and_han_native_text_skip_ocr(native_text: str) -> None:
     session = _ChildExtractionSession(None, _config(), object(), object())
-    with patch(
-        "_04_Nucleo_Operativo.pdf_isolation._ocr_page_result"
-    ) as ocr:
+    with patch("_04_Nucleo_Operativo.pdf_isolation._ocr_page_result") as ocr:
         source, text, provenance = session._page_text(_Page(native_text))
 
     ocr.assert_not_called()
@@ -243,9 +241,7 @@ def test_schema_12_promotes_bounded_page_ocr_provenance() -> None:
             version = connection.execute(
                 "SELECT value FROM metadata WHERE key='schema_version'"
             ).fetchone()[0]
-            stored = connection.execute(
-                "SELECT ocr_provenance_json FROM pages"
-            ).fetchone()[0]
+            stored = connection.execute("SELECT ocr_provenance_json FROM pages").fetchone()[0]
 
     assert version == str(SCHEMA_VERSION) == "12"
     assert json.loads(stored) == provenance
@@ -257,9 +253,7 @@ def test_schema_11_migration_preserves_populated_pages_and_staging() -> None:
         initialize_pdf_state(state)
         with closing(sqlite3.connect(state)) as connection:
             connection.execute("ALTER TABLE pages DROP COLUMN ocr_provenance_json")
-            connection.execute(
-                "ALTER TABLE page_staging DROP COLUMN ocr_provenance_json"
-            )
+            connection.execute("ALTER TABLE page_staging DROP COLUMN ocr_provenance_json")
             connection.execute(
                 """INSERT INTO documents(
                 file_key,path,size,mtime_ns,birthtime_ns,processing_signature,
@@ -275,9 +269,7 @@ def test_schema_11_migration_preserves_populated_pages_and_staging() -> None:
                 file_key,processing_signature,page_number,source,text_zlib,text_chars)
                 VALUES('key','sig',1,'ocr',X'78',1)"""
             )
-            connection.execute(
-                "UPDATE metadata SET value='11' WHERE key='schema_version'"
-            )
+            connection.execute("UPDATE metadata SET value='11' WHERE key='schema_version'")
             connection.commit()
 
         initialize_pdf_state(state)
@@ -286,9 +278,7 @@ def test_schema_11_migration_preserves_populated_pages_and_staging() -> None:
             version = connection.execute(
                 "SELECT value FROM metadata WHERE key='schema_version'"
             ).fetchone()[0]
-            page = connection.execute(
-                "SELECT file_key,ocr_provenance_json FROM pages"
-            ).fetchone()
+            page = connection.execute("SELECT file_key,ocr_provenance_json FROM pages").fetchone()
             staged = connection.execute(
                 "SELECT file_key,ocr_provenance_json FROM page_staging"
             ).fetchone()
@@ -304,12 +294,8 @@ def test_schema_11_ocr_provenance_migration_rolls_back_ddl_on_failure() -> None:
         initialize_pdf_state(state)
         with closing(sqlite3.connect(state)) as connection:
             connection.execute("ALTER TABLE pages DROP COLUMN ocr_provenance_json")
-            connection.execute(
-                "ALTER TABLE page_staging DROP COLUMN ocr_provenance_json"
-            )
-            connection.execute(
-                "UPDATE metadata SET value='11' WHERE key='schema_version'"
-            )
+            connection.execute("ALTER TABLE page_staging DROP COLUMN ocr_provenance_json")
+            connection.execute("UPDATE metadata SET value='11' WHERE key='schema_version'")
             connection.execute("INSERT INTO metadata VALUES('preserved','yes')")
             connection.commit()
 
@@ -322,12 +308,9 @@ def test_schema_11_ocr_provenance_migration_rolls_back_ddl_on_failure() -> None:
                 initialize_pdf_state(state)
 
         with closing(sqlite3.connect(state)) as connection:
-            page_columns = {
-                str(row[1]) for row in connection.execute("PRAGMA table_info(pages)")
-            }
+            page_columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(pages)")}
             staging_columns = {
-                str(row[1])
-                for row in connection.execute("PRAGMA table_info(page_staging)")
+                str(row[1]) for row in connection.execute("PRAGMA table_info(page_staging)")
             }
             objects = {
                 str(row[0])

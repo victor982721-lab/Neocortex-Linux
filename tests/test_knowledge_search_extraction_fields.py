@@ -67,15 +67,9 @@ def test_contract_field_topology_and_class_pickle_bytes_are_stable() -> None:
         ),
     }
     pickle_sha256 = {
-        KnowledgeCandidate: (
-            "6E6E55E406EBFFBA58E2F888A1D1CD907F1B8DA7B6D394F1484C3DE7210AF873"
-        ),
-        RankingExecution: (
-            "5382CB89ABDF9E9E1E043B4A6E418D1A1E5BE3DC2443E8000C15730FC1292368"
-        ),
-        KnowledgeSearchResult: (
-            "E577900298AD8FDAAB3E0E67D71E9BF39C275298C409E4A23F969385F02A9C54"
-        ),
+        KnowledgeCandidate: ("6E6E55E406EBFFBA58E2F888A1D1CD907F1B8DA7B6D394F1484C3DE7210AF873"),
+        RankingExecution: ("5382CB89ABDF9E9E1E043B4A6E418D1A1E5BE3DC2443E8000C15730FC1292368"),
+        KnowledgeSearchResult: ("E577900298AD8FDAAB3E0E67D71E9BF39C275298C409E4A23F969385F02A9C54"),
     }
 
     for contract, names in expected.items():

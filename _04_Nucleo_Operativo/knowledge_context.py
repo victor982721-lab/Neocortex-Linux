@@ -248,8 +248,7 @@ def _locator_payload(evidence: EvidenceRef) -> dict[str, object]:
         locator["bounding_box"] = list(evidence.bounding_box)
     if evidence.identifiers:
         locator["identifiers"] = [
-            {"namespace": namespace, "value": value}
-            for namespace, value in evidence.identifiers
+            {"namespace": namespace, "value": value} for namespace, value in evidence.identifiers
         ]
     return locator
 
@@ -291,8 +290,7 @@ def _render_entry(entry: _ContextEntry) -> str:
     }
     return "\n".join(
         (
-            f"[{entry.citation_id}] target="
-            f"{canonical_json(_citation_target(entry.hit))}",
+            f"[{entry.citation_id}] target={canonical_json(_citation_target(entry.hit))}",
             f"why={canonical_json(reason_payload)}",
             f"snippet={entry.rendered_snippet}",
         )
@@ -351,8 +349,7 @@ def _append_unique(values: list[str], value: str) -> None:
 def _stable_graph_id(prefix: str, identity: dict[str, object]) -> str:
     fingerprint = fingerprint_text(canonical_json(identity))
     return (
-        f"{prefix}-v1:{fingerprint.xxh3_128}:{fingerprint.byte_count}:"
-        f"{fingerprint.xxh3_64_guard}"
+        f"{prefix}-v1:{fingerprint.xxh3_128}:{fingerprint.byte_count}:{fingerprint.xxh3_64_guard}"
     )
 
 
@@ -542,9 +539,8 @@ def _accumulate_entry_identifiers(
     resource_id = hit.resource.resource_id
     for namespace, value in hit.evidence.identifiers:
         normalized_namespace = namespace.casefold()
-        if (
-            hit.evidence.section_kind == "code_relation"
-            and normalized_namespace.startswith("code_relation_")
+        if hit.evidence.section_kind == "code_relation" and normalized_namespace.startswith(
+            "code_relation_"
         ):
             continue
         if normalized_namespace != "planned_duplicate_of":
@@ -768,9 +764,7 @@ def _context_state(
         0,
         result.omitted_candidates - result.window_omitted_candidates,
     )
-    available_execution = any(
-        ranking.executed and ranking.available for ranking in result.rankings
-    )
+    available_execution = any(ranking.executed and ranking.available for ranking in result.rankings)
     missing: list[str] = []
 
     if source_hit_count == 0:
@@ -787,53 +781,34 @@ def _context_state(
             missing.append("No evidence matched the query in the captured snapshot.")
         else:
             completeness = KnowledgeCompleteness.PARTIAL
-            missing.append(
-                "Retrieval was incomplete; missing evidence cannot be ruled out."
-            )
+            missing.append("Retrieval was incomplete; missing evidence cannot be ruled out.")
     else:
         completeness = KnowledgeCompleteness.COMPLETE
         if not result.complete:
-            missing.append(
-                "One or more retrieval rankings were incomplete or unavailable."
-            )
+            missing.append("One or more retrieval rankings were incomplete or unavailable.")
         if not entries:
-            missing.append(
-                "No exact citation target fit within the context character budget."
-            )
+            missing.append("No exact citation target fit within the context character budget.")
 
     if result.snapshot.consistency is SnapshotConsistency.SNAPSHOT_CHANGED:
         missing.append("The owner snapshot changed during retrieval.")
     if result.truncated:
         missing.append("Search candidates were truncated before context construction.")
     if search_omitted:
-        missing.append(
-            f"Search omitted {search_omitted} candidate(s) before context construction."
-        )
+        missing.append(f"Search omitted {search_omitted} candidate(s) before context construction.")
     if context_omitted:
-        missing.append(
-            f"Context omitted {context_omitted} retrieved hit(s) because of its bounds."
-        )
+        missing.append(f"Context omitted {context_omitted} retrieved hit(s) because of its bounds.")
 
-    unavailable_snippets = sum(
-        entry.snippet_state == "unavailable" for entry in entries
-    )
-    budget_omitted_snippets = sum(
-        entry.snippet_state == "budget_omitted" for entry in entries
-    )
+    unavailable_snippets = sum(entry.snippet_state == "unavailable" for entry in entries)
+    budget_omitted_snippets = sum(entry.snippet_state == "budget_omitted" for entry in entries)
     truncated_snippets = sum(entry.snippet_state == "truncated" for entry in entries)
     if unavailable_snippets:
-        missing.append(
-            f"{unavailable_snippets} selected evidence item(s) had no textual snippet."
-        )
+        missing.append(f"{unavailable_snippets} selected evidence item(s) had no textual snippet.")
     if budget_omitted_snippets:
         missing.append(
-            f"{budget_omitted_snippets} evidence snippet(s) were omitted by the "
-            "character budget."
+            f"{budget_omitted_snippets} evidence snippet(s) were omitted by the character budget."
         )
     if truncated_snippets:
-        missing.append(
-            f"{truncated_snippets} evidence snippet(s) were visibly truncated."
-        )
+        missing.append(f"{truncated_snippets} evidence snippet(s) were visibly truncated.")
     if contradictions:
         missing.append("Contradictory structured claims require resolution.")
 
@@ -850,14 +825,11 @@ def _context_state(
     ):
         completeness = KnowledgeCompleteness.PARTIAL
 
-    selected_hit_warnings = tuple(
-        warning for entry in entries for warning in entry.hit.warnings
-    )
+    selected_hit_warnings = tuple(warning for entry in entries for warning in entry.hit.warnings)
     internal_warnings: tuple[str, ...] = ()
     if duplicate_or_overflow_hits:
         internal_warnings = (
-            f"Context ignored {duplicate_or_overflow_hits} duplicate or "
-            "out-of-bound hit(s).",
+            f"Context ignored {duplicate_or_overflow_hits} duplicate or out-of-bound hit(s).",
         )
     warnings = _bounded_unique_notices(
         result.warnings,
@@ -958,9 +930,7 @@ def _render_graph(
     if entities:
         blocks.append("ENTITIES\n" + "\n".join(entity.to_json() for entity in entities))
     if relations:
-        blocks.append(
-            "RELATIONS\n" + "\n".join(relation.to_json() for relation in relations)
-        )
+        blocks.append("RELATIONS\n" + "\n".join(relation.to_json() for relation in relations))
     return tuple(blocks)
 
 
@@ -981,9 +951,7 @@ def _render_status(state: _ContextState) -> str:
             )
         )
     if state.warnings:
-        sections.append(
-            "WARNINGS\n" + "\n".join(f"- {warning}" for warning in state.warnings)
-        )
+        sections.append("WARNINGS\n" + "\n".join(f"- {warning}" for warning in state.warnings))
     return "\n".join(sections)
 
 
@@ -1028,18 +996,12 @@ def _compose(
     )
     entities, relations = graph
     blocks = [
-        _render_header(result, plan)
-        if include_diagnostics
-        else _render_evidence_header(result)
+        _render_header(result, plan) if include_diagnostics else _render_evidence_header(result)
     ]
     if entries:
         blocks.append("EVIDENCE\n" + "\n\n".join(map(_render_entry, entries)))
     blocks.extend(_render_graph(entities, relations))
-    blocks.append(
-        _render_status(state)
-        if include_diagnostics
-        else _render_compact_status(state)
-    )
+    blocks.append(_render_status(state) if include_diagnostics else _render_compact_status(state))
     return "\n\n".join(blocks), state
 
 
@@ -1137,9 +1099,7 @@ def build_context_bundle(
     if isinstance(character_limit, bool) or not 1 <= character_limit <= (
         MAX_CONTEXT_CHARACTER_LIMIT
     ):
-        raise ValueError(
-            f"character_limit must be between 1 and {MAX_CONTEXT_CHARACTER_LIMIT}"
-        )
+        raise ValueError(f"character_limit must be between 1 and {MAX_CONTEXT_CHARACTER_LIMIT}")
     if isinstance(max_hits, bool) or not 1 <= max_hits <= MAX_CONTEXT_HITS:
         raise ValueError(f"max_hits must be between 1 and {MAX_CONTEXT_HITS}")
 
@@ -1231,9 +1191,7 @@ def build_context_bundle(
         )
 
     truncated_evidence_ids = tuple(
-        entry.hit.evidence.evidence_id
-        for entry in entries
-        if entry.snippet_state == "truncated"
+        entry.hit.evidence.evidence_id for entry in entries if entry.snippet_state == "truncated"
     )
     budget = ContextBudget(
         character_limit=character_limit,
@@ -1246,9 +1204,7 @@ def build_context_bundle(
     )
     entities, relations = graph
     graph_budget = ContextGraphBudget(
-        identifiers_considered=sum(
-            len(entry.hit.evidence.identifiers) for entry in entries
-        ),
+        identifiers_considered=sum(len(entry.hit.evidence.identifiers) for entry in entries),
         entities_included=len(entities),
         relations_included=len(relations),
     )

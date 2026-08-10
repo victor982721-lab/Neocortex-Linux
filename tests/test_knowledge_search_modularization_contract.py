@@ -197,9 +197,7 @@ def test_public_facade_surface_signatures_and_identity_are_stable() -> None:
     assert sdk.KnowledgeSearchResult is knowledge_search.KnowledgeSearchResult
     assert KnowledgeCandidate.__match_args__ == KnowledgeCandidate.__slots__
     assert RankingExecution.__match_args__ == RankingExecution.__slots__
-    assert all(
-        callable(getattr(knowledge_search, name)) for name in PRIVATE_MONKEYPATCH_SEAMS
-    )
+    assert all(callable(getattr(knowledge_search, name)) for name in PRIVATE_MONKEYPATCH_SEAMS)
 
 
 @pytest.mark.parametrize(
@@ -515,19 +513,14 @@ def test_plain_lexical_value_error_remains_an_observable_fts_fallback(
         _available_snapshot(),
     )
 
-    lexical_reports = tuple(
-        report for report in result.rankings if report.channel == "lexical"
-    )
+    lexical_reports = tuple(report for report in result.rankings if report.channel == "lexical")
     assert tuple(report.name for report in lexical_reports) == (
         "fts_pdf",
         "fts_docx",
         "fts_office",
         "fts_audio",
     )
-    assert all(
-        report.reason == "query_unsupported_by_fts:ValueError"
-        for report in lexical_reports
-    )
+    assert all(report.reason == "query_unsupported_by_fts:ValueError" for report in lexical_reports)
     assert not result.complete
 
 
@@ -591,9 +584,7 @@ def test_direct_sqlite_setup_preserves_primary_error_when_close_also_fails(
             events.append("close")
             raise secondary
 
-    monkeypatch.setattr(
-        knowledge_search.sqlite3, "connect", lambda *_a, **_k: Connection()
-    )
+    monkeypatch.setattr(knowledge_search.sqlite3, "connect", lambda *_a, **_k: Connection())
 
     with pytest.raises(BaseException) as raised:
         knowledge_search._open_direct_readonly_sqlite(tmp_path / "owner.sqlite3")

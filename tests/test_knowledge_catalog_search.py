@@ -4,7 +4,6 @@
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
-
 # region [01] Dependencias del módulo
 from __future__ import annotations
 
@@ -38,9 +37,7 @@ from _04_Nucleo_Operativo.knowledge_snapshot import KnowledgeStatePaths
 
 _ALPHA_FILE_KEY = "00000000000000000000000000000001:00000000000000000000000000000002"
 _BETA_FILE_KEY = "00000000000000000000000000000003:00000000000000000000000000000004"
-_CATALOG_ONLY_FILE_KEY = (
-    "00000000000000000000000000000005:00000000000000000000000000000006"
-)
+_CATALOG_ONLY_FILE_KEY = "00000000000000000000000000000005:00000000000000000000000000000006"
 
 
 def _snapshot(*, catalog_heads: bool = True) -> KnowledgeSnapshot:
@@ -263,9 +260,7 @@ def test_catalog_metadata_filters_membership_without_becoming_relevance(
     )
 
     assert {hit.resource.current_path for hit in result.hits} == {"C:/docs/alpha.pdf"}
-    assert {signal.source for hit in result.hits for signal in hit.signals} == {
-        "fts_pdf"
-    }
+    assert {signal.source for hit in result.hits for signal in hit.signals} == {"fts_pdf"}
     catalog_report = next(
         ranking for ranking in result.rankings if ranking.name == "catalog_metadata"
     )
@@ -353,9 +348,7 @@ def test_required_project_filter_without_catalog_heads_is_incomplete(
 
     assert result.hits == ()
     assert not result.complete
-    report = next(
-        ranking for ranking in result.rankings if ranking.name == "catalog_metadata"
-    )
+    report = next(ranking for ranking in result.rankings if ranking.name == "catalog_metadata")
     assert not report.executed
     assert not report.available
     assert not report.complete
@@ -407,11 +400,7 @@ def test_exact_catalog_evidence_comes_only_from_typed_adapter(
         )
     }
     assert all(signal.score_kind == "exact" for signal in exact_hits[0].signals)
-    assert all(
-        signal.source != "catalog_metadata"
-        for hit in result.hits
-        for signal in hit.signals
-    )
+    assert all(signal.source != "catalog_metadata" for hit in result.hits for signal in hit.signals)
     assert any(ranking.name == "catalog_metadata" for ranking in result.rankings)
 
 
@@ -423,9 +412,7 @@ def test_catalog_execution_uses_the_planned_candidate_limit(
     with sqlite3.connect(state / "document_catalog.sqlite3") as connection:
         _insert_catalog_document(
             connection,
-            file_key=(
-                "00000000000000000000000000000007:00000000000000000000000000000008"
-            ),
+            file_key=("00000000000000000000000000000007:00000000000000000000000000000008"),
             path="C:/docs/delta.pdf",
             volume_id=7,
             file_id=8,
@@ -448,4 +435,6 @@ def test_catalog_execution_uses_the_planned_candidate_limit(
     assert report.complete
     assert report.reason is None
     assert report.result_window_full
+
+
 # endregion [02]

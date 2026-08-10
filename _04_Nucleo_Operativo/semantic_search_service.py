@@ -589,9 +589,7 @@ def apply_image_retrieval_calibration(
     retained_keys: set[tuple[int, str, str, int]] = set()
     rejected_by_reason: dict[str, int] = {}
     for hit in ranking.hits:
-        backend, pipeline, provenance_conflict = _retrieval_contract_provenance(
-            hit.provenance
-        )
+        backend, pipeline, provenance_conflict = _retrieval_contract_provenance(hit.provenance)
         reason: str | None = None
         if provenance_conflict:
             reason = "provenance_contract_conflict"
@@ -606,13 +604,9 @@ def apply_image_retrieval_calibration(
         else:
             rejected_by_reason[reason] = rejected_by_reason.get(reason, 0) + 1
 
-    retained_hits = tuple(
-        hit for hit in ranking.hits if _search_hit_key(hit) in retained_keys
-    )
+    retained_hits = tuple(hit for hit in ranking.hits if _search_hit_key(hit) in retained_keys)
     retained_resolved = tuple(
-        value
-        for value in ranking.resolved
-        if _search_hit_key(value.hit) in retained_keys
+        value for value in ranking.resolved if _search_hit_key(value.hit) in retained_keys
     )
     query_abstained = bool(ranking.hits) and not retained_hits
     calibration_metadata = {

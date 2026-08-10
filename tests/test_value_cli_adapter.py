@@ -47,8 +47,10 @@ def test_value_payload_uses_fixed_scope_current_reference_and_no_mutation(
     monkeypatch.setattr(
         value_cli_adapter,
         "preview_value_review",
-        lambda paths, query: seen.append((paths, query))
-        or _fake_report(ValueReviewAvailability.READY, returned_count=2),
+        lambda paths, query: (
+            seen.append((paths, query))
+            or _fake_report(ValueReviewAvailability.READY, returned_count=2)
+        ),
     )
 
     payload = value_cli_adapter.value_review_payload(
@@ -154,11 +156,14 @@ def test_value_review_json_is_one_document(
         lambda *_args, **_kwargs: expected,
     )
 
-    assert value_cli_adapter.run_value_review(
-        scope="personal",
-        limit=5,
-        json_output=True,
-    ) == 3
+    assert (
+        value_cli_adapter.run_value_review(
+            scope="personal",
+            limit=5,
+            json_output=True,
+        )
+        == 3
+    )
     assert json.loads(capsys.readouterr().out) == expected
 
 

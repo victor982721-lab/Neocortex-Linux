@@ -206,7 +206,11 @@ def _run_status(args: argparse.Namespace) -> int:
             _render_scope_error(entry)
             continue
         owners = snapshot.get("owners", [])
-        owner_rows = [owner for owner in owners if isinstance(owner, dict)] if isinstance(owners, list) else []
+        owner_rows = (
+            [owner for owner in owners if isinstance(owner, dict)]
+            if isinstance(owners, list)
+            else []
+        )
         available = sum(owner.get("state") == "available" for owner in owner_rows)
         absent = sum(owner.get("state") == "absent" for owner in owner_rows)
         attention = [
@@ -340,7 +344,7 @@ def _run_ask(args: argparse.Namespace) -> int:
         )
         for index, hit in enumerate(hit_rows):
             citation = citation_rows[index] if index < len(citation_rows) else {}
-            _render_hit(hit, prefix=f"[{citation.get('citation_id', f'K{index + 1}')}]" )
+            _render_hit(hit, prefix=f"[{citation.get('citation_id', f'K{index + 1}')}]")
         if not hit_rows:
             missing = bundle.get("missing_information")
             if isinstance(missing, list) and missing:

@@ -10,9 +10,14 @@ from _04_Nucleo_Operativo.content_types import DETECTOR_VERSION, detect_content_
 
 
 def _ebml_header(doc_type: bytes) -> bytes:
-    return b"\x1aE\xdf\xa3" + b"\x9f" + b"fixture" + b"\x42\x82" + bytes(
-        (0x80 | len(doc_type),)
-    ) + doc_type
+    return (
+        b"\x1aE\xdf\xa3"
+        + b"\x9f"
+        + b"fixture"
+        + b"\x42\x82"
+        + bytes((0x80 | len(doc_type),))
+        + doc_type
+    )
 
 
 @pytest.mark.parametrize(

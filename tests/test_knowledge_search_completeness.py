@@ -80,8 +80,7 @@ def _snapshot(
             version,
             (
                 version
-                if states.get(owner, OwnerAvailability.ABSENT)
-                is OwnerAvailability.AVAILABLE
+                if states.get(owner, OwnerAvailability.ABSENT) is OwnerAvailability.AVAILABLE
                 else None
             ),
         )
@@ -139,8 +138,7 @@ def _ranking_stub(
 
 def _install_complete_lexical(monkeypatch: pytest.MonkeyPatch) -> None:
     reports = tuple(
-        _ranking(name, "lexical", available=True, complete=True)
-        for name in _LEXICAL_RANKINGS
+        _ranking(name, "lexical", available=True, complete=True) for name in _LEXICAL_RANKINGS
     )
     monkeypatch.setattr(
         knowledge_search,
@@ -202,9 +200,7 @@ def test_semantic_plan_steps_are_the_only_required_modalities(
         tuple(step.ranking_name for step in plan.steps if step.channel == "semantic")
         == expected_names
     )
-    assert knowledge_search._required_semantic_ranking_names(plan) == frozenset(
-        expected_names
-    )
+    assert knowledge_search._required_semantic_ranking_names(plan) == frozenset(expected_names)
 
 
 @pytest.mark.parametrize(
@@ -257,9 +253,7 @@ def test_each_required_semantic_modality_controls_completeness_and_warning(
     _install_complete_lexical(monkeypatch)
     _install_complete_catalog(monkeypatch)
     plan = plan_knowledge_query(query)
-    semantic_names = tuple(
-        step.ranking_name for step in plan.steps if step.channel == "semantic"
-    )
+    semantic_names = tuple(step.ranking_name for step in plan.steps if step.channel == "semantic")
     monkeypatch.setattr(
         knowledge_search,
         "_semantic_rankings",
@@ -422,9 +416,7 @@ def test_semantic_execution_uses_only_planned_steps_and_exact_global_budget(
         assert kwargs["limit"] == candidate_limit
         modality = "text" if include_text else "image"
         expected_name = f"semantic_{modality}"
-        planned_step = next(
-            step for step in plan.steps if step.ranking_name == expected_name
-        )
+        planned_step = next(step for step in plan.steps if step.ranking_name == expected_name)
         assert candidate_limit == planned_step.candidate_limit
         observed.append((expected_name, vector_budget))
         return SemanticSearchResult(
@@ -530,16 +522,12 @@ def test_optional_title_absence_is_reported_without_blocking_discovery(
         _snapshot(semantic=OwnerAvailability.AVAILABLE),
     )
 
-    title_report = next(
-        report for report in result.rankings if report.name == "semantic_title"
-    )
+    title_report = next(report for report in result.rankings if report.name == "semantic_title")
     assert title_report.channel == "semantic_discovery"
     assert title_report.reason == "title_channel_not_indexed"
     assert not title_report.available
     assert result.complete
-    assert result.warnings == (
-        "ranking_partial:semantic_title:title_channel_not_indexed",
-    )
+    assert result.warnings == ("ranking_partial:semantic_title:title_channel_not_indexed",)
 
 
 @pytest.mark.parametrize("cutoff_reason", ("top_k", "candidate_limit_reached"))
@@ -578,9 +566,7 @@ def test_semantic_candidate_cutoff_is_a_complete_bounded_window(
         "search_semantic_index",
         cutoff_semantic_search,
     )
-    plan = plan_knowledge_query(
-        KnowledgeQuery("proteccion interruptor", source_kinds=("pdf",))
-    )
+    plan = plan_knowledge_query(KnowledgeQuery("proteccion interruptor", source_kinds=("pdf",)))
 
     result = execute_knowledge_search(
         KnowledgeStatePaths.from_directory(tmp_path / "state"),
@@ -637,9 +623,7 @@ def test_semantic_vector_cutoff_remains_incomplete_and_exposes_continuation(
         "search_semantic_index",
         cutoff_semantic_search,
     )
-    plan = plan_knowledge_query(
-        KnowledgeQuery("proteccion interruptor", source_kinds=("pdf",))
-    )
+    plan = plan_knowledge_query(KnowledgeQuery("proteccion interruptor", source_kinds=("pdf",)))
 
     result = execute_knowledge_search(
         KnowledgeStatePaths.from_directory(tmp_path / "state"),
@@ -760,12 +744,8 @@ def test_code_only_required_semantic_failure_degrades_completeness(
         )
 
     monkeypatch.setattr(knowledge_search, "_code_ranking", complete_code)
-    plan = plan_knowledge_query(
-        KnowledgeQuery("definition breaker", source_kinds=("code",))
-    )
-    assert knowledge_search._required_direct_ranking_names(plan) == frozenset(
-        {"code_structural"}
-    )
+    plan = plan_knowledge_query(KnowledgeQuery("definition breaker", source_kinds=("code",)))
+    assert knowledge_search._required_direct_ranking_names(plan) == frozenset({"code_structural"})
 
     result = execute_knowledge_search(
         KnowledgeStatePaths.from_directory(tmp_path / "state"),
@@ -880,9 +860,7 @@ def test_required_direct_ranking_cannot_be_substituted_within_channel(
         )
 
     monkeypatch.setattr(knowledge_search, "_code_ranking", sibling_code_ranking)
-    plan = plan_knowledge_query(
-        KnowledgeQuery("definition breaker", source_kinds=("code",))
-    )
+    plan = plan_knowledge_query(KnowledgeQuery("definition breaker", source_kinds=("code",)))
 
     result = execute_knowledge_search(
         KnowledgeStatePaths.from_directory(tmp_path / "state"),
@@ -907,9 +885,7 @@ def test_semantic_outer_failure_reports_optional_planned_image_ranking(
         raise RuntimeError("semantic image fixture failed")
 
     monkeypatch.setattr(knowledge_search, "_semantic_rankings", semantic_failure)
-    plan = plan_knowledge_query(
-        KnowledgeQuery("substation maintenance", source_kinds=("image",))
-    )
+    plan = plan_knowledge_query(KnowledgeQuery("substation maintenance", source_kinds=("image",)))
     plan = replace(
         plan,
         plan_id="knowledge-plan-v1:optional-image-fallback-fixture",
@@ -926,15 +902,11 @@ def test_semantic_outer_failure_reports_optional_planned_image_ranking(
         _snapshot(semantic=OwnerAvailability.AVAILABLE),
     )
 
-    semantic_reports = tuple(
-        report for report in result.rankings if report.channel == "semantic"
-    )
+    semantic_reports = tuple(report for report in result.rankings if report.channel == "semantic")
     assert tuple(report.name for report in semantic_reports) == ("semantic_image",)
     assert semantic_reports[0].reason == "owner_read_failed:RuntimeError"
     assert result.complete
-    assert result.warnings == (
-        "ranking_partial:semantic_image:owner_read_failed:RuntimeError",
-    )
+    assert result.warnings == ("ranking_partial:semantic_image:owner_read_failed:RuntimeError",)
     assert result.plan is plan
     assert plan.to_json() == serialized_plan
 
@@ -1106,9 +1078,7 @@ def test_image_ocr_filter_accepts_only_ocr_evidence_from_image_resources() -> No
         path="C:/images/breaker.jpg",
         section_kind="image_region",
     )
-    plan = plan_knowledge_query(
-        KnowledgeQuery("breaker label", source_kinds=("image_ocr",))
-    )
+    plan = plan_knowledge_query(KnowledgeQuery("breaker label", source_kinds=("image_ocr",)))
 
     filtered = knowledge_search._apply_plan_filters(
         {"semantic_image": (ocr, visual)},

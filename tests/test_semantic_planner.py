@@ -23,7 +23,11 @@ from _04_Nucleo_Operativo.office_state import (
     initialize_office_state,
     office_database,
 )
-from _04_Nucleo_Operativo.pdf_state import initialize_pdf_state, pdf_database
+from _04_Nucleo_Operativo.pdf_state import (
+    SCHEMA_VERSION as PDF_SCHEMA_VERSION,
+    initialize_pdf_state,
+    pdf_database,
+)
 from _04_Nucleo_Operativo.semantic_config import (
     clip_image_model,
     multilingual_text_model,
@@ -454,7 +458,7 @@ def test_plan_rejects_schema_mismatch_without_migration(tmp_path: Path) -> None:
         connection.execute("UPDATE metadata SET value='10' WHERE key='schema_version'")
     before = database.read_bytes()
 
-    with pytest.raises(SemanticPlanBlocked, match="expected 11"):
+    with pytest.raises(SemanticPlanBlocked, match=rf"expected {PDF_SCHEMA_VERSION}"):
         plan_semantic_index(
             tmp_path,
             scope="text",

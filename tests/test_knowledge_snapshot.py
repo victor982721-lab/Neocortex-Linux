@@ -39,6 +39,7 @@ from _04_Nucleo_Operativo.semantic_state import (
     register_embedding_model,
     semantic_database,
 )
+from _04_Nucleo_Operativo.pdf_state import SCHEMA_VERSION as PDF_SCHEMA_VERSION
 from _04_Nucleo_Operativo.text_state import initialize_text_state
 # endregion [01]
 
@@ -540,7 +541,10 @@ def test_snapshot_distinguishes_absent_future_and_corrupt_without_mutation(
     future = state / "pdf.sqlite3"
     with sqlite3.connect(future) as connection:
         connection.execute("CREATE TABLE metadata(key TEXT PRIMARY KEY,value TEXT)")
-        connection.execute("INSERT INTO metadata(key,value) VALUES('schema_version','12')")
+        connection.execute(
+            "INSERT INTO metadata(key,value) VALUES('schema_version',?)",
+            (str(PDF_SCHEMA_VERSION + 1),),
+        )
     future_before = future.read_bytes()
     corrupt = state / "docx.sqlite3"
     corrupt.write_bytes(b"not a sqlite database")

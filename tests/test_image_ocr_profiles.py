@@ -56,9 +56,7 @@ def _tsv(words: list[tuple[str, float]]) -> subprocess.CompletedProcess[bytes]:
         "left\ttop\twidth\theight\tconf\ttext"
     ]
     for index, (word, confidence) in enumerate(words, start=1):
-        rows.append(
-            f"5\t1\t1\t1\t1\t{index}\t1\t1\t80\t20\t{confidence}\t{word}"
-        )
+        rows.append(f"5\t1\t1\t1\t1\t{index}\t1\t1\t80\t20\t{confidence}\t{word}")
     return _result(("\n".join(rows) + "\n").encode("utf-8"))
 
 
@@ -207,9 +205,7 @@ def test_multilingual_preflight_requests_all_potential_packs_and_reports_missing
         "_04_Nucleo_Operativo.image_document.resolve_tesseract_runtime",
         return_value=unavailable,
     ) as resolve:
-        runtime = resolve_document_verifier(
-            DocumentVerifierConfig(profile="auto-multilingual")
-        )
+        runtime = resolve_document_verifier(DocumentVerifierConfig(profile="auto-multilingual"))
 
     assert not runtime.enabled
     assert runtime.unavailable_reason == "missing OCR languages: deu, chi_sim, chi_tra"
@@ -221,9 +217,7 @@ def test_multilingual_preflight_requests_all_potential_packs_and_reports_missing
         "chi_tra",
         "osd",
     )
-    assert resolve.call_args.kwargs["language"] == (
-        "spa+eng+deu+chi_sim+chi_tra+osd"
-    )
+    assert resolve.call_args.kwargs["language"] == ("spa+eng+deu+chi_sim+chi_tra+osd")
 
 
 def test_configured_image_profile_fails_closed_when_requested_pack_is_missing() -> None:

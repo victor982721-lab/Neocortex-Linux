@@ -4,7 +4,6 @@
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
-
 # region [01] Dependencias del módulo
 from __future__ import annotations
 
@@ -151,15 +150,9 @@ def _relation_state(tmp_path: Path) -> tuple[Path, dict[str, int]]:
     target_path = tmp_path / "target.py"
     dependency_path = tmp_path / "depmod.py"
     caller_path = tmp_path / "caller.py"
-    target = SymbolRecord(
-        "function", "target", "pkg.target", "target()", _range(1)
-    )
-    dependency_module = SymbolRecord(
-        "module", "depmod", "depmod", None, _range(1)
-    )
-    caller = SymbolRecord(
-        "function", "caller", "pkg.caller", "caller()", _range(1)
-    )
+    target = SymbolRecord("function", "target", "pkg.target", "target()", _range(1))
+    dependency_module = SymbolRecord("module", "depmod", "depmod", None, _range(1))
+    caller = SymbolRecord("function", "caller", "pkg.caller", "caller()", _range(1))
     relations = (
         ReferenceRecord(
             "call",
@@ -286,9 +279,7 @@ def test_search_exposes_resolved_call_endpoints_and_owner_provenance(
 ) -> None:
     database, versions = _relation_state(tmp_path)
 
-    hit = search_code(
-        database, CodeSearchQuery(text="target", modes=("call",), limit=5)
-    )[0]
+    hit = search_code(database, CodeSearchQuery(text="target", modes=("call",), limit=5))[0]
     relation = hit.relations[0]
 
     assert relation.family == "reference"
@@ -411,8 +402,7 @@ def test_knowledge_search_and_context_preserve_real_code_relation_evidence(
     assert len(relation_hits) == 2
     assert len({hit.evidence.evidence_id for hit in relation_hits}) == 2
     assert all(
-        hit.evidence.evidence_id.startswith("evidence:code-relation:")
-        for hit in relation_hits
+        hit.evidence.evidence_id.startswith("evidence:code-relation:") for hit in relation_hits
     )
     identifiers_by_name = {
         dict(hit.evidence.identifiers)["code_relation_name"]: (
@@ -439,9 +429,7 @@ def test_knowledge_search_and_context_preserve_real_code_relation_evidence(
     assert resolved["code_relation_resolved"].casefold() == "true"
     assert resolved["code_relation_confirmed"].casefold() == "true"
     assert resolved["code_relation_provenance"] == "fixture-call"
-    assert resolved_hit.resource.resource_id == resolved[
-        "code_relation_source_resource"
-    ]
+    assert resolved_hit.resource.resource_id == resolved["code_relation_source_resource"]
 
     assert unresolved_hit.evidence.section_id is not None
     assert unresolved_hit.evidence.section_id.startswith("code_references:")
@@ -467,16 +455,16 @@ def test_knowledge_search_and_context_preserve_real_code_relation_evidence(
     assert relation.method is EvidenceMethod.STRUCTURAL
     assert relation.confidence == 0.95
     assert "analyzer:fixture-call" in relation.provenance
-    assert any(
-        item.startswith("code:code_references:") for item in relation.provenance
-    )
+    assert any(item.startswith("code:code_references:") for item in relation.provenance)
     entities = {entity.entity_id: entity for entity in bundle.entities}
-    assert resolved["code_relation_source_resource"] in entities[
-        relation.source_entity_id
-    ].resource_ids
-    assert resolved["code_relation_target_resource"] in entities[
-        relation.target_entity_id
-    ].resource_ids
+    assert (
+        resolved["code_relation_source_resource"]
+        in entities[relation.source_entity_id].resource_ids
+    )
+    assert (
+        resolved["code_relation_target_resource"]
+        in entities[relation.target_entity_id].resource_ids
+    )
     assert all(
         unresolved_hit.evidence.evidence_id not in relation.evidence_ids
         for relation in bundle.relations
@@ -518,10 +506,9 @@ def test_stale_code_relation_target_never_fabricates_a_context_endpoint(
         max_hits=20,
     )
     assert bundle.relations == ()
-    assert all(
-        "resource:file:1:10:50" not in entity.resource_ids
-        for entity in bundle.entities
-    )
+    assert all("resource:file:1:10:50" not in entity.resource_ids for entity in bundle.entities)
     notices = (*bundle.missing_information, *bundle.warnings)
     assert any("unresolved" in notice.casefold() for notice in notices)
+
+
 # endregion [02]

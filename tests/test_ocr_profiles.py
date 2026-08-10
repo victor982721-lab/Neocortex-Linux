@@ -130,10 +130,7 @@ def test_native_quality_gate_rejects_substantial_corrupt_text() -> None:
         "symbols": "!@#$%^&*()[]{}<>?/\\|~`" * 8,
         "run": "A" * 120,
     }
-    reasons = {
-        native_text_quality(value, min_characters=40).reason
-        for value in cases.values()
-    }
+    reasons = {native_text_quality(value, min_characters=40).reason for value in cases.values()}
 
     assert "suspicious_unicode_or_mojibake" in reasons
     assert "low_alphanumeric_density" in reasons

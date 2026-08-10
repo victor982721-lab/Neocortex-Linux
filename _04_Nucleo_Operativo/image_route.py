@@ -8,7 +8,7 @@ import time
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
-from typing import Any, Callable, Iterable, Iterator, Literal, Protocol
+from typing import Any, Callable, Iterable, Iterator, Literal, Protocol, cast
 
 from _02_Deduplicacion import (
     FULL_ALGORITHM,
@@ -51,7 +51,12 @@ from .image_document import (
     DocumentVerifierRuntime,
     resolve_document_verifier,
 )
-from .image_errors import ImageFailure, classify_image_failure, refine_image_failure
+from .image_errors import (
+    ErrorDisposition,
+    ImageFailure,
+    classify_image_failure,
+    refine_image_failure,
+)
 from .image_isolation import (
     ImageWorkerSupervisor,
     image_worker_memory_reservation,
@@ -1257,9 +1262,12 @@ def _document_text_metadata(
 
 
 def _cached_failure(row: Any) -> ImageFailure:
-    disposition = str(row["error_disposition"] or "manual_review")
-    if disposition not in {"retry", "manual_review", "deletion_candidate"}:
-        disposition = "manual_review"
+    raw_disposition = str(row["error_disposition"] or "manual_review")
+    disposition = (
+        cast(ErrorDisposition, raw_disposition)
+        if raw_disposition in {"retry", "manual_review", "deletion_candidate"}
+        else "manual_review"
+    )
     return ImageFailure(
         error_type=str(row["error_type"] or "UnknownError"),
         message=str(row["error_message"] or "unknown image error")[:2000],

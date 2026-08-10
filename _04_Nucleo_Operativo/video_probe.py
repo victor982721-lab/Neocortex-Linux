@@ -57,9 +57,7 @@ def probe_video(
         "json",
         str(path),
     )
-    creation_flags = (
-        int(getattr(subprocess, "CREATE_NO_WINDOW", 0)) if os.name == "nt" else 0
-    )
+    creation_flags = int(getattr(subprocess, "CREATE_NO_WINDOW", 0)) if os.name == "nt" else 0
     try:
         completed = run_bounded_capture(
             command,
@@ -132,9 +130,7 @@ def decode_video_probe(payload: Any) -> VideoMediaProbe:
         )
     video = tuple(_decode_video_stream(item) for item in raw_video)
     subtitles = tuple(
-        _decode_subtitle_stream(item)
-        for item in streams
-        if item.get("codec_type") == "subtitle"
+        _decode_subtitle_stream(item) for item in streams if item.get("codec_type") == "subtitle"
     )
     raw_chapters = payload.get("chapters", ())
     if not isinstance(raw_chapters, list):
@@ -205,9 +201,7 @@ def _rotation(value: Mapping[str, object]) -> int | None:
         candidates.append(tags.get("rotate"))
     side_data = value.get("side_data_list")
     if isinstance(side_data, list):
-        candidates.extend(
-            item.get("rotation") for item in side_data if isinstance(item, dict)
-        )
+        candidates.extend(item.get("rotation") for item in side_data if isinstance(item, dict))
     for candidate in candidates:
         if isinstance(candidate, bool) or not isinstance(
             candidate, (int, float, str, bytes, bytearray)
@@ -243,9 +237,7 @@ def _frame_rate(value: object) -> float | None:
 
 
 def _finite_nonnegative_float(value: object) -> float | None:
-    if isinstance(value, bool) or not isinstance(
-        value, (int, float, str, bytes, bytearray)
-    ):
+    if isinstance(value, bool) or not isinstance(value, (int, float, str, bytes, bytearray)):
         return None
     try:
         result = float(value)
@@ -255,9 +247,7 @@ def _finite_nonnegative_float(value: object) -> float | None:
 
 
 def _nonnegative_int(value: object, *, field_name: str) -> int:
-    if isinstance(value, bool) or not isinstance(
-        value, (int, float, str, bytes, bytearray)
-    ):
+    if isinstance(value, bool) or not isinstance(value, (int, float, str, bytes, bytearray)):
         raise _schema_error(f"video {field_name} is not an integer")
     try:
         result = int(value)
@@ -271,9 +261,7 @@ def _nonnegative_int(value: object, *, field_name: str) -> int:
 def _bounded_positive_int(value: object, *, field_name: str) -> int:
     result = _nonnegative_int(value, field_name=field_name)
     if not 1 <= result <= MAX_VIDEO_DIMENSION:
-        raise _schema_error(
-            f"video {field_name} must be between 1 and {MAX_VIDEO_DIMENSION}"
-        )
+        raise _schema_error(f"video {field_name} must be between 1 and {MAX_VIDEO_DIMENSION}")
     return result
 
 

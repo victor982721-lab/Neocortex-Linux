@@ -4,7 +4,6 @@
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
-
 # region [01] Dependencias del módulo
 from __future__ import annotations
 
@@ -174,9 +173,7 @@ def test_stable_query_uses_one_before_and_after_snapshot(tmp_path: Path) -> None
         executions.append(snapshot.snapshot_id)
         return _result(plan, snapshot, "stable")
 
-    result = _service(tmp_path, snapshots, execute).search(
-        KnowledgeQuery("relay protection")
-    )
+    result = _service(tmp_path, snapshots, execute).search(KnowledgeQuery("relay protection"))
 
     assert snapshots.calls == 2
     assert executions == [stable.snapshot_id]
@@ -198,9 +195,7 @@ def test_one_identity_change_retries_the_whole_retrieval_once(
         executions.append(snapshot.snapshot_id)
         return _result(plan, snapshot, str(len(executions)))
 
-    result = _service(tmp_path, snapshots, execute).search(
-        KnowledgeQuery("relay protection")
-    )
+    result = _service(tmp_path, snapshots, execute).search(KnowledgeQuery("relay protection"))
 
     assert snapshots.calls == 4
     assert executions == [first.snapshot_id, second.snapshot_id]
@@ -225,9 +220,7 @@ def test_second_identity_change_returns_latest_hits_as_observable_partial(
         executions.append(snapshot.snapshot_id)
         return _result(plan, snapshot, str(len(executions)))
 
-    result = _service(tmp_path, snapshots, execute).search(
-        KnowledgeQuery("relay protection")
-    )
+    result = _service(tmp_path, snapshots, execute).search(KnowledgeQuery("relay protection"))
 
     assert executions == [one.snapshot_id, three.snapshot_id]
     assert result.hits[0].evidence.evidence_id == "evidence:2"
@@ -441,9 +434,7 @@ def test_default_context_builder_accepts_service_budget_vocabulary(
     assert evidence_first.budget.omitted_candidates == 0
     assert evidence_first.missing_information == ()
     assert "[K1] target=" in evidence_first.rendered_context
-    assert "diagnostics=[omitted: character budget]" in (
-        evidence_first.rendered_context
-    )
+    assert "diagnostics=[omitted: character budget]" in (evidence_first.rendered_context)
     assert len(evidence_first.rendered_context) <= 1_800
 
 
@@ -507,4 +498,6 @@ def test_inaccessible_state_root_fails_before_owner_collection(
     assert raised.value.root == state.resolve()
     assert raised.value.reason == "is inaccessible"
     assert snapshots.calls == 0
+
+
 # endregion [02]

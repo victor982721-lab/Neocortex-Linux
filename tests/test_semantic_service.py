@@ -725,6 +725,7 @@ def test_image_and_ocr_use_separate_embedding_generations(
         service.clip_image_model().model_signature,
         service.multilingual_text_model().model_signature,
     }
+
     def unexpected_query_vector(*_args, **_kwargs):
         raise AssertionError("CLIP query backend must not load while retrieval is uncalibrated")
 

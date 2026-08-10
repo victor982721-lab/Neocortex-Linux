@@ -284,9 +284,7 @@ def test_text_embedding_scopes_separate_title_from_content_and_validate_empty_he
     content_page = search_exact_page(database, query, text_scope="content")
     title_page = search_exact_page(database, query, text_scope="title")
     assert (all_page.scanned, content_page.scanned, title_page.scanned) == (2, 1, 1)
-    assert resolve_search_hits(database, content_page.hits)[0].section_kind == (
-        "pdf_page"
-    )
+    assert resolve_search_hits(database, content_page.hits)[0].section_kind == ("pdf_page")
     assert resolve_search_hits(database, title_page.hits)[0].section_kind == (
         SEMANTIC_TITLE_SECTION_KIND
     )
@@ -326,9 +324,7 @@ def test_schema_is_explicit_current_and_integrity_checked(tmp_path: Path) -> Non
         assert connection.execute("PRAGMA quick_check").fetchone()[0] == "ok"
         tables = {
             str(row[0])
-            for row in connection.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'"
-            )
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
         }
         assert {
             "embedding_models",
@@ -349,10 +345,7 @@ def test_v2_database_migrates_additively_to_current_v6(tmp_path: Path) -> None:
         connection.execute("PRAGMA user_version=2")
     initialize_semantic_state(database)
     with semantic_database(database, readonly=True) as connection:
-        columns = {
-            str(row[1])
-            for row in connection.execute("PRAGMA table_info(semantic_items)")
-        }
+        columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(semantic_items)")}
         assert "source_revision_json" in columns
         assert connection.execute("PRAGMA user_version").fetchone()[0] == 6
         assert (
@@ -440,9 +433,7 @@ def test_item_refresh_deactivates_unseen_sources_without_deleting_history(
         load_semantic_item(database, "b")
     assert load_semantic_item(database, "b", include_inactive=True).item_id == "b"
     with semantic_database(database, readonly=True) as connection:
-        assert (
-            connection.execute("SELECT COUNT(*) FROM semantic_items").fetchone()[0] == 2
-        )
+        assert connection.execute("SELECT COUNT(*) FROM semantic_items").fetchone()[0] == 2
 
 
 def test_changed_item_content_keeps_published_snapshot_until_successor_publish(
@@ -466,15 +457,11 @@ def test_changed_item_content_keeps_published_snapshot_until_successor_publish(
     assert len(load_active_embedding_page(database, model.model_signature).records) == 1
     with semantic_database(database, readonly=True) as connection:
         assert (
-            connection.execute(
-                "SELECT COUNT(*) FROM text_chunks WHERE item_id='doc'"
-            ).fetchone()[0]
+            connection.execute("SELECT COUNT(*) FROM text_chunks WHERE item_id='doc'").fetchone()[0]
             == 1
         )
         assert (
-            connection.execute(
-                "SELECT active FROM text_chunks WHERE item_id='doc'"
-            ).fetchone()[0]
+            connection.execute("SELECT active FROM text_chunks WHERE item_id='doc'").fetchone()[0]
             == 0
         )
     successor = start_embedding_generation(
@@ -727,8 +714,7 @@ def test_job_lease_heartbeat_extends_a_batch_atomically(tmp_path: Path) -> None:
         deadlines = tuple(
             int(row[0])
             for row in connection.execute(
-                "SELECT lease_until_ns FROM embedding_jobs "
-                "WHERE generation_id=? ORDER BY job_id",
+                "SELECT lease_until_ns FROM embedding_jobs WHERE generation_id=? ORDER BY job_id",
                 (generation,),
             )
         )
@@ -746,8 +732,7 @@ def test_job_lease_heartbeat_extends_a_batch_atomically(tmp_path: Path) -> None:
         unchanged = tuple(
             int(row[0])
             for row in connection.execute(
-                "SELECT lease_until_ns FROM embedding_jobs "
-                "WHERE generation_id=? ORDER BY job_id",
+                "SELECT lease_until_ns FROM embedding_jobs WHERE generation_id=? ORDER BY job_id",
                 (generation,),
             )
         )
@@ -807,17 +792,9 @@ def test_xxh3_payload_reuse_and_active_pages_avoid_duplicate_inference(
     )
     finalize_embedding_generation(database, generation, completed_ns=16)
     with semantic_database(database, readonly=True) as connection:
-        assert (
-            connection.execute("SELECT COUNT(*) FROM vector_payloads").fetchone()[0]
-            == 1
-        )
-        assert (
-            connection.execute("SELECT COUNT(*) FROM text_embeddings").fetchone()[0]
-            == 2
-        )
-    pages = tuple(
-        iter_active_embedding_pages(database, model.model_signature, page_size=1)
-    )
+        assert connection.execute("SELECT COUNT(*) FROM vector_payloads").fetchone()[0] == 1
+        assert connection.execute("SELECT COUNT(*) FROM text_embeddings").fetchone()[0] == 2
+    pages = tuple(iter_active_embedding_pages(database, model.model_signature, page_size=1))
     assert len(pages) == 2
     assert all(len(page.records) == 1 for page in pages)
     assert pages[-1].complete is True
@@ -973,11 +950,7 @@ def test_vectorized_exact_scoring_preserves_scalar_scores_ties_and_provenance() 
     rows = []
     for index in range(16):
         dtype = VectorDType.FLOAT16 if index % 2 == 0 else VectorDType.FLOAT32
-        vector = (
-            (1.0, 0.0, 0.0, 0.0)
-            if index < 2
-            else (1.0, float(index), 0.5, -0.25)
-        )
+        vector = (1.0, 0.0, 0.0, 0.0) if index < 2 else (1.0, float(index), 0.5, -0.25)
         payload, _ = encode_vector(vector, model.dimensions, dtype)
         rows.append(
             {
@@ -997,8 +970,7 @@ def test_vectorized_exact_scoring_preserves_scalar_scores_ties_and_provenance() 
     normalized_query = (1.0, 0.0, 0.0, 0.0)
 
     expected = tuple(
-        semantic_search_repository._exact_search_hit(row, query, normalized_query)
-        for row in rows
+        semantic_search_repository._exact_search_hit(row, query, normalized_query) for row in rows
     )
     actual = semantic_search_repository._exact_search_hits(
         rows,
@@ -1015,9 +987,7 @@ def test_vectorized_exact_scoring_preserves_scalar_scores_ties_and_provenance() 
     )
 
 
-@pytest.mark.parametrize(
-    "profile_order", (("quality", "compact"), ("compact", "quality"))
-)
+@pytest.mark.parametrize("profile_order", (("quality", "compact"), ("compact", "quality")))
 def test_distinct_chunking_profiles_remain_active_and_searchable_in_either_order(
     tmp_path: Path,
     profile_order: tuple[str, str],
@@ -1080,9 +1050,7 @@ def test_distinct_chunking_profiles_remain_active_and_searchable_in_either_order
             processing_signature=f"profile-generation:{ordinal}:{profile}",
         )
 
-    assert (
-        chunks_by_profile["quality"].chunk_id != chunks_by_profile["compact"].chunk_id
-    )
+    assert chunks_by_profile["quality"].chunk_id != chunks_by_profile["compact"].chunk_id
     with semantic_database(database, readonly=True) as connection:
         active = connection.execute(
             "SELECT chunking_signature FROM text_chunks WHERE item_id=? AND active=1",
@@ -1282,9 +1250,7 @@ def test_image_lease_propagates_path_fingerprint_and_source_revision(
     assert lease.source_revision == item.source_revision
     request = embedding_request_from_lease(lease)
     assert request.fingerprint == item.fingerprint
-    assert load_semantic_item(database, item.item_id).source_revision == (
-        item.source_revision
-    )
+    assert load_semantic_item(database, item.item_id).source_revision == (item.source_revision)
 
 
 def test_versioned_prototypes_and_evidence_cannot_mix_vector_spaces(

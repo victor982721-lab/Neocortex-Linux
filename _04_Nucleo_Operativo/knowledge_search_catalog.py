@@ -227,9 +227,7 @@ def _read_catalog_rows(
                 return (), head_reason
 
             values = ",".join("(?,?)" for _ in available_heads)
-            parameters: list[object] = [
-                value for head in available_heads for value in head
-            ]
+            parameters: list[object] = [value for head in available_heads for value in head]
             clauses = ["d.active=1", "d.catalog_status<>'error'"]
             if plan.source_kinds:
                 expanded_source_kinds: set[str] = set()
@@ -365,9 +363,7 @@ def _materialize_candidate(
     if row["primary_project"] is not None:
         snippet_parts.append(f"project={row['primary_project']}")
     if identifiers:
-        snippet_parts.append(
-            "identifiers=" + ", ".join(value for _, value in identifiers)
-        )
+        snippet_parts.append("identifiers=" + ", ".join(value for _, value in identifiers))
     snippet_parts.append(f"uncertainty={row['uncertainty']}")
     evidence = evidence_ref_type(
         f"evidence:catalog:{generation}:{source_kind}:{file_key}",
@@ -490,12 +486,8 @@ def catalog_ranking(
             reason=f"owner_read_failed:{type(exc).__name__}",
         )
 
-    candidate_window_reached = (
-        len(materialized_rows) > target_limit
-        or (
-            target_limit == max_candidates
-            and len(materialized_rows) >= target_limit
-        )
+    candidate_window_reached = len(materialized_rows) > target_limit or (
+        target_limit == max_candidates and len(materialized_rows) >= target_limit
     )
     rows = materialized_rows[:target_limit]
     candidates: list[KnowledgeCandidate] = []

@@ -199,10 +199,7 @@ class KnowledgeSearchResult:
             raise ValueError("KnowledgeSearchResult telemetry must describe search")
         if not isinstance(self.blocking_owners, tuple):
             raise ValueError("search blocking owners must be a tuple")
-        if any(
-            not isinstance(owner, str) or not owner.strip()
-            for owner in self.blocking_owners
-        ):
+        if any(not isinstance(owner, str) or not owner.strip() for owner in self.blocking_owners):
             raise ValueError("search blocking owners cannot be blank")
         if self.blocking_owners != tuple(sorted(set(self.blocking_owners))):
             raise ValueError("search blocking owners must be unique and ordered")
@@ -215,9 +212,7 @@ class KnowledgeSearchResult:
         ):
             raise ValueError("search window omission count cannot be negative")
         if self.window_omitted_candidates > self.omitted_candidates:
-            raise ValueError(
-                "search window omissions cannot exceed total omitted candidates"
-            )
+            raise ValueError("search window omissions cannot exceed total omitted candidates")
         if self.window_omitted_candidates and not self.result_window_full:
             raise ValueError("search window omissions require a full result window")
 

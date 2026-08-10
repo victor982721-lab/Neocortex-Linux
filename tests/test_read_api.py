@@ -138,9 +138,7 @@ def test_evidence_resolves_only_selected_context_citations(
                     "scope": "personal",
                     "context": {
                         "snapshot": {"snapshot_id": "stable"},
-                        "citation_ids": [
-                            {"citation_id": "K1", "evidence_id": "evidence:1"}
-                        ],
+                        "citation_ids": [{"citation_id": "K1", "evidence_id": "evidence:1"}],
                         "selected_hits": [
                             {
                                 "resource": {"resource_id": "resource:1"},

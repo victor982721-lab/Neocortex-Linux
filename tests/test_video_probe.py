@@ -79,9 +79,7 @@ def test_non_video_media_fails_with_a_specific_reviewable_reason() -> None:
         decode_video_probe(
             {
                 "format": {"duration": "3"},
-                "streams": [
-                    {"index": 0, "codec_type": "audio", "codec_name": "opus"}
-                ],
+                "streams": [{"index": 0, "codec_type": "audio", "codec_name": "opus"}],
                 "chapters": [],
             }
         )

@@ -34,19 +34,13 @@ def _validate_limit(limit: int) -> int:
     if isinstance(limit, bool) or not isinstance(limit, int):
         raise ValueError("limit must be an integer")
     if not 1 <= limit <= MAX_HUMAN_RESULTS_PER_SCOPE:
-        raise ValueError(
-            f"limit must be between 1 and {MAX_HUMAN_RESULTS_PER_SCOPE} per scope"
-        )
+        raise ValueError(f"limit must be between 1 and {MAX_HUMAN_RESULTS_PER_SCOPE} per scope")
     return limit
 
 
 def _report_exit_code(report: ValueReviewReport) -> KnowledgeExitCode:
     if report.availability is ValueReviewAvailability.READY:
-        return (
-            KnowledgeExitCode.SUCCESS
-            if report.returned_count
-            else KnowledgeExitCode.NO_RESULTS
-        )
+        return KnowledgeExitCode.SUCCESS if report.returned_count else KnowledgeExitCode.NO_RESULTS
     if report.availability is ValueReviewAvailability.PARTIAL:
         return KnowledgeExitCode.PARTIAL
     reason = (report.reason or "").casefold()
@@ -173,9 +167,7 @@ _CODE_EXPLANATIONS = {
     ),
     "citation_history_unavailable": "historial de citas no disponible",
     "coverage_history_unavailable": "historial de cobertura no disponible",
-    "exact_duplicate_evidence_unavailable": (
-        "no hay evidencia publicada de duplicado exacto"
-    ),
+    "exact_duplicate_evidence_unavailable": ("no hay evidencia publicada de duplicado exacto"),
     "extraction_health_unavailable": "salud de extracción no disponible",
     "owner_health_unknown": "salud de la fuente no determinada",
     "uniqueness_evidence_unavailable": "no hay evidencia publicada de unicidad",
@@ -229,15 +221,16 @@ def _render_entry(entry: Mapping[str, object]) -> None:
     for index, item in enumerate(rows, start=1):
         state = str(item.get("state", "unknown"))
         label = _STATE_LABELS.get(state, state)
-        _print(f"{index}. [{label}] {item.get('path', 'sin ruta')} · {_size(item.get('size_bytes'))}")
+        _print(
+            f"{index}. [{label}] {item.get('path', 'sin ruta')} · {_size(item.get('size_bytes'))}"
+        )
         reasons = item.get("reasons")
         if isinstance(reasons, list) and reasons:
             _print("   Evidencia: " + "; ".join(_explain_code(value) for value in reasons))
         uncertainties = item.get("uncertainties")
         if isinstance(uncertainties, list) and uncertainties:
             _print(
-                "   Incertidumbre: "
-                + "; ".join(_explain_code(value) for value in uncertainties)
+                "   Incertidumbre: " + "; ".join(_explain_code(value) for value in uncertainties)
             )
     if not rows:
         _print("  No hay candidatos publicados dentro de este límite.")

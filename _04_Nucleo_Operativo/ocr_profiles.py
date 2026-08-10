@@ -176,9 +176,7 @@ def parse_osd_output(output: str) -> OcrOrientation:
     return OcrOrientation(
         orientation_degrees=_quarter_turn(values.get("orientation in degrees")),
         rotate_degrees=_quarter_turn(values.get("rotate")),
-        orientation_confidence=_bounded_confidence(
-            values.get("orientation confidence")
-        ),
+        orientation_confidence=_bounded_confidence(values.get("orientation confidence")),
         script=script,
         script_confidence=_bounded_confidence(values.get("script confidence")),
         available=available,
@@ -350,8 +348,7 @@ def native_text_quality(text: str, *, min_characters: int) -> NativeTextQuality:
         return NativeTextQuality(length, 0.0, 0.0, 0.0, 0, False, "too_short")
     alphanumeric = sum(character.isalnum() for character in normalized)
     suspicious = sum(
-        unicodedata.category(character) in {"Cc", "Co", "Cs"}
-        or character == "\ufffd"
+        unicodedata.category(character) in {"Cc", "Co", "Cs"} or character == "\ufffd"
         for character in normalized
     )
     suspicious += sum(normalized.count(marker) for marker in _MOJIBAKE_MARKERS)

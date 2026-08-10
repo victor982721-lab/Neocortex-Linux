@@ -70,9 +70,7 @@ def test_human_ask_labels_citations_without_fabricating_an_answer(
                     "context": {
                         "completeness": "complete",
                         "selected_hits": [_hit()],
-                        "citation_ids": [
-                            {"citation_id": "K1", "evidence_id": "evidence:1"}
-                        ],
+                        "citation_ids": [{"citation_id": "K1", "evidence_id": "evidence:1"}],
                     },
                 }
             ],

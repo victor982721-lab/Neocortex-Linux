@@ -21,6 +21,7 @@ from _04_Nucleo_Operativo.global_resources import GlobalResourceLimits
 from _04_Nucleo_Operativo.image_route import ImageRouteConfig
 from _04_Nucleo_Operativo.office_route import OfficeRouteConfig
 from _04_Nucleo_Operativo.pdf_route_models import PdfRouteConfig
+from _04_Nucleo_Operativo.video_route import VideoRouteConfig
 from neocortex.capabilities import CAPABILITY_SPECS, inspect_runtime_capabilities
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -106,6 +107,7 @@ def test_capability_selection_preserves_explicit_and_default_order() -> None:
         (projections.image_route_config_from_application, ImageRouteConfig),
         (projections.office_route_config_from_application, OfficeRouteConfig),
         (projections.pdf_route_config_from_application, PdfRouteConfig),
+        (projections.video_route_config_from_application, VideoRouteConfig),
     ),
 )
 def test_projection_runtime_type_hints_resolve_to_public_contracts(
@@ -138,6 +140,7 @@ def test_projection_module_cold_import_keeps_owner_contracts_deferred() -> None:
             "_04_Nucleo_Operativo.office_route",
             "_04_Nucleo_Operativo.pdf_route_models",
             "_04_Nucleo_Operativo.text_route",
+            "_04_Nucleo_Operativo.video_route",
         }
 
         import _04_Nucleo_Operativo.application_config_projections as projections
@@ -152,6 +155,7 @@ def test_projection_module_cold_import_keeps_owner_contracts_deferred() -> None:
             "office_route_config_from_application",
             "pdf_route_config_from_application",
             "text_route_config_from_application",
+            "video_route_config_from_application",
         ):
             raise SystemExit("projection public surface changed")
         loaded = sorted(forbidden.intersection(sys.modules))

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
-from typing import Any
+from typing import Any, cast
 
 from .read_api import (
     code_search_payload,
@@ -100,8 +100,12 @@ def create_server() -> Any:
         async def run_stdio_async(self) -> None:
             stdin, stdout = await _asyncio_stdio_files()
             async with stdio_server(
-                stdin,
-                stdout,
+                # MCP types these parameters nominally as AnyIO AsyncFile, but
+                # its implementation only consumes this exact async text
+                # reader/writer protocol. The native asyncio adapters avoid the
+                # AnyIO worker deadlock observed on CPython 3.14.
+                cast(Any, stdin),
+                cast(Any, stdout),
             ) as (read_stream, write_stream):
                 # MCP 1.23.3 exposes no public accessor for the decorated low-level
                 # server, so this exact-version adapter must use its stable member.

@@ -55,10 +55,7 @@ def _search_models(
     query: ExactSearchQuery,
 ) -> tuple[str, ...]:
     query_model = _load_model(connection, query.query_model_signature)
-    if (
-        query_model.vector_space != query.vector_space
-        or query_model.dimensions != query.dimensions
-    ):
+    if query_model.vector_space != query.vector_space or query_model.dimensions != query.dimensions:
         raise ValueError("query vector is incompatible with its registered model")
     rows = connection.execute(
         """SELECT model_signature FROM embedding_models
@@ -70,9 +67,7 @@ def _search_models(
     if query.indexed_model_signatures:
         missing = set(query.indexed_model_signatures).difference(available)
         if missing:
-            raise ValueError(
-                f"indexed models are absent or incompatible: {sorted(missing)}"
-            )
+            raise ValueError(f"indexed models are absent or incompatible: {sorted(missing)}")
         return query.indexed_model_signatures
     if not available:
         raise ValueError("no compatible indexed models are registered")
@@ -153,14 +148,10 @@ def _published_model_generations(
     for row in rows:
         head_model = str(row[0])
         if str(row[2]) != head_model or str(row[3]) != "ready":
-            raise SemanticStateError(
-                f"published embedding head for {head_model!r} is invalid"
-            )
+            raise SemanticStateError(f"published embedding head for {head_model!r} is invalid")
         by_model[head_model] = int(row[1])
     return tuple(
-        (signature, by_model[signature])
-        for signature in model_signatures
-        if signature in by_model
+        (signature, by_model[signature]) for signature in model_signatures if signature in by_model
     )
 
 
@@ -780,9 +771,7 @@ def _json_object(raw: object, *, error: str) -> dict[str, object]:
 def _search_source_revision_ids(source: sqlite3.Row) -> tuple[int, int | None]:
     published_revision_id = int(source["published_revision_id"])
     current_revision_id = (
-        None
-        if source["current_revision_id"] is None
-        else int(source["current_revision_id"])
+        None if source["current_revision_id"] is None else int(source["current_revision_id"])
     )
     return published_revision_id, current_revision_id
 

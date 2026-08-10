@@ -626,8 +626,7 @@ def lexical_rankings(
                 executed=available,
                 available=available,
                 complete=all(
-                    candidate.revision.state is revision_current
-                    for candidate in candidates
+                    candidate.revision.state is revision_current for candidate in candidates
                 ),
                 returned=len(candidates),
                 rows_scanned=len(result.hits),
@@ -784,9 +783,7 @@ def _semantic_result_report(
         or len(ranking.resolved) > candidate_limit
     )
     unexpected_cutoff = (
-        ranking.cutoff_reason is not None
-        and not vector_cutoff
-        and not candidate_cutoff
+        ranking.cutoff_reason is not None and not vector_cutoff and not candidate_cutoff
     )
     return RankingExecution(
         name=expected_name,
@@ -794,10 +791,7 @@ def _semantic_result_report(
         executed=True,
         available=ranking.available,
         complete=(
-            ranking.available
-            and ranking.complete
-            and not vector_cutoff
-            and not unexpected_cutoff
+            ranking.available and ranking.complete and not vector_cutoff and not unexpected_cutoff
         ),
         returned=returned,
         vectors_scanned=ranking.scanned,

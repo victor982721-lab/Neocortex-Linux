@@ -55,8 +55,7 @@ EXPECTED_SIGNATURES = {
         "'dict[int, sqlite3.Row]'"
     ),
     "_code_resource_revision": (
-        "(row: 'sqlite3.Row', *, path: 'str') -> "
-        "'tuple[ResourceRef, RevisionRef, tuple[str, ...]]'"
+        "(row: 'sqlite3.Row', *, path: 'str') -> 'tuple[ResourceRef, RevisionRef, tuple[str, ...]]'"
     ),
     "_bounded_code_relation_value": (
         "(namespace: 'str', value: 'str', warnings: 'set[str]') -> 'str'"
@@ -158,11 +157,7 @@ def _snapshot(*, available: bool = True) -> KnowledgeSnapshot:
         owners=(
             OwnerSnapshot(
                 "code",
-                (
-                    OwnerAvailability.AVAILABLE
-                    if available
-                    else OwnerAvailability.ABSENT
-                ),
+                (OwnerAvailability.AVAILABLE if available else OwnerAvailability.ABSENT),
                 2,
                 2 if available else None,
             ),
@@ -347,9 +342,7 @@ def test_code_facade_seams_are_thin_late_bound_delegates(name: str) -> None:
     assert isinstance(statement.value, ast.Call)
     assert isinstance(statement.value.func, ast.Name)
     assert statement.value.func.id == CODE_IMPLEMENTATIONS[name]
-    referenced_names = {
-        node.id for node in ast.walk(function) if isinstance(node, ast.Name)
-    }
+    referenced_names = {node.id for node in ast.walk(function) if isinstance(node, ast.Name)}
     assert LATE_BOUND_GLOBALS[name] <= referenced_names
 
 
@@ -387,9 +380,7 @@ def test_code_facade_seams_forward_exact_runtime_objects(
         call_args = (object(), object(), object())
         call_kwargs = {}
         expected_kwargs = {
-            "max_identifier_chars": (
-                knowledge_search.MAX_EVIDENCE_IDENTIFIER_COMPONENT_CHARS
-            ),
+            "max_identifier_chars": (knowledge_search.MAX_EVIDENCE_IDENTIFIER_COMPONENT_CHARS),
             "fingerprint_text_fn": knowledge_search.fingerprint_text,
         }
     elif name == "_code_relation_candidate":
@@ -433,9 +424,7 @@ def test_code_facade_seams_forward_exact_runtime_objects(
             "code_resource_revision_fn": knowledge_search._code_resource_revision,
             "code_relation_candidate_fn": knowledge_search._code_relation_candidate,
             "sqlite_error_type": sqlite3.Error,
-            "reraise_captured_cancellation_fn": (
-                knowledge_search._reraise_captured_cancellation
-            ),
+            "reraise_captured_cancellation_fn": (knowledge_search._reraise_captured_cancellation),
             "file_identity_error_type": knowledge_search.FileIdentityError,
             "evidence_method_type": knowledge_search.EvidenceMethod,
             "evidence_ref_type": knowledge_search.EvidenceRef,
@@ -464,10 +453,7 @@ def test_code_facade_seams_forward_exact_runtime_objects(
     assert isinstance(actual_args, tuple)
     assert isinstance(actual_kwargs, dict)
     assert len(actual_args) == len(call_args)
-    assert all(
-        actual is expected
-        for actual, expected in zip(actual_args, call_args, strict=True)
-    )
+    assert all(actual is expected for actual, expected in zip(actual_args, call_args, strict=True))
     assert actual_kwargs.keys() == expected_kwargs.keys()
     assert all(actual_kwargs[key] is value for key, value in expected_kwargs.items())
 
@@ -493,9 +479,7 @@ def test_code_extraction_module_exists_without_a_facade_cycle() -> None:
     )
     assert PUBLIC_MODULE not in imported_modules
     assert not any(module.endswith(".knowledge_search") for module in imported_modules)
-    helper_names = {
-        node.name for node in tree.body if isinstance(node, ast.FunctionDef)
-    }
+    helper_names = {node.name for node in tree.body if isinstance(node, ast.FunctionDef)}
     assert {
         "code_version_metadata",
         "code_resource_revision",
@@ -521,9 +505,7 @@ def test_code_extraction_modules_form_expected_relative_import_dag() -> None:
                     edges.add((module_name, imported))
             elif isinstance(node, ast.Import):
                 edges.update(
-                    (module_name, alias.name)
-                    for alias in node.names
-                    if alias.name in modules
+                    (module_name, alias.name) for alias in node.names if alias.name in modules
                 )
 
     assert edges == {
@@ -662,9 +644,7 @@ def test_code_metadata_batches_in_order_deduplicates_locally_and_reads_only(
     assert checkpoints == 2
     assert events[0] == ("progress", True, 1000)
     assert events[-2:] == [("progress", False, 0), "close"]
-    assert all(
-        statement.lstrip().upper().startswith("SELECT ") for statement in sql_statements
-    )
+    assert all(statement.lstrip().upper().startswith("SELECT ") for statement in sql_statements)
     combined_sql = " ".join(sql_statements).upper()
     assert "F.CURRENT_VERSION_ID=V.VERSION_ID" in combined_sql
     assert "F.STATUS='CURRENT'" in combined_sql
@@ -728,8 +708,7 @@ def test_code_metadata_progress_cleanup_preserves_primary_and_close_note(
     ]
     assert primary.__notes__ == [
         "SQLite progress handler cleanup failed: RuntimeError: metadata clear failed",
-        "code metadata connection close cleanup failed: "
-        "RuntimeError: metadata close failed",
+        "code metadata connection close cleanup failed: RuntimeError: metadata close failed",
     ]
 
 
@@ -751,11 +730,9 @@ def test_code_resource_revision_has_stable_identity_and_status_mapping(
         row,
         path="C:/src/original.py",
     )
-    moved_resource, moved_revision, moved_warnings = (
-        knowledge_search._code_resource_revision(
-            row,
-            path="D:/moved/original.py",
-        )
+    moved_resource, moved_revision, moved_warnings = knowledge_search._code_resource_revision(
+        row,
+        path="D:/moved/original.py",
     )
 
     source_identity = f"{row['volume_id']}:{row['physical_file_id']}"
@@ -786,9 +763,7 @@ def test_code_resource_revision_has_stable_identity_and_status_mapping(
     assert revision.state is expected_state
 
 
-def test_bounded_code_relation_value_uses_character_limit_and_exact_fingerprint() -> (
-    None
-):
+def test_bounded_code_relation_value_uses_character_limit_and_exact_fingerprint() -> None:
     warnings: set[str] = set()
     at_limit = "á" * MAX_EVIDENCE_IDENTIFIER_COMPONENT_CHARS
     over_limit = "á" * (MAX_EVIDENCE_IDENTIFIER_COMPONENT_CHARS + 1)
@@ -807,8 +782,7 @@ def test_bounded_code_relation_value_uses_character_limit_and_exact_fingerprint(
     fingerprint = fingerprint_text(over_limit)
     assert unchanged == at_limit
     assert bounded == (
-        f"xxh3-v1:{fingerprint.xxh3_128}:{fingerprint.byte_count}:"
-        f"{fingerprint.xxh3_64_guard}"
+        f"xxh3-v1:{fingerprint.xxh3_128}:{fingerprint.byte_count}:{fingerprint.xxh3_64_guard}"
     )
     assert fingerprint.byte_count == 2 * len(over_limit)
     assert warnings == {"code_relation_name_fingerprinted_due_to_contract_limit"}
@@ -853,9 +827,7 @@ def test_code_relation_candidate_preserves_resolution_and_evidence_semantics(
             "code_relation_target_changed_after_owner_read",
             "code_relation_unresolved",
         } <= warning_set
-        assert "code_relation_target_resource" not in dict(
-            candidate.evidence.identifiers
-        )
+        assert "code_relation_target_resource" not in dict(candidate.evidence.identifiers)
     if not confirmed:
         assert "code_relation_unconfirmed" in warning_set
     identifier_names = tuple(name for name, _ in candidate.evidence.identifiers)
@@ -892,9 +864,7 @@ def test_code_relation_candidate_fails_closed_for_missing_or_invalid_source() ->
     assert malformed == (None, True)
 
 
-def test_code_relation_candidate_bounds_long_identifiers_without_losing_source() -> (
-    None
-):
+def test_code_relation_candidate_bounds_long_identifiers_without_losing_source() -> None:
     long_name = "Ω" * (MAX_EVIDENCE_IDENTIFIER_COMPONENT_CHARS + 1)
     relation = _relation(target_version=None, name=long_name)
 
@@ -910,15 +880,10 @@ def test_code_relation_candidate_bounds_long_identifiers_without_losing_source()
     identifiers = dict(candidate.evidence.identifiers)
     fingerprint = fingerprint_text(long_name)
     assert identifiers["code_relation_name"] == (
-        f"xxh3-v1:{fingerprint.xxh3_128}:{fingerprint.byte_count}:"
-        f"{fingerprint.xxh3_64_guard}"
+        f"xxh3-v1:{fingerprint.xxh3_128}:{fingerprint.byte_count}:{fingerprint.xxh3_64_guard}"
     )
-    assert (
-        max(map(len, identifiers.values())) <= MAX_EVIDENCE_IDENTIFIER_COMPONENT_CHARS
-    )
-    assert "code_relation_name_fingerprinted_due_to_contract_limit" in (
-        candidate.warnings
-    )
+    assert max(map(len, identifiers.values())) <= MAX_EVIDENCE_IDENTIFIER_COMPONENT_CHARS
+    assert "code_relation_name_fingerprinted_due_to_contract_limit" in (candidate.warnings)
 
 
 # endregion [02]
@@ -1394,8 +1359,7 @@ def test_code_ranking_reraises_exact_sqlite_callback_error_from_metadata(
     assert raised.value.__cause__ is interrupted
     assert primary.__notes__ == [
         "SQLite progress handler cleanup failed: RuntimeError: metadata clear failed",
-        "code metadata connection close cleanup failed: "
-        "RuntimeError: metadata close failed",
+        "code metadata connection close cleanup failed: RuntimeError: metadata close failed",
     ]
     assert events == [
         "CONNECT",
@@ -1601,8 +1565,7 @@ def test_code_search_transaction_state_failure_preserves_primary_and_closes() ->
     code_search_module._cleanup_search_connection(connection, primary)
 
     assert primary.__notes__ == [
-        "code search transaction-state cleanup failed: "
-        "RuntimeError: transaction state failed"
+        "code search transaction-state cleanup failed: RuntimeError: transaction state failed"
     ]
     assert events == ["STATE", "CLOSE"]
 

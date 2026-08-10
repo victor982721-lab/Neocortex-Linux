@@ -4,7 +4,6 @@
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
-
 # region [01] Dependencias del módulo
 from __future__ import annotations
 # endregion [01]

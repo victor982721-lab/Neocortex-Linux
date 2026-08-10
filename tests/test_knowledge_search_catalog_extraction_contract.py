@@ -95,8 +95,7 @@ def _snapshot(
     available: bool = True,
 ) -> KnowledgeSnapshot:
     publications = tuple(
-        PublicationHead(scope, f"catalog:{generation}", generation)
-        for scope, generation in heads
+        PublicationHead(scope, f"catalog:{generation}", generation) for scope, generation in heads
     )
     return KnowledgeSnapshot.create(
         source_version="0.7.0",
@@ -111,11 +110,7 @@ def _snapshot(
             OwnerSnapshot("code", OwnerAvailability.ABSENT, 2),
             OwnerSnapshot(
                 "catalog",
-                (
-                    OwnerAvailability.AVAILABLE
-                    if available
-                    else OwnerAvailability.ABSENT
-                ),
+                (OwnerAvailability.AVAILABLE if available else OwnerAvailability.ABSENT),
                 6,
                 6 if available else None,
                 publications=publications,
@@ -164,9 +159,7 @@ def _row(
         "primary_project": "Alpha",
         "confidence": 0.9,
         "uncertainty": "baja",
-        "standard_references_json": (
-            '[" IEC 61850 ",{"identifier":"NFPA 70E"},"IEC 61850"]'
-        ),
+        "standard_references_json": ('[" IEC 61850 ",{"identifier":"NFPA 70E"},"IEC 61850"]'),
         "source_status": "done",
         "catalog_status": "classified",
         "updated_ns": 40,
@@ -290,9 +283,7 @@ def _install_catalog_database(
         knowledge_search,
         "_planned_candidate_limit",
         lambda _plan_value, channel: (
-            target_limit
-            if channel == "catalog"
-            else pytest.fail(f"unexpected channel: {channel}")
+            target_limit if channel == "catalog" else pytest.fail(f"unexpected channel: {channel}")
         ),
     )
     return manager_events
@@ -330,9 +321,7 @@ def test_catalog_facade_seams_are_thin_late_bound_delegates(name: str) -> None:
     assert isinstance(statement.value, ast.Call)
     assert isinstance(statement.value.func, ast.Name)
     assert statement.value.func.id == CATALOG_IMPLEMENTATIONS[name]
-    referenced_names = {
-        node.id for node in ast.walk(function) if isinstance(node, ast.Name)
-    }
+    referenced_names = {node.id for node in ast.walk(function) if isinstance(node, ast.Name)}
     assert LATE_BOUND_GLOBALS[name] <= referenced_names
 
 
@@ -362,19 +351,11 @@ def test_catalog_facade_seams_forward_exact_runtime_objects(
             "planned_candidate_limit_fn": knowledge_search._planned_candidate_limit,
             "max_candidates": knowledge_search.MAX_KNOWLEDGE_CANDIDATES,
             "cancellation_bridge_type": knowledge_search.SQLiteCancellationBridge,
-            "document_catalog_database_fn": (
-                knowledge_search.document_catalog_database
-            ),
-            "sqlite_cancellation_scope_fn": (
-                knowledge_search.sqlite_cancellation_scope
-            ),
+            "document_catalog_database_fn": (knowledge_search.document_catalog_database),
+            "sqlite_cancellation_scope_fn": (knowledge_search.sqlite_cancellation_scope),
             "sqlite_error_type": sqlite3.Error,
-            "reraise_captured_cancellation_fn": (
-                knowledge_search._reraise_captured_cancellation
-            ),
-            "cleanup_preserving_primary_fn": (
-                knowledge_search._cleanup_preserving_primary
-            ),
+            "reraise_captured_cancellation_fn": (knowledge_search._reraise_captured_cancellation),
+            "cleanup_preserving_primary_fn": (knowledge_search._cleanup_preserving_primary),
             "decimal_identity_value_fn": knowledge_search._decimal_identity_value,
             "file_identity_type": knowledge_search.FileIdentity,
             "file_identity_encoding": knowledge_search.FileIdentityEncoding.AUTO,
@@ -417,10 +398,7 @@ def test_catalog_facade_seams_forward_exact_runtime_objects(
     assert isinstance(actual_args, tuple)
     assert isinstance(actual_kwargs, dict)
     assert len(actual_args) == len(call_args)
-    assert all(
-        actual is expected
-        for actual, expected in zip(actual_args, call_args, strict=True)
-    )
+    assert all(actual is expected for actual, expected in zip(actual_args, call_args, strict=True))
     assert actual_kwargs.keys() == expected_kwargs.keys()
     assert all(actual_kwargs[key] is value for key, value in expected_kwargs.items())
 
@@ -448,9 +426,7 @@ def test_catalog_extraction_module_exists_without_facade_or_owner_cycle() -> Non
     assert DOCUMENT_CATALOG_MODULE not in imported_modules
     assert not any(module.endswith(".knowledge_search") for module in imported_modules)
     assert not any(module.endswith(".document_catalog") for module in imported_modules)
-    helper_names = {
-        node.name for node in tree.body if isinstance(node, ast.FunctionDef)
-    }
+    helper_names = {node.name for node in tree.body if isinstance(node, ast.FunctionDef)}
     assert {"escape_like", "catalog_identifiers", "catalog_ranking"} <= helper_names
 
 
@@ -470,9 +446,7 @@ def test_catalog_modules_form_expected_normalized_relative_import_dag() -> None:
                     edges.add((module_name, imported))
             elif isinstance(node, ast.Import):
                 edges.update(
-                    (module_name, alias.name)
-                    for alias in node.names
-                    if alias.name in modules
+                    (module_name, alias.name) for alias in node.names if alias.name in modules
                 )
     assert edges == {
         (PUBLIC_MODULE, CATALOG_MODULE),
@@ -704,9 +678,7 @@ def test_catalog_materialization_preserves_exact_identity_and_provenance(
     candidate = candidates[0]
     assert candidate.resource.resource_id == "resource:file:1:2:10"
     assert candidate.resource.current_path == "C:/docs/catalog-1.pdf"
-    assert candidate.revision.revision_id == (
-        "revision:catalog:203402563930d8e61b528d734c673848"
-    )
+    assert candidate.revision.revision_id == ("revision:catalog:203402563930d8e61b528d734c673848")
     assert candidate.revision.producer == "document-catalog-v6"
     assert candidate.revision.processing_signature == "catalog-fixture-v1"
     assert candidate.revision.generation == 1
@@ -810,9 +782,7 @@ def test_catalog_snapshot_head_lifecycle_preserves_superseded_and_reports_drift(
     expected_reason: str | None,
     expected_count: int,
 ) -> None:
-    heads = tuple(
-        (str(row["source_kind"]), int(row["generation_id"])) for row in preflight_rows
-    )
+    heads = tuple((str(row["source_kind"]), int(row["generation_id"])) for row in preflight_rows)
     connection = _CatalogConnection(
         preflight_rows=preflight_rows,
         candidate_rows=candidate_rows,

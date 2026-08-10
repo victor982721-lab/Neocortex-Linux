@@ -90,9 +90,7 @@ def _validate_limit(limit: int) -> int:
     if isinstance(limit, bool) or not isinstance(limit, int):
         raise ValueError("limit must be an integer")
     if not 1 <= limit <= MAX_HUMAN_RESULTS_PER_SCOPE:
-        raise ValueError(
-            f"limit must be between 1 and {MAX_HUMAN_RESULTS_PER_SCOPE} per scope"
-        )
+        raise ValueError(f"limit must be between 1 and {MAX_HUMAN_RESULTS_PER_SCOPE} per scope")
     return limit
 
 
@@ -159,8 +157,7 @@ def federated_exit_code(entries: Sequence[dict[str, object]]) -> int:
     if all(code == int(KnowledgeExitCode.NO_RESULTS) for code in codes):
         return int(KnowledgeExitCode.NO_RESULTS)
     if any(code == int(KnowledgeExitCode.SUCCESS) for code in codes) or (
-        any(code == int(KnowledgeExitCode.NO_RESULTS) for code in codes)
-        and len(set(codes)) > 1
+        any(code == int(KnowledgeExitCode.NO_RESULTS) for code in codes) and len(set(codes)) > 1
     ):
         return int(KnowledgeExitCode.PARTIAL)
     priority = (
@@ -385,9 +382,7 @@ def evidence_payload(
         "matches": matches,
         "context_exit_code": context["exit_code"],
         "exit_code": (
-            int(KnowledgeExitCode.SUCCESS)
-            if matches
-            else int(KnowledgeExitCode.NO_RESULTS)
+            int(KnowledgeExitCode.SUCCESS) if matches else int(KnowledgeExitCode.NO_RESULTS)
         ),
     }
 
