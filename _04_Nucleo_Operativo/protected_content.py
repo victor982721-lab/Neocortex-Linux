@@ -430,6 +430,17 @@ class ProtectedContentPolicy:
             or (selected is not None and selected.disposition == "analyze_read_only")
         )
 
+    def run_mutation_reason(self, access: CorpusAccessPolicy) -> str | None:
+        """Return the stable denial reason for a globally read-only run."""
+
+        return PROTECTED_CONTENT_REASON if self.run_is_read_only(access) else None
+
+    def require_run_mutation_allowed(self, access: CorpusAccessPolicy) -> None:
+        """Raise the policy-owned error when a run cannot mutate content."""
+
+        if self.run_is_read_only(access):
+            raise ProtectedContentError()
+
     def _containing_tree_entry(
         self,
         path: Path,

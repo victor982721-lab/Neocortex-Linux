@@ -17,7 +17,7 @@ import os
 import stat
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, Literal, Protocol, cast
 
 from neocortex.platform_policy import UNAVAILABLE_BIRTHTIME_NS, stat_birthtime_ns
 # endregion [01]
@@ -25,8 +25,46 @@ from neocortex.platform_policy import UNAVAILABLE_BIRTHTIME_NS, stat_birthtime_n
 # region [02] Implementación
 
 if TYPE_CHECKING:
-    from .internal_paths import InternalPathsPolicy
-    from .protected_content import ProtectedContentPolicy
+
+    class InternalPathsPolicy(Protocol):
+        """Structural mutation boundary supplied by the internal-path policy."""
+
+        def validate_corpus_access(self, access: CorpusAccessPolicy) -> None: ...
+
+        def require_mutation_paths_allowed(
+            self,
+            *paths: str | os.PathLike[str] | None,
+        ) -> None: ...
+
+    class _ProtectedPathIdentity(Protocol):
+        @property
+        def canonical_path(self) -> Path: ...
+
+    class ProtectedContentPolicy(Protocol):
+        """Structural boundary supplied by the protected-content policy."""
+
+        @property
+        def entries(self) -> tuple[_ProtectedPathIdentity, ...]: ...
+
+        def run_mutation_reason(
+            self,
+            access: CorpusAccessPolicy,
+        ) -> str | None: ...
+
+        def require_run_mutation_allowed(
+            self,
+            access: CorpusAccessPolicy,
+        ) -> None: ...
+
+        def require_mutation_paths_allowed(
+            self,
+            *paths: str | os.PathLike[str] | None,
+        ) -> None: ...
+
+        def mutation_path_protection_reasons(
+            self,
+            *paths: str | os.PathLike[str] | None,
+        ) -> tuple[str | None, ...]: ...
 
 
 CorpusAccessMode = Literal["normal", "analyze_only"]
@@ -313,14 +351,9 @@ class CorpusMutationGuard:
     def reason_code(self) -> str | None:
         if self.policy.mode == "analyze_only":
             return PROTECTED_ANALYSIS_REASON
-        if (
-            self.protected_content_policy is not None
-            and self.protected_content_policy.run_is_read_only(self.policy)
-        ):
-            from .protected_content import PROTECTED_CONTENT_REASON
-
-            return PROTECTED_CONTENT_REASON
-        return None
+        if self.protected_content_policy is None:
+            return None
+        return self.protected_content_policy.run_mutation_reason(self.policy)
 
     def reject_run_mutation(self) -> None:
         """Reject any action originating in a globally read-only run."""
@@ -328,13 +361,8 @@ class CorpusMutationGuard:
         if self.policy.mode == "analyze_only":
             self.policy.verify_root_identity()
             raise ProtectedAnalysisRootError()
-        if (
-            self.protected_content_policy is not None
-            and self.protected_content_policy.run_is_read_only(self.policy)
-        ):
-            from .protected_content import ProtectedContentError
-
-            raise ProtectedContentError()
+        if self.protected_content_policy is not None:
+            self.protected_content_policy.require_run_mutation_allowed(self.policy)
 
     def require_paths_allowed(
         self,
@@ -342,12 +370,11 @@ class CorpusMutationGuard:
     ) -> None:
         """Reject internal, protected-content and analyze-only intersections."""
 
-        protected_reasons = self.mutation_path_protection_reasons(*paths)
-        for reason in protected_reasons:
-            if reason is not None:
-                from .protected_content import ProtectedContentError
-
-                raise ProtectedContentError(reason)
+        self.internal_paths_policy.require_mutation_paths_allowed(*paths)
+        if self.protected_content_policy is not None:
+            self.protected_content_policy.require_mutation_paths_allowed(*paths)
+        if self.policy.mode == "analyze_only":
+            self._require_analyze_only_paths_allowed(paths)
 
     def mutation_path_protection_reasons(
         self,
@@ -356,20 +383,28 @@ class CorpusMutationGuard:
         """Classify one path batch while revalidating each policy only once."""
 
         self.internal_paths_policy.require_mutation_paths_allowed(*paths)
-        if self.protected_content_policy is not None:
+        protected_reasons: tuple[str | None, ...]
+        if self.protected_content_policy is None:
+            protected_reasons = (None,) * len(paths)
+        elif self.policy.mode == "analyze_only":
+            self.protected_content_policy.require_mutation_paths_allowed(*paths)
+            protected_reasons = (None,) * len(paths)
+        else:
             protected_reasons = self.protected_content_policy.mutation_path_protection_reasons(
                 *paths
             )
-        else:
-            protected_reasons = (None,) * len(paths)
 
         if self.policy.mode != "analyze_only":
             return protected_reasons
-        for reason in protected_reasons:
-            if reason is not None:
-                from .protected_content import ProtectedContentError
+        self._require_analyze_only_paths_allowed(paths)
+        return protected_reasons
 
-                raise ProtectedContentError(reason)
+    def _require_analyze_only_paths_allowed(
+        self,
+        paths: tuple[str | os.PathLike[str] | None, ...],
+    ) -> None:
+        """Fail closed for every mutation intersecting an analyze-only root."""
+
         root = self.policy.root
         self.policy.verify_root_identity()
         for raw_path in paths:
@@ -388,7 +423,6 @@ class CorpusMutationGuard:
                     f"mutation path intersects protected root: {candidate}"
                 )
         self.policy.verify_root_identity()
-        return protected_reasons
 
 
 __all__ = [
