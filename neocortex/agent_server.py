@@ -7,6 +7,7 @@ or mutation operation is registered.
 from __future__ import annotations
 
 import asyncio
+import importlib.metadata
 import os
 import sys
 from typing import Any, cast
@@ -28,6 +29,7 @@ context/evidence citations for factual answers. No tool can move, rename, delete
 write, index, migrate or authorize an action."""
 
 _MAX_MCP_LINE_BYTES = 1_048_576
+_MCP_STDIO_BRIDGE_VERSIONS = frozenset({"1.23.3", "1.29.0"})
 
 
 def _requires_upstream_stdio_transport() -> bool:
@@ -82,6 +84,34 @@ async def _asyncio_stdio_files() -> tuple[_AsyncioTextReader, _AsyncioTextWriter
     return _AsyncioTextReader(reader), _AsyncioTextWriter(writer)
 
 
+async def _run_fastmcp_over_streams(
+    server: object,
+    read_stream: object,
+    write_stream: object,
+) -> None:
+    """Contain the only private FastMCP compatibility boundary.
+
+    FastMCP 1.x still exposes no public method that accepts already-opened
+    streams.  NeoCortex needs those streams on Linux/CPython 3.14 to avoid the
+    upstream AnyIO standard-file worker deadlock.  Keep the member access here,
+    bind it to explicitly tested SDK versions and fail closed if its shape
+    changes; ordinary server construction and Windows use public FastMCP APIs.
+    """
+
+    version = importlib.metadata.version("mcp")
+    if version not in _MCP_STDIO_BRIDGE_VERSIONS:
+        supported = ", ".join(sorted(_MCP_STDIO_BRIDGE_VERSIONS))
+        raise RuntimeError(
+            f"unsupported MCP stdio bridge version {version!r}; expected one of: {supported}"
+        )
+    low_level = getattr(server, "_mcp_server", None)
+    run = getattr(low_level, "run", None)
+    initialization_options = getattr(low_level, "create_initialization_options", None)
+    if not callable(run) or not callable(initialization_options):
+        raise RuntimeError("MCP stdio bridge contract is unavailable")
+    await run(read_stream, write_stream, initialization_options())
+
+
 def create_server() -> Any:
     """Build the MCP server lazily so ordinary CLI use has no MCP import cost."""
 
@@ -120,13 +150,7 @@ def create_server() -> Any:
                 cast(Any, stdin),
                 cast(Any, stdout),
             ) as (read_stream, write_stream):
-                # MCP 1.23.3 exposes no public accessor for the decorated low-level
-                # server, so this exact-version adapter must use its stable member.
-                await self._mcp_server.run(
-                    read_stream,
-                    write_stream,
-                    self._mcp_server.create_initialization_options(),
-                )
+                await _run_fastmcp_over_streams(self, read_stream, write_stream)
 
     server = _NeoCortexFastMCP(
         name="Neocortex",

@@ -6,6 +6,7 @@ import queue
 import subprocess
 import sys
 import threading
+from dataclasses import dataclass
 from pathlib import Path
 
 import anyio
@@ -78,6 +79,40 @@ def test_windows_stdio_uses_upstream_cross_platform_adapter(
     anyio.run(server.run_stdio_async)
 
     assert calls == [server]
+
+
+def test_linux_stdio_private_sdk_boundary_is_versioned_and_fail_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[object, object, object]] = []
+
+    @dataclass
+    class _LowLevel:
+        async def run(self, reader: object, writer: object, options: object) -> None:
+            calls.append((reader, writer, options))
+
+        @staticmethod
+        def create_initialization_options() -> object:
+            return {"fixture": "options"}
+
+    class _Server:
+        _mcp_server = _LowLevel()
+
+    monkeypatch.setattr(agent_server.importlib.metadata, "version", lambda _name: "1.29.0")
+    reader = object()
+    writer = object()
+
+    anyio.run(agent_server._run_fastmcp_over_streams, _Server(), reader, writer)
+
+    assert calls == [(reader, writer, {"fixture": "options"})]
+
+    monkeypatch.setattr(agent_server.importlib.metadata, "version", lambda _name: "2.0.0")
+    with pytest.raises(RuntimeError, match="unsupported MCP stdio bridge version"):
+        anyio.run(agent_server._run_fastmcp_over_streams, _Server(), reader, writer)
+
+    monkeypatch.setattr(agent_server.importlib.metadata, "version", lambda _name: "1.29.0")
+    with pytest.raises(RuntimeError, match="bridge contract is unavailable"):
+        anyio.run(agent_server._run_fastmcp_over_streams, object(), reader, writer)
 
 
 def test_server_instructions_treat_corpus_as_untrusted_and_deny_mutation() -> None:
