@@ -368,17 +368,31 @@ class FrameworkActions:
         )
         if not active:
             return 0, preflight_failures, protected
+        # Revalidate the immutable guard once for the whole batch at the
+        # mutation frontier.  Candidate identity remains a per-path check: a
+        # component may have been substituted after the admission pass even
+        # when the corpus root and policy objects themselves are unchanged.
+        mutation_guard.require_paths_allowed(*(candidate[1] for candidate in active))
+        mutation_root = self._validate_apply_root(mutation_guard=mutation_guard)
+        ready, revalidation_failures = self._revalidate_trash_candidates(
+            action_type,
+            active,
+            validated_root=mutation_root,
+        )
+        preflight_failures += revalidation_failures
+        if not ready:
+            return 0, preflight_failures, protected
         # Send2Trash accepts paths only. Revalidation cannot prevent another
         # process from replacing the directory entry before its syscall, so
-        # there is deliberately no second mutation-frontier pass: no syscall
-        # follows it.  Destructive mode fails closed until a handle-bound
-        # Recycle Bin primitive is available and tested.
+        # destructive mode fails closed until a handle-bound Recycle Bin
+        # primitive is available and tested.  The frontier pass above remains
+        # mandatory so a future backend cannot bypass the TOCTOU contract.
         self._state.finish_file_actions(
-            (candidate[0] for candidate in active),
+            (candidate[0] for candidate in ready),
             "skipped",
             TRASH_IDENTITY_ABSTENTION,
         )
-        return 0, preflight_failures, protected + len(active)
+        return 0, preflight_failures, protected + len(ready)
 
     def _best_effort_require_recovery(
         self,
@@ -538,6 +552,8 @@ class FrameworkActions:
                 os.stat_result,
             ]
         ],
+        *,
+        validated_root: Path | None = None,
     ) -> tuple[
         list[
             tuple[
@@ -571,6 +587,7 @@ class FrameworkActions:
                     planned,
                     reference,
                     original_stat=original_stat,
+                    validated_root=validated_root,
                 )
             except (InternalPathProtectionError, ProtectedAnalysisRootError):
                 raise
