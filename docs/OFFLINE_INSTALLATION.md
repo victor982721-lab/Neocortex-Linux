@@ -14,12 +14,12 @@ Esta guía distingue validación de artefactos, reutilización del entorno del s
 
 No cambies constraints para sortear un paquete ausente. Completa y valida el wheelhouse para la versión de Python, arquitectura y extras que se desplegarán.
 
-## Preparación vigente de la entrega `0.8.0`
+## Preparación vigente de la entrega `0.9.0`
 
-El árbol fuente vigente declara `0.8.0`; eso no convierte en evidencia de esa
+El árbol fuente vigente declara `0.9.0`; eso no convierte en evidencia de esa
 versión la validación fechada anterior. Los bloques posteriores que fijan
 literalmente `0.6.0` conservan el ejercicio reproducido el 2026-07-25 y no deben
-reescribirse al citarlo. Para promover `0.8.0`, construye sus artefactos y repite
+reescribirse al citarlo. Para promover `0.9.0`, construye sus artefactos y repite
 las mismas barreras con nombres y requisitos exactos de la entrega actual:
 
 La metadata vigente admite CPython `>=3.13,<3.15`. El wheelhouse y la
@@ -30,7 +30,7 @@ referencias posteriores a `setuptools==82.0.1` pertenecen exclusivamente a la
 reproducción histórica de `0.6.0` y se conservan como evidencia fechada.
 
 ```powershell
-$Version = '0.8.0'
+$Version = '0.9.0'
 $Wheel = "C:\Ruta\Dist\neocortex_framework-$Version-py3-none-any.whl"
 $Sdist = "C:\Ruta\Dist\neocortex_framework-$Version.tar.gz"
 
@@ -43,8 +43,8 @@ C:\Ruta\VenvValidacion072\Scripts\Neocortex.exe --help
 
 La prueba `--no-deps` sigue siendo sólo una barrera de empaquetado ligero. Para
 una instalación operativa hermética, el requisito debe ser
-`neocortex-framework==0.8.0` para la base mínima, uno o más extras de dominio,
-o `neocortex-framework[full]==0.8.0` para conservar el runtime integrado
+`neocortex-framework==0.9.0` para la base mínima, uno o más extras de dominio,
+o `neocortex-framework[full]==0.9.0` para conservar el runtime integrado
 completo. Todo su cierre transitivo debe resolverse exclusivamente desde el
 wheelhouse autorizado. Después de `pip check`, comprueba además que Knowledge
 pueda inspeccionar un directorio de estado deliberadamente ausente sin crearlo:
@@ -56,17 +56,26 @@ C:\Ruta\VenvValidacion072\Scripts\Neocortex.exe --state-directory $StateProbe --
 if (Test-Path -LiteralPath $StateProbe) { throw 'Knowledge creó estado durante la consulta.' }
 ```
 
-La METADATA de `0.8.0` separa el cierre de runtime así:
+La METADATA de `0.9.0` separa el cierre de runtime así:
 
 | Selección | Requisitos directos |
 |---|---|
-| base | `complexipy`, `cosmic-ray`, `coverage`, `deptry`, `grimp`, `mypy`, `packaging`, `pip-audit`, `pytest`, `radon`, `rich`, `ruff`, `semgrep`, `vulture`, `xxhash` |
+| base | `packaging`, `rich`, `xxhash` |
+| `agent` | `mcp==1.29.0` |
+| `analysis` | `complexipy`, `cosmic-ray`, `coverage`, `deptry`, `grimp`, `mypy`, `pip-audit`, `pytest`, `radon`, `ruff`, `vulture` |
 | `documents` | `Pillow`, `PyMuPDF`, `pdfminer.six`, `pytesseract` |
 | `audio` | `ctranslate2`, `faster-whisper` |
 | `image` | `Pillow`, `nudenet` |
 | `semantic` | `Pillow`, `fastembed`, `numpy` |
 | `ui` | `PySide6` |
-| `full` | unión de los cinco extras anteriores |
+| `full` | unión de `agent`, `analysis` y los cinco extras de dominio |
+
+Semgrep no forma parte de ninguna selección del entorno de aplicación: su pin
+exacto de MCP es incompatible con el runtime seguro del agente. La release
+canónica lo aprovisiona como tool-runtime separado, scan-only y ligado a un
+recibo con inventario, hashes y excepciones de vulnerabilidad caducables. Una
+instalación offline debe conservar también su lock y todos sus wheels como un
+wheelhouse independiente; nunca debe mezclarlo con `full`.
 
 El wheelhouse sólo resuelve paquetes Python. Para `trusted-static`, prepare
 además Node y Pyright `1.1.411` como paquete npm aislado dentro del venv del
@@ -112,16 +121,16 @@ y `pip check` no detectan una DLL del sistema ausente.
 
 `--no-deps` permite comprobar versión y ayuda porque esas rutas de arranque no
 importan engines. No demuestra que `KnowledgeSearchService`, inventario o una
-ruta operativa funcionen: para ello el venv aislado debe contener al menos el
-cierre base de `complexipy`, `grimp`, `mypy`, `rich`, `ruff` y `xxhash`. Ruff,
-Mypy, Grimp y Complexipy deben resolverse desde el mismo runtime Python.
+ruta operativa funcionen: para ello el venv aislado debe contener el cierre
+base. El autoanálisis integrado requiere además `analysis`; Ruff, Mypy, Grimp y
+Complexipy deben resolverse desde el mismo runtime Python de aplicación.
 Pyright pertenece a la preparación separada de
 `trusted-static`; su ausencia no impide `protected`, pero deja su proveedor y el
 consenso de tipos degradados. Ningún probe de instalación debe cargar o
 descargar modelos; la disponibilidad de modelos
 se valida después, de forma offline y contra cachés explícitas.
 
-Conserva el wheel y sdist `0.8.0`, su `constraints.txt`, el inventario del
+Conserva el wheel y sdist `0.9.0`, su `constraints.txt`, el inventario del
 wheelhouse, hashes de procedencia y resultados de las barreras como evidencia
 separada; no atribuyas a esos artefactos los resultados históricos de `0.6.0`.
 

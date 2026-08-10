@@ -4,6 +4,48 @@ Este archivo registra cambios observables del producto. Las cifras de pruebas,
 cobertura y rendimiento pertenecen al informe técnico fechado de cada auditoría;
 no se copian aquí para evitar que se conviertan en datos históricos sin contexto.
 
+## [0.9.0] - 2026-08-10
+
+### Añadido
+
+- Gate único `tools/quality_gate.py` para inventariar dinámicamente toda la
+  suite, ejecutar contratos Grimp contra el grafo vivo, impedir deuda nueva de
+  Ruff/Mypy/Pyright, auditar supply chain y certificar Coverage completo con
+  ramas y baseline de no-regresión. El CI publica el reporte Coverage y ya no
+  mantiene listas manuales de pruebas.
+- Runtime administrado y aislado de Semgrep, expuesto sólo mediante un wrapper
+  `scan`, con lock exacto, inventario y hashes en un recibo verificable. Sus
+  tres excepciones MCP quedan confinadas, declaradas como no alcanzables y con
+  vencimiento; el entorno de aplicación no las hereda.
+- Dedup schema 10 con índices de identidad para las relaciones de Knowledge y
+  migración 9→10 aditiva, exacta, transaccional e idempotente.
+
+### Cambiado
+
+- MCP sube a `1.29.0`; el bridge Linux que acepta streams ya abiertos queda
+  encapsulado en una única frontera privada, ligada a versiones probadas y
+  fail-closed. El runtime base se reduce a `packaging`, `rich` y `xxhash`;
+  `agent` y `analysis` son extras de distribución y la release personal sigue
+  instalando su unión `full`.
+- La página GUI **Consulta** ejecuta lecturas publicadas en una tarea cancelable,
+  mantiene la ventana responsiva y permite copiar el resultado sin añadir
+  ninguna superficie de escritura.
+- Los contratos de Archive/Video, Semantic, Knowledge y políticas de corpus
+  invierten dependencias hacia modelos o Protocols neutrales; las fachadas y
+  reexports públicos conservan su identidad.
+- Los guards de mutación se reconstruyen por lote, no por candidato, sin quitar
+  la revalidación de raíz, componentes e identidad inmediatamente antes de la
+  frontera de acción.
+
+### Corregido
+
+- Se restauró la segunda pasada TOCTOU por candidato después de que el nuevo
+  batching revelara sustituciones de raíz y componentes entre preflight y
+  frontera; ambas regresiones fallan de forma cerrada y el presupuesto de
+  reconstrucciones permanece acotado.
+- La consulta de relaciones de inventario evita escaneos costosos por identidad
+  sin alterar evidencia, generaciones ni decisiones de deduplicación.
+
 ## [0.8.0] - 2026-08-09
 
 ### Añadido

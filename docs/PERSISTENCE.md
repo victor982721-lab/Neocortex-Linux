@@ -1,7 +1,7 @@
 # Persistencia, esquemas y migraciones
 
 > **Estado del documento.** Contrato actualizado el 10 de agosto de 2026. El
-> árbol fuente `0.8.0` declara inventario Dedup v10, framework v20,
+> árbol fuente `0.9.0` declara inventario Dedup v10, framework v20,
 > catálogo v6 y semántica v6; la barrera integral y el paquete final se registran
 > por separado. En una auditoría histórica, bases vivas se inspeccionaron sin
 > migrarlas: dedup permanecía
@@ -658,9 +658,9 @@ registra la barrera ejecutada.
 
 ### Estado de fuente y estado vivo
 
-La fuente `0.8.0` declara esquema v10. La base viva inspeccionada históricamente conservaba
+La fuente `0.9.0` declara esquema v10. La base viva inspeccionada históricamente conservaba
 `metadata.schema_version='6'`; se abrió sólo para checks y no se permitió que el
-initializer la migrara. Antes de usar esa base con `0.8.0` debe aplicarse el
+initializer la migrara. Antes de usar esa base con `0.9.0` debe aplicarse el
 procedimiento de backup y actualización de este documento.
 
 Los hallazgos `NC-AUD-001`, `NC-AUD-002` y `NC-AUD-003` quedaron corregidos en

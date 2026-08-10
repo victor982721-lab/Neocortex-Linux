@@ -2,7 +2,7 @@
 
 > **Estado del documento.** Esta es la fuente de verdad funcional de la
 > Knowledge Plane read-only introducida en NeoCortex `0.7.0` y actualizada para
-> los contratos de `0.8.0`. Describe el código y los contratos observables del
+> los contratos de `0.9.0`. Describe el código y los contratos observables del
 > árbol; no sustituye las pruebas ni convierte una evaluación scripted en
 > evidencia de calidad sobre el corpus real.
 

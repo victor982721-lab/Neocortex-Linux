@@ -1,6 +1,6 @@
 # Autoanálisis de código y evidencia externa
 
-> **Estado del contrato.** Esta capacidad pertenece a la fuente `0.8.0` bajo
+> **Estado del contrato.** Esta capacidad pertenece a la fuente `0.9.0` bajo
 > `%USERPROFILE%\Neocortex\Repository`. Debe ejecutarse desde un runtime
 > versionado bajo `%LOCALAPPDATA%\Programs\Neocortex\versions` y promoverse
 > únicamente mediante el launcher estable

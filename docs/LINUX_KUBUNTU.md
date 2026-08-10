@@ -1,6 +1,6 @@
 # Kubuntu/Linux
 
-NeoCortex `0.8.0` admite Kubuntu/Ubuntu 26.04 sobre Linux x86-64 con CPython
+NeoCortex `0.9.0` admite Kubuntu/Ubuntu 26.04 sobre Linux x86-64 con CPython
 3.14 como entorno personal de referencia. Python 3.13 permanece cubierto por
 la matriz de CI. El modo Linux conserva inventario, procesamiento, catálogo,
 búsqueda, Semantic y la interfaz KDE; las mutaciones del corpus continúan
@@ -163,7 +163,7 @@ También puede elegir una release conservada:
 
 ```bash
 python3.14 tools/release_linux.py rollback \
-  --release 0.8.0-0123456789ab-cp314-linux-x86_64
+  --release 0.9.0-0123456789ab-cp314-linux-x86_64
 ```
 
 Rollback sólo cambia atómicamente el enlace activo y deja un recibo; no elimina

@@ -4,7 +4,7 @@
 > 9 de agosto de 2026. Describe el comportamiento observado y separa los
 > cambios previstos de los ya implementados. No certifica por sí solo la suite
 > completa ni la instalación empaquetada. El árbol auditado declara la versión
-> `0.8.0`; la versión instalada debe comprobarse con
+> `0.9.0`; la versión instalada debe comprobarse con
 > `Neocortex --version`.
 
 ## Finalidad y principios

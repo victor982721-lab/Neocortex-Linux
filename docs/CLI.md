@@ -37,7 +37,7 @@ esperadas, deténgase: el launcher instalado y el árbol fuente no representan l
 misma entrega. No use una ruta nueva hasta actualizar y volver a comprobar el
 entrypoint.
 
-Esta fuente declara `0.8.0`. En Windows, la fuente canónica está en
+Esta fuente declara `0.9.0`. En Windows, la fuente canónica está en
 `%USERPROFILE%\Neocortex\Repository`; los runtimes versionados viven bajo
 `%LOCALAPPDATA%\Programs\Neocortex\versions` y el launcher estable es
 `%LOCALAPPDATA%\Programs\Neocortex\bin\Neocortex.exe`. En Linux, la fuente está
@@ -703,7 +703,7 @@ otros perfiles exigen OSD y seleccionan `spa+eng+deu`, `chi_sim+eng` o
 variante. Perfil, idiomas efectivos, OSD, confianza, fallback y huellas de
 traineddata quedan ligados a la procedencia y a la caché.
 
-### Knowledge Plane de sólo lectura (`0.8.0`)
+### Knowledge Plane de sólo lectura (`0.9.0`)
 
 Knowledge ofrece tres acciones planas y mutuamente excluyentes. Todas leen el
 estado ya publicado; no recorren el corpus, crean directorios o bases, migran
@@ -968,7 +968,7 @@ estado con código `2` y razón estable
 búsqueda permanecen disponibles; no se usa `Path.rename` como sustituto.
 
 `--apply` permite que una corrida integrada ejecute únicamente las mutaciones
-que satisfacen el contrato físico de `0.8.0`. Los rename de extensión y los
+que satisfacen el contrato físico de `0.9.0`. Los rename de extensión y los
 movimientos de organización requieren NTFS local, mismo volumen, archivo
 regular con un único hard link, ausencia de reparse y operación ligada a handles
 retenidos con *no-replace*. UNC, otros filesystems, directorios, múltiples hard

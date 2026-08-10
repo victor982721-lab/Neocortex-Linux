@@ -29,7 +29,7 @@ def test_project_metadata_uses_package_version_and_installed_command() -> None:
     assert metadata["project"]["requires-python"] == ">=3.13,<3.15"
     assert metadata["project"]["scripts"]["Neocortex"] == ("neocortex.cli:entrypoint")
     assert metadata["tool"]["setuptools"]["dynamic"]["version"] == {"attr": "neocortex.__version__"}
-    assert neocortex.__version__ == "0.8.0"
+    assert neocortex.__version__ == "0.9.0"
 
 
 def test_source_manifest_excludes_release_internal_material() -> None:
