@@ -10,6 +10,7 @@ import asyncio
 import importlib.metadata
 import os
 import sys
+from collections.abc import Awaitable, Callable
 from typing import Any, cast
 
 from .read_api import (
@@ -109,7 +110,9 @@ async def _run_fastmcp_over_streams(
     initialization_options = getattr(low_level, "create_initialization_options", None)
     if not callable(run) or not callable(initialization_options):
         raise RuntimeError("MCP stdio bridge contract is unavailable")
-    await run(read_stream, write_stream, initialization_options())
+    run_streams = cast(Callable[[object, object, object], Awaitable[object]], run)
+    initialization_options_factory = cast(Callable[[], object], initialization_options)
+    await run_streams(read_stream, write_stream, initialization_options_factory())
 
 
 def create_server() -> Any:
