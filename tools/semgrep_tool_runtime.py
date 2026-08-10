@@ -20,7 +20,6 @@ import sys
 import sysconfig
 import tempfile
 import urllib.parse
-import urllib.request
 import uuid
 import venv
 from collections.abc import Callable, Mapping, Sequence
@@ -29,6 +28,7 @@ from pathlib import Path
 if __package__ in {None, ""}:
     sys.path.insert(0, os.fspath(Path(__file__).resolve().parents[1]))
 
+from neocortex import pip_bootstrap
 from neocortex.semgrep_tool_contract import (
     PIP_BOOTSTRAP_FILENAME,
     PIP_BOOTSTRAP_SHA256,
@@ -52,13 +52,7 @@ from neocortex.semgrep_tool_contract import (
     sha256_file,
 )
 
-_PIP_WHEEL_RUNNER = (
-    "import runpy,sys;"
-    "wheel=sys.argv[1];"
-    "sys.path.insert(0,wheel);"
-    "sys.argv=sys.argv[1:];"
-    "runpy.run_module('pip',run_name='__main__')"
-)
+_PIP_WHEEL_RUNNER = pip_bootstrap.PIP_WHEEL_RUNNER
 _INVENTORY_SCRIPT = (
     "import importlib.metadata as m,json,re;"
     "rows=[{'name':re.sub(r'[-_.]+','-',d.metadata['Name']).lower(),"
@@ -99,12 +93,7 @@ def _run(
     return result
 
 
-def _download(url: str, destination: Path) -> None:
-    request = urllib.request.Request(url, headers={"User-Agent": "NeoCortex-release/1"})
-    with urllib.request.urlopen(request, timeout=120) as response, destination.open("xb") as output:
-        shutil.copyfileobj(response, output, length=1024 * 1024)
-        output.flush()
-        os.fsync(output.fileno())
+_download = pip_bootstrap.download_pip_bootstrap
 
 
 def _tool_root(runtime_root: Path) -> Path:
@@ -139,11 +128,13 @@ def require_pip_bootstrap(path: Path) -> None:
     """Reject any initial pip wheel not matching the canonical content hash."""
 
     try:
-        observed = sha256_file(path)
-    except OSError as exc:
-        raise SemgrepToolRuntimeError("pip bootstrap wheel is unavailable") from exc
-    if path.name != PIP_BOOTSTRAP_FILENAME or observed != PIP_BOOTSTRAP_SHA256:
-        raise SemgrepToolRuntimeError("pip bootstrap wheel failed exact SHA-256 validation")
+        pip_bootstrap.require_pip_bootstrap(
+            path,
+            filename=PIP_BOOTSTRAP_FILENAME,
+            sha256=PIP_BOOTSTRAP_SHA256,
+        )
+    except pip_bootstrap.PipBootstrapError as exc:
+        raise SemgrepToolRuntimeError(str(exc)) from exc
 
 
 def prepare_pip_bootstrap(
@@ -153,10 +144,16 @@ def prepare_pip_bootstrap(
 ) -> Path:
     """Download and authenticate pip without executing the venv-bundled copy."""
 
-    wheel = workspace / PIP_BOOTSTRAP_FILENAME
-    downloader(PIP_BOOTSTRAP_URL, wheel)
-    require_pip_bootstrap(wheel)
-    return wheel
+    try:
+        return pip_bootstrap.prepare_pip_bootstrap(
+            workspace,
+            downloader=downloader,
+            filename=PIP_BOOTSTRAP_FILENAME,
+            url=PIP_BOOTSTRAP_URL,
+            sha256=PIP_BOOTSTRAP_SHA256,
+        )
+    except pip_bootstrap.PipBootstrapError as exc:
+        raise SemgrepToolRuntimeError(str(exc)) from exc
 
 
 def _bootstrap_environment(
@@ -166,32 +163,23 @@ def _bootstrap_environment(
     runner: CommandRunner,
 ) -> None:
     require_pip_bootstrap(pip_wheel)
-    # A contained, regular interpreter lets release and gate checks reject
-    # executable escapes rather than accepting venv symlinks to a host Python.
-    venv.EnvBuilder(with_pip=False, clear=False, symlinks=False).create(tool_root)
-    python = _tool_python(tool_root)
-    runner(
-        (
-            python,
-            "-I",
-            "-c",
-            _PIP_WHEEL_RUNNER,
+    try:
+        # A contained, regular interpreter lets release and gate checks reject
+        # executable escapes rather than accepting venv symlinks to a host Python.
+        python = pip_bootstrap.create_pip_environment(
+            tool_root,
             pip_wheel,
-            "install",
-            "--disable-pip-version-check",
-            "--no-cache-dir",
-            "--no-index",
-            "--no-deps",
-            pip_wheel,
-        ),
-        timeout=300,
-    )
-    installed = runner(
-        (python, "-I", "-c", "import pip; print(pip.__version__)"),
-        timeout=60,
-    ).stdout.strip()
-    if installed != SEMGREP_TOOL_PIP_VERSION:
-        raise SemgrepToolRuntimeError(f"unexpected bootstrapped pip version: {installed}")
+            runner=runner,
+            symlinks=False,
+            builder_factory=venv.EnvBuilder,
+            expected_version=SEMGREP_TOOL_PIP_VERSION,
+            filename=PIP_BOOTSTRAP_FILENAME,
+            sha256=PIP_BOOTSTRAP_SHA256,
+        )
+    except pip_bootstrap.PipBootstrapError as exc:
+        raise SemgrepToolRuntimeError(str(exc)) from exc
+    if python != _tool_python(tool_root):
+        raise SemgrepToolRuntimeError("pip bootstrap selected an incompatible tool interpreter")
 
 
 def _remove_denied_entrypoints(tool_root: Path) -> None:

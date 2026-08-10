@@ -12,21 +12,21 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
+from .pip_bootstrap import (
+    PIP_BOOTSTRAP_FILENAME,
+    PIP_BOOTSTRAP_SHA256,
+    PIP_BOOTSTRAP_URL,
+    PIP_BOOTSTRAP_VERSION,
+)
+
 SEMGREP_TOOL_SCHEMA_VERSION = 1
 SEMGREP_TOOL_RECEIPT_KIND = "neocortex_semgrep_tool_runtime"
 SEMGREP_TOOL_RECEIPT_NAME = "neocortex-tool-runtime.json"
 SEMGREP_TOOL_VERSION = "1.172.0"
 SEMGREP_TOOL_MCP_VERSION = "1.23.3"
-SEMGREP_TOOL_PIP_VERSION = "26.1.2"
+SEMGREP_TOOL_PIP_VERSION = PIP_BOOTSTRAP_VERSION
 SEMGREP_TOOL_CONSTRAINTS_NAME = "semgrep_tool_constraints.txt"
 SEMGREP_TOOL_CONSTRAINTS_SHA256 = "61457161ee91f3908d4447b50311d2e54f63db62f1b342e9ceddda2de2b7595f"
-PIP_BOOTSTRAP_FILENAME = f"pip-{SEMGREP_TOOL_PIP_VERSION}-py3-none-any.whl"
-PIP_BOOTSTRAP_SHA256 = "382ff9f685ee3bc25864f820aa50505825f10f5458ffff07e30a6d96e5715cab"
-PIP_BOOTSTRAP_URL = (
-    "https://files.pythonhosted.org/packages/5d/95/"
-    "6b5cb3461ea5673ba0995989746db58eb18b91b54dbf331e72f569540946/"
-    f"{PIP_BOOTSTRAP_FILENAME}"
-)
 
 SEMGREP_TOOL_ALLOWED_SURFACES = ("local_scan_only",)
 SEMGREP_TOOL_DENIED_ENTRYPOINTS = ("mcp", "pysemgrep", "semgrep")

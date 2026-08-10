@@ -34,13 +34,15 @@ from pathlib import Path
 if __package__ in {None, ""}:
     sys.path.insert(0, os.fspath(Path(__file__).resolve().parents[1]))
 
-from neocortex import __version__
-from neocortex.platform_policy import PlatformPolicy, current_platform_policy
-from neocortex.semgrep_tool_contract import (
+from neocortex import __version__, pip_bootstrap
+from neocortex.pip_bootstrap import (
     PIP_BOOTSTRAP_FILENAME,
     PIP_BOOTSTRAP_SHA256,
     PIP_BOOTSTRAP_URL,
-    SEMGREP_TOOL_PIP_VERSION,
+    PIP_BOOTSTRAP_VERSION,
+)
+from neocortex.platform_policy import PlatformPolicy, current_platform_policy
+from neocortex.semgrep_tool_contract import (
     SEMGREP_TOOL_VERSION,
 )
 from tools.build_binary_inputs import build_source_only_wheels
@@ -52,7 +54,6 @@ from tools.semgrep_tool_runtime import (
 
 NODE_VERSION = "24.18.1"
 PYRIGHT_VERSION = "1.1.411"
-PIP_BOOTSTRAP_VERSION = SEMGREP_TOOL_PIP_VERSION
 RECEIPT_SCHEMA_VERSION = 1
 RELEASE_PLATFORM_TAG = "linux-x86_64"
 RELEASE_MANIFEST_NAME = "neocortex-release.json"
@@ -231,24 +232,30 @@ def _venv_command(root: Path) -> Path:
 def _prepare_pip_bootstrap(workspace: Path) -> Path:
     """Download the pinned pip wheel without invoking the bundled venv pip."""
 
-    wheel = workspace / PIP_BOOTSTRAP_FILENAME
-    _download(PIP_BOOTSTRAP_URL, wheel)
-    _require_pip_bootstrap(wheel)
-    return wheel
+    try:
+        return pip_bootstrap.prepare_pip_bootstrap(
+            workspace,
+            downloader=_download,
+            filename=PIP_BOOTSTRAP_FILENAME,
+            url=PIP_BOOTSTRAP_URL,
+            sha256=PIP_BOOTSTRAP_SHA256,
+        )
+    except pip_bootstrap.PipBootstrapError as exc:
+        raise LinuxReleaseError(str(exc)) from exc
 
 
 def _require_pip_bootstrap(wheel: Path) -> None:
-    if wheel.name != PIP_BOOTSTRAP_FILENAME or _sha256_file(wheel) != PIP_BOOTSTRAP_SHA256:
-        raise LinuxReleaseError("pip bootstrap wheel failed exact SHA-256 validation")
+    try:
+        pip_bootstrap.require_pip_bootstrap(
+            wheel,
+            filename=PIP_BOOTSTRAP_FILENAME,
+            sha256=PIP_BOOTSTRAP_SHA256,
+        )
+    except pip_bootstrap.PipBootstrapError as exc:
+        raise LinuxReleaseError(str(exc)) from exc
 
 
-_PIP_WHEEL_RUNNER = (
-    "import runpy,sys;"
-    "wheel=sys.argv[1];"
-    "sys.path.insert(0,wheel);"
-    "sys.argv=sys.argv[1:];"
-    "runpy.run_module('pip',run_name='__main__')"
-)
+_PIP_WHEEL_RUNNER = pip_bootstrap.PIP_WHEEL_RUNNER
 
 
 def _create_pip_environment(
@@ -260,30 +267,21 @@ def _create_pip_environment(
     """Create a venv and seed only the verified pip wheel into it."""
 
     _require_pip_bootstrap(pip_wheel)
-    venv.EnvBuilder(with_pip=False, clear=False, symlinks=True).create(root)
-    python = _venv_python(root)
-    runner(
-        (
-            python,
-            "-I",
-            "-c",
-            _PIP_WHEEL_RUNNER,
+    try:
+        python = pip_bootstrap.create_pip_environment(
+            root,
             pip_wheel,
-            "install",
-            "--disable-pip-version-check",
-            "--no-cache-dir",
-            "--no-index",
-            "--no-deps",
-            pip_wheel,
-        ),
-        timeout=300,
-    )
-    installed = runner(
-        (python, "-I", "-c", "import pip; print(pip.__version__)"),
-        timeout=60,
-    ).stdout.strip()
-    if installed != PIP_BOOTSTRAP_VERSION:
-        raise LinuxReleaseError(f"unexpected bootstrapped pip version: {installed}")
+            runner=runner,
+            symlinks=True,
+            builder_factory=venv.EnvBuilder,
+            expected_version=PIP_BOOTSTRAP_VERSION,
+            filename=PIP_BOOTSTRAP_FILENAME,
+            sha256=PIP_BOOTSTRAP_SHA256,
+        )
+    except pip_bootstrap.PipBootstrapError as exc:
+        raise LinuxReleaseError(str(exc)) from exc
+    if python != _venv_python(root):
+        raise LinuxReleaseError("pip bootstrap selected an incompatible release interpreter")
 
 
 def _build_wheel(
