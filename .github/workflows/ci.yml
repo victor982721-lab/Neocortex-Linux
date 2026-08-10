@@ -32,7 +32,10 @@ jobs:
         with:
           python-version: "3.14"
 
-      - name: Install constrained base runtime
+      - name: Bootstrap audited pip
+        run: python -I tools/bootstrap_pip.py
+
+      - name: Install constrained analysis runtime
         run: |
           set -euo pipefail
           python -m pip install --disable-pip-version-check --no-cache-dir \
@@ -44,7 +47,7 @@ jobs:
           python -m pip install --disable-pip-version-check --no-cache-dir \
             --only-binary=:all: \
             --find-links "$RUNNER_TEMP/neocortex-input-wheels" \
-            --constraint constraints.txt .
+            --constraint constraints.txt ".[analysis]"
 
       - name: Ruff changed-source contracts
         env:
@@ -68,36 +71,112 @@ jobs:
           python -m ruff check --no-cache "${targets[@]}"
           python -m ruff format --check --no-cache "${targets[@]}"
 
-      - name: Fast cross-platform contracts
-        run: >-
-          python -m pytest -q -p no:cacheprovider
-          --basetemp "${RUNNER_TEMP}/pytest-fast"
-          tests/test_agent_server.py
-          tests/test_packaging_entrypoint.py
-          tests/test_archive_cli.py
-          tests/test_archive_route.py
-          tests/test_build_binary_inputs.py
-          tests/test_cli_import_isolation.py
-          tests/test_cli_capabilities.py
-          tests/test_cli_modularization.py
-          tests/test_human_cli.py
-          tests/test_linux_memory_probe.py
-          tests/test_linux_platform_policy.py
-          tests/test_model_management.py
-          tests/test_posix_containment.py
-          tests/test_read_api.py
-          tests/test_release_linux.py
-          tests/test_route_schema_contracts.py
-          tests/test_semantic_lexical.py
-          tests/test_semantic_quality.py
-          tests/test_text_route.py
-          tests/test_value_cli_adapter.py
-          tests/test_value_review_contracts.py
-          tests/test_value_review_sqlite.py
-          tests/test_zip_safety.py
+      - name: Verify final candidate snapshot
+        if: always()
+        run: python tools/quality_gate.py git-snapshot --sha "$GITHUB_SHA"
+
+  quality:
+    name: Coverage · live contracts · supply chain · static baseline
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out candidate
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Bind gate evidence to the candidate SHA
+        run: |
+          set -euo pipefail
+          observed=$(git rev-parse HEAD)
+          test "$observed" = "$GITHUB_SHA"
+          printf 'candidate_sha=%s\n' "$observed"
+
+      - name: Set up CPython 3.14
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+
+      - name: Set up Node for canonical Pyright
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24.18.1"
+          package-manager-cache: false
+
+      - name: Bootstrap audited pip
+        run: python -I tools/bootstrap_pip.py
+
+      - name: Install constrained full source and Pyright
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check --no-cache-dir \
+            --only-binary=:all: --constraint constraints.txt \
+            build==1.5.0 setuptools==83.0.0 wheel
+          python tools/build_binary_inputs.py \
+            --wheel-dir "$RUNNER_TEMP/neocortex-input-wheels" \
+            --constraints constraints.txt
+          python -m pip install --disable-pip-version-check --no-cache-dir \
+            --only-binary=:all: \
+            --find-links "$RUNNER_TEMP/neocortex-input-wheels" \
+            --constraint constraints.txt ".[full]"
+          python -m pip check
+          python -I tools/pyright_runtime.py install --target "$RUNNER_TEMP/pyright"
+          echo "$RUNNER_TEMP/pyright/node_modules/.bin" >> "$GITHUB_PATH"
+
+      - name: Prove complete dynamic test inventory
+        run: python tools/quality_gate.py inventory --shard-count 2
+
+      - name: Enforce complete branch-aware coverage baseline
+        env:
+          QT_QPA_PLATFORM: offscreen
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
+          set -euo pipefail
+          python tools/quality_gate.py coverage \
+            --data-file "$RUNNER_TEMP/neocortex-coverage/.coverage" \
+            --report "$RUNNER_TEMP/neocortex-coverage/coverage.json" \
+            --basetemp "$RUNNER_TEMP/pytest-coverage"
+
+      - name: Verify candidate snapshot after coverage
+        run: python tools/quality_gate.py git-snapshot --sha "$GITHUB_SHA"
+
+      - name: Publish complete branch-aware coverage report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: neocortex-coverage-${{ github.sha }}
+          path: ${{ runner.temp }}/neocortex-coverage/coverage.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Enforce live Grimp architecture contracts
+        run: python tools/quality_gate.py architecture
+
+      - name: Reverify locked Pyright runtime after untrusted tests
+        run: |
+          set -euo pipefail
+          python -I tools/pyright_runtime.py verify --target "$RUNNER_TEMP/pyright"
+          test "$(pyright --version)" = "pyright 1.1.411"
+
+      - name: Enforce Ruff, Mypy and Pyright no-regression baseline
+        run: python tools/quality_gate.py static
+
+      - name: Provision, verify and audit the isolated Semgrep tool runtime
+        run: |
+          set -euo pipefail
+          runtime="$RUNNER_TEMP/neocortex-runtime"
+          python tools/semgrep_tool_runtime.py install --runtime-root "$runtime"
+          python tools/semgrep_tool_runtime.py verify --runtime-root "$runtime"
+          python tools/quality_gate.py supply-chain \
+            --tool-receipt "$runtime/tools/semgrep/neocortex-tool-runtime.json"
+
+      - name: Verify final candidate snapshot
+        if: always()
+        run: python tools/quality_gate.py git-snapshot --sha "$GITHUB_SHA"
 
   standard:
-    name: Wheel · ${{ matrix.os }} · Python ${{ matrix.python }}
+    name: Wheel + source shard ${{ matrix.shard }} · ${{ matrix.os }} · Python ${{ matrix.python }}
     if: github.event_name == 'pull_request' || github.event_name == 'push'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
@@ -106,16 +185,22 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
         python: ["3.13", "3.14"]
+        shard: [0, 1]
     steps:
       - name: Check out candidate
         uses: actions/checkout@v7
         with:
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Set up CPython
         uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python }}
+
+      - name: Bootstrap audited pip
+        shell: bash
+        run: python -I tools/bootstrap_pip.py
 
       - name: Install Ubuntu Qt runtime
         if: runner.os == 'Linux'
@@ -145,79 +230,32 @@ jobs:
             --constraint constraints.txt "${wheel}[full]"
           python -m pip check
 
-      - name: Verify site-packages imports and public entrypoint
+      - name: Execute the installed wheel imports and public entrypoint
         shell: bash
         run: |
           set -euo pipefail
           probe="$RUNNER_TEMP/wheel-origin-probe"
-          mkdir -p "$probe"
+          python tools/quality_gate.py wheel-smoke --probe-directory "$probe"
           cd "$probe"
-          python -I -c "import pathlib,neocortex,_04_Nucleo_Operativo; p=pathlib.Path(neocortex.__file__).resolve(); assert 'site-packages' in p.parts, p"
-          python -I -m neocortex --version
           python -I -m neocortex doctor platform --json
           python -I -c "import PIL,PySide6,ctranslate2,fastembed,faster_whisper,fitz,nudenet,numpy,pytesseract"
 
-      - name: Installed-wheel standard suite
+      - name: Complete source suite shard
         shell: bash
         env:
           QT_QPA_PLATFORM: offscreen
           PYTHONDONTWRITEBYTECODE: "1"
         run: |
           set -euo pipefail
-          suite="$RUNNER_TEMP/neocortex-standard-suite"
-          mkdir -p "$suite"
-          cp -R tests "$suite/tests"
-          cd "$suite"
-          export PYTHONPATH="$suite"
-          python -m pytest -q --import-mode=importlib -p no:cacheprovider \
-            --basetemp "$RUNNER_TEMP/pytest-standard" \
-            tests/test_agent_server.py \
-            tests/test_app_paths.py \
-            tests/test_archive_cli.py \
-            tests/test_archive_route.py \
-            tests/test_application_config.py \
-            tests/test_audio_route.py \
-            tests/test_bounded_subprocess.py \
-            tests/test_cli_capabilities.py \
-            tests/test_cli_modularization.py \
-            tests/test_cli_operations_registry.py \
-            tests/test_cli_video_surface.py \
-            tests/test_framework_schema_contract.py \
-            tests/test_human_cli.py \
-            tests/test_image_ocr_profiles.py \
-            tests/test_inventory_exclusion_policy.py \
-            tests/test_linux_platform_policy.py \
-            tests/test_model_management.py \
-            tests/test_ocr_profiles.py \
-            tests/test_office_route.py \
-            tests/test_pdf_ocr_profiles.py \
-            tests/test_posix_containment.py \
-            tests/test_read_api.py \
-            tests/test_route_schema_contracts.py \
-            tests/test_semantic_lexical.py \
-            tests/test_semantic_quality.py \
-            tests/test_semantic_service.py \
-            tests/test_semantic_service_contracts.py \
-            tests/test_semantic_service_facade.py \
-            tests/test_semantic_sources.py \
-            tests/test_semantic_state.py \
-            tests/test_image_route.py \
-            tests/test_text_route.py \
-            tests/test_ui_elevation.py \
-            tests/test_ui_linux.py \
-            tests/test_ui_read_client.py \
-            tests/test_ui_readonly.py \
-            tests/test_ui_run_request.py \
-            tests/test_ui_smoke.py \
-            tests/test_value_cli_adapter.py \
-            tests/test_value_review_contracts.py \
-            tests/test_value_review_sqlite.py \
-            tests/test_video_content_types.py \
-            tests/test_video_frames.py \
-            tests/test_video_probe.py \
-            tests/test_video_route.py \
-            tests/test_video_state.py \
-            tests/test_zip_safety.py
+          python tools/quality_gate.py tests \
+            --shard-count 2 \
+            --shard-index "${{ matrix.shard }}" \
+            --basetemp "$RUNNER_TEMP/pytest-standard-${{ matrix.shard }}"
+
+      - name: Verify final candidate snapshot
+        if: always()
+        shell: bash
+        run: python tools/quality_gate.py git-snapshot --sha "$GITHUB_SHA"
 
   deep-windows:
     name: Deep Windows NTFS · Python 3.14
@@ -236,6 +274,11 @@ jobs:
         with:
           node-version: "24.18.1"
           package-manager-cache: false
+      - name: Bootstrap audited pip
+        shell: pwsh
+        run: |
+          python -I tools/bootstrap_pip.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Install full constrained source and Pyright
         shell: pwsh
         run: |
@@ -245,7 +288,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -m pip install --disable-pip-version-check --no-cache-dir --only-binary=:all: --find-links "$env:RUNNER_TEMP\neocortex-input-wheels" --constraint constraints.txt ".[full]"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm install --prefix "$env:RUNNER_TEMP\pyright" --ignore-scripts --no-audit --no-fund "pyright@1.1.411"
+          python -I tools/pyright_runtime.py install --target "$env:RUNNER_TEMP\pyright"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -I tools/pyright_runtime.py verify --target "$env:RUNNER_TEMP\pyright"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           "$env:RUNNER_TEMP\pyright\node_modules\.bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
       - name: Windows identity, Job Object, NTFS and trusted-deep fixtures
@@ -261,6 +306,12 @@ jobs:
             tests/test_release_windows.py `
             tests/test_release_windows_ntfs.py `
             tests/test_trusted_deep_configuration.py
+      - name: Verify final candidate snapshot
+        if: always()
+        shell: pwsh
+        run: |
+          python tools/quality_gate.py git-snapshot --sha "$env:GITHUB_SHA"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
   deep-linux:
     name: Deep Linux portable/containment/installer · Python 3.14
@@ -275,6 +326,8 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.14"
+      - name: Bootstrap audited pip
+        run: python -I tools/bootstrap_pip.py
       - name: Install system fixture dependencies
         run: >-
           sudo apt-get update && sudo apt-get install -y
@@ -317,3 +370,6 @@ jobs:
           tests/test_video_probe.py
           tests/test_video_route.py
           tests/test_video_state.py
+      - name: Verify final candidate snapshot
+        if: always()
+        run: python tools/quality_gate.py git-snapshot --sha "$GITHUB_SHA"

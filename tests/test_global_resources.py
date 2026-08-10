@@ -13,7 +13,9 @@ from _04_Nucleo_Operativo.global_resources import (
 from _04_Nucleo_Operativo.memory_runtime import (
     MemoryBudgetExceeded,
     MemoryHeadroomTimeout,
+    MemoryResourceLimits,
     MemorySnapshot,
+    WeightedMemoryGate,
 )
 
 
@@ -29,6 +31,43 @@ class CpuLoadSamplerTests(unittest.TestCase):
         ):
             sampler = CpuLoadSampler()
             self.assertEqual(sampler.sample(), 50.0)
+
+    def test_preserves_last_load_when_counters_do_not_advance(self) -> None:
+        samples = [CpuTimes(600, 1_000), CpuTimes(600, 1_000)]
+        with patch(
+            "_04_Nucleo_Operativo.cpu_runtime.cpu_times",
+            side_effect=samples,
+        ):
+            sampler = CpuLoadSampler()
+            self.assertIsNone(sampler.sample())
+
+
+class WeightedMemoryGateTests(unittest.TestCase):
+    def test_spurious_wake_only_counts_one_wait(self) -> None:
+        gate = WeightedMemoryGate(
+            MemoryResourceLimits(
+                memory_budget_bytes=100,
+                min_free_memory_bytes=0,
+                min_free_commit_bytes=0,
+                wait_timeout_seconds=1,
+            )
+        )
+        gate._reserved = 100
+        wait_calls = 0
+
+        def spurious_then_release(_timeout: float) -> None:
+            nonlocal wait_calls
+            wait_calls += 1
+            if wait_calls == 2:
+                gate._reserved = 0
+
+        with patch.object(gate._condition, "wait", side_effect=spurious_then_release):
+            with gate.admit(1):
+                self.assertEqual(gate._reserved, 1)
+
+        self.assertEqual(wait_calls, 2)
+        self.assertEqual(gate.wait_count, 1)
+        self.assertEqual(gate._reserved, 0)
 
 
 class GlobalResourceCoordinatorTests(unittest.TestCase):
@@ -54,9 +93,7 @@ class GlobalResourceCoordinatorTests(unittest.TestCase):
                 "_04_Nucleo_Operativo.global_resources.memory_snapshot",
                 return_value=snapshot,
             ),
-            patch(
-                "_04_Nucleo_Operativo.global_resources.os.cpu_count", return_value=16
-            ),
+            patch("_04_Nucleo_Operativo.global_resources.os.cpu_count", return_value=16),
         ):
             coordinator = GlobalResourceCoordinator(
                 ("pdf", "audio"),

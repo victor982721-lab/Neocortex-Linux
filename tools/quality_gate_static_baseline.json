@@ -1,0 +1,1040 @@
+{
+  "schema": "neocortex.quality-gate-static-baseline/v1",
+  "scope": {
+    "mypy": [
+      "Orquestador.py",
+      "_01_Enumeracion",
+      "_02_Deduplicacion",
+      "_03_Progreso",
+      "_04_Nucleo_Operativo",
+      "_05_Interfaz",
+      "neocortex"
+    ],
+    "pyright": [
+      "Orquestador.py",
+      "_01_Enumeracion",
+      "_02_Deduplicacion",
+      "_03_Progreso",
+      "_04_Nucleo_Operativo",
+      "_05_Interfaz",
+      "neocortex"
+    ],
+    "ruff": "complete repository Python tree"
+  },
+  "tools": {
+    "mypy": {
+      "by_path_rule": [
+        {
+          "count": 3,
+          "path": "_01_Enumeracion/windows.py",
+          "rule": "attr-defined",
+          "severity": "error"
+        },
+        {
+          "count": 10,
+          "path": "_01_Enumeracion/windows.py",
+          "rule": "name-defined",
+          "severity": "error"
+        },
+        {
+          "count": 4,
+          "path": "_04_Nucleo_Operativo/console_cancellation.py",
+          "rule": "attr-defined",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/cpu_runtime.py",
+          "rule": "attr-defined",
+          "severity": "error"
+        },
+        {
+          "count": 2,
+          "path": "_04_Nucleo_Operativo/external_architecture_worker.py",
+          "rule": "unused-ignore",
+          "severity": "error"
+        },
+        {
+          "count": 5,
+          "path": "_04_Nucleo_Operativo/external_mutation_cosmic_ray_worker.py",
+          "rule": "import-untyped",
+          "severity": "error"
+        },
+        {
+          "count": 4,
+          "path": "_04_Nucleo_Operativo/external_mutation_cosmic_ray_worker.py",
+          "rule": "unused-ignore",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/inventory_coordinator.py",
+          "rule": "unreachable",
+          "severity": "error"
+        },
+        {
+          "count": 32,
+          "path": "_04_Nucleo_Operativo/isolated_process.py",
+          "rule": "attr-defined",
+          "severity": "error"
+        },
+        {
+          "count": 2,
+          "path": "_04_Nucleo_Operativo/knowledge_search.py",
+          "rule": "unreachable",
+          "severity": "error"
+        },
+        {
+          "count": 4,
+          "path": "_04_Nucleo_Operativo/locking.py",
+          "rule": "attr-defined",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/memory_runtime.py",
+          "rule": "attr-defined",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/pdf_runtime.py",
+          "rule": "attr-defined",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/protected_content.py",
+          "rule": "attr-defined",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/review_evidence.py",
+          "rule": "unused-ignore",
+          "severity": "error"
+        },
+        {
+          "count": 6,
+          "path": "_04_Nucleo_Operativo/watcher_life_lease.py",
+          "rule": "attr-defined",
+          "severity": "error"
+        },
+        {
+          "count": 11,
+          "path": "_04_Nucleo_Operativo/windows_handle_mutation.py",
+          "rule": "attr-defined",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "_05_Interfaz/app.py",
+          "rule": "attr-defined",
+          "severity": "error"
+        },
+        {
+          "count": 4,
+          "path": "_05_Interfaz/elevation.py",
+          "rule": "attr-defined",
+          "severity": "error"
+        }
+      ],
+      "total": 94,
+      "version": "2.1.0"
+    },
+    "pyright": {
+      "by_path_rule": [
+        {
+          "count": 1,
+          "path": "_01_Enumeracion/path_index_schema.py",
+          "rule": "reportUnusedFunction",
+          "severity": "warning"
+        },
+        {
+          "count": 3,
+          "path": "_01_Enumeracion/windows.py",
+          "rule": "reportAttributeAccessIssue",
+          "severity": "error"
+        },
+        {
+          "count": 10,
+          "path": "_01_Enumeracion/windows.py",
+          "rule": "reportUndefinedVariable",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "_02_Deduplicacion/hashing.py",
+          "rule": "reportMissingImports",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "_02_Deduplicacion/inventory_scan.py",
+          "rule": "reportMissingImports",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "_02_Deduplicacion/inventory_scan.py",
+          "rule": "reportOptionalOperand",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "_02_Deduplicacion/inventory_schema.py",
+          "rule": "reportUnusedFunction",
+          "severity": "warning"
+        },
+        {
+          "count": 3,
+          "path": "_03_Progreso/reporters.py",
+          "rule": "reportMissingImports",
+          "severity": "error"
+        },
+        {
+          "count": 4,
+          "path": "_04_Nucleo_Operativo/__init__.py",
+          "rule": "reportImportCycles",
+          "severity": "warning"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/archive_route.py",
+          "rule": "reportMissingImports",
+          "severity": "error"
+        },
+        {
+          "count": 2,
+          "path": "_04_Nucleo_Operativo/archive_text_worker.py",
+          "rule": "reportMissingImports",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/audio_route.py",
+          "rule": "reportArgumentType",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/audio_route.py",
+          "rule": "reportMissingImports",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/cli_app.py",
+          "rule": "reportMissingImports",
+          "severity": "error"
+        },
+        {
+          "count": 2,
+          "path": "_04_Nucleo_Operativo/cli_code_surface.py",
+          "rule": "reportArgumentType",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/cli_direct.py",
+          "rule": "reportMissingImports",
+          "severity": "error"
+        },
+        {
+          "count": 4,
+          "path": "_04_Nucleo_Operativo/cli_reporting.py",
+          "rule": "reportMissingImports",
+          "severity": "error"
+        },
+        {
+          "count": 5,
+          "path": "_04_Nucleo_Operativo/cli_validation.py",
+          "rule": "reportArgumentType",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/code_architecture_analysis.py",
+          "rule": "reportGeneralTypeIssues",
+          "severity": "error"
+        },
+        {
+          "count": 2,
+          "path": "_04_Nucleo_Operativo/code_architecture_contracts.py",
+          "rule": "reportGeneralTypeIssues",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/code_contracts.py",
+          "rule": "reportReturnType",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/code_contracts.py",
+          "rule": "reportUnusedFunction",
+          "severity": "warning"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/code_review_work_packages.py",
+          "rule": "reportReturnType",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/console_cancellation.py",
+          "rule": "reportAttributeAccessIssue",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/cpu_runtime.py",
+          "rule": "reportAttributeAccessIssue",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/document_organization_models.py",
+          "rule": "reportUnusedClass",
+          "severity": "warning"
+        },
+        {
+          "count": 3,
+          "path": "_04_Nucleo_Operativo/document_organization_models.py",
+          "rule": "reportUnusedFunction",
+          "severity": "warning"
+        },
+        {
+          "count": 10,
+          "path": "_04_Nucleo_Operativo/document_taxonomy_entities.py",
+          "rule": "reportUnusedFunction",
+          "severity": "warning"
+        },
+        {
+          "count": 2,
+          "path": "_04_Nucleo_Operativo/document_taxonomy_kinds.py",
+          "rule": "reportUnusedFunction",
+          "severity": "warning"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/document_taxonomy_overlay.py",
+          "rule": "reportMissingImports",
+          "severity": "error"
+        },
+        {
+          "count": 3,
+          "path": "_04_Nucleo_Operativo/document_taxonomy_references.py",
+          "rule": "reportUnusedFunction",
+          "severity": "warning"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/docx_layout.py",
+          "rule": "reportMissingImports",
+          "severity": "error"
+        },
+        {
+          "count": 3,
+          "path": "_04_Nucleo_Operativo/external_deep_coverage_worker.py",
+          "rule": "reportMissingImports",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/external_evidence_models.py",
+          "rule": "reportReturnType",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/external_evidence_providers.py",
+          "rule": "reportMissingImports",
+          "severity": "error"
+        },
+        {
+          "count": 2,
+          "path": "_04_Nucleo_Operativo/external_mutation_cosmic_ray_worker.py",
+          "rule": "reportArgumentType",
+          "severity": "error"
+        },
+        {
+          "count": 3,
+          "path": "_04_Nucleo_Operativo/external_supply_chain_audit.py",
+          "rule": "reportMissingImports",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/file_action_reconciliation_store.py",
+          "rule": "reportMissingImports",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/framework_state_common.py",
+          "rule": "reportMissingImports",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/image_decode.py",
+          "rule": "reportMissingImports",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/image_document.py",
+          "rule": "reportMissingImports",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/image_errors.py",
+          "rule": "reportMissingImports",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/image_features.py",
+          "rule": "reportMissingImports",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/image_isolation.py",
+          "rule": "reportMissingImports",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/image_state.py",
+          "rule": "reportMissingImports",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/internal_paths.py",
+          "rule": "reportMissingImports",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/isolated_process.py",
+          "rule": "reportGeneralTypeIssues",
+          "severity": "error"
+        },
+        {
+          "count": 6,
+          "path": "_04_Nucleo_Operativo/isolated_process.py",
+          "rule": "reportUndefinedVariable",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/knowledge_search.py",
+          "rule": "reportArgumentType",
+          "severity": "error"
+        },
+        {
+          "count": 2,
+          "path": "_04_Nucleo_Operativo/knowledge_search.py",
+          "rule": "reportGeneralTypeIssues",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/ocr_image_preprocess.py",
+          "rule": "reportMissingImports",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/office_route.py",
+          "rule": "reportArgumentType",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/office_route.py",
+          "rule": "reportMissingImports",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/pdf_admin.py",
+          "rule": "reportMissingImports",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/pdf_derived.py",
+          "rule": "reportMissingImports",
+          "severity": "error"
+        },
+        {
+          "count": 4,
+          "path": "_04_Nucleo_Operativo/pdf_isolation.py",
+          "rule": "reportMissingImports",
+          "severity": "error"
+        },
+        {
+          "count": 2,
+          "path": "_04_Nucleo_Operativo/pdf_isolation.py",
+          "rule": "reportUnusedFunction",
+          "severity": "warning"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/pdf_layout.py",
+          "rule": "reportMissingImports",
+          "severity": "error"
+        },
+        {
+          "count": 2,
+          "path": "_04_Nucleo_Operativo/pdf_route.py",
+          "rule": "reportMissingImports",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/pdf_route_storage.py",
+          "rule": "reportMissingImports",
+          "severity": "error"
+        },
+        {
+          "count": 3,
+          "path": "_04_Nucleo_Operativo/pdf_route_storage.py",
+          "rule": "reportOptionalSubscript",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/processing_provenance.py",
+          "rule": "reportMissingImports",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/protected_content.py",
+          "rule": "reportAttributeAccessIssue",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/protected_content.py",
+          "rule": "reportMissingImports",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/review_evidence.py",
+          "rule": "reportUnusedFunction",
+          "severity": "warning"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/self_analysis_manifest.py",
+          "rule": "reportMissingImports",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/semantic_backends.py",
+          "rule": "reportMissingImports",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/semantic_backends.py",
+          "rule": "reportReturnType",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/semantic_chunking.py",
+          "rule": "reportMissingImports",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/semantic_classification_service.py",
+          "rule": "reportMissingImports",
+          "severity": "error"
+        },
+        {
+          "count": 2,
+          "path": "_04_Nucleo_Operativo/semantic_generation_repository.py",
+          "rule": "reportUnusedFunction",
+          "severity": "warning"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/semantic_item_repository.py",
+          "rule": "reportUnusedFunction",
+          "severity": "warning"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/semantic_models.py",
+          "rule": "reportMissingImports",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/semantic_plan_owners.py",
+          "rule": "reportMissingImports",
+          "severity": "error"
+        },
+        {
+          "count": 7,
+          "path": "_04_Nucleo_Operativo/semantic_plan_owners.py",
+          "rule": "reportUnusedFunction",
+          "severity": "warning"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/semantic_plan_results.py",
+          "rule": "reportMissingImports",
+          "severity": "error"
+        },
+        {
+          "count": 6,
+          "path": "_04_Nucleo_Operativo/semantic_plan_results.py",
+          "rule": "reportUnusedFunction",
+          "severity": "warning"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/semantic_plan_scratch.py",
+          "rule": "reportUnusedClass",
+          "severity": "warning"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/semantic_plan_scratch.py",
+          "rule": "reportUnusedFunction",
+          "severity": "warning"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/semantic_preparation.py",
+          "rule": "reportGeneralTypeIssues",
+          "severity": "error"
+        },
+        {
+          "count": 2,
+          "path": "_04_Nucleo_Operativo/semantic_preparation.py",
+          "rule": "reportMissingImports",
+          "severity": "error"
+        },
+        {
+          "count": 6,
+          "path": "_04_Nucleo_Operativo/semantic_repository_common.py",
+          "rule": "reportUnusedFunction",
+          "severity": "warning"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/semantic_search_repository.py",
+          "rule": "reportMissingImports",
+          "severity": "error"
+        },
+        {
+          "count": 23,
+          "path": "_04_Nucleo_Operativo/semantic_service.py",
+          "rule": "reportUnusedFunction",
+          "severity": "warning"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/text_route.py",
+          "rule": "reportMissingImports",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/value_review_repository.py",
+          "rule": "reportReturnType",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/video_frames.py",
+          "rule": "reportMissingImports",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/video_route.py",
+          "rule": "reportArgumentType",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/watcher_life_lease.py",
+          "rule": "reportMissingImports",
+          "severity": "error"
+        },
+        {
+          "count": 9,
+          "path": "_04_Nucleo_Operativo/windows_handle_mutation.py",
+          "rule": "reportAttributeAccessIssue",
+          "severity": "error"
+        },
+        {
+          "count": 3,
+          "path": "_05_Interfaz/app.py",
+          "rule": "reportMissingImports",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "_05_Interfaz/controller.py",
+          "rule": "reportMissingImports",
+          "severity": "error"
+        },
+        {
+          "count": 3,
+          "path": "_05_Interfaz/main_window.py",
+          "rule": "reportMissingImports",
+          "severity": "error"
+        },
+        {
+          "count": 2,
+          "path": "_05_Interfaz/widgets.py",
+          "rule": "reportMissingImports",
+          "severity": "error"
+        },
+        {
+          "count": 3,
+          "path": "neocortex/agent_server.py",
+          "rule": "reportMissingImports",
+          "severity": "error"
+        },
+        {
+          "count": 5,
+          "path": "neocortex/agent_server.py",
+          "rule": "reportUnusedFunction",
+          "severity": "warning"
+        },
+        {
+          "count": 1,
+          "path": "neocortex/cli.py",
+          "rule": "reportReturnType",
+          "severity": "error"
+        }
+      ],
+      "total": 214,
+      "version": "1.1.411"
+    },
+    "ruff": {
+      "by_path_rule": [
+        {
+          "count": 1,
+          "path": "Orquestador.py",
+          "rule": "RUF022",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "_01_Enumeracion/__init__.py",
+          "rule": "RUF022",
+          "severity": "error"
+        },
+        {
+          "count": 2,
+          "path": "_01_Enumeracion/enumeration.py",
+          "rule": "B904",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "_02_Deduplicacion/__init__.py",
+          "rule": "RUF022",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/__init__.py",
+          "rule": "RUF022",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/audio_whisper.py",
+          "rule": "B904",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/code_analyzers.py",
+          "rule": "RUF022",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/code_external_evidence.py",
+          "rule": "RUF022",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/code_generic.py",
+          "rule": "B007",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/code_projects.py",
+          "rule": "RUF022",
+          "severity": "error"
+        },
+        {
+          "count": 2,
+          "path": "_04_Nucleo_Operativo/code_python.py",
+          "rule": "C409",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/code_semantic_links.py",
+          "rule": "RUF022",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/document_taxonomy.py",
+          "rule": "RUF022",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/file_action_recovery.py",
+          "rule": "RUF022",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/framework_route_state.py",
+          "rule": "RUF015",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/framework_state_writer.py",
+          "rule": "C401",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/image_analysis.py",
+          "rule": "RUF022",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/image_decision.py",
+          "rule": "C420",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/image_isolation.py",
+          "rule": "B904",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/knowledge_contract_payloads.py",
+          "rule": "RUF022",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/knowledge_contracts.py",
+          "rule": "RUF022",
+          "severity": "error"
+        },
+        {
+          "count": 4,
+          "path": "_04_Nucleo_Operativo/knowledge_evaluation.py",
+          "rule": "B905",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/knowledge_evaluation.py",
+          "rule": "C401",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/knowledge_planner_intents.py",
+          "rule": "RUF022",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/knowledge_planner_steps.py",
+          "rule": "RUF022",
+          "severity": "error"
+        },
+        {
+          "count": 5,
+          "path": "_04_Nucleo_Operativo/knowledge_service.py",
+          "rule": "B009",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/semantic_backend_supervisor.py",
+          "rule": "B904",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/sqlite_cancellation.py",
+          "rule": "RUF022",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "_04_Nucleo_Operativo/watcher.py",
+          "rule": "RUF022",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "neocortex/sqlite_backup.py",
+          "rule": "B008",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "neocortex/sqlite_cancellation.py",
+          "rule": "RUF022",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "neocortex/sqlite_integrity.py",
+          "rule": "B008",
+          "severity": "error"
+        },
+        {
+          "count": 3,
+          "path": "tests/test_adaptive_pdf_and_visual.py",
+          "rule": "B010",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "tests/test_document_catalog_schema_contract.py",
+          "rule": "RUF043",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "tests/test_framework_schema_contract.py",
+          "rule": "RUF043",
+          "severity": "error"
+        },
+        {
+          "count": 4,
+          "path": "tests/test_incremental_gate.py",
+          "rule": "B008",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "tests/test_knowledge_contract_context_extraction.py",
+          "rule": "C409",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "tests/test_knowledge_evaluation.py",
+          "rule": "B905",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "tests/test_lazy_package_api.py",
+          "rule": "B009",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "tests/test_release_windows_ntfs.py",
+          "rule": "B009",
+          "severity": "error"
+        },
+        {
+          "count": 4,
+          "path": "tests/test_release_windows_ntfs.py",
+          "rule": "RUF043",
+          "severity": "error"
+        },
+        {
+          "count": 3,
+          "path": "tests/test_route_candidate_stream_ownership.py",
+          "rule": "B023",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "tests/test_semantic_backends.py",
+          "rule": "RUF015",
+          "severity": "error"
+        },
+        {
+          "count": 7,
+          "path": "tests/test_semantic_config.py",
+          "rule": "RUF043",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "tests/test_semantic_text_staging_session.py",
+          "rule": "RUF015",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "tests/test_sqlite_maintenance.py",
+          "rule": "RUF007",
+          "severity": "error"
+        },
+        {
+          "count": 2,
+          "path": "tools/release_artifacts.py",
+          "rule": "B009",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "tools/release_artifacts.py",
+          "rule": "RUF022",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "tools/release_windows.py",
+          "rule": "RUF022",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "tools/release_windows_receipts.py",
+          "rule": "RUF022",
+          "severity": "error"
+        }
+      ],
+      "total": 76,
+      "version": "0.15.17"
+    }
+  }
+}

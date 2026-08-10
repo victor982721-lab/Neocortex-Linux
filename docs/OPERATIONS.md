@@ -37,6 +37,20 @@ Si el piloto falla o excede el límite, deténgalo y corrija la causa. `--all`, 
 watcher, una indexación Semantic completa, una migración, un rollback o una
 auditoría integral no son el punto de partida.
 
+## Bootstrap autenticado de pip
+
+Antes de cualquier instalación Python, CI y los flujos mantenidos ejecutan el
+helper independiente del `pip` ambiental:
+
+```bash
+python -I tools/bootstrap_pip.py
+```
+
+El helper descarga únicamente el wheel oficial fijado de `pip 26.1.2`, valida
+su nombre y SHA-256 antes de ejecutarlo, instala con aislamiento, sin índice ni
+dependencias, y verifica la versión exacta. `--wheel` permite entregar ese mismo
+artefacto ya descargado en un flujo offline; no relaja la autenticación.
+
 ## Condiciones previas
 
 1. Confirme que no haya otra ejecución de NeoCortex usando el mismo directorio
@@ -48,8 +62,8 @@ auditoría integral no son el punto de partida.
    Neocortex --help
    ```
 
-   Esta guía corresponde a la fuente `0.8.0`. Si `--version` no existe o no
-   informa `0.8.0`, el launcher operativo no coincide con esta entrega: no use
+   Esta guía corresponde a la fuente `0.9.0`. Si `--version` no existe o no
+   informa `0.9.0`, el launcher operativo no coincide con esta entrega: no use
    sus contratos nuevos sobre estado real hasta validar el artefacto correcto.
    En Linux añada `Neocortex doctor platform --json` y confirme
    `compatible=true`, inventario portable y contención POSIX antes de abrir
@@ -641,30 +655,35 @@ Neocortex models status --json
   vigente para sus wheels nativos. Antes de promover, importa PyMuPDF, ONNX
   Runtime, PySide6, PyAV, CTranslate2 y OpenCV desde el runtime candidato;
   `pip check` no detecta una DLL del sistema ausente.
-- Ruff pertenece al runtime base. `--code-doctor --code-json` debe mostrar su
+- Ruff pertenece a la superficie de distribución `analysis`, instalada por la
+  release personal mediante `full`. `--code-doctor --code-json` debe mostrar su
   distribución y versión desde el mismo intérprete de Neocortex; una copia
   global encontrada en `PATH` no satisface esta capacidad.
-- Mypy también pertenece al runtime base y se ejecuta como módulo del mismo
+- Mypy sigue la misma superficie `analysis`/`full` y se ejecuta como módulo del mismo
   intérprete, con caché efímera propiedad de la corrida.
-- Pyright `1.1.411` se instala como paquete npm aislado junto al runtime y se
-  invoca mediante Node. `--code-doctor --code-json` informa por separado los
+- Pyright `1.1.411` se instala con `python -I tools/pyright_runtime.py install`
+  desde el manifest/lock versionados: valida hashes e integridad npm, usa
+  `npm ci` sin scripts ni optional packages y verifica Node `24.18.1`, el grafo
+  instalado y la versión viva. Después se invoca mediante Node.
+  `--code-doctor --code-json` informa por separado los
   13 proveedores estáticos y los dos proveedores profundos; la corrida incorpora la
   resolución exacta a su firma de entorno y comparabilidad.
-- Vulture `2.16` pertenece al runtime base y se invoca mediante su API
+- Vulture `2.16` pertenece a `analysis`/`full` y se invoca mediante su API
   programática aislada. Su finding es advisory y sólo el consumidor de consenso
   puede explicarlo o abstenerse; nunca autoriza borrar.
-- Grimp `3.15` y Complexipy `6.2.0` pertenecen al runtime Python base. Grimp se
+- Grimp `3.15` y Complexipy `6.2.0` pertenecen a `analysis`/`full`. Grimp se
   consume directamente como grafo legible por máquina; Import Linter `2.13` se
   midió viable pero no se integra porque duplicaría esa dimensión sin salida de
   contratos JSON. Complexipy se invoca por API para separar findings reales de
   la semántica de umbral de su CLI.
-- Semgrep `1.172.0`, Deptry `0.25.1`, pip-audit `2.10.1` y Packaging `26.2`
-  pertenecen al runtime Python base. Semgrep usa sólo el ruleset empaquetado y
-  autofix deshabilitado; Deptry no instala ni retira dependencias; pip-audit
-  declara acceso de red al crear su snapshot y nunca ejecuta `--fix`; el
-  inventario instalado es local y no emite conclusiones jurídicas.
-- Git alimenta únicamente la historia local; Cosmic Ray `8.4.6` pertenece al
-  runtime base y sólo se activa con target y tests focales en `trusted-deep`.
+- Deptry `0.25.1` y pip-audit `2.10.1` pertenecen a `analysis`/`full`;
+  Packaging `26.2` sí forma parte de la base mínima. Semgrep `1.172.0` no se
+  instala en base, `analysis` ni `full`: su wrapper fijo de scan, constraints y
+  excepciones MCP viven en un tool-runtime administrado y separado. Deptry no
+  instala ni retira dependencias; pip-audit nunca ejecuta `--fix`; el inventario
+  instalado es local y no emite conclusiones jurídicas.
+- Git alimenta únicamente la historia local; Cosmic Ray `8.4.6` pertenece a
+  `analysis`/`full` y sólo se activa con target y tests focales en `trusted-deep`.
 - En Linux operativo, audio usa Whisper `small` CPU/int8 y sólo modelos
   locales. `Neocortex models prepare --json` adquiere explícita y
   secuencialmente Whisper, Jina, MiniLM compacto y CLIP texto/visión, y valida
@@ -719,10 +738,10 @@ incremental. Tests de staging no sustituyen esa prueba end-to-end.
 
 No ejecute manualmente herramientas externas ni descargue modelos para validar
 una instalación básica. `--self-analysis` supervisa por sí mismo la suite; la
-validación del wheel debe confirmar Ruff, Mypy, Grimp, Complexipy, Vulture,
-Pytest, Coverage, Cosmic Ray, Semgrep, Deptry, pip-audit y Packaging en la base,
-y la preparación de los perfiles trusted debe confirmar Git, Node y el paquete
-Pyright aislado.
+validación del wheel `full` debe confirmar Ruff, Mypy, Grimp, Complexipy,
+Vulture, Pytest, Coverage, Cosmic Ray, Deptry, pip-audit y Packaging. Semgrep se
+confirma exclusivamente mediante el recibo y la verificación de su tool-runtime
+separado; los perfiles trusted confirman además Git, Node y Pyright aislado.
 
 Para probar incrementalidad, ejecute una sola segunda corrida sobre el mismo
 estado y los mismos bytes. En `--code-status --code-json`, los proveedores
@@ -743,15 +762,66 @@ que se haya omitido la comprobación de frescura.
 `Neocortex CI`:
 
 - `fast` corre en Ubuntu/Python 3.14 para pull requests y pushes: Ruff
-  check/format y el subconjunto contractual rápido;
+  check/format sobre toda fuente Python cambiada;
+- `quality` ejecuta en Linux el inventario completo y dinámico de pruebas, los
+  seis contratos Grimp v2 contra el árbol vivo (todos `passed`, sin SCC),
+  `pip-audit` del runtime principal y los
+  baselines de no-regresión Ruff/Mypy/Pyright. En cada SHA provisiona y verifica
+  el runtime Semgrep aislado, audita sus paquetes y concilia exactamente el
+  resultado con su recibo y policy. También ejecuta el inventario
+  dinámico completo bajo Coverage con ramas activadas, compara por separado
+  líneas y ramas contra el baseline versionado y publica el JSON ligado al SHA.
+  También ratchetea las rutas de test y fuente: admite adiciones, pero un retiro
+  requiere `--write-baseline` explícito y revisión. Una regresión falla: el
+  baseline nunca se regenera implícitamente. El baseline
+  estático conserva deuda heredada por ruta y regla: permite reducirla, pero no
+  añadirla ni cambiar de versión del analizador sin una actualización deliberada;
 - `standard` corre en Windows y Ubuntu sobre Python 3.13 y 3.14: construye el
   wheel sin aislar la resolución ya declarada, instala `full` con constraints y
-  sólo wheels binarios, ejecuta `pip check` e imports nativos y prueba la suite
-  core desde una copia temporal;
+  sólo wheels binarios, ejecuta `pip check` e imports nativos y distribuye todos
+  los archivos de prueba en dos shards deterministas. Cada combinación de
+  plataforma y versión ejecuta ambos shards: 2 OS × 2 Python × 2 shards = 8
+  jobs, de modo que ninguna versión se confunde con una mitad del inventario.
+  El smoke fuera del checkout exige desde el wheel las seis raíces de paquete,
+  `Orquestador`, reglas Semgrep/assets, versión y entrypoint exactos;
 - `deep-windows` sólo corre por cron semanal o `workflow_dispatch`: prepara
   Pyright `1.1.411` aislado y prueba NTFS, Job Objects y workers trusted-deep;
 - `deep-linux`, con la misma cadencia, prueba inventario portable, identidad,
-  contención POSIX, instalador y UI sobre fixtures acotados.
+  contención POSIX, instalador y UI sobre fixtures acotados. En `quality`,
+  `pip-audit --path` debe observar en el tool-runtime exactamente los tres PYSEC
+  cuyos aliases GHSA, versión, alcance no alcanzable y vencimiento están fijados
+  por la policy; el runtime principal no hereda esas excepciones.
+
+Los jobs revalidan el SHA y un árbol sin cambios ni archivos no rastreados al
+terminar; `quality` lo hace además inmediatamente después de Coverage. Así, una
+prueba no puede cambiar una policy o un gate y hacer que la evidencia posterior
+se atribuya al SHA original.
+
+El baseline de cobertura sólo cambia mediante una medición completa, verde y
+aprobada. La actualización es explícita y su diff debe revisarse; una corrida
+ordinaria nunca escribe el baseline:
+
+```bash
+python tools/quality_gate.py coverage \
+  --data-file "${TMPDIR:-/tmp}/neocortex-coverage-data" \
+  --report "${TMPDIR:-/tmp}/neocortex-coverage.json" \
+  --write-baseline
+```
+
+La barrera local equivalente se ejecuta únicamente sobre `main`, con un
+worktree limpio y comprometido, mediante:
+
+```bash
+"${XDG_DATA_HOME:-$HOME/.local/share}/Neocortex/current/bin/python" \
+  tools/quality_gate.py pre-push \
+  --receipt "$HOME/.codex/vault/evidence/neocortex/pre-push.json"
+```
+
+`--receipt` es optativo, no escribe por defecto y debe apuntar fuera del
+repositorio. El JSON se publica atómicamente después de aprobar arquitectura,
+estática, supply chain y el inventario completo de pruebas bajo Coverage;
+conserva SHA Git, hash de inventario, versiones, totales de líneas/ramas,
+comandos, snapshots de árbol limpio y resultado.
 
 Ningún carril descarga pesos de modelos reales; los contratos usan dobles y la
 conformidad de los pesos se comprueba durante la instalación local. El checkout
@@ -785,7 +855,7 @@ Si se interrumpió una operación autorizada sobre archivos, **no la repita
 automáticamente**. Siga la sección de acciones inciertas de
 [RECOVERY.md](RECOVERY.md).
 
-En `0.8.0`, los rename y movimientos admitidos son únicamente de archivos
+En `0.9.0`, los rename y movimientos admitidos son únicamente de archivos
 regulares con un hard link en NTFS local y mismo volumen, mediante handles
 retenidos y sin reemplazo. Los demás casos se abstienen. La aplicación de
 candidatos de Papelera está deshabilitada; el dry-run continúa registrando el
@@ -945,13 +1015,15 @@ downgrade de base atribuible a Knowledge; cualquier otra migración o cambio de
 estado realizado por comandos distintos conserva su propio contrato de
 recuperación.
 
-La fuente `0.8.0` declara framework v20, Dedup v9, PDF v12, Office v2 y Video
+La fuente `0.9.0` declara framework v20, Dedup v10, PDF v12, Office v2 y Video
 v1. Framework 19→20 preserva
 filas legacy como `normal`; Dedup 7→8 agrega la firma cruda de inventario a los
 scans, conserva scans/archivos/bytes e invalida checkpoints sin firma en vez de
 inventar evidencia. Dedup 8→9 conserva esas publicaciones y permite que
 `volume`, `journal_id` y `next_usn` sean todos `NULL` o todos presentes, para
-separar publicación de aceleración USN. PDF 11→12 y Office 1→2 son migraciones
+separar publicación de aceleración USN. Dedup 9→10 añade únicamente los índices
+para joins Knowledge ligados a identidad y preserva conteos y bytes de archivos
+y miembros planeados. PDF 11→12 y Office 1→2 son migraciones
 aditivas; la evidencia OCR/celda nueva se completa al reprocesar. Video v1 se
 crea sólo al ejecutar su ruta. Ninguna migración ofrece downgrade. Abra bases vivas sólo
 con el runtime versionado validado; el rollback exige paquete compatible y

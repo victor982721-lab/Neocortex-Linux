@@ -21,7 +21,7 @@ El flujo personal normal es deliberadamente corto:
 un ciclo de release no son pruebas iniciales. Si el piloto no produce algo útil,
 se detiene y se corrige. La continuación técnica vigente, con el estado
 observado y la siguiente acción única, está en el
-[handoff operativo vigente](.codex/handoffs/NEOCORTEX_0.7.2_PAUSE_2026-07-30.md).
+[handoff operativo vigente](https://github.com/victor982721-lab/Neocortex/blob/main/.codex/handoffs/NEOCORTEX_0.7.2_PAUSE_2026-07-30.md).
 
 Esta precaución aplica al arranque y diagnóstico, no elimina la experiencia
 simple buscada. En Windows, una vez validado el entorno,
@@ -117,6 +117,25 @@ El paquete admite Windows 11 y Linux con CPython `>=3.13,<3.15`; CI valida
 Python 3.13 y 3.14 en ambos sistemas. No instale el paquete, `pip`, Node ni sus
 dependencias contra runtimes globales.
 
+Los extras `agent` y `analysis` son superficies de distribución para la API MCP
+y los analizadores, no elecciones operativas que Víctor deba administrar. Las
+releases personales siguen instalando `full`, que reúne esas superficies con
+las capacidades documentales, multimedia, Semantic y UI. Semgrep queda fuera
+incluso de `analysis`/`full`: se provisiona y verifica en su tool-runtime
+administrado, separado del runtime principal.
+
+CI y cualquier instalación mantenida autentican `pip` antes de instalar otra
+dependencia. El comando canónico no depende del `pip` ambiental: descarga el
+wheel oficial `26.1.2`, exige su nombre y SHA-256 fijados, lo instala sin índice
+ni dependencias y verifica la versión bajo Python aislado:
+
+```bash
+python -I tools/bootstrap_pip.py
+```
+
+Para una instalación offline, el mismo helper acepta `--wheel` con el wheel
+canónico ya disponible y conserva la validación exacta.
+
 ### Kubuntu/Linux
 
 La referencia local es Kubuntu/Ubuntu 26.04, Linux x86-64 y CPython 3.14.4. El
@@ -151,10 +170,11 @@ Instale primero en un entorno virtual aislado fuera del repositorio; no ejecute
 
 ```powershell
 $Repository = Join-Path $HOME 'Neocortex\Repository'
-$RuntimeId = '0.8.0-artifact-id' # sustituya por el identificador validado
+$RuntimeId = '0.9.0-artifact-id' # sustituya por el identificador validado
 $Venv = Join-Path $env:LOCALAPPDATA "Programs\Neocortex\versions\$RuntimeId\venv"
-py -3 -m venv $Venv
+py -3 -m venv --without-pip $Venv
 Set-Location -LiteralPath $Repository
+& "$Venv\Scripts\python.exe" -I tools/bootstrap_pip.py
 & "$Venv\Scripts\python.exe" -m pip install -c constraints.txt ".[full]"
 ```
 
@@ -164,17 +184,20 @@ elegir perfiles. Si una capacidad central aparece `unavailable`, se repara la
 instalación o su declaración antes de operar; no se trata como una decisión
 cotidiana del usuario.
 
-Los extras individuales se conservan únicamente como detalle de empaquetado y
-desarrollo:
+La base y los extras se conservan como superficies de empaquetado y desarrollo,
+no como decisiones cotidianas:
 
-| Extra | Runtime añadido |
+| Superficie | Runtime añadido |
 |---|---|
+| base (sin extra) | `packaging`, `rich` y `xxhash` para el comando mínimo |
+| `agent` | servidor MCP/stdio con MCP `1.29.0` |
+| `analysis` | Complexipy, Cosmic Ray, Coverage, Deptry, Grimp, Mypy, pip-audit, Pytest, Radon, Ruff y Vulture |
 | `documents` | PDF, fallback pdfminer y OCR documental |
 | `audio` | transcripción local con faster-whisper |
 | `image` | decodificación Pillow y clasificación NudeNet |
 | `semantic` | embeddings texto/imagen con FastEmbed y NumPy |
 | `ui` | interfaz PySide6 |
-| `full` | unión compatible de los cinco dominios anteriores |
+| `full` | unión compatible de `agent`, `analysis` y los cinco dominios de producto |
 
 Algunas rutas conservan prerrequisitos externos que ningún extra de Python
 puede instalar: `ffprobe` es obligatorio para `audio`; `tesseract` y `qpdf`
@@ -252,8 +275,8 @@ por su ruta exacta:
 instalación: en un entorno nuevo sin `framework.sqlite3` devuelve `2` de forma
 esperada y no crea la base.
 
-La versión fuente de esta entrega es `0.8.0`. Si el ejecutable exacto del
-runtime no informa `0.8.0` o no reconoce las opciones de esta guía, deténgase y
+La versión fuente de esta entrega es `0.9.0`. Si el ejecutable exacto del
+runtime no informa `0.9.0` o no reconoce las opciones de esta guía, deténgase y
 valide el artefacto en un entorno aislado antes de promover el launcher estable.
 
 ## Primer uso y rutas
@@ -341,7 +364,7 @@ La recuperación visual es deliberadamente *fail-closed*: sin una calibración
 positiva y negativa compatible con modelo, pipeline y backend no carga CLIP ni
 devuelve vecinos. La evaluación humana actual encontró solapamiento entre
 positivos y negativos; un piso suficientemente conservador sobre el estado vivo
-retendría sólo 32% de los positivos. Por ello `0.8.0` no inventa un umbral ni
+retendría sólo 32% de los positivos. Por ello `0.9.0` no inventa un umbral ni
 presenta similitud visual como confianza.
 
 Los OCR de PDF, imagen y video conservan `spa+eng` como contrato predeterminado.
@@ -596,15 +619,47 @@ descendientes. `--code-query-limit` acepta 1–500 (50 por defecto) y
 conservan dimensiones, evidencia y limitaciones por separado: no calculan un
 score agregado ni una probabilidad de defecto, y nunca autorizan una mutación.
 
-El workflow `Neocortex CI` en `.github/workflows/ci.yml` tiene un lint rápido en
-Ubuntu/Python 3.14 y una matriz estándar Windows/Ubuntu con Python 3.13 y 3.14.
-La matriz construye e instala el wheel con extras completos y wheels binarios.
-Los carriles profundos Windows (NTFS) y Linux
+El workflow `Neocortex CI` en `.github/workflows/ci.yml` mantiene un lint rápido
+en Ubuntu/Python 3.14, un gate Linux de arquitectura viva, supply chain, deuda
+estática y cobertura de líneas/ramas sin regresión, y una matriz Windows/Ubuntu
+con Python 3.13 y 3.14. El gate canónico de cobertura ejecuta el mismo inventario
+dinámico completo sobre Linux/Python 3.14, compara ambas dimensiones contra el
+baseline versionado y publica el reporte JSON ligado al SHA; nunca regenera el
+baseline al detectar una caída ni permite retirar silenciosamente una ruta de
+test o fuente ya aprobada. Ese mismo job provisiona y verifica el runtime
+Semgrep aislado y concilia su auditoría viva con el recibo/policy explícitos. La
+instalación de Pyright usa `tools/pyright_runtime.py` con manifest y lock
+versionados, integridad npm exacta, scripts deshabilitados y verificación viva
+de Node `24.18.1`/Pyright `1.1.411`; no resuelve una spec suelta. La
+matriz construye e instala el wheel completo y reparte dinámicamente **todos**
+los módulos `test_*.py`/`*_test.py` en dos shards reproducibles por sistema
+operativo y versión de Python: las ocho combinaciones OS×Python×shard evitan
+confundir un shard con la cobertura de una versión. Agregar una prueba ya no
+exige editar una lista de CI. El smoke aislado ejecuta desde el wheel sus seis
+raíces de paquete, `Orquestador`, datos empaquetados, versión y entrypoint. CI
+revalida HEAD y árbol limpio después de Coverage y al final. Los carriles
+profundos Windows (NTFS) y Linux
 (inventario/contención/instalador) quedan reservados al cron semanal o a
 `workflow_dispatch`. CI usa dobles para los contratos de modelos y nunca
 descarga los pesos reales; éstos se verifican únicamente en la instalación
 local. Los fixtures profundos no sustituyen la identidad física local exigida
 por una corrida real `trusted-deep`.
+
+Antes de un push directo a `main`, el intérprete de la release canónica puede
+ejecutar la misma barrera integral sobre un worktree limpio y ya comprometido:
+
+```bash
+"${XDG_DATA_HOME:-$HOME/.local/share}/Neocortex/current/bin/python" \
+  tools/quality_gate.py pre-push \
+  --receipt "$HOME/.codex/vault/evidence/neocortex/pre-push.json"
+```
+
+El recibo es opcional y sólo se escribe al solicitar una ruta explícita fuera
+del repositorio. Registra SHA Git, hash del inventario completo de pruebas,
+versiones/totales de los gates, cobertura de líneas y ramas, snapshots Git,
+comandos ejecutados y resultado. El pre-push ejecuta la suite dinámica completa bajo Coverage y
+exige además el recibo verificado del runtime Semgrep aislado; no acepta las
+excepciones MCP en el runtime principal.
 
 La validación H6 sobre la raíz canónica produjo el work package
 `_04_Nucleo_Operativo.external_deep_coverage` /
@@ -747,7 +802,7 @@ y segunda corrida incremental.
 ## Uso seguro
 
 `--apply` y `--organization-apply` son autorizaciones explícitas para mutar
-archivos; no son necesarias para indexar o buscar. En `0.8.0`, rename y
+archivos; no son necesarias para indexar o buscar. En `0.9.0`, rename y
 organización sólo operan sobre un archivo regular con un único hard link, en
 NTFS local y en el mismo volumen, mediante handles retenidos y semántica
 *no-replace*. Rutas UNC, otros filesystems, reparses, directorios y movimientos
@@ -803,7 +858,7 @@ WAL.
 - [Arquitectura](docs/ARCHITECTURE.md)
 - [Autoanálisis de código y evidencia externa](docs/SELF_ANALYSIS.md)
 - [Knowledge Plane](docs/KNOWLEDGE.md)
-- [Handoff operativo vigente](.codex/handoffs/NEOCORTEX_0.7.2_PAUSE_2026-07-30.md)
+- [Handoff operativo vigente](https://github.com/victor982721-lab/Neocortex/blob/main/.codex/handoffs/NEOCORTEX_0.7.2_PAUSE_2026-07-30.md)
 - [Persistencia y migraciones](docs/PERSISTENCE.md)
 - [Recuperación y rollback](docs/RECOVERY.md)
 - [Seguridad y operaciones sobre archivos](docs/SECURITY.md)
