@@ -24,11 +24,11 @@ documento exige igualdad dinámica entre Git, release, launcher y GitHub.
 
 ### Consulta humana y para agentes
 
-- `Neocortex human status|search|ask|inspect` consume únicamente snapshots
+- `Neocortex status|search|ask|inspect` consume únicamente snapshots
   publicados con scopes fijos `personal`, `framework` o ambos por separado.
   Conserva rutas, revisiones, señales, citas, completitud e incertidumbre en
   JSON legible; nunca acepta una ruta de estado ni abre productores.
-- `Neocortex value review` ordena candidatos de poco valor de forma consultiva
+- `Neocortex review value` ordena candidatos de poco valor de forma consultiva
   y fail-closed. En vivo devolvió `availability=ready`, `complete=true`, 844
   candidatos examinados y una ventana de 20; `advisory_only=true` y
   `mutation_authorized=false`.
@@ -54,7 +54,7 @@ documento exige igualdad dinámica entre Git, release, launcher y GitHub.
   aciertos elimina stopwords ES/EN/DE y aplica un fallback acotado; las
   consultas CJK sin espacios también tienen tokenización y regresiones propias.
 - La búsqueda humana viva de mantenimiento de transformadores devolvió cinco
-  resultados con `complete=true` y `result_window_full=true`. `human ask`
+  resultados con `complete=true` y `result_window_full=true`. `Neocortex ask`
   devolvió cuatro citas útiles y código 4 de forma intencional cuando el
   presupuesto de caracteres omitió un candidato y truncó dos fragmentos.
 
@@ -171,7 +171,7 @@ documento exige igualdad dinámica entre Git, release, launcher y GitHub.
    residentes permanentemente.
 3. **Video vivo sin muestra:** no hay candidatos Audio/Video en el corpus; la
    fidelidad real se demostró sólo en fixtures y un piloto FFmpeg aislado.
-4. **Presupuesto de contexto:** `human ask` puede devolver código 4 con citas
+4. **Presupuesto de contexto:** `Neocortex ask` puede devolver código 4 con citas
    útiles cuando el límite de caracteres impide una respuesta exhaustiva. Es
    una señal honesta de parcialidad, no debe convertirse en éxito completo.
 5. **Contenido irrecuperable:** permanece un PPT CFB corrupto y ocho incidencias
@@ -189,8 +189,8 @@ documento exige igualdad dinámica entre Git, release, launcher y GitHub.
 
 ## Próximos pasos, en orden
 
-1. Usar `Neocortex human search|ask` y la página Consulta para resolver
-   preguntas reales; usar `Neocortex value review` para revisar archivos de
+1. Usar `Neocortex search|ask` y la página Consulta para resolver preguntas
+   reales; usar `Neocortex review value` para revisar archivos de
    bajo valor sin mover ni eliminar nada.
 2. Etiquetar con Víctor 20–50 consultas reales ES/EN/DE/ZH y ejecutar MiniLM en
    un espacio shadow separado. Promoverlo sólo si mantiene calidad, latencia,
