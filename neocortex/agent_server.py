@@ -6,6 +6,8 @@ or mutation operation is registered.
 
 from __future__ import annotations
 
+import asyncio
+import sys
 from typing import Any
 
 from .read_api import (
@@ -24,12 +26,63 @@ Scopes are queried independently and cross-scope scores are never fused. Use
 context/evidence citations for factual answers. No tool can move, rename, delete,
 write, index, migrate or authorize an action."""
 
+_MAX_MCP_LINE_BYTES = 1_048_576
+
+
+class _AsyncioTextReader:
+    """Decode bounded UTF-8 JSON lines from an asyncio standard-input pipe."""
+
+    def __init__(self, stream: asyncio.StreamReader) -> None:
+        self._stream = stream
+
+    def __aiter__(self) -> _AsyncioTextReader:
+        return self
+
+    async def __anext__(self) -> str:
+        line = await self._stream.readline()
+        if not line:
+            raise StopAsyncIteration
+        return line.decode("utf-8")
+
+
+class _AsyncioTextWriter:
+    """Encode UTF-8 MCP responses through an asyncio standard-output pipe."""
+
+    def __init__(self, stream: asyncio.StreamWriter) -> None:
+        self._stream = stream
+
+    async def write(self, data: str) -> int:
+        self._stream.write(data.encode("utf-8"))
+        await self._stream.drain()
+        return len(data)
+
+    async def flush(self) -> None:
+        await self._stream.drain()
+
+
+async def _asyncio_stdio_files() -> tuple[_AsyncioTextReader, _AsyncioTextWriter]:
+    """Open native async pipes without AnyIO's CPython 3.14 file workers."""
+
+    loop = asyncio.get_running_loop()
+    reader = asyncio.StreamReader(limit=_MAX_MCP_LINE_BYTES + 1)
+    reader_protocol = asyncio.StreamReaderProtocol(reader)
+    await loop.connect_read_pipe(lambda: reader_protocol, sys.stdin.buffer)
+
+    writer_protocol = asyncio.streams.FlowControlMixin(loop=loop)
+    writer_transport, _ = await loop.connect_write_pipe(
+        lambda: writer_protocol,
+        sys.stdout.buffer,
+    )
+    writer = asyncio.StreamWriter(writer_transport, writer_protocol, None, loop)
+    return _AsyncioTextReader(reader), _AsyncioTextWriter(writer)
+
 
 def create_server() -> Any:
     """Build the MCP server lazily so ordinary CLI use has no MCP import cost."""
 
     try:
         from mcp.server.fastmcp import FastMCP
+        from mcp.server.stdio import stdio_server
         from mcp.types import ToolAnnotations
     except ImportError as exc:  # pragma: no cover - package gate in minimal installs
         raise RuntimeError(
@@ -42,7 +95,23 @@ def create_server() -> Any:
         idempotentHint=True,
         openWorldHint=False,
     )
-    server = FastMCP(
+
+    class _NeoCortexFastMCP(FastMCP):
+        async def run_stdio_async(self) -> None:
+            stdin, stdout = await _asyncio_stdio_files()
+            async with stdio_server(
+                stdin,
+                stdout,
+            ) as (read_stream, write_stream):
+                # MCP 1.23.3 exposes no public accessor for the decorated low-level
+                # server, so this exact-version adapter must use its stable member.
+                await self._mcp_server.run(
+                    read_stream,
+                    write_stream,
+                    self._mcp_server.create_initialization_options(),
+                )
+
+    server = _NeoCortexFastMCP(
         name="Neocortex",
         instructions=SERVER_INSTRUCTIONS,
         log_level="WARNING",
