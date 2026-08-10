@@ -424,8 +424,8 @@ crear auxiliares de forma oportunista.
 La ruta Code integrada de `Neocortex --all` no autodetecta proyectos por
 `pyproject.toml`, `package.json` u otros marcadores distribuidos en el perfil.
 Su allowlist predeterminada contiene exclusivamente
-`C:\Users\Victor\Neocortex\Repository` y
-`C:\Users\Victor\Frameworks\Generador de bitácoras EPS`; laboratorios,
+`$HOME\Neocortex\Repository` y
+`$HOME\Frameworks\Generador de bitácoras EPS`; laboratorios,
 dependencias, generados y caches dentro de esas raíces también se excluyen antes
 de leer contenido. `--code-project-root RUTA` reemplaza la allowlist y puede
 repetirse. `--code-scope broad` conserva la selección histórica amplia sólo como

@@ -63,7 +63,7 @@ regenerarse para cada resolución constrained que se pretenda promover.
 ### Addendum del runtime candidato 0.7.2 — Hito 6
 
 El candidato Hito 6 se validó con Python 3.13.14 desde el wheel
-`C:\Users\Victor\Neocortex\Laboratory\neocortex-0.7.2-hito6-mutation-history-20260803-rc3\wheelhouse\neocortex_framework-0.7.2-py3-none-any.whl`.
+`$HOME\Neocortex\Laboratory\neocortex-0.7.2-hito6-mutation-history-20260803-rc3\wheelhouse\neocortex_framework-0.7.2-py3-none-any.whl`.
 El artefacto tiene 1 580 823 bytes, 297 miembros, SHA-256
 `7CA6C693847869DF5D18139F9C2F2D22D7F890991077A06A2A86A96D9B54CA11`,
 integridad ZIP y `pip check` limpios. Los 23 módulos de producción comparados

@@ -1,227 +1,195 @@
 # NeoCortex — handoff operativo actual
 
 > Actualizado: 2026-08-10. El nombre del archivo es histórico y se conserva
-> únicamente como ruta estable. Este documento es la fuente única de la
-> frontera funcional y del orden de continuación vigentes.
+> como ruta estable. Este documento es la fuente única de la frontera vigente;
+> no guarda un SHA de cierre porque Git, la release instalada y GitHub deben
+> demostrarlo dinámicamente.
 
 ## Preferencia operativa de Víctor
 
-- GitHub debe conservar sólo `main` como rama visible.
-- No crear PR ni ramas para evoluciones ordinarias de este proyecto personal.
-- Cada entrega aceptada se integra con commits atómicos directos en `main`, una
-  release Linux del SHA final exacto, verificación del launcher público y push
-  directo a `origin/main` con CI verde.
-- No usar `--apply` ni `--organization-apply` en Linux. Ningún resultado de
-  búsqueda, OCR, clasificación o similitud autoriza una mutación.
-- El corpus, el estado vivo y el launcher instalado son el SSOT operativo; los
-  benchmarks y fixtures sólo autorizan pilotos posteriores, no promociones.
+- GitHub conserva únicamente `main`; no se usan PR ni ramas para la evolución
+  ordinaria de este proyecto personal.
+- Cada entrega se integra mediante commits atómicos directos en `main`, una
+  release Linux del SHA final exacto, el launcher público verificado y CI verde.
+- El estado vivo, el corpus y el launcher instalado son el SSOT operativo.
+- En Linux no se usa `--apply` ni `--organization-apply`. Resultados de
+  búsqueda, OCR, modelos o similitud nunca autorizan una mutación.
+- Originales y estado publicado se preservan; fixtures, benchmarks y pilotos
+  sólo autorizan la siguiente prueba acotada, no una promoción automática.
 
-## Frontera NeoCortex 0.8 entregada
+## Veredicto y frontera 0.9.0
 
-La versión de producto es `0.8.0`. La entrega es la cadena de commits de
-`main`, no un SHA aislado anotado aquí: el criterio de cierre al final de este
-documento exige igualdad dinámica entre Git, release, launcher y GitHub.
+La auditoría externa de 0.8.0 fue correcta en su diagnóstico central:
+NeoCortex ya era una plataforma local de conocimiento madura y fail-closed,
+pero CI, supply chain, rendimiento del guard y ciclos de imports no estaban al
+nivel de su amplitud. La campaña 0.9.0 cerró esos cuatro bloqueos y añadió un
+piloto de producto medido, sin habilitar mutación Linux ni fabricar calidad de
+modelos.
 
-### Consulta humana y para agentes
+La versión fuente es `0.9.0`. Su cierre no se infiere de este documento: sólo
+existe cuando se cumplen juntos los criterios dinámicos de la última sección.
 
-- `Neocortex status|search|ask|inspect` consume únicamente snapshots
-  publicados con scopes fijos `personal`, `framework` o ambos por separado.
-  Conserva rutas, revisiones, señales, citas, completitud e incertidumbre en
-  JSON legible; nunca acepta una ruta de estado ni abre productores.
-- `Neocortex review value` ordena candidatos de poco valor de forma consultiva
-  y fail-closed. En vivo devolvió `availability=ready`, `complete=true`, 844
-  candidatos examinados y una ventana de 20; `advisory_only=true` y
-  `mutation_authorized=false`.
-- La GUI incorpora la página **Consulta** sin alterar los índices históricos.
-  Permite búsqueda, contexto citado, status y revisión de valor. La inspección
-  visual de la release instalada, a 1440×900, confirmó el aviso de solo lectura,
-  cinco resultados reales y ausencia de controles de mutación.
-- `Neocortex agent serve` expone por MCP stdio exactamente `status`, `search`,
-  `context`, `evidence` e `inspect_code`. Las cinco herramientas declaran
-  `readOnlyHint=true`, `destructiveHint=false`, `openWorldHint=false`; un
-  intercambio JSON-RPC real desde el launcher instalado terminó limpiamente
-  con código 0 y sin proceso huérfano.
+## Cinco fases completadas
 
-### Knowledge y búsqueda
+### Fase 0 — supply chain y fronteras de arquitectura
 
-- Una ventana top-k normal ya no se confunde con truncamiento. Los contratos
-  distinguen `result_window_full`, candidatos omitidos por ventana, hard cutoff,
-  `next_cursor` y `cutoff_score`; sólo un corte real marca el resultado parcial.
-- `ContextBundle` reserva primero la mejor cita K1 cuando cabe y reduce el
-  diagnóstico antes de sacrificar evidencia. `code_search` ordena de forma
-  determinista ubicaciones `None|string`.
-- La búsqueda lexical conserva AND estricto como primera vía. Sólo ante cero
-  aciertos elimina stopwords ES/EN/DE y aplica un fallback acotado; las
-  consultas CJK sin espacios también tienen tokenización y regresiones propias.
-- La búsqueda humana viva de mantenimiento de transformadores devolvió cinco
-  resultados con `complete=true` y `result_window_full=true`. `Neocortex ask`
-  devolvió cuatro citas útiles y código 4 de forma intencional cuando el
-  presupuesto de caracteres omitió un candidato y truncó dos fragmentos.
+- El runtime principal usa `mcp==1.29.0`; el intercambio MCP stdio real cubre
+  initialize, listado, llamada y cierre sin depender de transporte HTTP,
+  WebSocket ni tareas experimentales.
+- Semgrep `1.172.0` se retiró del runtime principal porque fija
+  `mcp==1.23.3`. Vive en un tool-runtime administrado, scan-only, fuera de
+  `PATH`, con wrapper, lock, inventario, artefactos y receipt verificados.
+- Las tres vulnerabilidades MCP del tool-runtime son excepciones explícitas,
+  no alcanzables por su superficie, y vencen el **2026-09-30**. El runtime
+  principal no hereda ninguna excepción.
+- Todo bootstrap mantenido parte de un venv sin pip y autentica el wheel oficial
+  `pip 26.1.2` por nombre y SHA-256 antes de ejecutarlo. CI, release Linux y la
+  receta Windows usan `python -I tools/bootstrap_pip.py`.
+- Pyright `1.1.411` se instala con Node `24.18.1` desde manifest y lock npm
+  versionados. Se exige integridad exacta, `npm ci`, scripts deshabilitados,
+  entorno hostil limpiado y verificación viva antes del gate estático.
+- El empaquetado separa base, `agent` y `analysis`; la instalación personal
+  canónica sigue usando `full`. Semgrep permanece aislado incluso de `full`.
+- La distribución es privada (`LicenseRef-Proprietary`, clasificador
+  `Private :: Do Not Upload`) y declara autor, mantenedor y URLs válidas.
 
-### Semantic
+### Fase 1 — barreras integrales y CI
 
-- El escaneo exacto de vectores usa NumPy por páginas acotadas, valida dtype,
-  dimensiones, finitud y norma, y conserva fallback escalar. En el fixture
-  3,233×768 bajó de 0.826 s a 0.043 s (aprox. 19×) sin cambiar scores extremos.
-- Texto Jina y OCR siguen publicados en espacios firmados. La última repetición
-  estable de `Neocortex --all` creó generaciones `ready` sin jobs nuevos:
-  4,655 chunks de 360 items de texto, 431 items visuales y 294 chunks OCR de
-  imagen, con `queued=embedded=failed=pending=leased=0` en el replay.
-- CLIP ahora es fail-closed: exige una calibración humana positiva y negativa
-  ligada a modelos, pipeline y backend exactos. Sin contrato no carga el
-  backend, escanea 0 vectores, devuelve 0 vecinos y explica
-  `image_retrieval_not_calibrated`.
-- El fixture CLIP inspeccionado contiene 25 imágenes y 50 consultas (25
-  positivas, 25 negativas). Las distribuciones se solapan: mínimo positivo
-  0.204114 frente a máximo negativo 0.238547. En el diagnóstico acotado sobre
-  431 vectores, negativos llegaron a 0.300938; ese piso conservaría sólo 32 %
-  de los positivos. No se fabricó ni cableó un umbral escalar inseguro.
-- Un bakeoff offline ES/EN/DE/ZH de 24 consultas y 48 candidatos favoreció a
-  MiniLM 384d frente a Jina 768d: top-1 58.3 % vs 41.7 %, MRR 0.736 vs 0.505,
-  R@5 95.8 % vs 54.2 % y mediana warm 6.31 ms vs 24.70 ms. La muestra es
-  sintética y pequeña; MiniLM no se promovió, no se mezclaron espacios ni se
-  reutilizó el piso de Jina.
+- El inventario dinámico final contiene **265 archivos de prueba**. Coverage
+  ejecutó la suite completa dos veces de forma independiente: **4,125 passed,
+  146 skipped y 98 subtests** en ambas corridas.
+- Baseline branch-aware aprobado: **56,933/67,720 líneas** y
+  **14,600/21,110 ramas**. También ratchetea las rutas aprobadas de tests y de
+  las **326 fuentes de producción**: las adiciones pasan; un retiro exige una
+  reescritura explícita y revisada.
+- Los dos shards son una partición exacta: 132 archivos con 1,911 passed y 133
+  archivos con 2,214 passed. La suma coincide con la suite completa.
+- La matriz obligatoria es el producto Windows/Ubuntu × Python 3.13/3.14 × dos
+  shards: **8 jobs**, no una rotación incompleta entre versión y shard.
+- CI construye e instala el wheel `full`, ejecuta un smoke fuera del checkout
+  sobre seis paquetes, `Orquestador`, package-data, metadata, versión y
+  entrypoint, y después prueba el árbol fuente completo. Cada job revalida SHA
+  y worktree limpio al final; `quality` también lo hace tras Coverage.
+- El gate estático versionado conserva deuda sin permitir crecimiento:
+  Ruff **76**, Mypy **94**, Pyright **214**. No significa “cero deuda”; significa
+  cero diagnósticos nuevos por ruta/regla y versión exacta de cada herramienta.
+- Grimp exige el baseline acíclico v2, seis contratos exactos y evidencia viva.
+  Estado final: **325 módulos, 1,316 relaciones, 0 violaciones y 0 SCC**.
+- Supply chain real se evalúa en cada SHA con `pip-audit` del runtime principal
+  y del tool-runtime Semgrep contra su receipt/policy; Coverage JSON se publica
+  como artefacto ligado al SHA.
 
-### Documentos, OCR e imagen
+### Fase 2 — rendimiento sin perder seguridad TOCTOU
 
-- La ruta Image conserva en SQLite cada clasificación completada. En una
-  reanudación ilimitada acredita primero la caché vigente antes de iniciar
-  decodificación o NudeNet nuevos, y un `Ctrl+C` guarda el último lote ya
-  completado; los pilotos acotados mantienen prioridad para trabajo pendiente.
-- Office schema 2 persiste cada celda XLSX no vacía con libro, hoja, A1, tipo,
-  valor lógico y XML crudo, fórmula y caché separados, estilo/formato y una
-  proyección FTS compatible. La migración 1→2 fue aditiva y el replay reutilizó
-  20/20 libros.
-- PDF schema 12 persiste por página el perfil OCR, idiomas efectivos, OSD,
-  confianza y fallback. Imagen y Video comparten perfiles explícitos
-  `configured` y `auto-multilingual` sin inferir paquetes ausentes.
-- El runtime vivo tiene Tesseract `spa`, `eng`, `deu`, `chi_sim`, `chi_tra` y
-  `osd`. Los doctores PDF y Video de la release instalada aprobaron esos seis
-  paquetes; Video aprobó además `/usr/bin/ffmpeg` y `/usr/bin/ffprobe`.
-- Archive conserva ZIP anidado sin materializar miembros: 31 contenedores, 27
-  completos, 4 parciales, 258 miembros, 240 indexados, 18 sólo por metadata,
-  3 ZIP anidados, 5,089,368 caracteres y 8 incidencias de seguridad visibles.
-- Texto físico conserva 48 candidatos y reutilizó los 48; uno es un error
-  permanente cacheado porque el PPT CFB está corrupto y no contiene texto
-  recuperable. La ruta informó 0 errores nuevos en el replay.
+- El guard de mutación conserva revalidación de root, identidad, componente,
+  contención y no-replace por candidato, pero reutiliza el snapshot inmutable
+  de la frontera por lote.
+- El caso grande pasó de aproximadamente **113 s** a **8.6 s** y conserva un
+  máximo de seis reconstrucciones completas.
+- Una primera optimización reveló dos regresiones de sustitución entre preflight
+  y uso. Se corrigieron antes de aceptar el cambio y ambas pruebas TOCTOU pasan;
+  el batching no convirtió una mejora de velocidad en autorización por ruta.
 
-### Video y audio visual-only
+### Fase 3 — arquitectura acíclica
 
-- Video schema 1 indexa muestreo acotado de frames, escenas/keyframes,
-  dimensiones, OCR por frame, métricas, procedencia y enlace al transcript de
-  Audio. Los límites son fail-closed y el worker usa 2 GiB de memoria virtual,
-  valor requerido por FFmpeg en el piloto Linux real.
-- Un video sin pista de audio se registra en Audio como `no_audio` benigno, sin
-  adquirir ni cargar el transcriptor; Video continúa y publica el contenido
-  visual. El piloto FFmpeg aislado `route=all` completó así con 0 errores y sin
-  reviews espurias.
-- El corpus vivo actual no contiene candidatos Audio ni Video. El schema y los
-  doctores están verificados, pero no debe presentarse como validación de videos
-  reales de Víctor hasta añadir una muestra representativa autorizada.
+- Se eliminaron, sin mover los owners públicos, los SCC de contratos
+  semánticos, Knowledge, políticas de corpus y el ciclo central de 14 módulos.
+- Protocols estructurales de sólo lectura y modelos hoja fijan la dirección de
+  dependencias. Reexports conservan identidad y compatibilidad pública.
+- El baseline histórico de cuatro ciclos quedó sustituido por
+  `KNOWN_CYCLE_BASELINE = ()`; reintroducir cualquiera de ellos vuelve a fallar
+  el contrato principal.
 
-## Migración, integridad e incrementalidad vivas
+### Fase 4 — pilotos de producto y persistencia
 
-- Antes de migrar se creó un backup SQLite consistente en
-  `/home/winterboss/.codex/vault/backups/neocortex/pre-ed2b340-live-0.8/`.
-  Su `backup-manifest.json` tiene SHA-256
-  `9e450b85bb46934c8de7c25c1daafb017b6a5f81bbf6ea133b8c2bdd8c351d83`;
-  las doce copias aprobaron `integrity_check` y `foreign_key_check`.
-- El corpus tenía y conserva exactamente 844 archivos, 102 directorios sin
-  contar la raíz, 0 symlinks y 430,572,271 bytes. Antes y después coinciden:
-  contenido `d22ae1a61bd0406de7a9cb1d12162b505bddda155bc43ee9cb4d1158dd89ef64`,
-  rutas `cf9fe8fd2d6a1b7650b9ae2fd560433acf27136f2a863ea4f46e6580a873f253`
-  y metadata
-  `49dc1f9c5cb269c9ac2505439af03d3326fa59d15ddcc0689b735cb5cb656cfd`.
-- Las trece bases vivas aprobaron integridad y claves foráneas tras la
-  migración. Schemas publicados: Dedup 9, Framework 20, PDF 12, DOCX 5,
-  Office 2, Archive 1, Text 1, Audio 1, Video 1, Image 5, Catalog 6, Code 4 y
-  Semantic 6.
-- La primera corrida reanudó Semantic después de un límite externo y terminó
-  los 790 jobs restantes sin pérdidas. El replay final estable reutilizó
-  PDF 288/288, DOCX 26/26, Office 20/20, Archive 31/31, Text 48/48 e Image
-  431/431; no extrajo, clasificó, convirtió, transcribió ni embebió contenido
-  nuevo, y terminó con `action_mode=dry-run` y `action_errors=0`.
-- No se usó `--apply`, `--organization-apply` ni se modificó o materializó un
-  original del corpus.
+- La página **Consulta** de la GUI ejecuta lecturas fuera del hilo Qt, permite
+  cancelación y copia y conserva modo sólo lectura. El render offscreen
+  1440×900 fue inspeccionado visualmente.
+- Un piloto aislado de ocho videos reales produjo 7 completos y un error
+  esperado de contenido sólo-audio, 4 `visual_only`, 29 frames, 13 keyframes,
+  26 intervalos y OCR positivo en 27/29 intentos. El replay obtuvo 8 cache hits,
+  0 OCR nuevo y terminó en aproximadamente 1.1 s.
+- Audio enlazó los mismos ocho elementos: 1 transcrito, 3 `no_speech`, 4
+  `no_audio`, 0 errores. La consulta `MALPASO transformer` recuperó evidencia
+  OCR/frame, aunque con ruido; la muestra no demuestra todavía OCR DE/ZH fuerte.
+- Dedup schema 10 añade dos índices identity-bound para los joins productivos
+  de Knowledge. En una copia poblada v9→v10 preservó 414,421 archivos,
+  347,239,389,995 bytes, 3,518 miembros planeados y FK/integridad; migró en
+  5.40 s y la consulta medida bajó aproximadamente de 1.33 s a 0.106 s.
+- Fresh v10, v9→v10, cadena 1→10, rollback, DDL adversarial y `EXPLAIN QUERY
+  PLAN` productivo tienen regresiones específicas. La migración del estado vivo
+  sólo ocurre dentro del cierre protegido de release descrito abajo.
 
-## Barreras de release ejecutadas
+## Capacidades que permanecen fail-closed
 
-- Suite integral local: **4,034 passed, 144 skipped, 98 subtests passed** en
-  267.40 s. Quedó una advertencia upstream de Pydantic Settings al construir
-  FastMCP; el protocolo MCP y su cierre real sí aprobaron.
-- Ruff y `ruff format --check` aprobaron los 112 archivos Python modificados;
-  mypy focal aprobó las superficies de agente, imagen y Knowledge; YAML de CI,
-  `compileall` y `git diff --check` aprobaron.
-- El repositorio completo todavía registra 77 hallazgos Ruff heredados fuera de
-  la superficie modificada. No afectan la suite ni se ocultaron cambiando
-  reglas; siguen siendo deuda estática, no una barrera falsamente declarada
-  verde.
-- La instalación candidata `0.8.0` preparó Jina, MiniLM, CLIP texto/visión,
-  Whisper y NudeNet; `tools/release_linux.py verify`, el launcher público y los
-  doctores vivos aprobaron. El último commit documental exige reinstalar el SHA
-  final antes del push, como se especifica abajo.
-- Evidencia mínima persistente: snapshots, comparación, logs de `--all`,
-  consultas públicas, MCP y capturas GUI están bajo
-  `/home/winterboss/.codex/vault/evidence/neocortex-0.8-release-2026-08-09/`;
-  calibración CLIP y bakeoff tienen directorios de evidencia separados.
+1. **Linux mutation:** sigue intencionalmente deshabilitada. Un backend POSIX
+   sólo puede abrirse como proyecto separado con `openat2`/dirfd, identidad por
+   descriptor, `renameat2`, journal durable y pruebas adversariales equivalentes
+   a NTFS.
+2. **CLIP textual:** las distribuciones positivas y negativas reales siguen
+   solapadas; no existe un umbral publicado y la búsqueda se abstiene.
+3. **MiniLM:** el resultado offline favorece al modelo compacto, pero no hay
+   todavía 20–50 consultas humanas ES/EN/DE/ZH etiquetadas. Permanece shadow y
+   separado del espacio Jina.
+4. **Archive Semantic:** no se publican miles de chunks por inercia; sólo procede
+   por selector si supera FTS en preguntas reales.
+5. **OCR DE/ZH en video:** runtime y perfiles están listos, pero el piloto no
+   aportó evidencia representativa suficiente para declararlo validado.
+6. **Recuperación incierta:** una acción `recovery_required` continúa exigiendo
+   revisión manual; nunca se reintenta automáticamente.
 
-## Carencias y límites que no deben ocultarse
+## Deuda residual explícita
 
-1. **CLIP no calibrado:** la búsqueda visual se abstiene por diseño hasta
-   disponer de una política robusta; hoy no devuelve falsos vecinos, pero
-   tampoco recuperación visual textual.
-2. **MiniLM sin promover:** el bakeoff justifica un piloto shadow con consultas
-   reales etiquetadas, no un cambio automático de modelo ni dos modelos
-   residentes permanentemente.
-3. **Video vivo sin muestra:** no hay candidatos Audio/Video en el corpus; la
-   fidelidad real se demostró sólo en fixtures y un piloto FFmpeg aislado.
-4. **Presupuesto de contexto:** `Neocortex ask` puede devolver código 4 con citas
-   útiles cuando el límite de caracteres impide una respuesta exhaustiva. Es
-   una señal honesta de parcialidad, no debe convertirse en éxito completo.
-5. **Contenido irrecuperable:** permanece un PPT CFB corrupto y ocho incidencias
-   Archive acotadas. No se inventa texto ni se relajan límites para ocultarlos.
-6. **Archive Semantic:** Archive tiene FTS y procedencia, pero no se publicaron
-   por inercia sus miles de chunks en Semantic. Sólo procede por selectores si
-   mejora consultas reales frente a lexical.
-7. **Organización Linux:** búsqueda, catálogo, clasificación y previews están
-   disponibles; la mutación continúa intencionalmente deshabilitada hasta un
-   backend POSIX ligado a identidad con garantías equivalentes a Windows.
-8. **Relaciones y experiencia:** todavía no existe un grafo transversal que
-   convierta toda evidencia en conocimiento causal. La consulta GUI es
-   síncrona; una primera búsqueda fría puede pausar brevemente la ventana y
-   conviene volverla asíncrona si el uso real lo hace perceptible.
+- El baseline estático contiene 76/94/214 hallazgos y agrupa por ruta/regla, no
+  por fingerprint de cada mensaje. Debe reducirse gradualmente y nunca usarse
+  para intercambiar deuda nueva por vieja.
+- Permanecen hotspots grandes en evidencia externa, validaciones Knowledge y el
+  parser legado. La campaña eliminó ciclos, no fingió haber reducido toda la
+  complejidad ciclomática.
+- La suite integral prueba el árbol fuente después de instalar el wheel; el
+  artefacto instalado tiene un smoke aislado fuerte, no una segunda ejecución
+  artificial de los 4,125 casos que dependen también de tools/docs del checkout.
+- Windows conserva receta mantenida y CI completa, pero aún no tiene un
+  instalador Python integral equivalente a `tools/release_linux.py`.
+- Las excepciones Semgrep dejan de ser válidas el 2026-09-30. Antes de esa fecha
+  se actualiza o sustituye Semgrep; no se prolonga el vencimiento por rutina.
 
 ## Próximos pasos, en orden
 
-1. Usar `Neocortex search|ask` y la página Consulta para resolver preguntas
-   reales; usar `Neocortex review value` para revisar archivos de
-   bajo valor sin mover ni eliminar nada.
-2. Etiquetar con Víctor 20–50 consultas reales ES/EN/DE/ZH y ejecutar MiniLM en
-   un espacio shadow separado. Promoverlo sólo si mantiene calidad, latencia,
-   procedencia y calibración por fuente sobre ese conjunto.
-3. Ampliar la calibración CLIP con positivos/negativos reales por idioma y tipo
-   de imagen. No introducir un piso escalar mientras las distribuciones sigan
-   solapadas.
-4. Añadir una muestra pequeña y autorizada de videos representativos para
-   validar en estado vivo escenas, OCR DE/ZH, visual-only y enlaces Audio; repetir
-   la corrida para demostrar caché antes de escalar.
-5. Evaluar Archive Semantic sólo sobre selectores útiles y contra la línea base
-   FTS. Después, si el uso lo justifica, volver asíncrona la consulta GUI y
-   reducir gradualmente la deuda Ruff heredada sin mezclarla con cambios
-   funcionales.
+1. Usar `Neocortex search|ask`, la página Consulta y `review value` sobre
+   preguntas reales, siempre sin mutación.
+2. Etiquetar con Víctor 20–50 consultas ES/EN/DE/ZH y comparar MiniLM shadow
+   contra Jina con relevancia, latencia, procedencia y calibración por fuente.
+3. Ampliar CLIP con positivos y negativos humanos por idioma/tipo de imagen;
+   promover sólo una política que separe las distribuciones de forma robusta.
+4. Autorizar una muestra pequeña con texto alemán y chino visible para repetir
+   Video/OCR/Audio y su replay cacheado.
+5. Evaluar Archive Semantic por selectores útiles contra FTS y reducir después
+   un hotspot o bucket estático por cambio, sin mezclarlo con funciones nuevas.
+6. Diseñar el backend Linux identity-bound sólo si la organización física en
+   Kubuntu se vuelve prioridad; hasta entonces mantener el rechazo actual.
 
-## Criterio de cierre de esta release
+## Criterio dinámico de cierre de 0.9.0
 
-La entrega no termina sólo por código, pruebas o la versión `0.8.0`. Deben
-cumplirse y comprobarse juntos:
+La release queda cerrada únicamente cuando se comprueba todo lo siguiente sobre
+el mismo SHA comprometido y un worktree limpio:
 
 1. `git rev-parse HEAD` = `git rev-parse origin/main`;
 2. `current/neocortex-release.json:source_sha` = ese mismo SHA;
-3. `python3.14 tools/release_linux.py verify` y `Neocortex --version` aprueban;
-4. una repetición `Neocortex --all` desde el launcher final conserva corpus,
-   integridad, dry-run e incrementalidad;
-5. las consultas humanas, MCP stdio y GUI instalados siguen funcionando;
-6. el CI de push de GitHub queda verde y GitHub sólo expone `main`.
+3. `python3.14 tools/release_linux.py verify` y `Neocortex --version` informan
+   una release válida `0.9.0`;
+4. el pre-push canónico aprueba arquitectura, estática, supply, Coverage y SHA;
+5. antes de la primera corrida 0.9 se respalda cada SQLite con la API de backup
+   online y se verifica integridad/FK de las copias;
+6. dos corridas `Neocortex --all` desde el launcher final terminan en dry-run,
+   migran Dedup a v10, conservan originales y demuestran replay incremental;
+7. las trece bases, corpus before/after, status/search/ask/review, MCP stdio y GUI
+   instalados aprueban;
+8. el push de GitHub termina con todos los checks verdes y GitHub sólo expone
+   `main`.
 
-Si cualquiera difiere, la release sigue abierta y se corrige sobre `main` antes
-de declarar el cierre.
+La evidencia mínima de cierre se conserva bajo
+`$HOME/.codex/vault/evidence/neocortex-0.9-release-2026-08-10/`; el backup
+pre-0.9 se conserva separadamente bajo `$HOME/.codex/vault/backups/neocortex/`.
+Si cualquiera de los ocho puntos difiere, 0.9.0 sigue abierta y se corrige antes
+de declarar éxito.

@@ -109,7 +109,7 @@ protección de ownership de Git requiere `safe.directory`, el proveedor autoriza
 usa comodines ni modifica configuración global, local o del sistema.
 
 `trusted-deep` es la única frontera que ejecuta contenido. La CLI exige la
-identidad física exacta de `C:\Users\Victor\Neocortex\Repository`, estado
+identidad física exacta de `$HOME\Neocortex\Repository`, estado
 disjunto y límites efectivos acotados; cualquier otra raíz se rechaza antes de
 crear el run. Pytest carga plugins/código confiable y puede ejecutar comportamiento de
 red porque el proveedor no impone un sandbox de red; el descriptor lo declara

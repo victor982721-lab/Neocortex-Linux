@@ -491,14 +491,14 @@ afectado, no borra la evidencia de los demás proveedores.
 `trusted-deep` es un perfil adicional, nunca predeterminado, que conserva los
 13 proveedores estáticos y añade `pytest-coverage-trusted-deep` y
 `cosmic-ray-focal-mutation`, para un total de 15. Sólo acepta
-la identidad física exacta de `C:\Users\Victor\Neocortex\Repository`: ejecuta
+la identidad física exacta de `$HOME\Neocortex\Repository`: ejecuta
 el código del proyecto, sus pruebas y `conftest.py`, mide líneas y ramas con
 contextos dinámicos por test, y por ello no se admite sobre una raíz arbitraria.
 El estado debe permanecer aislado en Laboratory:
 
 ```powershell
-$Root = 'C:\Users\Victor\Neocortex\Repository'
-$State = 'C:\Users\Victor\Neocortex\Laboratory\self-analysis\trusted-deep'
+$Root = Join-Path $HOME 'Neocortex\Repository'
+$State = Join-Path $HOME 'Neocortex\Laboratory\self-analysis\trusted-deep'
 Neocortex --self-analysis --analysis-profile trusted-deep --root $Root --state-directory $State
 
 # Mutación focal del símbolo elegido por el work package.

@@ -190,13 +190,13 @@ consulta la red. El inventario instalado se recalcula en cada corrida.
 `trusted-deep` añade Pytest + Coverage y Cosmic Ray a los 13 proveedores
 estáticos, para un total de 15. Nunca
 es el perfil predeterminado y sólo acepta la identidad física exacta de
-`C:\Users\Victor\Neocortex\Repository`; cualquier otra raíz se rechaza antes de
+`$HOME\Neocortex\Repository`; cualquier otra raíz se rechaza antes de
 crear un run. Este perfil sí ejecuta código declarado del proyecto, pruebas y
 `conftest.py`, por lo que debe usar estado aislado:
 
 ```powershell
-$Root = 'C:\Users\Victor\Neocortex\Repository'
-$State = 'C:\Users\Victor\Neocortex\Laboratory\self-analysis\trusted-deep'
+$Root = Join-Path $HOME 'Neocortex\Repository'
+$State = Join-Path $HOME 'Neocortex\Laboratory\self-analysis\trusted-deep'
 Neocortex --self-analysis --analysis-profile trusted-deep --root $Root --state-directory $State
 
 # Selección focal repetible; omitirla significa suite declarada completa.

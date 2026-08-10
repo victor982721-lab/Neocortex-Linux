@@ -335,13 +335,13 @@ mutación focal e historia con líneas, ramas, símbolos, módulos y el work pac
 vigente. Conserva los 13 proveedores estáticos y añade Coverage y Cosmic Ray,
 para un total de 15. No es
 predeterminado y la CLI rechaza cualquier raíz que no sea la identidad física
-exacta de `C:\Users\Victor\Neocortex\Repository`. El perfil ejecuta código del
+exacta de `$HOME\Neocortex\Repository`. El perfil ejecuta código del
 proyecto, pruebas y `conftest.py`; no procesa corpus ni modifica el estado
 durable vivo:
 
 ```powershell
-$Root = 'C:\Users\Victor\Neocortex\Repository'
-$State = 'C:\Users\Victor\Neocortex\Laboratory\self-analysis\trusted-deep'
+$Root = Join-Path $HOME 'Neocortex\Repository'
+$State = Join-Path $HOME 'Neocortex\Laboratory\self-analysis\trusted-deep'
 
 # Suite declarada completa, dentro de los límites predeterminados.
 Neocortex --self-analysis --analysis-profile trusted-deep --root $Root --state-directory $State
@@ -427,7 +427,7 @@ campos USN en `NULL` y las rutas reutilizan caches por identidad/metadata.
 
 Sólo un cambio al autoanálisis o un cierre de release requiere un smoke de la
 raíz canónica. En ese caso analiza `%USERPROFILE%\Neocortex\Repository` con un
-estado externo nuevo bajo `C:\Users\Victor\Neocortex\Laboratory\self-analysis`.
+estado externo nuevo bajo `$HOME\Neocortex\Laboratory\self-analysis`.
 Un cambio cotidiano no debe convertirse por rutina en un análisis completo del
 repositorio.
 

@@ -48,7 +48,7 @@ estado AST ni los demás resultados válidos.
 |---|---|---|
 | `protected` (predeterminado) | `ruff-protected-basic` | Ruff `E4,E7,E9,F` con `--isolated`, sin configuración del proyecto. Es la frontera `untrusted-safe`. |
 | `trusted-static` | `ruff-protected-basic`, `ruff-trusted-project`, `mypy-trusted-project`, `pyright-trusted-project`, `vulture-unused-static`, `ruff-analyze-imports`, `grimp-architecture`, `complexipy-cognitive` | Añade política estática, tipos, candidatos de no uso, grafo de imports, contratos arquitectónicos y complejidad cognitiva sólo para una raíz declarada confiable. Rechaza extensiones Ruff, plugins/`mypy_path` de Mypy y rutas externas de Pyright. |
-| `trusted-deep` | Los ocho de `trusted-static` más `pytest-coverage-trusted-deep` | Ejecuta el código, pruebas y `conftest.py` declarados únicamente para la identidad física exacta de `C:\Users\Victor\Neocortex\Repository`; mide branch coverage y contextos dinámicos por test. Es la frontera `trusted-execution`, nunca predeterminada. |
+| `trusted-deep` | Los ocho de `trusted-static` más `pytest-coverage-trusted-deep` | Ejecuta el código, pruebas y `conftest.py` declarados únicamente para la identidad física exacta de `$HOME\Neocortex\Repository`; mide branch coverage y contextos dinámicos por test. Es la frontera `trusted-execution`, nunca predeterminada. |
 
 Ruff trusted selecciona `E4,E7,E9,F,B,C4,PIE,RUF`. Omite deliberadamente
 `I,PT,SIM,UP`: ordenar imports, convenciones pytest, simplificación y
@@ -159,12 +159,12 @@ no puede aprobar su gate ni aparentar frescura.
 
 `trusted-deep` no acepta mini-roots ni raíces configurables: antes de crear el
 run exige que ruta resuelta e identidad física coincidan exactamente con
-`C:\Users\Victor\Neocortex\Repository`. Su estado sigue siendo externo y
+`$HOME\Neocortex\Repository`. Su estado sigue siendo externo y
 disjunto; el ejemplo operativo usa exclusivamente Laboratory:
 
 ```powershell
-$Root = 'C:\Users\Victor\Neocortex\Repository'
-$State = 'C:\Users\Victor\Neocortex\Laboratory\self-analysis\trusted-deep'
+$Root = Join-Path $HOME 'Neocortex\Repository'
+$State = Join-Path $HOME 'Neocortex\Laboratory\self-analysis\trusted-deep'
 Neocortex --self-analysis --analysis-profile trusted-deep --root $Root --state-directory $State
 ```
 
@@ -223,8 +223,8 @@ uso.
 Con un artefacto instalado que coincida con esta fuente, la forma canónica es:
 
 ```powershell
-$Root = 'C:\Users\Victor\Neocortex\Repository'
-$State = 'C:\Users\Victor\Neocortex\Laboratory\self-analysis\run-id'
+$Root = Join-Path $HOME 'Neocortex\Repository'
+$State = Join-Path $HOME 'Neocortex\Laboratory\self-analysis\run-id'
 # Elija un perfil para el estado de esta secuencia:
 Neocortex --self-analysis --root $Root --state-directory $State
 # o, sólo para una raíz confiable:
