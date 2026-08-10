@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
+from threading import Event
 
 import pytest
 
@@ -176,6 +178,19 @@ class _FixtureReadClient:
         }
 
 
+class _BlockingReadClient(_FixtureReadClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = Event()
+        self.release = Event()
+
+    def execute(self, request: ReadRequest) -> dict[str, object]:
+        self.started.set()
+        if not self.release.wait(timeout=5):
+            raise RuntimeError("fixture read was not released")
+        return super().execute(request)
+
+
 @pytest.fixture(scope="module")
 def application() -> QApplication:
     instance = QApplication.instance()
@@ -193,6 +208,15 @@ def _window(tmp_path: Path, client: _FixtureReadClient) -> MainWindow:
         settings_path=tmp_path / "config" / "ui.ini",
         read_client=client,
     )
+
+
+def _wait_for_read(application: QApplication, window: MainWindow, timeout: float = 5.0) -> None:
+    deadline = time.monotonic() + timeout
+    while window._read_tasks.is_running and time.monotonic() < deadline:
+        application.processEvents()
+        time.sleep(0.005)
+    application.processEvents()
+    assert not window._read_tasks.is_running
 
 
 def test_consultation_exposes_all_read_operations_without_mutation_controls(
@@ -226,6 +250,7 @@ def test_consultation_exposes_all_read_operations_without_mutation_controls(
 
         window.consult_query.setText("  pruebas eléctricas U5  ")
         window._run_read_request()
+        _wait_for_read(application, window)
         assert client.calls[-1] == ReadRequest(
             "search",
             scope="all",
@@ -238,6 +263,7 @@ def test_consultation_exposes_all_read_operations_without_mutation_controls(
 
         window.consult_operation.setCurrentIndex(1)
         window._run_read_request()
+        _wait_for_read(application, window)
         assert client.calls[-1].limit == 8
         assert "[K1]" in window.consult_result.toPlainText()
 
@@ -245,12 +271,14 @@ def test_consultation_exposes_all_read_operations_without_mutation_controls(
         assert not window.consult_query.isEnabled()
         assert not window.consult_limit.isEnabled()
         window._run_read_request()
+        _wait_for_read(application, window)
         assert "personal-published-17" in window.consult_result.toPlainText()
 
         window.consult_operation.setCurrentIndex(3)
         assert not window.consult_query.isEnabled()
         assert window.consult_button.text() == "Revisar sin cambios"
         window._run_read_request()
+        _wait_for_read(application, window)
         assert client.calls[-1].limit == 50
         assert "0 acciones aplicadas" in window.consult_result_summary.text()
         assert "no autoriza mover, archivar o borrar" in window.consult_result.toPlainText()
@@ -260,6 +288,8 @@ def test_consultation_exposes_all_read_operations_without_mutation_controls(
             "status",
             "review",
         ]
+        window.consult_copy_button.click()
+        assert QApplication.clipboard().text() == window.consult_result.toPlainText()
     finally:
         window.close()
         application.processEvents()
@@ -276,7 +306,7 @@ def test_consultation_page_renders_reproducibly_offscreen(
     window._select_page(4)
     window.consult_query.setText("pruebas eléctricas del transformador U5")
     window._run_read_request()
-    application.processEvents()
+    _wait_for_read(application, window)
     try:
         configured = os.environ.get("NEOCORTEX_UI_CAPTURE_PATH")
         output = Path(configured) if configured else tmp_path / "gui-readonly.png"
@@ -291,5 +321,73 @@ def test_consultation_page_renders_reproducibly_offscreen(
         assert window.consult_result_title.text() == "Búsqueda de evidencia"
         assert "Pruebas eléctricas U5.pdf" in window.consult_result.toPlainText()
     finally:
+        window.close()
+        application.processEvents()
+
+
+def test_consultation_runs_off_the_gui_thread_and_discards_cancelled_results(
+    application: QApplication,
+    tmp_path: Path,
+) -> None:
+    client = _BlockingReadClient()
+    window = _window(tmp_path, client)
+    window.show()
+    window._select_page(4)
+    window.consult_query.setText("consulta fría acotada")
+    try:
+        started_at = time.monotonic()
+        window._run_read_request()
+        assert time.monotonic() - started_at < 0.25
+        deadline = time.monotonic() + 2
+        while not client.started.is_set() and time.monotonic() < deadline:
+            application.processEvents()
+            time.sleep(0.005)
+        assert client.started.is_set()
+        assert window.consult_status.property("state") == "running"
+        assert not window.consult_button.isEnabled()
+        assert window.consult_cancel_button.isEnabled()
+
+        window._cancel_read_request()
+        assert not window.consult_cancel_button.isEnabled()
+        client.release.set()
+        _wait_for_read(application, window)
+
+        assert window.consult_status.property("state") == "warning"
+        assert window.consult_result_title.text() == "Consulta cancelada"
+        assert "No se creó" in window.consult_result.toPlainText()
+        assert window.consult_button.isEnabled()
+    finally:
+        client.release.set()
+        window.close()
+        application.processEvents()
+
+
+def test_window_defers_close_until_an_active_read_is_cancelled(
+    application: QApplication,
+    tmp_path: Path,
+) -> None:
+    client = _BlockingReadClient()
+    window = _window(tmp_path, client)
+    window.show()
+    window._select_page(4)
+    window.consult_query.setText("consulta protegida durante el cierre")
+    try:
+        window._run_read_request()
+        deadline = time.monotonic() + 2
+        while not client.started.is_set() and time.monotonic() < deadline:
+            application.processEvents()
+            time.sleep(0.005)
+        assert client.started.is_set()
+
+        assert not window.close()
+        assert window.isVisible()
+        assert not window.consult_cancel_button.isEnabled()
+
+        client.release.set()
+        _wait_for_read(application, window)
+        assert window.consult_result_title.text() == "Consulta cancelada"
+        assert window.close()
+    finally:
+        client.release.set()
         window.close()
         application.processEvents()

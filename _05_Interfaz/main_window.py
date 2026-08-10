@@ -47,12 +47,12 @@ from .elevation import is_elevated, start_elevated_ui
 from .read_client import (
     MAX_QUERY_CHARACTERS,
     ReadClient,
-    ReadClientError,
     ReadOperation,
+    ReadPresentation,
     ReadRequest,
     SharedReadClient,
-    present_read_payload,
 )
+from .read_tasks import ReadTaskController
 from .run_request import ROUTE_ORDER, RunRequest
 from .status_repository import RunStatus, StatusRepository, StatusRepositoryError
 from .theme import COLORS
@@ -107,12 +107,15 @@ class MainWindow(QMainWindow):
         self._execution_elevated = is_elevated()
         self._controller = controller or WorkerController(self)
         self._read_client = read_client or SharedReadClient()
+        self._read_tasks = ReadTaskController(self._read_client, self)
+        self._active_read_request: int | None = None
         self._nav_buttons: list[NavButton] = []
         self._progress_items: dict[tuple[str, str], ProgressItem] = {}
         self._last_status_error: str | None = None
 
         self._build_shell()
         self._connect_controller()
+        self._connect_read_tasks()
         self._load_settings()
         self._refresh_data()
         self._status_timer = QTimer(self)
@@ -635,8 +638,13 @@ class MainWindow(QMainWindow):
         self.consult_button = QPushButton("Buscar")
         self.consult_button.setObjectName("PrimaryButton")
         self.consult_button.clicked.connect(self._run_read_request)
+        self.consult_cancel_button = QPushButton("Cancelar")
+        self.consult_cancel_button.setObjectName("ConsultCancelButton")
+        self.consult_cancel_button.setEnabled(False)
+        self.consult_cancel_button.clicked.connect(self._cancel_read_request)
         query_row.addWidget(self.consult_query, 1)
         query_row.addWidget(self.consult_button)
+        query_row.addWidget(self.consult_cancel_button)
         request_layout.addLayout(query_row)
 
         safety = QLabel(
@@ -672,6 +680,13 @@ class MainWindow(QMainWindow):
         result_layout.addWidget(self.consult_result_title)
         result_layout.addWidget(self.consult_result_summary)
         result_layout.addWidget(self.consult_result, 1)
+        result_actions = QHBoxLayout()
+        result_actions.addStretch(1)
+        self.consult_copy_button = QPushButton("Copiar resultado")
+        self.consult_copy_button.setEnabled(False)
+        self.consult_copy_button.clicked.connect(self._copy_consult_result)
+        result_actions.addWidget(self.consult_copy_button)
+        result_layout.addLayout(result_actions)
         layout.addWidget(result_panel)
         layout.addStretch(1)
 
@@ -766,6 +781,8 @@ class MainWindow(QMainWindow):
         self.consult_button.setText(button_labels.get(operation, "Consultar"))
 
     def _run_read_request(self) -> None:
+        if self._active_read_request is not None:
+            return
         operation = cast(ReadOperation, str(self.consult_operation.currentData()))
         request = ReadRequest(
             operation=operation,
@@ -785,41 +802,95 @@ class MainWindow(QMainWindow):
             return
 
         self.consult_status.set_state("running", "Consultando…")
-        self.consult_button.setEnabled(False)
-        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        self._set_consult_running(True)
         try:
-            payload = self._read_client.execute(request)
-            presentation = present_read_payload(request, payload)
-        except (
-            AttributeError,
-            ImportError,
-            OSError,
-            ReadClientError,
-            RuntimeError,
-            TypeError,
-            ValueError,
-        ) as exc:
-            detail = " ".join(str(exc).split())[:800] or type(exc).__name__
-            self.consult_status.set_state("failed", "No disponible")
-            self.consult_result_title.setText("No fue posible consultar")
-            self.consult_result_summary.setText(detail)
-            self.consult_result.setPlainText(
-                "La consulta se abstuvo de continuar. No se creó, migró ni modificó estado."
-            )
-        else:
-            status_text = {
-                "completed": "Consulta lista",
-                "warning": "Cobertura parcial",
-                "failed": "Requiere atención",
-            }[presentation.state]
-            self.consult_status.set_state(presentation.state, status_text)
-            self.consult_result_title.setText(presentation.title)
-            self.consult_result_summary.setText(presentation.summary)
-            self.consult_result.setPlainText(presentation.body)
-            self.consult_result.moveCursor(QTextCursor.MoveOperation.Start)
-        finally:
-            QApplication.restoreOverrideCursor()
-            self.consult_button.setEnabled(True)
+            self._active_read_request = self._read_tasks.start(request)
+        except RuntimeError as exc:
+            self._active_read_request = None
+            self._set_consult_running(False)
+            self._show_read_failure(" ".join(str(exc).split())[:800])
+
+    def _connect_read_tasks(self) -> None:
+        self._read_tasks.succeeded.connect(self._read_succeeded)
+        self._read_tasks.failed.connect(self._read_failed)
+        self._read_tasks.cancelled.connect(self._read_cancelled)
+
+    def _set_consult_running(self, running: bool) -> None:
+        self.consult_operation.setEnabled(not running)
+        self.consult_scope.setEnabled(not running)
+        self.consult_query.setEnabled(not running)
+        self.consult_limit.setEnabled(not running)
+        self.consult_button.setEnabled(not running)
+        self.consult_cancel_button.setEnabled(running)
+        if not running:
+            self._consult_operation_changed()
+
+    def _cancel_read_request(self) -> None:
+        request_id = self._active_read_request
+        if request_id is None:
+            return
+        if self._read_tasks.cancel(request_id):
+            self.consult_cancel_button.setEnabled(False)
+            self.consult_status.set_state("running", "Cancelando…")
+
+    def _read_succeeded(self, request_id: int, value: object) -> None:
+        if request_id != self._active_read_request:
+            return
+        if not isinstance(value, ReadPresentation):
+            self._show_read_failure("La consulta devolvió una presentación incompatible.")
+            self._finish_read_request(request_id)
+            return
+        presentation = value
+        status_text = {
+            "completed": "Consulta lista",
+            "warning": "Cobertura parcial",
+            "failed": "Requiere atención",
+        }[presentation.state]
+        self.consult_status.set_state(presentation.state, status_text)
+        self.consult_result_title.setText(presentation.title)
+        self.consult_result_summary.setText(presentation.summary)
+        self.consult_result.setPlainText(presentation.body)
+        self.consult_result.moveCursor(QTextCursor.MoveOperation.Start)
+        self.consult_copy_button.setEnabled(bool(presentation.body))
+        self._finish_read_request(request_id)
+
+    def _read_failed(self, request_id: int, detail: str) -> None:
+        if request_id != self._active_read_request:
+            return
+        self._show_read_failure(detail)
+        self._finish_read_request(request_id)
+
+    def _read_cancelled(self, request_id: int) -> None:
+        if request_id != self._active_read_request:
+            return
+        self.consult_status.set_state("warning", "Consulta cancelada")
+        self.consult_result_title.setText("Consulta cancelada")
+        self.consult_result_summary.setText(
+            "Se descartó el resultado de la operación local de solo lectura."
+        )
+        self.consult_result.setPlainText(
+            "No se creó, migró ni modificó estado. Puedes iniciar otra consulta."
+        )
+        self._finish_read_request(request_id)
+
+    def _show_read_failure(self, detail: str) -> None:
+        self.consult_status.set_state("failed", "No disponible")
+        self.consult_result_title.setText("No fue posible consultar")
+        self.consult_result_summary.setText(detail)
+        self.consult_result.setPlainText(
+            "La consulta se abstuvo de continuar. No se creó, migró ni modificó estado."
+        )
+
+    def _finish_read_request(self, request_id: int) -> None:
+        if request_id != self._active_read_request:
+            return
+        self._active_read_request = None
+        self._set_consult_running(False)
+
+    def _copy_consult_result(self) -> None:
+        text = self.consult_result.toPlainText()
+        if text:
+            QApplication.clipboard().setText(text)
 
     # endregion [02]
 
@@ -1333,6 +1404,11 @@ class MainWindow(QMainWindow):
         self.dependencies_layout.setColumnStretch(1, 1)
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        if self._active_read_request is not None:
+            self._cancel_read_request()
+            self.consult_status.set_state("running", "Cancelando antes de cerrar…")
+            event.ignore()
+            return
         if self._controller.is_running:
             answer = QMessageBox.warning(
                 self,

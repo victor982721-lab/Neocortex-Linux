@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
 import tomllib
 from pathlib import Path
 from unittest.mock import patch
@@ -109,6 +111,39 @@ def test_installed_entrypoint_exposes_owned_pyright_shim_and_node(
         str(owned_node),
         *original_path.split(os.pathsep),
     ]
+
+
+def test_interface_package_does_not_import_optional_qt_stack_eagerly() -> None:
+    project_root = Path(__file__).resolve().parents[1]
+    probe = subprocess.run(
+        (
+            sys.executable,
+            "-I",
+            "-c",
+            (
+                "import sys; "
+                f"sys.path.insert(0, {os.fspath(project_root)!r}); "
+                "import _05_Interfaz; "
+                "assert not any(name == 'PySide6' or name.startswith('PySide6.') "
+                "for name in sys.modules)"
+            ),
+        ),
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert probe.returncode == 0, probe.stderr
+
+
+def test_interface_package_entrypoint_preserves_forwarding_contract() -> None:
+    import _05_Interfaz
+
+    with patch("_05_Interfaz.app.main", return_value=11) as run_application:
+        assert _05_Interfaz.main(("--portable",)) == 11
+
+    run_application.assert_called_once_with(("--portable",))
 
 
 def test_legacy_dedup_entrypoint_delegates_without_legacy_state(
