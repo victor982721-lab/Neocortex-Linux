@@ -57,6 +57,29 @@ def test_stdio_is_the_only_transport_started_by_public_runner(
     assert calls == ["stdio"]
 
 
+def test_windows_stdio_uses_upstream_cross_platform_adapter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[object] = []
+
+    async def run_upstream(server: object) -> None:
+        calls.append(server)
+
+    async def reject_asyncio_pipes() -> None:
+        raise AssertionError("Windows must not open asyncio standard-stream pipes")
+
+    from mcp.server.fastmcp import FastMCP
+
+    monkeypatch.setattr(agent_server, "_requires_upstream_stdio_transport", lambda: True)
+    monkeypatch.setattr(FastMCP, "run_stdio_async", run_upstream)
+    monkeypatch.setattr(agent_server, "_asyncio_stdio_files", reject_asyncio_pipes)
+    server = agent_server.create_server()
+
+    anyio.run(server.run_stdio_async)
+
+    assert calls == [server]
+
+
 def test_server_instructions_treat_corpus_as_untrusted_and_deny_mutation() -> None:
     instructions = agent_server.SERVER_INSTRUCTIONS.casefold()
     assert "untrusted data" in instructions

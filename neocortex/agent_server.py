@@ -7,6 +7,7 @@ or mutation operation is registered.
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 from typing import Any, cast
 
@@ -27,6 +28,10 @@ context/evidence citations for factual answers. No tool can move, rename, delete
 write, index, migrate or authorize an action."""
 
 _MAX_MCP_LINE_BYTES = 1_048_576
+
+
+def _requires_upstream_stdio_transport() -> bool:
+    return os.name == "nt"
 
 
 class _AsyncioTextReader:
@@ -98,6 +103,14 @@ def create_server() -> Any:
 
     class _NeoCortexFastMCP(FastMCP):
         async def run_stdio_async(self) -> None:
+            if _requires_upstream_stdio_transport():
+                # Windows standard handles are not guaranteed to support the
+                # overlapped I/O required by Proactor asyncio pipe transports.
+                # MCP's upstream adapter deliberately uses AnyIO file workers
+                # there and also normalizes the streams to UTF-8.
+                await super().run_stdio_async()
+                return
+
             stdin, stdout = await _asyncio_stdio_files()
             async with stdio_server(
                 # MCP types these parameters nominally as AnyIO AsyncFile, but
