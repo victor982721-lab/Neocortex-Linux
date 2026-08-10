@@ -1,4 +1,4 @@
-"""Portable publication contracts for dedup inventory schema v9."""
+"""Portable publication contracts introduced by dedup inventory schema v9."""
 
 from __future__ import annotations
 
@@ -70,7 +70,7 @@ def _create_populated_v8(
             connection.execute("UPDATE inventory_checkpoints SET unexpected='preserve-me'")
 
 
-def test_fresh_v9_publishes_a_snapshot_without_inventing_usn(
+def test_fresh_current_schema_publishes_a_snapshot_without_inventing_usn(
     tmp_path: Path,
 ) -> None:
     database = tmp_path / "inventory.sqlite3"
@@ -108,7 +108,7 @@ def test_fresh_v9_publishes_a_snapshot_without_inventing_usn(
     with sqlite3.connect(database) as connection:
         assert connection.execute(
             "SELECT value FROM metadata WHERE key='schema_version'"
-        ).fetchone() == ("9",)
+        ).fetchone() == ("10",)
         assert connection.execute(
             "SELECT volume,journal_id,next_usn,valid FROM inventory_checkpoints"
         ).fetchone() == (None, None, None, 1)
@@ -117,7 +117,7 @@ def test_fresh_v9_publishes_a_snapshot_without_inventing_usn(
         inventory_schema_module.validate_inventory_schema(connection)
 
 
-def test_v9_rejects_a_partial_optional_usn_cursor(tmp_path: Path) -> None:
+def test_current_schema_rejects_a_partial_optional_usn_cursor(tmp_path: Path) -> None:
     database = tmp_path / "inventory.sqlite3"
     root = tmp_path / "corpus"
     root.mkdir()
@@ -140,7 +140,7 @@ def test_v9_rejects_a_partial_optional_usn_cursor(tmp_path: Path) -> None:
             )
 
 
-def test_v8_to_v9_preserves_published_evidence_and_is_idempotent(
+def test_v8_to_current_preserves_published_evidence_and_is_idempotent(
     tmp_path: Path,
 ) -> None:
     database = tmp_path / "inventory-v8.sqlite3"
@@ -153,7 +153,7 @@ def test_v8_to_v9_preserves_published_evidence_and_is_idempotent(
     with sqlite3.connect(database) as connection:
         assert connection.execute(
             "SELECT value FROM metadata WHERE key='schema_version'"
-        ).fetchone() == ("9",)
+        ).fetchone() == ("10",)
         assert connection.execute(
             """SELECT root,scan_id,volume,journal_id,next_usn,valid,updated_ns
             FROM inventory_checkpoints"""

@@ -1,7 +1,7 @@
 # Persistencia, esquemas y migraciones
 
-> **Estado del documento.** Contrato actualizado el 9 de agosto de 2026. El
-> árbol fuente `0.8.0` declara inventario Dedup v9, framework v20,
+> **Estado del documento.** Contrato actualizado el 10 de agosto de 2026. El
+> árbol fuente `0.8.0` declara inventario Dedup v10, framework v20,
 > catálogo v6 y semántica v6; la barrera integral y el paquete final se registran
 > por separado. En una auditoría histórica, bases vivas se inspeccionaron sin
 > migrarlas: dedup permanecía
@@ -71,7 +71,7 @@ mezcle bases de dos directorios de estado ni restaure una sola base sin revisar
 la compatibilidad del conjunto.
 
 `InternalPathsPolicy` captura ruta e identidad física de repositorio, runtime,
-datos de aplicación, autoanálisis y launcher. En una corrida normal, Dedup v9
+datos de aplicación, autoanálisis y launcher. En una corrida normal, Dedup v10
 guarda en cada scan la firma cruda de `InventoryExclusionPolicy`; Framework
 guarda la firma efectiva que combina esa evidencia con la firma versionada de
 rutas internas. Un estado igual o ancestro del corpus se rechaza porque su
@@ -101,7 +101,7 @@ a los archivos vivos.
 | Base o API | Propietario | Versión declarada | Finalidad y tablas principales | Versionado |
 |---|---|---:|---|---|
 | Base de `SqlitePathIndex` | `_01_Enumeracion.path_index_schema` / `path_index` | 1 | índice auxiliar MFT de `nodes` y `metadata` | `metadata.schema_version`; no migraciones legacy admitidas |
-| `dedup.sqlite3` | `_02_Deduplicacion.inventory_schema` / `DedupIndex` | **9 en fuente**; 6 en la base viva histórica inspeccionada | scans generacionales ligados a firma de inventario, checkpoint portable/USN opcional, archivos, fingerprints, summaries y grupos/miembros de plan | `metadata.schema_version`; migraciones 1→9 |
+| `dedup.sqlite3` | `_02_Deduplicacion.inventory_schema` / `DedupIndex` | **10 en fuente**; 6 en la base viva histórica inspeccionada | scans generacionales ligados a firma de inventario, checkpoint portable/USN opcional, archivos, fingerprints, summaries y grupos/miembros de plan | `metadata.schema_version`; migraciones 1→10 |
 | `framework.sqlite3` | `framework_schema`, `FrameworkState`, `FrameworkRouteState` | **20** | runs, fases, policy/identidad de corpus, acciones con snapshot protegido, eventos append-only de transición/conciliación/manifest, candidatos de ruta, caché de tipo, revisión y evidencia | `metadata.schema_version`; migraciones secuenciales |
 | `pdf.sqlite3` | `pdf_schema`, `pdf_state`, `PdfRoute`, `PdfDerivedIndexer` | 12 | inventario, documentos, páginas, OCR efectivo/OSD/confianza/fallback, staging, errores, warnings, FTS, firmas, similitud y layout | `metadata.schema_version`; migraciones secuenciales |
 | `docx.sqlite3` | `docx_schema`, `docx_state`, `DocxRoute` | 5 | inventario, documentos, partes, diagnósticos, FTS, layouts y contrapartes PDF | `metadata.schema_version`; migraciones secuenciales |
@@ -130,7 +130,7 @@ ejecutó esas rutas mantiene el vector histórico de diez owners:
 
 | Owner Knowledge | Archivo | Esquema esperado | Head o watermark lógico |
 |---|---|---:|---|
-| `inventory` | `dedup.sqlite3` | 9 | scan publicado por raíz y firma, checkpoint portable/USN opcional y señal de plan de duplicados completado |
+| `inventory` | `dedup.sqlite3` | 10 | scan publicado por raíz y firma, checkpoint portable/USN opcional y señal de plan de duplicados completado |
 | `framework` | `framework.sqlite3` | 20 | máximos de run, evento y acción; `best_effort_non_generational` |
 | `catalog` | `document_catalog.sqlite3` | 6 | generación publicada por `source_kind` |
 | `pdf` | `pdf.sqlite3` | 12 | filas actuales, último update/run; `best_effort_non_generational` |
@@ -468,7 +468,7 @@ a una conexión auxiliar.
 | Propietario | Timeout/busy | Escritura | Caché y WAL | FK / lector |
 |---|---|---|---|---|
 | Path index | 60 s | WAL, `synchronous=NORMAL` | `cache_size=-32768`, autocheckpoint 4096 páginas, journal limit 256 MiB | FK/query-only verificados según reader/writer; el esquema no declara relaciones FK |
-| Dedup v9 | 60 s | WAL, `synchronous=NORMAL` | `cache_size=-32768`, autocheckpoint 4096 páginas, journal limit 256 MiB | FK de files/checkpoint a scans; cursor USN opcional todo-o-nada; `foreign_keys=ON` y verificado por la factory |
+| Dedup v10 | 60 s | WAL, `synchronous=NORMAL` | `cache_size=-32768`, autocheckpoint 4096 páginas, journal limit 256 MiB | FK de files/checkpoint a scans; cursor USN opcional todo-o-nada; `foreign_keys=ON` y verificado por la factory |
 | Framework writer | 60 s | WAL, NORMAL | -32768, 4096, 256 MiB | FK local de eventos de acción; otras relaciones lógicas |
 | Framework route / heartbeat | 60 s / 10 s | base existente `mode=rw`; hereda journal del propietario | busy timeout explícito | FK verificado; reader diagnóstico usa `mode=ro` + `query_only` |
 | PDF | 60 s / 60 000 ms | WAL, NORMAL | -32768, 4096, 256 MiB | `foreign_keys=ON`; lector URI ro + query_only |
@@ -611,6 +611,32 @@ no autoriza reconciliación incremental USN. La migración valida exactamente la
 fuente v8, compara conteos, ejecuta `foreign_key_check` y se revierte completa
 ante una estructura desconocida o una excepción.
 
+### Migración Dedup v9→v10
+
+La migración es aditiva y conserva el DDL v9 como contrato histórico exacto:
+antes de escribir rechaza tablas, índices o triggers desconocidos. Después crea
+únicamente estos dos índices para la consulta real de relaciones de Knowledge:
+
+```sql
+CREATE INDEX files_identity_birth_scan_idx
+ON files(volume_id, file_id, birthtime_ns, scan_id);
+
+CREATE INDEX planned_members_identity_idx
+ON planned_duplicate_members(volume_id, file_id, birthtime_ns);
+```
+
+La misma transacción compara antes y después el conteo y la suma de `size` tanto
+de `files` como de `planned_duplicate_members`, ejecuta
+`PRAGMA foreign_key_check` y sólo entonces avanza `metadata.schema_version` a
+10. Una anomalía revierte índices y versión. La apertura posterior valida el
+contrato v10 exacto y no repite DDL.
+
+En una copia aislada del inventario, la consulta que motivó los índices pasó de
+aproximadamente 1.33 s a 0.106 s. Es evidencia orientativa, no un SLA. La
+regresión automatizada evita umbrales de reloj: ejecuta la sentencia productiva
+y exige mediante `EXPLAIN QUERY PLAN`, con índices automáticos desactivados, que
+SQLite seleccione explícitamente ambos índices v10.
+
 ### Migración histórica del catálogo v1→v2
 
 `NC-AUD-018` reprodujo dos pérdidas silenciosas en la antigua migración v1→v2
@@ -628,11 +654,11 @@ Las regresiones para columna, trigger y tabla reservada viven en
 respaldarse y migrarse primero sobre una copia; el informe técnico fechado
 registra la barrera ejecutada.
 
-## Publicación generacional de inventario: Dedup v9
+## Publicación generacional de inventario: Dedup v10
 
 ### Estado de fuente y estado vivo
 
-La fuente `0.8.0` declara esquema v9. La base viva inspeccionada históricamente conservaba
+La fuente `0.8.0` declara esquema v10. La base viva inspeccionada históricamente conservaba
 `metadata.schema_version='6'`; se abrió sólo para checks y no se permitió que el
 initializer la migrara. Antes de usar esa base con `0.8.0` debe aplicarse el
 procedimiento de backup y actualización de este documento.
@@ -643,8 +669,8 @@ entrega pertenece al informe técnico fechado.
 
 ### Esquema y estados
 
-V9 conserva los estados generacionales introducidos por v7 y liga cada scan
-nuevo a `inventory_policy_signature`:
+V10 conserva la semántica generacional de v9, incluidos los estados
+introducidos por v7, y liga cada scan nuevo a `inventory_policy_signature`:
 
 | Estado | Significado | Visible mediante el lector publicado | Puede recibir checkpoint válido |
 |---|---|---|---|
@@ -895,7 +921,7 @@ pero la conservación histórica indefinida no sustituye un backup consistente.
   a acciones y añade policy/identidad protegidas; catálogo
   v6 declara las relaciones de run/base/publicación con sus generaciones. Las
   demás asociaciones de ambos dominios continúan siendo lógicas.
-- Dedup v9 declara FK restrictivas desde `files` y `inventory_checkpoints` a
+- Dedup v10 declara FK restrictivas desde `files` y `inventory_checkpoints` a
   `scans` y activa su enforcement en la factory.
 - PDF, DOCX y audio declaran algunas relaciones locales.
 - Code y semantic declaran relaciones extensas.
@@ -971,7 +997,7 @@ Resultado lógico: 8/8 `integrity_check=['ok']`, 8/8 sin filas de
 `foreign_key_check`, ningún timeout; suma de los subprocesos, aproximadamente
 98.625 s. Un FK check vacío no valida relaciones lógicas no declaradas.
 
-La fuente soporta framework v20, Dedup v9, catálogo v6 y semántica v6, mientras
+La fuente soporta framework v20, Dedup v10, catálogo v6 y semántica v6, mientras
 las bases vivas seguían en framework v16, dedup v6 y catálogo v5; semantic no
 existía. Esa diferencia es esperable antes de actualizar, pero demuestra que
 leer el árbol no sustituye consultar la instalación. No se migraron para cerrar
@@ -1138,7 +1164,7 @@ actual sí permite inventariar una página protegida/elegible sin borrar.
 ### Planificador dry-run actual
 
 `Neocortex --retention-status` abre únicamente bases existentes y reconoce los
-contratos exactos de framework v20, inventario v9, catálogo v6 y semántica v6.
+contratos exactos de framework v20, inventario v10, catálogo v6 y semántica v6.
 No crea ni migra estado. `--retention-store` acota propietarios,
 `--retention-batch-size` limita 1..1000 y los cursores
 `--retention-<store>-after` avanzan por keyset, nunca por `OFFSET`.

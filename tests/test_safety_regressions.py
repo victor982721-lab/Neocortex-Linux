@@ -1007,7 +1007,7 @@ class FingerprintCacheSafetyTests(unittest.TestCase):
                     legacy_birthtime = connection.execute(
                         "SELECT birthtime_ns FROM fingerprints"
                     ).fetchone()[0]
-                self.assertEqual(version, "9")
+                self.assertEqual(version, "10")
                 self.assertEqual(legacy_birthtime, -1)
 
                 index.store_fingerprint(snapshot, "test-v1", b"refreshed")

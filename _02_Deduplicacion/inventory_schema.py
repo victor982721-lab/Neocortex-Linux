@@ -21,7 +21,7 @@ from neocortex.sqlite_schema_lifecycle import (
 from .errors import InventoryError
 
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 _SCHEMA_LABEL = "dedup inventory"
 _PATH_COLLATION = "NOCASE" if os.name == "nt" else "BINARY"
 _METADATA_DDL = """
@@ -42,7 +42,7 @@ CREATE TABLE inventory_checkpoints (
     FOREIGN KEY(scan_id) REFERENCES scans(scan_id) ON DELETE RESTRICT
 ) WITHOUT ROWID
 """
-_CURRENT_CHECKPOINT_DDL = f"""
+_V9_CHECKPOINT_DDL = f"""
 CREATE TABLE inventory_checkpoints (
     root TEXT PRIMARY KEY COLLATE {_PATH_COLLATION},
     scan_id INTEGER NOT NULL,
@@ -59,7 +59,11 @@ CREATE TABLE inventory_checkpoints (
     )
 ) WITHOUT ROWID
 """
-_CURRENT_DDL = (
+_V9_PLANNED_MEMBERS_PATH_INDEX_DDL = f"""
+CREATE INDEX planned_members_path_idx
+ON planned_duplicate_members(path COLLATE {_PATH_COLLATION}, role)
+"""
+_V9_DDL = (
     _METADATA_DDL,
     """
     CREATE TABLE scans (
@@ -81,7 +85,7 @@ _CURRENT_DDL = (
         inventory_policy_signature TEXT
     )
     """,
-    _CURRENT_CHECKPOINT_DDL,
+    _V9_CHECKPOINT_DDL,
     f"""
     CREATE TABLE files (
         scan_id INTEGER NOT NULL,
@@ -148,11 +152,19 @@ _CURRENT_DDL = (
         PRIMARY KEY(group_id, member_order)
     ) WITHOUT ROWID
     """,
-    f"""
-    CREATE INDEX planned_members_path_idx
-    ON planned_duplicate_members(path COLLATE {_PATH_COLLATION}, role)
+    _V9_PLANNED_MEMBERS_PATH_INDEX_DDL,
+)
+_V10_INDEX_DDL = (
+    """
+    CREATE INDEX files_identity_birth_scan_idx
+    ON files(volume_id, file_id, birthtime_ns, scan_id)
+    """,
+    """
+    CREATE INDEX planned_members_identity_idx
+    ON planned_duplicate_members(volume_id, file_id, birthtime_ns)
     """,
 )
+_CURRENT_DDL = (*_V9_DDL, *_V10_INDEX_DDL)
 
 # The first seven v9 statements own generation publication; later statements
 # are unchanged cache/plan objects shared with v6 and v7. Explicit legacy
@@ -160,16 +172,16 @@ _CURRENT_DDL = (
 _CURRENT_SHARED_DDL_START = 7
 # Schemas v1-v8 were Windows-only and therefore always used NOCASE for the
 # persisted plan-path index.  Keep that historical contract independent from
-# the host performing a migration; fresh v9 Linux state uses BINARY instead.
+# the host performing a migration; v9 and later Linux state uses BINARY instead.
 _LEGACY_SHARED_DDL = tuple(
     statement.replace(f"COLLATE {_PATH_COLLATION}", "COLLATE NOCASE")
-    for statement in _CURRENT_DDL[_CURRENT_SHARED_DDL_START:]
+    for statement in _V9_DDL[_CURRENT_SHARED_DDL_START:]
 )
 _V8_GENERATIONAL_DDL = (
     _METADATA_DDL,
-    _CURRENT_DDL[1],
+    _V9_DDL[1],
     _V8_CHECKPOINT_DDL,
-    *_CURRENT_DDL[3:_CURRENT_SHARED_DDL_START],
+    *_V9_DDL[3:_CURRENT_SHARED_DDL_START],
 )
 _V7_GENERATIONAL_DDL = (
     _METADATA_DDL,
@@ -193,7 +205,7 @@ _V7_GENERATIONAL_DDL = (
     )
     """,
     _V8_CHECKPOINT_DDL,
-    *_CURRENT_DDL[3:_CURRENT_SHARED_DDL_START],
+    *_V9_DDL[3:_CURRENT_SHARED_DDL_START],
 )
 _V6_GENERATIONAL_DDL = (
     _METADATA_DDL,
@@ -410,6 +422,10 @@ def _build_v8_schema(connection: sqlite3.Connection) -> None:
     _execute_ddl(connection, _LEGACY_SHARED_DDL)
 
 
+def _build_v9_schema(connection: sqlite3.Connection) -> None:
+    _execute_ddl(connection, _V9_DDL)
+
+
 @lru_cache(maxsize=1)
 def _metadata_contract() -> SQLiteSchemaContract:
     return schema_contract_from_builder(_build_metadata_schema)
@@ -417,7 +433,7 @@ def _metadata_contract() -> SQLiteSchemaContract:
 
 @lru_cache(maxsize=1)
 def inventory_schema_contract() -> SQLiteSchemaContract:
-    """Return the exact structural contract for inventory schema v9."""
+    """Return the exact structural contract for inventory schema v10."""
 
     return schema_contract_from_builder(_build_current_schema)
 
@@ -437,6 +453,11 @@ def _inventory_v8_schema_contract() -> SQLiteSchemaContract:
     return schema_contract_from_builder(_build_v8_schema)
 
 
+@lru_cache(maxsize=1)
+def _inventory_v9_schema_contract() -> SQLiteSchemaContract:
+    return schema_contract_from_builder(_build_v9_schema)
+
+
 def _validate_metadata(connection: sqlite3.Connection) -> None:
     validate_sqlite_schema_contract(
         connection,
@@ -446,7 +467,7 @@ def _validate_metadata(connection: sqlite3.Connection) -> None:
 
 
 def validate_inventory_schema(connection: sqlite3.Connection) -> None:
-    """Validate every persistent v9 table and index without changing state."""
+    """Validate every persistent v10 table and index without changing state."""
 
     validate_sqlite_schema_contract(
         connection,
@@ -592,7 +613,7 @@ def _migrate_six_to_seven(connection: sqlite3.Connection) -> None:
         THEN 'complete' ELSE 'partial' END"""
     )
     connection.execute(_V8_CHECKPOINT_DDL)
-    connection.execute(_CURRENT_DDL[3])
+    connection.execute(_V9_DDL[3])
     connection.execute(
         """INSERT INTO files(
         scan_id,path,volume_id,file_id,size,mtime_ns,birthtime_ns)
@@ -617,7 +638,7 @@ def _migrate_six_to_seven(connection: sqlite3.Connection) -> None:
         raise InventoryError("dedup inventory v7 checkpoint count changed during migration")
     connection.execute("DROP TABLE inventory_checkpoints_v6")
     connection.execute("DROP TABLE files_v6")
-    for statement in _CURRENT_DDL[4:_CURRENT_SHARED_DDL_START]:
+    for statement in _V9_DDL[4:_CURRENT_SHARED_DDL_START]:
         connection.execute(statement)
     if connection.execute("PRAGMA foreign_key_check").fetchone() is not None:
         raise InventoryError("dedup inventory v7 foreign-key validation failed")
@@ -684,7 +705,7 @@ def _migrate_eight_to_nine(connection: sqlite3.Connection) -> None:
         connection.execute("SELECT COUNT(*) FROM inventory_checkpoints").fetchone()[0]
     )
     connection.execute("ALTER TABLE inventory_checkpoints RENAME TO inventory_checkpoints_v8")
-    connection.execute(_CURRENT_CHECKPOINT_DDL)
+    connection.execute(_V9_CHECKPOINT_DDL)
     connection.execute(
         """INSERT INTO inventory_checkpoints(
         root,scan_id,volume,journal_id,next_usn,valid,updated_ns)
@@ -699,9 +720,47 @@ def _migrate_eight_to_nine(connection: sqlite3.Connection) -> None:
     connection.execute("DROP TABLE inventory_checkpoints_v8")
     if _PATH_COLLATION != "NOCASE":
         connection.execute("DROP INDEX planned_members_path_idx")
-        connection.execute(_CURRENT_DDL[-1])
+        connection.execute(_V9_PLANNED_MEMBERS_PATH_INDEX_DDL)
     if connection.execute("PRAGMA foreign_key_check").fetchone() is not None:
         raise InventoryError("dedup inventory v9 foreign-key validation failed")
+
+
+def _migrate_nine_to_ten(connection: sqlite3.Connection) -> None:
+    """Index the identity-bound Knowledge joins without changing evidence."""
+
+    validate_sqlite_schema_contract(
+        connection,
+        _inventory_v9_schema_contract(),
+        label=f"{_SCHEMA_LABEL} v9 migration source",
+        exact=True,
+    )
+    file_count, file_bytes = connection.execute(
+        "SELECT COUNT(*),COALESCE(SUM(size),0) FROM files"
+    ).fetchone()
+    member_count, member_bytes = connection.execute(
+        "SELECT COUNT(*),COALESCE(SUM(size),0) FROM planned_duplicate_members"
+    ).fetchone()
+
+    _execute_ddl(connection, _V10_INDEX_DDL)
+
+    migrated_file_count, migrated_file_bytes = connection.execute(
+        "SELECT COUNT(*),COALESCE(SUM(size),0) FROM files"
+    ).fetchone()
+    migrated_member_count, migrated_member_bytes = connection.execute(
+        "SELECT COUNT(*),COALESCE(SUM(size),0) FROM planned_duplicate_members"
+    ).fetchone()
+    if (int(migrated_file_count), int(migrated_file_bytes)) != (
+        int(file_count),
+        int(file_bytes),
+    ):
+        raise InventoryError("dedup inventory v10 file evidence changed during migration")
+    if (int(migrated_member_count), int(migrated_member_bytes)) != (
+        int(member_count),
+        int(member_bytes),
+    ):
+        raise InventoryError("dedup inventory v10 plan-member evidence changed during migration")
+    if connection.execute("PRAGMA foreign_key_check").fetchone() is not None:
+        raise InventoryError("dedup inventory v10 foreign-key validation failed")
 
 
 _MIGRATIONS = {
@@ -713,6 +772,7 @@ _MIGRATIONS = {
     6: _migrate_six_to_seven,
     7: _migrate_seven_to_eight,
     8: _migrate_eight_to_nine,
+    9: _migrate_nine_to_ten,
 }
 
 

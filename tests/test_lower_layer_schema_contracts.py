@@ -38,9 +38,7 @@ def _metadata(database: Path) -> dict[str, str]:
 
 def _columns(database: Path, table: str) -> set[str]:
     with sqlite3.connect(database) as connection:
-        return {
-            str(row[1]) for row in connection.execute(f"PRAGMA table_info({table})")
-        }
+        return {str(row[1]) for row in connection.execute(f"PRAGMA table_info({table})")}
 
 
 # region [01] Path-index v1 lifecycle
@@ -205,7 +203,7 @@ def test_dedup_migrates_each_historical_version_and_preserves_rows(
 
     initialize_inventory_schema(database)
 
-    assert _metadata(database) == {"preserved": "yes", "schema_version": "9"}
+    assert _metadata(database) == {"preserved": "yes", "schema_version": "10"}
     with sqlite3.connect(database) as connection:
         validate_inventory_schema(connection)
         if version in {2, 3, 5}:
@@ -250,14 +248,13 @@ def test_dedup_records_every_sequential_version_inside_migration(
     initialize_inventory_schema(database)
 
     updates = [
-        statement
-        for statement in traces
-        if statement.startswith("UPDATE metadata SET value=")
+        statement for statement in traces if statement.startswith("UPDATE metadata SET value=")
     ]
     assert [
         f"'{version}'" in statement
-        for version, statement in zip(range(2, 10), updates, strict=True)
+        for version, statement in zip(range(2, 11), updates, strict=True)
     ] == [
+        True,
         True,
         True,
         True,
@@ -302,7 +299,7 @@ def test_dedup_rolls_back_all_steps_when_final_contract_fails(
 # region [03] Dedup read-only rejection and exact index semantics
 
 
-@pytest.mark.parametrize("raw_version", ("10", "09", "future"))
+@pytest.mark.parametrize("raw_version", ("11", "09", "future"))
 def test_dedup_rejects_unsupported_or_noncanonical_version_without_mutation(
     tmp_path: Path,
     raw_version: str,
@@ -340,6 +337,16 @@ def test_dedup_rejects_unsupported_or_noncanonical_version_without_mutation(
             "files_identity_idx",
             """CREATE INDEX files_identity_idx ON files(volume_id,file_id)
             WHERE file_id IS NOT NULL""",
+        ),
+        (
+            "files_identity_birth_scan_idx",
+            """CREATE INDEX files_identity_birth_scan_idx
+            ON files(volume_id,file_id,scan_id,birthtime_ns)""",
+        ),
+        (
+            "planned_members_identity_idx",
+            """CREATE INDEX planned_members_identity_idx
+            ON planned_duplicate_members(volume_id,file_id)""",
         ),
     ),
 )
@@ -434,7 +441,7 @@ def test_neutral_contract_captures_desc_collation_where_and_foreign_keys(
     expected = schema_contract_from_builder(expected_builder)
     with sqlite3.connect(":memory:") as connection:
         _relational_schema(actual_index, foreign_key=foreign_key)(connection)
-        with pytest.raises(SQLiteSchemaContractError, match="incompatible|lacks"):
+        with pytest.raises(SQLiteSchemaContractError, match=r"incompatible|lacks"):
             validate_sqlite_schema_contract(
                 connection,
                 expected,

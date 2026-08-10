@@ -71,7 +71,7 @@ class PlannerTests(unittest.TestCase):
                 for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
             }
             connection.close()
-            self.assertEqual(version, "9")
+            self.assertEqual(version, "10")
             self.assertIn("planned_duplicate_groups", tables)
             self.assertIn("planned_duplicate_members", tables)
             self.assertIn("inventory_checkpoints", tables)
@@ -119,7 +119,7 @@ class PlannerTests(unittest.TestCase):
                 version = connection.execute(
                     "SELECT value FROM metadata WHERE key='schema_version'"
                 ).fetchone()[0]
-            self.assertEqual(version, "9")
+            self.assertEqual(version, "10")
 
     def test_reuses_inventory_checkpoint_and_advances_it_with_changes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
