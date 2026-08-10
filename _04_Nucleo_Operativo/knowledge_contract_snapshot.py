@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Any, TypeVar
 # region [02] Implementación
 
 if TYPE_CHECKING:
-    from .knowledge_contracts import (
+    from .knowledge_contract_protocols import (
         ActiveModel,
         KnowledgeSnapshot,
         LogicalWatermark,

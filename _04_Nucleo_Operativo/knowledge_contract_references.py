@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Any
 # region [02] Implementación
 
 if TYPE_CHECKING:
-    from .knowledge_contracts import (
+    from .knowledge_contract_protocols import (
         EvidenceRef,
         KnowledgeHit,
         PhysicalIdentityRef,

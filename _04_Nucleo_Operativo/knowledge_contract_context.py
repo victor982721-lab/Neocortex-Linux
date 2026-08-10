@@ -15,13 +15,13 @@ from __future__ import annotations
 import json
 import math
 from collections.abc import Callable, Mapping
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 # endregion [01]
 
 # region [02] Implementación
 
 if TYPE_CHECKING:
-    from .knowledge_contracts import (
+    from .knowledge_contract_protocols import (
         ContextBudget,
         ContextBundle,
         ContextContradictionRef,
@@ -38,6 +38,7 @@ ValidateValues = Callable[[str, tuple[str, ...]], None]
 ValidateReferences = Callable[[str, tuple[str, ...]], None]
 CanonicalJson = Callable[[Mapping[str, object]], str]
 FingerprintText = Callable[[str], Any]
+ContextContradictionT = TypeVar("ContextContradictionT")
 
 
 def validate_context_plan_values(
@@ -312,16 +313,17 @@ def context_contradiction_stable_id(
 
 
 def create_context_contradiction(
-    cls: Any,
+    cls: Callable[..., ContextContradictionT],
     *,
     contradiction_kind: str,
     topic: str,
     values: tuple[str, ...],
     citation_ids: tuple[str, ...],
-) -> ContextContradictionRef:
+) -> ContextContradictionT:
     ordered_values = tuple(sorted(values, key=str.casefold))
+    stable_id_fn: Callable[[str, str, tuple[str, ...]], str] = cast(Any, cls)._stable_id
     return cls(
-        contradiction_id=cls._stable_id(
+        contradiction_id=stable_id_fn(
             contradiction_kind,
             topic,
             ordered_values,
