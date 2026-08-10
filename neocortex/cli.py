@@ -130,6 +130,16 @@ def _run_special_mode(arguments: Sequence[str]) -> int | None:
     return None
 
 
+def _run_human_mode(arguments: Sequence[str]) -> int | None:
+    """Dispatch the concise facade without importing operational readers eagerly."""
+
+    from .human_cli import handles_human_command, run_human_command
+
+    if not handles_human_command(arguments):
+        return None
+    return run_human_command(arguments)
+
+
 def entrypoint(arguments: Sequence[str] | None = None) -> int:
     """Run one CLI, desktop, or supervised-worker invocation."""
 
@@ -139,6 +149,9 @@ def entrypoint(arguments: Sequence[str] | None = None) -> int:
         special_exit_code = _run_special_mode(forwarded)
         if special_exit_code is not None:
             return special_exit_code
+        human_exit_code = _run_human_mode(forwarded)
+        if human_exit_code is not None:
+            return human_exit_code
         if _canonical_help_requested(forwarded):
             command = _canonical_command(forwarded)
             assert command is not None

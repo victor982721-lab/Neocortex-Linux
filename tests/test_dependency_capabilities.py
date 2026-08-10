@@ -29,6 +29,7 @@ BASE_DEPENDENCIES = (
     "coverage>=7.14,<8",
     "deptry>=0.25,<0.26",
     "grimp>=3.15,<4",
+    "mcp==1.23.3",
     "mypy>=2.1,<3",
     "packaging>=26,<27",
     "pip-audit>=2.10,<2.11",
