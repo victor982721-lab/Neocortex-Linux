@@ -10,6 +10,7 @@ deptry==0.25.1
 fastembed==0.8.0
 faster-whisper==1.2.1
 grimp==3.15
+mcp==1.23.3
 mypy==2.1.0
 nudenet==3.4.2
 numpy==2.4.6
