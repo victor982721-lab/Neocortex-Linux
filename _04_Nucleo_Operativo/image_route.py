@@ -911,6 +911,7 @@ class ImageRoute:
             self.config.max_documents,
             processing_signature=self.processing_signature,
             retry_errors=retry_selected,
+            prefer_current_cache=self.config.max_documents is None,
             selection=self.config.selection,
         )
 
@@ -1002,7 +1003,7 @@ class ImageRoute:
                 flush_results,
                 report,
             )
-        except CancellationRequested:
+        except (CancellationRequested, KeyboardInterrupt):
             for future in work.pending:
                 future.cancel()
             flush_results()

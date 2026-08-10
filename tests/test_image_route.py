@@ -101,6 +101,7 @@ def _route(
     **overrides: Any,
 ) -> ImageRoute:
     dedup_index = overrides.pop("dedup_index", None)
+    progress = overrides.pop("progress", None)
     config = ImageRouteConfig(
         state_path=root / "state" / "image.sqlite3",
         root=root,
@@ -114,6 +115,7 @@ def _route(
         replace(config, **overrides),
         state,
         run_id,
+        progress=progress,
         dedup_index=dedup_index,
     )
 
@@ -384,6 +386,59 @@ class ImageRouteTests(unittest.TestCase):
             with closing(sqlite3.connect(root / "state" / "image.sqlite3")) as connection:
                 statuses = dict(connection.execute("SELECT path,status FROM images"))
             self.assertEqual(statuses[str(tail_path)], "done")
+
+    def test_unbounded_resume_reports_persisted_cache_before_new_work(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            cached_path = root / "a-cached.png"
+            new_path = root / "z-new.png"
+            with Image.new("RGB", (96, 96), "navy") as image:
+                image.save(cached_path)
+            with Image.new("RGB", (96, 96), "green") as image:
+                image.save(new_path)
+            state = _State((("image/png", snapshot_path(cached_path)),))
+
+            initial = _route(root, state, 1).run()
+            self.assertEqual(initial.classified, 1)
+            state.rows.append(("image/png", snapshot_path(new_path)))
+            events = []
+
+            resumed = _route(root, state, 2, progress=events.append).run()
+
+            first_advanced = next(
+                event
+                for event in events
+                if event.operation == "image" and event.phase == "classify" and event.completed > 0
+            )
+            metrics = {metric.name: metric.value for metric in first_advanced.metrics}
+            self.assertEqual(first_advanced.completed, 1)
+            self.assertEqual(metrics["cache_hits"], 1)
+            self.assertEqual(metrics["new_work"], 0)
+            self.assertEqual(resumed.cache_hits, 1)
+            self.assertEqual(resumed.classified, 1)
+
+    def test_keyboard_interrupt_flushes_completed_classification_for_resume(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / "checkpoint.png"
+            with Image.new("RGB", (96, 96), "navy") as image:
+                image.save(path)
+            state = _State((("image/png", snapshot_path(path)),))
+
+            def interrupt_after_first_result(event):
+                if (
+                    event.operation == "image"
+                    and event.phase == "classify"
+                    and event.completed == 1
+                ):
+                    raise KeyboardInterrupt
+
+            with self.assertRaises(KeyboardInterrupt):
+                _route(root, state, 1, progress=interrupt_after_first_result).run()
+
+            resumed = _route(root, state, 2).run()
+            self.assertEqual(resumed.cache_hits, 1)
+            self.assertEqual(resumed.classified, 0)
 
     def test_retryable_old_error_precedes_old_done_reclassification(self):
         with tempfile.TemporaryDirectory() as temporary:

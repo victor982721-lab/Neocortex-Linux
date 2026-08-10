@@ -65,6 +65,11 @@ no se copian aquí para evitar que se conviertan en datos históricos sin contex
 
 ### Cambiado
 
+- La reanudación ilimitada de la ruta Image reproduce primero las
+  clasificaciones vigentes desde SQLite, de modo que el progreso acredita la
+  caché antes de iniciar trabajo nuevo. Un `Ctrl+C` conserva además el último
+  lote ya completado; los límites explícitos siguen priorizando imágenes aún
+  no procesadas.
 - El paquete admite CPython 3.13 y 3.14 en Windows y Linux
   (`>=3.13,<3.15`); el carril `standard` instala el perfil `full`, comprueba sus
   imports nativos y prueba el wheel con ambas versiones y sistemas.

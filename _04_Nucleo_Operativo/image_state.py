@@ -356,6 +356,7 @@ def iter_candidates(
     *,
     processing_signature: str | None = None,
     retry_errors: bool = False,
+    prefer_current_cache: bool = False,
     selection: CandidateSelection | None = None,
 ) -> Iterator[sqlite3.Row]:
     """Yield a stable candidate snapshot while result rows change underneath it.
@@ -375,6 +376,26 @@ def iter_candidates(
         if processing_signature is None:
             priority_sql = "0"
             priority_parameters: list[object] = []
+        elif prefer_current_cache:
+            # An unlimited replay has no work-selection tradeoff, so expose
+            # durable cache reuse before starting fresh decoder/model work.
+            # Bounded runs retain the work-first ordering below so a limit is
+            # never consumed only by already-current rows.
+            priority_sql = """CASE
+                WHEN processing_signature IS ? AND (
+                    status='done' OR (status='error' AND ?=0)) THEN 0
+                WHEN status='error' AND
+                    (processing_signature IS NOT ? OR ?=1) THEN 1
+                WHEN status='pending' OR processing_signature IS NULL THEN 2
+                WHEN processing_signature IS NOT ? THEN 3
+                ELSE 4 END"""
+            priority_parameters = [
+                processing_signature,
+                int(retry_errors),
+                processing_signature,
+                int(retry_errors),
+                processing_signature,
+            ]
         else:
             priority_sql = """CASE
                 WHEN status='error' AND

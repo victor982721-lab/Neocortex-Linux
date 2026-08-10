@@ -84,6 +84,10 @@ documento exige igualdad dinámica entre Git, release, launcher y GitHub.
 
 ### Documentos, OCR e imagen
 
+- La ruta Image conserva en SQLite cada clasificación completada. En una
+  reanudación ilimitada acredita primero la caché vigente antes de iniciar
+  decodificación o NudeNet nuevos, y un `Ctrl+C` guarda el último lote ya
+  completado; los pilotos acotados mantienen prioridad para trabajo pendiente.
 - Office schema 2 persiste cada celda XLSX no vacía con libro, hoja, A1, tipo,
   valor lógico y XML crudo, fórmula y caché separados, estilo/formato y una
   proyección FTS compatible. La migración 1→2 fue aditiva y el replay reutilizó
