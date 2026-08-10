@@ -4,7 +4,13 @@ from __future__ import annotations
 
 from threading import Event
 
-from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal, Slot
+from PySide6.QtCore import (  # type: ignore[import-not-found]
+    QObject,
+    QRunnable,
+    QThreadPool,
+    Signal,
+    Slot,
+)
 
 from .read_client import ReadClient, ReadRequest, present_read_payload
 
