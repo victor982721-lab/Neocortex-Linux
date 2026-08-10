@@ -87,9 +87,7 @@ used_function()
         for item in result.findings
     }
 
-    assert {("import", "os"), ("class", "DeadClass"), ("function", "dead_function")} <= set(
-        records
-    )
+    assert {("import", "os"), ("class", "DeadClass"), ("function", "dead_function")} <= set(records)
     assert ("class", "Public") not in records
     assert ("import", "used_math") not in records
     assert ("function", "used_function") not in records
@@ -304,13 +302,15 @@ def test_invalid_python_fails_closed(tmp_path: Path) -> None:
         adapter.execute_vulture_unused(tmp_path, staged, _environment())
 
 
-def test_vulture_is_a_canonical_runtime_dependency() -> None:
+def test_vulture_is_a_canonical_analysis_and_full_dependency() -> None:
     payload = tomllib.loads((Path(__file__).parents[1] / "pyproject.toml").read_text("utf-8"))
     runtime = payload["project"]["dependencies"]
-    development = payload["project"]["optional-dependencies"]["dev"]
+    extras = payload["project"]["optional-dependencies"]
 
-    assert "vulture>=2.16,<2.17" in runtime
-    assert not any(str(item).startswith("vulture") for item in development)
+    assert not any(str(item).startswith("vulture") for item in runtime)
+    assert "vulture>=2.16,<2.17" in extras["analysis"]
+    assert "vulture>=2.16,<2.17" in extras["full"]
+    assert not any(str(item).startswith("vulture") for item in extras["dev"])
 
 
 def test_vulture_adapter_phase_order_and_complete_result(
