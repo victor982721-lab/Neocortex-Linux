@@ -41,7 +41,7 @@ if TYPE_CHECKING:
     from .global_resources import GlobalResourceSummary
     from .image_route import ImageRouteSummary
     from .office_route import OfficeRouteSummary
-    from .pdf_route import PdfRouteSummary
+    from .pdf_route_models import PdfRouteSummary
     from .text_route import TextRouteSummary
     from .video_models import VideoRouteSummary
 

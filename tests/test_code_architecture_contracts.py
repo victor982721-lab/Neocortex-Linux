@@ -26,7 +26,7 @@ def _evaluations(modules: set[str], imports: tuple[ModuleImport, ...]):
     }
 
 
-def test_declared_boundary_entry_points_pass_without_claiming_zero_cycles() -> None:
+def test_declared_boundary_entry_points_pass_with_acyclic_v2_baseline() -> None:
     modules = {
         "neocortex",
         "neocortex.cli",
@@ -56,7 +56,7 @@ def test_declared_boundary_entry_points_pass_without_claiming_zero_cycles() -> N
 
     assert manifest["schema"] == ARCHITECTURE_CONTRACT_SCHEMA
     assert manifest["baseline_id"] == ARCHITECTURE_BASELINE_ID
-    assert len(manifest["known_cycle_components"]) == 4
+    assert manifest["known_cycle_components"] == []
     assert all(item.status == "passed" for item in evaluations.values())
 
 

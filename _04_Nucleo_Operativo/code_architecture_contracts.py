@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 ARCHITECTURE_CONTRACT_SCHEMA = "neocortex.code-architecture-contracts/v1"
-ARCHITECTURE_BASELINE_ID = "neocortex-production-imports-2026-08-03/v1"
+ARCHITECTURE_BASELINE_ID = "neocortex-production-imports-2026-08-10/v2"
 
 PRODUCTION_ROOT_PACKAGES = (
     "neocortex",
@@ -47,43 +47,9 @@ _NEOCORTEX_CORE_UI_ALLOWLIST = (
     ("neocortex.value_cli_adapter", "_04_Nucleo_Operativo.value_review_port"),
 )
 
-# Existing cycles are observations, not claims that the architecture is
-# acyclic.  Their exact memberships are the v1 no-new baseline.
-KNOWN_CYCLE_BASELINE = (
-    (
-        "_04_Nucleo_Operativo.actions",
-        "_04_Nucleo_Operativo.docx_route",
-        "_04_Nucleo_Operativo.framework_route_state",
-        "_04_Nucleo_Operativo.framework_state_common",
-        "_04_Nucleo_Operativo.framework_state_writer",
-        "_04_Nucleo_Operativo.image_route",
-        "_04_Nucleo_Operativo.models",
-        "_04_Nucleo_Operativo.office_route",
-        "_04_Nucleo_Operativo.pdf_route",
-        "_04_Nucleo_Operativo.self_analysis",
-        "_04_Nucleo_Operativo.self_analysis_finalization",
-        "_04_Nucleo_Operativo.self_analysis_manifest",
-        "_04_Nucleo_Operativo.self_analysis_status",
-        "_04_Nucleo_Operativo.state",
-    ),
-    (
-        "_04_Nucleo_Operativo.corpus_access",
-        "_04_Nucleo_Operativo.internal_paths",
-        "_04_Nucleo_Operativo.protected_content",
-    ),
-    (
-        "_04_Nucleo_Operativo.knowledge_contract_context",
-        "_04_Nucleo_Operativo.knowledge_contract_payloads",
-        "_04_Nucleo_Operativo.knowledge_contract_references",
-        "_04_Nucleo_Operativo.knowledge_contract_snapshot",
-        "_04_Nucleo_Operativo.knowledge_contract_telemetry",
-        "_04_Nucleo_Operativo.knowledge_contracts",
-    ),
-    (
-        "_04_Nucleo_Operativo.semantic_contract_validation",
-        "_04_Nucleo_Operativo.semantic_service_contracts",
-    ),
-)
+# The v2 graph is acyclic.  Keep the baseline empty so that reintroducing even
+# a previously resolved component fails the primary architecture contract.
+KNOWN_CYCLE_BASELINE: tuple[tuple[str, ...], ...] = ()
 
 ContractKind = Literal["forbidden_dependency", "allowlisted_boundary", "baseline_no_new_cycles"]
 ContractStatus = Literal["passed", "failed", "baseline"]
@@ -573,7 +539,7 @@ def evaluate_architecture_contracts(
             _violation_for_chain(
                 cycle_contract,
                 chain,
-                "production import cycle is not in the published v1 baseline",
+                "production import cycle is not in the published acyclic v2 baseline",
                 index,
                 metadata={"component": list(component)},
             )

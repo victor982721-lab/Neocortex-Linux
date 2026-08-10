@@ -6,6 +6,7 @@ import json
 import os
 from collections.abc import Mapping, Sequence
 from pathlib import Path
+from typing import TYPE_CHECKING, Literal, Protocol
 
 from _02_Deduplicacion import InventoryExclusionPolicy
 from _02_Deduplicacion.inventory import (
@@ -19,7 +20,66 @@ from .code_contracts import (
     deep_configuration_signature,
     normalize_deep_test_selectors,
 )
-from .models import FrameworkConfig
+
+if TYPE_CHECKING:
+    class FrameworkConfig(Protocol):
+        """Read-only configuration surface consumed by self-analysis."""
+
+        @property
+        def analysis_profile(
+            self,
+        ) -> Literal["protected", "trusted-static", "trusted-deep"]: ...
+
+        @property
+        def code_max_file_bytes(self) -> int: ...
+
+        @property
+        def code_max_documents(self) -> int | None: ...
+
+        @property
+        def code_max_text_chars(self) -> int: ...
+
+        @property
+        def code_chunk_chars(self) -> int: ...
+
+        @property
+        def code_retry_errors(self) -> bool: ...
+
+        @property
+        def code_cache_validation(self) -> Literal["metadata", "full"]: ...
+
+        @property
+        def code_complexity_warning(self) -> int: ...
+
+        @property
+        def code_function_lines_warning(self) -> int: ...
+
+        @property
+        def deep_test_selectors(self) -> tuple[str, ...]: ...
+
+        @property
+        def deep_max_tests(self) -> int: ...
+
+        @property
+        def deep_time_budget_seconds(self) -> int: ...
+
+        @property
+        def deep_shard_size(self) -> int: ...
+
+        @property
+        def deep_mutation_target(self) -> str | None: ...
+
+        @property
+        def deep_mutation_symbol(self) -> str | None: ...
+
+        @property
+        def deep_mutation_max_mutants(self) -> int: ...
+
+        @property
+        def deep_mutation_timeout_seconds(self) -> int: ...
+
+        @property
+        def deep_mutation_time_budget_seconds(self) -> int: ...
 
 # region [01] Stable profile and manifest contracts
 

@@ -14,7 +14,7 @@ import time
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 from _01_Enumeracion import JournalCursor
 from _02_Deduplicacion import FileSnapshot, InventoryExclusionPolicy
@@ -40,7 +40,6 @@ from .framework_state_common import (
     finish_file_actions,
     mark_file_actions_applying,
 )
-from .models import ActionSummary
 from .self_analysis import (
     SELF_ANALYSIS_MANIFEST_MESSAGE,
     SELF_ANALYSIS_MANIFEST_PHASE,
@@ -55,6 +54,67 @@ from .sqlite_paths import existing_sqlite_uri
 # endregion [01]
 
 # region [02] Implementación
+
+if TYPE_CHECKING:
+    class ActionSummary(Protocol):
+        """Read-only action counters persisted by the state writer."""
+
+        @property
+        def apply_actions(self) -> bool: ...
+
+        @property
+        def duplicate_candidates(self) -> int: ...
+
+        @property
+        def duplicates_trashed(self) -> int: ...
+
+        @property
+        def duplicate_skips(self) -> int: ...
+
+        @property
+        def files_checked(self) -> int: ...
+
+        @property
+        def types_detected(self) -> int: ...
+
+        @property
+        def extensions_matching(self) -> int: ...
+
+        @property
+        def unknown_types(self) -> int: ...
+
+        @property
+        def type_cache_hits(self) -> int: ...
+
+        @property
+        def type_cache_misses(self) -> int: ...
+
+        @property
+        def type_cache_pruned(self) -> int: ...
+
+        @property
+        def stale_inventory(self) -> int: ...
+
+        @property
+        def rename_candidates(self) -> int: ...
+
+        @property
+        def files_renamed(self) -> int: ...
+
+        @property
+        def rename_skips(self) -> int: ...
+
+        @property
+        def empty_directory_candidates(self) -> int: ...
+
+        @property
+        def empty_directories_trashed(self) -> int: ...
+
+        @property
+        def empty_directory_skips(self) -> int: ...
+
+        @property
+        def errors(self) -> int: ...
 
 
 @dataclass(frozen=True, slots=True)
