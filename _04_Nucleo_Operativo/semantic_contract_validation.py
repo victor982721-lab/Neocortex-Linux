@@ -4,7 +4,6 @@
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
-
 # region [01] Dependencias del módulo
 from __future__ import annotations
 
@@ -301,9 +300,7 @@ def _require_nonnegative_int(name: str, value: int) -> None:
 
 
 def _require_xxh3_128(name: str, value: str) -> None:
-    if len(value) != 32 or any(
-        character not in "0123456789abcdef" for character in value
-    ):
+    if len(value) != 32 or any(character not in "0123456789abcdef" for character in value):
         raise ValueError(f"{name} must be a lowercase XXH3-128 digest")
 
 
@@ -339,10 +336,7 @@ def _validate_cost_calibration_rate(calibration: _SemanticCostCalibration) -> No
         (int, float),
     ):
         raise ValueError("contents_per_second must be a finite number")
-    if (
-        not math.isfinite(calibration.contents_per_second)
-        or calibration.contents_per_second <= 0
-    ):
+    if not math.isfinite(calibration.contents_per_second) or calibration.contents_per_second <= 0:
         raise ValueError("contents_per_second must be finite and positive")
 
 
@@ -724,9 +718,7 @@ def _validate_plan_snapshots_and_signatures(plan: _SemanticPlan) -> None:
         snapshot = (source.schema_version, source.snapshot_xxh3_128)
         previous = physical_snapshots.setdefault(source.database, snapshot)
         if previous != snapshot:
-            raise ValueError(
-                "source plans for one physical database require one snapshot"
-            )
+            raise ValueError("source plans for one physical database require one snapshot")
     if any(workload.modality == "text" for workload in plan.workloads) != (
         plan.text_chunking_signature is not None
     ):
@@ -778,19 +770,13 @@ def _validate_plan_source_aggregates(plan: _SemanticPlan) -> None:
         raise ValueError("plan section aggregate is inconsistent")
     if plan.chunks != sum(source.chunks for source in plan.source_plans):
         raise ValueError("plan chunk aggregate is inconsistent")
-    if plan.embedding_entities != sum(
-        source.embedding_entities for source in plan.source_plans
-    ):
+    if plan.embedding_entities != sum(source.embedding_entities for source in plan.source_plans):
         raise ValueError("plan entity aggregate is inconsistent")
-    if plan.embedding_entities != sum(
-        workload.embedding_entities for workload in plan.workloads
-    ):
+    if plan.embedding_entities != sum(workload.embedding_entities for workload in plan.workloads):
         raise ValueError("workload entity aggregate is inconsistent")
     if plan.source_bytes != sum(source.source_bytes for source in plan.source_plans):
         raise ValueError("plan source-byte aggregate is inconsistent")
-    if plan.section_text_bytes != sum(
-        source.section_text_bytes for source in plan.source_plans
-    ):
+    if plan.section_text_bytes != sum(source.section_text_bytes for source in plan.source_plans):
         raise ValueError("plan section-byte aggregate is inconsistent")
     if plan.input_bytes != sum(source.input_bytes for source in plan.source_plans):
         raise ValueError("plan source input-byte aggregate is inconsistent")
@@ -801,13 +787,10 @@ def _validate_plan_source_aggregates(plan: _SemanticPlan) -> None:
 def _validate_plan_content_aggregates(plan: _SemanticPlan) -> None:
     if plan.unique_input_bytes > plan.input_bytes:
         raise ValueError("unique input bytes cannot exceed total input bytes")
-    if plan.unique_input_bytes > sum(
-        workload.unique_input_bytes for workload in plan.workloads
-    ):
+    if plan.unique_input_bytes > sum(workload.unique_input_bytes for workload in plan.workloads):
         raise ValueError("plan unique input bytes exceed workload evidence")
     if plan.unique_contents > plan.embedding_entities or (
-        plan.unique_contents
-        > sum(workload.unique_contents for workload in plan.workloads)
+        plan.unique_contents > sum(workload.unique_contents for workload in plan.workloads)
     ):
         raise ValueError("plan unique-content aggregate is inconsistent")
     if plan.reusable_unique_contents + plan.new_unique_contents != plan.unique_contents:
@@ -816,9 +799,7 @@ def _validate_plan_content_aggregates(plan: _SemanticPlan) -> None:
         workload.preexisting_reusable_contents for workload in plan.workloads
     ):
         raise ValueError("global preexisting reuse exceeds workload evidence")
-    if plan.new_unique_contents != sum(
-        workload.new_unique_contents for workload in plan.workloads
-    ):
+    if plan.new_unique_contents != sum(workload.new_unique_contents for workload in plan.workloads):
         raise ValueError("global new-content aggregate is inconsistent")
     if plan.model_request_contents_lower_bound != plan.new_unique_contents:
         raise ValueError("global request lower bound must equal new unique contents")
@@ -852,22 +833,15 @@ def _validate_plan_cost_aggregates(plan: _SemanticPlan) -> None:
         plan.estimated_model_seconds_upper_bound,
     )
     available_workloads = all(
-        workload.estimated_model_seconds_lower_bound is not None
-        for workload in plan.workloads
+        workload.estimated_model_seconds_lower_bound is not None for workload in plan.workloads
     )
     expected_lower = (
-        sum(
-            workload.estimated_model_seconds_lower_bound or 0.0
-            for workload in plan.workloads
-        )
+        sum(workload.estimated_model_seconds_lower_bound or 0.0 for workload in plan.workloads)
         if available_workloads
         else None
     )
     expected_upper = (
-        sum(
-            workload.estimated_model_seconds_upper_bound or 0.0
-            for workload in plan.workloads
-        )
+        sum(workload.estimated_model_seconds_upper_bound or 0.0 for workload in plan.workloads)
         if available_workloads
         else None
     )
@@ -916,4 +890,6 @@ def validate_semantic_plan(
     _validate_plan_content_aggregates(plan)
     _validate_plan_cost_aggregates(plan)
     _validate_plan_operational_state(plan)
+
+
 # endregion [02]

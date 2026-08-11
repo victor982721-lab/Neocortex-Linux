@@ -41,6 +41,28 @@ def _runner(
     return run
 
 
+def test_release_linux_import_does_not_require_posix_fcntl() -> None:
+    script = (
+        "import sys\n"
+        "sys.modules['fcntl'] = None\n"
+        f"sys.path.insert(0, {str(PROJECT_ROOT)!r})\n"
+        "import tools.release_linux\n"
+        "print('ok')\n"
+    )
+
+    completed = subprocess.run(
+        (sys.executable, "-I", "-B", "-c", script),
+        cwd=PROJECT_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip() == "ok"
+
+
 def test_neutral_contract_preserves_release_and_semgrep_reexports() -> None:
     assert pip_bootstrap.PIP_BOOTSTRAP_VERSION == "26.1.2"
     assert pip_bootstrap.PIP_BOOTSTRAP_FILENAME == "pip-26.1.2-py3-none-any.whl"

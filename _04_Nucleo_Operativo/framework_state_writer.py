@@ -56,6 +56,7 @@ from .sqlite_paths import existing_sqlite_uri
 # region [02] Implementación
 
 if TYPE_CHECKING:
+
     class ActionSummary(Protocol):
         """Read-only action counters persisted by the state writer."""
 
@@ -287,9 +288,7 @@ class FrameworkState:
     ) -> None:
         """Persist one reusable detector result without reading the file again."""
 
-        self.store_content_type_cache_batch(
-            ((snapshot, detected),), detector_version, run_id
-        )
+        self.store_content_type_cache_batch(((snapshot, detected),), detector_version, run_id)
 
     def store_content_type_cache_batch(
         self,
@@ -336,7 +335,7 @@ class FrameworkState:
     ) -> int:
         """Remove old routing snapshots while preserving explicitly resumable runs."""
 
-        keep = tuple(sorted(set(int(value) for value in keep_run_ids)))
+        keep = tuple(sorted({int(value) for value in keep_run_ids}))
         removed = 0
         while True:
             if keep:
@@ -362,9 +361,7 @@ class FrameworkState:
                 )
 
     def latest_route_candidate_run(self) -> int | None:
-        row = self._connection.execute(
-            "SELECT MAX(run_id) FROM route_candidates"
-        ).fetchone()
+        row = self._connection.execute("SELECT MAX(run_id) FROM route_candidates").fetchone()
         return None if row is None or row[0] is None else int(row[0])
 
     def route_candidate_run_count(self, run_id: int) -> int:
@@ -442,9 +439,7 @@ class FrameworkState:
             (run_id,),
         ).fetchall()
         if len(rows) > 100:
-            raise ValueError(
-                f"source run {run_id} has too many inventory evidence events"
-            )
+            raise ValueError(f"source run {run_id} has too many inventory evidence events")
 
         def strict_integer(details: Mapping[str, Any], name: str) -> int:
             value = details[name]
@@ -463,9 +458,7 @@ class FrameworkState:
                     raise ValueError(f"unsupported inventory evidence schema: {schema}")
                 scan_id = strict_integer(details, "scan_id")
                 files = strict_integer(details, "files")
-                reconciliation_records = strict_integer(
-                    details, "reconciliation_records"
-                )
+                reconciliation_records = strict_integer(details, "reconciliation_records")
                 inventory_attempts = strict_integer(details, "attempts")
                 inventory_mode_value = details["mode"]
                 if not isinstance(inventory_mode_value, str):
@@ -482,9 +475,7 @@ class FrameworkState:
                 or inventory_attempts < 0
                 or inventory_mode not in {"full", "incremental"}
             ):
-                raise ValueError(
-                    f"source run {run_id} has invalid inventory event {event_id}"
-                )
+                raise ValueError(f"source run {run_id} has invalid inventory event {event_id}")
             evidence.append(
                 InventoryRunEvidence(
                     int(event_id),
@@ -496,9 +487,7 @@ class FrameworkState:
                 )
             )
         if not evidence:
-            raise ValueError(
-                f"source run {run_id} has no validated inventory event evidence"
-            )
+            raise ValueError(f"source run {run_id} has no validated inventory event evidence")
         evidence_values = {
             (
                 item.scan_id,
@@ -510,9 +499,7 @@ class FrameworkState:
             for item in evidence
         }
         if len(evidence_values) != 1:
-            raise ValueError(
-                f"source run {run_id} has ambiguous inventory event evidence"
-            )
+            raise ValueError(f"source run {run_id} has ambiguous inventory event evidence")
         return evidence[0]
 
     def resumable_route_names(self, run_id: int) -> tuple[str, ...]:
@@ -636,9 +623,7 @@ class FrameworkState:
         policy = CorpusAccessPolicy.capture("normal", root)
         signature = inventory_policy_signature
         if signature is not None and (
-            not signature
-            or signature.strip() != signature
-            or len(signature.encode("utf-8")) > 4096
+            not signature or signature.strip() != signature or len(signature.encode("utf-8")) > 4096
         ):
             raise ValueError("inventory policy signature must be trimmed and bounded")
         now = time.time_ns()
@@ -687,11 +672,7 @@ class FrameworkState:
             raise ValueError("self-analysis requires analyze_only corpus access")
         policy.verify_root_identity()
         signature = inventory_policy_signature
-        if (
-            not signature
-            or signature.strip() != signature
-            or len(signature.encode("utf-8")) > 4096
-        ):
+        if not signature or signature.strip() != signature or len(signature.encode("utf-8")) > 4096:
             raise ValueError("inventory policy signature must be trimmed and bounded")
         owner_state = Path(os.path.abspath(os.path.realpath(self.path.parent)))
         try:
@@ -702,9 +683,7 @@ class FrameworkState:
             requested_metadata = os.stat(state_directory)
             owner_metadata = os.stat(owner_state)
         except (OSError, ValueError) as exc:
-            raise ValueError(
-                "self-analysis state ownership cannot be verified"
-            ) from exc
+            raise ValueError("self-analysis state ownership cannot be verified") from exc
         if not owner_intersects_request or (
             int(requested_metadata.st_dev),
             int(requested_metadata.st_ino),
@@ -717,9 +696,7 @@ class FrameworkState:
         try:
             intersects = path_trees_intersect(policy.root, requested_state)
         except (OSError, ValueError) as exc:
-            raise ValueError(
-                "self-analysis root/state boundary cannot be verified"
-            ) from exc
+            raise ValueError("self-analysis root/state boundary cannot be verified") from exc
         if intersects:
             raise ValueError("self-analysis root and state directory must be disjoint")
         now = time.time_ns()
@@ -823,10 +800,7 @@ class FrameworkState:
             return None
         if corpus_access_mode is not None and str(row[2]) != corpus_access_mode:
             return None
-        if (
-            inventory_policy_signature is not None
-            and row[3] != inventory_policy_signature
-        ):
+        if inventory_policy_signature is not None and row[3] != inventory_policy_signature:
             return None
         end_cursor = None
         if all(value is not None for value in row[4:7]):
@@ -884,9 +858,7 @@ class FrameworkState:
                 (*journal_values, run_id),
             )
             if updated.rowcount != 1:
-                raise RuntimeError(
-                    f"run {run_id} cannot update its effective inventory cursor"
-                )
+                raise RuntimeError(f"run {run_id} cannot update its effective inventory cursor")
 
     @staticmethod
     def _validate_inventory_binding(
@@ -936,13 +908,8 @@ class FrameworkState:
             if row is None:
                 raise ValueError(f"initial run {run_id} does not exist")
             status, run_kind, current_scan_id, *metadata = row
-            if (
-                str(run_kind) not in {"initial", "self_analysis"}
-                or str(status) != "running"
-            ):
-                raise ValueError(
-                    f"run {run_id} cannot bind inventory while {run_kind}/{status}"
-                )
+            if str(run_kind) not in {"initial", "self_analysis"} or str(status) != "running":
+                raise ValueError(f"run {run_id} cannot bind inventory while {run_kind}/{status}")
             if str(run_kind) == "self_analysis" and candidate_rows != 0:
                 raise ValueError("self-analysis cannot publish MIME route candidates")
             actual_candidates = int(
@@ -952,9 +919,7 @@ class FrameworkState:
                 ).fetchone()[0]
             )
             if actual_candidates != candidate_rows:
-                raise ValueError(
-                    f"run {run_id} routing candidate count changed before publication"
-                )
+                raise ValueError(f"run {run_id} routing candidate count changed before publication")
             if current_scan_id is not None:
                 persisted = (int(current_scan_id), *(metadata))
                 requested = (
@@ -964,9 +929,7 @@ class FrameworkState:
                     inventory_mode,
                 )
                 if persisted != requested:
-                    raise ValueError(
-                        f"run {run_id} has conflicting routing snapshot metadata"
-                    )
+                    raise ValueError(f"run {run_id} has conflicting routing snapshot metadata")
                 marker = self._connection.execute(
                     """SELECT 1 FROM run_events WHERE run_id=?
                     AND phase='routing-snapshot'
@@ -1046,9 +1009,7 @@ class FrameworkState:
                 ).fetchone()[0]
             )
             if actual_candidates != candidate_rows or route_runs <= 0:
-                raise ValueError(
-                    f"source run {run_id} has no complete legacy routing snapshot"
-                )
+                raise ValueError(f"source run {run_id} has no complete legacy routing snapshot")
             row = self._connection.execute(
                 """SELECT status,run_kind,scan_id,reconciliation_records,
                 inventory_attempts,inventory_mode FROM initial_runs WHERE run_id=?""",
@@ -1058,9 +1019,7 @@ class FrameworkState:
                 raise ValueError(f"initial run {run_id} does not exist")
             status, run_kind, current_scan_id, *metadata = row
             if str(run_kind) != "initial" or str(status) != "interrupted":
-                raise ValueError(
-                    f"run {run_id} cannot recover inventory while {run_kind}/{status}"
-                )
+                raise ValueError(f"run {run_id} cannot recover inventory while {run_kind}/{status}")
             requested = (
                 evidence.scan_id,
                 evidence.reconciliation_records,
@@ -1069,9 +1028,7 @@ class FrameworkState:
             )
             if current_scan_id is not None:
                 if (int(current_scan_id), *metadata) != requested:
-                    raise ValueError(
-                        f"run {run_id} has conflicting recovered snapshot metadata"
-                    )
+                    raise ValueError(f"run {run_id} has conflicting recovered snapshot metadata")
                 return False
             now = time.time_ns()
             result = self._connection.execute(
@@ -1138,19 +1095,14 @@ class FrameworkState:
                 (run_id,),
             ).fetchone()
             if source_row is None:
-                raise ValueError(
-                    f"run {run_id} cannot start routes before snapshot publication"
-                )
+                raise ValueError(f"run {run_id} cannot start routes before snapshot publication")
             source_run_id = source_row[0]
             self._connection.executemany(
                 """INSERT INTO route_runs(
                 run_id,route_name,status,started_ns,current_phase,heartbeat_ns,
                 source_run_id)
                 VALUES(?,?,'running',?,'route_start',?,?)""",
-                (
-                    (run_id, route_name, now, now, source_run_id)
-                    for route_name in routes
-                ),
+                ((run_id, route_name, now, now, source_run_id) for route_name in routes),
             )
 
     def begin_route_phase(
@@ -1316,15 +1268,13 @@ class FrameworkState:
         started_ids = tuple(
             int(row[0])
             for row in self._connection.execute(
-                "SELECT action_id FROM file_actions "
-                "WHERE status='started' ORDER BY action_id"
+                "SELECT action_id FROM file_actions WHERE status='started' ORDER BY action_id"
             )
         )
         applying_ids = tuple(
             int(row[0])
             for row in self._connection.execute(
-                "SELECT action_id FROM file_actions "
-                "WHERE status='applying' ORDER BY action_id"
+                "SELECT action_id FROM file_actions WHERE status='applying' ORDER BY action_id"
             )
         )
         if started_ids:
@@ -1368,9 +1318,7 @@ class FrameworkState:
         """Publish the protected completion manifest and status atomically."""
 
         if self._connection.in_transaction:
-            raise RuntimeError(
-                "self-analysis finalization requires transaction ownership"
-            )
+            raise RuntimeError("self-analysis finalization requires transaction ownership")
         self._connection.execute("BEGIN IMMEDIATE")
         try:
             row = self._connection.execute(
@@ -1508,13 +1456,9 @@ class FrameworkState:
             0,
         )
         if cursor is None and (
-            inventory_mode != "full"
-            or reconciliation_records != 0
-            or inventory_attempts != 1
+            inventory_mode != "full" or reconciliation_records != 0 or inventory_attempts != 1
         ):
-            raise ValueError(
-                "portable inventory must publish one unreconciled full scan"
-            )
+            raise ValueError("portable inventory must publish one unreconciled full scan")
         with self._connection:
             result = self._connection.execute(
                 "UPDATE initial_runs SET completed_ns=?, status='completed', "
@@ -1535,9 +1479,7 @@ class FrameworkState:
                 ),
             )
             if result.rowcount != 1:
-                raise RuntimeError(
-                    f"run {run_id} cannot complete without its published snapshot"
-                )
+                raise RuntimeError(f"run {run_id} cannot complete without its published snapshot")
 
     def complete_operational_run(self, run_id: int) -> None:
         with self._connection:
@@ -1549,9 +1491,7 @@ class FrameworkState:
                 (time.time_ns(), time.time_ns(), run_id),
             )
             if result.rowcount != 1:
-                raise RuntimeError(
-                    f"run {run_id} is not a running operational execution"
-                )
+                raise RuntimeError(f"run {run_id} is not a running operational execution")
 
     def fail_initial_run(self, run_id: int) -> bool:
         with self._connection:
@@ -1641,9 +1581,7 @@ class FrameworkState:
 
         return begin_file_actions(self._connection, run_id, actions)
 
-    def finish_file_action(
-        self, action_id: int, status: str, detail: str | None = None
-    ) -> None:
+    def finish_file_action(self, action_id: int, status: str, detail: str | None = None) -> None:
         self.finish_file_actions((action_id,), status, detail)
 
     def finish_file_actions(

@@ -45,18 +45,11 @@ def validate_telemetry_clock(
         raise ValueError("Knowledge telemetry clock signature must be text")
     required_text_fn("Knowledge telemetry clock signature", contract.signature)
     if contract.signature != contract.signature.strip():
-        raise ValueError(
-            "Knowledge telemetry clock signature cannot have outer whitespace"
-        )
+        raise ValueError("Knowledge telemetry clock signature cannot have outer whitespace")
     if len(contract.signature) > max_signature_chars:
         raise ValueError("Knowledge telemetry clock signature is too long")
-    if (
-        contract.signature == default_signature
-        and contract.read_ns is not perf_counter_ns
-    ):
-        raise ValueError(
-            "python-perf-counter-ns-v1 is reserved for time.perf_counter_ns"
-        )
+    if contract.signature == default_signature and contract.read_ns is not perf_counter_ns:
+        raise ValueError("python-perf-counter-ns-v1 is reserved for time.perf_counter_ns")
 
 
 def telemetry_clock_from_legacy(
@@ -133,10 +126,7 @@ def _validate_phase_optional_text(
     optional_text_fn("Knowledge timing snapshot_id", contract.snapshot_id)
     if contract.owner is not None and len(contract.owner) > max_name_chars:
         raise ValueError("Knowledge timing owner is too long")
-    if (
-        contract.snapshot_id is not None
-        and len(contract.snapshot_id) > max_snapshot_id_chars
-    ):
+    if contract.snapshot_id is not None and len(contract.snapshot_id) > max_snapshot_id_chars:
         raise ValueError("Knowledge timing snapshot_id is too long")
 
 

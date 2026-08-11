@@ -80,10 +80,7 @@ def validate_owner_snapshot(
     required_text_fn("owner", contract.owner)
     if contract.expected_schema_version < 1:
         raise ValueError("expected schema version must be positive")
-    if (
-        contract.observed_schema_version is not None
-        and contract.observed_schema_version < 0
-    ):
+    if contract.observed_schema_version is not None and contract.observed_schema_version < 0:
         raise ValueError("observed schema version cannot be negative")
     if contract.state is owner_availability_type.AVAILABLE and (
         contract.observed_schema_version is None
@@ -98,9 +95,7 @@ def validate_owner_snapshot(
         raise ValueError("identity_changed must be boolean")
     optional_text_fn("owner warning", contract.warning)
     optional_text_fn("owner error code", contract.error_code)
-    if len({head.scope for head in contract.publications}) != len(
-        contract.publications
-    ):
+    if len({head.scope for head in contract.publications}) != len(contract.publications):
         raise ValueError("publication scopes must be unique per owner")
     if len({item.name for item in contract.watermarks}) != len(contract.watermarks):
         raise ValueError("watermark names must be unique per owner")
@@ -133,9 +128,7 @@ def _validate_snapshot_header(
 def _validate_snapshot_members(contract: KnowledgeSnapshot) -> None:
     if len({owner.owner for owner in contract.owners}) != len(contract.owners):
         raise ValueError("snapshot owners must be unique")
-    if len({model.signature for model in contract.active_models}) != len(
-        contract.active_models
-    ):
+    if len({model.signature for model in contract.active_models}) != len(contract.active_models):
         raise ValueError("active model signatures must be unique")
 
 
@@ -166,10 +159,7 @@ def _validate_active_model_publications(
         None,
     )
     compatible_publications: set[tuple[str, int]] = set()
-    if (
-        semantic_owner is not None
-        and semantic_owner.state is owner_availability_type.AVAILABLE
-    ):
+    if semantic_owner is not None and semantic_owner.state is owner_availability_type.AVAILABLE:
         compatible_publications = {
             (head.model_signature, head.generation)
             for head in semantic_owner.publications
@@ -179,9 +169,7 @@ def _validate_active_model_publications(
         (model.signature, model.generation) not in compatible_publications
         for model in contract.active_models
     ):
-        raise ValueError(
-            "active model must correspond to a compatible semantic publication"
-        )
+        raise ValueError("active model must correspond to a compatible semantic publication")
 
 
 def validate_knowledge_snapshot(

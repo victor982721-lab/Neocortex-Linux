@@ -133,6 +133,12 @@ Las pruebas y migraciones se ejecutan en fixtures o copias aisladas, nunca sobre
 el único estado vivo. No transmitas corpus, secretos ni estado a servicios
 externos.
 
+Los laboratorios temporales que simulan corpus, estado o mutación no deben
+ubicarse bajo `$CODEX_HOME` ni `.codex/vault`, porque NeoCortex protege ese árbol
+como contenido interno. Ejecuta el gate sin `--basetemp` o usa el temporal del
+sistema (`$TMPDIR`/`$RUNNER_TEMP`); el gate debe rechazar cualquier laboratorio
+dentro del árbol protegido antes de crear artefactos o iniciar pytest.
+
 ## Flujo predeterminado de trabajo
 
 Cada mejora debe cerrar una sola capacidad vertical:

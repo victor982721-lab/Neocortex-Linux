@@ -4,7 +4,6 @@
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
-
 # region [01] Dependencias del módulo
 from __future__ import annotations
 
@@ -56,4 +55,6 @@ def test_knowledge_contract_static_graph_points_to_protocol_leaf() -> None:
         *((helper, PROTOCOLS) for helper in HELPERS),
     }
     assert observed_edges == expected_edges
+
+
 # endregion [02]

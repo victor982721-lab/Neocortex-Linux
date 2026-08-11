@@ -176,9 +176,7 @@ def _transcribe_loaded_model(
                 end_ms=round(end_seconds * 1000),
                 text=text,
                 avg_logprob=_optional_float(getattr(segment, "avg_logprob", None)),
-                no_speech_probability=_optional_float(
-                    getattr(segment, "no_speech_prob", None)
-                ),
+                no_speech_probability=_optional_float(getattr(segment, "no_speech_prob", None)),
             )
         )
         text_parts.append(text)
@@ -188,9 +186,7 @@ def _transcribe_loaded_model(
     return TranscriptResult(
         text=" ".join(text_parts),
         language=str(getattr(info, "language", "") or "") or None,
-        language_probability=_optional_float(
-            getattr(info, "language_probability", None)
-        ),
+        language_probability=_optional_float(getattr(info, "language_probability", None)),
         duration_seconds=max(0.0, duration),
         speech_duration_seconds=speech_seconds,
         segments=tuple(result_segments),
@@ -201,17 +197,13 @@ def _transcribe_loaded_model(
     )
 
 
-def _whisper_worker(
-    task_channel, result_channel, settings: Mapping[str, object]
-) -> None:
+def _whisper_worker(task_channel, result_channel, settings: Mapping[str, object]) -> None:
     """Load one model, then service sequential bounded requests."""
 
     try:
         from faster_whisper import WhisperModel  # type: ignore[import-untyped]
 
-        runtime = resolve_whisper_runtime(
-            str(settings["device"]), str(settings["compute_type"])
-        )
+        runtime = resolve_whisper_runtime(str(settings["device"]), str(settings["compute_type"]))
         download_root = settings.get("model_cache_directory")
         if download_root is not None and not isinstance(download_root, str):
             raise ValueError("invalid Whisper model cache directory")
@@ -326,9 +318,8 @@ class WhisperTranscriber:
             except queue.Empty:
                 if not self._process.is_alive():
                     raise WhisperRuntimeError(
-                        "isolated Whisper worker exited with code "
-                        f"{self._process.exitcode}"
-                    )
+                        f"isolated Whisper worker exited with code {self._process.exitcode}"
+                    ) from None
 
     def _start(self, cancellation: CancellationToken) -> None:
         settings: dict[str, object] = {
@@ -401,8 +392,7 @@ class WhisperTranscriber:
                 time.monotonic() + self.config.file_timeout_seconds,
                 cancellation,
                 timeout_message=(
-                    f"transcription exceeded {self.config.file_timeout_seconds:g} "
-                    f"seconds: {path}"
+                    f"transcription exceeded {self.config.file_timeout_seconds:g} seconds: {path}"
                 ),
             )
         except queue.Full as exc:

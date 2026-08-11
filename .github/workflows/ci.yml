@@ -107,6 +107,9 @@ jobs:
       - name: Bootstrap audited pip
         run: python -I tools/bootstrap_pip.py
 
+      - name: Install Ubuntu multimedia and Qt runtime
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg libegl1
+
       - name: Install constrained full source and Pyright
         run: |
           set -euo pipefail
@@ -202,9 +205,9 @@ jobs:
         shell: bash
         run: python -I tools/bootstrap_pip.py
 
-      - name: Install Ubuntu Qt runtime
+      - name: Install Ubuntu multimedia and Qt runtime
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libegl1
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg libegl1
 
       - name: Build constrained wheel
         shell: bash

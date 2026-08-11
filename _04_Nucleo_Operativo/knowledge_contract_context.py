@@ -53,9 +53,7 @@ def validate_context_plan_values(
     if not isinstance(values, tuple):
         raise ValueError(f"context plan {name} must be a tuple")
     if len(values) > max_values:
-        raise ValueError(
-            f"context plan {name} cannot contain more than {max_values} values"
-        )
+        raise ValueError(f"context plan {name} cannot contain more than {max_values} values")
     if len(set(values)) != len(values):
         raise ValueError(f"context plan {name} must be unique")
     total_characters = 0
@@ -70,8 +68,7 @@ def validate_context_plan_values(
         total_characters += len(value)
     if total_characters > max_total_value_chars:
         raise ValueError(
-            f"context plan {name} cannot exceed "
-            f"{max_total_value_chars} total characters"
+            f"context plan {name} cannot exceed {max_total_value_chars} total characters"
         )
 
 
@@ -90,9 +87,7 @@ def validate_context_plan_step_ref(
             raise ValueError(f"context plan step {name} must be a string")
         required_text_fn(f"context plan step {name}", value)
         if len(value) > max_value_chars:
-            raise ValueError(
-                f"context plan step {name} cannot exceed {max_value_chars} characters"
-            )
+            raise ValueError(f"context plan step {name} cannot exceed {max_value_chars} characters")
     if (
         isinstance(contract.candidate_limit, bool)
         or not isinstance(contract.candidate_limit, int)
@@ -117,9 +112,7 @@ def _validate_context_plan_identity(
             raise ValueError(f"context plan {name} must be a string")
         required_text_fn(f"context plan {name}", value)
         if len(value) > max_value_chars:
-            raise ValueError(
-                f"context plan {name} cannot exceed {max_value_chars} characters"
-            )
+            raise ValueError(f"context plan {name} cannot exceed {max_value_chars} characters")
     if contract.retrieval_mode not in {"discovery", "evidence"}:
         raise ValueError("context plan retrieval_mode is invalid")
 
@@ -139,9 +132,7 @@ def _validate_context_plan_options(
             raise ValueError(f"context plan {name} must be a string when present")
         optional_text_fn(f"context plan {name}", option_value)
         if option_value is not None and len(option_value) > max_value_chars:
-            raise ValueError(
-                f"context plan {name} cannot exceed {max_value_chars} characters"
-            )
+            raise ValueError(f"context plan {name} cannot exceed {max_value_chars} characters")
 
 
 def _validate_context_plan_numbers(contract: ContextPlanRef) -> None:
@@ -158,9 +149,7 @@ def _validate_context_plan_numbers(contract: ContextPlanRef) -> None:
             or not isinstance(numeric_value, int)
             or not minimum <= numeric_value <= maximum
         ):
-            raise ValueError(
-                f"context plan {name} must be between {minimum} and {maximum}"
-            )
+            raise ValueError(f"context plan {name} must be between {minimum} and {maximum}")
 
 
 def _validate_context_plan_steps(
@@ -235,11 +224,7 @@ def validate_context_graph_budget(
 
 
 def context_graph_omitted_total(contract: ContextGraphBudget) -> int:
-    return (
-        contract.omitted_identifiers
-        + contract.omitted_entities
-        + contract.omitted_relations
-    )
+    return contract.omitted_identifiers + contract.omitted_entities + contract.omitted_relations
 
 
 def validate_context_budget(
@@ -258,9 +243,7 @@ def validate_context_budget(
     required_text_fn("estimator signature", contract.estimator_signature)
     if contract.measurement_scope != "rendered_context":
         raise ValueError("context budget measurement_scope must be rendered_context")
-    if len(set(contract.truncated_evidence_ids)) != len(
-        contract.truncated_evidence_ids
-    ):
+    if len(set(contract.truncated_evidence_ids)) != len(contract.truncated_evidence_ids):
         raise ValueError("truncated evidence identifiers must be unique")
 
 
@@ -351,9 +334,7 @@ def validate_context_contradiction(
         raise ValueError("context contradiction values must be canonically ordered")
     validate_references_fn("contradiction citation", contract.citation_ids)
     if len(contract.citation_ids) < 2:
-        raise ValueError(
-            "context contradictions require at least two distinct citations"
-        )
+        raise ValueError("context contradictions require at least two distinct citations")
     expected_id = contract._stable_id(
         contract.contradiction_kind,
         contract.topic,
@@ -390,13 +371,11 @@ def validate_context_relation_ref(
     validate_references_fn("relation provenance", contract.provenance)
     if len(contract.provenance) > max_provenance_items:
         raise ValueError(
-            "context relation provenance cannot contain more than "
-            f"{max_provenance_items} items"
+            f"context relation provenance cannot contain more than {max_provenance_items} items"
         )
     if sum(len(item) for item in contract.provenance) > max_provenance_chars:
         raise ValueError(
-            "context relation provenance cannot exceed "
-            f"{max_provenance_chars} total characters"
+            f"context relation provenance cannot exceed {max_provenance_chars} total characters"
         )
     if contract.confidence is not None and (
         isinstance(contract.confidence, bool)
@@ -430,9 +409,7 @@ def _validate_bundle_plan(
 def _bundle_evidence_grounding(
     contract: ContextBundle,
 ) -> tuple[tuple[str, ...], set[str], dict[str, set[str]], set[str]]:
-    selected_evidence_ids = tuple(
-        hit.evidence.evidence_id for hit in contract.selected_hits
-    )
+    selected_evidence_ids = tuple(hit.evidence.evidence_id for hit in contract.selected_hits)
     evidence_ids = set(selected_evidence_ids)
     evidence_resources: dict[str, set[str]] = {}
     for hit in contract.selected_hits:
@@ -454,9 +431,7 @@ def _bundle_evidence_grounding(
         for resource_id in grounded_resources
     }
     if len(evidence_ids) != len(selected_evidence_ids):
-        raise ValueError(
-            "selected hits require unique evidence identifiers for citations"
-        )
+        raise ValueError("selected hits require unique evidence identifiers for citations")
     return selected_evidence_ids, evidence_ids, evidence_resources, resource_ids
 
 
@@ -481,9 +456,7 @@ def _validate_bundle_citations(
         len(contract.citation_ids) != len(selected_evidence_ids)
         or cited_evidence_ids != evidence_ids
     ):
-        raise ValueError(
-            "each selected hit must have exactly one citation by evidence_id"
-        )
+        raise ValueError("each selected hit must have exactly one citation by evidence_id")
     return citation_names, cited_evidence_ids
 
 
@@ -508,9 +481,7 @@ def _validate_bundle_entities(
             for resource_id in evidence_resources.get(evidence_id, set())
         }
         if not set(entity.resource_ids).issubset(grounded_resources):
-            raise ValueError(
-                "context entity resources must be grounded by its evidence references"
-            )
+            raise ValueError("context entity resources must be grounded by its evidence references")
     return entity_ids, {entity.entity_id: entity for entity in contract.entities}
 
 
@@ -550,9 +521,7 @@ def _validate_bundle_relations(
         relation_evidence = set(relation.evidence_ids)
         source_evidence = set(entities_by_id[relation.source_entity_id].evidence_ids)
         target_evidence = set(entities_by_id[relation.target_entity_id].evidence_ids)
-        if not relation_evidence.issubset(
-            source_evidence.intersection(target_evidence)
-        ):
+        if not relation_evidence.issubset(source_evidence.intersection(target_evidence)):
             raise ValueError("context relation evidence must ground both endpoints")
 
 
@@ -561,9 +530,7 @@ def _validate_bundle_graph_budget(
     *,
     knowledge_completeness_type: Any,
 ) -> None:
-    identifiers_considered = sum(
-        len(hit.evidence.identifiers) for hit in contract.selected_hits
-    )
+    identifiers_considered = sum(len(hit.evidence.identifiers) for hit in contract.selected_hits)
     if contract.graph_budget.identifiers_considered != identifiers_considered:
         raise ValueError("context graph identifier count must match selected evidence")
     if contract.graph_budget.entities_included != len(contract.entities):
@@ -580,14 +547,10 @@ def _validate_bundle_graph_budget(
 def _validate_bundle_rendered_graph(contract: ContextBundle) -> None:
     for entity in contract.entities:
         if entity.to_json() not in contract.rendered_context:
-            raise ValueError(
-                "context entities must be rendered inside the character budget"
-            )
+            raise ValueError("context entities must be rendered inside the character budget")
     for relation in contract.relations:
         if relation.to_json() not in contract.rendered_context:
-            raise ValueError(
-                "context relations must be rendered inside the character budget"
-            )
+            raise ValueError("context relations must be rendered inside the character budget")
 
 
 def _validate_bundle_contradictions(
@@ -608,9 +571,7 @@ def _validate_bundle_contradictions(
             contradiction.summary not in contract.rendered_context
             or rendered_citations not in contract.rendered_context
         ):
-            raise ValueError(
-                "context contradictions must be rendered inside the character budget"
-            )
+            raise ValueError("context contradictions must be rendered inside the character budget")
         logical_contradiction = (
             contradiction.contradiction_kind,
             contradiction.topic.casefold(),
@@ -637,9 +598,7 @@ def _validate_bundle_notices(
         if not graph_notices or not any(
             notice in contract.rendered_context for notice in graph_notices
         ):
-            raise ValueError(
-                "omitted context graph data requires a rendered visible notice"
-            )
+            raise ValueError("omitted context graph data requires a rendered visible notice")
 
 
 def _validate_bundle_blocking_owners(

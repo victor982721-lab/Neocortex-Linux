@@ -237,6 +237,19 @@ def _selected_test_paths(root: Path, shard_count: int, shard_index: int) -> tupl
     return tuple(os.fspath(root / item.path) for item in shards[shard_index])
 
 
+def _safe_pytest_path(path: Path, *, label: str) -> Path:
+    candidate = path.expanduser().resolve()
+    codex_home_raw = os.environ.get("CODEX_HOME", "").strip()
+    codex_home = (
+        Path(codex_home_raw).expanduser().resolve()
+        if codex_home_raw
+        else (Path.home() / ".codex").resolve()
+    )
+    if candidate == codex_home or candidate.is_relative_to(codex_home):
+        _fail(f"{label} must remain outside protected Codex home and vault: {candidate}")
+    return candidate
+
+
 def _pytest_command(
     selected: Sequence[str],
     *,
@@ -245,12 +258,27 @@ def _pytest_command(
 ) -> list[str]:
     command = [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider"]
     if basetemp is not None:
-        resolved_basetemp = basetemp.expanduser().resolve()
+        resolved_basetemp = _safe_pytest_path(basetemp, label="pytest basetemp")
         resolved_basetemp.parent.mkdir(parents=True, exist_ok=True)
         command.extend(("--basetemp", os.fspath(resolved_basetemp)))
     command.extend(pytest_arguments)
     command.extend(selected)
     return command
+
+
+def _pytest_environment(basetemp: Path | None) -> dict[str, str]:
+    """Bind pytest and tempfile users to one disposable non-protected boundary."""
+
+    temporary_root = (
+        _safe_pytest_path(Path(tempfile.gettempdir()), label="pytest temporary root")
+        if basetemp is None
+        else _safe_pytest_path(basetemp, label="pytest basetemp").parent
+    )
+    temporary_root.mkdir(parents=True, exist_ok=True)
+    environment = os.environ.copy()
+    for name in ("TMPDIR", "TEMP", "TMP"):
+        environment[name] = os.fspath(temporary_root)
+    return environment
 
 
 def run_test_shard(
@@ -271,7 +299,7 @@ def run_test_shard(
         f"test shard {shard_index + 1}/{shard_count}: {len(selected)} dynamically discovered files",
         flush=True,
     )
-    return subprocess.call(command, cwd=root)
+    return subprocess.call(command, cwd=root, env=_pytest_environment(basetemp))
 
 
 def discover_production_sources(root: Path) -> tuple[str, ...]:
@@ -1103,7 +1131,11 @@ def run_coverage_gate(
         f"coverage suite: {test_inventory['file_count']} dynamically discovered files",
         flush=True,
     )
-    test_result = subprocess.call(command, cwd=root)
+    test_result = subprocess.call(
+        command,
+        cwd=root,
+        env=_pytest_environment(basetemp),
+    )
     temporary_report = resolved_report.with_name(f".{resolved_report.name}.tmp")
     report_result = subprocess.call(
         (

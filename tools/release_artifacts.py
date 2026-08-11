@@ -4,7 +4,6 @@
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
-
 # region [01] Dependencias del módulo
 from __future__ import annotations
 
@@ -22,6 +21,7 @@ import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from email import policy
+from email.message import Message
 from email.parser import BytesParser
 from pathlib import Path
 from typing import BinaryIO, Final, Literal
@@ -167,9 +167,7 @@ class ArchiveLimits:
 
     def __post_init__(self) -> None:
         values = tuple(getattr(self, name) for name in self.__slots__)
-        if any(
-            isinstance(value, bool) or not isinstance(value, int) for value in values
-        ):
+        if any(isinstance(value, bool) or not isinstance(value, int) for value in values):
             raise TypeError("archive limits must be integers")
         if any(value <= 0 for value in values):
             raise ValueError("archive limits must be positive")
@@ -248,11 +246,7 @@ def _member_category(path: str) -> str | None:
         return "backup"
     if leaf.endswith((".temp", ".tmp")):
         return "temporary"
-    if (
-        leaf in _SECRET_NAMES
-        or leaf.endswith(_SECRET_SUFFIXES)
-        or leaf.startswith("~$")
-    ):
+    if leaf in _SECRET_NAMES or leaf.endswith(_SECRET_SUFFIXES) or leaf.startswith("~$"):
         return "secret"
     return None
 
@@ -260,9 +254,7 @@ def _member_category(path: str) -> str | None:
 def _validate_member_policy(path: str) -> None:
     category = _member_category(path)
     if category is not None:
-        raise ArtifactValidationError(
-            f"forbidden artifact member category={category}: {path}"
-        )
+        raise ArtifactValidationError(f"forbidden artifact member category={category}: {path}")
 
 
 def _ui_asset_contract_name(path: str) -> str | None:
@@ -288,9 +280,7 @@ def _validate_payload_policy(path: str, payload: bytes) -> None:
     asset = _ui_asset_contract_name(path)
     if asset is not None:
         if hashlib.sha256(payload).hexdigest().upper() != _UI_ASSET_SHA256[asset]:
-            raise ArtifactValidationError(
-                f"UI asset payload hash is unexpected: {path}"
-            )
+            raise ArtifactValidationError(f"UI asset payload hash is unexpected: {path}")
         return
     if payload.startswith(b"SQLite format 3\x00"):
         raise ArtifactValidationError(f"SQLite payload is forbidden: {path}")
@@ -299,11 +289,7 @@ def _validate_payload_policy(path: str, payload: bytes) -> None:
     for text in _text_views(payload):
         if _PRIVATE_PATH.search(text):
             raise ArtifactValidationError(f"private path payload is forbidden: {path}")
-        if (
-            _PRIVATE_KEY.search(text)
-            or _SECRET_ASSIGNMENT.search(text)
-            or _TOKEN.search(text)
-        ):
+        if _PRIVATE_KEY.search(text) or _SECRET_ASSIGNMENT.search(text) or _TOKEN.search(text):
             raise ArtifactValidationError(f"secret payload is forbidden: {path}")
 
 
@@ -319,12 +305,8 @@ def _scan_archive(path: str | Path, limits: ArchiveLimits) -> _Scan:
         if isinstance(exc, ArtifactValidationError):
             raise
         raise ArtifactValidationError(str(exc)) from exc
-    members = tuple(
-        ArchiveMember(item.path, item.size, item.sha256) for item in scanned.members
-    )
-    report = ArchiveInspection(
-        scanned.path, scanned.kind, scanned.archive_sha256, members
-    )
+    members = tuple(ArchiveMember(item.path, item.size, item.sha256) for item in scanned.members)
+    report = ArchiveInspection(scanned.path, scanned.kind, scanned.archive_sha256, members)
     return _Scan(report, scanned.payloads, scanned.all_paths)
 
 
@@ -342,9 +324,7 @@ def _required(payloads: Mapping[str, bytes], path: str, label: str) -> bytes:
     try:
         return payloads[path]
     except KeyError as exc:
-        raise ArtifactValidationError(
-            f"wheel is missing required {label}: {path}"
-        ) from exc
+        raise ArtifactValidationError(f"wheel is missing required {label}: {path}") from exc
 
 
 def _required_members(
@@ -357,23 +337,17 @@ def _required_members(
     prefix = f"{root}/" if root else ""
     missing = [path for path in required if f"{prefix}{path}" not in payloads]
     if missing:
-        raise ArtifactValidationError(
-            f"artifact is missing required {label}: {', '.join(missing)}"
-        )
+        raise ArtifactValidationError(f"artifact is missing required {label}: {', '.join(missing)}")
 
 
 def _reject_wheel_source_only_tools(payloads: Mapping[str, bytes]) -> None:
-    leaked = sorted(
-        path for path in payloads if path.split("/", 1)[0].casefold() == "tools"
-    )
+    leaked = sorted(path for path in payloads if path.split("/", 1)[0].casefold() == "tools")
     if leaked:
-        raise ArtifactValidationError(
-            f"wheel contains source-only tool: {', '.join(leaked)}"
-        )
+        raise ArtifactValidationError(f"wheel contains source-only tool: {', '.join(leaked)}")
 
 
-def _one_header(message: object, name: str, label: str) -> str:
-    values = getattr(message, "get_all")(name, [])
+def _one_header(message: Message, name: str, label: str) -> str:
+    values = message.get_all(name, [])
     if len(values) != 1 or not str(values[0]).strip():
         raise ArtifactValidationError(f"{label} requires one {name} header")
     return str(values[0]).strip()
@@ -406,7 +380,7 @@ def _wheel_headers(payload: bytes) -> None:
         raise ArtifactValidationError("WHEEL version is unsupported")
     if _one_header(message, "Root-Is-Purelib", "WHEEL").casefold() != "true":
         raise ArtifactValidationError("WHEEL must be pure Python")
-    tags = tuple(str(value).strip() for value in getattr(message, "get_all")("Tag", []))
+    tags = tuple(str(value).strip() for value in message.get_all("Tag", []))
     if tags != ("py3-none-any",):
         raise ArtifactValidationError("WHEEL tags are not canonical")
 
@@ -423,9 +397,9 @@ def _entry_points(payload: bytes) -> tuple[str, ...]:
     except (UnicodeDecodeError, configparser.Error) as exc:
         raise ArtifactValidationError("entry_points.txt is invalid") from exc
     command, target = _ENTRY_POINT
-    if parser.sections() != ["console_scripts"] or dict(
-        parser.items("console_scripts")
-    ) != {command: target}:
+    if parser.sections() != ["console_scripts"] or dict(parser.items("console_scripts")) != {
+        command: target
+    }:
         raise ArtifactValidationError("wheel console entrypoint is invalid")
     return (f"{command} = {target}",)
 
@@ -455,11 +429,7 @@ def _validate_record(
             if digest_text or size_text:
                 raise ArtifactValidationError("wheel RECORD self row must be unhashed")
             continue
-        digest = (
-            base64.urlsafe_b64encode(hashlib.sha256(payload).digest())
-            .rstrip(b"=")
-            .decode()
-        )
+        digest = base64.urlsafe_b64encode(hashlib.sha256(payload).digest()).rstrip(b"=").decode()
         if digest_text != f"sha256={digest}":
             raise ArtifactValidationError(f"wheel RECORD hash mismatch: {path}")
         if size_text != str(len(payload)):
@@ -469,22 +439,16 @@ def _validate_record(
 def _typed_packages(payloads: Mapping[str, bytes], root: str = "") -> tuple[str, ...]:
     prefix = f"{root}/" if root else ""
     missing = [
-        package
-        for package in _TYPED_PACKAGES
-        if f"{prefix}{package}/py.typed" not in payloads
+        package for package in _TYPED_PACKAGES if f"{prefix}{package}/py.typed" not in payloads
     ]
     if missing:
-        raise ArtifactValidationError(
-            f"artifact is missing py.typed: {', '.join(missing)}"
-        )
+        raise ArtifactValidationError(f"artifact is missing py.typed: {', '.join(missing)}")
     return tuple(sorted(_TYPED_PACKAGES))
 
 
 def _wheel_dist_info(payloads: Mapping[str, bytes]) -> str:
     roots = {
-        path.split("/", 1)[0]
-        for path in payloads
-        if path.split("/", 1)[0].endswith(".dist-info")
+        path.split("/", 1)[0] for path in payloads if path.split("/", 1)[0].endswith(".dist-info")
     }
     if len(roots) != 1:
         raise ArtifactValidationError("wheel must contain exactly one dist-info root")
@@ -505,16 +469,11 @@ def _validate_wheel_scan(
         raise ArtifactValidationError("wheel filename metadata is inconsistent")
     metadata = _required(scan.payloads, f"{dist_info}/METADATA", "METADATA")
     wheel = _required(scan.payloads, f"{dist_info}/WHEEL", "WHEEL")
-    entry_points = _required(
-        scan.payloads, f"{dist_info}/entry_points.txt", "entry_points.txt"
-    )
+    entry_points = _required(scan.payloads, f"{dist_info}/entry_points.txt", "entry_points.txt")
     record_path = f"{dist_info}/RECORD"
     _required(scan.payloads, record_path, "RECORD")
     distribution, version = _metadata_identity(metadata, "METADATA")
-    if (
-        _canonical_distribution(distribution) != _DISTRIBUTION
-        or version != filename_version
-    ):
+    if _canonical_distribution(distribution) != _DISTRIBUTION or version != filename_version:
         raise ArtifactValidationError("wheel filename metadata is inconsistent")
     if expected_version is not None and version != expected_version:
         raise ArtifactValidationError("wheel version is unexpected")
@@ -581,11 +540,7 @@ def _validate_sdist_scan(
         _validate_sdist_filename(scan, version)
     if expected_version is not None and version != expected_version:
         raise ArtifactValidationError("sdist version is unexpected")
-    missing = [
-        path
-        for path in _REQUIRED_SDIST_CONTENT
-        if f"{root}/{path}" not in scan.payloads
-    ]
+    missing = [path for path in _REQUIRED_SDIST_CONTENT if f"{root}/{path}" not in scan.payloads]
     if missing:
         raise ArtifactValidationError(
             f"sdist is missing required sdist content: {', '.join(missing)}"
@@ -643,9 +598,7 @@ def logical_payload(inspection: ArchiveInspection) -> LogicalPayload:
     elif inspection.kind == "sdist":
         kind = "sdist"
     else:
-        raise ArtifactValidationError(
-            "logical payload requires a validated release artifact"
-        )
+        raise ArtifactValidationError("logical payload requires a validated release artifact")
     members: list[ArchiveMember] = []
     for member in inspection.members:
         path = member.path
@@ -701,15 +654,11 @@ def _epoch(value: int) -> int:
     return value
 
 
-def _write_canonical_tar(
-    stream: BinaryIO, payloads: Mapping[str, bytes], epoch: int
-) -> None:
+def _write_canonical_tar(stream: BinaryIO, payloads: Mapping[str, bytes], epoch: int) -> None:
     with gzip.GzipFile(
         filename="", mode="wb", compresslevel=9, fileobj=stream, mtime=epoch
     ) as compressed:
-        with tarfile.open(
-            fileobj=compressed, mode="w", format=tarfile.PAX_FORMAT
-        ) as archive:
+        with tarfile.open(fileobj=compressed, mode="w", format=tarfile.PAX_FORMAT) as archive:
             for path in sorted(payloads):
                 payload = payloads[path]
                 info = tarfile.TarInfo(path)
@@ -778,9 +727,7 @@ def canonicalize_sdist(
             raise ArtifactValidationError("canonical sdist logical payload changed")
         os.link(candidate, output)
         published = True
-        result = validate_sdist(
-            output, expected_version=source_report.version, limits=limits
-        )
+        result = validate_sdist(output, expected_version=source_report.version, limits=limits)
         if logical_payload(result) != expected:
             raise ArtifactValidationError("published sdist logical payload changed")
     except BaseException:
@@ -792,7 +739,8 @@ def canonicalize_sdist(
     return result
 
 
-__all__ = [
+# This order is a characterized public compatibility contract.
+__all__ = [  # noqa: RUF022
     "ArchiveInspection",
     "ArchiveLimits",
     "ArchiveMember",

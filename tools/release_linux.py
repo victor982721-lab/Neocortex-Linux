@@ -9,8 +9,8 @@ under a POSIX ``flock``. Previous releases are deliberately retained.
 from __future__ import annotations
 
 import argparse
-import fcntl
 import hashlib
+import importlib
 import json
 import os
 import platform
@@ -584,6 +584,10 @@ def _remove_incomplete_release(root: Path) -> None:
 
 @contextmanager
 def _release_lock(layout: LinuxReleaseLayout):
+    try:
+        fcntl = importlib.import_module("fcntl")
+    except ImportError as exc:
+        raise LinuxReleaseError("release activation requires POSIX fcntl") from exc
     layout.lock.parent.mkdir(parents=True, exist_ok=True)
     with layout.lock.open("a+b") as stream:
         fcntl.flock(stream.fileno(), fcntl.LOCK_EX)

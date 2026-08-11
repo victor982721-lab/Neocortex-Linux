@@ -177,8 +177,7 @@ def evidence_ref_payload(
         payload["bounding_box"] = list(contract.bounding_box)
     if contract.identifiers:
         payload["identifiers"] = [
-            {"namespace": namespace, "value": value}
-            for namespace, value in contract.identifiers
+            {"namespace": namespace, "value": value} for namespace, value in contract.identifiers
         ]
     return payload
 
@@ -254,12 +253,10 @@ def owner_snapshot_identity_payload(contract: OwnerSnapshot) -> dict[str, object
         "state": contract.state.value,
         "expected_schema_version": contract.expected_schema_version,
         "publications": [
-            item.to_dict()
-            for item in sorted(contract.publications, key=lambda value: value.scope)
+            item.to_dict() for item in sorted(contract.publications, key=lambda value: value.scope)
         ],
         "watermarks": [
-            item.to_dict()
-            for item in sorted(contract.watermarks, key=lambda value: value.name)
+            item.to_dict() for item in sorted(contract.watermarks, key=lambda value: value.name)
         ],
     }
     if contract.observed_schema_version is not None:
@@ -472,7 +469,8 @@ def context_bundle_payload(
     return payload
 
 
-__all__ = [
+# Keep the exports in contract/serialization order rather than alphabetic order.
+__all__ = [  # noqa: RUF022
     "base_payload",
     "canonical_output",
     "knowledge_phase_timing_payload",

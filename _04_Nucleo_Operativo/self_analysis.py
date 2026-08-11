@@ -22,6 +22,7 @@ from .code_contracts import (
 )
 
 if TYPE_CHECKING:
+
     class FrameworkConfig(Protocol):
         """Read-only configuration surface consumed by self-analysis."""
 

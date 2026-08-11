@@ -4,7 +4,6 @@
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
-
 # region [01] Dependencias del módulo
 from __future__ import annotations
 
@@ -110,13 +109,9 @@ def _type_checking_protocol(module_name: str, class_name: str) -> ast.ClassDef:
         and node.test.id == "TYPE_CHECKING"
     )
     contract = next(
-        node
-        for node in block.body
-        if isinstance(node, ast.ClassDef) and node.name == class_name
+        node for node in block.body if isinstance(node, ast.ClassDef) and node.name == class_name
     )
-    assert any(
-        isinstance(base, ast.Name) and base.id == "Protocol" for base in contract.bases
-    )
+    assert any(isinstance(base, ast.Name) and base.id == "Protocol" for base in contract.bases)
     return contract
 
 
@@ -153,9 +148,9 @@ def test_public_contract_owners_reexports_and_signatures_are_unchanged() -> None
         "return": "None",
     }
     assert tuple(field.name for field in fields(models.ActionSummary)) == ACTION_SUMMARY_FIELDS
-    assert str(next(field for field in fields(models.InitialRunResult) if field.name == "pdf").type) == (
-        "PdfRouteSummary | None"
-    )
+    assert str(
+        next(field for field in fields(models.InitialRunResult) if field.name == "pdf").type
+    ) == ("PdfRouteSummary | None")
 
     values = (
         models.FrameworkConfig(),
@@ -256,4 +251,6 @@ def test_live_grimp_graph_has_no_production_cycles() -> None:
     assert payload["cycles"] == []
     assert cycle_evaluation["observed_count"] == 0
     assert cycle_evaluation["status"] == "passed"
+
+
 # endregion [02]

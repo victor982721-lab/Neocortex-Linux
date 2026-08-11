@@ -167,10 +167,28 @@ def test_inventory_and_shards_are_reproducible_across_lf_and_crlf(tmp_path: Path
     assert lf_inventory["shards"] == crlf_inventory["shards"]
 
 
+def test_pytest_lab_rejects_codex_home_before_creating_artifacts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    codex_home = tmp_path / "codex-home"
+    basetemp = codex_home / "vault" / "work" / "pytest"
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+
+    with pytest.raises(
+        GateError,
+        match="must remain outside protected Codex home and vault",
+    ):
+        quality_gate._pytest_command((), basetemp=basetemp)
+
+    assert not codex_home.exists()
+
+
 def test_push_ci_uses_dynamic_total_shards_instead_of_manual_test_lists() -> None:
     workflow_path = Path(__file__).parents[1] / ".github" / "workflows" / "ci.yml"
     workflow = workflow_path.read_text(encoding="utf-8")
     fast_and_quality, remaining = workflow.split("  standard:\n", 1)
+    fast, quality = fast_and_quality.split("  quality:\n", 1)
     standard, _deep = remaining.split("  deep-windows:\n", 1)
 
     assert "tests/test_" not in fast_and_quality
@@ -178,9 +196,12 @@ def test_push_ci_uses_dynamic_total_shards_instead_of_manual_test_lists() -> Non
     assert "quality_gate.py inventory --shard-count 2" in fast_and_quality
     assert "quality_gate.py coverage" in fast_and_quality
     assert "actions/upload-artifact@v7" in fast_and_quality
+    assert "--no-install-recommends ffmpeg libegl1" not in fast
+    assert "--no-install-recommends ffmpeg libegl1" in quality
     assert "semgrep_tool_runtime.py install" in fast_and_quality
     assert "--tool-receipt" in fast_and_quality
     assert "quality_gate.py tests" in standard
+    assert "--no-install-recommends ffmpeg libegl1" in standard
     assert "os: [ubuntu-latest, windows-latest]" in standard
     assert 'python: ["3.13", "3.14"]' in standard
     assert "shard: [0, 1]" in standard
@@ -424,11 +445,18 @@ def test_coverage_runner_uses_branch_mode_exact_scope_and_dynamic_total_inventor
     baseline_path = root / "coverage-baseline.json"
     baseline_path.write_text(json.dumps(baseline), encoding="utf-8")
     calls: list[list[str]] = []
+    environments: list[dict[str, str] | None] = []
 
-    def fake_call(command: list[str] | tuple[str, ...], *, cwd: Path) -> int:
+    def fake_call(
+        command: list[str] | tuple[str, ...],
+        *,
+        cwd: Path,
+        env: dict[str, str] | None = None,
+    ) -> int:
         assert cwd == root
         observed = list(command)
         calls.append(observed)
+        environments.append(env)
         if "json" in observed:
             output = Path(observed[observed.index("-o") + 1])
             output.write_text(json.dumps(report), encoding="utf-8")
@@ -449,6 +477,12 @@ def test_coverage_runner_uses_branch_mode_exact_scope_and_dynamic_total_inventor
     assert f"--source={','.join(PRODUCTION_COVERAGE_SOURCES)}" in run_command
     assert str(root / "tests" / "test_alpha.py") in run_command
     assert str(root / "tests" / "nested" / "beta_test.py") in run_command
+    pytest_environment = environments[0]
+    assert pytest_environment is not None
+    temporary_root = str(tmp_path.resolve())
+    assert pytest_environment["TMPDIR"] == temporary_root
+    assert pytest_environment["TEMP"] == temporary_root
+    assert pytest_environment["TMP"] == temporary_root
     summary_inventory = summary["test_inventory"]
     assert isinstance(summary_inventory, dict)
     assert summary_inventory["file_count"] == 2

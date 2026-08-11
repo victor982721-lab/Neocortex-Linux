@@ -305,7 +305,8 @@ def _validate_self_analysis_paths(args: argparse.Namespace) -> None:
             exact_trusted_root = _is_exact_trusted_deep_root(args.root)
         except (OSError, RuntimeError, ValueError) as exc:
             raise SystemExit(
-                "trusted-deep canonical root identity cannot be verified: "
+                "trusted-deep requires the exact canonical root; "
+                "canonical root identity cannot be verified: "
                 f"{type(exc).__name__}: {exc}"
             ) from exc
         if not exact_trusted_root:

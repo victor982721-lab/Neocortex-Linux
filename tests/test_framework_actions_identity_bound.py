@@ -151,11 +151,9 @@ def test_protected_extension_mismatch_is_analyzed_without_action_or_syscall(
             excluded_paths=(),
         )
 
-        summary, route_candidate, cache_update = (
-            actions._inspect_content_type_candidate(
-                planned,
-                ActionSummary(apply_actions=True),
-            )
+        summary, route_candidate, cache_update = actions._inspect_content_type_candidate(
+            planned,
+            ActionSummary(apply_actions=True),
         )
         assert summary.files_checked == 1
         assert summary.types_detected == 1
@@ -544,9 +542,7 @@ def test_extension_action_blocks_source_swap_at_syscall_boundary(
             _before_native_call=attempt_swap,
         )
 
-    monkeypatch.setattr(
-        actions_module, "rename_no_replace_by_identity", identity_bound_with_race
-    )
+    monkeypatch.setattr(actions_module, "rename_no_replace_by_identity", identity_bound_with_race)
     database = _normal_state_database(root)
     with (
         DedupIndex(root / "dedup.sqlite3") as index,
@@ -910,4 +906,6 @@ def test_rename_mismatch_signature_is_frozen() -> None:
     assert str(signature(FrameworkActions._rename_mismatch)) == (
         "(self, planned, detected, summary: 'ActionSummary') -> 'ActionSummary'"
     )
+
+
 # endregion [02]

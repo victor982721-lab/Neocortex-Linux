@@ -59,9 +59,7 @@ def validate_resource_ref(
     if contract.disposition is resource_disposition_type.DUPLICATE:
         required_text_fn(
             "canonical_resource_id",
-            ""
-            if contract.canonical_resource_id is None
-            else contract.canonical_resource_id,
+            "" if contract.canonical_resource_id is None else contract.canonical_resource_id,
         )
     if contract.canonical_resource_id == contract.resource_id:
         raise ValueError("a resource cannot name itself as its canonical resource")
@@ -103,9 +101,7 @@ def _validate_evidence_optional_text(
 
 
 def _validate_page_locator(contract: EvidenceRef) -> None:
-    if contract.page is not None and (
-        isinstance(contract.page, bool) or contract.page < 0
-    ):
+    if contract.page is not None and (isinstance(contract.page, bool) or contract.page < 0):
         raise ValueError("page cannot be negative")
 
 
@@ -188,9 +184,7 @@ def _validate_evidence_identifiers(
     max_component_chars: int,
 ) -> None:
     if len(contract.identifiers) > max_identifiers:
-        raise ValueError(
-            f"evidence cannot contain more than {max_identifiers} identifiers"
-        )
+        raise ValueError(f"evidence cannot contain more than {max_identifiers} identifiers")
     if len(set(contract.identifiers)) != len(contract.identifiers):
         raise ValueError("evidence identifiers must be unique")
     for namespace, value in contract.identifiers:
@@ -200,8 +194,7 @@ def _validate_evidence_identifiers(
         required_text_fn("identifier value", value)
         if len(namespace) > max_component_chars or len(value) > max_component_chars:
             raise ValueError(
-                "evidence identifier components cannot exceed "
-                f"{max_component_chars} characters"
+                f"evidence identifier components cannot exceed {max_component_chars} characters"
             )
 
 

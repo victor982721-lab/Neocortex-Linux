@@ -22,9 +22,7 @@ from .memory_runtime import MemoryResourceLimits, WeightedMemoryGate
 try:
     from PIL import Image, ImageFilter, ImageOps, ImageStat
 except ImportError as exc:  # pragma: no cover
-    raise SystemExit(
-        "Falta Pillow. Instálalo con: python -m pip install Pillow"
-    ) from exc
+    raise SystemExit("Falta Pillow. Instálalo con: python -m pip install Pillow") from exc
 
 
 # region [01] Memory admission
@@ -57,9 +55,7 @@ def entropy(gray: Image.Image) -> float:
     total = sum(histogram)
     if not total:
         return 0.0
-    return -sum(
-        (count / total) * math.log2(count / total) for count in histogram if count
-    )
+    return -sum((count / total) * math.log2(count / total) for count in histogram if count)
 
 
 def projection_features(edges: Image.Image) -> tuple[float, float, float]:
@@ -180,9 +176,7 @@ def _extract_admitted_features(
                     neutral += high - low <= 24
                     color_range_sum += high - low
                     brightness_sum += value
-                    greenish += (
-                        green > red * 1.08 and green > blue * 1.05 and green >= 55
-                    )
+                    greenish += green > red * 1.08 and green > blue * 1.05 and green >= 55
                     warm += red > blue * 1.15 and red > green * 1.03 and red >= 70
                     skin += is_skin_tone((red, green, blue))
 
@@ -205,16 +199,13 @@ def _extract_admitted_features(
                     center_data = center.tobytes()
                     center_total = max(1, len(center_data) // 3)
                     central_skin_fraction = (
-                        sum(is_skin_tone(pixel) for pixel in _triples(center_data))
-                        / center_total
+                        sum(is_skin_tone(pixel) for pixel in _triples(center_data)) / center_total
                     )
 
                 with rgb.convert("L") as gray:
                     with gray.filter(ImageFilter.FIND_EDGES) as edges:
                         edge_histogram = edges.histogram()
-                        edge_fraction = sum(edge_histogram[48:]) / max(
-                            1, sum(edge_histogram)
-                        )
+                        edge_fraction = sum(edge_histogram[48:]) / max(1, sum(edge_histogram))
                         horizontal, vertical, text_bands = projection_features(edges)
                         edge_strength = ImageStat.Stat(edges).mean[0] / 255
                     brightness_std = ImageStat.Stat(gray).stddev[0] / 255
@@ -292,9 +283,7 @@ def _extract_features_once(
                 raise ValueError("dimensiones inválidas")
             fmt = (source.format or path.suffix.lstrip(".")).upper()
             admission = (
-                memory_gate.admit(
-                    estimated_image_memory_bytes(width, height, file_size)
-                )
+                memory_gate.admit(estimated_image_memory_bytes(width, height, file_size))
                 if memory_gate is not None
                 else nullcontext()
             )

@@ -191,6 +191,30 @@ def test_trusted_deep_requires_exact_canonical_root(tmp_path: Path) -> None:
         )
 
 
+def test_trusted_deep_missing_canonical_root_preserves_requirement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "other-project"
+    root.mkdir()
+    missing = tmp_path / "missing-canonical-root"
+    monkeypatch.setattr(cli_validation, "trusted_deep_expected_root", lambda: missing)
+
+    with pytest.raises(
+        SystemExit,
+        match="requires the exact canonical root; canonical root identity cannot be verified",
+    ):
+        _validate(
+            "--self-analysis",
+            "--analysis-profile",
+            "trusted-deep",
+            "--root",
+            str(root),
+            "--state-directory",
+            str(tmp_path / "state"),
+        )
+
+
 def test_trusted_deep_normalizes_bounded_selection(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
