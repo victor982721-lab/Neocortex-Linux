@@ -128,8 +128,10 @@ jobs:
             --find-links "$RUNNER_TEMP/neocortex-input-wheels" \
             --constraint constraints.txt ".[full]"
           python -m pip check
-          python -I tools/pyright_runtime.py install --target "$RUNNER_TEMP/pyright"
-          echo "$RUNNER_TEMP/pyright/node_modules/.bin" >> "$GITHUB_PATH"
+          runtime=$(python -c 'import sys; print(sys.prefix)')
+          pyright_root="$runtime/tools/pyright"
+          python -I tools/pyright_runtime.py install --target "$pyright_root"
+          echo "$pyright_root/node_modules/.bin" >> "$GITHUB_PATH"
 
       - name: Provision and verify the isolated Semgrep test runtime
         run: |
@@ -170,7 +172,8 @@ jobs:
       - name: Reverify locked Pyright runtime after untrusted tests
         run: |
           set -euo pipefail
-          python -I tools/pyright_runtime.py verify --target "$RUNNER_TEMP/pyright"
+          runtime=$(python -c 'import sys; print(sys.prefix)')
+          python -I tools/pyright_runtime.py verify --target "$runtime/tools/pyright"
           test "$(pyright --version)" = "pyright 1.1.411"
 
       - name: Enforce Ruff, Mypy and Pyright no-regression baseline

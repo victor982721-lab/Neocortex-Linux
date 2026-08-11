@@ -206,6 +206,12 @@ def test_push_ci_uses_dynamic_total_shards_instead_of_manual_test_lists() -> Non
     assert "tesseract-ocr-deu tesseract-ocr-chi-sim tesseract-ocr-chi-tra" in quality
     assert "semgrep_tool_runtime.py install" in fast_and_quality
     assert "runtime=$(python -c 'import sys; print(sys.prefix)')" in quality
+    assert 'pyright_root="$runtime/tools/pyright"' in quality
+    assert 'pyright_runtime.py install --target "$pyright_root"' in quality
+    assert 'pyright_runtime.py verify --target "$runtime/tools/pyright"' in quality
+    assert quality.index('pyright_root="$runtime/tools/pyright"') < quality.index(
+        "quality_gate.py coverage"
+    )
     assert quality.index("semgrep_tool_runtime.py install") < quality.index(
         "quality_gate.py coverage"
     )
