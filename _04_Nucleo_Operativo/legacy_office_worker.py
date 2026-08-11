@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
-import shutil
 import sys
 import tempfile
 import xml.etree.ElementTree as ET
@@ -14,6 +14,8 @@ from pathlib import Path
 
 from .bounded_subprocess import SubprocessOutputLimitError, run_bounded_capture
 
+_MAX_BACKEND_BYTES = 16 * 1024 * 1024
+
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
@@ -21,7 +23,14 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-input-bytes", type=int, required=True)
     parser.add_argument("--max-chars", type=int, required=True)
     parser.add_argument("--timeout", type=float, required=True)
-    parser.add_argument("--libreoffice-cmd")
+    parser.add_argument(
+        "--backend",
+        choices=("soffice", "libreoffice", "catdoc", "xls2csv", "catppt"),
+        required=True,
+    )
+    parser.add_argument("--backend-command", required=True)
+    parser.add_argument("--backend-sha256", required=True)
+    parser.add_argument("--backend-size", type=int, required=True)
     return parser
 
 
@@ -78,12 +87,14 @@ def _ooxml_text(path: Path, kind: str, max_chars: int) -> tuple[str, bool]:
     return "\n".join(parts), truncated
 
 
-def _fallback_extract(source: Path, kind: str, max_chars: int, timeout: float) -> str | None:
-    executable = shutil.which({"doc": "catdoc", "xls": "xls2csv", "ppt": "catppt"}[kind])
-    if executable is None:
-        return None
+def _fallback_extract(
+    source: Path,
+    executable: Path,
+    max_chars: int,
+    timeout: float,
+) -> str | None:
     result = run_bounded_capture(
-        (executable, str(source)),
+        (str(executable), str(source)),
         timeout_seconds=timeout,
         stdout_limit_bytes=max(64 * 1024, max_chars * 6 + 64 * 1024),
         stderr_limit_bytes=256 * 1024,
@@ -98,10 +109,8 @@ def _libreoffice_extract(
     output: Path,
     profile: Path,
     args: argparse.Namespace,
+    executable: Path,
 ) -> tuple[str, bool, str] | None:
-    executable = args.libreoffice_cmd or shutil.which("soffice") or shutil.which("libreoffice")
-    if executable is None:
-        return None
     target = "txt:Text" if args.kind == "doc" else "xlsx" if args.kind == "xls" else "pptx"
     environment = dict(os.environ)
     environment.update(
@@ -109,7 +118,7 @@ def _libreoffice_extract(
         USERPROFILE=str(profile.parent),
     )
     command = (
-        executable,
+        str(executable),
         "--headless",
         "--nologo",
         "--nodefault",
@@ -142,6 +151,46 @@ def _libreoffice_extract(
     return value, truncated, f"libreoffice_{target}"
 
 
+def _verified_backend(args: argparse.Namespace) -> Path:
+    allowed = {
+        "doc": {"soffice", "libreoffice", "catdoc"},
+        "xls": {"soffice", "libreoffice", "xls2csv"},
+        "ppt": {"soffice", "libreoffice", "catppt"},
+    }
+    if args.backend not in allowed[args.kind]:
+        raise ValueError("legacy Office backend is incompatible with document kind")
+    if args.backend_size < 0 or args.backend_size > _MAX_BACKEND_BYTES:
+        raise ValueError("legacy Office backend size is invalid")
+    if len(args.backend_sha256) != 64 or any(
+        character not in "0123456789abcdef" for character in args.backend_sha256
+    ):
+        raise ValueError("legacy Office backend SHA-256 is invalid")
+    command = Path(args.backend_command).expanduser().resolve(strict=True)
+    before = command.stat()
+    if not command.is_file() or not os.access(command, os.X_OK):
+        raise ValueError("legacy Office backend is not an executable file")
+    if before.st_size != args.backend_size:
+        raise ValueError("legacy Office backend size changed after selection")
+    digest = hashlib.sha256()
+    hashed_bytes = 0
+    with command.open("rb") as stream:
+        while chunk := stream.read(min(1024 * 1024, _MAX_BACKEND_BYTES + 1 - hashed_bytes)):
+            hashed_bytes += len(chunk)
+            if hashed_bytes > _MAX_BACKEND_BYTES:
+                raise ValueError("legacy Office backend exceeds the verified size limit")
+            digest.update(chunk)
+        after = os.fstat(stream.fileno())
+    if (
+        before.st_dev != after.st_dev
+        or before.st_ino != after.st_ino
+        or before.st_size != after.st_size
+        or before.st_mtime_ns != after.st_mtime_ns
+        or digest.hexdigest() != args.backend_sha256
+    ):
+        raise ValueError("legacy Office backend identity changed after selection")
+    return command
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     if args.max_input_bytes < 1 or args.max_chars < 1 or args.timeout <= 0:
@@ -160,17 +209,36 @@ def main(argv: list[str] | None = None) -> int:
             output.mkdir()
             profile.mkdir()
             source.write_bytes(payload)
-            extracted = _libreoffice_extract(source, output, profile, args)
-            if extracted is None:
-                fallback = _fallback_extract(source, args.kind, args.max_chars, args.timeout)
-                if fallback is None:
-                    _emit({"ok": False, "reason": "legacy_office_extractor_unavailable"})
-                    return 3
-                extracted = (
-                    fallback[: args.max_chars],
-                    len(fallback) > args.max_chars,
-                    {"doc": "catdoc", "xls": "xls2csv", "ppt": "catppt"}[args.kind],
+            backend = _verified_backend(args)
+            if args.backend in {"soffice", "libreoffice"}:
+                extracted = _libreoffice_extract(
+                    source,
+                    output,
+                    profile,
+                    args,
+                    backend,
                 )
+            else:
+                fallback = _fallback_extract(
+                    source,
+                    backend,
+                    args.max_chars,
+                    args.timeout,
+                )
+                extracted = (
+                    None
+                    if fallback is None
+                    else (
+                        fallback[: args.max_chars],
+                        len(fallback) > args.max_chars,
+                        args.backend,
+                    )
+                )
+            if extracted is None:
+                _emit({"ok": False, "reason": "legacy_office_selected_backend_failed"})
+                return 3
+            if _verified_backend(args) != backend:
+                raise ValueError("legacy Office backend changed during extraction")
     except (
         OSError,
         RuntimeError,
@@ -186,11 +254,12 @@ def main(argv: list[str] | None = None) -> int:
             }
         )
         return 2
-    text, truncated, backend = extracted
+    text, truncated, conversion = extracted
     _emit(
         {
             "ok": True,
-            "backend": backend,
+            "backend": args.backend,
+            "conversion": conversion,
             "text": text,
             "truncated": truncated,
         }

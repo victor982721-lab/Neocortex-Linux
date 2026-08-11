@@ -141,9 +141,10 @@ existe cuando se cumplen juntos los criterios dinámicos de la última sección.
 - Text schema 2 registra la cadena owner-local `RevisionRef -> text.extract/v2
   -> text_representation/text_fts`: intento durable, bindings exactos,
   materializaciones, heads, `WorkReceipt` terminal y outbox se confirman sin
-  falsa atomicidad cross-owner. Cache/replay exigen outputs físicos vigentes y
-  causación exacta; fallo, cancelación, crash y rollback no publican outputs
-  parciales.
+  falsa atomicidad cross-owner. En el provider builtin, cache/replay exigen
+  outputs físicos vigentes y causación exacta; Office heredado se mantiene
+  `non_replayable` y nunca reutiliza éxitos ni fallos. Fallo, cancelación, crash
+  y rollback no publican outputs parciales.
 - La migración Text 1→2 conserva documentos/FTS y deja el legado explícitamente
   `legacy_unattributed`; no inventa receipts. Los readers validan facts
   normalizados, receipts canónicos, publicación física e identidad histórica y
@@ -171,6 +172,48 @@ existe cuando se cumplen juntos los criterios dinámicos de la última sección.
   Office y el historial Semantic pre-v7 no se presentan como linaje completo.
   El SHA comprometido, la release instalada y GitHub Actions siguen siendo la
   evidencia dinámica de entrega, no este texto.
+
+## Corte evolutivo actual — CapabilityManifest + CapabilityBroker v1
+
+- El árbol fuente incorpora contratos stdlib-only, inmutables y acotados para
+  manifests, requests, política, readiness, evaluación y selección/abstención.
+  Sus serializaciones canónicas exponen fingerprints de request, política,
+  manifest y selección; el broker no importa engines, abre estado ni descarga
+  modelos.
+- La única integración productiva de este corte es `text.extract/v2`, con
+  manifests estáticos para `neocortex.text.builtin` y
+  `neocortex.text.legacy-office-worker`. La selección ocurre por candidato y
+  aplica plataforma, schemas, MIME/tamaño, reproducibilidad, readiness y la
+  política `neocortex-text-local-v1`: local-only, sin red y sin GPU. El builtin
+  permanece `environment_bound`, `incremental=true` y cacheable; el worker v2
+  declara `best_effort`/`non_replayable`/`incremental=false`. Las solicitudes
+  exigen incrementalidad sólo para MIME builtin.
+- Texto/EML sigue funcionando sin LibreOffice. DOC/XLS/PPT heredado sólo elige
+  el worker si observa y fija `soffice`/`libreoffice` o el backend exacto del
+  MIME; el worker verifica su SHA-256/tamaño antes y después y no cambia de
+  backend silenciosamente. Ante ausencia se abstiene, confirma el receipt de
+  fallo y no publica materializaciones ni heads.
+- La identidad Office atesta únicamente el launcher seleccionado, no una
+  clausura transitiva arbitraria de engines, librerías o procesos descendientes.
+  Por ello Text vuelve a ejecutar siempre Office heredado y no consulta su caché
+  de éxito ni de fallo, incluso cuando la firma no cambió; el receipt conserva
+  `non_replayable`. Office sigue seleccionable, pero el coste explícito es que no
+  procesa únicamente candidatos legacy cambiados.
+- Los receipts Text ligan provider y versión, fingerprint de manifest,
+  política, readiness y fingerprint de selección con la firma de
+  procesamiento. El fingerprint del manifest no se presenta como digest de
+  implementación; la identidad del ejecutable Office se registra por separado
+  sin sobreafirmar certificación supply-chain.
+- `Neocortex doctor capabilities --select text.extract --mime-type MIME
+  --input-bytes BYTES [--json]` explica la decisión con schema
+  `neocortex.capability-selection/v1`. El reporte agregado sin `--select`
+  conserva schema 1 y no construye el broker; ambos son ligeros y no crean
+  estado.
+- **PLANNED:** PDF, DOCX, la ruta Office, Semantic y plugins/providers externos
+  todavía no consumen este broker. No existe autodescubrimiento de plugins ni
+  se añadieron dependencias pesadas obligatorias.
+- Este handoff describe el comportamiento del árbol; no sustituye tests, gates,
+  commit, release instalada ni CI del SHA final.
 
 ## Capacidades que permanecen fail-closed
 
@@ -221,18 +264,16 @@ existe cuando se cumplen juntos los criterios dinámicos de la última sección.
 
 ## Próximos pasos, en orden
 
-1. Implementar `CapabilityManifest + CapabilityBroker` como siguiente vertical
-   slice, evolucionando `RuntimeCapabilitySpec` sin providers pesados
-   obligatorios y con selección explicable.
-2. Extender el mismo contrato causal a PDF/DOCX/Office sólo después de una ruta
-   a la vez y sin reescribir extractores; mantener el legado no atribuible.
-3. Añadir `Knowledge Asset Health + ReviewTask`, empezando por preselección
+1. Añadir `Knowledge Asset Health + ReviewTask`, empezando por preselección
    durable y acotada para `review value --scope personal`.
-4. Mantener `normalize`/`chunk` como deuda explícita hasta identificar fronteras
+2. Extender manifests, broker y el contrato causal a PDF/DOCX/Office sólo una
+   ruta a la vez, con characterization tests y sin reescribir extractores;
+   mantener el legado no atribuible.
+3. Mantener `normalize`/`chunk` como deuda explícita hasta identificar fronteras
    ejecutables reales; no crear stages nominales que no correspondan a trabajo.
-5. Etiquetar con Víctor 20–50 consultas ES/EN/DE/ZH y comparar MiniLM/CLIP
+4. Etiquetar con Víctor 20–50 consultas ES/EN/DE/ZH y comparar MiniLM/CLIP
    shadow sin mezclar espacios ni promover por intuición.
-6. Diseñar el backend Linux identity-bound sólo si la organización física en
+5. Diseñar el backend Linux identity-bound sólo si la organización física en
    Kubuntu se vuelve prioridad; hasta entonces mantener el rechazo actual.
 
 ## Criterio dinámico de cierre de 0.9.0
@@ -248,7 +289,9 @@ el mismo SHA comprometido y un worktree limpio:
 5. antes de la primera corrida 0.9 se respalda cada SQLite con la API de backup
    online y se verifica integridad/FK de las copias;
 6. dos corridas `Neocortex --all` desde el launcher final terminan en dry-run,
-   migran Dedup a v10, conservan originales y demuestran replay incremental;
+   migran Dedup a v10, conservan originales y demuestran replay incremental en
+   providers replayables; Office heredado debe mostrar su reejecución
+   `non_replayable` en vez de fingir cache hit;
 7. las trece bases, corpus before/after, status/search/ask/review, MCP stdio y GUI
    instalados aprueban;
 8. el push de GitHub termina con todos los checks verdes y GitHub sólo expone

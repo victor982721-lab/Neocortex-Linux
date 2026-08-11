@@ -17,6 +17,10 @@ El flujo personal normal es deliberadamente corto:
    incremental.
 5. Escala sólo después de revisar resultados, errores, velocidad y proyección.
 
+La incrementalidad no se presume para providers declarados
+`non_replayable`: esos candidatos deben volver a ejecutarse y mostrar ese coste
+explícitamente, aunque el resto de la corrida reutilice estado compatible.
+
 `--all`, el watcher, una indexación Semantic completa, una auditoría integral y
 un ciclo de release no son pruebas iniciales. Si el piloto no produce algo útil,
 se detiene y se corrige. La continuación técnica vigente, con el estado
@@ -82,6 +86,18 @@ locales, `Neocortex agent serve` expone por MCP/stdio sólo `status`, `search`,
 históricos siguen disponibles para automatización y producción de estado.
 `inspect lineage` explica receipts, revisiones, materializaciones y dependencias
 Text/Semantic ya publicadas; tampoco ejecuta extractores ni migra owners.
+
+La selección del extractor Text también puede inspeccionarse antes de procesar
+un archivo. Es una consulta local, sin modelos ni escritura de estado:
+
+```bash
+Neocortex doctor capabilities --select text.extract \
+  --mime-type text/plain --input-bytes 4096
+```
+
+La salida explica la implementación elegida o cada causa de abstención. El
+diagnóstico agregado `Neocortex doctor capabilities [--json]` conserva su
+contrato schema 1; la selección por trabajo sólo se activa con `--select`.
 
 ## Topología canónica por usuario
 
@@ -353,6 +369,39 @@ Neocortex --catalog-preview 25
 catálogo puede proponer clasificación y nombres —por ejemplo, el asunto de un
 EML—, pero en Linux sigue sin existir autoridad de movimiento. Semantic acepta
 esta caché mediante `--semantic-source text`.
+
+**IMPLEMENTED — broker para Text.** Antes de extraer cada candidato, la ruta
+evalúa manifests estáticos y versionados para `neocortex.text.builtin` y
+`neocortex.text.legacy-office-worker`. La política vigente exige ejecución
+local/offline, MIME exacto, plataforma compatible y runtime disponible; no elige
+simplemente el primer provider registrado. El builtin de texto/EML sigue siendo
+`environment_bound` y puede reutilizar un resultado o fallo compatible bajo las
+validaciones Text existentes. DOC/XLS/PPT heredado usa el provider worker v2,
+declarado `best_effort` y `non_replayable`: requiere demostrar y fijar
+`soffice`/`libreoffice` o el backend específico del formato, pero sólo puede
+atestar ese launcher, no la clausura transitiva arbitraria de engines,
+dependencias o procesos que éste invoque. Por ello cada candidato Office
+heredado vuelve a ejecutarse y nunca reutiliza un éxito ni un fallo previo.
+Su manifest declara además `incremental=false`: no se presenta como una ruta que
+procese únicamente cambios. Es el coste deliberado de no fingir reproducibilidad
+ni cobertura transitiva. Ante ausencia de backend se abstiene, persiste un
+receipt de fallo explicable y no publica outputs parciales; después de iniciar
+un intento tampoco cambia silenciosamente a otra alternativa.
+
+Los receipts Text ligan la firma de procesamiento con provider y versión,
+fingerprint del manifest, política, readiness observado y fingerprint de la
+selección. Para Office heredado, readiness incorpora SHA-256, tamaño e identidad
+hasheada de la ubicación del ejecutable fijado; el worker los revalida antes y
+después del uso. Esto liga la corrida al artefacto observado, pero no constituye
+por sí solo una certificación supply-chain del proveedor ni vuelve reproducible
+su ejecución transitiva. El receipt legacy conserva clase `non_replayable`; los
+manifests y el broker son stdlib-only y no cargan providers, engines ni modelos
+al inspeccionarlos.
+
+**PLANNED — no implementado en este corte.** Las rutas nativas `pdf`, `docx` y
+`office`, Semantic y plugins/providers externos todavía no consumen este
+broker. Se incorporarán una ruta a la vez, sin reescribir extractores ni añadir
+dependencias base obligatorias.
 
 ### Imágenes completas y búsqueda multimodal
 

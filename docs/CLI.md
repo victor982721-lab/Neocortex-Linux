@@ -490,6 +490,7 @@ corpus:
 Neocortex --status
 Neocortex --status --status-run 40 --status-json
 Neocortex doctor capabilities
+Neocortex doctor capabilities --select text.extract --mime-type text/plain --input-bytes 4096
 Neocortex doctor platform
 Neocortex doctor platform --json
 Neocortex models status
@@ -512,6 +513,54 @@ eso no convierte el diagnóstico en una operación de reparación.
 `doctor capabilities` comprueba la presencia de dependencias sin cargar
 modelos; los diagnósticos profundos siguen siendo específicos de PDF/OCR,
 audio, código y estado semántico.
+
+Sin opciones de selección, `doctor capabilities [--json]` conserva exactamente
+el reporte agregado schema 1 de `RuntimeCapabilitySpec`, incluido su orden y
+semántica de salida. El broker por trabajo es opt-in y en este corte sólo admite
+`text.extract`:
+
+```bash
+Neocortex doctor capabilities --select text.extract \
+  --mime-type text/plain --input-bytes 4096
+Neocortex doctor capabilities --select text.extract \
+  --mime-type application/msword --input-bytes 120000 --json
+```
+
+`--mime-type` debe ser un MIME exacto y `--input-bytes` un entero no negativo;
+ambos son obligatorios con `--select`. La solicitud fija además modalidad
+documental, schemas Text y plataforma viva; admite `environment_bound` o
+`non_replayable` según el manifest elegido. Sólo los MIME del provider builtin
+exige `incremental=true`; para DOC/XLS/PPT la solicitud no impone
+incrementalidad, porque su manifest declara `incremental=false`. La política
+`neocortex-text-local-v1` prohíbe red, sólo admite privacidad `local_only` y no
+presupone GPU.
+
+La salida humana nombra implementación, provider/versión, razones de selección
+y evaluación de cada candidato. Con `--json` emite un documento canónico schema
+`neocortex.capability-selection/v1` con request, política, candidato elegido o
+`null`, readiness, rechazos/preferencias y fingerprints de request, política,
+manifest y selección. `status=selected` devuelve `0`; una abstención explicable
+`status=unavailable` devuelve `2`; un error fatal del probe devuelve `1`. La
+consulta no abre ni crea estado, no carga providers/engines/modelos y no descarga
+modelos.
+
+La selección productiva se ejecuta también por cada candidato de la ruta Text.
+Texto/EML usa `neocortex.text.builtin` sin depender de LibreOffice; DOC/XLS/PPT
+heredado sólo elige `neocortex.text.legacy-office-worker` si existe
+`soffice`/`libreoffice` o el backend exacto del MIME. La salida muestra la
+identidad SHA-256 del ejecutable fijado. El worker no cambia de backend si éste
+falla. El builtin es `environment_bound` y cacheable; el worker Office v2 se
+declara `best_effort`/`non_replayable` e `incremental=false` porque la identidad
+sólo atesta el launcher, no todos los engines, librerías o descendientes que
+pueda invocar. Text vuelve a ejecutar siempre un candidato Office heredado y no
+reutiliza ni su resultado ni su fallo previos, incluso con la misma firma. El
+tradeoff operativo es explícito: Office sigue seleccionable, pero esta vertical
+no promete procesar sólo archivos legacy cambiados. En ausencia de un provider
+elegible, confirma un receipt de fallo y no publica materializaciones parciales.
+
+**PLANNED — no disponible mediante `--select`.** PDF, DOCX, la ruta Office,
+Semantic y plugins/providers externos todavía no consumen este broker. Una
+solicitud distinta de `text.extract` se rechaza durante validación.
 
 `doctor platform` tampoco crea estado. Su esquema versionado informa sistema,
 rutas, backend de inventario, identidad, contención, elevación y mutación. En
@@ -959,6 +1008,7 @@ por familia:
 | `--archive-json` | Estado o resultados ZIP; exige exactamente una acción `--archive-*`. |
 | `--knowledge-json` | Snapshot, resultado de búsqueda o contexto Knowledge; exige exactamente una acción `--knowledge-*`. |
 | `inspect lineage --json` | Linaje owner-local y proyección causal acotada para el identificador; no migra estado. |
+| `doctor capabilities --json` | Reporte agregado schema 1; con `--select text.extract --mime-type MIME --input-bytes BYTES`, selección explicable schema `neocortex.capability-selection/v1`. |
 | `doctor platform --json` | Un documento JSON versionado de política y capacidades de plataforma. |
 | `models prepare/status --json` | Un documento JSON versionado del conjunto de modelos gestionados. |
 
@@ -972,7 +1022,7 @@ y compruebe siempre el código de salida.
 |---:|---|
 | `0` | Ayuda/versión o ejecución/consulta completada según su contrato. |
 | `1` | Excepción fatal no normalizada o fallo interno del worker de GUI. No es el código de una validación ordinaria de argumentos. |
-| `2` | Error de argumentos detectado por `argparse` o por la validación posterior, como una combinación incompatible o una solicitud Linux de `--apply`/`--organization-apply`; estado requerido ausente o incompatible; diagnóstico fallido —incluida abstención total de `--code-status`/`--code-review` ante sidecars, cerca inestable o publicación no elegible—; generación Semantic incompleta, truncada o no publicada; error de acciones u organización; conciliación con efecto ambiguo/imposible —incluso si su evento fue registrado—; plan de retención bloqueado; o, con `--strict-exit-codes`, errores/parciales retenidos por una ruta. El watcher también devuelve `2` si conserva corridas fallidas o errores de fuente. |
+| `2` | Error de argumentos detectado por `argparse` o por la validación posterior, como una combinación incompatible o una solicitud Linux de `--apply`/`--organization-apply`; abstención explicable de `doctor capabilities --select`; estado requerido ausente o incompatible; diagnóstico fallido —incluida abstención total de `--code-status`/`--code-review` ante sidecars, cerca inestable o publicación no elegible—; generación Semantic incompleta, truncada o no publicada; error de acciones u organización; conciliación con efecto ambiguo/imposible —incluso si su evento fue registrado—; plan de retención bloqueado; o, con `--strict-exit-codes`, errores/parciales retenidos por una ruta. El watcher también devuelve `2` si conserva corridas fallidas o errores de fuente. |
 | `3` | Knowledge terminó con snapshot estable y cobertura completa, pero search/context no obtuvo evidencia; Archive search/list también lo usa cuando no hay miembros coincidentes; `inspect lineage` no encontró el identificador. |
 | `4` | Knowledge produjo una respuesta parcial o no soportada; incluye propietarios necesarios ausentes. `inspect lineage` encontró evidencia incompleta, legacy o truncada. |
 | `5` | El snapshot Knowledge volvió a cambiar durante el único reintento global acotado. |

@@ -42,6 +42,12 @@ _CANONICAL_COMMANDS = {
     ),
 }
 
+_CAPABILITIES_CANONICAL_OPTIONS = {
+    "--select": "--doctor-capabilities-select",
+    "--mime-type": "--doctor-capabilities-mime-type",
+    "--input-bytes": "--doctor-capabilities-input-bytes",
+}
+
 
 def _prepend_owned_executable_directories() -> None:
     """Expose executable shims installed inside the active Neocortex runtime."""
@@ -94,6 +100,23 @@ def _print_canonical_help(command: tuple[str, str]) -> None:
         action="store_true",
         help="emit one canonical JSON capability report",
     )
+    if command == ("doctor", "capabilities"):
+        parser.add_argument(
+            "--select",
+            metavar="CAPABILITY",
+            help="explain provider selection for text.extract",
+        )
+        parser.add_argument(
+            "--mime-type",
+            metavar="MIME",
+            help="exact input MIME type for --select",
+        )
+        parser.add_argument(
+            "--input-bytes",
+            type=int,
+            metavar="BYTES",
+            help="non-negative input size for --select",
+        )
     parser.print_help()
 
 
@@ -108,11 +131,18 @@ def _translate_canonical_arguments(arguments: Sequence[str]) -> list[str]:
     translated = [flat_flag]
     translate_options = True
     for token in forwarded[2:]:
+        option, separator, value = token.partition("=")
         if token == "--":
             translate_options = False
             translated.append(token)
-        elif translate_options and token == "--json":
-            translated.append(json_flat_flag)
+        elif translate_options and option == "--json":
+            translated.append(json_flat_flag + separator + value)
+        elif (
+            translate_options
+            and command == ("doctor", "capabilities")
+            and option in _CAPABILITIES_CANONICAL_OPTIONS
+        ):
+            translated.append(_CAPABILITIES_CANONICAL_OPTIONS[option] + separator + value)
         else:
             translated.append(token)
     return translated

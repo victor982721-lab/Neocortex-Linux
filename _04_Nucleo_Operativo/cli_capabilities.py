@@ -10,11 +10,21 @@ import json
 import sys
 from enum import IntEnum
 
+from neocortex.capability_broker import (
+    CAPABILITY_SELECTION_SCHEMA,
+    CapabilityPolicy,
+    CapabilityPrivacy,
+    CapabilityRequest,
+    CapabilitySelection,
+)
 from neocortex.capabilities import (
     RUNTIME_CAPABILITY_PROBE_POLICY,
     RUNTIME_CAPABILITY_SCHEMA_VERSION,
     CapabilityState,
     RuntimeCapabilityStatus,
+    TEXT_RAW_INPUT_SCHEMA,
+    TEXT_REPRESENTATION_OUTPUT_SCHEMA,
+    build_runtime_capability_broker,
     inspect_runtime_capabilities,
 )
 
@@ -83,6 +93,119 @@ def _print_human(statuses: tuple[RuntimeCapabilityStatus, ...]) -> None:
             )
 
 
+def _runtime_platform() -> str:
+    return {"win32": "windows", "linux": "linux"}.get(sys.platform, sys.platform)
+
+
+_TEXT_LOCAL_POLICY = CapabilityPolicy(
+    policy_id="neocortex-text-local-v1",
+    allow_network=False,
+    allowed_privacy=(CapabilityPrivacy.LOCAL_ONLY,),
+    gpu_available=False,
+)
+_NON_REPLAYABLE_TEXT_MIMES = frozenset(
+    {
+        "application/msword",
+        "application/vnd.ms-excel",
+        "application/vnd.ms-powerpoint",
+    }
+)
+
+
+def _text_selection(args: argparse.Namespace) -> CapabilitySelection:
+    request = CapabilityRequest(
+        capability_id=args.doctor_capabilities_select,
+        modality="document",
+        input_schema=TEXT_RAW_INPUT_SCHEMA,
+        output_schema=TEXT_REPRESENTATION_OUTPUT_SCHEMA,
+        mime_type=args.doctor_capabilities_mime_type,
+        language="unknown",
+        input_bytes=args.doctor_capabilities_input_bytes,
+        platform=_runtime_platform(),
+        acceptable_reproducibility=("environment_bound", "non_replayable"),
+        require_incremental=(args.doctor_capabilities_mime_type not in _NON_REPLAYABLE_TEXT_MIMES),
+    )
+    broker = build_runtime_capability_broker(request)
+    return broker.select(request, _TEXT_LOCAL_POLICY)
+
+
+def _print_selection_human(selection: CapabilitySelection) -> None:
+    print(
+        f"CAPABILITY_SELECTION schema={CAPABILITY_SELECTION_SCHEMA} "
+        f"status={selection.status} "
+        f"capability={selection.request.capability_id} "
+        f"policy={selection.policy.policy_id} "
+        f"mime_type={selection.request.mime_type} "
+        f"input_bytes={selection.request.input_bytes}"
+    )
+    if selection.selected is not None:
+        print(
+            "CAPABILITY_SELECTED "
+            f"implementation={selection.selected.implementation_id} "
+            f"provider={selection.selected.provider} "
+            f"provider_version={selection.selected.provider_version or '-'}"
+        )
+    for reason in selection.explanation:
+        print(f"CAPABILITY_SELECTION_REASON value={reason}")
+    for candidate in selection.candidates:
+        rejected = ",".join(candidate.rejection_reasons) or "-"
+        preferred = ",".join(candidate.preference_reasons) or "-"
+        readiness = (
+            "unknown"
+            if candidate.availability is None
+            else "available"
+            if candidate.availability.available
+            else "unavailable"
+        )
+        binaries = (
+            "-"
+            if candidate.availability is None
+            else ",".join(
+                f"{item.name}@sha256:{item.artifact_sha256}"
+                for item in candidate.availability.binary_identities
+            )
+            or "-"
+        )
+        print(
+            "CAPABILITY_CANDIDATE "
+            f"implementation={candidate.implementation_id} "
+            f"eligible={int(candidate.eligible)} readiness={readiness} "
+            f"binaries={binaries} rejected={rejected} preferences={preferred}"
+        )
+
+
+def _run_text_selection(args: argparse.Namespace) -> int:
+    try:
+        selection = _text_selection(args)
+        serialized = (
+            json.dumps(
+                selection.to_dict(),
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+            if args.doctor_capabilities_json
+            else None
+        )
+    except Exception as exc:
+        print(
+            f"ERROR doctor-capabilities {type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+        return int(CapabilitiesExitCode.FATAL)
+
+    if serialized is not None:
+        print(serialized)
+    else:
+        _print_selection_human(selection)
+    return int(
+        CapabilitiesExitCode.SUCCESS
+        if selection.selected is not None
+        else CapabilitiesExitCode.NOT_FULLY_AVAILABLE
+    )
+
+
 # endregion [02]
 
 
@@ -91,6 +214,9 @@ def _print_human(statuses: tuple[RuntimeCapabilityStatus, ...]) -> None:
 
 def run_doctor_capabilities(args: argparse.Namespace) -> int:
     """Inspect declared runtime prerequisites without loading optional engines."""
+
+    if getattr(args, "doctor_capabilities_select", None) is not None:
+        return _run_text_selection(args)
 
     try:
         statuses = inspect_runtime_capabilities()

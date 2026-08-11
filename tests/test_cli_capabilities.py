@@ -18,12 +18,20 @@ from unittest.mock import patch
 import pytest
 
 import _04_Nucleo_Operativo.cli_capabilities as cli_capabilities
+from neocortex.capability_broker import (
+    CapabilityAvailability,
+    CapabilityBroker,
+    CapabilityRequest,
+)
 from neocortex.capabilities import (
+    CAPABILITY_MANIFESTS,
     CapabilityState,
     RequirementKind,
     RuntimeCapabilityStatus,
     RuntimeComponentStatus,
     RuntimeRequirement,
+    TEXT_BUILTIN_IMPLEMENTATION_ID,
+    TEXT_LEGACY_OFFICE_IMPLEMENTATION_ID,
 )
 from neocortex.cli import _translate_canonical_arguments, entrypoint
 from _04_Nucleo_Operativo.cli_app import main
@@ -35,6 +43,10 @@ from _04_Nucleo_Operativo.cli_validation import validate_arguments
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+EXPECTED_PLATFORM = {"win32": "windows", "linux": "linux"}.get(
+    sys.platform,
+    sys.platform,
+)
 
 
 def _python_requirement() -> RuntimeRequirement:
@@ -132,18 +144,68 @@ def test_canonical_argv_translates_to_hidden_flat_compatibility_flags() -> None:
         "--help",
     ]
 
+    with patch("_04_Nucleo_Operativo.cli_app.main", return_value=3) as run_cli:
+        result = entrypoint(
+            (
+                "doctor",
+                "capabilities",
+                "--select=text.extract",
+                "--mime-type",
+                "text/plain",
+                "--input-bytes=42",
+                "--json",
+            )
+        )
+
+    assert result == 3
+    run_cli.assert_called_once_with(
+        [
+            "--doctor-capabilities",
+            "--doctor-capabilities-select=text.extract",
+            "--doctor-capabilities-mime-type",
+            "text/plain",
+            "--doctor-capabilities-input-bytes=42",
+            "--doctor-capabilities-json",
+        ]
+    )
+
 
 def test_flat_alias_is_explicit_but_hidden_from_global_help() -> None:
     parser = build_parser()
-    args = parser.parse_args(("--doctor-capabilities", "--doctor-capabilities-json"))
+    args = parser.parse_args(
+        (
+            "--doctor-capabilities",
+            "--doctor-capabilities-json",
+            "--doctor-capabilities-select",
+            "text.extract",
+            "--doctor-capabilities-mime-type",
+            "text/plain",
+            "--doctor-capabilities-input-bytes",
+            "42",
+        )
+    )
 
     assert parser.allow_abbrev is False
     assert args.doctor_capabilities is True
     assert args.doctor_capabilities_json is True
-    assert args._explicit_options == frozenset({"doctor_capabilities", "doctor_capabilities_json"})
+    assert args.doctor_capabilities_select == "text.extract"
+    assert args.doctor_capabilities_mime_type == "text/plain"
+    assert args.doctor_capabilities_input_bytes == 42
+    assert args._explicit_options == frozenset(
+        {
+            "doctor_capabilities",
+            "doctor_capabilities_json",
+            "doctor_capabilities_select",
+            "doctor_capabilities_mime_type",
+            "doctor_capabilities_input_bytes",
+        }
+    )
     help_text = parser.format_help()
     assert "--doctor-capabilities" not in help_text
     assert "--doctor-capabilities-json" not in help_text
+    assert "--doctor-capabilities-select" not in help_text
+    assert "--doctor-capabilities-mime-type" not in help_text
+    assert "--doctor-capabilities-input-bytes" not in help_text
 
 
 def test_canonical_help_is_specific_without_changing_global_parser_help(
@@ -155,6 +217,9 @@ def test_canonical_help_is_specific_without_changing_global_parser_help(
     assert captured.err == ""
     assert "usage: Neocortex doctor capabilities [-h] [--json]" in captured.out
     assert "--json" in captured.out
+    assert "--select" in captured.out
+    assert "--mime-type" in captured.out
+    assert "--input-bytes" in captured.out
     assert "--doctor-capabilities" not in captured.out
 
 
@@ -173,6 +238,11 @@ def test_available_capabilities_emit_canonical_json_and_exit_zero(
             "dumps",
             wraps=json.dumps,
         ) as dumps,
+        patch.object(
+            cli_capabilities,
+            "build_runtime_capability_broker",
+            side_effect=AssertionError("selection must remain opt-in"),
+        ) as build_broker,
     ):
         code = entrypoint(("doctor", "capabilities", "--json"))
 
@@ -200,6 +270,232 @@ def test_available_capabilities_emit_canonical_json_and_exit_zero(
         + "\n"
     )
     assert dumps.call_args.kwargs["allow_nan"] is False
+    build_broker.assert_not_called()
+
+
+def _selection_request(
+    *,
+    input_bytes: int,
+    platform: str = EXPECTED_PLATFORM,
+) -> CapabilityRequest:
+    return CapabilityRequest(
+        capability_id="text.extract",
+        modality="document",
+        input_schema="neocortex.raw-bytes/v1",
+        output_schema="neocortex.text-representation/v1",
+        platform=platform,
+        mime_type="text/plain",
+        language="unknown",
+        input_bytes=input_bytes,
+        acceptable_reproducibility=("environment_bound", "non_replayable"),
+        require_incremental=True,
+    )
+
+
+def _text_broker(
+    request: CapabilityRequest,
+    *,
+    builtin_available: bool = True,
+) -> CapabilityBroker:
+    return CapabilityBroker(
+        CAPABILITY_MANIFESTS,
+        (
+            CapabilityAvailability(
+                TEXT_BUILTIN_IMPLEMENTATION_ID,
+                CAPABILITY_MANIFESTS[0].contract_fingerprint,
+                request.execution_contract_fingerprint,
+                available=builtin_available,
+                reasons=() if builtin_available else ("fixture_builtin_unavailable",),
+                observed_components=("xxhash",) if builtin_available else (),
+            ),
+            CapabilityAvailability(
+                TEXT_LEGACY_OFFICE_IMPLEMENTATION_ID,
+                CAPABILITY_MANIFESTS[1].contract_fingerprint,
+                request.execution_contract_fingerprint,
+                available=False,
+                reasons=("fixture_legacy_unavailable",),
+            ),
+        ),
+    )
+
+
+def test_text_selection_emits_explainable_canonical_json_and_exit_zero(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def build_broker(request):
+        assert request.capability_id == "text.extract"
+        assert request.modality == "document"
+        assert request.mime_type == "text/plain"
+        assert request.input_bytes == 42
+        assert request.language == "unknown"
+        assert request.platform == EXPECTED_PLATFORM
+        assert request.acceptable_reproducibility == (
+            "environment_bound",
+            "non_replayable",
+        )
+        assert request.require_incremental is True
+        return _text_broker(request)
+
+    with patch.object(
+        cli_capabilities,
+        "build_runtime_capability_broker",
+        side_effect=build_broker,
+    ):
+        code = entrypoint(
+            (
+                "doctor",
+                "capabilities",
+                "--select",
+                "text.extract",
+                "--mime-type",
+                "text/plain",
+                "--input-bytes",
+                "42",
+                "--json",
+            )
+        )
+
+    assert code == 0
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    payload = json.loads(captured.out)
+    assert payload["schema"] == "neocortex.capability-selection/v1"
+    assert payload["status"] == "selected"
+    assert payload["request"]["mime_type"] == "text/plain"
+    assert payload["request"]["input_bytes"] == 42
+    assert payload["request"]["platform"] == EXPECTED_PLATFORM
+    assert payload["policy"]["policy_id"] == "neocortex-text-local-v1"
+    assert payload["policy"]["allow_network"] is False
+    assert payload["policy"]["allowed_privacy"] == ["local_only"]
+    assert payload["policy"]["gpu_available"] is False
+    assert payload["selected"]["implementation_id"] == (TEXT_BUILTIN_IMPLEMENTATION_ID)
+    assert payload["selected"]["provider"] == "neocortex-builtin"
+    assert payload["explanation"][0] == (f"selected:{TEXT_BUILTIN_IMPLEMENTATION_ID}")
+    assert payload["models_loaded"] is False
+    assert payload["models_downloaded"] is False
+    assert captured.out == (
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        + "\n"
+    )
+
+
+def test_text_selection_abstains_with_candidate_reasons_and_exit_two(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with patch.object(
+        cli_capabilities,
+        "build_runtime_capability_broker",
+        return_value=_text_broker(
+            _selection_request(input_bytes=0),
+            builtin_available=False,
+        ),
+    ):
+        code = entrypoint(
+            (
+                "doctor",
+                "capabilities",
+                "--select",
+                "text.extract",
+                "--mime-type",
+                "text/plain",
+                "--input-bytes",
+                "0",
+                "--json",
+            )
+        )
+
+    assert code == 2
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    payload = json.loads(captured.out)
+    assert payload["status"] == "unavailable"
+    assert payload["selected"] is None
+    assert payload["explanation"] == [
+        "unavailable:text.extract",
+        "rejected_candidates:2",
+    ]
+    candidates = {item["implementation_id"]: item for item in payload["candidates"]}
+    assert candidates[TEXT_BUILTIN_IMPLEMENTATION_ID]["rejection_reasons"] == [
+        "fixture_builtin_unavailable"
+    ]
+    assert (
+        "mime_type_unsupported"
+        in candidates[TEXT_LEGACY_OFFICE_IMPLEMENTATION_ID]["rejection_reasons"]
+    )
+
+
+def test_text_selection_human_output_names_provider_and_policy(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with patch.object(
+        cli_capabilities,
+        "build_runtime_capability_broker",
+        return_value=_text_broker(_selection_request(input_bytes=5)),
+    ):
+        code = entrypoint(
+            (
+                "doctor",
+                "capabilities",
+                "--select",
+                "text.extract",
+                "--mime-type",
+                "text/plain",
+                "--input-bytes",
+                "5",
+            )
+        )
+
+    assert code == 0
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert (
+        "CAPABILITY_SELECTION schema=neocortex.capability-selection/v1 "
+        "status=selected capability=text.extract "
+        "policy=neocortex-text-local-v1"
+    ) in captured.out
+    assert (
+        "CAPABILITY_SELECTED implementation=neocortex.text.builtin "
+        "provider=neocortex-builtin provider_version=text-route-v2"
+    ) in captured.out
+    assert "CAPABILITY_SELECTION_REASON value=selected:neocortex.text.builtin" in (captured.out)
+
+
+def test_text_selection_fails_closed_on_an_unknown_platform(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with (
+        patch.object(cli_capabilities.sys, "platform", "darwin"),
+        patch.object(
+            cli_capabilities,
+            "build_runtime_capability_broker",
+            return_value=_text_broker(_selection_request(input_bytes=5, platform="darwin")),
+        ),
+    ):
+        code = entrypoint(
+            (
+                "doctor",
+                "capabilities",
+                "--select",
+                "text.extract",
+                "--mime-type",
+                "text/plain",
+                "--input-bytes",
+                "5",
+                "--json",
+            )
+        )
+
+    assert code == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["request"]["platform"] == "darwin"
+    assert payload["status"] == "unavailable"
+    assert payload["candidates"][0]["rejection_reasons"] == ["platform_unsupported"]
 
 
 @pytest.mark.parametrize(
@@ -274,6 +570,86 @@ def test_fatal_probe_error_exits_one_without_partial_stdout(
         (
             ("--doctor-capabilities", "--route", "pdf"),
             "doctor capabilities cannot be combined with --route",
+        ),
+        (
+            ("--doctor-capabilities-select", "text.extract"),
+            "--doctor-capabilities-select requires --doctor-capabilities",
+        ),
+        (
+            (
+                "--doctor-capabilities",
+                "--doctor-capabilities-mime-type",
+                "text/plain",
+            ),
+            "--doctor-capabilities-mime-type requires --doctor-capabilities-select",
+        ),
+        (
+            (
+                "--doctor-capabilities",
+                "--doctor-capabilities-select",
+                "text.extract",
+                "--doctor-capabilities-input-bytes",
+                "1",
+            ),
+            "--doctor-capabilities-select requires --doctor-capabilities-mime-type",
+        ),
+        (
+            (
+                "--doctor-capabilities",
+                "--doctor-capabilities-select",
+                "text.extract",
+                "--doctor-capabilities-mime-type",
+                "text/plain",
+            ),
+            "--doctor-capabilities-select requires --doctor-capabilities-input-bytes",
+        ),
+        (
+            (
+                "--doctor-capabilities",
+                "--doctor-capabilities-select",
+                "semantic.embed",
+                "--doctor-capabilities-mime-type",
+                "text/plain",
+                "--doctor-capabilities-input-bytes",
+                "1",
+            ),
+            "--doctor-capabilities-select currently supports only text.extract",
+        ),
+        (
+            (
+                "--doctor-capabilities",
+                "--doctor-capabilities-select",
+                "text.extract",
+                "--doctor-capabilities-mime-type",
+                " text/plain",
+                "--doctor-capabilities-input-bytes",
+                "1",
+            ),
+            "--doctor-capabilities-mime-type must be an exact MIME type",
+        ),
+        (
+            (
+                "--doctor-capabilities",
+                "--doctor-capabilities-select",
+                "text.extract",
+                "--doctor-capabilities-mime-type",
+                "text/*",
+                "--doctor-capabilities-input-bytes",
+                "1",
+            ),
+            "--doctor-capabilities-mime-type must be an exact MIME type",
+        ),
+        (
+            (
+                "--doctor-capabilities",
+                "--doctor-capabilities-select",
+                "text.extract",
+                "--doctor-capabilities-mime-type",
+                "text/plain",
+                "--doctor-capabilities-input-bytes",
+                "-1",
+            ),
+            "--doctor-capabilities-input-bytes cannot be negative",
         ),
     ),
 )
@@ -392,6 +768,91 @@ def test_cold_canonical_probe_loads_no_optional_engine_and_creates_no_state(
 
     assert completed.returncode == 0, completed.stderr
     assert "CAPABILITIES_COLD_OK" in completed.stdout
+
+
+def test_cold_text_selection_loads_no_provider_engine_and_creates_no_state(
+    tmp_path: Path,
+) -> None:
+    state_directory = tmp_path / "missing-state"
+    environment = os.environ.copy()
+    environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    environment["NEOCORTEX_TEST_STATE"] = str(state_directory)
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-B",
+            "-c",
+            textwrap.dedent(
+                """
+                import contextlib
+                import importlib.abc
+                import io
+                import json
+                import os
+                import sys
+                from pathlib import Path
+
+                blocked_roots = {
+                    "PIL", "PySide6", "ctranslate2", "fastembed",
+                    "faster_whisper", "fitz", "nudenet", "numpy",
+                    "pdfminer", "pytesseract",
+                }
+
+                class OptionalEngineBlocker(importlib.abc.MetaPathFinder):
+                    def find_spec(self, fullname, path=None, target=None):
+                        del path, target
+                        if fullname.partition(".")[0] in blocked_roots:
+                            raise ModuleNotFoundError(
+                                f"blocked optional engine: {fullname}",
+                                name=fullname,
+                            )
+                        return None
+
+                sys.meta_path.insert(0, OptionalEngineBlocker())
+                from neocortex.cli import entrypoint
+
+                state = Path(os.environ["NEOCORTEX_TEST_STATE"])
+                output = io.StringIO()
+                with contextlib.redirect_stdout(output):
+                    code = entrypoint((
+                        "doctor", "capabilities",
+                        "--select", "text.extract",
+                        "--mime-type", "text/plain",
+                        "--input-bytes", "42",
+                        "--json",
+                        "--state-directory", str(state),
+                    ))
+                if code != 0:
+                    raise SystemExit(f"unexpected selection exit: {code}")
+                payload = json.loads(output.getvalue())
+                if payload["schema"] != "neocortex.capability-selection/v1":
+                    raise SystemExit("unexpected capability selection schema")
+                if payload["status"] != "selected":
+                    raise SystemExit("text/plain provider was not selected")
+                if payload["models_loaded"] or payload["models_downloaded"]:
+                    raise SystemExit("capability selection touched models")
+                loaded = sorted(
+                    name for name in sys.modules
+                    if name.partition(".")[0] in blocked_roots
+                )
+                if loaded:
+                    raise SystemExit("optional engines loaded: " + ",".join(loaded))
+                if state.exists() or (state.parent / "framework.lock").exists():
+                    raise SystemExit("capability selection created state")
+                print("CAPABILITY_SELECTION_COLD_OK")
+                """
+            ),
+        ],
+        cwd=PROJECT_ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "CAPABILITY_SELECTION_COLD_OK" in completed.stdout
 
 
 # endregion [02]

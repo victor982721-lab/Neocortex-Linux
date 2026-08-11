@@ -15,6 +15,10 @@ incremental. Sus rutas actuales cubren PDF, DOCX, otros documentos Office,
 ZIP anidados, texto físico/correo/Office heredado, audio, video, imágenes y
 código.
 
+“Incremental” no significa que todo provider sea replayable: una implementación
+que no pueda cerrar su entorno declara `incremental=false`/`non_replayable` y se
+reejecuta de forma visible en vez de aparentar que procesa sólo cambios.
+
 La arquitectura persigue estos invariantes:
 
 - los archivos originales permanecen intactos salvo autorización explícita;
@@ -44,6 +48,7 @@ eludirlo.
 | Coordinación de corridas | `orchestrator.py` |
 | Knowledge Plane read-only | `knowledge_contracts.py`, `knowledge_snapshot.py`, `knowledge_planner.py`, `knowledge_search.py`, `knowledge_context.py` y `knowledge_service.py` |
 | Derivaciones reproducibles | `derivation_contracts.py`, repositorios owner-local de Text/Semantic, `derivation_projection.py` y `derivation_lineage_service.py` |
+| Manifests y selección de capacidades | contratos puros en `neocortex/capability_broker.py`, declaraciones/probes en `neocortex/capabilities.py` y consumidor Text en `text_route.py` |
 | Planner semántico read-only | `semantic_planner.py` y contratos en `semantic_service_contracts.py` |
 | SDK, consulta y capacidades públicas | `neocortex/sdk`, `neocortex/read_api.py`, `neocortex/human_cli.py`, `neocortex/agent_server.py`, `neocortex/capabilities.py` y markers `py.typed` |
 | Apertura SQLite compartida | `neocortex/sqlite_connection.py`; su adopción actual no es universal |
@@ -180,7 +185,9 @@ terminal y evento de outbox ocurre en una sola transacción del owner Text; un
 rollback no deja outputs declarados ni evento confirmado. Una reutilización compatible
 verifica también los outputs físicos y publica un recibo `cache_hit` ligado por
 `causation_id`; contenido, MIME efectivo, configuración, firma o versión de
-stage incompatibles fuerzan ejecución. Cancelación, fallo y un intento
+stage incompatibles fuerzan ejecución. Esa reutilización aplica al provider
+builtin `environment_bound`; el worker Office heredado `non_replayable` nunca
+consulta ni publica cache hits de éxito o fallo. Cancelación, fallo y un intento
 `running` encontrado después de una caída terminan con un recibo terminal
 owner-local auditable, sin publicar materializaciones parciales.
 
@@ -211,6 +218,84 @@ legacy en hechos: la migración 6→7 crea las tablas vacías y no inventa
 recibos retroactivos. Si un payload pre-v7 compatible se reutiliza, el owner lo
 verifica y emite bajo demanda una attestación separada; esa materialización
 declara la inspección del payload, no finge haber ejecutado el modelo original.
+
+## CapabilityManifest y CapabilityBroker v1
+
+**IMPLEMENTED — selección por trabajo Text.** `neocortex.capability_broker` es
+una capa stdlib-only que define manifests, requests, políticas, observaciones de
+readiness, evaluaciones y una selección o abstención explicable. No importa un
+extractor, abre estado, descarga modelos ni ejecuta providers. Los contratos son
+inmutables, versionados y acotados; manifiesto, request, política y selección se
+serializan canónicamente y exponen fingerprints SHA-256.
+
+Un `CapabilityManifest` declara identidad y versión de capacidad,
+implementación/provider, lifecycle, plataformas, modalidad, schemas, MIME e
+idiomas, determinismo y clases de reproducibilidad, incrementalidad,
+cancelación/checkpointing, cotas de entrada/timeout/CPU/RAM/GPU, red,
+privacidad, extra opcional, componentes/binarios/modelos, compatibilidad,
+métricas de calidad, coste y latencia conocidos. Un dato ausente permanece
+ausente; no se inventan versiones, recursos o calidad.
+
+El broker aplica primero filtros duros de request y política: readiness,
+plataforma, modalidad, schemas, MIME exacto, idioma, tamaño, reproducibilidad,
+lifecycle, privacidad/red, hardware, recursos, provider/implementación y
+umbrales de calidad. Después compara preferencias declaradas de forma estable.
+No usa “primer provider disponible”, no fabrica un score global y, si dos
+candidatos elegibles quedan exactamente empatados, se abstiene con
+`ambiguous_capability_selection`. La explicación conserva motivos de rechazo y
+preferencia de cada candidato.
+
+La integración productiva inicial declara dos manifests estáticos de
+`text.extract/v2`: `neocortex.text.builtin` para texto, CSV, Markdown, HTML,
+XML, JSON y EML; y `neocortex.text.legacy-office-worker` para DOC/XLS/PPT
+binarios. Cada candidato Text construye un request con MIME y bytes exactos,
+plataforma y schemas; admite `environment_bound` o `non_replayable` según el
+manifest elegido. La política `neocortex-text-local-v1` prohíbe red, exige
+privacidad `local_only` y no ofrece GPU. El builtin conserva reproducibilidad
+`environment_bound`, declara `incremental=true` y es cacheable bajo las
+validaciones físicas/causales de Text. Sólo los MIME builtin exigen
+incrementalidad en su `CapabilityRequest`. El worker Office heredado v2 declara
+`best_effort`, `non_replayable` e `incremental=false`. Su readiness resuelve y
+fija `soffice`/`libreoffice` o el backend exacto
+`catdoc`/`xls2csv`/`catppt`; la ausencia de LibreOffice no degrada texto plano.
+El orden de alternativas forma parte del manifest, readiness elige un único
+launcher verificable y el worker no hace fallback oculto si éste falla.
+
+Provider y versión, fingerprint del manifest, política y su fingerprint,
+readiness, explicación y fingerprint de ejecución forman parte de la
+configuración efectiva del `WorkReceipt` Text y, por tanto, de su firma de
+procesamiento. En Office heredado también se conservan SHA-256/tamaño del
+ejecutable y un digest de su ubicación resuelta; el worker vuelve a comprobar
+esa identidad antes y después del proceso. Esa atestación cubre el launcher
+seleccionado, no una clausura transitiva arbitraria de engines, librerías o
+procesos descendientes. Por seguridad, todo intento legacy —incluidos éxitos y
+fallos con firma invariable— se ejecuta otra vez y su receipt declara
+`non_replayable`; nunca se consulta la caché legacy. El builtin sí puede publicar
+`cache_hit` como `environment_bound`. Una abstención se registra como intento
+fallido owner-local sin materializaciones ni heads. El fingerprint del manifest
+identifica el contrato declarado y no se reutiliza falsamente como
+`implementation_digest`; observar un launcher tampoco certifica toda su cadena
+de suministro. El tradeoff es explícito: Office heredado continúa seleccionable
+y seguro, pero no afirma incrementalidad ni “procesar sólo cambios”.
+
+La superficie visible es opt-in:
+
+```text
+Neocortex doctor capabilities --select text.extract \
+  --mime-type text/plain --input-bytes 4096 [--json]
+```
+
+Devuelve schema `neocortex.capability-selection/v1`, status `selected` o
+`unavailable`, request/policy, candidatos, explicación y fingerprints. El
+diagnóstico agregado `Neocortex doctor capabilities [--json]` conserva schema
+1, orden, salida y códigos previos; no construye el broker salvo que exista
+`--select`. Ambas superficies siguen sin cargar modelos ni crear estado.
+
+**PLANNED — no implementado en este corte.** Las rutas `pdf`, `docx` y
+`office`, Semantic y los plugins/providers externos todavía no consumen el
+broker. No existe registro automático de plugins, sandbox de providers externos
+ni protocolo fuera de proceso. La extensión debe hacerse por una ruta vertical
+a la vez después de estabilizar estos contratos, sin dependencias pesadas base.
 
 ## Planificador semántico read-only
 
@@ -251,7 +336,9 @@ Paquete de instalación mínimo:
 - expone `neocortex.cli:entrypoint`;
 - soporta `python -m neocortex`;
 - ofrece la fachada read-only de scopes, CLI humana y MCP/stdio;
-- contiene utilidades compartidas de ciclo de vida y contrato SQLite.
+- contiene utilidades compartidas de ciclo de vida y contrato SQLite;
+- declara los contratos puros y manifests estáticos de capacidad, además de los
+  probes ligeros que alimentan al broker sin cargar providers.
 
 No implementa el pipeline completo. Su función es ofrecer una frontera estable
 y evitar imports pesados durante ayuda, versión o selección de modo.
@@ -382,6 +469,10 @@ lo requiere. La lista de comandos y códigos de salida está en
 `neocortex.cli` traduce a flags planos internos ocultos. El handler inspecciona
 specs, metadata y ejecutables sin cargar engines/modelos ni crear estado; no
 introduce un `--doctor` o `--json` global.
+La variante opt-in `--select text.extract --mime-type MIME --input-bytes BYTES`
+ejecuta la selección explicable por trabajo bajo la política local Text y usa
+schema `neocortex.capability-selection/v1`; sin `--select`, el reporte agregado
+conserva schema 1 y no construye el broker.
 
 La Knowledge Plane se expone mediante operaciones directas mutuamente
 excluyentes y no destructivas:
@@ -1039,8 +1130,10 @@ Coverage, Deptry, Grimp, Mypy, pip-audit, Pytest, Radon, Ruff y Vulture.
 `documents`, `audio`, `image`, `semantic` y `ui` declaran runtimes de dominio;
 `full` es la unión canónica. Semgrep no pertenece a base, `analysis` ni `full`:
 la release lo provisiona en su entorno administrado separado.
-`neocortex.capabilities` inspecciona esa disponibilidad de forma estática; no
-certifica inferencia, caché de modelos ni compatibilidad resuelta.
+`neocortex.capabilities` conserva el reporte agregado schema 1 y proyecta
+readiness por implementación Text para el broker. Los contratos de selección
+son stdlib-only; no certifican inferencia, caché de modelos, digest de binario
+externo ni compatibilidad no observada.
 
 La ayuda y versión deben arrancar sin cargar rutas pesadas. La instalación, el
 wheel y el sdist deben validarse en un entorno limpio antes de publicar; este
@@ -1075,6 +1168,12 @@ Una ruta nueva debe definir antes de integrarse:
 
 No debe añadirse una base, repositorio o clasificación sin productor y
 consumidor confirmados.
+
+**PLANNED.** Un provider externo no se descubre ni carga automáticamente en el
+corte actual. Antes de plugins se deben conservar manifests estables, registro
+explícito, permisos/red, timeout, recursos, cancelación, compatibilidad y salida
+estructurada; un plugin nunca adquiere autoridad implícita sobre corpus u
+owners.
 
 ## Compatibilidad y retirada de legacy
 

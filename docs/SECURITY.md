@@ -245,6 +245,60 @@ las etapas conectadas en schema 7. No
 hay commit coordinado entre bases: una proyección transversal se reconstruye
 después de los commits y nunca debe elevarse a autoridad monolítica.
 
+### Broker de capacidades y providers
+
+`CapabilityManifest` describe hechos declarados; no concede autoridad al
+provider ni certifica que un ejecutable sea confiable. El broker es stdlib-only
+y puro respecto de engines: recibe observaciones explícitas, aplica filtros y
+devuelve una selección o abstención. Inspeccionarlo no importa extractores, no
+abre workspace/SQLite, no carga o descarga modelos y no inicia red o procesos.
+
+La integración implementada se limita a `text.extract`. La política
+`neocortex-text-local-v1` exige privacidad `local_only`, prohíbe red y no declara
+GPU. El request por archivo exige plataforma, schemas, MIME exacto,
+una clase aceptable `environment_bound` o `non_replayable` y, sólo para MIME
+builtin, incrementalidad. DOC/XLS/PPT no exigen esa propiedad porque el manifest
+legacy declara `incremental=false`. Readiness ambiguo, provider ausente,
+incompatibilidad o empate exacto causan abstención. Nunca se elige por orden de
+registro. La salida conserva causas por candidato para que la abstención no se
+degrade a un fallback silencioso.
+
+Texto/EML usa el provider builtin sin requerir LibreOffice. Para DOC/XLS/PPT
+heredado, readiness exige un backend exacto observado: `soffice`/`libreoffice`
+o `catdoc`/`xls2csv`/`catppt` según MIME. La extracción externa conserva la
+frontera de worker acotado descrita abajo. Readiness fija un único comando
+resuelto, su SHA-256, tamaño y digest de ubicación; el worker los revalida y no
+prueba otro backend después de un fallo. Si no existe implementación elegible,
+Text registra un `CapabilityFailure` redacted dentro del receipt owner-local y
+no publica outputs ni heads parciales.
+
+El provider builtin conserva clase `environment_bound`, declara
+`incremental=true` y puede reutilizar éxitos o fallos compatibles bajo las
+validaciones Text. El worker Office v2 se declara `best_effort`,
+`non_replayable` e `incremental=false`: el digest verifica el launcher
+seleccionado, pero no puede atestar la clausura transitiva arbitraria de engines,
+librerías, configuración o procesos descendientes que éste invoque. Por ello
+Text omite por completo la lectura de caché para Office heredado; una segunda
+corrida vuelve a ejecutar tanto un éxito como un fallo previo, aunque la firma
+permanezca igual, y registra `non_replayable` en su receipt. La pérdida de
+incrementalidad legacy es un tradeoff de seguridad visible, no una optimización
+pendiente ocultada como “procesar sólo cambios”.
+
+Los receipts incorporan provider/versión, fingerprints de manifest, política y
+selección, y readiness observado. Esos valores forman parte de la firma de
+procesamiento para impedir reutilización bajo un contrato distinto. Un
+fingerprint SHA-256 del JSON canónico demuestra igualdad del contrato. Para el
+worker Office se añade por separado el digest verificable del ejecutable
+observado; no demuestra por sí solo procedencia, firma del proveedor,
+dependencias transitivas ni toda la cadena de suministro. La selección tampoco
+autoriza syscalls, mutación del corpus ni escritura en un owner ajeno.
+
+**PLANNED — no implementado.** PDF, DOCX, la ruta Office, Semantic y
+plugins/providers externos aún no usan el broker. No hay autodescubrimiento de
+plugins, aislamiento externo versionado ni permisos implícitos; cualquier
+extensión futura exige registro explícito, política de red/privacidad, timeout,
+recursos, compatibilidad y salida estructurada antes de poder ser elegible.
+
 `deletion_candidate` significa “requiere revisión”, no “eliminar”. Las
 decisiones `confirmed`, `dismissed` y `deferred` conservan evidencia humana, pero
 registrarlas no ejecuta una acción sobre el archivo.

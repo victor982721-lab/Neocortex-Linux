@@ -8,6 +8,24 @@ no se copian aquí para evitar que se conviertan en datos históricos sin contex
 
 ### Añadido
 
+- Contratos públicos stdlib-only `CapabilityManifest`, `CapabilityRequest`,
+  `CapabilityPolicy`, `CapabilityAvailability`, `CapabilitySelection` y
+  `CapabilityBroker`, con manifests versionados/acotados, hard filters,
+  preferencias explicables, abstención ante empate o ambigüedad y fingerprints
+  canónicos de request, política, manifest y selección.
+- Dos manifests estáticos de `text.extract/v2` para el extractor builtin y el
+  worker Office heredado, con readiness por trabajo y política
+  `neocortex-text-local-v1` local/offline. El builtin no depende de LibreOffice;
+  conserva clase `environment_bound`, declara `incremental=true` y sigue siendo
+  cacheable. DOC/XLS/PPT usa el worker v2
+  `best_effort`/`non_replayable`/`incremental=false`: exige un backend compatible
+  observado, fija su launcher mediante SHA-256/tamaño/ubicación hasheada y
+  prohíbe fallback oculto después de iniciar un intento.
+- Diagnóstico opt-in
+  `Neocortex doctor capabilities --select text.extract --mime-type MIME
+  --input-bytes BYTES [--json]`, con explicación por candidato y schema
+  `neocortex.capability-selection/v1`, sin engines, modelos ni escritura de
+  estado.
 - Contratos públicos inmutables Reproducible Derivations schema 1:
   `StageDescriptor`, `InputBinding`, `OutputBinding`, `MaterializationRef`,
   `DerivationRef`, `CapabilityFailure`, `ReproducibilityClass`, `WorkOutcome`,
@@ -29,14 +47,30 @@ no se copian aquí para evitar que se conviertan en datos históricos sin contex
 
 ### Cambiado
 
+- Cada candidato Text selecciona provider por request/política/readiness en vez
+  de usar el primer provider disponible. Sus receipts y firmas de procesamiento
+  conservan provider/versión, fingerprints de manifest/política/selección,
+  readiness y explicación; una abstención publica sólo el fallo durable, nunca
+  outputs o heads parciales.
+- Text reutiliza éxitos/fallos compatibles del provider builtin
+  `environment_bound`, pero nunca consulta la caché para el worker Office
+  heredado. Su receipt es `non_replayable` y cada corrida vuelve a ejecutar
+  incluso con firma invariable, porque sólo se atesta el launcher seleccionado,
+  no una clausura transitiva arbitraria de engines o dependencias. Las requests
+  exigen incrementalidad sólo para MIME builtin; Office permanece seleccionable
+  con el tradeoff explícito de no procesar únicamente cambios.
+- `Neocortex doctor capabilities [--json]` sin `--select` conserva el reporte
+  agregado `RuntimeCapabilitySpec` schema 1, su orden y su comportamiento
+  ligero previo; el broker sólo se construye en la modalidad opt-in.
 - Text pasa de schema 1 a 2 con revisiones inmutables, intentos, bindings,
   materializaciones, heads, receipts y outbox. La migración exacta conserva
   documentos/FTS legacy, deja su `revision_id` nulo y no fabrica receipts ni
   procedencia retroactiva.
 - La publicación Text confirma documento/FTS, materializaciones, heads, receipt
-  y outbox en una sola transacción del owner. El cache hit exige outputs físicos
-  y fingerprints vigentes; cambios de contenido, MIME, configuración o stage
-  invalidan la reutilización.
+  y outbox en una sola transacción del owner. Para el builtin, el cache hit exige
+  outputs físicos y fingerprints vigentes; cambios de contenido, MIME,
+  configuración o stage invalidan la reutilización. El worker Office no produce
+  cache hits de éxito ni de fallo.
 - Semantic pasa de schema 6 a 7 mediante una migración aditiva que preserva los
   heads generacionales de v6 y agrega tracking de intentos, receipts,
   derivaciones de chunks y outbox. No se inventa linaje para trabajo legacy.
@@ -46,6 +80,9 @@ no se copian aquí para evitar que se conviertan en datos históricos sin contex
 
 ### Límites conocidos
 
+- CapabilityBroker v1 sólo está conectado a la ruta Text. PDF, DOCX, la ruta
+  Office, Semantic y plugins/providers externos permanecen planificados; no hay
+  autodescubrimiento de plugins ni providers pesados obligatorios.
 - Reproducible Derivations v1 implementa extracción y publicación Text; la
   certificación del SHA se determina dinámicamente por las barreras y la release,
   no por esta entrada.

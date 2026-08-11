@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sqlite3
 import stat
 import sys
@@ -22,6 +23,23 @@ from typing import Any, Protocol
 
 import xxhash
 
+from neocortex.capability_broker import (
+    CapabilityBinaryIdentity,
+    CapabilityBroker,
+    CapabilityPolicy,
+    CapabilityPrivacy,
+    CapabilityRequest,
+    CapabilitySelection,
+)
+from neocortex.capabilities import (
+    TEXT_BUILTIN_IMPLEMENTATION_ID,
+    TEXT_EXTRACT_CAPABILITY_ID,
+    TEXT_LEGACY_OFFICE_IMPLEMENTATION_ID,
+    TEXT_RAW_INPUT_SCHEMA,
+    TEXT_REPRESENTATION_OUTPUT_SCHEMA,
+    build_runtime_capability_broker,
+    inspect_runtime_capability,
+)
 from neocortex.platform_policy import physical_identity_scheme_for_birthtime
 
 from _02_Deduplicacion import FileChangedError, FileSnapshot
@@ -54,7 +72,6 @@ from .processing_provenance import (
     ROUTE_SUMMARY_SCHEMA,
     ProcessingProvenance,
     build_processing_provenance,
-    executable_component,
     python_runtime_component,
 )
 from .route_filters import CandidateSelection
@@ -83,6 +100,7 @@ _TEXT_SOURCE_REVISION_PRODUCER = "text.source"
 _TEXT_SOURCE_PROCESSING_SIGNATURE = "text-source-revision-v1:xxh3-128"
 _TEXT_REPRESENTATION_KIND = "text_representation"
 _TEXT_FTS_KIND = "text_fts"
+_MAX_DERIVATION_VALUE_CHARS = 4_096
 TEXT_ROUTE_MIMES = (
     "text/plain",
     "text/csv",
@@ -95,6 +113,19 @@ TEXT_ROUTE_MIMES = (
     "application/msword",
     "application/vnd.ms-excel",
     "application/vnd.ms-powerpoint",
+)
+_TEXT_LEGACY_MIMES = frozenset(
+    {
+        "application/msword",
+        "application/vnd.ms-excel",
+        "application/vnd.ms-powerpoint",
+    }
+)
+_TEXT_CAPABILITY_POLICY = CapabilityPolicy(
+    policy_id="neocortex-text-local-v1",
+    allow_network=False,
+    allowed_privacy=(CapabilityPrivacy.LOCAL_ONLY,),
+    gpu_available=False,
 )
 
 
@@ -141,14 +172,7 @@ class TextRouteConfig:
                 "email_policy": "stdlib-default-visible-text-v1",
                 "plain_text_decoder": "strict-bom-utf8-cp1252-v1",
             },
-            (
-                python_runtime_component(),
-                executable_component(
-                    "soffice",
-                    default_name="soffice",
-                    explicit=self.libreoffice_cmd,
-                ),
-            ),
+            (python_runtime_component(),),
             compatibility_tag=(f"{TEXT_ROUTE_VERSION}-text-extract-v{_TEXT_EXTRACT_STAGE_VERSION}"),
         )
 
@@ -209,6 +233,7 @@ class _TextDerivationWork:
     revision: RevisionRef
     input_binding: InputBinding
     stage: StageDescriptor
+    capability_selection: CapabilitySelection
     started_monotonic_ns: int
 
     def receipt_id(self, outcome: WorkOutcome) -> str:
@@ -320,14 +345,35 @@ def _partial_input_binding(
     )
 
 
+class TextCapabilityUnavailableError(RuntimeError):
+    """No declared Text provider satisfies the exact workload and local policy."""
+
+    def __init__(self, selection: CapabilitySelection) -> None:
+        self.selection = selection
+        super().__init__("Text extraction capability is unavailable for this workload")
+
+
 def _stage_descriptor(provenance: ProcessingProvenance) -> StageDescriptor:
+    configuration = provenance.manifest.get("configuration")
+    if not isinstance(configuration, dict):
+        raise ValueError("Text processing provenance has no canonical configuration")
+    provider = configuration.get("capability_provider")
+    provider_version = configuration.get("capability_provider_version")
+    manifest_fingerprint = configuration.get("capability_manifest_fingerprint")
+    for name, value in (
+        ("capability_provider", provider),
+        ("capability_provider_version", provider_version),
+        ("capability_manifest_fingerprint", manifest_fingerprint),
+    ):
+        if value is not None and not isinstance(value, str):
+            raise ValueError(f"Text {name} must be a string or null")
     return StageDescriptor(
         stage_id=_TEXT_EXTRACT_STAGE_ID,
         stage_version=_TEXT_EXTRACT_STAGE_VERSION,
         processing_signature=provenance.signature,
         implementation_digest=None,
-        provider="neocortex-builtin",
-        provider_version=TEXT_ROUTE_VERSION,
+        provider=provider,
+        provider_version=provider_version,
     )
 
 
@@ -384,10 +430,139 @@ def _extractor_selector(mime: str, path: str) -> tuple[str, str]:
     return "strict_text_decode", content_kind
 
 
+def _runtime_platform() -> str:
+    return {"win32": "windows", "linux": "linux"}.get(sys.platform, sys.platform)
+
+
+def _text_executable_finder(config: TextRouteConfig):
+    explicit = config.libreoffice_cmd
+    cache: dict[str, str | None] = {}
+    explicit_resolved = None if explicit is None else shutil.which(explicit)
+
+    def find(executable: str) -> str | None:
+        if executable in cache:
+            return cache[executable]
+        if explicit is not None:
+            if explicit_resolved is None:
+                result = None
+            elif executable == "libreoffice":
+                result = explicit_resolved
+            else:
+                result = None
+        else:
+            result = shutil.which(executable)
+        cache[executable] = result
+        return result
+
+    return find
+
+
+def _text_capability_request(mime: str, input_bytes: int) -> CapabilityRequest:
+    return CapabilityRequest(
+        capability_id=TEXT_EXTRACT_CAPABILITY_ID,
+        modality="document",
+        input_schema=TEXT_RAW_INPUT_SCHEMA,
+        output_schema=TEXT_REPRESENTATION_OUTPUT_SCHEMA,
+        platform=_runtime_platform(),
+        mime_type=mime,
+        language="unknown",
+        input_bytes=input_bytes,
+        workspace_id="text-owner",
+        acceptable_reproducibility=(
+            ReproducibilityClass.ENVIRONMENT_BOUND.value,
+            ReproducibilityClass.NON_REPLAYABLE.value,
+        ),
+        require_incremental=mime not in _TEXT_LEGACY_MIMES,
+    )
+
+
+def _bounded_capability_text(value: str) -> str:
+    if len(value) <= _MAX_DERIVATION_VALUE_CHARS:
+        return value
+    digest = fingerprint_text(value).xxh3_128
+    suffix = f"...[truncated;xxh3-128={digest}]"
+    return value[: _MAX_DERIVATION_VALUE_CHARS - len(suffix)] + suffix
+
+
+def _selected_availability(selection: CapabilitySelection) -> str:
+    selected = selection.selected
+    if selected is None:
+        return "|".join(selection.explanation)
+    evaluation = next(
+        item
+        for item in selection.candidates
+        if item.implementation_id == selected.implementation_id
+    )
+    availability = evaluation.availability
+    if availability is None:
+        return "runtime_availability_unknown"
+    evidence = [*availability.observed_components]
+    evidence.extend(
+        f"binary:{item.name}@sha256:{item.artifact_sha256}"
+        for item in availability.binary_identities
+    )
+    return _bounded_capability_text(",".join(evidence) or "available")
+
+
+def _selection_allows_reuse(selection: CapabilitySelection) -> bool:
+    selected = selection.selected
+    return selected is not None and (
+        ReproducibilityClass.NON_REPLAYABLE.value not in selected.reproducibility_classes
+    )
+
+
+def _work_reproducibility(selection: CapabilitySelection) -> ReproducibilityClass:
+    return (
+        ReproducibilityClass.NON_REPLAYABLE
+        if selection.selected is not None
+        and ReproducibilityClass.NON_REPLAYABLE.value in selection.selected.reproducibility_classes
+        else ReproducibilityClass.ENVIRONMENT_BOUND
+    )
+
+
+def _selected_binary_identity(
+    selection: CapabilitySelection,
+    mime: str,
+) -> CapabilityBinaryIdentity | None:
+    selected = selection.selected
+    if selected is None:
+        return None
+    requirement = next(
+        (item for item in selected.mime_binary_alternatives if item.mime_type == mime),
+        None,
+    )
+    if requirement is None:
+        return None
+    evaluation = next(
+        item
+        for item in selection.candidates
+        if item.implementation_id == selected.implementation_id
+    )
+    availability = evaluation.availability
+    if availability is None:
+        raise RuntimeError("selected Text capability has no runtime observation")
+    matching = tuple(
+        item for item in availability.binary_identities if item.name in requirement.alternatives
+    )
+    if len(matching) != 1:
+        raise RuntimeError("selected Text capability has no unique pinned backend")
+    return matching[0]
+
+
+def _capability_rejections(selection: CapabilitySelection) -> str:
+    return _bounded_capability_text(
+        ";".join(
+            f"{item.implementation_id}={','.join(item.rejection_reasons) or 'eligible'}"
+            for item in selection.candidates
+        )
+    )
+
+
 def _candidate_processing_provenance(
     base: ProcessingProvenance,
     mime: str,
     path: str,
+    selection: CapabilitySelection,
 ) -> ProcessingProvenance:
     manifest = base.manifest
     configuration = manifest.get("configuration")
@@ -395,12 +570,43 @@ def _candidate_processing_provenance(
     if not isinstance(configuration, dict) or not isinstance(components, list):
         raise ValueError("Text base provenance is malformed")
     adapter, content_kind = _extractor_selector(mime, path)
+    selected = selection.selected
+    selected_binary = _selected_binary_identity(selection, mime)
+    if selected is not None:
+        expected_implementation = (
+            TEXT_LEGACY_OFFICE_IMPLEMENTATION_ID
+            if adapter.startswith("legacy_office_worker:")
+            else TEXT_BUILTIN_IMPLEMENTATION_ID
+        )
+        if selected.implementation_id != expected_implementation:
+            raise ValueError("Text capability selection conflicts with extractor adapter")
     effective_configuration: dict[str, object] = {
+        "capability_id": TEXT_EXTRACT_CAPABILITY_ID,
+        "capability_implementation": (None if selected is None else selected.implementation_id),
+        "capability_manifest_fingerprint": (
+            None if selected is None else selected.contract_fingerprint
+        ),
+        "capability_policy": selection.policy.policy_id,
+        "capability_policy_fingerprint": selection.policy.contract_fingerprint,
+        "capability_provider": None if selected is None else selected.provider,
+        "capability_provider_version": (None if selected is None else selected.provider_version),
+        "capability_readiness": _selected_availability(selection),
+        "capability_selection": selection.explanation[0],
+        "capability_selection_fingerprint": selection.execution_fingerprint,
         "max_text_chars": configuration["max_text_chars"],
         "declared_mime": mime,
         "extractor_adapter": adapter,
         "output_content_kind": content_kind,
     }
+    if selected_binary is not None:
+        effective_configuration.update(
+            {
+                "capability_binary_backend": selected_binary.name,
+                "capability_binary_artifact_sha256": (selected_binary.artifact_sha256),
+                "capability_binary_command_sha256": selected_binary.command_sha256,
+                "capability_binary_size_bytes": selected_binary.size_bytes,
+            }
+        )
     legacy_office = adapter.startswith("legacy_office_worker:")
     if legacy_office:
         effective_configuration.update(
@@ -413,11 +619,22 @@ def _candidate_processing_provenance(
         effective_configuration["plain_text_decoder"] = configuration["plain_text_decoder"]
         if mime == "message/rfc822":
             effective_configuration["email_policy"] = configuration["email_policy"]
-    effective_components = [
+    effective_components: list[dict[str, object]] = [
         component
         for component in components
-        if legacy_office or not isinstance(component, dict) or component.get("name") != "soffice"
+        if not isinstance(component, dict) or component.get("name") != "soffice"
     ]
+    if selected_binary is not None:
+        effective_components.append(
+            {
+                "name": "capability-selected-backend",
+                "kind": "executable",
+                "backend": selected_binary.name,
+                "artifact_sha256": selected_binary.artifact_sha256,
+                "command_sha256": selected_binary.command_sha256,
+                "size_bytes": selected_binary.size_bytes,
+            }
+        )
     return build_processing_provenance(
         "text-route",
         f"{TEXT_ROUTE_VERSION}:text.extract/{_TEXT_EXTRACT_STAGE_VERSION}",
@@ -583,6 +800,7 @@ def _legacy_office_text(
     payload: bytes,
     kind: str,
     config: TextRouteConfig,
+    backend: CapabilityBinaryIdentity,
 ) -> _ExtractedText:
     command = (
         sys.executable,
@@ -596,7 +814,14 @@ def _legacy_office_text(
         str(config.max_text_chars),
         "--timeout",
         str(config.worker_timeout_seconds),
-        *(("--libreoffice-cmd", config.libreoffice_cmd) if config.libreoffice_cmd else ()),
+        "--backend",
+        backend.name,
+        "--backend-command",
+        backend.command,
+        "--backend-sha256",
+        backend.artifact_sha256,
+        "--backend-size",
+        str(backend.size_bytes),
     )
     completed = run_bounded_capture(
         command,
@@ -632,11 +857,35 @@ def _legacy_office_text(
             "ppt": "application/vnd.ms-powerpoint",
         }[kind],
         truncated=bool(result.get("truncated")),
-        detail=f"backend={result.get('backend', 'unknown')}",
+        detail=(
+            f"backend={result.get('backend', 'unknown')};"
+            f"conversion={result.get('conversion', 'unknown')}"
+        ),
     )
 
 
-def _extract(payload: bytes, mime: str, path: str, config: TextRouteConfig) -> _ExtractedText:
+def _extract(
+    payload: bytes,
+    mime: str,
+    path: str,
+    config: TextRouteConfig,
+    selection: CapabilitySelection,
+) -> _ExtractedText:
+    selected = selection.selected
+    if selected is None:
+        raise TextCapabilityUnavailableError(selection)
+    expected_implementation = (
+        TEXT_LEGACY_OFFICE_IMPLEMENTATION_ID
+        if mime
+        in {
+            "application/msword",
+            "application/vnd.ms-excel",
+            "application/vnd.ms-powerpoint",
+        }
+        else TEXT_BUILTIN_IMPLEMENTATION_ID
+    )
+    if selected.implementation_id != expected_implementation:
+        raise RuntimeError("Text capability selection changed before execution")
     suffix = Path(path).suffix.casefold()
     if mime == "message/rfc822":
         return _email_text(payload, config.max_text_chars)
@@ -646,7 +895,10 @@ def _extract(payload: bytes, mime: str, path: str, config: TextRouteConfig) -> _
         "application/vnd.ms-powerpoint": "ppt",
     }.get(mime)
     if legacy_kind is not None:
-        return _legacy_office_text(payload, legacy_kind, config)
+        backend = _selected_binary_identity(selection, mime)
+        if backend is None:
+            raise RuntimeError("selected legacy Text capability has no pinned backend")
+        return _legacy_office_text(payload, legacy_kind, config, backend)
     value, encoding = _decode_text(payload)
     if mime == "text/html":
         value = _visible_html(value)
@@ -735,6 +987,11 @@ class TextRoute:
             raise ValueError("text max_text_chars must be positive")
         if self.config.worker_timeout_seconds <= 0 or self.config.worker_memory_bytes < 1:
             raise ValueError("text worker limits must be positive")
+        if self.config.libreoffice_cmd is not None and (
+            not isinstance(self.config.libreoffice_cmd, str)
+            or not self.config.libreoffice_cmd.strip()
+        ):
+            raise ValueError("text libreoffice_cmd must be a non-blank string")
 
     def _counts(self) -> tuple[int, int, int]:
         pool = eligible = 0
@@ -1105,6 +1362,7 @@ class TextRoute:
         resource: ResourceRef,
         revision: RevisionRef,
         input_binding: InputBinding,
+        capability_selection: CapabilitySelection,
         *,
         causation_id: str | None,
     ) -> _TextDerivationWork:
@@ -1158,6 +1416,7 @@ class TextRoute:
             revision=revision,
             input_binding=input_binding,
             stage=stage,
+            capability_selection=capability_selection,
             started_monotonic_ns=started_monotonic_ns,
         )
 
@@ -1189,7 +1448,7 @@ class TextRoute:
                 finished_at_utc=_utc_now(),
                 duration_ns=self._duration_ns(work),
                 execution_mode=WorkExecutionMode.CACHE_HIT,
-                reproducibility=ReproducibilityClass.ENVIRONMENT_BOUND,
+                reproducibility=_work_reproducibility(work.capability_selection),
                 document_file_key=file_key,
             )
         except BaseException:
@@ -1224,7 +1483,7 @@ class TextRoute:
                 finished_at_utc=_utc_now(),
                 duration_ns=self._duration_ns(work),
                 execution_mode=WorkExecutionMode.EXECUTED,
-                reproducibility=ReproducibilityClass.ENVIRONMENT_BOUND,
+                reproducibility=_work_reproducibility(work.capability_selection),
                 document_file_key=file_key,
             )
         except BaseException:
@@ -1257,14 +1516,21 @@ class TextRoute:
                 receipt_id=work.receipt_id(WorkOutcome.FAILED),
                 finished_at_utc=_utc_now(),
                 duration_ns=self._duration_ns(work),
-                reproducibility=ReproducibilityClass.ENVIRONMENT_BOUND,
+                reproducibility=_work_reproducibility(work.capability_selection),
                 failure=CapabilityFailure(
                     capability_id=_TEXT_EXTRACT_STAGE_ID,
                     reason_code=type(exc).__name__,
                     message=_redacted_failure_message(exc),
                     retryable=retryable,
-                    provider="neocortex-builtin",
-                    details=(("diagnostic_detail", "[redacted]"),),
+                    provider=work.stage.provider,
+                    details=(
+                        ("diagnostic_detail", "[redacted]"),
+                        (
+                            "rejections",
+                            _capability_rejections(work.capability_selection),
+                        ),
+                        ("selection", "|".join(work.capability_selection.explanation)),
+                    ),
                 ),
                 document_file_key=file_key,
             )
@@ -1289,14 +1555,21 @@ class TextRoute:
                 receipt_id=work.receipt_id(WorkOutcome.CANCELLED),
                 finished_at_utc=_utc_now(),
                 duration_ns=self._duration_ns(work),
-                reproducibility=ReproducibilityClass.ENVIRONMENT_BOUND,
+                reproducibility=_work_reproducibility(work.capability_selection),
                 failure=CapabilityFailure(
                     capability_id=_TEXT_EXTRACT_STAGE_ID,
                     reason_code="framework_cancellation_requested",
                     message="Framework cancellation requested; diagnostic detail redacted.",
                     retryable=True,
-                    provider="neocortex-builtin",
-                    details=(("diagnostic_detail", "[redacted]"),),
+                    provider=work.stage.provider,
+                    details=(
+                        ("diagnostic_detail", "[redacted]"),
+                        (
+                            "rejections",
+                            _capability_rejections(work.capability_selection),
+                        ),
+                        ("selection", "|".join(work.capability_selection.explanation)),
+                    ),
                 ),
             )
         except BaseException:
@@ -1342,6 +1615,11 @@ class TextRoute:
             terminal_ns=abandoned_ns,
         ):
             pass
+        executable_finder = _text_executable_finder(self.config)
+        text_runtime_status = inspect_runtime_capability(
+            "text",
+            executable_finder=executable_finder,
+        )
         provenance = self.config.processing_provenance
         signature = provenance.signature
         pool, eligible, selected = self._counts()
@@ -1368,13 +1646,29 @@ class TextRoute:
             ET.ParseError,
         )
         effective_signatures: set[str] = set()
+        capability_brokers: dict[str, CapabilityBroker] = {}
         self._emit(0, selected, counters)
         with text_database(self.config.state_path, create=False) as connection:
             for mime, snapshot in self._candidates():
+                capability_request = _text_capability_request(mime, snapshot.size)
+                broker_key = capability_request.execution_contract_fingerprint
+                capability_broker = capability_brokers.get(broker_key)
+                if capability_broker is None:
+                    capability_broker = build_runtime_capability_broker(
+                        capability_request,
+                        statuses=(text_runtime_status,),
+                        executable_finder=executable_finder,
+                    )
+                    capability_brokers[broker_key] = capability_broker
+                capability_selection = capability_broker.select(
+                    capability_request,
+                    _TEXT_CAPABILITY_POLICY,
+                )
                 candidate_provenance = _candidate_processing_provenance(
                     provenance,
                     mime,
                     snapshot.path,
+                    capability_selection,
                 )
                 candidate_signature = candidate_provenance.signature
                 effective_signatures.add(candidate_signature)
@@ -1395,6 +1689,7 @@ class TextRoute:
                             resource,
                             revision,
                             input_binding,
+                            capability_selection,
                             causation_id=None,
                         )
                         self._publish_cancellation(connection, work, exc)
@@ -1407,6 +1702,7 @@ class TextRoute:
                             resource,
                             revision,
                             input_binding,
+                            capability_selection,
                             causation_id=None,
                         )
                         retryable = self._publish_error(
@@ -1421,9 +1717,10 @@ class TextRoute:
                         counters["retryable_errors"] += int(retryable)
                     else:
                         resource, revision, input_binding = _input_binding(snapshot, payload)
+                        reuse_allowed = _selection_allows_reuse(capability_selection)
                         cached_failure = (
                             None
-                            if self.config.retry_errors
+                            if self.config.retry_errors or not reuse_allowed
                             else read_reusable_text_failure_from_connection(
                                 connection,
                                 file_key,
@@ -1447,12 +1744,16 @@ class TextRoute:
                             completed = counters["processed"] + counters["cache_hits"]
                             self._emit(completed, selected, counters)
                             continue
-                        reusable_state = self._reusable_derivation(
-                            connection,
-                            file_key,
-                            resource,
-                            revision,
-                            candidate_signature,
+                        reusable_state = (
+                            self._reusable_derivation(
+                                connection,
+                                file_key,
+                                resource,
+                                revision,
+                                candidate_signature,
+                            )
+                            if reuse_allowed
+                            else None
                         )
                         reusable = None if reusable_state is None else reusable_state[0]
                         work = self._begin_derivation(
@@ -1461,6 +1762,7 @@ class TextRoute:
                             resource,
                             revision,
                             input_binding,
+                            capability_selection,
                             causation_id=(
                                 None if reusable is None else reusable.producer_receipt_id
                             ),
@@ -1486,6 +1788,7 @@ class TextRoute:
                                     mime,
                                     snapshot.path,
                                     self.config,
+                                    capability_selection,
                                 )
                                 self.cancellation.checkpoint()
                                 refreshed = snapshot_path(snapshot.path)
