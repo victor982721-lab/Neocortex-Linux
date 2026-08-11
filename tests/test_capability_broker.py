@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import math
 import os
+import sys
 from dataclasses import replace
 from importlib import metadata
 from pathlib import Path
@@ -1076,10 +1077,11 @@ def test_binary_artifact_and_location_change_execution_fingerprint(
 
 
 def test_binary_identity_contract_rejects_invalid_hashes() -> None:
+    command = os.fspath(Path(sys.executable).resolve())
     with pytest.raises(ValueError, match="command_sha256"):
         CapabilityBinaryIdentity(
             name="fixture",
-            command=os.devnull,
+            command=command,
             command_sha256="invalid",
             artifact_sha256="0" * 64,
             size_bytes=0,
@@ -1087,7 +1089,7 @@ def test_binary_identity_contract_rejects_invalid_hashes() -> None:
     with pytest.raises(ValueError, match="must fingerprint command exactly"):
         CapabilityBinaryIdentity(
             name="fixture",
-            command=os.devnull,
+            command=command,
             command_sha256="0" * 64,
             artifact_sha256="0" * 64,
             size_bytes=0,
