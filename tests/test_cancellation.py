@@ -163,10 +163,11 @@ class FrameworkCancellationTests(unittest.TestCase):
             journal = SyntheticUsnJournal(corpus).start()
             self.addCleanup(journal.close)
             waiting_started = threading.Event()
+            cancellation_wakes: list[bool] = []
 
             def waiting_route(context):
                 waiting_started.set()
-                context.cancellation.wait(5)
+                cancellation_wakes.append(context.cancellation.wait(5))
                 context.cancellation.checkpoint()
 
             def interrupting_route(_context):
@@ -191,10 +192,9 @@ class FrameworkCancellationTests(unittest.TestCase):
                 route_registry=registry,
             )
 
-            started = time.monotonic()
             with self.assertRaises(KeyboardInterrupt):
                 orchestrator.run_initial()
-            self.assertLess(time.monotonic() - started, 2)
+            self.assertEqual(cancellation_wakes, [True])
 
             with closing(sqlite3.connect(state / "framework.sqlite3")) as connection:
                 run_status = connection.execute(
