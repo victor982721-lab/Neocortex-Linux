@@ -4,6 +4,58 @@ Este archivo registra cambios observables del producto. Las cifras de pruebas,
 cobertura y rendimiento pertenecen al informe técnico fechado de cada auditoría;
 no se copian aquí para evitar que se conviertan en datos históricos sin contexto.
 
+## [Unreleased]
+
+### Añadido
+
+- Contratos públicos inmutables Reproducible Derivations schema 1:
+  `StageDescriptor`, `InputBinding`, `OutputBinding`, `MaterializationRef`,
+  `DerivationRef`, `CapabilityFailure`, `ReproducibilityClass`, `WorkOutcome`,
+  `WorkExecutionMode` y `WorkReceipt`, con fingerprints,
+  causalidad, configuración/runtime acotados y clases de reproducibilidad sin
+  declarar `exact` cuando faltan los requisitos verificables.
+- Text extraction/publication slice `text.extract/v2`: cada revisión fuente puede explicar sus
+  outputs `text_representation` y `text_fts`; ejecución, cache hit, fallo,
+  cancelación y abandono emiten receipts terminales sin atribuir outputs a un
+  intento fallido.
+- Outboxes append-only owner-local de Text y Semantic y proyección causal
+  descartable en memoria, reconstruible e idempotente. Explica ancestros,
+  producción/reutilización, causación e impacto por cambio de firma sin crear
+  una autoridad SQLite transversal.
+- `Neocortex inspect lineage IDENTIFICADOR [--scope
+  personal|framework|all] [--json]` y `neocortex.read_api.lineage_payload()`
+  para consultar linaje Text histórico o chunks Semantic con ventanas y códigos
+  de abstención explícitos, sin crear ni migrar estado.
+
+### Cambiado
+
+- Text pasa de schema 1 a 2 con revisiones inmutables, intentos, bindings,
+  materializaciones, heads, receipts y outbox. La migración exacta conserva
+  documentos/FTS legacy, deja su `revision_id` nulo y no fabrica receipts ni
+  procedencia retroactiva.
+- La publicación Text confirma documento/FTS, materializaciones, heads, receipt
+  y outbox en una sola transacción del owner. El cache hit exige outputs físicos
+  y fingerprints vigentes; cambios de contenido, MIME, configuración o stage
+  invalidan la reutilización.
+- Semantic pasa de schema 6 a 7 mediante una migración aditiva que preserva los
+  heads generacionales de v6 y agrega tracking de intentos, receipts,
+  derivaciones de chunks y outbox. No se inventa linaje para trabajo legacy.
+- Las fuentes Semantic procedentes de Text conservan el `RevisionRef`
+  owner-native cuando está disponible, en vez de depender sólo de una revisión
+  sintética DB-local.
+
+### Límites conocidos
+
+- Reproducible Derivations v1 implementa extracción y publicación Text; la
+  certificación del SHA se determina dinámicamente por las barreras y la release,
+  no por esta entrada.
+  La extensión Semantic es parcial y no equivale a linaje completo de PDF,
+  DOCX, Office ni de materializaciones creadas antes de schema 7.
+- `normalize` y `chunk` todavía no son stages Text independientes; se
+  incorporarán únicamente donde existan fronteras ejecutables reales.
+- La proyección transversal es una vista reconstruible, no una transacción
+  distribuida ni un grafo epistémico de entities/claims.
+
 ## [0.9.0] - 2026-08-10
 
 ### Añadido

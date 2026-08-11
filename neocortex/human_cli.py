@@ -14,6 +14,7 @@ from .read_api import (
     ReadScope,
     code_search_payload,
     context_payload,
+    lineage_payload,
     search_payload,
     status_payload,
 )
@@ -146,6 +147,14 @@ def build_human_parser() -> argparse.ArgumentParser:
         help="canal Code; puede repetirse (por defecto: hybrid)",
     )
     inspect_code.add_argument("--json", action="store_true")
+    inspect_lineage = inspect_commands.add_parser(
+        "lineage",
+        help="explica cómo se produjo una revisión o materialización",
+        allow_abbrev=False,
+    )
+    inspect_lineage.add_argument("identifier", metavar="IDENTIFICADOR")
+    _add_scope(inspect_lineage, default=ReadScope.PERSONAL)
+    inspect_lineage.add_argument("--json", action="store_true")
 
     review = commands.add_parser(
         "review",
@@ -389,6 +398,121 @@ def _run_inspect_code(args: argparse.Namespace) -> int:
     return _exit_code(payload)
 
 
+def _mapping(value: object) -> Mapping[str, object] | None:
+    return value if isinstance(value, Mapping) else None
+
+
+def _mapping_rows(value: object) -> list[Mapping[str, object]]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    return [row for row in value if isinstance(row, Mapping)]
+
+
+def _render_text_lineage(text: Mapping[str, object]) -> None:
+    lineage = _mapping(text.get("lineage"))
+    if lineage is None:
+        _print("  Text: el owner devolvió un contrato de linaje incompleto.")
+        return
+    location = lineage.get("path") or lineage.get("file_key") or "sin documento publicado"
+    _print(
+        f"  Text: {location} · "
+        f"estado {lineage.get('document_status', '-')} · "
+        f"atribución {lineage.get('attribution', '-')}."
+    )
+    revision = _mapping(lineage.get("revision"))
+    if revision is None:
+        _print("    Revisión: no atribuida.")
+    else:
+        _print(
+            f"    Revisión: {revision.get('revision_id', '-')} · "
+            f"recurso {revision.get('resource_id', '-')}."
+        )
+    materializations = _mapping_rows(lineage.get("materializations"))
+    receipt_count = text.get("receipt_count", 0)
+    head_count = text.get("current_materialization_heads", 0)
+    _print(
+        f"    Receipts: {receipt_count} · materializaciones: {len(materializations)} "
+        f"({head_count} publicadas como head)."
+    )
+    if bool(text.get("receipt_window_truncated")):
+        _print("    Advertencia: la ventana de receipts fue truncada por el límite de lectura.")
+    for materialization in materializations:
+        reference = _mapping(materialization.get("materialization"))
+        materialization_id = (
+            reference.get("materialization_id", "-") if reference is not None else "-"
+        )
+        head = "head actual" if bool(materialization.get("current_head")) else "histórica"
+        _print(f"    - {materialization.get('name', 'output')}: {materialization_id} · {head}.")
+    dependencies = _mapping_rows(text.get("dependencies"))
+    if dependencies:
+        _print(f"    Dependencias derivadas: {len(dependencies)}.")
+
+
+def _render_semantic_lineage(semantic: Mapping[str, object]) -> None:
+    lineage = _mapping(semantic.get("lineage"))
+    if lineage is None:
+        _print("  Semantic: el owner devolvió un contrato de linaje incompleto.")
+        return
+    origins = _mapping_rows(lineage.get("origins"))
+    embeddings = _mapping_rows(lineage.get("embeddings"))
+    _print(
+        f"  Semantic: chunk {lineage.get('chunk_id', '-')} · "
+        f"linaje {lineage.get('lineage_status', '-')} · "
+        f"{len(origins)} orígenes · {len(embeddings)} embeddings."
+    )
+    signature = lineage.get("chunking_signature")
+    if signature:
+        _print(f"    Firma de chunking: {signature}")
+    for embedding in embeddings:
+        publication = "publicado" if bool(embedding.get("published")) else "no publicado"
+        model = embedding.get("model_id") or embedding.get("model_signature") or "-"
+        _print(
+            f"    - generación {embedding.get('generation_id', '-')} · modelo {model} · "
+            f"{publication} · linaje {embedding.get('lineage_status', '-')}."
+        )
+
+
+def _run_inspect_lineage(args: argparse.Namespace) -> int:
+    payload = lineage_payload(args.identifier, args.scope)
+    if args.json:
+        _json(payload)
+        return _exit_code(payload)
+    _print(f"Linaje de derivación para: {payload.get('identifier', args.identifier)}")
+    for entry in _entries(payload):
+        lineage = _mapping(entry.get("lineage"))
+        if lineage is None:
+            _render_scope_error(entry)
+            continue
+        status = str(lineage.get("status", entry.get("status", "unknown")))
+        text = _mapping(lineage.get("text"))
+        semantic = _mapping(lineage.get("semantic"))
+        if status == "not_found" and text is None and semantic is None:
+            _print(
+                f"{_scope_label(entry.get('scope'))}: no se encontró ese identificador "
+                "en el linaje publicado."
+            )
+        elif text is None and semantic is None:
+            _print(f"{_scope_label(entry.get('scope'))}: linaje no disponible ({status}).")
+        else:
+            coverage = "completa" if bool(lineage.get("complete")) else "parcial"
+            _print(f"{_scope_label(entry.get('scope'))}: {status} · cobertura {coverage}.")
+            if text is not None:
+                _render_text_lineage(text)
+            if semantic is not None:
+                _render_semantic_lineage(semantic)
+            semantic_dependents = _mapping(lineage.get("semantic_dependents"))
+            if semantic_dependents is not None:
+                count = semantic_dependents.get("chunk_count_in_window", 0)
+                suffix = " (ventana truncada)" if semantic_dependents.get("truncated") else ""
+                label = "chunk" if count == 1 else "chunks"
+                _print(f"  Semantic dependiente: {count} {label}{suffix}.")
+        warnings = lineage.get("warnings")
+        if isinstance(warnings, list) and warnings:
+            _print("  Advertencias: " + "; ".join(str(value) for value in warnings))
+    _print("No se creó, migró ni modificó estado.")
+    return _exit_code(payload)
+
+
 def _run_review_value(args: argparse.Namespace) -> int:
     try:
         adapter = importlib.import_module("neocortex.value_cli_adapter")
@@ -423,6 +547,8 @@ def run_human_command(arguments: Sequence[str]) -> int:
         return _run_ask(args)
     if args.command == "inspect" and args.inspect_command == "code":
         return _run_inspect_code(args)
+    if args.command == "inspect" and args.inspect_command == "lineage":
+        return _run_inspect_lineage(args)
     if args.command == "review" and args.review_command == "value":
         return _run_review_value(args)
     if args.command == "agent" and args.agent_command == "serve":

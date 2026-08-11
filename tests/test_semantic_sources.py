@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 import zlib
 from contextlib import contextmanager
@@ -8,8 +9,11 @@ from typing import Iterator
 
 import pytest
 
+import _04_Nucleo_Operativo.text_state as text_state_module
 from _02_Deduplicacion.hashing import FULL_ALGORITHM, full_fingerprint, snapshot_path
 from _04_Nucleo_Operativo import semantic_sources
+from _04_Nucleo_Operativo.derivation_contracts import MaterializationRef
+from _04_Nucleo_Operativo.file_identity import file_key_from_snapshot
 from _04_Nucleo_Operativo.semantic_models import (
     SemanticItem,
     TextSection,
@@ -25,6 +29,7 @@ from _04_Nucleo_Operativo.semantic_sources import (
     iter_text_source_records,
     semantic_item_title_section,
 )
+from _04_Nucleo_Operativo.text_route import TextRoute, TextRouteConfig
 from _04_Nucleo_Operativo.text_state import initialize_text_state, text_database
 
 
@@ -584,38 +589,72 @@ def test_generic_text_adapter_preserves_physical_provenance_and_email_title(
     tmp_path: Path,
 ) -> None:
     state = tmp_path / "text.sqlite3"
-    initialize_text_state(state)
     text = "resultado satisfactorio de la protección del alimentador"
-    file_key = "00000000000000000000000000000015:00000000000000000000000000000022"
-    with text_database(state, create=False) as connection:
-        connection.execute(
-            """INSERT INTO documents(
-            file_key,path,size,mtime_ns,birthtime_ns,processing_signature,status,
-            content_kind,media_type,title,author,metadata_json,text_zlib,text_chars,
-            text_xxh3_128,text_truncated,detail,last_seen_run_id,updated_ns)
-            VALUES(?,?,?,?,?,?,'complete',?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (
-                file_key,
-                "C:/corpus/mensaje.eml",
-                500,
-                700,
-                900,
-                "text-route-v1",
-                "email",
-                "message/rfc822",
-                "Prueba funcional del alimentador norte",
-                "Operacion <operacion@example.test>",
-                '{"date":"2026-08-09"}',
-                zlib.compress(text.encode("utf-8")),
-                len(text),
-                fingerprint_text(text).xxh3_128,
-                0,
-                "stdlib_email_visible_text",
-                12,
-                1_000,
-            ),
-        )
-        connection.commit()
+    source = tmp_path / "mensaje.eml"
+    source.write_text(
+        "From: Operacion <operacion@example.test>\n"
+        "To: Pruebas <pruebas@example.test>\n"
+        "Subject: Prueba funcional del alimentador norte\n"
+        "Date: Sun, 9 Aug 2026 12:00:00 -0600\n"
+        "Content-Type: text/plain; charset=utf-8\n\n"
+        f"{text}\n",
+        encoding="utf-8",
+    )
+    snapshot = snapshot_path(source)
+
+    class _TextFrameworkState:
+        def selected_route_candidate_counts(
+            self,
+            _run_id: int,
+            mime: str,
+            max_file_bytes: int | None,
+            _route_name: str,
+            _selection: object,
+        ) -> tuple[int, int]:
+            if mime != "message/rfc822":
+                return (0, 0)
+            return (1, int(max_file_bytes is None or snapshot.size <= max_file_bytes))
+
+        def iter_selected_route_candidates(
+            self,
+            _run_id: int,
+            mime: str,
+            _route_name: str,
+            _selection: object,
+        ):
+            if mime == "message/rfc822":
+                yield snapshot
+
+    summary = TextRoute(
+        TextRouteConfig(state_path=state),
+        _TextFrameworkState(),
+        12,
+    ).run()
+    assert summary.extracted == 1
+    file_key = file_key_from_snapshot(snapshot)
+    with text_database(state, readonly=True) as connection:
+        owner_facts = connection.execute(
+            """SELECT d.size,d.mtime_ns,d.birthtime_ns,d.processing_signature,
+            d.last_seen_run_id,d.revision_id,r.resource_id,r.producer,r.generation,
+            r.revision_state,r.observed_at_utc,r.fingerprint_algorithm,
+            r.fingerprint,m.materialization_json,m.fingerprint_algorithm
+              AS representation_algorithm,m.fingerprint AS representation_fingerprint
+            FROM documents d JOIN text_input_revisions r
+              ON r.revision_id=d.revision_id
+            JOIN text_materialization_heads h
+              ON h.resource_id=r.resource_id
+             AND h.materialization_kind='text_representation'
+            JOIN text_materializations m
+              ON m.owner=h.materialization_owner
+             AND m.materialization_id=h.materialization_id
+            WHERE d.file_key=?""",
+            (file_key,),
+        ).fetchone()
+    assert owner_facts is not None
+    representation = MaterializationRef.from_dict(
+        json.loads(str(owner_facts["materialization_json"]))
+    )
+    assert representation.revision is not None
 
     records = tuple(iter_text_source_records(tmp_path, "text"))
 
@@ -623,16 +662,130 @@ def test_generic_text_adapter_preserves_physical_provenance_and_email_title(
     record = records[0]
     assert record.item.item_id == f"item:text:{file_key}"
     assert record.item.source_revision == {
-        "size": 500,
-        "mtime_ns": 700,
-        "birthtime_ns": 900,
-        "processing_signature": "text-route-v1",
-        "last_seen_run_id": 12,
+        "size": int(owner_facts["size"]),
+        "mtime_ns": int(owner_facts["mtime_ns"]),
+        "birthtime_ns": int(owner_facts["birthtime_ns"]),
+        "processing_signature": str(owner_facts["processing_signature"]),
+        "last_seen_run_id": int(owner_facts["last_seen_run_id"]),
+        "revision_id": str(owner_facts["revision_id"]),
+        "owner_revision": {
+            "owner": "text",
+            "revision": representation.revision.to_dict(),
+            "fingerprint_algorithm": str(owner_facts["fingerprint_algorithm"]),
+            "fingerprint": str(owner_facts["fingerprint"]),
+        },
+        "consumed_materialization": {
+            "materialization": representation.to_dict(),
+            "fingerprint_algorithm": str(owner_facts["representation_algorithm"]),
+            "fingerprint": str(owner_facts["representation_fingerprint"]),
+        },
     }
     assert record.item.provenance["source_title"] == ("Prueba funcional del alimentador norte")
     assert record.item.provenance["source_author"] == ("Operacion <operacion@example.test>")
-    assert record.section.text == text
+    assert record.section.text == f"{text}\n"
     assert record.section.provenance["inside_zip"] is False
+
+
+@pytest.mark.parametrize(
+    ("fault", "message"),
+    (
+        ("corrupt_receipt", "owner-local validation"),
+        ("missing_receipt", "owner-local validation"),
+        ("downgraded_revision", "downgraded to legacy"),
+    ),
+)
+def test_generic_text_adapter_rejects_unvalidated_owner_publication(
+    tmp_path: Path,
+    fault: str,
+    message: str,
+) -> None:
+    state = tmp_path / "text.sqlite3"
+    source = tmp_path / "owner-publication.txt"
+    source.write_text("publicación Text con causalidad durable", encoding="utf-8")
+    snapshot = snapshot_path(source)
+
+    class _TextFrameworkState:
+        def selected_route_candidate_counts(
+            self,
+            _run_id: int,
+            mime: str,
+            max_file_bytes: int | None,
+            _route_name: str,
+            _selection: object,
+        ) -> tuple[int, int]:
+            if mime != "text/plain":
+                return (0, 0)
+            return (1, int(max_file_bytes is None or snapshot.size <= max_file_bytes))
+
+        def iter_selected_route_candidates(
+            self,
+            _run_id: int,
+            mime: str,
+            _route_name: str,
+            _selection: object,
+        ):
+            if mime == "text/plain":
+                yield snapshot
+
+    summary = TextRoute(
+        TextRouteConfig(state_path=state),
+        _TextFrameworkState(),
+        1,
+    ).run()
+    assert summary.extracted == 1
+    with sqlite3.connect(state) as connection:
+        if fault == "corrupt_receipt":
+            connection.execute("DROP TRIGGER text_work_receipts_no_update")
+            connection.execute("UPDATE text_work_receipts SET receipt_json='{}'")
+        elif fault == "missing_receipt":
+            connection.execute("DROP TRIGGER text_work_receipts_no_delete")
+            connection.execute("DELETE FROM text_work_receipts")
+        else:
+            connection.execute("DROP TRIGGER text_documents_revision_no_downgrade")
+            connection.execute("UPDATE documents SET revision_id=NULL")
+
+    with pytest.raises(SemanticSourceError, match=message):
+        tuple(iter_text_source_records(tmp_path, "text"))
+
+
+def test_generic_text_adapter_keeps_migrated_v1_explicitly_unattributed(
+    tmp_path: Path,
+) -> None:
+    state = tmp_path / "text.sqlite3"
+    text = "evidencia legacy sin receipt inventado"
+    encoded = text.encode("utf-8")
+    with sqlite3.connect(state) as connection:
+        text_state_module._create_text_v1_schema(connection)
+        connection.execute("INSERT INTO metadata VALUES('schema_version','1')")
+        connection.execute(
+            """INSERT INTO documents(
+            file_key,path,size,mtime_ns,birthtime_ns,processing_signature,status,
+            content_kind,media_type,text_zlib,text_chars,text_xxh3_128,
+            last_seen_run_id,updated_ns)
+            VALUES('legacy','/legacy.txt',?,?,?,'legacy-psig','complete',
+            'txt','text/plain',?,?,?,1,1)""",
+            (
+                len(encoded),
+                10,
+                -1,
+                zlib.compress(encoded),
+                len(text),
+                fingerprint_text(text).xxh3_128,
+            ),
+        )
+        connection.execute(
+            """INSERT INTO document_fts(file_key,path,content_kind,title,author,body)
+            VALUES('legacy','/legacy.txt','txt','','',?)""",
+            (text,),
+        )
+    initialize_text_state(state)
+
+    records = tuple(iter_text_source_records(tmp_path, "text"))
+
+    assert len(records) == 1
+    assert records[0].section.text == text
+    assert "owner_revision" not in records[0].item.source_revision
+    assert "consumed_materialization" not in records[0].item.source_revision
 
 
 # endregion [01]

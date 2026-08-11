@@ -14,6 +14,7 @@ que conviene conocer antes de usar `--help`.
 | Buscar evidencia | `Neocortex search "consulta" --scope personal --limit 20` |
 | Preparar contexto citado | `Neocortex ask "consulta" --scope personal --limit 12` |
 | Inspeccionar Code | `Neocortex inspect code "consulta" --scope framework` |
+| Explicar una derivación | `Neocortex inspect lineage IDENTIFICADOR --scope personal` |
 | Revisar valor sin cambios | `Neocortex review value --scope personal` |
 | Diagnóstico de una corrida | `Neocortex --status --status-json` |
 
@@ -426,14 +427,50 @@ Neocortex status --scope personal
 Neocortex search "protección diferencial" --scope all --limit 10
 Neocortex ask "¿qué evidencia existe de la prueba FAT?" --scope personal
 Neocortex inspect code "validación de schema" --scope framework --mode hybrid
+Neocortex inspect lineage IDENTIFICADOR --scope personal
 Neocortex review value --scope personal --limit 50
 ```
 
 Los scopes válidos son `personal`, `framework` y `all`. `all` ejecuta cada
 snapshot independientemente y no fusiona scores. `status`, `search`, `ask` e
-`inspect code` aceptan `--json`; `search`/`ask` acotan la consulta a 4096
-caracteres y como máximo 100 resultados por scope. `review value` es advisory,
-declara `mutation_authorized=false` y no mueve, archiva ni elimina.
+`inspect code`/`inspect lineage` aceptan `--json`; `search`/`ask` acotan la
+consulta a 4096 caracteres y como máximo 100 resultados por scope.
+`review value` es advisory, declara `mutation_authorized=false` y no mueve,
+archiva ni elimina.
+
+#### `inspect lineage`
+
+La inspección de linaje consulta cómo se produjo estado ya persistido; no
+ejecuta extractores ni reconstruye las bases propietarias:
+
+```bash
+Neocortex inspect lineage revision:text:... --scope personal
+Neocortex inspect lineage materialization:text:... --scope personal --json
+Neocortex inspect lineage semantic:chunk:... --scope framework
+```
+
+`IDENTIFICADOR` admite un file key/path Text, revisión,
+materialización o `WorkReceipt`, y un `chunk_id` Semantic. Use el identificador
+exacto emitido por los contratos JSON; los prefijos del ejemplo son
+ilustrativos y no deben fabricarse. El scope predeterminado es `personal`;
+`all` consulta Personal y Framework por separado sin unir sus grafos.
+
+La salida Text muestra revisión, atribución, receipts, materializaciones,
+heads y dependencias; para una revisión Text también enumera hasta 100 chunks
+Semantic dependientes. La salida de un chunk Semantic distingue origen,
+staged/publicado, receipts y embeddings. Los readers acotan cada ventana Text a
+1,000 filas, los eventos de proyección a 100,000 y marcan truncamiento; no
+cargan el historial completo de forma silenciosa.
+
+El comando abre exclusivamente `text.sqlite3`/`semantic.sqlite3` ya existentes
+bajo las raíces fijas, valida schema y permanece read-only. No crea directorios,
+migra bases, hace checkpoint, carga modelos, recorre el corpus ni autoriza una
+mutación. El estado humano `ready` devuelve `0`; `not_found`, `partial`, schema
+incompatible que impide toda resolución y corrupción conservan respectivamente
+los códigos `3`, `4`, `6` y `7` (federados por scope). Si otro owner aporta
+evidencia válida pese al schema incompatible, el resultado es `4 partial` con
+warning. El lector admite Semantic v6 como legado no atribuible y v7 como
+contrato atribuible; nunca migra la base durante `inspect lineage`.
 
 ```bash
 Neocortex agent serve
@@ -921,6 +958,7 @@ por familia:
 | `--retention-json` | Un documento JSON del plan dry-run; exige `--retention-status`. |
 | `--archive-json` | Estado o resultados ZIP; exige exactamente una acción `--archive-*`. |
 | `--knowledge-json` | Snapshot, resultado de búsqueda o contexto Knowledge; exige exactamente una acción `--knowledge-*`. |
+| `inspect lineage --json` | Linaje owner-local y proyección causal acotada para el identificador; no migra estado. |
 | `doctor platform --json` | Un documento JSON versionado de política y capacidades de plataforma. |
 | `models prepare/status --json` | Un documento JSON versionado del conjunto de modelos gestionados. |
 
@@ -935,11 +973,11 @@ y compruebe siempre el código de salida.
 | `0` | Ayuda/versión o ejecución/consulta completada según su contrato. |
 | `1` | Excepción fatal no normalizada o fallo interno del worker de GUI. No es el código de una validación ordinaria de argumentos. |
 | `2` | Error de argumentos detectado por `argparse` o por la validación posterior, como una combinación incompatible o una solicitud Linux de `--apply`/`--organization-apply`; estado requerido ausente o incompatible; diagnóstico fallido —incluida abstención total de `--code-status`/`--code-review` ante sidecars, cerca inestable o publicación no elegible—; generación Semantic incompleta, truncada o no publicada; error de acciones u organización; conciliación con efecto ambiguo/imposible —incluso si su evento fue registrado—; plan de retención bloqueado; o, con `--strict-exit-codes`, errores/parciales retenidos por una ruta. El watcher también devuelve `2` si conserva corridas fallidas o errores de fuente. |
-| `3` | Knowledge terminó con snapshot estable y cobertura completa, pero search/context no obtuvo evidencia; Archive search/list también lo usa cuando no hay miembros coincidentes. |
-| `4` | Knowledge produjo una respuesta parcial o no soportada; incluye propietarios necesarios ausentes. |
+| `3` | Knowledge terminó con snapshot estable y cobertura completa, pero search/context no obtuvo evidencia; Archive search/list también lo usa cuando no hay miembros coincidentes; `inspect lineage` no encontró el identificador. |
+| `4` | Knowledge produjo una respuesta parcial o no soportada; incluye propietarios necesarios ausentes. `inspect lineage` encontró evidencia incompleta, legacy o truncada. |
 | `5` | El snapshot Knowledge volvió a cambiar durante el único reintento global acotado. |
-| `6` | Knowledge status encontró un schema futuro/incompatible; en search/context, uno de esos owners figura en `blocking_owners` y obliga a abstenerse. |
-| `7` | Knowledge status detectó una base corrupta; en search/context, la base figura en `blocking_owners` y obliga a abstenerse. |
+| `6` | Knowledge status encontró un schema futuro/incompatible; en search/context, uno de esos owners figura en `blocking_owners` y obliga a abstenerse. `inspect lineage` lo usa cuando el schema incompatible impide toda resolución; si otro owner aporta evidencia válida, devuelve `4 partial` con warning. |
+| `7` | Knowledge status detectó una base corrupta; en search/context, la base figura en `blocking_owners` y obliga a abstenerse. `inspect lineage` también lo usa ante corrupción SQLite. |
 | `130` | Cancelación por teclado o cancelación del watcher. |
 | otro no cero | Fallo no normalizado. Trátelo como fatal y preserve la evidencia. |
 

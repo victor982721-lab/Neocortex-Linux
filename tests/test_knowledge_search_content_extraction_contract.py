@@ -10,6 +10,7 @@ from __future__ import annotations
 import inspect
 import pickle
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -700,6 +701,27 @@ def test_materialization_wrapper_resolves_current_lower_helpers_and_constants(
         "start_ms",
         "end_ms",
     ]
+
+
+def test_revision_identity_prefers_a_valid_owner_native_revision() -> None:
+    resolved = _resolved(source_kind="text")
+    resolved = replace(
+        resolved,
+        source_revision={
+            **resolved.source_revision,
+            "revision_id": "revision:text:owner-native-fixture",
+        },
+    )
+
+    revision_id, signature, state, warnings = knowledge_search._revision_identity(
+        resolved,
+        "text-route-v2",
+    )
+
+    assert revision_id == "revision:text:owner-native-fixture"
+    assert signature == "fixture-v1"
+    assert state is RevisionState.CURRENT
+    assert warnings == ()
 
 
 # endregion [02]

@@ -620,7 +620,8 @@ _SPECS = {
         bm25(document_fts) AS raw_bm25,d.size AS source_size,
         d.mtime_ns AS source_mtime_ns,d.birthtime_ns AS source_birthtime_ns,
         d.processing_signature AS source_processing_signature,
-        d.last_seen_run_id AS source_last_seen_run_id,d.status AS source_status
+        d.last_seen_run_id AS source_last_seen_run_id,d.status AS source_status,
+        d.revision_id AS source_revision_id
         FROM document_fts AS f JOIN documents AS d ON d.file_key=f.file_key
         WHERE document_fts MATCH ? AND d.status='complete'
         ORDER BY raw_bm25,f.path COLLATE NOCASE LIMIT ?""",
@@ -629,7 +630,8 @@ _SPECS = {
         CAST(length(f.body) AS REAL) AS raw_bm25,d.size AS source_size,
         d.mtime_ns AS source_mtime_ns,d.birthtime_ns AS source_birthtime_ns,
         d.processing_signature AS source_processing_signature,
-        d.last_seen_run_id AS source_last_seen_run_id,d.status AS source_status
+        d.last_seen_run_id AS source_last_seen_run_id,d.status AS source_status,
+        d.revision_id AS source_revision_id
         FROM document_fts AS f JOIN documents AS d ON d.file_key=f.file_key
         WHERE d.status='complete' AND {conditions}
         ORDER BY length(f.body),f.path COLLATE NOCASE LIMIT ?""",
@@ -723,6 +725,11 @@ def _resolved_hit(
         "processing_signature": str(row["source_processing_signature"]),
         "last_seen_run_id": int(row["source_last_seen_run_id"]),
     }
+    if "source_revision_id" in row.keys() and row["source_revision_id"] is not None:
+        revision_id = str(row["source_revision_id"])
+        if not revision_id.strip():
+            raise sqlite3.DataError("source revision identity cannot be blank")
+        source_revision["revision_id"] = revision_id
     if spec.source_kind == "pdf":
         source_revision["is_partial"] = bool(row["source_is_partial"])
     section_provenance: dict[str, object] = {}

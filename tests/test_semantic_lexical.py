@@ -212,7 +212,8 @@ def _create_text_state(path: Path) -> None:
                 mtime_ns INTEGER NOT NULL,
                 birthtime_ns INTEGER NOT NULL,
                 processing_signature TEXT NOT NULL,
-                last_seen_run_id INTEGER NOT NULL
+                last_seen_run_id INTEGER NOT NULL,
+                revision_id TEXT
             );
             CREATE VIRTUAL TABLE document_fts USING fts5(
                 file_key UNINDEXED,path UNINDEXED,content_kind,title,author,body,
@@ -220,7 +221,7 @@ def _create_text_state(path: Path) -> None:
             );
             INSERT INTO documents VALUES(
                 '21:34','C:/docs/bitacora.eml','complete',500,70,14,
-                'text-route-v1',12
+                'text-route-v1',12,'revision:text:owner-native-fixture'
             );
             INSERT INTO document_fts VALUES(
                 '21:34','C:/docs/bitacora.eml','email','Alimentador norte','Victor',
@@ -765,6 +766,7 @@ def test_generic_text_source_is_additive_and_preserves_physical_evidence(
         "birthtime_ns": 14,
         "processing_signature": "text-route-v1",
         "last_seen_run_id": 12,
+        "revision_id": "revision:text:owner-native-fixture",
     }
 
 

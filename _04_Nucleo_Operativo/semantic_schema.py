@@ -19,7 +19,7 @@ from .sqlite_schema_contract import (
 )
 
 
-SEMANTIC_SCHEMA_VERSION = 6
+SEMANTIC_SCHEMA_VERSION = 7
 
 
 class SemanticStateError(RuntimeError):
@@ -52,9 +52,7 @@ def _configure_write_connection(connection: sqlite3.Connection) -> None:
 
 
 @contextmanager
-def semantic_database(
-    path: Path, *, readonly: bool = False
-) -> Iterator[sqlite3.Connection]:
+def semantic_database(path: Path, *, readonly: bool = False) -> Iterator[sqlite3.Connection]:
     """Open the semantic database with bounded WAL/cache settings."""
 
     if readonly:
@@ -460,6 +458,171 @@ _MIGRATION_6 = (
     ) WITHOUT ROWID""",
 )
 
+_MIGRATION_7 = (
+    """ALTER TABLE vector_payloads
+        ADD COLUMN legacy_before_receipts INTEGER NOT NULL DEFAULT 0
+        CHECK(legacy_before_receipts IN (0,1))""",
+    """UPDATE vector_payloads SET legacy_before_receipts=1""",
+    """CREATE TRIGGER vector_payloads_no_update
+        BEFORE UPDATE ON vector_payloads BEGIN
+            SELECT RAISE(ABORT,'semantic vector payloads are append-only');
+        END""",
+    """CREATE TRIGGER vector_payloads_no_delete
+        BEFORE DELETE ON vector_payloads BEGIN
+            SELECT RAISE(ABORT,'semantic vector payloads are append-only');
+        END""",
+    """ALTER TABLE embedding_jobs
+        ADD COLUMN attempt_started_ns INTEGER
+        CHECK(attempt_started_ns IS NULL OR attempt_started_ns>=0)""",
+    """ALTER TABLE embedding_jobs
+        ADD COLUMN attempt_sequence INTEGER NOT NULL DEFAULT 0
+        CHECK(attempt_sequence>=0)""",
+    """ALTER TABLE embedding_jobs
+        ADD COLUMN input_item_revision_id INTEGER
+        REFERENCES semantic_item_revisions(item_revision_id)""",
+    """ALTER TABLE embedding_jobs
+        ADD COLUMN input_chunk_revision_id INTEGER
+        REFERENCES semantic_chunk_revisions(chunk_revision_id)""",
+    """CREATE INDEX semantic_item_revisions_source_revision_idx
+        ON semantic_item_revisions(
+            json_extract(source_revision_json,'$.revision_id'),item_revision_id)
+        WHERE json_type(source_revision_json,'$.revision_id')='text'""",
+    """CREATE TRIGGER semantic_item_revisions_no_update
+        BEFORE UPDATE ON semantic_item_revisions BEGIN
+            SELECT RAISE(ABORT,'semantic item revisions are append-only');
+        END""",
+    """CREATE TRIGGER semantic_item_revisions_no_delete
+        BEFORE DELETE ON semantic_item_revisions BEGIN
+            SELECT RAISE(ABORT,'semantic item revisions are append-only');
+        END""",
+    """CREATE TRIGGER semantic_chunk_revisions_no_update
+        BEFORE UPDATE ON semantic_chunk_revisions BEGIN
+            SELECT RAISE(ABORT,'semantic chunk revisions are append-only');
+        END""",
+    """CREATE TRIGGER semantic_chunk_revisions_no_delete
+        BEFORE DELETE ON semantic_chunk_revisions BEGIN
+            SELECT RAISE(ABORT,'semantic chunk revisions are append-only');
+        END""",
+    """CREATE TABLE semantic_work_receipts(
+        receipt_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        receipt_key TEXT NOT NULL UNIQUE,
+        contract_version TEXT NOT NULL
+            CHECK(contract_version='neocortex.work-receipt/v1'),
+        stage_id TEXT NOT NULL,
+        stage_version TEXT NOT NULL,
+        processing_signature TEXT NOT NULL,
+        status TEXT NOT NULL CHECK(status IN
+            ('succeeded','failed','cancelled','abandoned')),
+        execution_mode TEXT NOT NULL CHECK(execution_mode IN
+            ('executed','cache_hit','replay','attempted','unknown')),
+        reproducibility_class TEXT NOT NULL CHECK(reproducibility_class IN
+            ('exact','environment_bound','seeded','equivalent','best_effort',
+             'non_replayable')),
+        entity_kind TEXT NOT NULL,
+        entity_id TEXT NOT NULL,
+        item_revision_id INTEGER,
+        chunk_revision_id INTEGER,
+        generation_id INTEGER,
+        model_signature TEXT,
+        payload_id INTEGER,
+        job_id INTEGER,
+        attempt INTEGER CHECK(attempt IS NULL OR attempt>=1),
+        started_ns INTEGER CHECK(started_ns IS NULL OR started_ns>=0),
+        finished_ns INTEGER CHECK(finished_ns IS NULL OR finished_ns>=0),
+        duration_ns INTEGER CHECK(duration_ns IS NULL OR duration_ns>=0),
+        receipt_json TEXT NOT NULL,
+        committed_ns INTEGER NOT NULL CHECK(committed_ns>=0),
+        CHECK(finished_ns IS NULL OR started_ns IS NULL OR
+              finished_ns>=started_ns),
+        FOREIGN KEY(item_revision_id)
+            REFERENCES semantic_item_revisions(item_revision_id),
+        FOREIGN KEY(chunk_revision_id)
+            REFERENCES semantic_chunk_revisions(chunk_revision_id),
+        FOREIGN KEY(generation_id)
+            REFERENCES embedding_generations(generation_id),
+        FOREIGN KEY(model_signature)
+            REFERENCES embedding_models(model_signature),
+        FOREIGN KEY(payload_id) REFERENCES vector_payloads(payload_id)
+    )""",
+    """CREATE INDEX semantic_work_receipts_entity_idx
+        ON semantic_work_receipts(entity_kind,entity_id,receipt_id)""",
+    """CREATE INDEX semantic_work_receipts_generation_idx
+        ON semantic_work_receipts(generation_id,model_signature,receipt_id)""",
+    """CREATE INDEX semantic_work_receipts_embedding_lookup_idx
+        ON semantic_work_receipts(
+            stage_id,status,entity_id,generation_id,payload_id,receipt_id)""",
+    """CREATE TRIGGER semantic_work_receipts_no_update
+        BEFORE UPDATE ON semantic_work_receipts BEGIN
+            SELECT RAISE(ABORT,'semantic work receipts are append-only');
+        END""",
+    """CREATE TRIGGER semantic_work_receipts_no_delete
+        BEFORE DELETE ON semantic_work_receipts BEGIN
+            SELECT RAISE(ABORT,'semantic work receipts are append-only');
+        END""",
+    """CREATE TABLE semantic_chunk_derivations(
+        derivation_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        chunk_revision_id INTEGER NOT NULL,
+        item_revision_id INTEGER NOT NULL,
+        refresh_token TEXT NOT NULL,
+        materialization_receipt_id INTEGER NOT NULL UNIQUE,
+        publication_receipt_id INTEGER,
+        created_ns INTEGER NOT NULL CHECK(created_ns>=0),
+        UNIQUE(chunk_revision_id,item_revision_id,refresh_token),
+        FOREIGN KEY(chunk_revision_id)
+            REFERENCES semantic_chunk_revisions(chunk_revision_id),
+        FOREIGN KEY(item_revision_id)
+            REFERENCES semantic_item_revisions(item_revision_id),
+        FOREIGN KEY(materialization_receipt_id)
+            REFERENCES semantic_work_receipts(receipt_id),
+        FOREIGN KEY(publication_receipt_id)
+            REFERENCES semantic_work_receipts(receipt_id)
+    )""",
+    """CREATE INDEX semantic_chunk_derivations_chunk_idx
+        ON semantic_chunk_derivations(
+            chunk_revision_id,item_revision_id,derivation_id)""",
+    """CREATE INDEX semantic_chunk_derivations_refresh_idx
+        ON semantic_chunk_derivations(refresh_token,publication_receipt_id,
+                                      derivation_id)""",
+    """CREATE TRIGGER semantic_chunk_derivations_publication_once
+        BEFORE UPDATE ON semantic_chunk_derivations
+        WHEN NOT (
+            OLD.publication_receipt_id IS NULL AND
+            NEW.publication_receipt_id IS NOT NULL AND
+            NEW.derivation_id=OLD.derivation_id AND
+            NEW.chunk_revision_id=OLD.chunk_revision_id AND
+            NEW.item_revision_id=OLD.item_revision_id AND
+            NEW.refresh_token=OLD.refresh_token AND
+            NEW.materialization_receipt_id=OLD.materialization_receipt_id AND
+            NEW.created_ns=OLD.created_ns)
+        BEGIN
+            SELECT RAISE(ABORT,'semantic chunk derivations are immutable after publication');
+        END""",
+    """CREATE TRIGGER semantic_chunk_derivations_no_delete
+        BEFORE DELETE ON semantic_chunk_derivations BEGIN
+            SELECT RAISE(ABORT,'semantic chunk derivations are append-only');
+        END""",
+    """CREATE TABLE semantic_derivation_outbox(
+        event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        receipt_id INTEGER NOT NULL UNIQUE,
+        event_kind TEXT NOT NULL,
+        aggregate_kind TEXT NOT NULL,
+        aggregate_id TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        committed_ns INTEGER NOT NULL CHECK(committed_ns>=0),
+        FOREIGN KEY(receipt_id) REFERENCES semantic_work_receipts(receipt_id)
+    )""",
+    """CREATE INDEX semantic_derivation_outbox_scan_idx
+        ON semantic_derivation_outbox(event_id,event_kind)""",
+    """CREATE TRIGGER semantic_derivation_outbox_no_update
+        BEFORE UPDATE ON semantic_derivation_outbox BEGIN
+            SELECT RAISE(ABORT,'semantic derivation outbox is append-only');
+        END""",
+    """CREATE TRIGGER semantic_derivation_outbox_no_delete
+        BEFORE DELETE ON semantic_derivation_outbox BEGIN
+            SELECT RAISE(ABORT,'semantic derivation outbox is append-only');
+        END""",
+)
+
 
 def _execute_migration(
     connection: sqlite3.Connection,
@@ -684,15 +847,12 @@ def _migrate_to_v6(connection: sqlite3.Connection, applied_ns: int) -> None:
         )
         actual_count = int(
             connection.execute(
-                "SELECT COUNT(*) FROM embedding_generation_members "
-                "WHERE generation_id=?",
+                "SELECT COUNT(*) FROM embedding_generation_members WHERE generation_id=?",
                 (generation_id,),
             ).fetchone()[0]
         )
         if actual_count != expected_count:
-            raise SemanticStateError(
-                "v5 semantic visible-row count changed during migration"
-            )
+            raise SemanticStateError("v5 semantic visible-row count changed during migration")
         connection.execute(
             """INSERT INTO published_embedding_heads(
                 model_signature,generation_id,published_ns) VALUES(?,?,?)""",
@@ -702,20 +862,26 @@ def _migrate_to_v6(connection: sqlite3.Connection, applied_ns: int) -> None:
     foreign_key_error = connection.execute("PRAGMA foreign_key_check").fetchone()
     if foreign_key_error is not None:
         raise SemanticStateError(
-            f"semantic v6 migration created a foreign-key violation: "
-            f"{tuple(foreign_key_error)!r}"
+            f"semantic v6 migration created a foreign-key violation: {tuple(foreign_key_error)!r}"
         )
-    integrity = tuple(
-        str(row[0]) for row in connection.execute("PRAGMA integrity_check")
-    )
+    integrity = tuple(str(row[0]) for row in connection.execute("PRAGMA integrity_check"))
     if integrity != ("ok",):
-        raise SemanticStateError(
-            f"semantic v6 migration failed integrity_check: {integrity!r}"
-        )
+        raise SemanticStateError(f"semantic v6 migration failed integrity_check: {integrity!r}")
     connection.execute(
-        "INSERT INTO schema_migrations(version,description,applied_ns) "
-        "VALUES(6,?,?)",
+        "INSERT INTO schema_migrations(version,description,applied_ns) VALUES(6,?,?)",
         ("atomic published embedding snapshots", applied_ns),
+    )
+
+
+def _migrate_to_v7(connection: sqlite3.Connection, applied_ns: int) -> None:
+    """Add owner-local derivation receipts without inventing legacy facts."""
+
+    _execute_migration(
+        connection,
+        _MIGRATION_7,
+        version=7,
+        description="owner-local semantic derivation receipts and outbox",
+        applied_ns=applied_ns,
     )
 
 
@@ -726,6 +892,7 @@ _MIGRATIONS_BY_TARGET: dict[int, Callable[[sqlite3.Connection, int], None]] = {
     4: _migrate_to_v4,
     5: _migrate_to_v5,
     6: _migrate_to_v6,
+    7: _migrate_to_v7,
 }
 
 _TABLE_NAMES_BY_VERSION = {
@@ -751,6 +918,11 @@ _TABLE_NAMES_BY_VERSION = {
         "semantic_chunk_revisions",
         "embedding_generation_members",
         "published_embedding_heads",
+    ),
+    7: (
+        "semantic_work_receipts",
+        "semantic_chunk_derivations",
+        "semantic_derivation_outbox",
     ),
 }
 
@@ -781,6 +953,15 @@ _NAMED_INDEXES_BY_VERSION = {
         "semantic_chunk_revisions_item_idx": "semantic_chunk_revisions",
         "embedding_generation_members_search_idx": "embedding_generation_members",
         "embedding_generation_members_clone_idx": "embedding_generation_members",
+    },
+    7: {
+        "semantic_item_revisions_source_revision_idx": "semantic_item_revisions",
+        "semantic_work_receipts_entity_idx": "semantic_work_receipts",
+        "semantic_work_receipts_generation_idx": "semantic_work_receipts",
+        "semantic_work_receipts_embedding_lookup_idx": "semantic_work_receipts",
+        "semantic_chunk_derivations_chunk_idx": "semantic_chunk_derivations",
+        "semantic_chunk_derivations_refresh_idx": "semantic_chunk_derivations",
+        "semantic_derivation_outbox_scan_idx": "semantic_derivation_outbox",
     },
 }
 
@@ -839,9 +1020,7 @@ def _index_columns(
     connection: sqlite3.Connection,
     index: str,
 ) -> tuple[_IndexColumnContract, ...]:
-    rows = connection.execute(
-        f"PRAGMA index_xinfo({_quoted_identifier(index)})"
-    ).fetchall()
+    rows = connection.execute(f"PRAGMA index_xinfo({_quoted_identifier(index)})").fetchall()
     return tuple(
         _IndexColumnContract(
             name=(str(row[2]) if row[2] is not None else f"<expression:{int(row[1])}>"),
@@ -855,9 +1034,7 @@ def _index_columns(
 
 def _tables_through(version: int) -> tuple[str, ...]:
     return tuple(
-        table
-        for target in range(1, version + 1)
-        for table in _TABLE_NAMES_BY_VERSION[target]
+        table for target in range(1, version + 1) for table in _TABLE_NAMES_BY_VERSION[target]
     )
 
 
@@ -897,15 +1074,11 @@ def _canonical_contract(version: int) -> _SchemaContract:
                     default_sql=None if row[4] is None else str(row[4]),
                     primary_key_position=int(row[5]),
                 )
-                for row in connection.execute(
-                    f"PRAGMA table_xinfo({_quoted_identifier(table)})"
-                )
+                for row in connection.execute(f"PRAGMA table_xinfo({_quoted_identifier(table)})")
             }
             without_rowid, strict = table_options[table]
             tables[table] = _TableContract(columns, without_rowid, strict)
-            for row in connection.execute(
-                f"PRAGMA index_list({_quoted_identifier(table)})"
-            ):
+            for row in connection.execute(f"PRAGMA index_list({_quoted_identifier(table)})"):
                 if bool(row[2]) and str(row[3]) == "u":
                     unique_keys.add((table, _index_columns(connection, str(row[1]))))
 
@@ -964,18 +1137,14 @@ def _validate_schema(connection: sqlite3.Connection, version: int) -> None:
                 default_sql=None if row[4] is None else str(row[4]),
                 primary_key_position=int(row[5]),
             )
-            for row in connection.execute(
-                f"PRAGMA table_xinfo({_quoted_identifier(table)})"
-            )
+            for row in connection.execute(f"PRAGMA table_xinfo({_quoted_identifier(table)})")
         }
         for column, column_contract in table_contract.columns.items():
             actual = actual_columns.get(column)
             if actual is None:
                 errors.append(f"table {table!r} is missing column {column!r}")
             elif actual != column_contract:
-                errors.append(
-                    f"table {table!r} column {column!r} has an invalid declaration"
-                )
+                errors.append(f"table {table!r} column {column!r} has an invalid declaration")
         options = table_options.get(table)
         if options is not None and options != (
             table_contract.without_rowid,
@@ -986,9 +1155,7 @@ def _validate_schema(connection: sqlite3.Connection, version: int) -> None:
     for index, (table, columns, unique, partial) in expected.indexes.items():
         rows = {
             str(row[1]): row
-            for row in connection.execute(
-                f"PRAGMA index_list({_quoted_identifier(table)})"
-            )
+            for row in connection.execute(f"PRAGMA index_list({_quoted_identifier(table)})")
         }
         actual = rows.get(index)
         if actual is None:
@@ -1002,18 +1169,14 @@ def _validate_schema(connection: sqlite3.Connection, version: int) -> None:
     for table, columns in expected.unique_keys:
         actual_unique_keys = {
             _index_columns(connection, str(row[1]))
-            for row in connection.execute(
-                f"PRAGMA index_list({_quoted_identifier(table)})"
-            )
+            for row in connection.execute(f"PRAGMA index_list({_quoted_identifier(table)})")
             if bool(row[2])
         }
         if columns not in actual_unique_keys:
             errors.append(f"table {table!r} is missing required unique key {columns!r}")
 
     if errors:
-        raise SemanticStateError(
-            "semantic schema contract validation failed: " + "; ".join(errors)
-        )
+        raise SemanticStateError("semantic schema contract validation failed: " + "; ".join(errors))
 
 
 def _application_objects(connection: sqlite3.Connection) -> set[str]:
@@ -1055,9 +1218,7 @@ def _read_metadata_version(
             f"semantic schema version is not an integer: {raw_version!r}"
         ) from exc
     if raw_version != str(version):
-        raise SemanticStateError(
-            f"semantic schema version is not canonical: {raw_version!r}"
-        )
+        raise SemanticStateError(f"semantic schema version is not canonical: {raw_version!r}")
     return version
 
 
@@ -1066,14 +1227,11 @@ def _read_schema_version(connection: sqlite3.Connection) -> int | None:
     objects = _application_objects(connection)
     if not objects:
         if version != 0:
-            raise SemanticStateError(
-                "semantic database declares a version but contains no schema"
-            )
+            raise SemanticStateError("semantic database declares a version but contains no schema")
         return None
     if version < 1 or version > SEMANTIC_SCHEMA_VERSION:
         raise SemanticStateError(
-            f"semantic schema {version} is unsupported; expected "
-            f"1..{SEMANTIC_SCHEMA_VERSION}"
+            f"semantic schema {version} is unsupported; expected 1..{SEMANTIC_SCHEMA_VERSION}"
         )
     metadata_version = _read_metadata_version(
         connection,
@@ -1092,8 +1250,7 @@ def _validate_migration_history(
 ) -> None:
     try:
         rows = connection.execute(
-            "SELECT version,description,applied_ns FROM schema_migrations "
-            "ORDER BY version"
+            "SELECT version,description,applied_ns FROM schema_migrations ORDER BY version"
         ).fetchall()
     except sqlite3.DatabaseError as exc:
         raise SemanticStateError("semantic migration history is malformed") from exc

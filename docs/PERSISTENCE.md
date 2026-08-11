@@ -1,9 +1,10 @@
 # Persistencia, esquemas y migraciones
 
-> **Estado del documento.** Contrato actualizado el 10 de agosto de 2026. El
+> **Estado del documento.** Contrato actualizado el 11 de agosto de 2026. El
 > árbol fuente `0.9.0` declara inventario Dedup v10, framework v20,
-> catálogo v6 y semántica v6; la barrera integral y el paquete final se registran
-> por separado. En una auditoría histórica, bases vivas se inspeccionaron sin
+> PDF v12, Text v2, catálogo v6 y semántica v7; la barrera integral y el paquete
+> final se registran por separado. En una auditoría histórica, bases vivas se
+> inspeccionaron sin
 > migrarlas: dedup permanecía
 > en v6, framework en v16 y catálogo en v5; semantic no existía. La lectura
 > confirmó integridad lógica, pero SQLite creó
@@ -107,13 +108,13 @@ a los archivos vivos.
 | `docx.sqlite3` | `docx_schema`, `docx_state`, `DocxRoute` | 5 | inventario, documentos, partes, diagnósticos, FTS, layouts y contrapartes PDF | `metadata.schema_version`; migraciones secuenciales |
 | `office.sqlite3` | `office_state`, `OfficeRoute` | 2 | inventario, documentos, celdas XLSX tipadas y FTS | `metadata.schema_version` |
 | `archive.sqlite3` | `archive_state`, `ArchiveRoute` | 1 | contenedores ZIP, miembros y cadenas anidadas, incidencias, texto comprimido y FTS | `metadata.schema_version`; sin estado legacy |
-| `text.sqlite3` | `text_state`, `TextRoute` | 1 | texto físico, EML y Office heredado; título/autor, metadata, texto comprimido, errores y FTS | `metadata.schema_version`; sin estado legacy |
+| `text.sqlite3` | `text_state`, `TextRoute`, `text_derivation_repository` | **2** | texto físico, EML y Office heredado; documento/FTS, revisiones, intentos, bindings, materializaciones, heads, receipts y outbox de derivación | `metadata.schema_version`; migración exacta 1→2 sin receipts sintéticos |
 | `audio.sqlite3` | `audio_state`, `AudioRoute` | 1 | inventario, documentos, segmentos y FTS de transcripción | `metadata.schema_version` |
 | `video.sqlite3` | `video_state`, `VideoRoute` | 1 | documentos, streams, frames, selección, OCR, timestamps, métricas y FTS | `metadata.schema_version`; sin estado legacy |
 | `image.sqlite3` | `image_state`, `ImageRoute` | 5 | imágenes, estado de extracción/clasificación y metadata | `metadata.schema_version`; migraciones aditivas |
 | `document_catalog.sqlite3` | `document_catalog_schema`, `document_catalog` | **6** | runs, generaciones/staging, publicación por fuente, proyección de documentos, historial y planes de organización | `metadata.schema_version`; migraciones secuenciales |
 | `code.sqlite3` | `code_schema`, `code_state` | 4 | proyectos, runs, archivos/versiones, símbolos, referencias, dependencias, grafo, chunks, FTS, métricas/relaciones y evidencia externa normalizada | metadata + `PRAGMA user_version` + `schema_migrations` exacto; migraciones secuenciales 1→4 |
-| `semantic.sqlite3` | `semantic_schema`, repositorios y servicio semántico | **6** | espacios/modelos, revisiones inmutables, miembros de generación, heads publicados, jobs, payloads, prototipos y evidencia | metadata + `PRAGMA user_version` + `schema_migrations` exacto |
+| `semantic.sqlite3` | `semantic_schema`, repositorios y servicio semántico | **7** | espacios/modelos, revisiones inmutables, miembros/heads generacionales, jobs, payloads, receipts, derivaciones de chunks y outbox | metadata + `PRAGMA user_version` + `schema_migrations` exacto; 6→7 aditiva sin atribución legacy |
 
 La base del índice MFT es una API auxiliar con ruta elegida por el llamador y
 no forma parte de las propiedades predeterminadas de `FrameworkConfig`.
@@ -137,10 +138,10 @@ ejecutó esas rutas mantiene el vector histórico de diez owners:
 | `docx` | `docx.sqlite3` | 5 | filas actuales, último update/run; `best_effort_non_generational` |
 | `office` | `office.sqlite3` | 2 | filas actuales, último update/run; `best_effort_non_generational` |
 | `archive` (aditivo si existe) | `archive.sqlite3` | 1 | miembros actuales, último update/run; `best_effort_non_generational` |
-| `text` (aditivo si existe) | `text.sqlite3` | 1 | documentos actuales, último update/run; `best_effort_non_generational` |
+| `text` (aditivo si existe) | `text.sqlite3` | 2 | documentos actuales, último update/run; `best_effort_non_generational`; el linaje owner-local se consulta aparte |
 | `audio` | `audio.sqlite3` | 1 | filas actuales, último update/run; `best_effort_non_generational` |
 | `image` | `image.sqlite3` | 5 | imágenes actuales, último update/run; `best_effort_non_generational` |
-| `semantic` | `semantic.sqlite3` | 6 | generación `ready` publicada por modelo, espacio y firma de procesamiento |
+| `semantic` | `semantic.sqlite3` | 7 | generación `ready` publicada por modelo, espacio y firma de procesamiento; receipts nuevos no atribuyen filas legacy |
 | `code` | `code.sqlite3` | 4 | archivos actuales, última versión/run; `best_effort_non_generational` |
 
 Una base ausente se representa como `absent`; no se crea para completar la
@@ -333,6 +334,74 @@ completa XXH3-128 en Dedup. La poda de una caché sólo debe
 ocurrir después de una reconciliación que demuestre qué filas dejaron de ser
 vigentes.
 
+### Derivaciones reproducibles owner-local
+
+**IMPLEMENTED — Text schema 2 extraction/publication.** El owner agrega estas
+familias sin crear otra base:
+
+- `text_input_revisions`, inmutable, conserva la `RevisionRef` fuente y su
+  fingerprint;
+- `text_derivation_attempts` y bindings normalizados registran el intento
+  `running` después de capturar el input exacto y antes del parser, además de
+  sus inputs y el estado terminal;
+- `text_work_receipts` es append-only y guarda el `WorkReceipt` JSON canónico,
+  su fingerprint y outcome;
+- `text_materializations`, output bindings y
+  `text_materialization_heads` enlazan representación/FTS con revisión y
+  recibo productor;
+- `text_derivation_outbox` es append-only y contiene el mismo hecho terminal
+  para reconstruir una proyección transversal descartable.
+
+`begin_text_derivation_attempt()` confirma el intento `running` después de la
+lectura/fingerprint del input y antes de su transformación por el parser. Los
+tiempos de ese intento no pretenden medir la adquisición previa. Los writers
+terminales no hacen commit propio: `TextRoute` publica
+documento/FTS, output bindings, heads, receipt y outbox dentro del mismo
+`BEGIN IMMEDIATE`. Una excepción revierte el conjunto; fallo o cancelación no
+declaran outputs. Un cache hit exige misma revisión y firma, receipt previo,
+materializaciones exactas y presencia/fingerprint real de documento y FTS; su
+nuevo receipt usa `cache_hit` y `causation_id`. El lock de ruta serializa la
+reconciliación de intentos `running`; un intento abandonado se registra como
+estado desconocido, nunca se reintenta por fingir que ejecutó.
+
+La migración exacta Text 1→2 valida primero el DDL v1, crea las tablas nuevas y
+reconstruye `documents` con la FK nullable `revision_id`. Copia cada fila
+legacy y conserva `document_fts`, pero deja `revision_id=NULL`; las tablas de
+revisiones, materializaciones, receipts y outbox quedan vacías. Esta ausencia
+es deliberada: un documento previo se lee como `legacy_unattributed` hasta
+reprocesarlo. Cambiar metadata de versión no constituye rollback; el downgrade
+requiere restaurar el backup v1 y el runtime compatible.
+
+Los readers de linaje abren el owner en modo read-only, validan Text v2 exacto
+y consultan mediante `COUNT`, `LIMIT` y joins acotados. La identidad histórica
+se resuelve desde revisiones/materializaciones/receipts, no sólo desde la fila
+actual de `documents`. Las ventanas informan sus conteos y truncamiento; no
+cargan primero todo el historial para recortarlo en Python.
+
+**PARTIAL — Semantic schema 7.** La migración 6→7 es aditiva: agrega secuencia y
+tiempo de intento a jobs, referencias a revisiones de entrada, el índice de
+`source_revision_json`, `semantic_work_receipts`,
+`semantic_chunk_derivations` y `semantic_derivation_outbox`, con FKs,
+unicidad e índices. `semantic_work_receipts` y el outbox son append-only; las
+revisiones son inmutables; `semantic_chunk_derivations` permite únicamente la
+transición de publicación `publication_receipt_id=NULL` a un receipt y después
+queda inmutable. No inserta receipts para chunks,
+embeddings o generaciones anteriores: hechos legacy sin evidencia permanecen
+sin atribución. Un payload pre-v7 sólo se reutiliza después de una attestación
+owner-local bajo demanda que valida espacio, dimensiones, dtype, finitud y
+normalización y produce una materialización de attestación separada; no declara
+haber calculado el vector histórico. Los writers conectados registran receipts de
+materialización/publicación de chunks, ejecución o reutilización de embeddings
+y publicación de generación dentro de la transacción Semantic que confirma el
+hecho. `publication_receipt_id=NULL` distingue un chunk staged; sólo el cierre
+publicado lo eleva a linaje publicado.
+
+La outbox Semantic y la de Text siguen perteneciendo a sus respectivos owners.
+`derivation_projection` las pliega idempotentemente en memoria y puede
+reconstruirse después de perderse; no existe `lineage.sqlite3`, foreign key
+cross-owner ni falsa atomicidad distribuida. Este corte no declara cerrada la
+extensión de receipts a PDF, DOCX, Office ni a todo output Semantic histórico.
+
 ### Catálogo documental
 
 El catálogo unifica resultados de PDF, DOCX, Office, texto y audio para
@@ -428,10 +497,12 @@ por lo que un cambio de contrato puede invalidar otros lenguajes.
 ### Semántica
 
 La base semántica separa espacios vectoriales incompatibles, modelos,
-revisiones de texto, chunks, embeddings, payloads, jobs y evidencia. V6 congela
-revisiones y miembros por generación y selecciona una generación completa por
-modelo mediante `published_embedding_heads`. La búsqueda oficial sólo consulta
-esos heads; `ready_partial` y `building` no son visibles.
+revisiones de texto, chunks, embeddings, payloads, jobs y evidencia. V7
+conserva el contrato de v6: revisiones y miembros congelados por generación y
+una generación completa por modelo seleccionada mediante
+`published_embedding_heads`. La búsqueda oficial sólo consulta esos heads;
+`ready_partial` y `building` no son visibles. V7 agrega receipts/outbox de
+derivación sin convertir las filas preexistentes en hechos atribuidos.
 
 `code.embedding_links`, introducida en Code v2 y conservada por v4, tiene un
 productor y un consumidor integrados. Tras publicar por completo texto de
@@ -827,7 +898,7 @@ barrera final del informe técnico, no a este contrato de persistencia.
 
 ## Publicación generacional semántica y de catálogo
 
-### NC-AUD-012 — semántica v6
+### NC-AUD-012 — semántica v7 (publicación generacional v6)
 
 Cada `model_signature` publica exactamente un head. Un build `building` conserva
 su `base_generation_id`, fija ID, estado, modelo, high-watermark y conteo de esa
@@ -848,8 +919,9 @@ Ante `RuntimeError`, cancelación o cualquier otra `BaseException`, la factory
 revierte el lote activo y conserva el prefijo ya confirmado dentro del build.
 Ese prefijo sigue invisible para lectores publicados y el mismo refresh puede
 reanudarlo sin duplicar estado. Sólo después de recorrer toda la fuente se
-desactivan items ausentes. No cambian el esquema 6, las APIs ni los contratos
-JSON.
+desactivan items ausentes. Ese batching no cambió el esquema 6, las APIs ni los
+contratos JSON cuando se introdujo; el esquema 7 actual sólo agrega el contrato
+de derivación owner-local descrito arriba.
 
 Antes de cada `claim_embedding_jobs`, el worker repite
 `reuse_cached_jobs` hasta alcanzar un punto fijo. La igualdad exige
@@ -886,6 +958,14 @@ migración 6. Columnas, índices, triggers u objetos v5 desconocidos impiden el
 commit y la transacción se revierte; no se promete una apertura byte-neutra de
 WAL/SHM. Un `BaseException` también revierte. El rollback operativo consiste en
 restaurar el backup v5 y el paquete compatible.
+
+La migración exacta v6→v7 valida el contrato de origen y ejecuta DDL aditivo
+dentro del lifecycle de migraciones. Agrega tracking durable de intentos de
+embedding, receipts, derivaciones de chunks y outbox, registra la migración 7 y
+valida el contrato v7 antes del commit. No recorre las filas v6 para fabricar
+`WorkReceipt`: su ausencia comunica procedencia desconocida. El rollback
+operativo exige restaurar el backup v6 y el paquete compatible; editar
+`metadata` o `PRAGMA user_version` no elimina el nuevo DDL.
 
 ### NC-AUD-013 — catálogo v6
 
@@ -997,7 +1077,8 @@ Resultado lógico: 8/8 `integrity_check=['ok']`, 8/8 sin filas de
 `foreign_key_check`, ningún timeout; suma de los subprocesos, aproximadamente
 98.625 s. Un FK check vacío no valida relaciones lógicas no declaradas.
 
-La fuente soporta framework v20, Dedup v10, catálogo v6 y semántica v6, mientras
+La fuente soporta framework v20, Dedup v10, PDF v12, Text v2, catálogo v6 y
+semántica v7, mientras
 las bases vivas seguían en framework v16, dedup v6 y catálogo v5; semantic no
 existía. Esa diferencia es esperable antes de actualizar, pero demuestra que
 leer el árbol no sustituye consultar la instalación. No se migraron para cerrar
@@ -1164,7 +1245,7 @@ actual sí permite inventariar una página protegida/elegible sin borrar.
 ### Planificador dry-run actual
 
 `Neocortex --retention-status` abre únicamente bases existentes y reconoce los
-contratos exactos de framework v20, inventario v10, catálogo v6 y semántica v6.
+contratos exactos de framework v20, inventario v10, catálogo v6 y semántica v7.
 No crea ni migra estado. `--retention-store` acota propietarios,
 `--retention-batch-size` limita 1..1000 y los cursores
 `--retention-<store>-after` avanzan por keyset, nunca por `OFFSET`.
@@ -1262,7 +1343,7 @@ Antes de aceptar una migración:
 | NC-AUD-003 | corregido y conservado | reconciliación ambigua no aplica ni adelanta cursor |
 | NC-AUD-010 | corregido en el subconjunto soportado | rename/organización ligan identidad por handles; casos no soportados y Papelera se abstienen |
 | NC-AUD-011 | corregido y revalidado para observaciones | recibos/eventos y `recovery_required`; status no escribe y record conserva clasificación append-only/CAS sin autorizar recuperación; plan incierto no se reintenta |
-| NC-AUD-012 | corregido para lectores oficiales v6 | heads por modelo, revisiones congeladas y publicación CAS completa |
+| NC-AUD-012 | corregido para lectores oficiales v7 | preserva heads por modelo, revisiones congeladas y publicación CAS de v6; receipts v7 son aditivos y no atribuyen legacy |
 | NC-AUD-013 | corregido para lectores oficiales v6 | staging por fuente y proyección/publicación CAS atómica |
 | NC-AUD-014 | corregido parcialmente | planner dry-run keyset protege estado crítico, evidencia semántica y último run completado; la poda dedup exige holds explícitos y conserva dos publicaciones, pero no hay ejecución genérica, cuotas ni poda global |
 | NC-AUD-015 | pendiente reproducido | fastpath estable y reconstrucción fail-closed reducen trabajo repetido, pero esquema 4 sigue no generacional, global, sin reanudación ni cancelación dentro de sentencia; no se fragmentó sin contrato completo |

@@ -1,17 +1,17 @@
 {
   "approved": {
     "branches": {
-      "covered": 14600,
-      "total": 21110
+      "covered": 15410,
+      "total": 22270
     },
     "lines": {
-      "covered": 56933,
-      "total": 67720
+      "covered": 59779,
+      "total": 71019
     }
   },
   "approved_inventory": {
     "production_source_inventory": {
-      "file_count": 326,
+      "file_count": 331,
       "files": [
         "Orquestador.py",
         "_01_Enumeracion/__init__.py",
@@ -118,6 +118,9 @@
         "_04_Nucleo_Operativo/content_types.py",
         "_04_Nucleo_Operativo/corpus_access.py",
         "_04_Nucleo_Operativo/cpu_runtime.py",
+        "_04_Nucleo_Operativo/derivation_contracts.py",
+        "_04_Nucleo_Operativo/derivation_lineage_service.py",
+        "_04_Nucleo_Operativo/derivation_projection.py",
         "_04_Nucleo_Operativo/document_cache_sync.py",
         "_04_Nucleo_Operativo/document_catalog.py",
         "_04_Nucleo_Operativo/document_catalog_schema.py",
@@ -265,6 +268,7 @@
         "_04_Nucleo_Operativo/semantic_image_index.py",
         "_04_Nucleo_Operativo/semantic_item_repository.py",
         "_04_Nucleo_Operativo/semantic_lexical.py",
+        "_04_Nucleo_Operativo/semantic_lineage_repository.py",
         "_04_Nucleo_Operativo/semantic_models.py",
         "_04_Nucleo_Operativo/semantic_ontology.py",
         "_04_Nucleo_Operativo/semantic_plan_errors.py",
@@ -290,6 +294,7 @@
         "_04_Nucleo_Operativo/sqlite_schema_contract.py",
         "_04_Nucleo_Operativo/sqlite_schema_lifecycle.py",
         "_04_Nucleo_Operativo/state.py",
+        "_04_Nucleo_Operativo/text_derivation_repository.py",
         "_04_Nucleo_Operativo/text_route.py",
         "_04_Nucleo_Operativo/text_state.py",
         "_04_Nucleo_Operativo/value_review.py",
@@ -341,10 +346,10 @@
         "neocortex/value_cli_adapter.py"
       ],
       "hash_algorithm": "sha256(path,lf-size,sha256(lf-content))-v1",
-      "sha256": "b262a3b3b64ef675f1aa12abb84668c51f77fa9214607b1a3bc5582557373552"
+      "sha256": "5b37be6eb5657f0e72f013f0e43d9071dba8d14a34efab4e5f01c306d058e85d"
     },
     "test_inventory": {
-      "file_count": 265,
+      "file_count": 271,
       "files": [
         "tests/test_adaptive_pdf_and_visual.py",
         "tests/test_agent_server.py",
@@ -411,6 +416,9 @@
         "tests/test_corpus_policy_architecture.py",
         "tests/test_dedup_pipeline_modularity.py",
         "tests/test_dependency_capabilities.py",
+        "tests/test_derivation_contracts.py",
+        "tests/test_derivation_lineage_service.py",
+        "tests/test_derivation_projection.py",
         "tests/test_document_cache_sync_bounded.py",
         "tests/test_document_catalog_and_organization.py",
         "tests/test_document_catalog_generation_publication.py",
@@ -558,6 +566,7 @@
         "tests/test_semantic_backends.py",
         "tests/test_semantic_config.py",
         "tests/test_semantic_contract_payloads.py",
+        "tests/test_semantic_derivation_lineage.py",
         "tests/test_semantic_generation_fixed_point.py",
         "tests/test_semantic_generation_publication_v6.py",
         "tests/test_semantic_generation_search_failures.py",
@@ -586,6 +595,8 @@
         "tests/test_synthetic_usn.py",
         "tests/test_t_dedup.py",
         "tests/test_t_framework.py",
+        "tests/test_text_derivation_route.py",
+        "tests/test_text_derivation_state.py",
         "tests/test_text_route.py",
         "tests/test_trash_identity_abstention.py",
         "tests/test_trusted_deep_configuration.py",
@@ -613,7 +624,7 @@
         "tests/test_zip_safety.py"
       ],
       "hash_algorithm": "sha256(path,lf-size,sha256(lf-content))-v1",
-      "sha256": "52f589129109b741cdccb107d7ae1a938b12ef38329127e4420ff6b34442007b"
+      "sha256": "f090492908cf3f955c9ab9caab3935e2c404e1e6d443bbb4e05e4c8894ebfa50"
     }
   },
   "schema": "neocortex.quality-gate-coverage-baseline/v1",

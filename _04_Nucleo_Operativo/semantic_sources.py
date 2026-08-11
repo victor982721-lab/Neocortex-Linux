@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import json
 import re
 import sqlite3
 import unicodedata
@@ -18,6 +19,8 @@ from _02_Deduplicacion.hashing import FULL_ALGORITHM, stat_matches_snapshot
 from _02_Deduplicacion.path_io import native_io_path
 
 from .file_identity import FileIdentityError, decode_file_identity
+from .derivation_contracts import MaterializationRef
+from .knowledge_contracts import RevisionRef, RevisionState
 from .semantic_models import (
     ContentFingerprint,
     SemanticItem,
@@ -32,6 +35,10 @@ from .semantic_quality import (
     content_title_from_sample,
 )
 from .sqlite_paths import readonly_sqlite_uri
+from .text_derivation_repository import (
+    TextDerivationIntegrityError,
+    validate_text_publications_from_connection,
+)
 
 
 # region [01] Public records and explicit limits
@@ -69,6 +76,7 @@ MAX_SEMANTIC_TITLE_CHARS = 512
 MAX_SECTION_TEXT_BYTES = 32 * 1024 * 1024
 MAX_SECTION_TEXT_CHARS = 20_000_000
 FILE_HASH_BUFFER_BYTES = 4 * 1024 * 1024
+_TEXT_PUBLICATION_VALIDATION_BATCH = 250
 
 
 @dataclass(frozen=True, slots=True)
@@ -319,6 +327,89 @@ def _text_source_revision(row: sqlite3.Row) -> dict[str, object]:
     }
     if row["last_seen_run_id"] is not None:
         revision["last_seen_run_id"] = int(row["last_seen_run_id"])
+    if "source_revision_id" in row.keys() and row["source_revision_id"] is not None:
+        revision_id = str(row["source_revision_id"])
+        if not revision_id.strip():
+            raise SemanticSourceError("source revision identity cannot be blank")
+        revision["revision_id"] = revision_id
+        native_columns = (
+            "source_resource_id",
+            "source_revision_producer",
+            "source_revision_processing_signature",
+            "source_revision_state",
+            "source_revision_fingerprint_algorithm",
+            "source_revision_fingerprint",
+        )
+        if any(column not in row.keys() or row[column] is None for column in native_columns):
+            raise SemanticSourceError("text source revision is missing its owner-native contract")
+        try:
+            native_revision = RevisionRef(
+                resource_id=str(row["source_resource_id"]),
+                revision_id=revision_id,
+                producer=str(row["source_revision_producer"]),
+                processing_signature=str(row["source_revision_processing_signature"]),
+                generation=(
+                    None
+                    if row["source_revision_generation"] is None
+                    else int(row["source_revision_generation"])
+                ),
+                state=RevisionState(str(row["source_revision_state"])),
+                observed_at_utc=(
+                    None
+                    if row["source_revision_observed_at_utc"] is None
+                    else str(row["source_revision_observed_at_utc"])
+                ),
+            )
+        except (TypeError, ValueError) as exc:
+            raise SemanticSourceError(
+                "text source revision has an invalid owner-native contract"
+            ) from exc
+        fingerprint_algorithm = str(row["source_revision_fingerprint_algorithm"])
+        fingerprint = str(row["source_revision_fingerprint"])
+        if not fingerprint_algorithm.strip() or not fingerprint.strip():
+            raise SemanticSourceError("text source revision fingerprint cannot be blank")
+        revision["owner_revision"] = {
+            "owner": "text",
+            "revision": native_revision.to_dict(),
+            "fingerprint_algorithm": fingerprint_algorithm,
+            "fingerprint": fingerprint,
+        }
+        materialization_columns = (
+            "source_materialization_json",
+            "source_materialization_fingerprint_algorithm",
+            "source_materialization_fingerprint",
+        )
+        if any(
+            column not in row.keys() or row[column] is None for column in materialization_columns
+        ):
+            raise SemanticSourceError(
+                "text source revision is missing its published representation"
+            )
+        try:
+            materialization_payload = json.loads(str(row["source_materialization_json"]))
+            materialization = MaterializationRef.from_dict(materialization_payload)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise SemanticSourceError(
+                "text source representation materialization is invalid"
+            ) from exc
+        if (
+            materialization.owner != "text"
+            or materialization.kind != "text_representation"
+            or materialization.revision is None
+            or materialization.revision.revision_id != revision_id
+        ):
+            raise SemanticSourceError(
+                "text source representation does not match its owner revision"
+            )
+        representation_algorithm = str(row["source_materialization_fingerprint_algorithm"])
+        representation_fingerprint = str(row["source_materialization_fingerprint"])
+        if not representation_algorithm.strip() or not representation_fingerprint.strip():
+            raise SemanticSourceError("text source representation fingerprint cannot be blank")
+        revision["consumed_materialization"] = {
+            "materialization": materialization.to_dict(),
+            "fingerprint_algorithm": representation_algorithm,
+            "fingerprint": representation_fingerprint,
+        }
     if "is_partial" in row.keys():
         is_partial = row["is_partial"]
         if not isinstance(is_partial, int) or is_partial not in {0, 1}:
@@ -609,39 +700,131 @@ def _iter_text(
     """Stream physical generic-text bodies and typed extraction evidence."""
 
     with _borrow_or_open_database(path, connection) as connection:
-        rows = connection.execute(
-            """SELECT file_key,path,processing_signature,status,size,mtime_ns,
-            birthtime_ns,last_seen_run_id,text_xxh3_128,text_chars,text_zlib,
-            content_kind,media_type,title,author,metadata_json,text_truncated,detail
-            FROM documents WHERE status='complete' AND text_zlib IS NOT NULL
-            AND text_chars>0 ORDER BY file_key"""
+        document_columns = {
+            str(row[1]) for row in connection.execute("PRAGMA table_info(documents)")
+        }
+        has_revision_table = (
+            connection.execute(
+                """SELECT 1 FROM sqlite_master
+                WHERE type='table' AND name='text_input_revisions'"""
+            ).fetchone()
+            is not None
         )
-        for row in rows:
-            item = _source_item(
-                row,
-                source_kind="text",
-                text_fingerprint_column="text_xxh3_128",
-                text_count_column="text_chars",
+        validate_owner_publication = "revision_id" in document_columns and has_revision_table
+        if validate_owner_publication:
+            rows = connection.execute(
+                """SELECT d.file_key,d.path,d.processing_signature,d.status,
+                d.size,d.mtime_ns,d.birthtime_ns,d.last_seen_run_id,
+                d.text_xxh3_128,d.text_chars,d.text_zlib,d.content_kind,
+                d.media_type,d.title,d.author,d.metadata_json,d.text_truncated,
+                d.detail,d.revision_id AS source_revision_id,
+                r.resource_id AS source_resource_id,
+                r.producer AS source_revision_producer,
+                r.processing_signature AS source_revision_processing_signature,
+                r.generation AS source_revision_generation,
+                r.revision_state AS source_revision_state,
+                r.observed_at_utc AS source_revision_observed_at_utc,
+                r.fingerprint_algorithm AS source_revision_fingerprint_algorithm,
+                r.fingerprint AS source_revision_fingerprint,
+                materialization.materialization_json AS source_materialization_json,
+                materialization.fingerprint_algorithm
+                  AS source_materialization_fingerprint_algorithm,
+                materialization.fingerprint AS source_materialization_fingerprint
+                FROM documents d LEFT JOIN text_input_revisions r
+                  ON r.revision_id=d.revision_id
+                LEFT JOIN text_materialization_heads head
+                  ON head.resource_id=r.resource_id
+                 AND head.materialization_kind='text_representation'
+                 AND head.revision_id=r.revision_id
+                LEFT JOIN text_materializations materialization
+                  ON materialization.owner=head.materialization_owner
+                 AND materialization.materialization_id=head.materialization_id
+                WHERE d.status='complete' AND d.text_zlib IS NOT NULL
+                  AND d.text_chars>0 ORDER BY d.file_key"""
             )
-            yield TextSourceRecord(
-                item,
-                TextSection(
-                    section_kind="document",
-                    section_id="fulltext",
-                    text=_decode_text(row["text_zlib"], int(row["text_chars"])),
-                    provenance={
-                        "adapter": SOURCE_ADAPTER_VERSION,
-                        "content_kind": str(row["content_kind"]),
-                        "media_type": str(row["media_type"]),
-                        "title": str(row["title"] or ""),
-                        "author": str(row["author"] or ""),
-                        "metadata_json": str(row["metadata_json"]),
-                        "text_truncated": bool(row["text_truncated"]),
-                        "detail": str(row["detail"] or ""),
-                        "inside_zip": False,
-                    },
-                ),
+        else:
+            rows = connection.execute(
+                """SELECT file_key,path,processing_signature,status,size,mtime_ns,
+                birthtime_ns,last_seen_run_id,text_xxh3_128,text_chars,text_zlib,
+                content_kind,media_type,title,author,metadata_json,text_truncated,
+                detail,NULL AS source_revision_id
+                FROM documents WHERE status='complete' AND text_zlib IS NOT NULL
+                AND text_chars>0 ORDER BY file_key"""
             )
+        while batch := rows.fetchmany(_TEXT_PUBLICATION_VALIDATION_BATCH):
+            if validate_owner_publication:
+                legacy_resource_ids: list[str] = []
+                for row in batch:
+                    if row["source_revision_id"] is not None:
+                        continue
+                    try:
+                        identity = decode_file_identity(str(row["file_key"]))
+                    except (FileIdentityError, TypeError, ValueError):
+                        continue
+                    legacy_resource_ids.append(
+                        f"resource:file:{identity.volume_id}:{identity.file_id}:"
+                        f"{int(row['birthtime_ns'])}"
+                    )
+                if legacy_resource_ids:
+                    placeholders = ",".join("?" for _ in legacy_resource_ids)
+                    downgraded = connection.execute(
+                        f"""SELECT resource_id FROM text_input_revisions
+                        WHERE resource_id IN ({placeholders})
+                        UNION SELECT resource_id FROM text_materialization_heads
+                        WHERE resource_id IN ({placeholders})
+                        UNION SELECT resource_id FROM text_materializations
+                        WHERE resource_id IN ({placeholders}) LIMIT 1""",
+                        (
+                            *legacy_resource_ids,
+                            *legacy_resource_ids,
+                            *legacy_resource_ids,
+                        ),
+                    ).fetchone()
+                    if downgraded is not None:
+                        raise SemanticSourceError(
+                            "text source publication was downgraded to legacy state"
+                        )
+                publications = tuple(
+                    (str(row["file_key"]), str(row["source_revision_id"]))
+                    for row in batch
+                    if row["source_revision_id"] is not None
+                )
+                if publications:
+                    try:
+                        validate_text_publications_from_connection(
+                            connection,
+                            publications,
+                        )
+                    except TextDerivationIntegrityError as exc:
+                        raise SemanticSourceError(
+                            "text source publication failed owner-local validation"
+                        ) from exc
+            for row in batch:
+                item = _source_item(
+                    row,
+                    source_kind="text",
+                    text_fingerprint_column="text_xxh3_128",
+                    text_count_column="text_chars",
+                )
+                yield TextSourceRecord(
+                    item,
+                    TextSection(
+                        section_kind="document",
+                        section_id="fulltext",
+                        text=_decode_text(row["text_zlib"], int(row["text_chars"])),
+                        provenance={
+                            "adapter": SOURCE_ADAPTER_VERSION,
+                            "content_kind": str(row["content_kind"]),
+                            "media_type": str(row["media_type"]),
+                            "title": str(row["title"] or ""),
+                            "author": str(row["author"] or ""),
+                            "metadata_json": str(row["metadata_json"]),
+                            "text_truncated": bool(row["text_truncated"]),
+                            "detail": str(row["detail"] or ""),
+                            "inside_zip": False,
+                        },
+                    ),
+                )
 
 
 def _iter_code(

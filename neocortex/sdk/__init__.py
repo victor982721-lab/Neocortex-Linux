@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any, Final
 
 if TYPE_CHECKING:
     from _04_Nucleo_Operativo import (
+        CapabilityFailure as CapabilityFailure,
         ContextBundle as ContextBundle,
         ContextContradictionRef as ContextContradictionRef,
         ContextEntityRef as ContextEntityRef,
@@ -25,7 +26,10 @@ if TYPE_CHECKING:
         ContextPlanRef as ContextPlanRef,
         ContextPlanStepRef as ContextPlanStepRef,
         ContextRelationRef as ContextRelationRef,
+        DERIVATION_CONTRACT_SCHEMA_VERSION as DERIVATION_CONTRACT_SCHEMA_VERSION,
+        DerivationRef as DerivationRef,
         EvidenceRef as EvidenceRef,
+        InputBinding as InputBinding,
         KnowledgeHit as KnowledgeHit,
         KnowledgePhaseTiming as KnowledgePhaseTiming,
         KnowledgePlan as KnowledgePlan,
@@ -39,13 +43,22 @@ if TYPE_CHECKING:
         KnowledgeStateRootError as KnowledgeStateRootError,
         KnowledgeTelemetryOperation as KnowledgeTelemetryOperation,
         KnowledgeTimingPhase as KnowledgeTimingPhase,
+        MaterializationRef as MaterializationRef,
+        OutputBinding as OutputBinding,
+        ReproducibilityClass as ReproducibilityClass,
         ResourceRef as ResourceRef,
         RetrievalMode as RetrievalMode,
         RevisionRef as RevisionRef,
+        StageDescriptor as StageDescriptor,
+        WorkExecutionMode as WorkExecutionMode,
+        WorkOutcome as WorkOutcome,
+        WorkReceipt as WorkReceipt,
         plan_knowledge_query as plan_knowledge_query,
     )
 
 __all__ = (
+    "DERIVATION_CONTRACT_SCHEMA_VERSION",
+    "CapabilityFailure",
     "ContextBundle",
     "ContextContradictionRef",
     "ContextEntityRef",
@@ -53,7 +66,9 @@ __all__ = (
     "ContextPlanRef",
     "ContextPlanStepRef",
     "ContextRelationRef",
+    "DerivationRef",
     "EvidenceRef",
+    "InputBinding",
     "KnowledgeHit",
     "KnowledgePhaseTiming",
     "KnowledgePlan",
@@ -67,9 +82,16 @@ __all__ = (
     "KnowledgeTelemetryClock",
     "KnowledgeTelemetryOperation",
     "KnowledgeTimingPhase",
+    "MaterializationRef",
+    "OutputBinding",
+    "ReproducibilityClass",
     "ResourceRef",
     "RetrievalMode",
     "RevisionRef",
+    "StageDescriptor",
+    "WorkExecutionMode",
+    "WorkOutcome",
+    "WorkReceipt",
     "plan_knowledge_query",
 )
 

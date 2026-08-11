@@ -31,6 +31,21 @@ if TYPE_CHECKING:
     from .docx_route import DocxRouteConfig as DocxRouteConfig
     from .docx_route import DocxRouteSummary as DocxRouteSummary
     from .docx_route import search_docx_state as search_docx_state
+    from .derivation_contracts import CapabilityFailure as CapabilityFailure
+    from .derivation_contracts import (
+        DERIVATION_CONTRACT_SCHEMA_VERSION as DERIVATION_CONTRACT_SCHEMA_VERSION,
+    )
+    from .derivation_contracts import DerivationRef as DerivationRef
+    from .derivation_contracts import InputBinding as InputBinding
+    from .derivation_contracts import MaterializationRef as MaterializationRef
+    from .derivation_contracts import OutputBinding as OutputBinding
+    from .derivation_contracts import (
+        ReproducibilityClass as ReproducibilityClass,
+    )
+    from .derivation_contracts import StageDescriptor as StageDescriptor
+    from .derivation_contracts import WorkExecutionMode as WorkExecutionMode
+    from .derivation_contracts import WorkOutcome as WorkOutcome
+    from .derivation_contracts import WorkReceipt as WorkReceipt
     from .global_resources import GlobalResourceCoordinator as GlobalResourceCoordinator
     from .global_resources import GlobalResourceLimits as GlobalResourceLimits
     from .global_resources import GlobalResourceSummary as GlobalResourceSummary
@@ -91,12 +106,13 @@ if TYPE_CHECKING:
 
 # region [02] Stable public export manifest
 
-__all__ = [
+__all__ = [  # noqa: RUF022
     "ActionSummary",
     "ApplicationConfig",
     "AudioRoute",
     "AudioRouteConfig",
     "AudioRouteSummary",
+    "CapabilityFailure",
     "CodeRelationEndpoint",
     "CodeRoute",
     "CodeRouteConfig",
@@ -104,7 +120,9 @@ __all__ = [
     "CodeSearchHit",
     "CodeSearchQuery",
     "CodeSearchRelation",
+    "DERIVATION_CONTRACT_SCHEMA_VERSION",
     "DetectedType",
+    "DerivationRef",
     "DocxRoute",
     "DocxRouteConfig",
     "DocxRouteSummary",
@@ -116,6 +134,9 @@ __all__ = [
     "ImageRoute",
     "ImageRouteConfig",
     "ImageRouteSummary",
+    "InputBinding",
+    "MaterializationRef",
+    "OutputBinding",
     "PdfDoctorReport",
     "PdfRoute",
     "PdfRouteConfig",
@@ -123,6 +144,7 @@ __all__ = [
     "PdfVerifyReport",
     "RouteAdapter",
     "RouteExecutionContext",
+    "ReproducibilityClass",
     "PdfDerivedIndexer",
     "PdfDerivedSummary",
     "search_pdf_state",
@@ -134,6 +156,7 @@ __all__ = [
     "OfficeRouteSummary",
     "RouteOnlyRunResult",
     "SelfAnalysisRunResult",
+    "StageDescriptor",
     "detect_content_type",
     "verify_pdf_state",
     "list_projects",
@@ -163,6 +186,9 @@ __all__ = [
     "ResourceRef",
     "RetrievalMode",
     "RevisionRef",
+    "WorkExecutionMode",
+    "WorkOutcome",
+    "WorkReceipt",
     "plan_knowledge_query",
 ]
 
@@ -172,6 +198,7 @@ _EXPORTS: Final[dict[str, tuple[str, str]]] = {
     "AudioRoute": (".audio_route", "AudioRoute"),
     "AudioRouteConfig": (".audio_models", "AudioRouteConfig"),
     "AudioRouteSummary": (".audio_models", "AudioRouteSummary"),
+    "CapabilityFailure": (".derivation_contracts", "CapabilityFailure"),
     "CodeRelationEndpoint": (".code_contracts", "CodeRelationEndpoint"),
     "CodeRoute": (".code_route", "CodeRoute"),
     "CodeRouteConfig": (".code_contracts", "CodeRouteConfig"),
@@ -179,7 +206,12 @@ _EXPORTS: Final[dict[str, tuple[str, str]]] = {
     "CodeSearchHit": (".code_contracts", "CodeSearchHit"),
     "CodeSearchQuery": (".code_contracts", "CodeSearchQuery"),
     "CodeSearchRelation": (".code_contracts", "CodeSearchRelation"),
+    "DERIVATION_CONTRACT_SCHEMA_VERSION": (
+        ".derivation_contracts",
+        "DERIVATION_CONTRACT_SCHEMA_VERSION",
+    ),
     "DetectedType": (".content_types", "DetectedType"),
+    "DerivationRef": (".derivation_contracts", "DerivationRef"),
     "DocxRoute": (".docx_route", "DocxRoute"),
     "DocxRouteConfig": (".docx_route", "DocxRouteConfig"),
     "DocxRouteSummary": (".docx_route", "DocxRouteSummary"),
@@ -194,6 +226,9 @@ _EXPORTS: Final[dict[str, tuple[str, str]]] = {
     "ImageRoute": (".image_route", "ImageRoute"),
     "ImageRouteConfig": (".image_route", "ImageRouteConfig"),
     "ImageRouteSummary": (".image_route", "ImageRouteSummary"),
+    "InputBinding": (".derivation_contracts", "InputBinding"),
+    "MaterializationRef": (".derivation_contracts", "MaterializationRef"),
+    "OutputBinding": (".derivation_contracts", "OutputBinding"),
     "PdfDoctorReport": (".pdf_admin", "PdfDoctorReport"),
     "PdfRoute": (".pdf_route", "PdfRoute"),
     "PdfRouteConfig": (".pdf_route", "PdfRouteConfig"),
@@ -201,6 +236,10 @@ _EXPORTS: Final[dict[str, tuple[str, str]]] = {
     "PdfVerifyReport": (".pdf_admin", "PdfVerifyReport"),
     "RouteAdapter": (".route_registry", "RouteAdapter"),
     "RouteExecutionContext": (".route_registry", "RouteExecutionContext"),
+    "ReproducibilityClass": (
+        ".derivation_contracts",
+        "ReproducibilityClass",
+    ),
     "PdfDerivedIndexer": (".pdf_derived", "PdfDerivedIndexer"),
     "PdfDerivedSummary": (".pdf_derived", "PdfDerivedSummary"),
     "search_pdf_state": (".pdf_derived", "search_pdf_state"),
@@ -212,6 +251,7 @@ _EXPORTS: Final[dict[str, tuple[str, str]]] = {
     "OfficeRouteSummary": (".office_route", "OfficeRouteSummary"),
     "RouteOnlyRunResult": (".models", "RouteOnlyRunResult"),
     "SelfAnalysisRunResult": (".models", "SelfAnalysisRunResult"),
+    "StageDescriptor": (".derivation_contracts", "StageDescriptor"),
     "detect_content_type": (".content_types", "detect_content_type"),
     "verify_pdf_state": (".pdf_admin", "verify_pdf_state"),
     "list_projects": (".code_projects", "list_projects"),
@@ -253,6 +293,9 @@ _EXPORTS: Final[dict[str, tuple[str, str]]] = {
     "ResourceRef": (".knowledge_contracts", "ResourceRef"),
     "RetrievalMode": (".knowledge_planner", "RetrievalMode"),
     "RevisionRef": (".knowledge_contracts", "RevisionRef"),
+    "WorkExecutionMode": (".derivation_contracts", "WorkExecutionMode"),
+    "WorkOutcome": (".derivation_contracts", "WorkOutcome"),
+    "WorkReceipt": (".derivation_contracts", "WorkReceipt"),
     "plan_knowledge_query": (".knowledge_planner", "plan_knowledge_query"),
 }
 

@@ -198,6 +198,41 @@ def test_code_search_is_bounded_labelled_and_read_only(
     assert payload["scopes"][0]["hits"][0]["symbol"] == "entrypoint"
 
 
+def test_lineage_uses_only_fixed_scope_roots_and_keeps_results_independent(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    bindings = _bindings(tmp_path)
+    observed: list[tuple[Path, str]] = []
+    monkeypatch.setattr(read_api, "scope_bindings", lambda _scope: bindings)
+
+    def inspect(state_directory: Path, identifier: str) -> dict[str, object]:
+        observed.append((state_directory, identifier))
+        return {
+            "status": "ready",
+            "exit_code": 0,
+            "read_only": True,
+            "marker": state_directory.name,
+        }
+
+    monkeypatch.setattr(read_api, "inspect_derivation_lineage", inspect)
+
+    payload = read_api.lineage_payload(" revision:text:one ", "all")
+
+    assert payload["read_only"] is True
+    assert payload["federation_policy"] == read_api.FEDERATION_POLICY
+    assert payload["identifier"] == "revision:text:one"
+    assert observed == [
+        (tmp_path / "personal", "revision:text:one"),
+        (tmp_path / "framework", "revision:text:one"),
+    ]
+    assert [entry["lineage"]["marker"] for entry in payload["scopes"]] == [
+        "personal",
+        "framework",
+    ]
+    assert payload["exit_code"] == int(KnowledgeExitCode.SUCCESS)
+
+
 @pytest.mark.parametrize(
     ("call", "match"),
     [
@@ -211,6 +246,7 @@ def test_code_search_is_bounded_labelled_and_read_only(
             lambda: read_api.code_search_payload("x", modes=("unknown",)),
             "unsupported",
         ),
+        (lambda: read_api.lineage_payload(" "), "identifier cannot be blank"),
     ],
 )
 def test_public_read_api_rejects_unbounded_or_ambiguous_inputs(call, match: str) -> None:

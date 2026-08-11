@@ -367,7 +367,7 @@ def test_systemic_embedding_error_leaves_no_job_leased(tmp_path: Path) -> None:
 
     work = run_generation(database, generation_id, backend, queued=2)
 
-    assert tuple(map(len, backend.calls)) == (2,)
+    assert tuple(map(len, backend.calls)) == (1, 1)
     assert work.failed == 2
     assert work.summary.status == "ready_partial"
     with semantic_database(database, readonly=True) as connection:
@@ -401,7 +401,7 @@ def test_keyboard_interrupt_releases_exact_leases_without_publication(
     with pytest.raises(KeyboardInterrupt, match="cancel embedding"):
         run_generation(database, generation_id, backend, queued=2)
 
-    assert tuple(map(len, backend.calls)) == (2,)
+    assert tuple(map(len, backend.calls)) == (1,)
     with semantic_database(database, readonly=True) as connection:
         jobs = tuple(
             tuple(row)
@@ -494,8 +494,8 @@ def test_deadline_crossed_by_last_embedding_batch_does_not_publish(
     )
 
     assert paused.summary.status == "building"
-    assert paused.summary.done == 2
-    assert paused.summary.unfinished == 0
+    assert paused.summary.done == 1
+    assert paused.summary.unfinished == 1
     assert budget.truncation_reason == "time_budget"
     with semantic_database(database, readonly=True) as connection:
         assert (
@@ -552,7 +552,7 @@ def test_request_construction_failure_releases_exact_leases_without_publication(
         heads = int(
             connection.execute("SELECT COUNT(*) FROM published_embedding_heads").fetchone()[0]
         )
-    assert jobs == (("pending", 1, None, None), ("pending", 1, None, None))
+    assert jobs == (("pending", 1, None, None), ("pending", 0, None, None))
     assert generation_status == "building"
     assert heads == 0
 

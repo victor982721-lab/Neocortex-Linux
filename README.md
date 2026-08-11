@@ -69,6 +69,7 @@ Neocortex status --scope all
 Neocortex search "pruebas eléctricas del transformador U5" --scope personal
 Neocortex ask "¿qué evidencia existe sobre el tratamiento de aceite?" --scope personal
 Neocortex inspect code "dónde se valida SQLite" --scope framework
+Neocortex inspect lineage IDENTIFICADOR --scope personal
 Neocortex review value --scope personal --limit 50
 ```
 
@@ -79,6 +80,8 @@ citas, cobertura e incertidumbre sin controles de mutación. Para clientes
 locales, `Neocortex agent serve` expone por MCP/stdio sólo `status`, `search`,
 `context`, `evidence` e `inspect_code`, todos marcados read-only. Los flags
 históricos siguen disponibles para automatización y producción de estado.
+`inspect lineage` explica receipts, revisiones, materializaciones y dependencias
+Text/Semantic ya publicadas; tampoco ejecuta extractores ni migra owners.
 
 ## Topología canónica por usuario
 

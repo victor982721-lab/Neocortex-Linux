@@ -13,6 +13,7 @@ import zlib
 from collections.abc import Iterable
 from contextlib import nullcontext
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from email import policy
 from email.parser import BytesParser
 from html.parser import HTMLParser
@@ -21,14 +22,34 @@ from typing import Any, Protocol
 
 import xxhash
 
+from neocortex.platform_policy import physical_identity_scheme_for_birthtime
+
 from _02_Deduplicacion import FileChangedError, FileSnapshot
 from _02_Deduplicacion.hashing import snapshot_path, stat_matches_snapshot
 from _02_Deduplicacion.path_io import native_io_path
 from _03_Progreso import ProgressCallback, ProgressEvent, ProgressMetric, emit_progress
 
 from .bounded_subprocess import SubprocessOutputLimitError, run_bounded_capture
-from .cancellation import CancellationToken
+from .cancellation import CancellationRequested, CancellationToken
+from .derivation_contracts import (
+    CapabilityFailure,
+    InputBinding,
+    MaterializationRef,
+    OutputBinding,
+    ReproducibilityClass,
+    StageDescriptor,
+    WorkExecutionMode,
+    WorkOutcome,
+)
 from .file_identity import file_key_from_snapshot
+from .knowledge_contracts import (
+    PhysicalIdentityRef,
+    ResourceDisposition,
+    ResourceRef,
+    RevisionRef,
+    RevisionState,
+)
+from .locking import FrameworkRunLock
 from .processing_provenance import (
     ROUTE_SUMMARY_SCHEMA,
     ProcessingProvenance,
@@ -37,10 +58,31 @@ from .processing_provenance import (
     python_runtime_component,
 )
 from .route_filters import CandidateSelection
-from .text_state import initialize_text_state, text_database
+from .semantic_models import canonical_json, fingerprint_text
+from .text_derivation_repository import (
+    TextDerivationAttemptStart,
+    TextDerivationIntegrityError,
+    TextReusableDerivation,
+    abandon_running_text_derivations,
+    begin_text_derivation_attempt_from_connection,
+    cancel_text_derivation_attempt,
+    compute_text_fts_fingerprint,
+    compute_text_representation_fingerprint,
+    fail_text_derivation_attempt,
+    read_reusable_text_derivation_from_connection,
+    read_reusable_text_failure_from_connection,
+    succeed_text_derivation_attempt,
+)
+from .text_state import TEXT_SCHEMA_VERSION, initialize_text_state, text_database
 
 
-TEXT_ROUTE_VERSION = "text-route-v1"
+TEXT_ROUTE_VERSION = "text-route-v2"
+_TEXT_EXTRACT_STAGE_ID = "text.extract"
+_TEXT_EXTRACT_STAGE_VERSION = "2"
+_TEXT_SOURCE_REVISION_PRODUCER = "text.source"
+_TEXT_SOURCE_PROCESSING_SIGNATURE = "text-source-revision-v1:xxh3-128"
+_TEXT_REPRESENTATION_KIND = "text_representation"
+_TEXT_FTS_KIND = "text_fts"
 TEXT_ROUTE_MIMES = (
     "text/plain",
     "text/csv",
@@ -91,7 +133,7 @@ class TextRouteConfig:
     def processing_provenance(self) -> ProcessingProvenance:
         return build_processing_provenance(
             "text-route",
-            TEXT_ROUTE_VERSION,
+            f"{TEXT_ROUTE_VERSION}:text.extract/{_TEXT_EXTRACT_STAGE_VERSION}",
             {
                 "max_text_chars": self.max_text_chars,
                 "worker_timeout_seconds": self.worker_timeout_seconds,
@@ -107,7 +149,7 @@ class TextRouteConfig:
                     explicit=self.libreoffice_cmd,
                 ),
             ),
-            compatibility_tag=TEXT_ROUTE_VERSION,
+            compatibility_tag=(f"{TEXT_ROUTE_VERSION}-text-extract-v{_TEXT_EXTRACT_STAGE_VERSION}"),
         )
 
     @property
@@ -143,6 +185,7 @@ class TextRouteSummary:
     peak_reserved_bytes: int = 0
     memory_waits: int = 0
     processing_signature: str | None = None
+    effective_processing_signatures: tuple[str, ...] = ()
     processing_provenance: dict[str, Any] | None = None
     summary_schema: str = ROUTE_SUMMARY_SCHEMA
 
@@ -157,6 +200,298 @@ class _ExtractedText:
     metadata: dict[str, object] = field(default_factory=dict)
     truncated: bool = False
     detail: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _TextDerivationWork:
+    attempt_id: str
+    resource: ResourceRef
+    revision: RevisionRef
+    input_binding: InputBinding
+    stage: StageDescriptor
+    started_monotonic_ns: int
+
+    def receipt_id(self, outcome: WorkOutcome) -> str:
+        return _stable_identifier(
+            f"receipt:text:{outcome.value}",
+            {"attempt_id": self.attempt_id, "outcome": outcome.value},
+        )
+
+
+def _utc_now() -> str:
+    return datetime.now(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
+
+
+def _stable_identifier(prefix: str, payload: dict[str, object]) -> str:
+    return f"{prefix}:{fingerprint_text(canonical_json(payload)).xxh3_128}"
+
+
+def _resource_ref(snapshot: FileSnapshot) -> ResourceRef:
+    physical_value = f"{snapshot.volume_id}:{snapshot.file_id}:{snapshot.birthtime_ns}"
+    return ResourceRef(
+        resource_id=f"resource:file:{physical_value}",
+        source_kind="text",
+        owner="text",
+        physical_identity=PhysicalIdentityRef(
+            physical_identity_scheme_for_birthtime(snapshot.birthtime_ns),
+            physical_value,
+            1,
+        ),
+        current_path=snapshot.path,
+        disposition=ResourceDisposition.CANONICAL,
+    )
+
+
+def _input_binding(
+    snapshot: FileSnapshot,
+    payload: bytes,
+) -> tuple[ResourceRef, RevisionRef, InputBinding]:
+    resource = _resource_ref(snapshot)
+    raw_xxh3_128 = xxhash.xxh3_128_hexdigest(payload)
+    revision_id = _stable_identifier(
+        "revision:text",
+        {
+            "byte_count": len(payload),
+            "fingerprint_algorithm": "xxh3-128",
+            "raw_xxh3_128": raw_xxh3_128,
+            "resource_id": resource.resource_id,
+        },
+    )
+    revision = RevisionRef(
+        resource_id=resource.resource_id,
+        revision_id=revision_id,
+        producer=_TEXT_SOURCE_REVISION_PRODUCER,
+        processing_signature=_TEXT_SOURCE_PROCESSING_SIGNATURE,
+        generation=None,
+        state=RevisionState.CURRENT,
+    )
+    return (
+        resource,
+        revision,
+        InputBinding(
+            name="source",
+            revision=revision,
+            fingerprint=raw_xxh3_128,
+            fingerprint_algorithm="xxh3-128",
+        ),
+    )
+
+
+def _partial_input_binding(
+    snapshot: FileSnapshot,
+) -> tuple[ResourceRef, RevisionRef, InputBinding]:
+    """Identify an unreadable observation without inventing a raw content hash."""
+
+    resource = _resource_ref(snapshot)
+    snapshot_fingerprint = fingerprint_text(
+        canonical_json(
+            {
+                "birthtime_ns": snapshot.birthtime_ns,
+                "file_id": snapshot.file_id,
+                "mtime_ns": snapshot.mtime_ns,
+                "size": snapshot.size,
+                "volume_id": snapshot.volume_id,
+            }
+        )
+    ).xxh3_128
+    revision = RevisionRef(
+        resource_id=resource.resource_id,
+        revision_id=_stable_identifier(
+            "revision:text:partial",
+            {
+                "resource_id": resource.resource_id,
+                "snapshot_fingerprint": snapshot_fingerprint,
+            },
+        ),
+        producer=_TEXT_SOURCE_REVISION_PRODUCER,
+        processing_signature="text-source-revision-partial-v1",
+        generation=None,
+        state=RevisionState.PARTIAL,
+    )
+    return (
+        resource,
+        revision,
+        InputBinding(
+            name="source_observation",
+            revision=revision,
+            fingerprint=snapshot_fingerprint,
+            fingerprint_algorithm="text-snapshot-v1",
+        ),
+    )
+
+
+def _stage_descriptor(provenance: ProcessingProvenance) -> StageDescriptor:
+    return StageDescriptor(
+        stage_id=_TEXT_EXTRACT_STAGE_ID,
+        stage_version=_TEXT_EXTRACT_STAGE_VERSION,
+        processing_signature=provenance.signature,
+        implementation_digest=None,
+        provider="neocortex-builtin",
+        provider_version=TEXT_ROUTE_VERSION,
+    )
+
+
+def _derivation_configuration(
+    provenance: ProcessingProvenance,
+) -> tuple[tuple[str, str | int | float | bool | None], ...]:
+    configuration = provenance.manifest.get("configuration")
+    if not isinstance(configuration, dict):
+        raise ValueError("Text processing provenance has no canonical configuration")
+    values: list[tuple[str, str | int | float | bool | None]] = []
+    for key, value in sorted(configuration.items()):
+        if not isinstance(key, str) or not isinstance(value, (str, int, float, bool, type(None))):
+            raise ValueError("Text effective configuration must contain JSON scalars")
+        values.append((key, value))
+    return tuple(values)
+
+
+def _derivation_runtime(provenance: ProcessingProvenance) -> tuple[tuple[str, str], ...]:
+    components = provenance.manifest.get("components")
+    if not isinstance(components, list):
+        raise ValueError("Text processing provenance has no canonical runtime components")
+    values: list[tuple[str, str]] = []
+    for component in components:
+        if not isinstance(component, dict):
+            raise ValueError("Text runtime component must be an object")
+        name = component.get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("Text runtime component has no name")
+        values.append((name, canonical_json(component)))
+    return tuple(sorted(values))
+
+
+def _extractor_selector(mime: str, path: str) -> tuple[str, str]:
+    suffix = Path(path).suffix.casefold().removeprefix(".")
+    legacy_kind = {
+        "application/msword": "doc",
+        "application/vnd.ms-excel": "xls",
+        "application/vnd.ms-powerpoint": "ppt",
+    }.get(mime)
+    if mime == "message/rfc822":
+        return "stdlib_email_visible_text", "email"
+    if legacy_kind is not None:
+        return f"legacy_office_worker:{legacy_kind}", legacy_kind
+    if mime == "text/html":
+        return "strict_text_decode+html_visible_text", "html"
+    if mime == "application/xml":
+        return "strict_text_decode+xml_itertext", "xml"
+    content_kind = {
+        "text/csv": "csv",
+        "text/tab-separated-values": "tsv",
+        "text/markdown": "markdown",
+        "application/json": "json",
+    }.get(mime, suffix or "text")
+    return "strict_text_decode", content_kind
+
+
+def _candidate_processing_provenance(
+    base: ProcessingProvenance,
+    mime: str,
+    path: str,
+) -> ProcessingProvenance:
+    manifest = base.manifest
+    configuration = manifest.get("configuration")
+    components = manifest.get("components")
+    if not isinstance(configuration, dict) or not isinstance(components, list):
+        raise ValueError("Text base provenance is malformed")
+    adapter, content_kind = _extractor_selector(mime, path)
+    effective_configuration: dict[str, object] = {
+        "max_text_chars": configuration["max_text_chars"],
+        "declared_mime": mime,
+        "extractor_adapter": adapter,
+        "output_content_kind": content_kind,
+    }
+    legacy_office = adapter.startswith("legacy_office_worker:")
+    if legacy_office:
+        effective_configuration.update(
+            {
+                "worker_timeout_seconds": configuration["worker_timeout_seconds"],
+                "worker_memory_bytes": configuration["worker_memory_bytes"],
+            }
+        )
+    else:
+        effective_configuration["plain_text_decoder"] = configuration["plain_text_decoder"]
+        if mime == "message/rfc822":
+            effective_configuration["email_policy"] = configuration["email_policy"]
+    effective_components = [
+        component
+        for component in components
+        if legacy_office or not isinstance(component, dict) or component.get("name") != "soffice"
+    ]
+    return build_processing_provenance(
+        "text-route",
+        f"{TEXT_ROUTE_VERSION}:text.extract/{_TEXT_EXTRACT_STAGE_VERSION}",
+        effective_configuration,
+        effective_components,
+        compatibility_tag=(f"{TEXT_ROUTE_VERSION}-text-extract-v{_TEXT_EXTRACT_STAGE_VERSION}"),
+    )
+
+
+def _representation_fingerprint(extracted: _ExtractedText) -> str:
+    return compute_text_representation_fingerprint(
+        text=extracted.text,
+        content_kind=extracted.content_kind,
+        media_type=extracted.media_type,
+        title=extracted.title,
+        author=extracted.author,
+        metadata=extracted.metadata,
+        truncated=extracted.truncated,
+        detail=extracted.detail,
+    )
+
+
+def _fts_fingerprint(file_key: str, extracted: _ExtractedText) -> str:
+    return compute_text_fts_fingerprint(
+        file_key,
+        text=extracted.text,
+        content_kind=extracted.content_kind,
+        title=extracted.title,
+        author=extracted.author,
+    )
+
+
+def _redacted_failure_message(exc: BaseException) -> str:
+    return f"{type(exc).__name__}: diagnostic detail redacted by Text owner policy."
+
+
+def _output_bindings(
+    work: _TextDerivationWork,
+    file_key: str,
+    extracted: _ExtractedText,
+    generation: int | None,
+) -> tuple[OutputBinding, OutputBinding]:
+    def output(name: str, kind: str, fingerprint: str) -> OutputBinding:
+        materialization_id = _stable_identifier(
+            "materialization:text",
+            {"attempt_id": work.attempt_id, "output_kind": kind},
+        )
+        return OutputBinding(
+            name=name,
+            materialization=MaterializationRef(
+                owner="text",
+                kind=kind,
+                materialization_id=materialization_id,
+                schema_version=TEXT_SCHEMA_VERSION,
+                resource=work.resource,
+                revision=work.revision,
+                generation=generation,
+            ),
+            fingerprint=fingerprint,
+            fingerprint_algorithm="xxh3-128",
+        )
+
+    return (
+        output(
+            "text_representation",
+            _TEXT_REPRESENTATION_KIND,
+            _representation_fingerprint(extracted),
+        ),
+        output(
+            "text_fts",
+            _TEXT_FTS_KIND,
+            _fts_fingerprint(file_key, extracted),
+        ),
+    )
 
 
 class _VisibleHTML(HTMLParser):
@@ -446,55 +781,196 @@ class TextRoute:
             max(4 * 1024 * 1024, snapshot.size * 3 + self.config.max_text_chars * 4)
         )
 
-    def _cache_hit(
+    def _cached_extracted(
+        self,
+        connection: sqlite3.Connection,
+        file_key: str,
+        revision: RevisionRef,
+        signature: str,
+    ) -> _ExtractedText | None:
+        row = connection.execute(
+            "SELECT * FROM documents WHERE file_key=?",
+            (file_key,),
+        ).fetchone()
+        if (
+            row is None
+            or str(row["status"]) != "complete"
+            or str(row["processing_signature"]) != signature
+            or row["revision_id"] is None
+            or str(row["revision_id"]) != revision.revision_id
+            or row["text_zlib"] is None
+            or row["text_xxh3_128"] is None
+        ):
+            return None
+        fts_rows = connection.execute(
+            "SELECT file_key,path,content_kind,title,author,body "
+            "FROM document_fts WHERE file_key=?",
+            (file_key,),
+        ).fetchall()
+        if len(fts_rows) != 1:
+            return None
+        try:
+            text = zlib.decompress(bytes(row["text_zlib"])).decode("utf-8", "strict")
+            metadata = json.loads(str(row["metadata_json"]))
+        except (TypeError, UnicodeError, ValueError, zlib.error):
+            return None
+        if not isinstance(metadata, dict) or any(not isinstance(key, str) for key in metadata):
+            return None
+        extracted = _ExtractedText(
+            text=text,
+            content_kind=str(row["content_kind"]),
+            media_type=str(row["media_type"]),
+            title=None if row["title"] is None else str(row["title"]),
+            author=None if row["author"] is None else str(row["author"]),
+            metadata=metadata,
+            truncated=bool(row["text_truncated"]),
+            detail=None if row["detail"] is None else str(row["detail"]),
+        )
+        encoded = text.encode("utf-8")
+        fts = fts_rows[0]
+        physical_output_matches = (
+            int(row["text_chars"]) == len(text)
+            and str(row["text_xxh3_128"]) == xxhash.xxh3_128_hexdigest(encoded)
+            and str(fts["file_key"]) == file_key
+            and str(fts["content_kind"]) == extracted.content_kind
+            and str(fts["title"]) == (extracted.title or "")
+            and str(fts["author"]) == (extracted.author or "")
+            and str(fts["body"]) == extracted.text
+        )
+        return extracted if physical_output_matches else None
+
+    def _reusable_derivation(
+        self,
+        connection: sqlite3.Connection,
+        file_key: str,
+        resource: ResourceRef,
+        revision: RevisionRef,
+        signature: str,
+    ) -> tuple[TextReusableDerivation, _ExtractedText] | None:
+        try:
+            reusable = read_reusable_text_derivation_from_connection(
+                connection,
+                file_key,
+                stage_id=_TEXT_EXTRACT_STAGE_ID,
+                processing_signature=signature,
+            )
+        except TextDerivationIntegrityError:
+            return None
+        if reusable is None or reusable.revision.revision_id != revision.revision_id:
+            return None
+        extracted = self._cached_extracted(connection, file_key, revision, signature)
+        if extracted is None:
+            return None
+        expected = {
+            "text_representation": (
+                _TEXT_REPRESENTATION_KIND,
+                _representation_fingerprint(extracted),
+            ),
+            "text_fts": (_TEXT_FTS_KIND, _fts_fingerprint(file_key, extracted)),
+        }
+        if len(reusable.outputs) != len(expected):
+            return None
+        for output in reusable.outputs:
+            contract = expected.get(output.name)
+            materialization = output.materialization
+            if (
+                contract is None
+                or output.fingerprint_algorithm != "xxh3-128"
+                or output.fingerprint != contract[1]
+                or materialization.owner != "text"
+                or materialization.kind != contract[0]
+                or materialization.schema_version != TEXT_SCHEMA_VERSION
+                or materialization.resource is None
+                or materialization.resource.resource_id != resource.resource_id
+                or materialization.revision is None
+                or materialization.revision.revision_id != revision.revision_id
+            ):
+                return None
+        return reusable, extracted
+
+    def _refresh_cached_document(
         self,
         connection: sqlite3.Connection,
         snapshot: FileSnapshot,
+        file_key: str,
         signature: str,
-    ) -> tuple[bool, bool, int]:
-        key = file_key_from_snapshot(snapshot)
-        row = connection.execute(
-            "SELECT path,size,mtime_ns,birthtime_ns,processing_signature,status,text_chars "
-            "FROM documents WHERE file_key=?",
-            (key,),
+    ) -> None:
+        conflict = connection.execute(
+            "SELECT file_key FROM documents WHERE path=? AND file_key<>?",
+            (snapshot.path, file_key),
         ).fetchone()
-        if row is None:
-            return False, False, 0
-        matches = (
-            int(row["size"]) == snapshot.size
-            and int(row["mtime_ns"]) == snapshot.mtime_ns
-            and int(row["birthtime_ns"]) == snapshot.birthtime_ns
-            and str(row["processing_signature"]) == signature
+        if conflict is not None:
+            self._delete_document(connection, str(conflict["file_key"]))
+        updated = connection.execute(
+            "UPDATE documents SET path=?,size=?,mtime_ns=?,birthtime_ns=?,"
+            "processing_signature=?,last_seen_run_id=?,updated_ns=? WHERE file_key=?",
+            (
+                snapshot.path,
+                snapshot.size,
+                snapshot.mtime_ns,
+                snapshot.birthtime_ns,
+                signature,
+                self.run_id,
+                time.time_ns(),
+                file_key,
+            ),
         )
-        status = str(row["status"])
-        reusable = matches and (
-            status == "complete" or (status == "error" and not self.config.retry_errors)
+        if updated.rowcount != 1:
+            raise RuntimeError("cached Text document disappeared before publication")
+        fts = connection.execute(
+            "UPDATE document_fts SET path=? WHERE file_key=?",
+            (snapshot.path, file_key),
         )
-        if not reusable:
-            return False, False, 0
-        if str(row["path"]) != snapshot.path:
+        if fts.rowcount != 1:
+            raise RuntimeError("cached Text FTS output disappeared before publication")
+
+    def _refresh_cached_error(
+        self,
+        connection: sqlite3.Connection,
+        snapshot: FileSnapshot,
+        file_key: str,
+        signature: str,
+    ) -> None:
+        connection.execute("BEGIN IMMEDIATE")
+        try:
             conflict = connection.execute(
                 "SELECT file_key FROM documents WHERE path=? AND file_key<>?",
-                (snapshot.path, key),
+                (snapshot.path, file_key),
             ).fetchone()
             if conflict is not None:
                 self._delete_document(connection, str(conflict["file_key"]))
-            connection.execute(
-                "UPDATE documents SET path=?,last_seen_run_id=?,updated_ns=? WHERE file_key=?",
-                (snapshot.path, self.run_id, time.time_ns(), key),
+            updated = connection.execute(
+                """UPDATE documents SET path=?,size=?,mtime_ns=?,birthtime_ns=?,
+                processing_signature=?,last_seen_run_id=?,updated_ns=?
+                WHERE file_key=? AND status='error'""",
+                (
+                    snapshot.path,
+                    snapshot.size,
+                    snapshot.mtime_ns,
+                    snapshot.birthtime_ns,
+                    signature,
+                    self.run_id,
+                    time.time_ns(),
+                    file_key,
+                ),
             )
-            connection.execute(
-                "UPDATE document_fts SET path=? WHERE file_key=?", (snapshot.path, key)
-            )
+            if updated.rowcount != 1:
+                raise RuntimeError("cached Text error disappeared before refresh")
+        except BaseException:
+            connection.rollback()
+            raise
         else:
-            connection.execute(
-                "UPDATE documents SET last_seen_run_id=?,updated_ns=? WHERE file_key=?",
-                (self.run_id, time.time_ns(), key),
-            )
-        return True, status == "error", int(row["text_chars"])
+            connection.commit()
 
     @staticmethod
     def _delete_document(connection: sqlite3.Connection, key: str) -> None:
+        connection.execute(
+            "DELETE FROM text_materialization_heads WHERE materialization_owner='text' "
+            "AND materialization_kind IN (?,?) AND resource_id IN ("
+            "SELECT r.resource_id FROM documents d JOIN text_input_revisions r "
+            "ON r.revision_id=d.revision_id WHERE d.file_key=?)",
+            (_TEXT_REPRESENTATION_KIND, _TEXT_FTS_KIND, key),
+        )
         connection.execute("DELETE FROM document_fts WHERE file_key=?", (key,))
         connection.execute("DELETE FROM documents WHERE file_key=?", (key,))
 
@@ -506,6 +982,13 @@ class TextRoute:
         stale = int(row[0])
         if stale == 0:
             return 0
+        connection.execute(
+            "DELETE FROM text_materialization_heads WHERE materialization_owner='text' "
+            "AND materialization_kind IN (?,?) AND resource_id IN ("
+            "SELECT r.resource_id FROM documents d JOIN text_input_revisions r "
+            "ON r.revision_id=d.revision_id WHERE d.last_seen_run_id<>?)",
+            (_TEXT_REPRESENTATION_KIND, _TEXT_FTS_KIND, self.run_id),
+        )
         connection.execute(
             "DELETE FROM document_fts WHERE file_key IN "
             "(SELECT file_key FROM documents WHERE last_seen_run_id<>?)",
@@ -607,13 +1090,220 @@ class TextRoute:
                 Path(snapshot.path).suffix.casefold().removeprefix(".") or "text",
                 mime,
                 type(exc).__name__,
-                str(exc)[:2_000],
+                _redacted_failure_message(exc),
                 int(retryable),
                 self.run_id,
                 time.time_ns(),
             ),
         )
         return retryable
+
+    def _begin_derivation(
+        self,
+        connection: sqlite3.Connection,
+        provenance: ProcessingProvenance,
+        resource: ResourceRef,
+        revision: RevisionRef,
+        input_binding: InputBinding,
+        *,
+        causation_id: str | None,
+    ) -> _TextDerivationWork:
+        stage = _stage_descriptor(provenance)
+        recorded_ns = time.time_ns()
+        started_monotonic_ns = time.monotonic_ns()
+        correlation_id = _stable_identifier(
+            "correlation:text",
+            {
+                "resource_id": resource.resource_id,
+                "stage_id": stage.stage_id,
+            },
+        )
+        attempt_number = int(
+            connection.execute(
+                "SELECT COALESCE(MAX(attempt_number),0)+1 "
+                "FROM text_derivation_attempts WHERE correlation_id=?",
+                (correlation_id,),
+            ).fetchone()[0]
+        )
+        attempt_id = _stable_identifier(
+            "attempt:text",
+            {
+                "correlation_id": correlation_id,
+                "recorded_ns": recorded_ns,
+                "run_id": self.run_id,
+                "started_monotonic_ns": started_monotonic_ns,
+                "stage_version": stage.stage_version,
+            },
+        )
+        begin_text_derivation_attempt_from_connection(
+            connection,
+            TextDerivationAttemptStart(
+                attempt_id=attempt_id,
+                stage=stage,
+                inputs=(input_binding,),
+                effective_configuration=_derivation_configuration(provenance),
+                runtime=_derivation_runtime(provenance),
+                started_at_utc=_utc_now(),
+                started_monotonic_ns=started_monotonic_ns,
+                attempt=attempt_number,
+                run_id=f"framework:{self.run_id}",
+                correlation_id=correlation_id,
+                recorded_ns=recorded_ns,
+                causation_id=causation_id,
+            ),
+        )
+        return _TextDerivationWork(
+            attempt_id=attempt_id,
+            resource=resource,
+            revision=revision,
+            input_binding=input_binding,
+            stage=stage,
+            started_monotonic_ns=started_monotonic_ns,
+        )
+
+    @staticmethod
+    def _duration_ns(work: _TextDerivationWork) -> int:
+        return max(0, time.monotonic_ns() - work.started_monotonic_ns)
+
+    def _publish_cache_hit(
+        self,
+        connection: sqlite3.Connection,
+        work: _TextDerivationWork,
+        snapshot: FileSnapshot,
+        reusable: TextReusableDerivation,
+    ) -> None:
+        file_key = file_key_from_snapshot(snapshot)
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            self._refresh_cached_document(
+                connection,
+                snapshot,
+                file_key,
+                work.stage.processing_signature,
+            )
+            succeed_text_derivation_attempt(
+                connection,
+                work.attempt_id,
+                receipt_id=work.receipt_id(WorkOutcome.SUCCEEDED),
+                outputs=reusable.outputs,
+                finished_at_utc=_utc_now(),
+                duration_ns=self._duration_ns(work),
+                execution_mode=WorkExecutionMode.CACHE_HIT,
+                reproducibility=ReproducibilityClass.ENVIRONMENT_BOUND,
+                document_file_key=file_key,
+            )
+        except BaseException:
+            connection.rollback()
+            raise
+        else:
+            connection.commit()
+
+    def _publish_success(
+        self,
+        connection: sqlite3.Connection,
+        work: _TextDerivationWork,
+        snapshot: FileSnapshot,
+        extracted: _ExtractedText,
+    ) -> None:
+        file_key = file_key_from_snapshot(snapshot)
+        generation = self.run_id if self.run_id >= 0 else None
+        outputs = _output_bindings(work, file_key, extracted, generation)
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            self._store_success(
+                connection,
+                snapshot,
+                extracted,
+                work.stage.processing_signature,
+            )
+            succeed_text_derivation_attempt(
+                connection,
+                work.attempt_id,
+                receipt_id=work.receipt_id(WorkOutcome.SUCCEEDED),
+                outputs=outputs,
+                finished_at_utc=_utc_now(),
+                duration_ns=self._duration_ns(work),
+                execution_mode=WorkExecutionMode.EXECUTED,
+                reproducibility=ReproducibilityClass.ENVIRONMENT_BOUND,
+                document_file_key=file_key,
+            )
+        except BaseException:
+            connection.rollback()
+            raise
+        else:
+            connection.commit()
+
+    def _publish_error(
+        self,
+        connection: sqlite3.Connection,
+        work: _TextDerivationWork,
+        snapshot: FileSnapshot,
+        mime: str,
+        exc: BaseException,
+    ) -> bool:
+        file_key = file_key_from_snapshot(snapshot)
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            retryable = self._store_error(
+                connection,
+                snapshot,
+                mime,
+                work.stage.processing_signature,
+                exc,
+            )
+            fail_text_derivation_attempt(
+                connection,
+                work.attempt_id,
+                receipt_id=work.receipt_id(WorkOutcome.FAILED),
+                finished_at_utc=_utc_now(),
+                duration_ns=self._duration_ns(work),
+                reproducibility=ReproducibilityClass.ENVIRONMENT_BOUND,
+                failure=CapabilityFailure(
+                    capability_id=_TEXT_EXTRACT_STAGE_ID,
+                    reason_code=type(exc).__name__,
+                    message=_redacted_failure_message(exc),
+                    retryable=retryable,
+                    provider="neocortex-builtin",
+                    details=(("diagnostic_detail", "[redacted]"),),
+                ),
+                document_file_key=file_key,
+            )
+        except BaseException:
+            connection.rollback()
+            raise
+        else:
+            connection.commit()
+        return retryable
+
+    def _publish_cancellation(
+        self,
+        connection: sqlite3.Connection,
+        work: _TextDerivationWork,
+        _exc: CancellationRequested,
+    ) -> None:
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            cancel_text_derivation_attempt(
+                connection,
+                work.attempt_id,
+                receipt_id=work.receipt_id(WorkOutcome.CANCELLED),
+                finished_at_utc=_utc_now(),
+                duration_ns=self._duration_ns(work),
+                reproducibility=ReproducibilityClass.ENVIRONMENT_BOUND,
+                failure=CapabilityFailure(
+                    capability_id=_TEXT_EXTRACT_STAGE_ID,
+                    reason_code="framework_cancellation_requested",
+                    message="Framework cancellation requested; diagnostic detail redacted.",
+                    retryable=True,
+                    provider="neocortex-builtin",
+                    details=(("diagnostic_detail", "[redacted]"),),
+                ),
+            )
+        except BaseException:
+            connection.rollback()
+            raise
+        else:
+            connection.commit()
 
     def _emit(self, completed: int, total: int, summary: dict[str, int], *, finished=False) -> None:
         emit_progress(
@@ -635,7 +1325,23 @@ class TextRoute:
 
     def run(self) -> TextRouteSummary:
         self._validate()
+        self.cancellation.checkpoint()
+        lock_path = self.config.state_path.with_suffix(
+            self.config.state_path.suffix + ".route.lock"
+        )
+        self.config.state_path.parent.mkdir(parents=True, exist_ok=True)
+        with FrameworkRunLock(lock_path):
+            return self._run_locked()
+
+    def _run_locked(self) -> TextRouteSummary:
         initialize_text_state(self.config.state_path)
+        abandoned_ns = time.time_ns()
+        while abandon_running_text_derivations(
+            self.config.state_path,
+            finished_at_utc=_utc_now(),
+            terminal_ns=abandoned_ns,
+        ):
+            pass
         provenance = self.config.processing_provenance
         signature = provenance.signature
         pool, eligible, selected = self._counts()
@@ -652,59 +1358,182 @@ class TextRoute:
             "errors": 0,
             "retryable_errors": 0,
         }
+        handled_errors = (
+            FileChangedError,
+            OSError,
+            RuntimeError,
+            SubprocessOutputLimitError,
+            UnicodeError,
+            ValueError,
+            ET.ParseError,
+        )
+        effective_signatures: set[str] = set()
         self._emit(0, selected, counters)
         with text_database(self.config.state_path, create=False) as connection:
             for mime, snapshot in self._candidates():
+                candidate_provenance = _candidate_processing_provenance(
+                    provenance,
+                    mime,
+                    snapshot.path,
+                )
+                candidate_signature = candidate_provenance.signature
+                effective_signatures.add(candidate_signature)
                 self.cancellation.checkpoint()
-                hit, cached_error, chars = self._cache_hit(connection, snapshot, signature)
-                if hit:
-                    counters["cache_hits"] += 1
-                    counters["cached_errors"] += int(cached_error)
-                    counters["text_chars"] += chars
-                else:
+                file_key = file_key_from_snapshot(snapshot)
+                with self._admission(snapshot):
                     try:
-                        with self._admission(snapshot):
-                            payload = _read_exact(
-                                snapshot,
-                                self.config.max_file_bytes or snapshot.size,
-                                self.cancellation,
-                            )
-                            extracted = _extract(payload, mime, snapshot.path, self.config)
-                            refreshed = snapshot_path(snapshot.path)
-                            if refreshed != snapshot:
-                                raise FileChangedError("text source changed after extraction")
-                        self._store_success(connection, snapshot, extracted, signature)
-                        counters["processed"] += 1
-                        counters["extracted"] += 1
-                        counters["text_chars"] += len(extracted.text)
-                        counters["truncated"] += int(extracted.truncated)
-                        if extracted.content_kind == "email":
-                            counters["emails"] += 1
-                        elif extracted.content_kind in {"doc", "xls", "ppt"}:
-                            counters["legacy_office"] += 1
-                        else:
-                            counters["plain_text"] += 1
-                    except (
-                        FileChangedError,
-                        OSError,
-                        RuntimeError,
-                        SubprocessOutputLimitError,
-                        UnicodeError,
-                        ValueError,
-                        ET.ParseError,
-                    ) as exc:
+                        payload = _read_exact(
+                            snapshot,
+                            self.config.max_file_bytes or snapshot.size,
+                            self.cancellation,
+                        )
+                    except CancellationRequested as exc:
+                        resource, revision, input_binding = _partial_input_binding(snapshot)
+                        work = self._begin_derivation(
+                            connection,
+                            candidate_provenance,
+                            resource,
+                            revision,
+                            input_binding,
+                            causation_id=None,
+                        )
+                        self._publish_cancellation(connection, work, exc)
+                        raise
+                    except handled_errors as exc:
+                        resource, revision, input_binding = _partial_input_binding(snapshot)
+                        work = self._begin_derivation(
+                            connection,
+                            candidate_provenance,
+                            resource,
+                            revision,
+                            input_binding,
+                            causation_id=None,
+                        )
+                        retryable = self._publish_error(
+                            connection,
+                            work,
+                            snapshot,
+                            mime,
+                            exc,
+                        )
                         counters["processed"] += 1
                         counters["errors"] += 1
-                        counters["retryable_errors"] += int(
-                            self._store_error(connection, snapshot, mime, signature, exc)
+                        counters["retryable_errors"] += int(retryable)
+                    else:
+                        resource, revision, input_binding = _input_binding(snapshot, payload)
+                        cached_failure = (
+                            None
+                            if self.config.retry_errors
+                            else read_reusable_text_failure_from_connection(
+                                connection,
+                                file_key,
+                                stage_id=_TEXT_EXTRACT_STAGE_ID,
+                                processing_signature=candidate_signature,
+                                revision_id=revision.revision_id,
+                                size=snapshot.size,
+                                mtime_ns=snapshot.mtime_ns,
+                                birthtime_ns=snapshot.birthtime_ns,
+                            )
                         )
-                connection.commit()
+                        if cached_failure is not None:
+                            self._refresh_cached_error(
+                                connection,
+                                snapshot,
+                                file_key,
+                                candidate_signature,
+                            )
+                            counters["cache_hits"] += 1
+                            counters["cached_errors"] += 1
+                            completed = counters["processed"] + counters["cache_hits"]
+                            self._emit(completed, selected, counters)
+                            continue
+                        reusable_state = self._reusable_derivation(
+                            connection,
+                            file_key,
+                            resource,
+                            revision,
+                            candidate_signature,
+                        )
+                        reusable = None if reusable_state is None else reusable_state[0]
+                        work = self._begin_derivation(
+                            connection,
+                            candidate_provenance,
+                            resource,
+                            revision,
+                            input_binding,
+                            causation_id=(
+                                None if reusable is None else reusable.producer_receipt_id
+                            ),
+                        )
+                        try:
+                            self.cancellation.checkpoint()
+                        except CancellationRequested as exc:
+                            self._publish_cancellation(connection, work, exc)
+                            raise
+                        if reusable_state is not None:
+                            self._publish_cache_hit(
+                                connection,
+                                work,
+                                snapshot,
+                                reusable_state[0],
+                            )
+                            counters["cache_hits"] += 1
+                            counters["text_chars"] += len(reusable_state[1].text)
+                        else:
+                            try:
+                                extracted = _extract(
+                                    payload,
+                                    mime,
+                                    snapshot.path,
+                                    self.config,
+                                )
+                                self.cancellation.checkpoint()
+                                refreshed = snapshot_path(snapshot.path)
+                                if refreshed != snapshot:
+                                    raise FileChangedError("text source changed after extraction")
+                            except CancellationRequested as exc:
+                                self._publish_cancellation(connection, work, exc)
+                                raise
+                            except handled_errors as exc:
+                                retryable = self._publish_error(
+                                    connection,
+                                    work,
+                                    snapshot,
+                                    mime,
+                                    exc,
+                                )
+                                counters["processed"] += 1
+                                counters["errors"] += 1
+                                counters["retryable_errors"] += int(retryable)
+                            else:
+                                self._publish_success(
+                                    connection,
+                                    work,
+                                    snapshot,
+                                    extracted,
+                                )
+                                counters["processed"] += 1
+                                counters["extracted"] += 1
+                                counters["text_chars"] += len(extracted.text)
+                                counters["truncated"] += int(extracted.truncated)
+                                if extracted.content_kind == "email":
+                                    counters["emails"] += 1
+                                elif extracted.content_kind in {"doc", "xls", "ppt"}:
+                                    counters["legacy_office"] += 1
+                                else:
+                                    counters["plain_text"] += 1
                 completed = counters["processed"] + counters["cache_hits"]
                 self._emit(completed, selected, counters)
             pruned = 0
             if self.config.max_documents is None and not self.config.selection.active:
-                pruned = self._prune_stale_documents(connection)
-                connection.commit()
+                connection.execute("BEGIN IMMEDIATE")
+                try:
+                    pruned = self._prune_stale_documents(connection)
+                except BaseException:
+                    connection.rollback()
+                    raise
+                else:
+                    connection.commit()
         self._emit(selected, selected, counters, finished=True)
         peak = int(getattr(self.memory_gate, "peak_reserved_bytes", 0))
         waits = int(getattr(self.memory_gate, "wait_count", 0))
@@ -717,6 +1546,7 @@ class TextRoute:
             peak_reserved_bytes=peak,
             memory_waits=waits,
             processing_signature=signature,
+            effective_processing_signatures=tuple(sorted(effective_signatures)),
             processing_provenance=provenance.manifest,
             processed=counters["processed"],
             cache_hits=counters["cache_hits"],

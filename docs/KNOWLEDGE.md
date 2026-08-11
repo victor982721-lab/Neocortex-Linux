@@ -1,8 +1,9 @@
 # Knowledge Plane de NeoCortex — Fase 1
 
 > **Estado del documento.** Esta es la fuente de verdad funcional de la
-> Knowledge Plane read-only introducida en NeoCortex `0.7.0` y actualizada para
-> los contratos de `0.9.0`. Describe el código y los contratos observables del
+> Knowledge Plane read-only introducida en NeoCortex `0.7.0` y actualizada el
+> 11 de agosto de 2026 para los contratos de `0.9.0`. Describe el código y los
+> contratos observables del
 > árbol; no sustituye las pruebas ni convierte una evaluación scripted en
 > evidencia de calidad sobre el corpus real.
 
@@ -96,6 +97,9 @@ o regiones.
 | `KnowledgeHit` | Recurso, revisión, evidencia, señales, score fusionado, razones y warnings. |
 | `KnowledgeSearchResult` | Resultado completo/parcial, ventana top-k, truncamiento real, cursor/cutoff, rankings ejecutados, filas/vectores observados, `blocking_owners` y warnings. |
 | `KnowledgeSnapshot` | Schemas, publicaciones, watermarks y modelos activos de la vista consultada. |
+| `StageDescriptor` / `InputBinding` / `OutputBinding` | Identidad versionada del stage y enlaces exactos entre revisiones/materializaciones con fingerprints. |
+| `MaterializationRef` / `DerivationRef` | Output owner-local y enlace estable al recibo que declara su producción o reutilización. |
+| `WorkReceipt` / `CapabilityFailure` | Hecho terminal acotado con configuración, runtime, tiempos, resultado, causalidad y clase de reproducibilidad; no es autorización de acción. |
 | `ContextPlanRef` / `ContextPlanStepRef` | Copia validada del plan normalizado completo y de cada paso requerido u opcional. |
 | `ContextEntityRef` / `ContextRelationRef` | Grafo acotado y grounded en evidencias citadas, con método, procedencia y confianza opcional. |
 | `ContextContradictionRef` | Conflicto estructurado con identidad XXH3 estable, valores canónicos y citas existentes. |
@@ -159,11 +163,58 @@ como identidad no criptográfica de datos propios; no prueban autenticidad.
 
 `duplicate` exige un `canonical_resource_id` distinto. La fusión excluye
 recursos marcados explícitamente como duplicados exactos, pero no convierte
-similitud ni una huella por sí sola en identidad. Inventory v9 no conserva si
+similitud ni una huella por sí sola en identidad. Inventory v10 conserva el
+contrato de plan introducido en v9, que no registra si
 un plan se ejecutó con comparación byte a byte: sus miembros `redundant` se
 exponen como `inventory_planned_duplicate_unverified`, no se marcan
 `duplicate` ni se filtran. El resultado queda parcial y se abstiene de afirmar
 canonicalidad.
+
+## Linaje de derivación read-only
+
+**IMPLEMENTED para Text extraction/publication.**
+`inspect_derivation_lineage()` y la fachada
+`lineage_payload()` explican por qué existe una representación/FTS, qué
+`RevisionRef` la originó, qué stage/firma/configuración se usó, si el intento
+ejecutó o reutilizó trabajo y qué materializaciones dependen de la revisión. El
+identificador puede resolver el file key/path Text vigente, una revisión
+histórica, una materialización o un receipt; un receipt terminal sin documento
+vigente sigue siendo consultable. El owner conserva los hechos y la vista
+causal se reconstruye en memoria desde su outbox append-only.
+
+La proyección separa revisiones, stages, receipts y materializaciones. Distingue
+`produced` de `reused`, incorpora `causation_id` y calcula el impacto de cambiar
+una firma propagando staleness sólo por aristas explícitas; las revisiones o
+materializaciones upstream pueden declararse reutilizables, no outputs ajenos
+al subgrafo afectado. Perder la proyección no destruye conocimiento owner-local
+y no existe `knowledge.sqlite3` ni autoridad global nueva.
+
+La consulta está acotada: hasta 1,000 receipts/materializaciones/dependencias
+Text por ventana, 100 chunks Semantic dependientes y 100,000 eventos al
+reconstruir una proyección. Una ventana excedida se marca truncada o falla
+cerrado según el contrato; no se oculta como completa. Los scopes son las
+raíces fijas `personal`, `framework` o ambas por separado. La operación abre
+bases existentes con readers owner-local y no crea, migra ni repara estado.
+
+**PARTIAL para Semantic.** Schema 7 registra receipts/outbox owner-local de las
+etapas Semantic conectadas y permite inspeccionar un chunk directo, sus
+orígenes, embeddings y estado de publicación. Cuando la fuente es Text, el
+adapter conserva su `RevisionRef` owner-native en lugar de fabricar una segunda
+identidad. Chunks staged se distinguen de publicados. No se atribuyen receipts
+a filas anteriores a la migración 6→7, y este slice no afirma linaje completo
+de PDF, DOCX, Office ni de toda ruta Semantic histórica. La reutilización de un
+payload pre-v7 compatible exige una attestación owner-local creada bajo demanda
+después de validar sus hechos físicos; no se presenta esa attestación como la
+ejecución histórica del modelo.
+
+Este corte modela `RevisionRef -> text.extract/v2 ->
+text_representation/text_fts`. Todavía no representa `normalize` y `chunk`
+como stages Text independientes; esa ampliación sólo procederá donde existan
+fronteras ejecutables reales.
+
+Este grafo responde **cómo fue producido** un output. No es el grafo de contexto
+acotado de `ContextBundle`, no representa claims del corpus y no autoriza
+mutación, clasificación ni retención.
 
 ## Owners, schemas y visibilidad
 
@@ -186,17 +237,17 @@ control.
 
 | Owner | Archivo | Schema esperado | Frontera observada | Uso en recuperación |
 |---|---|---:|---|---|
-| `inventory` | `dedup.sqlite3` | 9 | Checkpoint válido por raíz y firma cruda a un scan `complete`, con cursor USN opcional todo-o-nada y token del plan dedup completo; máximo 1024 heads. | Exact typed de path, nombre o huella sobre heads publicados; identidad física y relaciones planeadas no verificadas. |
+| `inventory` | `dedup.sqlite3` | 10 | Checkpoint válido por raíz y firma cruda a un scan `complete`, con cursor USN opcional todo-o-nada y token del plan dedup completo; máximo 1024 heads. | Exact typed de path, nombre o huella sobre heads publicados; identidad física y relaciones planeadas no verificadas. |
 | `framework` | `framework.sqlite3` | 20 | Máximos de run, evento y acción; `best_effort_non_generational`. El schema 19 se admite sólo en lectura cuando pasa su validador estructural exacto y se marca `legacy_schema_read_compatible:19->20`. | Estado transversal; no produce ranking de contenido. |
 | `catalog` | `document_catalog.sqlite3` | 6 | Publicación `published` por `source_kind`. | Membership de filtros y exact typed de path, nombre o identificador en la generación publicada. |
-| `pdf` | `pdf.sqlite3` | 11 | Conteo, último `updated_ns` y run; no generacional. | FTS por página y fuentes semantic. |
+| `pdf` | `pdf.sqlite3` | 12 | Conteo, último `updated_ns` y run; no generacional. | FTS por página y fuentes semantic. |
 | `docx` | `docx.sqlite3` | 5 | Conteo, último `updated_ns` y run; no generacional. | FTS documental y partes semantic. |
 | `office` | `office.sqlite3` | 2 | Conteo, último `updated_ns` y run; no generacional. | FTS documental de XLSX/PPTX/ODT y semantic. |
 | `archive` (aditivo) | `archive.sqlite3` | 1 | Miembros virtuales actuales, último `updated_ns` y run; no generacional. | FTS y semantic con cadena ZIP y `inside_zip=1`. |
-| `text` (aditivo) | `text.sqlite3` | 1 | Documentos actuales, último `updated_ns` y run; no generacional. | FTS y semantic de texto, EML y Office heredado; clasificación vía catálogo. |
+| `text` (aditivo) | `text.sqlite3` | 2 | Documento/FTS actual más revisiones, receipts, materializaciones, heads y outbox owner-local; la vista de contenido sigue siendo no generacional. | FTS y semantic de texto, EML y Office heredado; clasificación vía catálogo y linaje read-only. |
 | `audio` | `audio.sqlite3` | 1 | Conteo, último `updated_ns` y run; no generacional. | FTS de transcripción y segmentos semantic. |
 | `image` | `image.sqlite3` | 5 | Conteo, último `updated_ns` y run; no generacional. | Imagen y OCR retenido mediante semantic cuando están publicados. |
-| `semantic` | `semantic.sqlite3` | 6 | Head `ready` por firma de modelo. | Texto e imagen por espacio/modelo publicado, resueltos contra la revisión DB-local vigente. |
+| `semantic` | `semantic.sqlite3` | 7 | Head `ready` por firma de modelo; receipts/outbox nuevos no atribuyen trabajo legacy. | Texto e imagen por espacio/modelo publicado, resueltos contra la revisión DB-local vigente, y linaje parcial de chunks/embeddings. |
 | `code` | `code.sqlite3` | 4 | Archivos actuales, última versión y último run; `best_effort_non_generational`. | FTS, exact typed, estructura, símbolos, relaciones owner-local, evidencia externa y enlaces exactos a chunks Semantic publicados. |
 
 Los watermarks no generacionales son detectores acotados de cambio, no una
@@ -320,7 +371,7 @@ La frontera `execute_knowledge_search()` reutiliza los owners existentes:
 | `exact_code_*` | Estado actual de archivos, huellas y símbolos de code. | Coincidencia exacta; cobertura `partial`. |
 | `exact_catalog_*` | Generaciones publicadas del catálogo. | Coincidencia exacta y generación fijada. |
 | `fts_pdf`, `fts_docx`, `fts_office`, `fts_audio`, `fts_archive`, `fts_text` | FTS5 de cada owner disponible; Archive conserva contenedor, miembro, cadena y profundidad; texto conserva tipo, título y autor. | BM25 del owner y posición original. |
-| `semantic_text`, `semantic_image` | Servicio semantic v6 local; `semantic_text` materializa sólo contenido corporal. | Coseno, firmas de modelo consultor/indexado, espacio y generación. |
+| `semantic_text`, `semantic_image` | Servicio semantic v7 local, sobre la publicación generacional de v6; `semantic_text` materializa sólo contenido corporal. | Coseno, firmas de modelo consultor/indexado, espacio y generación. |
 | `semantic_title` | Canal opcional sólo en planes `discovery` v3; título de fuente, encabezado acotado o basename, siempre mutable y advisory. | Rango semántico con peso `0.5`; sólo refuerza evidencia corporal del mismo recurso y revisión. |
 | `code_structural` | `search_code` sin reentrar a semantic. | RRF propio de código y evidencia estructural. |
 | `catalog_metadata` | Generación de catálogo fijada por el snapshot. | Sin señal de relevancia: sólo membership/filtro y telemetría. |
@@ -836,7 +887,7 @@ Limitaciones abiertas:
 - Las relaciones owner-local de código son productivas, pero el grafo
   transversal y la temporalidad uniforme sólo aparecen como planes no
   disponibles. No existe un knowledge graph transversal generacional.
-- Inventory v9 no persiste `verification_mode`: una relación
+- Inventory v10 conserva la limitación de v9: no persiste `verification_mode`; una relación
   `planned_duplicate_of` no prueba duplicación exacta. El caso golden
   `exact_duplicate` prueba la política de fusión con una disposición scripted,
   no que el owner productivo pueda inferirla.

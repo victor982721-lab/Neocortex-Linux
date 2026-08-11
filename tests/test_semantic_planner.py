@@ -328,7 +328,14 @@ def test_malformed_cached_vector_is_not_counted_as_reusable(tmp_path: Path) -> N
     _create_pdf_state(tmp_path, (text,))
     semantic = _create_semantic_payload(tmp_path, text)
     with sqlite3.connect(semantic) as connection:
+        connection.execute("DROP TRIGGER vector_payloads_no_update")
         connection.execute("UPDATE vector_payloads SET vector_blob=X'00'")
+        connection.execute(
+            """CREATE TRIGGER vector_payloads_no_update
+            BEFORE UPDATE ON vector_payloads BEGIN
+                SELECT RAISE(ABORT,'semantic vector payloads are append-only');
+            END"""
+        )
 
     plan = plan_semantic_index(
         tmp_path,

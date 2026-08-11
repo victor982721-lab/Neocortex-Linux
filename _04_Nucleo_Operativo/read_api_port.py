@@ -7,6 +7,8 @@ the internal layout of the Knowledge, Code and path owners.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from .app_paths import default_state_directory, self_analysis_data_directory
 from .cli_knowledge import (
     KnowledgeExitCode,
@@ -26,6 +28,17 @@ from .knowledge_service import KnowledgeSearchService
 from .knowledge_snapshot import KnowledgeStatePaths
 
 
+def inspect_derivation_lineage(
+    state_directory: Path,
+    identifier: str,
+) -> dict[str, object]:
+    """Load the lineage reader only when that explicit surface is invoked."""
+
+    from .derivation_lineage_service import inspect_derivation_lineage as inspect
+
+    return inspect(state_directory, identifier)
+
+
 __all__ = (
     "CodeSearchQuery",
     "KnowledgeCompleteness",
@@ -39,6 +52,7 @@ __all__ = (
     "SnapshotConsistency",
     "available_search_modes",
     "default_state_directory",
+    "inspect_derivation_lineage",
     "knowledge_context_exit_code",
     "knowledge_search_exit_code",
     "search_code",

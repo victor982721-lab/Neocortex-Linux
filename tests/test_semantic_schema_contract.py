@@ -23,9 +23,7 @@ def _create_version_two(path: Path) -> None:
         semantic_schema._migrate_to_v1(connection, 1)
         semantic_schema._migrate_to_v2(connection, 2)
         connection.execute("PRAGMA user_version=2")
-        connection.execute(
-            "INSERT INTO metadata(key,value) VALUES('schema_version','2')"
-        )
+        connection.execute("INSERT INTO metadata(key,value) VALUES('schema_version','2')")
 
 
 def _mutate(path: Path, sql: str) -> None:
@@ -38,13 +36,10 @@ def _mutate(path: Path, sql: str) -> None:
 
 
 def test_semantic_state_facade_reexports_schema_lifecycle_contract() -> None:
-    assert semantic_state.SEMANTIC_SCHEMA_VERSION == 6
+    assert semantic_state.SEMANTIC_SCHEMA_VERSION == 7
     assert semantic_state.SemanticStateError is semantic_schema.SemanticStateError
     assert semantic_state.semantic_database is semantic_schema.semantic_database
-    assert (
-        semantic_state.initialize_semantic_state
-        is semantic_schema.initialize_semantic_state
-    )
+    assert semantic_state.initialize_semantic_state is semantic_schema.initialize_semantic_state
     assert semantic_state._migrate_to_v1 is semantic_schema._migrate_to_v1
     assert semantic_state._migrate_to_v2 is semantic_schema._migrate_to_v2
 
@@ -101,7 +96,7 @@ def test_declared_current_malformed_schema_is_rejected_without_repair(
 
     assert database.read_bytes() == before
     with sqlite3.connect(database) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 6
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 7
 
 
 @pytest.mark.parametrize(
@@ -180,8 +175,7 @@ def test_migration_failure_rolls_back_every_intermediate_version(
             "SELECT value FROM metadata WHERE key='schema_version'"
         ).fetchone() == ("2",)
         assert "source_revision_json" not in {
-            str(row[1])
-            for row in connection.execute("PRAGMA table_info(semantic_items)")
+            str(row[1]) for row in connection.execute("PRAGMA table_info(semantic_items)")
         }
         assert (
             connection.execute(
@@ -192,9 +186,7 @@ def test_migration_failure_rolls_back_every_intermediate_version(
         )
         assert tuple(
             int(row[0])
-            for row in connection.execute(
-                "SELECT version FROM schema_migrations ORDER BY version"
-            )
+            for row in connection.execute("SELECT version FROM schema_migrations ORDER BY version")
         ) == (1, 2)
 
 
@@ -203,17 +195,17 @@ def test_new_schema_records_exact_complete_migration_history(tmp_path: Path) -> 
     semantic_schema.initialize_semantic_state(database)
 
     with semantic_schema.semantic_database(database, readonly=True) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 6
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 7
         assert (
-            connection.execute(
-                "SELECT value FROM metadata WHERE key='schema_version'"
-            ).fetchone()[0]
-            == "6"
+            connection.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()[
+                0
+            ]
+            == "7"
         )
         assert tuple(
             int(row[0])
-            for row in connection.execute(
-                "SELECT version FROM schema_migrations ORDER BY version"
-            )
-        ) == (1, 2, 3, 4, 5, 6)
+            for row in connection.execute("SELECT version FROM schema_migrations ORDER BY version")
+        ) == (1, 2, 3, 4, 5, 6, 7)
+
+
 # endregion [02]

@@ -993,7 +993,7 @@ def test_text_owner_is_additive_only_after_text_state_exists(tmp_path: Path) -> 
 
     text = _owner(available, "text")
     assert text.state is OwnerAvailability.AVAILABLE
-    assert text.observed_schema_version == 1
+    assert text.observed_schema_version == 2
     assert {mark.name: mark.value for mark in text.watermarks}["current_rows"] == "0"
 
 

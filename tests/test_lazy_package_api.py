@@ -22,6 +22,7 @@ EXPECTED_EXPORTS = [
     "AudioRoute",
     "AudioRouteConfig",
     "AudioRouteSummary",
+    "CapabilityFailure",
     "CodeRelationEndpoint",
     "CodeRoute",
     "CodeRouteConfig",
@@ -29,7 +30,9 @@ EXPECTED_EXPORTS = [
     "CodeSearchHit",
     "CodeSearchQuery",
     "CodeSearchRelation",
+    "DERIVATION_CONTRACT_SCHEMA_VERSION",
     "DetectedType",
+    "DerivationRef",
     "DocxRoute",
     "DocxRouteConfig",
     "DocxRouteSummary",
@@ -41,6 +44,9 @@ EXPECTED_EXPORTS = [
     "ImageRoute",
     "ImageRouteConfig",
     "ImageRouteSummary",
+    "InputBinding",
+    "MaterializationRef",
+    "OutputBinding",
     "PdfDoctorReport",
     "PdfRoute",
     "PdfRouteConfig",
@@ -48,6 +54,7 @@ EXPECTED_EXPORTS = [
     "PdfVerifyReport",
     "RouteAdapter",
     "RouteExecutionContext",
+    "ReproducibilityClass",
     "PdfDerivedIndexer",
     "PdfDerivedSummary",
     "search_pdf_state",
@@ -59,6 +66,7 @@ EXPECTED_EXPORTS = [
     "OfficeRouteSummary",
     "RouteOnlyRunResult",
     "SelfAnalysisRunResult",
+    "StageDescriptor",
     "detect_content_type",
     "verify_pdf_state",
     "list_projects",
@@ -88,6 +96,9 @@ EXPECTED_EXPORTS = [
     "ResourceRef",
     "RetrievalMode",
     "RevisionRef",
+    "WorkExecutionMode",
+    "WorkOutcome",
+    "WorkReceipt",
     "plan_knowledge_query",
 ]
 EXPECTED_SOURCES = {
@@ -96,6 +107,7 @@ EXPECTED_SOURCES = {
     "AudioRoute": "_04_Nucleo_Operativo.audio_route",
     "AudioRouteConfig": "_04_Nucleo_Operativo.audio_models",
     "AudioRouteSummary": "_04_Nucleo_Operativo.audio_models",
+    "CapabilityFailure": "_04_Nucleo_Operativo.derivation_contracts",
     "CodeRelationEndpoint": "_04_Nucleo_Operativo.code_contracts",
     "CodeRoute": "_04_Nucleo_Operativo.code_route",
     "CodeRouteConfig": "_04_Nucleo_Operativo.code_contracts",
@@ -103,7 +115,9 @@ EXPECTED_SOURCES = {
     "CodeSearchHit": "_04_Nucleo_Operativo.code_contracts",
     "CodeSearchQuery": "_04_Nucleo_Operativo.code_contracts",
     "CodeSearchRelation": "_04_Nucleo_Operativo.code_contracts",
+    "DERIVATION_CONTRACT_SCHEMA_VERSION": ("_04_Nucleo_Operativo.derivation_contracts"),
     "DetectedType": "_04_Nucleo_Operativo.content_types",
+    "DerivationRef": "_04_Nucleo_Operativo.derivation_contracts",
     "DocxRoute": "_04_Nucleo_Operativo.docx_route",
     "DocxRouteConfig": "_04_Nucleo_Operativo.docx_route",
     "DocxRouteSummary": "_04_Nucleo_Operativo.docx_route",
@@ -115,6 +129,9 @@ EXPECTED_SOURCES = {
     "ImageRoute": "_04_Nucleo_Operativo.image_route",
     "ImageRouteConfig": "_04_Nucleo_Operativo.image_route",
     "ImageRouteSummary": "_04_Nucleo_Operativo.image_route",
+    "InputBinding": "_04_Nucleo_Operativo.derivation_contracts",
+    "MaterializationRef": "_04_Nucleo_Operativo.derivation_contracts",
+    "OutputBinding": "_04_Nucleo_Operativo.derivation_contracts",
     "PdfDoctorReport": "_04_Nucleo_Operativo.pdf_admin",
     "PdfRoute": "_04_Nucleo_Operativo.pdf_route",
     "PdfRouteConfig": "_04_Nucleo_Operativo.pdf_route",
@@ -122,6 +139,7 @@ EXPECTED_SOURCES = {
     "PdfVerifyReport": "_04_Nucleo_Operativo.pdf_admin",
     "RouteAdapter": "_04_Nucleo_Operativo.route_registry",
     "RouteExecutionContext": "_04_Nucleo_Operativo.route_registry",
+    "ReproducibilityClass": "_04_Nucleo_Operativo.derivation_contracts",
     "PdfDerivedIndexer": "_04_Nucleo_Operativo.pdf_derived",
     "PdfDerivedSummary": "_04_Nucleo_Operativo.pdf_derived",
     "search_pdf_state": "_04_Nucleo_Operativo.pdf_derived",
@@ -133,6 +151,7 @@ EXPECTED_SOURCES = {
     "OfficeRouteSummary": "_04_Nucleo_Operativo.office_route",
     "RouteOnlyRunResult": "_04_Nucleo_Operativo.models",
     "SelfAnalysisRunResult": "_04_Nucleo_Operativo.models",
+    "StageDescriptor": "_04_Nucleo_Operativo.derivation_contracts",
     "detect_content_type": "_04_Nucleo_Operativo.content_types",
     "verify_pdf_state": "_04_Nucleo_Operativo.pdf_admin",
     "list_projects": "_04_Nucleo_Operativo.code_projects",
@@ -162,6 +181,9 @@ EXPECTED_SOURCES = {
     "ResourceRef": "_04_Nucleo_Operativo.knowledge_contracts",
     "RetrievalMode": "_04_Nucleo_Operativo.knowledge_planner",
     "RevisionRef": "_04_Nucleo_Operativo.knowledge_contracts",
+    "WorkExecutionMode": "_04_Nucleo_Operativo.derivation_contracts",
+    "WorkOutcome": "_04_Nucleo_Operativo.derivation_contracts",
+    "WorkReceipt": "_04_Nucleo_Operativo.derivation_contracts",
     "plan_knowledge_query": "_04_Nucleo_Operativo.knowledge_planner",
 }
 
@@ -182,7 +204,7 @@ class LazyPackageApiTests(unittest.TestCase):
                 self.assertIs(getattr(operational, name), expected)
 
         with self.assertRaises(AttributeError):
-            getattr(operational, "unsupported_public_symbol")
+            operational.__getattr__("unsupported_public_symbol")
 
     def test_application_projection_boundary_has_no_runtime_owner_imports(
         self,

@@ -10,6 +10,17 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .semantic_item_repository import _decode_chunk_text
+from .semantic_lineage_repository import (
+    _embedding_member_binding_by_id,
+    _producer_receipts_for_embedding_members,
+    _record_discarded_embedding_execution,
+    _record_embedding_clone_batch,
+    _record_embedding_attempt_failure,
+    _record_embedding_receipt,
+    _record_generation_publication_receipt,
+    _snapshot_chunk_revision,
+    _snapshot_item_revision,
+)
 from .semantic_models import (
     EmbeddingJobLease,
     EmbeddingModality,
@@ -233,7 +244,7 @@ def _base_clone_rows(
     clone_cursor: Mapping[str, object],
 ) -> list[sqlite3.Row]:
     return connection.execute(
-        """SELECT member_id,model_signature,entity_kind,entity_id,item_id,
+        """SELECT generation_id,member_id,model_signature,entity_kind,entity_id,item_id,
             item_revision_id,chunk_revision_id,payload_id,
             content_xxh3_128,content_bytes,content_xxh3_64_guard,
             provenance_json,updated_ns
@@ -281,6 +292,13 @@ def _insert_base_clone_rows(
             )
             for row in rows
         ),
+    )
+    _record_embedding_clone_batch(
+        connection,
+        generation_id=generation_id,
+        base_generation_id=int(rows[0]["generation_id"]),
+        base_member_ids=tuple(int(row["member_id"]) for row in rows),
+        now_ns=_now(None),
     )
 
 
@@ -650,6 +668,7 @@ class _QueueJobContext:
     role: EmbeddingRole
     max_attempts: int
     now_ns: int
+    source_member_receipts: Mapping[int, int]
 
 
 @dataclass(frozen=True, slots=True)
@@ -682,11 +701,14 @@ ON CONFLICT(generation_id,entity_kind,entity_id) DO UPDATE SET
 
 _UPSERT_EMBEDDING_JOB_SQL = """INSERT INTO embedding_jobs(
         generation_id,model_signature,role,entity_kind,entity_id,item_id,
+        input_item_revision_id,input_chunk_revision_id,
         content_xxh3_128,content_bytes,content_xxh3_64_guard,status,
         max_attempts,available_ns,created_ns,updated_ns)
-    VALUES(?,?,?,?,?,?,?,?,?,'pending',?,?,?,?)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,'pending',?,?,?,?)
     ON CONFLICT(generation_id,entity_kind,entity_id) DO UPDATE SET
         item_id=excluded.item_id,
+        input_item_revision_id=excluded.input_item_revision_id,
+        input_chunk_revision_id=excluded.input_chunk_revision_id,
         content_xxh3_128=excluded.content_xxh3_128,
         content_bytes=excluded.content_bytes,
         content_xxh3_64_guard=excluded.content_xxh3_64_guard,
@@ -726,6 +748,16 @@ _UPSERT_EMBEDDING_JOB_SQL = """INSERT INTO embedding_jobs(
             embedding_jobs.content_bytes<>excluded.content_bytes OR
             embedding_jobs.content_xxh3_64_guard<>excluded.content_xxh3_64_guard
             THEN NULL ELSE embedding_jobs.error_message END,
+        attempt_started_ns=CASE WHEN
+            embedding_jobs.content_xxh3_128<>excluded.content_xxh3_128 OR
+            embedding_jobs.content_bytes<>excluded.content_bytes OR
+            embedding_jobs.content_xxh3_64_guard<>excluded.content_xxh3_64_guard
+            THEN NULL ELSE embedding_jobs.attempt_started_ns END,
+        attempt_sequence=CASE WHEN
+            embedding_jobs.content_xxh3_128<>excluded.content_xxh3_128 OR
+            embedding_jobs.content_bytes<>excluded.content_bytes OR
+            embedding_jobs.content_xxh3_64_guard<>excluded.content_xxh3_64_guard
+            THEN 0 ELSE embedding_jobs.attempt_sequence END,
         updated_ns=excluded.updated_ns"""
 
 
@@ -738,15 +770,34 @@ def _queue_entity_rows(
     if entity_kind is SemanticEntityKind.TEXT_CHUNK:
         rows = connection.execute(
             f"""SELECT c.chunk_id AS entity_id,c.item_id,
-                c.content_xxh3_128,c.content_bytes,c.content_xxh3_64_guard
+                c.content_xxh3_128,c.content_bytes,c.content_xxh3_64_guard,
+                COALESCE(
+                    derivation.item_revision_id,
+                    (SELECT legacy.item_revision_id
+                     FROM embedding_generation_members legacy
+                     JOIN published_embedding_heads legacy_head
+                       ON legacy_head.generation_id=legacy.generation_id
+                     WHERE legacy.chunk_revision_id=revision.chunk_revision_id
+                       AND legacy.entity_kind='text_chunk'
+                     ORDER BY legacy.member_id DESC LIMIT 1)
+                ) AS input_item_revision_id,
+                revision.chunk_revision_id AS input_chunk_revision_id
             FROM text_chunks c JOIN semantic_items i ON i.item_id=c.item_id
+            JOIN semantic_chunk_revisions revision ON revision.chunk_id=c.chunk_id
+            LEFT JOIN semantic_chunk_derivations derivation
+              ON derivation.derivation_id=(
+                SELECT MAX(candidate.derivation_id)
+                FROM semantic_chunk_derivations candidate
+                WHERE candidate.chunk_revision_id=revision.chunk_revision_id
+                  AND candidate.refresh_token=c.refresh_token)
             WHERE c.active=1 AND i.active=1 AND c.chunk_id IN ({placeholders})""",
             identifiers,
         ).fetchall()
     else:
         rows = connection.execute(
             f"""SELECT item_id AS entity_id,item_id,content_xxh3_128,
-                content_bytes,content_xxh3_64_guard
+                content_bytes,content_xxh3_64_guard,
+                NULL AS input_item_revision_id,NULL AS input_chunk_revision_id
             FROM semantic_items WHERE active=1 AND path IS NOT NULL
                 AND item_id IN ({placeholders})""",
             identifiers,
@@ -858,7 +909,13 @@ def _snapshot_queue_revisions(
         item_revision_id = _snapshot_item_revision(connection, item_id, context.now_ns)
         item_revisions[item_id] = item_revision_id
     chunk_revision_id = (
-        _snapshot_chunk_revision(connection, row, context.now_ns)
+        _snapshot_chunk_revision(
+            connection,
+            str(row["entity_id"]),
+            _fingerprint_from_row(row),
+            context.now_ns,
+            require_published=False,
+        )
         if context.entity_kind is SemanticEntityKind.TEXT_CHUNK
         else None
     )
@@ -913,6 +970,20 @@ def _rebind_generation_member(
     chunk_revision_id: int | None,
     prior: sqlite3.Row | None,
 ) -> None:
+    source_member_id = int(member["member_id"])
+    source_member_binding = _embedding_member_binding_by_id(
+        connection,
+        source_member_id,
+    )
+    source_generation_id = source_member_binding.get("generation_id")
+    if source_generation_id == context.generation_id:
+        deleted = connection.execute(
+            """DELETE FROM embedding_generation_members
+            WHERE member_id=? AND generation_id=?""",
+            (source_member_id, context.generation_id),
+        )
+        if deleted.rowcount != 1:
+            raise SemanticStateError("semantic cloned member changed before immutable rebind")
     connection.execute(
         _REBIND_GENERATION_MEMBER_SQL,
         (
@@ -930,6 +1001,23 @@ def _rebind_generation_member(
             str(member["provenance_json"]),
             context.now_ns,
         ),
+    )
+    _record_embedding_receipt(
+        connection,
+        generation_id=context.generation_id,
+        entity_kind=context.entity_kind.value,
+        entity_id=str(row["entity_id"]),
+        item_revision_id=item_revision_id,
+        chunk_revision_id=chunk_revision_id,
+        model_signature=str(member["model_signature"]),
+        payload_id=int(member["payload_id"]),
+        job_id=None if prior is None else int(prior["job_id"]),
+        attempt=None,
+        execution_mode="replay",
+        now_ns=context.now_ns,
+        source_member_id=source_member_id,
+        source_member_binding=source_member_binding,
+        source_causation_receipt_id=context.source_member_receipts.get(source_member_id),
     )
     if prior is not None:
         connection.execute(
@@ -950,6 +1038,19 @@ def _reuse_generation_member(
 ) -> tuple[bool, bool]:
     if member is None or not _same_fingerprint(member, _fingerprint_from_row(row)):
         return False, False
+    if context.entity_kind is SemanticEntityKind.TEXT_CHUNK:
+        try:
+            _snapshot_chunk_revision(
+                connection,
+                str(row["entity_id"]),
+                _fingerprint_from_row(row),
+                context.now_ns,
+                require_published=True,
+            )
+        except StaleEmbeddingJobError:
+            # Staging may enqueue before the owner publishes its chunk set.  Keep
+            # the job pending; cache reuse can attach only after publication.
+            return False, False
     item_revision_id, chunk_revision_id = _snapshot_queue_revisions(
         connection,
         context,
@@ -1043,6 +1144,16 @@ def _upsert_queue_jobs(
                 context.entity_kind.value,
                 str(row["entity_id"]),
                 str(row["item_id"]),
+                (
+                    None
+                    if row["input_item_revision_id"] is None
+                    else int(row["input_item_revision_id"])
+                ),
+                (
+                    None
+                    if row["input_chunk_revision_id"] is None
+                    else int(row["input_chunk_revision_id"])
+                ),
                 str(row["content_xxh3_128"]),
                 int(row["content_bytes"]),
                 str(row["content_xxh3_64_guard"]),
@@ -1067,7 +1178,8 @@ def _reset_queue_jobs_pending(
     connection.execute(
         f"""UPDATE embedding_jobs SET status='pending',attempts=0,
             available_ns=?,lease_owner=NULL,lease_until_ns=NULL,
-            error_type=NULL,error_message=NULL,updated_ns=?
+            error_type=NULL,error_message=NULL,attempt_started_ns=NULL,
+            attempt_sequence=0,updated_ns=?
         WHERE generation_id=? AND entity_kind=?
           AND entity_id IN ({placeholders})""",
         (
@@ -1101,6 +1213,7 @@ def _queue_job_rows_bounded(
         role,
         max_attempts,
         now_ns,
+        {},
     )
     ordered_rows = _queue_entity_rows(connection, entity_kind, identifiers)
     generation = _queue_generation(connection, generation_id, model.model_signature)
@@ -1110,6 +1223,18 @@ def _queue_job_rows_bounded(
         context,
         generation,
         identifiers,
+    )
+    context = _QueueJobContext(
+        generation_id,
+        model.model_signature,
+        entity_kind,
+        role,
+        max_attempts,
+        now_ns,
+        _producer_receipts_for_embedding_members(
+            connection,
+            tuple(int(member["member_id"]) for member in members.values()),
+        ),
     )
     selection = _select_queue_rows(
         connection,
@@ -1477,13 +1602,41 @@ def _mark_stale_jobs(
     now_ns: int,
 ) -> None:
     current_match = _current_job_matches_source(modality)
+    leased_rows = connection.execute(
+        f"""SELECT * FROM embedding_jobs
+        WHERE generation_id=? AND status='leased' AND NOT {current_match}
+        ORDER BY job_id LIMIT ?""",
+        (generation_id, MAX_WRITE_BATCH),
+    ).fetchall()
+    for row in leased_rows:
+        _record_embedding_attempt_failure(
+            connection,
+            row=row,
+            status="failed",
+            error_type="source_changed",
+            error_message="source changed or became inactive during embedding",
+            retryable=False,
+            now_ns=now_ns,
+        )
     connection.execute(
         f"""UPDATE embedding_jobs SET status='stale',lease_owner=NULL,
             lease_until_ns=NULL,error_type='source_changed',
-            error_message='source changed or became inactive before embedding',updated_ns=?
-        WHERE generation_id=? AND status IN ('pending','leased') AND NOT {current_match}""",
+            error_message='source changed or became inactive before embedding',
+            attempt_started_ns=NULL,updated_ns=?
+        WHERE generation_id=? AND status='pending' AND NOT {current_match}""",
         (now_ns, generation_id),
     )
+    if leased_rows:
+        job_ids = tuple(int(row["job_id"]) for row in leased_rows)
+        placeholders = ",".join("?" for _ in job_ids)
+        connection.execute(
+            f"""UPDATE embedding_jobs SET status='stale',lease_owner=NULL,
+                lease_until_ns=NULL,error_type='source_changed',
+                error_message='source changed or became inactive before embedding',
+                attempt_started_ns=NULL,updated_ns=?
+            WHERE job_id IN ({placeholders}) AND status='leased'""",
+            (now_ns, *job_ids),
+        )
 
 
 def _remove_superseded_completed_jobs(
@@ -1507,140 +1660,14 @@ def _remove_superseded_completed_jobs(
     return max(0, int(deleted.rowcount))
 
 
-def _snapshot_item_revision(
-    connection: sqlite3.Connection,
-    item_id: str,
-    now_ns: int,
-) -> int:
-    item = connection.execute(
-        """SELECT item_id,source_kind,source_identity,identity_version,path,
-            content_xxh3_128,content_bytes,content_xxh3_64_guard,
-            provenance_json,source_revision_json
-        FROM semantic_items WHERE item_id=? AND active=1""",
-        (item_id,),
-    ).fetchone()
-    if item is None:
-        raise StaleEmbeddingJobError("semantic item became inactive before snapshot")
-    existing = connection.execute(
-        """SELECT item_revision_id FROM semantic_item_revisions
-        WHERE item_id=? AND source_kind=? AND source_identity=?
-          AND identity_version=? AND path IS ? AND content_xxh3_128=?
-          AND content_bytes=? AND content_xxh3_64_guard=?
-          AND provenance_json=? AND source_revision_json=?
-        ORDER BY item_revision_id DESC LIMIT 1""",
-        (
-            str(item["item_id"]),
-            str(item["source_kind"]),
-            str(item["source_identity"]),
-            str(item["identity_version"]),
-            None if item["path"] is None else str(item["path"]),
-            str(item["content_xxh3_128"]),
-            int(item["content_bytes"]),
-            str(item["content_xxh3_64_guard"]),
-            str(item["provenance_json"]),
-            str(item["source_revision_json"]),
-        ),
-    ).fetchone()
-    if existing is not None:
-        return int(existing[0])
-    cursor = connection.execute(
-        """INSERT INTO semantic_item_revisions(
-            item_id,source_kind,source_identity,identity_version,path,
-            content_xxh3_128,content_bytes,content_xxh3_64_guard,
-            provenance_json,source_revision_json,captured_ns)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
-        (
-            str(item["item_id"]),
-            str(item["source_kind"]),
-            str(item["source_identity"]),
-            str(item["identity_version"]),
-            None if item["path"] is None else str(item["path"]),
-            str(item["content_xxh3_128"]),
-            int(item["content_bytes"]),
-            str(item["content_xxh3_64_guard"]),
-            str(item["provenance_json"]),
-            str(item["source_revision_json"]),
-            now_ns,
-        ),
-    )
-    if cursor.lastrowid is None:
-        raise SemanticStateError("item revision insert returned no identifier")
-    return int(cursor.lastrowid)
-
-
-def _snapshot_chunk_revision(
-    connection: sqlite3.Connection,
-    row: sqlite3.Row,
-    now_ns: int,
-) -> int:
-    chunk = connection.execute(
-        """SELECT chunk_id,item_id,ordinal,section_kind,section_id,start_char,
-            end_char,text_zlib,text_chars,content_xxh3_128,content_bytes,
-            content_xxh3_64_guard,chunking_signature,provenance_json
-        FROM text_chunks WHERE chunk_id=? AND active=1""",
-        (str(row["entity_id"]),),
-    ).fetchone()
-    if chunk is None or not _same_fingerprint(chunk, _fingerprint_from_row(row)):
-        raise StaleEmbeddingJobError("text chunk changed before snapshot")
-    existing = connection.execute(
-        "SELECT * FROM semantic_chunk_revisions WHERE chunk_id=?",
-        (str(chunk["chunk_id"]),),
-    ).fetchone()
-    values = (
-        str(chunk["item_id"]),
-        int(chunk["ordinal"]),
-        str(chunk["section_kind"]),
-        str(chunk["section_id"]),
-        int(chunk["start_char"]),
-        int(chunk["end_char"]),
-        bytes(chunk["text_zlib"]),
-        int(chunk["text_chars"]),
-        str(chunk["content_xxh3_128"]),
-        int(chunk["content_bytes"]),
-        str(chunk["content_xxh3_64_guard"]),
-        str(chunk["chunking_signature"]),
-        str(chunk["provenance_json"]),
-    )
-    if existing is not None:
-        persisted = (
-            str(existing["item_id"]),
-            int(existing["ordinal"]),
-            str(existing["section_kind"]),
-            str(existing["section_id"]),
-            int(existing["start_char"]),
-            int(existing["end_char"]),
-            bytes(existing["text_zlib"]),
-            int(existing["text_chars"]),
-            str(existing["content_xxh3_128"]),
-            int(existing["content_bytes"]),
-            str(existing["content_xxh3_64_guard"]),
-            str(existing["chunking_signature"]),
-            str(existing["provenance_json"]),
-        )
-        if persisted != values:
-            raise SemanticStateError(
-                "content-addressed chunk id is bound to different snapshot data"
-            )
-        return int(existing["chunk_revision_id"])
-    cursor = connection.execute(
-        """INSERT INTO semantic_chunk_revisions(
-            chunk_id,item_id,ordinal,section_kind,section_id,start_char,end_char,
-            text_zlib,text_chars,content_xxh3_128,content_bytes,
-            content_xxh3_64_guard,chunking_signature,provenance_json,captured_ns)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-        (str(chunk["chunk_id"]), *values, now_ns),
-    )
-    if cursor.lastrowid is None:
-        raise SemanticStateError("chunk revision insert returned no identifier")
-    return int(cursor.lastrowid)
-
-
 def _attach_payload(
     connection: sqlite3.Connection,
     row: sqlite3.Row,
     payload_id: int,
     provenance_json: str,
     now_ns: int,
+    *,
+    execution_mode: str,
 ) -> None:
     generation = connection.execute(
         """SELECT status,model_signature,base_clone_complete
@@ -1656,15 +1683,44 @@ def _attach_payload(
         raise SemanticStateError(
             "embedding result cannot attach outside a cloned building generation"
         )
-    item_revision_id = _snapshot_item_revision(
-        connection,
-        str(row["item_id"]),
-        now_ns,
+    item_revision_id = (
+        int(row["input_item_revision_id"])
+        if row["input_item_revision_id"] is not None
+        else _snapshot_item_revision(
+            connection,
+            str(row["item_id"]),
+            now_ns,
+        )
     )
-    chunk_revision_id = (
-        _snapshot_chunk_revision(connection, row, now_ns)
+    if (
+        connection.execute(
+            """SELECT 1 FROM semantic_item_revisions WHERE item_revision_id=?""",
+            (item_revision_id,),
+        ).fetchone()
+        is None
+    ):
+        raise StaleEmbeddingJobError("queued semantic item revision disappeared")
+    current_chunk_revision_id = (
+        _snapshot_chunk_revision(
+            connection,
+            str(row["entity_id"]),
+            _fingerprint_from_row(row),
+            now_ns,
+            require_published=True,
+        )
         if str(row["entity_kind"]) == SemanticEntityKind.TEXT_CHUNK.value
         else None
+    )
+    if (
+        current_chunk_revision_id is not None
+        and row["input_chunk_revision_id"] is not None
+        and current_chunk_revision_id != int(row["input_chunk_revision_id"])
+    ):
+        raise StaleEmbeddingJobError("queued semantic chunk revision changed")
+    chunk_revision_id = (
+        int(row["input_chunk_revision_id"])
+        if row["input_chunk_revision_id"] is not None
+        else current_chunk_revision_id
     )
     values = (
         str(row["entity_id"]),
@@ -1747,6 +1803,20 @@ def _attach_payload(
             now_ns,
         ),
     )
+    _record_embedding_receipt(
+        connection,
+        generation_id=int(row["generation_id"]),
+        entity_kind=str(row["entity_kind"]),
+        entity_id=str(row["entity_id"]),
+        item_revision_id=item_revision_id,
+        chunk_revision_id=chunk_revision_id,
+        model_signature=str(row["model_signature"]),
+        payload_id=payload_id,
+        job_id=int(row["job_id"]),
+        attempt=max(1, int(row["attempt_sequence"])),
+        execution_mode=execution_mode,
+        now_ns=now_ns,
+    )
 
 
 def reuse_cached_jobs(
@@ -1788,6 +1858,7 @@ def reuse_cached_jobs(
                     }
                 ),
                 selected_ns,
+                execution_mode="cache_hit",
             )
             connection.execute(
                 "UPDATE embedding_jobs SET status='done',lease_owner=NULL,"
@@ -1805,9 +1876,26 @@ def _lease_rows(
     now_ns: int,
     limit: int,
 ) -> list[sqlite3.Row]:
-    common = """j.generation_id=? AND j.attempts<j.max_attempts AND
-        ((j.status='pending' AND j.available_ns<=?) OR
-         (j.status='leased' AND j.lease_until_ns<=?))"""
+    common = """j.generation_id=? AND j.attempts<j.max_attempts
+        AND j.status='pending' AND j.available_ns<=?
+        AND NOT EXISTS(
+            SELECT 1 FROM embedding_jobs active
+            WHERE active.generation_id=j.generation_id
+              AND active.model_signature=j.model_signature
+              AND active.content_xxh3_128=j.content_xxh3_128
+              AND active.content_bytes=j.content_bytes
+              AND active.content_xxh3_64_guard=j.content_xxh3_64_guard
+              AND active.status='leased')
+        AND j.job_id=(
+            SELECT MIN(candidate.job_id) FROM embedding_jobs candidate
+            WHERE candidate.generation_id=j.generation_id
+              AND candidate.model_signature=j.model_signature
+              AND candidate.content_xxh3_128=j.content_xxh3_128
+              AND candidate.content_bytes=j.content_bytes
+              AND candidate.content_xxh3_64_guard=j.content_xxh3_64_guard
+              AND candidate.status='pending'
+              AND candidate.attempts<candidate.max_attempts
+              AND candidate.available_ns<=?)"""
     if modality is EmbeddingModality.TEXT:
         return connection.execute(
             f"""SELECT j.*,m.vector_space,c.text_zlib
@@ -1815,10 +1903,27 @@ def _lease_rows(
             JOIN embedding_models m ON m.model_signature=j.model_signature
             JOIN text_chunks c ON c.chunk_id=j.entity_id
             JOIN semantic_items i ON i.item_id=c.item_id
+            JOIN semantic_chunk_revisions revision ON revision.chunk_id=c.chunk_id
             WHERE {common} AND c.active=1 AND i.active=1
               AND c.content_xxh3_128=j.content_xxh3_128
               AND c.content_bytes=j.content_bytes
               AND c.content_xxh3_64_guard=j.content_xxh3_64_guard
+              AND (
+                EXISTS(
+                    SELECT 1 FROM semantic_chunk_derivations derivation
+                    WHERE derivation.chunk_revision_id=revision.chunk_revision_id
+                      AND derivation.refresh_token=c.refresh_token
+                      AND derivation.publication_receipt_id IS NOT NULL)
+                OR (
+                    NOT EXISTS(
+                        SELECT 1 FROM semantic_chunk_derivations derivation
+                        WHERE derivation.chunk_revision_id=revision.chunk_revision_id)
+                    AND EXISTS(
+                        SELECT 1 FROM embedding_generation_members member
+                        JOIN published_embedding_heads head
+                          ON head.generation_id=member.generation_id
+                        WHERE member.chunk_revision_id=revision.chunk_revision_id
+                          AND member.entity_kind='text_chunk')))
             ORDER BY j.job_id LIMIT ?""",
             (generation_id, now_ns, now_ns, limit),
         ).fetchall()
@@ -1834,6 +1939,56 @@ def _lease_rows(
         ORDER BY j.job_id LIMIT ?""",
         (generation_id, now_ns, now_ns, limit),
     ).fetchall()
+
+
+def _reconcile_expired_embedding_leases(
+    connection: sqlite3.Connection,
+    generation_id: int,
+    now_ns: int,
+) -> None:
+    rows = connection.execute(
+        """SELECT * FROM embedding_jobs
+        WHERE generation_id=? AND status='leased' AND lease_until_ns<=?
+        ORDER BY job_id LIMIT ?""",
+        (generation_id, now_ns, MAX_WRITE_BATCH),
+    ).fetchall()
+    if not rows:
+        return
+    retry_ids: list[int] = []
+    terminal_ids: list[int] = []
+    for row in rows:
+        retryable = int(row["attempts"]) < int(row["max_attempts"])
+        _record_embedding_attempt_failure(
+            connection,
+            row=row,
+            status="abandoned",
+            error_type="lease_expired",
+            error_message="embedding worker lease expired before terminal result",
+            retryable=retryable,
+            now_ns=now_ns,
+        )
+        target = retry_ids if retryable else terminal_ids
+        target.append(int(row["job_id"]))
+    if retry_ids:
+        placeholders = ",".join("?" for _ in retry_ids)
+        connection.execute(
+            f"""UPDATE embedding_jobs SET status='pending',available_ns=?,
+                lease_owner=NULL,lease_until_ns=NULL,error_type='lease_expired',
+                error_message='worker lease expired; retry is available',
+                attempt_started_ns=NULL,updated_ns=?
+            WHERE job_id IN ({placeholders}) AND status='leased'""",
+            (now_ns, now_ns, *retry_ids),
+        )
+    if terminal_ids:
+        placeholders = ",".join("?" for _ in terminal_ids)
+        connection.execute(
+            f"""UPDATE embedding_jobs SET status='error',lease_owner=NULL,
+                lease_until_ns=NULL,error_type='lease_expired',
+                error_message='maximum attempts reached after lease expiration',
+                attempt_started_ns=NULL,updated_ns=?
+            WHERE job_id IN ({placeholders}) AND status='leased'""",
+            (now_ns, *terminal_ids),
+        )
 
 
 def claim_embedding_jobs(
@@ -1858,15 +2013,8 @@ def claim_embedding_jobs(
     with semantic_database(path) as connection:
         connection.execute("BEGIN IMMEDIATE")
         model = _generation_model(connection, generation_id, require_building=True)
+        _reconcile_expired_embedding_leases(connection, generation_id, selected_ns)
         _mark_stale_jobs(connection, generation_id, model.modality, selected_ns)
-        connection.execute(
-            """UPDATE embedding_jobs SET status='error',lease_owner=NULL,
-                lease_until_ns=NULL,error_type='lease_expired',
-                error_message='maximum attempts reached after lease expiration',updated_ns=?
-            WHERE generation_id=? AND status='leased' AND lease_until_ns<=?
-              AND attempts>=max_attempts""",
-            (selected_ns, generation_id, selected_ns),
-        )
         rows = _lease_rows(
             connection,
             generation_id,
@@ -1880,9 +2028,10 @@ def claim_embedding_jobs(
         placeholders = ",".join("?" for _ in job_ids)
         connection.execute(
             f"""UPDATE embedding_jobs SET status='leased',attempts=attempts+1,
-                lease_owner=?,lease_until_ns=?,updated_ns=?
+                attempt_sequence=attempt_sequence+1,lease_owner=?,lease_until_ns=?,
+                attempt_started_ns=?,updated_ns=?
             WHERE job_id IN ({placeholders})""",
-            (worker_id, lease_until_ns, selected_ns, *job_ids),
+            (worker_id, lease_until_ns, selected_ns, selected_ns, *job_ids),
         )
         leases: list[EmbeddingJobLease] = []
         for row in rows:
@@ -2048,10 +2197,20 @@ def complete_embedding_job(
         ):
             raise SemanticStateError("job lease is absent, expired or owned elsewhere")
         if not _job_is_current(connection, row):
+            _record_embedding_attempt_failure(
+                connection,
+                row=row,
+                status="failed",
+                error_type="source_changed",
+                error_message="source changed before vector completion",
+                retryable=False,
+                now_ns=selected_ns,
+            )
             connection.execute(
                 """UPDATE embedding_jobs SET status='stale',lease_owner=NULL,
                 lease_until_ns=NULL,error_type='source_changed',
-                error_message='source changed before vector completion',updated_ns=?
+                error_message='source changed before vector completion',
+                attempt_started_ns=NULL,updated_ns=?
                 WHERE job_id=?""",
                 (selected_ns, job_id),
             )
@@ -2063,7 +2222,7 @@ def complete_embedding_job(
             model.dimensions,
             model.vector_dtype,
         )
-        connection.execute(
+        inserted_payload = connection.execute(
             """INSERT INTO vector_payloads(
                 model_signature,content_xxh3_128,content_bytes,
                 content_xxh3_64_guard,dimensions,vector_dtype,vector_blob,
@@ -2098,12 +2257,26 @@ def complete_embedding_job(
         if payload is None:
             raise SemanticStateError("vector payload upsert did not produce a row")
         payload_id = int(payload["payload_id"])
+        if inserted_payload.rowcount not in {0, 1}:
+            raise SemanticStateError("vector payload insert returned an invalid outcome")
+        if inserted_payload.rowcount == 0:
+            _record_discarded_embedding_execution(
+                connection,
+                row=row,
+                incumbent_payload_id=payload_id,
+                candidate_vector_blob=vector_blob,
+                dimensions=model.dimensions,
+                vector_dtype=model.vector_dtype.value,
+                original_norm=original_norm,
+                now_ns=selected_ns,
+            )
         _attach_payload(
             connection,
             row,
             payload_id,
             provenance_json,
             selected_ns,
+            execution_mode=("executed" if inserted_payload.rowcount == 1 else "cache_hit"),
         )
         connection.execute(
             """UPDATE embedding_jobs SET status='done',lease_owner=NULL,
@@ -2139,7 +2312,11 @@ def fail_embedding_job(
     with semantic_database(path) as connection:
         connection.execute("BEGIN IMMEDIATE")
         row = connection.execute(
-            """SELECT attempts,max_attempts,status,lease_owner,lease_until_ns
+            """SELECT attempts,max_attempts,status,lease_owner,lease_until_ns,
+                generation_id,model_signature,entity_kind,entity_id,
+                content_xxh3_128,content_bytes,content_xxh3_64_guard,job_id,
+                attempt_started_ns,attempt_sequence,input_item_revision_id,
+                input_chunk_revision_id
             FROM embedding_jobs WHERE job_id=?""",
             (job_id,),
         ).fetchone()
@@ -2173,6 +2350,15 @@ def fail_embedding_job(
         )
         if updated.rowcount != 1:  # pragma: no cover - protected by the write lock
             raise SemanticStateError("job lease changed before failure was recorded")
+        _record_embedding_attempt_failure(
+            connection,
+            row=row,
+            status="failed",
+            error_type=error_type[:256],
+            error_message=error_message[:MAX_ERROR_CHARS],
+            retryable=should_retry,
+            now_ns=selected_ns,
+        )
         return status
 
 
@@ -2190,10 +2376,17 @@ def release_embedding_job_lease_for_deadline(
     selected_ns = _now(now_ns)
     with semantic_database(path) as connection:
         connection.execute("BEGIN IMMEDIATE")
+        row = connection.execute(
+            "SELECT * FROM embedding_jobs WHERE job_id=?",
+            (job_id,),
+        ).fetchone()
+        if row is None:
+            raise KeyError(f"unknown embedding job {job_id}")
         updated = connection.execute(
             """UPDATE embedding_jobs SET status='pending',
                 attempts=MAX(0,attempts-1),available_ns=?,lease_owner=NULL,
-                lease_until_ns=NULL,error_type=NULL,error_message=NULL,updated_ns=?
+                lease_until_ns=NULL,error_type=NULL,error_message=NULL,
+                attempt_started_ns=NULL,updated_ns=?
             WHERE job_id=? AND status='leased' AND lease_owner=?""",
             (selected_ns, selected_ns, job_id, worker_id),
         )
@@ -2201,6 +2394,15 @@ def release_embedding_job_lease_for_deadline(
             raise SemanticStateError(
                 "timed-out embedding lease changed before it could be released"
             )
+        _record_embedding_attempt_failure(
+            connection,
+            row=row,
+            status="cancelled",
+            error_type="deadline_cancelled",
+            error_message="embedding lease returned before the work deadline",
+            retryable=True,
+            now_ns=selected_ns,
+        )
 
 
 def update_embedding_generation_cursor(
@@ -2785,6 +2987,40 @@ def _missing_finalization_member(
     return None if row is None else int(row[0])
 
 
+def _unpublished_text_finalization_member(
+    connection: sqlite3.Connection,
+    generation_id: int,
+) -> int | None:
+    row = connection.execute(
+        """SELECT member.member_id
+        FROM embedding_generation_members member
+        JOIN semantic_chunk_revisions revision
+          ON revision.chunk_revision_id=member.chunk_revision_id
+        LEFT JOIN text_chunks chunk ON chunk.chunk_id=revision.chunk_id
+        WHERE member.generation_id=? AND member.entity_kind='text_chunk'
+          AND NOT (
+            chunk.active=1 AND (
+              EXISTS(
+                SELECT 1 FROM semantic_chunk_derivations derivation
+                WHERE derivation.chunk_revision_id=revision.chunk_revision_id
+                  AND derivation.refresh_token=chunk.refresh_token
+                  AND derivation.publication_receipt_id IS NOT NULL)
+              OR (
+                NOT EXISTS(
+                  SELECT 1 FROM semantic_chunk_derivations derivation
+                  WHERE derivation.chunk_revision_id=revision.chunk_revision_id)
+                AND EXISTS(
+                  SELECT 1 FROM embedding_generation_members legacy_member
+                  JOIN published_embedding_heads head
+                    ON head.generation_id=legacy_member.generation_id
+                  WHERE legacy_member.chunk_revision_id=revision.chunk_revision_id
+                    AND legacy_member.entity_kind='text_chunk'))))
+        ORDER BY member.member_id LIMIT 1""",
+        (generation_id,),
+    ).fetchone()
+    return None if row is None else int(row[0])
+
+
 def _reconcile_generation_finalization(
     connection: sqlite3.Connection,
     finalization: _EmbeddingGenerationFinalization,
@@ -2798,6 +3034,14 @@ def _reconcile_generation_finalization(
     )
     if missing_member is not None:
         raise SemanticStateError(f"completed job {missing_member} has no candidate member")
+    unpublished_member = _unpublished_text_finalization_member(
+        connection,
+        finalization.generation_id,
+    )
+    if unpublished_member is not None:
+        raise SemanticStateError(
+            f"candidate member {unpublished_member} depends on an unpublished text chunk"
+        )
     current_head = _published_head_id(
         connection,
         finalization.model.model_signature,
@@ -2854,6 +3098,11 @@ def _publish_generation_finalization(
                 finalization.completed_ns,
             ),
         )
+        _record_generation_publication_receipt(
+            connection,
+            generation_id=finalization.generation_id,
+            published_ns=finalization.completed_ns,
+        )
         return
     published = connection.execute(
         """UPDATE published_embedding_heads
@@ -2868,6 +3117,11 @@ def _publish_generation_finalization(
     )
     if published.rowcount != 1:  # protected by BEGIN IMMEDIATE + CAS
         raise SemanticStateError("published embedding head changed during finalization")
+    _record_generation_publication_receipt(
+        connection,
+        generation_id=finalization.generation_id,
+        published_ns=finalization.completed_ns,
+    )
 
 
 def _finalized_generation_summary(

@@ -98,6 +98,161 @@ def test_human_status_json_is_one_machine_readable_document(
     assert json.loads(capsys.readouterr().out) == payload
 
 
+def test_human_lineage_defaults_to_personal_and_explains_text_and_semantic(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    seen: list[tuple[str, str]] = []
+
+    def fake_lineage(identifier: str, scope: str) -> dict[str, object]:
+        seen.append((identifier, scope))
+        return {
+            "identifier": identifier,
+            "exit_code": 4,
+            "scopes": [
+                {
+                    "scope": "personal",
+                    "status": "partial",
+                    "exit_code": 4,
+                    "lineage": {
+                        "status": "partial",
+                        "complete": False,
+                        "text": {
+                            "lineage": {
+                                "file_key": "text:file:1",
+                                "path": "/corpus/informe.txt",
+                                "document_status": "ok",
+                                "attribution": "recorded",
+                                "revision": {
+                                    "revision_id": "revision:text:1",
+                                    "resource_id": "resource:text:1",
+                                },
+                                "materializations": [
+                                    {
+                                        "name": "structured_text",
+                                        "materialization": {
+                                            "materialization_id": "materialization:text:1"
+                                        },
+                                        "current_head": True,
+                                    }
+                                ],
+                            },
+                            "receipt_count": 2,
+                            "current_materialization_heads": 1,
+                            "dependencies": [{"receipt_id": "receipt:semantic:1"}],
+                        },
+                        "semantic": {
+                            "lineage": {
+                                "chunk_id": "chunk:1",
+                                "lineage_status": "recorded",
+                                "chunking_signature": "chunker:v1",
+                                "origins": ({"source_kind": "text"},),
+                                "embeddings": (
+                                    {
+                                        "generation_id": 7,
+                                        "model_id": "local-model",
+                                        "published": True,
+                                        "lineage_status": "recorded",
+                                    },
+                                ),
+                            }
+                        },
+                        "semantic_dependents": {
+                            "revision_id": "revision:text:1",
+                            "chunk_ids": ["chunk:1"],
+                            "chunk_count_in_window": 1,
+                            "truncated": False,
+                        },
+                        "warnings": ["text:receipt_window_truncated"],
+                    },
+                }
+            ],
+        }
+
+    monkeypatch.setattr(human_cli, "lineage_payload", fake_lineage)
+
+    assert human_cli.run_human_command(("inspect", "lineage", "chunk:1")) == 4
+    assert seen == [("chunk:1", "personal")]
+    output = capsys.readouterr().out
+    assert "Text: /corpus/informe.txt" in output
+    assert "Revisión: revision:text:1" in output
+    assert "Receipts: 2" in output
+    assert "Semantic: chunk chunk:1" in output
+    assert "Semantic dependiente: 1 chunk" in output
+    assert "generación 7 · modelo local-model · publicado" in output
+    assert "Advertencias: text:receipt_window_truncated" in output
+    assert output.rstrip().endswith("No se creó, migró ni modificó estado.")
+
+
+def test_human_lineage_json_is_one_machine_readable_document(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    payload = {
+        "kind": "neocortex_scoped_derivation_lineage",
+        "identifier": "revision:text:1",
+        "exit_code": 3,
+        "scopes": [],
+    }
+    seen: list[tuple[str, str]] = []
+
+    def fake_lineage(identifier: str, scope: str) -> dict[str, object]:
+        seen.append((identifier, scope))
+        return payload
+
+    monkeypatch.setattr(human_cli, "lineage_payload", fake_lineage)
+
+    assert (
+        human_cli.run_human_command(
+            ("inspect", "lineage", "revision:text:1", "--scope", "framework", "--json")
+        )
+        == 3
+    )
+    assert seen == [("revision:text:1", "framework")]
+    assert json.loads(capsys.readouterr().out) == payload
+
+
+def test_human_lineage_distinguishes_not_found_from_scope_error(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(
+        human_cli,
+        "lineage_payload",
+        lambda *_args: {
+            "identifier": "missing",
+            "exit_code": 3,
+            "scopes": [
+                {
+                    "scope": "personal",
+                    "status": "not_found",
+                    "exit_code": 3,
+                    "lineage": {
+                        "status": "not_found",
+                        "complete": False,
+                        "text": None,
+                        "semantic": None,
+                        "warnings": [],
+                    },
+                },
+                {
+                    "scope": "framework",
+                    "status": "error",
+                    "exit_code": 5,
+                    "error_type": "OperationalError",
+                    "reason": "database is locked",
+                },
+            ],
+        },
+    )
+
+    assert human_cli.run_human_command(("inspect", "lineage", "missing", "--scope", "all")) == 3
+    output = capsys.readouterr().out
+    assert "Personal: no se encontró ese identificador" in output
+    assert "Framework: no se pudo consultar (OperationalError: database is locked)" in output
+    assert output.rstrip().endswith("No se creó, migró ni modificó estado.")
+
+
 def test_installed_entrypoint_dispatches_human_commands_before_flat_cli(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

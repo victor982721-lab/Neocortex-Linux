@@ -458,18 +458,6 @@
         },
         {
           "count": 1,
-          "path": "_04_Nucleo_Operativo/__init__.py",
-          "rule": "RUF022",
-          "severity": "error"
-        },
-        {
-          "count": 1,
-          "path": "_04_Nucleo_Operativo/audio_whisper.py",
-          "rule": "B904",
-          "severity": "error"
-        },
-        {
-          "count": 1,
           "path": "_04_Nucleo_Operativo/code_analyzers.py",
           "rule": "RUF022",
           "severity": "error"
@@ -524,12 +512,6 @@
         },
         {
           "count": 1,
-          "path": "_04_Nucleo_Operativo/framework_state_writer.py",
-          "rule": "C401",
-          "severity": "error"
-        },
-        {
-          "count": 1,
           "path": "_04_Nucleo_Operativo/image_analysis.py",
           "rule": "RUF022",
           "severity": "error"
@@ -538,18 +520,6 @@
           "count": 1,
           "path": "_04_Nucleo_Operativo/image_decision.py",
           "rule": "C420",
-          "severity": "error"
-        },
-        {
-          "count": 1,
-          "path": "_04_Nucleo_Operativo/image_isolation.py",
-          "rule": "B904",
-          "severity": "error"
-        },
-        {
-          "count": 1,
-          "path": "_04_Nucleo_Operativo/knowledge_contract_payloads.py",
-          "rule": "RUF022",
           "severity": "error"
         },
         {
@@ -662,12 +632,6 @@
         },
         {
           "count": 1,
-          "path": "tests/test_lazy_package_api.py",
-          "rule": "B009",
-          "severity": "error"
-        },
-        {
-          "count": 1,
           "path": "tests/test_release_windows_ntfs.py",
           "rule": "B009",
           "severity": "error"
@@ -709,18 +673,6 @@
           "severity": "error"
         },
         {
-          "count": 2,
-          "path": "tools/release_artifacts.py",
-          "rule": "B009",
-          "severity": "error"
-        },
-        {
-          "count": 1,
-          "path": "tools/release_artifacts.py",
-          "rule": "RUF022",
-          "severity": "error"
-        },
-        {
           "count": 1,
           "path": "tools/release_windows.py",
           "rule": "RUF022",
@@ -733,7 +685,7 @@
           "severity": "error"
         }
       ],
-      "total": 76,
+      "total": 67,
       "version": "0.15.17"
     }
   }

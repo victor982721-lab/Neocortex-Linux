@@ -35,7 +35,7 @@ PDF, OCR, Office, audio, código, metadatos o relaciones como autorización.
 
 | Nivel | Ejemplos | Efecto |
 |---|---|---|
-| Consulta | `--help`, `--version`, `--status`, `--action-recovery-status`, `--retention-status`, `--knowledge-status`, `--knowledge-search`, `--knowledge-context`, búsquedas, previews y doctors | No debe recorrer ni modificar el corpus; puede fallar si falta estado. SQLite read-only puede participar en WAL/SHM. |
+| Consulta | `--help`, `--version`, `--status`, `--action-recovery-status`, `--retention-status`, `--knowledge-status`, `--knowledge-search`, `--knowledge-context`, `inspect lineage`, búsquedas, previews y doctors | No debe recorrer ni modificar el corpus; puede fallar si falta estado. SQLite read-only puede participar en WAL/SHM. |
 | Estado sin mutación del corpus | Corrida sin `--apply`, `--self-analysis`, `--semantic-index`, `--semantic-classify`, `--catalog-documents`, `--organization-plan`, `--review-record`, `--action-recovery-record` | Lee contenido o cachés y escribe bases, evidencia o planes. |
 | Descarga/carga externa | `models prepare`; `--semantic-prepare-models`; primera transcripción Windows sin `--audio-local-models-only` | Puede adquirir modelos y ampliar cachés. `models status` es local y read-only. |
 | Mutación de archivos | Corrida integrada con `--apply`; `--organization-apply` | En Windows puede renombrar extensiones o mover documentos sólo bajo el contrato NTFS ligado a handles; en Linux se rechaza antes de crear estado. |
@@ -44,7 +44,8 @@ PDF, OCR, Office, audio, código, metadatos o relaciones como autorización.
 originales. No significa que sea de sólo lectura: el estado y las cachés sí se
 actualizan.
 
-Las operaciones Knowledge pertenecen específicamente al nivel **Consulta**:
+Las operaciones Knowledge y la inspección de linaje pertenecen específicamente
+al nivel **Consulta**:
 abren sólo estado existente y no crean ni actualizan bases, cachés, planes o
 archivos del corpus. Un propietario con esquema futuro, incompatible o corrupto
 produce abstención explícita; no se migra, repara ni reconstruye durante la
@@ -208,6 +209,41 @@ Los `KnowledgeHit`, sus evidencias y el `ContextBundle` compilado también son
 resultados de consulta. Una cita, un score alto, la fusión entre propietarios o
 el texto de contexto no constituyen una autorización de mutación ni pueden
 activar `--apply` o `--organization-apply`.
+
+Los `WorkReceipt`, las materializaciones y la proyección de derivación tienen
+la misma frontera: explican causalidad técnica, no autorizan una acción física.
+Un output derivado, un cache hit o una clase de reproducibilidad nunca sustituye
+policy, autorización, revalidación de identidad ni recibo de efecto.
+
+### Receipts y linaje como datos sensibles
+
+El contrato de derivación limita bindings, configuración, runtime y tamaño JSON.
+Las claves de configuración con forma de password, token, cookie, credencial,
+clave privada o secreto sólo se aceptan con valor nulo o explícitamente
+redactado. El adapter Semantic aplica redacción recursiva y cotas antes de
+incorporar provenance a un receipt. Esta protección reduce filtraciones
+accidentales; no autoriza persistir un secreto bajo una clave deliberadamente
+engañosa. Los producers deben pasar únicamente configuración efectiva necesaria
+para explicar/reproducir el stage.
+Text tampoco persiste `str(exc)` en el documento de error, `CapabilityFailure`
+ni outbox: conserva el tipo/reason code y una indicación explícita de diagnóstico
+redactado. El detalle crudo de un provider o subproceso no forma parte del
+contrato durable.
+
+`inspect lineage` acepta un identificador de hasta 4096 caracteres y scopes
+predefinidos; no acepta una ruta arbitraria de base. Sus readers validan el
+schema owner-local, aplican ventanas SQL y distinguen truncamiento. La
+proyección de outboxes tiene cotas acumuladas de eventos, bytes, nodos y aristas,
+y vive sólo en memoria. Un
+evento malformado, una base futura o un receipt contradictorio falla cerrado;
+no se normaliza para aparentar un grafo coherente.
+
+Text confirma intento `running` después de capturar el input exacto y antes del
+parser; sólo registra receipt, outbox, outputs y heads terminales en la
+transacción owner-local que publica el resultado. Semantic hace lo mismo para
+las etapas conectadas en schema 7. No
+hay commit coordinado entre bases: una proyección transversal se reconstruye
+después de los commits y nunca debe elevarse a autoridad monolítica.
 
 `deletion_candidate` significa “requiere revisión”, no “eliminar”. Las
 decisiones `confirmed`, `dismissed` y `deferred` conservan evidencia humana, pero

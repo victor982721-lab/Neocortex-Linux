@@ -18,6 +18,8 @@ import neocortex.sdk as sdk
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 EXPECTED_EXPORTS = (
+    "DERIVATION_CONTRACT_SCHEMA_VERSION",
+    "CapabilityFailure",
     "ContextBundle",
     "ContextContradictionRef",
     "ContextEntityRef",
@@ -25,7 +27,9 @@ EXPECTED_EXPORTS = (
     "ContextPlanRef",
     "ContextPlanStepRef",
     "ContextRelationRef",
+    "DerivationRef",
     "EvidenceRef",
+    "InputBinding",
     "KnowledgeHit",
     "KnowledgePhaseTiming",
     "KnowledgePlan",
@@ -39,9 +43,16 @@ EXPECTED_EXPORTS = (
     "KnowledgeTelemetryClock",
     "KnowledgeTelemetryOperation",
     "KnowledgeTimingPhase",
+    "MaterializationRef",
+    "OutputBinding",
+    "ReproducibilityClass",
     "ResourceRef",
     "RetrievalMode",
     "RevisionRef",
+    "StageDescriptor",
+    "WorkExecutionMode",
+    "WorkOutcome",
+    "WorkReceipt",
     "plan_knowledge_query",
 )
 

@@ -1,7 +1,7 @@
 # Arquitectura de NeoCortex
 
 > **Estado del documento.** Contrato derivado del árbol inspeccionado el
-> 9 de agosto de 2026. Describe el comportamiento observado y separa los
+> 11 de agosto de 2026. Describe el comportamiento observado y separa los
 > cambios previstos de los ya implementados. No certifica por sí solo la suite
 > completa ni la instalación empaquetada. El árbol auditado declara la versión
 > `0.9.0`; la versión instalada debe comprobarse con
@@ -43,6 +43,7 @@ eludirlo.
 | Orden y adaptadores de rutas | `route_selection.py` y `route_registry.py` |
 | Coordinación de corridas | `orchestrator.py` |
 | Knowledge Plane read-only | `knowledge_contracts.py`, `knowledge_snapshot.py`, `knowledge_planner.py`, `knowledge_search.py`, `knowledge_context.py` y `knowledge_service.py` |
+| Derivaciones reproducibles | `derivation_contracts.py`, repositorios owner-local de Text/Semantic, `derivation_projection.py` y `derivation_lineage_service.py` |
 | Planner semántico read-only | `semantic_planner.py` y contratos en `semantic_service_contracts.py` |
 | SDK, consulta y capacidades públicas | `neocortex/sdk`, `neocortex/read_api.py`, `neocortex/human_cli.py`, `neocortex/agent_server.py`, `neocortex/capabilities.py` y markers `py.typed` |
 | Apertura SQLite compartida | `neocortex/sqlite_connection.py`; su adopción actual no es universal |
@@ -153,6 +154,64 @@ conserva intentos, snapshots, owners, rankings, fusión, broker y contexto sin
 alterar los contratos sin telemetría. No constituye una publicación ni un owner
 persistente adicional.
 
+## Derivaciones reproducibles v1
+
+**IMPLEMENTED — Text extraction/publication.** El contrato público schema 1
+extiende, sin
+duplicarlos, `ResourceRef` y `RevisionRef` con `StageDescriptor`,
+`InputBinding`, `OutputBinding`, `MaterializationRef`, `DerivationRef`,
+`CapabilityFailure`, `ReproducibilityClass`, `WorkOutcome`,
+`WorkExecutionMode` y `WorkReceipt`. Un recibo terminal conserva stage y
+versión, firma de procesamiento, configuración efectiva, runtime, inputs y
+outputs con fingerprints, proveedor/modelo cuando aplica, tiempos, intento,
+resultado, modo de ejecución, `run_id`, correlación, causación y una de las
+clases `exact`, `environment_bound`, `seeded`, `equivalent`, `best_effort` o
+`non_replayable`. El contrato rechaza una declaración `exact` sin digest de
+implementación y runtime identificable; fallo/cancelación usan `attempted` y
+un abandono usa `unknown`, por lo que no se presenta como ejecutado lo que no
+puede demostrarse.
+
+Text schema 2 hace durable la cadena `RevisionRef` → `text.extract/v2` →
+`text_representation` + `text_fts`. Después de capturar y fingerprintar el input
+exacto, el intento `running` se confirma antes del parser y de materializar
+outputs. Sus tiempos cubren esa etapa transformativa, no la adquisición previa
+del archivo. La publicación de documento/FTS, outputs, heads, recibo
+terminal y evento de outbox ocurre en una sola transacción del owner Text; un
+rollback no deja outputs declarados ni evento confirmado. Una reutilización compatible
+verifica también los outputs físicos y publica un recibo `cache_hit` ligado por
+`causation_id`; contenido, MIME efectivo, configuración, firma o versión de
+stage incompatibles fuerzan ejecución. Cancelación, fallo y un intento
+`running` encontrado después de una caída terminan con un recibo terminal
+owner-local auditable, sin publicar materializaciones parciales.
+
+La outbox es append-only y se confirma junto con el recibo owner-local. La
+proyección transversal es un objeto descartable en memoria: consume de forma
+idempotente outboxes Text y Semantic, distingue outputs producidos de
+reutilizados, explica ancestros/causación y propaga staleness por stage y firma.
+No es autoridad, no posee otra base SQLite y puede borrarse y reconstruirse;
+por tanto no introduce una transacción distribuida ni registra un hecho antes
+del commit del propietario.
+
+`Neocortex inspect lineage IDENTIFICADOR` y `neocortex.read_api.lineage_payload`
+exponen la vista con scopes fijos. La lectura acepta file key/path Text y
+revisiones, materializaciones o recibos actuales/históricos, además de chunks
+Semantic. Abre sólo bases existentes, valida el contrato de cada schema
+soportado y limita recibos,
+dependencias, chunks y eventos. No crea, migra, repara ni hace checkpoint del
+estado.
+
+**PARTIAL — extensión Semantic.** Semantic schema 7 conserva la publicación
+generacional introducida en v6 y agrega receipts/outbox owner-local para
+materialización/publicación de chunks, ejecución/reutilización de embeddings y
+publicación de generaciones. El lector distingue chunks staged de los
+publicados y puede enlazar un chunk textual con la `RevisionRef` owner-native
+de Text cuando la fuente la aporta. Este corte no afirma todavía una cadena
+canónica completa para PDF/DOCX/Office ni convierte todo el historial Semantic
+legacy en hechos: la migración 6→7 crea las tablas vacías y no inventa
+recibos retroactivos. Si un payload pre-v7 compatible se reutiliza, el owner lo
+verifica y emite bajo demanda una attestación separada; esa materialización
+declara la inspección del payload, no finge haber ejecutado el modelo original.
+
 ## Planificador semántico read-only
 
 `plan_semantic_index()` y `--semantic-plan {text,image,all}` calculan un
@@ -224,13 +283,14 @@ Propietario del inventario común:
 - grupos y planes de duplicados;
 - comparación exacta inmediatamente antes de una mutación autorizada.
 
-El esquema fuente actual es v9. Conserva la clave `(scan_id, path)` y los scans
+El esquema fuente actual es v10. Conserva la clave `(scan_id, path)` y los scans
 `building`, `complete` y `partial` introducidos por v7, liga cada scan nuevo a
 su `inventory_policy_signature` y publica un checkpoint que referencia una
 generación completa. El cursor USN del checkpoint es opcional y sólo acelera
 la siguiente enumeración; la publicación portable sigue siendo consumible por
 Knowledge y Semantic. Las migraciones históricas v6→v7, v7→v8 y v8→v9 tienen
-regresiones específicas; los diagnósticos no migran una base existente y la
+regresiones específicas; v9→v10 agrega índices de identidad sin cambiar la
+semántica generacional. Los diagnósticos no migran una base existente y la
 actualización debe seguir el procedimiento respaldado de
 [PERSISTENCE.md](PERSISTENCE.md).
 
@@ -685,7 +745,8 @@ de clase espurios, y un nombre repetido en la misma asignación se conserva una
 sola vez.
 
 El puente Code↔Semantic conserva los propietarios separados. Una publicación
-textual completa de `source_kind=code` termina primero el head Semantic v6 y,
+textual completa de `source_kind=code` termina primero el head Semantic v7
+—que preserva el contrato generacional introducido en v6— y,
 bajo el lock común del framework, proyecta en `code.embedding_links` un enlace
 por chunk vigente. Cada enlace fija item Semantic, modelo, espacio vectorial,
 generación y procedencia; no existe FK ni transacción distribuida entre las dos
@@ -827,7 +888,7 @@ para joins ligados a identidad. No combine por cuenta propia
 `inventory_checkpoint(root)` con `snapshots(scan_id)`; entre ambas llamadas otro
 writer puede publicar y podar la generación elegida.
 
-En semantic v6, cada `model_signature` tiene un único
+En semantic v7, cada `model_signature` tiene un único
 `published_embedding_heads`. Una generación `building` clona de forma acotada
 los miembros de una base fijada. El clon confirma por páginas un cursor durable
 con high-watermark y conteo; comparte el deadline del productor y reanuda el
@@ -850,7 +911,9 @@ lotes de hasta 128 chunks. Error, cancelación o cualquier `BaseException`
 revierte sólo la transacción en curso; el prefijo ya confirmado permanece
 idempotente y reanudable dentro de la generación `building`. La desactivación de
 miembros no observados ocurre al finalizar la fuente, y ningún prefijo parcial
-cambia el head publicado. Este cambio no altera schema, API Python ni JSON.
+cambia el head publicado. Esa mecánica de batching, introducida sin cambio de
+schema en v6, se conserva en v7; el cambio de schema actual corresponde a
+receipts y outbox de derivación.
 
 El worker alcanza un punto fijo de reutilización exacta antes de cada claim:
 agota jobs pendientes cuyo modelo, XXH3, longitud y guarda coinciden con un
@@ -860,6 +923,14 @@ que sigan pendientes antes del claim N+1. Todo lease aún propio se libera ante
 excepción original. Permanecen dos límites explícitos: duplicados ya incluidos
 en el mismo batch pueden llegar juntos al backend y los commits/fallos por job
 todavía realizan persistencia N+1.
+
+Text v2 conserva `documents` y `document_fts` como salidas físicas compatibles,
+pero agrega revisiones fuente inmutables, intentos, bindings de entrada/salida,
+materializaciones, heads, `WorkReceipt` y outbox. La migración exacta v1→v2
+preserva documentos y FTS, deja `documents.revision_id=NULL` y no fabrica
+revisiones, materializaciones ni recibos para trabajo legacy que no puede
+atribuirse. Las consultas de linaje lo presentan como
+`legacy_unattributed` hasta que el productor lo reprocese.
 
 En catálogo v6, cada `source_kind` construye filas en
 `catalog_generation_documents`. Los lectores siguen viendo la proyección
@@ -1029,12 +1100,13 @@ Los siguientes límites deben permanecer visibles:
   poblada/abstencionista, aislamiento, publicación, scan parcial, lectura
   concurrente, poda y cursor USN ambiguo; la barrera integral se registra
   aparte;
-- la poda vigente de v9 conserva generaciones `building` y candidatos `complete` aún no
+- la poda vigente de v10 conserva generaciones `building` y candidatos `complete` aún no
   publicados para evitar carreras; el planner dry-run diagnostica candidatos,
   pero todavía no ejecuta expiración/conciliación de un build abandonado;
-- semántica v6 y catálogo v6 aíslan el staging y publican por puntero/CAS para
-  sus lectores oficiales (`NC-AUD-012` y `NC-AUD-013`); SQL externo sobre
-  tablas legacy no hereda el contrato;
+- semántica v7 preserva el staging y puntero/CAS de v6, y catálogo v6 publica
+  por puntero/CAS para sus lectores oficiales (`NC-AUD-012` y `NC-AUD-013`);
+  los receipts Semantic nuevos no atribuyen trabajo legacy y SQL externo sobre
+  tablas mutables no hereda el contrato;
 - el grafo de código conserva esquema 4 no generacional y una transacción global
   extensa (`NC-AUD-015`); es atómica para lectores, pero carece de reanudación y
   de cancelación dentro de una sentencia SQL. Los empates permanecen ambiguos y

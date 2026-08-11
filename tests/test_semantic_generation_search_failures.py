@@ -319,8 +319,7 @@ def test_resolver_preserves_order_provenance_and_read_only_contract(
     assert readonly_calls == [True]
     assert tuple(value.hit for value in resolved) == ordered_hits
     assert all(
-        value.hit is expected
-        for value, expected in zip(resolved, ordered_hits, strict=True)
+        value.hit is expected for value, expected in zip(resolved, ordered_hits, strict=True)
     )
     assert tuple(value.snippet for value in resolved) == (
         "published",
@@ -336,9 +335,7 @@ def test_resolver_preserves_order_provenance_and_read_only_contract(
     assert all(value.section_provenance == {} for value in resolved)
     assert all(value.source_status is None for value in resolved)
     assert all(value.published_revision_id is not None for value in resolved)
-    assert all(
-        value.current_revision_id == value.published_revision_id for value in resolved
-    )
+    assert all(value.current_revision_id == value.published_revision_id for value in resolved)
 
     without_snippet = resolve_search_hits(database, (hit,), snippet_chars=0)
     assert readonly_calls == [True, True]
@@ -403,7 +400,32 @@ def test_resolver_rejects_malformed_provenance_objects(
         started_ns=100,
     )
     with sqlite3.connect(database) as connection:
+        trigger: tuple[str, str] | None = None
+        if statement.startswith("UPDATE semantic_item_revisions"):
+            trigger = (
+                "semantic_item_revisions_no_update",
+                "semantic item revisions are append-only",
+            )
+        elif statement.startswith("UPDATE semantic_chunk_revisions"):
+            trigger = (
+                "semantic_chunk_revisions_no_update",
+                "semantic chunk revisions are append-only",
+            )
+        if trigger is not None:
+            connection.execute(f"DROP TRIGGER {trigger[0]}")
         connection.execute(statement)
+        if trigger is not None:
+            table = (
+                "semantic_item_revisions"
+                if trigger[0].startswith("semantic_item")
+                else "semantic_chunk_revisions"
+            )
+            connection.execute(
+                f"""CREATE TRIGGER {trigger[0]}
+                BEFORE UPDATE ON {table} BEGIN
+                    SELECT RAISE(ABORT,'{trigger[1]}');
+                END"""
+            )
 
     with pytest.raises(SemanticStateError, match=message):
         resolve_search_hits(database, (hit,))
@@ -506,15 +528,27 @@ def test_search_rejects_corrupt_vector_and_member_provenance(tmp_path: Path) -> 
     )
 
     with sqlite3.connect(database) as connection:
+        connection.execute("DROP TRIGGER vector_payloads_no_update")
         connection.execute("UPDATE vector_payloads SET dimensions=3")
+        connection.execute(
+            """CREATE TRIGGER vector_payloads_no_update
+            BEFORE UPDATE ON vector_payloads BEGIN
+                SELECT RAISE(ABORT,'semantic vector payloads are append-only');
+            END"""
+        )
     with pytest.raises(SemanticStateError, match="dimension violates its space"):
         search_exact_page(database, _query(model))
 
     with sqlite3.connect(database) as connection:
+        connection.execute("DROP TRIGGER vector_payloads_no_update")
         connection.execute("UPDATE vector_payloads SET dimensions=4")
         connection.execute(
-            "UPDATE embedding_generation_members SET provenance_json='[]'"
+            """CREATE TRIGGER vector_payloads_no_update
+            BEFORE UPDATE ON vector_payloads BEGIN
+                SELECT RAISE(ABORT,'semantic vector payloads are append-only');
+            END"""
         )
+        connection.execute("UPDATE embedding_generation_members SET provenance_json='[]'")
     with pytest.raises(SemanticStateError, match="provenance is not a JSON object"):
         load_active_embedding_page(
             database,

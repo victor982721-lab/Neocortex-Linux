@@ -145,6 +145,7 @@ from .semantic_schema import (
     _migrate_to_v4 as _migrate_to_v4,
     _migrate_to_v5 as _migrate_to_v5,
     _migrate_to_v6 as _migrate_to_v6,
+    _migrate_to_v7 as _migrate_to_v7,
     initialize_semantic_state as initialize_semantic_state,
     semantic_database,
 )

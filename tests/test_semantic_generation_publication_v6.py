@@ -722,9 +722,28 @@ def test_base_clone_deadline_persists_cursor_and_replays_to_completion(
                 (candidate,),
             ).fetchone()[0]
         )
+        clone_receipts = connection.execute(
+            """SELECT receipt_json FROM semantic_work_receipts
+            WHERE generation_id=? AND stage_id='semantic.embedding.clone'
+            ORDER BY receipt_id""",
+            (candidate,),
+        ).fetchall()
+        clone_events = int(
+            connection.execute(
+                """SELECT COUNT(*) FROM semantic_derivation_outbox outbox
+                JOIN semantic_work_receipts receipt
+                  ON receipt.receipt_id=outbox.receipt_id
+                WHERE receipt.generation_id=?
+                  AND receipt.stage_id='semantic.embedding.clone'""",
+                (candidate,),
+            ).fetchone()[0]
+        )
     assert resumed is not None
     assert int(resumed["base_clone_complete"]) == 1
     assert resumed_members == 5
+    assert len(clone_receipts) == 3
+    assert clone_events == 3
+    assert sum(len(json.loads(str(row[0]))["outputs"]) for row in clone_receipts) == 5
     resumed_cursor = json.loads(str(resumed["cursor_json"]))["base_clone"]
     assert resumed_cursor["scanned_members"] == 5
     assert resumed_cursor["base_member_count"] == 5
@@ -815,6 +834,53 @@ def test_base_clone_page_rolls_back_before_retrying(
     assert int(completed["base_clone_complete"]) == 1
     assert member_count == 3
     assert baseline > 0
+
+
+def test_base_clone_uses_bounded_page_receipts_below_contract_size(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "semantic.sqlite3"
+    model, _baseline = _published_fixture_with_members(database, extra_members=499)
+    candidate = start_embedding_generation(
+        database,
+        model_signature=model.model_signature,
+        processing_signature="clone-bounded-receipts-v1",
+        provenance={"fixture": "clone-bounded-receipts-v1"},
+        materialize_base=False,
+        started_ns=120,
+    )
+
+    assert (
+        prepare_embedding_generation(
+            database,
+            candidate,
+            enumeration_complete=True,
+        )
+        is None
+    )
+
+    with semantic_database(database, readonly=True) as connection:
+        receipts = connection.execute(
+            """SELECT receipt_json FROM semantic_work_receipts
+            WHERE generation_id=? AND stage_id='semantic.embedding.clone'
+            ORDER BY receipt_id""",
+            (candidate,),
+        ).fetchall()
+        event_count = int(
+            connection.execute(
+                """SELECT COUNT(*) FROM semantic_derivation_outbox outbox
+                JOIN semantic_work_receipts receipt
+                  ON receipt.receipt_id=outbox.receipt_id
+                WHERE receipt.generation_id=?
+                  AND receipt.stage_id='semantic.embedding.clone'""",
+                (candidate,),
+            ).fetchone()[0]
+        )
+    payloads = tuple(str(row[0]) for row in receipts)
+    assert len(payloads) == 2
+    assert event_count == 2
+    assert sum(len(json.loads(payload)["outputs"]) for payload in payloads) == 500
+    assert max(len(payload.encode("utf-8")) for payload in payloads) < 1_000_000
 
 
 def test_base_clone_rejects_a_changed_pinned_snapshot(
@@ -1692,7 +1758,7 @@ def test_embedding_generation_preparation_order_and_work_are_row_bounded(
         large_baseline,
     )
     assert len(small_trace) == len(large_trace)
-    assert len(small_trace) <= 24
+    assert len(small_trace) <= 36
     ordered_phases = (
         "begin immediate",
         "select model_signature,status from embedding_generations",
@@ -1847,7 +1913,7 @@ def test_embedding_generation_finalization_order_and_work_are_row_bounded(
 
     assert (small_summary.done, large_summary.done) == (1, 24)
     assert len(small_trace) == len(large_trace)
-    assert len(small_trace) <= 24
+    assert len(small_trace) <= 36
     ordered_phases = (
         "begin immediate",
         "select model_signature,status from embedding_generations",
@@ -2124,7 +2190,7 @@ def test_populated_v5_migration_preserves_legacy_rows_and_publishes_snapshot(
     assert resolved[0].path == "C:/fixtures/legacy-document.pdf"
     assert resolved[0].snippet == "legacy published transformer record"
     with semantic_database(database, readonly=True) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 6
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 7
         assert connection.execute("SELECT COUNT(*) FROM text_embeddings").fetchone()[0] == 1
         assert (
             connection.execute("SELECT COUNT(*) FROM embedding_generation_members").fetchone()[0]

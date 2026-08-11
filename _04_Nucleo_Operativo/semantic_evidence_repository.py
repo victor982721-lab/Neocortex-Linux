@@ -38,6 +38,38 @@ from .semantic_schema import SemanticStateError, semantic_database
 # region [08] Versioned label prototypes and advisory semantic evidence
 
 
+def _published_text_chunk_predicate(
+    connection: sqlite3.Connection,
+    alias: str,
+) -> str:
+    """Require owner-published chunks on schema 7 without breaking v6 readers."""
+
+    has_derivation_owner = connection.execute(
+        """SELECT 1 FROM sqlite_master
+        WHERE type='table' AND name='semantic_chunk_derivations'"""
+    ).fetchone()
+    if has_derivation_owner is None:
+        return f"{alias}.active=1"
+    return f"""{alias}.active=1 AND EXISTS(
+        SELECT 1 FROM semantic_chunk_revisions revision
+        WHERE revision.chunk_id={alias}.chunk_id AND (
+            EXISTS(
+                SELECT 1 FROM semantic_chunk_derivations derivation
+                WHERE derivation.chunk_revision_id=revision.chunk_revision_id
+                  AND derivation.refresh_token={alias}.refresh_token
+                  AND derivation.publication_receipt_id IS NOT NULL)
+            OR (
+                NOT EXISTS(
+                    SELECT 1 FROM semantic_chunk_derivations derivation
+                    WHERE derivation.chunk_revision_id=revision.chunk_revision_id)
+                AND EXISTS(
+                    SELECT 1 FROM embedding_generation_members member
+                    JOIN published_embedding_heads head
+                      ON head.generation_id=member.generation_id
+                    WHERE member.chunk_revision_id=revision.chunk_revision_id
+                      AND member.entity_kind='text_chunk'))))"""
+
+
 def _store_label_prototype_row(
     connection: sqlite3.Connection,
     prototype: LabelPrototype,
@@ -79,13 +111,9 @@ def _store_label_prototype_row(
         if tuple(str(existing[index]) for index in range(6)) != identity:
             raise ValueError("prototype_id is already bound to a different identity")
         if not _same_fingerprint(existing, prototype.fingerprint):
-            raise ValueError(
-                "prototype content changed without a new prototype version"
-            )
+            raise ValueError("prototype content changed without a new prototype version")
         if bytes(existing["vector_blob"]) != vector_blob:
-            raise ValueError(
-                "prototype vector changed under an immutable model signature"
-            )
+            raise ValueError("prototype vector changed under an immutable model signature")
     connection.execute(
         """INSERT INTO label_prototypes(
             prototype_id,ontology_id,ontology_version,concept_id,
@@ -245,9 +273,7 @@ def finalize_label_prototype_refresh(
             )
         }
         if published_ids != set(expected_ids):
-            raise SemanticStateError(
-                "cannot publish an incomplete or incompatible prototype set"
-            )
+            raise SemanticStateError("cannot publish an incomplete or incompatible prototype set")
         connection.execute(
             f"""UPDATE label_prototypes
             SET active=1,
@@ -312,9 +338,7 @@ def load_label_prototypes(
         not value.strip()
         for value in (ontology_id, ontology_version, prototype_version, vector_space)
     ):
-        raise ValueError(
-            "ontology, prototype, and vector-space identifiers cannot be blank"
-        )
+        raise ValueError("ontology, prototype, and vector-space identifiers cannot be blank")
     if not 1 <= limit <= 10_000:
         raise ValueError("limit must be between 1 and 10000")
     clauses = [
@@ -334,9 +358,7 @@ def load_label_prototypes(
     if model_signatures:
         if len(model_signatures) > MAX_WRITE_BATCH:
             raise ValueError("too many model signatures")
-        clauses.append(
-            "p.model_signature IN (" + ",".join("?" for _ in model_signatures) + ")"
-        )
+        clauses.append("p.model_signature IN (" + ",".join("?" for _ in model_signatures) + ")")
         parameters.extend(model_signatures)
     parameters.append(limit)
     with semantic_database(path, readonly=True) as connection:
@@ -377,9 +399,7 @@ def load_label_prototypes(
                     vector_space=str(row["vector_space"]),
                     text=text,
                     fingerprint=fingerprint,
-                    calibration_status=CalibrationStatus(
-                        str(row["calibration_status"])
-                    ),
+                    calibration_status=CalibrationStatus(str(row["calibration_status"])),
                     feedback_reference=(
                         None
                         if row["feedback_reference"] is None
@@ -422,17 +442,11 @@ def _validate_evidence_batch(
     )
     source_entity_ids = tuple(
         sorted(
-            {
-                value.source_entity_id
-                for value in batch
-                if value.source_entity_id != value.item_id
-            }
+            {value.source_entity_id for value in batch if value.source_entity_id != value.item_id}
         )
     )
     generation_ids = tuple(
-        sorted(
-            {value.generation_id for value in batch if value.generation_id is not None}
-        )
+        sorted({value.generation_id for value in batch if value.generation_id is not None})
     )
     item_placeholders = ",".join("?" for _ in item_ids)
     prototype_placeholders = ",".join("?" for _ in prototype_ids)
@@ -465,11 +479,13 @@ def _validate_evidence_batch(
     active_chunks: dict[str, str] = {}
     if source_entity_ids:
         source_placeholders = ",".join("?" for _ in source_entity_ids)
+        published_chunk = _published_text_chunk_predicate(connection, "chunk")
         active_chunks = {
             str(row["chunk_id"]): str(row["item_id"])
             for row in connection.execute(
-                f"""SELECT chunk_id,item_id FROM text_chunks
-                WHERE active=1 AND chunk_id IN ({source_placeholders})""",
+                f"""SELECT chunk.chunk_id,chunk.item_id FROM text_chunks chunk
+                WHERE {published_chunk}
+                  AND chunk.chunk_id IN ({source_placeholders})""",
                 source_entity_ids,
             )
         }
@@ -521,10 +537,7 @@ def _validate_evidence_batch(
         ):
             raise ValueError("evidence attempts to mix incompatible vector spaces")
         if evidence.generation_id is not None:
-            if (
-                generations.get(evidence.generation_id)
-                != evidence.indexed_model_signature
-            ):
+            if generations.get(evidence.generation_id) != evidence.indexed_model_signature:
                 raise ValueError("evidence generation does not match indexed model")
 
 
@@ -745,10 +758,7 @@ def publish_semantic_evidence_entities(
         connection.execute("BEGIN IMMEDIATE")
         query_model = _load_model(connection, query_model_signature)
         indexed_model = _load_model(connection, indexed_model_signature)
-        if (
-            query_model.vector_space != vector_space
-            or indexed_model.vector_space != vector_space
-        ):
+        if query_model.vector_space != vector_space or indexed_model.vector_space != vector_space:
             raise ValueError("evidence publication mixes incompatible vector spaces")
         connection.execute(
             """CREATE TEMP TABLE evidence_publication_entities(
@@ -767,16 +777,15 @@ def publish_semantic_evidence_entities(
             WHERE i.item_id IS NULL LIMIT 1"""
         ).fetchone()
         if invalid_item is not None:
-            raise KeyError(
-                f"unknown or inactive evidence item {str(invalid_item['item_id'])!r}"
-            )
+            raise KeyError(f"unknown or inactive evidence item {str(invalid_item['item_id'])!r}")
         if indexed_model.modality is EmbeddingModality.TEXT:
+            published_chunk = _published_text_chunk_predicate(connection, "c")
             invalid_entity = connection.execute(
-                """SELECT p.item_id,p.source_entity_id
+                f"""SELECT p.item_id,p.source_entity_id
                 FROM evidence_publication_entities p
                 LEFT JOIN text_chunks c
                   ON c.chunk_id=p.source_entity_id AND c.item_id=p.item_id
-                 AND c.active=1
+                 AND {published_chunk}
                 WHERE c.chunk_id IS NULL LIMIT 1"""
             ).fetchone()
         else:
@@ -968,14 +977,15 @@ def list_semantic_evidence(
     if not 1 <= limit <= 10_000:
         raise ValueError("limit must be between 1 and 10000")
     with semantic_database(path, readonly=True) as connection:
+        published_chunk = _published_text_chunk_predicate(connection, "c")
         rows = connection.execute(
-            """SELECT e.* FROM semantic_evidence e
+            f"""SELECT e.* FROM semantic_evidence e
             JOIN semantic_items i ON i.item_id=e.item_id
             WHERE e.item_id=? AND e.ontology_id=? AND e.ontology_version=?
               AND e.active=1 AND i.active=1
               AND (e.source_entity_id=e.item_id OR EXISTS(
                   SELECT 1 FROM text_chunks c
-                  WHERE c.chunk_id=e.source_entity_id AND c.active=1))
+                  WHERE c.chunk_id=e.source_entity_id AND {published_chunk}))
             ORDER BY e.rank,e.score DESC,e.concept_id LIMIT ?""",
             (item_id, ontology_id, ontology_version, limit),
         ).fetchall()
@@ -997,15 +1007,11 @@ def list_semantic_evidence(
                 vector_space=str(row["vector_space"]),
                 score=float(row["score"]),
                 rank=int(row["rank"]),
-                generation_id=(
-                    None if row["generation_id"] is None else int(row["generation_id"])
-                ),
+                generation_id=(None if row["generation_id"] is None else int(row["generation_id"])),
                 calibration_status=CalibrationStatus(str(row["calibration_status"])),
                 disposition=EvidenceDisposition(str(row["disposition"])),
                 feedback_reference=(
-                    None
-                    if row["feedback_reference"] is None
-                    else str(row["feedback_reference"])
+                    None if row["feedback_reference"] is None else str(row["feedback_reference"])
                 ),
                 provenance=raw_provenance,
             )

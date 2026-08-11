@@ -27,6 +27,7 @@ from _04_Nucleo_Operativo.read_api_port import (
     SnapshotConsistency,
     available_search_modes,
     default_state_directory,
+    inspect_derivation_lineage,
     knowledge_context_exit_code,
     knowledge_search_exit_code,
     search_code,
@@ -439,6 +440,45 @@ def code_search_payload(
     }
 
 
+def lineage_payload(
+    identifier: str,
+    scope: str | ReadScope = ReadScope.ALL,
+) -> dict[str, object]:
+    """Inspect owner-local derivation lineage under fixed trusted state roots."""
+
+    if not isinstance(identifier, str) or not identifier.strip():
+        raise ValueError("lineage identifier cannot be blank")
+    if len(identifier) > MAX_HUMAN_QUERY_CHARS:
+        raise ValueError(f"lineage identifier cannot exceed {MAX_HUMAN_QUERY_CHARS} characters")
+    normalized = identifier.strip()
+    selected = _scope(scope)
+    entries: list[dict[str, object]] = []
+    for binding in scope_bindings(selected):
+        try:
+            result = inspect_derivation_lineage(binding.state_directory, normalized)
+            entries.append(
+                {
+                    "scope": binding.scope.value,
+                    "state_directory": str(binding.state_directory),
+                    "status": result["status"],
+                    "exit_code": result["exit_code"],
+                    "lineage": result,
+                }
+            )
+        except (OSError, RuntimeError, sqlite3.Error, TypeError, ValueError) as exc:
+            entries.append(_error_entry(binding, exc))
+    return {
+        "schema": READ_API_SCHEMA,
+        "kind": "neocortex_scoped_derivation_lineage",
+        "read_only": True,
+        "scope_requested": selected.value,
+        "federation_policy": FEDERATION_POLICY,
+        "identifier": normalized,
+        "exit_code": federated_exit_code(entries),
+        "scopes": entries,
+    }
+
+
 __all__ = (
     "FEDERATION_POLICY",
     "MAX_HUMAN_QUERY_CHARS",
@@ -450,6 +490,7 @@ __all__ = (
     "context_payload",
     "evidence_payload",
     "federated_exit_code",
+    "lineage_payload",
     "scope_bindings",
     "search_payload",
     "status_payload",

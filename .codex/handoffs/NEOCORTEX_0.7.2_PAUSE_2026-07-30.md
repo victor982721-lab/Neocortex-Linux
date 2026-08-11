@@ -1,6 +1,6 @@
 # NeoCortex — handoff operativo actual
 
-> Actualizado: 2026-08-10. El nombre del archivo es histórico y se conserva
+> Actualizado: 2026-08-11. El nombre del archivo es histórico y se conserva
 > como ruta estable. Este documento es la fuente única de la frontera vigente;
 > no guarda un SHA de cierre porque Git, la release instalada y GitHub deben
 > demostrarlo dinámicamente.
@@ -136,6 +136,42 @@ existe cuando se cumplen juntos los criterios dinámicos de la última sección.
   PLAN` productivo tienen regresiones específicas. La migración del estado vivo
   sólo ocurre dentro del cierre protegido de release descrito abajo.
 
+## Corte evolutivo actual — Reproducible Derivations v1
+
+- Text schema 2 registra la cadena owner-local `RevisionRef -> text.extract/v2
+  -> text_representation/text_fts`: intento durable, bindings exactos,
+  materializaciones, heads, `WorkReceipt` terminal y outbox se confirman sin
+  falsa atomicidad cross-owner. Cache/replay exigen outputs físicos vigentes y
+  causación exacta; fallo, cancelación, crash y rollback no publican outputs
+  parciales.
+- La migración Text 1→2 conserva documentos/FTS y deja el legado explícitamente
+  `legacy_unattributed`; no inventa receipts. Los readers validan facts
+  normalizados, receipts canónicos, publicación física e identidad histórica y
+  permanecen read-only.
+- Semantic schema 7 agrega receipts/outbox, revisiones inmutables y manifests
+  causales para chunks, embeddings y generaciones. El enlace Text nuevo
+  conserva su revisión y materialización owner-native. Staging/restage no
+  sustituye la verdad publicada antes de `finalize`.
+- Los payloads vectoriales pre-v7 no reciben receipts durante la migración. Una
+  reutilización compatible exige attestación owner-local bajo demanda que
+  valida sus hechos físicos y no finge haber ejecutado el modelo histórico.
+- `Neocortex inspect lineage IDENTIFICADOR` y
+  `neocortex.read_api.lineage_payload()` explican ejecución/reutilización,
+  dependencias, publicación y staleness mediante una proyección acotada,
+  descartable y reconstruible. Ayuda, versión y superficies ligeras conservan
+  carga lazy.
+- Certificación local del árbol final previo al commit: 271 archivos de prueba;
+  4,271 passed, 144 skipped y 109 subtests; Coverage 59,779/71,019 líneas y
+  15,410/22,270 ramas; 331 fuentes de producción y 271 tests ratcheteados.
+  Los shards exactos sumaron lo mismo: 2,171/56/96 y 2,100/88/13. Grimp observó
+  330 módulos, 1,347 relaciones, 0 violaciones y 0 SCC. Static quedó en Ruff
+  67, Mypy 94 y Pyright 142, sin aceptar diagnósticos nuevos.
+- El alcance cerrado es la extracción/publicación Text y su cadena Semantic
+  nueva. `normalize` no es todavía un stage durable independiente; PDF, DOCX,
+  Office y el historial Semantic pre-v7 no se presentan como linaje completo.
+  El SHA comprometido, la release instalada y GitHub Actions siguen siendo la
+  evidencia dinámica de entrega, no este texto.
+
 ## Capacidades que permanecen fail-closed
 
 1. **Linux mutation:** sigue intencionalmente deshabilitada. Un backend POSIX
@@ -156,10 +192,15 @@ existe cuando se cumplen juntos los criterios dinámicos de la última sección.
 
 ## Deuda residual explícita
 
-- El baseline estático permite como máximo 76/94/142 hallazgos y agrupa por
-  ruta/regla, no por fingerprint de cada mensaje. El cierre observó 69/94/142;
+- El baseline estático permite como máximo 67/94/142 hallazgos y agrupa por
+  ruta/regla, no por fingerprint de cada mensaje. El corte Derivations observó
+  exactamente 67/94/142;
   debe reducirse gradualmente y nunca usarse para intercambiar deuda nueva por
   vieja.
+- `text_derivation_repository.py` y `semantic_lineage_repository.py` son nuevos
+  hotspots grandes. Sus readers críticos están paginados/set-based y tienen
+  regresiones de cotas, pero deben dividirse sólo por owners y contratos reales,
+  no mediante un refactor cosmético.
 - Permanecen hotspots grandes en evidencia externa, validaciones Knowledge y el
   parser legado. La campaña eliminó ciclos, no fingió haber reducido toda la
   complejidad ciclomática.
@@ -180,16 +221,17 @@ existe cuando se cumplen juntos los criterios dinámicos de la última sección.
 
 ## Próximos pasos, en orden
 
-1. Usar `Neocortex search|ask`, la página Consulta y `review value` sobre
-   preguntas reales, siempre sin mutación.
-2. Etiquetar con Víctor 20–50 consultas ES/EN/DE/ZH y comparar MiniLM shadow
-   contra Jina con relevancia, latencia, procedencia y calibración por fuente.
-3. Ampliar CLIP con positivos y negativos humanos por idioma/tipo de imagen;
-   promover sólo una política que separe las distribuciones de forma robusta.
-4. Autorizar una muestra pequeña con texto alemán y chino visible para repetir
-   Video/OCR/Audio y su replay cacheado.
-5. Evaluar Archive Semantic por selectores útiles contra FTS y reducir después
-   un hotspot o bucket estático por cambio, sin mezclarlo con funciones nuevas.
+1. Implementar `CapabilityManifest + CapabilityBroker` como siguiente vertical
+   slice, evolucionando `RuntimeCapabilitySpec` sin providers pesados
+   obligatorios y con selección explicable.
+2. Extender el mismo contrato causal a PDF/DOCX/Office sólo después de una ruta
+   a la vez y sin reescribir extractores; mantener el legado no atribuible.
+3. Añadir `Knowledge Asset Health + ReviewTask`, empezando por preselección
+   durable y acotada para `review value --scope personal`.
+4. Mantener `normalize`/`chunk` como deuda explícita hasta identificar fronteras
+   ejecutables reales; no crear stages nominales que no correspondan a trabajo.
+5. Etiquetar con Víctor 20–50 consultas ES/EN/DE/ZH y comparar MiniLM/CLIP
+   shadow sin mezclar espacios ni promover por intuición.
 6. Diseñar el backend Linux identity-bound sólo si la organización física en
    Kubuntu se vuelve prioridad; hasta entonces mantener el rechazo actual.
 

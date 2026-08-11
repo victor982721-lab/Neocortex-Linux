@@ -17,6 +17,10 @@ from .semantic_models import (
     canonical_json,
     fingerprint_text,
 )
+from .semantic_lineage_repository import (
+    _record_chunk_materialization,
+    _record_chunk_refresh_publication,
+)
 from .semantic_repository_common import (
     MAX_STORED_CHUNK_BYTES,
     MAX_WRITE_BATCH,
@@ -41,15 +45,12 @@ def register_embedding_model(
     """Register an immutable model and enforce vector-space compatibility."""
 
     if model.provider == "test-deterministic" and not allow_test_provider:
-        raise ValueError(
-            "test-deterministic models require explicit test authorization"
-        )
+        raise ValueError("test-deterministic models require explicit test authorization")
     now_ns = time.time_ns()
     with semantic_database(path) as connection:
         connection.execute("BEGIN IMMEDIATE")
         space = connection.execute(
-            "SELECT dimensions,distance,normalization FROM vector_spaces "
-            "WHERE vector_space=?",
+            "SELECT dimensions,distance,normalization FROM vector_spaces WHERE vector_space=?",
             (model.vector_space,),
         ).fetchone()
         if space is None:
@@ -168,13 +169,11 @@ def _upsert_item(
     if prior is not None and not _same_fingerprint(prior, item.fingerprint):
         if invalidate_text_on_fingerprint_change:
             connection.execute(
-                "UPDATE text_chunks SET active=0,updated_ns=? "
-                "WHERE item_id=? AND active=1",
+                "UPDATE text_chunks SET active=0,updated_ns=? WHERE item_id=? AND active=1",
                 (updated_ns, item.item_id),
             )
             connection.execute(
-                "UPDATE semantic_evidence SET active=0,updated_ns=? "
-                "WHERE item_id=? AND active=1",
+                "UPDATE semantic_evidence SET active=0,updated_ns=? WHERE item_id=? AND active=1",
                 (updated_ns, item.item_id),
             )
         else:
@@ -234,9 +233,7 @@ def stage_semantic_items(
                     item,
                     refresh_token=refresh_token,
                     updated_ns=selected_ns,
-                    invalidate_text_on_fingerprint_change=(
-                        invalidate_text_on_fingerprint_change
-                    ),
+                    invalidate_text_on_fingerprint_change=(invalidate_text_on_fingerprint_change),
                 )
         count += len(batch)
     return count
@@ -323,13 +320,11 @@ def deactivate_semantic_item_if_fingerprint(
             (selected_ns, item_id),
         )
         connection.execute(
-            "UPDATE semantic_evidence SET active=0,updated_ns=? "
-            "WHERE item_id=? AND active=1",
+            "UPDATE semantic_evidence SET active=0,updated_ns=? WHERE item_id=? AND active=1",
             (selected_ns, item_id),
         )
         cursor = connection.execute(
-            "UPDATE semantic_items SET active=0,updated_ns=? "
-            "WHERE item_id=? AND active=1",
+            "UPDATE semantic_items SET active=0,updated_ns=? WHERE item_id=? AND active=1",
             (selected_ns, item_id),
         )
         return cursor.rowcount == 1
@@ -408,16 +403,13 @@ def _stage_text_chunk_batch(
     if not chunks:
         return 0
     if len(chunks) > MAX_WRITE_BATCH:
-        raise ValueError(
-            f"text chunk batch cannot exceed {MAX_WRITE_BATCH} records"
-        )
+        raise ValueError(f"text chunk batch cannot exceed {MAX_WRITE_BATCH} records")
     item_ids = tuple(sorted({chunk.item_id for chunk in chunks}))
     placeholders = ",".join("?" for _ in item_ids)
     active_items = {
         str(row[0])
         for row in connection.execute(
-            f"SELECT item_id FROM semantic_items WHERE active=1 "
-            f"AND item_id IN ({placeholders})",
+            f"SELECT item_id FROM semantic_items WHERE active=1 AND item_id IN ({placeholders})",
             item_ids,
         )
     }
@@ -447,7 +439,13 @@ def _stage_text_chunk_batch(
             provenance_json=excluded.provenance_json,
             refresh_token=excluded.refresh_token,
             active=1,
-            updated_ns=excluded.updated_ns""",
+            updated_ns=excluded.updated_ns
+        WHERE text_chunks.active=0 OR NOT EXISTS(
+            SELECT 1 FROM semantic_chunk_revisions revision
+            JOIN semantic_chunk_derivations derivation
+              ON derivation.chunk_revision_id=revision.chunk_revision_id
+            WHERE revision.chunk_id=text_chunks.chunk_id
+              AND derivation.publication_receipt_id IS NOT NULL)""",
         (
             (
                 chunk.chunk_id,
@@ -470,6 +468,16 @@ def _stage_text_chunk_batch(
             for chunk in chunks
         ),
     )
+    for chunk in chunks:
+        _record_chunk_materialization(
+            connection,
+            chunk_id=chunk.chunk_id,
+            item_id=chunk.item_id,
+            fingerprint=chunk.fingerprint,
+            chunking_signature=chunk.chunking_signature,
+            refresh_token=refresh_token,
+            now_ns=updated_ns,
+        )
     return len(chunks)
 
 
@@ -483,11 +491,7 @@ def finalize_text_chunk_refresh(
 ) -> int:
     """Publish one signature refresh without retiring other chunking profiles."""
 
-    if (
-        not item_id.strip()
-        or not chunking_signature.strip()
-        or not refresh_token.strip()
-    ):
+    if not item_id.strip() or not chunking_signature.strip() or not refresh_token.strip():
         raise ValueError("item, chunking signature and refresh token cannot be blank")
     selected_ns = _now(updated_ns)
     with semantic_database(path) as connection:
@@ -511,21 +515,33 @@ def _finalize_text_chunk_refresh(
 ) -> int:
     """Finalize one item/profile refresh in the caller's transaction."""
 
-    duplicate = connection.execute(
-        """SELECT ordinal FROM text_chunks
-        WHERE item_id=? AND chunking_signature=? AND refresh_token=?
-        GROUP BY ordinal HAVING COUNT(*)>1 LIMIT 1""",
-        (item_id, chunking_signature, refresh_token),
-    ).fetchone()
-    if duplicate is not None:
-        raise ValueError(
-            f"refresh contains duplicate chunk ordinal {int(duplicate['ordinal'])}"
-        )
+    publication_receipt_id = _record_chunk_refresh_publication(
+        connection,
+        item_id=item_id,
+        chunking_signature=chunking_signature,
+        refresh_token=refresh_token,
+        now_ns=updated_ns,
+    )
+    connection.execute(
+        """UPDATE text_chunks SET refresh_token=?,active=1,updated_ns=?
+        WHERE chunk_id IN (
+            SELECT revision.chunk_id
+            FROM semantic_chunk_revisions revision
+            JOIN semantic_chunk_derivations derivation
+              ON derivation.chunk_revision_id=revision.chunk_revision_id
+            WHERE derivation.publication_receipt_id=?)""",
+        (refresh_token, updated_ns, publication_receipt_id),
+    )
     cursor = connection.execute(
         """UPDATE text_chunks SET active=0,updated_ns=?
         WHERE item_id=? AND active=1 AND chunking_signature=?
-          AND refresh_token<>?""",
-        (updated_ns, item_id, chunking_signature, refresh_token),
+          AND chunk_id NOT IN (
+            SELECT revision.chunk_id
+            FROM semantic_chunk_revisions revision
+            JOIN semantic_chunk_derivations derivation
+              ON derivation.chunk_revision_id=revision.chunk_revision_id
+            WHERE derivation.publication_receipt_id=?)""",
+        (updated_ns, item_id, chunking_signature, publication_receipt_id),
     )
     connection.execute(
         """UPDATE semantic_evidence SET active=0,updated_ns=?

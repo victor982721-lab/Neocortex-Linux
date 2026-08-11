@@ -112,15 +112,25 @@ def revision_identity(
     canonical_json_fn: CanonicalJson,
     fingerprint_text_fn: FingerprintText,
 ) -> tuple[str, str, RevisionState, tuple[str, ...]]:
-    revision_payload: dict[str, object] = {
-        "source_kind": resolved.source_kind,
-        "source_identity": resolved.source_identity,
-        "source_revision": dict(resolved.source_revision),
-    }
-    if not resolved.source_revision and resolved.published_revision_id is not None:
-        revision_payload["published_revision_id"] = resolved.published_revision_id
-    fingerprint = fingerprint_text_fn(canonical_json_fn(revision_payload))
-    revision_id = f"revision:{resolved.source_kind}:{fingerprint.xxh3_128}"
+    owner_revision_id = resolved.source_revision.get("revision_id")
+    if owner_revision_id is None:
+        revision_payload: dict[str, object] = {
+            "source_kind": resolved.source_kind,
+            "source_identity": resolved.source_identity,
+            "source_revision": dict(resolved.source_revision),
+        }
+        if not resolved.source_revision and resolved.published_revision_id is not None:
+            revision_payload["published_revision_id"] = resolved.published_revision_id
+        fingerprint = fingerprint_text_fn(canonical_json_fn(revision_payload))
+        revision_id = f"revision:{resolved.source_kind}:{fingerprint.xxh3_128}"
+    elif (
+        not isinstance(owner_revision_id, str)
+        or not owner_revision_id.strip()
+        or len(owner_revision_id) > MAX_EVIDENCE_IDENTIFIER_COMPONENT_CHARS
+    ):
+        raise ValueError("owner revision identity is invalid")
+    else:
+        revision_id = owner_revision_id
     signature = resolved.source_revision.get("processing_signature")
     if not isinstance(signature, str) or not signature.strip():
         signature = producer
