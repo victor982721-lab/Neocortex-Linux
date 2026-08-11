@@ -150,6 +150,24 @@ class PlannerTests(unittest.TestCase):
             self.assertEqual(summary.files_seen, 2)
             self.assertEqual(names, {"original.bin", "created.bin"})
 
+    def test_reconciliation_removes_the_exact_inventory_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root = base / "corpus"
+            root.mkdir()
+            source = root / "removed.bin"
+            source.write_bytes(b"removed")
+            with DedupIndex(base / "state.db") as index:
+                scan = index.scan(root, excluded_paths=())
+                snapshot = next(index.snapshots(scan.scan_id))
+                index.apply_reconciliation(
+                    scan.scan_id,
+                    remove_identities=((snapshot.volume_id, snapshot.file_id),),
+                )
+                remaining = tuple(index.snapshots(scan.scan_id))
+
+            self.assertEqual(remaining, ())
+
     def test_scan_excludes_only_exact_configured_paths(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "corpus"

@@ -175,9 +175,15 @@ def test_deep_controls_require_trusted_deep(
         )
 
 
-def test_trusted_deep_requires_exact_canonical_root(tmp_path: Path) -> None:
+def test_trusted_deep_requires_exact_canonical_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     root = tmp_path / "other-project"
     root.mkdir()
+    canonical = tmp_path / "canonical-project"
+    canonical.mkdir()
+    monkeypatch.setattr(cli_validation, "trusted_deep_expected_root", lambda: canonical)
 
     with pytest.raises(SystemExit, match="requires the exact canonical root"):
         _validate(
