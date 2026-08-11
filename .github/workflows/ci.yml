@@ -107,8 +107,12 @@ jobs:
       - name: Bootstrap audited pip
         run: python -I tools/bootstrap_pip.py
 
-      - name: Install Ubuntu multimedia and Qt runtime
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg libegl1
+      - name: Install Ubuntu analysis, multimedia and Qt runtime
+        run: >-
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends
+          ffmpeg libegl1 qpdf desktop-file-utils
+          tesseract-ocr tesseract-ocr-spa tesseract-ocr-eng
+          tesseract-ocr-deu tesseract-ocr-chi-sim tesseract-ocr-chi-tra
 
       - name: Install constrained full source and Pyright
         run: |
@@ -126,6 +130,13 @@ jobs:
           python -m pip check
           python -I tools/pyright_runtime.py install --target "$RUNNER_TEMP/pyright"
           echo "$RUNNER_TEMP/pyright/node_modules/.bin" >> "$GITHUB_PATH"
+
+      - name: Provision and verify the isolated Semgrep test runtime
+        run: |
+          set -euo pipefail
+          runtime=$(python -c 'import sys; print(sys.prefix)')
+          python tools/semgrep_tool_runtime.py install --runtime-root "$runtime"
+          python tools/semgrep_tool_runtime.py verify --runtime-root "$runtime"
 
       - name: Prove complete dynamic test inventory
         run: python tools/quality_gate.py inventory --shard-count 2
@@ -165,11 +176,10 @@ jobs:
       - name: Enforce Ruff, Mypy and Pyright no-regression baseline
         run: python tools/quality_gate.py static
 
-      - name: Provision, verify and audit the isolated Semgrep tool runtime
+      - name: Reverify and audit the isolated Semgrep tool runtime
         run: |
           set -euo pipefail
-          runtime="$RUNNER_TEMP/neocortex-runtime"
-          python tools/semgrep_tool_runtime.py install --runtime-root "$runtime"
+          runtime=$(python -c 'import sys; print(sys.prefix)')
           python tools/semgrep_tool_runtime.py verify --runtime-root "$runtime"
           python tools/quality_gate.py supply-chain \
             --tool-receipt "$runtime/tools/semgrep/neocortex-tool-runtime.json"

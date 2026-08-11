@@ -14,6 +14,7 @@ import subprocess
 import tempfile
 import unittest
 import zipfile
+from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
@@ -717,12 +718,12 @@ class OrchestratorTests(unittest.TestCase):
             self.assertEqual(result.video.complete, 1)
             self.assertEqual(result.video.errors, 0)
             self.assertFalse(_has_strict_route_errors(result))
-            with sqlite3.connect(state_directory / "audio.sqlite3") as connection:
+            with closing(sqlite3.connect(state_directory / "audio.sqlite3")) as connection:
                 self.assertEqual(
                     connection.execute("SELECT status FROM documents").fetchone()[0],
                     "no_audio",
                 )
-            with sqlite3.connect(state_directory / "video.sqlite3") as connection:
+            with closing(sqlite3.connect(state_directory / "video.sqlite3")) as connection:
                 self.assertEqual(
                     tuple(
                         connection.execute("SELECT status,audio_status FROM documents").fetchone()
