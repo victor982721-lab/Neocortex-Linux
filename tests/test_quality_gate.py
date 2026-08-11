@@ -202,7 +202,10 @@ def test_push_ci_uses_dynamic_total_shards_instead_of_manual_test_lists() -> Non
     assert "quality_gate.py coverage" in fast_and_quality
     assert "actions/upload-artifact@v7" in fast_and_quality
     assert "--no-install-recommends ffmpeg libegl1" not in fast
-    assert "--no-install-recommends\n          ffmpeg libegl1 qpdf desktop-file-utils" in quality
+    assert (
+        "--no-install-recommends\n"
+        "          ffmpeg fonts-noto-core libegl1 qpdf desktop-file-utils" in quality
+    )
     assert "tesseract-ocr-deu tesseract-ocr-chi-sim tesseract-ocr-chi-tra" in quality
     assert "semgrep_tool_runtime.py install" in fast_and_quality
     assert "runtime=$(python -c 'import sys; print(sys.prefix)')" in quality

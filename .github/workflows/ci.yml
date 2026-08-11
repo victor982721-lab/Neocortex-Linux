@@ -110,7 +110,7 @@ jobs:
       - name: Install Ubuntu analysis, multimedia and Qt runtime
         run: >-
           sudo apt-get update && sudo apt-get install -y --no-install-recommends
-          ffmpeg libegl1 qpdf desktop-file-utils
+          ffmpeg fonts-noto-core libegl1 qpdf desktop-file-utils
           tesseract-ocr tesseract-ocr-spa tesseract-ocr-eng
           tesseract-ocr-deu tesseract-ocr-chi-sim tesseract-ocr-chi-tra
 
@@ -378,7 +378,7 @@ jobs:
       - name: Install system fixture dependencies
         run: >-
           sudo apt-get update && sudo apt-get install -y
-          qpdf ffmpeg tesseract-ocr tesseract-ocr-spa tesseract-ocr-eng
+          qpdf ffmpeg fonts-noto-core tesseract-ocr tesseract-ocr-spa tesseract-ocr-eng
           tesseract-ocr-deu tesseract-ocr-chi-sim tesseract-ocr-chi-tra
           tesseract-ocr-osd desktop-file-utils libegl1
       - name: Install full constrained source from wheels
