@@ -45,12 +45,16 @@ from tools.quality_gate import (
 
 def _repository_fixture(root: Path) -> Path:
     (root / "tests" / "nested").mkdir(parents=True)
-    (root / "pyproject.toml").write_text("[project]\nname='fixture'\n", encoding="utf-8")
-    (root / "tests" / "test_alpha.py").write_text("def test_alpha(): pass\n", encoding="utf-8")
-    (root / "tests" / "nested" / "beta_test.py").write_text(
-        "def test_beta(): pass\n" * 3, encoding="utf-8"
+    (root / "pyproject.toml").write_text(
+        "[project]\nname='fixture'\n", encoding="utf-8", newline="\n"
     )
-    (root / "tests" / "helpers.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (root / "tests" / "test_alpha.py").write_text(
+        "def test_alpha(): pass\n", encoding="utf-8", newline="\n"
+    )
+    (root / "tests" / "nested" / "beta_test.py").write_text(
+        "def test_beta(): pass\n" * 3, encoding="utf-8", newline="\n"
+    )
+    (root / "tests" / "helpers.py").write_text("VALUE = 1\n", encoding="utf-8", newline="\n")
     return root
 
 
@@ -189,7 +193,8 @@ def test_push_ci_uses_dynamic_total_shards_instead_of_manual_test_lists() -> Non
     workflow = workflow_path.read_text(encoding="utf-8")
     fast_and_quality, remaining = workflow.split("  standard:\n", 1)
     fast, quality = fast_and_quality.split("  quality:\n", 1)
-    standard, _deep = remaining.split("  deep-windows:\n", 1)
+    standard, deep = remaining.split("  deep-windows:\n", 1)
+    deep_windows, _deep_linux = deep.split("  deep-linux:\n", 1)
 
     assert "tests/test_" not in fast_and_quality
     assert "tests/test_" not in standard
@@ -202,6 +207,7 @@ def test_push_ci_uses_dynamic_total_shards_instead_of_manual_test_lists() -> Non
     assert "--tool-receipt" in fast_and_quality
     assert "quality_gate.py tests" in standard
     assert "--no-install-recommends ffmpeg libegl1" in standard
+    assert "choco install ffmpeg --yes --no-progress" in standard
     assert "os: [ubuntu-latest, windows-latest]" in standard
     assert 'python: ["3.13", "3.14"]' in standard
     assert "shard: [0, 1]" in standard
@@ -211,6 +217,13 @@ def test_push_ci_uses_dynamic_total_shards_instead_of_manual_test_lists() -> Non
     assert "NEOCORTEX_BOOTSTRAP_PIP_VERSION" not in workflow
     assert '--constraint constraints.txt ".[analysis]"' in fast_and_quality
     assert "quality_gate.py wheel-smoke" in standard
+    assert 'Join-Path (Split-Path -Parent $env:GITHUB_WORKSPACE) "Laboratory"' in deep_windows
+    assert "$env:NEOCORTEX_AUDIT_LAB_ROOT = $laboratory" in deep_windows
+    assert "$env:TEMP = $temporary" in deep_windows
+    assert "$env:TMP = $temporary" in deep_windows
+    assert "$env:TMPDIR = $temporary" in deep_windows
+    assert "$env:PYTHONPYCACHEPREFIX = $pycache" in deep_windows
+    assert '--basetemp "$laboratory\\pytest"' in deep_windows
     assert workflow.count("git-snapshot --sha") == 6
     assert WHEEL_PACKAGE_ROOTS == (
         "_01_Enumeracion",

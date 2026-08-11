@@ -207,6 +207,11 @@ class ImageWorkerSupervisor:
     ) -> Decision:
         if memory_limit_bytes < 1:
             raise ValueError("image worker memory limit must be positive")
+        if memory_limit_bytes < MIN_IMAGE_WORKER_BYTES:
+            raise ImageWorkerError(
+                "image worker memory limit is below the minimum safe "
+                f"reservation of {MIN_IMAGE_WORKER_BYTES} bytes"
+            )
         if timeout_seconds <= 0:
             raise ValueError("image worker timeout must be positive")
         cancellation.checkpoint()
@@ -260,7 +265,7 @@ class ImageWorkerSupervisor:
                         raise ImageWorkerError(
                             "isolated image worker exited with code "
                             f"{self._process.exitcode}: {path}"
-                        )
+                        ) from None
                     continue
                 if len(message) < 2 or message[1] != request_id:
                     raise ImageWorkerError("isolated image worker protocol mismatch")

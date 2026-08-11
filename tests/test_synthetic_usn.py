@@ -4,7 +4,6 @@
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
-
 # region [01] Dependencias del módulo
 from __future__ import annotations
 
@@ -37,9 +36,12 @@ def test_synthetic_usn_emits_create_modify_delete_and_rename(
     with SyntheticUsnJournal(root) as journal:
         start = journal.capture(root.drive)
         modified.write_bytes(b"modified-and-longer")
+        # Allocate the new file before releasing an inode. NTFS file references
+        # carry a reuse sequence, while the POSIX ``st_ino`` test double does
+        # not; this ordering keeps delete/create distinct on both platforms.
+        (root / "created.bin").write_bytes(b"create")
         deleted.unlink()
         renamed.rename(root / "new.bin")
-        (root / "created.bin").write_bytes(b"create")
         target = journal.capture(root.drive)
         with journal.consume_changes(root.drive, start) as reader:
             batches = tuple(reader.iter_until(target.next_usn))
@@ -79,4 +81,6 @@ def test_synthetic_usn_restores_lookup_points_after_base_exception(
         inventory_coordinator.query_journal_cursor,
         reconcile.consume_changes,
     ) == original
+
+
 # endregion [02]

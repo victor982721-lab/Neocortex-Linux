@@ -209,6 +209,17 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg libegl1
 
+      - name: Install Windows multimedia runtime
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install ffmpeg --yes --no-progress
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ffmpeg -version | Select-Object -First 1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ffprobe -version | Select-Object -First 1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Build constrained wheel
         shell: bash
         run: |
@@ -301,14 +312,34 @@ jobs:
         env:
           NEOCORTEX_RUN_REAL_MUTATION_ACCEPTANCE: "1"
         run: |
-          python -m pytest -q -p no:cacheprovider --basetemp "$env:RUNNER_TEMP\pytest-deep-windows" `
-            tests/test_bounded_subprocess.py `
-            tests/test_corpus_access_policy.py `
-            tests/test_durable_mutation_boundary.py `
-            tests/test_framework_actions_identity_bound.py `
-            tests/test_release_windows.py `
-            tests/test_release_windows_ntfs.py `
-            tests/test_trusted_deep_configuration.py
+          $laboratoryParent = Join-Path (Split-Path -Parent $env:GITHUB_WORKSPACE) "Laboratory"
+          $laboratory = Join-Path $laboratoryParent "ci-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          $temporary = Join-Path $laboratory "temp"
+          $pycache = Join-Path $laboratory "pycache"
+          New-Item -ItemType Directory -Force -Path $temporary, $pycache | Out-Null
+          $env:NEOCORTEX_AUDIT_LAB_ROOT = $laboratory
+          $env:TEMP = $temporary
+          $env:TMP = $temporary
+          $env:TMPDIR = $temporary
+          $env:PYTHONPYCACHEPREFIX = $pycache
+          $exitCode = 0
+          try {
+            python -m pytest -q -p no:cacheprovider `
+              --basetemp "$laboratory\pytest" `
+              -o "cache_dir=$laboratory\pytest-cache" `
+              tests/test_bounded_subprocess.py `
+              tests/test_corpus_access_policy.py `
+              tests/test_durable_mutation_boundary.py `
+              tests/test_framework_actions_identity_bound.py `
+              tests/test_release_windows.py `
+              tests/test_release_windows_ntfs.py `
+              tests/test_trusted_deep_configuration.py
+            $exitCode = $LASTEXITCODE
+          }
+          finally {
+            Remove-Item -LiteralPath $laboratory -Recurse -Force -ErrorAction SilentlyContinue
+          }
+          if ($exitCode -ne 0) { exit $exitCode }
       - name: Verify final candidate snapshot
         if: always()
         shell: pwsh

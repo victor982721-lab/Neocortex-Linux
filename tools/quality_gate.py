@@ -324,7 +324,11 @@ def discover_production_sources(root: Path) -> tuple[str, ...]:
         paths.append(candidate.relative_to(root).as_posix())
     if not paths:
         _fail("production coverage inventory is empty")
-    return tuple(paths)
+    # ``WindowsPath`` orders case-insensitively before conversion while the
+    # persisted manifest is a platform-neutral POSIX string inventory.  Sort
+    # only after normalization so one checkout produces the same ordered
+    # contract on every supported platform.
+    return tuple(sorted(paths))
 
 
 def _run_captured(

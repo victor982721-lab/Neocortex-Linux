@@ -55,15 +55,17 @@ existe cuando se cumplen juntos los criterios dinámicos de la última sección.
 
 ### Fase 1 — barreras integrales y CI
 
-- El inventario dinámico final contiene **265 archivos de prueba**. Coverage
-  ejecutó la suite completa dos veces de forma independiente: **4,125 passed,
-  146 skipped y 98 subtests** en ambas corridas.
-- Baseline branch-aware aprobado: **56,933/67,720 líneas** y
-  **14,600/21,110 ramas**. También ratchetea las rutas aprobadas de tests y de
+- El inventario dinámico final contiene **265 archivos de prueba**. La corrida
+  integral de cierre ejecutó **4,138 passed, 144 skipped y 98 subtests**.
+- El baseline branch-aware mínimo aprobado sigue en **56,933/67,720 líneas** y
+  **14,600/21,110 ramas**; la corrida de cierre quedó por encima, en
+  **56,957/67,731 líneas** y **14,604/21,114 ramas**. También ratchetea las rutas
+  aprobadas de tests y de
   las **326 fuentes de producción**: las adiciones pasan; un retiro exige una
   reescritura explícita y revisada.
-- Los dos shards son una partición exacta: 132 archivos con 1,911 passed y 133
-  archivos con 2,214 passed. La suma coincide con la suite completa.
+- Los dos shards son una partición exacta: 132 archivos con 2,003 passed,
+  97 skipped y 83 subtests; 133 archivos con 2,135 passed, 47 skipped y
+  15 subtests. La suma coincide exactamente con la suite completa.
 - La matriz obligatoria es el producto Windows/Ubuntu × Python 3.13/3.14 × dos
   shards: **8 jobs**, no una rotación incompleta entre versión y shard.
 - CI construye e instala el wheel `full`, ejecuta un smoke fuera del checkout
@@ -71,7 +73,8 @@ existe cuando se cumplen juntos los criterios dinámicos de la última sección.
   entrypoint, y después prueba el árbol fuente completo. Cada job revalida SHA
   y worktree limpio al final; `quality` también lo hace tras Coverage.
 - El gate estático versionado conserva deuda sin permitir crecimiento:
-  Ruff **76**, Mypy **94**, Pyright **142**. Pyright queda ligado explícitamente
+  límites Ruff **76**, Mypy **94**, Pyright **142**; la corrida de cierre observó
+  Ruff **69**, Mypy **94** y Pyright **142**. Pyright queda ligado explícitamente
   a los paquetes del intérprete canónico y eliminó 72 falsos missing-import. No
   significa “cero deuda”; significa
   cero diagnósticos nuevos por ruta/regla y versión exacta de cada herramienta.
@@ -80,6 +83,11 @@ existe cuando se cumplen juntos los criterios dinámicos de la última sección.
 - Supply chain real se evalúa en cada SHA con `pip-audit` del runtime principal
   y del tool-runtime Semgrep contra su receipt/policy; Coverage JSON se publica
   como artefacto ligado al SHA.
+- Las pruebas NTFS con mutación real sólo se recolectan como activas dentro del
+  job deep-Windows. Ese job crea su laboratorio en un directorio hermano del
+  checkout, fuera del repositorio, `$CODEX_HOME` y `.codex/vault`, liga ahí
+  temporales y bytecode, revalida las identidades y elimina la ruta exacta al
+  terminar. La matriz ordinaria no ejecuta esas fixtures sin laboratorio.
 
 ### Fase 2 — rendimiento sin perder seguridad TOCTOU
 
@@ -148,15 +156,16 @@ existe cuando se cumplen juntos los criterios dinámicos de la última sección.
 
 ## Deuda residual explícita
 
-- El baseline estático contiene 76/94/142 hallazgos y agrupa por ruta/regla, no
-  por fingerprint de cada mensaje. Debe reducirse gradualmente y nunca usarse
-  para intercambiar deuda nueva por vieja.
+- El baseline estático permite como máximo 76/94/142 hallazgos y agrupa por
+  ruta/regla, no por fingerprint de cada mensaje. El cierre observó 69/94/142;
+  debe reducirse gradualmente y nunca usarse para intercambiar deuda nueva por
+  vieja.
 - Permanecen hotspots grandes en evidencia externa, validaciones Knowledge y el
   parser legado. La campaña eliminó ciclos, no fingió haber reducido toda la
   complejidad ciclomática.
 - La suite integral prueba el árbol fuente después de instalar el wheel; el
   artefacto instalado tiene un smoke aislado fuerte, no una segunda ejecución
-  artificial de los 4,125 casos que dependen también de tools/docs del checkout.
+  artificial de los 4,138 casos que dependen también de tools/docs del checkout.
 - Windows conserva receta mantenida y CI completa, pero aún no tiene un
   instalador Python integral equivalente a `tools/release_linux.py`.
 - Las excepciones Semgrep dejan de ser válidas el 2026-09-30. Antes de esa fecha

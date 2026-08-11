@@ -148,13 +148,15 @@ def test_portable_snapshot_matches_the_usn_inventory_for_the_same_tree(
 
     portable = _run(root, portable_state)
     with SyntheticUsnJournal(root):
-        usn = FrameworkOrchestrator(
+        usn_orchestrator = FrameworkOrchestrator(
             FrameworkConfig(
                 root=root,
                 state_directory=usn_state,
                 document_catalog_enabled=False,
             )
-        ).run_initial()
+        )
+        usn = usn_orchestrator.run_initial()
+        usn_replay = usn_orchestrator.run_initial()
 
     assert _snapshot(portable_state, root, portable.scan.scan_id) == _snapshot(
         usn_state,
@@ -168,7 +170,10 @@ def test_portable_snapshot_matches_the_usn_inventory_for_the_same_tree(
     assert portable_checkpoint is not None and usn_checkpoint is not None
     assert not portable_checkpoint.journal_available
     assert usn_checkpoint.journal_available is (os.name == "nt")
-    assert usn.inventory_mode == ("incremental" if os.name == "nt" else "full")
+    # A first publication is a complete inventory on every platform.  The
+    # durable USN cursor accelerates only a subsequent compatible run.
+    assert usn.inventory_mode == "full"
+    assert usn_replay.inventory_mode == ("incremental" if os.name == "nt" else "full")
 
 
 def test_portable_run_recovers_after_an_interruption(tmp_path: Path) -> None:

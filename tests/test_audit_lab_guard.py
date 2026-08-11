@@ -8,9 +8,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 
+from tests import conftest as audit_conftest
 from tests.audit_lab_guard import (
     AuditLabContractError,
     capture_audit_lab_directory_identity,
@@ -161,6 +163,31 @@ def test_audit_root_must_be_absolute_local(tmp_path: Path, raw: str) -> None:
     del tmp_path
     with pytest.raises(AuditLabContractError, match="absolute local path"):
         validate_audit_lab_environment(raw, environment={}, selected_temp_directory=raw)
+
+
+def test_windows_ntfs_suite_is_skipped_without_an_activated_lab(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Item:
+        def __init__(self, path: Path) -> None:
+            self.path = path
+            self.markers: list[Any] = []
+
+        def add_marker(self, marker: Any) -> None:
+            self.markers.append(marker)
+
+    ntfs = Item(tmp_path / "test_release_windows_ntfs.py")
+    ordinary = Item(tmp_path / "test_regular.py")
+    monkeypatch.setattr(audit_conftest, "_windows_audit_lab_required", lambda: True)
+
+    audit_conftest.pytest_collection_modifyitems([ntfs, ordinary])
+
+    assert len(ntfs.markers) == 1
+    assert ordinary.markers == []
+    marker = ntfs.markers[0]
+    assert marker.name == "skip"
+    assert "activated audit laboratory" in marker.kwargs["reason"]
 
 
 # endregion [02]

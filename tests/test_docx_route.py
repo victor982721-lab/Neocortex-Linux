@@ -421,16 +421,20 @@ class DocxRouteTests(unittest.TestCase):
                 birthtime_ns=initial_snapshot.birthtime_ns + 1,
             )
             changed_state = _State({DOCX_MIME: [changed_snapshot], PDF_MIME: []})
+            # Simulate the live NTFS stat for a reused file reference.  The
+            # real filesystem fixture has not been replaced, so its creation
+            # time cannot otherwise match the replacement snapshot.
             with patch(
-                "_04_Nucleo_Operativo.docx_route.snapshot_path",
-                return_value=changed_snapshot,
-            ):
+                "_04_Nucleo_Operativo.docx_route.stat_matches_snapshot",
+                return_value=True,
+            ) as live_identity:
                 second = DocxRoute(DocxRouteConfig(database), changed_state, 2).run()
 
             self.assertEqual(second.cache_hits, 0)
             self.assertEqual(second.new_documents, 1)
             self.assertEqual(second.extracted, 1)
             self.assertEqual(second.cache_documents_pruned, 0)
+            self.assertEqual(live_identity.call_count, 2)
             with closing(sqlite3.connect(database)) as connection:
                 stored = connection.execute(
                     """SELECT d.birthtime_ns,i.birthtime_ns,d.last_seen_run_id

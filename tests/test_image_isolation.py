@@ -33,6 +33,16 @@ def _blocking_image_worker(task_channel, result_channel) -> None:
         time.sleep(30)
 
 
+def _memory_hungry_image_worker(task_channel, result_channel) -> None:
+    del result_channel
+    task = task_channel.get()
+    if task is None:
+        return
+    allocations = []
+    while True:
+        allocations.append(bytearray(16 * 1024 * 1024))
+
+
 # endregion [01]
 
 
@@ -73,18 +83,35 @@ class ImageIsolationTests(unittest.TestCase):
             path = root / "image.png"
             with Image.new("RGB", (32, 32), "white") as image:
                 image.save(path)
-            supervisor = ImageWorkerSupervisor()
+            supervisor = ImageWorkerSupervisor(_memory_hungry_image_worker)
             try:
                 with self.assertRaises((ImageWorkerError, ImageWorkerTimeout)):
                     supervisor.classify(
                         path,
                         root,
-                        memory_limit_bytes=8 * 1024 * 1024,
-                        timeout_seconds=2,
+                        memory_limit_bytes=512 * 1024 * 1024,
+                        timeout_seconds=15,
                         cancellation=CancellationToken(),
                     )
             finally:
                 supervisor.close()
+
+    def test_impossible_memory_cap_fails_before_spawning_decoder(self) -> None:
+        supervisor = ImageWorkerSupervisor()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / "image.png"
+            with Image.new("RGB", (32, 32), "white") as image:
+                image.save(path)
+            with self.assertRaisesRegex(ImageWorkerError, "minimum safe reservation"):
+                supervisor.classify(
+                    path,
+                    root,
+                    memory_limit_bytes=8 * 1024 * 1024,
+                    timeout_seconds=2,
+                    cancellation=CancellationToken(),
+                )
+        self.assertIsNone(supervisor._process)
 
     def test_cancellation_stops_a_blocked_decoder_promptly(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
