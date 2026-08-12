@@ -654,7 +654,8 @@ en faltantes. Alineación o delta siguen siendo observaciones: no prueban una
 transacción distribuida, recuperación ante muerte de proceso ni un defecto.
 
 `--code-publication-diff` publica el envelope
-`neocortex.code-publication-diff/v9`, compatible con v1-v8, y compara dos
+`neocortex.code-publication-diff/v10`, sin declarar compatibilidad estructural
+con wires anteriores, y compara dos
 publicaciones Code completadas sin escribirlas. Informa calls comunes,
 resoluciones nuevas/corregidas/perdidas,
 hotspots añadidos o retirados, el delta no calibrado de `probable_dead` y los

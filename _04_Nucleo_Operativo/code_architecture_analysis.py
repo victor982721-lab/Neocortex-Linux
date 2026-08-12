@@ -3,7 +3,9 @@
 The provider tables are generic persistence.  This module is their first public
 consumer: it turns the three Hito 2 providers into one bounded, deterministic,
 and explicitly abstaining architecture view.  Hito 6 derives bounded graph
-reach, owner crossings, and named centrality from that same published graph.
+reach, path-namespace crossings, and named centrality from that same published
+graph.  A Python package prefix is never presented as repository or logical
+ownership.
 """
 
 from __future__ import annotations
@@ -25,7 +27,7 @@ from .external_evidence_store import (
 from .self_analysis_status import require_sqlite_sidecars_absent
 from .semantic_models import canonical_json, fingerprint_text
 
-CODE_ARCHITECTURE_SCHEMA = "neocortex.code-architecture-analysis/v2"
+CODE_ARCHITECTURE_SCHEMA = "neocortex.code-architecture-analysis/v3"
 CODE_ARCHITECTURE_REQUIRED_PROVIDERS = (
     "complexipy-cognitive",
     "grimp-architecture",
@@ -127,16 +129,16 @@ class ArchitectureModule:
     grimp_fan_out: int | None
     grimp_scc_size: int | None
     grimp_cycle_membership: bool | None
-    owner_id: str | None = None
+    path_namespace_id: str | None = None
     dependency_reach: int = 0
     dependency_reach_truncated: bool = False
-    dependency_owner_ids: tuple[str, ...] = ()
+    dependency_path_namespace_ids: tuple[str, ...] = ()
     blast_radius: int = 0
     blast_radius_truncated: bool = False
-    consumer_owner_ids: tuple[str, ...] = ()
+    consumer_path_namespace_ids: tuple[str, ...] = ()
     directed_degree_centrality: float = 0.0
-    cross_owner_fan_in: int = 0
-    cross_owner_fan_out: int = 0
+    cross_path_namespace_fan_in: int = 0
+    cross_path_namespace_fan_out: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -275,16 +277,16 @@ class _Relation:
 
 @dataclass(frozen=True, slots=True)
 class _ModuleGraphMetrics:
-    owner_id: str
+    path_namespace_id: str
     dependency_reach: int
     dependency_reach_truncated: bool
-    dependency_owner_ids: tuple[str, ...]
+    dependency_path_namespace_ids: tuple[str, ...]
     blast_radius: int
     blast_radius_truncated: bool
-    consumer_owner_ids: tuple[str, ...]
+    consumer_path_namespace_ids: tuple[str, ...]
     directed_degree_centrality: float
-    cross_owner_fan_in: int
-    cross_owner_fan_out: int
+    cross_path_namespace_fan_in: int
+    cross_path_namespace_fan_out: int
 
 
 def _root_hint(connection: sqlite3.Connection) -> Path:
@@ -788,8 +790,8 @@ def _module_indexes(
     return module_ids, fan_in, fan_out, cycles_by_module, contracts_by_module, symbol_counts
 
 
-def _module_owner(module_id: str) -> str:
-    """Return the deterministic owner label derived from the first dotted component."""
+def _module_path_namespace(module_id: str) -> str:
+    """Return only the first dotted path namespace, never an ownership claim."""
 
     first, _, _ = module_id.partition(".")
     return first or module_id
@@ -832,7 +834,7 @@ def _module_graph_metrics(
     denominator = 2 * (module_count - 1)
     result: dict[str, _ModuleGraphMetrics] = {}
     for module_id in sorted(module_ids):
-        owner_id = _module_owner(module_id)
+        path_namespace_id = _module_path_namespace(module_id)
         direct_consumers = fan_in.get(module_id, set()) - {module_id}
         direct_dependencies = fan_out.get(module_id, set()) - {module_id}
         dependencies, dependencies_truncated = _bounded_reach(
@@ -851,15 +853,15 @@ def _module_graph_metrics(
             else round((len(direct_consumers) + len(direct_dependencies)) / denominator, 12)
         )
         result[module_id] = _ModuleGraphMetrics(
-            owner_id,
+            path_namespace_id,
             len(dependencies),
             dependencies_truncated,
             tuple(
                 sorted(
                     {
-                        _module_owner(dependency)
+                        _module_path_namespace(dependency)
                         for dependency in dependencies
-                        if _module_owner(dependency) != owner_id
+                        if _module_path_namespace(dependency) != path_namespace_id
                     }
                 )
             ),
@@ -868,15 +870,21 @@ def _module_graph_metrics(
             tuple(
                 sorted(
                     {
-                        _module_owner(consumer)
+                        _module_path_namespace(consumer)
                         for consumer in consumers
-                        if _module_owner(consumer) != owner_id
+                        if _module_path_namespace(consumer) != path_namespace_id
                     }
                 )
             ),
             centrality,
-            sum(_module_owner(consumer) != owner_id for consumer in direct_consumers),
-            sum(_module_owner(dependency) != owner_id for dependency in direct_dependencies),
+            sum(
+                _module_path_namespace(consumer) != path_namespace_id
+                for consumer in direct_consumers
+            ),
+            sum(
+                _module_path_namespace(dependency) != path_namespace_id
+                for dependency in direct_dependencies
+            ),
         )
     return result
 
@@ -923,16 +931,16 @@ def _modules(
                 if "module_cycle_membership" not in grimp_metrics.get(module, {})
                 else bool(grimp_metrics[module]["module_cycle_membership"])
             ),
-            graph_metrics[module].owner_id,
+            graph_metrics[module].path_namespace_id,
             graph_metrics[module].dependency_reach,
             graph_metrics[module].dependency_reach_truncated,
-            graph_metrics[module].dependency_owner_ids,
+            graph_metrics[module].dependency_path_namespace_ids,
             graph_metrics[module].blast_radius,
             graph_metrics[module].blast_radius_truncated,
-            graph_metrics[module].consumer_owner_ids,
+            graph_metrics[module].consumer_path_namespace_ids,
             graph_metrics[module].directed_degree_centrality,
-            graph_metrics[module].cross_owner_fan_in,
-            graph_metrics[module].cross_owner_fan_out,
+            graph_metrics[module].cross_path_namespace_fan_in,
+            graph_metrics[module].cross_path_namespace_fan_out,
         )
         for module in sorted(module_ids)
     )
@@ -1100,7 +1108,8 @@ def read_code_architecture_analysis(
         "import_graph_is_static_and_does_not_observe_dynamic_imports",
         "ruff_grimp_disagreement_is_preserved_not_forced_to_consensus",
         "cognitive_complexity_is_a_tool_metric_not_defect_probability",
-        "module_owner_id_is_the_first_dotted_module_component_not_repository_ownership",
+        "path_namespace_id_is_only_the_first_dotted_module_component",
+        "logical_and_repository_ownership_are_not_observed",
         "directed_degree_centrality_formula:" + CODE_ARCHITECTURE_CENTRALITY_FORMULA,
         f"transitive_reach_is_exact_until_module_limit:{reachability_limit}",
         "truncated_transitive_reach_counts_are_lower_bounds",

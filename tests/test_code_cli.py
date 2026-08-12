@@ -185,7 +185,7 @@ def test_code_status_and_doctor_do_not_initialize_absent_state(
     assert not status["exists"]
     assert status["self_analysis"] is None
     assert status["architecture"]["status"] == "abstained"
-    assert status["architecture"]["schema"] == "neocortex.code-architecture-analysis/v2"
+    assert status["architecture"]["schema"] == "neocortex.code-architecture-analysis/v3"
     assert status["architecture"]["reason"] == "code_state_missing"
     assert status["architecture"]["summary"] is None
     assert len(status["architecture"]["gates"]) == 3

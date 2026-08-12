@@ -116,7 +116,7 @@ def _architecture_abstained_payload(
     analysis_run_id: int | None = None,
 ) -> dict[str, object]:
     return {
-        "schema": "neocortex.code-architecture-analysis/v2",
+        "schema": "neocortex.code-architecture-analysis/v3",
         "status": "abstained",
         "reason": reason,
         "gate": "abstained",
@@ -161,7 +161,7 @@ def _architecture_status_payload(
 ) -> dict[str, object]:
     failed_contracts = sum(item.status == "failed" for item in analysis.contracts)
     return {
-        "schema": "neocortex.code-architecture-analysis/v2",
+        "schema": "neocortex.code-architecture-analysis/v3",
         "status": analysis.status,
         "reason": analysis.reason,
         "gate": analysis.gate,
@@ -279,7 +279,7 @@ def _engineering_abstained_payload(
 ) -> dict[str, object]:
     return {
         "kind": "code-engineering-analytics",
-        "schema": "neocortex.code-engineering-analytics/v1",
+        "schema": "neocortex.code-engineering-analytics/v2",
         "database": database,
         "analysis_run_id": analysis_run_id,
         "status": "abstained",
@@ -316,7 +316,7 @@ def _engineering_status_payload(
     modules = analysis.modules[:_CODE_CLI_ENGINEERING_MODULE_LIMIT]
     return {
         "kind": "code-engineering-analytics",
-        "schema": "neocortex.code-engineering-analytics/v1",
+        "schema": "neocortex.code-engineering-analytics/v2",
         "database": analysis.database,
         "analysis_run_id": analysis.analysis_run_id,
         "status": analysis.status,
@@ -1088,8 +1088,8 @@ def _module_architecture_changed(module: CodeModuleArchitectureDelta) -> bool:
         or getattr(module, "dependency_reach_delta", None)
         or getattr(module, "blast_radius_delta", None)
         or getattr(module, "directed_degree_centrality_delta", None)
-        or getattr(module, "cross_owner_fan_in_delta", None)
-        or getattr(module, "cross_owner_fan_out_delta", None)
+        or getattr(module, "cross_path_namespace_fan_in_delta", None)
+        or getattr(module, "cross_path_namespace_fan_out_delta", None)
         or getattr(module, "graph_metrics_status", "comparable") == "not_comparable"
         or module.baseline_cycle_ids != module.current_cycle_ids
         or module.baseline_contract_ids != module.current_contract_ids
@@ -1139,8 +1139,10 @@ def _emit_code_publication_architecture(architecture: CodeArchitectureDelta) -> 
             f"dependency_reach_delta={getattr(module, 'dependency_reach_delta', None)} "
             f"blast_radius_delta={getattr(module, 'blast_radius_delta', None)} "
             f"centrality_delta={getattr(module, 'directed_degree_centrality_delta', None)} "
-            f"cross_owner_fan_in_delta={getattr(module, 'cross_owner_fan_in_delta', None)} "
-            f"cross_owner_fan_out_delta={getattr(module, 'cross_owner_fan_out_delta', None)} "
+            "cross_path_namespace_fan_in_delta="
+            f"{getattr(module, 'cross_path_namespace_fan_in_delta', None)} "
+            "cross_path_namespace_fan_out_delta="
+            f"{getattr(module, 'cross_path_namespace_fan_out_delta', None)} "
             f"graph_status={getattr(module, 'graph_metrics_status', 'not_comparable')} "
             f"baseline_cycles={json.dumps(module.baseline_cycle_ids, ensure_ascii=True)} "
             f"current_cycles={json.dumps(module.current_cycle_ids, ensure_ascii=True)} "

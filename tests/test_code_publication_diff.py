@@ -603,12 +603,10 @@ def test_publication_diff_of_the_same_state_is_stable_and_empty(
     assert result.engineering_analytics.baseline_mutation_score is None
     assert result.engineering_analytics.current_mutation_score is None
     payload = result.as_payload()
-    assert payload["schema"] == "neocortex.code-publication-diff/v9"
+    assert payload["schema"] == "neocortex.code-publication-diff/v10"
     compatible_schemas = payload["compatible_schemas"]
     assert isinstance(compatible_schemas, list)
-    assert "neocortex.code-publication-diff/v8" in compatible_schemas
-    assert "neocortex.code-publication-diff/v7" in compatible_schemas
-    assert "neocortex.code-publication-diff/v5" in compatible_schemas
+    assert compatible_schemas == []
     assert isinstance(payload["engineering_analytics"], dict)
     coverage_payload = payload["test_coverage"]
     assert isinstance(coverage_payload, dict)
@@ -777,12 +775,12 @@ def test_architecture_v2_graph_deltas_preserve_truncation_honesty() -> None:
         None,
         None,
         None,
-        owner_id="pkg",
+        path_namespace_id="pkg",
         dependency_reach=4,
         blast_radius=7,
         directed_degree_centrality=0.25,
-        cross_owner_fan_in=1,
-        cross_owner_fan_out=2,
+        cross_path_namespace_fan_in=1,
+        cross_path_namespace_fan_out=2,
     )
     current = replace(
         baseline,
@@ -790,8 +788,8 @@ def test_architecture_v2_graph_deltas_preserve_truncation_honesty() -> None:
         dependency_reach_truncated=True,
         blast_radius=10,
         directed_degree_centrality=0.5,
-        cross_owner_fan_in=3,
-        cross_owner_fan_out=1,
+        cross_path_namespace_fan_in=3,
+        cross_path_namespace_fan_out=1,
     )
 
     delta = _architecture_module_deltas(
@@ -804,8 +802,8 @@ def test_architecture_v2_graph_deltas_preserve_truncation_honesty() -> None:
     assert delta.blast_radius_status == "comparable"
     assert delta.blast_radius_delta == 3
     assert delta.directed_degree_centrality_delta == 0.25
-    assert delta.cross_owner_fan_in_delta == 2
-    assert delta.cross_owner_fan_out_delta == -1
+    assert delta.cross_path_namespace_fan_in_delta == 2
+    assert delta.cross_path_namespace_fan_out_delta == -1
     assert delta.graph_metrics_status == "not_comparable"
 
 

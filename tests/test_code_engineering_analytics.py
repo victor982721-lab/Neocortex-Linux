@@ -271,11 +271,11 @@ def test_engineering_analysis_correlates_dimensions_without_score() -> None:
     assert [gate.status for gate in first.gates] == ["passed", "passed", "passed"]
     profile = engineering_profile_for_module(first, MODULE)
     assert profile is not None
-    assert profile.owner_id == "_04_Nucleo_Operativo"
+    assert profile.path_namespace_id == "_04_Nucleo_Operativo"
     assert {item.name for item in profile.graph.metrics} >= {
         "blast_radius",
         "directed_degree_centrality",
-        "cross_owner_fan_out",
+        "cross_path_namespace_fan_out",
     }
     assert {item.name for item in profile.history.metrics} >= {
         "observed_commit_count",
@@ -370,17 +370,17 @@ def test_engineering_analyzer_signature_status_order_and_digests_are_frozen() ->
     assert (ready.status, ready.reason, ready.digest) == (
         "ready",
         None,
-        "code-engineering-v1:xxh3_128:35554e27e2bfcc902c447986dda7630b",
+        "code-engineering-v2:xxh3_128:c12478f85542583c61459460a1d1d327",
     )
     assert (partial.status, partial.reason, partial.digest) == (
         "partial",
         "one_or_more_engineering_dimensions_not_ready",
-        "code-engineering-v1:xxh3_128:a119e13e8a3abdfe108aff03e3c95c5f",
+        "code-engineering-v2:xxh3_128:e16e09fe8adb9737b7287d89aed45160",
     )
     assert (abstained.status, abstained.reason, abstained.digest) == (
         "abstained",
         "architecture_not_ready",
-        "code-engineering-v1:xxh3_128:ea7a72397d258bf053904222e3b717d9",
+        "code-engineering-v2:xxh3_128:ea7a72397d258bf053904222e3b717d9",
     )
     assert abstained.modules == ()
     assert {gate.status for gate in abstained.gates} == {"not_evaluated"}

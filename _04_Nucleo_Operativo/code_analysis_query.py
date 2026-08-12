@@ -298,11 +298,14 @@ def _append_architecture(
                 statuses=_texts(module, "status"),
                 facts=_facts(
                     module,
+                    "path_namespace_id",
                     "owner_id",
                     "fan_in",
                     "fan_out",
                     "blast_radius",
                     "dependency_reach",
+                    "cross_path_namespace_fan_in",
+                    "cross_path_namespace_fan_out",
                     "cross_owner_fan_in",
                     "cross_owner_fan_out",
                     "directed_degree_centrality",
@@ -326,7 +329,7 @@ def _append_engineering(
         providers: list[str] = []
         categories: list[str] = ["engineering"]
         statuses: list[str] = []
-        facts = _facts(module, "owner_id")
+        facts = _facts(module, "path_namespace_id", "owner_id")
         for dimension_name in _ENGINEERING_DIMENSIONS:
             dimension = _mapping(module.get(dimension_name))
             if dimension is None:

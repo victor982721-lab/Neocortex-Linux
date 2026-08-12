@@ -660,10 +660,10 @@ def test_status_review_and_diff_consume_the_normalized_provider_contract(
     assert first_diff == second_diff
     assert first_diff.status == "ready"
     diff_payload = first_diff.as_payload()
-    assert diff_payload["schema"] == "neocortex.code-publication-diff/v9"
+    assert diff_payload["schema"] == "neocortex.code-publication-diff/v10"
     compatible_schemas = diff_payload["compatible_schemas"]
     assert isinstance(compatible_schemas, list)
-    assert "neocortex.code-publication-diff/v8" in compatible_schemas
+    assert compatible_schemas == []
     assert first_diff.analysis_profile == "protected"
     assert len(first_diff.providers) == 1
     assert first_diff.providers[0].provider_id == "ruff-protected-basic"

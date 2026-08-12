@@ -703,12 +703,13 @@ El baseline `neocortex-production-imports-2026-08-10/v2` de
 acíclico y reintroducir incluso uno de los cuatro SCC históricos falla el
 contrato principal.
 
-La proyección `neocortex.code-architecture-analysis/v2` conserva por módulo un
-`owner_id` —el primer componente del módulo, no ownership del repositorio—,
+La proyección `neocortex.code-architecture-analysis/v3` conserva por módulo un
+`path_namespace_id`, que es únicamente el primer componente del módulo y nunca
+se presenta como ownership lógico, estatal ni del repositorio,
 los SCC y sus ciclos explícitos. Sobre el mismo grafo publica
 `dependency_reach` y `blast_radius`, con banderas `*_truncated` cuando el límite
 convierte el valor en una cota inferior, `directed_degree_centrality` y cruces
-de owner entrantes y salientes. El corte vivo de NeoCortex 0.9 resolvió `325`
+de namespace de ruta entrantes y salientes. El corte vivo de NeoCortex 0.9 resolvió `325`
 módulos, `1316` relaciones de import y `0` SCC cíclicos; no registró violaciones
 de contratos.
 
@@ -782,7 +783,7 @@ publicados por Code: fan-in/fan-out y dependencias aportan contexto modular,
 mientras el grafo de llamadas conserva alcance por símbolo. No duplica ese
 grafo en otra tabla ni combina ambas dimensiones dentro de un score mágico.
 
-`neocortex.code-engineering-analytics/v1` correlaciona por identidad publicada
+`neocortex.code-engineering-analytics/v2` correlaciona por identidad publicada
 las dimensiones separadas de complejidad, cobertura, mutación, historia y
 grafo. Conserva procedencia, limitaciones y abstenciones por dimensión; nunca
 produce un score agregado ni una probabilidad de defecto, y permanece advisory

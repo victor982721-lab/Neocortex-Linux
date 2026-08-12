@@ -686,7 +686,7 @@ def test_review_ranks_confirmed_hotspots_deterministically_with_diversity(
     assert first.engineering_analytics.status == "abstained"
     engineering_payload = first.as_payload()["engineering_analytics"]
     assert isinstance(engineering_payload, dict)
-    assert engineering_payload["schema"] == "neocortex.code-engineering-analytics/v1"
+    assert engineering_payload["schema"] == "neocortex.code-engineering-analytics/v2"
     assert engineering_payload["aggregate_score"] is None
     assert engineering_payload["defect_probability"] is None
     assert [gate["gate"] for gate in engineering_payload["gates"]] == [

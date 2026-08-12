@@ -340,15 +340,15 @@ def test_architecture_analysis_is_ready_and_replay_exact(tmp_path: Path) -> None
     assert modules["pkg.a"].cognitive_complexity_total == 10
     assert modules["pkg.a"].fan_in == 1
     assert modules["pkg.b"].fan_out == 3
-    assert modules["pkg.a"].owner_id == "pkg"
+    assert modules["pkg.a"].path_namespace_id == "pkg"
     assert modules["pkg.a"].dependency_reach == 5
     assert modules["pkg.a"].dependency_reach_truncated is False
-    assert modules["pkg.a"].dependency_owner_ids == ("other", "third")
+    assert modules["pkg.a"].dependency_path_namespace_ids == ("other", "third")
     assert modules["third.worker"].blast_radius == 4
-    assert modules["third.worker"].consumer_owner_ids == ("other", "pkg")
+    assert modules["third.worker"].consumer_path_namespace_ids == ("other", "pkg")
     assert modules["pkg.b"].directed_degree_centrality == 0.333333333333
-    assert modules["pkg.c"].cross_owner_fan_out == 1
-    assert modules["other.api"].cross_owner_fan_in == 1
+    assert modules["pkg.c"].cross_path_namespace_fan_out == 1
+    assert modules["other.api"].cross_path_namespace_fan_in == 1
     assert modules["solo.node"].dependency_reach == 0
     assert modules["solo.node"].blast_radius == 0
     assert modules["solo.node"].directed_degree_centrality == 0.0
@@ -357,7 +357,7 @@ def test_architecture_analysis_is_ready_and_replay_exact(tmp_path: Path) -> None
         for item in cast(list[dict[str, object]], baseline.as_payload()["modules"])
     }
     assert payload_modules["pkg.a"]["dependency_reach"] == 5
-    assert payload_modules["pkg.a"]["owner_id"] == "pkg"
+    assert payload_modules["pkg.a"]["path_namespace_id"] == "pkg"
     assert (
         "directed_degree_centrality_formula:" + CODE_ARCHITECTURE_CENTRALITY_FORMULA
         in baseline.limitations

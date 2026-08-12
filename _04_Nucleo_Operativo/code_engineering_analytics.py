@@ -26,7 +26,7 @@ from .external_evidence_models import ExternalProviderEvidence, ExternalProvider
 from .external_evidence_store import read_external_provider_evidence
 from .semantic_models import canonical_json, fingerprint_text
 
-CODE_ENGINEERING_ANALYTICS_SCHEMA = "neocortex.code-engineering-analytics/v1"
+CODE_ENGINEERING_ANALYTICS_SCHEMA = "neocortex.code-engineering-analytics/v2"
 GIT_HISTORY_PROVIDER_ID = "git-history-local"
 MUTATION_PROVIDER_ID = "cosmic-ray-focal-mutation"
 CODE_ENGINEERING_MODULE_LIMIT = 5_000
@@ -104,7 +104,7 @@ class EngineeringGate:
 @dataclass(frozen=True, slots=True)
 class ModuleEngineeringProfile:
     module_id: str
-    owner_id: str | None
+    path_namespace_id: str | None
     complexity: EngineeringDimension
     coverage: EngineeringDimension
     mutation: EngineeringDimension
@@ -404,16 +404,16 @@ def _graph_dimension(module: ArchitectureModule) -> EngineeringDimension:
             module.module_id,
         ),
         _metric(
-            "cross_owner_fan_in",
-            module.cross_owner_fan_in,
+            "cross_path_namespace_fan_in",
+            module.cross_path_namespace_fan_in,
             "count",
             "internal-import-graph",
             "module",
             module.module_id,
         ),
         _metric(
-            "cross_owner_fan_out",
-            module.cross_owner_fan_out,
+            "cross_path_namespace_fan_out",
+            module.cross_path_namespace_fan_out,
             "count",
             "internal-import-graph",
             "module",
@@ -529,7 +529,7 @@ def _module_engineering_profile(
         )
     return ModuleEngineeringProfile(
         module.module_id,
-        module.owner_id,
+        module.path_namespace_id,
         _complexity_dimension(module),
         evidence.coverage_by_module.get(
             module.module_id,
@@ -557,9 +557,7 @@ def _module_engineering_profile(
             "history",
             history_values,
             reason=(
-                evidence.history.reason
-                if evidence.history is not None
-                else "history_not_recorded"
+                evidence.history.reason if evidence.history is not None else "history_not_recorded"
             ),
             not_recorded=evidence.history is None,
             provenance=(GIT_HISTORY_PROVIDER_ID,),
@@ -574,16 +572,10 @@ def _engineering_profiles(
     coverage: CodeCoverageAnalysis | None,
     evidence: _EngineeringEvidence,
 ) -> tuple[ModuleEngineeringProfile, ...]:
-    modules = (
-        ()
-        if architecture is None or architecture.status != "ready"
-        else architecture.modules
-    )
+    modules = () if architecture is None or architecture.status != "ready" else architecture.modules
     if len(modules) > CODE_ENGINEERING_MODULE_LIMIT:
         raise ValueError("engineering module bound exceeded")
-    return tuple(
-        _module_engineering_profile(module, coverage, evidence) for module in modules
-    )
+    return tuple(_module_engineering_profile(module, coverage, evidence) for module in modules)
 
 
 def _engineering_status(
@@ -637,10 +629,7 @@ def _engineering_digest(
         "mutation_score": mutation_score,
         "limitations": limitations,
     }
-    return (
-        "code-engineering-v1:xxh3_128:"
-        + fingerprint_text(canonical_json(payload)).xxh3_128
-    )
+    return "code-engineering-v2:xxh3_128:" + fingerprint_text(canonical_json(payload)).xxh3_128
 
 
 def analyze_code_engineering(

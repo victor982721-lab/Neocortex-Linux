@@ -919,7 +919,7 @@ def _bounded_engineering_profile_payload(
 ) -> dict[str, object]:
     return {
         "module_id": profile.module_id,
-        "owner_id": profile.owner_id,
+        "path_namespace_id": profile.path_namespace_id,
         "complexity": _bounded_engineering_dimension_payload(profile.complexity),
         "coverage": _bounded_engineering_dimension_payload(profile.coverage),
         "mutation": _bounded_engineering_dimension_payload(profile.mutation),

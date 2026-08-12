@@ -316,7 +316,8 @@ campos legacy todavía usen esa terminología. `--code-review-limit N
 `--code-publication-diff BASELINE_STATE` compara ese baseline con el owner Code
 de `--state-directory`. Es estrictamente read-only y falla cerrado si falta un
 run completado, el schema no coincide o existe cualquier sidecar SQLite. El
-envelope `neocortex.code-publication-diff/v9`, compatible con v1-v8, informa
+envelope `neocortex.code-publication-diff/v10`, sin declarar compatibilidad
+estructural con wires anteriores, informa
 calls comunes y exclusivas, resoluciones nuevas/corregidas/perdidas, cambios de hotspots y el
 delta meramente descriptivo de `probable_dead`. También compara por separado
 los proveedores cuyas firmas coinciden, informa findings añadidos/resueltos,

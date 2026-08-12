@@ -57,17 +57,10 @@ from .external_evidence_store import (
 from .self_analysis_status import require_sqlite_sidecars_absent
 from .semantic_models import canonical_json, fingerprint_text
 
-CODE_PUBLICATION_DIFF_SCHEMA = "neocortex.code-publication-diff/v9"
-CODE_PUBLICATION_DIFF_COMPATIBLE_SCHEMAS = (
-    "neocortex.code-publication-diff/v1",
-    "neocortex.code-publication-diff/v2",
-    "neocortex.code-publication-diff/v3",
-    "neocortex.code-publication-diff/v4",
-    "neocortex.code-publication-diff/v5",
-    "neocortex.code-publication-diff/v6",
-    "neocortex.code-publication-diff/v7",
-    "neocortex.code-publication-diff/v8",
-)
+CODE_PUBLICATION_DIFF_SCHEMA = "neocortex.code-publication-diff/v10"
+# v10 deliberately removes the path-prefix-as-owner projection.  Older wires
+# are therefore neither structurally nor semantically compatible.
+CODE_PUBLICATION_DIFF_COMPATIBLE_SCHEMAS: tuple[str, ...] = ()
 CODE_PUBLICATION_DIFF_EXAMPLE_LIMIT = 20
 _LEGACY_RUFF_COMPARABILITY_REASON = "legacy_ruff_contract_compatibility_projection"
 _RELOCATION_AWARE_PROVIDER_IDS = frozenset({"mypy-trusted-project", "pyright-trusted-project"})
@@ -221,12 +214,12 @@ class CodeModuleArchitectureDelta:
     baseline_directed_degree_centrality: float | None = None
     current_directed_degree_centrality: float | None = None
     directed_degree_centrality_delta: float | None = None
-    baseline_cross_owner_fan_in: int | None = None
-    current_cross_owner_fan_in: int | None = None
-    cross_owner_fan_in_delta: int | None = None
-    baseline_cross_owner_fan_out: int | None = None
-    current_cross_owner_fan_out: int | None = None
-    cross_owner_fan_out_delta: int | None = None
+    baseline_cross_path_namespace_fan_in: int | None = None
+    current_cross_path_namespace_fan_in: int | None = None
+    cross_path_namespace_fan_in_delta: int | None = None
+    baseline_cross_path_namespace_fan_out: int | None = None
+    current_cross_path_namespace_fan_out: int | None = None
+    cross_path_namespace_fan_out_delta: int | None = None
     graph_metrics_status: Literal["comparable", "not_comparable"] = "not_comparable"
     graph_metrics_reason: str | None = "graph_metrics_not_compared"
 
@@ -1403,17 +1396,25 @@ def _architecture_module_deltas(
                     if left is not None and right is not None
                     else None
                 ),
-                baseline_cross_owner_fan_in=(None if left is None else left.cross_owner_fan_in),
-                current_cross_owner_fan_in=(None if right is None else right.cross_owner_fan_in),
-                cross_owner_fan_in_delta=(
-                    right.cross_owner_fan_in - left.cross_owner_fan_in
+                baseline_cross_path_namespace_fan_in=(
+                    None if left is None else left.cross_path_namespace_fan_in
+                ),
+                current_cross_path_namespace_fan_in=(
+                    None if right is None else right.cross_path_namespace_fan_in
+                ),
+                cross_path_namespace_fan_in_delta=(
+                    right.cross_path_namespace_fan_in - left.cross_path_namespace_fan_in
                     if left is not None and right is not None
                     else None
                 ),
-                baseline_cross_owner_fan_out=(None if left is None else left.cross_owner_fan_out),
-                current_cross_owner_fan_out=(None if right is None else right.cross_owner_fan_out),
-                cross_owner_fan_out_delta=(
-                    right.cross_owner_fan_out - left.cross_owner_fan_out
+                baseline_cross_path_namespace_fan_out=(
+                    None if left is None else left.cross_path_namespace_fan_out
+                ),
+                current_cross_path_namespace_fan_out=(
+                    None if right is None else right.cross_path_namespace_fan_out
+                ),
+                cross_path_namespace_fan_out_delta=(
+                    right.cross_path_namespace_fan_out - left.cross_path_namespace_fan_out
                     if left is not None and right is not None
                     else None
                 ),

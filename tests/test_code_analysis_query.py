@@ -302,7 +302,7 @@ def test_diff_query_exposes_provider_category_status_and_delta_filters() -> None
 def test_diff_query_exposes_typed_relocation_with_exact_positions() -> None:
     payload = {
         "kind": "code-publication-diff",
-        "schema": "neocortex.code-publication-diff/v9",
+        "schema": "neocortex.code-publication-diff/v10",
         "status": "ready",
         "providers": [
             {
