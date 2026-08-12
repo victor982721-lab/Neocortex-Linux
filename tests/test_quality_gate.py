@@ -221,7 +221,14 @@ def test_push_ci_uses_dynamic_total_shards_instead_of_manual_test_lists() -> Non
     assert "--tool-receipt" in fast_and_quality
     assert "quality_gate.py tests" in standard
     assert "--no-install-recommends ffmpeg libegl1" in standard
-    assert "choco install ffmpeg --yes --no-progress" in standard
+    assert "choco install ffmpeg" not in standard
+    assert "ffmpeg-9.0-essentials_build.7z" in standard
+    assert (
+        'expectedSha256 = "ffb866303866995734849995027533b9756971215e8c55ef408073628cdc27a2"'
+        in standard
+    )
+    assert "Get-FileHash -Algorithm SHA256" in standard
+    assert "$bin | Out-File -FilePath $env:GITHUB_PATH" in standard
     assert "os: [ubuntu-latest, windows-latest]" in standard
     assert 'python: ["3.13", "3.14"]' in standard
     assert "shard: [0, 1]" in standard

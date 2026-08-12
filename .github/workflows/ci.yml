@@ -226,11 +226,31 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          choco install ffmpeg --yes --no-progress
+          $archive = Join-Path $env:RUNNER_TEMP "ffmpeg-9.0-essentials_build.7z"
+          $runtime = Join-Path $env:RUNNER_TEMP "ffmpeg-9.0"
+          $uri = "https://github.com/GyanD/codexffmpeg/releases/download/9.0/ffmpeg-9.0-essentials_build.7z"
+          $expectedSha256 = "ffb866303866995734849995027533b9756971215e8c55ef408073628cdc27a2"
+          Invoke-WebRequest -Uri $uri -OutFile $archive
+          $observedSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant()
+          if ($observedSha256 -cne $expectedSha256) {
+            throw "FFmpeg archive digest mismatch: $observedSha256"
+          }
+          New-Item -ItemType Directory -Force -Path $runtime | Out-Null
+          7z x -y "-o$runtime" $archive | Out-Null
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          ffmpeg -version | Select-Object -First 1
+          $bin = Join-Path $runtime "ffmpeg-9.0-essentials_build\bin"
+          $ffmpeg = Join-Path $bin "ffmpeg.exe"
+          $ffprobe = Join-Path $bin "ffprobe.exe"
+          if (-not (Test-Path -LiteralPath $ffmpeg -PathType Leaf)) {
+            throw "Verified FFmpeg archive did not contain ffmpeg.exe"
+          }
+          if (-not (Test-Path -LiteralPath $ffprobe -PathType Leaf)) {
+            throw "Verified FFmpeg archive did not contain ffprobe.exe"
+          }
+          $bin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          & $ffmpeg -version | Select-Object -First 1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          ffprobe -version | Select-Object -First 1
+          & $ffprobe -version | Select-Object -First 1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Build constrained wheel
