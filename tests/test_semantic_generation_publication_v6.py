@@ -1651,6 +1651,496 @@ def _create_populated_v5(path: Path) -> tuple[EmbeddingModelSpec, TextChunk]:
     return model, chunk
 
 
+def _create_receiptless_current_base(
+    path: Path,
+) -> tuple[EmbeddingModelSpec, TextChunk, int]:
+    model = _initialize(path)
+    chunk = _stage(path, "receiptless-current", "current receiptless record", 1)
+    generation_id = start_embedding_generation(
+        path,
+        model_signature=model.model_signature,
+        processing_signature="receiptless-current-base-v1",
+        materialize_base=False,
+        started_ns=100,
+    )
+    vector_blob, norm = encode_vector(
+        (1.0, 0.0, 0.0, 0.0),
+        model.dimensions,
+        model.vector_dtype,
+    )
+    with semantic_database(path) as connection:
+        item_revision_id = int(
+            connection.execute(
+                """SELECT item_revision_id FROM semantic_item_revisions
+                WHERE item_id=? ORDER BY item_revision_id DESC LIMIT 1""",
+                (chunk.item_id,),
+            ).fetchone()[0]
+        )
+        chunk_revision_id = int(
+            connection.execute(
+                "SELECT chunk_revision_id FROM semantic_chunk_revisions WHERE chunk_id=?",
+                (chunk.chunk_id,),
+            ).fetchone()[0]
+        )
+        payload_id = int(
+            connection.execute(
+                """INSERT INTO vector_payloads(
+                    model_signature,content_xxh3_128,content_bytes,
+                    content_xxh3_64_guard,dimensions,vector_dtype,vector_blob,
+                    original_norm,provenance_json,created_ns)
+                VALUES(?,?,?,?,?,?,?,?,?,?) RETURNING payload_id""",
+                (
+                    model.model_signature,
+                    chunk.fingerprint.xxh3_128,
+                    chunk.fingerprint.byte_count,
+                    chunk.fingerprint.xxh3_64_guard,
+                    model.dimensions,
+                    model.vector_dtype.value,
+                    vector_blob,
+                    norm,
+                    '{"fixture":"receiptless-current"}',
+                    101,
+                ),
+            ).fetchone()[0]
+        )
+        connection.execute(
+            """INSERT INTO embedding_generation_members(
+                generation_id,model_signature,entity_kind,entity_id,item_id,
+                item_revision_id,chunk_revision_id,payload_id,content_xxh3_128,
+                content_bytes,content_xxh3_64_guard,provenance_json,updated_ns,
+                base_member_id)
+            VALUES(?,?,'text_chunk',?,?,?,?,?,?,?,?,?,102,NULL)""",
+            (
+                generation_id,
+                model.model_signature,
+                chunk.chunk_id,
+                chunk.item_id,
+                item_revision_id,
+                chunk_revision_id,
+                payload_id,
+                chunk.fingerprint.xxh3_128,
+                chunk.fingerprint.byte_count,
+                chunk.fingerprint.xxh3_64_guard,
+                '{"fixture":"receiptless-current"}',
+            ),
+        )
+        connection.execute(
+            """UPDATE embedding_generations
+            SET status='ready',completed_ns=103,done_count=1,base_clone_complete=1
+            WHERE generation_id=?""",
+            (generation_id,),
+        )
+        connection.execute(
+            """INSERT INTO published_embedding_heads(
+                model_signature,generation_id,published_ns) VALUES(?,?,103)""",
+            (model.model_signature, generation_id),
+        )
+    return model, chunk, generation_id
+
+
+def test_unchanged_receiptless_legacy_base_member_replays_without_rebind(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "legacy-base.sqlite3"
+    model, chunk = _create_populated_v5(database)
+    initialize_semantic_state(database)
+    successor = start_embedding_generation(
+        database,
+        model_signature=model.model_signature,
+        processing_signature="legacy-base-successor-v1",
+        materialize_base=False,
+        started_ns=100,
+    )
+
+    assert enqueue_text_chunk_jobs(database, successor, (chunk.chunk_id,), now_ns=101) == 0
+
+    assert (
+        prepare_embedding_generation(
+            database,
+            successor,
+            enumeration_complete=True,
+        )
+        is None
+    )
+    summary = finalize_embedding_generation(database, successor, completed_ns=110)
+
+    assert summary.status == "ready"
+
+    with semantic_database(database, readonly=True) as connection:
+        assert (
+            connection.execute(
+                """SELECT COUNT(*) FROM semantic_work_receipts
+                WHERE generation_id=? AND stage_id='semantic.embedding.clone'""",
+                (successor,),
+            ).fetchone()[0]
+            == 1
+        )
+        assert (
+            connection.execute(
+                """SELECT COUNT(*) FROM embedding_generation_members
+                WHERE generation_id=?""",
+                (successor,),
+            ).fetchone()[0]
+            == 1
+        )
+        assert (
+            connection.execute(
+                """SELECT COUNT(*) FROM embedding_jobs
+                WHERE generation_id=?""",
+                (successor,),
+            ).fetchone()[0]
+            == 0
+        )
+        assert (
+            connection.execute(
+                "SELECT status FROM embedding_generations WHERE generation_id=?",
+                (successor,),
+            ).fetchone()[0]
+            == "ready"
+        )
+
+
+def test_receiptless_legacy_base_member_rebinds_through_exact_attestation(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "legacy-rebind.sqlite3"
+    model, chunk = _create_populated_v5(database)
+    initialize_semantic_state(database)
+    successor = start_embedding_generation(
+        database,
+        model_signature=model.model_signature,
+        processing_signature="legacy-rebind-successor-v1",
+        materialize_base=False,
+        started_ns=100,
+    )
+    with semantic_database(database) as connection:
+        source_revision = json.loads(
+            str(
+                connection.execute(
+                    "SELECT source_revision_json FROM semantic_items WHERE item_id=?",
+                    ("legacy-document",),
+                ).fetchone()[0]
+            )
+        )
+        source_revision["last_seen_run_id"] = 61
+        connection.execute(
+            "UPDATE semantic_items SET source_revision_json=?,updated_ns=? WHERE item_id=?",
+            (
+                json.dumps(source_revision, separators=(",", ":"), sort_keys=True),
+                101,
+                "legacy-document",
+            ),
+        )
+
+    assert enqueue_text_chunk_jobs(database, successor, (chunk.chunk_id,), now_ns=102) == 0
+
+    prepare_embedding_generation(
+        database,
+        successor,
+        enumeration_complete=True,
+    )
+    summary = finalize_embedding_generation(database, successor, completed_ns=110)
+    assert summary.status == "ready"
+
+    with semantic_database(database, readonly=True) as connection:
+        rows = connection.execute(
+            """SELECT stage_id,execution_mode,receipt_key,receipt_json
+            FROM semantic_work_receipts
+            WHERE stage_id IN (
+                'semantic.vector_payload.legacy_attest','semantic.embedding'
+            ) ORDER BY receipt_id"""
+        ).fetchall()
+        member = connection.execute(
+            """SELECT base_member_id,item_revision_id,payload_id
+            FROM embedding_generation_members
+            WHERE generation_id=? AND entity_id=?""",
+            (successor, chunk.chunk_id),
+        ).fetchone()
+    assert [tuple(row[key] for key in ("stage_id", "execution_mode")) for row in rows] == [
+        ("semantic.vector_payload.legacy_attest", "executed"),
+        ("semantic.embedding", "cache_hit"),
+    ]
+    assert json.loads(str(rows[1]["receipt_json"]))["causation_id"] == str(rows[0]["receipt_key"])
+    assert member is not None
+    assert member["base_member_id"] is None
+    assert int(member["item_revision_id"]) > 1
+    assert int(member["payload_id"]) == 1
+
+
+def test_receiptless_nonlegacy_base_member_rebind_stays_fail_closed(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "nonlegacy-rebind.sqlite3"
+    model, chunk, _base = _create_receiptless_current_base(database)
+    with semantic_database(database, readonly=True) as connection:
+        baseline_receipt_count = int(
+            connection.execute("SELECT COUNT(*) FROM semantic_work_receipts").fetchone()[0]
+        )
+    successor = start_embedding_generation(
+        database,
+        model_signature=model.model_signature,
+        processing_signature="nonlegacy-rebind-successor-v1",
+        materialize_base=False,
+        started_ns=100,
+    )
+    upsert_semantic_item(
+        database,
+        SemanticItem(
+            chunk.item_id,
+            "pdf",
+            f"identity:{chunk.item_id}",
+            "fixture-v1",
+            chunk.fingerprint,
+            path=f"C:/fixtures/moved/{chunk.item_id}.pdf",
+            provenance={"fixture": "metadata-move"},
+        ),
+        refresh_token="nonlegacy-metadata-move",
+        updated_ns=101,
+    )
+
+    with pytest.raises(
+        SemanticStateError,
+        match="semantic source embedding member has no exact producer receipt",
+    ):
+        enqueue_text_chunk_jobs(database, successor, (chunk.chunk_id,), now_ns=102)
+
+    with semantic_database(database, readonly=True) as connection:
+        receipt_count = int(
+            connection.execute("SELECT COUNT(*) FROM semantic_work_receipts").fetchone()[0]
+        )
+        target_member_count = int(
+            connection.execute(
+                """SELECT COUNT(*) FROM embedding_generation_members
+                WHERE generation_id=?""",
+                (successor,),
+            ).fetchone()[0]
+        )
+    assert receipt_count == baseline_receipt_count
+    assert target_member_count == 0
+
+
+def test_receiptless_legacy_rebind_rejects_mismatched_candidate_receipt(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "legacy-mismatched-receipt.sqlite3"
+    model, chunk = _create_populated_v5(database)
+    initialize_semantic_state(database)
+    with semantic_database(database) as connection:
+        member_id = int(
+            connection.execute("SELECT member_id FROM embedding_generation_members").fetchone()[0]
+        )
+        connection.execute(
+            """INSERT INTO semantic_work_receipts(
+                receipt_key,contract_version,stage_id,stage_version,
+                processing_signature,status,execution_mode,
+                reproducibility_class,entity_kind,entity_id,receipt_json,
+                committed_ns)
+            VALUES(?,'neocortex.work-receipt/v1','fixture.corrupt','fixture-v1',
+                'fixture-v1','succeeded','unknown','non_replayable',
+                'fixture',?, ?,100)""",
+            (
+                f"fixture-mismatched:{member_id}",
+                str(member_id),
+                json.dumps(
+                    {
+                        "outputs": [
+                            {
+                                "materialization": {
+                                    "materialization_id": (
+                                        f"materialization:semantic:embedding-member:{member_id}"
+                                    )
+                                },
+                                "fingerprint": "not-the-physical-fingerprint",
+                                "fingerprint_algorithm": (
+                                    "semantic-embedding-member-contract-xxh3-128-v1"
+                                ),
+                            }
+                        ]
+                    },
+                    separators=(",", ":"),
+                ),
+            ),
+        )
+        connection.execute(
+            """UPDATE semantic_items SET source_revision_json=?,updated_ns=?
+            WHERE item_id=?""",
+            ('{"last_seen_run_id":61}', 101, chunk.item_id),
+        )
+    successor = start_embedding_generation(
+        database,
+        model_signature=model.model_signature,
+        processing_signature="legacy-mismatch-successor-v1",
+        materialize_base=False,
+        started_ns=102,
+    )
+
+    with pytest.raises(
+        SemanticStateError,
+        match="semantic source embedding member has no exact producer receipt",
+    ):
+        enqueue_text_chunk_jobs(database, successor, (chunk.chunk_id,), now_ns=103)
+
+    with semantic_database(database, readonly=True) as connection:
+        assert (
+            connection.execute(
+                """SELECT COUNT(*) FROM semantic_work_receipts
+                WHERE stage_id IN (
+                    'semantic.vector_payload.legacy_attest','semantic.embedding'
+                )"""
+            ).fetchone()[0]
+            == 0
+        )
+        assert (
+            connection.execute(
+                """SELECT COUNT(*) FROM embedding_generation_members
+                WHERE generation_id=?""",
+                (successor,),
+            ).fetchone()[0]
+            == 0
+        )
+
+
+def test_rebind_rejects_multiple_exact_physical_producers(tmp_path: Path) -> None:
+    database = tmp_path / "multiple-exact-producers.sqlite3"
+    model = _initialize(database)
+    chunk = _stage(database, "multiple-producers", "multiple producer record", 1)
+    baseline = start_embedding_generation(
+        database,
+        model_signature=model.model_signature,
+        processing_signature="multiple-producers-base-v1",
+        started_ns=100,
+    )
+    assert enqueue_text_chunk_jobs(database, baseline, (chunk.chunk_id,), now_ns=101) == 1
+    _complete_jobs(database, baseline, now_ns=102)
+    finalize_embedding_generation(database, baseline, completed_ns=110)
+    with semantic_database(database) as connection:
+        producer = connection.execute(
+            """SELECT * FROM semantic_work_receipts
+            WHERE generation_id=? AND stage_id='semantic.embedding'
+              AND execution_mode='executed'""",
+            (baseline,),
+        ).fetchone()
+        assert producer is not None
+        connection.execute(
+            """INSERT INTO semantic_work_receipts(
+                receipt_key,contract_version,stage_id,stage_version,
+                processing_signature,status,execution_mode,
+                reproducibility_class,entity_kind,entity_id,item_revision_id,
+                chunk_revision_id,generation_id,model_signature,payload_id,
+                job_id,attempt,started_ns,finished_ns,duration_ns,receipt_json,
+                committed_ns)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                f"{producer['receipt_key']}:duplicate-fixture",
+                str(producer["contract_version"]),
+                str(producer["stage_id"]),
+                str(producer["stage_version"]),
+                str(producer["processing_signature"]),
+                str(producer["status"]),
+                str(producer["execution_mode"]),
+                str(producer["reproducibility_class"]),
+                str(producer["entity_kind"]),
+                str(producer["entity_id"]),
+                int(producer["item_revision_id"]),
+                int(producer["chunk_revision_id"]),
+                int(producer["generation_id"]),
+                str(producer["model_signature"]),
+                int(producer["payload_id"]),
+                int(producer["job_id"]),
+                int(producer["attempt"]),
+                int(producer["started_ns"]),
+                int(producer["finished_ns"]),
+                int(producer["duration_ns"]),
+                str(producer["receipt_json"]),
+                111,
+            ),
+        )
+        connection.execute(
+            """UPDATE semantic_items SET source_revision_json=?,updated_ns=?
+            WHERE item_id=?""",
+            ('{"last_seen_run_id":61}', 120, chunk.item_id),
+        )
+    successor = start_embedding_generation(
+        database,
+        model_signature=model.model_signature,
+        processing_signature="multiple-producers-successor-v1",
+        materialize_base=False,
+        started_ns=121,
+    )
+
+    with pytest.raises(
+        SemanticStateError,
+        match="semantic source embedding member has multiple exact producer receipts",
+    ):
+        enqueue_text_chunk_jobs(database, successor, (chunk.chunk_id,), now_ns=122)
+
+    with semantic_database(database, readonly=True) as connection:
+        assert (
+            connection.execute(
+                """SELECT COUNT(*) FROM embedding_generation_members
+                WHERE generation_id=?""",
+                (successor,),
+            ).fetchone()[0]
+            == 0
+        )
+
+
+def test_rebind_exact_producers_are_resolved_once_for_128_members(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "batched-rebind-producers.sqlite3"
+    model, baseline = _completed_generation(
+        database,
+        member_count=128,
+        processing_signature="batched-rebind-base-v1",
+    )
+    for offset in range(3):
+        _complete_jobs(database, baseline, now_ns=200 + offset * 40)
+    finalize_embedding_generation(database, baseline, completed_ns=400)
+    with semantic_database(database) as connection:
+        chunk_ids = tuple(
+            str(row[0])
+            for row in connection.execute(
+                """SELECT entity_id FROM embedding_generation_members
+                WHERE generation_id=? ORDER BY member_id""",
+                (baseline,),
+            )
+        )
+        connection.execute(
+            """UPDATE semantic_items SET source_revision_json=?,updated_ns=?
+            WHERE active=1""",
+            ('{"last_seen_run_id":61}', 410),
+        )
+    assert len(chunk_ids) == 128
+    successor = start_embedding_generation(
+        database,
+        model_signature=model.model_signature,
+        processing_signature="batched-rebind-successor-v1",
+        materialize_base=False,
+        started_ns=420,
+    )
+    original = semantic_generation_repository._producer_receipts_for_embedding_members
+    calls: list[tuple[int, ...]] = []
+
+    def traced_producers(
+        connection: sqlite3.Connection,
+        member_ids: Sequence[int],
+    ) -> dict[int, int]:
+        calls.append(tuple(member_ids))
+        return original(connection, member_ids)
+
+    monkeypatch.setattr(
+        semantic_generation_repository,
+        "_producer_receipts_for_embedding_members",
+        traced_producers,
+    )
+
+    assert enqueue_text_chunk_jobs(database, successor, chunk_ids, now_ns=430) == 0
+    assert len(calls) == 1
+    assert len(calls[0]) == 128
+
+
 def test_building_rows_are_invisible_until_atomic_head_publication(
     tmp_path: Path,
 ) -> None:

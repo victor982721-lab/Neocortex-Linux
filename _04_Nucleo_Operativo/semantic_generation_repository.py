@@ -993,6 +993,15 @@ def _rebind_generation_member(
         connection,
         source_member_id,
     )
+    if source_member_id not in context.source_member_receipts:
+        raise SemanticStateError("semantic rebind member was not causally classified")
+    classified_receipt_id = context.source_member_receipts[source_member_id]
+    source_causation_receipt_id = classified_receipt_id or None
+    # Schema-v5 payloads intentionally predate work receipts.  A physical
+    # member replay therefore has no causal producer to cite.  Re-adopt the
+    # immutable payload through the existing legacy attestation path rather
+    # than fabricating a replay or repeating model work.
+    execution_mode = "replay" if source_causation_receipt_id is not None else "cache_hit"
     source_generation_id = source_member_binding.get("generation_id")
     if source_generation_id == context.generation_id:
         deleted = connection.execute(
@@ -1031,11 +1040,11 @@ def _rebind_generation_member(
         payload_id=int(member["payload_id"]),
         job_id=None if prior is None else int(prior["job_id"]),
         attempt=None,
-        execution_mode="replay",
+        execution_mode=execution_mode,
         now_ns=context.now_ns,
-        source_member_id=source_member_id,
-        source_member_binding=source_member_binding,
-        source_causation_receipt_id=context.source_member_receipts.get(source_member_id),
+        source_member_id=source_member_id if execution_mode == "replay" else None,
+        source_member_binding=(source_member_binding if execution_mode == "replay" else None),
+        source_causation_receipt_id=source_causation_receipt_id,
     )
     if prior is not None:
         connection.execute(
@@ -1098,6 +1107,107 @@ def _reuse_generation_member(
         prior,
     )
     return True, True
+
+
+def _rebind_candidate_member_ids(
+    connection: sqlite3.Connection,
+    context: _QueueJobContext,
+    ordered_rows: tuple[sqlite3.Row, ...],
+    members: Mapping[str, sqlite3.Row],
+) -> tuple[int, ...]:
+    item_revisions: dict[str, int] = {}
+    candidates: list[int] = []
+    for row in ordered_rows:
+        member = members.get(str(row["entity_id"]))
+        if member is None or not _same_fingerprint(member, _fingerprint_from_row(row)):
+            continue
+        if context.entity_kind is SemanticEntityKind.TEXT_CHUNK:
+            try:
+                _snapshot_chunk_revision(
+                    connection,
+                    str(row["entity_id"]),
+                    _fingerprint_from_row(row),
+                    context.now_ns,
+                    require_published=True,
+                )
+            except StaleEmbeddingJobError:
+                continue
+        item_revision_id, chunk_revision_id = _snapshot_queue_revisions(
+            connection,
+            context,
+            row,
+            item_revisions,
+        )
+        prior_item_revision_id = int(member["item_revision_id"])
+        prior_chunk_revision_id = (
+            None if member["chunk_revision_id"] is None else int(member["chunk_revision_id"])
+        )
+        if (
+            item_revision_id != prior_item_revision_id
+            and chunk_revision_id == prior_chunk_revision_id
+            and _same_item_identity(
+                connection,
+                prior_item_revision_id,
+                item_revision_id,
+            )
+        ):
+            candidates.append(int(member["member_id"]))
+    return tuple(candidates)
+
+
+def _rebind_source_member_receipts(
+    connection: sqlite3.Connection,
+    member_ids: tuple[int, ...],
+) -> dict[int, int]:
+    classified: dict[int, int] = {}
+    for offset in range(0, len(member_ids), 250):
+        batch = tuple(dict.fromkeys(member_ids[offset : offset + 250]))
+        if not batch:
+            continue
+        placeholders = ",".join("?" for _ in batch)
+        member_rows = connection.execute(
+            f"""SELECT member.member_id,payload.legacy_before_receipts
+            FROM embedding_generation_members member
+            JOIN vector_payloads payload ON payload.payload_id=member.payload_id
+            WHERE member.member_id IN ({placeholders})""",
+            batch,
+        ).fetchall()
+        legacy_by_member = {
+            int(row["member_id"]): bool(row["legacy_before_receipts"]) for row in member_rows
+        }
+        missing = set(batch).difference(legacy_by_member)
+        if missing:
+            raise SemanticStateError(
+                f"semantic source embedding member disappeared: {min(missing)}"
+            )
+        materialization_to_member = {
+            f"materialization:semantic:embedding-member:{member_id}": member_id
+            for member_id in batch
+        }
+        placeholders = ",".join("?" for _ in materialization_to_member)
+        receipt_rows = connection.execute(
+            f"""SELECT DISTINCT
+                json_extract(output.value,'$.materialization.materialization_id')
+                  AS materialization_id
+            FROM semantic_work_receipts receipt,
+                 json_each(receipt.receipt_json,'$.outputs') output
+            WHERE json_extract(
+                output.value,'$.materialization.materialization_id'
+            ) IN ({placeholders})""",
+            tuple(materialization_to_member),
+        ).fetchall()
+        attributed = {
+            materialization_to_member[str(row["materialization_id"])] for row in receipt_rows
+        }
+        unattributed_legacy = {
+            member_id
+            for member_id in batch
+            if legacy_by_member[member_id] and member_id not in attributed
+        }
+        required = tuple(member_id for member_id in batch if member_id not in unattributed_legacy)
+        classified.update(_producer_receipts_for_embedding_members(connection, required))
+        classified.update((member_id, 0) for member_id in unattributed_legacy)
+    return classified
 
 
 def _select_queue_rows(
@@ -1242,6 +1352,12 @@ def _queue_job_rows_bounded(
         generation,
         identifiers,
     )
+    rebind_member_ids = _rebind_candidate_member_ids(
+        connection,
+        context,
+        ordered_rows,
+        members,
+    )
     context = _QueueJobContext(
         generation_id,
         model.model_signature,
@@ -1249,9 +1365,9 @@ def _queue_job_rows_bounded(
         role,
         max_attempts,
         now_ns,
-        _producer_receipts_for_embedding_members(
+        _rebind_source_member_receipts(
             connection,
-            tuple(int(member["member_id"]) for member in members.values()),
+            rebind_member_ids,
         ),
     )
     selection = _select_queue_rows(
