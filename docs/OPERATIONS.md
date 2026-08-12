@@ -399,12 +399,19 @@ bytes/analyze/persist/graph y 14 replays; `installed-package-inventory` se
 recalculó. Las consultas read-only status, review y diff tardaron 38.982,
 47.675 y 57.856 s. Esos artefactos históricos usaron architecture v2,
 engineering v1, review v10 y publication diff v8. El contrato vigente de review
-es `neocortex.code-review/v13`, no declara schemas compatibles, publica
+es `neocortex.code-review/v14`, no declara schemas compatibles, publica
 observaciones estructurales con inferencia abstained y evidencia enlazada a IDs
 Code después de resolución read-only; incluye clases seleccionadas por superficie
 AST directa, con umbrales provisionales explícitos, y no genera recomendaciones
 ni paquetes de cambio. Sólo puede publicar paquetes
 `unused_characterization`, advisory y sin autoridad de mutación.
+
+En el estado canónico, v14 consulta además Text/Semantic mediante conexiones
+`immutable=1` y fences de main/WAL/SHM; nunca checkpointa ni elimina sidecars.
+Un WAL no vacío, layout no demostrado o cambio de fence produce abstención de
+esa dimensión. `aligned` significa exclusivamente igualdad de sets en el head
+publicado y contratos owner/materialization correctos; no demuestra crash
+recovery ni atomicidad cross-owner.
 
 El manifest guarda `Neocortex` como primer elemento de su argv canónico. Antes
 de promover el launcher estable, use la ruta exacta del runtime versionado para

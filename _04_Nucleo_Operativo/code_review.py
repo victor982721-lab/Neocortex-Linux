@@ -66,6 +66,10 @@ from .code_review_work_packages import (
     CODE_REVIEW_PLANNING,
     plan_code_review_work_packages,
 )
+from .code_state_projection_analysis import (
+    abstained_code_state_projection,
+    analyze_text_semantic_projection,
+)
 from .code_schema import (
     CODE_SCHEMA_VERSION,
     readonly_code_database,
@@ -906,6 +910,20 @@ def review_code_state(
             )
     except CodeReviewEvidenceResolutionError:
         return _abstained(path, "code_review_evidence_unresolvable")
+    try:
+        from .app_paths import self_analysis_data_directory
+
+        if state_directory.resolve() == self_analysis_data_directory().resolve():
+            state_projection = analyze_text_semantic_projection(
+                self_analysis_data_directory().parent / "state",
+                source_version=CODE_REVIEW_SCHEMA,
+            )
+        else:
+            state_projection = abstained_code_state_projection(
+                "document_state_not_configured_for_noncanonical_code_review"
+            )
+    except (OSError, RuntimeError, ValueError):
+        state_projection = abstained_code_state_projection("document_state_boundary_unresolvable")
     limitation_tuple = tuple(limitations)
     return CodeReviewResult(
         database=str(path),
@@ -931,6 +949,7 @@ def review_code_state(
         supply_chain=read.supply_chain,
         engineering_analytics=read.engineering_analytics,
         structural_analysis=structural_analysis,
+        state_projection=state_projection,
         question_specs=question_specs,
         question_evaluations=question_evaluations,
         limitations=limitation_tuple,
@@ -953,6 +972,7 @@ def review_code_state(
             test_coverage=read.test_coverage,
             engineering_analytics=read.engineering_analytics,
             structural_analysis=structural_analysis,
+            state_projection=state_projection,
             unused_analysis=read.unused_analysis,
             supply_chain=read.supply_chain,
             question_specs=question_specs,

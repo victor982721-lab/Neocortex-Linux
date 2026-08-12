@@ -609,10 +609,15 @@ def test_review_ranks_confirmed_hotspots_deterministically_with_diversity(
 
     assert first.status == "ready"
     assert first_json == second_json
-    assert first.as_payload()["schema"] == "neocortex.code-review/v13"
+    assert first.as_payload()["schema"] == "neocortex.code-review/v14"
     assert first.as_payload()["compatible_schemas"] == []
     assert first.supply_chain is not None
     assert first.supply_chain.status == "abstained"
+    assert first.state_projection is not None
+    assert first.state_projection.status == "abstained"
+    assert first.state_projection.reason == (
+        "document_state_not_configured_for_noncanonical_code_review"
+    )
     assert len(first.findings) == 10
     assert len(expanded.findings) == 11
     assert expanded.findings[:10] == first.findings

@@ -1313,6 +1313,22 @@ def _emit_code_review_supply_chain_result(result: CodeReviewResult) -> None:
 
 
 def _emit_code_review_ranked_evidence(result: CodeReviewResult) -> None:
+    state_projection = getattr(result, "state_projection", None)
+    if state_projection is not None:
+        _print_console_line(
+            "CODE_STATE_PROJECTION "
+            f"status={state_projection.status} "
+            f"reason={json.dumps(state_projection.reason, ensure_ascii=True)} "
+            f"policy={state_projection.policy_id} "
+            f"observation={state_projection.observation} "
+            f"inference={state_projection.inference_status} "
+            f"decision={state_projection.decision_readiness} "
+            f"heads={len(state_projection.heads)} "
+            f"eligible_text={state_projection.eligible_text_rows} "
+            f"excluded_empty={state_projection.excluded_empty_text_rows} "
+            f"authority={state_projection.authority} "
+            f"mutation_authority={int(state_projection.mutation_authority)}"
+        )
     structural = getattr(result, "structural_analysis", None)
     if structural is not None:
         _print_console_line(

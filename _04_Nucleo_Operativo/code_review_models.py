@@ -47,11 +47,12 @@ from .code_review_serialization import (
     CodeReviewDigest,
     rebuild_code_review_result_digest,
 )
+from .code_state_projection_analysis import CodeStateProjectionAnalysis
 from .external_evidence_models import ExternalEvidenceSuiteStatus
 from .semantic_models import canonical_json, fingerprint_text
 
-# v13 adds a resolved class-surface observation family.  Earlier contracts
-# cannot satisfy the expanded epistemic coverage, so no compatibility is
+# v14 adds an independently bounded Text/Semantic published-state projection.
+# Earlier contracts cannot satisfy the expanded wire, so no compatibility is
 # claimed without an explicit adapter.
 CODE_REVIEW_COVERAGE_EXAMPLE_LIMIT = 20
 CODE_REVIEW_ENGINEERING_EXAMPLE_LIMIT = 20
@@ -229,7 +230,7 @@ class CodeReviewFinding:
             raise ValueError("invalid structural observation-confidence scope")
         if self.recommended_change or self.actionability == "act_now":
             raise ValueError(
-                "code-review/v13 structural findings cannot authorize a change recommendation"
+                "code-review/v14 structural findings cannot authorize a change recommendation"
             )
         expected_actionability = (
             "characterize_first"
@@ -360,7 +361,7 @@ class CodeReviewRecommendation:
     recommended_validation: tuple[str, ...]
 
     def __post_init__(self) -> None:
-        raise ValueError("code-review/v13 cannot construct semantic change recommendations")
+        raise ValueError("code-review/v14 cannot construct semantic change recommendations")
 
 
 @dataclass(frozen=True, slots=True)
@@ -414,7 +415,7 @@ class CodeReviewWorkPackage:
         if self.mutation_authority:
             raise ValueError("code review work package cannot authorize mutation")
         if self.package_kind != "unused_characterization":
-            raise ValueError("code-review/v13 only supports unused-code characterization packages")
+            raise ValueError("code-review/v14 only supports unused-code characterization packages")
         if not self.steps or any(step.phase != "characterize" for step in self.steps):
             raise ValueError("unused-code package may contain characterization steps only")
         if len(self.unused_candidates) != 1 or any(
@@ -592,6 +593,7 @@ class CodeReviewResult:
     supply_chain: CodeSupplyChainAnalysis | None = None
     engineering_analytics: CodeEngineeringAnalytics | None = None
     structural_analysis: CodeClassSurfaceAnalysis | None = None
+    state_projection: CodeStateProjectionAnalysis | None = None
     question_specs: tuple[AnalysisQuestionSpec, ...] = ()
     question_evaluations: tuple[AnalysisQuestionEvaluation, ...] = ()
 
@@ -603,15 +605,15 @@ class CodeReviewResult:
         if self.work_package_status not in {"ready", "abstained", "not_evaluated"}:
             raise ValueError("invalid code-review work-package status")
         if self.recommendations:
-            raise ValueError("code-review/v13 cannot publish semantic change recommendations")
+            raise ValueError("code-review/v14 cannot publish semantic change recommendations")
         if self.recommendation_status == "ready":
-            raise ValueError("code-review/v13 recommendation status must abstain")
+            raise ValueError("code-review/v14 recommendation status must abstain")
         if self.recommendation_status == "abstained" and not self.recommendation_reason:
             raise ValueError("abstained recommendation status requires a reason")
         if self.recommendation_status == "not_evaluated" and not self.recommendation_reason:
             raise ValueError("not-evaluated recommendation status requires a reason")
         if any(package.package_kind != "unused_characterization" for package in self.work_packages):
-            raise ValueError("code-review/v13 cannot publish hotspot change packages")
+            raise ValueError("code-review/v14 cannot publish hotspot change packages")
         if (self.work_package_status == "ready") != bool(self.work_packages):
             raise ValueError("work-package readiness must match published packages")
         if self.work_package_status == "ready" and self.work_package_reason is not None:
@@ -640,6 +642,7 @@ class CodeReviewResult:
                 or self.findings
                 or self.work_packages
                 or self.structural_analysis is not None
+                or self.state_projection is not None
                 or self.question_specs
                 or self.question_evaluations
             ):
@@ -651,6 +654,8 @@ class CodeReviewResult:
             raise ValueError("ready code-review result requires an evidence digest")
         if self.structural_analysis is None:
             raise ValueError("ready code-review result requires resolved structural analysis")
+        if self.state_projection is None:
+            raise ValueError("ready code-review result requires a state projection result")
         if rebuild_code_review_result_digest(self) != self.digest:
             raise ValueError("code-review result digest disagrees with published evidence")
         validate_analysis_question_set(self.question_specs, self.question_evaluations)
@@ -723,6 +728,9 @@ class CodeReviewResult:
             ),
             "structural_analysis": (
                 None if self.structural_analysis is None else self.structural_analysis.as_payload()
+            ),
+            "state_projection": (
+                None if self.state_projection is None else self.state_projection.as_payload()
             ),
             "epistemics": analysis_questions_payload(
                 self.question_specs,
@@ -1015,7 +1023,7 @@ def build_code_review_recommendations(
 ) -> tuple[CodeReviewRecommendation, ...]:
     """Abstain until an independently resolvable decision-evidence model exists.
 
-    ``code-review/v13`` observes structural hotspots but deliberately exposes no
+    ``code-review/v14`` observes structural hotspots but deliberately exposes no
     factory for a semantic change decision.  Keeping the fail-closed boundary
     here prevents a legacy flag or a manually assembled object from reviving
     the former name-based recommendation path.

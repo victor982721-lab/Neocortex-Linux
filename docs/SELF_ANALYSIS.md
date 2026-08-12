@@ -407,7 +407,7 @@ explícitamente como **convención de ruta**, no como ownership ni reachability 
 runtime. `hotspot_id` identifica establemente la evidencia física y el símbolo;
 `finding_id` identifica la interpretación versionada.
 
-El envelope vigente es `neocortex.code-review/v13` y no declara compatibilidad
+El envelope vigente es `neocortex.code-review/v14` y no declara compatibilidad
 con schemas anteriores: conserva el corte de autoridad y usa el contrato general
 `neocortex.code-analysis-epistemics/v1`. Cada finding separa
 observación, hipótesis, readiness
@@ -436,8 +436,25 @@ declarativa, protocolaria o un composition root intencional. Hasta resolver rol,
 consumidores, cohesión método-estado, historia y contraevidencia, toda evaluación
 queda `experiment_required`, sin recomendación ni autoridad de mutación.
 
+La primera pregunta durable cross-owner no intenta fabricar un grafo SQL.
+`neocortex.code-state-projection/v1` compara, por modelo de texto publicado, el
+set de `documents.revision_id` realmente elegible para el adaptador Text con el
+set de revisiones capturado en `embedding_generation_members` y
+`semantic_item_revisions` del head Semantic. Verifica además owner `text` y
+materialización `text_representation`. Cada owner se abre por separado con
+`immutable=1`; el lector exige schema actual, contrato exacto, WAL de cero bytes
+o ausencia de sidecars y fences idénticos antes/después. No usa `ATTACH`, no
+escribe, no checkpointa y no llama transacción distribuida a la comparación.
+
+Una fila Text `complete` con cero caracteres se conserva como control excluido,
+no como revisión faltante. `aligned` y `delta_observed` son observaciones; ambas
+mantienen inferencia `abstained`, decisión `experiment_required` y
+`mutation_authority=false`. Un delta exige inspeccionar build, freshness,
+recovery y reconciliación antes de formular una hipótesis de corrupción. Incluso
+una alineación exacta no prueba muerte de proceso, power loss ni recovery.
+
 `recommendations` permanece vacío y `recommendation_status=abstained` porque
-v13 todavía no tiene un resolver independiente que enlace evidencia de
+v14 todavía no tiene un resolver independiente que enlace evidencia de
 comportamiento/contrato, contraevidencia y resultado experimental. Nombres como
 `repository`, `commit`, `build`, `read` o `run`, mover el archivo o añadir un
 wrapper no pueden producir una recomendación. Los constructors y factories
@@ -478,12 +495,12 @@ los top 40 de ambos rankings, 41 símbolos etiquetados como builders,
 validadores, reglas, algoritmos y orquestadores. El ranking v2 elevó la
 `Precision@10` provisional de 0.60 a 0.70 y dejó iguales P@20, P@30 y P@40;
 `build_parser` pasó del rango 2 al 39. Es revisión estática reproducible, no
-ground truth humano, y el score sigue sin representar riesgo calibrado. v13
+ground truth humano, y el score sigue sin representar riesgo calibrado. v14
 las conserva sólo como evidencia histórica y regresión; no autorizan una
 decisión ni un package de cambio.
 
 Los párrafos rc14–rc20 siguientes documentan resultados del contrato anterior;
-no representan autoridad vigente de v13. La regresión temporal rc14 retira
+no representan autoridad vigente de v14. La regresión temporal rc14 retira
 `execute_knowledge_search`: el rango bruto 1,
 `GoldenCase._validate_required_feature`, queda como
 `validator/characterize_first`, mientras

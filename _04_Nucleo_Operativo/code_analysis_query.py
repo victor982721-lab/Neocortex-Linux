@@ -14,6 +14,7 @@ from .code_class_surface_analysis import (
     expected_class_surface_questions,
     parse_code_class_surface_payload,
 )
+from .code_state_projection_analysis import parse_code_state_projection_payload
 from .code_review_epistemics import STRUCTURAL_HOTSPOT_QUESTION
 from .code_schema import CODE_SCHEMA_VERSION
 from .semantic_models import canonical_json
@@ -39,6 +40,7 @@ _CODE_REVIEW_V10 = "neocortex.code-review/v10"
 _CODE_REVIEW_V11 = "neocortex.code-review/v11"
 _CODE_REVIEW_V12 = "neocortex.code-review/v12"
 _CODE_REVIEW_V13 = "neocortex.code-review/v13"
+_CODE_REVIEW_V14 = "neocortex.code-review/v14"
 _CODE_ANALYSIS_EPISTEMICS_V1 = "neocortex.code-analysis-epistemics/v1"
 _UNUSED_V11_STEP_REQUIREMENTS = (
     "verify_import_reexport_callback_registry_protocol_and_entry_point_usage",
@@ -1045,7 +1047,7 @@ def _source_limitations(payload: Mapping[str, object], status: str) -> list[str]
         reason = _first_text(payload, "reason") or "source_publication_not_ready"
         limitations.append(reason)
     limitations.append("explicit_public_projection_only")
-    if payload.get("schema") in {_CODE_REVIEW_V12, _CODE_REVIEW_V13}:
+    if payload.get("schema") in {_CODE_REVIEW_V12, _CODE_REVIEW_V13, _CODE_REVIEW_V14}:
         limitations.append("query_adapter_does_not_reopen_source_records")
     return _dimension_values(limitations)
 
@@ -1480,6 +1482,26 @@ def _validate_review_v13_payload(payload: Mapping[str, object]) -> None:
         raise ValueError("code-review/v13 structural projection is malformed") from exc
 
 
+def _validate_review_v14_payload(payload: Mapping[str, object]) -> None:
+    """Validate v14's structural wire plus bounded state-projection receipt."""
+
+    projected = dict(payload)
+    projected["schema"] = _CODE_REVIEW_V13
+    projected.pop("state_projection", None)
+    _validate_review_v13_payload(projected)
+    state_projection = _mapping(payload.get("state_projection"))
+    if payload.get("status") == "abstained":
+        if state_projection is not None:
+            raise ValueError("abstained code-review/v14 payload asserts a state projection")
+        return
+    if state_projection is None:
+        raise ValueError("ready code-review/v14 payload lacks a state projection")
+    try:
+        parse_code_state_projection_payload(state_projection)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("code-review/v14 state projection is malformed") from exc
+
+
 def query_code_analysis(
     payload: Mapping[str, object],
     query: CodeAnalysisQuery,
@@ -1498,7 +1520,9 @@ def query_code_analysis(
         )
     if query.surface == "review":
         review_schema = payload.get("schema")
-        if review_schema == _CODE_REVIEW_V13:
+        if review_schema == _CODE_REVIEW_V14:
+            _validate_review_v14_payload(payload)
+        elif review_schema == _CODE_REVIEW_V13:
             _validate_review_v13_payload(payload)
         elif review_schema == _CODE_REVIEW_V12:
             _validate_review_v12_payload(payload)

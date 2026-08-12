@@ -276,7 +276,7 @@ review y work packages consumen la misma evidencia; la ausencia o caducidad de
 un proveedor obliga a abstener sólo la dimensión afectada.
 
 `--code-review` consume esa publicación sin volver a analizar la raíz. El
-envelope `neocortex.code-review/v13` no declara compatibilidad con schemas
+envelope `neocortex.code-review/v14` no declara compatibilidad con schemas
 anteriores. Usa `neocortex.code-analysis-epistemics/v1`, una proyección general
 de preguntas con fingerprint de spec y evidencia resuelta contra IDs de
 registros Code. Publica observaciones estructurales confirmadas y separa hipótesis,
@@ -293,6 +293,15 @@ No deduce rol, ownership, cohesión, consumidores ni riesgo desde el nombre o la
 ruta; una clase de pruebas, un `Protocol` o un composition root siguen visibles
 como controles negativos y quedan `experiment_required`. El límite solicitado
 se aplica por familia de pregunta.
+
+Cuando `--code-review` consume el estado canónico protegido, v14 también publica
+`neocortex.code-state-projection/v1`. La observación compara revisiones Text
+elegibles (`complete`, revisión presente, blob presente y `text_chars > 0`) con
+miembros del head Semantic de texto publicado. Las lecturas usan `immutable=1`,
+exigen WAL vacío/sidecars inactivos y verifican fences antes/después. En un
+estado de fixture o una ruta no canónica esta dimensión se abstiene con
+`document_state_not_configured_for_noncanonical_code_review`; no busca ni crea
+otro estado por convención de ruta.
 
 El planificador v5 puede entregar, de forma independiente, hasta tres paquetes
 `unused_characterization` únicamente cuando pasan los gates de precisión de
