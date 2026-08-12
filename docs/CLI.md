@@ -276,34 +276,22 @@ review y work packages consumen la misma evidencia; la ausencia o caducidad de
 un proveedor obliga a abstener sólo la dimensión afectada.
 
 `--code-review` consume esa publicación sin volver a analizar la raíz. El
-envelope `neocortex.code-review/v10` conserva compatibilidad con v2-v9 y
-la proyección Ruff legacy —hasta 10 hotspots brutos por defecto y tres
-recomendaciones `act_now`—. Añade `external_evidence_suite` sin modificar el
-ranking, además de un `work_package`
-determinista con una sola recomendación raíz, guards alcanzados por llamadas
-confirmadas a uno o dos saltos, riesgo agregado, módulo primario, contratos
-afectados, cadenas de imports acotadas, pruebas protectoras observadas, líneas y
-ramas faltantes, evidencia y gates de supply chain, pasos y gates. Los gates
-profundos son `tests_passed`,
-`coverage_available`, `work_package_target_protected`,
-`line_coverage_not_degraded` y `branch_coverage_not_degraded`; ausencia o falta
-de comparabilidad nunca aprueba uno. El planificador v4 conserva como máximo un
-paquete de mantenimiento y puede entregar, de forma independiente, hasta tres
-paquetes `unused_characterization`. Sólo los crea para
-`probable_unused_high_consensus` cuando pasan los gates de precisión de
-calibración y holdout; exigen revisión dinámica, pruebas y confirmación humana,
-y declaran `mutation_authority=false`. El work package enlaza además el perfil
-y los gates de `engineering_analytics`; en la validación H6 su objetivo fue
-`_04_Nucleo_Operativo.external_deep_coverage` /
-`external_deep_coverage._normalize`. El pool del
-planificador siempre es el top 50, independientemente de la vista; no
-agrupa por nombre o directorio y los guards exigen caracterización antes de
-cualquier cambio. `--code-review-limit N --code-json` permite inspeccionar entre
-1 y 50 hotspots; valores mayores a 10 exigen JSON. No admite `--apply`, `--route`
-ni otra operación directa. Un snapshot full completado con USN indisponible
-sigue siendo consultable como `freshness=publication_only` y `current=false`;
-journal avanzado/discontinuo, manifest inválido o vínculo de raíz/framework
-incompatible devuelve `2` sin crear estado.
+envelope `neocortex.code-review/v11` no declara compatibilidad con schemas
+anteriores. Publica observaciones estructurales confirmadas y separa hipótesis,
+readiness de pregunta, evidencia faltante, contraevidencia, siguiente acción y
+readiness de decisión. Los hotspots quedan `experiment_required`, con
+`construction=unknown`, `change_risk=unknown`, cero recomendaciones y cero
+packages de cambio.
+
+El planificador v5 puede entregar, de forma independiente, hasta tres paquetes
+`unused_characterization` únicamente cuando pasan los gates de precisión de
+calibración y holdout. Todos sus pasos son de caracterización, exigen revisión
+dinámica y confirmación humana, y declaran `mutation_authority=false`. La
+proyección Coverage demuestra ejecución por una suite passing y líneas/ramas no
+observadas; no demuestra que un test proteja un invariante, aunque algunos
+campos legacy todavía usen esa terminología. `--code-review-limit N
+--code-json` permite inspeccionar entre 1 y 50 hotspots. No admite `--apply`,
+`--route` ni otra operación directa.
 
 `--code-publication-diff BASELINE_STATE` compara ese baseline con el owner Code
 de `--state-directory`. Es estrictamente read-only y falla cerrado si falta un

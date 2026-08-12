@@ -23,6 +23,14 @@ _DIMENSIONS = (
 )
 _ENGINEERING_DIMENSIONS = ("complexity", "coverage", "mutation", "history", "graph")
 _SCALAR_TYPES = (str, int, float, bool)
+_CODE_REVIEW_V10 = "neocortex.code-review/v10"
+_CODE_REVIEW_V11 = "neocortex.code-review/v11"
+_UNUSED_V11_STEP_REQUIREMENTS = (
+    "verify_import_reexport_callback_registry_protocol_and_entry_point_usage",
+    "run_targeted_tests_and_public_import_smoke_without_mutating_code",
+    "record_explicit_human_confirmation_or_reclassify_with_new_evidence",
+    "require_comparable_unused_analysis_replay_before_any_separate_change",
+)
 
 
 def _normalize_filter(values: tuple[str, ...], *, name: str) -> tuple[str, ...]:
@@ -482,6 +490,17 @@ def _extract_review(payload: Mapping[str, object]) -> list[dict[str, object]]:
             for diagnostic in _mapping_items(finding.get("diagnostics"))
             for code in _texts(diagnostic, "code")
         ]
+        epistemic = _mapping(finding.get("epistemic_state")) or {}
+        epistemic_statuses = tuple(
+            f"{prefix}:{value}"
+            for prefix, field_name in (
+                ("observation", "observation_status"),
+                ("inference", "inference_status"),
+                ("question", "question_readiness"),
+                ("decision", "decision_readiness"),
+            )
+            for value in _texts(epistemic, field_name)
+        )
         records.append(
             _record(
                 record_type="review_finding",
@@ -490,7 +509,10 @@ def _extract_review(payload: Mapping[str, object]) -> list[dict[str, object]]:
                 providers=_provider_values(finding),
                 categories=("finding", category, *diagnostic_codes),
                 modules=_module_values(finding),
-                statuses=_texts(finding, "actionability", "confidence", "change_risk"),
+                statuses=(
+                    *_texts(finding, "actionability", "observation_confidence", "change_risk"),
+                    *epistemic_statuses,
+                ),
                 facts=_facts(
                     finding,
                     "symbol",
@@ -499,6 +521,7 @@ def _extract_review(payload: Mapping[str, object]) -> list[dict[str, object]]:
                     "complexity",
                     "function_lines",
                     "actionability",
+                    "observation_confidence",
                     "recommended_change",
                     "change_risk",
                 ),
@@ -953,6 +976,106 @@ def _source_limitations(payload: Mapping[str, object], status: str) -> list[str]
     return _dimension_values(limitations)
 
 
+def _validate_review_v11_payload(payload: Mapping[str, object]) -> None:
+    """Reject mappings that claim v11 while violating its fail-closed wire contract."""
+
+    status = payload.get("status")
+    if status not in {"ready", "abstained"}:
+        raise ValueError("code-review/v11 status is invalid")
+    findings = _mapping_items(payload.get("findings"))
+    recommendations = _mapping_items(payload.get("recommendations"))
+    work_packages = _mapping_items(payload.get("work_packages"))
+    recommendation_status = payload.get("recommendation_status")
+    if recommendation_status not in {"abstained", "not_evaluated"}:
+        raise ValueError("code-review/v11 recommendation status is invalid")
+    if recommendations:
+        raise ValueError("code-review/v11 cannot contain semantic change recommendations")
+    if not _first_text(payload, "recommendation_reason"):
+        raise ValueError("code-review/v11 recommendation abstention requires a reason")
+    work_package_status = payload.get("work_package_status", "abstained")
+    if work_package_status not in {"ready", "abstained", "not_evaluated"}:
+        raise ValueError("code-review/v11 work-package status is invalid")
+    if (work_package_status == "ready") != bool(work_packages):
+        raise ValueError("code-review/v11 work-package readiness is inconsistent")
+    work_package_reason = _first_text(payload, "work_package_reason")
+    if (work_package_status == "ready") == (work_package_reason is not None):
+        raise ValueError("code-review/v11 work-package reason is inconsistent")
+    if status == "abstained":
+        asserted_envelopes = (
+            "snapshot",
+            "coverage",
+            "digest",
+            "external_evidence",
+            "external_evidence_suite",
+            "architecture",
+            "test_coverage",
+            "unused_analysis",
+            "supply_chain",
+            "engineering_analytics",
+        )
+        if (
+            not _first_text(payload, "reason")
+            or findings
+            or work_packages
+            or any(payload.get(name) is not None for name in asserted_envelopes)
+        ):
+            raise ValueError("abstained code-review/v11 payload contains asserted evidence")
+        return
+    if _first_text(payload, "reason") is not None:
+        raise ValueError("ready code-review/v11 payload carries an abstention reason")
+    for required in ("snapshot", "coverage", "digest"):
+        if _mapping(payload.get(required)) is None:
+            raise ValueError(f"ready code-review/v11 payload lacks {required}")
+    for finding in findings:
+        epistemic = _mapping(finding.get("epistemic_state"))
+        if (
+            finding.get("recommended_change") is not False
+            or finding.get("construction") != "unknown"
+            or finding.get("change_risk") != "unknown"
+            or finding.get("actionability") != "characterize_first"
+            or epistemic is None
+            or epistemic.get("observation_status") != "confirmed"
+            or epistemic.get("inference_status") != "abstained"
+            or epistemic.get("question_readiness") != "ready"
+            or epistemic.get("decision_readiness") != "experiment_required"
+            or epistemic.get("decision") is not None
+            or epistemic.get("authority") != "advisory"
+            or epistemic.get("mutation_authority") is not False
+            or not _mapping_items(finding.get("diagnostics"))
+        ):
+            raise ValueError("code-review/v11 finding violates its observation-only contract")
+    for package in work_packages:
+        steps = _mapping_items(package.get("steps"))
+        requirements = tuple(_first_text(step, "requirement") for step in steps)
+        candidates = _mapping_items(package.get("unused_candidates"))
+        candidate = candidates[0] if len(candidates) == 1 else None
+        candidate_id = None if candidate is None else _first_text(candidate, "candidate_id")
+        target = None if candidate is None else _first_text(candidate, "symbol", "name")
+        if (
+            package.get("package_kind") != "unused_characterization"
+            or package.get("objective")
+            != "characterize_high_consensus_unused_candidate_without_mutation"
+            or package.get("change_risk") != "unknown"
+            or _mapping_items(package.get("members"))
+            or package.get("requires_human_confirmation") is not True
+            or package.get("mutation_authority") is not False
+            or package.get("confidence") != "unused_high_consensus_advisory"
+            or candidate is None
+            or candidate.get("state") != "probable_unused_high_consensus"
+            or candidate.get("authority") != "advisory"
+            or candidate.get("mutation_authority") is not False
+            or not candidate_id
+            or not target
+            or _first_text(package, "primary_finding_id") != candidate_id
+            or _first_text(package, "primary_hotspot_id") != candidate_id
+            or _first_text(package, "primary_symbol") != target
+            or _first_text(package, "title") != f"{target} unused-code characterization"
+            or tuple(_first_text(step, "phase") for step in steps) != ("characterize",) * 4
+            or requirements != _UNUSED_V11_STEP_REQUIREMENTS
+        ):
+            raise ValueError("code-review/v11 work package violates characterization-only policy")
+
+
 def query_code_analysis(
     payload: Mapping[str, object],
     query: CodeAnalysisQuery,
@@ -969,6 +1092,12 @@ def query_code_analysis(
         raise ValueError(
             f"{query.surface} query requires kind {expected_kind!r}, got {actual_kind!r}"
         )
+    if query.surface == "review":
+        review_schema = payload.get("schema")
+        if review_schema == _CODE_REVIEW_V11:
+            _validate_review_v11_payload(payload)
+        elif review_schema != _CODE_REVIEW_V10:
+            raise ValueError(f"unsupported code-review schema: {review_schema!r}")
     extractors = {
         "status": _extract_status,
         "review": _extract_review,

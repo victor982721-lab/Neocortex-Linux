@@ -55,6 +55,24 @@ GateState = Literal["passed", "failed", "not_evaluated"]
 CalibrationLabel = Literal["used", "unused"]
 
 
+def _validate_signals(signals: UnusedEvidenceSignals) -> None:
+    if signals.coverage_status not in {"complete", "partial", "missing"}:
+        raise ValueError("unused coverage status is invalid")
+    if signals.vulture_confidence is not None and (
+        isinstance(signals.vulture_confidence, bool)
+        or not math.isfinite(signals.vulture_confidence)
+        or not 0.0 <= signals.vulture_confidence <= 1.0
+    ):
+        raise ValueError("unused Vulture confidence is invalid")
+    for value in (signals.graph_references, signals.graph_calls, signals.graph_imports):
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError("unused graph count is invalid")
+    if len(signals.evidence_ids) > CODE_UNUSED_FINDING_LIMIT:
+        raise ValueError("unused evidence identity bound exceeded")
+    if len(set(signals.evidence_ids)) != len(signals.evidence_ids):
+        raise ValueError("unused evidence identities are duplicated")
+
+
 @dataclass(frozen=True, slots=True)
 class UnusedEvidenceSignals:
     vulture_reported: bool
@@ -78,6 +96,9 @@ class UnusedEvidenceSignals:
     coverage_status: CoverageState
     evidence_ids: tuple[str, ...]
 
+    def __post_init__(self) -> None:
+        _validate_signals(self)
+
 
 @dataclass(frozen=True, slots=True)
 class UnusedConsensusCandidate:
@@ -98,7 +119,63 @@ class UnusedConsensusCandidate:
     evidence: tuple[str, ...]
     limitations: tuple[str, ...]
     authority: Literal["advisory"] = "advisory"
-    mutation_authority: bool = False
+    mutation_authority: Literal[False] = False
+
+    def __post_init__(self) -> None:
+        if self.state not in {
+            "explained_usage",
+            "dynamic_usage_possible",
+            "insufficient_evidence",
+            "probable_unused_high_consensus",
+        }:
+            raise ValueError("invalid unused consensus state")
+        if self.authority != "advisory" or self.mutation_authority:
+            raise ValueError("unused candidate authority must remain advisory and non-mutating")
+        if not self.candidate_id or not self.relative_path or not self.name:
+            raise ValueError("unused candidate identity is incomplete")
+        if (
+            isinstance(self.version_id, bool)
+            or not isinstance(self.version_id, int)
+            or self.version_id < 1
+        ):
+            raise ValueError("unused candidate version identity is invalid")
+        if self.symbol_id is not None and (
+            isinstance(self.symbol_id, bool)
+            or not isinstance(self.symbol_id, int)
+            or self.symbol_id < 1
+        ):
+            raise ValueError("unused candidate symbol identity is invalid")
+        if (
+            any(
+                isinstance(value, bool) or not isinstance(value, int) or value < 1
+                for value in (self.start_line, self.end_line)
+            )
+            or self.end_line < self.start_line
+        ):
+            raise ValueError("unused candidate source span is invalid")
+        if len(set(self.provider_ids)) != len(self.provider_ids):
+            raise ValueError("unused candidate providers are duplicated")
+        if len(set(self.evidence)) != len(self.evidence):
+            raise ValueError("unused candidate evidence is duplicated")
+        if self.state == "probable_unused_high_consensus":
+            if (
+                set(self.provider_ids)
+                != {
+                    PYRIGHT_UNUSED_PROVIDER_ID,
+                    VULTURE_UNUSED_PROVIDER_ID,
+                }
+                or len(self.provider_ids) != 2
+            ):
+                raise ValueError("high-consensus unused candidate requires canonical providers")
+            classified_state, canonical_reasons = _classify(self.signals)
+            if classified_state != self.state:
+                raise ValueError("high-consensus unused state disagrees with its signals")
+            if self.reasons != canonical_reasons:
+                raise ValueError("high-consensus unused reasons must be derived from signals")
+            if not self.provider_ids or not self.evidence or not self.signals.evidence_ids:
+                raise ValueError("high-consensus unused candidate requires provider evidence")
+            if set(self.evidence) != set(self.signals.evidence_ids):
+                raise ValueError("unused candidate evidence must match its signal evidence")
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,6 +183,10 @@ class UnusedCalibrationSample:
     sample_id: str
     label: CalibrationLabel
     signals: UnusedEvidenceSignals
+
+    def __post_init__(self) -> None:
+        if not self.sample_id or self.label not in {"used", "unused"}:
+            raise ValueError("unused calibration sample is invalid")
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,6 +221,30 @@ class UnusedProviderStatus:
     eligible_candidates: int
     covered_candidates: int
     comparability: str
+    source_provider_schema: str | None = None
+    source_tool_name: str | None = None
+    source_tool_version: str | None = None
+    source_comparability_signature: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.provider_id not in {PYRIGHT_UNUSED_PROVIDER_ID, VULTURE_UNUSED_PROVIDER_ID}:
+            raise ValueError("unused provider identity is unsupported")
+        if self.status not in {"ready", "abstained", "missing"}:
+            raise ValueError("invalid unused provider status")
+        if self.status == "ready":
+            if self.reason is not None or self.tool_run_id is None:
+                raise ValueError("ready unused provider requires a tool-run receipt")
+            if self.comparability != "comparable":
+                raise ValueError("ready unused provider must be comparable")
+            if (
+                not self.source_provider_schema
+                or not self.source_tool_name
+                or not self.source_tool_version
+                or not self.source_comparability_signature
+            ):
+                raise ValueError("ready unused provider requires exact source provenance")
+        elif not self.reason:
+            raise ValueError("non-ready unused provider requires a reason")
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,6 +252,10 @@ class UnusedGateEvaluation:
     gate: str
     status: GateState
     reason: str | None
+
+    def __post_init__(self) -> None:
+        if self.status not in {"passed", "failed", "not_evaluated"}:
+            raise ValueError("invalid unused calibration gate status")
 
 
 @dataclass(frozen=True, slots=True)
@@ -168,7 +277,56 @@ class CodeUnusedAnalysis:
     gates: tuple[UnusedGateEvaluation, ...]
     limitations: tuple[str, ...]
     authority: Literal["advisory"] = "advisory"
-    mutation_authority: bool = False
+    mutation_authority: Literal[False] = False
+
+    def __post_init__(self) -> None:
+        if self.status not in {"ready", "abstained"}:
+            raise ValueError("invalid unused analysis status")
+        if self.coverage_status not in {"complete", "partial", "missing"}:
+            raise ValueError("invalid unused analysis coverage status")
+        if self.authority != "advisory" or self.mutation_authority:
+            raise ValueError("unused analysis authority must remain advisory and non-mutating")
+        if self.status == "ready" and self.reason is not None:
+            raise ValueError("ready unused analysis cannot carry an abstention reason")
+        if self.status == "abstained" and not self.reason:
+            raise ValueError("abstained unused analysis requires a reason")
+        if self.policy_signature != CODE_UNUSED_POLICY_SIGNATURE:
+            raise ValueError("unused analysis policy signature is not canonical")
+        if not self.evidence_signature:
+            raise ValueError("unused analysis requires an evidence receipt")
+        if self.status == "ready" and not self.provider_signature:
+            raise ValueError("ready unused analysis requires a provider receipt")
+        if self.status == "ready":
+            provider_ids = tuple(provider.provider_id for provider in self.providers)
+            if (
+                set(provider_ids) != {PYRIGHT_UNUSED_PROVIDER_ID, VULTURE_UNUSED_PROVIDER_ID}
+                or len(provider_ids) != 2
+            ):
+                raise ValueError("ready unused analysis requires both canonical providers")
+            if any(provider.status != "ready" for provider in self.providers):
+                raise ValueError("ready unused analysis cannot contain a non-ready provider")
+            if self.provider_signature != build_unused_provider_signature(self.providers):
+                raise ValueError("unused analysis provider receipt is not reproducible")
+        expected_evidence_signature = _evidence_signature(self.candidates)
+        if self.evidence_signature != expected_evidence_signature:
+            raise ValueError("unused analysis evidence receipt disagrees with candidates")
+        expected_calibration_signature = _calibration_signature(self.calibration, self.holdout)
+        if self.calibration_signature != expected_calibration_signature:
+            raise ValueError("unused analysis calibration receipt is not canonical")
+        expected_gates = _calibration_gates(self.calibration, self.holdout)
+        if self.gates != expected_gates:
+            raise ValueError("unused analysis calibration gates are not reproducible")
+        expected_counts: Counter[str] = Counter(candidate.state for candidate in self.candidates)
+        expected_counts["total"] = len(self.candidates)
+        for state_name in (
+            "explained_usage",
+            "dynamic_usage_possible",
+            "insufficient_evidence",
+            "probable_unused_high_consensus",
+        ):
+            expected_counts.setdefault(state_name, 0)
+        if dict(self.counts) != dict(expected_counts):
+            raise ValueError("unused analysis counts disagree with candidates")
 
     def as_payload(self) -> dict[str, object]:
         payload = asdict(self)
@@ -328,22 +486,6 @@ DEFAULT_HOLDOUT_SAMPLES = (
         _signal(vulture=True, confidence=1.0, pyright=True, complete=False),
     ),
 )
-
-
-def _validate_signals(signals: UnusedEvidenceSignals) -> None:
-    if signals.vulture_confidence is not None and (
-        isinstance(signals.vulture_confidence, bool)
-        or not math.isfinite(signals.vulture_confidence)
-        or not 0.0 <= signals.vulture_confidence <= 1.0
-    ):
-        raise ValueError("unused Vulture confidence is invalid")
-    for value in (signals.graph_references, signals.graph_calls, signals.graph_imports):
-        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-            raise ValueError("unused graph count is invalid")
-    if len(signals.evidence_ids) > CODE_UNUSED_FINDING_LIMIT:
-        raise ValueError("unused evidence identity bound exceeded")
-    if len(set(signals.evidence_ids)) != len(signals.evidence_ids):
-        raise ValueError("unused evidence identities are duplicated")
 
 
 def _confirmed_usage_reasons(signals: UnusedEvidenceSignals) -> tuple[str, ...]:
@@ -1166,6 +1308,55 @@ def _provider_signature(provider_rows: Sequence[object]) -> str:
     )
 
 
+def build_unused_provider_signature(
+    providers: Sequence[UnusedProviderStatus],
+) -> str:
+    """Build the exact receipt for the two normalized unused-code providers."""
+
+    by_id = {provider.provider_id: provider for provider in providers}
+    rows = []
+    for provider_id in (PYRIGHT_UNUSED_PROVIDER_ID, VULTURE_UNUSED_PROVIDER_ID):
+        provider = by_id.get(provider_id)
+        if provider is None:
+            raise ValueError("unused provider receipt is incomplete")
+        rows.append(
+            {
+                "provider_id": provider.provider_id,
+                "provider_schema": provider.source_provider_schema,
+                "tool_name": provider.source_tool_name,
+                "tool_version": provider.source_tool_version,
+                "comparability_signature": provider.source_comparability_signature,
+            }
+        )
+    return _provider_signature(rows)
+
+
+def build_unused_analysis(
+    candidates: Sequence[UnusedConsensusCandidate],
+    *,
+    providers: Sequence[UnusedProviderStatus],
+    database: str = "",
+    analysis_run_id: int | None = None,
+    coverage_status: CoverageState = "missing",
+    calibration_samples: Sequence[UnusedCalibrationSample] = (),
+    holdout_samples: Sequence[UnusedCalibrationSample] = (),
+) -> CodeUnusedAnalysis:
+    """Build a ready analysis only from exact, validated provider receipts."""
+
+    provider_tuple = tuple(providers)
+    return analyze_code_unused(
+        candidates,
+        database=database,
+        analysis_run_id=analysis_run_id,
+        coverage_status=coverage_status,
+        providers=provider_tuple,
+        provider_signature=build_unused_provider_signature(provider_tuple),
+        calibration_samples=calibration_samples,
+        holdout_samples=holdout_samples,
+        status="ready",
+    )
+
+
 def _evidence_signature(candidates: Sequence[UnusedConsensusCandidate]) -> str:
     rows = []
     for candidate in candidates:
@@ -1225,7 +1416,7 @@ def analyze_code_unused(
     provider_signature: str = "",
     calibration_samples: Sequence[UnusedCalibrationSample] = (),
     holdout_samples: Sequence[UnusedCalibrationSample] = (),
-    status: AnalysisState = "ready",
+    status: AnalysisState = "abstained",
     reason: str | None = None,
 ) -> CodeUnusedAnalysis:
     """Consolidate one bounded, immutable and explicitly advisory analysis."""
@@ -1266,11 +1457,14 @@ def analyze_code_unused(
         "coverage_observation_can_explain_usage_but_absence_never_proves_non_use",
         "dynamic_imports_callbacks_registries_and_reflection_may_remain_unobserved",
     )
+    effective_reason = reason
+    if status == "abstained" and effective_reason is None:
+        effective_reason = "unused_provider_receipt_not_supplied"
     return CodeUnusedAnalysis(
         database,
         analysis_run_id,
         status,
-        reason,
+        effective_reason,
         CODE_UNUSED_POLICY_SIGNATURE,
         provider_signature,
         _evidence_signature(ordered),
@@ -1323,6 +1517,10 @@ def _provider_statuses(
                 and suite_status.status == "ready"
                 and bool(suite_status.comparability_signature)
                 else "not_comparable",
+                None if suite_status is None else suite_status.provider_schema,
+                None if suite_status is None else suite_status.tool_name,
+                None if suite_status is None else suite_status.tool_version,
+                None if suite_status is None else suite_status.comparability_signature,
             )
         )
         signature_rows.append(
@@ -1404,6 +1602,7 @@ def read_code_unused_analysis(
             provider_signature=provider_signature,
             calibration_samples=calibration_samples,
             holdout_samples=holdout_samples,
+            status="ready",
         )
     except (KeyError, TypeError, ValueError, sqlite3.DatabaseError) as exc:
         return analyze_code_unused(
@@ -1432,6 +1631,8 @@ __all__ = [
     "UnusedGateEvaluation",
     "UnusedProviderStatus",
     "analyze_code_unused",
+    "build_unused_analysis",
+    "build_unused_provider_signature",
     "classify_unused_candidate",
     "evaluate_unused_calibration",
     "read_code_unused_analysis",

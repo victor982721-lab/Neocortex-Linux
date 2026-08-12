@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 from collections import Counter
-from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -191,16 +190,16 @@ def _fixture_actionability_input(
             if function_lines is None
             else (10_000 * int(function_lines[0])) // int(function_lines[1])
         ),
-        production_callers=callers,
-        test_callers=0,
-        fixture_callers=0,
-        tool_callers=0,
-        compatibility_callers=0,
-        consumer_modules=callers,
+        path_convention_production_callers=callers,
+        path_convention_test_callers=0,
+        path_convention_fixture_callers=0,
+        path_convention_tool_callers=0,
+        path_convention_compatibility_callers=0,
+        resolved_static_consumer_files=callers,
     )
 
 
-def test_actionability_gate_preserves_provisional_rc11_labels() -> None:
+def test_legacy_provisional_labels_cannot_authorize_current_decisions() -> None:
     payload = json.loads(REPRESENTATIVE_ACTIONABILITY_FIXTURE.read_text(encoding="utf-8"))
     labels = payload["labels"]
     assessed = [
@@ -208,19 +207,17 @@ def test_actionability_gate_preserves_provisional_rc11_labels() -> None:
         for label in labels
     ]
 
-    assert all(assessment.construction == label["construction"] for label, assessment in assessed)
+    assert all(assessment.construction == "unknown" for _label, assessment in assessed)
+    assert all(assessment.actionability == "characterize_first" for _label, assessment in assessed)
+    assert not any(assessment.recommended_change for _label, assessment in assessed)
     assert all(
-        (assessment.actionability == "act_now") == (label["label"] == "actionable")
-        for label, assessment in assessed
+        assessment.epistemic_state.decision_readiness == "experiment_required"
+        for _label, assessment in assessed
     )
-    assert not any(
-        assessment.actionability == "act_now"
-        for label, assessment in assessed
-        if label["construction"] in {"builder", "initializer", "rule", "validator"}
-    )
+    assert all(assessment.epistemic_state.decision is None for _label, assessment in assessed)
 
 
-def test_actionability_gate_selects_rc14_first_prudent_candidate() -> None:
+def test_actionability_gate_does_not_promote_provisional_rc14_labels() -> None:
     payload = json.loads(REPRESENTATIVE_ACTIONABILITY_FIXTURE.read_text(encoding="utf-8"))
     rc14_top_10 = sorted(
         (
@@ -236,16 +233,15 @@ def test_actionability_gate_selects_rc14_first_prudent_candidate() -> None:
         (label, assess_code_review_actionability(_fixture_actionability_input(label)))
         for label in rc14_top_10
     ]
-    recommendations = [
-        label for label, assessment in assessed if assessment.actionability == "act_now"
-    ]
-
     assert rc14_top_10[0]["symbol"] == (
         "knowledge_evaluation.GoldenCase._validate_required_feature"
     )
     assert assessed[0][1].actionability == "characterize_first"
-    assert recommendations[0]["symbol"] == (
-        "semantic_generation_repository._queue_job_rows_bounded"
+    assert all(not assessment.recommended_change for _label, assessment in assessed)
+    assert all(
+        assessment.epistemic_state.decision_reason
+        == "structural_observation_alone_cannot_justify_change"
+        for _label, assessment in assessed
     )
 
 
@@ -607,42 +603,34 @@ def test_review_ranks_confirmed_hotspots_deterministically_with_diversity(
 
     assert first.status == "ready"
     assert first_json == second_json
-    assert first.as_payload()["schema"] == "neocortex.code-review/v10"
-    assert "neocortex.code-review/v6" in first.as_payload()["compatible_schemas"]
-    assert first.as_payload()["compatible_schemas"] == [
-        "neocortex.code-review/v2",
-        "neocortex.code-review/v3",
-        "neocortex.code-review/v4",
-        "neocortex.code-review/v5",
-        "neocortex.code-review/v6",
-        "neocortex.code-review/v7",
-        "neocortex.code-review/v8",
-        "neocortex.code-review/v9",
-    ]
+    assert first.as_payload()["schema"] == "neocortex.code-review/v11"
+    assert first.as_payload()["compatible_schemas"] == []
     assert first.supply_chain is not None
     assert first.supply_chain.status == "abstained"
     assert len(first.findings) == 10
     assert len(expanded.findings) == 11
     assert expanded.findings[:10] == first.findings
     assert expanded.work_packages == first.work_packages
-    assert first.work_package_status == "ready"
-    assert len(first.work_packages) == 1
-    assert len(first.work_packages[0].supply_chain_gates) == 6
-    assert "semgrep_invariants" in first.work_packages[0].acceptance_gates
-    assert first.work_packages[0].mutation_authority is False
-    assert first.work_packages[0].members[0].role == "primary_change_target"
+    assert first.work_package_status == "abstained"
+    assert first.work_packages == ()
     assert max(Counter(finding.path for finding in first.findings).values()) == 2
     assert len({finding.path for finding in first.findings}) == 9
     assert first.findings[0].symbol == "pkg.compute_dominant_0"
     assert first.findings[0].resolved_static_callers == 3
-    assert first.findings[0].impact.production_callers == 1
-    assert first.findings[0].impact.test_callers == 1
-    assert first.findings[0].impact.fixture_callers == 1
-    assert first.findings[0].construction == "algorithm"
-    assert first.findings[0].actionability == "act_now"
-    assert first.recommendations[0].hotspot_rank == 1
+    assert first.findings[0].impact.path_convention_production_callers == 1
+    assert first.findings[0].impact.path_convention_test_callers == 1
+    assert first.findings[0].impact.path_convention_fixture_callers == 1
+    assert first.findings[0].construction == "unknown"
+    assert first.findings[0].actionability == "characterize_first"
+    assert first.findings[0].recommended_change is False
+    assert first.findings[0].epistemic_state.observation_status == "confirmed"
+    assert first.findings[0].epistemic_state.inference_status == "abstained"
+    assert first.findings[0].epistemic_state.question_readiness == "ready"
+    assert first.findings[0].epistemic_state.decision_readiness == "experiment_required"
+    assert first.findings[0].epistemic_state.decision is None
+    assert first.recommendations == ()
     assert len(first.findings[0].callers) == 3
-    assert {caller.source_role for caller in first.findings[0].callers} == {
+    assert {caller.path_convention_role for caller in first.findings[0].callers} == {
         "production",
         "test",
         "fixture",
@@ -666,9 +654,6 @@ def test_review_ranks_confirmed_hotspots_deterministically_with_diversity(
     coverage_payload = first.as_payload()["test_coverage"]
     assert isinstance(coverage_payload, dict)
     assert coverage_payload["schema"] == "neocortex.code-coverage-analysis/v1"
-    assert first.work_packages[0].test_coverage is not None
-    assert first.work_packages[0].test_coverage.status == "not_evaluated"
-    assert first.work_packages[0].test_coverage.gate.status == "not_evaluated"
     assert "test_coverage_not_ready:" in " ".join(first.limitations)
     assert first.engineering_analytics is not None
     assert first.engineering_analytics.status == "abstained"
@@ -719,13 +704,11 @@ def test_review_exposes_advisory_ruff_evidence_and_package_gate(
     assert payload["external_evidence"]["authority"] == "advisory"
     assert payload["external_evidence"]["mutation_authority"] is False
     assert "ruff_external_evidence_baseline_only" in result.limitations
-    assert "no_added_ruff_diagnostics" in result.work_packages[0].acceptance_gates
-    assert "no_added_mypy_errors" in result.work_packages[0].acceptance_gates
-    assert "no_added_pyright_errors" in result.work_packages[0].acceptance_gates
-    assert "provider_cache_or_rerun_explained" in result.work_packages[0].acceptance_gates
+    assert result.recommendations == ()
+    assert result.work_packages == ()
 
 
-def test_work_package_planning_uses_the_fixed_pool_not_the_output_limit(
+def test_observational_findings_do_not_create_hidden_change_packages(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -736,35 +719,14 @@ def test_work_package_planning_uses_the_fixed_pool_not_the_output_limit(
         "read_self_analysis_status",
         lambda _state, _run: _status(tmp_path),
     )
-    original_assessor = code_review_module.assess_code_review_actionability
-
-    def characterize_the_visible_leader(actionability_input):
-        assessment = original_assessor(actionability_input)
-        if actionability_input.symbol == "pkg.compute_dominant_0":
-            return replace(
-                assessment,
-                actionability="characterize_first",
-                recommended_change=False,
-            )
-        return assessment
-
-    monkeypatch.setattr(
-        code_review_module,
-        "assess_code_review_actionability",
-        characterize_the_visible_leader,
-    )
-
     limited = review_code_state(state_directory, limit=1)
     planning_view = review_code_state(state_directory, limit=50)
-    expected = next(
-        finding for finding in planning_view.findings if finding.actionability == "act_now"
-    )
 
     assert limited.findings[0].actionability == "characterize_first"
     assert limited.recommendations == ()
-    assert limited.work_package_status == "ready"
-    assert limited.work_packages[0].primary_finding_id == expected.finding_id
-    assert limited.work_packages[0].primary_symbol == expected.symbol
+    assert planning_view.recommendations == ()
+    assert limited.work_package_status == "abstained"
+    assert limited.work_packages == ()
 
 
 @pytest.mark.parametrize("limit", [0, 51, True])
@@ -835,11 +797,13 @@ def test_review_with_zero_hotspots_is_ready_and_does_not_mutate_state(
     assert result.status == "ready"
     assert result.findings == ()
     assert result.recommendation_status == "abstained"
-    assert result.recommendation_reason == ("no_act_now_candidate_within_bounded_findings")
+    assert result.recommendation_reason == (
+        "no_evidence_ready_change_decision_within_bounded_findings"
+    )
     assert result.recommendations == ()
     assert result.work_package_status == "abstained"
     assert result.work_package_reason == (
-        "no_primary_act_now_or_high_consensus_unused_candidate_within_bounded_evidence"
+        "no_evidence_ready_change_or_calibrated_characterization_candidate"
     )
     assert result.work_packages == ()
     assert result.coverage is not None

@@ -401,52 +401,39 @@ complexity_bp
 ```
 
 Cada finding conserva rango, firma, fingerprints del archivo, versión del
-analizador, valor/umbral y hasta tres callers resueltos. Separa callers y
-módulos consumidores de producción, pruebas, fixtures, herramientas y
-compatibilidad. `hotspot_id` identifica establemente la evidencia física y el
-símbolo; `finding_id` identifica la interpretación bajo versiones concretas de
-ranking y actionability.
+analizador, valor/umbral y hasta tres callers resueltos. La separación por
+`production`, `test`, `fixture`, `tool` y `compatibility` se publica
+explícitamente como **convención de ruta**, no como ownership ni reachability de
+runtime. `hotspot_id` identifica establemente la evidencia física y el símbolo;
+`finding_id` identifica la interpretación versionada.
 
-`recommendations` filtra como máximo tres `act_now` mediante
-`python-maintenance-actionability-v1`. La clasificación determinista distingue
-algoritmos, builders, classifiers, initializers, lifecycle, orquestadores,
-persistencia, recuperación, reglas y validators. Builders se difieren;
-validators, reglas e invariantes exigen caracterización; y una construcción no
-reconocida devuelve `insufficient_evidence`. Cada recomendación enumera riesgo,
-evidencia exacta, contratos a preservar y validación sugerida. El score bruto y
-todos los hotspots siguen disponibles: esta capa no es ground truth humano ni
-autoriza modificar código. Cero hallazgos o cero `act_now` son respuestas
-válidas; en el segundo caso `recommendation_status=abstained` explica la brecha.
+El envelope vigente es `neocortex.code-review/v11` y no declara compatibilidad
+con schemas anteriores: retiró autoridad heurística y acotó `confidence` a
+`observation_confidence`. Cada finding separa observación, hipótesis, readiness
+de pregunta, evidencia satisfecha/faltante, contraevidencia pendiente,
+readiness de decisión y siguiente acción. Un umbral estructural confirma sólo
+la observación y abre la pregunta
+`maintenance.structural_hotspot_requires_change/v1`; la inferencia se abstiene,
+la decisión queda `experiment_required`, `construction` y `change_risk` quedan
+`unknown`, y `mutation_authority=false`.
 
-`work_packages` añade una tercera capa mediante
-`python-maintenance-work-packages-v4`. Conserva como máximo un paquete de
-mantenimiento que toma la primera
-recomendación como `primary_change_target` y consulta siempre un pool fijo de 50
-hotspots, aunque la vista solicitada sea menor. Sólo incorpora
-`contract_guard`s alcanzados por una llamada confirmada directa o por dos saltos
-a través de un símbolo Python vigente, completo, no generado y de producción.
-No usa coincidencias de nombre, ruta, módulo ni caller compartido. Cada relación
-conserva profundidad, símbolo puente, confianza mínima y provenance; el paquete
-expone riesgo conservador, módulo primario, contratos afectados, cadenas de
-imports acotadas, orden de ejecución, validación y los gates
-históricos de caracterización exacta, cero hotspots sustitutos, cero
-resoluciones corregidas/perdidas y replay completamente incremental. También
-expone los gates de proveedor normalizados y los gates arquitectónicos
-`architecture_contracts_not_degraded`, `no_new_import_cycles` y
-`module_complexity_not_displaced`. Cada uno sólo puede aprobarse frente
-a una línea base comparable del mismo adaptador, versión, configuración y
-entorno. La evidencia profunda añade la proyección del símbolo objetivo, sus
-pruebas protectoras observadas, líneas/ramas faltantes y los gates
-`tests_passed`, `coverage_available`, `work_package_target_protected`,
-`line_coverage_not_degraded` y `branch_coverage_not_degraded`. Los dos últimos
-requieren un publication diff comparable; no encontrar una relación produce
-`unprotected`, no un permiso para editar. La primera publicación sana queda
-`baseline`; si falta el proveedor o
-cambia su firma queda `not_evaluated` o `abstained` sin borrar los demás. Los
-guards no son objetivos automáticos y el paquete nunca autoriza modificar código.
-Además puede entregar hasta tres paquetes `unused_characterization` para
-consenso alto con gates de precisión aprobados. Sólo ordenan caracterización,
-pruebas y confirmación humana; declaran `mutation_authority=false`.
+`recommendations` permanece vacío y `recommendation_status=abstained` porque
+v11 todavía no tiene un resolver independiente que enlace evidencia de
+comportamiento/contrato, contraevidencia y resultado experimental. Nombres como
+`repository`, `commit`, `build`, `read` o `run`, mover el archivo o añadir un
+wrapper no pueden producir una recomendación. Los constructors y factories
+públicos fallan cerrado ante `act_now`, una decisión autodeclarada o un package
+de cambio.
+
+`python-maintenance-work-packages-v5` publica únicamente paquetes
+`unused_characterization`, y sólo cuando los dos gates de precisión del
+consenso de no-uso están aprobados. Sus pasos son exclusivamente de
+caracterización, exigen confirmación humana y conservan
+`mutation_authority=false`; no contienen `primary_change_target`. Coverage
+puede demostrar ejecución por una suite passing y exponer líneas/ramas no
+observadas, pero los nombres legacy `protecting_tests` y
+`work_package_target_protected` **no demuestran** que un test afirme un
+invariante. Esa terminología es una limitación conocida pendiente de migración.
 
 `probable_dead_symbol` se informa únicamente como conteo suprimido. Una muestra
 portable de 40 entre los 246 candidatos de rc11 encontró 36 usos demostrables,
@@ -465,16 +452,20 @@ redefinidos permanecen sin enlazar. El porcentaje global de calls resueltas es
 descriptivo —su denominador incluye builtins, APIs externas y dispatch
 dinámico— y no debe convertirse en objetivo aislado de calidad.
 
-La línea base de actionability vive en
+Las líneas base históricas de actionability viven en
 `tests/fixtures/code_review/rc6_top10_actionability_v1.json`. La ampliación
 representativa está en `rc11_top40_actionability_v2.json`: reúne la unión de
 los top 40 de ambos rankings, 41 símbolos etiquetados como builders,
 validadores, reglas, algoritmos y orquestadores. El ranking v2 elevó la
 `Precision@10` provisional de 0.60 a 0.70 y dejó iguales P@20, P@30 y P@40;
 `build_parser` pasó del rango 2 al 39. Es revisión estática reproducible, no
-ground truth humano, y el score sigue sin representar riesgo calibrado.
+ground truth humano, y el score sigue sin representar riesgo calibrado. v11
+las conserva sólo como evidencia histórica y regresión; no autorizan una
+decisión ni un package de cambio.
 
-La regresión temporal rc14 retira `execute_knowledge_search`: el rango bruto 1,
+Los párrafos rc14–rc20 siguientes documentan resultados del contrato anterior;
+no representan autoridad vigente de v11. La regresión temporal rc14 retira
+`execute_knowledge_search`: el rango bruto 1,
 `GoldenCase._validate_required_feature`, queda como
 `validator/characterize_first`, mientras
 `semantic_generation_repository._queue_job_rows_bounded` se convierte en la

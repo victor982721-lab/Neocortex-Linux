@@ -9,9 +9,13 @@ from _04_Nucleo_Operativo.cli_code import _read_code_status_snapshot
 from _04_Nucleo_Operativo.code_publication_diff import _supply_chain_delta
 from _04_Nucleo_Operativo.code_review_models import build_code_review_recommendations
 from _04_Nucleo_Operativo.code_review_work_packages import (
-    build_code_review_work_packages,
+    plan_code_review_work_packages,
 )
-from tests.test_code_review_work_packages import _planning_findings
+from tests.test_code_review_work_packages import (
+    _planning_findings,
+    _unused_analysis,
+    _unused_candidate,
+)
 from tests.test_code_supply_chain_analysis import _database, _read
 
 
@@ -44,12 +48,13 @@ def test_work_package_attaches_advisory_supply_chain_context(tmp_path: Path) -> 
     findings = _planning_findings()
     recommendations = build_code_review_recommendations(findings, limit=3)
 
-    packages = build_code_review_work_packages(
+    packages = plan_code_review_work_packages(
         findings,
         recommendations,
         (),
+        unused_analysis=_unused_analysis(_unused_candidate()),  # type: ignore[arg-type]
         supply_chain=supply_chain,
-    )
+    )[0]
 
     assert len(packages) == 1
     package = packages[0]

@@ -1326,17 +1326,39 @@ def _emit_code_review_ranked_evidence(result: CodeReviewResult) -> None:
             f"symbol={json.dumps(recommendation.symbol, ensure_ascii=True)}"
         )
     for finding in result.findings:
+        epistemic = finding.epistemic_state
         _print_console_line(
             f"CODE_REVIEW_FINDING rank={finding.rank} "
             f"score_bp={finding.score_basis_points} category={finding.category} "
             f"construction={finding.construction} "
             f"actionability={finding.actionability} risk={finding.change_risk} "
+            f"observation={epistemic.observation_status} "
+            f"question={epistemic.question_readiness} "
+            f"decision={epistemic.decision_readiness} "
+            f"authority={epistemic.authority} "
+            f"mutation_authority={int(epistemic.mutation_authority)} "
             f"complexity={finding.complexity} lines={finding.function_lines} "
-            f"production_callers={finding.impact.production_callers} "
-            f"test_callers={finding.impact.test_callers + finding.impact.fixture_callers} "
+            "path_convention_production_callers="
+            f"{finding.impact.path_convention_production_callers} "
+            "path_convention_test_or_fixture_callers="
+            f"{finding.impact.path_convention_test_callers + finding.impact.path_convention_fixture_callers} "
             f"path={json.dumps(finding.path, ensure_ascii=True)} "
             f"symbol={json.dumps(finding.symbol, ensure_ascii=True)} "
             f"line={finding.start_line}"
+        )
+        _print_console_line(
+            f"CODE_REVIEW_QUESTION rank={finding.rank} "
+            f"finding_id={finding.finding_id} "
+            f"question_id={epistemic.question_id} "
+            f"question_version={epistemic.question_version} "
+            f"inference={epistemic.inference_status} "
+            f"decision_readiness={epistemic.decision_readiness} "
+            f"decision={json.dumps(epistemic.decision, ensure_ascii=True)} "
+            f"missing_evidence={json.dumps(epistemic.missing_evidence, ensure_ascii=True)} "
+            f"counterevidence={epistemic.counterevidence_status} "
+            f"next_actions={json.dumps(epistemic.next_actions, ensure_ascii=True)} "
+            f"authority={epistemic.authority} "
+            f"mutation_authority={int(epistemic.mutation_authority)}"
         )
     for limitation in result.limitations:
         _print_console_line(f"CODE_REVIEW_LIMITATION {limitation}")
@@ -1445,13 +1467,11 @@ def _emit_code_review_test_coverage_result(result: CodeReviewResult) -> None:
 def _emit_code_review_abstention_statuses(result: CodeReviewResult) -> None:
     if result.recommendation_status == "abstained":
         _print_console_line(
-            f"CODE_REVIEW_RECOMMENDATION status=abstained "
-            f"reason={result.recommendation_reason}"
+            f"CODE_REVIEW_RECOMMENDATION status=abstained reason={result.recommendation_reason}"
         )
     if result.work_package_status == "abstained":
         _print_console_line(
-            f"CODE_REVIEW_WORK_PACKAGE status=abstained "
-            f"reason={result.work_package_reason}"
+            f"CODE_REVIEW_WORK_PACKAGE status=abstained reason={result.work_package_reason}"
         )
 
 
@@ -1510,9 +1530,7 @@ def _emit_code_review_work_package_architecture(
         :_CODE_CLI_ARCHITECTURE_EXAMPLE_LIMIT
     ]
     architecture_gates = tuple(
-        gate
-        for gate in package.acceptance_gates
-        if gate in _CODE_ARCHITECTURE_ACCEPTANCE_GATES
+        gate for gate in package.acceptance_gates if gate in _CODE_ARCHITECTURE_ACCEPTANCE_GATES
     )
     _print_console_line(
         "CODE_REVIEW_WORK_PACKAGE_ARCHITECTURE status=ready "
@@ -1597,6 +1615,7 @@ def run_code_review(args: argparse.Namespace) -> int:
     """Rank confirmed Python hotspots in the published self-analysis snapshot."""
 
     from .code_review import review_code_state
+
     try:
         result = review_code_state(
             args.state_directory,

@@ -56,15 +56,11 @@ from .code_review_models import (
     CodeReviewSnapshot,
     FindingCategory,
     RecommendationStatus,
-    build_code_review_recommendations,
 )
 from .code_review_serialization import build_code_review_digest
 from .code_review_work_packages import (
     CODE_REVIEW_PLANNING,
-    CODE_REVIEW_PLANNING_FINDING_LIMIT,
-    CodeReviewPlanningLink,
     plan_code_review_work_packages,
-    read_code_review_planning_links,
 )
 from .code_schema import (
     CODE_SCHEMA_VERSION,
@@ -135,8 +131,6 @@ class _ReviewRead:
     latest_run: CodeRunStatusEvidence | None
     coverage: CodeReviewCoverage
     findings: tuple[CodeReviewFinding, ...]
-    planning_findings: tuple[CodeReviewFinding, ...]
-    planning_links: tuple[CodeReviewPlanningLink, ...]
     enumeration_truncated: bool
     external_evidence: ExternalEvidenceStatus
     external_evidence_suite: ExternalEvidenceSuiteStatus
@@ -322,6 +316,8 @@ def _diagnostic_threshold(
         raise ValueError(f"{label} diagnostic value disagrees with symbol evidence")
     if isinstance(threshold, bool) or not isinstance(threshold, int) or threshold < 1:
         raise ValueError(f"{label} diagnostic threshold must be positive")
+    if required and expected_value < threshold:
+        raise ValueError(f"{label} diagnostic does not meet its declared threshold")
     return threshold
 
 
@@ -386,7 +382,7 @@ def _diagnostics(
     candidate: _Candidate,
 ) -> tuple[CodeReviewDiagnostic, ...]:
     rows = connection.execute(
-        """SELECT d.code,d.source,d.tool_name,d.tool_version,d.confirmed,
+        """SELECT d.diagnostic_id,d.code,d.source,d.tool_name,d.tool_version,d.confirmed,
         d.confidence,d.metadata_json FROM diagnostics d
         JOIN symbols s ON s.version_id=d.version_id
          AND s.start_byte=d.start_byte AND s.end_byte=d.end_byte
@@ -413,6 +409,7 @@ def _diagnostics(
         )
         diagnostics.append(
             CodeReviewDiagnostic(
+                diagnostic_id=int(row["diagnostic_id"]),
                 code=code,
                 value=value,
                 threshold=threshold,
@@ -457,7 +454,7 @@ def _callers(
             end_line=int(row["end_line"]),
             confidence=float(row["confidence"]),
             provenance=str(row["evidence"]),
-            source_role=classify_source_role(
+            path_convention_role=classify_source_role(
                 str(row["current_path"]),
                 project_root,
             ),
@@ -515,15 +512,15 @@ def _impact(
     test_modules = modules_by_role["test"] | modules_by_role["fixture"]
     return CodeReviewImpact(
         call_sites=call_sites,
-        production_callers=caller_counts["production"],
-        test_callers=caller_counts["test"],
-        fixture_callers=caller_counts["fixture"],
-        tool_callers=caller_counts["tool"],
-        compatibility_callers=caller_counts["compatibility"],
-        consumer_modules=len(consumer_modules),
-        production_consumer_modules=len(modules_by_role["production"]),
-        test_consumer_modules=len(test_modules),
-        consumer_module_examples=tuple(
+        path_convention_production_callers=caller_counts["production"],
+        path_convention_test_callers=caller_counts["test"],
+        path_convention_fixture_callers=caller_counts["fixture"],
+        path_convention_tool_callers=caller_counts["tool"],
+        path_convention_compatibility_callers=caller_counts["compatibility"],
+        resolved_static_consumer_files=len(consumer_modules),
+        path_convention_production_consumer_files=len(modules_by_role["production"]),
+        path_convention_test_consumer_files=len(test_modules),
+        consumer_file_examples=tuple(
             sorted(consumer_modules, key=lambda value: (value.casefold(), value))[
                 :CODE_REVIEW_CONSUMER_MODULE_EXAMPLES
             ]
@@ -601,12 +598,12 @@ def _finding(
             root=candidate.project_root,
             complexity_ratio_basis_points=candidate.complexity_ratio_basis_points,
             length_ratio_basis_points=candidate.length_ratio_basis_points,
-            production_callers=impact.production_callers,
-            test_callers=impact.test_callers,
-            fixture_callers=impact.fixture_callers,
-            tool_callers=impact.tool_callers,
-            compatibility_callers=impact.compatibility_callers,
-            consumer_modules=impact.consumer_modules,
+            path_convention_production_callers=impact.path_convention_production_callers,
+            path_convention_test_callers=impact.path_convention_test_callers,
+            path_convention_fixture_callers=impact.path_convention_fixture_callers,
+            path_convention_tool_callers=impact.path_convention_tool_callers,
+            path_convention_compatibility_callers=(impact.path_convention_compatibility_callers),
+            resolved_static_consumer_files=impact.resolved_static_consumer_files,
             outgoing_calls=outgoing_calls,
             outgoing_calls_truncated=outgoing_calls_truncated,
         )
@@ -641,11 +638,12 @@ def _finding(
         incoming_calls=candidate.incoming_calls,
         resolved_static_callers=candidate.resolved_static_callers,
         impact=impact,
-        source_role=assessment.source_role,
+        path_convention_role=assessment.path_convention_role,
         construction=assessment.construction,
         actionability=assessment.actionability,
         change_risk=assessment.change_risk,
         recommended_change=assessment.recommended_change,
+        epistemic_state=assessment.epistemic_state,
         actionability_evidence=assessment.evidence,
         contracts_to_preserve=assessment.contracts_to_preserve,
         recommended_validation=assessment.recommended_validation,
@@ -672,26 +670,10 @@ def _read_review(path: Path, *, limit: int) -> _ReviewRead:
         ).fetchall()
         candidates = tuple(_candidate(row) for row in rows)
         total_candidates = int(rows[0]["total_candidates"]) if rows else 0
-        planning_limit = min(
-            len(candidates),
-            max(limit, CODE_REVIEW_PLANNING_FINDING_LIMIT),
-        )
-        selected = _select_candidates(candidates, limit=planning_limit)
-        planning_findings = tuple(
+        selected = _select_candidates(candidates, limit=limit)
+        findings = tuple(
             _finding(connection, candidate, rank)
             for rank, candidate in enumerate(selected, start=1)
-        )
-        findings = planning_findings[:limit]
-        planning_links = read_code_review_planning_links(
-            connection,
-            {
-                candidate.symbol_id: finding.finding_id
-                for candidate, finding in zip(
-                    selected,
-                    planning_findings,
-                    strict=True,
-                )
-            },
         )
         probable_dead = int(
             connection.execute(
@@ -769,8 +751,6 @@ def _read_review(path: Path, *, limit: int) -> _ReviewRead:
             resolved_call_edges=int(resolved_call_edges),
         ),
         findings=findings,
-        planning_findings=planning_findings,
-        planning_links=planning_links,
         enumeration_truncated=total_candidates > len(candidates),
         external_evidence=external_evidence,
         external_evidence_suite=external_evidence_suite,
@@ -838,7 +818,7 @@ def review_code_state(
         raise AssertionError("eligible code review requires self-analysis status")
     limitations = [
         "raw_ranking_score_is_not_calibrated_risk",
-        "actionability_is_deterministic_advice_not_human_ground_truth",
+        "structural_hotspot_opens_a_question_not_a_change_decision",
         "intentional_complexity_requires_human_confirmation",
         "static_call_resolution_is_partial",
         "dynamic_dispatch_is_not_observed",
@@ -895,22 +875,13 @@ def review_code_state(
         current=status.freshness.current,
         journal_status=status.freshness.journal_status,
     )
-    recommendations = build_code_review_recommendations(
-        read.findings,
-        limit=CODE_REVIEW_RECOMMENDATION_LIMIT,
-    )
-    planning_recommendations = build_code_review_recommendations(
-        read.planning_findings,
-        limit=CODE_REVIEW_RECOMMENDATION_LIMIT,
-    )
-    recommendation_status: RecommendationStatus = "ready" if recommendations else "abstained"
-    recommendation_reason = (
-        None if recommendations else "no_act_now_candidate_within_bounded_findings"
-    )
+    recommendations: tuple[CodeReviewRecommendation, ...] = ()
+    recommendation_status: RecommendationStatus = "abstained"
+    recommendation_reason = "no_evidence_ready_change_decision_within_bounded_findings"
     work_packages, work_package_status, work_package_reason = plan_code_review_work_packages(
-        read.planning_findings,
-        planning_recommendations,
-        read.planning_links,
+        read.findings,
+        (),
+        (),
         architecture=read.architecture,
         architecture_root=snapshot.root,
         test_coverage=read.test_coverage,

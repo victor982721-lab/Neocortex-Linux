@@ -382,10 +382,12 @@ incompatible se vuelve a ejecutar.
 
 Después de cerrar writers, consulte el mismo `$State` con `--code-status
 --code-json` y `--code-review --code-json`. `test_coverage` debe explicar
-selección, completitud, resultados, líneas/ramas y limitaciones. El work package
-debe mostrar pruebas protectoras o `unprotected`/`not_evaluated`; jamás infiera
-protección por nombre. Un publication diff sólo puede aprobar los deltas de
-líneas y ramas cuando suite, alcance, configuración y herramientas coinciden.
+selección, completitud, resultados, líneas/ramas y limitaciones. Los contextos
+dinámicos prueban qué tests ejecutaron una línea o símbolo; no prueban por sí
+solos que exista una aserción o un invariante protector. Los nombres históricos
+`protecting_tests` y `work_package_target_protected` deben leerse con esa
+limitación hasta su migración. Un publication diff sólo puede aprobar los deltas
+de líneas y ramas cuando suite, alcance, configuración y herramientas coinciden.
 
 La corrida canónica H6 Run 9 terminó en 343.168 s: 585 candidatos, 2 procesados,
 583 por caché, 15 proveedores y 0 errores. Sobre
@@ -395,8 +397,12 @@ La corrida canónica H6 Run 9 terminó en 343.168 s: 585 candidatos, 2 procesado
 0.50. Run 10 tardó 23.996 s con 585/585 candidatos por caché, cero
 bytes/analyze/persist/graph y 14 replays; `installed-package-inventory` se
 recalculó. Las consultas read-only status, review y diff tardaron 38.982,
-47.675 y 57.856 s. Sus envelopes son architecture v2, engineering v1, review
-v10 compatible con v2-v9 y publication diff v8 compatible con v1-v7.
+47.675 y 57.856 s. Esos artefactos históricos usaron architecture v2,
+engineering v1, review v10 y publication diff v8. El contrato vigente de review
+es `neocortex.code-review/v11`, no declara schemas compatibles, publica
+observaciones estructurales con inferencia abstained y no genera recomendaciones
+ni paquetes de cambio. Sólo puede publicar paquetes
+`unused_characterization`, advisory y sin autoridad de mutación.
 
 El manifest guarda `Neocortex` como primer elemento de su argv canónico. Antes
 de promover el launcher estable, use la ruta exacta del runtime versionado para

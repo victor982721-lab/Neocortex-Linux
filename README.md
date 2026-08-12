@@ -616,43 +616,26 @@ manifest registra `journal.status=unavailable`, el status nunca afirma
 `current=true` y la ruta code todavía reutiliza por caché los archivos sin
 cambios.
 
-`--code-review` convierte la publicación en una lista de mantenimiento
-explicable. El envelope `neocortex.code-review/v10`, compatible con v2-v9,
-conserva las capas anteriores, el ranking bruto y
-hasta tres recomendaciones `act_now`, y añade
-`external_evidence_suite` con los proveedores y gates normalizados sin alterar
-ranking ni actionability. La proyección `architecture_analysis` v2 consume las
-métricas y relaciones portables del schema Code v5 y muestra módulos, imports,
-SCC, contratos y los estados `import_graph_consensus`,
-`architecture_contracts` y `module_complexity_displacement`; ausencia o falta
-de comparabilidad nunca se convierte en `passed`. `unused_analysis` publica los
-cuatro estados, evidencia, firmas, calibración/holdout y gates sin cambiar el
-ranking histórico. El planificador v4 conserva como máximo un paquete raíz de
-mantenimiento y, de forma independiente, puede añadir hasta tres paquetes de
-caracterización para candidatos `probable_unused_high_consensus` sólo cuando
-pasan los gates de precisión. El paquete de mantenimiento mantiene una sola
-recomendación raíz y enlaza como `contract_guard`
-los hotspots alcanzables por llamadas estáticas confirmadas a uno o dos saltos,
-y enumera contratos, cadenas de imports acotadas, orden, validación y gates de
-arquitectura/publicación: `architecture_contracts_not_degraded`,
-`no_new_import_cycles` y `module_complexity_not_displaced`. Cuando existe una
-publicación `trusted-deep`, también enlaza pruebas protectoras, líneas y ramas
-faltantes del símbolo objetivo, y añade `tests_passed`, `coverage_available`,
-`work_package_target_protected`, `line_coverage_not_degraded` y
-`branch_coverage_not_degraded`. Los dos últimos sólo se evalúan ante un baseline
-comparable. `engineering_analytics` v1 conserva por módulo complejidad,
-cobertura, mutación, historia y grafo sin colapsarlos en un score de riesgo, y
-el work package incorpora su perfil y gates con `mutation_authority=false`. El
-horizonte de planeación permanece fijo en 50 aunque la vista
-muestre 10; no agrupa por nombre, directorio ni prefijo de módulo.
-`--code-review-limit N --code-json` amplía de 1 a 50 la vista auditable. La
-consulta es estrictamente read-only y todo paquete es consejo, nunca autorización
-de cambio. Un paquete de código potencialmente no usado sólo solicita
-caracterización, revisión de superficies dinámicas, pruebas y confirmación
-humana; nunca propone borrar. El conteo legacy `probable_dead` permanece
-descriptivo y separado. Un snapshot full completado sin USN se etiqueta
-`publication_only`; un journal avanzado/discontinuo o un vínculo incompatible
-causa abstención con código `2`.
+`--code-review` convierte la publicación en observaciones estructurales
+explicables. El envelope `neocortex.code-review/v11` no declara schemas
+compatibles: retiró la autoridad heurística de v10 y acotó `confidence` a su
+alcance real, `observation_confidence`. Cada finding separa observación,
+hipótesis, readiness de pregunta, evidencia faltante, contraevidencia por
+buscar, siguiente acción y readiness de decisión. Un hotspot queda
+`experiment_required`; no infiere construcción ni riesgo por nombres y nunca
+autoriza mutación.
+
+Mientras no exista un resolver trazable de evidencia de comportamiento,
+contraevidencia y resultados experimentales, v11 publica cero recomendaciones
+de cambio y cero packages hotspot. El planificador v5 sólo puede entregar hasta
+tres paquetes `unused_characterization` calibrados: todos sus pasos son de
+caracterización, requieren confirmación humana y declaran
+`mutation_authority=false`. Coverage aporta evidencia de ejecución por una
+suite passing, no prueba que un test afirme o proteja un invariante; los nombres
+legacy `protecting_tests`/`work_package_target_protected` son una limitación
+conocida. `--code-review-limit N --code-json` amplía de 1 a 50 la vista
+auditable. La consulta es estrictamente read-only; un snapshot full sin USN se
+etiqueta `publication_only` y un journal avanzado/discontinuo causa abstención.
 
 `--code-publication-diff` publica el envelope
 `neocortex.code-publication-diff/v9`, compatible con v1-v8, y compara dos

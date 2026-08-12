@@ -9,7 +9,6 @@ from typing import Literal, cast
 from .code_architecture_analysis import (
     CodeArchitectureAnalysis,
     bounded_import_chains,
-    module_id_from_path,
 )
 from .code_coverage_analysis import (
     CodeCoverageAnalysis,
@@ -27,46 +26,15 @@ from .code_review_models import (
     CodeReviewFinding,
     CodeReviewRecommendation,
     CodeReviewWorkPackage,
-    CodeReviewWorkPackageMember,
     CodeReviewWorkPackageStep,
     RecommendationStatus,
-    WorkPackageRelationship,
 )
 from .semantic_models import canonical_json, fingerprint_text
 
-CODE_REVIEW_PLANNING = "python-maintenance-work-packages-v4"
-_CODE_REVIEW_PACKAGE_ID_PLANNING = "python-maintenance-work-packages-v1"
-CODE_REVIEW_PLANNING_FINDING_LIMIT = 50
-CODE_REVIEW_WORK_PACKAGE_LIMIT = 4
-CODE_REVIEW_WORK_PACKAGE_MEMBER_LIMIT = 5
+CODE_REVIEW_PLANNING = "python-maintenance-work-packages-v5"
 CODE_REVIEW_UNUSED_WORK_PACKAGE_LIMIT = 3
 CODE_REVIEW_SUPPLY_CHAIN_EVIDENCE_LIMIT = 20
 
-_ACCEPTANCE_GATES = (
-    "characterization_fixture_exact",
-    "target_hotspot_removed",
-    "no_added_hotspots",
-    "no_changed_hotspot_evidence",
-    "no_corrected_or_lost_call_resolutions",
-    "full_cache_hit_replay",
-    "no_added_ruff_diagnostics",
-    "no_added_ruff_basic_diagnostics",
-    "no_added_ruff_project_diagnostics",
-    "no_added_mypy_errors",
-    "no_added_pyright_errors",
-    "public_type_surface_not_degraded",
-    "type_coverage_not_degraded",
-    "provider_cache_or_rerun_explained",
-    "architecture_contracts_not_degraded",
-    "no_new_import_cycles",
-    "module_complexity_not_displaced",
-    "tests_passed",
-    "coverage_available",
-    "work_package_target_protected",
-    "line_coverage_not_degraded",
-    "branch_coverage_not_degraded",
-)
-_RISK_ORDER = {"unknown": 0, "low": 1, "medium": 2, "high": 3}
 _UNUSED_REQUIRED_PRECISION_GATES = frozenset(
     {
         "calibration_probable_unused_precision",
@@ -234,195 +202,6 @@ def read_code_review_planning_links(
     return tuple(links[key] for key in sorted(links))
 
 
-def _member(
-    finding: CodeReviewFinding,
-    role: Literal["primary_change_target", "contract_guard"],
-    relationship: WorkPackageRelationship,
-    evidence: tuple[str, ...],
-) -> CodeReviewWorkPackageMember:
-    return CodeReviewWorkPackageMember(
-        finding_id=finding.finding_id,
-        hotspot_id=finding.hotspot_id,
-        hotspot_rank=finding.rank,
-        path=finding.path,
-        symbol=finding.symbol,
-        construction=finding.construction,
-        actionability=finding.actionability,
-        role=role,
-        relationship=relationship,
-        relationship_evidence=evidence,
-    )
-
-
-def _link_evidence(link: CodeReviewPlanningLink) -> tuple[str, ...]:
-    evidence = [f"resolved_static_call_depth:{link.depth}"]
-    if link.via_symbol is not None:
-        evidence.append(f"via_symbol:{link.via_symbol}")
-    evidence.append(f"minimum_confidence:{link.confidence:.6f}")
-    evidence.extend(f"provenance:{item}" for item in link.provenance)
-    return tuple(evidence)
-
-
-def _related_findings(
-    primary: CodeReviewFinding,
-    findings: tuple[CodeReviewFinding, ...],
-    links: tuple[CodeReviewPlanningLink, ...],
-    recommendation_ids: frozenset[str],
-) -> tuple[tuple[CodeReviewFinding, CodeReviewPlanningLink], ...]:
-    by_id = {finding.finding_id: finding for finding in findings}
-    related = []
-    for link in links:
-        candidate = by_id.get(link.target_finding_id)
-        if link.source_finding_id != primary.finding_id or candidate is None:
-            continue
-        if candidate.finding_id in recommendation_ids or candidate.source_role != "production":
-            continue
-        related.append((candidate, link))
-    related.sort(
-        key=lambda item: (
-            item[1].depth,
-            item[0].rank,
-            item[0].path.casefold(),
-            item[0].symbol,
-        )
-    )
-    return tuple(related)
-
-
-def _ordered_union(values: tuple[tuple[str, ...], ...]) -> tuple[str, ...]:
-    return tuple(dict.fromkeys(item for group in values for item in group))
-
-
-def _package_steps(
-    primary: CodeReviewFinding,
-    related: tuple[tuple[CodeReviewFinding, CodeReviewPlanningLink], ...],
-) -> tuple[CodeReviewWorkPackageStep, ...]:
-    characterization_targets = ",".join(
-        finding.symbol for finding in (primary, *(item[0] for item in related))
-    )
-    steps = [
-        CodeReviewWorkPackageStep(
-            1,
-            "characterize",
-            characterization_targets,
-            "freeze_order_evidence_confidence_uncertainty_and_abstention",
-        ),
-        CodeReviewWorkPackageStep(
-            2,
-            "change",
-            primary.symbol,
-            "preserve_public_contract_and_characterized_behavior",
-        ),
-    ]
-    steps.extend(
-        (
-            CodeReviewWorkPackageStep(
-                len(steps) + 1,
-                "validate",
-                primary.symbol,
-                "run_representative_fixture_and_consumer_regressions",
-            ),
-            CodeReviewWorkPackageStep(
-                len(steps) + 2,
-                "publish",
-                primary.symbol,
-                "compare_publication_and_require_incremental_replay",
-            ),
-        )
-    )
-    return tuple(steps)
-
-
-def _package_id(
-    primary: CodeReviewFinding,
-    related: tuple[tuple[CodeReviewFinding, CodeReviewPlanningLink], ...],
-) -> str:
-    payload = canonical_json(
-        {
-            # The architecture context enriches validation but does not change
-            # the legacy finding membership identity of the package.
-            "planning": _CODE_REVIEW_PACKAGE_ID_PLANNING,
-            "primary_hotspot_id": primary.hotspot_id,
-            "members": [
-                {
-                    "hotspot_id": finding.hotspot_id,
-                    "depth": link.depth,
-                    "via_symbol": link.via_symbol,
-                }
-                for finding, link in related
-            ],
-        }
-    )
-    return "code-review-work-package-v1:xxh3_128:" + fingerprint_text(payload).xxh3_128
-
-
-def _package_risk(
-    primary: CodeReviewFinding,
-    related: tuple[tuple[CodeReviewFinding, CodeReviewPlanningLink], ...],
-) -> Literal["low", "medium", "high", "unknown"]:
-    risks = (primary.change_risk, *(finding.change_risk for finding, _link in related))
-    selected = max(risks, key=lambda risk: _RISK_ORDER[risk])
-    if related and selected == "medium":
-        return "high"
-    return selected
-
-
-def _normalized_path(value: str) -> str:
-    return value.replace("\\", "/").strip("/").casefold()
-
-
-def _candidate_matches_member(
-    candidate: UnusedConsensusCandidate,
-    member: CodeReviewWorkPackageMember,
-) -> bool:
-    candidate_path = _normalized_path(candidate.relative_path)
-    member_path = _normalized_path(member.path)
-    path_matches = member_path == candidate_path or member_path.endswith("/" + candidate_path)
-    symbol_matches = (
-        candidate.symbol == member.symbol or member.symbol.rsplit(".", 1)[-1] == candidate.name
-    )
-    return path_matches and symbol_matches
-
-
-def _annotate_unused_candidates(
-    package: CodeReviewWorkPackage,
-    unused_analysis: CodeUnusedAnalysis | None,
-) -> CodeReviewWorkPackage:
-    if unused_analysis is None or unused_analysis.status != "ready":
-        return package
-    matching = tuple(
-        candidate
-        for candidate in unused_analysis.candidates
-        if any(_candidate_matches_member(candidate, member) for member in package.members)
-    )[:CODE_REVIEW_WORK_PACKAGE_MEMBER_LIMIT]
-    if not matching:
-        return package
-    return replace(
-        package,
-        unused_candidates=matching,
-        requires_human_confirmation=True,
-        acceptance_gates=tuple(
-            dict.fromkeys(
-                (
-                    *package.acceptance_gates,
-                    "unused_analysis_comparable",
-                    "unused_evidence_not_degraded",
-                    "human_confirmation_recorded",
-                )
-            )
-        ),
-        evidence=(
-            *package.evidence,
-            *(f"unused_candidate:{item.candidate_id}:{item.state}" for item in matching),
-        ),
-        limitations=(
-            *package.limitations,
-            "unused_evidence_is_advisory_and_requires_human_confirmation",
-            "unused_evidence_has_zero_delete_or_mutation_authority",
-        ),
-    )
-
-
 def _annotate_engineering(
     package: CodeReviewWorkPackage,
     analysis: CodeEngineeringAnalytics | None,
@@ -482,6 +261,10 @@ def _annotate_engineering(
         evidence=tuple(dict.fromkeys((*package.evidence, *evidence))),
         limitations=tuple(dict.fromkeys((*package.limitations, *limitations))),
     )
+
+
+def _normalized_path(value: str) -> str:
+    return value.replace("\\", "/").strip("/").casefold()
 
 
 def _path_matches_package(path: str, package: CodeReviewWorkPackage) -> bool:
@@ -599,19 +382,19 @@ def _unused_package_steps(
         ),
         CodeReviewWorkPackageStep(
             2,
-            "validate",
+            "characterize",
             target,
             "run_targeted_tests_and_public_import_smoke_without_mutating_code",
         ),
         CodeReviewWorkPackageStep(
             3,
-            "validate",
+            "characterize",
             target,
             "record_explicit_human_confirmation_or_reclassify_with_new_evidence",
         ),
         CodeReviewWorkPackageStep(
             4,
-            "publish",
+            "characterize",
             target,
             "require_comparable_unused_analysis_replay_before_any_separate_change",
         ),
@@ -628,15 +411,17 @@ def _unused_characterization_packages(
     supply_chain: CodeSupplyChainAnalysis | None = None,
 ) -> tuple[CodeReviewWorkPackage, ...]:
     precision_gates: dict[str, str] = {}
-    if analysis is not None:
+    if isinstance(analysis, CodeUnusedAnalysis):
         precision_gates = {
             gate.gate: gate.status
             for gate in analysis.gates
             if gate.gate in _UNUSED_REQUIRED_PRECISION_GATES
         }
     if (
-        analysis is None
+        not isinstance(analysis, CodeUnusedAnalysis)
         or analysis.status != "ready"
+        or analysis.authority != "advisory"
+        or analysis.mutation_authority
         or any(precision_gates.get(gate) != "passed" for gate in _UNUSED_REQUIRED_PRECISION_GATES)
     ):
         return ()
@@ -757,147 +542,25 @@ def build_code_review_work_packages(
     unused_analysis: CodeUnusedAnalysis | None = None,
     supply_chain: CodeSupplyChainAnalysis | None = None,
 ) -> tuple[CodeReviewWorkPackage, ...]:
-    """Build the single next coherent package; never batch independent roots."""
+    """Refuse hotspot change packages until decision evidence is resolvable.
 
-    if not recommendations:
-        return ()
-    by_id = {finding.finding_id: finding for finding in findings}
-    primary = by_id.get(recommendations[0].finding_id)
-    if primary is None:
-        return ()
-    recommendation_ids = frozenset(item.finding_id for item in recommendations)
-    all_related = _related_findings(primary, findings, links, recommendation_ids)
-    related = all_related[: CODE_REVIEW_WORK_PACKAGE_MEMBER_LIMIT - 1]
-    members_truncated = len(all_related) > len(related)
-    package_findings = (primary, *(item[0] for item in related))
-    members = (
-        _member(
-            primary,
-            "primary_change_target",
-            "primary",
-            ("primary_actionability:act_now",),
-        ),
-        *(
-            _member(
-                finding,
-                "contract_guard",
-                "resolved_static_call" if link.depth == 1 else "resolved_static_call_via",
-                _link_evidence(link),
-            )
-            for finding, link in related
-        ),
+    The v11 structural detector has observation authority only.  Unused-code
+    characterization packages are built separately by
+    :func:`plan_code_review_work_packages` and remain non-mutating.
+    """
+
+    del (
+        findings,
+        recommendations,
+        links,
+        architecture,
+        architecture_root,
+        test_coverage,
+        engineering_analytics,
+        unused_analysis,
+        supply_chain,
     )
-    relationship_evidence = tuple(
-        item for _finding, link in related for item in _link_evidence(link)
-    )
-    primary_module = (
-        None if architecture_root is None else module_id_from_path(primary.path, architecture_root)
-    )
-    import_chains = (
-        ()
-        if architecture is None or primary_module is None
-        else bounded_import_chains(architecture, primary_module)
-    )
-    affected_contracts = (
-        ()
-        if architecture is None or primary_module is None
-        else tuple(
-            sorted(
-                contract.contract_id
-                for contract in architecture.contracts
-                if primary_module in contract.importer_modules
-                or primary_module in contract.imported_modules
-            )
-        )
-    )
-    architecture_evidence = (
-        "architecture:not_evaluated"
-        if architecture is None
-        else (
-            "architecture:ready"
-            if architecture.status == "ready"
-            else f"architecture:abstained:{architecture.reason}"
-        )
-    )
-    architecture_limitations = (
-        ()
-        if architecture is not None and architecture.status == "ready"
-        else ("architecture_gates_require_a_comparable_ready_publication_diff",)
-    )
-    coverage_projection = (
-        None
-        if test_coverage is None
-        else project_work_package_coverage(test_coverage, primary.symbol)
-    )
-    coverage_status = "not_evaluated" if coverage_projection is None else coverage_projection.status
-    coverage_scope = (
-        None
-        if test_coverage is None
-        else project_work_package_coverage_scope(test_coverage, primary.symbol)
-    )
-    coverage_limitations = {
-        "protected": (),
-        "unprotected": ("work_package_target_has_no_observed_protecting_test",),
-        "not_evaluated": ("coverage_gates_require_ready_trusted_deep_evidence",),
-    }[coverage_status]
-    package = CodeReviewWorkPackage(
-        package_rank=1,
-        package_id=_package_id(primary, related),
-        title=f"{primary.symbol} maintenance package",
-        objective="reduce_confirmed_hotspots_without_contract_regression",
-        primary_finding_id=primary.finding_id,
-        primary_hotspot_id=primary.hotspot_id,
-        primary_symbol=primary.symbol,
-        primary_module=primary_module,
-        change_risk=_package_risk(primary, related),
-        members=members,
-        members_truncated=members_truncated,
-        consumer_module_examples=_ordered_union(
-            tuple(finding.impact.consumer_module_examples for finding in package_findings)
-        ),
-        import_chains=import_chains,
-        affected_architecture_contracts=affected_contracts,
-        test_coverage=coverage_projection,
-        test_coverage_scope=coverage_scope,
-        contracts_to_preserve=_ordered_union(
-            tuple(finding.contracts_to_preserve for finding in package_findings)
-        ),
-        steps=_package_steps(primary, related),
-        recommended_validation=_ordered_union(
-            tuple(finding.recommended_validation for finding in package_findings)
-        ),
-        acceptance_gates=_ACCEPTANCE_GATES,
-        evidence=(
-            "bounded_planning_horizon:50",
-            "primary_recommendation_rank:1",
-            architecture_evidence,
-            f"test_coverage:{coverage_status}",
-            *(
-                ()
-                if coverage_projection is None
-                else (f"test_coverage_subject:{coverage_projection.primary_symbol}",)
-            ),
-            *relationship_evidence,
-        ),
-        limitations=(
-            "work_package_is_advice_not_authorization",
-            "relationship_graph_is_bounded_to_two_static_call_hops",
-            "dynamic_dispatch_is_not_observed",
-            "related_members_require_characterization_before_change",
-            *architecture_limitations,
-            *coverage_limitations,
-        ),
-        confidence=("confirmed_static_relationship" if related else "primary_finding_only"),
-    )
-    return (
-        _annotate_supply_chain(
-            _annotate_engineering(
-                _annotate_unused_candidates(package, unused_analysis),
-                engineering_analytics,
-            ),
-            supply_chain,
-        ),
-    )
+    return ()
 
 
 def plan_code_review_work_packages(
@@ -949,15 +612,13 @@ def plan_code_review_work_packages(
     return (
         (),
         "abstained",
-        "no_primary_act_now_or_high_consensus_unused_candidate_within_bounded_evidence",
+        "no_evidence_ready_change_or_calibrated_characterization_candidate",
     )
 
 
 __all__ = [
     "CODE_REVIEW_PLANNING",
-    "CODE_REVIEW_PLANNING_FINDING_LIMIT",
     "CODE_REVIEW_UNUSED_WORK_PACKAGE_LIMIT",
-    "CODE_REVIEW_WORK_PACKAGE_LIMIT",
     "CodeReviewPlanningLink",
     "build_code_review_work_packages",
     "plan_code_review_work_packages",

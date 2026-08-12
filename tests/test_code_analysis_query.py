@@ -75,6 +75,109 @@ def test_review_query_combines_all_dimensions_without_a_magic_score() -> None:
     assert '"defect_probability": null' in serialized
 
 
+def test_review_query_keeps_question_and_decision_readiness_dimensioned() -> None:
+    payload = {
+        "kind": "code-review",
+        "schema": "neocortex.code-review/v11",
+        "status": "ready",
+        "reason": None,
+        "recommendation_status": "abstained",
+        "recommendation_reason": "no_evidence_ready_change_decision",
+        "recommendations": [],
+        "work_package_status": "abstained",
+        "work_package_reason": "no_calibrated_characterization_candidate",
+        "work_packages": [],
+        "snapshot": {"processing_signature": "fixture"},
+        "coverage": {"candidate_hotspots": 1},
+        "digest": {"xxh3_128": "fixture"},
+        "findings": [
+            {
+                "finding_id": "finding-1",
+                "category": "long_function_hotspot",
+                "actionability": "characterize_first",
+                "construction": "unknown",
+                "observation_confidence": "confirmed_static_evidence",
+                "change_risk": "unknown",
+                "recommended_change": False,
+                "diagnostics": [{"code": "long_function"}],
+                "epistemic_state": {
+                    "observation_status": "confirmed",
+                    "inference_status": "abstained",
+                    "question_readiness": "ready",
+                    "decision_readiness": "experiment_required",
+                    "decision": None,
+                    "authority": "advisory",
+                    "mutation_authority": False,
+                },
+            }
+        ],
+    }
+
+    question = query_code_analysis(
+        payload,
+        CodeAnalysisQuery(surface="review", statuses=("question:ready",)),
+    )
+    bare_ready = query_code_analysis(
+        payload,
+        CodeAnalysisQuery(surface="review", statuses=("ready",)),
+    )
+    decision = query_code_analysis(
+        payload,
+        CodeAnalysisQuery(surface="review", statuses=("decision:experiment_required",)),
+    )
+
+    assert question["counts"]["matched"] == 1
+    assert decision["counts"]["matched"] == 1
+    assert bare_ready["counts"]["matched"] == 0
+
+
+def test_review_query_rejects_a_forged_v11_change_package() -> None:
+    payload = {
+        "kind": "code-review",
+        "schema": "neocortex.code-review/v11",
+        "status": "ready",
+        "reason": None,
+        "recommendation_status": "abstained",
+        "recommendation_reason": "no_evidence_ready_change_decision",
+        "recommendations": [],
+        "work_package_status": "ready",
+        "work_package_reason": None,
+        "snapshot": {"processing_signature": "forged"},
+        "coverage": {"candidate_hotspots": 1},
+        "digest": {"xxh3_128": "forged"},
+        "findings": [],
+        "work_packages": [
+            {
+                "package_id": "forged",
+                "package_kind": "hotspot_maintenance",
+                "title": "Delete now",
+                "objective": "delete_production_symbol",
+                "requires_human_confirmation": False,
+                "mutation_authority": True,
+                "steps": [{"phase": "change", "requirement": "delete"}],
+            }
+        ],
+    }
+
+    with pytest.raises(ValueError, match="characterization-only policy"):
+        query_code_analysis(payload, CodeAnalysisQuery(surface="review"))
+
+
+@pytest.mark.parametrize(
+    "schema",
+    (None, "neocortex.code-review/unknown", "neocortex.code-review/v12"),
+)
+def test_review_query_rejects_missing_unknown_or_future_schemas(schema: object) -> None:
+    payload = deepcopy(_surface("review"))
+    if schema is None:
+        payload.pop("schema", None)
+    else:
+        payload["schema"] = schema
+
+    with pytest.raises(ValueError, match="unsupported code-review schema"):
+        query_code_analysis(payload, CodeAnalysisQuery(surface="review"))
+
+
 def test_status_query_supports_exact_or_descendant_module_matching() -> None:
     result = query_code_analysis(
         _surface("status"),
@@ -306,10 +409,7 @@ def test_diff_extractor_signature_order_and_exact_fixture_are_frozen() -> None:
 
     assert payload == before
     assert records == query_module._extract_diff(deepcopy(payload))
-    assert [
-        (record["record_type"], record["id"], record["source_path"])
-        for record in records
-    ] == [
+    assert [(record["record_type"], record["id"], record["source_path"]) for record in records] == [
         (
             "provider_delta",
             "providers[0]:cosmic-ray-focal-mutation",

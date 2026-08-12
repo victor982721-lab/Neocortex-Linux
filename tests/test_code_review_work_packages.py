@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
-from types import SimpleNamespace
 
 from _04_Nucleo_Operativo.code_architecture_analysis import (
     ArchitectureContract,
@@ -32,21 +31,28 @@ from _04_Nucleo_Operativo.code_engineering_analytics import (
     ModuleEngineeringProfile,
 )
 from _04_Nucleo_Operativo.code_review_models import (
+    CodeReviewDiagnostic,
     CodeReviewFinding,
     CodeReviewImpact,
-    CodeReviewResult,
+    bounded_code_coverage_payload,
+    bounded_code_engineering_payload,
+    bounded_code_review_work_package_payload,
     bounded_code_unused_payload,
     build_code_review_recommendations,
 )
+from _04_Nucleo_Operativo.code_review_actionability import CodeReviewEpistemicState
 from _04_Nucleo_Operativo.code_review_work_packages import (
     build_code_review_work_packages,
     plan_code_review_work_packages,
     read_code_review_planning_links,
 )
 from _04_Nucleo_Operativo.code_unused_analysis import (
+    UnusedCalibrationSample,
     UnusedConsensusCandidate,
     UnusedEvidenceSignals,
+    UnusedProviderStatus,
     analyze_code_unused,
+    build_unused_analysis,
 )
 
 
@@ -162,16 +168,16 @@ def _engineering_analysis(
 
 def _impact(symbol: str) -> CodeReviewImpact:
     return CodeReviewImpact(
-        call_sites=1,
-        production_callers=1,
-        test_callers=1,
-        fixture_callers=0,
-        tool_callers=0,
-        compatibility_callers=0,
-        consumer_modules=2,
-        production_consumer_modules=1,
-        test_consumer_modules=1,
-        consumer_module_examples=(f"C:\\repo\\consumer_{symbol}.py",),
+        call_sites=2,
+        path_convention_production_callers=1,
+        path_convention_test_callers=1,
+        path_convention_fixture_callers=0,
+        path_convention_tool_callers=0,
+        path_convention_compatibility_callers=0,
+        resolved_static_consumer_files=2,
+        path_convention_production_consumer_files=1,
+        path_convention_test_consumer_files=1,
+        consumer_file_examples=(f"C:\\repo\\consumer_{symbol}.py",),
     )
 
 
@@ -179,11 +185,53 @@ def _finding(
     rank: int,
     symbol: str,
     path: str,
-    *,
-    actionability: str,
-    construction: str,
-    risk: str = "medium",
 ) -> CodeReviewFinding:
+    epistemic_state = CodeReviewEpistemicState(
+        question_id="maintenance.structural_hotspot_requires_change",
+        question_version="v1",
+        observation_status="confirmed",
+        observations=(
+            "cyclomatic_complexity_threshold_met_or_exceeded:20000bp",
+            "function_length_threshold_met_or_exceeded:11550bp",
+            "path_convention_production_callers:1",
+            "path_convention_test_or_fixture_callers:1",
+            "resolved_static_consumer_files:2",
+        ),
+        inference_status="abstained",
+        inferences=(),
+        hypotheses=(
+            "structural_hotspot_may_increase_maintenance_cost",
+            "structure_may_be_intentional_or_cohesive",
+        ),
+        question_readiness="ready",
+        question_reason=None,
+        required_evidence=(
+            "confirmed_structural_hotspot",
+            "behavior_or_contract_problem_observed",
+            "counterevidence_evaluated",
+            "discriminating_experiment_result",
+        ),
+        satisfied_evidence=("confirmed_structural_hotspot",),
+        missing_evidence=(
+            "behavior_or_contract_problem_observed",
+            "counterevidence_evaluated",
+            "discriminating_experiment_result",
+        ),
+        counterevidence_status="not_evaluated",
+        counterevidence_to_seek=(
+            "intentional_or_cohesive_structure",
+            "existing_assurance_for_observed_behavior",
+            "change_cost_or_risk_exceeds_verified_benefit",
+        ),
+        decision_readiness="experiment_required",
+        decision=None,
+        decision_reason="structural_observation_alone_cannot_justify_change",
+        next_actions=(
+            "characterize_exact_behavior_and_contracts",
+            "seek_counterevidence",
+            "design_lowest_cost_discriminating_experiment",
+        ),
+    )
     return CodeReviewFinding(
         finding_id=f"finding:{symbol}",
         hotspot_id=f"hotspot:{symbol}",
@@ -208,21 +256,55 @@ def _finding(
         incoming_calls=2,
         resolved_static_callers=2,
         impact=_impact(symbol),
-        source_role="production",
-        construction=construction,  # type: ignore[arg-type]
-        actionability=actionability,  # type: ignore[arg-type]
-        change_risk=risk,  # type: ignore[arg-type]
-        recommended_change=actionability == "act_now",
-        actionability_evidence=(f"actionability:{actionability}",),
-        contracts_to_preserve=(f"contract:{symbol}",),
-        recommended_validation=(f"validation:{symbol}",),
+        path_convention_role="production",
+        construction="unknown",
+        actionability="characterize_first",
+        change_risk="unknown",
+        recommended_change=False,
+        epistemic_state=epistemic_state,
+        actionability_evidence=(
+            "source_role_path_convention:production",
+            "semantic_construction:abstained:not_observed",
+            "question_readiness:ready",
+            "decision_readiness:experiment_required",
+            *epistemic_state.observations,
+        ),
+        contracts_to_preserve=(),
+        recommended_validation=(),
         analyzer_id="fixture-python",
         analyzer_version="1",
         file_xxh3_128="a" * 32,
         file_xxh3_64_guard="b" * 16,
-        diagnostics=(),
+        diagnostics=(
+            CodeReviewDiagnostic(
+                diagnostic_id=rank * 2 - 1,
+                code="high_complexity",
+                value=30,
+                threshold=15,
+                source="fixture",
+                tool_name="fixture-analyzer",
+                tool_version="1",
+                confirmed=True,
+                confidence=1.0,
+            ),
+            CodeReviewDiagnostic(
+                diagnostic_id=rank * 2,
+                code="long_function",
+                value=231,
+                threshold=200,
+                source="fixture",
+                tool_name="fixture-analyzer",
+                tool_version="1",
+                confirmed=True,
+                confidence=1.0,
+            ),
+        ),
         callers=(),
-        reasons=("fixture",),
+        reasons=(
+            "confirmed_cyclomatic_complexity:30",
+            "confirmed_function_lines:231",
+            "resolved_static_callers:2",
+        ),
     )
 
 
@@ -232,36 +314,26 @@ def _planning_findings() -> tuple[CodeReviewFinding, ...]:
             1,
             "document_taxonomy.classify_document",
             r"C:\repo\document_taxonomy.py",
-            actionability="act_now",
-            construction="classifier",
         ),
         _finding(
             2,
             "document_taxonomy_kinds._normative_document_evidence",
             r"C:\repo\document_taxonomy_kinds.py",
-            actionability="characterize_first",
-            construction="rule",
         ),
         _finding(
             3,
             "document_taxonomy_references._plausible_authority_identifier",
             r"C:\repo\document_taxonomy_references.py",
-            actionability="characterize_first",
-            construction="validator",
         ),
         _finding(
             4,
             "document_taxonomy_overlay.load_overlay",
             r"C:\repo\document_taxonomy_overlay.py",
-            actionability="characterize_first",
-            construction="validator",
         ),
         _finding(
             5,
             "knowledge_exact.lookup_exact",
             r"C:\repo\knowledge_exact.py",
-            actionability="act_now",
-            construction="retrieval",
         ),
     )
 
@@ -337,7 +409,7 @@ def _create_graph(*, project_root: str = r"C:\repo") -> sqlite3.Connection:
     return connection
 
 
-def test_planner_uses_only_confirmed_direct_and_two_hop_relationships() -> None:
+def test_relationship_reader_observes_links_but_cannot_create_a_hotspot_package() -> None:
     findings = _planning_findings()
     recommendations = build_code_review_recommendations(findings, limit=3)
     with _create_graph() as connection:
@@ -356,28 +428,12 @@ def test_planner_uses_only_confirmed_direct_and_two_hop_relationships() -> None:
     repeated = build_code_review_work_packages(findings, recommendations, links)
 
     assert packages == repeated
-    assert len(packages) == 1
-    package = packages[0]
-    assert package.primary_symbol == "document_taxonomy.classify_document"
-    assert package.change_risk == "high"
-    assert package.confidence == "confirmed_static_relationship"
-    assert [member.symbol for member in package.members] == [
-        "document_taxonomy.classify_document",
-        "document_taxonomy_references._plausible_authority_identifier",
-        "document_taxonomy_kinds._normative_document_evidence",
-    ]
-    assert [member.role for member in package.members] == [
-        "primary_change_target",
-        "contract_guard",
-        "contract_guard",
-    ]
-    assert all(
-        step.target == package.primary_symbol for step in package.steps if step.phase == "change"
-    )
-    assert "document_taxonomy_overlay.load_overlay" not in {
-        member.symbol for member in package.members
+    assert recommendations == ()
+    assert packages == ()
+    assert {(link.source_finding_id, link.target_finding_id) for link in links} == {
+        (findings[0].finding_id, findings[1].finding_id),
+        (findings[0].finding_id, findings[2].finding_id),
     }
-    assert "knowledge_exact.lookup_exact" not in {member.symbol for member in package.members}
 
 
 def test_link_reader_collapses_repeated_calls_before_the_pair_bound() -> None:
@@ -430,51 +486,87 @@ def test_bridge_role_is_relative_to_its_project_root() -> None:
     assert links[0].via_symbol == "document_taxonomy._kind_evidence"
 
 
-def test_planner_abstains_without_an_act_now_recommendation() -> None:
-    findings = tuple(
-        _finding(
-            finding.rank,
-            finding.symbol,
-            finding.path,
-            actionability="characterize_first",
-            construction=finding.construction,
-        )
-        for finding in _planning_findings()[:2]
-    )
+def test_planner_abstains_without_an_evidence_resolved_recommendation() -> None:
+    findings = _planning_findings()[:2]
 
+    assert build_code_review_recommendations(findings, limit=2) == ()
     assert build_code_review_work_packages(findings, (), ()) == ()
 
 
 def _unused_candidate(
     *,
     state: str = "probable_unused_high_consensus",
-) -> SimpleNamespace:
-    return SimpleNamespace(
+) -> UnusedConsensusCandidate:
+    return UnusedConsensusCandidate(
         candidate_id="unused:document_taxonomy.classify_document",
+        version_id=1,
+        symbol_id=1,
         relative_path="document_taxonomy.py",
         module_id="document_taxonomy",
         symbol="document_taxonomy.classify_document",
         name="classify_document",
-        state=state,
+        kind="function",
+        start_line=10,
+        end_line=240,
+        state=state,  # type: ignore[arg-type]
         provider_ids=("pyright-trusted-project", "vulture-unused-static"),
-        reasons=("both_static_providers_report", "no_explained_usage_observed"),
-    )
-
-
-def _unused_analysis(*candidates: SimpleNamespace) -> SimpleNamespace:
-    return SimpleNamespace(
-        status="ready",
-        candidates=tuple(candidates),
-        calibration_signature="calibration-v1",
-        coverage_status="missing",
-        gates=(
-            SimpleNamespace(gate="calibration_probable_unused_precision", status="passed"),
-            SimpleNamespace(gate="holdout_probable_unused_precision", status="passed"),
+        signals=UnusedEvidenceSignals(
+            vulture_reported=True,
+            vulture_confidence=1.0,
+            pyright_reported=True,
+            vulture_complete=True,
+            pyright_complete=True,
+            providers_aligned=True,
+            graph_references=0,
+            graph_calls=0,
+            graph_imports=0,
+            in_all=False,
+            reexported=False,
+            entry_point=False,
+            callback=False,
+            registry=False,
+            fixture=False,
+            protocol=False,
+            special=False,
+            coverage_observed=False,
+            coverage_status="missing",
+            evidence_ids=("fixture-unused-evidence",),
         ),
+        reasons=(
+            "vulture_high_confidence",
+            "pyright_reported_unused",
+            "no_observed_usage_or_dynamic_contract",
+        ),
+        evidence=("fixture-unused-evidence",),
+        limitations=("dynamic_usage_not_observed",),
     )
 
 
-def test_normal_work_package_is_annotated_with_matching_unused_evidence() -> None:
+def _unused_analysis(*candidates: UnusedConsensusCandidate):
+    providers = tuple(
+        UnusedProviderStatus(
+            provider_id=provider_id,
+            status="ready",
+            reason=None,
+            tool_run_id=index,
+            effective_tool_run_id=index,
+            findings=1,
+            eligible_candidates=1,
+            covered_candidates=1,
+            comparability="comparable",
+            source_provider_schema="neocortex.external-provider/v1",
+            source_tool_name=provider_id,
+            source_tool_version="fixture-1",
+            source_comparability_signature=f"comparability:{provider_id}",
+        )
+        for index, provider_id in enumerate(
+            ("pyright-trusted-project", "vulture-unused-static"), start=1
+        )
+    )
+    return build_unused_analysis(candidates, providers=providers)
+
+
+def test_hotspot_factory_does_not_smuggle_unused_evidence_into_a_change_package() -> None:
     findings = _planning_findings()
     recommendations = build_code_review_recommendations(findings, limit=1)
     packages = build_code_review_work_packages(
@@ -484,13 +576,8 @@ def test_normal_work_package_is_annotated_with_matching_unused_evidence() -> Non
         unused_analysis=_unused_analysis(_unused_candidate()),  # type: ignore[arg-type]
     )
 
-    assert len(packages) == 1
-    assert packages[0].package_kind == "hotspot_maintenance"
-    assert tuple(item.state for item in packages[0].unused_candidates) == (
-        "probable_unused_high_consensus",
-    )
-    assert packages[0].requires_human_confirmation is True
-    assert packages[0].mutation_authority is False
+    assert recommendations == ()
+    assert packages == ()
 
 
 def test_high_consensus_unused_candidate_gets_characterization_only_package() -> None:
@@ -531,23 +618,22 @@ def test_non_high_consensus_unused_states_never_create_characterization_packages
 
     assert packages == ()
     assert status == "abstained"
-    assert reason == (
-        "no_primary_act_now_or_high_consensus_unused_candidate_within_bounded_evidence"
-    )
+    assert reason == "no_evidence_ready_change_or_calibrated_characterization_candidate"
 
 
 def test_unused_characterization_requires_a_passed_calibration_gate() -> None:
-    analysis = _unused_analysis(_unused_candidate())
-    analysis.gates = (
-        SimpleNamespace(gate="calibration_probable_unused_precision", status="not_evaluated"),
-        SimpleNamespace(gate="holdout_probable_unused_precision", status="passed"),
+    candidate = _unused_candidate()
+    analysis = analyze_code_unused(
+        (candidate,),
+        provider_signature="unused-provider-suite-fixture-v1",
+        calibration_samples=(UnusedCalibrationSample("false-positive", "used", candidate.signals),),
     )
 
     packages, status, _reason = plan_code_review_work_packages(
         (),
         (),
         (),
-        unused_analysis=analysis,  # type: ignore[arg-type]
+        unused_analysis=analysis,
     )
 
     assert packages == ()
@@ -593,7 +679,11 @@ def test_review_unused_payload_bounds_candidates_and_nested_evidence() -> None:
             state="probable_unused_high_consensus",
             provider_ids=("pyright-trusted-project", "vulture-unused-static"),
             signals=signals,
-            reasons=evidence_ids,
+            reasons=(
+                "vulture_high_confidence",
+                "pyright_reported_unused",
+                "no_observed_usage_or_dynamic_contract",
+            ),
             evidence=evidence_ids,
             limitations=evidence_ids,
         )
@@ -621,9 +711,8 @@ def test_review_unused_payload_bounds_candidates_and_nested_evidence() -> None:
     assert bounded_signals["evidence_ids_truncated"] is True
 
 
-def test_work_package_adds_bounded_architecture_context_without_changing_identity() -> None:
+def test_unused_package_adds_bounded_architecture_context_without_changing_identity() -> None:
     findings = _planning_findings()
-    recommendations = build_code_review_recommendations(findings, limit=3)
     architecture = CodeArchitectureAnalysis(
         database="fixture",
         analysis_run_id=1,
@@ -690,22 +779,22 @@ def test_work_package_adds_bounded_architecture_context_without_changing_identit
         ),
         limitations=(),
     )
-    with _create_graph() as connection:
-        links = read_code_review_planning_links(
-            connection,
-            {1: findings[0].finding_id, 3: findings[1].finding_id},
-        )
     engineering = _engineering_analysis(("document_taxonomy",), complete=True)
 
-    legacy = build_code_review_work_packages(findings, recommendations, links)[0]
-    enriched = build_code_review_work_packages(
+    legacy = plan_code_review_work_packages(
         findings,
-        recommendations,
-        links,
+        (),
+        (),
+        unused_analysis=_unused_analysis(_unused_candidate()),  # type: ignore[arg-type]
+    )[0][0]
+    enriched = plan_code_review_work_packages(
+        findings,
+        (),
+        (),
         architecture=architecture,
-        architecture_root=r"C:\repo",
         engineering_analytics=engineering,
-    )[0]
+        unused_analysis=_unused_analysis(_unused_candidate()),  # type: ignore[arg-type]
+    )[0][0]
 
     assert enriched.package_id == legacy.package_id
     assert enriched.primary_module == "document_taxonomy"
@@ -714,7 +803,6 @@ def test_work_package_adds_bounded_architecture_context_without_changing_identit
     assert {
         "architecture_contracts_not_degraded",
         "no_new_import_cycles",
-        "module_complexity_not_displaced",
     }.issubset(enriched.acceptance_gates)
     assert "architecture:ready" in enriched.evidence
     assert enriched.engineering_profile == engineering.modules[0]
@@ -729,16 +817,15 @@ def test_work_package_adds_bounded_architecture_context_without_changing_identit
 
 def test_partial_engineering_evidence_never_hides_a_work_package() -> None:
     findings = _planning_findings()
-    recommendations = build_code_review_recommendations(findings, limit=3)
     engineering = _engineering_analysis(("document_taxonomy",), complete=False)
 
-    packages = build_code_review_work_packages(
+    packages = plan_code_review_work_packages(
         findings,
-        recommendations,
         (),
-        architecture_root=r"C:\repo",
+        (),
         engineering_analytics=engineering,
-    )
+        unused_analysis=_unused_analysis(_unused_candidate()),  # type: ignore[arg-type]
+    )[0]
 
     assert len(packages) == 1
     package = packages[0]
@@ -753,7 +840,6 @@ def test_partial_engineering_evidence_never_hides_a_work_package() -> None:
 
 def test_work_package_projects_protecting_tests_and_missing_target_coverage() -> None:
     findings = _planning_findings()
-    recommendations = build_code_review_recommendations(findings, limit=3)
     subject_key = "symbol:document_taxonomy.classify_document:10:240"
     totals = CoverageTotals(20, 17, 3, 8, 6, 2, 85.0, 75.0)
     coverage = CodeCoverageAnalysis(
@@ -813,13 +899,19 @@ def test_work_package_projects_protecting_tests_and_missing_target_coverage() ->
         limitations=("selected_suite_is_not_claimed_as_full_project_coverage",),
     )
 
-    legacy = build_code_review_work_packages(findings, recommendations, ())[0]
-    package = build_code_review_work_packages(
+    legacy = plan_code_review_work_packages(
         findings,
-        recommendations,
+        (),
+        (),
+        unused_analysis=_unused_analysis(_unused_candidate()),  # type: ignore[arg-type]
+    )[0][0]
+    package = plan_code_review_work_packages(
+        findings,
+        (),
         (),
         test_coverage=coverage,
-    )[0]
+        unused_analysis=_unused_analysis(_unused_candidate()),  # type: ignore[arg-type]
+    )[0][0]
 
     assert package.package_id == legacy.package_id
     assert package.test_coverage is not None
@@ -832,13 +924,12 @@ def test_work_package_projects_protecting_tests_and_missing_target_coverage() ->
     assert package.test_coverage_scope is not None
     assert package.test_coverage_scope.missing_line_ranges == ((30, 31), (80, 80))
     assert package.test_coverage_scope.missing_branch_arcs == ((25, 30), (70, 80))
-    assert "work_package_target_protected" in package.acceptance_gates
+    assert "work_package_target_protected" not in package.acceptance_gates
     assert "coverage_gates_require_ready_trusted_deep_evidence" not in package.limitations
 
 
 def test_review_json_bounds_coverage_and_work_package_examples_to_twenty() -> None:
     findings = _planning_findings()
-    recommendations = build_code_review_recommendations(findings, limit=3)
     subject_key = "symbol:document_taxonomy.classify_document:10:240"
     tests = tuple(f"tests/test_many.py::test_{index:02d}" for index in range(25))
     ranges = tuple((index, index) for index in range(1, 26))
@@ -930,42 +1021,17 @@ def test_review_json_bounds_coverage_and_work_package_examples_to_twenty() -> No
         complete=True,
         metric_count=25,
     )
-    package = build_code_review_work_packages(
+    package = plan_code_review_work_packages(
         findings,
-        recommendations,
         (),
-        architecture_root=r"C:\repo",
+        (),
         test_coverage=coverage,
         engineering_analytics=engineering,
-    )[0]
-    result = CodeReviewResult(
-        database="fixture",
-        status="ready",
-        reason=None,
-        ranking="fixture",
-        actionability_version="fixture",
-        recommendation_status="ready",
-        recommendation_reason=None,
-        planning_version="fixture",
-        work_package_status="ready",
-        work_package_reason=None,
-        snapshot=None,
-        coverage=None,
-        findings=(),
-        recommendations=(),
-        work_packages=(package,),
-        external_evidence=None,
-        external_evidence_suite=None,
-        architecture=None,
-        test_coverage=coverage,
-        limitations=(),
-        digest=None,
-        engineering_analytics=engineering,
-    )
-
-    payload = result.as_payload()
-    coverage_payload = payload["test_coverage"]
-    packages_payload = payload["work_packages"]
+        unused_analysis=_unused_analysis(_unused_candidate()),  # type: ignore[arg-type]
+    )[0][0]
+    coverage_payload = bounded_code_coverage_payload(coverage)
+    engineering_payload = bounded_code_engineering_payload(engineering)
+    packages_payload = [bounded_code_review_work_package_payload(package)]
     assert isinstance(coverage_payload, dict)
     assert isinstance(packages_payload, list)
     assert len(coverage_payload["failed_test_examples"]) == 20
@@ -979,7 +1045,6 @@ def test_review_json_bounds_coverage_and_work_package_examples_to_twenty() -> No
     package_payload = packages_payload[0]
     package_coverage = package_payload["test_coverage"]
     package_scope = package_payload["test_coverage_scope"]
-    engineering_payload = payload["engineering_analytics"]
     assert len(package_coverage["protecting_tests"]) == 20
     assert package_coverage["protecting_tests_total"] == 25
     assert package_coverage["protecting_tests_truncated"] is True
@@ -1007,32 +1072,15 @@ def test_review_json_bounds_coverage_and_work_package_examples_to_twenty() -> No
     ]
 
 
-def _passes_history_policy(
-    outcome: dict[str, object],
-    policy: dict[str, object],
-) -> bool:
-    return bool(
-        outcome["target_hotspot_removed"] == policy["target_hotspot_removed"]
-        and int(outcome["added_hotspots"]) <= int(policy["maximum_added_hotspots"])
-        and int(outcome["changed_hotspot_evidence"])
-        <= int(policy["maximum_changed_hotspot_evidence"])
-        and int(outcome["corrected_call_resolutions"])
-        <= int(policy["maximum_corrected_call_resolutions"])
-        and int(outcome["lost_call_resolutions"]) <= int(policy["maximum_lost_call_resolutions"])
-        and (
-            not policy["require_full_cache_hit_replay"]
-            or outcome["replay_candidates"] == outcome["replay_cache_hits"]
-        )
-    )
-
-
-def test_rc14_rc19_history_calibrates_replacement_and_replay_gates() -> None:
+def test_rc14_rc19_history_is_descriptive_not_decision_ground_truth() -> None:
     payload = json.loads(HISTORY_FIXTURE.read_text(encoding="utf-8"))
     outcomes = payload["outcomes"]
-    policy = payload["acceptance_policy"]
 
     assert payload["schema"] == "neocortex-code-review-work-package-outcomes/v1"
+    assert payload["source"]["ground_truth_status"] == (
+        "project_history_confirmed_not_general_human_ground_truth"
+    )
     assert len(outcomes) == 7
-    assert [outcome["id"] for outcome in outcomes if _passes_history_policy(outcome, policy)] == [
-        outcome["id"] for outcome in outcomes if outcome["accepted"]
-    ]
+    assert sum(bool(outcome["accepted"]) for outcome in outcomes) == 4
+    assert all("target_hotspot_removed" in outcome for outcome in outcomes)
+    assert all("corrected_call_resolutions" in outcome for outcome in outcomes)

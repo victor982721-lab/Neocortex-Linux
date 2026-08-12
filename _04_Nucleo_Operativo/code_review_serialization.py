@@ -19,6 +19,7 @@ from .code_review_models import (
     CodeReviewDigest,
     CodeReviewFinding,
     CodeReviewRecommendation,
+    CodeReviewResult,
     CodeReviewSnapshot,
     CodeReviewWorkPackage,
     RecommendationStatus,
@@ -103,4 +104,53 @@ def build_code_review_digest(
     )
 
 
-__all__ = ["build_code_review_digest"]
+def rebuild_code_review_result_digest(result: CodeReviewResult) -> CodeReviewDigest:
+    """Recompute a ready envelope digest from every evidence-bearing projection."""
+
+    required = (
+        result.snapshot,
+        result.coverage,
+        result.external_evidence,
+        result.external_evidence_suite,
+        result.architecture,
+        result.test_coverage,
+        result.engineering_analytics,
+        result.unused_analysis,
+        result.supply_chain,
+    )
+    if any(item is None for item in required):
+        raise ValueError("ready code-review result lacks evidence required by its digest")
+    assert result.snapshot is not None
+    assert result.coverage is not None
+    assert result.external_evidence is not None
+    assert result.external_evidence_suite is not None
+    assert result.architecture is not None
+    assert result.test_coverage is not None
+    assert result.engineering_analytics is not None
+    assert result.unused_analysis is not None
+    assert result.supply_chain is not None
+    return build_code_review_digest(
+        result.snapshot,
+        result.coverage,
+        result.findings,
+        ranking=result.ranking,
+        actionability_version=result.actionability_version,
+        recommendation_status=result.recommendation_status,
+        recommendation_reason=result.recommendation_reason,
+        recommendations=result.recommendations,
+        planning_version=result.planning_version,
+        work_package_status=result.work_package_status,
+        work_package_reason=result.work_package_reason,
+        work_packages=result.work_packages,
+        external_evidence=result.external_evidence,
+        external_evidence_suite=result.external_evidence_suite,
+        architecture=result.architecture,
+        test_coverage=result.test_coverage,
+        engineering_analytics=result.engineering_analytics,
+        unused_analysis=result.unused_analysis,
+        supply_chain=result.supply_chain,
+        limitations=result.limitations,
+    )
+
+
+__all__ = ["build_code_review_digest", "rebuild_code_review_result_digest"]

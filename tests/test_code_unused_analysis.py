@@ -16,8 +16,10 @@ from _04_Nucleo_Operativo.code_unused_analysis import (
     CodeUnusedAnalysis,
     UnusedConsensusCandidate,
     UnusedEvidenceSignals,
+    UnusedProviderStatus,
     _classify,
     analyze_code_unused,
+    build_unused_analysis,
     classify_unused_candidate,
     evaluate_unused_calibration,
     read_code_unused_analysis,
@@ -70,16 +72,42 @@ def _candidate(index: int) -> UnusedConsensusCandidate:
         classify_unused_candidate(signals),
         ("pyright-trusted-project", "vulture-unused-static"),
         signals,
-        ("static_consensus",),
+        (
+            "vulture_high_confidence",
+            "pyright_reported_unused",
+            "no_observed_usage_or_dynamic_contract",
+        ),
         signals.evidence_ids,
         ("advisory_only",),
     )
 
 
+def _ready_providers() -> tuple[UnusedProviderStatus, ...]:
+    return tuple(
+        UnusedProviderStatus(
+            provider_id=provider_id,
+            status="ready",
+            reason=None,
+            tool_run_id=index,
+            effective_tool_run_id=index,
+            findings=1,
+            eligible_candidates=1,
+            covered_candidates=1,
+            comparability="comparable",
+            source_provider_schema="neocortex.external-provider/v1",
+            source_tool_name=provider_id,
+            source_tool_version="fixture-1",
+            source_comparability_signature=f"comparability:{provider_id}",
+        )
+        for index, provider_id in enumerate(
+            ("pyright-trusted-project", "vulture-unused-static"), start=1
+        )
+    )
+
+
 def test_private_classification_signature_and_reason_precedence() -> None:
     assert str(inspect.signature(_classify)) == (
-        "(signals: 'UnusedEvidenceSignals') -> "
-        "'tuple[UnusedState, tuple[str, ...]]'"
+        "(signals: 'UnusedEvidenceSignals') -> 'tuple[UnusedState, tuple[str, ...]]'"
     )
     state, reasons = _classify(
         _signals(
@@ -165,22 +193,22 @@ def test_high_consensus_and_abstention_reasons_are_exact() -> None:
 
 
 @pytest.mark.parametrize(
-    "signals",
+    "changes",
     (
-        _signals(vulture_confidence=True),
-        _signals(vulture_confidence=float("nan")),
-        _signals(vulture_confidence=1.01),
-        _signals(graph_references=True),
-        _signals(graph_calls=-1),
-        _signals(graph_imports=0.5),
-        _signals(evidence_ids=("duplicate", "duplicate")),
+        {"vulture_confidence": True},
+        {"vulture_confidence": float("nan")},
+        {"vulture_confidence": 1.01},
+        {"graph_references": True},
+        {"graph_calls": -1},
+        {"graph_imports": 0.5},
+        {"evidence_ids": ("duplicate", "duplicate")},
     ),
 )
 def test_classification_rejects_invalid_or_ambiguous_signal_domains(
-    signals: UnusedEvidenceSignals,
+    changes: dict[str, object],
 ) -> None:
     with pytest.raises(ValueError):
-        _classify(signals)
+        _signals(**changes)
 
 
 @pytest.mark.parametrize(
@@ -265,7 +293,7 @@ def test_public_payload_is_bounded_but_digest_retains_all_candidate_evidence() -
 
 def test_high_consensus_candidate_has_no_delete_or_mutation_authority() -> None:
     candidate = _candidate(1)
-    analysis = analyze_code_unused((candidate,), provider_signature="providers-v1")
+    analysis = build_unused_analysis((candidate,), providers=_ready_providers())
 
     assert analysis.status == "ready"
     assert analysis.counts["probable_unused_high_consensus"] == 1

@@ -184,8 +184,8 @@ EXPECTED_CODE_ACTIONS = (
         "--code-review",
         "code_review",
         (
-            "show deterministic read-only maintenance recommendations and the "
-            "underlying hotspot ranking"
+            "show deterministic read-only structural observations, open questions "
+            "and the underlying hotspot ranking"
         ),
     ),
     _expected_store(
@@ -335,8 +335,8 @@ EXPECTED_CODE_HELP = (
     "                        retain vendored artifacts in structural analysis\n"
     "  --retry-code-errors   retry unchanged partial or failed code observations\n"
     "  --code-status         show bounded code database, analyzer and index status\n"
-    "  --code-review         show deterministic read-only maintenance\n"
-    "                        recommendations and the underlying hotspot ranking\n"
+    "  --code-review         show deterministic read-only structural observations,\n"
+    "                        open questions and the underlying hotspot ranking\n"
     "  --code-review-limit N\n"
     "                        inspect 1 to 50 raw hotspots; values above 10 require\n"
     "                        --code-json\n"

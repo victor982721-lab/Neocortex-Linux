@@ -98,8 +98,8 @@ def register_code_arguments(
         "--code-review",
         action="store_true",
         help=(
-            "show deterministic read-only maintenance recommendations and the "
-            "underlying hotspot ranking"
+            "show deterministic read-only structural observations, open questions "
+            "and the underlying hotspot ranking"
         ),
     )
     code.add_argument(

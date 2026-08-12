@@ -244,23 +244,13 @@ def test_code_review_abstains_without_initializing_absent_state(
     payload = json.loads(capsys.readouterr().out)
 
     assert payload["kind"] == "code-review"
-    assert payload["schema"] == "neocortex.code-review/v10"
-    assert "neocortex.code-review/v3" in payload["compatible_schemas"]
-    assert payload["compatible_schemas"] == [
-        "neocortex.code-review/v2",
-        "neocortex.code-review/v3",
-        "neocortex.code-review/v4",
-        "neocortex.code-review/v5",
-        "neocortex.code-review/v6",
-        "neocortex.code-review/v7",
-        "neocortex.code-review/v8",
-        "neocortex.code-review/v9",
-    ]
+    assert payload["schema"] == "neocortex.code-review/v11"
+    assert payload["compatible_schemas"] == []
     assert payload["status"] == "abstained"
     assert payload["reason"] == "code_state_missing"
-    assert payload["actionability_version"] == "python-maintenance-actionability-v1"
+    assert payload["actionability_version"] == "python-maintenance-epistemic-gate-v2"
     assert payload["recommendation_status"] == "not_evaluated"
-    assert payload["planning_version"] == "python-maintenance-work-packages-v4"
+    assert payload["planning_version"] == "python-maintenance-work-packages-v5"
     assert payload["work_package_status"] == "not_evaluated"
     assert payload["work_packages"] == []
     assert not (tmp_path / "code.sqlite3").exists()
@@ -751,11 +741,7 @@ def test_code_review_human_surfaces_architecture_and_work_package_context(
         "CODE_REVIEW_WORK_PACKAGE_COVERAGE ",
     )
     phase_positions = tuple(
-        next(
-            index
-            for index, line in enumerate(lines)
-            if line.startswith(prefix)
-        )
+        next(index for index, line in enumerate(lines) if line.startswith(prefix))
         for prefix in ordered_prefixes
     )
     assert phase_positions == tuple(sorted(phase_positions))
@@ -876,8 +862,7 @@ def test_run_code_publication_diff_signature_phase_order_and_complete_output(
     assert cli_code.run_code_publication_diff(args) == 0
     assert calls == [(baseline, current)]
     assert capsys.readouterr().out.splitlines() == [
-        "CODE_PUBLICATION_DIFF status=ready digest=digest "
-        "baseline_calls=2/3 current_calls=3/4",
+        "CODE_PUBLICATION_DIFF status=ready digest=digest baseline_calls=2/3 current_calls=3/4",
         "CODE_PUBLICATION_DIFF_CALLS common=2 baseline_only=1 current_only=2 "
         "newly_resolved=1 corrected=2 lost=3",
         "CODE_PUBLICATION_DIFF_HOTSPOTS common=4 added=5 removed=6 "
@@ -983,9 +968,7 @@ def test_run_code_publication_diff_propagates_cancellation_and_maps_failures(
     assert cli_code.run_code_publication_diff(args) == 2
     failed_output = capsys.readouterr()
     assert failed_output.out == ""
-    assert failed_output.err == (
-        "ERROR code-publication-diff RuntimeError: fixture failure\n"
-    )
+    assert failed_output.err == ("ERROR code-publication-diff RuntimeError: fixture failure\n")
 
 
 @pytest.mark.parametrize(
@@ -1018,18 +1001,19 @@ def test_run_code_publication_diff_rejects_incomplete_human_ready_results(
         lambda *_args: result,
     )
 
-    assert cli_code.run_code_publication_diff(
-        argparse.Namespace(
-            code_publication_diff=str(tmp_path / "baseline"),
-            state_directory=tmp_path / "current",
-            code_json=False,
+    assert (
+        cli_code.run_code_publication_diff(
+            argparse.Namespace(
+                code_publication_diff=str(tmp_path / "baseline"),
+                state_directory=tmp_path / "current",
+                code_json=False,
+            )
         )
-    ) == 2
+        == 2
+    )
     output = capsys.readouterr()
     assert output.out == ""
-    assert output.err == (
-        "ERROR code-publication-diff RuntimeError: ready result is incomplete\n"
-    )
+    assert output.err == ("ERROR code-publication-diff RuntimeError: ready result is incomplete\n")
 
 
 def test_code_publication_diff_human_surfaces_bounded_architecture_delta(
