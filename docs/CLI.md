@@ -276,12 +276,15 @@ review y work packages consumen la misma evidencia; la ausencia o caducidad de
 un proveedor obliga a abstener sólo la dimensión afectada.
 
 `--code-review` consume esa publicación sin volver a analizar la raíz. El
-envelope `neocortex.code-review/v11` no declara compatibilidad con schemas
-anteriores. Publica observaciones estructurales confirmadas y separa hipótesis,
+envelope `neocortex.code-review/v12` no declara compatibilidad con schemas
+anteriores. Añade `neocortex.code-analysis-epistemics/v1`, una proyección
+general de preguntas con fingerprint de spec y evidencia resuelta contra IDs de
+registros Code. Publica observaciones estructurales confirmadas y separa hipótesis,
 readiness de pregunta, evidencia faltante, contraevidencia, siguiente acción y
 readiness de decisión. Los hotspots quedan `experiment_required`, con
 `construction=unknown`, `change_risk=unknown`, cero recomendaciones y cero
-packages de cambio.
+packages de cambio. La resolución prueba procedencia y concordancia del
+diagnóstico; no prueba daño, cohesión ni necesidad de refactor.
 
 El planificador v5 puede entregar, de forma independiente, hasta tres paquetes
 `unused_characterization` únicamente cuando pasan los gates de precisión de

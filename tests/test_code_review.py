@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
 from collections import Counter
 from pathlib import Path
 
@@ -39,7 +40,12 @@ from _04_Nucleo_Operativo.code_review_actionability import (
 )
 from _04_Nucleo_Operativo.code_schema import (
     checkpoint_code_wal,
+    readonly_code_database,
     remove_checkpointed_code_sidecars,
+)
+from _04_Nucleo_Operativo.code_review_epistemics import (
+    CodeReviewEvidenceResolutionError,
+    resolve_code_review_questions,
 )
 from _04_Nucleo_Operativo.code_state import CodeState
 from _04_Nucleo_Operativo.self_analysis_freshness import SelfAnalysisFreshness
@@ -603,7 +609,7 @@ def test_review_ranks_confirmed_hotspots_deterministically_with_diversity(
 
     assert first.status == "ready"
     assert first_json == second_json
-    assert first.as_payload()["schema"] == "neocortex.code-review/v11"
+    assert first.as_payload()["schema"] == "neocortex.code-review/v12"
     assert first.as_payload()["compatible_schemas"] == []
     assert first.supply_chain is not None
     assert first.supply_chain.status == "abstained"
@@ -628,6 +634,22 @@ def test_review_ranks_confirmed_hotspots_deterministically_with_diversity(
     assert first.findings[0].epistemic_state.question_readiness == "ready"
     assert first.findings[0].epistemic_state.decision_readiness == "experiment_required"
     assert first.findings[0].epistemic_state.decision is None
+    epistemics = first.as_payload()["epistemics"]
+    assert isinstance(epistemics, dict)
+    assert epistemics["schema"] == "neocortex.code-analysis-epistemics/v1"
+    assert len(epistemics["specs"]) == 1
+    assert len(epistemics["evaluations"]) == len(first.findings)
+    first_evaluation = epistemics["evaluations"][0]
+    assert first_evaluation["observation_status"] == "confirmed"
+    assert first_evaluation["inference_status"] == "abstained"
+    assert first_evaluation["question_readiness"] == "ready"
+    assert first_evaluation["decision_readiness"] == "experiment_required"
+    assert first_evaluation["decision"] is None
+    assert first_evaluation["authority"] == "advisory"
+    assert first_evaluation["mutation_authority"] is False
+    assert {item["source_record_id"] for item in first_evaluation["evidence"]} == {
+        str(item.diagnostic_id) for item in first.findings[0].diagnostics
+    }
     assert first.recommendations == ()
     assert len(first.findings[0].callers) == 3
     assert {caller.path_convention_role for caller in first.findings[0].callers} == {
@@ -681,6 +703,69 @@ def test_review_ranks_confirmed_hotspots_deterministically_with_diversity(
     assert [finding.finding_id for finding in reinterpreted.findings] != [
         finding.finding_id for finding in first.findings
     ]
+
+
+def test_review_abstains_when_its_evidence_resolver_cannot_verify_a_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state_directory = tmp_path / "state"
+    _build_state(state_directory)
+    monkeypatch.setattr(
+        code_review_module,
+        "read_self_analysis_status",
+        lambda _state, _run: _status(tmp_path),
+    )
+    monkeypatch.setattr(
+        code_review_module,
+        "resolve_code_review_questions",
+        lambda *_args: (_ for _ in ()).throw(
+            CodeReviewEvidenceResolutionError("source record changed")
+        ),
+    )
+
+    result = review_code_state(state_directory)
+
+    assert result.status == "abstained"
+    assert result.reason == "code_review_evidence_unresolvable"
+    assert result.findings == ()
+    assert result.question_evaluations == ()
+    assert result.digest is None
+
+
+def test_evidence_resolver_rejects_a_source_record_changed_after_review_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state_directory = tmp_path / "state"
+    database = _build_state(state_directory)
+    monkeypatch.setattr(
+        code_review_module,
+        "read_self_analysis_status",
+        lambda _state, _run: _status(tmp_path),
+    )
+    result = review_code_state(state_directory, limit=1)
+    assert result.snapshot is not None
+    diagnostic_id = result.findings[0].diagnostics[0].diagnostic_id
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "UPDATE diagnostics SET source='forged-after-read' WHERE diagnostic_id=?",
+            (diagnostic_id,),
+        )
+        connection.commit()
+        checkpoint_code_wal(connection)
+    remove_checkpointed_code_sidecars(database)
+
+    with readonly_code_database(database) as connection:
+        with pytest.raises(
+            CodeReviewEvidenceResolutionError,
+            match="disagrees with its source record",
+        ):
+            resolve_code_review_questions(
+                connection,
+                result.findings,
+                result.snapshot,
+            )
 
 
 def test_review_exposes_advisory_ruff_evidence_and_package_gate(

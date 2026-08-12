@@ -1360,6 +1360,27 @@ def _emit_code_review_ranked_evidence(result: CodeReviewResult) -> None:
             f"authority={epistemic.authority} "
             f"mutation_authority={int(epistemic.mutation_authority)}"
         )
+    for evaluation in getattr(result, "question_evaluations", ()):
+        source_records = tuple(
+            f"{item.source_record_kind}:{item.source_record_id}" for item in evaluation.evidence
+        )
+        _print_console_line(
+            f"CODE_ANALYSIS_QUESTION rank={evaluation.rank} "
+            f"evaluation_id={evaluation.evaluation_id} "
+            f"question_id={evaluation.question_id} "
+            f"question_version={evaluation.question_version} "
+            f"spec_fingerprint={evaluation.question_spec_fingerprint} "
+            f"subject_kind={evaluation.subject.subject_kind} "
+            f"subject_key={evaluation.subject.subject_key} "
+            f"freshness={evaluation.subject.snapshot_freshness} "
+            f"observation={evaluation.observation_status} "
+            f"inference={evaluation.inference_status} "
+            f"question={evaluation.question_readiness} "
+            f"decision={evaluation.decision_readiness} "
+            f"source_records={json.dumps(source_records, ensure_ascii=True)} "
+            f"authority={evaluation.authority} "
+            f"mutation_authority={int(evaluation.mutation_authority)}"
+        )
     for limitation in result.limitations:
         _print_console_line(f"CODE_REVIEW_LIMITATION {limitation}")
 

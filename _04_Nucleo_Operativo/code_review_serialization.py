@@ -1,57 +1,58 @@
-"""Deterministic digest construction for the Code review envelope."""
+"""Lower-level wire identity and digest construction for Code review."""
 
 from __future__ import annotations
 
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
+from typing import Any, Literal
 
-from .code_architecture_analysis import CodeArchitectureAnalysis
-from .code_coverage_analysis import CodeCoverageAnalysis
-from .code_engineering_analytics import CodeEngineeringAnalytics
-from .code_external_evidence import (
-    ExternalEvidenceStatus,
-    external_status_digest_payload,
+from .code_analysis_epistemics import (
+    AnalysisQuestionEvaluation,
+    AnalysisQuestionSpec,
+    analysis_questions_payload,
 )
-from .code_unused_analysis import CodeUnusedAnalysis
-from .code_supply_chain_analysis import CodeSupplyChainAnalysis
-from .code_review_models import (
-    CODE_REVIEW_SCHEMA,
-    CodeReviewCoverage,
-    CodeReviewDigest,
-    CodeReviewFinding,
-    CodeReviewRecommendation,
-    CodeReviewResult,
-    CodeReviewSnapshot,
-    CodeReviewWorkPackage,
-    RecommendationStatus,
-)
-from .external_evidence_models import ExternalEvidenceSuiteStatus
+from .code_external_evidence import external_status_digest_payload
 from .semantic_models import canonical_json, fingerprint_text
+
+CODE_REVIEW_SCHEMA = "neocortex.code-review/v12"
+CODE_REVIEW_COMPATIBLE_SCHEMAS: tuple[str, ...] = ()
+RecommendationStatus = Literal["ready", "abstained", "not_evaluated"]
+
+
+@dataclass(frozen=True, slots=True)
+class CodeReviewDigest:
+    """Collision-guarded deterministic identity of review evidence."""
+
+    xxh3_128: str
+    xxh3_64_guard: str
+    byte_count: int
 
 
 def build_code_review_digest(
-    snapshot: CodeReviewSnapshot,
-    coverage: CodeReviewCoverage,
-    findings: tuple[CodeReviewFinding, ...],
+    snapshot: Any,
+    coverage: Any,
+    findings: tuple[Any, ...],
     *,
     ranking: str,
     actionability_version: str,
     recommendation_status: RecommendationStatus,
     recommendation_reason: str | None,
-    recommendations: tuple[CodeReviewRecommendation, ...],
+    recommendations: tuple[Any, ...],
     planning_version: str,
     work_package_status: RecommendationStatus,
     work_package_reason: str | None,
-    work_packages: tuple[CodeReviewWorkPackage, ...],
-    external_evidence: ExternalEvidenceStatus,
-    external_evidence_suite: ExternalEvidenceSuiteStatus,
-    architecture: CodeArchitectureAnalysis,
-    test_coverage: CodeCoverageAnalysis,
-    engineering_analytics: CodeEngineeringAnalytics,
-    unused_analysis: CodeUnusedAnalysis,
-    supply_chain: CodeSupplyChainAnalysis,
+    work_packages: tuple[Any, ...],
+    external_evidence: Any,
+    external_evidence_suite: Any,
+    architecture: Any,
+    test_coverage: Any,
+    engineering_analytics: Any,
+    unused_analysis: Any,
+    supply_chain: Any,
+    question_specs: tuple[AnalysisQuestionSpec, ...],
+    question_evaluations: tuple[AnalysisQuestionEvaluation, ...],
     limitations: tuple[str, ...],
 ) -> CodeReviewDigest:
-    """Hash every decision-bearing field while excluding local database paths."""
+    """Hash every evidence-bearing field while excluding local database paths."""
 
     payload = canonical_json(
         {
@@ -93,6 +94,10 @@ def build_code_review_digest(
                 "reason": supply_chain.reason,
                 "digest": asdict(supply_chain.digest),
             },
+            "epistemics": analysis_questions_payload(
+                question_specs,
+                question_evaluations,
+            ),
             "limitations": list(limitations),
         }
     )
@@ -104,7 +109,7 @@ def build_code_review_digest(
     )
 
 
-def rebuild_code_review_result_digest(result: CodeReviewResult) -> CodeReviewDigest:
+def rebuild_code_review_result_digest(result: Any) -> CodeReviewDigest:
     """Recompute a ready envelope digest from every evidence-bearing projection."""
 
     required = (
@@ -120,15 +125,6 @@ def rebuild_code_review_result_digest(result: CodeReviewResult) -> CodeReviewDig
     )
     if any(item is None for item in required):
         raise ValueError("ready code-review result lacks evidence required by its digest")
-    assert result.snapshot is not None
-    assert result.coverage is not None
-    assert result.external_evidence is not None
-    assert result.external_evidence_suite is not None
-    assert result.architecture is not None
-    assert result.test_coverage is not None
-    assert result.engineering_analytics is not None
-    assert result.unused_analysis is not None
-    assert result.supply_chain is not None
     return build_code_review_digest(
         result.snapshot,
         result.coverage,
@@ -149,8 +145,16 @@ def rebuild_code_review_result_digest(result: CodeReviewResult) -> CodeReviewDig
         engineering_analytics=result.engineering_analytics,
         unused_analysis=result.unused_analysis,
         supply_chain=result.supply_chain,
+        question_specs=result.question_specs,
+        question_evaluations=result.question_evaluations,
         limitations=result.limitations,
     )
 
 
-__all__ = ["build_code_review_digest", "rebuild_code_review_result_digest"]
+__all__ = [
+    "CODE_REVIEW_COMPATIBLE_SCHEMAS",
+    "CODE_REVIEW_SCHEMA",
+    "CodeReviewDigest",
+    "build_code_review_digest",
+    "rebuild_code_review_result_digest",
+]

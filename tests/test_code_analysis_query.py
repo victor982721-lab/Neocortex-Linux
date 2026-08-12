@@ -163,10 +163,7 @@ def test_review_query_rejects_a_forged_v11_change_package() -> None:
         query_code_analysis(payload, CodeAnalysisQuery(surface="review"))
 
 
-@pytest.mark.parametrize(
-    "schema",
-    (None, "neocortex.code-review/unknown", "neocortex.code-review/v12"),
-)
+@pytest.mark.parametrize("schema", (None, "neocortex.code-review/unknown"))
 def test_review_query_rejects_missing_unknown_or_future_schemas(schema: object) -> None:
     payload = deepcopy(_surface("review"))
     if schema is None:
@@ -175,6 +172,88 @@ def test_review_query_rejects_missing_unknown_or_future_schemas(schema: object) 
         payload["schema"] = schema
 
     with pytest.raises(ValueError, match="unsupported code-review schema"):
+        query_code_analysis(payload, CodeAnalysisQuery(surface="review"))
+
+
+def test_review_query_accepts_and_indexes_a_source_linked_v12_question(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import _04_Nucleo_Operativo.code_review as review_module
+    from _04_Nucleo_Operativo.code_review import review_code_state
+    from tests.test_code_review import _build_state, _status
+
+    state_directory = tmp_path / "state"
+    _build_state(state_directory)
+    monkeypatch.setattr(
+        review_module,
+        "read_self_analysis_status",
+        lambda _state, _run: _status(tmp_path),
+    )
+    payload = json.loads(json.dumps(review_code_state(state_directory, limit=1).as_payload()))
+
+    result = query_code_analysis(
+        payload,
+        CodeAnalysisQuery(
+            surface="review",
+            categories=("maintenance.structural_hotspot_requires_change",),
+            statuses=("decision:experiment_required",),
+        ),
+    )
+
+    assert result["status"] == "ready"
+    assert result["counts"]["matched"] == 1
+    assert result["matches"][0]["record_type"] == "analysis_question"
+    assert result["matches"][0]["facts"]["mutation_authority"] is False
+
+
+def test_review_query_rejects_forged_v12_evidence_linkage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import _04_Nucleo_Operativo.code_review as review_module
+    from _04_Nucleo_Operativo.code_review import review_code_state
+    from tests.test_code_review import _build_state, _status
+
+    state_directory = tmp_path / "state"
+    _build_state(state_directory)
+    monkeypatch.setattr(
+        review_module,
+        "read_self_analysis_status",
+        lambda _state, _run: _status(tmp_path),
+    )
+    payload = review_code_state(state_directory, limit=1).as_payload()
+    epistemics = cast("dict[str, object]", payload["epistemics"])
+    evaluations = cast("list[dict[str, object]]", epistemics["evaluations"])
+    evidence = cast("list[dict[str, object]]", evaluations[0]["evidence"])
+    evidence[0]["source_record_id"] = "forged"
+
+    with pytest.raises(ValueError, match="not source-linked"):
+        query_code_analysis(payload, CodeAnalysisQuery(surface="review"))
+
+
+def test_review_query_rejects_forged_v12_question_semantics(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import _04_Nucleo_Operativo.code_review as review_module
+    from _04_Nucleo_Operativo.code_review import review_code_state
+    from tests.test_code_review import _build_state, _status
+
+    state_directory = tmp_path / "state"
+    _build_state(state_directory)
+    monkeypatch.setattr(
+        review_module,
+        "read_self_analysis_status",
+        lambda _state, _run: _status(tmp_path),
+    )
+    payload = json.loads(json.dumps(review_code_state(state_directory, limit=1).as_payload()))
+    epistemics = cast("dict[str, object]", payload["epistemics"])
+    specs = cast("list[dict[str, object]]", epistemics["specs"])
+    actions = cast("list[dict[str, object]]", specs[0]["next_actions"])
+    actions[0]["description"] = "Delete the production symbol now."
+
+    with pytest.raises(ValueError, match="question spec is not canonical"):
         query_code_analysis(payload, CodeAnalysisQuery(surface="review"))
 
 

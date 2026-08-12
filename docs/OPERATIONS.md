@@ -399,9 +399,10 @@ bytes/analyze/persist/graph y 14 replays; `installed-package-inventory` se
 recalculó. Las consultas read-only status, review y diff tardaron 38.982,
 47.675 y 57.856 s. Esos artefactos históricos usaron architecture v2,
 engineering v1, review v10 y publication diff v8. El contrato vigente de review
-es `neocortex.code-review/v11`, no declara schemas compatibles, publica
-observaciones estructurales con inferencia abstained y no genera recomendaciones
-ni paquetes de cambio. Sólo puede publicar paquetes
+es `neocortex.code-review/v12`, no declara schemas compatibles, publica
+observaciones estructurales con inferencia abstained y evidencia enlazada a IDs
+Code después de resolución read-only; no genera recomendaciones ni paquetes de
+cambio. Sólo puede publicar paquetes
 `unused_characterization`, advisory y sin autoridad de mutación.
 
 El manifest guarda `Neocortex` como primer elemento de su argv canónico. Antes

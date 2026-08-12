@@ -617,16 +617,16 @@ manifest registra `journal.status=unavailable`, el status nunca afirma
 cambios.
 
 `--code-review` convierte la publicación en observaciones estructurales
-explicables. El envelope `neocortex.code-review/v11` no declara schemas
-compatibles: retiró la autoridad heurística de v10 y acotó `confidence` a su
-alcance real, `observation_confidence`. Cada finding separa observación,
+explicables. El envelope `neocortex.code-review/v12` no declara schemas
+compatibles: conserva el corte fail-closed de v11 y añade una proyección general
+`neocortex.code-analysis-epistemics/v1`. Cada finding separa observación,
 hipótesis, readiness de pregunta, evidencia faltante, contraevidencia por
 buscar, siguiente acción y readiness de decisión. Un hotspot queda
 `experiment_required`; no infiere construcción ni riesgo por nombres y nunca
 autoriza mutación.
 
 Mientras no exista un resolver trazable de evidencia de comportamiento,
-contraevidencia y resultados experimentales, v11 publica cero recomendaciones
+contraevidencia y resultados experimentales, v12 publica cero recomendaciones
 de cambio y cero packages hotspot. El planificador v5 sólo puede entregar hasta
 tres paquetes `unused_characterization` calibrados: todos sus pasos son de
 caracterización, requieren confirmación humana y declaran
@@ -636,6 +636,10 @@ legacy `protecting_tests`/`work_package_target_protected` son una limitación
 conocida. `--code-review-limit N --code-json` amplía de 1 a 50 la vista
 auditable. La consulta es estrictamente read-only; un snapshot full sin USN se
 etiqueta `publication_only` y un journal avanzado/discontinuo causa abstención.
+Cada evaluación v12 fija el fingerprint de la pregunta, el snapshot y la
+revisión, y enlaza los IDs de diagnóstico exactos después de volver a resolverlos
+en Code. `resolved` prueba concordancia con ese registro; no convierte el umbral
+en evidencia de daño ni en una decisión humana.
 
 `--code-publication-diff` publica el envelope
 `neocortex.code-publication-diff/v9`, compatible con v1-v8, y compara dos

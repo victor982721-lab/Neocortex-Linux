@@ -58,6 +58,10 @@ from .code_review_models import (
     RecommendationStatus,
 )
 from .code_review_serialization import build_code_review_digest
+from .code_review_epistemics import (
+    CodeReviewEvidenceResolutionError,
+    resolve_code_review_questions,
+)
 from .code_review_work_packages import (
     CODE_REVIEW_PLANNING,
     plan_code_review_work_packages,
@@ -889,6 +893,16 @@ def review_code_state(
         unused_analysis=read.unused_analysis,
         supply_chain=read.supply_chain,
     )
+    try:
+        with readonly_code_database(path) as connection:
+            validate_code_schema(connection)
+            question_specs, question_evaluations = resolve_code_review_questions(
+                connection,
+                read.findings,
+                snapshot,
+            )
+    except CodeReviewEvidenceResolutionError:
+        return _abstained(path, "code_review_evidence_unresolvable")
     limitation_tuple = tuple(limitations)
     return CodeReviewResult(
         database=str(path),
@@ -913,6 +927,8 @@ def review_code_state(
         unused_analysis=read.unused_analysis,
         supply_chain=read.supply_chain,
         engineering_analytics=read.engineering_analytics,
+        question_specs=question_specs,
+        question_evaluations=question_evaluations,
         limitations=limitation_tuple,
         digest=build_code_review_digest(
             snapshot,
@@ -934,6 +950,8 @@ def review_code_state(
             engineering_analytics=read.engineering_analytics,
             unused_analysis=read.unused_analysis,
             supply_chain=read.supply_chain,
+            question_specs=question_specs,
+            question_evaluations=question_evaluations,
             limitations=limitation_tuple,
         ),
     )

@@ -6,6 +6,12 @@ import math
 from dataclasses import asdict, dataclass, replace
 from typing import Literal
 
+from .code_analysis_epistemics import (
+    AnalysisQuestionEvaluation,
+    AnalysisQuestionSpec,
+    analysis_questions_payload,
+    validate_analysis_question_set,
+)
 from .code_architecture_analysis import CodeArchitectureAnalysis
 from .code_coverage_analysis import (
     CodeCoverageAnalysis,
@@ -34,14 +40,18 @@ from .code_review_actionability import (
     Construction,
     SourceRole,
 )
+from .code_review_serialization import (
+    CODE_REVIEW_COMPATIBLE_SCHEMAS,
+    CODE_REVIEW_SCHEMA,
+    CodeReviewDigest,
+    rebuild_code_review_result_digest,
+)
 from .external_evidence_models import ExternalEvidenceSuiteStatus
 from .semantic_models import canonical_json, fingerprint_text
 
-CODE_REVIEW_SCHEMA = "neocortex.code-review/v11"
-# v11 deliberately removes the former heuristic change authority and renames
-# confidence to its actual observation scope.  No earlier wire contract is
-# claimed compatible without a tested adapter.
-CODE_REVIEW_COMPATIBLE_SCHEMAS: tuple[str, ...] = ()
+# v12 adds linked general question/evidence projections.  v11 remains
+# semantically fail-closed, but it cannot satisfy the new structural wire
+# contract; no earlier schema is claimed compatible without an adapter.
 CODE_REVIEW_COVERAGE_EXAMPLE_LIMIT = 20
 CODE_REVIEW_ENGINEERING_EXAMPLE_LIMIT = 20
 CODE_REVIEW_UNUSED_EXAMPLE_LIMIT = 20
@@ -218,7 +228,7 @@ class CodeReviewFinding:
             raise ValueError("invalid structural observation-confidence scope")
         if self.recommended_change or self.actionability == "act_now":
             raise ValueError(
-                "code-review/v11 structural findings cannot authorize a change recommendation"
+                "code-review/v12 structural findings cannot authorize a change recommendation"
             )
         expected_actionability = (
             "characterize_first"
@@ -349,7 +359,7 @@ class CodeReviewRecommendation:
     recommended_validation: tuple[str, ...]
 
     def __post_init__(self) -> None:
-        raise ValueError("code-review/v11 cannot construct semantic change recommendations")
+        raise ValueError("code-review/v12 cannot construct semantic change recommendations")
 
 
 @dataclass(frozen=True, slots=True)
@@ -403,7 +413,7 @@ class CodeReviewWorkPackage:
         if self.mutation_authority:
             raise ValueError("code review work package cannot authorize mutation")
         if self.package_kind != "unused_characterization":
-            raise ValueError("code-review/v11 only supports unused-code characterization packages")
+            raise ValueError("code-review/v12 only supports unused-code characterization packages")
         if not self.steps or any(step.phase != "characterize" for step in self.steps):
             raise ValueError("unused-code package may contain characterization steps only")
         if len(self.unused_candidates) != 1 or any(
@@ -553,15 +563,6 @@ class CodeReviewCoverage:
 
 
 @dataclass(frozen=True, slots=True)
-class CodeReviewDigest:
-    """Collision-guarded deterministic identity of review evidence."""
-
-    xxh3_128: str
-    xxh3_64_guard: str
-    byte_count: int
-
-
-@dataclass(frozen=True, slots=True)
 class CodeReviewResult:
     """One JSON-ready review result with a deterministic content digest."""
 
@@ -589,6 +590,8 @@ class CodeReviewResult:
     unused_analysis: CodeUnusedAnalysis | None = None
     supply_chain: CodeSupplyChainAnalysis | None = None
     engineering_analytics: CodeEngineeringAnalytics | None = None
+    question_specs: tuple[AnalysisQuestionSpec, ...] = ()
+    question_evaluations: tuple[AnalysisQuestionEvaluation, ...] = ()
 
     def __post_init__(self) -> None:
         if self.status not in {"ready", "abstained"}:
@@ -598,15 +601,15 @@ class CodeReviewResult:
         if self.work_package_status not in {"ready", "abstained", "not_evaluated"}:
             raise ValueError("invalid code-review work-package status")
         if self.recommendations:
-            raise ValueError("code-review/v11 cannot publish semantic change recommendations")
+            raise ValueError("code-review/v12 cannot publish semantic change recommendations")
         if self.recommendation_status == "ready":
-            raise ValueError("code-review/v11 recommendation status must abstain")
+            raise ValueError("code-review/v12 recommendation status must abstain")
         if self.recommendation_status == "abstained" and not self.recommendation_reason:
             raise ValueError("abstained recommendation status requires a reason")
         if self.recommendation_status == "not_evaluated" and not self.recommendation_reason:
             raise ValueError("not-evaluated recommendation status requires a reason")
         if any(package.package_kind != "unused_characterization" for package in self.work_packages):
-            raise ValueError("code-review/v11 cannot publish hotspot change packages")
+            raise ValueError("code-review/v12 cannot publish hotspot change packages")
         if (self.work_package_status == "ready") != bool(self.work_packages):
             raise ValueError("work-package readiness must match published packages")
         if self.work_package_status == "ready" and self.work_package_reason is not None:
@@ -634,6 +637,8 @@ class CodeReviewResult:
                 )
                 or self.findings
                 or self.work_packages
+                or self.question_specs
+                or self.question_evaluations
             ):
                 raise ValueError("abstained code-review result cannot publish unverified evidence")
             return
@@ -641,15 +646,25 @@ class CodeReviewResult:
             raise ValueError("ready code-review result cannot carry an abstention reason")
         if self.digest is None:
             raise ValueError("ready code-review result requires an evidence digest")
-        from .code_review_serialization import rebuild_code_review_result_digest
-
         if rebuild_code_review_result_digest(self) != self.digest:
             raise ValueError("code-review result digest disagrees with published evidence")
+        validate_analysis_question_set(self.question_specs, self.question_evaluations)
+        if len(self.question_evaluations) != len(self.findings):
+            raise ValueError("code-review questions must cover every structural finding exactly")
+        assert self.snapshot is not None
+        from .code_review_epistemics import expected_code_review_questions
+
+        expected_specs, expected_evaluations = expected_code_review_questions(
+            self.findings,
+            self.snapshot,
+        )
+        if self.question_specs != expected_specs or self.question_evaluations != (
+            expected_evaluations
+        ):
+            raise ValueError("code-review questions are not reproducible from published evidence")
 
     def as_payload(self) -> dict[str, object]:
         if self.status == "ready":
-            from .code_review_serialization import rebuild_code_review_result_digest
-
             if self.digest is None or rebuild_code_review_result_digest(self) != self.digest:
                 raise ValueError("code-review result changed after digest verification")
         payload: dict[str, object] = {
@@ -696,6 +711,10 @@ class CodeReviewResult:
                 None
                 if self.engineering_analytics is None
                 else bounded_code_engineering_payload(self.engineering_analytics)
+            ),
+            "epistemics": analysis_questions_payload(
+                self.question_specs,
+                self.question_evaluations,
             ),
         }
         return {
@@ -984,7 +1003,7 @@ def build_code_review_recommendations(
 ) -> tuple[CodeReviewRecommendation, ...]:
     """Abstain until an independently resolvable decision-evidence model exists.
 
-    ``code-review/v11`` observes structural hotspots but deliberately exposes no
+    ``code-review/v12`` observes structural hotspots but deliberately exposes no
     factory for a semantic change decision.  Keeping the fail-closed boundary
     here prevents a legacy flag or a manually assembled object from reviving
     the former name-based recommendation path.

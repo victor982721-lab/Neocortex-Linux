@@ -3,8 +3,16 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Literal
+
+from .code_analysis_epistemics import (
+    analysis_identity,
+    analysis_question_spec_fingerprint,
+)
+from .code_review_epistemics import STRUCTURAL_HOTSPOT_QUESTION
+from .code_schema import CODE_SCHEMA_VERSION
+from .semantic_models import canonical_json
 
 CODE_ANALYSIS_QUERY_SCHEMA = "neocortex.code-analysis-query/v1"
 
@@ -25,6 +33,8 @@ _ENGINEERING_DIMENSIONS = ("complexity", "coverage", "mutation", "history", "gra
 _SCALAR_TYPES = (str, int, float, bool)
 _CODE_REVIEW_V10 = "neocortex.code-review/v10"
 _CODE_REVIEW_V11 = "neocortex.code-review/v11"
+_CODE_REVIEW_V12 = "neocortex.code-review/v12"
+_CODE_ANALYSIS_EPISTEMICS_V1 = "neocortex.code-analysis-epistemics/v1"
 _UNUSED_V11_STEP_REQUIREMENTS = (
     "verify_import_reexport_callback_registry_protocol_and_entry_point_usage",
     "run_targeted_tests_and_public_import_smoke_without_mutating_code",
@@ -527,6 +537,63 @@ def _extract_review(payload: Mapping[str, object]) -> list[dict[str, object]]:
                 ),
             )
         )
+    epistemics = _mapping(payload.get("epistemics"))
+    if epistemics is not None:
+        for index, evaluation in enumerate(_mapping_items(epistemics.get("evaluations"))):
+            evaluation_id = _first_text(evaluation, "evaluation_id") or str(index)
+            subject = _mapping(evaluation.get("subject")) or {}
+            question_id = _first_text(evaluation, "question_id") or "question"
+            subject_kind = _first_text(subject, "subject_kind") or "subject"
+            location = _mapping(subject.get("location")) or {}
+            evidence = _mapping_items(evaluation.get("evidence"))
+            modules = _module_values(location)
+            records.append(
+                _record(
+                    record_type="analysis_question",
+                    record_id=evaluation_id,
+                    source_path=f"epistemics.evaluations[{index}]",
+                    providers=tuple(
+                        provider
+                        for item in evidence
+                        for provider in _texts(item, "producer_id", "resolver_id")
+                    ),
+                    categories=("analysis_question", question_id, subject_kind),
+                    modules=modules,
+                    statuses=tuple(
+                        f"{prefix}:{value}"
+                        for prefix, field_name in (
+                            ("observation", "observation_status"),
+                            ("inference", "inference_status"),
+                            ("question", "question_readiness"),
+                            ("decision", "decision_readiness"),
+                            ("counterevidence", "counterevidence_status"),
+                        )
+                        for value in _texts(evaluation, field_name)
+                    ),
+                    facts={
+                        **_facts(
+                            evaluation,
+                            "question_id",
+                            "question_version",
+                            "question_spec_fingerprint",
+                            "rank",
+                            "decision_reason",
+                            "authority",
+                            "mutation_authority",
+                        ),
+                        **_facts(
+                            subject,
+                            "subject_kind",
+                            "subject_key",
+                            "display_name",
+                            "source_owner_id",
+                            "snapshot_id",
+                            "snapshot_freshness",
+                            "revision_id",
+                        ),
+                    },
+                )
+            )
     parent_status = _first_text(payload, "work_package_status") or "unknown"
     for index, package in enumerate(_mapping_items(payload.get("work_packages"))):
         package_id = _first_text(package, "package_id") or str(index)
@@ -973,6 +1040,8 @@ def _source_limitations(payload: Mapping[str, object], status: str) -> list[str]
         reason = _first_text(payload, "reason") or "source_publication_not_ready"
         limitations.append(reason)
     limitations.append("explicit_public_projection_only")
+    if payload.get("schema") == _CODE_REVIEW_V12:
+        limitations.append("query_adapter_does_not_reopen_source_records")
     return _dimension_values(limitations)
 
 
@@ -1076,6 +1145,263 @@ def _validate_review_v11_payload(payload: Mapping[str, object]) -> None:
             raise ValueError("code-review/v11 work package violates characterization-only policy")
 
 
+def _review_v12_revision_id(finding: Mapping[str, object]) -> str | None:
+    raw = _first_text(finding, "file_xxh3_128")
+    guard = _first_text(finding, "file_xxh3_64_guard")
+    if raw is None and guard is None:
+        return None
+    if raw is None or guard is None:
+        raise ValueError("code-review/v12 finding revision identity is incomplete")
+    return f"xxh3_128:{raw}:xxh3_64_guard:{guard}"
+
+
+def _review_v12_expected_evaluation(
+    finding: Mapping[str, object],
+    snapshot: Mapping[str, object],
+) -> dict[str, object]:
+    finding_id = _first_text(finding, "finding_id")
+    hotspot_id = _first_text(finding, "hotspot_id")
+    symbol = _first_text(finding, "symbol")
+    path = _first_text(finding, "path")
+    snapshot_id = _first_text(snapshot, "processing_signature")
+    freshness = _first_text(snapshot, "freshness")
+    rank = finding.get("rank")
+    location_values = tuple(
+        finding.get(name) for name in ("start_line", "end_line", "start_column", "end_column")
+    )
+    if (
+        not finding_id
+        or not hotspot_id
+        or not symbol
+        or not path
+        or not snapshot_id
+        or freshness not in {"current", "publication_only", "unknown"}
+        or isinstance(rank, bool)
+        or not isinstance(rank, int)
+        or rank < 1
+        or any(isinstance(value, bool) or not isinstance(value, int) for value in location_values)
+    ):
+        raise ValueError("code-review/v12 finding cannot identify its question subject")
+    revision_id = _review_v12_revision_id(finding)
+    evidence: list[dict[str, object]] = []
+    evidence_ids: list[str] = []
+    for diagnostic in _mapping_items(finding.get("diagnostics")):
+        diagnostic_id = diagnostic.get("diagnostic_id")
+        code = _first_text(diagnostic, "code")
+        source = _first_text(diagnostic, "source")
+        tool_name = _first_text(diagnostic, "tool_name")
+        tool_version = _first_text(diagnostic, "tool_version")
+        value = diagnostic.get("value")
+        threshold = diagnostic.get("threshold")
+        confirmed = diagnostic.get("confirmed")
+        confidence = diagnostic.get("confidence")
+        if (
+            isinstance(diagnostic_id, bool)
+            or not isinstance(diagnostic_id, int)
+            or diagnostic_id < 1
+            or code not in {"high_complexity", "long_function"}
+            or not source
+            or not tool_name
+            or not tool_version
+            or isinstance(value, bool)
+            or not isinstance(value, int)
+            or isinstance(threshold, bool)
+            or not isinstance(threshold, int)
+            or confirmed is not True
+            or isinstance(confidence, bool)
+            or not isinstance(confidence, (int, float))
+        ):
+            raise ValueError("code-review/v12 diagnostic evidence is malformed")
+        source_projection = {
+            "snapshot_id": snapshot_id,
+            "revision_id": revision_id,
+            "path": path,
+            "start_line": location_values[0],
+            "end_line": location_values[1],
+            "start_column": location_values[2],
+            "end_column": location_values[3],
+            "code": code,
+            "value": value,
+            "threshold": threshold,
+            "source": source,
+            "tool_name": tool_name,
+            "tool_version": tool_version,
+            "confirmed": confirmed,
+            "reported_confidence": confidence,
+        }
+        projection_digest = analysis_identity(
+            "code-source-projection-v1",
+            source_projection,
+        )
+        evidence_id = analysis_identity(
+            "code-diagnostic-evidence-v1",
+            {
+                "subject_key": hotspot_id,
+                "source_projection_digest": projection_digest,
+                "code": code,
+            },
+        )
+        evidence_ids.append(evidence_id)
+        evidence.append(
+            {
+                "evidence_id": evidence_id,
+                "subject_key": hotspot_id,
+                "role": "supporting",
+                "evidence_kind": "internal_diagnostic",
+                "source_owner_id": "code",
+                "producer_id": tool_name,
+                "producer_version": tool_version,
+                "source_schema": f"neocortex.code-state/sqlite-v{CODE_SCHEMA_VERSION}",
+                "source_record_kind": "diagnostic",
+                "source_record_id": str(diagnostic_id),
+                "source_projection_digest": projection_digest,
+                "snapshot_id": snapshot_id,
+                "revision_id": revision_id,
+                "facts": (
+                    {"name": "code", "value": code, "unit": None},
+                    {"name": "value", "value": value, "unit": None},
+                    {"name": "threshold", "value": threshold, "unit": None},
+                    {"name": "confirmed", "value": True, "unit": None},
+                    {
+                        "name": "reported_confidence",
+                        "value": confidence,
+                        "unit": "ratio",
+                    },
+                ),
+                "completeness": "complete",
+                "bounded": False,
+                "truncated": False,
+                "resolver_id": "code.sqlite-diagnostic-resolver",
+                "resolver_version": "v1",
+                "resolution_status": "resolved",
+                "limitations": ("diagnostic_confirms_threshold_only",),
+                "provider_run_id": None,
+                "authority": "advisory",
+                "mutation_authority": False,
+            }
+        )
+    if not evidence:
+        raise ValueError("code-review/v12 finding lacks diagnostic evidence")
+    spec_fingerprint = analysis_question_spec_fingerprint(STRUCTURAL_HOTSPOT_QUESTION)
+    return {
+        "evaluation_id": analysis_identity(
+            "code-question-evaluation-v1",
+            {
+                "finding_id": finding_id,
+                "snapshot": snapshot_id,
+                "question_spec": spec_fingerprint,
+                "evidence_ids": tuple(evidence_ids),
+            },
+        ),
+        "question_id": STRUCTURAL_HOTSPOT_QUESTION.question_id,
+        "question_version": STRUCTURAL_HOTSPOT_QUESTION.version,
+        "question_spec_fingerprint": spec_fingerprint,
+        "rank": rank,
+        "subject": {
+            "subject_kind": "symbol",
+            "subject_key": hotspot_id,
+            "display_name": symbol,
+            "source_owner_id": "code",
+            "snapshot_id": snapshot_id,
+            "snapshot_freshness": freshness,
+            "revision_id": revision_id,
+            "location": {
+                "path": path,
+                "start_line": location_values[0],
+                "end_line": location_values[1],
+                "start_column": location_values[2],
+                "end_column": location_values[3],
+            },
+        },
+        "evidence": tuple(evidence),
+        "requirements": (
+            {
+                "requirement_id": "confirmed_structural_hotspot",
+                "status": "satisfied",
+                "evidence_ids": tuple(evidence_ids),
+                "reason": "linked_confirmed_threshold_diagnostics",
+            },
+            {
+                "requirement_id": "behavior_or_contract_problem_observed",
+                "status": "missing",
+                "evidence_ids": (),
+                "reason": "no_behavior_or_contract_problem_evidence_linked",
+            },
+            {
+                "requirement_id": "counterevidence_evaluated",
+                "status": "not_evaluated",
+                "evidence_ids": (),
+                "reason": "counterevidence_not_evaluated",
+            },
+            {
+                "requirement_id": "discriminating_experiment_result",
+                "status": "missing",
+                "evidence_ids": (),
+                "reason": "no_discriminating_experiment_result_linked",
+            },
+        ),
+        "observation_status": "confirmed",
+        "inference_status": "abstained",
+        "inferences": (),
+        "hypotheses": STRUCTURAL_HOTSPOT_QUESTION.hypotheses,
+        "question_readiness": "ready",
+        "decision_readiness": "experiment_required",
+        "decision": None,
+        "decision_reason": "decision_evidence_incomplete",
+        "counterevidence_status": "not_evaluated",
+        "next_action_ids": tuple(
+            item.action_id for item in STRUCTURAL_HOTSPOT_QUESTION.next_actions
+        ),
+        "limitations": (
+            "structural_threshold_does_not_prove_maintenance_harm",
+            "source_record_projection_is_resolved_but_semantics_are_not",
+            "human_decision_not_owned_by_code_analysis",
+        ),
+        "authority": "advisory",
+        "mutation_authority": False,
+    }
+
+
+def _validate_review_v12_payload(payload: Mapping[str, object]) -> None:
+    """Validate v12's linked, observation-only epistemic wire projection."""
+
+    _validate_review_v11_payload(payload)
+    if payload.get("status") == "abstained":
+        epistemics = _mapping(payload.get("epistemics"))
+        if epistemics is None or epistemics.get("schema") != _CODE_ANALYSIS_EPISTEMICS_V1:
+            raise ValueError("abstained code-review/v12 payload lacks its empty epistemic envelope")
+        if _mapping_items(epistemics.get("specs")) or _mapping_items(epistemics.get("evaluations")):
+            raise ValueError("abstained code-review/v12 payload asserts epistemic evidence")
+        return
+    findings = _mapping_items(payload.get("findings"))
+    epistemics = _mapping(payload.get("epistemics"))
+    if epistemics is None or epistemics.get("schema") != _CODE_ANALYSIS_EPISTEMICS_V1:
+        raise ValueError("ready code-review/v12 payload lacks its epistemic contract")
+    specs = _mapping_items(epistemics.get("specs"))
+    evaluations = _mapping_items(epistemics.get("evaluations"))
+    expected_spec = {
+        **asdict(STRUCTURAL_HOTSPOT_QUESTION),
+        "spec_fingerprint": analysis_question_spec_fingerprint(STRUCTURAL_HOTSPOT_QUESTION),
+    }
+    if bool(findings) != bool(specs) or len(specs) > 1 or len(evaluations) != len(findings):
+        raise ValueError("code-review/v12 epistemic coverage is incomplete")
+    try:
+        if specs and canonical_json(dict(specs[0])) != canonical_json(expected_spec):
+            raise ValueError("code-review/v12 question spec is not canonical")
+        snapshot = _mapping(payload.get("snapshot"))
+        if snapshot is None:
+            raise ValueError("code-review/v12 snapshot is missing")
+        expected_evaluations = tuple(
+            _review_v12_expected_evaluation(finding, snapshot) for finding in findings
+        )
+        if canonical_json(list(evaluations)) != canonical_json(expected_evaluations):
+            raise ValueError("code-review/v12 epistemic projection is not source-linked")
+    except (TypeError, ValueError) as exc:
+        if isinstance(exc, ValueError) and str(exc).startswith("code-review/v12"):
+            raise
+        raise ValueError("code-review/v12 epistemic projection is malformed") from exc
+
+
 def query_code_analysis(
     payload: Mapping[str, object],
     query: CodeAnalysisQuery,
@@ -1094,7 +1420,9 @@ def query_code_analysis(
         )
     if query.surface == "review":
         review_schema = payload.get("schema")
-        if review_schema == _CODE_REVIEW_V11:
+        if review_schema == _CODE_REVIEW_V12:
+            _validate_review_v12_payload(payload)
+        elif review_schema == _CODE_REVIEW_V11:
             _validate_review_v11_payload(payload)
         elif review_schema != _CODE_REVIEW_V10:
             raise ValueError(f"unsupported code-review schema: {review_schema!r}")
