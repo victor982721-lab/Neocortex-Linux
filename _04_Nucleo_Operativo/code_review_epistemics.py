@@ -20,6 +20,11 @@ from .code_analysis_epistemics import (
     analysis_question_spec_fingerprint,
     validate_analysis_question_set,
 )
+from .code_class_surface_analysis import (
+    CodeClassSurfaceAnalysis,
+    expected_class_surface_questions,
+    read_code_class_surface_analysis,
+)
 from .code_review_actionability import (
     CODE_REVIEW_QUESTION_ID,
     CODE_REVIEW_QUESTION_VERSION,
@@ -384,11 +389,18 @@ def _evaluation(
 def expected_code_review_questions(
     findings: tuple[_FindingEvidence, ...],
     snapshot: _SnapshotEvidence,
+    class_surface: CodeClassSurfaceAnalysis,
 ) -> tuple[tuple[AnalysisQuestionSpec, ...], tuple[AnalysisQuestionEvaluation, ...]]:
     """Rebuild the canonical projection from already-resolved review findings."""
 
-    evaluations = tuple(_evaluation(finding, snapshot) for finding in findings)
-    specs = (STRUCTURAL_HOTSPOT_QUESTION,) if evaluations else ()
+    hotspot_evaluations = tuple(_evaluation(finding, snapshot) for finding in findings)
+    hotspot_specs = (STRUCTURAL_HOTSPOT_QUESTION,) if hotspot_evaluations else ()
+    class_specs, class_evaluations = expected_class_surface_questions(
+        class_surface,
+        rank_offset=len(hotspot_evaluations),
+    )
+    specs = hotspot_specs + class_specs
+    evaluations = hotspot_evaluations + class_evaluations
     validate_analysis_question_set(specs, evaluations)
     return specs, evaluations
 
@@ -397,7 +409,13 @@ def resolve_code_review_questions(
     connection: sqlite3.Connection,
     findings: tuple[_FindingEvidence, ...],
     snapshot: _SnapshotEvidence,
-) -> tuple[tuple[AnalysisQuestionSpec, ...], tuple[AnalysisQuestionEvaluation, ...]]:
+    *,
+    class_limit: int,
+) -> tuple[
+    CodeClassSurfaceAnalysis,
+    tuple[AnalysisQuestionSpec, ...],
+    tuple[AnalysisQuestionEvaluation, ...],
+]:
     """Resolve every diagnostic pointer against the read-only Code connection."""
 
     if not isinstance(connection, sqlite3.Connection):
@@ -405,7 +423,26 @@ def resolve_code_review_questions(
     for finding in findings:
         for diagnostic in finding.diagnostics:
             _validate_resolved_diagnostic(connection, finding, diagnostic)
-    return expected_code_review_questions(findings, snapshot)
+    try:
+        class_surface = read_code_class_surface_analysis(
+            connection,
+            snapshot_id=snapshot.processing_signature,
+            snapshot_freshness=cast(
+                Literal["current", "publication_only", "unknown"],
+                snapshot.freshness,
+            ),
+            limit=class_limit,
+        )
+    except ValueError as exc:
+        raise CodeReviewEvidenceResolutionError(
+            "code-review class-surface evidence is not resolvable"
+        ) from exc
+    specs, evaluations = expected_code_review_questions(
+        findings,
+        snapshot,
+        class_surface,
+    )
+    return class_surface, specs, evaluations
 
 
 __all__ = [

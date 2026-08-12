@@ -13,6 +13,7 @@ from .code_analysis_epistemics import (
     validate_analysis_question_set,
 )
 from .code_architecture_analysis import CodeArchitectureAnalysis
+from .code_class_surface_analysis import CodeClassSurfaceAnalysis
 from .code_coverage_analysis import (
     CodeCoverageAnalysis,
     CoverageScopeSummary,
@@ -49,9 +50,9 @@ from .code_review_serialization import (
 from .external_evidence_models import ExternalEvidenceSuiteStatus
 from .semantic_models import canonical_json, fingerprint_text
 
-# v12 adds linked general question/evidence projections.  v11 remains
-# semantically fail-closed, but it cannot satisfy the new structural wire
-# contract; no earlier schema is claimed compatible without an adapter.
+# v13 adds a resolved class-surface observation family.  Earlier contracts
+# cannot satisfy the expanded epistemic coverage, so no compatibility is
+# claimed without an explicit adapter.
 CODE_REVIEW_COVERAGE_EXAMPLE_LIMIT = 20
 CODE_REVIEW_ENGINEERING_EXAMPLE_LIMIT = 20
 CODE_REVIEW_UNUSED_EXAMPLE_LIMIT = 20
@@ -228,7 +229,7 @@ class CodeReviewFinding:
             raise ValueError("invalid structural observation-confidence scope")
         if self.recommended_change or self.actionability == "act_now":
             raise ValueError(
-                "code-review/v12 structural findings cannot authorize a change recommendation"
+                "code-review/v13 structural findings cannot authorize a change recommendation"
             )
         expected_actionability = (
             "characterize_first"
@@ -359,7 +360,7 @@ class CodeReviewRecommendation:
     recommended_validation: tuple[str, ...]
 
     def __post_init__(self) -> None:
-        raise ValueError("code-review/v12 cannot construct semantic change recommendations")
+        raise ValueError("code-review/v13 cannot construct semantic change recommendations")
 
 
 @dataclass(frozen=True, slots=True)
@@ -413,7 +414,7 @@ class CodeReviewWorkPackage:
         if self.mutation_authority:
             raise ValueError("code review work package cannot authorize mutation")
         if self.package_kind != "unused_characterization":
-            raise ValueError("code-review/v12 only supports unused-code characterization packages")
+            raise ValueError("code-review/v13 only supports unused-code characterization packages")
         if not self.steps or any(step.phase != "characterize" for step in self.steps):
             raise ValueError("unused-code package may contain characterization steps only")
         if len(self.unused_candidates) != 1 or any(
@@ -590,6 +591,7 @@ class CodeReviewResult:
     unused_analysis: CodeUnusedAnalysis | None = None
     supply_chain: CodeSupplyChainAnalysis | None = None
     engineering_analytics: CodeEngineeringAnalytics | None = None
+    structural_analysis: CodeClassSurfaceAnalysis | None = None
     question_specs: tuple[AnalysisQuestionSpec, ...] = ()
     question_evaluations: tuple[AnalysisQuestionEvaluation, ...] = ()
 
@@ -601,15 +603,15 @@ class CodeReviewResult:
         if self.work_package_status not in {"ready", "abstained", "not_evaluated"}:
             raise ValueError("invalid code-review work-package status")
         if self.recommendations:
-            raise ValueError("code-review/v12 cannot publish semantic change recommendations")
+            raise ValueError("code-review/v13 cannot publish semantic change recommendations")
         if self.recommendation_status == "ready":
-            raise ValueError("code-review/v12 recommendation status must abstain")
+            raise ValueError("code-review/v13 recommendation status must abstain")
         if self.recommendation_status == "abstained" and not self.recommendation_reason:
             raise ValueError("abstained recommendation status requires a reason")
         if self.recommendation_status == "not_evaluated" and not self.recommendation_reason:
             raise ValueError("not-evaluated recommendation status requires a reason")
         if any(package.package_kind != "unused_characterization" for package in self.work_packages):
-            raise ValueError("code-review/v12 cannot publish hotspot change packages")
+            raise ValueError("code-review/v13 cannot publish hotspot change packages")
         if (self.work_package_status == "ready") != bool(self.work_packages):
             raise ValueError("work-package readiness must match published packages")
         if self.work_package_status == "ready" and self.work_package_reason is not None:
@@ -637,6 +639,7 @@ class CodeReviewResult:
                 )
                 or self.findings
                 or self.work_packages
+                or self.structural_analysis is not None
                 or self.question_specs
                 or self.question_evaluations
             ):
@@ -646,17 +649,23 @@ class CodeReviewResult:
             raise ValueError("ready code-review result cannot carry an abstention reason")
         if self.digest is None:
             raise ValueError("ready code-review result requires an evidence digest")
+        if self.structural_analysis is None:
+            raise ValueError("ready code-review result requires resolved structural analysis")
         if rebuild_code_review_result_digest(self) != self.digest:
             raise ValueError("code-review result digest disagrees with published evidence")
         validate_analysis_question_set(self.question_specs, self.question_evaluations)
-        if len(self.question_evaluations) != len(self.findings):
-            raise ValueError("code-review questions must cover every structural finding exactly")
+        expected_evaluation_count = len(self.findings) + len(self.structural_analysis.observations)
+        if len(self.question_evaluations) != expected_evaluation_count:
+            raise ValueError(
+                "code-review questions must cover every published structural observation"
+            )
         assert self.snapshot is not None
         from .code_review_epistemics import expected_code_review_questions
 
         expected_specs, expected_evaluations = expected_code_review_questions(
             self.findings,
             self.snapshot,
+            self.structural_analysis,
         )
         if self.question_specs != expected_specs or self.question_evaluations != (
             expected_evaluations
@@ -711,6 +720,9 @@ class CodeReviewResult:
                 None
                 if self.engineering_analytics is None
                 else bounded_code_engineering_payload(self.engineering_analytics)
+            ),
+            "structural_analysis": (
+                None if self.structural_analysis is None else self.structural_analysis.as_payload()
             ),
             "epistemics": analysis_questions_payload(
                 self.question_specs,
@@ -1003,7 +1015,7 @@ def build_code_review_recommendations(
 ) -> tuple[CodeReviewRecommendation, ...]:
     """Abstain until an independently resolvable decision-evidence model exists.
 
-    ``code-review/v12`` observes structural hotspots but deliberately exposes no
+    ``code-review/v13`` observes structural hotspots but deliberately exposes no
     factory for a semantic change decision.  Keeping the fail-closed boundary
     here prevents a legacy flag or a manually assembled object from reviving
     the former name-based recommendation path.

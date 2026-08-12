@@ -896,10 +896,13 @@ def review_code_state(
     try:
         with readonly_code_database(path) as connection:
             validate_code_schema(connection)
-            question_specs, question_evaluations = resolve_code_review_questions(
-                connection,
-                read.findings,
-                snapshot,
+            structural_analysis, question_specs, question_evaluations = (
+                resolve_code_review_questions(
+                    connection,
+                    read.findings,
+                    snapshot,
+                    class_limit=limit,
+                )
             )
     except CodeReviewEvidenceResolutionError:
         return _abstained(path, "code_review_evidence_unresolvable")
@@ -927,6 +930,7 @@ def review_code_state(
         unused_analysis=read.unused_analysis,
         supply_chain=read.supply_chain,
         engineering_analytics=read.engineering_analytics,
+        structural_analysis=structural_analysis,
         question_specs=question_specs,
         question_evaluations=question_evaluations,
         limitations=limitation_tuple,
@@ -948,6 +952,7 @@ def review_code_state(
             architecture=read.architecture,
             test_coverage=read.test_coverage,
             engineering_analytics=read.engineering_analytics,
+            structural_analysis=structural_analysis,
             unused_analysis=read.unused_analysis,
             supply_chain=read.supply_chain,
             question_specs=question_specs,

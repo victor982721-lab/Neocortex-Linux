@@ -175,7 +175,7 @@ def test_review_query_rejects_missing_unknown_or_future_schemas(schema: object) 
         query_code_analysis(payload, CodeAnalysisQuery(surface="review"))
 
 
-def test_review_query_accepts_and_indexes_a_source_linked_v12_question(
+def test_review_query_accepts_and_indexes_source_linked_v13_questions(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -207,7 +207,7 @@ def test_review_query_accepts_and_indexes_a_source_linked_v12_question(
     assert result["matches"][0]["facts"]["mutation_authority"] is False
 
 
-def test_review_query_rejects_forged_v12_evidence_linkage(
+def test_review_query_rejects_forged_v13_evidence_linkage(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -232,7 +232,7 @@ def test_review_query_rejects_forged_v12_evidence_linkage(
         query_code_analysis(payload, CodeAnalysisQuery(surface="review"))
 
 
-def test_review_query_rejects_forged_v12_question_semantics(
+def test_review_query_rejects_forged_v13_question_semantics(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -253,7 +253,7 @@ def test_review_query_rejects_forged_v12_question_semantics(
     actions = cast("list[dict[str, object]]", specs[0]["next_actions"])
     actions[0]["description"] = "Delete the production symbol now."
 
-    with pytest.raises(ValueError, match="question spec is not canonical"):
+    with pytest.raises(ValueError, match="epistemic projection is not source-linked"):
         query_code_analysis(payload, CodeAnalysisQuery(surface="review"))
 
 

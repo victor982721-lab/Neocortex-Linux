@@ -407,9 +407,9 @@ explícitamente como **convención de ruta**, no como ownership ni reachability 
 runtime. `hotspot_id` identifica establemente la evidencia física y el símbolo;
 `finding_id` identifica la interpretación versionada.
 
-El envelope vigente es `neocortex.code-review/v12` y no declara compatibilidad
-con schemas anteriores: conserva el corte de autoridad de v11 y añade el
-contrato general `neocortex.code-analysis-epistemics/v1`. Cada finding separa
+El envelope vigente es `neocortex.code-review/v13` y no declara compatibilidad
+con schemas anteriores: conserva el corte de autoridad y usa el contrato general
+`neocortex.code-analysis-epistemics/v1`. Cada finding separa
 observación, hipótesis, readiness
 de pregunta, evidencia satisfecha/faltante, contraevidencia pendiente,
 readiness de decisión y siguiente acción. Un umbral estructural confirma sólo
@@ -419,14 +419,25 @@ la decisión queda `experiment_required`, `construction` y `change_risk` quedan
 `unknown`, y `mutation_authority=false`.
 
 Cada evaluación general incluye `question_spec_fingerprint`, identidad de
-snapshot/revisión, el ID exacto de cada diagnóstico, un digest de la proyección
-y la versión del resolver. Antes de publicarla, Code vuelve a consultar el
-registro read-only y exige que rango, archivo, hashes, umbral, valor y
-procedencia coincidan. Esa resolución confirma el origen de la observación; no
-resuelve semántica ni propiedad lógica.
+snapshot/revisión, IDs de origen, un digest de la proyección y la versión del
+resolver. Antes de publicarla, Code vuelve a consultar los registros read-only.
+Para funciones exige que rango, archivo, hashes, umbral, valor y procedencia
+coincidan. Para clases, `neocortex.code-class-surface/v1` exige el símbolo actual
+y el agregado completo de miembros AST directos confirmados. Esa resolución
+confirma el origen de la observación; no resuelve semántica ni propiedad lógica.
+
+La primera extensión más allá de funciones selecciona una clase cuando su span
+es de al menos 500 líneas o tiene al menos 20 métodos directos. Esos valores son
+un filtro provisional de atención y se publican como tales, no como umbral de
+defecto. Nombre, ruta, bases y decorators no alteran la selección. La pregunta
+`maintenance.class_surface_requires_change/v1` conserva dos hipótesis: una
+superficie puede combinar responsabilidades accidentales o puede ser cohesiva,
+declarativa, protocolaria o un composition root intencional. Hasta resolver rol,
+consumidores, cohesión método-estado, historia y contraevidencia, toda evaluación
+queda `experiment_required`, sin recomendación ni autoridad de mutación.
 
 `recommendations` permanece vacío y `recommendation_status=abstained` porque
-v12 todavía no tiene un resolver independiente que enlace evidencia de
+v13 todavía no tiene un resolver independiente que enlace evidencia de
 comportamiento/contrato, contraevidencia y resultado experimental. Nombres como
 `repository`, `commit`, `build`, `read` o `run`, mover el archivo o añadir un
 wrapper no pueden producir una recomendación. Los constructors y factories
@@ -467,12 +478,12 @@ los top 40 de ambos rankings, 41 símbolos etiquetados como builders,
 validadores, reglas, algoritmos y orquestadores. El ranking v2 elevó la
 `Precision@10` provisional de 0.60 a 0.70 y dejó iguales P@20, P@30 y P@40;
 `build_parser` pasó del rango 2 al 39. Es revisión estática reproducible, no
-ground truth humano, y el score sigue sin representar riesgo calibrado. v12
+ground truth humano, y el score sigue sin representar riesgo calibrado. v13
 las conserva sólo como evidencia histórica y regresión; no autorizan una
 decisión ni un package de cambio.
 
 Los párrafos rc14–rc20 siguientes documentan resultados del contrato anterior;
-no representan autoridad vigente de v12. La regresión temporal rc14 retira
+no representan autoridad vigente de v13. La regresión temporal rc14 retira
 `execute_knowledge_search`: el rango bruto 1,
 `GoldenCase._validate_required_feature`, queda como
 `validator/characterize_first`, mientras

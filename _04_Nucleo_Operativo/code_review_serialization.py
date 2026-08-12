@@ -13,7 +13,7 @@ from .code_analysis_epistemics import (
 from .code_external_evidence import external_status_digest_payload
 from .semantic_models import canonical_json, fingerprint_text
 
-CODE_REVIEW_SCHEMA = "neocortex.code-review/v12"
+CODE_REVIEW_SCHEMA = "neocortex.code-review/v13"
 CODE_REVIEW_COMPATIBLE_SCHEMAS: tuple[str, ...] = ()
 RecommendationStatus = Literal["ready", "abstained", "not_evaluated"]
 
@@ -46,6 +46,7 @@ def build_code_review_digest(
     architecture: Any,
     test_coverage: Any,
     engineering_analytics: Any,
+    structural_analysis: Any,
     unused_analysis: Any,
     supply_chain: Any,
     question_specs: tuple[AnalysisQuestionSpec, ...],
@@ -87,6 +88,7 @@ def build_code_review_digest(
                 "aggregate_score": engineering_analytics.aggregate_score,
                 "defect_probability": engineering_analytics.defect_probability,
             },
+            "structural_analysis": structural_analysis.as_payload(),
             "unused_analysis": unused_analysis.digest_payload(),
             "supply_chain": {
                 "schema": supply_chain.as_payload()["schema"],
@@ -120,6 +122,7 @@ def rebuild_code_review_result_digest(result: Any) -> CodeReviewDigest:
         result.architecture,
         result.test_coverage,
         result.engineering_analytics,
+        result.structural_analysis,
         result.unused_analysis,
         result.supply_chain,
     )
@@ -143,6 +146,7 @@ def rebuild_code_review_result_digest(result: Any) -> CodeReviewDigest:
         architecture=result.architecture,
         test_coverage=result.test_coverage,
         engineering_analytics=result.engineering_analytics,
+        structural_analysis=result.structural_analysis,
         unused_analysis=result.unused_analysis,
         supply_chain=result.supply_chain,
         question_specs=result.question_specs,

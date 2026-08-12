@@ -617,8 +617,8 @@ manifest registra `journal.status=unavailable`, el status nunca afirma
 cambios.
 
 `--code-review` convierte la publicación en observaciones estructurales
-explicables. El envelope `neocortex.code-review/v12` no declara schemas
-compatibles: conserva el corte fail-closed de v11 y añade una proyección general
+explicables. El envelope `neocortex.code-review/v13` no declara schemas
+compatibles: conserva el corte fail-closed y usa la proyección general
 `neocortex.code-analysis-epistemics/v1`. Cada finding separa observación,
 hipótesis, readiness de pregunta, evidencia faltante, contraevidencia por
 buscar, siguiente acción y readiness de decisión. Un hotspot queda
@@ -626,7 +626,7 @@ buscar, siguiente acción y readiness de decisión. Un hotspot queda
 autoriza mutación.
 
 Mientras no exista un resolver trazable de evidencia de comportamiento,
-contraevidencia y resultados experimentales, v12 publica cero recomendaciones
+contraevidencia y resultados experimentales, v13 publica cero recomendaciones
 de cambio y cero packages hotspot. El planificador v5 sólo puede entregar hasta
 tres paquetes `unused_characterization` calibrados: todos sus pasos son de
 caracterización, requieren confirmación humana y declaran
@@ -636,10 +636,14 @@ legacy `protecting_tests`/`work_package_target_protected` son una limitación
 conocida. `--code-review-limit N --code-json` amplía de 1 a 50 la vista
 auditable. La consulta es estrictamente read-only; un snapshot full sin USN se
 etiqueta `publication_only` y un journal avanzado/discontinuo causa abstención.
-Cada evaluación v12 fija el fingerprint de la pregunta, el snapshot y la
-revisión, y enlaza los IDs de diagnóstico exactos después de volver a resolverlos
-en Code. `resolved` prueba concordancia con ese registro; no convierte el umbral
-en evidencia de daño ni en una decisión humana.
+Cada evaluación v13 fija el fingerprint de la pregunta, el snapshot y la
+revisión. Los hotspots enlazan los IDs de diagnóstico exactos; la nueva familia
+`class_surface` vuelve a resolver el símbolo de clase y todos sus miembros AST
+directos confirmados. Sus umbrales provisionales de 500 líneas o 20 métodos son
+filtros de atención, no riesgo calibrado ni evidencia de una *god class*.
+`--code-review-limit N` acota cada familia a `N` observaciones. `resolved` prueba
+concordancia con los registros; no convierte tamaño, nombres o rutas en daño ni
+en una decisión humana.
 
 `--code-publication-diff` publica el envelope
 `neocortex.code-publication-diff/v9`, compatible con v1-v8, y compara dos

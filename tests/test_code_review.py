@@ -609,7 +609,7 @@ def test_review_ranks_confirmed_hotspots_deterministically_with_diversity(
 
     assert first.status == "ready"
     assert first_json == second_json
-    assert first.as_payload()["schema"] == "neocortex.code-review/v12"
+    assert first.as_payload()["schema"] == "neocortex.code-review/v13"
     assert first.as_payload()["compatible_schemas"] == []
     assert first.supply_chain is not None
     assert first.supply_chain.status == "abstained"
@@ -719,7 +719,7 @@ def test_review_abstains_when_its_evidence_resolver_cannot_verify_a_source(
     monkeypatch.setattr(
         code_review_module,
         "resolve_code_review_questions",
-        lambda *_args: (_ for _ in ()).throw(
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
             CodeReviewEvidenceResolutionError("source record changed")
         ),
     )
@@ -765,6 +765,7 @@ def test_evidence_resolver_rejects_a_source_record_changed_after_review_read(
                 connection,
                 result.findings,
                 result.snapshot,
+                class_limit=1,
             )
 
 

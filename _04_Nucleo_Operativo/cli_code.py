@@ -1313,6 +1313,20 @@ def _emit_code_review_supply_chain_result(result: CodeReviewResult) -> None:
 
 
 def _emit_code_review_ranked_evidence(result: CodeReviewResult) -> None:
+    structural = getattr(result, "structural_analysis", None)
+    if structural is not None:
+        _print_console_line(
+            "CODE_CLASS_SURFACE "
+            f"status={structural.status} policy={structural.policy_id} "
+            f"eligible={structural.eligible_classes} "
+            f"selected={structural.selected_classes} "
+            f"returned={structural.returned_classes} "
+            f"truncated={int(structural.selection_truncated)} "
+            f"span_threshold={structural.span_lines_threshold} "
+            f"method_threshold={structural.direct_methods_threshold} "
+            f"authority={structural.authority} "
+            f"mutation_authority={int(structural.mutation_authority)}"
+        )
     for recommendation in result.recommendations:
         _print_console_line(
             "CODE_REVIEW_RECOMMENDATION status=ready "

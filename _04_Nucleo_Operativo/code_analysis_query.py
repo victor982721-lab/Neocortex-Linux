@@ -10,6 +10,10 @@ from .code_analysis_epistemics import (
     analysis_identity,
     analysis_question_spec_fingerprint,
 )
+from .code_class_surface_analysis import (
+    expected_class_surface_questions,
+    parse_code_class_surface_payload,
+)
 from .code_review_epistemics import STRUCTURAL_HOTSPOT_QUESTION
 from .code_schema import CODE_SCHEMA_VERSION
 from .semantic_models import canonical_json
@@ -34,6 +38,7 @@ _SCALAR_TYPES = (str, int, float, bool)
 _CODE_REVIEW_V10 = "neocortex.code-review/v10"
 _CODE_REVIEW_V11 = "neocortex.code-review/v11"
 _CODE_REVIEW_V12 = "neocortex.code-review/v12"
+_CODE_REVIEW_V13 = "neocortex.code-review/v13"
 _CODE_ANALYSIS_EPISTEMICS_V1 = "neocortex.code-analysis-epistemics/v1"
 _UNUSED_V11_STEP_REQUIREMENTS = (
     "verify_import_reexport_callback_registry_protocol_and_entry_point_usage",
@@ -1040,7 +1045,7 @@ def _source_limitations(payload: Mapping[str, object], status: str) -> list[str]
         reason = _first_text(payload, "reason") or "source_publication_not_ready"
         limitations.append(reason)
     limitations.append("explicit_public_projection_only")
-    if payload.get("schema") == _CODE_REVIEW_V12:
+    if payload.get("schema") in {_CODE_REVIEW_V12, _CODE_REVIEW_V13}:
         limitations.append("query_adapter_does_not_reopen_source_records")
     return _dimension_values(limitations)
 
@@ -1402,6 +1407,79 @@ def _validate_review_v12_payload(payload: Mapping[str, object]) -> None:
         raise ValueError("code-review/v12 epistemic projection is malformed") from exc
 
 
+def _validate_review_v13_payload(payload: Mapping[str, object]) -> None:
+    """Validate v13 class surfaces and their complete question projection."""
+
+    _validate_review_v11_payload(payload)
+    epistemics = _mapping(payload.get("epistemics"))
+    if epistemics is None or epistemics.get("schema") != _CODE_ANALYSIS_EPISTEMICS_V1:
+        raise ValueError("code-review/v13 payload lacks its epistemic contract")
+    if payload.get("status") == "abstained":
+        if payload.get("structural_analysis") is not None:
+            raise ValueError("abstained code-review/v13 payload asserts structural evidence")
+        if _mapping_items(epistemics.get("specs")) or _mapping_items(epistemics.get("evaluations")):
+            raise ValueError("abstained code-review/v13 payload asserts epistemic evidence")
+        return
+    findings = _mapping_items(payload.get("findings"))
+    structural_payload = _mapping(payload.get("structural_analysis"))
+    snapshot = _mapping(payload.get("snapshot"))
+    if structural_payload is None or snapshot is None:
+        raise ValueError("ready code-review/v13 payload lacks resolved structural evidence")
+    try:
+        structural = parse_code_class_surface_payload(structural_payload)
+        snapshot_id = _first_text(snapshot, "processing_signature")
+        snapshot_freshness = _first_text(snapshot, "freshness")
+        if (
+            not snapshot_id
+            or not snapshot_freshness
+            or structural.snapshot_id != snapshot_id
+            or structural.snapshot_freshness != snapshot_freshness
+        ):
+            raise ValueError("code-review/v13 structural snapshot is inconsistent")
+        hotspot_evaluations = tuple(
+            _review_v12_expected_evaluation(finding, snapshot) for finding in findings
+        )
+        hotspot_specs = (
+            (
+                {
+                    **asdict(STRUCTURAL_HOTSPOT_QUESTION),
+                    "spec_fingerprint": analysis_question_spec_fingerprint(
+                        STRUCTURAL_HOTSPOT_QUESTION
+                    ),
+                },
+            )
+            if hotspot_evaluations
+            else ()
+        )
+        class_specs, class_evaluations = expected_class_surface_questions(
+            structural,
+            rank_offset=len(hotspot_evaluations),
+        )
+        expected = {
+            "schema": _CODE_ANALYSIS_EPISTEMICS_V1,
+            "specs": [
+                *hotspot_specs,
+                *(
+                    {
+                        **asdict(spec),
+                        "spec_fingerprint": analysis_question_spec_fingerprint(spec),
+                    }
+                    for spec in class_specs
+                ),
+            ],
+            "evaluations": [
+                *hotspot_evaluations,
+                *(asdict(evaluation) for evaluation in class_evaluations),
+            ],
+        }
+        if canonical_json(dict(epistemics)) != canonical_json(expected):
+            raise ValueError("code-review/v13 epistemic projection is not source-linked")
+    except (TypeError, ValueError) as exc:
+        if isinstance(exc, ValueError) and str(exc).startswith("code-review/v13"):
+            raise
+        raise ValueError("code-review/v13 structural projection is malformed") from exc
+
+
 def query_code_analysis(
     payload: Mapping[str, object],
     query: CodeAnalysisQuery,
@@ -1420,7 +1498,9 @@ def query_code_analysis(
         )
     if query.surface == "review":
         review_schema = payload.get("schema")
-        if review_schema == _CODE_REVIEW_V12:
+        if review_schema == _CODE_REVIEW_V13:
+            _validate_review_v13_payload(payload)
+        elif review_schema == _CODE_REVIEW_V12:
             _validate_review_v12_payload(payload)
         elif review_schema == _CODE_REVIEW_V11:
             _validate_review_v11_payload(payload)
