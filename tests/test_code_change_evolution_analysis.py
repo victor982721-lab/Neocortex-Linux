@@ -418,6 +418,28 @@ def _build_single_publication(tmp_path: Path) -> Path:
     return database
 
 
+def _build_unchanged_transition(tmp_path: Path) -> Path:
+    database = tmp_path / "state" / "code.sqlite3"
+    database.parent.mkdir(parents=True)
+    path = tmp_path / "repository" / "stable.py"
+    analysis = _analysis(
+        path,
+        91,
+        "def stable():\n    return 1\n",
+        (_function("pkg.stable"),),
+    )
+    with CodeState(database) as state:
+        first = state.begin_run(1, 1, PROCESSING_SIGNATURE)
+        state.store_analysis(analysis, first)
+        _finish_run(state, first, 1)
+        second = state.begin_run(2, 2, PROCESSING_SIGNATURE)
+        state.store_analysis(analysis, second)
+        _finish_run(state, second, 1)
+        checkpoint_code_wal(state.connection)
+    remove_checkpointed_code_sidecars(database)
+    return database
+
+
 def test_change_history_schema_vertical_preserves_epistemic_boundaries(tmp_path: Path) -> None:
     database = _build_transition(tmp_path, history=True)
 
@@ -523,6 +545,21 @@ def test_missing_or_incomparable_baseline_fails_closed(tmp_path: Path) -> None:
         assert evaluations[0].observation_status == "abstained"
         assert evaluations[0].decision_readiness == "abstained"
         assert evaluations[0].decision is None
+
+
+def test_no_observed_surface_does_not_request_an_experiment(tmp_path: Path) -> None:
+    result = analyze_code_change_evolution(_build_unchanged_transition(tmp_path))
+    _specs, evaluations = expected_code_change_evolution_questions(result)
+
+    assert result.change_surface.status == "ready"
+    assert result.change_surface.total_observations == 0
+    assert result.change_surface.observations == ()
+    assert evaluations[0].observation_status == "abstained"
+    assert evaluations[0].decision_readiness == "abstained"
+    assert evaluations[0].next_action_ids == ()
+    assert evaluations[0].requirements[0].reason == "no_change_surface_observation"
+    assert evaluations[1].observation_status == "abstained"
+    assert evaluations[1].decision_readiness == "abstained"
 
 
 def test_newer_unpublished_run_invalidates_transition_freshness(tmp_path: Path) -> None:

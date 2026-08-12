@@ -2097,7 +2097,9 @@ def _change_question_evaluation(
     subject = _run_subject(analysis, question_id=spec.question_id)
     evidence = (
         (_change_evidence(analysis.change_surface, subject),)
-        if analysis.change_surface.status == "ready" and not analysis.change_surface.truncated
+        if analysis.change_surface.status == "ready"
+        and not analysis.change_surface.truncated
+        and analysis.change_surface.total_observations > 0
         else ()
     )
     question_ready = bool(evidence)
@@ -2126,7 +2128,12 @@ def _change_question_evaluation(
                 tuple(item.evidence_id for item in evidence),
                 "linked_consecutive_comparable_code_publications"
                 if evidence
-                else analysis.change_surface.reason or "comparable_publication_transition_missing",
+                else analysis.change_surface.reason
+                or (
+                    "no_change_surface_observation"
+                    if analysis.change_surface.status == "ready"
+                    else "comparable_publication_transition_missing"
+                ),
             ),
             AnalysisRequirementEvaluation(
                 "capability_owner_contract_impact_observed",
@@ -2175,7 +2182,9 @@ def _history_question_evaluation(
     subject = _run_subject(analysis, question_id=spec.question_id)
     surface_evidence = (
         (_change_evidence(analysis.change_surface, subject),)
-        if analysis.change_surface.status == "ready" and not analysis.change_surface.truncated
+        if analysis.change_surface.status == "ready"
+        and not analysis.change_surface.truncated
+        and analysis.change_surface.total_observations > 0
         else ()
     )
     history_evidence = (
@@ -2210,7 +2219,12 @@ def _history_question_evaluation(
                 tuple(item.evidence_id for item in surface_evidence),
                 "linked_comparable_change_surface"
                 if surface_evidence
-                else analysis.change_surface.reason or "comparable_change_surface_missing",
+                else analysis.change_surface.reason
+                or (
+                    "no_change_surface_observation"
+                    if analysis.change_surface.status == "ready"
+                    else "comparable_change_surface_missing"
+                ),
             ),
             AnalysisRequirementEvaluation(
                 "complete_git_history_metrics",
