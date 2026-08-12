@@ -83,6 +83,7 @@ _HISTORY_LIMITATIONS = (
 )
 _SCHEMA_LIMITATIONS = (
     "only_the_code_owner_sqlite_schema_is_observed",
+    "historical_ddl_snapshots_are_not_persisted_for_direct_schema_diff",
     "migration_ledger_presence_does_not_prove_populated_upgrade_or_rollback_safety",
     "schema_shape_does_not_prove_application_invariants",
 )
@@ -323,6 +324,13 @@ def _revision_id(raw_xxh3_128: object, raw_xxh3_64_guard: object) -> str | None:
     if not raw_xxh3_128 or not raw_xxh3_64_guard:
         return None
     return f"xxh3_128:{raw_xxh3_128}:xxh3_64_guard:{raw_xxh3_64_guard}"
+
+
+def _required_revision(raw_xxh3_128: object, raw_xxh3_64_guard: object) -> str:
+    revision = _revision_id(raw_xxh3_128, raw_xxh3_64_guard)
+    if revision is None:
+        raise CodeChangeEvolutionResolutionError("change_surface_content_digest_missing")
+    return revision
 
 
 def _publication_id(row: sqlite3.Row) -> str:
@@ -1037,7 +1045,7 @@ def _completed_run_pair(
 ) -> tuple[sqlite3.Row, sqlite3.Row] | str:
     rows = connection.execute(
         """SELECT analysis_run_id,framework_run_id,scan_id,processing_signature,
-        status,completed_ns FROM analysis_runs WHERE status='completed'
+        status,completed_ns,errors FROM analysis_runs WHERE status='completed'
         ORDER BY analysis_run_id DESC LIMIT 2"""
     ).fetchall()
     if len(rows) < 2:
@@ -1051,6 +1059,44 @@ def _completed_run_pair(
         return "publication_order_invalid"
     if int(baseline["framework_run_id"]) >= int(current["framework_run_id"]):
         return "framework_publication_order_invalid"
+    latest = connection.execute(
+        "SELECT analysis_run_id,status FROM analysis_runs ORDER BY analysis_run_id DESC LIMIT 1"
+    ).fetchone()
+    if latest is None or int(latest["analysis_run_id"]) != int(current["analysis_run_id"]):
+        return "newer_analysis_run_not_published"
+    between = int(
+        connection.execute(
+            """SELECT COUNT(*) FROM analysis_runs
+            WHERE analysis_run_id>? AND analysis_run_id<?""",
+            (int(baseline["analysis_run_id"]), int(current["analysis_run_id"])),
+        ).fetchone()[0]
+    )
+    if between:
+        return "nonpublication_run_between_comparable_publications"
+    if int(baseline["errors"]) or int(current["errors"]):
+        return "comparable_publication_contains_analysis_errors"
+    marker = connection.execute(
+        "SELECT value FROM metadata WHERE key='code_graph_completion_v3'"
+    ).fetchone()
+    if marker is None:
+        return "current_graph_publication_fence_missing"
+    try:
+        graph_fence = json.loads(str(marker["value"]))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return "current_graph_publication_fence_invalid"
+    if not isinstance(graph_fence, dict) or graph_fence.get("analysis_run_id") != int(
+        current["analysis_run_id"]
+    ):
+        return "current_graph_publication_fence_stale"
+    current_inventory_outside_fence = int(
+        connection.execute(
+            """SELECT COUNT(*) FROM files
+            WHERE status='current' AND last_seen_run_id<>?""",
+            (int(current["framework_run_id"]),),
+        ).fetchone()[0]
+    )
+    if current_inventory_outside_fence:
+        return "current_file_inventory_outside_publication_fence"
     return baseline, current
 
 
@@ -1159,6 +1205,8 @@ def _replacement_changes(
         baseline_path = None if row["baseline_path"] is None else str(row["baseline_path"])
         current_path = str(row["current_path"])
         if baseline_version_id is None:
+            if current_revision is None:
+                raise CodeChangeEvolutionResolutionError("change_surface_content_digest_missing")
             current_symbols = _public_symbols(connection, current_version_id)
             result.append(
                 _file_change(
@@ -1177,13 +1225,19 @@ def _replacement_changes(
                 )
             )
             continue
-        same_content = baseline_revision is not None and baseline_revision == current_revision
-        if same_content and baseline_path == current_path:
-            continue
+        if current_revision is None or baseline_revision is None:
+            raise CodeChangeEvolutionResolutionError("change_surface_content_digest_missing")
+        same_content = baseline_revision == current_revision
         baseline_symbols = _public_symbols(connection, baseline_version_id)
         current_symbols = _public_symbols(connection, current_version_id)
         baseline_set = set(baseline_symbols)
         current_set = set(current_symbols)
+        if same_content and baseline_set != current_set:
+            raise CodeChangeEvolutionResolutionError(
+                "identical_content_has_inconsistent_public_symbol_projection"
+            )
+        if same_content and baseline_path == current_path:
+            continue
         result.append(
             _file_change(
                 file_id=int(row["file_id"]),
@@ -1232,7 +1286,7 @@ def _removed_changes(
             current_version_id=None,
             baseline_path=str(row["path_observed"]),
             current_path=None,
-            baseline_revision_id=_revision_id(row["raw_xxh3_128"], row["raw_xxh3_64_guard"]),
+            baseline_revision_id=_required_revision(row["raw_xxh3_128"], row["raw_xxh3_64_guard"]),
             current_revision_id=None,
             content_change="removed",
             public_symbols_added=(),
@@ -1265,7 +1319,7 @@ def _cached_relocations(
         if file_id in excluded_file_ids:
             continue
         version_id = int(row["version_id"])
-        revision = _revision_id(row["raw_xxh3_128"], row["raw_xxh3_64_guard"])
+        revision = _required_revision(row["raw_xxh3_128"], row["raw_xxh3_64_guard"])
         result.append(
             _file_change(
                 file_id=file_id,
@@ -1754,6 +1808,14 @@ def analyze_code_change_evolution(
 ) -> CodeChangeEvolutionAnalysis:
     """Open one stable Code owner with immutable/query-only safeguards."""
 
+    if (
+        isinstance(limit, bool)
+        or not isinstance(limit, int)
+        or not 1 <= limit <= CODE_CHANGE_EVOLUTION_MAX_LIMIT
+    ):
+        raise ValueError(
+            f"change evolution limit must be between 1 and {CODE_CHANGE_EVOLUTION_MAX_LIMIT}"
+        )
     selected = Path(database)
     try:
         with immutable_sqlite_database(selected) as connection:

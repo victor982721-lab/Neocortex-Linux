@@ -434,6 +434,11 @@ def test_change_history_schema_vertical_preserves_epistemic_boundaries(tmp_path:
     assert surface.status == "ready"
     assert surface.baseline_analysis_run_id == 1
     assert surface.current_analysis_run_id == 2
+    assert surface.baseline_publication_id is not None
+    assert surface.current_publication_id is not None
+    assert surface.baseline_publication_id.startswith("code-publication-v1:xxh3_128:")
+    assert surface.current_publication_id.startswith("code-publication-v1:xxh3_128:")
+    assert surface.baseline_publication_id != surface.current_publication_id
     assert surface.files_added == surface.files_removed == 0
     assert surface.files_modified == 2
     assert surface.files_relocated == 1
@@ -473,6 +478,9 @@ def test_change_history_schema_vertical_preserves_epistemic_boundaries(tmp_path:
     assert all(item.decision_readiness == "experiment_required" for item in evaluations)
     assert all(item.decision is None for item in evaluations)
     assert not any(item.mutation_authority for item in evaluations)
+
+    repeated = analyze_code_change_evolution(database, limit=20)
+    assert repeated == result
 
 
 def test_missing_history_provider_abstains_without_weakening_other_dimensions(
@@ -515,6 +523,72 @@ def test_missing_or_incomparable_baseline_fails_closed(tmp_path: Path) -> None:
         assert evaluations[0].observation_status == "abstained"
         assert evaluations[0].decision_readiness == "abstained"
         assert evaluations[0].decision is None
+
+
+def test_newer_unpublished_run_invalidates_transition_freshness(tmp_path: Path) -> None:
+    database = _build_transition(tmp_path, history=True)
+    with CodeState(database) as state:
+        state.begin_run(3, 3, PROCESSING_SIGNATURE)
+        checkpoint_code_wal(state.connection)
+    remove_checkpointed_code_sidecars(database)
+
+    result = analyze_code_change_evolution(database, limit=20)
+    _specs, evaluations = expected_code_change_evolution_questions(result)
+
+    assert result.status == "partial"
+    assert result.change_surface.status == "abstained"
+    assert result.change_surface.reason == "newer_analysis_run_not_published"
+    assert result.history.status == "abstained"
+    assert result.code_schema.status == "ready"
+    assert evaluations[0].observation_status == "abstained"
+    assert evaluations[1].observation_status == "abstained"
+    assert all(item.decision is None for item in evaluations)
+
+
+def test_history_digest_mismatch_abstains_without_using_stale_metrics(tmp_path: Path) -> None:
+    database = _build_transition(tmp_path, history=True)
+    with sqlite3.connect(database) as connection:
+        updated = connection.execute(
+            """UPDATE external_run_contracts SET result_digest='tampered-result-digest'
+            WHERE provider_id=?""",
+            (GIT_HISTORY_PROVIDER_ID,),
+        )
+        assert updated.rowcount == 1
+        connection.commit()
+        checkpoint_code_wal(connection)
+    remove_checkpointed_code_sidecars(database)
+
+    result = analyze_code_change_evolution(database, limit=20)
+    _specs, evaluations = expected_code_change_evolution_questions(result)
+
+    assert result.change_surface.status == "ready"
+    assert result.history.status == "abstained"
+    assert result.history.reason == "external_provider_projection_invalid"
+    assert result.history.file_contexts == ()
+    assert result.history.companions == ()
+    assert evaluations[1].observation_status == "abstained"
+    assert evaluations[1].decision_readiness == "abstained"
+    assert evaluations[1].counterevidence_status == "not_evaluated"
+
+
+def test_bounded_change_selection_cannot_be_promoted_to_question_evidence(
+    tmp_path: Path,
+) -> None:
+    result = analyze_code_change_evolution(
+        _build_transition(tmp_path, history=True),
+        limit=1,
+    )
+    _specs, evaluations = expected_code_change_evolution_questions(result)
+
+    assert result.change_surface.status == "ready"
+    assert result.change_surface.total_observations == 3
+    assert result.change_surface.returned_observations == 1
+    assert result.change_surface.truncated is True
+    assert result.history.status == "abstained"
+    assert result.history.reason == "change_surface_selection_truncated"
+    assert evaluations[0].observation_status == "abstained"
+    assert evaluations[0].decision_readiness == "abstained"
+    assert evaluations[1].observation_status == "abstained"
 
 
 def test_corrected_call_resolution_cannot_claim_change_success(tmp_path: Path) -> None:
@@ -574,6 +648,11 @@ def test_strict_wire_roundtrip_rejects_tampering_and_unknown_fields(tmp_path: Pa
     with pytest.raises(ValueError, match="fields are invalid"):
         parse_code_change_evolution_payload(unknown)
 
+    forged_decision = json.loads(json.dumps(payload))
+    forged_decision["decision"] = "accept"
+    with pytest.raises(ValueError, match="cannot infer a defect or own a decision"):
+        parse_code_change_evolution_payload(forged_decision)
+
 
 def test_immutable_reader_leaves_no_sqlite_sidecars(tmp_path: Path) -> None:
     database = _build_transition(tmp_path, history=False)
@@ -584,3 +663,11 @@ def test_immutable_reader_leaves_no_sqlite_sidecars(tmp_path: Path) -> None:
 
     assert result.change_surface.status == "ready"
     assert tuple(path.exists() for path in sidecars) == before == (False, False, False)
+
+
+@pytest.mark.parametrize("limit", (0, 201, True))
+def test_public_reader_rejects_invalid_bounds(tmp_path: Path, limit: object) -> None:
+    database = _build_transition(tmp_path, history=False)
+
+    with pytest.raises(ValueError, match="limit must be between"):
+        analyze_code_change_evolution(database, limit=limit)  # type: ignore[arg-type]
