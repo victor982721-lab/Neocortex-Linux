@@ -119,17 +119,13 @@ def test_knowledge_json_escapes_unencodable_corpus_text_on_windows_console(
     )
     console = StrictCp1252Console()
     monkeypatch.setattr(sys, "stdout", console)
-    args = build_parser().parse_args(
-        ("--knowledge-search", "relay", "--knowledge-json")
-    )
+    args = build_parser().parse_args(("--knowledge-search", "relay", "--knowledge-json"))
 
     code = cli_knowledge.run_knowledge_search(args)
 
     assert code == int(cli_knowledge.KnowledgeExitCode.NO_RESULTS)
     assert "\\uf0b7" in console.getvalue()
-    assert json.loads(console.getvalue())["plan"]["normalized_query"] == (
-        "relay \uf0b7 protection"
-    )
+    assert json.loads(console.getvalue())["plan"]["normalized_query"] == ("relay \uf0b7 protection")
 
 
 def test_parser_selects_three_lazy_flat_operations_with_bounded_defaults() -> None:
@@ -185,9 +181,7 @@ def test_query_limits_preserve_the_search_and_context_bounds(
     operation: str,
     limit: str,
 ) -> None:
-    args = build_parser().parse_args(
-        (operation, "relay protection", "--knowledge-limit", limit)
-    )
+    args = build_parser().parse_args((operation, "relay protection", "--knowledge-limit", limit))
 
     validate_arguments(args)
 

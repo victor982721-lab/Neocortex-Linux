@@ -134,34 +134,22 @@ class RetentionStorePlan:
 
     @property
     def eligible_rows(self) -> int:
-        return sum(
-            item.estimated_rows
-            for item in self.items
-            if item.disposition == "eligible"
-        )
+        return sum(item.estimated_rows for item in self.items if item.disposition == "eligible")
 
     @property
     def eligible_bytes(self) -> int:
-        return sum(
-            item.estimated_bytes
-            for item in self.items
-            if item.disposition == "eligible"
-        )
+        return sum(item.estimated_bytes for item in self.items if item.disposition == "eligible")
 
     @property
     def protected_rows(self) -> int:
         return sum(
-            item.estimated_rows
-            for item in self.items
-            if item.disposition != "eligible"
+            item.estimated_rows for item in self.items if item.disposition != "eligible"
         ) + sum(hold.rows for hold in self.holds)
 
     @property
     def protected_bytes(self) -> int:
         return sum(
-            item.estimated_bytes
-            for item in self.items
-            if item.disposition != "eligible"
+            item.estimated_bytes for item in self.items if item.disposition != "eligible"
         ) + sum(hold.estimated_bytes for hold in self.holds)
 
 
@@ -275,16 +263,14 @@ def _validate_snapshot(
         version = _metadata_version(connection, "dedup inventory")
         if version != inventory_schema.SCHEMA_VERSION:
             raise RuntimeError(
-                f"dedup inventory schema is {version}; expected "
-                f"{inventory_schema.SCHEMA_VERSION}"
+                f"dedup inventory schema is {version}; expected {inventory_schema.SCHEMA_VERSION}"
             )
         inventory_schema.validate_inventory_schema(connection)
         return version
     version = _metadata_version(connection, "framework")
     if version != framework_schema.SCHEMA_VERSION:
         raise RuntimeError(
-            f"framework schema is {version!r}; expected "
-            f"{framework_schema.SCHEMA_VERSION}"
+            f"framework schema is {version!r}; expected {framework_schema.SCHEMA_VERSION}"
         )
     framework_schema._validate_schema(connection)
     return version
@@ -540,9 +526,7 @@ def _plan_semantic(
             disposition, age_reasons = _age_disposition(
                 policy=policy,
                 now_ns=now_ns,
-                terminal_ns=(
-                    None if row["completed_ns"] is None else int(row["completed_ns"])
-                ),
+                terminal_ns=(None if row["completed_ns"] is None else int(row["completed_ns"])),
             )
             reasons.extend(age_reasons)
         return RetentionItem(
@@ -687,9 +671,7 @@ def _plan_catalog(
             disposition, age_reasons = _age_disposition(
                 policy=policy,
                 now_ns=now_ns,
-                terminal_ns=(
-                    None if row["completed_ns"] is None else int(row["completed_ns"])
-                ),
+                terminal_ns=(None if row["completed_ns"] is None else int(row["completed_ns"])),
             )
             reasons.extend(age_reasons)
         return RetentionItem(
@@ -848,9 +830,7 @@ def _plan_inventory(
             disposition, age_reasons = _age_disposition(
                 policy=policy,
                 now_ns=now_ns,
-                terminal_ns=(
-                    None if row["completed_ns"] is None else int(row["completed_ns"])
-                ),
+                terminal_ns=(None if row["completed_ns"] is None else int(row["completed_ns"])),
             )
             reasons.extend(age_reasons)
         return RetentionItem(
@@ -1126,11 +1106,7 @@ def _plan_framework(
         after,
         next_after,
         truncated,
-        (
-            "catalog retention dependency could not be validated"
-            if dependency_unverified
-            else None
-        ),
+        ("catalog retention dependency could not be validated" if dependency_unverified else None),
     )
 
 
@@ -1167,9 +1143,7 @@ def _validated_snapshot(
         return _StoreSnapshot(store, database, "ready", version, connection, None)
     except sqlite3.OperationalError as exc:
         if cancelled is not None and cancelled() and "interrupt" in str(exc).lower():
-            raise RetentionPlanningCancelled(
-                "retention planning was cancelled"
-            ) from exc
+            raise RetentionPlanningCancelled("retention planning was cancelled") from exc
         return _StoreSnapshot(store, database, "blocked", None, None, str(exc)[:1000])
     except Exception as exc:
         return _StoreSnapshot(store, database, "blocked", None, None, str(exc)[:1000])
@@ -1293,9 +1267,7 @@ def _plan_retention_store_with_cancellation(
         )
     except sqlite3.OperationalError as exc:
         if cancelled is not None and cancelled() and "interrupt" in str(exc).lower():
-            raise RetentionPlanningCancelled(
-                "retention planning was cancelled"
-            ) from exc
+            raise RetentionPlanningCancelled("retention planning was cancelled") from exc
         raise
 
 
@@ -1382,9 +1354,7 @@ def retention_plan_payload(plan: RetentionPlan) -> dict[str, object]:
             "minimum_age_ns": plan.policy.minimum_age_ns,
         },
         "snapshot_scope": plan.snapshot_scope,
-        "sqlite_read_snapshot_may_touch_shm": (
-            plan.sqlite_read_snapshot_may_touch_shm
-        ),
+        "sqlite_read_snapshot_may_touch_shm": (plan.sqlite_read_snapshot_may_touch_shm),
         "stores": [
             {
                 "after": store.after,

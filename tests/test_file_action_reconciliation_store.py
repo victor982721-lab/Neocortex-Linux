@@ -4,7 +4,6 @@
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
-
 # region [01] Dependencias del módulo
 from __future__ import annotations
 
@@ -112,9 +111,7 @@ def test_schema_20_migrates_populated_version_18_idempotently(tmp_path: Path) ->
             """SELECT event_id,action_id,from_status,to_status,stage,detail
             FROM file_action_events"""
         ).fetchone()
-        reconciliation_count = connection.execute(
-            f"SELECT COUNT(*) FROM {_TABLE}"
-        ).fetchone()
+        reconciliation_count = connection.execute(f"SELECT COUNT(*) FROM {_TABLE}").fetchone()
         integrity = connection.execute("PRAGMA integrity_check").fetchone()
         foreign_keys = connection.execute("PRAGMA foreign_key_check").fetchall()
 
@@ -165,13 +162,9 @@ def test_schema_20_abstains_and_rolls_back_on_unknown_version_18_objects(
         assert connection.execute(
             "SELECT value FROM metadata WHERE key='schema_version'"
         ).fetchone() == ("18",)
-        assert connection.execute("SELECT COUNT(*) FROM file_actions").fetchone() == (
-            1,
-        )
+        assert connection.execute("SELECT COUNT(*) FROM file_actions").fetchone() == (1,)
         assert (
-            connection.execute(
-                "SELECT name FROM sqlite_master WHERE name=?", (_TABLE,)
-            ).fetchone()
+            connection.execute("SELECT name FROM sqlite_master WHERE name=?", (_TABLE,)).fetchone()
             is None
         )
 
@@ -192,14 +185,10 @@ def test_schema_20_rolls_back_on_base_exception_after_migration(
             "SELECT value FROM metadata WHERE key='schema_version'"
         ).fetchone() == ("18",)
         assert (
-            connection.execute(
-                "SELECT name FROM sqlite_master WHERE name=?", (_TABLE,)
-            ).fetchone()
+            connection.execute("SELECT name FROM sqlite_master WHERE name=?", (_TABLE,)).fetchone()
             is None
         )
-        assert connection.execute("SELECT COUNT(*) FROM file_actions").fetchone() == (
-            1,
-        )
+        assert connection.execute("SELECT COUNT(*) FROM file_actions").fetchone() == (1,)
         assert not connection.in_transaction
     finally:
         connection.close()
@@ -213,22 +202,16 @@ def test_schema_20_rolls_back_runtime_error_after_migration(tmp_path: Path) -> N
         with pytest.raises(RuntimeError, match="injected post-migration failure"):
             initialize_framework_schema(
                 connection,
-                lambda: (_ for _ in ()).throw(
-                    RuntimeError("injected post-migration failure")
-                ),
+                lambda: (_ for _ in ()).throw(RuntimeError("injected post-migration failure")),
             )
         assert connection.execute(
             "SELECT value FROM metadata WHERE key='schema_version'"
         ).fetchone() == ("18",)
         assert (
-            connection.execute(
-                "SELECT name FROM sqlite_master WHERE name=?", (_TABLE,)
-            ).fetchone()
+            connection.execute("SELECT name FROM sqlite_master WHERE name=?", (_TABLE,)).fetchone()
             is None
         )
-        assert connection.execute("SELECT COUNT(*) FROM file_actions").fetchone() == (
-            1,
-        )
+        assert connection.execute("SELECT COUNT(*) FROM file_actions").fetchone() == (1,)
         assert not connection.in_transaction
     finally:
         connection.close()
@@ -256,9 +239,7 @@ def test_schema_20_publication_preserves_concurrent_version_18_snapshot(
                 "SELECT value FROM metadata WHERE key='schema_version'"
             ).fetchone() == ("18",)
             assert (
-                reader.execute(
-                    "SELECT name FROM sqlite_master WHERE name=?", (_TABLE,)
-                ).fetchone()
+                reader.execute("SELECT name FROM sqlite_master WHERE name=?", (_TABLE,)).fetchone()
                 is None
             )
 
@@ -267,9 +248,7 @@ def test_schema_20_publication_preserves_concurrent_version_18_snapshot(
             "SELECT value FROM metadata WHERE key='schema_version'"
         ).fetchone() == ("18",)
         assert (
-            reader.execute(
-                "SELECT name FROM sqlite_master WHERE name=?", (_TABLE,)
-            ).fetchone()
+            reader.execute("SELECT name FROM sqlite_master WHERE name=?", (_TABLE,)).fetchone()
             is None
         )
         reader.rollback()
@@ -418,9 +397,7 @@ def test_record_rejects_invalid_reconciliation_contract_before_transaction(
     message: str,
 ) -> None:
     database, root = _action_sandbox(tmp_path)
-    run_id, action_id, action_key = _seed_action(
-        database, root, status="recovery_required"
-    )
+    run_id, action_id, action_key = _seed_action(database, root, status="recovery_required")
     reconciliation = _reconciliation(root, run_id, action_id, action_key)
 
     with FrameworkState(database) as state:
@@ -432,18 +409,14 @@ def test_record_rejects_invalid_reconciliation_contract_before_transaction(
                 observed_ns=100,
             )
         assert not state._connection.in_transaction
-        assert state._connection.execute(
-            f"SELECT COUNT(*) FROM {_TABLE}"
-        ).fetchone() == (0,)
+        assert state._connection.execute(f"SELECT COUNT(*) FROM {_TABLE}").fetchone() == (0,)
 
 
 def test_record_abstains_on_invalid_frontiers_missing_action_and_identity(
     tmp_path: Path,
 ) -> None:
     database, root = _action_sandbox(tmp_path)
-    run_id, action_id, action_key = _seed_action(
-        database, root, status="recovery_required"
-    )
+    run_id, action_id, action_key = _seed_action(database, root, status="recovery_required")
     reconciliation = _reconciliation(root, run_id, action_id, action_key)
 
     with FrameworkState(database) as state:
@@ -534,9 +507,7 @@ def test_record_abstains_on_corrupt_or_colliding_existing_evidence(
     tmp_path: Path,
 ) -> None:
     database, root = _action_sandbox(tmp_path)
-    run_id, action_id, action_key = _seed_action(
-        database, root, status="recovery_required"
-    )
+    run_id, action_id, action_key = _seed_action(database, root, status="recovery_required")
     reconciliation = _reconciliation(root, run_id, action_id, action_key)
     with FrameworkState(database) as state:
         first = _record_state(
@@ -582,9 +553,7 @@ def test_status_is_strictly_read_only_and_record_is_explicit_append_only(
     tmp_path: Path,
 ) -> None:
     database, root = _action_sandbox(tmp_path)
-    run_id, action_id, action_key = _seed_action(
-        database, root, status="recovery_required"
-    )
+    run_id, action_id, action_key = _seed_action(database, root, status="recovery_required")
 
     before = database.read_bytes()
     status = list_file_action_reconciliations(database)
@@ -650,8 +619,7 @@ def test_status_is_strictly_read_only_and_record_is_explicit_append_only(
             "schema_version": 1,
         }
         assert (
-            evidence["reconciliation"]["reconciler_signature"]
-            == FILE_ACTION_RECONCILER_SIGNATURE
+            evidence["reconciliation"]["reconciler_signature"] == FILE_ACTION_RECONCILER_SIGNATURE
         )
         with pytest.raises(sqlite3.IntegrityError, match="append-only"):
             connection.execute(
@@ -667,9 +635,7 @@ def test_reconciliation_schema_rejects_incompatible_and_cross_action_events(
     tmp_path: Path,
 ) -> None:
     database, root = _action_sandbox(tmp_path)
-    run_id, action_id, action_key = _seed_action(
-        database, root, status="recovery_required"
-    )
+    run_id, action_id, action_key = _seed_action(database, root, status="recovery_required")
     reconciliation = _reconciliation(root, run_id, action_id, action_key)
     with FrameworkState(database) as state:
         first = _record_state(
@@ -678,9 +644,7 @@ def test_reconciliation_schema_rejects_incompatible_and_cross_action_events(
             expected_previous_event_id=None,
             observed_ns=250,
         )
-    _other_run, other_action, _other_key = _seed_action(
-        database, root, status="recovery_required"
-    )
+    _other_run, other_action, _other_key = _seed_action(database, root, status="recovery_required")
 
     statement = f"""INSERT INTO {_TABLE}(
     action_id,sequence,previous_event_id,reconciliation_key,observed_ns,
@@ -736,9 +700,7 @@ def test_reconciliation_schema_rejects_incompatible_and_cross_action_events(
 
 def test_record_enforces_action_and_event_compare_and_swap(tmp_path: Path) -> None:
     database, root = _action_sandbox(tmp_path)
-    run_id, action_id, action_key = _seed_action(
-        database, root, status="recovery_required"
-    )
+    run_id, action_id, action_key = _seed_action(database, root, status="recovery_required")
     reconciliation = _reconciliation(root, run_id, action_id, action_key)
 
     with FrameworkState(database) as state:
@@ -781,9 +743,7 @@ def test_record_enforces_action_and_event_compare_and_swap(tmp_path: Path) -> No
         tmp_path,
         state_name="stale-state",
     )
-    stale_run, stale_action, stale_key = _seed_action(
-        stale_database, stale_root, status="applying"
-    )
+    stale_run, stale_action, stale_key = _seed_action(stale_database, stale_root, status="applying")
     stale = _reconciliation(
         stale_root,
         stale_run,
@@ -800,18 +760,14 @@ def test_record_enforces_action_and_event_compare_and_swap(tmp_path: Path) -> No
                 expected_previous_event_id=None,
                 observed_ns=400,
             )
-        assert state._connection.execute(
-            f"SELECT COUNT(*) FROM {_TABLE}"
-        ).fetchone() == (0,)
+        assert state._connection.execute(f"SELECT COUNT(*) FROM {_TABLE}").fetchone() == (0,)
 
 
 def test_record_rolls_back_base_exception_and_retries_idempotently(
     tmp_path: Path,
 ) -> None:
     database, root = _action_sandbox(tmp_path)
-    run_id, action_id, action_key = _seed_action(
-        database, root, status="recovery_required"
-    )
+    run_id, action_id, action_key = _seed_action(database, root, status="recovery_required")
     reconciliation = _reconciliation(root, run_id, action_id, action_key)
 
     with FrameworkState(database) as state:
@@ -830,9 +786,7 @@ def test_record_rolls_back_base_exception_and_retries_idempotently(
                 observed_ns=500,
             )
         assert not state._connection.in_transaction
-        assert state._connection.execute(
-            f"SELECT COUNT(*) FROM {_TABLE}"
-        ).fetchone() == (0,)
+        assert state._connection.execute(f"SELECT COUNT(*) FROM {_TABLE}").fetchone() == (0,)
         recorded = _record_state(
             state,
             reconciliation,
@@ -865,16 +819,13 @@ def test_concurrent_identical_record_is_idempotent_and_conflict_does_not_fork(
     tmp_path: Path,
 ) -> None:
     database, root = _action_sandbox(tmp_path)
-    run_id, action_id, action_key = _seed_action(
-        database, root, status="recovery_required"
-    )
+    run_id, action_id, action_key = _seed_action(database, root, status="recovery_required")
     reconciliation = _reconciliation(root, run_id, action_id, action_key)
 
     barrier = threading.Barrier(2)
     with ThreadPoolExecutor(max_workers=2) as executor:
         futures = [
-            executor.submit(_concurrent_record, database, barrier, reconciliation)
-            for _ in range(2)
+            executor.submit(_concurrent_record, database, barrier, reconciliation) for _ in range(2)
         ]
         identical = [future.result(timeout=20) for future in futures]
     assert {result[0] for result in identical} == {"recorded"}
@@ -911,9 +862,7 @@ def test_concurrent_identical_record_is_idempotent_and_conflict_does_not_fork(
 
 def test_temporary_sqlite_lock_leaves_no_partial_record(tmp_path: Path) -> None:
     database, root = _action_sandbox(tmp_path)
-    run_id, action_id, action_key = _seed_action(
-        database, root, status="recovery_required"
-    )
+    run_id, action_id, action_key = _seed_action(database, root, status="recovery_required")
     reconciliation = _reconciliation(root, run_id, action_id, action_key)
     blocker = sqlite3.connect(database, timeout=0.1)
     candidate = sqlite3.connect(database, timeout=0.01)
@@ -942,4 +891,6 @@ def test_temporary_sqlite_lock_leaves_no_partial_record(tmp_path: Path) -> None:
             blocker.rollback()
         blocker.close()
         candidate.close()
+
+
 # endregion [02]
