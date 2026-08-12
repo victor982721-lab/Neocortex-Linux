@@ -297,6 +297,67 @@ broker. No existe registro automático de plugins, sandbox de providers externos
 ni protocolo fuera de proceso. La extensión debe hacerse por una ruta vertical
 a la vez después de estabilizar estos contratos, sin dependencias pesadas base.
 
+## ReviewTask durable y salud del conocimiento
+
+**IMPLEMENTED — contrato transversal y primera vertical Value.** Framework
+schema 21 añade, dentro del owner que ya coordina revisión, seis familias:
+`review_task_batches`, `review_tasks`, `review_task_batch_memberships`,
+`review_task_events`, `review_task_scan_progress` y
+`review_task_source_publications`. No aparece una base global nueva. Cada batch fija
+scope, tipo, selector y fingerprint/snapshot fuente, conserva un receipt
+canónico y admite como máximo 1,000 inputs examinados y 100 tareas. Las tareas
+son versiones inmutables; sus eventos son append-only y las transiciones usan
+CAS sobre estado/evento anterior. La migración 20→21 sólo crea este contrato
+vacío: no convierte candidatos o decisiones históricos en tareas sintéticas.
+
+`ReviewTask` mantiene separados el hallazgo derivado y la decisión humana. Sus
+estados son `OPEN`, `IN_REVIEW`, `RESOLVED`, `DISMISSED` y `SUPERSEDED`; una
+resolución o descarte exige actor humano y decisión durable. Un refresh puede
+reemplazar versiones abiertas mediante supersession efectiva derivada del head
+generacional, pero nunca reabre ni sobrescribe automáticamente una versión
+humana terminal. `SUPERSEDED` está reservado a receipts sistémicos exactos. El
+batch, memberships, tareas, eventos iniciales, progreso y, al terminar con
+evidencia completa, el head fuente se publican en transacciones Framework
+owner-local; no se
+declara atomicidad con Inventory o Catalog. El fence fuente se vuelve a leer
+antes de publicar y cualquier cambio causa abstención.
+
+La primera productora real es `review value`. El comando predeterminado sigue
+read-only: consulta una cola vigente cuando existe y, ante Framework anterior a
+v21 o sin cola, conserva el preview legacy sin DDL. La variante explícita
+`review value --refresh --scope personal|framework` puede crear/migrar Framework
+y avanza exactamente una página keyset de 100 observaciones. Es advisory,
+rechaza `all`, nunca escribe Inventory/Catalog ni toca el corpus y permite
+recorrer más de 25,000 observaciones sin quitar la cota. Una cola cuyo
+fingerprint ya no coincide con sus owners fuente queda `stale` y no se presenta
+como vigente.
+
+El progreso distingue dos hechos independientes: `scan_complete` sólo confirma
+que el cursor keyset llegó al final; `evidence_complete` acumula la salud de
+todas las páginas. Una página parcial vuelve parcial a la corrida completa. En
+ese estado no se infiere que un finding desapareció y las tareas abiertas del
+snapshot anterior no se superseden por ausencia. Falta de un head publicado,
+plan de duplicados inválido, owner ausente o mismatch de Catalog se conserva
+como causa durable, aunque la última página sí haya terminado el recorrido.
+
+Knowledge expone heads ReviewTask sólo después de reconciliar source receipt,
+progreso y la cadena completa alcanzable de batches y memberships; añade
+watermarks de batches, eventos y publicaciones fuente en Framework v21.
+Retention trata tareas y eventos humanos como holds separados y protege además
+el head vigente, toda esa cadena publicada y su progreso exacto. La auditoría
+owner-local está acotada a 1,024 heads, 10,000 batches, 1,000,000 memberships y
+128 MiB de payload. El resto de la coordinación sistémica no se eleva a
+conocimiento humano. Esto permite detectar cambios y proteger decisiones sin
+convertir ReviewTask en autoridad sobre otros owners.
+
+**PARTIAL / PLANNED.** La cola Value expone estado causal local
+`ready`/`partial`/`stale`/`absent`/`unavailable`, pero no constituye todavía el
+árbol general `Knowledge Asset Health` para Semantic, extracción y demás
+materializaciones. Tareas de OCR, entity resolution, claims, links, recovery y
+shadow promotion siguen planificadas; también falta una GUI consumidora. No hay
+un score mágico de salud ni revisión durable general para dominios que aún no
+tienen productor.
+
 ## Planificador semántico read-only
 
 `plan_semantic_index()` y `--semantic-plan {text,image,all}` calculan un
@@ -748,7 +809,8 @@ Ese backend es exclusivamente Windows. En Linux, `--apply` y
 `--organization-apply` se rechazan antes de crear estado con código `2` y razón
 `linux_mutation_backend_unavailable`; no existe un fallback con `Path.rename`.
 
-`file_actions` conserva en el esquema framework v20 la frontera incorporada en v18:
+`file_actions` conserva en framework v21 la frontera incorporada en v18 y
+endurecida en v20:
 
 ```text
 started -> applying -> applied

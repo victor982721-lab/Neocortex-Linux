@@ -4,7 +4,6 @@
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
-
 # region [01] Dependencias del módulo
 from __future__ import annotations
 
@@ -30,6 +29,22 @@ from _04_Nucleo_Operativo.retention_planner import (
     RetentionPlanningCancelled,
     RetentionPolicy,
     plan_retention,
+)
+from _04_Nucleo_Operativo.review_task_contracts import (
+    CanonicalJsonObject,
+    ReviewTaskActorKind,
+    ReviewTaskCoverage,
+    ReviewTaskDraft,
+    ReviewTaskInput,
+    ReviewTaskPublication,
+    ReviewTaskSourceFence,
+    ReviewTaskState,
+    ReviewTaskTransition,
+)
+from _04_Nucleo_Operativo.review_task_repository import (
+    append_review_task_event,
+    list_current_review_tasks,
+    publish_review_task_page,
 )
 from _04_Nucleo_Operativo.semantic_models import (
     EmbeddingModality,
@@ -93,9 +108,7 @@ def _populate_semantic(database: Path) -> None:
             VALUES(?,'retention-model-v1','fixture',?,'{}','{}',1,?,?,1)""",
             ((generation, status, completed, base) for generation, status, base, completed in rows),
         )
-        connection.execute(
-            "INSERT INTO published_embedding_heads VALUES('retention-model-v1',5,2)"
-        )
+        connection.execute("INSERT INTO published_embedding_heads VALUES('retention-model-v1',5,2)")
         connection.execute(
             """INSERT INTO embedding_jobs(
             generation_id,model_signature,role,entity_kind,entity_id,item_id,
@@ -204,6 +217,163 @@ def _populate_framework(database: Path) -> None:
         connection.commit()
 
 
+def _populate_review_task_holds(database: Path, *, multipage: bool = False) -> None:
+    review_input = ReviewTaskInput("input-1", "sha256", "1" * 64)
+    task = ReviewTaskDraft(
+        task_id="task-1",
+        logical_key="logical-1",
+        task_version=1,
+        task_type="value-review",
+        scope="personal",
+        source_kind="review-decision",
+        source_input_id=review_input.input_id,
+        snapshot=CanonicalJsonObject.from_mapping({"fixture": "retention-hold"}),
+        evidence=(),
+        reason_code="uncertain",
+        uncertainty_detail=CanonicalJsonObject.from_mapping({"basis": "fixture"}),
+        impact=0.5,
+        uncertainty=0.4,
+        irreversibility=0.25,
+        suggestions=("inspect",),
+        supersedes_task_id=None,
+        created_ns=99,
+    )
+    fence = ReviewTaskSourceFence.create(
+        scope="personal",
+        task_type="value-review",
+        selector_signature="selector-v1",
+        source_snapshot={"fixture": "retention-hold"},
+    )
+    cursor = CanonicalJsonObject.from_mapping({"offset": 1}) if multipage else None
+    publication = ReviewTaskPublication(
+        batch_id="batch-1",
+        batch_key="batch-key-1",
+        fence=fence,
+        cursor_before=None,
+        cursor_after=cursor,
+        inputs=(review_input,),
+        tasks=(task,),
+        coverage=(ReviewTaskCoverage.PARTIAL if multipage else ReviewTaskCoverage.COMPLETE),
+        producer_signature="producer-v1",
+        confirmed_ns=100,
+    )
+    first_result = publish_review_task_page(
+        database,
+        publication,
+        expected_progress_revision=None,
+    )
+    if multipage:
+        final = ReviewTaskPublication(
+            batch_id="batch-2",
+            batch_key="batch-key-2",
+            fence=fence,
+            cursor_before=cursor,
+            cursor_after=None,
+            inputs=(),
+            tasks=(),
+            coverage=ReviewTaskCoverage.COMPLETE,
+            producer_signature="producer-v1",
+            confirmed_ns=101,
+        )
+        publish_review_task_page(
+            database,
+            final,
+            expected_progress_revision=first_result.progress.revision,
+        )
+    current = list_current_review_tasks(database, limit=1).items[0].current_event
+    append_review_task_event(
+        database,
+        ReviewTaskTransition(
+            event_id="event-2",
+            event_key="event-key-2",
+            task_id=task.task_id,
+            expected_event_id=current.event_id,
+            expected_state=ReviewTaskState.OPEN,
+            to_state=ReviewTaskState.RESOLVED,
+            actor_kind=ReviewTaskActorKind.HUMAN,
+            actor_id="reviewer",
+            provenance=CanonicalJsonObject.from_mapping({"surface": "fixture"}),
+            decision=CanonicalJsonObject.from_mapping({"decision": "accept"}),
+            note="accepted",
+            observed_ns=103,
+            recorded_ns=104,
+        ),
+    )
+
+
+def _corrupt_published_review_task_receipt(database: Path, *, fact: str) -> None:
+    with sqlite3.connect(database) as connection:
+        if fact == "membership":
+            trigger_name = "review_task_batch_memberships_no_delete"
+            trigger_sql = str(
+                connection.execute(
+                    "SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?",
+                    (trigger_name,),
+                ).fetchone()[0]
+            )
+            connection.execute("DROP TRIGGER review_task_batch_memberships_no_delete")
+            connection.execute("DELETE FROM review_task_batch_memberships")
+        elif fact == "progress":
+            trigger_name = "review_task_scan_progress_no_delete"
+            trigger_sql = str(
+                connection.execute(
+                    "SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?",
+                    (trigger_name,),
+                ).fetchone()[0]
+            )
+            connection.execute("DROP TRIGGER review_task_scan_progress_no_delete")
+            connection.execute("DELETE FROM review_task_scan_progress")
+        elif fact == "progress_mismatch":
+            trigger_name = "review_task_scan_progress_validate_update"
+            trigger_sql = str(
+                connection.execute(
+                    "SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?",
+                    (trigger_name,),
+                ).fetchone()[0]
+            )
+            connection.execute("DROP TRIGGER review_task_scan_progress_validate_update")
+            connection.execute("UPDATE review_task_scan_progress SET scanned_count=scanned_count+1")
+        elif fact == "membership_binding":
+            trigger_name = "review_task_batch_memberships_no_update"
+            trigger_sql = str(
+                connection.execute(
+                    "SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?",
+                    (trigger_name,),
+                ).fetchone()[0]
+            )
+            connection.execute("DROP TRIGGER review_task_batch_memberships_no_update")
+            connection.execute(
+                "UPDATE review_task_batch_memberships SET source_input_id='wrong-input'"
+            )
+        elif fact == "batch_cursor":
+            trigger_name = "review_task_batches_no_update"
+            trigger_sql = str(
+                connection.execute(
+                    "SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?",
+                    (trigger_name,),
+                ).fetchone()[0]
+            )
+            connection.execute("DROP TRIGGER review_task_batches_no_update")
+            connection.execute(
+                "UPDATE review_task_batches SET cursor_before_json=?",
+                ('{"forged":true}',),
+            )
+        elif fact == "source_receipt":
+            trigger_name = "review_task_source_publications_no_update"
+            trigger_sql = str(
+                connection.execute(
+                    "SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?",
+                    (trigger_name,),
+                ).fetchone()[0]
+            )
+            connection.execute("DROP TRIGGER review_task_source_publications_no_update")
+            connection.execute("UPDATE review_task_source_publications SET receipt_json='{}'")
+        else:  # pragma: no cover - fixture invariant
+            raise AssertionError(f"unsupported ReviewTask receipt fact {fact}")
+        connection.execute(trigger_sql)
+        connection.commit()
+
+
 def _populate_inventory(database: Path, framework: Path) -> None:
     initialize_inventory_schema(database)
     with sqlite3.connect(database) as connection:
@@ -260,14 +430,17 @@ def test_absent_state_and_cli_json_do_not_create_directories(
     assert [store.status for store in plan.stores] == ["absent"] * 4
     assert not state.exists()
 
-    assert cli_main(
-        [
-            "--state-directory",
-            str(state),
-            "--retention-status",
-            "--retention-json",
-        ]
-    ) == 0
+    assert (
+        cli_main(
+            [
+                "--state-directory",
+                str(state),
+                "--retention-status",
+                "--retention-json",
+            ]
+        )
+        == 0
+    )
     payload = json.loads(capsys.readouterr().out)
     assert payload["dry_run"] is True
     assert payload["deletion_supported"] is False
@@ -483,7 +656,10 @@ def test_catalog_protects_publications_builders_and_uncertain_actions(
     assert "uncertain_organization_action" in items[5].reasons
     assert items[6].disposition == "eligible"
     store = plan.stores[0]
-    assert next(hold for hold in store.holds if hold.name == "uncertain_organization_actions").rows == 1
+    assert (
+        next(hold for hold in store.holds if hold.name == "uncertain_organization_actions").rows
+        == 1
+    )
 
 
 def test_inventory_protects_current_previous_builder_candidate_and_framework_use(
@@ -514,6 +690,7 @@ def test_framework_protects_uncertain_actions_and_human_evidence(
     tmp_path: Path,
 ) -> None:
     _populate_framework(tmp_path / "framework.sqlite3")
+    _populate_review_task_holds(tmp_path / "framework.sqlite3")
 
     plan = plan_retention(
         tmp_path,
@@ -530,8 +707,108 @@ def test_framework_protects_uncertain_actions_and_human_evidence(
     assert items[5].disposition == "protected"
     assert items[6].disposition == "protected"
     holds = {hold.name: hold for hold in plan.stores[0].holds}
-    assert holds["human_review_evidence"].rows == 1
+    # One legacy decision, one durable ReviewTask evidence record and one human
+    # decision event are permanent. The producer batch, scan progress and
+    # system-open event are reconstructible coordination state and stay out.
+    assert holds["human_review_evidence"].rows == 3
     assert holds["file_action_audit_evidence"].rows == 3
+    # The effective source head is derived, but it is published truth. Its
+    # owner-local publication row, final batch receipt and progress receipt are
+    # retained separately from irreconstructible human knowledge.
+    assert holds["published_review_task_state"].rows == 4
+    assert holds["published_review_task_state"].estimated_bytes > 0
+
+
+def test_framework_retention_holds_and_validates_complete_review_batch_chain(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "framework.sqlite3"
+    _populate_framework(database)
+    _populate_review_task_holds(database, multipage=True)
+
+    plan = plan_retention(
+        tmp_path,
+        policy=RetentionPolicy(minimum_age_ns=0),
+        stores=("framework",),
+        now_ns=NOW_NS,
+    )
+    hold = next(item for item in plan.stores[0].holds if item.name == "published_review_task_state")
+    assert hold.rows == 5
+    _corrupt_published_review_task_receipt(database, fact="membership_binding")
+
+    with pytest.raises(RuntimeError, match="ReviewTask"):
+        plan_retention(
+            tmp_path,
+            policy=RetentionPolicy(minimum_age_ns=0),
+            stores=("framework",),
+            now_ns=NOW_NS,
+        )
+
+
+@pytest.mark.parametrize(
+    "fact",
+    (
+        "membership",
+        "progress",
+        "progress_mismatch",
+        "membership_binding",
+        "batch_cursor",
+        "source_receipt",
+    ),
+)
+def test_framework_retention_fails_closed_on_incomplete_review_source_receipt(
+    tmp_path: Path,
+    fact: str,
+) -> None:
+    database = tmp_path / "framework.sqlite3"
+    _populate_framework(database)
+    _populate_review_task_holds(database)
+    _corrupt_published_review_task_receipt(database, fact=fact)
+
+    with pytest.raises(RuntimeError, match="ReviewTask"):
+        plan_retention(
+            tmp_path,
+            policy=RetentionPolicy(minimum_age_ns=0),
+            stores=("framework",),
+            now_ns=NOW_NS,
+        )
+
+
+def test_framework_retention_holds_empty_review_source_head_without_memberships(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "framework.sqlite3"
+    with FrameworkState(database):
+        pass
+    publication = ReviewTaskPublication(
+        batch_id="empty-batch",
+        batch_key="empty-batch-key",
+        fence=ReviewTaskSourceFence.create(
+            scope="personal",
+            task_type="value-review",
+            selector_signature="selector-v1",
+            source_snapshot={"fixture": "empty-retention-head"},
+        ),
+        cursor_before=None,
+        cursor_after=None,
+        inputs=(),
+        tasks=(),
+        coverage=ReviewTaskCoverage.COMPLETE,
+        producer_signature="producer-v1",
+        confirmed_ns=100,
+    )
+    publish_review_task_page(database, publication, expected_progress_revision=None)
+
+    plan = plan_retention(
+        tmp_path,
+        policy=RetentionPolicy(minimum_age_ns=0),
+        stores=("framework",),
+        now_ns=NOW_NS,
+    )
+
+    hold = next(item for item in plan.stores[0].holds if item.name == "published_review_task_state")
+    assert hold.rows == 3
+    assert hold.estimated_bytes > 0
 
 
 def test_keyset_page_is_bounded_repeatable_and_has_resume_cursor(
@@ -738,19 +1015,22 @@ def test_cli_human_output_exposes_bounded_read_only_contract(
 ) -> None:
     _populate_semantic(tmp_path / "semantic.sqlite3")
 
-    assert cli_main(
-        [
-            "--state-directory",
-            str(tmp_path),
-            "--retention-status",
-            "--retention-store",
-            "semantic",
-            "--retention-batch-size",
-            "1",
-            "--retention-min-age-days",
-            "0",
-        ]
-    ) == 0
+    assert (
+        cli_main(
+            [
+                "--state-directory",
+                str(tmp_path),
+                "--retention-status",
+                "--retention-store",
+                "semantic",
+                "--retention-batch-size",
+                "1",
+                "--retention-min-age-days",
+                "0",
+            ]
+        )
+        == 0
+    )
 
     output = capsys.readouterr().out
     assert "RETENTION_PLAN dry_run=1 deletion_supported=0" in output
@@ -802,4 +1082,6 @@ def test_cli_rejects_unbounded_or_orphaned_retention_options() -> None:
     with pytest.raises(SystemExit) as route:
         cli_main(["--retention-status", "--route", "pdf"])
     assert route.value.code == 2
+
+
 # endregion [02]

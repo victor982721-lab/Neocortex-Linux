@@ -215,6 +215,49 @@ existe cuando se cumplen juntos los criterios dinámicos de la última sección.
 - Este handoff describe el comportamiento del árbol; no sustituye tests, gates,
   commit, release instalada ni CI del SHA final.
 
+## Corte evolutivo actual — ReviewTask durable + Value
+
+- Framework schema 21 incorpora `review_task_batches`, `review_tasks`,
+  `review_task_batch_memberships`, `review_task_events`,
+  `review_task_scan_progress` y `review_task_source_publications` dentro del owner existente;
+  no crea un datastore transversal. Batches/receipts están acotados a 1,000
+  inputs y 100 tareas, las tareas son versiones inmutables y los eventos son
+  append-only con CAS. La migración 20→21 crea el contrato vacío sin interpretar
+  revisión histórica como tareas nuevas.
+- La primera vertical productiva es Value. `Neocortex review value --refresh
+  --scope personal|framework` avanza exactamente una página keyset de 100
+  observaciones y puede crear/migrar Framework. Rechaza `all`, vuelve a leer el
+  fence de Inventory/Catalog antes de publicar y sólo escribe batches, tareas,
+  eventos y progreso owner-local; nunca muta corpus ni owners fuente.
+- `review value` sin `--refresh` sigue estrictamente read-only. Usa la cola si
+  coincide con el fingerprint fuente y, si Framework v21 o la cola todavía no
+  existen, conserva el preview legacy sin DDL. Una cola desfasada se reporta
+  `stale`; no mezcla snapshots ni cae silenciosamente al preview.
+- El cursor durable permite recorrer más de 25,000 observaciones sin retirar el
+  límite que antes producía `scope_too_broad`. Cada invocación explícita avanza
+  sólo una página; replay de un batch idéntico es idempotente.
+- Fin de cursor y completitud de evidencia se persisten por separado. Si una
+  página observa owner ausente, plan inválido o mismatch, la corrida completa
+  permanece `partial` y no supersede pendientes por ausencia aunque una página
+  posterior llegue al final del keyset.
+- `RESOLVED` y `DISMISSED` requieren decisión humana durable y no se reabren o
+  reemplazan automáticamente al refrescar. `SUPERSEDED` está reservado a
+  receipts sistémicos: el head fuente generacional deriva ausencias masivas sin
+  O(N) eventos ni borrar historial.
+- El snapshot Knowledge de Framework v21 valida y expone heads ReviewTask y
+  watermarks de batches, eventos y publicaciones fuente; conserva lectura
+  legacy validada para v19/v20. Retention protege tareas y eventos humanos como
+  holds y, por separado, el head vigente con toda la cadena alcanzable de
+  batches, memberships y progreso exactos. La auditoría está acotada y falla
+  cerrado ante receipts o vínculos históricos corruptos.
+- **PARTIAL / PLANNED:** esto no completa el árbol general de `Knowledge Asset
+  Health`. Los estados causales actuales corresponden sólo a la cola Value;
+  ReviewTask para OCR, entities/claims, contradicciones, links, recovery y
+  promociones shadow, así como una GUI para refrescar y decidir tareas, siguen
+  pendientes. El schema por sí solo no demuestra esos productores.
+- Este handoff documenta el árbol sin sustituir tests focales, gates, commit,
+  release instalada ni CI del SHA final.
+
 ## Capacidades que permanecen fail-closed
 
 1. **Linux mutation:** sigue intencionalmente deshabilitada. Un backend POSIX
@@ -257,17 +300,19 @@ existe cuando se cumplen juntos los criterios dinámicos de la última sección.
 - La poda Text deja páginas libres reutilizables dentro de `text.sqlite3`; no se
   ejecutó `VACUUM` automático sobre el estado vivo. Cualquier compactación debe
   ser una ventana de mantenimiento explícita, con backup y verificación.
-- `review value --scope personal` se abstiene con `scope_too_broad` ante los 844
-  archivos actuales. La revisión de Framework sí responde en modo advisory y
-  sin mutación; ampliar Personal requiere una preselección durable y acotada,
-  no retirar el límite de seguridad.
+- La preselección durable ya evita retirar el límite de Personal, pero requiere
+  invocaciones explícitas de `--refresh` hasta completar el cursor. No existe
+  todavía UI de decisión ni productores ReviewTask para dominios distintos de
+  Value.
 
 ## Próximos pasos, en orden
 
-1. Añadir `Knowledge Asset Health + ReviewTask`, empezando por preselección
-   durable y acotada para `review value --scope personal`.
-2. Extender manifests, broker y el contrato causal a PDF/DOCX/Office sólo una
-   ruta a la vez, con characterization tests y sin reescribir extractores;
+1. Completar `Knowledge Asset Health` mediante una sola vertical causal sobre
+   facts/receipts/snapshots reales —sin score agregado— y exponerla primero en
+   API/CLI/doctor/status; no fingir salud de dominios aún no instrumentados.
+2. Extender manifests, broker, representación documental y contrato causal a
+   PDF/DOCX/Office sólo una ruta a la vez, con characterization tests y sin
+   reescribir extractores;
    mantener el legado no atribuible.
 3. Mantener `normalize`/`chunk` como deuda explícita hasta identificar fronteras
    ejecutables reales; no crear stages nominales que no correspondan a trabajo.

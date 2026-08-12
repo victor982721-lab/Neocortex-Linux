@@ -169,6 +169,11 @@ def build_human_parser() -> argparse.ArgumentParser:
     )
     _add_scope(review_value, default=ReadScope.PERSONAL)
     review_value.add_argument("--limit", type=int, default=50, metavar="N")
+    review_value.add_argument(
+        "--refresh",
+        action="store_true",
+        help="publica una página acotada de tareas durables; no muta archivos",
+    )
     review_value.add_argument("--json", action="store_true")
 
     agent = commands.add_parser(
@@ -514,6 +519,12 @@ def _run_inspect_lineage(args: argparse.Namespace) -> int:
 
 
 def _run_review_value(args: argparse.Namespace) -> int:
+    if args.refresh and args.scope == ReadScope.ALL.value:
+        _print(
+            "review value --refresh requiere --scope personal o framework; no se modificó estado.",
+            file=sys.stderr,
+        )
+        return 2
     try:
         adapter = importlib.import_module("neocortex.value_cli_adapter")
         run_value_review = adapter.run_value_review
@@ -524,7 +535,12 @@ def _run_review_value(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
-    return run_value_review(scope=args.scope, limit=args.limit, json_output=args.json)
+    return run_value_review(
+        scope=args.scope,
+        limit=args.limit,
+        json_output=args.json,
+        refresh=args.refresh,
+    )
 
 
 def _run_agent_serve() -> int:

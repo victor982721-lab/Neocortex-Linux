@@ -29,6 +29,22 @@ from _04_Nucleo_Operativo.knowledge_snapshot import (
     KnowledgeStateRootError,
     collect_knowledge_snapshot,
 )
+from _04_Nucleo_Operativo.review_task_contracts import (
+    CanonicalJsonObject,
+    ReviewTaskActorKind,
+    ReviewTaskCoverage,
+    ReviewTaskDraft,
+    ReviewTaskInput,
+    ReviewTaskPublication,
+    ReviewTaskSourceFence,
+    ReviewTaskState,
+    ReviewTaskTransition,
+)
+from _04_Nucleo_Operativo.review_task_repository import (
+    append_review_task_event,
+    list_current_review_tasks,
+    publish_review_task_page,
+)
 from _04_Nucleo_Operativo.semantic_models import (
     EmbeddingModality,
     EmbeddingModelSpec,
@@ -118,14 +134,180 @@ def _published_fixture(state: Path) -> None:
     initialize_code_state(state / "code.sqlite3")
 
 
-def _legacy_read_compatible_fixture(state: Path) -> None:
+def _legacy_read_compatible_fixture(
+    state: Path,
+    *,
+    framework_version: int = 19,
+) -> None:
     state.mkdir()
     with sqlite3.connect(state / "dedup.sqlite3") as connection:
         inventory_schema_module._build_v7_schema(connection)
         connection.execute("INSERT INTO metadata(key,value) VALUES('schema_version','7')")
     with sqlite3.connect(state / "framework.sqlite3") as connection:
-        framework_schema_module._build_v19_exact_schema(connection)
-        connection.execute("INSERT INTO metadata(key,value) VALUES('schema_version','19')")
+        if framework_version == 19:
+            framework_schema_module._build_v19_exact_schema(connection)
+        elif framework_version == 20:
+            framework_schema_module._build_v20_exact_schema(connection)
+        else:  # pragma: no cover - fixture invariant
+            raise AssertionError(f"unsupported legacy fixture {framework_version}")
+        connection.execute(
+            "INSERT INTO metadata(key,value) VALUES('schema_version',?)",
+            (str(framework_version),),
+        )
+
+
+def _populate_review_task_watermark(database: Path, *, multipage: bool = False) -> None:
+    with sqlite3.connect(database) as connection:
+        connection.execute("PRAGMA foreign_keys=ON")
+        framework_schema_module.initialize_framework_schema(connection, lambda: None)
+    review_input = ReviewTaskInput("input-1", "sha256", "1" * 64)
+    task = ReviewTaskDraft(
+        task_id="task-1",
+        logical_key="logical-1",
+        task_version=1,
+        task_type="value-review",
+        scope="personal",
+        source_kind="review-decision",
+        source_input_id=review_input.input_id,
+        snapshot=CanonicalJsonObject.from_mapping({"fixture": "knowledge-watermark"}),
+        evidence=(),
+        reason_code="uncertain",
+        uncertainty_detail=CanonicalJsonObject.from_mapping({"basis": "fixture"}),
+        impact=0.5,
+        uncertainty=0.4,
+        irreversibility=0.25,
+        suggestions=("inspect",),
+        supersedes_task_id=None,
+        created_ns=99,
+    )
+    fence = ReviewTaskSourceFence.create(
+        scope="personal",
+        task_type="value-review",
+        selector_signature="selector-v1",
+        source_snapshot={"fixture": "knowledge-watermark"},
+    )
+    cursor = CanonicalJsonObject.from_mapping({"offset": 1}) if multipage else None
+    publication = ReviewTaskPublication(
+        batch_id="batch-1",
+        batch_key="batch-key-1",
+        fence=fence,
+        cursor_before=None,
+        cursor_after=cursor,
+        inputs=(review_input,),
+        tasks=(task,),
+        coverage=(ReviewTaskCoverage.PARTIAL if multipage else ReviewTaskCoverage.COMPLETE),
+        producer_signature="producer-v1",
+        confirmed_ns=100,
+    )
+    first_result = publish_review_task_page(
+        database,
+        publication,
+        expected_progress_revision=None,
+    )
+    if multipage:
+        final = ReviewTaskPublication(
+            batch_id="batch-2",
+            batch_key="batch-key-2",
+            fence=fence,
+            cursor_before=cursor,
+            cursor_after=None,
+            inputs=(),
+            tasks=(),
+            coverage=ReviewTaskCoverage.COMPLETE,
+            producer_signature="producer-v1",
+            confirmed_ns=101,
+        )
+        publish_review_task_page(
+            database,
+            final,
+            expected_progress_revision=first_result.progress.revision,
+        )
+    current = list_current_review_tasks(database, limit=1).items[0].current_event
+    append_review_task_event(
+        database,
+        ReviewTaskTransition(
+            event_id="event-2",
+            event_key="event-key-2",
+            task_id=task.task_id,
+            expected_event_id=current.event_id,
+            expected_state=ReviewTaskState.OPEN,
+            to_state=ReviewTaskState.RESOLVED,
+            actor_kind=ReviewTaskActorKind.HUMAN,
+            actor_id="reviewer",
+            provenance=CanonicalJsonObject.from_mapping({"surface": "fixture"}),
+            decision=CanonicalJsonObject.from_mapping({"decision": "accept"}),
+            note=None,
+            observed_ns=103,
+            recorded_ns=104,
+        ),
+    )
+
+
+def _delete_review_task_publication_fact(
+    database: Path,
+    *,
+    fact: str,
+) -> None:
+    with sqlite3.connect(database) as connection:
+        if fact == "membership":
+            trigger_name = "review_task_batch_memberships_no_delete"
+            trigger_sql = str(
+                connection.execute(
+                    "SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?",
+                    (trigger_name,),
+                ).fetchone()[0]
+            )
+            connection.execute("DROP TRIGGER review_task_batch_memberships_no_delete")
+            connection.execute("DELETE FROM review_task_batch_memberships")
+        elif fact == "progress":
+            trigger_name = "review_task_scan_progress_no_delete"
+            trigger_sql = str(
+                connection.execute(
+                    "SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?",
+                    (trigger_name,),
+                ).fetchone()[0]
+            )
+            connection.execute("DROP TRIGGER review_task_scan_progress_no_delete")
+            connection.execute("DELETE FROM review_task_scan_progress")
+        elif fact == "membership_binding":
+            trigger_name = "review_task_batch_memberships_no_update"
+            trigger_sql = str(
+                connection.execute(
+                    "SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?",
+                    (trigger_name,),
+                ).fetchone()[0]
+            )
+            connection.execute("DROP TRIGGER review_task_batch_memberships_no_update")
+            connection.execute(
+                "UPDATE review_task_batch_memberships SET source_input_id='wrong-input'"
+            )
+        elif fact == "batch_cursor":
+            trigger_name = "review_task_batches_no_update"
+            trigger_sql = str(
+                connection.execute(
+                    "SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?",
+                    (trigger_name,),
+                ).fetchone()[0]
+            )
+            connection.execute("DROP TRIGGER review_task_batches_no_update")
+            connection.execute(
+                "UPDATE review_task_batches SET cursor_before_json=?",
+                ('{"forged":true}',),
+            )
+        elif fact == "source_receipt":
+            trigger_name = "review_task_source_publications_no_update"
+            trigger_sql = str(
+                connection.execute(
+                    "SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?",
+                    (trigger_name,),
+                ).fetchone()[0]
+            )
+            connection.execute("DROP TRIGGER review_task_source_publications_no_update")
+            connection.execute("UPDATE review_task_source_publications SET receipt_json='{}'")
+        else:  # pragma: no cover - fixture invariant
+            raise AssertionError(f"unsupported ReviewTask fact {fact}")
+        connection.execute(trigger_sql)
+        connection.commit()
 
 
 def _set_duplicate_plan_summary(
@@ -487,11 +669,13 @@ def test_snapshot_collects_real_heads_and_marks_absent_owners(tmp_path: Path) ->
     assert not (state / "pdf.sqlite3").exists()
 
 
+@pytest.mark.parametrize("framework_version", (19, 20))
 def test_snapshot_reads_safe_previous_framework_and_abstains_inventory(
     tmp_path: Path,
+    framework_version: int,
 ) -> None:
     state = tmp_path / "state"
-    _legacy_read_compatible_fixture(state)
+    _legacy_read_compatible_fixture(state, framework_version=framework_version)
     inventory = state / "dedup.sqlite3"
     framework = state / "framework.sqlite3"
     inventory_before = inventory.read_bytes()
@@ -511,10 +695,123 @@ def test_snapshot_reads_safe_previous_framework_and_abstains_inventory(
     assert inventory_owner.error_code == "legacy_schema"
     assert inventory_owner.publications == ()
     assert framework_owner.state is OwnerAvailability.AVAILABLE
-    assert framework_owner.observed_schema_version == 19
-    assert framework_owner.warning == "legacy_schema_read_compatible:19->20"
+    assert framework_owner.observed_schema_version == framework_version
+    assert framework_owner.warning == (f"legacy_schema_read_compatible:{framework_version}->21")
+    assert not any(
+        watermark.name.startswith("review_task_") for watermark in framework_owner.watermarks
+    )
     assert inventory.read_bytes() == inventory_before
     assert framework.read_bytes() == framework_before
+
+
+def test_snapshot_observes_v21_review_task_batches_and_events(tmp_path: Path) -> None:
+    state = tmp_path / "state"
+    state.mkdir()
+    _populate_review_task_watermark(state / "framework.sqlite3")
+
+    snapshot = collect_knowledge_snapshot(
+        KnowledgeStatePaths.from_directory(state),
+        source_version="0.9.0",
+    )
+
+    framework_owner = _owner(snapshot, "framework")
+    watermarks = {mark.name: mark.value for mark in framework_owner.watermarks}
+    assert framework_owner.state is OwnerAvailability.AVAILABLE
+    assert framework_owner.observed_schema_version == 21
+    assert framework_owner.warning is None
+    assert len(framework_owner.publications) == 1
+    review_head = framework_owner.publications[0]
+    assert review_head.publication_id.startswith("review-task-source-publication-v1:")
+    assert review_head.scope == f"review-task-source:{review_head.publication_id}"
+    assert review_head.generation == 1
+    assert review_head.model_signature is not None
+    assert watermarks["review_task_batches"] == "1:100"
+    assert watermarks["review_task_events"] == "2:104"
+    assert watermarks["review_task_source_publications"] == "1:100"
+
+
+@pytest.mark.parametrize(
+    "fact",
+    ("membership", "progress", "membership_binding", "batch_cursor", "source_receipt"),
+)
+def test_snapshot_rejects_review_source_head_missing_exact_receipt(
+    tmp_path: Path,
+    fact: str,
+) -> None:
+    state = tmp_path / "state"
+    state.mkdir()
+    database = state / "framework.sqlite3"
+    _populate_review_task_watermark(database)
+    _delete_review_task_publication_fact(database, fact=fact)
+
+    snapshot = collect_knowledge_snapshot(
+        KnowledgeStatePaths.from_directory(state),
+        source_version="0.9.0",
+    )
+
+    framework_owner = _owner(snapshot, "framework")
+    assert framework_owner.state is OwnerAvailability.INCOMPATIBLE
+    assert framework_owner.publications == ()
+    assert "ReviewTask" in (framework_owner.warning or "")
+
+
+def test_snapshot_rejects_corruption_in_earlier_published_review_page(
+    tmp_path: Path,
+) -> None:
+    state = tmp_path / "state"
+    state.mkdir()
+    database = state / "framework.sqlite3"
+    _populate_review_task_watermark(database, multipage=True)
+    _delete_review_task_publication_fact(database, fact="membership_binding")
+
+    snapshot = collect_knowledge_snapshot(
+        KnowledgeStatePaths.from_directory(state),
+        source_version="0.9.0",
+    )
+
+    framework_owner = _owner(snapshot, "framework")
+    assert framework_owner.state is OwnerAvailability.INCOMPATIBLE
+    assert framework_owner.publications == ()
+    assert "membership receipt" in (framework_owner.warning or "")
+
+
+def test_snapshot_bounds_review_source_publication_heads(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = tmp_path / "state"
+    state.mkdir()
+    database = state / "framework.sqlite3"
+    _populate_review_task_watermark(database)
+    second = ReviewTaskPublication(
+        batch_id="batch-2",
+        batch_key="batch-key-2",
+        fence=ReviewTaskSourceFence.create(
+            scope="personal",
+            task_type="value-review",
+            selector_signature="selector-v2",
+            source_snapshot={"fixture": "knowledge-watermark-2"},
+        ),
+        cursor_before=None,
+        cursor_after=None,
+        inputs=(),
+        tasks=(),
+        coverage=ReviewTaskCoverage.COMPLETE,
+        producer_signature="producer-v1",
+        confirmed_ns=200,
+    )
+    publish_review_task_page(database, second, expected_progress_revision=None)
+    monkeypatch.setattr(knowledge_snapshot, "MAX_SNAPSHOT_HEADS", 1)
+
+    snapshot = collect_knowledge_snapshot(
+        KnowledgeStatePaths.from_directory(state),
+        source_version="0.9.0",
+    )
+
+    framework_owner = _owner(snapshot, "framework")
+    assert framework_owner.state is OwnerAvailability.INCOMPATIBLE
+    assert framework_owner.publications == ()
+    assert "limit 1" in (framework_owner.warning or "")
 
 
 def test_snapshot_rejects_extended_previous_framework_schema(tmp_path: Path) -> None:

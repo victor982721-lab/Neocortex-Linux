@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 
 import pytest
 
@@ -253,6 +255,16 @@ def test_human_lineage_distinguishes_not_found_from_scope_error(
     assert output.rstrip().endswith("No se creó, migró ni modificó estado.")
 
 
+def test_value_refresh_rejects_federated_scope_as_stable_usage_error(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert human_cli.run_human_command(("review", "value", "--scope", "all", "--refresh")) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "requiere --scope personal o framework" in captured.err
+    assert "no se modificó estado" in captured.err
+
+
 def test_installed_entrypoint_dispatches_human_commands_before_flat_cli(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -272,6 +284,41 @@ def test_help_lists_useful_facade_and_legacy_compatibility(
     assert "search" in output
     assert "ask" in output
     assert "flags siguen disponibles" in " ".join(output.split())
+
+
+def test_value_help_does_not_load_review_task_storage() -> None:
+    script = """
+import contextlib
+import io
+import sys
+from neocortex.cli import entrypoint
+
+output = io.StringIO()
+try:
+    with contextlib.redirect_stdout(output):
+        code = entrypoint(("review", "value", "--help"))
+except SystemExit as error:
+    code = error.code
+forbidden = {
+    "_04_Nucleo_Operativo.review_task_contracts",
+    "_04_Nucleo_Operativo.review_task_repository",
+    "_04_Nucleo_Operativo.value_review_repository",
+    "_04_Nucleo_Operativo.value_review_tasks",
+    "torch",
+    "transformers",
+    "sentence_transformers",
+}
+loaded = sorted(forbidden.intersection(sys.modules))
+if code != 0 or loaded:
+    raise SystemExit(f"help loaded operational state: code={code}, modules={loaded}")
+"""
+    completed = subprocess.run(
+        (sys.executable, "-c", script),
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stderr
 
 
 @pytest.mark.parametrize("arguments", [("inspect",), ("review",), ("agent",)])

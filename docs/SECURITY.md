@@ -62,8 +62,9 @@ La topología reservada es
 aliases/reparses y protege también un hardlink del launcher. Una raíz normal
 situada dentro de un árbol propio se rechaza; los árboles propios descendientes
 de un corpus permitido se excluyen. El estado no puede ser igual ni ancestro
-del corpus. Dedup v10 conserva la firma cruda de exclusión y Framework v20 liga
-la firma efectiva que también incorpora las rutas internas.
+del corpus. Dedup v10 conserva la firma cruda de exclusión y Framework v21
+conserva la firma efectiva incorporada en v20, que también incluye las rutas
+internas.
 
 En Linux, la política protege además estado/configuración/datos XDG, releases,
 modelos, runtimes, el launcher `~/.local/share/Neocortex/bin/Neocortex`, el alias
@@ -124,7 +125,8 @@ El proveedor es `authority=advisory`, conserva `mutation_authority=false` y
 declara `uses_network=true` porque los tests podrían usar red; no es una
 autorización para modificar la raíz canónica.
 
-La finalización no confía únicamente en la CLI: Framework v20 impide enlazar
+La finalización no confía únicamente en la CLI: Framework v21 conserva la
+protección de v20 que impide enlazar
 acciones a un run protegido, Dedup v10 exige el scan ligado a su firma y Code v4
 conserva el run analítico. Los owners de mutación reciben
 `CorpusMutationGuard` y el commit exige ceros durables en candidatos, acciones
@@ -214,6 +216,42 @@ Los `WorkReceipt`, las materializaciones y la proyección de derivación tienen
 la misma frontera: explican causalidad técnica, no autorizan una acción física.
 Un output derivado, un cache hit o una clase de reproducibilidad nunca sustituye
 policy, autorización, revalidación de identidad ni recibo de efecto.
+
+### ReviewTask no es autorización
+
+Framework v21 conserva `ReviewTask` como una cola advisory: input/revisión,
+snapshot, evidencia, motivo, incertidumbre, impacto, irreversibilidad,
+sugerencias y eventos de estado. La prioridad
+`impacto × incertidumbre × irreversibilidad` es una regla de ordenamiento, no
+una probabilidad ni una certeza calibrada. Ni una tarea `OPEN`, ni su score, ni
+una sugerencia permiten ejecutar syscalls o saltar el policy engine.
+
+`Neocortex review value` permanece read-only y consulta una cola sólo si su
+fingerprint coincide con Inventory/Catalog; de lo contrario se abstiene como
+`stale`. Si la cola no existe, usa el preview legacy sin DDL. La operación
+separada `review value --refresh --scope personal|framework` escribe únicamente
+estado Framework y puede crear/migrar ese owner; rechaza `all`, avanza una sola
+página keyset de 100 y nunca modifica archivos, Inventory o Catalog. La segunda
+lectura del fence antes de publicar reduce mezcla TOCTOU, pero no afirma una
+transacción distribuida.
+
+Completar el cursor tampoco autoriza una conclusión por ausencia. La cola
+mantiene por separado `scan_complete` y `evidence_complete`; cualquier owner
+faltante, plan inválido o mismatch observado en una página conserva el estado
+`partial` y bloquea la supersession por ausencia de tareas abiertas previas.
+Así, perder cobertura no puede retirar silenciosamente trabajo humano pendiente.
+
+Los eventos son append-only y las transiciones usan CAS. `RESOLVED` y
+`DISMISSED` requieren actor humano y decisión; un refresh posterior no los
+reabre ni los reemplaza automáticamente. `SUPERSEDED` no es una transición
+pública: sólo se acepta con actor sistémico y receipt exacto de successor o head
+fuente. Knowledge falla cerrado si ese head no reconcilia su source receipt,
+progreso o cualquier receipt, batch o membership de la cadena publicada.
+Retention trata tareas y eventos humanos como holds y protege por separado el
+head vigente con toda esa cadena; el resto de la coordinación derivada puede
+reconstruirse. Recovery de acciones, OCR dudoso, entities/claims y otros
+dominios todavía no producen ReviewTask general: esa ausencia no debe ocultarse
+creando tareas nominales o habilitando decisiones automáticas.
 
 ### Receipts y linaje como datos sensibles
 

@@ -10,6 +10,11 @@ from .value_review_contracts import (
     ValueReviewQuery,
     ValueReviewReport,
 )
+from .value_review_tasks import (
+    ValueReviewTaskQueueStatus,
+    read_value_review_task_queue,
+    refresh_value_review_tasks,
+)
 
 
 __all__ = (
@@ -18,5 +23,8 @@ __all__ = (
     "ValueReviewPaths",
     "ValueReviewQuery",
     "ValueReviewReport",
+    "ValueReviewTaskQueueStatus",
     "preview_value_review",
+    "read_value_review_task_queue",
+    "refresh_value_review_tasks",
 )

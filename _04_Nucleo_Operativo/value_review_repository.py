@@ -7,6 +7,8 @@ repairs owner state.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 import sqlite3
 import stat
@@ -15,7 +17,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import TypeVar
+from typing import TypeVar, cast
 
 from _02_Deduplicacion.inventory_schema import (
     SCHEMA_VERSION as INVENTORY_SCHEMA_VERSION,
@@ -43,7 +45,9 @@ from .value_review_contracts import (
 
 MAX_PUBLISHED_HEADS = 1_024
 MAX_SQLITE_CANDIDATES = 25_000
+MAX_VALUE_REVIEW_PAGE_INPUTS = 1_000
 _SQLITE_BATCH = 300
+_KEYSET_IDENTITY_BATCH = 200
 _INACTIVE_SHM_SIZE_BYTES = 32_768
 _T = TypeVar("_T")
 
@@ -56,6 +60,74 @@ class ValueObservationLoad:
     observations: tuple[ValueFileObservation, ...]
     provenance: tuple[ValueProvenance, ...] = ()
     uncertainties: tuple[str, ...] = ()
+    cursor_before: ValueReviewPageCursor | None = None
+    cursor_after: ValueReviewPageCursor | None = None
+    scanned_count: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class ValueReviewPageCursor:
+    """Stable keyset over one immutable published inventory snapshot."""
+
+    volume_id_hex: str
+    file_id_hex: str
+    birthtime_ns: int
+
+    def __post_init__(self) -> None:
+        for label, value in (
+            ("volume_id_hex", self.volume_id_hex),
+            ("file_id_hex", self.file_id_hex),
+        ):
+            if (
+                not isinstance(value, str)
+                or len(value) != 32
+                or value != value.upper()
+                or any(character not in "0123456789ABCDEF" for character in value)
+            ):
+                raise ValueError(f"{label} must be 32 uppercase hexadecimal characters")
+        if (
+            isinstance(self.birthtime_ns, bool)
+            or not isinstance(self.birthtime_ns, int)
+            or self.birthtime_ns < -1
+        ):
+            raise ValueError("birthtime_ns must be an integer greater than or equal to -1")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "birthtime_ns": self.birthtime_ns,
+            "file_id_hex": self.file_id_hex,
+            "volume_id_hex": self.volume_id_hex,
+        }
+
+    @classmethod
+    def from_mapping(cls, value: object) -> ValueReviewPageCursor:
+        if not isinstance(value, dict) or set(value) != {
+            "birthtime_ns",
+            "file_id_hex",
+            "volume_id_hex",
+        }:
+            raise ValueError("value review page cursor has an invalid shape")
+        return cls(
+            volume_id_hex=cast(str, value["volume_id_hex"]),
+            file_id_hex=cast(str, value["file_id_hex"]),
+            birthtime_ns=cast(int, value["birthtime_ns"]),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ValueReviewSourceSnapshot:
+    """Bounded owner-head snapshot used to fence a durable review scan."""
+
+    availability: ValueReviewAvailability
+    reason: str | None
+    payload_json: str
+    uncertainties: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, object]:
+        payload = json.loads(self.payload_json)
+        if not isinstance(payload, dict):  # pragma: no cover - constructor invariant
+            raise AssertionError("source snapshot payload is not an object")
+        return payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -171,6 +243,9 @@ class _StateIncompatibleError(_StateContractError):
 def load_value_review_observations(
     paths: ValueReviewPaths,
     query: ValueReviewQuery,
+    *,
+    _after: ValueReviewPageCursor | None = None,
+    _page_size: int | None = None,
 ) -> ValueObservationLoad:
     """Load bounded published facts without creating or changing owner state."""
 
@@ -201,12 +276,22 @@ def load_value_review_observations(
                 )
                 for head in heads
             )
-            files = _inventory_files(inventory, query, heads)
-            if files is None:
-                return _unavailable(
-                    "scope_too_broad",
-                    "published_inventory_candidate_limit_exceeded",
-                    provenance=inventory_provenance,
+            cursor_after: ValueReviewPageCursor | None = None
+            if _page_size is None:
+                files = _inventory_files(inventory, query, heads)
+                if files is None:
+                    return _unavailable(
+                        "scope_too_broad",
+                        "published_inventory_candidate_limit_exceeded",
+                        provenance=inventory_provenance,
+                    )
+            else:
+                files, cursor_after = _inventory_file_page(
+                    inventory,
+                    query,
+                    heads,
+                    after=_after,
+                    page_size=_page_size,
                 )
             duplicate_facts, duplicate_uncertainties = _duplicate_facts(
                 inventory,
@@ -222,12 +307,15 @@ def load_value_review_observations(
 
     if not heads:
         return ValueObservationLoad(
-            ValueReviewAvailability.READY,
+            ValueReviewAvailability.PARTIAL,
             True,
-            None,
+            "inventory_has_no_published_scans",
             (),
             (),
             ("inventory_has_no_published_scans",),
+            _after,
+            None,
+            0,
         )
 
     catalog_records: dict[str, _CatalogRecord] = {}
@@ -238,8 +326,12 @@ def load_value_review_observations(
     ] = {}
     catalog_provenance: tuple[ValueProvenance, ...] = ()
     global_uncertainties = list(duplicate_uncertainties)
-    availability = ValueReviewAvailability.READY
-    reason: str | None = None
+    availability = (
+        ValueReviewAvailability.PARTIAL
+        if duplicate_uncertainties
+        else ValueReviewAvailability.READY
+    )
+    reason: str | None = "duplicate_evidence_incomplete" if duplicate_uncertainties else None
     catalog_failure_health: ValueOwnerHealth | None = None
 
     catalog_status = _path_status(paths.catalog)
@@ -328,11 +420,218 @@ def load_value_review_observations(
     )
     return ValueObservationLoad(
         availability=availability,
-        complete=True,
+        complete=cursor_after is None,
         reason=reason,
         observations=observations,
         provenance=_unique_provenance((*inventory_provenance, *catalog_provenance)),
         uncertainties=_unique_strings(tuple(global_uncertainties)),
+        cursor_before=_after,
+        cursor_after=cursor_after,
+        scanned_count=len(files),
+    )
+
+
+def load_value_review_observation_page(
+    paths: ValueReviewPaths,
+    query: ValueReviewQuery,
+    *,
+    page_size: int,
+    after: ValueReviewPageCursor | None = None,
+) -> ValueObservationLoad:
+    """Read one keyset page without weakening the legacy whole-scope bound."""
+
+    if isinstance(page_size, bool) or not isinstance(page_size, int):
+        raise ValueError("page_size must be an integer")
+    if not 1 <= page_size <= MAX_VALUE_REVIEW_PAGE_INPUTS:
+        raise ValueError(f"page_size must be between 1 and {MAX_VALUE_REVIEW_PAGE_INPUTS}")
+    if after is not None and not isinstance(after, ValueReviewPageCursor):
+        raise ValueError("after must be a ValueReviewPageCursor when present")
+    return load_value_review_observations(
+        paths,
+        query,
+        _after=after,
+        _page_size=page_size,
+    )
+
+
+def read_value_review_source_snapshot(
+    paths: ValueReviewPaths,
+) -> ValueReviewSourceSnapshot:
+    """Capture bounded owner-head facts without scanning candidate rows."""
+
+    inventory_status = _path_status(paths.inventory)
+    if inventory_status != "file":
+        unavailable_reason = f"inventory_state_{inventory_status}"
+        return _source_snapshot(
+            ValueReviewAvailability.UNAVAILABLE,
+            unavailable_reason,
+            inventory={"status": inventory_status},
+            catalog={"status": _path_status(paths.catalog)},
+            source_owners=(),
+            uncertainties=(unavailable_reason,),
+        )
+    try:
+        with _readonly_connection(paths.inventory) as inventory:
+            inventory_version = _validate_owner_schema(
+                inventory,
+                owner="inventory",
+                expected_version=INVENTORY_SCHEMA_VERSION,
+                validator=validate_inventory_schema,
+            )
+            heads = _inventory_heads(inventory)
+            inventory_payload: dict[str, object] = {
+                "status": "published" if heads else "empty",
+                "schema_version": inventory_version,
+                "publication_count": len(heads),
+                "publications_sha256": _canonical_sha256(
+                    [
+                        {
+                            "plan_available": head.plan_available,
+                            "plan_completed_ns": head.plan_completed_ns,
+                            "plan_valid": head.plan_valid,
+                            "publication_id": head.publication_id,
+                            "root": head.root,
+                            "scan_id": head.scan_id,
+                            "updated_ns": head.updated_ns,
+                        }
+                        for head in heads
+                    ]
+                ),
+            }
+    except _StateIncompatibleError as exc:
+        return _source_snapshot(
+            ValueReviewAvailability.UNAVAILABLE,
+            "inventory_state_incompatible",
+            inventory={"status": "incompatible"},
+            catalog={"status": _path_status(paths.catalog)},
+            source_owners=(),
+            uncertainties=(_error_detail(exc),),
+        )
+    except (sqlite3.DatabaseError, _StateContractError, OSError, ValueError) as exc:
+        inventory_reason = (
+            "inventory_state_corrupt" if _is_corrupt_error(exc) else "inventory_state_invalid"
+        )
+        return _source_snapshot(
+            ValueReviewAvailability.UNAVAILABLE,
+            inventory_reason,
+            inventory={"status": inventory_reason.removeprefix("inventory_state_")},
+            catalog={"status": _path_status(paths.catalog)},
+            source_owners=(),
+            uncertainties=(_error_detail(exc),),
+        )
+
+    inventory_evidence_reason = (
+        "inventory_has_no_published_scans"
+        if not heads
+        else (
+            "duplicate_evidence_incomplete"
+            if any(not head.plan_available or not head.plan_valid for head in heads)
+            else None
+        )
+    )
+    availability = (
+        ValueReviewAvailability.READY
+        if inventory_evidence_reason is None
+        else ValueReviewAvailability.PARTIAL
+    )
+    reason: str | None = inventory_evidence_reason
+    uncertainties: list[str] = [] if reason is None else [reason]
+    catalog_status = _path_status(paths.catalog)
+    catalog_payload: dict[str, object] = {"status": catalog_status}
+    source_owner_payload: tuple[dict[str, object], ...] = ()
+    if catalog_status != "file":
+        availability = ValueReviewAvailability.PARTIAL
+        catalog_reason = f"catalog_state_{catalog_status}"
+        reason = reason or catalog_reason
+        uncertainties.append(catalog_reason)
+    else:
+        try:
+            with _readonly_connection(paths.catalog) as catalog:
+                catalog_version = _validate_owner_schema(
+                    catalog,
+                    owner="catalog",
+                    expected_version=document_catalog_schema.CATALOG_SCHEMA_VERSION,
+                    validator=_validate_catalog,
+                )
+                publications = _catalog_publications(catalog)
+                catalog_payload = {
+                    "status": "published" if publications else "empty",
+                    "schema_version": catalog_version,
+                    "publication_count": len(publications),
+                    "publications_sha256": _canonical_sha256(
+                        [
+                            {
+                                "generation_id": generation_id,
+                                "publication_id": publication_id,
+                                "source_kind": source_kind,
+                            }
+                            for source_kind, generation_id, publication_id in publications
+                        ]
+                    ),
+                }
+                source_owner_payload = _source_owner_snapshot(
+                    paths,
+                    tuple(source_kind for source_kind, _, _ in publications),
+                )
+                degraded_owners = tuple(
+                    str(item["status"])
+                    for item in source_owner_payload
+                    if item["status"] != ValueOwnerHealth.HEALTHY.value
+                )
+                if degraded_owners:
+                    availability = ValueReviewAvailability.PARTIAL
+                    reason = reason or "source_owner_health_incomplete"
+                    uncertainties.extend(
+                        f"source_owner_health:{status}" for status in degraded_owners
+                    )
+                if not publications:
+                    availability = ValueReviewAvailability.PARTIAL
+                    catalog_reason = "catalog_has_no_publications"
+                    reason = reason or catalog_reason
+                    uncertainties.append(catalog_reason)
+        except _StateIncompatibleError as exc:
+            availability = ValueReviewAvailability.PARTIAL
+            reason = "catalog_state_incompatible"
+            catalog_payload = {"status": "incompatible"}
+            uncertainties.extend((reason, _error_detail(exc)))
+        except (sqlite3.DatabaseError, _StateContractError, OSError, ValueError) as exc:
+            availability = ValueReviewAvailability.PARTIAL
+            reason = "catalog_state_corrupt" if _is_corrupt_error(exc) else "catalog_state_invalid"
+            catalog_payload = {"status": reason.removeprefix("catalog_state_")}
+            uncertainties.extend((reason, _error_detail(exc)))
+    return _source_snapshot(
+        availability,
+        reason,
+        inventory=inventory_payload,
+        catalog=catalog_payload,
+        source_owners=source_owner_payload,
+        uncertainties=tuple(uncertainties),
+    )
+
+
+def _source_snapshot(
+    availability: ValueReviewAvailability,
+    reason: str | None,
+    *,
+    inventory: dict[str, object],
+    catalog: dict[str, object],
+    source_owners: tuple[dict[str, object], ...],
+    uncertainties: tuple[str, ...],
+) -> ValueReviewSourceSnapshot:
+    payload = {
+        "availability": availability.value,
+        "catalog": catalog,
+        "inventory": inventory,
+        "kind": "neocortex_value_review_source_snapshot",
+        "reason": reason,
+        "schema_version": 1,
+        "source_owners": list(source_owners),
+    }
+    return ValueReviewSourceSnapshot(
+        availability=availability,
+        reason=reason,
+        payload_json=_canonical_json(payload),
+        uncertainties=_unique_strings(uncertainties),
     )
 
 
@@ -622,6 +921,116 @@ def _inventory_files(
 ) -> tuple[_InventoryFile, ...] | None:
     if not heads:
         return ()
+    clauses, parameters = _inventory_file_filters(query)
+    rows = connection.execute(
+        f"""SELECT c.root,c.scan_id,c.updated_ns,f.path,f.volume_id,f.file_id,
+        f.size,f.mtime_ns,f.birthtime_ns
+        FROM inventory_checkpoints c
+        JOIN scans s ON s.scan_id=c.scan_id AND s.root=c.root
+        JOIN files f ON f.scan_id=c.scan_id
+        WHERE {" AND ".join(clauses)}
+        ORDER BY f.path COLLATE BINARY,c.updated_ns DESC,c.scan_id DESC,c.root COLLATE BINARY
+        LIMIT ?""",
+        (*parameters, MAX_SQLITE_CANDIDATES + 1),
+    ).fetchall()
+    if len(rows) > MAX_SQLITE_CANDIDATES:
+        return None
+    return _inventory_files_from_rows(rows, heads)
+
+
+def _inventory_file_page(
+    connection: sqlite3.Connection,
+    query: ValueReviewQuery,
+    heads: tuple[_InventoryHead, ...],
+    *,
+    after: ValueReviewPageCursor | None,
+    page_size: int,
+) -> tuple[tuple[_InventoryFile, ...], ValueReviewPageCursor | None]:
+    if not heads:
+        return (), None
+    clauses, parameters = _inventory_file_filters(query)
+    if after is not None:
+        after_volume_id = bytes.fromhex(after.volume_id_hex)
+        after_file_id = bytes.fromhex(after.file_id_hex)
+        clauses.append(
+            """(
+            f.volume_id>? OR
+            (f.volume_id=? AND f.file_id>?) OR
+            (f.volume_id=? AND f.file_id=? AND f.birthtime_ns>?)
+            )"""
+        )
+        parameters.extend(
+            (
+                after_volume_id,
+                after_volume_id,
+                after_file_id,
+                after_volume_id,
+                after_file_id,
+                after.birthtime_ns,
+            )
+        )
+    identity_rows = connection.execute(
+        f"""SELECT f.volume_id,f.file_id,f.birthtime_ns
+        FROM inventory_checkpoints c
+        JOIN scans s ON s.scan_id=c.scan_id AND s.root=c.root
+        JOIN files f ON f.scan_id=c.scan_id
+        WHERE {" AND ".join(clauses)}
+        GROUP BY f.volume_id,f.file_id,f.birthtime_ns
+        ORDER BY f.volume_id,f.file_id,f.birthtime_ns
+        LIMIT ?""",
+        (*parameters, page_size + 1),
+    ).fetchall()
+    has_more = len(identity_rows) > page_size
+    selected_identities = identity_rows[:page_size]
+    if not selected_identities:
+        return (), None
+
+    rows: list[sqlite3.Row] = []
+    for identity_batch in _batches(
+        tuple(selected_identities),
+        _KEYSET_IDENTITY_BATCH,
+    ):
+        selected_clauses, selected_parameters = _inventory_file_filters(query)
+        identity_clauses: list[str] = []
+        for row in identity_batch:
+            volume_blob, _ = _identity_blob(row["volume_id"])
+            file_blob, _ = _identity_blob(row["file_id"])
+            identity_clauses.append("(f.volume_id=? AND f.file_id=? AND f.birthtime_ns=?)")
+            selected_parameters.extend((volume_blob, file_blob, int(row["birthtime_ns"])))
+        selected_clauses.append(f"({' OR '.join(identity_clauses)})")
+        rows.extend(
+            connection.execute(
+                f"""SELECT c.root,c.scan_id,c.updated_ns,f.path,f.volume_id,f.file_id,
+                f.size,f.mtime_ns,f.birthtime_ns
+                FROM inventory_checkpoints c
+                JOIN scans s ON s.scan_id=c.scan_id AND s.root=c.root
+                JOIN files f ON f.scan_id=c.scan_id
+                WHERE {" AND ".join(selected_clauses)}
+                ORDER BY f.volume_id,f.file_id,f.birthtime_ns,
+                c.updated_ns DESC,c.scan_id DESC,c.root COLLATE BINARY,
+                f.path COLLATE BINARY""",
+                tuple(selected_parameters),
+            ).fetchall()
+        )
+    files = _inventory_files_from_rows(rows, heads)
+    if len(files) != len(selected_identities):
+        raise _StateContractError("published inventory keyset page lost an identity")
+    cursor_after: ValueReviewPageCursor | None = None
+    if has_more:
+        last = selected_identities[-1]
+        volume_blob, _ = _identity_blob(last["volume_id"])
+        file_blob, _ = _identity_blob(last["file_id"])
+        cursor_after = ValueReviewPageCursor(
+            volume_id_hex=volume_blob.hex().upper(),
+            file_id_hex=file_blob.hex().upper(),
+            birthtime_ns=int(last["birthtime_ns"]),
+        )
+    return files, cursor_after
+
+
+def _inventory_file_filters(
+    query: ValueReviewQuery,
+) -> tuple[list[str], list[object]]:
     clauses = ["c.valid=1", "s.status='complete'"]
     parameters: list[object] = []
     if query.scope is not None:
@@ -654,19 +1063,13 @@ def _inventory_files(
             extension_clauses.append("lower(substr(f.path,-?))=?")
             parameters.extend((len(normalized), normalized))
         clauses.append(f"({' OR '.join(extension_clauses)})")
-    rows = connection.execute(
-        f"""SELECT c.root,c.scan_id,c.updated_ns,f.path,f.volume_id,f.file_id,
-        f.size,f.mtime_ns,f.birthtime_ns
-        FROM inventory_checkpoints c
-        JOIN scans s ON s.scan_id=c.scan_id AND s.root=c.root
-        JOIN files f ON f.scan_id=c.scan_id
-        WHERE {" AND ".join(clauses)}
-        ORDER BY f.path COLLATE BINARY,c.updated_ns DESC,c.scan_id DESC,c.root COLLATE BINARY
-        LIMIT ?""",
-        (*parameters, MAX_SQLITE_CANDIDATES + 1),
-    ).fetchall()
-    if len(rows) > MAX_SQLITE_CANDIDATES:
-        return None
+    return clauses, parameters
+
+
+def _inventory_files_from_rows(
+    rows: list[sqlite3.Row],
+    heads: tuple[_InventoryHead, ...],
+) -> tuple[_InventoryFile, ...]:
     heads_by_key = {(head.root, head.scan_id): head for head in heads}
     grouped: dict[str, list[_InventoryFile]] = defaultdict(list)
     for row in rows:
@@ -713,16 +1116,15 @@ def _duplicate_facts(
     uncertainties: list[str] = []
     candidates_by_scan: dict[int, list[_InventoryFile]] = defaultdict(list)
     for value in files:
-        if (
-            value.head.plan_available
-            and value.head.plan_valid
-            and not value.conflicting_publication
-        ):
+        if value.conflicting_publication:
+            uncertainties.append(f"inventory_publication_conflict:{value.resource_id}")
+            continue
+        if value.head.plan_available and value.head.plan_valid:
             candidates_by_scan[value.head.scan_id].append(value)
         elif value.head.plan_available and not value.head.plan_valid:
             uncertainties.append(f"duplicate_plan_invalid:{value.head.publication_id}")
-        elif not value.head.plan_valid:
-            uncertainties.append(f"duplicate_plan_invalid:{value.head.publication_id}")
+        elif not value.head.plan_available:
+            uncertainties.append(f"duplicate_plan_unavailable:{value.head.publication_id}")
     for scan_id, candidates in sorted(candidates_by_scan.items()):
         by_snapshot = {
             (
@@ -986,6 +1388,66 @@ def _text_fingerprint_counts(
         for row in rows:
             result[str(row["text_fingerprint"])] = int(row["resource_count"])
     return result
+
+
+def _source_owner_snapshot(
+    paths: ValueReviewPaths,
+    source_kinds: tuple[str, ...],
+) -> tuple[dict[str, object], ...]:
+    """Capture the bounded owner-schema facts that can change Value ranking."""
+
+    result: list[dict[str, object]] = []
+    for source_kind in sorted(set(source_kinds)):
+        spec = _owner_spec(paths, source_kind)
+        if spec is None or spec.path is None:
+            result.append(
+                {
+                    "owner": source_kind if spec is None else spec.owner,
+                    "path_status": "unavailable",
+                    "schema_version": None,
+                    "source_kind": source_kind,
+                    "status": ValueOwnerHealth.UNKNOWN.value,
+                }
+            )
+            continue
+        path_status = _path_status(spec.path)
+        if path_status != "file":
+            result.append(
+                {
+                    "owner": spec.owner,
+                    "path_status": path_status,
+                    "schema_version": None,
+                    "source_kind": source_kind,
+                    "status": ValueOwnerHealth.UNKNOWN.value,
+                }
+            )
+            continue
+        try:
+            with _readonly_connection(spec.path) as connection:
+                version = _validate_owner_schema(
+                    connection,
+                    owner=spec.owner,
+                    expected_version=spec.expected_version,
+                    validator=spec.validator,
+                )
+        except _StateIncompatibleError:
+            health = ValueOwnerHealth.INCOMPATIBLE
+            version = None
+        except (sqlite3.DatabaseError, _StateContractError, OSError, ValueError) as exc:
+            health = ValueOwnerHealth.CORRUPT if _is_corrupt_error(exc) else ValueOwnerHealth.FAILED
+            version = None
+        else:
+            health = ValueOwnerHealth.HEALTHY
+        result.append(
+            {
+                "owner": spec.owner,
+                "path_status": path_status,
+                "schema_version": version,
+                "source_kind": source_kind,
+                "status": health.value,
+            }
+        )
+    return tuple(result)
 
 
 def _inspect_source_owners(
@@ -1395,6 +1857,20 @@ def _error_detail(exc: BaseException) -> str:
     return f"{type(exc).__name__}:{str(exc)[:500]}"
 
 
+def _canonical_json(value: object) -> str:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def _canonical_sha256(value: object) -> str:
+    return hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
+
+
 def _unique_strings(values: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(sorted({value for value in values if value}))
 
@@ -1407,4 +1883,12 @@ def _unique_provenance(values: tuple[ValueProvenance, ...]) -> tuple[ValueProven
     return tuple(unique[key] for key in sorted(unique))
 
 
-__all__ = ["ValueObservationLoad", "load_value_review_observations"]
+__all__ = [
+    "MAX_VALUE_REVIEW_PAGE_INPUTS",
+    "ValueObservationLoad",
+    "ValueReviewPageCursor",
+    "ValueReviewSourceSnapshot",
+    "load_value_review_observation_page",
+    "load_value_review_observations",
+    "read_value_review_source_snapshot",
+]

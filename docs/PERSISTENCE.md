@@ -1,7 +1,7 @@
 # Persistencia, esquemas y migraciones
 
 > **Estado del documento.** Contrato actualizado el 11 de agosto de 2026. El
-> árbol fuente `0.9.0` declara inventario Dedup v10, framework v20,
+> árbol fuente `0.9.0` declara inventario Dedup v10, framework v21,
 > PDF v12, Text v2, catálogo v6 y semántica v7; la barrera integral y el paquete
 > final se registran por separado. En una auditoría histórica, bases vivas se
 > inspeccionaron sin
@@ -103,7 +103,7 @@ a los archivos vivos.
 |---|---|---:|---|---|
 | Base de `SqlitePathIndex` | `_01_Enumeracion.path_index_schema` / `path_index` | 1 | índice auxiliar MFT de `nodes` y `metadata` | `metadata.schema_version`; no migraciones legacy admitidas |
 | `dedup.sqlite3` | `_02_Deduplicacion.inventory_schema` / `DedupIndex` | **10 en fuente**; 6 en la base viva histórica inspeccionada | scans generacionales ligados a firma de inventario, checkpoint portable/USN opcional, archivos, fingerprints, summaries y grupos/miembros de plan | `metadata.schema_version`; migraciones 1→10 |
-| `framework.sqlite3` | `framework_schema`, `FrameworkState`, `FrameworkRouteState` | **20** | runs, fases, policy/identidad de corpus, acciones con snapshot protegido, eventos append-only de transición/conciliación/manifest, candidatos de ruta, caché de tipo, revisión y evidencia | `metadata.schema_version`; migraciones secuenciales |
+| `framework.sqlite3` | `framework_schema`, `FrameworkState`, `FrameworkRouteState`, `review_task_repository` | **21** | runs, fases, policy/identidad de corpus, acciones con snapshot protegido, eventos append-only de transición/conciliación/manifest, candidatos de ruta, caché de tipo y ReviewTask durable | `metadata.schema_version`; migraciones secuenciales |
 | `pdf.sqlite3` | `pdf_schema`, `pdf_state`, `PdfRoute`, `PdfDerivedIndexer` | 12 | inventario, documentos, páginas, OCR efectivo/OSD/confianza/fallback, staging, errores, warnings, FTS, firmas, similitud y layout | `metadata.schema_version`; migraciones secuenciales |
 | `docx.sqlite3` | `docx_schema`, `docx_state`, `DocxRoute` | 5 | inventario, documentos, partes, diagnósticos, FTS, layouts y contrapartes PDF | `metadata.schema_version`; migraciones secuenciales |
 | `office.sqlite3` | `office_state`, `OfficeRoute` | 2 | inventario, documentos, celdas XLSX tipadas y FTS | `metadata.schema_version` |
@@ -132,7 +132,7 @@ ejecutó esas rutas mantiene el vector histórico de diez owners:
 | Owner Knowledge | Archivo | Esquema esperado | Head o watermark lógico |
 |---|---|---:|---|
 | `inventory` | `dedup.sqlite3` | 10 | scan publicado por raíz y firma, checkpoint portable/USN opcional y señal de plan de duplicados completado |
-| `framework` | `framework.sqlite3` | 20 | máximos de run, evento y acción; `best_effort_non_generational` |
+| `framework` | `framework.sqlite3` | 21 | máximos de run, evento y acción, heads ReviewTask validados y conteo/tiempo de batches, eventos y publicaciones fuente; `best_effort_non_generational` |
 | `catalog` | `document_catalog.sqlite3` | 6 | generación publicada por `source_kind` |
 | `pdf` | `pdf.sqlite3` | 12 | filas actuales, último update/run; `best_effort_non_generational` |
 | `docx` | `docx.sqlite3` | 5 | filas actuales, último update/run; `best_effort_non_generational` |
@@ -262,6 +262,49 @@ Los runs legacy se conservan como `normal` con evidencia nueva nula; no se
 reinterpretan como autoanálisis. Checks y triggers ligan cada snapshot de
 acción a su owner, vuelven inmutable la frontera y rechazan acciones para
 `analyze_only`.
+
+V21 agrega `review_task_batches`, `review_tasks`,
+`review_task_batch_memberships`, `review_task_events`,
+`review_task_scan_progress` y `review_task_source_publications`. Un batch
+inmutable fija scope, tipo, selector,
+snapshot/fingerprint fuente, cursores, cobertura y receipt canónico; acepta como
+máximo 1,000 inputs examinados y 100 tareas. Cada tarea conserva input,
+`ResourceRef`/`RevisionRef`, evidencia, snapshot, motivo, factores de prioridad,
+sugerencias, versión y predecesor. Los eventos son append-only y encadenan
+estado/evento mediante CAS; `RESOLVED` y `DISMISSED` requieren actor y decisión
+humanos. El progreso mutable está limitado al cursor/revisión de su scan y
+referencia el último batch confirmado.
+
+`publish_review_task_page()` confirma batch, memberships, tareas, eventos
+iniciales y progreso en una sola transacción Framework. Cuando el cursor y la
+evidencia acumulada están completos publica también un head fuente append-only;
+la supersession masiva se deriva de ese receipt generacional sin escribir O(N)
+eventos. Esta atomicidad no
+incluye Inventory ni Catalog: el productor fija y vuelve a comprobar su fence
+antes de publicar, y una lectura posterior rechaza como `stale` la cola cuyo
+fingerprint ya no coincide. La implementación Value lee 100 observaciones por
+página keyset; los límites mayores del schema existen para otros productores
+compatibles, no autorizan una lectura sin cota.
+
+Los lectores de un head vigente auditan la cadena completa alcanzable por
+`previous_batch_id`, no sólo su batch final: validan receipts canónicos,
+continuidad de cursores/acumulados y cada membership contra su tarea e input.
+La auditoría está acotada a 1,024 heads, 10,000 batches, 1,000,000 memberships y
+128 MiB de payload; exceder cualquier cota falla cerrado. El recorrido conduce
+las búsquedas de memberships por el índice de `batch_id` y evita ordenar el
+conjunto antes de aplicar sus límites.
+
+Las versiones humanas terminales no se sustituyen ni se reabren durante un
+refresh. `SUPERSEDED` está reservado a receipts sistémicos exactos: un successor
+materializa sólo su predecesor inmediato y un head fuente puede derivar
+efectivamente la supersession de cualquier cantidad de versiones abiertas
+ausentes, sin borrar historial. Esa ausencia sólo es válida cuando el progreso acumulado confirma a
+la vez fin del cursor y evidencia completa; una página con owner ausente,
+publicación inválida o snapshot discordante fija `evidence_complete=0` y evita
+el retiro aunque una página posterior sea sana. `review value` sin `--refresh`
+sólo abre el schema existente y usa
+la cola vigente o el preview legacy. El flag explícito `--refresh` puede crear
+o migrar Framework, pero no escribe los owners fuente ni el corpus.
 
 #### Manifest durable de autoanálisis
 
@@ -616,7 +659,8 @@ reservado comprobado; v18 valida el layout v17 exacto de `file_actions`, agrega
 cuatro columnas sin reinterpretar filas legacy y crea la bitácora de transición.
 V19 valida el layout v18 y agrega la bitácora de conciliación append-only.
 V20 preserva esos owners y agrega evidencia inmutable de policy/identidad para
-autoanálisis y acciones.
+autoanálisis y acciones. V21 preserva todo ese estado y agrega la cola
+ReviewTask vacía sin sintetizar hallazgos históricos.
 
 ### Migración framework v17→v18
 
@@ -651,6 +695,22 @@ inmutabilidad y el contrato completo antes del commit.
 Un reader limitado a v19 debe abstenerse ante v20. No hay downgrade por DDL: el
 rollback exige restaurar base consistente y paquete compatible. Abra o migre
 bases operativas sólo con el runtime versionado validado para esta fuente.
+
+### Migración framework v20→v21
+
+La migración es aditiva y exige primero el contrato v20 exacto. Crea las seis
+tablas ReviewTask, sus índices, checks, foreign keys y triggers de inmutabilidad,
+append-only y CAS; después actualiza metadata y valida el contrato v21 completo
+dentro de la misma transacción. Las tablas nuevas quedan vacías: no interpreta
+`review_candidates`, `review_decisions` ni `review_evidence_examples` como una
+cola equivalente y no inventa decisiones humanas.
+
+Una segunda apertura es idempotente. Un objeto desconocido, JSON/DDL no
+canónico, FK inválida, schema futuro o excepción durante el writer provoca
+abstención o rollback. Un lector Knowledge puede aceptar v19/v20 bajo su
+validador read-only exacto, pero un productor ReviewTask exige v21. El rollback
+operativo restaura backup y runtime compatibles; no se edita el número de
+schema para fingir downgrade.
 
 ### Migraciones PDF v11→v12 y Office v1→v2
 
@@ -997,8 +1057,10 @@ pero la conservación histórica indefinida no sustituye un backup consistente.
 ### Cobertura declarada
 
 - Path index, Office e imagen no declaran foreign keys en sus esquemas actuales.
-- Framework v20 conserva relaciones append-only de transiciones y conciliaciones
-  a acciones y añade policy/identidad protegidas; catálogo
+- Framework v21 conserva relaciones append-only de transiciones y conciliaciones
+  a acciones, añade policy/identidad protegidas y liga batches, tareas, eventos
+  memberships, progreso y publicaciones fuente ReviewTask con FKs locales;
+  catálogo
   v6 declara las relaciones de run/base/publicación con sus generaciones. Las
   demás asociaciones de ambos dominios continúan siendo lógicas.
 - Dedup v10 declara FK restrictivas desde `files` y `inventory_checkpoints` a
@@ -1077,7 +1139,7 @@ Resultado lógico: 8/8 `integrity_check=['ok']`, 8/8 sin filas de
 `foreign_key_check`, ningún timeout; suma de los subprocesos, aproximadamente
 98.625 s. Un FK check vacío no valida relaciones lógicas no declaradas.
 
-La fuente soporta framework v20, Dedup v10, PDF v12, Text v2, catálogo v6 y
+La fuente soporta framework v21, Dedup v10, PDF v12, Text v2, catálogo v6 y
 semántica v7, mientras
 las bases vivas seguían en framework v16, dedup v6 y catálogo v5; semantic no
 existía. Esa diferencia es esperable antes de actualizar, pero demuestra que
@@ -1245,7 +1307,7 @@ actual sí permite inventariar una página protegida/elegible sin borrar.
 ### Planificador dry-run actual
 
 `Neocortex --retention-status` abre únicamente bases existentes y reconoce los
-contratos exactos de framework v20, inventario v10, catálogo v6 y semántica v7.
+contratos exactos de framework v21, inventario v10, catálogo v6 y semántica v7.
 No crea ni migra estado. `--retention-store` acota propietarios,
 `--retention-batch-size` limita 1..1000 y los cursores
 `--retention-<store>-after` avanzan por keyset, nunca por `OFFSET`.
@@ -1253,7 +1315,11 @@ No crea ni migra estado. `--retention-store` acota propietarios,
 El planner fija `keep_published=2` y protege publicación vigente/anterior,
 el último run `completed` de framework aunque existan runs fallidos o
 cancelados posteriores, builders/leases vivos, generaciones base, checkpoints,
-acciones `recovery_required`, eventos de auditoría y evidencia humana. Una fila
+acciones `recovery_required`, eventos de auditoría, tareas ReviewTask y eventos
+humanos. Por separado protege cada head ReviewTask vigente, toda la cadena
+alcanzable de batches y memberships que lo sustenta y su progreso exacto. El
+resto de coordinación exclusivamente sistémica no se confunde con una decisión
+humana. Una fila
 de `semantic_evidence` que referencia una generación semántica actúa como hold
 y bloquea su elegibilidad. Deriva del esquema, dependencias incomprensibles o
 FK no activables bloquean el store. Sin `--retention-min-age-days`, la política

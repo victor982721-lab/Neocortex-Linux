@@ -87,6 +87,29 @@ históricos siguen disponibles para automatización y producción de estado.
 `inspect lineage` explica receipts, revisiones, materializaciones y dependencias
 Text/Semantic ya publicadas; tampoco ejecuta extractores ni migra owners.
 
+`review value` conserva esa misma frontera read-only: si existe una cola
+`ReviewTask` vigente en Framework la consulta; si todavía no existe, usa el
+preview legacy sobre publicaciones sin crear ni migrar estado. La construcción
+durable es una operación distinta y explícita:
+
+```bash
+Neocortex review value --refresh --scope personal --limit 50
+```
+
+`--refresh` sólo admite `personal` o `framework`, avanza exactamente una página
+keyset de 100 observaciones y puede crear o migrar `framework.sqlite3` a schema
+21. No abre una autorización de mutación: escribe únicamente batches,
+memberships, tareas, eventos, progreso y el head generacional de revisión en el
+owner Framework; nunca mueve, renombra, archiva ni elimina archivos. Un corpus
+de más de 25,000 observaciones se recorre
+por páginas sucesivas, y un cambio del snapshot fuente deja la cola `stale` en
+vez de mezclar evidencia. Las decisiones humanas `RESOLVED`/`DISMISSED` se
+preservan y no se reabren automáticamente al refrescar. Terminar el cursor no
+equivale por sí solo a tener evidencia completa: si falta un owner, una
+publicación o una fila no concuerda con su snapshot, la cola conserva
+`scan_complete=true` pero `evidence_complete=false`, permanece `partial` y no
+retira hallazgos abiertos por ausencia de evidencia.
+
 La selección del extractor Text también puede inspeccionarse antes de procesar
 un archivo. Es una consulta local, sin modelos ni escritura de estado:
 

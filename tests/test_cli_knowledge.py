@@ -497,9 +497,9 @@ def test_exact_read_compatible_legacy_owner_is_not_schema_incompatible() -> None
             OwnerSnapshot(
                 "framework",
                 OwnerAvailability.AVAILABLE,
-                20,
+                21,
                 19,
-                warning="legacy_schema_read_compatible:19->20",
+                warning="legacy_schema_read_compatible:19->21",
             ),
         ),
     )

@@ -216,6 +216,58 @@ Este grafo responde **cómo fue producido** un output. No es el grafo de context
 acotado de `ContextBundle`, no representa claims del corpus y no autoriza
 mutación, clasificación ni retención.
 
+## ReviewTask y cola durable Value
+
+**IMPLEMENTED para la primera vertical de revisión.** `ReviewTask` no sustituye
+`ResourceRef`, `RevisionRef` o `EvidenceRef`: conserva esos contratos como
+input/evidencia y agrega una decisión durable sobre un hallazgo. Framework
+schema 21 posee batches, versiones inmutables de tarea, memberships y eventos
+append-only, progreso keyset y heads fuente generacionales. Un batch fija el
+snapshot fuente y está acotado a 1,000 inputs
+y 100 tareas; las transiciones de estado aplican CAS. La migración v20→v21 crea
+las tablas vacías y no fabrica conocimiento a partir del historial.
+
+La primera productora es Value. `review value --refresh --scope
+personal|framework` examina exactamente una página de 100 observaciones de
+Inventory/Catalog, vuelve a comprobar el fence y publica el receipt, las tareas,
+sus memberships, eventos iniciales y el progreso dentro de una sola transacción
+del owner Framework. La página final con evidencia completa publica el head
+fuente en O(1); la supersession de ausentes se deriva de ese receipt sin una
+transacción O(N). No existe transacción distribuida con los owners fuente. Si éstos
+cambian antes de publicar se abstiene; si cambian después, la lectura detecta el
+fingerprint distinto y devuelve `stale` sin mezclar snapshots. El recorrido de
+un estado con más de 25,000 filas continúa por keyset, no retirando la cota.
+
+La consulta predeterminada `review value` permanece read-only. Usa la cola sólo
+cuando coincide con el snapshot fuente y, si Framework v21 o la cola todavía no
+existen, cae al preview legacy también read-only; no migra ni crea SQLite. Las
+versiones `RESOLVED` o `DISMISSED` y sus decisiones humanas sobreviven a
+reconstrucciones y no se reabren automáticamente. El refresh sigue siendo
+advisory y nunca autoriza una acción física.
+
+La cola no colapsa cobertura de cursor y cobertura epistémica. Un progreso puede
+tener `scan_complete=true` y `evidence_complete=false`: significa que ya leyó
+todas las identidades de ese fence, pero alguna página careció de evidencia
+publicada íntegra. Entonces el resultado sigue `partial`, conserva la razón y no
+usa la ausencia observada para superseder pendientes anteriores.
+
+El snapshot Knowledge de Framework v21 expone los heads ReviewTask sólo después
+de reconciliarlos con source receipt, progreso, acumulados y la cadena completa
+alcanzable de batches y memberships; añade watermarks de batches, eventos y
+publicaciones fuente, además de run/event/action. Los lectores aceptan v19 y v20
+sólo con validación estructural exacta y los marcan
+`legacy_schema_read_compatible:*->21`; esos schemas carecen de la cola.
+Retention protege tareas y eventos humanos como holds y, por separado, el head
+fuente vigente con toda su cadena publicada y progreso exactos; el resto de la
+coordinación sistémica no se confunde con conocimiento humano irreconstruible.
+
+**PARTIAL / PLANNED.** Los estados locales de cola explican si Value está
+`ready`, `partial`, `stale`, `absent` o `unavailable`; no son todavía el árbol
+causal general de `Knowledge Asset Health`. Tampoco existen aún productores
+ReviewTask para OCR, entities/claims, contradicciones, enlaces, recovery o
+promoción shadow, ni una vista GUI. Esas capacidades no deben inferirse de la
+presencia del schema.
+
 ## Owners, schemas y visibilidad
 
 `KnowledgeStatePaths.from_directory()` registra diez owners históricos y las
@@ -238,7 +290,7 @@ control.
 | Owner | Archivo | Schema esperado | Frontera observada | Uso en recuperación |
 |---|---|---:|---|---|
 | `inventory` | `dedup.sqlite3` | 10 | Checkpoint válido por raíz y firma cruda a un scan `complete`, con cursor USN opcional todo-o-nada y token del plan dedup completo; máximo 1024 heads. | Exact typed de path, nombre o huella sobre heads publicados; identidad física y relaciones planeadas no verificadas. |
-| `framework` | `framework.sqlite3` | 20 | Máximos de run, evento y acción; `best_effort_non_generational`. El schema 19 se admite sólo en lectura cuando pasa su validador estructural exacto y se marca `legacy_schema_read_compatible:19->20`. | Estado transversal; no produce ranking de contenido. |
+| `framework` | `framework.sqlite3` | 21 | Máximos de run, evento y acción; heads ReviewTask validados y conteo/tiempo de batches, eventos y publicaciones fuente; `best_effort_non_generational`. Los schemas 19 y 20 se admiten sólo en lectura cuando pasan su validador estructural exacto y se marcan `legacy_schema_read_compatible:<versión>->21`. | Estado transversal; no produce ranking de contenido. |
 | `catalog` | `document_catalog.sqlite3` | 6 | Publicación `published` por `source_kind`. | Membership de filtros y exact typed de path, nombre o identificador en la generación publicada. |
 | `pdf` | `pdf.sqlite3` | 12 | Conteo, último `updated_ns` y run; no generacional. | FTS por página y fuentes semantic. |
 | `docx` | `docx.sqlite3` | 5 | Conteo, último `updated_ns` y run; no generacional. | FTS documental y partes semantic. |
@@ -266,9 +318,9 @@ No existe una transacción distribuida entre estos archivos SQLite.
 
 1. abre cada owner por URI `mode=ro` con timeout/busy timeout de 60 s,
    `foreign_keys=ON` y `query_only=ON`;
-2. valida la versión y el schema exacto esperado; la única compatibilidad
-   legacy explícita es framework 19→20, condicionada al contrato estructural
-   exacto y sin migrar ni escribir;
+2. valida la versión y el schema exacto esperado; la compatibilidad legacy
+   explícita de Framework admite 19 o 20 hacia 21, condicionada al contrato
+   estructural exacto y sin migrar ni escribir;
 3. observa publicaciones o watermarks dentro de una transacción de lectura;
 4. repite la observación sobre la misma conexión;
 5. compara el estado lógico y `PRAGMA data_version`;

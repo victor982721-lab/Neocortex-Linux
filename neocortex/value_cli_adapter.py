@@ -14,7 +14,10 @@ from _04_Nucleo_Operativo.value_review_port import (
     ValueReviewPaths,
     ValueReviewQuery,
     ValueReviewReport,
+    ValueReviewTaskQueueStatus,
     preview_value_review,
+    read_value_review_task_queue,
+    refresh_value_review_tasks,
 )
 
 from .read_api import (
@@ -27,6 +30,7 @@ from .read_api import (
 
 
 VALUE_REVIEW_API_SCHEMA = "neocortex.value-review/v1"
+VALUE_REVIEW_REFRESH_API_SCHEMA = "neocortex.value-review-refresh/v1"
 ClockNs = Callable[[], int]
 
 
@@ -53,6 +57,63 @@ def _report_exit_code(report: ValueReviewReport) -> KnowledgeExitCode:
     return KnowledgeExitCode.FATAL
 
 
+def _report_mapping_exit_code(report: Mapping[str, object]) -> KnowledgeExitCode:
+    availability = str(report.get("availability", "unavailable"))
+    returned = report.get("returned_count", 0)
+    if availability == ValueReviewAvailability.READY.value:
+        return (
+            KnowledgeExitCode.SUCCESS
+            if isinstance(returned, int) and not isinstance(returned, bool) and returned > 0
+            else KnowledgeExitCode.NO_RESULTS
+        )
+    if availability == ValueReviewAvailability.PARTIAL.value:
+        return KnowledgeExitCode.PARTIAL
+    reason = str(report.get("reason") or "").casefold()
+    if "corrupt" in reason:
+        return KnowledgeExitCode.CORRUPT
+    if "incompatible" in reason or "future" in reason:
+        return KnowledgeExitCode.SCHEMA_INCOMPATIBLE
+    if "absent" in reason:
+        return KnowledgeExitCode.NO_RESULTS
+    return KnowledgeExitCode.FATAL
+
+
+def _unavailable_reason_exit_code(reason: str | None) -> KnowledgeExitCode:
+    normalized = (reason or "").casefold()
+    if "corrupt" in normalized:
+        return KnowledgeExitCode.CORRUPT
+    if "incompatible" in normalized or "future" in normalized:
+        return KnowledgeExitCode.SCHEMA_INCOMPATIBLE
+    if "absent" in normalized:
+        return KnowledgeExitCode.NO_RESULTS
+    return KnowledgeExitCode.FATAL
+
+
+def _state_error_entry(
+    *,
+    scope: str,
+    state_directory: object,
+    error: BaseException,
+) -> dict[str, object]:
+    reason = str(error)
+    exit_code = _unavailable_reason_exit_code(reason)
+    error_name = type(error).__name__.casefold()
+    if exit_code is KnowledgeExitCode.FATAL and (
+        error_name == "reviewtaskrepositoryerror"
+        or "integrity" in error_name
+        or "schemacontract" in error_name
+    ):
+        exit_code = KnowledgeExitCode.CORRUPT
+    return {
+        "scope": scope,
+        "state_directory": str(state_directory),
+        "status": ("error" if exit_code is KnowledgeExitCode.FATAL else "unavailable"),
+        "exit_code": int(exit_code),
+        "error_type": type(error).__name__,
+        "reason": reason,
+    }
+
+
 def value_review_payload(
     scope: str | ReadScope = ReadScope.PERSONAL,
     *,
@@ -74,32 +135,49 @@ def value_review_payload(
     entries: list[dict[str, object]] = []
     for binding in bindings:
         try:
-            report = preview_value_review(
-                ValueReviewPaths.from_directory(binding.state_directory),
-                ValueReviewQuery(
-                    limit=bounded_limit,
-                    reference_time_ns=reference_time_ns,
-                ),
+            paths = ValueReviewPaths.from_directory(binding.state_directory)
+            queue = read_value_review_task_queue(
+                binding.state_directory / "framework.sqlite3",
+                paths,
+                scope=binding.scope.value,
+                limit=bounded_limit,
+                reference_time_ns=reference_time_ns,
             )
-            entries.append(
-                {
+            entry: dict[str, object]
+            if queue.status is ValueReviewTaskQueueStatus.ABSENT:
+                report = preview_value_review(
+                    paths,
+                    ValueReviewQuery(
+                        limit=bounded_limit,
+                        reference_time_ns=reference_time_ns,
+                    ),
+                )
+                entry = {
                     "scope": binding.scope.value,
                     "state_directory": str(binding.state_directory),
                     "status": report.availability.value,
                     "exit_code": int(_report_exit_code(report)),
                     "report": report.to_dict(),
+                    "source": "published_owner_preview",
                 }
-            )
-        except (OSError, RuntimeError, TypeError, ValueError) as exc:
-            entries.append(
-                {
+            else:
+                queue_report = queue.report_dict()
+                entry = {
                     "scope": binding.scope.value,
                     "state_directory": str(binding.state_directory),
-                    "status": "error",
-                    "exit_code": int(KnowledgeExitCode.FATAL),
-                    "error_type": type(exc).__name__,
-                    "reason": str(exc),
+                    "status": queue.status.value,
+                    "exit_code": int(_report_mapping_exit_code(queue_report)),
+                    "report": queue_report,
+                    "source": "durable_review_task_queue",
                 }
+            entries.append(entry)
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            entries.append(
+                _state_error_entry(
+                    scope=binding.scope.value,
+                    state_directory=binding.state_directory,
+                    error=exc,
+                )
             )
     return {
         "schema": VALUE_REVIEW_API_SCHEMA,
@@ -114,6 +192,87 @@ def value_review_payload(
         "limit_per_scope": bounded_limit,
         "exit_code": federated_exit_code(entries),
         "scopes": entries,
+    }
+
+
+def value_review_refresh_payload(
+    scope: str | ReadScope = ReadScope.PERSONAL,
+    *,
+    limit: int = 50,
+    clock_ns: ClockNs = time.time_ns,
+) -> dict[str, object]:
+    """Advance exactly one durable queue page in one fixed public scope."""
+
+    bounded_limit = _validate_limit(limit)
+    selected = scope if isinstance(scope, ReadScope) else ReadScope(scope)
+    if selected is ReadScope.ALL:
+        raise ValueError("review value --refresh requires personal or framework scope")
+    bindings = scope_bindings(selected)
+    if len(bindings) != 1:
+        raise RuntimeError("review value refresh did not resolve exactly one scope")
+    reference_time_ns = clock_ns()
+    if (
+        isinstance(reference_time_ns, bool)
+        or not isinstance(reference_time_ns, int)
+        or reference_time_ns <= 0
+    ):
+        raise RuntimeError("value review refresh clock returned an invalid timestamp")
+    binding = bindings[0]
+    paths = ValueReviewPaths.from_directory(binding.state_directory)
+    try:
+        refresh = refresh_value_review_tasks(
+            binding.state_directory / "framework.sqlite3",
+            paths,
+            scope=binding.scope.value,
+            clock_ns=lambda: reference_time_ns,
+        )
+        queue = read_value_review_task_queue(
+            binding.state_directory / "framework.sqlite3",
+            paths,
+            scope=binding.scope.value,
+            limit=bounded_limit,
+            reference_time_ns=reference_time_ns,
+        )
+        report = queue.report_dict()
+        if refresh.status == "snapshot_changed":
+            exit_code = KnowledgeExitCode.SNAPSHOT_CHANGED
+        elif refresh.status == "unavailable":
+            exit_code = _unavailable_reason_exit_code(refresh.reason)
+        else:
+            exit_code = _report_mapping_exit_code(report)
+        current_status = (
+            refresh.status
+            if refresh.status in {"snapshot_changed", "unavailable"}
+            else queue.status.value
+        )
+        entry: dict[str, object] = {
+            "scope": binding.scope.value,
+            "state_directory": str(binding.state_directory),
+            "status": current_status,
+            "exit_code": int(exit_code),
+            "refresh": refresh.to_dict(),
+            "report": report,
+            "source": "durable_review_task_queue",
+        }
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        entry = _state_error_entry(
+            scope=binding.scope.value,
+            state_directory=binding.state_directory,
+            error=exc,
+        )
+    return {
+        "schema": VALUE_REVIEW_REFRESH_API_SCHEMA,
+        "kind": "neocortex_scoped_value_review_refresh",
+        "operation": "value-task-refresh",
+        "read_only": False,
+        "advisory_only": True,
+        "mutation_authorized": False,
+        "scope_requested": selected.value,
+        "federation_policy": FEDERATION_POLICY,
+        "reference_time_ns": reference_time_ns,
+        "limit_per_scope": bounded_limit,
+        "exit_code": federated_exit_code((entry,)),
+        "scopes": [entry],
     }
 
 
@@ -232,6 +391,14 @@ def _render_entry(entry: Mapping[str, object]) -> None:
             _print(
                 "   Incertidumbre: " + "; ".join(_explain_code(value) for value in uncertainties)
             )
+        review_task = item.get("review_task")
+        if isinstance(review_task, dict):
+            _print(
+                "   Tarea durable: "
+                f"{review_task.get('task_id', 'sin id')} · "
+                f"{review_task.get('state', 'estado desconocido')} · "
+                f"v{review_task.get('task_version', '?')}"
+            )
     if not rows:
         _print("  No hay candidatos publicados dentro de este límite.")
 
@@ -241,10 +408,20 @@ def _payload_exit_code(payload: Mapping[str, object]) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) else 1
 
 
-def run_value_review(*, scope: str, limit: int, json_output: bool) -> int:
+def run_value_review(
+    *,
+    scope: str,
+    limit: int,
+    json_output: bool,
+    refresh: bool = False,
+) -> int:
     """Run the canonical human value-preview command."""
 
-    payload = value_review_payload(scope, limit=limit)
+    payload = (
+        value_review_refresh_payload(scope, limit=limit)
+        if refresh
+        else value_review_payload(scope, limit=limit)
+    )
     if json_output:
         _print(
             json.dumps(
@@ -255,7 +432,11 @@ def run_value_review(*, scope: str, limit: int, json_output: bool) -> int:
             )
         )
         return _payload_exit_code(payload)
-    _print("Revisión conservadora de valor (solo lectura)")
+    _print(
+        "Actualización acotada de la cola de revisión"
+        if refresh
+        else "Revisión conservadora de valor (solo lectura)"
+    )
     _print("Las recomendaciones no autorizan mover, archivar ni borrar archivos.")
     entries = payload.get("scopes")
     if isinstance(entries, list):
@@ -267,6 +448,8 @@ def run_value_review(*, scope: str, limit: int, json_output: bool) -> int:
 
 __all__ = (
     "VALUE_REVIEW_API_SCHEMA",
+    "VALUE_REVIEW_REFRESH_API_SCHEMA",
     "run_value_review",
     "value_review_payload",
+    "value_review_refresh_payload",
 )

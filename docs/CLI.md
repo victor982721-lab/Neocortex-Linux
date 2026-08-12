@@ -16,6 +16,7 @@ que conviene conocer antes de usar `--help`.
 | Inspeccionar Code | `Neocortex inspect code "consulta" --scope framework` |
 | Explicar una derivación | `Neocortex inspect lineage IDENTIFICADOR --scope personal` |
 | Revisar valor sin cambios | `Neocortex review value --scope personal` |
+| Avanzar una página durable de revisión | `Neocortex review value --refresh --scope personal` |
 | Diagnóstico de una corrida | `Neocortex --status --status-json` |
 
 Empiece por consultas sobre estado publicado. Si debe producir cobertura nueva,
@@ -415,7 +416,9 @@ con scopes fijos, citas, cobertura e incertidumbre; no acepta rutas de estado ni
 presenta controles de mutación. En Linux muestra “modo portátil Linux”, no
 solicita elevación y desactiva los controles de mutación; inventario,
 procesamiento y búsqueda se conservan. El worker `--gui-worker` es un contrato
-interno y no debe invocarse manualmente.
+interno y no debe invocarse manualmente. La GUI puede mostrar la consulta
+read-only que ahora consume una cola vigente, pero una vista para refrescar,
+resolver o descartar `ReviewTask` permanece **PLANNED**.
 
 ### Consulta humana y agentes locales
 
@@ -429,6 +432,7 @@ Neocortex ask "¿qué evidencia existe de la prueba FAT?" --scope personal
 Neocortex inspect code "validación de schema" --scope framework --mode hybrid
 Neocortex inspect lineage IDENTIFICADOR --scope personal
 Neocortex review value --scope personal --limit 50
+Neocortex review value --refresh --scope personal --limit 50
 ```
 
 Los scopes válidos son `personal`, `framework` y `all`. `all` ejecuta cada
@@ -436,7 +440,26 @@ snapshot independientemente y no fusiona scores. `status`, `search`, `ask` e
 `inspect code`/`inspect lineage` aceptan `--json`; `search`/`ask` acotan la
 consulta a 4096 caracteres y como máximo 100 resultados por scope.
 `review value` es advisory, declara `mutation_authorized=false` y no mueve,
-archiva ni elimina.
+archiva ni elimina. Sin `--refresh` es estrictamente read-only: consulta la cola
+Framework v21 sólo si coincide con el snapshot fuente y, si todavía no existe,
+usa el preview legacy sin crear o migrar estado.
+
+`--refresh` es la única variante escritora de esta familia. Sólo admite un scope
+fijo `personal` o `framework` (`all` se rechaza), puede crear/migrar
+`framework.sqlite3` y avanza exactamente una página keyset de 100 observaciones.
+Escribe únicamente batches, memberships, tareas, eventos, progreso y el head
+fuente generacional owner-local; no modifica Inventory, Catalog ni archivos.
+Ejecútelo otra vez para avanzar la página
+siguiente, incluso sobre más de 25,000 observaciones. Si el snapshot cambia
+antes de publicar, se abstiene; si la cola quedó desfasada, la lectura devuelve
+`stale` en vez de presentar evidencia mezclada. Una decisión humana durable
+`RESOLVED` o `DISMISSED` no se reabre automáticamente.
+
+En JSON, `queue.scan_complete` indica fin del cursor y
+`queue.evidence_complete` indica que todas las páginas tuvieron evidencia
+íntegra. Pueden ser `true` y `false`, respectivamente; en ese caso la salida y
+el código siguen siendo `partial`, `queue.evidence_reason` conserva la causa y
+el refresh no retira tareas previas sólo porque ya no aparecieron.
 
 #### `inspect lineage`
 
@@ -1008,6 +1031,7 @@ por familia:
 | `--archive-json` | Estado o resultados ZIP; exige exactamente una acción `--archive-*`. |
 | `--knowledge-json` | Snapshot, resultado de búsqueda o contexto Knowledge; exige exactamente una acción `--knowledge-*`. |
 | `inspect lineage --json` | Linaje owner-local y proyección causal acotada para el identificador; no migra estado. |
+| `review value --json` | Consulta advisory schema `neocortex.value-review/v1`; con `--refresh`, avance de una página Framework schema `neocortex.value-review-refresh/v1`, sin mutación del corpus. |
 | `doctor capabilities --json` | Reporte agregado schema 1; con `--select text.extract --mime-type MIME --input-bytes BYTES`, selección explicable schema `neocortex.capability-selection/v1`. |
 | `doctor platform --json` | Un documento JSON versionado de política y capacidades de plataforma. |
 | `models prepare/status --json` | Un documento JSON versionado del conjunto de modelos gestionados. |
@@ -1024,8 +1048,8 @@ y compruebe siempre el código de salida.
 | `1` | Excepción fatal no normalizada o fallo interno del worker de GUI. No es el código de una validación ordinaria de argumentos. |
 | `2` | Error de argumentos detectado por `argparse` o por la validación posterior, como una combinación incompatible o una solicitud Linux de `--apply`/`--organization-apply`; abstención explicable de `doctor capabilities --select`; estado requerido ausente o incompatible; diagnóstico fallido —incluida abstención total de `--code-status`/`--code-review` ante sidecars, cerca inestable o publicación no elegible—; generación Semantic incompleta, truncada o no publicada; error de acciones u organización; conciliación con efecto ambiguo/imposible —incluso si su evento fue registrado—; plan de retención bloqueado; o, con `--strict-exit-codes`, errores/parciales retenidos por una ruta. El watcher también devuelve `2` si conserva corridas fallidas o errores de fuente. |
 | `3` | Knowledge terminó con snapshot estable y cobertura completa, pero search/context no obtuvo evidencia; Archive search/list también lo usa cuando no hay miembros coincidentes; `inspect lineage` no encontró el identificador. |
-| `4` | Knowledge produjo una respuesta parcial o no soportada; incluye propietarios necesarios ausentes. `inspect lineage` encontró evidencia incompleta, legacy o truncada. |
-| `5` | El snapshot Knowledge volvió a cambiar durante el único reintento global acotado. |
+| `4` | Knowledge produjo una respuesta parcial o no soportada; incluye propietarios necesarios ausentes. `inspect lineage` encontró evidencia incompleta, legacy o truncada. `review value` también lo usa para una cola parcial o `stale`. |
+| `5` | El snapshot Knowledge volvió a cambiar durante el único reintento global acotado, o el refresh ReviewTask observó un cambio antes de publicar. |
 | `6` | Knowledge status encontró un schema futuro/incompatible; en search/context, uno de esos owners figura en `blocking_owners` y obliga a abstenerse. `inspect lineage` lo usa cuando el schema incompatible impide toda resolución; si otro owner aporta evidencia válida, devuelve `4 partial` con warning. |
 | `7` | Knowledge status detectó una base corrupta; en search/context, la base figura en `blocking_owners` y obliga a abstenerse. `inspect lineage` también lo usa ante corrupción SQLite. |
 | `130` | Cancelación por teclado o cancelación del watcher. |

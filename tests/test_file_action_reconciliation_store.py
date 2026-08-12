@@ -118,7 +118,7 @@ def test_schema_20_migrates_populated_version_18_idempotently(tmp_path: Path) ->
         integrity = connection.execute("PRAGMA integrity_check").fetchone()
         foreign_keys = connection.execute("PRAGMA foreign_key_check").fetchall()
 
-    assert version == (str(SCHEMA_VERSION),) == ("20",)
+    assert version == (str(SCHEMA_VERSION),) == ("21",)
     assert action == (
         41,
         7,
@@ -275,7 +275,7 @@ def test_schema_20_publication_preserves_concurrent_version_18_snapshot(
         reader.rollback()
         assert reader.execute(
             "SELECT value FROM metadata WHERE key='schema_version'"
-        ).fetchone() == ("20",)
+        ).fetchone() == ("21",)
         assert reader.execute(
             "SELECT name FROM sqlite_master WHERE name=?", (_TABLE,)
         ).fetchone() == (_TABLE,)

@@ -8,6 +8,28 @@ no se copian aquí para evitar que se conviertan en datos históricos sin contex
 
 ### Añadido
 
+- Framework schema 21 con `ReviewTask` durable: batches y receipts acotados,
+  memberships, tareas versionadas, eventos append-only con CAS, progreso keyset
+  y heads fuente generacionales. Cada batch
+  admite hasta 1,000 inputs y 100 tareas; la migración 20→21 es aditiva, deja el
+  contrato vacío y no fabrica decisiones o hallazgos históricos.
+- Primera productora ReviewTask para Value. `Neocortex review value --refresh
+  --scope personal|framework` avanza exactamente una página de 100
+  observaciones, puede crear/migrar Framework y publica su estado sólo dentro de
+  ese owner. Rechaza `all`, vuelve a comprobar el snapshot antes del commit y no
+  muta archivos, Inventory ni Catalog.
+- Cola durable paginada para que Personal pueda preseleccionar más de 25,000
+  observaciones sin retirar el límite. Los estados
+  `ready`/`partial`/`stale`/`absent`/`unavailable` exponen la causa; decisiones
+  humanas `RESOLVED`/`DISMISSED` sobreviven a refresh/reconstrucción y no se
+  reabren automáticamente.
+- Progreso Value separa fin del cursor (`scan_complete`) de integridad de la
+  evidencia (`evidence_complete`). Una página parcial conserva su razón durante
+  toda la corrida y no permite superseder tareas abiertas por ausencia, aunque
+  una página posterior complete el keyset.
+- La página final con evidencia completa promueve un único head fuente
+  append-only. La supersession de ausentes se deriva de ese receipt sin miles de
+  eventos; `SUPERSEDED` queda reservado a receipts sistémicos exactos.
 - Contratos públicos stdlib-only `CapabilityManifest`, `CapabilityRequest`,
   `CapabilityPolicy`, `CapabilityAvailability`, `CapabilitySelection` y
   `CapabilityBroker`, con manifests versionados/acotados, hard filters,
@@ -47,6 +69,16 @@ no se copian aquí para evitar que se conviertan en datos históricos sin contex
 
 ### Cambiado
 
+- `review value` sin `--refresh` permanece read-only, pero prefiere una cola
+  ReviewTask vigente; si Framework v21 o la cola no existen conserva el preview
+  legacy sin crear ni migrar estado. Un fingerprint fuente distinto falla
+  cerrado como `stale`.
+- El snapshot Knowledge de Framework v21 valida y expone heads ReviewTask y
+  agrega watermarks de batches, eventos y publicaciones fuente; mantiene
+  compatibilidad read-only validada con v19/v20. Retention protege tareas y
+  eventos humanos como holds y, por separado, cada head vigente con toda su
+  cadena alcanzable de batches, memberships y progreso exactos. La auditoría
+  falla cerrado bajo cotas explícitas y usa búsquedas indexadas por batch.
 - Cada candidato Text selecciona provider por request/política/readiness en vez
   de usar el primer provider disponible. Sus receipts y firmas de procesamiento
   conservan provider/versión, fingerprints de manifest/política/selección,
@@ -80,6 +112,10 @@ no se copian aquí para evitar que se conviertan en datos históricos sin contex
 
 ### Límites conocidos
 
+- `Knowledge Asset Health` general permanece parcial/planificado: los estados
+  causales implementados sólo cubren la cola Value. ReviewTask para OCR,
+  entities/claims, contradicciones, links, recovery y promoción shadow, además
+  de una GUI para refrescar/decidir tareas, todavía no está implementado.
 - CapabilityBroker v1 sólo está conectado a la ruta Text. PDF, DOCX, la ruta
   Office, Semantic y plugins/providers externos permanecen planificados; no hay
   autodescubrimiento de plugins ni providers pesados obligatorios.
