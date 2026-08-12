@@ -18,10 +18,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 
-from _02_Deduplicacion.inventory_schema import (
-    SCHEMA_VERSION as INVENTORY_SCHEMA_VERSION,
-    validate_inventory_schema,
-)
+from _02_Deduplicacion.inventory_schema import validate_inventory_schema
 from neocortex.sqlite_schema_contract import (
     read_application_schema_version,
     validate_sqlite_schema_contract,
@@ -37,9 +34,8 @@ from . import (
     video_state,
 )
 from . import semantic_schema as semantic_schema_module
-from .code_schema import CODE_SCHEMA_VERSION, validate_code_schema
-from .docx_schema import DOCX_SCHEMA_VERSION, validate_docx_schema
-from .framework_schema import SCHEMA_VERSION as FRAMEWORK_SCHEMA_VERSION
+from .code_schema import validate_code_schema
+from .docx_schema import validate_docx_schema
 from .framework_schema import (
     validate_framework_schema_v19,
     validate_framework_schema_v20,
@@ -55,11 +51,11 @@ from .knowledge_contracts import (
     PublicationHead,
     SnapshotConsistency,
 )
-from .pdf_schema import PDF_SCHEMA_VERSION, validate_pdf_schema
+from .pdf_schema import validate_pdf_schema
 from .semantic_models import canonical_json
-from .semantic_schema import SEMANTIC_SCHEMA_VERSION
 from .sqlite_cancellation import SQLiteCancellationBridge, sqlite_cancellation_scope
 from .sqlite_paths import readonly_sqlite_uri
+from .state_topology_contracts import STATE_STORE_REGISTRY
 
 
 # region [01] Owner registry and state paths
@@ -90,26 +86,7 @@ class _CancellationController:
         return self.raised_exception is exc
 
 
-# This reader deliberately pins the image owner version it understands.  Import
-# image_state only when that database exists so status over absent state does
-# not load the image-processing/Pillow runtime.
-_EXPECTED_IMAGE_SCHEMA_VERSION = 5
-
-_STATE_PATH_NAMES = (
-    "inventory",
-    "framework",
-    "catalog",
-    "pdf",
-    "docx",
-    "office",
-    "audio",
-    "video",
-    "image",
-    "semantic",
-    "code",
-    "archive",
-    "text",
-)
+_STATE_PATH_NAMES = tuple(store.knowledge_path_attribute for store in STATE_STORE_REGISTRY.stores)
 
 
 class KnowledgeStateRootError(RuntimeError):
@@ -223,19 +200,10 @@ class KnowledgeStatePaths:
         except OSError as exc:
             raise _inaccessible_root(requested_root, exc) from exc
         return cls(
-            inventory=root / "dedup.sqlite3",
-            framework=root / "framework.sqlite3",
-            catalog=root / "document_catalog.sqlite3",
-            pdf=root / "pdf.sqlite3",
-            docx=root / "docx.sqlite3",
-            office=root / "office.sqlite3",
-            audio=root / "audio.sqlite3",
-            video=root / "video.sqlite3",
-            image=root / "image.sqlite3",
-            semantic=root / "semantic.sqlite3",
-            code=root / "code.sqlite3",
-            archive=root / "archive.sqlite3",
-            text=root / "text.sqlite3",
+            **{
+                store.knowledge_path_attribute: root / store.database_name
+                for store in STATE_STORE_REGISTRY.stores
+            }
         )
 
 
@@ -315,86 +283,80 @@ def _validate_image(connection: sqlite3.Connection) -> None:
 
 
 def _validate_semantic(connection: sqlite3.Connection) -> None:
-    semantic_schema_module._validate_schema(connection, SEMANTIC_SCHEMA_VERSION)
+    semantic_schema_module._validate_schema(
+        connection,
+        STATE_STORE_REGISTRY.by_owner("semantic").expected_schema_version,
+    )
 
 
-_OWNER_SPECS = (
-    _OwnerSpec(
-        "inventory",
-        INVENTORY_SCHEMA_VERSION,
-        validate_inventory_schema,
-        "inventory",
-    ),
-    _OwnerSpec(
-        "framework",
-        FRAMEWORK_SCHEMA_VERSION,
+def _owner_spec(
+    owner: str,
+    validate: _Validator,
+    legacy_read_validators: tuple[tuple[int, _Validator], ...] = (),
+) -> _OwnerSpec:
+    contract = STATE_STORE_REGISTRY.by_owner(owner)
+    return _OwnerSpec(
+        contract.state_owner_id,
+        contract.expected_schema_version,
+        validate,
+        contract.knowledge_read_kind,
+        legacy_read_validators,
+    )
+
+
+_OWNER_VALIDATORS: dict[
+    str,
+    tuple[_Validator, tuple[tuple[int, _Validator], ...]],
+] = {
+    "inventory": (validate_inventory_schema, ()),
+    "framework": (
         validate_framework_schema_v22,
-        "framework",
         (
             (19, validate_framework_schema_v19),
             (20, validate_framework_schema_v20),
             (21, validate_framework_schema_v21),
         ),
     ),
-    _OwnerSpec(
-        "catalog",
-        document_catalog_schema.CATALOG_SCHEMA_VERSION,
-        _validate_catalog,
-        "catalog",
-    ),
-    _OwnerSpec("pdf", PDF_SCHEMA_VERSION, validate_pdf_schema, "documents"),
-    _OwnerSpec("docx", DOCX_SCHEMA_VERSION, validate_docx_schema, "documents"),
-    _OwnerSpec("office", office_state.OFFICE_SCHEMA_VERSION, _validate_office, "documents"),
-    _OwnerSpec("audio", audio_state.AUDIO_SCHEMA_VERSION, _validate_audio, "documents"),
-    _OwnerSpec("image", _EXPECTED_IMAGE_SCHEMA_VERSION, _validate_image, "images"),
-    _OwnerSpec("semantic", SEMANTIC_SCHEMA_VERSION, _validate_semantic, "semantic"),
-    _OwnerSpec("code", CODE_SCHEMA_VERSION, validate_code_schema, "code"),
-)
-
-_VIDEO_OWNER_SPEC = _OwnerSpec(
-    "video",
-    video_state.VIDEO_SCHEMA_VERSION,
-    video_state.validate_video_schema,
-    "documents",
-)
-
-_ARCHIVE_OWNER_SPEC = _OwnerSpec(
-    "archive",
-    archive_state.ARCHIVE_SCHEMA_VERSION,
-    _validate_archive,
-    "documents",
-)
-
-_TEXT_OWNER_SPEC = _OwnerSpec(
-    "text",
-    text_state.TEXT_SCHEMA_VERSION,
-    _validate_text,
-    "documents",
-)
+    "catalog": (_validate_catalog, ()),
+    "pdf": (validate_pdf_schema, ()),
+    "docx": (validate_docx_schema, ()),
+    "office": (_validate_office, ()),
+    "audio": (_validate_audio, ()),
+    "video": (video_state.validate_video_schema, ()),
+    "image": (_validate_image, ()),
+    "semantic": (_validate_semantic, ()),
+    "code": (validate_code_schema, ()),
+    "archive": (_validate_archive, ()),
+    "text": (_validate_text, ()),
+}
 
 
 def _owner_specs(paths: KnowledgeStatePaths) -> tuple[_OwnerSpec, ...]:
     """Expose additive owners only after their databases exist."""
 
-    specs = list(_OWNER_SPECS)
-    if paths.video is not None:
-        # Preserve the established owner order without making Video mandatory
-        # for callers that construct the public path contract directly.
-        specs.insert(7, _VIDEO_OWNER_SPEC)
-    for path, spec in (
-        (paths.archive, _ARCHIVE_OWNER_SPEC),
-        (paths.text, _TEXT_OWNER_SPEC),
-    ):
+    if set(_OWNER_VALIDATORS) != {store.state_owner_id for store in STATE_STORE_REGISTRY.stores}:
+        raise RuntimeError("Knowledge owner validators disagree with the state store registry")
+    specs: list[_OwnerSpec] = []
+    for contract in STATE_STORE_REGISTRY.stores:
+        path = getattr(paths, contract.knowledge_path_attribute)
         if path is None:
             continue
-        try:
-            path.stat()
-        except FileNotFoundError:
-            continue
-        except OSError:
-            # Let normal owner capture classify an inaccessible configured path.
-            pass
-        specs.append(spec)
+        if contract.knowledge_capture_mode == "if_present":
+            try:
+                path.stat()
+            except FileNotFoundError:
+                continue
+            except OSError:
+                # Let normal owner capture classify an inaccessible configured path.
+                pass
+        validator, legacy_validators = _OWNER_VALIDATORS[contract.state_owner_id]
+        specs.append(
+            _owner_spec(
+                contract.state_owner_id,
+                validator,
+                legacy_validators,
+            )
+        )
     return tuple(specs)
 
 
