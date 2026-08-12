@@ -680,7 +680,7 @@ def test_review_ranks_confirmed_hotspots_deterministically_with_diversity(
     assert first.test_coverage.status == "abstained"
     coverage_payload = first.as_payload()["test_coverage"]
     assert isinstance(coverage_payload, dict)
-    assert coverage_payload["schema"] == "neocortex.code-coverage-analysis/v1"
+    assert coverage_payload["schema"] == "neocortex.code-coverage-analysis/v2"
     assert "test_coverage_not_ready:" in " ".join(first.limitations)
     assert first.engineering_analytics is not None
     assert first.engineering_analytics.status == "abstained"

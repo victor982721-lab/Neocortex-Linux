@@ -15,6 +15,7 @@ from .code_analysis_epistemics import (
 from .code_architecture_analysis import CodeArchitectureAnalysis
 from .code_class_surface_analysis import CodeClassSurfaceAnalysis
 from .code_coverage_analysis import (
+    CODE_COVERAGE_SCHEMA,
     CodeCoverageAnalysis,
     CoverageScopeSummary,
     TestToSymbolRelation,
@@ -767,9 +768,9 @@ def _bounded_scope_payload(scope: CoverageScopeSummary) -> dict[str, object]:
         "missing_branch_arcs_truncated": (
             scope.missing_branch_arcs_truncated or len(scope.missing_branch_arcs) > limit
         ),
-        "protecting_tests": list(scope.protecting_tests[:limit]),
-        "protecting_tests_total": len(scope.protecting_tests),
-        "protecting_tests_truncated": len(scope.protecting_tests) > limit,
+        "executing_tests": list(scope.executing_tests[:limit]),
+        "executing_tests_total": len(scope.executing_tests),
+        "executing_tests_truncated": len(scope.executing_tests) > limit,
     }
 
 
@@ -850,7 +851,7 @@ def bounded_code_coverage_payload(
     missing_symbols = _missing_scope_examples(analysis.symbols)
     return {
         "kind": "code-coverage-analysis",
-        "schema": "neocortex.code-coverage-analysis/v1",
+        "schema": CODE_COVERAGE_SCHEMA,
         "database": analysis.database,
         "analysis_run_id": analysis.analysis_run_id,
         "provider_id": analysis.provider_id,
@@ -984,9 +985,9 @@ def bounded_code_review_work_package_payload(
         payload["test_coverage"] = {
             "primary_symbol": projection.primary_symbol,
             "status": projection.status,
-            "protecting_tests": list(projection.protecting_tests[:limit]),
-            "protecting_tests_total": len(projection.protecting_tests),
-            "protecting_tests_truncated": len(projection.protecting_tests) > limit,
+            "executing_tests": list(projection.executing_tests[:limit]),
+            "executing_tests_total": len(projection.executing_tests),
+            "executing_tests_truncated": len(projection.executing_tests) > limit,
             "relation_ids": list(projection.relation_ids[:limit]),
             "relation_ids_total": len(projection.relation_ids),
             "relation_ids_truncated": len(projection.relation_ids) > limit,

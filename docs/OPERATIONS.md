@@ -384,9 +384,9 @@ Después de cerrar writers, consulte el mismo `$State` con `--code-status
 --code-json` y `--code-review --code-json`. `test_coverage` debe explicar
 selección, completitud, resultados, líneas/ramas y limitaciones. Los contextos
 dinámicos prueban qué tests ejecutaron una línea o símbolo; no prueban por sí
-solos que exista una aserción o un invariante protector. Los nombres históricos
-`protecting_tests` y `work_package_target_protected` deben leerse con esa
-limitación hasta su migración. Un publication diff sólo puede aprobar los deltas
+solos que exista una aserción o un invariante protector. Coverage v2 lo expresa
+como `executing_tests` y `work_package_target_executed_by_passing_suite`. Un
+publication diff sólo puede aprobar los deltas
 de líneas y ramas cuando suite, alcance, configuración y herramientas coinciden.
 
 La corrida canónica H6 Run 9 terminó en 343.168 s: 585 candidatos, 2 procesados,

@@ -630,10 +630,11 @@ contraevidencia y resultados experimentales, v14 publica cero recomendaciones
 de cambio y cero packages hotspot. El planificador v5 sólo puede entregar hasta
 tres paquetes `unused_characterization` calibrados: todos sus pasos son de
 caracterización, requieren confirmación humana y declaran
-`mutation_authority=false`. Coverage aporta evidencia de ejecución por una
-suite passing, no prueba que un test afirme o proteja un invariante; los nombres
-legacy `protecting_tests`/`work_package_target_protected` son una limitación
-conocida. `--code-review-limit N --code-json` amplía de 1 a 50 la vista
+`mutation_authority=false`. Coverage v2 aporta evidencia de ejecución por una
+suite passing, no prueba que un test afirme o proteja un invariante; por eso la
+superficie usa `executing_tests` y
+`work_package_target_executed_by_passing_suite`. `--code-review-limit N
+--code-json` amplía de 1 a 50 la vista
 auditable. La consulta es estrictamente read-only; un snapshot full sin USN se
 etiqueta `publication_only` y un journal avanzado/discontinuo causa abstención.
 Cada evaluación v14 fija el fingerprint de la pregunta, el snapshot y la

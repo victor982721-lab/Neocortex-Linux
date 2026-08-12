@@ -474,11 +474,11 @@ de cambio.
 `unused_characterization`, y sólo cuando los dos gates de precisión del
 consenso de no-uso están aprobados. Sus pasos son exclusivamente de
 caracterización, exigen confirmación humana y conservan
-`mutation_authority=false`; no contienen `primary_change_target`. Coverage
+`mutation_authority=false`; no contienen `primary_change_target`. Coverage v2
 puede demostrar ejecución por una suite passing y exponer líneas/ramas no
-observadas, pero los nombres legacy `protecting_tests` y
-`work_package_target_protected` **no demuestran** que un test afirme un
-invariante. Esa terminología es una limitación conocida pendiente de migración.
+observadas. Sus términos `executing_tests` y
+`work_package_target_executed_by_passing_suite` delimitan expresamente esa
+evidencia y **no demuestran** que un test afirme un invariante.
 
 `probable_dead_symbol` se informa únicamente como conteo suprimido. Una muestra
 portable de 40 entre los 246 candidatos de rc11 encontró 36 usos demostrables,

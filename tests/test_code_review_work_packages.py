@@ -838,7 +838,7 @@ def test_partial_engineering_evidence_never_hides_a_work_package() -> None:
     assert package.mutation_authority is False
 
 
-def test_work_package_projects_protecting_tests_and_missing_target_coverage() -> None:
+def test_work_package_projects_executing_tests_and_missing_target_coverage() -> None:
     findings = _planning_findings()
     subject_key = "symbol:document_taxonomy.classify_document:10:240"
     totals = CoverageTotals(20, 17, 3, 8, 6, 2, 85.0, 75.0)
@@ -915,16 +915,16 @@ def test_work_package_projects_protecting_tests_and_missing_target_coverage() ->
 
     assert package.package_id == legacy.package_id
     assert package.test_coverage is not None
-    assert package.test_coverage.status == "protected"
+    assert package.test_coverage.status == "executed"
     assert package.test_coverage.primary_symbol == subject_key
-    assert package.test_coverage.protecting_tests == (
+    assert package.test_coverage.executing_tests == (
         "tests/test_document_taxonomy.py::test_classify",
     )
     assert package.test_coverage.gate.status == "passed"
     assert package.test_coverage_scope is not None
     assert package.test_coverage_scope.missing_line_ranges == ((30, 31), (80, 80))
     assert package.test_coverage_scope.missing_branch_arcs == ((25, 30), (70, 80))
-    assert "work_package_target_protected" not in package.acceptance_gates
+    assert "work_package_target_executed_by_passing_suite" not in package.acceptance_gates
     assert "coverage_gates_require_ready_trusted_deep_evidence" not in package.limitations
 
 
@@ -1045,9 +1045,9 @@ def test_review_json_bounds_coverage_and_work_package_examples_to_twenty() -> No
     package_payload = packages_payload[0]
     package_coverage = package_payload["test_coverage"]
     package_scope = package_payload["test_coverage_scope"]
-    assert len(package_coverage["protecting_tests"]) == 20
-    assert package_coverage["protecting_tests_total"] == 25
-    assert package_coverage["protecting_tests_truncated"] is True
+    assert len(package_coverage["executing_tests"]) == 20
+    assert package_coverage["executing_tests_total"] == 25
+    assert package_coverage["executing_tests_truncated"] is True
     assert len(package_coverage["relation_ids"]) == 20
     assert package_coverage["relation_ids_total"] == 25
     assert package_coverage["relation_ids_truncated"] is True

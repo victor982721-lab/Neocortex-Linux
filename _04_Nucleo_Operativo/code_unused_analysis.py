@@ -1100,7 +1100,7 @@ def _coverage_evidence(
     status: CoverageState = "complete" if coverage.measurement_complete else "partial"
     observed: set[str] = set()
     for scope in coverage.symbols:
-        if scope.totals.covered_lines <= 0 and not scope.protecting_tests:
+        if scope.totals.covered_lines <= 0 and not scope.executing_tests:
             continue
         for value in (scope.qualified_name, scope.symbol_key, scope.subject_key):
             if value:

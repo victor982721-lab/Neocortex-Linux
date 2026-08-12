@@ -11,6 +11,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, TextIO
 
+from .code_coverage_analysis import CODE_COVERAGE_SCHEMA
+
 if TYPE_CHECKING:
     from .code_architecture_analysis import CodeArchitectureAnalysis
     from .code_coverage_analysis import CodeCoverageAnalysis, CoverageComparison
@@ -201,7 +203,7 @@ def _coverage_status_payload(
 
     return {
         "kind": "code-coverage-analysis",
-        "schema": "neocortex.code-coverage-analysis/v1",
+        "schema": CODE_COVERAGE_SCHEMA,
         "database": analysis.database,
         "analysis_run_id": analysis.analysis_run_id,
         "provider_id": analysis.provider_id,
@@ -243,7 +245,7 @@ def _coverage_abstained_payload(
 ) -> dict[str, object]:
     return {
         "kind": "code-coverage-analysis",
-        "schema": "neocortex.code-coverage-analysis/v1",
+        "schema": CODE_COVERAGE_SCHEMA,
         "database": database,
         "analysis_run_id": analysis_run_id,
         "provider_id": "pytest-coverage-trusted-deep",
@@ -1628,7 +1630,7 @@ def _emit_code_review_work_package_coverage(
         f"status={payload.get('status')} "
         f"package_rank={package.package_rank} package_id={package.package_id} "
         f"subject={json.dumps(payload.get('primary_symbol'), ensure_ascii=True)} "
-        f"tests={json.dumps(_bounded_code_review_sequence(payload.get('protecting_tests')), ensure_ascii=True)} "
+        f"tests={json.dumps(_bounded_code_review_sequence(payload.get('executing_tests')), ensure_ascii=True)} "
         f"relations={json.dumps(_bounded_code_review_sequence(payload.get('relation_ids')), ensure_ascii=True)} "
         f"missing_lines={json.dumps(_bounded_code_review_sequence(coverage_scope.get('missing_line_ranges')), ensure_ascii=True)} "
         f"missing_branches={json.dumps(_bounded_code_review_sequence(coverage_scope.get('missing_branch_arcs')), ensure_ascii=True)} "

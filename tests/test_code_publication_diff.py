@@ -610,7 +610,7 @@ def test_publication_diff_of_the_same_state_is_stable_and_empty(
     assert isinstance(payload["engineering_analytics"], dict)
     coverage_payload = payload["test_coverage"]
     assert isinstance(coverage_payload, dict)
-    assert coverage_payload["schema"] == "neocortex.code-coverage-analysis/v1"
+    assert coverage_payload["schema"] == "neocortex.code-coverage-analysis/v2"
     assert "test_coverage_delta_not_comparable" in result.limitations
 
 

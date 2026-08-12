@@ -593,10 +593,10 @@ def test_code_review_human_surfaces_architecture_and_work_package_context(
         affected_architecture_contracts=("layers",),
         test_coverage=WorkPackageCoverageProjection(
             "symbol:app.handler:10:30",
-            "protected",
+            "executed",
             ("tests/test_app.py::test_handler",),
             ("relation:handler",),
-            CoverageGateEvaluation("work_package_target_protected", "passed", None),
+            CoverageGateEvaluation("work_package_target_executed_by_passing_suite", "passed", None),
         ),
         test_coverage_scope=CoverageScopeSummary(
             "symbol",
@@ -719,7 +719,7 @@ def test_code_review_human_surfaces_architecture_and_work_package_context(
     assert "module_complexity_not_displaced" in output
     assert "CODE_REVIEW_TEST_COVERAGE status=ready suite=selected" in output
     assert "CODE_REVIEW_TEST_COVERAGE_GATE id=tests_passed status=passed" in output
-    assert "CODE_REVIEW_WORK_PACKAGE_COVERAGE status=protected" in output
+    assert "CODE_REVIEW_WORK_PACKAGE_COVERAGE status=executed" in output
     assert 'tests=["tests/test_app.py::test_handler"]' in output
     assert "missing_lines=[[19, 20]]" in output
     assert "missing_branches=[[18, 20]]" in output

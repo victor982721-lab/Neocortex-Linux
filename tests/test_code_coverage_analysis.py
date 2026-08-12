@@ -343,7 +343,7 @@ def test_ready_evidence_preserves_dimensions_and_exact_test_relations() -> None:
     assert len(analysis.symbols) == 1
     assert analysis.symbols[0].missing_line_ranges == ((13, 13),)
     assert analysis.symbols[0].qualified_name == "target"
-    assert analysis.symbols[0].protecting_tests == (TEST_NODEID,)
+    assert analysis.symbols[0].executing_tests == (TEST_NODEID,)
     assert analysis.test_relations[0].production_symbol == SYMBOL
     assert analysis.test_relations[0].lines == (10, 11, 12)
     assert {gate.gate: gate.status for gate in analysis.gates} == {
@@ -365,8 +365,8 @@ def test_work_package_projection_resolves_stable_and_review_identities() -> None
         projection = project_work_package_coverage(analysis, target)
         assert scope is not None and scope.subject_key == SYMBOL
         assert projection.primary_symbol == SYMBOL
-        assert projection.status == "protected"
-        assert projection.protecting_tests == (TEST_NODEID,)
+        assert projection.status == "executed"
+        assert projection.executing_tests == (TEST_NODEID,)
         assert projection.gate.status == "passed"
 
 
@@ -380,10 +380,10 @@ def test_work_package_projection_resolves_unique_packaged_qualified_name_suffix(
     assert scope.subject_key == PACKAGED_SYMBOL
     assert scope.qualified_name == PACKAGED_QUALIFIED_NAME
     assert round(scope.totals.branch_coverage_percent or 0.0, 2) == 77.27
-    assert scope.protecting_tests == (TEST_NODEID,)
+    assert scope.executing_tests == (TEST_NODEID,)
     assert projection.primary_symbol == PACKAGED_SYMBOL
-    assert projection.status == "protected"
-    assert projection.protecting_tests == (TEST_NODEID,)
+    assert projection.status == "executed"
+    assert projection.executing_tests == (TEST_NODEID,)
     assert projection.gate.status == "passed"
 
 
@@ -429,7 +429,7 @@ def test_work_package_alias_ambiguity_and_missing_target_abstain() -> None:
     assert missing.status == "not_evaluated"
     assert missing.gate.reason == "work_package_target_not_measured"
     assert exact.primary_symbol == SYMBOL
-    assert exact.status == "protected"
+    assert exact.status == "executed"
 
 
 def test_failed_or_absent_provider_never_passes_gates() -> None:

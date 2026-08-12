@@ -196,7 +196,7 @@ def test_full_coverage_and_assertive_test_name_do_not_invent_asserts_relation() 
         totals=full_totals,
         missing_line_ranges=(),
         missing_branch_arcs=(),
-        protecting_tests=(nodeid,),
+        executing_tests=(nodeid,),
     )
     coverage = replace(coverage, symbols=(symbol,), test_relations=(relation,))
 
@@ -219,9 +219,9 @@ def test_full_coverage_and_assertive_test_name_do_not_invent_asserts_relation() 
     )
 
 
-def test_legacy_protecting_tests_without_exact_relation_are_ignored() -> None:
+def test_scope_executing_tests_without_exact_relation_are_ignored() -> None:
     coverage = _coverage()
-    assert coverage.symbols[0].protecting_tests == (TEST_NODEID,)
+    assert coverage.symbols[0].executing_tests == (TEST_NODEID,)
     coverage = replace(coverage, test_relations=())
 
     analysis = analyze_code_assurance(
@@ -278,7 +278,7 @@ def test_complete_mutation_is_separate_experiment_and_counterevidence() -> None:
         extra_metadata={
             # Untyped metadata is data, not an ASSERTS relation.
             "asserts_invariant": True,
-            "protecting_tests": [TEST_NODEID],
+            "executing_tests": [TEST_NODEID],
         },
     )
 

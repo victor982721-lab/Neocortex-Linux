@@ -22,7 +22,7 @@ from .external_evidence_store import (
     read_external_provider_evidence,
 )
 
-CODE_COVERAGE_SCHEMA = "neocortex.code-coverage-analysis/v1"
+CODE_COVERAGE_SCHEMA = "neocortex.code-coverage-analysis/v2"
 CODE_COVERAGE_PROVIDER_ID = "pytest-coverage-trusted-deep"
 
 CODE_COVERAGE_METRIC_LIMIT = 250_000
@@ -42,7 +42,7 @@ CoverageGateStatus = Literal["passed", "failed", "not_evaluated"]
 CoverageGateName = Literal[
     "tests_passed",
     "coverage_available",
-    "work_package_target_protected",
+    "work_package_target_executed_by_passing_suite",
     "line_coverage_not_degraded",
     "branch_coverage_not_degraded",
 ]
@@ -97,7 +97,7 @@ class CoverageScopeSummary:
     missing_branch_arcs: tuple[tuple[int, int], ...]
     missing_line_ranges_truncated: bool
     missing_branch_arcs_truncated: bool
-    protecting_tests: tuple[str, ...]
+    executing_tests: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -176,8 +176,8 @@ class CoverageComparison:
 @dataclass(frozen=True, slots=True)
 class WorkPackageCoverageProjection:
     primary_symbol: str
-    status: Literal["protected", "unprotected", "not_evaluated"]
-    protecting_tests: tuple[str, ...]
+    status: Literal["executed", "not_executed", "not_evaluated"]
+    executing_tests: tuple[str, ...]
     relation_ids: tuple[str, ...]
     gate: CoverageGateEvaluation
 
@@ -842,7 +842,7 @@ def _test_relations(
     return tuple(result)
 
 
-def _protecting_tests(
+def _executing_tests(
     symbols: tuple[CoverageScopeSummary, ...],
     relations: tuple[TestToSymbolRelation, ...],
 ) -> tuple[CoverageScopeSummary, ...]:
@@ -850,9 +850,9 @@ def _protecting_tests(
     for relation in relations:
         by_symbol[relation.production_symbol].update(relation.test_nodeids)
     if any(len(values) > CODE_COVERAGE_TESTS_PER_SYMBOL_LIMIT for values in by_symbol.values()):
-        raise _CoverageEvidenceError("protecting_tests_bound_exceeded")
+        raise _CoverageEvidenceError("executing_tests_bound_exceeded")
     return tuple(
-        replace(item, protecting_tests=tuple(sorted(by_symbol[item.subject_key])))
+        replace(item, executing_tests=tuple(sorted(by_symbol[item.subject_key])))
         for item in symbols
     )
 
@@ -990,7 +990,7 @@ def analyze_code_coverage(
             cast(Sequence[_RelationEvidence], evidence.relations),
             symbols,
         )
-        symbols = _protecting_tests(symbols, relations)
+        symbols = _executing_tests(symbols, relations)
         failed_test_nodeids = _failed_test_nodeids(
             cast(Sequence[_FindingEvidence], evidence.findings)
         )
@@ -1216,23 +1216,27 @@ def project_work_package_coverage(
         target = _bounded_string(primary_symbol, "work_package_primary_symbol")
     except _CoverageEvidenceError as exc:
         gate = CoverageGateEvaluation(
-            "work_package_target_protected",
+            "work_package_target_executed_by_passing_suite",
             "not_evaluated",
             str(exc),
         )
         return WorkPackageCoverageProjection(primary_symbol, "not_evaluated", (), (), gate)
     if analysis.status != "ready":
         reason = analysis.reason or "coverage_provider_not_ready"
-        gate = CoverageGateEvaluation("work_package_target_protected", "not_evaluated", reason)
+        gate = CoverageGateEvaluation(
+            "work_package_target_executed_by_passing_suite", "not_evaluated", reason
+        )
         return WorkPackageCoverageProjection(target, "not_evaluated", (), (), gate)
     if analysis.measurement_complete is not True:
         reason = "coverage_measurement_incomplete"
-        gate = CoverageGateEvaluation("work_package_target_protected", "not_evaluated", reason)
+        gate = CoverageGateEvaluation(
+            "work_package_target_executed_by_passing_suite", "not_evaluated", reason
+        )
         return WorkPackageCoverageProjection(target, "not_evaluated", (), (), gate)
     measured, resolution_reason = _resolve_work_package_coverage_scope(analysis, target)
     if measured is None:
         gate = CoverageGateEvaluation(
-            "work_package_target_protected",
+            "work_package_target_executed_by_passing_suite",
             "not_evaluated",
             resolution_reason,
         )
@@ -1246,14 +1250,14 @@ def project_work_package_coverage(
     tests_gate = next(item for item in analysis.gates if item.gate == "tests_passed")
     if tests_gate.status != "passed":
         gate = CoverageGateEvaluation(
-            "work_package_target_protected",
+            "work_package_target_executed_by_passing_suite",
             "failed" if tests_gate.status == "failed" else "not_evaluated",
-            "protecting_suite_did_not_pass",
+            "executing_suite_did_not_pass",
         )
         if gate.status == "failed":
             return WorkPackageCoverageProjection(
                 resolved_target,
-                "unprotected",
+                "not_executed",
                 tests,
                 relation_ids,
                 gate,
@@ -1267,13 +1271,13 @@ def project_work_package_coverage(
         )
     if not tests:
         gate = CoverageGateEvaluation(
-            "work_package_target_protected",
+            "work_package_target_executed_by_passing_suite",
             "failed",
-            "no_protecting_test_observed",
+            "no_executing_test_context_observed",
         )
-        return WorkPackageCoverageProjection(resolved_target, "unprotected", (), (), gate)
-    gate = CoverageGateEvaluation("work_package_target_protected", "passed", None)
-    return WorkPackageCoverageProjection(resolved_target, "protected", tests, relation_ids, gate)
+        return WorkPackageCoverageProjection(resolved_target, "not_executed", (), (), gate)
+    gate = CoverageGateEvaluation("work_package_target_executed_by_passing_suite", "passed", None)
+    return WorkPackageCoverageProjection(resolved_target, "executed", tests, relation_ids, gate)
 
 
 def _resolve_work_package_coverage_scope(

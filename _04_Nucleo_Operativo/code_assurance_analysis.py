@@ -74,7 +74,7 @@ _ANALYSIS_LIMITATIONS = (
     "human_decision_not_owned_by_code_analysis",
 )
 _OBSERVATION_LIMITATIONS = (
-    "executing_tests_are_coverage_contexts_not_protecting_tests",
+    "executing_tests_are_coverage_contexts_not_assertion_evidence",
     "coverage_percentage_does_not_prove_assertion_quality",
     "assertion_or_invariant_links_are_not_inferred_from_names_source_or_metadata",
     "coverage_symbol_revision_digest_is_not_exposed_by_the_v1_projection",
