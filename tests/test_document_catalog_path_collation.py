@@ -378,6 +378,15 @@ def test_v6_path_migration_rolls_back_atomically(
 ) -> None:
     database = tmp_path / "catalog-v6-rollback.sqlite3"
     _create_populated_v6_catalog(database)
+    # Exercise the rebuild branch deterministically on every CI platform.
+    # Windows already uses the v6 NOCASE layout and therefore has no physical
+    # path-table migration to interrupt.
+    monkeypatch.setattr(schema_module, "_PATH_COLLATION", "BINARY")
+    monkeypatch.setattr(
+        schema_module,
+        "_CURRENT_SCHEMA_DDL",
+        schema_module._document_catalog_schema_ddl("BINARY"),
+    )
     original = schema_module._copy_catalog_table_exact
 
     def fail_after_copy(
