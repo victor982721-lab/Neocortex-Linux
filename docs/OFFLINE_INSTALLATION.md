@@ -106,12 +106,13 @@ capacidad `audio`. La ausencia
 de `tesseract` o `qpdf` deja degradadas las funciones OCR/recuperación PDF de
 `documents`, incluido el OCR de PDF e imágenes dentro de ZIP; la ausencia de
 `tesseract` también degrada el OCR documental de `image`. LibreOffice
-(`soffice`) es opcional pero necesario para el backend preferido de DOC/XLS/PPT
-heredados; `catdoc`, `xls2csv` y `catppt` pueden cubrir individualmente esos
-formatos. El probe estático de capacidades busca estos ejecutables únicamente
-en `PATH`; no interpreta overrides de una invocación operativa. Sus estados
-declaran presencia, no validan los rangos de versiones: el resolver hermético y
-`pip check` son las barreras de compatibilidad antes de promover el runtime.
+(`soffice`) es opcional: se prefiere para DOC heredado y cubre XLS/PPT cuando no
+están disponibles `xls2csv`/`catppt`; `catdoc` cubre DOC cuando falta
+LibreOffice. El probe estático de capacidades busca estos ejecutables
+únicamente en `PATH`; no interpreta overrides de una invocación operativa. Sus
+estados declaran presencia, no validan los rangos de versiones: el resolver
+hermético y `pip check` son las barreras de compatibilidad antes de promover el
+runtime.
 
 En Windows, los wheels nativos del cierre `full` también requieren el Microsoft
 Visual C++ v14 Redistributable x64. Conserva el instalador firmado y su hash en

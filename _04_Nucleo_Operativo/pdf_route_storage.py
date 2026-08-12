@@ -12,6 +12,7 @@ from typing import Literal, Protocol, cast
 import xxhash
 
 from _02_Deduplicacion import FileSnapshot
+from neocortex.platform_policy import sqlite_path_collation
 
 from .pdf_route_cache import RETRYABLE_PAGE_ERROR_SQL, file_key
 from .pdf_route_models import PdfRouteConfig
@@ -26,6 +27,7 @@ from .retry_policy import retry_delay_seconds
 PROMOTION_BATCH_PAGES = 16
 PROMOTION_BATCH_BYTES = 8 * 1024 * 1024
 OCR_PROVENANCE_MAX_UTF8_BYTES = 64 * 1024
+_PATH_COLLATION = sqlite_path_collation()
 
 
 class _DocumentCacheDeleter(Protocol):
@@ -117,7 +119,7 @@ class PdfRouteStorageMixin:
             )
         stale_path_owners = connection.execute(
             "SELECT file_key FROM documents "
-            "WHERE path=? COLLATE NOCASE AND file_key<>? ORDER BY file_key",
+            f"WHERE path=? COLLATE {_PATH_COLLATION} AND file_key<>? ORDER BY file_key",
             (snapshot.path, key),
         ).fetchall()
         cache_deleter = cast(_DocumentCacheDeleter, self)

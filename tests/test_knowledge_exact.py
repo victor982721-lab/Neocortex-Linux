@@ -48,6 +48,7 @@ from _04_Nucleo_Operativo.knowledge_planner import (
 )
 from _04_Nucleo_Operativo.knowledge_snapshot import KnowledgeStatePaths
 from _04_Nucleo_Operativo.semantic_models import fingerprint_text
+from neocortex.platform_policy import sqlite_path_collation
 # endregion [01]
 
 # region [02] Implementación
@@ -292,8 +293,7 @@ def _create_catalog(path: Path) -> None:
             generation=1,
             file_identity=FileIdentity(1, 2),
             path="C:/docs/proteccion.pdf",
-            references='[{"authority":"IEC","identifier":"IEC-61850"},'
-            '{"identifier":"SN-2048"}]',
+            references='[{"authority":"IEC","identifier":"IEC-61850"},{"identifier":"SN-2048"}]',
         )
         _insert_catalog_document(
             connection,
@@ -305,19 +305,12 @@ def _create_catalog(path: Path) -> None:
 
 
 LOOKUP_ORCHESTRATION_FIXTURE = (
-    Path(__file__).parent
-    / "fixtures"
-    / "knowledge_exact"
-    / "lookup_exact_orchestration_v1.json"
+    Path(__file__).parent / "fixtures" / "knowledge_exact" / "lookup_exact_orchestration_v1.json"
 )
 
 
 def _state_file_bytes(state: Path) -> dict[str, bytes]:
-    return {
-        path.name: path.read_bytes()
-        for path in sorted(state.iterdir())
-        if path.is_file()
-    }
+    return {path.name: path.read_bytes() for path in sorted(state.iterdir()) if path.is_file()}
 
 
 def test_private_code_lookup_signature_is_frozen() -> None:
@@ -422,9 +415,7 @@ def test_lookup_exact_orchestration_preserves_primary_state_bytes(
 
 def test_plan_exact_terms_are_typed_and_serial_variants_are_deduplicated() -> None:
     plan = plan_knowledge_query(
-        KnowledgeQuery(
-            r"C:\Corpus\report-2026.pdf serial SN-2048 symbol control.validate"
-        )
+        KnowledgeQuery(r"C:\Corpus\report-2026.pdf serial SN-2048 symbol control.validate")
     )
 
     terms = classify_plan_exact_terms(plan)
@@ -475,9 +466,7 @@ def test_arbitrary_reasonable_extensions_are_names_without_code_evidence(
 
 
 def test_code_context_types_bare_camel_and_snake_case_as_symbols() -> None:
-    base = plan_knowledge_query(
-        KnowledgeQuery("definition KnowledgeSnapshot calculate_breaker")
-    )
+    base = plan_knowledge_query(KnowledgeQuery("definition KnowledgeSnapshot calculate_breaker"))
     plan = _legacy_plan_with_exact_terms(
         base,
         ("KnowledgeSnapshot", "calculate_breaker"),
@@ -606,16 +595,11 @@ def _assert_catalog_multi_term_matches(
     terms: tuple[ExactLookupTerm, ...],
 ) -> None:
     assert [match.term for match in result.matches] == list(terms)
-    assert all(
-        match.resource.current_path == "C:/docs/proteccion.pdf"
-        for match in result.matches
-    )
+    assert all(match.resource.current_path == "C:/docs/proteccion.pdf" for match in result.matches)
     assert all(match.source_rank == 1 for match in result.matches)
     assert all(match.generation == 1 for match in result.matches)
     assert all(match.model_signature == "classifier-v1" for match in result.matches)
-    assert all(
-        match.evidence.extractor == "document-catalog" for match in result.matches
-    )
+    assert all(match.evidence.extractor == "document-catalog" for match in result.matches)
     assert all(match.evidence.extractor_version == "6" for match in result.matches)
     assert len({match.evidence.evidence_id for match in result.matches}) == 3
 
@@ -695,9 +679,7 @@ def test_catalog_invalid_json_and_hostile_identifier_fail_closed(
     )
     with closing(sqlite3.connect(catalog)) as connection, connection:
         assert (
-            connection.execute(
-                "SELECT COUNT(*) FROM catalog_generation_documents"
-            ).fetchone()[0]
+            connection.execute("SELECT COUNT(*) FROM catalog_generation_documents").fetchone()[0]
             == 2
         )
         connection.execute(
@@ -888,9 +870,7 @@ def test_catalog_source_alias_is_applied_before_limit(tmp_path: Path) -> None:
         ),
     )
 
-    assert [match.resource.current_path for match in result.matches] == [
-        "C:/docs/Z.xlsx"
-    ]
+    assert [match.resource.current_path for match in result.matches] == ["C:/docs/Z.xlsx"]
     assert result.reports[0].rows_observed == 1
 
 
@@ -920,18 +900,14 @@ def test_inventory_path_name_and_full_hash_are_constrained_but_partial(
         ),
     )
 
-    inventory_matches = [
-        match for match in result.matches if match.resource.owner == "inventory"
-    ]
+    inventory_matches = [match for match in result.matches if match.resource.owner == "inventory"]
     assert len(inventory_matches) == 3
     assert {match.term.kind for match in inventory_matches} == {
         ExactLookupKind.PATH,
         ExactLookupKind.NAME,
         ExactLookupKind.HASH,
     }
-    assert {match.resource.resource_id for match in inventory_matches} == {
-        "resource:file:1:2:10"
-    }
+    assert {match.resource.resource_id for match in inventory_matches} == {"resource:file:1:2:10"}
     hash_match = next(
         match for match in inventory_matches if match.term.kind is ExactLookupKind.HASH
     )
@@ -989,9 +965,7 @@ def test_inventory_checkpoint_change_after_snapshot_abstains(tmp_path: Path) -> 
     inventory = state / "dedup.sqlite3"
     _create_inventory(inventory)
     with closing(sqlite3.connect(inventory)) as connection, connection:
-        connection.execute(
-            "UPDATE inventory_checkpoints SET updated_ns=4 WHERE root='C:/docs'"
-        )
+        connection.execute("UPDATE inventory_checkpoints SET updated_ns=4 WHERE root='C:/docs'")
 
     result = lookup_exact(
         KnowledgeStatePaths.from_directory(state),
@@ -1014,7 +988,13 @@ def test_inventory_checkpoint_change_after_snapshot_abstains(tmp_path: Path) -> 
 
 def test_stable_match_ids_use_observed_resource_evidence_not_query_term(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(
+        knowledge_exact_module,
+        "_PATH_COLLATION",
+        sqlite_path_collation(platform_name="nt"),
+    )
     state = tmp_path / "state"
     state.mkdir()
     _create_inventory(state / "dedup.sqlite3")
@@ -1125,12 +1105,8 @@ def test_inventory_format_and_source_predicates_precede_limit(tmp_path: Path) ->
         ),
     )
 
-    assert [match.resource.current_path for match in by_format.matches] == [
-        "C:/docs/Z.pdf"
-    ]
-    assert [match.resource.current_path for match in by_source.matches] == [
-        "C:/docs/Z.pdf"
-    ]
+    assert [match.resource.current_path for match in by_format.matches] == ["C:/docs/Z.pdf"]
+    assert [match.resource.current_path for match in by_source.matches] == ["C:/docs/Z.pdf"]
 
 
 def test_invalid_row_does_not_count_as_omitted_valid_match(tmp_path: Path) -> None:
@@ -1233,9 +1209,7 @@ def test_global_budget_is_shared_in_fixed_owner_order(tmp_path: Path) -> None:
 
     for request in requests:
         result = lookup_exact(paths, snapshot, request)
-        code_report = next(
-            report for report in result.reports if report.owner == "code"
-        )
+        code_report = next(report for report in result.reports if report.owner == "code")
 
         assert code_report.executed is False
         assert code_report.truncated is True
@@ -1287,12 +1261,8 @@ def test_code_exact_path_hash_and_symbol_need_no_fts_chunks(tmp_path: Path) -> N
 
     code_matches = [match for match in result.matches if match.resource.owner == "code"]
     assert len(code_matches) == 4
-    assert {match.resource.resource_id for match in code_matches} == {
-        "resource:file:1:2:10"
-    }
-    symbol = next(
-        match for match in code_matches if match.term.kind is ExactLookupKind.SYMBOL
-    )
+    assert {match.resource.resource_id for match in code_matches} == {"resource:file:1:2:10"}
+    symbol = next(match for match in code_matches if match.term.kind is ExactLookupKind.SYMBOL)
     assert symbol.evidence.symbol == "control.validate"
     assert symbol.evidence.start_line == 1
     assert all(
@@ -1334,9 +1304,7 @@ def test_code_exact_reads_committed_wal_without_mutating_owner_bytes(
         ),
     )
 
-    assert [match.evidence.symbol for match in result.matches] == [
-        "control.validate"
-    ]
+    assert [match.evidence.symbol for match in result.matches] == ["control.validate"]
     assert code.read_bytes() == primary_before
     assert wal.read_bytes() == wal_before
 
@@ -1371,9 +1339,7 @@ def test_code_format_predicate_precedes_limit(tmp_path: Path) -> None:
     code = state / "code.sqlite3"
     _create_code(code)
     with closing(sqlite3.connect(code)) as connection, connection:
-        connection.execute(
-            "UPDATE files SET current_path='C:/src/A.js' WHERE file_id=1"
-        )
+        connection.execute("UPDATE files SET current_path='C:/src/A.js' WHERE file_id=1")
         connection.execute(
             "UPDATE file_versions SET path_observed='C:/src/A.js' WHERE version_id=1"
         )
@@ -1540,8 +1506,7 @@ def test_request_bounds_and_parameterized_hostile_identifier() -> None:
     with pytest.raises(ValueError, match="at most 64"):
         ExactLookupRequest(
             tuple(
-                ExactLookupTerm(ExactLookupKind.IDENTIFIER, f"IEC-{index}")
-                for index in range(65)
+                ExactLookupTerm(ExactLookupKind.IDENTIFIER, f"IEC-{index}") for index in range(65)
             )
         )
     term = ExactLookupTerm(
@@ -1555,8 +1520,7 @@ def test_exactly_sixty_four_terms_are_processed_deterministically(
     tmp_path: Path,
 ) -> None:
     terms = tuple(
-        ExactLookupTerm(ExactLookupKind.IDENTIFIER, f"IEC-{index:04d}")
-        for index in range(64)
+        ExactLookupTerm(ExactLookupKind.IDENTIFIER, f"IEC-{index:04d}") for index in range(64)
     )
     result = lookup_exact(
         KnowledgeStatePaths.from_directory(tmp_path / "state"),

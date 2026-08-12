@@ -51,9 +51,14 @@ runtime aislado y obtiene Node dentro de la release. En el host de referencia:
 ```bash
 sudo apt install python3.14-venv qpdf tesseract-ocr tesseract-ocr-spa \
   tesseract-ocr-eng tesseract-ocr-deu tesseract-ocr-chi-sim \
-  tesseract-ocr-chi-tra tesseract-ocr-osd ffmpeg libreoffice rsync \
+  tesseract-ocr-chi-tra tesseract-ocr-osd ffmpeg libreoffice catdoc rsync \
   desktop-file-utils
 ```
+
+En Ubuntu, el paquete `catdoc` aporta `catdoc`, `xls2csv` y `catppt`.
+NeoCortex prioriza estos dos últimos para XLS y PPT heredados, respectivamente,
+y conserva LibreOffice como alternativa cuando el extractor específico no está
+disponible.
 
 La instalación necesita red para resolver wheels binarios, Node y, cuando se
 solicita, modelos. Requiere al menos 4 GiB libres para modelos y cachés. No
@@ -176,10 +181,11 @@ La entrada de aplicaciones se llama **NeoCortex**. La ventana muestra
 controles de mutación. Inventario, PDF, DOCX, Office, ZIP anidados con OCR,
 texto/correo/Office heredado, audio, video, imagen, Code, catálogo, Semantic y
 búsqueda siguen disponibles. La página **Consulta** ofrece status, search, ask
-y review value sobre scopes fijos, sin modificar estado. LibreOffice permite
-extraer DOC/XLS/PPT sin modificar el original; Tesseract conserva `spa+eng`
-como default y permite perfiles latín/Han/auto con alemán, chino simplificado,
-tradicional y OSD. FFmpeg/FFprobe sostienen la ruta Video acotada.
+y review value sobre scopes fijos, sin modificar estado. DOC heredado prioriza
+LibreOffice; XLS y PPT priorizan `xls2csv` y `catppt`. Todos extraen texto sin
+modificar el original. Tesseract conserva `spa+eng` como default y permite
+perfiles latín/Han/auto con alemán, chino simplificado, tradicional y OSD.
+FFmpeg/FFprobe sostienen la ruta Video acotada.
 
 La primera ejecución debe usar una raíz de laboratorio con 20–50 fixtures, una
 sola ruta por vez y un máximo de 10–15 minutos. Compare hashes antes y después;

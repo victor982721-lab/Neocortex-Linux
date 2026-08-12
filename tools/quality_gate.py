@@ -21,6 +21,7 @@ import sys
 import sysconfig
 import tempfile
 import tomllib
+import unicodedata
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -30,6 +31,10 @@ from typing import NoReturn, cast
 
 
 BASELINE_SCHEMA = "neocortex.quality-gate-static-baseline/v1"
+STATIC_DIAGNOSTIC_SHADOW_SCHEMA = "neocortex.quality-gate-static-diagnostic-shadow/v1"
+STATIC_DIAGNOSTIC_FINGERPRINT_ALGORITHM = (
+    "sha256(canonical-json(tool,version,path,rule,severity,normalized-message,anchor,symbol))-v1"
+)
 COVERAGE_BASELINE_SCHEMA = "neocortex.quality-gate-coverage-baseline/v1"
 DEFAULT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_BASELINE = Path(__file__).with_name("quality_gate_static_baseline.json")
@@ -126,10 +131,44 @@ class TestFile:
 
 
 @dataclass(frozen=True, slots=True)
+class StaticDiagnosticEvidence:
+    tool: str
+    version: str
+    path: str
+    rule: str
+    severity: str
+    normalized_message: str
+    anchor: str | None = None
+    symbol: str | None = None
+
+    @property
+    def fingerprint(self) -> str:
+        payload = {
+            "tool": self.tool,
+            "version": self.version,
+            "path": self.path,
+            "rule": self.rule,
+            "severity": self.severity,
+            "message": self.normalized_message,
+            "anchor": self.anchor,
+            "symbol": self.symbol,
+        }
+        encoded = json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+        return "static-diagnostic-v1:sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
 class StaticObservation:
     tool: str
     version: str
     counts: Counter[tuple[str, str, str]]
+    diagnostics: tuple[StaticDiagnosticEvidence, ...] = ()
 
     @property
     def total(self) -> int:
@@ -559,6 +598,102 @@ def _relative_path(raw: object, root: Path) -> str:
     return text.removeprefix("./")
 
 
+def _normalize_static_diagnostic_message(raw: object, root: Path) -> str:
+    """Normalize volatile layout and whitespace without erasing diagnostic meaning."""
+
+    text = "unknown" if raw is None else str(raw)
+    text = unicodedata.normalize("NFC", text).replace("\r\n", "\n").replace("\r", "\n")
+    root_variants = {
+        os.fspath(root),
+        os.fspath(root).replace("\\", "/"),
+        os.fspath(root).replace("/", "\\"),
+    }
+    for variant in sorted((item for item in root_variants if item), key=len, reverse=True):
+        text = text.replace(variant, "<root>")
+    normalized = " ".join(text.split())
+    return normalized or "unknown"
+
+
+def _optional_static_symbol(item: Mapping[str, object]) -> str | None:
+    for key in ("symbol", "symbolName"):
+        raw = item.get(key)
+        if isinstance(raw, str):
+            normalized = " ".join(unicodedata.normalize("NFC", raw).split())
+            if normalized:
+                return normalized
+    return None
+
+
+def _static_coordinate(raw: object, *, offset: int = 0) -> int | None:
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
+        return None
+    return raw + offset
+
+
+def _static_anchor(
+    start_line: object,
+    start_column: object,
+    end_line: object = None,
+    end_column: object = None,
+    *,
+    offset: int = 0,
+) -> str | None:
+    line = _static_coordinate(start_line, offset=offset)
+    if line is None:
+        return None
+    column = _static_coordinate(start_column, offset=offset)
+    start = str(line) if column is None else f"{line}:{column}"
+    last_line = _static_coordinate(end_line, offset=offset)
+    if last_line is None:
+        return start
+    last_column = _static_coordinate(end_column, offset=offset)
+    end = str(last_line) if last_column is None else f"{last_line}:{last_column}"
+    return f"{start}-{end}"
+
+
+def _nested_static_anchor(
+    start: object,
+    end: object,
+    *,
+    line_key: str,
+    column_key: str,
+    offset: int = 0,
+) -> str | None:
+    start_mapping = start if isinstance(start, Mapping) else {}
+    end_mapping = end if isinstance(end, Mapping) else {}
+    return _static_anchor(
+        start_mapping.get(line_key),
+        start_mapping.get(column_key),
+        end_mapping.get(line_key),
+        end_mapping.get(column_key),
+        offset=offset,
+    )
+
+
+def _static_diagnostic_evidence(
+    *,
+    tool: str,
+    version: str,
+    path: str,
+    rule: str,
+    severity: str,
+    message: object,
+    root: Path,
+    anchor: str | None,
+    symbol: str | None,
+) -> StaticDiagnosticEvidence:
+    return StaticDiagnosticEvidence(
+        tool=tool,
+        version=version,
+        path=path,
+        rule=rule,
+        severity=severity,
+        normalized_message=_normalize_static_diagnostic_message(message, root),
+        anchor=anchor,
+        symbol=symbol,
+    )
+
+
 def _ruff_observation(root: Path) -> StaticObservation:
     version_run = _run_captured(
         (sys.executable, "-m", "ruff", "--version"),
@@ -586,18 +721,35 @@ def _ruff_observation(root: Path) -> StaticObservation:
         _fail(f"Ruff returned invalid JSON: {error}")
     if not isinstance(payload, list):
         _fail("Ruff returned a non-list payload")
+    version = _semantic_version(version_run.stdout, "Ruff")
     counts: Counter[tuple[str, str, str]] = Counter()
+    diagnostics: list[StaticDiagnosticEvidence] = []
     for item in payload:
         if not isinstance(item, Mapping):
             _fail("Ruff returned a malformed diagnostic")
-        counts[
-            (
-                _relative_path(item.get("filename", "unknown"), root),
-                str(item.get("code") or "unknown"),
-                "error",
+        path = _relative_path(item.get("filename", "unknown"), root)
+        rule = str(item.get("code") or "unknown")
+        severity = "error"
+        counts[(path, rule, severity)] += 1
+        diagnostics.append(
+            _static_diagnostic_evidence(
+                tool="ruff",
+                version=version,
+                path=path,
+                rule=rule,
+                severity=severity,
+                message=item.get("message"),
+                root=root,
+                anchor=_nested_static_anchor(
+                    item.get("location"),
+                    item.get("end_location"),
+                    line_key="row",
+                    column_key="column",
+                ),
+                symbol=_optional_static_symbol(item),
             )
-        ] += 1
-    return StaticObservation("ruff", _semantic_version(version_run.stdout, "Ruff"), counts)
+        )
+    return StaticObservation("ruff", version, counts, tuple(diagnostics))
 
 
 def _mypy_observation(root: Path) -> StaticObservation:
@@ -621,7 +773,9 @@ def _mypy_observation(root: Path) -> StaticObservation:
         timeout=STATIC_TIMEOUT_SECONDS,
         allowed_codes=frozenset({0, 1}),
     )
+    version = _semantic_version(version_run.stdout, "Mypy")
     counts: Counter[tuple[str, str, str]] = Counter()
+    diagnostics: list[StaticDiagnosticEvidence] = []
     for line_number, raw_line in enumerate(completed.stdout.splitlines(), 1):
         if not raw_line.strip():
             continue
@@ -634,14 +788,28 @@ def _mypy_observation(root: Path) -> StaticObservation:
         severity = str(item.get("severity") or "error")
         if severity != "error":
             continue
-        counts[
-            (
-                _relative_path(item.get("file", "unknown"), root),
-                str(item.get("code") or "unknown"),
-                severity,
+        path = _relative_path(item.get("file", "unknown"), root)
+        rule = str(item.get("code") or "unknown")
+        counts[(path, rule, severity)] += 1
+        diagnostics.append(
+            _static_diagnostic_evidence(
+                tool="mypy",
+                version=version,
+                path=path,
+                rule=rule,
+                severity=severity,
+                message=item.get("message"),
+                root=root,
+                anchor=_static_anchor(
+                    item.get("line"),
+                    item.get("column"),
+                    item.get("end_line"),
+                    item.get("end_column"),
+                ),
+                symbol=_optional_static_symbol(item),
             )
-        ] += 1
-    return StaticObservation("mypy", _semantic_version(version_run.stdout, "Mypy"), counts)
+        )
+    return StaticObservation("mypy", version, counts, tuple(diagnostics))
 
 
 def _pyright_command() -> tuple[Path, dict[str, str]]:
@@ -732,21 +900,40 @@ def _pyright_observation(root: Path) -> StaticObservation:
     diagnostics = payload.get("generalDiagnostics")
     if not isinstance(diagnostics, list):
         _fail("Pyright diagnostics are missing")
+    version = _semantic_version(version_run.stdout, "Pyright")
     counts: Counter[tuple[str, str, str]] = Counter()
+    evidence: list[StaticDiagnosticEvidence] = []
     for item in diagnostics:
         if not isinstance(item, Mapping):
             _fail("Pyright returned a malformed diagnostic")
         severity = str(item.get("severity") or "unknown")
         if severity not in {"error", "warning"}:
             continue
-        counts[
-            (
-                _relative_path(item.get("file", "unknown"), root),
-                str(item.get("rule") or "unknown"),
-                severity,
+        path = _relative_path(item.get("file", "unknown"), root)
+        rule = str(item.get("rule") or "unknown")
+        counts[(path, rule, severity)] += 1
+        raw_range = item.get("range")
+        range_mapping = raw_range if isinstance(raw_range, Mapping) else {}
+        evidence.append(
+            _static_diagnostic_evidence(
+                tool="pyright",
+                version=version,
+                path=path,
+                rule=rule,
+                severity=severity,
+                message=item.get("message"),
+                root=root,
+                anchor=_nested_static_anchor(
+                    range_mapping.get("start"),
+                    range_mapping.get("end"),
+                    line_key="line",
+                    column_key="character",
+                    offset=1,
+                ),
+                symbol=_optional_static_symbol(item),
             )
-        ] += 1
-    return StaticObservation("pyright", _semantic_version(version_run.stdout, "Pyright"), counts)
+        )
+    return StaticObservation("pyright", version, counts, tuple(evidence))
 
 
 def collect_static_observations(root: Path) -> tuple[StaticObservation, ...]:
@@ -777,6 +964,61 @@ def baseline_payload(observations: Sequence[StaticObservation]) -> dict[str, obj
             }
             for observation in observations
         },
+    }
+
+
+def static_diagnostic_shadow_payload(
+    observations: Sequence[StaticObservation],
+) -> dict[str, object]:
+    """Return non-enforcing diagnostic identities alongside the count baseline."""
+
+    tools: dict[str, object] = {}
+    for observation in sorted(observations, key=lambda item: item.tool):
+        fingerprint_counts = Counter(item.fingerprint for item in observation.diagnostics)
+        evidence_by_fingerprint: dict[str, StaticDiagnosticEvidence] = {}
+        for item in observation.diagnostics:
+            evidence_by_fingerprint.setdefault(item.fingerprint, item)
+        entries = []
+        for fingerprint, count in sorted(fingerprint_counts.items()):
+            item = evidence_by_fingerprint[fingerprint]
+            entries.append(
+                {
+                    "fingerprint": fingerprint,
+                    "count": count,
+                    "path": item.path,
+                    "rule": item.rule,
+                    "severity": item.severity,
+                    "message_sha256": hashlib.sha256(
+                        item.normalized_message.encode("utf-8")
+                    ).hexdigest(),
+                    "anchor": item.anchor,
+                    "symbol": item.symbol,
+                }
+            )
+        encoded_entries = json.dumps(
+            entries,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+        tools[observation.tool] = {
+            "version": observation.version,
+            "count_baseline_total": observation.total,
+            "fingerprinted_diagnostic_total": len(observation.diagnostics),
+            "unique_fingerprints": len(entries),
+            "coverage": (
+                "complete" if len(observation.diagnostics) == observation.total else "partial"
+            ),
+            "manifest_sha256": hashlib.sha256(encoded_entries).hexdigest(),
+            "diagnostics": entries,
+        }
+    return {
+        "schema": STATIC_DIAGNOSTIC_SHADOW_SCHEMA,
+        "mode": "shadow",
+        "enforced": False,
+        "fingerprint_algorithm": STATIC_DIAGNOSTIC_FINGERPRINT_ALGORITHM,
+        "tools": tools,
     }
 
 
@@ -819,6 +1061,8 @@ def _baseline_counts(raw: object, tool: str) -> tuple[str, int, Counter[tuple[st
 def compare_static_observations(
     observations: Sequence[StaticObservation], baseline: Mapping[str, object]
 ) -> dict[str, int]:
+    """Enforce only the established version and count buckets, never shadow identities."""
+
     if baseline.get("schema") != BASELINE_SCHEMA:
         _fail("static baseline has an unsupported schema")
     raw_tools = baseline.get("tools")
@@ -1226,6 +1470,7 @@ def run_static_gate(
             item.tool: {"version": item.version, "total": totals[item.tool]}
             for item in observations
         },
+        "diagnostic_shadow": static_diagnostic_shadow_payload(observations),
     }
 
 

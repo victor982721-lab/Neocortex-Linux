@@ -28,6 +28,7 @@ from neocortex.platform_policy import (
     current_platform_policy,
     resolve_xdg_documents_directory,
     stat_birthtime_ns,
+    sqlite_path_collation,
 )
 
 
@@ -88,6 +89,7 @@ def test_linux_policy_uses_xdg_roots_and_safe_documents_file(tmp_path: Path) -> 
     assert policy.stable_launcher == data_home / "Neocortex" / "bin" / "Neocortex"
     assert policy.user_alias == home / ".local" / "bin" / "Neocortex"
     assert policy.inventory_backend == "portable-full-scan"
+    assert policy.path_collation == "BINARY"
     assert policy.mutation_available is False
 
 
@@ -104,7 +106,13 @@ def test_windows_policy_preserves_profile_and_localappdata_contract(tmp_path: Pa
     assert policy.state_directory == local / "Neocortex" / "state"
     assert policy.stable_launcher == local / "Programs" / "Neocortex" / "bin" / "Neocortex.exe"
     assert policy.inventory_backend == "ntfs-usn"
+    assert policy.path_collation == "NOCASE"
     assert policy.mutation_available is True
+
+
+def test_filesystem_path_collation_is_allowlisted_by_platform() -> None:
+    assert sqlite_path_collation(platform_name="posix") == "BINARY"
+    assert sqlite_path_collation(platform_name="nt") == "NOCASE"
 
 
 def test_posix_birthtime_is_explicitly_unavailable_and_windows_fallback_is_preserved() -> None:

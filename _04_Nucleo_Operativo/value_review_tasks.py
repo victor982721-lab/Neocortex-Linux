@@ -91,6 +91,23 @@ class ValueReviewTaskQueueStatus(StrEnum):
     UNAVAILABLE = "unavailable"
 
 
+def _reference_day_ns(value: int) -> int:
+    return (value // _DAY_NS) * _DAY_NS
+
+
+def _fence_reference_day_ns(fence: ReviewTaskSourceFence) -> int:
+    value = fence.source_snapshot.to_dict().get("reference_day_ns")
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueReviewTaskStateError("ReviewTask fence lacks a valid evaluation epoch")
+    return value
+
+
+def _owner_snapshot_without_epoch(fence: ReviewTaskSourceFence) -> CanonicalJsonObject:
+    payload = fence.source_snapshot.to_dict()
+    payload.pop("reference_day_ns", None)
+    return CanonicalJsonObject.from_mapping(payload)
+
+
 @dataclass(frozen=True, slots=True)
 class ValueReviewTaskQueue:
     status: ValueReviewTaskQueueStatus
@@ -228,7 +245,7 @@ def build_value_review_task_fence(
     if source.availability is ValueReviewAvailability.UNAVAILABLE:
         return None, source.reason or "value_review_source_unavailable"
     source_payload = source.to_dict()
-    source_payload["reference_day_ns"] = (reference_time_ns // _DAY_NS) * _DAY_NS
+    source_payload["reference_day_ns"] = _reference_day_ns(reference_time_ns)
     selector_payload = {
         "policy": "conservative-value-review-v1",
         "scope": scope,
@@ -279,12 +296,12 @@ def read_value_review_task_queue(
             (),
             False,
         )
-    fence, source_reason = build_value_review_task_fence(
+    requested_fence, source_reason = build_value_review_task_fence(
         paths,
         scope=scope,
         reference_time_ns=reference_time_ns,
     )
-    if fence is None:
+    if requested_fence is None:
         return ValueReviewTaskQueue(
             ValueReviewTaskQueueStatus.UNAVAILABLE,
             source_reason,
@@ -296,14 +313,45 @@ def read_value_review_task_queue(
     from .review_task_repository import (
         has_review_task_scan_history,
         list_current_review_tasks,
+        read_latest_complete_review_task_progress,
         read_review_task_progress,
     )
 
     progress = read_review_task_progress(
         database,
-        fence,
+        requested_fence,
         cancellation_check=cancellation_check,
     )
+    fence = requested_fence
+    if progress is None or not progress.complete:
+        from .review_task_repository import find_review_task_scan_progress
+
+        incomplete, complete = find_review_task_scan_progress(
+            database,
+            scope=scope,
+            task_type=VALUE_REVIEW_TASK_TYPE,
+            selector_signature=requested_fence.selector_signature,
+            owner_source_snapshot=_owner_snapshot_without_epoch(requested_fence),
+            cancellation_check=cancellation_check,
+        )
+        # A committed complete epoch remains the public queue head while the
+        # next evaluation epoch is still building.  Refresh resumes the
+        # incomplete epoch; read-only consumers never observe its partial page
+        # as if it replaced the last complete truth.
+        selected = (
+            complete
+            or read_latest_complete_review_task_progress(
+                database,
+                scope=scope,
+                task_type=VALUE_REVIEW_TASK_TYPE,
+                selector_signature=requested_fence.selector_signature,
+                cancellation_check=cancellation_check,
+            )
+            or incomplete
+        )
+        if selected is not None:
+            progress = selected
+            fence = selected.fence
     if progress is None:
         historical_scan = has_review_task_scan_history(
             database,
@@ -341,6 +389,13 @@ def read_value_review_task_queue(
             (),
             False,
         )
+    policy_time_stale = progress.complete and (
+        _fence_reference_day_ns(progress.fence) != _reference_day_ns(reference_time_ns)
+    )
+    source_changed = progress.complete and (
+        _owner_snapshot_without_epoch(progress.fence)
+        != _owner_snapshot_without_epoch(requested_fence)
+    )
     page = list_current_review_tasks(
         database,
         limit=limit,
@@ -348,6 +403,7 @@ def read_value_review_task_queue(
         task_type=VALUE_REVIEW_TASK_TYPE,
         states=(ReviewTaskState.OPEN, ReviewTaskState.IN_REVIEW),
         source_snapshot_fingerprint=fence.source_snapshot_fingerprint,
+        source_snapshot_as_published=policy_time_stale or source_changed,
         cancellation_check=cancellation_check,
     )
     for record in page.items:
@@ -356,14 +412,24 @@ def read_value_review_task_queue(
         _validated_value_snapshot(record)
     evidence_complete = progress.evidence_complete and source_reason is None
     status = (
-        ValueReviewTaskQueueStatus.READY
-        if progress.complete and evidence_complete
-        else ValueReviewTaskQueueStatus.PARTIAL
+        ValueReviewTaskQueueStatus.STALE
+        if policy_time_stale or source_changed
+        else (
+            ValueReviewTaskQueueStatus.READY
+            if progress.complete and evidence_complete
+            else ValueReviewTaskQueueStatus.PARTIAL
+        )
     )
     queue_reason = (
         None
         if status is ValueReviewTaskQueueStatus.READY
-        else progress.evidence_reason or source_reason or "review_task_scan_partial"
+        else (
+            "review_task_source_changed"
+            if source_changed
+            else "review_task_policy_time_stale"
+            if policy_time_stale
+            else progress.evidence_reason or source_reason or "review_task_scan_partial"
+        )
     )
     return ValueReviewTaskQueue(
         status,
@@ -388,7 +454,7 @@ def refresh_value_review_tasks(
     now_ns = clock_ns()
     if isinstance(now_ns, bool) or not isinstance(now_ns, int) or now_ns <= 0:
         raise RuntimeError("value review refresh clock returned an invalid timestamp")
-    reference_time_ns = (now_ns // _DAY_NS) * _DAY_NS
+    reference_time_ns = _reference_day_ns(now_ns)
     _checkpoint(cancellation_check)
     fence, source_reason = build_value_review_task_fence(
         paths,
@@ -419,6 +485,22 @@ def refresh_value_review_tasks(
         if version == FRAMEWORK_SCHEMA_VERSION
         else None
     )
+    if progress is None and version == FRAMEWORK_SCHEMA_VERSION:
+        from .review_task_repository import find_review_task_scan_progress
+
+        candidate, _complete = find_review_task_scan_progress(
+            database,
+            scope=scope,
+            task_type=VALUE_REVIEW_TASK_TYPE,
+            selector_signature=fence.selector_signature,
+            owner_source_snapshot=_owner_snapshot_without_epoch(fence),
+            cancellation_check=cancellation_check,
+        )
+        if candidate is not None:
+            fence = candidate.fence
+            progress = candidate
+            reference_time_ns = _fence_reference_day_ns(candidate.fence)
+            source_reason = candidate.evidence_reason or source_reason
     if progress is not None and progress.complete:
         return ValueReviewTaskRefreshResult(
             "complete" if progress.evidence_complete and source_reason is None else "partial",
@@ -547,14 +629,17 @@ def _publication(
     for item in report_items:
         logical_key = _logical_key(scope, item)
         previous = head_by_key.get(logical_key)
-        if previous is not None and previous.state in {
-            ReviewTaskState.RESOLVED,
-            ReviewTaskState.DISMISSED,
-        }:
-            # Human-terminal knowledge is canonical. A source refresh may
-            # preserve the finding, but it must not silently reopen it.
-            continue
         source = input_by_resource[item.resource_id]
+        if (
+            previous is not None
+            and previous.state
+            in {
+                ReviewTaskState.RESOLVED,
+                ReviewTaskState.DISMISSED,
+            }
+            and not _terminal_scope_expired(previous, source=source, fence=fence)
+        ):
+            continue
         version = 1 if previous is None else int(previous.task_version) + 1
         supersedes = None if previous is None else str(previous.task_id)
         identity_payload = {
@@ -630,6 +715,45 @@ def _publication(
             else loaded.reason or source_reason or "value_review_evidence_partial"
         ),
     )
+
+
+def _terminal_scope_expired(
+    previous: ReviewTaskVersionHead,
+    *,
+    source: ReviewTaskInput,
+    fence: ReviewTaskSourceFence,
+) -> bool:
+    decision = previous.decision
+    if decision is None:
+        return False
+    payload = decision.to_dict()
+    expected = {
+        "decision",
+        "schema",
+        "scope",
+        "selector_signature",
+        "source_input_fingerprint",
+        "source_snapshot_fingerprint",
+    }
+    if set(payload) != expected:
+        # Legacy terminal decisions remain canonical; no intent is invented.
+        return False
+    if (
+        payload.get("schema") != "neocortex.review-task-decision/v1"
+        or payload.get("decision") != previous.state.value
+        or payload.get("source_input_fingerprint") != previous.source_input_fingerprint
+        or payload.get("source_snapshot_fingerprint") != previous.source_snapshot_fingerprint
+        or payload.get("selector_signature") != previous.selector_signature
+    ):
+        raise ValueReviewTaskStateError("terminal ReviewTask decision is contradictory")
+    decision_scope = payload.get("scope")
+    if decision_scope == "permanent":
+        return False
+    if decision_scope == "until-source-change":
+        return source.fingerprint != previous.source_input_fingerprint
+    if decision_scope == "until-policy-change":
+        return fence.selector_signature != previous.selector_signature
+    raise ValueReviewTaskStateError("terminal ReviewTask decision scope is invalid")
 
 
 def _review_input(observation: ValueFileObservation) -> ReviewTaskInput:

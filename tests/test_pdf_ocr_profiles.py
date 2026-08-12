@@ -243,15 +243,15 @@ def test_schema_12_promotes_bounded_page_ocr_provenance() -> None:
             ).fetchone()[0]
             stored = connection.execute("SELECT ocr_provenance_json FROM pages").fetchone()[0]
 
-    assert version == str(SCHEMA_VERSION) == "12"
+    assert version == str(SCHEMA_VERSION) == "13"
     assert json.loads(stored) == provenance
 
 
 def test_schema_11_migration_preserves_populated_pages_and_staging() -> None:
     with tempfile.TemporaryDirectory() as temporary:
         state = Path(temporary) / "pdf.sqlite3"
-        initialize_pdf_state(state)
         with closing(sqlite3.connect(state)) as connection:
+            pdf_schema._build_pdf_v12_canonical_schema(connection)
             connection.execute("ALTER TABLE pages DROP COLUMN ocr_provenance_json")
             connection.execute("ALTER TABLE page_staging DROP COLUMN ocr_provenance_json")
             connection.execute(
@@ -269,7 +269,7 @@ def test_schema_11_migration_preserves_populated_pages_and_staging() -> None:
                 file_key,processing_signature,page_number,source,text_zlib,text_chars)
                 VALUES('key','sig',1,'ocr',X'78',1)"""
             )
-            connection.execute("UPDATE metadata SET value='11' WHERE key='schema_version'")
+            connection.execute("INSERT INTO metadata VALUES('schema_version','11')")
             connection.commit()
 
         initialize_pdf_state(state)
@@ -283,7 +283,7 @@ def test_schema_11_migration_preserves_populated_pages_and_staging() -> None:
                 "SELECT file_key,ocr_provenance_json FROM page_staging"
             ).fetchone()
 
-    assert version == "12"
+    assert version == "13"
     assert page == ("key", None)
     assert staged == ("key", None)
 
@@ -291,11 +291,11 @@ def test_schema_11_migration_preserves_populated_pages_and_staging() -> None:
 def test_schema_11_ocr_provenance_migration_rolls_back_ddl_on_failure() -> None:
     with tempfile.TemporaryDirectory() as temporary:
         state = Path(temporary) / "pdf.sqlite3"
-        initialize_pdf_state(state)
         with closing(sqlite3.connect(state)) as connection:
+            pdf_schema._build_pdf_v12_canonical_schema(connection)
             connection.execute("ALTER TABLE pages DROP COLUMN ocr_provenance_json")
             connection.execute("ALTER TABLE page_staging DROP COLUMN ocr_provenance_json")
-            connection.execute("UPDATE metadata SET value='11' WHERE key='schema_version'")
+            connection.execute("INSERT INTO metadata VALUES('schema_version','11')")
             connection.execute("INSERT INTO metadata VALUES('preserved','yes')")
             connection.commit()
 

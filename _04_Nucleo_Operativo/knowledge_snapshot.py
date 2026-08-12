@@ -26,6 +26,7 @@ from neocortex.sqlite_schema_contract import (
     read_application_schema_version,
     validate_sqlite_schema_contract,
 )
+from neocortex.platform_policy import sqlite_path_collation
 
 from . import (
     archive_state,
@@ -33,15 +34,17 @@ from . import (
     document_catalog_schema,
     office_state,
     text_state,
+    video_state,
 )
 from . import semantic_schema as semantic_schema_module
 from .code_schema import CODE_SCHEMA_VERSION, validate_code_schema
 from .docx_schema import DOCX_SCHEMA_VERSION, validate_docx_schema
 from .framework_schema import SCHEMA_VERSION as FRAMEWORK_SCHEMA_VERSION
 from .framework_schema import (
-    _validate_schema as validate_framework_schema,
     validate_framework_schema_v19,
     validate_framework_schema_v20,
+    validate_framework_schema_v21,
+    validate_framework_schema_v22,
 )
 from .knowledge_contracts import (
     ActiveModel,
@@ -63,6 +66,7 @@ from .sqlite_paths import readonly_sqlite_uri
 
 
 MAX_SNAPSHOT_HEADS = 1_024
+_PATH_COLLATION = sqlite_path_collation()
 
 CancellationCheck = Callable[[], None]
 
@@ -99,6 +103,7 @@ _STATE_PATH_NAMES = (
     "docx",
     "office",
     "audio",
+    "video",
     "image",
     "semantic",
     "code",
@@ -168,6 +173,7 @@ class KnowledgeStatePaths:
     code: Path
     archive: Path | None = None
     text: Path | None = None
+    video: Path | None = None
 
     def validate_roots(self) -> tuple[Path, ...]:
         """Permit missing roots but fail closed for unusable existing roots."""
@@ -224,6 +230,7 @@ class KnowledgeStatePaths:
             docx=root / "docx.sqlite3",
             office=root / "office.sqlite3",
             audio=root / "audio.sqlite3",
+            video=root / "video.sqlite3",
             image=root / "image.sqlite3",
             semantic=root / "semantic.sqlite3",
             code=root / "code.sqlite3",
@@ -321,11 +328,12 @@ _OWNER_SPECS = (
     _OwnerSpec(
         "framework",
         FRAMEWORK_SCHEMA_VERSION,
-        validate_framework_schema,
+        validate_framework_schema_v22,
         "framework",
         (
             (19, validate_framework_schema_v19),
             (20, validate_framework_schema_v20),
+            (21, validate_framework_schema_v21),
         ),
     ),
     _OwnerSpec(
@@ -341,6 +349,13 @@ _OWNER_SPECS = (
     _OwnerSpec("image", _EXPECTED_IMAGE_SCHEMA_VERSION, _validate_image, "images"),
     _OwnerSpec("semantic", SEMANTIC_SCHEMA_VERSION, _validate_semantic, "semantic"),
     _OwnerSpec("code", CODE_SCHEMA_VERSION, validate_code_schema, "code"),
+)
+
+_VIDEO_OWNER_SPEC = _OwnerSpec(
+    "video",
+    video_state.VIDEO_SCHEMA_VERSION,
+    video_state.validate_video_schema,
+    "documents",
 )
 
 _ARCHIVE_OWNER_SPEC = _OwnerSpec(
@@ -362,6 +377,10 @@ def _owner_specs(paths: KnowledgeStatePaths) -> tuple[_OwnerSpec, ...]:
     """Expose additive owners only after their databases exist."""
 
     specs = list(_OWNER_SPECS)
+    if paths.video is not None:
+        # Preserve the established owner order without making Video mandatory
+        # for callers that construct the public path contract directly.
+        specs.insert(7, _VIDEO_OWNER_SPEC)
     for path, spec in (
         (paths.archive, _ARCHIVE_OWNER_SPEC),
         (paths.text, _TEXT_OWNER_SPEC),
@@ -482,7 +501,7 @@ def _inventory_duplicate_plan_signal(row: sqlite3.Row) -> str | None:
 def _inventory_observation(connection: sqlite3.Connection) -> _LogicalObservation:
     rows = _limited_rows(
         connection,
-        """SELECT c.root,c.scan_id,c.updated_ns,
+        f"""SELECT c.root,c.scan_id,c.updated_ns,
         p.group_count AS duplicate_group_count,
         p.redundant_files AS duplicate_redundant_files,
         p.reclaimable_bytes AS duplicate_reclaimable_bytes,
@@ -490,7 +509,7 @@ def _inventory_observation(connection: sqlite3.Connection) -> _LogicalObservatio
         s.scan_id AS matched_scan_id,s.status AS scan_status
         FROM inventory_checkpoints c
         LEFT JOIN scans s ON s.scan_id=c.scan_id
-        AND c.root=s.root COLLATE NOCASE
+        AND c.root=s.root COLLATE {_PATH_COLLATION}
         LEFT JOIN duplicate_plan_summaries p ON p.scan_id=c.scan_id
         WHERE c.valid=1
         ORDER BY c.root COLLATE NOCASE LIMIT ?""",
@@ -650,13 +669,13 @@ def _framework_observation(connection: sqlite3.Connection) -> _LogicalObservatio
     review_heads: tuple[PublicationHead, ...] = ()
     if review_tasks_available is not None:
         from .review_task_repository import (
-            validate_latest_review_task_source_publications_from_connection,
+            _audit_latest_review_task_source_publications_from_prevalidated_connection,
         )
 
-        publications = validate_latest_review_task_source_publications_from_connection(
+        publications = _audit_latest_review_task_source_publications_from_prevalidated_connection(
             connection,
             limit=MAX_SNAPSHOT_HEADS,
-        )
+        ).publications
         review_heads = tuple(
             PublicationHead(
                 scope=f"review-task-source:{publication.publication_id}",

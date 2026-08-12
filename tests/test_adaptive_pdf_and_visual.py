@@ -8,6 +8,7 @@ from unittest.mock import patch
 from _02_Deduplicacion import DedupIndex, FileSnapshot
 from _04_Nucleo_Operativo.image_models import Features
 from _04_Nucleo_Operativo.image_visual import FeatureVisualClassifier
+from _04_Nucleo_Operativo import pdf_schema
 from _04_Nucleo_Operativo.pdf_derived import PdfDerivedSummary
 from _04_Nucleo_Operativo.pdf_route import PdfRoute
 from _04_Nucleo_Operativo.pdf_route_models import (
@@ -56,9 +57,9 @@ def test_pdf_schema_migrates_only_known_legacy_ocr_control_error(
     tmp_path,
 ) -> None:
     database = tmp_path / "pdf.sqlite3"
-    initialize_pdf_state(database)
     with sqlite3.connect(database) as connection:
-        connection.execute("UPDATE metadata SET value='9' WHERE key='schema_version'")
+        pdf_schema._build_pdf_v12_canonical_schema(connection)
+        connection.execute("INSERT INTO metadata VALUES('schema_version','9')")
         connection.execute(
             """INSERT INTO documents(
             file_key,path,size,mtime_ns,birthtime_ns,processing_signature,status,
@@ -103,13 +104,9 @@ def test_changed_cached_snapshot_retains_prior_status_for_metrics() -> None:
         "processing_signature": "sig",
     }
     route.config = PdfRouteConfig(Path("unused.sqlite3"))
-    setattr(route, "_read_cache_row", lambda snapshot, connection: row)
-    setattr(route, "_cached_snapshot_matches", lambda cached, snapshot: False)
-    setattr(
-        route,
-        "_cached_legacy_snapshot_matches",
-        lambda cached, snapshot: False,
-    )
+    route._read_cache_row = lambda snapshot, connection: row
+    route._cached_snapshot_matches = lambda cached, snapshot: False
+    route._cached_legacy_snapshot_matches = lambda cached, snapshot: False
     snapshot = FileSnapshot("changed.pdf", 1, 2, 1, 1, 1)
     decision = route._is_cache_hit(snapshot, connection=object(), touch=False)
     assert decision.hit is False

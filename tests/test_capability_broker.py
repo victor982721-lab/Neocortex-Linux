@@ -960,6 +960,14 @@ def test_builtin_text_manifests_are_additive_to_runtime_schema_v1() -> None:
         "best_effort",
         "non_replayable",
     )
+    assert {
+        item.mime_type: item.alternatives
+        for item in by_id[TEXT_LEGACY_OFFICE_IMPLEMENTATION_ID].mime_binary_alternatives
+    } == {
+        "application/msword": ("soffice", "libreoffice", "catdoc"),
+        "application/vnd.ms-excel": ("xls2csv", "soffice", "libreoffice"),
+        "application/vnd.ms-powerpoint": ("catppt", "soffice", "libreoffice"),
+    }
     for name in (
         "CapabilityBroker",
         "CapabilityManifest",
@@ -1041,6 +1049,56 @@ def test_legacy_text_abstains_without_a_matching_backend_and_pins_exact_fallback
     assert tuple(item.name for item in both_evaluation.availability.binary_identities) == (
         "soffice",
     )
+
+
+@pytest.mark.parametrize(
+    ("mime_type", "specific_backend"),
+    (
+        ("application/vnd.ms-excel", "xls2csv"),
+        ("application/vnd.ms-powerpoint", "catppt"),
+    ),
+)
+def test_legacy_text_prefers_format_specific_backend_when_soffice_is_also_present(
+    mime_type: str,
+    specific_backend: str,
+) -> None:
+    request = _text_request(mime_type)
+    command = os.fspath(Path(sys.executable).resolve())
+    selection = build_runtime_capability_broker(
+        request,
+        module_finder=lambda name: object() if name == "xxhash" else None,
+        distribution_version=_runtime_version,
+        executable_finder=(lambda name: command if name in {specific_backend, "soffice"} else None),
+    ).select(request)
+
+    assert selection.selected is not None
+    assert selection.selected.implementation_id == TEXT_LEGACY_OFFICE_IMPLEMENTATION_ID
+    evaluation = next(item for item in selection.candidates if item.eligible)
+    assert evaluation.availability is not None
+    assert tuple(item.name for item in evaluation.availability.binary_identities) == (
+        specific_backend,
+    )
+
+
+@pytest.mark.parametrize(
+    "mime_type",
+    ("application/vnd.ms-excel", "application/vnd.ms-powerpoint"),
+)
+def test_legacy_text_uses_soffice_when_format_specific_backend_is_absent(
+    mime_type: str,
+) -> None:
+    request = _text_request(mime_type)
+    command = os.fspath(Path(sys.executable).resolve())
+    selection = build_runtime_capability_broker(
+        request,
+        module_finder=lambda name: object() if name == "xxhash" else None,
+        distribution_version=_runtime_version,
+        executable_finder=lambda name: command if name == "soffice" else None,
+    ).select(request)
+
+    evaluation = next(item for item in selection.candidates if item.eligible)
+    assert evaluation.availability is not None
+    assert tuple(item.name for item in evaluation.availability.binary_identities) == ("soffice",)
 
 
 def test_binary_artifact_and_location_change_execution_fingerprint(

@@ -2506,7 +2506,7 @@ def test_catalog_schema_migration_preserves_classification_history(
             row[1] for row in migrated.execute("PRAGMA table_info(organization_plans)")
         }
         document_columns = {row[1] for row in migrated.execute("PRAGMA table_info(documents)")}
-    assert version == "6"
+    assert version == str(catalog_schema_module.CATALOG_SCHEMA_VERSION)
     assert [row["path"] for row in history] == [r"C:\Normativa\IEEE.pdf"]
     assert primary_key[-1] == "path"
     assert {

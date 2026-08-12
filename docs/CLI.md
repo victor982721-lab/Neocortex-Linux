@@ -417,8 +417,9 @@ presenta controles de mutación. En Linux muestra “modo portátil Linux”, no
 solicita elevación y desactiva los controles de mutación; inventario,
 procesamiento y búsqueda se conservan. El worker `--gui-worker` es un contrato
 interno y no debe invocarse manualmente. La GUI puede mostrar la consulta
-read-only que ahora consume una cola vigente, pero una vista para refrescar,
-resolver o descartar `ReviewTask` permanece **PLANNED**.
+read-only que ahora consume una cola vigente, pero una vista gráfica para
+refrescar o decidir `ReviewTask` permanece **PLANNED**; la CLI ya expone el
+lifecycle mediante la API compartida.
 
 ### Consulta humana y agentes locales
 
@@ -433,6 +434,11 @@ Neocortex inspect code "validación de schema" --scope framework --mode hybrid
 Neocortex inspect lineage IDENTIFICADOR --scope personal
 Neocortex review value --scope personal --limit 50
 Neocortex review value --refresh --scope personal --limit 50
+Neocortex review task show TASK_ID --scope personal
+Neocortex review task history TASK_ID --scope personal
+Neocortex review task claim TASK_ID --expected-event-id EVENT_ID --actor ACTOR
+Neocortex review task decide TASK_ID --expected-event-id EVENT_ID \
+  --decision resolved --decision-scope until-source-change --actor ACTOR
 ```
 
 Los scopes válidos son `personal`, `framework` y `all`. `all` ejecuta cada
@@ -441,7 +447,7 @@ snapshot independientemente y no fusiona scores. `status`, `search`, `ask` e
 consulta a 4096 caracteres y como máximo 100 resultados por scope.
 `review value` es advisory, declara `mutation_authorized=false` y no mueve,
 archiva ni elimina. Sin `--refresh` es estrictamente read-only: consulta la cola
-Framework v21 sólo si coincide con el snapshot fuente y, si todavía no existe,
+Framework v22 sólo si coincide con el snapshot fuente y, si todavía no existe,
 usa el preview legacy sin crear o migrar estado.
 
 `--refresh` es la única variante escritora de esta familia. Sólo admite un scope
@@ -449,11 +455,20 @@ fijo `personal` o `framework` (`all` se rechaza), puede crear/migrar
 `framework.sqlite3` y avanza exactamente una página keyset de 100 observaciones.
 Escribe únicamente batches, memberships, tareas, eventos, progreso y el head
 fuente generacional owner-local; no modifica Inventory, Catalog ni archivos.
-Ejecútelo otra vez para avanzar la página
-siguiente, incluso sobre más de 25,000 observaciones. Si el snapshot cambia
-antes de publicar, se abstiene; si la cola quedó desfasada, la lectura devuelve
-`stale` en vez de presentar evidencia mezclada. Una decisión humana durable
-`RESOLVED` o `DISMISSED` no se reabre automáticamente.
+Ejecútelo otra vez para avanzar la página siguiente, incluso sobre más de
+25,000 observaciones. La época de evaluación queda fijada desde la primera
+página: un scan incompleto reanuda su cursor aunque cruce medianoche. El último
+head completo permanece visible como `stale` mientras una época nueva está en
+curso o cambió el owner fuente; el reader conserva decisiones humanas actuales
+y no presenta páginas parciales como verdad publicada.
+
+`review task show/history` son read-only. `claim` y `decide` escriben un único
+evento Framework append-only mediante CAS y requieren `--expected-event-id` y
+actor explícitos. `decide` exige `resolved|dismissed` y un scope durable:
+`until-source-change`, `until-policy-change` o `permanent`. El retry semántico
+idéntico es idempotente; una tarea/evento distinto falla como snapshot cambiado.
+No se modifica el corpus y `all` se rechaza. La GUI consumidora sigue
+**PLANNED**.
 
 En JSON, `queue.scan_complete` indica fin del cursor y
 `queue.evidence_complete` indica que todas las páginas tuvieron evidencia
@@ -780,10 +795,11 @@ Neocortex --catalog-preview 25
 `--text-max-chars`, texto persistido; y `--text-worker-timeout`/
 `--text-worker-memory-mb`, el conversor aislado. `--libreoffice-path` permite un
 ejecutable explícito y `--retry-text-errors` vuelve a intentar errores sin
-cambios. EML conserva asunto y autor; LibreOffice es el backend preferido para
-Office heredado y `catdoc`/`xls2csv`/`catppt` son fallbacks locales. No existe
-una operación directa `--text-search`: FTS se consume por Knowledge, el catálogo
-y Semantic para no crear otra superficie paralela.
+cambios. EML conserva asunto y autor. DOC prioriza LibreOffice y conserva
+`catdoc` como fallback; XLS y PPT priorizan `xls2csv` y `catppt`,
+respectivamente, y usan LibreOffice si falta el extractor específico. No existe
+una operación directa `--text-search`: FTS se consume por Knowledge, el
+catálogo y Semantic para no crear otra superficie paralela.
 
 ### Video y OCR multilingüe
 

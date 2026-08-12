@@ -6,8 +6,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
+from neocortex.platform_policy import sqlite_path_collation
+
 
 # region [01] Stable selection contract
+
+_PATH_COLLATION = sqlite_path_collation()
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,11 +42,7 @@ class CandidateSelection:
             self.error_types
             or self.failed_pages_only
             or "retry" in self.recommendations
-            or bool(
-                {"error", "partial", "protected", "processing"}.intersection(
-                    self.statuses
-                )
-            )
+            or bool({"error", "partial", "protected", "processing"}.intersection(self.statuses))
         )
 
     @classmethod
@@ -59,11 +59,7 @@ class CandidateSelection:
             statuses=_normalized_values(statuses),
             error_types=_normalized_values(error_types, casefold=False),
             recommendations=_normalized_values(recommendations),
-            paths=tuple(
-                dict.fromkeys(
-                    str(Path(value).expanduser().absolute()) for value in paths
-                )
-            ),
+            paths=tuple(dict.fromkeys(str(Path(value).expanduser().absolute()) for value in paths)),
             failed_pages_only=failed_pages_only,
         )
 
@@ -100,7 +96,7 @@ def framework_selection_predicate(
     parameters: list[object] = []
     if selection.paths:
         placeholders = ",".join("?" for _ in selection.paths)
-        clauses.append(f"{candidate_alias}.path COLLATE NOCASE IN ({placeholders})")
+        clauses.append(f"{candidate_alias}.path COLLATE {_PATH_COLLATION} IN ({placeholders})")
         parameters.extend(selection.paths)
     if selection.recommendations:
         placeholders = ",".join("?" for _ in selection.recommendations)

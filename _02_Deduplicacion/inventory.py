@@ -12,6 +12,8 @@ import time
 from collections.abc import Iterable, Iterator
 from pathlib import Path
 
+from neocortex.platform_policy import sqlite_path_collation
+
 from .errors import InventoryError
 from .hashing import snapshot_path
 from .inventory_scan import (
@@ -44,7 +46,7 @@ from _03_Progreso import ProgressCallback
 
 # region [02] Implementación
 
-_PATH_COLLATION = "NOCASE" if os.name == "nt" else "BINARY"
+_PATH_COLLATION = sqlite_path_collation()
 
 
 PRUNE_BATCH_SIZE = 1000

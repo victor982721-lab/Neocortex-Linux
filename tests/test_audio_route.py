@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import os
 import queue
+import sqlite3
 import sys
+import zlib
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,6 +12,7 @@ from typing import Any
 
 import pytest
 
+import _04_Nucleo_Operativo.audio_state as audio_state_module
 from _02_Deduplicacion import FileSnapshot, snapshot_path
 from _04_Nucleo_Operativo.audio_models import (
     AudioProcessingError,
@@ -24,7 +27,11 @@ from _04_Nucleo_Operativo.audio_route import (
     AudioRoute,
     search_audio_state,
 )
-from _04_Nucleo_Operativo.audio_state import audio_database
+from _04_Nucleo_Operativo.audio_state import (
+    AUDIO_SCHEMA_VERSION,
+    audio_database,
+    initialize_audio_state,
+)
 from _04_Nucleo_Operativo import audio_whisper
 from _04_Nucleo_Operativo.cli_config import framework_config_from_args
 from _04_Nucleo_Operativo.cli_parser import build_parser
@@ -47,6 +54,7 @@ from _04_Nucleo_Operativo.cancellation import (
     CancellationToken,
 )
 from _04_Nucleo_Operativo.audio_whisper import WhisperTranscriber
+from neocortex.platform_policy import sqlite_path_collation
 from tests.internal_paths_test_support import disjoint_internal_paths_policy
 
 
@@ -297,10 +305,206 @@ def _audio_route(
     return route, framework, transcriber, factory_calls
 
 
+def _index_key_collations(
+    connection: sqlite3.Connection,
+    index_name: str,
+) -> tuple[str, ...]:
+    return tuple(
+        str(row[4]).upper()
+        for row in connection.execute(f'PRAGMA index_xinfo("{index_name}")')
+        if bool(row[5])
+    )
+
+
+def _create_populated_audio_v1_state(path: Path) -> None:
+    body = "Supervisión de pruebas del transformador"
+    with sqlite3.connect(path) as connection:
+        connection.execute("PRAGMA foreign_keys=ON")
+        for statement in audio_state_module._AUDIO_V1_SCHEMA_DDL:
+            connection.execute(statement)
+        connection.execute("INSERT INTO metadata(key,value) VALUES('schema_version','1')")
+        connection.execute(
+            """INSERT INTO documents(
+            file_key,path,mime,size,mtime_ns,birthtime_ns,processing_signature,status,
+            title,text_zlib,text_chars,text_xxh3_128,segment_count,last_seen_run_id,updated_ns)
+            VALUES('legacy-audio','/Corpus/Case.opus','audio/opus',10,20,30,
+            'audio-v1','complete','Prueba',?,?,?,1,7,99)""",
+            (zlib.compress(body.encode("utf-8")), len(body), "legacy-audio-text"),
+        )
+        connection.execute(
+            """INSERT INTO audio_inventory(
+            file_key,path,mime,size,mtime_ns,birthtime_ns,last_seen_run_id)
+            VALUES('legacy-audio','/Corpus/Case.opus','audio/opus',10,20,30,7)"""
+        )
+        connection.execute(
+            """INSERT INTO segments(
+            file_key,segment_index,start_ms,end_ms,text,avg_logprob,no_speech_probability)
+            VALUES('legacy-audio',0,100,900,?,-0.2,0.01)""",
+            (body,),
+        )
+        connection.execute(
+            """INSERT INTO transcript_fts(rowid,file_key,path,title,body)
+            VALUES(41,'legacy-audio','/Corpus/Case.opus','Prueba',?)""",
+            (body,),
+        )
+        connection.commit()
+
+
 # endregion [01]
 
 
 # region [02] Incremental transcript cache, search and error review
+
+
+def test_audio_v1_path_collation_migration_preserves_populated_state_and_reopens(
+    tmp_path: Path,
+) -> None:
+    state_path = tmp_path / "audio-v1.sqlite3"
+    _create_populated_audio_v1_state(state_path)
+
+    initialize_audio_state(state_path)
+
+    with audio_database(state_path, readonly=True) as connection:
+        assert connection.execute(
+            "SELECT value FROM metadata WHERE key='schema_version'"
+        ).fetchone()[0] == str(AUDIO_SCHEMA_VERSION)
+        assert tuple(connection.execute("SELECT path,text_chars FROM documents").fetchone()) == (
+            "/Corpus/Case.opus",
+            len("Supervisión de pruebas del transformador"),
+        )
+        assert connection.execute("SELECT COUNT(*) FROM audio_inventory").fetchone()[0] == 1
+        assert connection.execute("SELECT COUNT(*) FROM segments").fetchone()[0] == 1
+        assert tuple(
+            connection.execute("SELECT rowid,file_key,path FROM transcript_fts").fetchone()
+        ) == (41, "legacy-audio", "/Corpus/Case.opus")
+        assert _index_key_collations(connection, "audio_documents_path_idx") == (
+            sqlite_path_collation(),
+        )
+        assert _index_key_collations(connection, "audio_inventory_path_idx") == (
+            sqlite_path_collation(),
+        )
+        assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+    assert search_audio_state(state_path, "transformador", 5)[0]["file_key"] == ("legacy-audio")
+
+    migrated = state_path.read_bytes()
+    initialize_audio_state(state_path)
+    assert state_path.read_bytes() == migrated
+
+    with sqlite3.connect(state_path) as connection:
+        connection.execute(
+            "UPDATE metadata SET value=? WHERE key='schema_version'",
+            (str(AUDIO_SCHEMA_VERSION + 1),),
+        )
+    future = state_path.read_bytes()
+    with pytest.raises(RuntimeError, match="newer than supported"):
+        initialize_audio_state(state_path)
+    assert state_path.read_bytes() == future
+
+
+def test_failed_audio_v1_migration_rolls_back_rows_and_version(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state_path = tmp_path / "audio-v1.sqlite3"
+    _create_populated_audio_v1_state(state_path)
+
+    def fail_after_write(connection: sqlite3.Connection) -> None:
+        connection.execute("DELETE FROM segments")
+        raise RuntimeError("forced audio migration failure")
+
+    monkeypatch.setattr(
+        audio_state_module,
+        "_migrate_audio_v1_path_collation",
+        fail_after_write,
+    )
+
+    with pytest.raises(RuntimeError, match="forced audio migration failure"):
+        initialize_audio_state(state_path)
+
+    with sqlite3.connect(state_path) as connection:
+        assert (
+            connection.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()[
+                0
+            ]
+            == "1"
+        )
+        assert connection.execute("SELECT COUNT(*) FROM documents").fetchone()[0] == 1
+        assert connection.execute("SELECT COUNT(*) FROM segments").fetchone()[0] == 1
+        assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+@pytest.mark.skipif(sqlite_path_collation() != "BINARY", reason="POSIX path identity contract")
+@pytest.mark.parametrize("reverse", (False, True))
+def test_linux_case_distinct_audio_paths_survive_both_processing_orders(
+    tmp_path: Path,
+    reverse: bool,
+) -> None:
+    sources = (tmp_path / "Case.opus", tmp_path / "case.opus")
+    for source in sources:
+        source.write_bytes(f"OggS {source.name}".encode())
+    snapshots = tuple(snapshot_path(source) for source in sources)
+    ordered = tuple(reversed(snapshots)) if reverse else snapshots
+    framework = FakeFrameworkRouteState({"audio/opus": ordered})
+    transcriber = FakeTranscriber(_result("Transformador Malpaso"))
+    state_path = tmp_path / "audio.sqlite3"
+    route = AudioRoute(
+        AudioRouteConfig(
+            state_path=state_path,
+            min_free_memory_bytes=0,
+            min_free_commit_bytes=0,
+        ),
+        framework,  # type: ignore[arg-type]
+        1,
+        runtime_resolver=lambda _device, _compute: RUNTIME,
+        transcriber_factory=lambda _config, _runtime: transcriber,
+        media_probe=lambda *_args, **_kwargs: PROBE,
+        memory_gate=FakeMemoryGate(),
+    )
+
+    summary = route.run()
+
+    assert summary.transcribed == 2
+    with audio_database(state_path, readonly=True) as connection:
+        assert [
+            str(row[0])
+            for row in connection.execute("SELECT path FROM documents ORDER BY path COLLATE BINARY")
+        ] == [str(sources[0]), str(sources[1])]
+        assert connection.execute("SELECT COUNT(*) FROM audio_inventory").fetchone()[0] == 2
+        assert connection.execute("SELECT COUNT(*) FROM segments").fetchone()[0] == 2
+        assert connection.execute("SELECT COUNT(*) FROM transcript_fts").fetchone()[0] == 2
+        assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+@pytest.mark.parametrize("reverse", (False, True))
+def test_audio_windows_path_identity_schema_remains_nocase(reverse: bool) -> None:
+    connection = sqlite3.connect(":memory:")
+    try:
+        for statement in audio_state_module._audio_schema_ddl(
+            sqlite_path_collation(platform_name="nt")
+        ):
+            connection.execute(statement)
+        assert _index_key_collations(connection, "audio_documents_path_idx") == ("NOCASE",)
+        assert _index_key_collations(connection, "audio_inventory_path_idx") == ("NOCASE",)
+        paths = ("C:/Corpus/Case.opus", "C:/Corpus/case.opus")
+        ordered = tuple(reversed(paths)) if reverse else paths
+        connection.execute(
+            """INSERT INTO audio_inventory(
+            file_key,path,mime,size,mtime_ns,birthtime_ns,last_seen_run_id)
+            VALUES('first',?,'audio/opus',1,2,3,4)""",
+            (ordered[0],),
+        )
+        with pytest.raises(sqlite3.IntegrityError, match="UNIQUE constraint failed"):
+            connection.execute(
+                """INSERT INTO audio_inventory(
+                file_key,path,mime,size,mtime_ns,birthtime_ns,last_seen_run_id)
+                VALUES('second',?,'audio/opus',1,2,3,4)""",
+                (ordered[1],),
+            )
+    finally:
+        connection.close()
 
 
 def test_audio_route_transcribes_segments_and_reuses_cache(tmp_path: Path) -> None:

@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from _02_Deduplicacion import FileSnapshot
+from _04_Nucleo_Operativo import video_state as video_state_module
 from _04_Nucleo_Operativo.audio_state import audio_database, initialize_audio_state
 from _04_Nucleo_Operativo.file_identity import file_key_from_snapshot
 from _04_Nucleo_Operativo.video_models import VideoMediaProbe, VideoStreamProbe
@@ -21,6 +22,7 @@ from _04_Nucleo_Operativo.video_state import (
     video_database,
     video_state_status,
 )
+from neocortex.platform_policy import sqlite_path_collation
 
 
 def _snapshot(path: Path) -> FileSnapshot:
@@ -58,6 +60,146 @@ def test_schema_is_exact_idempotent_and_rejects_future_versions(tmp_path: Path) 
     with pytest.raises(RuntimeError, match="not the supported schema"):
         video_state_status(path)
     assert path.read_bytes() == modified
+
+
+@pytest.mark.skipif(sqlite_path_collation() != "BINARY", reason="POSIX path identity contract")
+@pytest.mark.parametrize("reverse", (False, True))
+def test_linux_case_distinct_video_paths_survive_both_insertion_orders(
+    tmp_path: Path,
+    reverse: bool,
+) -> None:
+    state_path = tmp_path / "video.sqlite3"
+    initialize_video_state(state_path)
+    snapshots = (
+        FileSnapshot(str(tmp_path / "Case.mp4"), 11, 101, 10, 20, -1),
+        FileSnapshot(str(tmp_path / "case.mp4"), 11, 102, 10, 20, -1),
+    )
+    ordered = tuple(reversed(snapshots)) if reverse else snapshots
+    frames = (VideoFrameEvidence(0, 0, ("interval",), 1, 1, "a" * 32, True, "Malpaso"),)
+    with video_database(state_path, create=False) as connection:
+        for run_id, snapshot in enumerate(ordered, 1):
+            store_video_success(
+                connection,
+                snapshot,
+                "video/mp4",
+                "fixture-signature",
+                _probe(),
+                frames,
+                (),
+                None,
+                run_id,
+            )
+        connection.commit()
+        rows = connection.execute(
+            "SELECT file_key,path FROM documents ORDER BY path COLLATE BINARY"
+        ).fetchall()
+        assert [(str(row[0]), str(row[1])) for row in rows] == [
+            (file_key_from_snapshot(snapshots[0]), snapshots[0].path),
+            (file_key_from_snapshot(snapshots[1]), snapshots[1].path),
+        ]
+        assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+    assert len(search_video_state(state_path, "Malpaso", 5)) == 2
+
+
+@pytest.mark.skipif(
+    sqlite_path_collation() != "BINARY", reason="POSIX migration changes path collation"
+)
+def test_populated_video_v1_migrates_atomically_with_frames_and_fts_rowids(
+    tmp_path: Path,
+) -> None:
+    state_path = tmp_path / "video.sqlite3"
+    snapshot = _snapshot(tmp_path / "legacy.mp4")
+    frame = VideoFrameEvidence(
+        0,
+        12_345,
+        ("scene",),
+        320,
+        200,
+        "e" * 32,
+        True,
+        "evidencia legado",
+        88.0,
+        "fixture-ocr-v1",
+    )
+    with sqlite3.connect(state_path) as connection:
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys=ON")
+        video_state_module._create_video_v1_schema(connection)
+        connection.execute("INSERT INTO metadata(key,value) VALUES('schema_version','1')")
+        store_video_success(
+            connection,
+            snapshot,
+            "video/mp4",
+            "legacy-signature",
+            _probe(),
+            (frame,),
+            (),
+            None,
+            1,
+        )
+        connection.execute(
+            "UPDATE frame_fts SET rowid=41 WHERE file_key=?",
+            (file_key_from_snapshot(snapshot),),
+        )
+        connection.commit()
+
+    initialize_video_state(state_path)
+
+    with video_database(state_path, readonly=True) as connection:
+        assert (
+            connection.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()[
+                0
+            ]
+            == "2"
+        )
+        assert connection.execute("SELECT COUNT(*) FROM documents").fetchone()[0] == 1
+        assert connection.execute("SELECT COUNT(*) FROM video_inventory").fetchone()[0] == 0
+        assert connection.execute("SELECT COUNT(*) FROM frames").fetchone()[0] == 1
+        assert connection.execute("SELECT rowid FROM frame_fts").fetchone()[0] == 41
+        assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+    before = state_path.read_bytes()
+    initialize_video_state(state_path)
+    assert state_path.read_bytes() == before
+    assert search_video_state(state_path, "legado", 5)[0]["frame_index"] == 0
+
+
+@pytest.mark.skipif(
+    sqlite_path_collation() != "BINARY", reason="POSIX migration changes path collation"
+)
+def test_video_v1_migration_rolls_back_on_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state_path = tmp_path / "video.sqlite3"
+    with sqlite3.connect(state_path) as connection:
+        video_state_module._create_video_v1_schema(connection)
+        connection.execute("INSERT INTO metadata(key,value) VALUES('schema_version','1')")
+        connection.commit()
+    original = video_state_module._migrate_video_v1
+
+    def fail_after_rebuild(connection: sqlite3.Connection) -> None:
+        original(connection)
+        raise RuntimeError("injected migration failure")
+
+    monkeypatch.setattr(video_state_module, "_migrate_video_v1", fail_after_rebuild)
+    with pytest.raises(RuntimeError, match="injected migration failure"):
+        initialize_video_state(state_path)
+
+    with sqlite3.connect(state_path) as connection:
+        assert (
+            connection.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()[
+                0
+            ]
+            == "1"
+        )
+        video_state_module.validate_sqlite_schema_contract(
+            connection,
+            video_state_module._video_v1_schema_contract(),
+            label="video schema 1 after rollback",
+            exact=True,
+        )
 
 
 def test_frame_search_returns_typed_channel_and_millisecond_evidence(tmp_path: Path) -> None:

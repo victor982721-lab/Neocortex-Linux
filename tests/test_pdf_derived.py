@@ -12,6 +12,7 @@ from _04_Nucleo_Operativo.pdf_derived import (
     initialize_derived_schema,
 )
 from _04_Nucleo_Operativo.pdf_state import initialize_pdf_state
+from neocortex.platform_policy import sqlite_path_collation
 
 
 # region [01] Linear FTS/state reconciliation
@@ -146,6 +147,57 @@ class PdfDerivedRepairTests(unittest.TestCase):
                 [("small", "small.pdf", 10)],
             )
             self.assertEqual(indexer._profile_candidate_count(), 1)
+
+    @unittest.skipUnless(
+        sqlite_path_collation() == "BINARY",
+        "case-distinct path pagination is the POSIX contract",
+    )
+    def test_profile_candidate_keyset_keeps_case_distinct_boundary_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "pdf.sqlite3"
+            initialize_pdf_state(database)
+            rows = [
+                (
+                    f"prefix-{ordinal:04d}",
+                    f"/fixture/A{ordinal:04d}.pdf",
+                    10,
+                    1,
+                    1,
+                    "sig",
+                    "done",
+                    7,
+                    1,
+                )
+                for ordinal in range(999)
+            ]
+            rows.extend(
+                (
+                    ("upper", "/fixture/Case.pdf", 10, 1, 1, "sig", "done", 7, 1),
+                    ("lower", "/fixture/case.pdf", 10, 1, 1, "sig", "done", 7, 1),
+                )
+            )
+            with sqlite3.connect(database) as connection:
+                connection.executemany(
+                    """INSERT INTO documents(
+                    file_key,path,size,mtime_ns,birthtime_ns,processing_signature,
+                    status,last_seen_run_id,updated_ns)
+                    VALUES(?,?,?,?,?,?,?,?,?)""",
+                    rows,
+                )
+
+            indexer = PdfDerivedIndexer(
+                database,
+                7,
+                workers=1,
+                similarity_threshold=0.8,
+            )
+            candidates = list(indexer._profile_candidates())
+
+            self.assertEqual(len(candidates), 1001)
+            self.assertEqual(
+                {candidate[1] for candidate in candidates[-2:]},
+                {"/fixture/Case.pdf", "/fixture/case.pdf"},
+            )
 
     def test_layout_groups_stream_relations_in_two_passes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -35,6 +35,7 @@ from _04_Nucleo_Operativo.office_route import (
     XLSX_MIME,
     OfficeRoute,
     OfficeRouteConfig,
+    search_office_state,
 )
 from _04_Nucleo_Operativo.office_state import (
     OFFICE_SCHEMA_VERSION,
@@ -42,6 +43,7 @@ from _04_Nucleo_Operativo.office_state import (
     office_database,
 )
 from _04_Nucleo_Operativo.route_filters import CandidateSelection
+from neocortex.platform_policy import sqlite_path_collation
 from tests.internal_paths_test_support import disjoint_internal_paths_policy
 
 
@@ -260,10 +262,219 @@ def _route_for(state_path: Path, source_paths: dict[str, Path]):
     return route, framework
 
 
+def _index_key_collations(
+    connection: sqlite3.Connection,
+    index_name: str,
+) -> tuple[str, ...]:
+    return tuple(
+        str(row[4]).upper()
+        for row in connection.execute(f'PRAGMA index_xinfo("{index_name}")')
+        if bool(row[5])
+    )
+
+
+def _create_populated_office_v2_state(path: Path) -> None:
+    body = "Medición de relación de transformación"
+    with sqlite3.connect(path) as connection:
+        connection.execute("PRAGMA foreign_keys=ON")
+        for statement in (
+            office_state_module._OFFICE_V1_SCHEMA_DDL + office_state_module._OFFICE_V2_SCHEMA_DDL
+        ):
+            connection.execute(statement)
+        connection.execute("INSERT INTO metadata(key,value) VALUES('schema_version','2')")
+        connection.execute(
+            """INSERT INTO documents(
+            file_key,format,path,size,mtime_ns,birthtime_ns,processing_signature,status,
+            title,author,subject,text_zlib,text_chars,text_xxh3_128,part_count,
+            last_seen_run_id,updated_ns)
+            VALUES('legacy-office','xlsx','/Corpus/Case.xlsx',10,20,30,'office-v2',
+            'complete','Mediciones','ANDRITZ','U2',?,?,?,1,7,99)""",
+            (zlib.compress(body.encode("utf-8")), len(body), "legacy-office-text"),
+        )
+        connection.execute(
+            """INSERT INTO office_inventory(
+            file_key,format,path,size,mtime_ns,birthtime_ns,last_seen_run_id)
+            VALUES('legacy-office','xlsx','/Corpus/Case.xlsx',10,20,30,7)"""
+        )
+        connection.execute(
+            """INSERT INTO xlsx_cells(
+            file_key,workbook,sheet,sheet_ordinal,cell_reference,cell_type,value,
+            raw_value,formula,cached_value,style_index,number_format)
+            VALUES('legacy-office','/Corpus/Case.xlsx','U2',1,'C3','number',
+            '1234.5','1234.5','SUM(C1:C2)','1234.5',1,'0.0')"""
+        )
+        connection.execute(
+            """INSERT INTO document_fts(
+            rowid,file_key,format,path,title,author,body)
+            VALUES(73,'legacy-office','xlsx','/Corpus/Case.xlsx',
+            'Mediciones','ANDRITZ',?)""",
+            (body,),
+        )
+        connection.commit()
+
+
 # endregion [01]
 
 
 # region [02] Incremental extraction, classification and corrupt review
+
+
+def test_office_v2_path_collation_migration_preserves_populated_state_and_reopens(
+    tmp_path: Path,
+) -> None:
+    state_path = tmp_path / "office-v2.sqlite3"
+    _create_populated_office_v2_state(state_path)
+
+    initialize_office_state(state_path)
+
+    with office_database(state_path, readonly=True) as connection:
+        assert connection.execute(
+            "SELECT value FROM metadata WHERE key='schema_version'"
+        ).fetchone()[0] == str(OFFICE_SCHEMA_VERSION)
+        assert tuple(connection.execute("SELECT path,text_chars FROM documents").fetchone()) == (
+            "/Corpus/Case.xlsx",
+            len("Medición de relación de transformación"),
+        )
+        assert connection.execute("SELECT COUNT(*) FROM office_inventory").fetchone()[0] == 1
+        assert tuple(
+            connection.execute(
+                "SELECT workbook,sheet,cell_reference,value FROM xlsx_cells"
+            ).fetchone()
+        ) == ("/Corpus/Case.xlsx", "U2", "C3", "1234.5")
+        assert tuple(
+            connection.execute("SELECT rowid,file_key,path FROM document_fts").fetchone()
+        ) == (73, "legacy-office", "/Corpus/Case.xlsx")
+        assert _index_key_collations(connection, "office_documents_path_idx") == (
+            sqlite_path_collation(),
+        )
+        assert _index_key_collations(connection, "office_inventory_path_idx") == (
+            sqlite_path_collation(),
+        )
+        assert _index_key_collations(connection, "xlsx_cells_location_idx")[0] == (
+            sqlite_path_collation()
+        )
+        assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+    assert search_office_state(state_path, "transformación", 5)[0]["file_key"] == ("legacy-office")
+
+    migrated = state_path.read_bytes()
+    initialize_office_state(state_path)
+    assert state_path.read_bytes() == migrated
+
+    with sqlite3.connect(state_path) as connection:
+        connection.execute(
+            "UPDATE metadata SET value=? WHERE key='schema_version'",
+            (str(OFFICE_SCHEMA_VERSION + 1),),
+        )
+    future = state_path.read_bytes()
+    with pytest.raises(RuntimeError, match="newer than supported"):
+        initialize_office_state(state_path)
+    assert state_path.read_bytes() == future
+
+
+def test_failed_office_v2_migration_rolls_back_rows_and_version(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state_path = tmp_path / "office-v2.sqlite3"
+    _create_populated_office_v2_state(state_path)
+
+    def fail_after_write(connection: sqlite3.Connection) -> None:
+        connection.execute("DELETE FROM xlsx_cells")
+        raise RuntimeError("forced Office migration failure")
+
+    monkeypatch.setattr(
+        office_state_module,
+        "_migrate_office_v2_path_collation",
+        fail_after_write,
+    )
+
+    with pytest.raises(RuntimeError, match="forced Office migration failure"):
+        initialize_office_state(state_path)
+
+    with sqlite3.connect(state_path) as connection:
+        assert (
+            connection.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()[
+                0
+            ]
+            == "2"
+        )
+        assert connection.execute("SELECT COUNT(*) FROM documents").fetchone()[0] == 1
+        assert connection.execute("SELECT COUNT(*) FROM xlsx_cells").fetchone()[0] == 1
+        assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+@pytest.mark.skipif(sqlite_path_collation() != "BINARY", reason="POSIX path identity contract")
+@pytest.mark.parametrize("reverse", (False, True))
+def test_linux_case_distinct_office_paths_survive_both_processing_orders(
+    tmp_path: Path,
+    reverse: bool,
+) -> None:
+    sources = (tmp_path / "Case.xlsx", tmp_path / "case.xlsx")
+    for source in sources:
+        _write_typed_xlsx(source)
+    snapshots = tuple(snapshot_path(source) for source in sources)
+    ordered = tuple(reversed(snapshots)) if reverse else snapshots
+    framework = FakeFrameworkRouteState({XLSX_MIME: ordered})
+    state_path = tmp_path / "office.sqlite3"
+    route = OfficeRoute(
+        OfficeRouteConfig(
+            state_path=state_path,
+            min_free_memory_bytes=0,
+            min_free_commit_bytes=0,
+        ),
+        framework,  # type: ignore[arg-type]
+        1,
+        cancellation=CancellationToken(),
+    )
+
+    summary = route.run()
+
+    assert summary.extracted == 2
+    with office_database(state_path, readonly=True) as connection:
+        assert [
+            str(row[0])
+            for row in connection.execute("SELECT path FROM documents ORDER BY path COLLATE BINARY")
+        ] == [str(sources[0]), str(sources[1])]
+        assert connection.execute("SELECT COUNT(*) FROM office_inventory").fetchone()[0] == 2
+        assert connection.execute("SELECT COUNT(*) FROM xlsx_cells").fetchone()[0] == 20
+        assert (
+            connection.execute("SELECT COUNT(DISTINCT workbook) FROM xlsx_cells").fetchone()[0] == 2
+        )
+        assert connection.execute("SELECT COUNT(*) FROM document_fts").fetchone()[0] == 2
+        assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+@pytest.mark.parametrize("reverse", (False, True))
+def test_office_windows_path_identity_schema_remains_nocase(reverse: bool) -> None:
+    connection = sqlite3.connect(":memory:")
+    try:
+        for statement in office_state_module._office_v1_schema_ddl(
+            sqlite_path_collation(platform_name="nt")
+        ) + office_state_module._office_xlsx_schema_ddl(sqlite_path_collation(platform_name="nt")):
+            connection.execute(statement)
+        assert _index_key_collations(connection, "office_documents_path_idx") == ("NOCASE",)
+        assert _index_key_collations(connection, "office_inventory_path_idx") == ("NOCASE",)
+        assert _index_key_collations(connection, "xlsx_cells_location_idx")[0] == ("NOCASE")
+        paths = ("C:/Corpus/Case.xlsx", "C:/Corpus/case.xlsx")
+        ordered = tuple(reversed(paths)) if reverse else paths
+        connection.execute(
+            """INSERT INTO office_inventory(
+            file_key,format,path,size,mtime_ns,birthtime_ns,last_seen_run_id)
+            VALUES('first','xlsx',?,1,2,3,4)""",
+            (ordered[0],),
+        )
+        with pytest.raises(sqlite3.IntegrityError, match="UNIQUE constraint failed"):
+            connection.execute(
+                """INSERT INTO office_inventory(
+                file_key,format,path,size,mtime_ns,birthtime_ns,last_seen_run_id)
+                VALUES('second','xlsx',?,1,2,3,4)""",
+                (ordered[1],),
+            )
+    finally:
+        connection.close()
 
 
 def test_office_route_extracts_caches_and_classifies_all_supported_formats(

@@ -389,9 +389,11 @@ def test_v1_to_current_migration_preserves_rows_relations_and_fts(tmp_path: Path
         assert after == before
         assert metadata == {
             "preserved_marker": "keep-me",
-            "schema_version": "4",
+            "schema_version": str(code_schema.CODE_SCHEMA_VERSION),
         }
-        assert int(connection.execute("PRAGMA user_version").fetchone()[0]) == 4
+        assert int(connection.execute("PRAGMA user_version").fetchone()[0]) == (
+            code_schema.CODE_SCHEMA_VERSION
+        )
         assert migrations[0] == (1, "fixture version one", 11)
         assert migrations[1][0:2] == (
             2,
@@ -537,12 +539,14 @@ def test_v2_to_v3_migration_preserves_legacy_external_runs(tmp_path: Path) -> No
         assert after["external_tool_runs"] == before["external_tool_runs"]
         assert dict(connection.execute("SELECT key,value FROM metadata")) == {
             "preserved_marker": "keep-me",
-            "schema_version": "4",
+            "schema_version": str(code_schema.CODE_SCHEMA_VERSION),
         }
-        assert int(connection.execute("PRAGMA user_version").fetchone()[0]) == 4
+        assert int(connection.execute("PRAGMA user_version").fetchone()[0]) == (
+            code_schema.CODE_SCHEMA_VERSION
+        )
         assert connection.execute(
             "SELECT version FROM schema_migrations ORDER BY version"
-        ).fetchall() == [(1,), (2,), (3,), (4,)]
+        ).fetchall() == [(version,) for version in range(1, code_schema.CODE_SCHEMA_VERSION + 1)]
         for table in (
             "external_run_contracts",
             "external_run_inputs",

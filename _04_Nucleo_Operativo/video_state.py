@@ -26,6 +26,7 @@ from neocortex.sqlite_connection import (
     SQLiteWriterPragmas,
     connect_sqlite,
 )
+from neocortex.platform_policy import sqlite_path_collation
 
 from .file_identity import file_key_from_snapshot
 from .sqlite_schema_contract import (
@@ -37,7 +38,8 @@ from .sqlite_schema_contract import (
 from .video_models import VideoMediaProbe, VideoProcessingError
 
 
-VIDEO_SCHEMA_VERSION = 1
+VIDEO_SCHEMA_VERSION = 2
+_PATH_COLLATION = sqlite_path_collation()
 MAX_STORED_VIDEO_FRAMES = 256
 MAX_STORED_VIDEO_FRAME_PIXELS = 40_000_000
 MAX_STORED_VIDEO_OCR_UTF8_BYTES = 16 * 1024
@@ -59,14 +61,18 @@ _VIDEO_SQLITE_POLICY = SQLiteConnectionPolicy(
     ),
 )
 
-_VIDEO_SCHEMA_DDL = (
-    """CREATE TABLE IF NOT EXISTS metadata(
+
+def _video_schema_ddl(path_collation: str) -> tuple[str, ...]:
+    if path_collation not in {"BINARY", "NOCASE"}:
+        raise ValueError(f"unsupported video path collation: {path_collation}")
+    return (
+        """CREATE TABLE IF NOT EXISTS metadata(
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
     ) WITHOUT ROWID""",
-    """CREATE TABLE IF NOT EXISTS documents(
+        f"""CREATE TABLE IF NOT EXISTS documents(
         file_key TEXT PRIMARY KEY,
-        path TEXT NOT NULL COLLATE NOCASE,
+        path TEXT NOT NULL COLLATE {path_collation},
         mime TEXT NOT NULL,
         size INTEGER NOT NULL,
         mtime_ns INTEGER NOT NULL,
@@ -83,7 +89,7 @@ _VIDEO_SCHEMA_DDL = (
         frame_count INTEGER NOT NULL DEFAULT 0,
         ocr_frame_count INTEGER NOT NULL DEFAULT 0,
         ocr_text_chars INTEGER NOT NULL DEFAULT 0,
-        probe_json TEXT NOT NULL DEFAULT '{}',
+        probe_json TEXT NOT NULL DEFAULT '{{}}',
         warnings_json TEXT NOT NULL DEFAULT '[]',
         audio_file_key TEXT,
         audio_processing_signature TEXT,
@@ -95,24 +101,24 @@ _VIDEO_SCHEMA_DDL = (
         last_seen_run_id INTEGER NOT NULL,
         updated_ns INTEGER NOT NULL
     ) WITHOUT ROWID""",
-    """CREATE UNIQUE INDEX IF NOT EXISTS video_documents_path_idx
+        """CREATE UNIQUE INDEX IF NOT EXISTS video_documents_path_idx
         ON documents(path)""",
-    """CREATE INDEX IF NOT EXISTS video_documents_status_idx
+        """CREATE INDEX IF NOT EXISTS video_documents_status_idx
         ON documents(status,review_disposition,path)""",
-    """CREATE TABLE IF NOT EXISTS video_inventory(
+        f"""CREATE TABLE IF NOT EXISTS video_inventory(
         file_key TEXT PRIMARY KEY,
-        path TEXT NOT NULL COLLATE NOCASE,
+        path TEXT NOT NULL COLLATE {path_collation},
         mime TEXT NOT NULL,
         size INTEGER NOT NULL,
         mtime_ns INTEGER NOT NULL,
         birthtime_ns INTEGER NOT NULL,
         last_seen_run_id INTEGER NOT NULL
     ) WITHOUT ROWID""",
-    """CREATE UNIQUE INDEX IF NOT EXISTS video_inventory_path_idx
+        """CREATE UNIQUE INDEX IF NOT EXISTS video_inventory_path_idx
         ON video_inventory(path)""",
-    """CREATE INDEX IF NOT EXISTS video_inventory_run_idx
+        """CREATE INDEX IF NOT EXISTS video_inventory_run_idx
         ON video_inventory(last_seen_run_id,file_key)""",
-    """CREATE TABLE IF NOT EXISTS frames(
+        """CREATE TABLE IF NOT EXISTS frames(
         file_key TEXT NOT NULL,
         frame_index INTEGER NOT NULL,
         timestamp_ms INTEGER NOT NULL,
@@ -129,9 +135,9 @@ _VIDEO_SCHEMA_DDL = (
         PRIMARY KEY(file_key,frame_index),
         FOREIGN KEY(file_key) REFERENCES documents(file_key) ON DELETE CASCADE
     ) WITHOUT ROWID""",
-    """CREATE INDEX IF NOT EXISTS video_frames_time_idx
+        """CREATE INDEX IF NOT EXISTS video_frames_time_idx
         ON frames(file_key,timestamp_ms,frame_index)""",
-    """CREATE VIRTUAL TABLE IF NOT EXISTS frame_fts USING fts5(
+        """CREATE VIRTUAL TABLE IF NOT EXISTS frame_fts USING fts5(
         file_key UNINDEXED,
         path UNINDEXED,
         title,
@@ -139,7 +145,11 @@ _VIDEO_SCHEMA_DDL = (
         body,
         tokenize='unicode61 remove_diacritics 2'
     )""",
-)
+    )
+
+
+_VIDEO_SCHEMA_DDL = _video_schema_ddl(_PATH_COLLATION)
+_VIDEO_V1_SCHEMA_DDL = _video_schema_ddl("NOCASE")
 
 
 @dataclass(frozen=True, slots=True)
@@ -172,9 +182,78 @@ def _create_video_schema(connection: sqlite3.Connection) -> None:
         connection.execute(statement)
 
 
+def _create_video_v1_schema(connection: sqlite3.Connection) -> None:
+    for statement in _VIDEO_V1_SCHEMA_DDL:
+        connection.execute(statement)
+
+
 @lru_cache(maxsize=1)
 def _video_schema_contract() -> SQLiteSchemaContract:
     return schema_contract_from_builder(_create_video_schema)
+
+
+@lru_cache(maxsize=1)
+def _video_v1_schema_contract() -> SQLiteSchemaContract:
+    return schema_contract_from_builder(_create_video_v1_schema)
+
+
+def _migrate_video_v1(connection: sqlite3.Connection) -> None:
+    if _PATH_COLLATION == "NOCASE":
+        return
+    expected_counts = {
+        table: int(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+        for table in ("documents", "video_inventory", "frames", "frame_fts")
+    }
+    connection.execute("CREATE TEMP TABLE video_documents_copy AS SELECT * FROM documents")
+    connection.execute("CREATE TEMP TABLE video_inventory_copy AS SELECT * FROM video_inventory")
+    connection.execute("CREATE TEMP TABLE video_frames_copy AS SELECT * FROM frames")
+    connection.execute(
+        "CREATE TEMP TABLE video_fts_copy AS SELECT rowid AS source_rowid,* FROM frame_fts"
+    )
+    connection.execute("DROP TABLE frame_fts")
+    connection.execute("DROP TABLE frames")
+    connection.execute("DROP TABLE video_inventory")
+    connection.execute("DROP TABLE documents")
+    _create_video_schema(connection)
+    document_columns = tuple(
+        str(row[1]) for row in connection.execute("PRAGMA table_info(documents)")
+    )
+    inventory_columns = tuple(
+        str(row[1]) for row in connection.execute("PRAGMA table_info(video_inventory)")
+    )
+    frame_columns = tuple(str(row[1]) for row in connection.execute("PRAGMA table_info(frames)"))
+    fts_columns = tuple(str(row[1]) for row in connection.execute("PRAGMA table_info(frame_fts)"))
+    quoted_documents = ",".join(f'"{column}"' for column in document_columns)
+    quoted_inventory = ",".join(f'"{column}"' for column in inventory_columns)
+    quoted_frames = ",".join(f'"{column}"' for column in frame_columns)
+    quoted_fts = ",".join(f'"{column}"' for column in fts_columns)
+    connection.execute(
+        f"INSERT INTO documents({quoted_documents}) SELECT {quoted_documents} "
+        "FROM video_documents_copy"
+    )
+    connection.execute(
+        f"INSERT INTO video_inventory({quoted_inventory}) SELECT {quoted_inventory} "
+        "FROM video_inventory_copy"
+    )
+    connection.execute(
+        f"INSERT INTO frames({quoted_frames}) SELECT {quoted_frames} FROM video_frames_copy"
+    )
+    connection.execute(
+        f"INSERT INTO frame_fts(rowid,{quoted_fts}) "
+        f"SELECT source_rowid,{quoted_fts} FROM video_fts_copy"
+    )
+    observed_counts = {
+        table: int(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+        for table in expected_counts
+    }
+    if observed_counts != expected_counts:
+        raise RuntimeError("video schema migration changed persisted row counts")
+    if connection.execute("PRAGMA foreign_key_check").fetchone() is not None:
+        raise RuntimeError("video schema migration produced foreign-key violations")
+    connection.execute("DROP TABLE video_documents_copy")
+    connection.execute("DROP TABLE video_inventory_copy")
+    connection.execute("DROP TABLE video_frames_copy")
+    connection.execute("DROP TABLE video_fts_copy")
 
 
 @contextmanager
@@ -206,9 +285,29 @@ def initialize_video_state(path: Path) -> None:
                     exact=True,
                 )
                 return
+            if prior == 1:
+                validate_sqlite_schema_contract(
+                    connection,
+                    _video_v1_schema_contract(),
+                    label="video schema 1 migration source",
+                    exact=True,
+                )
+            elif prior not in {None, 0}:
+                raise RuntimeError(f"unsupported video migration start: {prior}")
     with video_database(path, create=True) as connection:
         connection.execute("BEGIN IMMEDIATE")
         try:
+            locked_prior = read_metadata_schema_version(connection, label="video")
+            if locked_prior == 1:
+                validate_sqlite_schema_contract(
+                    connection,
+                    _video_v1_schema_contract(),
+                    label="video schema 1 migration source",
+                    exact=True,
+                )
+                _migrate_video_v1(connection)
+            elif locked_prior not in {None, 0, VIDEO_SCHEMA_VERSION}:
+                raise RuntimeError(f"unsupported video migration start: {locked_prior}")
             _create_video_schema(connection)
             connection.execute(
                 "INSERT INTO metadata(key,value) VALUES('schema_version',?) "
@@ -243,6 +342,12 @@ def _validate_video_reader(connection: sqlite3.Connection) -> int:
     return version
 
 
+def validate_video_schema(connection: sqlite3.Connection) -> None:
+    """Validate the exact current Video owner contract without mutating state."""
+
+    _validate_video_reader(connection)
+
+
 def store_video_inventory(
     connection: sqlite3.Connection,
     snapshot: FileSnapshot,
@@ -251,7 +356,7 @@ def store_video_inventory(
 ) -> None:
     key = file_key_from_snapshot(snapshot)
     connection.execute(
-        "DELETE FROM video_inventory WHERE path=? COLLATE NOCASE AND file_key<>?",
+        f"DELETE FROM video_inventory WHERE path=? COLLATE {_PATH_COLLATION} AND file_key<>?",
         (snapshot.path, key),
     )
     connection.execute(
@@ -297,7 +402,7 @@ def cached_video_document(
 def _remove_path_conflict(connection: sqlite3.Connection, snapshot: FileSnapshot) -> None:
     key = file_key_from_snapshot(snapshot)
     conflict = connection.execute(
-        "SELECT file_key FROM documents WHERE path=? COLLATE NOCASE AND file_key<>?",
+        f"SELECT file_key FROM documents WHERE path=? COLLATE {_PATH_COLLATION} AND file_key<>?",
         (snapshot.path, key),
     ).fetchone()
     if conflict is None:
@@ -626,7 +731,9 @@ def search_video_state(
             """SELECT f.file_key,f.path,f.title,CAST(f.timestamp_ms AS INTEGER) AS timestamp_ms,
             snippet(frame_fts,4,'[',']',' ... ',24) AS snippet,
             d.duration_seconds,d.format_name,fr.sampling_reasons_json,
-            fr.ocr_mean_confidence
+            fr.ocr_mean_confidence,d.size,d.mtime_ns,d.birthtime_ns,
+            d.processing_signature,d.status,
+            fr.frame_index,fr.content_xxh3_128,fr.ocr_provenance
             FROM frame_fts AS f
             JOIN documents AS d ON d.file_key=f.file_key
             JOIN frames AS fr ON fr.file_key=f.file_key
@@ -770,6 +877,7 @@ __all__ = (
     "store_video_error",
     "store_video_inventory",
     "store_video_success",
+    "validate_video_schema",
     "video_database",
     "video_state_status",
 )

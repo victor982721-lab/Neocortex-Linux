@@ -454,6 +454,7 @@ def test_base_surfaces_and_absent_knowledge_state_ignore_optional_engines(
             "office",
             "pdf",
             "semantic",
+            "video",
         )
         observed_owners = tuple(owner.owner for owner in snapshot.owners)
         if observed_owners != expected_owners or {

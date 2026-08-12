@@ -15,6 +15,7 @@ from neocortex.sqlite_connection import (
     SQLiteWriterPragmas,
     connect_sqlite,
 )
+from neocortex.platform_policy import sqlite_path_collation
 
 from .sqlite_schema_contract import (
     SQLiteSchemaContract,
@@ -27,7 +28,8 @@ from .sqlite_schema_contract import (
 # region [01] Connections and schema
 
 
-OFFICE_SCHEMA_VERSION = 2
+OFFICE_SCHEMA_VERSION = 3
+_PATH_COLLATION = sqlite_path_collation()
 
 _OFFICE_SQLITE_POLICY = SQLiteConnectionPolicy(
     label="Office state",
@@ -43,15 +45,18 @@ _OFFICE_SQLITE_POLICY = SQLiteConnectionPolicy(
 )
 
 
-_OFFICE_V1_SCHEMA_DDL = (
-    """CREATE TABLE IF NOT EXISTS metadata(
+def _office_v1_schema_ddl(path_collation: str) -> tuple[str, ...]:
+    if path_collation not in {"BINARY", "NOCASE"}:
+        raise ValueError(f"unsupported Office path collation: {path_collation}")
+    return (
+        """CREATE TABLE IF NOT EXISTS metadata(
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
     ) WITHOUT ROWID""",
-    """CREATE TABLE IF NOT EXISTS documents(
+        f"""CREATE TABLE IF NOT EXISTS documents(
         file_key TEXT PRIMARY KEY,
         format TEXT NOT NULL,
-        path TEXT NOT NULL COLLATE NOCASE,
+        path TEXT NOT NULL COLLATE {path_collation},
         size INTEGER NOT NULL,
         mtime_ns INTEGER NOT NULL,
         birthtime_ns INTEGER NOT NULL,
@@ -71,24 +76,24 @@ _OFFICE_V1_SCHEMA_DDL = (
         last_seen_run_id INTEGER NOT NULL,
         updated_ns INTEGER NOT NULL
     ) WITHOUT ROWID""",
-    """CREATE UNIQUE INDEX IF NOT EXISTS office_documents_path_idx
+        """CREATE UNIQUE INDEX IF NOT EXISTS office_documents_path_idx
         ON documents(path)""",
-    """CREATE INDEX IF NOT EXISTS office_documents_status_idx
+        """CREATE INDEX IF NOT EXISTS office_documents_status_idx
         ON documents(format,status,review_disposition,path)""",
-    """CREATE TABLE IF NOT EXISTS office_inventory(
+        f"""CREATE TABLE IF NOT EXISTS office_inventory(
         file_key TEXT PRIMARY KEY,
         format TEXT NOT NULL,
-        path TEXT NOT NULL COLLATE NOCASE,
+        path TEXT NOT NULL COLLATE {path_collation},
         size INTEGER NOT NULL,
         mtime_ns INTEGER NOT NULL,
         birthtime_ns INTEGER NOT NULL,
         last_seen_run_id INTEGER NOT NULL
     ) WITHOUT ROWID""",
-    """CREATE INDEX IF NOT EXISTS office_inventory_run_idx
+        """CREATE INDEX IF NOT EXISTS office_inventory_run_idx
         ON office_inventory(last_seen_run_id,format,file_key)""",
-    """CREATE UNIQUE INDEX IF NOT EXISTS office_inventory_path_idx
+        """CREATE UNIQUE INDEX IF NOT EXISTS office_inventory_path_idx
         ON office_inventory(path)""",
-    """CREATE VIRTUAL TABLE IF NOT EXISTS document_fts USING fts5(
+        """CREATE VIRTUAL TABLE IF NOT EXISTS document_fts USING fts5(
         file_key UNINDEXED,
         format UNINDEXED,
         path UNINDEXED,
@@ -97,10 +102,14 @@ _OFFICE_V1_SCHEMA_DDL = (
         body,
         tokenize='unicode61 remove_diacritics 2'
     )""",
-)
+    )
 
-_OFFICE_V2_SCHEMA_DDL = (
-    """CREATE TABLE IF NOT EXISTS xlsx_cells(
+
+def _office_xlsx_schema_ddl(path_collation: str) -> tuple[str, ...]:
+    if path_collation not in {"BINARY", "NOCASE"}:
+        raise ValueError(f"unsupported Office path collation: {path_collation}")
+    return (
+        """CREATE TABLE IF NOT EXISTS xlsx_cells(
         file_key TEXT NOT NULL,
         workbook TEXT NOT NULL,
         sheet TEXT NOT NULL,
@@ -116,17 +125,22 @@ _OFFICE_V2_SCHEMA_DDL = (
         PRIMARY KEY(file_key,sheet_ordinal,cell_reference),
         FOREIGN KEY(file_key) REFERENCES documents(file_key) ON DELETE CASCADE
     ) WITHOUT ROWID""",
-    """CREATE INDEX IF NOT EXISTS xlsx_cells_location_idx
-        ON xlsx_cells(workbook COLLATE NOCASE,sheet_ordinal,cell_reference)""",
-    """CREATE TRIGGER IF NOT EXISTS xlsx_cells_document_path_update
+        f"""CREATE INDEX IF NOT EXISTS xlsx_cells_location_idx
+        ON xlsx_cells(workbook COLLATE {path_collation},sheet_ordinal,cell_reference)""",
+        """CREATE TRIGGER IF NOT EXISTS xlsx_cells_document_path_update
         AFTER UPDATE OF path ON documents
         WHEN OLD.path<>NEW.path
         BEGIN
             UPDATE xlsx_cells SET workbook=NEW.path WHERE file_key=NEW.file_key;
         END""",
-)
+    )
 
-_OFFICE_SCHEMA_DDL = _OFFICE_V1_SCHEMA_DDL + _OFFICE_V2_SCHEMA_DDL
+
+_OFFICE_V1_SCHEMA_DDL = _office_v1_schema_ddl("NOCASE")
+_OFFICE_V2_SCHEMA_DDL = _office_xlsx_schema_ddl("NOCASE")
+_OFFICE_SCHEMA_DDL = _office_v1_schema_ddl(_PATH_COLLATION) + _office_xlsx_schema_ddl(
+    _PATH_COLLATION
+)
 
 
 def _create_office_schema(connection: sqlite3.Connection) -> None:
@@ -139,6 +153,11 @@ def _create_office_v1_schema(connection: sqlite3.Connection) -> None:
         connection.execute(statement)
 
 
+def _create_office_v2_schema(connection: sqlite3.Connection) -> None:
+    for statement in _OFFICE_V1_SCHEMA_DDL + _OFFICE_V2_SCHEMA_DDL:
+        connection.execute(statement)
+
+
 @lru_cache(maxsize=1)
 def _office_schema_contract() -> SQLiteSchemaContract:
     return schema_contract_from_builder(_create_office_schema)
@@ -147,6 +166,57 @@ def _office_schema_contract() -> SQLiteSchemaContract:
 @lru_cache(maxsize=1)
 def _office_v1_schema_contract() -> SQLiteSchemaContract:
     return schema_contract_from_builder(_create_office_v1_schema)
+
+
+@lru_cache(maxsize=1)
+def _office_v2_schema_contract() -> SQLiteSchemaContract:
+    return schema_contract_from_builder(_create_office_v2_schema)
+
+
+def _migrate_office_v1(connection: sqlite3.Connection) -> None:
+    for statement in _OFFICE_V2_SCHEMA_DDL:
+        connection.execute(statement)
+
+
+def _migrate_office_v2_path_collation(connection: sqlite3.Connection) -> None:
+    if _PATH_COLLATION == "NOCASE":
+        return
+    row_counts = {
+        table: int(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+        for table in ("documents", "office_inventory", "xlsx_cells", "document_fts")
+    }
+    connection.execute("CREATE TEMP TABLE office_documents_v2 AS SELECT * FROM documents")
+    connection.execute("CREATE TEMP TABLE office_inventory_v2 AS SELECT * FROM office_inventory")
+    connection.execute("CREATE TEMP TABLE office_xlsx_cells_v2 AS SELECT * FROM xlsx_cells")
+    connection.execute(
+        """CREATE TEMP TABLE office_document_fts_v2 AS
+        SELECT rowid AS source_rowid,file_key,format,path,title,author,body
+        FROM document_fts"""
+    )
+    connection.execute("DROP TABLE document_fts")
+    connection.execute("DROP TRIGGER xlsx_cells_document_path_update")
+    connection.execute("DROP TABLE xlsx_cells")
+    connection.execute("DROP TABLE office_inventory")
+    connection.execute("DROP TABLE documents")
+    _create_office_schema(connection)
+    connection.execute("INSERT INTO documents SELECT * FROM office_documents_v2")
+    connection.execute("INSERT INTO office_inventory SELECT * FROM office_inventory_v2")
+    connection.execute("INSERT INTO xlsx_cells SELECT * FROM office_xlsx_cells_v2")
+    connection.execute(
+        """INSERT INTO document_fts(rowid,file_key,format,path,title,author,body)
+        SELECT source_rowid,file_key,format,path,title,author,body
+        FROM office_document_fts_v2"""
+    )
+    for table, expected in row_counts.items():
+        actual = int(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+        if actual != expected:
+            raise RuntimeError(f"Office path migration changed {table} row count")
+    if connection.execute("PRAGMA foreign_key_check").fetchone() is not None:
+        raise RuntimeError("Office path migration foreign-key validation failed")
+    connection.execute("DROP TABLE office_documents_v2")
+    connection.execute("DROP TABLE office_inventory_v2")
+    connection.execute("DROP TABLE office_xlsx_cells_v2")
+    connection.execute("DROP TABLE office_document_fts_v2")
 
 
 @contextmanager
@@ -196,6 +266,13 @@ def initialize_office_state(path: Path) -> None:
                     label="office schema 1 migration source",
                     exact=True,
                 )
+            elif prior == 2:
+                validate_sqlite_schema_contract(
+                    connection,
+                    _office_v2_schema_contract(),
+                    label="office schema 2 migration source",
+                    exact=True,
+                )
             elif prior not in {None, 0}:
                 raise RuntimeError(f"unsupported office migration start: {prior}")
 
@@ -210,6 +287,16 @@ def initialize_office_state(path: Path) -> None:
                     label="office schema 1 migration source",
                     exact=True,
                 )
+                _migrate_office_v1(connection)
+                locked_prior = 2
+            if locked_prior == 2:
+                validate_sqlite_schema_contract(
+                    connection,
+                    _office_v2_schema_contract(),
+                    label="office schema 2 migration source",
+                    exact=True,
+                )
+                _migrate_office_v2_path_collation(connection)
             elif locked_prior not in {None, 0, OFFICE_SCHEMA_VERSION}:
                 raise RuntimeError(f"unsupported office migration start: {locked_prior}")
             _create_office_schema(connection)

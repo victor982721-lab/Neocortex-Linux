@@ -1608,17 +1608,54 @@ def _producer_receipts_for_embedding_members(
     member_ids: Sequence[int],
 ) -> dict[int, int]:
     producer_by_member: dict[int, int] = {}
-    prefix = "materialization:semantic:embedding-member:"
     for offset in range(0, len(member_ids), 250):
         batch = tuple(dict.fromkeys(int(value) for value in member_ids[offset : offset + 250]))
         if not batch:
             continue
-        materialization_ids = tuple(f"{prefix}{member_id}" for member_id in batch)
+        placeholders = ",".join("?" for _ in batch)
+        physical_rows = connection.execute(
+            f"""SELECT member.*,g.processing_signature,
+                payload.dimensions,payload.vector_dtype,payload.original_norm,
+                payload.content_xxh3_128 AS payload_xxh3_128,
+                payload.content_bytes AS payload_bytes,
+                payload.content_xxh3_64_guard AS payload_xxh3_64_guard
+            FROM embedding_generation_members member
+            JOIN embedding_generations g
+              ON g.generation_id=member.generation_id
+            JOIN vector_payloads payload ON payload.payload_id=member.payload_id
+            WHERE member.member_id IN ({placeholders})
+            ORDER BY member.member_id""",
+            batch,
+        ).fetchall()
+        physical_by_id = {int(row["member_id"]): row for row in physical_rows}
+        missing = set(batch).difference(physical_by_id)
+        if missing:
+            raise SemanticStateError(
+                f"semantic source embedding member disappeared: {min(missing)}"
+            )
+        expected_by_materialization: dict[str, tuple[int, str, str]] = {}
+        for member_id in batch:
+            binding = _embedding_member_binding_from_row(physical_by_id[member_id])
+            materialization = binding.get("materialization_ref")
+            if not isinstance(materialization, MaterializationRef):
+                raise SemanticStateError(
+                    "semantic source embedding member has no exact materialization"
+                )
+            fingerprint, fingerprint_algorithm = _binding_fingerprint(binding)
+            expected_by_materialization[materialization.materialization_id] = (
+                member_id,
+                fingerprint,
+                fingerprint_algorithm,
+            )
+        materialization_ids = tuple(expected_by_materialization)
         placeholders = ",".join("?" for _ in materialization_ids)
         rows = connection.execute(
             f"""SELECT receipt.receipt_id,
             json_extract(output.value,'$.materialization.materialization_id')
-              AS materialization_id
+              AS materialization_id,
+            json_extract(output.value,'$.fingerprint') AS fingerprint,
+            json_extract(output.value,'$.fingerprint_algorithm')
+              AS fingerprint_algorithm
             FROM semantic_work_receipts receipt,
                  json_each(receipt.receipt_json,'$.outputs') output
             WHERE receipt.status='succeeded'
@@ -1628,16 +1665,31 @@ def _producer_receipts_for_embedding_members(
             ORDER BY receipt.receipt_id""",
             materialization_ids,
         ).fetchall()
+        matching_receipts: dict[int, set[int]] = {member_id: set() for member_id in batch}
         for row in rows:
             materialization_id = str(row["materialization_id"])
-            member_id = int(materialization_id.removeprefix(prefix))
+            expected = expected_by_materialization.get(materialization_id)
+            if expected is None:  # pragma: no cover - protected by the SQL predicate
+                continue
+            member_id, fingerprint, fingerprint_algorithm = expected
+            if (
+                str(row["fingerprint"]) != fingerprint
+                or str(row["fingerprint_algorithm"]) != fingerprint_algorithm
+            ):
+                continue
             receipt_id = int(row["receipt_id"])
-            prior = producer_by_member.get(member_id)
-            if prior is not None and prior != receipt_id:
+            matching_receipts[member_id].add(receipt_id)
+        for member_id in batch:
+            exact_receipts = matching_receipts[member_id]
+            if not exact_receipts:
                 raise SemanticStateError(
-                    "semantic source embedding member has multiple producer receipts"
+                    "semantic source embedding member has no exact producer receipt"
                 )
-            producer_by_member[member_id] = receipt_id
+            if len(exact_receipts) != 1:
+                raise SemanticStateError(
+                    "semantic source embedding member has multiple exact producer receipts"
+                )
+            producer_by_member[member_id] = next(iter(exact_receipts))
     return producer_by_member
 
 

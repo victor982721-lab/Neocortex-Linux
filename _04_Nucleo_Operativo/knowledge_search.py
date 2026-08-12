@@ -110,6 +110,7 @@ _LEXICAL_OWNER_FORMATS: dict[str, frozenset[str]] = {
     "docx": frozenset({"docx"}),
     "office": frozenset({"doc", "odt", "ods", "odp", "xls", "xlsx", "xlsm", "ppt", "pptx"}),
     "audio": frozenset({"audio", "aac", "flac", "m4a", "mp3", "ogg", "opus", "wav", "wma"}),
+    "video": frozenset({"video", "video_ocr", "avi", "mkv", "mov", "mp4", "webm"}),
     "archive": frozenset({"archive", "zip", "zipx", "cbz"}),
     "text": frozenset(
         {
@@ -738,6 +739,8 @@ def _matches_explicit_source_filters(
         aliases.add("office")
     if extension in _LEXICAL_OWNER_FORMATS["audio"]:
         aliases.add("audio")
+    if extension in _LEXICAL_OWNER_FORMATS["video"]:
+        aliases.update(("video", "video_ocr"))
     if candidate.resource.owner == "archive":
         aliases.update(_LEXICAL_OWNER_FORMATS["archive"])
     if candidate.resource.owner == "text":

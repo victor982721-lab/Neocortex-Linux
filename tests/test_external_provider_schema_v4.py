@@ -341,9 +341,21 @@ def _downgrade_fixture_to_populated_v3(database: Path) -> tuple[tuple[object, ..
             result_digest=external_findings_digest(()),
         )
         publish_external_provider(connection, 1, publication)
+        connection.commit()
+        connection.execute("PRAGMA foreign_keys=OFF")
+        connection.execute("PRAGMA legacy_alter_table=ON")
         connection.execute("DROP TABLE external_relations")
         connection.execute("DROP TABLE external_metrics")
-        connection.execute("DELETE FROM schema_migrations WHERE version=4")
+        connection.execute("ALTER TABLE files RENAME TO files_current_fixture")
+        connection.execute(code_schema._LEGACY_FILES_TABLE_DDL)
+        columns = ",".join(code_schema._FILES_COLUMNS)
+        connection.execute(
+            f"INSERT INTO files({columns}) SELECT {columns} FROM files_current_fixture"
+        )
+        connection.execute("DROP TABLE files_current_fixture")
+        connection.execute(code_schema._FILES_CURRENT_PATH_INDEX_DDL)
+        connection.execute(code_schema._FILES_LAST_SEEN_INDEX_DDL)
+        connection.execute("DELETE FROM schema_migrations WHERE version>=4")
         connection.execute("UPDATE metadata SET value='3' WHERE key='schema_version'")
         connection.execute("PRAGMA user_version=3")
         rows = tuple(
@@ -551,17 +563,17 @@ def test_v2_digest_and_portable_identities_are_order_stable() -> None:
     assert digest == external_provider_result_digest((), (first_metric,), (relation,))
 
 
-def test_fresh_schema_records_exact_history_one_through_four(tmp_path: Path) -> None:
+def test_fresh_schema_records_exact_current_history(tmp_path: Path) -> None:
     database = tmp_path / "fresh.sqlite3"
     code_schema.initialize_code_state(database)
 
     with sqlite3.connect(database) as connection:
         assert connection.execute(
             "SELECT version FROM schema_migrations ORDER BY version"
-        ).fetchall() == [(1,), (2,), (3,), (4,)]
+        ).fetchall() == [(version,) for version in range(1, code_schema.CODE_SCHEMA_VERSION + 1)]
         assert connection.execute(
             "SELECT value FROM metadata WHERE key='schema_version'"
-        ).fetchone() == ("4",)
+        ).fetchone() == (str(code_schema.CODE_SCHEMA_VERSION),)
         code_schema.validate_code_schema(connection)
 
 
@@ -585,7 +597,7 @@ def test_populated_v3_migrates_transactionally_without_changing_prior_rows(
         assert after == before
         assert connection.execute(
             "SELECT version FROM schema_migrations ORDER BY version"
-        ).fetchall() == [(1,), (2,), (3,), (4,)]
+        ).fetchall() == [(version,) for version in range(1, code_schema.CODE_SCHEMA_VERSION + 1)]
         assert connection.execute("SELECT COUNT(*) FROM external_metrics").fetchone() == (0,)
         assert connection.execute("SELECT COUNT(*) FROM external_relations").fetchone() == (0,)
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []

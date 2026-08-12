@@ -359,6 +359,11 @@ def _evidence_from_resolved(
                     str(value)[:MAX_EVIDENCE_IDENTIFIER_COMPONENT_CHARS],
                 )
             )
+    elif resolved.source_kind == "video":
+        timestamp = provenance.get("timestamp")
+        if not isinstance(timestamp, str) or not timestamp:
+            raise ValueError("video frame evidence is missing its timestamp identifier")
+        identifiers = [("neocortex.video.timestamp", timestamp)]
     return evidence_ref_type(
         evidence_id=f"evidence:{resolved.source_kind}:{resolved.hit.entity_id}",
         resource_id=resource_id,
@@ -546,6 +551,7 @@ def _lexical_state_paths(
         docx=paths.docx if owner_available(snapshot, "docx") else None,
         office=paths.office if owner_available(snapshot, "office") else None,
         audio=paths.audio if owner_available(snapshot, "audio") else None,
+        video=paths.video if owner_available(snapshot, "video") else None,
         archive=(paths.archive if owner_available(snapshot, "archive") else None),
         text=(paths.text if owner_available(snapshot, "text") else None),
     )

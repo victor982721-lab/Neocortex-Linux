@@ -26,7 +26,7 @@ from .knowledge_contracts import (
 
 
 REVIEW_TASK_CONTRACT_SCHEMA_VERSION = 1
-REVIEW_TASK_FRAMEWORK_SCHEMA_VERSION = 21
+REVIEW_TASK_FRAMEWORK_SCHEMA_VERSION = 22
 REVIEW_TASK_PRIORITY_ALGORITHM = "impact-x-uncertainty-x-irreversibility-v1"
 REVIEW_TASK_SOURCE_FINGERPRINT_PREFIX = "review-task-source-snapshot-v1:sha256:"
 
@@ -78,6 +78,8 @@ _ALLOWED_TRANSITIONS = frozenset(
         (ReviewTaskState.IN_REVIEW, ReviewTaskState.RESOLVED),
         (ReviewTaskState.IN_REVIEW, ReviewTaskState.DISMISSED),
         (ReviewTaskState.IN_REVIEW, ReviewTaskState.SUPERSEDED),
+        (ReviewTaskState.RESOLVED, ReviewTaskState.SUPERSEDED),
+        (ReviewTaskState.DISMISSED, ReviewTaskState.SUPERSEDED),
     }
 )
 
@@ -862,6 +864,7 @@ class ReviewTaskRecord:
     source: ReviewTaskInput
     source_snapshot_fingerprint: str
     batch_id: str
+    selector_signature: str
     current_event: ReviewTaskEvent
 
     def __post_init__(self) -> None:
@@ -877,6 +880,11 @@ class ReviewTaskRecord:
             raise ValueError("review task record event belongs to another task")
         _validate_source_snapshot_fingerprint(self.source_snapshot_fingerprint)
         _required_text("batch_id", self.batch_id)
+        _required_text(
+            "selector_signature",
+            self.selector_signature,
+            limit=MAX_REVIEW_TASK_SELECTOR_CHARS,
+        )
 
     @property
     def state(self) -> ReviewTaskState:
@@ -893,6 +901,9 @@ class ReviewTaskVersionHead:
     state: ReviewTaskState
     event_id: str
     source_snapshot_fingerprint: str
+    source_input_fingerprint: str
+    selector_signature: str
+    decision: CanonicalJsonObject | None
 
     def __post_init__(self) -> None:
         _required_text("logical_key", self.logical_key, limit=MAX_REVIEW_TASK_LOGICAL_KEY_CHARS)
@@ -902,6 +913,14 @@ class ReviewTaskVersionHead:
             raise ValueError("state must be a ReviewTaskState")
         _required_text("event_id", self.event_id)
         _validate_source_snapshot_fingerprint(self.source_snapshot_fingerprint)
+        _required_text("source_input_fingerprint", self.source_input_fingerprint)
+        _required_text(
+            "selector_signature",
+            self.selector_signature,
+            limit=MAX_REVIEW_TASK_SELECTOR_CHARS,
+        )
+        if self.decision is not None and not isinstance(self.decision, CanonicalJsonObject):
+            raise ValueError("decision must be a CanonicalJsonObject when present")
 
 
 @dataclass(frozen=True, slots=True)

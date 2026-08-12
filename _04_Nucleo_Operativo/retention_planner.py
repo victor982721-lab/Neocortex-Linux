@@ -272,7 +272,7 @@ def _validate_snapshot(
         raise RuntimeError(
             f"framework schema is {version!r}; expected {framework_schema.SCHEMA_VERSION}"
         )
-    framework_schema._validate_schema(connection)
+    framework_schema.validate_framework_schema_v22(connection)
     return version
 
 

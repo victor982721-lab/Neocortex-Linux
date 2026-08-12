@@ -66,9 +66,7 @@ def _seed_catalog_v1(database: Path, anomaly: str | None = None) -> None:
     with closing(sqlite3.connect(database)) as connection:
         catalog_schema_module._migrate_to_v1(connection)
         catalog_schema_module._set_schema_version(connection, 1)
-        connection.execute(
-            "INSERT INTO metadata(key,value) VALUES('audit_sentinel','preserved')"
-        )
+        connection.execute("INSERT INTO metadata(key,value) VALUES('audit_sentinel','preserved')")
         if anomaly == "column":
             connection.execute(
                 """ALTER TABLE classification_history
@@ -168,34 +166,28 @@ def test_catalog_v1_unknown_objects_abstain_and_roll_back_without_loss(
 
     with closing(sqlite3.connect(database)) as connection:
         assert (
-            connection.execute(
-                "SELECT value FROM metadata WHERE key='schema_version'"
-            ).fetchone()[0]
+            connection.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()[
+                0
+            ]
             == "1"
         )
         assert (
-            connection.execute(
-                "SELECT value FROM metadata WHERE key='audit_sentinel'"
-            ).fetchone()[0]
+            connection.execute("SELECT value FROM metadata WHERE key='audit_sentinel'").fetchone()[
+                0
+            ]
             == "preserved"
         )
-        assert _history_rows(connection) == tuple(
-            sorted(_HISTORY_ROWS, key=lambda row: row[1])
-        )
+        assert _history_rows(connection) == tuple(sorted(_HISTORY_ROWS, key=lambda row: row[1]))
         assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
         if anomaly == "column":
             columns = {
                 str(row[1])
-                for row in connection.execute(
-                    "PRAGMA table_info(classification_history)"
-                )
+                for row in connection.execute("PRAGMA table_info(classification_history)")
             }
             assert "vendor_note" in columns
             assert {
                 str(row[0])
-                for row in connection.execute(
-                    "SELECT vendor_note FROM classification_history"
-                )
+                for row in connection.execute("SELECT vendor_note FROM classification_history")
             } == {"preserved"}
         elif anomaly == "trigger":
             assert connection.execute(
@@ -220,9 +212,7 @@ def test_catalog_v1_base_exception_rolls_back_every_migration_step(
     _seed_catalog_v1(database)
 
     def abort_after_write(connection: sqlite3.Connection) -> None:
-        connection.execute(
-            "UPDATE metadata SET value='partial' WHERE key='audit_sentinel'"
-        )
+        connection.execute("UPDATE metadata SET value='partial' WHERE key='audit_sentinel'")
         raise _InjectedCatalogMigrationAbort
 
     monkeypatch.setattr(
@@ -241,9 +231,7 @@ def test_catalog_v1_base_exception_rolls_back_every_migration_step(
         assert connection.execute(
             "SELECT value FROM metadata WHERE key='audit_sentinel'"
         ).fetchone() == ("preserved",)
-        assert _history_rows(connection) == tuple(
-            sorted(_HISTORY_ROWS, key=lambda row: row[1])
-        )
+        assert _history_rows(connection) == tuple(sorted(_HISTORY_ROWS, key=lambda row: row[1]))
         assert connection.execute(
             """SELECT COUNT(*) FROM sqlite_master
             WHERE name IN ('catalog_generations','catalog_publications',
@@ -529,6 +517,46 @@ def test_document_cache_sync_does_not_reassign_incompatible_identity(
     with closing(sqlite3.connect(database)) as connection:
         row = connection.execute("SELECT path,volume_id,file_id FROM files").fetchone()
     assert row == (old_path, incompatible_volume, incompatible_file)
+
+
+@pytest.mark.skipif(
+    document_cache_sync._PATH_COLLATION != "BINARY",
+    reason="POSIX path identity contract",
+)
+def test_document_cache_sync_does_not_casefold_distinct_linux_paths() -> None:
+    connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
+    connection.execute(
+        """CREATE TABLE files(
+        scan_id INTEGER NOT NULL,
+        path TEXT NOT NULL COLLATE BINARY,
+        volume_id BLOB NOT NULL,
+        file_id BLOB NOT NULL,
+        PRIMARY KEY(scan_id,volume_id,file_id),
+        UNIQUE(scan_id,path)
+        ) WITHOUT ROWID"""
+    )
+    connection.executemany(
+        "INSERT INTO files VALUES(1,?,?,?)",
+        (
+            ("/tmp/Case.pdf", (1).to_bytes(16, "little"), (11).to_bytes(16, "little")),
+            ("/tmp/case.pdf", (1).to_bytes(16, "little"), (12).to_bytes(16, "little")),
+        ),
+    )
+
+    updated = document_cache_sync._sync_dedup_cache(
+        connection,
+        old_path="/tmp/Case.pdf",
+        new_path="/tmp/Renamed.pdf",
+        volume_id="1",
+        file_id="11",
+    )
+
+    assert updated == 1
+    assert [
+        str(row[0])
+        for row in connection.execute("SELECT path FROM files ORDER BY path COLLATE BINARY")
+    ] == ["/tmp/Renamed.pdf", "/tmp/case.pdf"]
 
 
 # endregion [04]

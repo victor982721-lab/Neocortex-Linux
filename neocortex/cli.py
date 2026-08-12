@@ -48,6 +48,13 @@ _CAPABILITIES_CANONICAL_OPTIONS = {
     "--input-bytes": "--doctor-capabilities-input-bytes",
 }
 
+# This first-token allowlist is intentionally duplicated at the installed
+# entrypoint boundary.  Importing ``human_cli`` merely to ask whether an argv
+# belongs to that facade also imports its operational read adapters.  Leaf
+# commands that cannot be human commands must stay on the lightweight parser
+# path instead.
+_HUMAN_COMMANDS = frozenset({"help", "status", "search", "ask", "inspect", "review", "agent"})
+
 
 def _prepend_owned_executable_directories() -> None:
     """Expose executable shims installed inside the active Neocortex runtime."""
@@ -163,10 +170,11 @@ def _run_special_mode(arguments: Sequence[str]) -> int | None:
 def _run_human_mode(arguments: Sequence[str]) -> int | None:
     """Dispatch the concise facade without importing operational readers eagerly."""
 
-    from .human_cli import handles_human_command, run_human_command
-
-    if not handles_human_command(arguments):
+    if not arguments or arguments[0] not in _HUMAN_COMMANDS:
         return None
+
+    from .human_cli import run_human_command
+
     return run_human_command(arguments)
 
 

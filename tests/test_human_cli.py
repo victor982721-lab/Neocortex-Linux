@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -23,6 +24,108 @@ def _hit() -> dict[str, object]:
         },
         "reasons": ["fts_pdf returned this concrete evidence"],
     }
+
+
+@pytest.mark.parametrize(
+    ("arguments", "runner", "expected"),
+    (
+        (
+            ("review", "task", "show", "task-1", "--json"),
+            "run_review_task_show",
+            {"task_id": "task-1", "scope": "personal", "json_output": True},
+        ),
+        (
+            ("review", "task", "history", "task-1", "--scope", "framework"),
+            "run_review_task_history",
+            {"task_id": "task-1", "scope": "framework", "json_output": False},
+        ),
+        (
+            (
+                "review",
+                "task",
+                "claim",
+                "task-1",
+                "--expected-event-id",
+                "event-1",
+                "--actor",
+                "victor",
+                "--note",
+                "inicio",
+            ),
+            "run_review_task_claim",
+            {
+                "task_id": "task-1",
+                "scope": "personal",
+                "expected_event_id": "event-1",
+                "actor": "victor",
+                "note": "inicio",
+                "json_output": False,
+            },
+        ),
+        (
+            (
+                "review",
+                "task",
+                "decide",
+                "task-1",
+                "--expected-event-id",
+                "event-2",
+                "--decision",
+                "dismissed",
+                "--decision-scope",
+                "permanent",
+                "--actor",
+                "victor",
+                "--json",
+            ),
+            "run_review_task_decide",
+            {
+                "task_id": "task-1",
+                "scope": "personal",
+                "expected_event_id": "event-2",
+                "decision": "dismissed",
+                "decision_scope": "permanent",
+                "actor": "victor",
+                "note": None,
+                "json_output": True,
+            },
+        ),
+    ),
+)
+def test_human_review_task_commands_use_one_shared_adapter(
+    monkeypatch: pytest.MonkeyPatch,
+    arguments: tuple[str, ...],
+    runner: str,
+    expected: dict[str, object],
+) -> None:
+    calls: list[dict[str, object]] = []
+    fake = SimpleNamespace(**{runner: lambda **kwargs: calls.append(kwargs) or 0})
+    original_import = human_cli.importlib.import_module
+    monkeypatch.setattr(
+        human_cli.importlib,
+        "import_module",
+        lambda name: fake if name == "neocortex.review_task_cli_adapter" else original_import(name),
+    )
+
+    assert human_cli.run_human_command(arguments) == 0
+    assert calls == [expected]
+
+
+def test_human_review_task_rejects_all_scope_without_loading_adapter(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    loaded = False
+
+    def forbidden_import(_name: str):
+        nonlocal loaded
+        loaded = True
+        raise AssertionError("adapter must not load for an invalid scope")
+
+    monkeypatch.setattr(human_cli.importlib, "import_module", forbidden_import)
+    assert human_cli.run_human_command(("review", "task", "show", "task-1", "--scope", "all")) == 2
+    assert not loaded
+    assert "personal o framework" in capsys.readouterr().err
 
 
 def test_human_search_explains_path_locator_and_non_authority(

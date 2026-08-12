@@ -38,6 +38,7 @@ def _policy(tmp_path: Path) -> PlatformPolicy:
         desktop_file=tmp_path / "home" / ".local" / "share" / "applications" / "neocortex.desktop",
         inventory_backend="portable-full-scan",
         identity_backend="posix-st_dev-st_ino",
+        path_collation="BINARY",
         containment_backend="posix-session-process-group-rlimit",
         elevation="not-required",
         mutation_backend="intentionally-unavailable",

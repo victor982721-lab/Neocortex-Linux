@@ -6,6 +6,8 @@ import sqlite3
 from collections.abc import Callable
 from functools import lru_cache
 
+from neocortex.platform_policy import sqlite_path_collation
+
 from .pdf_derived_schema import initialize_derived_schema
 from .sqlite_schema_contract import (
     SQLiteSchemaContract,
@@ -18,11 +20,12 @@ from .sqlite_schema_contract import (
 # region [01] Versions and canonical DDL
 
 
-PDF_SCHEMA_VERSION = 12
+PDF_SCHEMA_VERSION = 13
 UNKNOWN_BIRTHTIME_NS = -1
+_PATH_COLLATION = sqlite_path_collation()
 
 
-_PDF_TABLE_DDL = (
+_PDF_V12_TABLE_DDL = (
     """CREATE TABLE IF NOT EXISTS metadata(
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
@@ -105,7 +108,7 @@ _PDF_TABLE_DDL = (
 )
 
 
-_PDF_INDEX_DDL = (
+_PDF_V12_INDEX_DDL = (
     """CREATE INDEX IF NOT EXISTS pdf_inventory_run_idx
         ON pdf_inventory(last_seen_run_id,file_key)""",
     """CREATE UNIQUE INDEX IF NOT EXISTS documents_path_idx
@@ -113,6 +116,31 @@ _PDF_INDEX_DDL = (
     """CREATE INDEX IF NOT EXISTS documents_text_idx
         ON documents(normalized_text_xxh3_128,normalized_text_chars,status)""",
 )
+
+
+def _pdf_table_ddl(path_collation: str) -> tuple[str, ...]:
+    if path_collation not in {"BINARY", "NOCASE"}:
+        raise ValueError(f"unsupported PDF path collation: {path_collation}")
+    return tuple(
+        statement.replace("COLLATE NOCASE", f"COLLATE {path_collation}")
+        for statement in _PDF_V12_TABLE_DDL
+    )
+
+
+def _pdf_index_ddl(path_collation: str) -> tuple[str, ...]:
+    if path_collation not in {"BINARY", "NOCASE"}:
+        raise ValueError(f"unsupported PDF path collation: {path_collation}")
+    return tuple(
+        statement.replace(
+            "ON documents(path)",
+            f"ON documents(path COLLATE {path_collation})",
+        )
+        for statement in _PDF_V12_INDEX_DDL
+    )
+
+
+_PDF_TABLE_DDL = _pdf_table_ddl(_PATH_COLLATION)
+_PDF_INDEX_DDL = _pdf_index_ddl(_PATH_COLLATION)
 
 
 _DOCUMENT_ADDITIONS = (
@@ -175,18 +203,29 @@ def _add_columns(
         connection.execute(f"ALTER TABLE {quoted_table} ADD COLUMN {quoted_name} {declaration}")
 
 
-def _create_tables(connection: sqlite3.Connection) -> None:
-    for statement in _PDF_TABLE_DDL:
+def _create_tables_from(
+    connection: sqlite3.Connection,
+    statements: tuple[str, ...],
+) -> None:
+    for statement in statements:
         connection.execute(statement)
 
 
-def _create_indexes(connection: sqlite3.Connection) -> None:
-    for statement in _PDF_INDEX_DDL:
+def _create_indexes_from(
+    connection: sqlite3.Connection,
+    statements: tuple[str, ...],
+) -> None:
+    for statement in statements:
         connection.execute(statement)
 
 
-def _ensure_current_structure(connection: sqlite3.Connection) -> None:
-    _create_tables(connection)
+def _ensure_structure(
+    connection: sqlite3.Connection,
+    *,
+    table_ddl: tuple[str, ...],
+    index_ddl: tuple[str, ...],
+) -> None:
+    _create_tables_from(connection, table_ddl)
     _add_columns(connection, "documents", _DOCUMENT_ADDITIONS)
     _add_columns(
         connection,
@@ -200,7 +239,23 @@ def _ensure_current_structure(connection: sqlite3.Connection) -> None:
         (("birthtime_ns", "INTEGER NOT NULL DEFAULT -1"),),
     )
     initialize_derived_schema(connection)
-    _create_indexes(connection)
+    _create_indexes_from(connection, index_ddl)
+
+
+def _ensure_current_structure(connection: sqlite3.Connection) -> None:
+    _ensure_structure(
+        connection,
+        table_ddl=_PDF_TABLE_DDL,
+        index_ddl=_PDF_INDEX_DDL,
+    )
+
+
+def _ensure_v12_structure(connection: sqlite3.Connection) -> None:
+    _ensure_structure(
+        connection,
+        table_ddl=_PDF_V12_TABLE_DDL,
+        index_ddl=_PDF_V12_INDEX_DDL,
+    )
 
 
 def _no_data_migration(connection: sqlite3.Connection) -> None:
@@ -262,6 +317,108 @@ def _migrate_durable_timeouts(connection: sqlite3.Connection) -> None:
     )
 
 
+_PDF_PATH_REBUILD_TABLES = (
+    "documents",
+    "pdf_inventory",
+    "pages",
+    "page_layouts",
+    "document_layouts",
+)
+
+
+def _ordered_columns(
+    connection: sqlite3.Connection,
+    table: str,
+    *,
+    schema: str = "main",
+) -> tuple[str, ...]:
+    if schema not in {"main", "temp"}:  # pragma: no cover - internal invariant
+        raise ValueError(f"unsupported SQLite schema: {schema}")
+    quoted = _quoted_identifier(table)
+    return tuple(str(row[1]) for row in connection.execute(f"PRAGMA {schema}.table_info({quoted})"))
+
+
+def _copy_table_exact(
+    connection: sqlite3.Connection,
+    *,
+    source: str,
+    target: str,
+) -> None:
+    source_columns = _ordered_columns(connection, source, schema="temp")
+    target_columns = _ordered_columns(connection, target)
+    if not source_columns or set(source_columns) != set(target_columns):
+        raise RuntimeError(
+            f"PDF path migration columns changed for {target}: "
+            f"source={source_columns!r} target={target_columns!r}"
+        )
+    columns = ",".join(_quoted_identifier(column) for column in target_columns)
+    connection.execute(
+        f"INSERT INTO main.{_quoted_identifier(target)}({columns}) "
+        f"SELECT {columns} FROM temp.{_quoted_identifier(source)}"
+    )
+
+
+def _validate_pdf_v12_schema(connection: sqlite3.Connection) -> None:
+    failures: list[str] = []
+    for contract in _pdf_v12_schema_contracts():
+        try:
+            validate_sqlite_schema_contract(
+                connection,
+                contract,
+                label="PDF schema 12 migration source",
+                exact=True,
+            )
+        except SQLiteSchemaContractError as exc:
+            failures.append(str(exc))
+        else:
+            return
+    raise SQLiteSchemaContractError(
+        "PDF schema 12 migration source is invalid for every supported layout: "
+        + " | ".join(failures)
+    )
+
+
+def _migrate_platform_path_collation(connection: sqlite3.Connection) -> None:
+    """Rebuild path-owning tables without discarding child or FTS evidence."""
+
+    _validate_pdf_v12_schema(connection)
+    row_counts = {
+        table: int(
+            connection.execute(f"SELECT COUNT(*) FROM {_quoted_identifier(table)}").fetchone()[0]
+        )
+        for table in _PDF_PATH_REBUILD_TABLES
+    }
+    fts_count = int(connection.execute("SELECT COUNT(*) FROM page_fts").fetchone()[0])
+    for table in _PDF_PATH_REBUILD_TABLES:
+        backup = f"pdf_v12_{table}"
+        connection.execute(
+            f"CREATE TEMP TABLE {_quoted_identifier(backup)} AS "
+            f"SELECT * FROM main.{_quoted_identifier(table)}"
+        )
+
+    for table in ("page_layouts", "document_layouts", "pages"):
+        connection.execute(f"DROP TABLE {_quoted_identifier(table)}")
+    connection.execute("DROP TABLE documents")
+    connection.execute("DROP TABLE pdf_inventory")
+    _ensure_current_structure(connection)
+
+    for table in ("documents", "pdf_inventory", "pages", "page_layouts", "document_layouts"):
+        backup = f"pdf_v12_{table}"
+        _copy_table_exact(connection, source=backup, target=table)
+        connection.execute(f"DROP TABLE temp.{_quoted_identifier(backup)}")
+        migrated_count = int(
+            connection.execute(f"SELECT COUNT(*) FROM main.{_quoted_identifier(table)}").fetchone()[
+                0
+            ]
+        )
+        if migrated_count != row_counts[table]:
+            raise RuntimeError(f"PDF path migration changed {table} row count")
+    if int(connection.execute("SELECT COUNT(*) FROM page_fts").fetchone()[0]) != fts_count:
+        raise RuntimeError("PDF path migration changed page FTS rows")
+    if connection.execute("PRAGMA foreign_key_check").fetchone() is not None:
+        raise RuntimeError("PDF path migration foreign-key validation failed")
+
+
 _PDF_MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     1: _no_data_migration,
     2: _no_data_migration,
@@ -274,6 +431,7 @@ _PDF_MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     9: _migrate_legacy_ocr_control,
     10: _migrate_durable_timeouts,
     11: _no_data_migration,
+    12: _migrate_platform_path_collation,
 }
 
 
@@ -286,7 +444,8 @@ def create_fresh_pdf_schema(connection: sqlite3.Connection) -> None:
 
 
 def migrate_pdf_schema(connection: sqlite3.Connection, version: int) -> None:
-    _ensure_current_structure(connection)
+    if version < 12:
+        _ensure_v12_structure(connection)
     current = version
     while current < PDF_SCHEMA_VERSION:
         migration = _PDF_MIGRATIONS.get(current)
@@ -312,7 +471,11 @@ def _build_canonical_schema(connection: sqlite3.Connection) -> None:
     _ensure_current_structure(connection)
 
 
-def _build_legacy_v1_compatible_schema(connection: sqlite3.Connection) -> None:
+def _build_pdf_v12_canonical_schema(connection: sqlite3.Connection) -> None:
+    _ensure_v12_structure(connection)
+
+
+def _build_pdf_v12_legacy_v1_schema(connection: sqlite3.Connection) -> None:
     statements = (
         """CREATE TABLE metadata(
             key TEXT PRIMARY KEY,value TEXT NOT NULL
@@ -331,7 +494,7 @@ def _build_legacy_v1_compatible_schema(connection: sqlite3.Connection) -> None:
     )
     for statement in statements:
         connection.execute(statement)
-    _ensure_current_structure(connection)
+    _ensure_v12_structure(connection)
 
 
 def _build_metadata_schema(connection: sqlite3.Connection) -> None:
@@ -345,9 +508,14 @@ def _metadata_contract() -> SQLiteSchemaContract:
 
 @lru_cache(maxsize=1)
 def _pdf_schema_contracts() -> tuple[SQLiteSchemaContract, ...]:
+    return (schema_contract_from_builder(_build_canonical_schema),)
+
+
+@lru_cache(maxsize=1)
+def _pdf_v12_schema_contracts() -> tuple[SQLiteSchemaContract, ...]:
     return (
-        schema_contract_from_builder(_build_canonical_schema),
-        schema_contract_from_builder(_build_legacy_v1_compatible_schema),
+        schema_contract_from_builder(_build_pdf_v12_canonical_schema),
+        schema_contract_from_builder(_build_pdf_v12_legacy_v1_schema),
     )
 
 

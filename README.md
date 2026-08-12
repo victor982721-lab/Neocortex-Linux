@@ -376,10 +376,11 @@ La ruta `text` cubre archivos imprimibles que antes sólo aparecían en el
 inventario: TXT, Markdown, CSV/TSV, HTML, XML, JSON y formatos de texto
 equivalentes. También interpreta la estructura visible de correo EML y conserva
 asunto, remitente y encabezados acotados. Los DOC/XLS/PPT binarios heredados se
-extraen en un proceso aislado mediante LibreOffice y, si existe, el extractor
-específico `catdoc`/`xls2csv`/`catppt`. La detección exige evidencia de bytes
-imprimibles, RFC 5322 o contenedor CFB; una extensión por sí sola no convierte
-binarios arbitrarios en texto.
+extraen en un proceso aislado con un único backend fijado por formato. DOC
+prioriza LibreOffice y usa `catdoc` si no está disponible; XLS y PPT priorizan
+respectivamente `xls2csv` y `catppt`, con LibreOffice como fallback. La
+detección exige evidencia de bytes imprimibles, RFC 5322 o contenedor CFB; una
+extensión por sí sola no convierte binarios arbitrarios en texto.
 
 ```bash
 Neocortex --root "$Root" --route text --text-max-count 25 --strict-exit-codes
@@ -463,6 +464,10 @@ Neocortex --video-status
 Neocortex --video-search "placa del transformador" --video-search-limit 20
 Neocortex --video-doctor --video-ocr-profile auto-multilingual
 ```
+
+El OCR de frames publicado también participa en `Neocortex search` y `ask` con
+localizador temporal; no se presenta como embedding Video ni duplica la pista
+Audio enlazada.
 
 ### Código con recuperación semántica integrada
 
@@ -617,7 +622,7 @@ conserva las capas anteriores, el ranking bruto y
 hasta tres recomendaciones `act_now`, y añade
 `external_evidence_suite` con los proveedores y gates normalizados sin alterar
 ranking ni actionability. La proyección `architecture_analysis` v2 consume las
-métricas y relaciones portables del schema Code v4 y muestra módulos, imports,
+métricas y relaciones portables del schema Code v5 y muestra módulos, imports,
 SCC, contratos y los estados `import_graph_consensus`,
 `architecture_contracts` y `module_complexity_displacement`; ausencia o falta
 de comparabilidad nunca se convierte en `passed`. `unused_analysis` publica los

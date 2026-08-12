@@ -136,7 +136,11 @@ def test_live_repository_graph_satisfies_published_architecture_contracts() -> N
     failures = [item for item in payload["contract_evaluations"] if item["status"] == "failed"]
     assert failures == []
 
-    public_facades = {"neocortex.read_api", "neocortex.value_cli_adapter"}
+    public_facades = {
+        "neocortex.read_api",
+        "neocortex.review_task_cli_adapter",
+        "neocortex.value_cli_adapter",
+    }
     crossings = {
         (item["importer"], item["imported"])
         for item in payload["relations"]
@@ -147,6 +151,10 @@ def test_live_repository_graph_satisfies_published_architecture_contracts() -> N
         ("neocortex.read_api", "_04_Nucleo_Operativo.read_api_port"),
         (
             "neocortex.value_cli_adapter",
+            "_04_Nucleo_Operativo.value_review_port",
+        ),
+        (
+            "neocortex.review_task_cli_adapter",
             "_04_Nucleo_Operativo.value_review_port",
         ),
     }

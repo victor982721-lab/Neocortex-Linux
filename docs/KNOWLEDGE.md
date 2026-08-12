@@ -28,6 +28,9 @@ Neocortex --knowledge-status --knowledge-json
   es éxito semántico. `evidence` excluye el título. `discovery` puede
   transportarlo como señal advisory separada y sólo refuerza un recurso y
   revisión que ya tengan evidencia corporal; un título no crea hits ni citas.
+- Video aporta ya el OCR publicado de frames al canal lexical canónico, con
+  locator temporal `start_ms/end_ms` y validación owner fail-closed. No produce
+  embeddings Video ni duplica como evidencia independiente el Audio enlazado.
 
 El checkpoint operativo actual se conserva en el
 [handoff vigente](../.codex/handoffs/NEOCORTEX_0.7.2_PAUSE_2026-07-30.md), no en
@@ -221,11 +224,14 @@ mutación, clasificación ni retención.
 **IMPLEMENTED para la primera vertical de revisión.** `ReviewTask` no sustituye
 `ResourceRef`, `RevisionRef` o `EvidenceRef`: conserva esos contratos como
 input/evidencia y agrega una decisión durable sobre un hallazgo. Framework
-schema 21 posee batches, versiones inmutables de tarea, memberships y eventos
+schema 21 introdujo batches, versiones inmutables de tarea, memberships y eventos
 append-only, progreso keyset y heads fuente generacionales. Un batch fija el
 snapshot fuente y está acotado a 1,000 inputs
 y 100 tareas; las transiciones de estado aplican CAS. La migración v20→v21 crea
 las tablas vacías y no fabrica conocimiento a partir del historial.
+Framework v22 conserva las seis familias ReviewTask, migra la identidad de rutas
+a `BINARY` en Linux y `NOCASE` en Windows y cierra el lifecycle tipado de
+decisiones humanas sin reinterpretar eventos v21.
 
 La primera productora es Value. `review value --refresh --scope
 personal|framework` examina exactamente una página de 100 observaciones de
@@ -233,17 +239,22 @@ Inventory/Catalog, vuelve a comprobar el fence y publica el receipt, las tareas,
 sus memberships, eventos iniciales y el progreso dentro de una sola transacción
 del owner Framework. La página final con evidencia completa publica el head
 fuente en O(1); la supersession de ausentes se deriva de ese receipt sin una
-transacción O(N). No existe transacción distribuida con los owners fuente. Si éstos
-cambian antes de publicar se abstiene; si cambian después, la lectura detecta el
-fingerprint distinto y devuelve `stale` sin mezclar snapshots. El recorrido de
-un estado con más de 25,000 filas continúa por keyset, no retirando la cota.
+transacción O(N). No existe transacción distribuida con los owners fuente. Si
+éstos cambian antes de publicar se abstiene; si cambian después, la lectura
+conserva como `stale` el último head completo mientras construye el siguiente.
+La época temporal se fija al comenzar el scan, de modo que el cursor reanuda
+después de medianoche sin impedir una reevaluación posterior. El recorrido de
+más de 25,000 filas continúa por keyset.
 
 La consulta predeterminada `review value` permanece read-only. Usa la cola sólo
-cuando coincide con el snapshot fuente y, si Framework v21 o la cola todavía no
+cuando coincide con el snapshot fuente y, si Framework v22 o la cola todavía no
 existen, cae al preview legacy también read-only; no migra ni crea SQLite. Las
 versiones `RESOLVED` o `DISMISSED` y sus decisiones humanas sobreviven a
-reconstrucciones y no se reabren automáticamente. El refresh sigue siendo
-advisory y nunca autoriza una acción física.
+reconstrucciones. Una decisión tipada puede ser permanente, válida hasta que
+cambie el input fuente o válida hasta que cambie la política/selector; sólo la
+condición declarada permite crear una versión sucesora con receipt exacto. Las
+decisiones legacy permanecen terminales sin inventar intención. El refresh
+sigue siendo advisory y nunca autoriza una acción física.
 
 La cola no colapsa cobertura de cursor y cobertura epistémica. Un progreso puede
 tener `scan_complete=true` y `evidence_complete=false`: significa que ya leyó
@@ -251,12 +262,13 @@ todas las identidades de ese fence, pero alguna página careció de evidencia
 publicada íntegra. Entonces el resultado sigue `partial`, conserva la razón y no
 usa la ausencia observada para superseder pendientes anteriores.
 
-El snapshot Knowledge de Framework v21 expone los heads ReviewTask sólo después
+El snapshot Knowledge de Framework v22 expone los heads ReviewTask sólo después
 de reconciliarlos con source receipt, progreso, acumulados y la cadena completa
 alcanzable de batches y memberships; añade watermarks de batches, eventos y
-publicaciones fuente, además de run/event/action. Los lectores aceptan v19 y v20
+publicaciones fuente, además de run/event/action. Los lectores aceptan v19, v20 y v21
 sólo con validación estructural exacta y los marcan
-`legacy_schema_read_compatible:*->21`; esos schemas carecen de la cola.
+`legacy_schema_read_compatible:*->22`; v19/v20 carecen de la cola y v21 se
+observa sin migrarla.
 Retention protege tareas y eventos humanos como holds y, por separado, el head
 fuente vigente con toda su cadena publicada y progreso exactos; el resto de la
 coordinación sistémica no se confunde con conocimiento humano irreconstruible.
@@ -270,7 +282,7 @@ presencia del schema.
 
 ## Owners, schemas y visibilidad
 
-`KnowledgeStatePaths.from_directory()` registra diez owners históricos y las
+`KnowledgeStatePaths.from_directory()` registra once owners base y las
 rutas aditivas de Archive y texto. Estas dos últimas sólo entran al vector si su
 base existe. Una base histórica ausente se representa como `absent`; no se crea
 su directorio ni el archivo.
@@ -290,21 +302,22 @@ control.
 | Owner | Archivo | Schema esperado | Frontera observada | Uso en recuperación |
 |---|---|---:|---|---|
 | `inventory` | `dedup.sqlite3` | 10 | Checkpoint válido por raíz y firma cruda a un scan `complete`, con cursor USN opcional todo-o-nada y token del plan dedup completo; máximo 1024 heads. | Exact typed de path, nombre o huella sobre heads publicados; identidad física y relaciones planeadas no verificadas. |
-| `framework` | `framework.sqlite3` | 21 | Máximos de run, evento y acción; heads ReviewTask validados y conteo/tiempo de batches, eventos y publicaciones fuente; `best_effort_non_generational`. Los schemas 19 y 20 se admiten sólo en lectura cuando pasan su validador estructural exacto y se marcan `legacy_schema_read_compatible:<versión>->21`. | Estado transversal; no produce ranking de contenido. |
-| `catalog` | `document_catalog.sqlite3` | 6 | Publicación `published` por `source_kind`. | Membership de filtros y exact typed de path, nombre o identificador en la generación publicada. |
-| `pdf` | `pdf.sqlite3` | 12 | Conteo, último `updated_ns` y run; no generacional. | FTS por página y fuentes semantic. |
-| `docx` | `docx.sqlite3` | 5 | Conteo, último `updated_ns` y run; no generacional. | FTS documental y partes semantic. |
-| `office` | `office.sqlite3` | 2 | Conteo, último `updated_ns` y run; no generacional. | FTS documental de XLSX/PPTX/ODT y semantic. |
+| `framework` | `framework.sqlite3` | 22 | Máximos de run, evento y acción; heads ReviewTask validados y conteo/tiempo de batches, eventos y publicaciones fuente; `best_effort_non_generational`. Los schemas 19, 20 y 21 se admiten sólo en lectura cuando pasan su validador estructural exacto y se marcan `legacy_schema_read_compatible:<versión>->22`. | Estado transversal; no produce ranking de contenido. |
+| `catalog` | `document_catalog.sqlite3` | 7 | Publicación `published` por `source_kind`. | Membership de filtros y exact typed de path, nombre o identificador en la generación publicada. |
+| `pdf` | `pdf.sqlite3` | 13 | Conteo, último `updated_ns` y run; no generacional. | FTS por página y fuentes semantic. |
+| `docx` | `docx.sqlite3` | 6 | Conteo, último `updated_ns` y run; no generacional. | FTS documental y partes semantic. |
+| `office` | `office.sqlite3` | 3 | Conteo, último `updated_ns` y run; no generacional. | FTS documental de XLSX/PPTX/ODT y semantic. |
 | `archive` (aditivo) | `archive.sqlite3` | 1 | Miembros virtuales actuales, último `updated_ns` y run; no generacional. | FTS y semantic con cadena ZIP y `inside_zip=1`. |
 | `text` (aditivo) | `text.sqlite3` | 2 | Documento/FTS actual más revisiones, receipts, materializaciones, heads y outbox owner-local; la vista de contenido sigue siendo no generacional. | FTS y semantic de texto, EML y Office heredado; clasificación vía catálogo y linaje read-only. |
-| `audio` | `audio.sqlite3` | 1 | Conteo, último `updated_ns` y run; no generacional. | FTS de transcripción y segmentos semantic. |
+| `audio` | `audio.sqlite3` | 2 | Conteo, último `updated_ns` y run; no generacional. | FTS de transcripción y segmentos semantic. |
+| `video` | `video.sqlite3` | 2 | Conteo, último `updated_ns` y run; no generacional. | OCR FTS de frames con localizador temporal; el audio enlazado conserva su owner propio. |
 | `image` | `image.sqlite3` | 5 | Conteo, último `updated_ns` y run; no generacional. | Imagen y OCR retenido mediante semantic cuando están publicados. |
 | `semantic` | `semantic.sqlite3` | 7 | Head `ready` por firma de modelo; receipts/outbox nuevos no atribuyen trabajo legacy. | Texto e imagen por espacio/modelo publicado, resueltos contra la revisión DB-local vigente, y linaje parcial de chunks/embeddings. |
-| `code` | `code.sqlite3` | 4 | Archivos actuales, última versión y último run; `best_effort_non_generational`. | FTS, exact typed, estructura, símbolos, relaciones owner-local, evidencia externa y enlaces exactos a chunks Semantic publicados. |
+| `code` | `code.sqlite3` | 5 | Archivos actuales, última versión y último run; `best_effort_non_generational`. | FTS, exact typed, estructura, símbolos, relaciones owner-local, evidencia externa y enlaces exactos a chunks Semantic publicados. |
 
 Los watermarks no generacionales son detectores acotados de cambio, no una
 publicación equivalente a inventario, catálogo o semantic. En particular,
-`code` schema 4 todavía no tiene generación/head de grafo.
+`code` schema 5 todavía no tiene generación/head de grafo.
 
 Cada head de inventario incluye, cuando existe un plan terminado, el token
 `duplicate-plan-v1:<completed_ns>:<groups>:<redundant>:<bytes>`. Así se detecta
@@ -319,7 +332,7 @@ No existe una transacción distribuida entre estos archivos SQLite.
 1. abre cada owner por URI `mode=ro` con timeout/busy timeout de 60 s,
    `foreign_keys=ON` y `query_only=ON`;
 2. valida la versión y el schema exacto esperado; la compatibilidad legacy
-   explícita de Framework admite 19 o 20 hacia 21, condicionada al contrato
+   explícita de Framework admite 19, 20 o 21 hacia 22, condicionada al contrato
    estructural exacto y sin migrar ni escribir;
 3. observa publicaciones o watermarks dentro de una transacción de lectura;
 4. repite la observación sobre la misma conexión;

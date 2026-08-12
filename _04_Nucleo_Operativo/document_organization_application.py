@@ -14,7 +14,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from neocortex.platform_policy import stat_birthtime_ns
+from neocortex.platform_policy import sqlite_path_collation, stat_birthtime_ns
 
 from _02_Deduplicacion import FileSnapshot, snapshot_path
 from _03_Progreso import (
@@ -66,6 +66,9 @@ from .windows_handle_mutation import (
 # endregion [01]
 
 # region [02] Implementación
+
+
+_PATH_COLLATION = sqlite_path_collation()
 
 
 @dataclass(slots=True)
@@ -711,7 +714,8 @@ def _catalog_destination_conflict(
     if destination is None:
         return False
     conflict = connection.execute(
-        """SELECT 1 FROM documents WHERE active=1 AND path=? COLLATE NOCASE
+        f"""SELECT 1 FROM documents
+        WHERE active=1 AND path=? COLLATE {_PATH_COLLATION}
         AND NOT (source_kind=? AND file_key=?) LIMIT 1""",
         (destination, row["source_kind"], row["file_key"]),
     ).fetchone()

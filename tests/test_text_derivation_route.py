@@ -191,7 +191,10 @@ def test_first_execution_and_cache_hit_publish_complete_causal_receipts(
             "capability_selection": "selected:neocortex.text.builtin",
         }
         assert capability_configuration["capability_manifest_fingerprint"].startswith("sha256:")
-        assert receipts[0]["stage"]["implementation_digest"] is None
+        assert (
+            receipts[0]["stage"]["implementation_digest"]
+            == receipts[0]["effective_configuration"]["implementation_digest"]
+        )
         assert capability_configuration["capability_readiness"].startswith("xxhash@")
         assert capability_configuration["capability_policy_fingerprint"].startswith("sha256:")
         assert capability_configuration["capability_selection_fingerprint"].startswith("sha256:")
@@ -1136,3 +1139,96 @@ def test_failed_selected_legacy_backend_does_not_fall_through_to_another(
             connection.execute("SELECT receipt_json FROM text_work_receipts").fetchone()[0]
         )
     assert dict(receipt["effective_configuration"])["capability_binary_backend"] == "soffice"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX executable fixture")
+@pytest.mark.parametrize(
+    ("suffix", "mime_type", "specific_backend"),
+    (
+        ("xls", "application/vnd.ms-excel", "xls2csv"),
+        ("ppt", "application/vnd.ms-powerpoint", "catppt"),
+    ),
+)
+def test_failed_format_specific_backend_does_not_fall_through_to_soffice(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    suffix: str,
+    mime_type: str,
+    specific_backend: str,
+) -> None:
+    source = tmp_path / f"legacy.{suffix}"
+    source.write_bytes(b"legacy fixture")
+    state = tmp_path / "text.sqlite3"
+    specific = tmp_path / specific_backend
+    soffice = tmp_path / "soffice"
+    soffice_marker = tmp_path / "soffice-used"
+    specific.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    soffice.write_text(
+        f"#!/bin/sh\nprintf used > '{soffice_marker}'\nprintf 'hidden fallback\\n'\n",
+        encoding="utf-8",
+    )
+    specific.chmod(0o755)
+    soffice.chmod(0o755)
+    executables = {specific_backend: str(specific), "soffice": str(soffice)}
+    monkeypatch.setattr(
+        text_route_module.shutil,
+        "which",
+        executables.get,
+    )
+
+    summary = _route(state, source, 1, mime=mime_type).run()
+
+    assert (summary.extracted, summary.errors, summary.legacy_office) == (0, 1, 0)
+    assert not soffice_marker.exists()
+    attempts = _attempts(state)
+    assert [(row["status"], row["execution_mode"]) for row in attempts] == [("failed", "attempted")]
+    with sqlite3.connect(state) as connection:
+        receipt = json.loads(
+            connection.execute("SELECT receipt_json FROM text_work_receipts").fetchone()[0]
+        )
+    assert dict(receipt["effective_configuration"])["capability_binary_backend"] == (
+        specific_backend
+    )
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX executable fixture")
+def test_explicit_libreoffice_command_overrides_xls2csv_for_the_route(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "legacy.xls"
+    source.write_bytes(b"legacy fixture")
+    state = tmp_path / "text.sqlite3"
+    explicit = tmp_path / "explicit-libreoffice"
+    xls2csv = tmp_path / "xls2csv"
+    xls2csv_marker = tmp_path / "xls2csv-used"
+    explicit.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    xls2csv.write_text(
+        f"#!/bin/sh\nprintf used > '{xls2csv_marker}'\nprintf 'hidden fallback\\n'\n",
+        encoding="utf-8",
+    )
+    explicit.chmod(0o755)
+    xls2csv.chmod(0o755)
+    monkeypatch.setattr(
+        text_route_module.shutil,
+        "which",
+        lambda name: (
+            str(explicit) if name == str(explicit) else str(xls2csv) if name == "xls2csv" else None
+        ),
+    )
+    route = TextRoute(
+        TextRouteConfig(state_path=state, libreoffice_cmd=str(explicit)),
+        _FrameworkState(snapshot_path(source), "application/vnd.ms-excel"),
+        1,
+        cancellation=CancellationToken(),
+    )
+
+    summary = route.run()
+
+    assert (summary.extracted, summary.errors, summary.legacy_office) == (0, 1, 0)
+    assert not xls2csv_marker.exists()
+    with sqlite3.connect(state) as connection:
+        receipt = json.loads(
+            connection.execute("SELECT receipt_json FROM text_work_receipts").fetchone()[0]
+        )
+    assert dict(receipt["effective_configuration"])["capability_binary_backend"] == ("libreoffice")

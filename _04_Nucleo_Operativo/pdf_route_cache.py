@@ -6,6 +6,7 @@ import sqlite3
 import time
 
 from _02_Deduplicacion import DedupIndex, FileChangedError, FileSnapshot
+from neocortex.platform_policy import sqlite_path_collation
 
 from .cancellation import CancellationToken
 from .file_identity import file_key_from_snapshot as file_key
@@ -29,6 +30,7 @@ from .retry_policy import (
 PDF_CACHE_PRUNE_BATCH = 256
 PDF_CACHE_TOUCH_BATCH = 256
 MAX_RETRY_PAGE_SET = 10_000
+_PATH_COLLATION = sqlite_path_collation()
 # Compatibility name retained for the storage mixin and older integrations.
 RETRYABLE_PAGE_ERROR_SQL = PDF_RETRYABLE_PAGE_ERROR_SQL
 CACHE_QUERY = f"""SELECT size,mtime_ns,birthtime_ns,processing_signature,status,
@@ -213,7 +215,7 @@ class PdfRouteCacheMixin:
                 connection.commit()
 
             connection.execute(
-                """UPDATE documents SET
+                f"""UPDATE documents SET
                 path=(SELECT i.path FROM pdf_inventory i WHERE i.file_key=documents.file_key),
                 updated_ns=? WHERE EXISTS(
                     SELECT 1 FROM pdf_inventory i WHERE i.file_key=documents.file_key
@@ -221,14 +223,14 @@ class PdfRouteCacheMixin:
                     AND i.mtime_ns=documents.mtime_ns
                     AND (i.birthtime_ns=documents.birthtime_ns
                         OR documents.birthtime_ns=-1)
-                    AND i.path<>documents.path COLLATE NOCASE)""",
+                    AND i.path<>documents.path COLLATE {_PATH_COLLATION})""",
                 (time.time_ns(), self.run_id),
             )
             connection.execute(
-                """UPDATE page_fts SET path=(SELECT d.path FROM documents d
+                f"""UPDATE page_fts SET path=(SELECT d.path FROM documents d
                 WHERE d.file_key=page_fts.file_key) WHERE EXISTS(
                 SELECT 1 FROM documents d WHERE d.file_key=page_fts.file_key
-                AND d.path<>page_fts.path COLLATE NOCASE)"""
+                AND d.path<>page_fts.path COLLATE {_PATH_COLLATION})"""
             )
             while True:
                 self.cancellation.checkpoint()
@@ -329,9 +331,7 @@ class PdfRouteCacheMixin:
             if not rowids:
                 return removed
             removed += int(
-                connection.executemany(
-                    "DELETE FROM page_fts WHERE rowid=?", rowids
-                ).rowcount
+                connection.executemany("DELETE FROM page_fts WHERE rowid=?", rowids).rowcount
             )
             connection.executemany("DELETE FROM stale_fts_rowids WHERE rowid=?", rowids)
             connection.commit()
@@ -394,9 +394,7 @@ class PdfRouteCacheMixin:
                     break
                 predicate = " AND ".join(f"{name}=?" for name in columns)
                 removed += int(
-                    connection.executemany(
-                        f"DELETE FROM {table} WHERE {predicate}", rows
-                    ).rowcount
+                    connection.executemany(f"DELETE FROM {table} WHERE {predicate}", rows).rowcount
                 )
                 connection.commit()
         removed += int(
@@ -413,11 +411,7 @@ class PdfRouteCacheMixin:
 
     def _page_bounds(self, page_count: int) -> tuple[int, int]:
         start = 0 if self.config.page_start is None else self.config.page_start - 1
-        end = (
-            page_count
-            if self.config.page_end is None
-            else min(page_count, self.config.page_end)
-        )
+        end = page_count if self.config.page_end is None else min(page_count, self.config.page_end)
         if self.config.max_pages is not None:
             end = min(end, start + self.config.max_pages)
         if start >= page_count:
@@ -537,9 +531,7 @@ class PdfRouteCacheMixin:
 
     @staticmethod
     def _cached_retry_page_count(row, prior_status: str) -> int:
-        return (
-            int(row["persisted_page_error_count"]) if prior_status == "partial" else 0
-        )
+        return int(row["persisted_page_error_count"]) if prior_status == "partial" else 0
 
     @staticmethod
     def _cached_layers_are_consistent(row) -> bool:
@@ -567,10 +559,7 @@ class PdfRouteCacheMixin:
         self._touch_cache_hits(connection, [snapshot])
 
     def _cached_retry_explicitly_requested(self, status: str) -> bool:
-        return (
-            self.config.retry_errors
-            and status in {"error", "protected", "partial"}
-        ) or (
+        return (self.config.retry_errors and status in {"error", "protected", "partial"}) or (
             self.config.selection.force_incomplete_retry
             and status in {"error", "protected", "partial", "processing"}
         )
@@ -596,8 +585,7 @@ class PdfRouteCacheMixin:
             return False
         return error_type == "PdfPageSequenceAborted" or (
             not error_type
-            and int(row["persisted_page_error_count"])
-            >= PDF_PAGE_SEQUENCE_ERROR_LIMIT
+            and int(row["persisted_page_error_count"]) >= PDF_PAGE_SEQUENCE_ERROR_LIMIT
         )
 
     @staticmethod
@@ -712,12 +700,8 @@ class PdfRouteCacheMixin:
             prior_status,
             retry_pages,
             error_type=(None if row["error_type"] is None else str(row["error_type"])),
-            error_message=(
-                None if row["error_message"] is None else str(row["error_message"])
-            ),
-            metadata_json=(
-                None if row["metadata_json"] is None else str(row["metadata_json"])
-            ),
+            error_message=(None if row["error_message"] is None else str(row["error_message"])),
+            metadata_json=(None if row["metadata_json"] is None else str(row["metadata_json"])),
             page_error_type=(
                 None
                 if row["latest_page_error_type"] is None
@@ -797,9 +781,7 @@ class PdfRouteCacheMixin:
             return ()
         incoming_values = ",".join("(?,?)" for _snapshot in snapshots)
         parameters = tuple(
-            value
-            for snapshot in snapshots
-            for value in (snapshot.path, file_key(snapshot))
+            value for snapshot in snapshots for value in (snapshot.path, file_key(snapshot))
         )
         conflicts = connection.execute(
             f"""WITH incoming(path,file_key) AS (VALUES {incoming_values})
@@ -811,7 +793,7 @@ class PdfRouteCacheMixin:
                     OR d.birthtime_ns={UNKNOWN_BIRTHTIME_NS})
             ) AS owner_is_live
             FROM incoming JOIN documents d
-              ON d.path=incoming.path COLLATE NOCASE
+              ON d.path=incoming.path COLLATE {_PATH_COLLATION}
              AND d.file_key<>incoming.file_key
             ORDER BY incoming.file_key,d.file_key""",
             parameters,
@@ -833,9 +815,7 @@ class PdfRouteCacheMixin:
     ) -> tuple[int, frozenset[int], int]:
         key = file_key(snapshot)
         signature = self.config.processing_signature
-        range_start = (
-            0 if self.config.page_start is None else self.config.page_start - 1
-        )
+        range_start = 0 if self.config.page_start is None else self.config.page_start - 1
         with pdf_database(self.config.state_path) as connection:
             row = connection.execute(
                 "SELECT size,mtime_ns,birthtime_ns,processing_signature,status,"

@@ -20,6 +20,7 @@ from pathlib import Path
 import xxhash
 
 from _03_Progreso import ProgressCallback, ProgressEvent, ProgressMetric, emit_progress
+from neocortex.platform_policy import sqlite_path_collation
 
 from .cancellation import CancellationRequested, CancellationToken
 from .pdf_derived_queries import (
@@ -56,6 +57,7 @@ MAX_BUCKET_MEMBERS = 128
 MAX_CANDIDATES_PER_DOCUMENT = 256
 TOKEN_RE = re.compile(r"\w+", re.UNICODE)
 PROFILE_PROGRESS_INTERVAL_SECONDS = 1.0
+_PATH_COLLATION = sqlite_path_collation()
 
 
 @dataclass(frozen=True, slots=True)
@@ -479,7 +481,7 @@ class PdfDerivedIndexer:
             self.cancellation.checkpoint()
             with _database(self.state_path) as connection:
                 rows = connection.execute(
-                    """SELECT file_key,path,size FROM documents
+                    f"""SELECT file_key,path,size FROM documents
                     WHERE (status='done' OR (status='partial'
                     AND COALESCE(error_type,'')<>'PdfDocumentTimeout'))
                     AND last_seen_run_id=? AND (COALESCE(profile_version,0)<>?
@@ -491,8 +493,8 @@ class PdfDerivedIndexer:
                     OR NOT EXISTS(SELECT 1 FROM document_layouts dl
                         WHERE dl.file_key=documents.file_key
                         AND dl.algorithm_version=?))
-                    AND (size>? OR (size=? AND path>? COLLATE NOCASE))
-                    ORDER BY size,path COLLATE NOCASE LIMIT 1000""",
+                    AND (size>? OR (size=? AND path COLLATE {_PATH_COLLATION}>?))
+                    ORDER BY size,path COLLATE {_PATH_COLLATION} LIMIT 1000""",
                     (
                         self.run_id,
                         PROFILE_VERSION,

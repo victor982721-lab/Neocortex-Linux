@@ -19,6 +19,7 @@ from neocortex.sqlite_connection import (
     SQLiteWriterPragmas,
     connect_sqlite,
 )
+from neocortex.platform_policy import sqlite_path_collation
 
 from .sqlite_schema_contract import (
     SQLiteSchemaContract,
@@ -29,9 +30,37 @@ from .sqlite_schema_contract import (
 # region [01] Versioned DDL
 
 
-CODE_SCHEMA_VERSION = 4
+CODE_SCHEMA_VERSION = 5
+_PATH_COLLATION = sqlite_path_collation()
 
-_V1_DDL = (
+
+def _files_table_ddl(path_collation: str) -> str:
+    if path_collation not in {"BINARY", "NOCASE"}:
+        raise ValueError(f"unsupported Code path collation: {path_collation}")
+    return f"""CREATE TABLE files(
+        file_id INTEGER PRIMARY KEY,
+        volume_id TEXT NOT NULL,
+        physical_file_id TEXT NOT NULL,
+        current_path TEXT NOT NULL COLLATE {path_collation},
+        current_version_id INTEGER,
+        status TEXT NOT NULL CHECK(status IN ('current','missing','stale')),
+        first_seen_run_id INTEGER NOT NULL,
+        last_seen_run_id INTEGER NOT NULL,
+        UNIQUE(volume_id,physical_file_id),
+        FOREIGN KEY(current_version_id) REFERENCES file_versions(version_id)
+            DEFERRABLE INITIALLY DEFERRED
+    )"""
+
+
+_FILES_TABLE_DDL = _files_table_ddl(_PATH_COLLATION)
+_LEGACY_FILES_TABLE_DDL = _files_table_ddl("NOCASE")
+_FILES_CURRENT_PATH_INDEX_DDL = """CREATE UNIQUE INDEX files_current_path_idx
+        ON files(current_path) WHERE status='current'"""
+_FILES_LAST_SEEN_INDEX_DDL = (
+    "CREATE INDEX files_last_seen_idx ON files(last_seen_run_id,status,file_id)"
+)
+
+_V1_DDL: tuple[str, ...] = (
     """CREATE TABLE metadata(
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
@@ -63,22 +92,9 @@ _V1_DDL = (
         ON analysis_runs(framework_run_id,analysis_run_id)""",
     """CREATE INDEX analysis_runs_status_idx
         ON analysis_runs(status,started_ns)""",
-    """CREATE TABLE files(
-        file_id INTEGER PRIMARY KEY,
-        volume_id TEXT NOT NULL,
-        physical_file_id TEXT NOT NULL,
-        current_path TEXT NOT NULL COLLATE NOCASE,
-        current_version_id INTEGER,
-        status TEXT NOT NULL CHECK(status IN ('current','missing','stale')),
-        first_seen_run_id INTEGER NOT NULL,
-        last_seen_run_id INTEGER NOT NULL,
-        UNIQUE(volume_id,physical_file_id),
-        FOREIGN KEY(current_version_id) REFERENCES file_versions(version_id)
-            DEFERRABLE INITIALLY DEFERRED
-    )""",
-    """CREATE UNIQUE INDEX files_current_path_idx
-        ON files(current_path) WHERE status='current'""",
-    """CREATE INDEX files_last_seen_idx ON files(last_seen_run_id,status,file_id)""",
+    _FILES_TABLE_DDL,
+    _FILES_CURRENT_PATH_INDEX_DDL,
+    _FILES_LAST_SEEN_INDEX_DDL,
     """CREATE TABLE file_versions(
         version_id INTEGER PRIMARY KEY,
         file_id INTEGER NOT NULL,
@@ -307,6 +323,17 @@ _V1_DDL = (
     """CREATE INDEX version_relations_right_idx
         ON version_relations(right_version_id,relation_kind,left_version_id)""",
 )
+
+# Schemas v1-v4 predate the cross-platform path policy and therefore always
+# used SQLite NOCASE for the one path that owns current filesystem identity.
+# Keep an exact historical builder so a Linux migration never accepts a
+# partially altered or future-shaped source database.
+_CURRENT_V1_DDL = _V1_DDL
+_V1_DDL = tuple(
+    _LEGACY_FILES_TABLE_DDL if statement == _FILES_TABLE_DDL else statement
+    for statement in _CURRENT_V1_DDL
+)
+_LEGACY_V1_DDL = _V1_DDL
 
 _V2_DDL = (
     """CREATE TABLE projects(
@@ -695,10 +722,25 @@ def _execute(connection: sqlite3.Connection, statements: tuple[str, ...]) -> Non
 
 
 def _build_current_schema(connection: sqlite3.Connection) -> None:
-    _execute(connection, _V1_DDL)
+    _execute(connection, _CURRENT_V1_DDL)
     _execute(connection, _V2_DDL)
     _execute(connection, _V3_DDL)
     _execute(connection, _V4_DDL)
+
+
+def _build_legacy_schema(
+    connection: sqlite3.Connection,
+    version: int,
+) -> None:
+    if version not in {1, 2, 3, 4}:
+        raise ValueError(f"unsupported legacy Code schema: {version}")
+    _execute(connection, _LEGACY_V1_DDL)
+    if version >= 2:
+        _execute(connection, _V2_DDL)
+    if version >= 3:
+        _execute(connection, _V3_DDL)
+    if version >= 4:
+        _execute(connection, _V4_DDL)
 
 
 @lru_cache(maxsize=1)
@@ -706,11 +748,30 @@ def code_schema_contract() -> SQLiteSchemaContract:
     return schema_contract_from_builder(_build_current_schema)
 
 
+@lru_cache(maxsize=4)
+def _legacy_code_schema_contract(version: int) -> SQLiteSchemaContract:
+    return schema_contract_from_builder(
+        lambda connection: _build_legacy_schema(connection, version)
+    )
+
+
 def validate_code_schema(connection: sqlite3.Connection) -> None:
     validate_sqlite_schema_contract(
         connection,
         code_schema_contract(),
         label="code",
+        exact=True,
+    )
+
+
+def _validate_legacy_code_schema(
+    connection: sqlite3.Connection,
+    version: int,
+) -> None:
+    validate_sqlite_schema_contract(
+        connection,
+        _legacy_code_schema_contract(version),
+        label=f"code v{version} migration source",
         exact=True,
     )
 
@@ -767,8 +828,21 @@ def _record_migration(
     connection.execute(f"PRAGMA user_version={version}")
 
 
+def _validate_code_storage_integrity(
+    connection: sqlite3.Connection,
+    *,
+    label: str,
+) -> None:
+    foreign_key_error = connection.execute("PRAGMA foreign_key_check").fetchone()
+    if foreign_key_error is not None:
+        raise RuntimeError(f"{label} has a foreign-key integrity violation")
+    integrity = tuple(str(row[0]) for row in connection.execute("PRAGMA integrity_check"))
+    if integrity != ("ok",):
+        raise RuntimeError(f"{label} failed integrity_check: {integrity!r}")
+
+
 def _create_fresh(connection: sqlite3.Connection, applied_ns: int) -> None:
-    _execute(connection, _V1_DDL)
+    _execute(connection, _CURRENT_V1_DDL)
     _record_migration(
         connection,
         1,
@@ -796,9 +870,16 @@ def _create_fresh(connection: sqlite3.Connection, applied_ns: int) -> None:
         "portable external provider metrics and relations",
         applied_ns + 3,
     )
+    _record_migration(
+        connection,
+        5,
+        "platform-aware current filesystem path identity",
+        applied_ns + 4,
+    )
 
 
 def _migrate_one_to_two(connection: sqlite3.Connection, applied_ns: int) -> None:
+    _validate_legacy_code_schema(connection, 1)
     _execute(connection, _V2_DDL)
     _record_migration(
         connection,
@@ -809,6 +890,7 @@ def _migrate_one_to_two(connection: sqlite3.Connection, applied_ns: int) -> None
 
 
 def _migrate_two_to_three(connection: sqlite3.Connection, applied_ns: int) -> None:
+    _validate_legacy_code_schema(connection, 2)
     _execute(connection, _V3_DDL)
     _record_migration(
         connection,
@@ -819,11 +901,64 @@ def _migrate_two_to_three(connection: sqlite3.Connection, applied_ns: int) -> No
 
 
 def _migrate_three_to_four(connection: sqlite3.Connection, applied_ns: int) -> None:
+    _validate_legacy_code_schema(connection, 3)
     _execute(connection, _V4_DDL)
     _record_migration(
         connection,
         4,
         "portable external provider metrics and relations",
+        applied_ns,
+    )
+
+
+_FILES_COLUMNS = (
+    "file_id",
+    "volume_id",
+    "physical_file_id",
+    "current_path",
+    "current_version_id",
+    "status",
+    "first_seen_run_id",
+    "last_seen_run_id",
+)
+
+
+def _migrate_four_to_five(connection: sqlite3.Connection, applied_ns: int) -> None:
+    """Adopt host path equivalence without reinterpreting physical identity."""
+
+    _validate_legacy_code_schema(connection, 4)
+    if _PATH_COLLATION != "NOCASE":
+        legacy_table = "__neocortex_code_v4_files"
+        collision = connection.execute(
+            "SELECT type FROM sqlite_master WHERE name=?",
+            (legacy_table,),
+        ).fetchone()
+        if collision is not None:
+            raise RuntimeError(f"reserved Code migration object exists: {legacy_table}")
+        source_count = int(connection.execute("SELECT COUNT(*) FROM files").fetchone()[0])
+        connection.execute("ALTER TABLE files RENAME TO " + legacy_table)
+        connection.execute(_FILES_TABLE_DDL)
+        column_sql = ",".join(_FILES_COLUMNS)
+        inserted = connection.execute(
+            f"INSERT INTO files({column_sql}) SELECT {column_sql} FROM {legacy_table}"
+        )
+        if inserted.rowcount != source_count:
+            raise RuntimeError("Code v5 file row count changed during migration")
+        missing = connection.execute(
+            f"SELECT {column_sql} FROM {legacy_table} EXCEPT SELECT {column_sql} FROM files LIMIT 1"
+        ).fetchone()
+        extra = connection.execute(
+            f"SELECT {column_sql} FROM files EXCEPT SELECT {column_sql} FROM {legacy_table} LIMIT 1"
+        ).fetchone()
+        if missing is not None or extra is not None:
+            raise RuntimeError("Code v5 file evidence changed during migration")
+        connection.execute(f"DROP TABLE {legacy_table}")
+        connection.execute(_FILES_CURRENT_PATH_INDEX_DDL)
+        connection.execute(_FILES_LAST_SEEN_INDEX_DDL)
+    _record_migration(
+        connection,
+        5,
+        "platform-aware current filesystem path identity",
         applied_ns,
     )
 
@@ -849,13 +984,28 @@ def initialize_code_state(path: Path) -> None:
             if prior == CODE_SCHEMA_VERSION:
                 validate_code_schema(connection)
                 _validate_migration_history(connection)
+                _validate_code_storage_integrity(connection, label="code current state")
                 return
+            if prior is not None:
+                _validate_legacy_code_schema(connection, prior)
+                _validate_code_storage_integrity(
+                    connection,
+                    label=f"code v{prior} migration source",
+                )
 
     connection = connect_code_state(path, create=True)
+    rebuilds_path_identity = prior is not None and _PATH_COLLATION != "NOCASE"
     try:
+        if rebuilds_path_identity:
+            connection.execute("PRAGMA foreign_keys=OFF")
+            connection.execute("PRAGMA legacy_alter_table=ON")
+            if int(connection.execute("PRAGMA foreign_keys").fetchone()[0]) != 0:
+                raise RuntimeError("Code migration could not suspend foreign-key enforcement")
         connection.execute("BEGIN IMMEDIATE")
         try:
             current = _read_version(connection)
+            if current != prior:
+                raise RuntimeError("code schema changed during initialization")
             applied_ns = time.time_ns()
             if current is None:
                 _create_fresh(connection, applied_ns)
@@ -863,21 +1013,30 @@ def initialize_code_state(path: Path) -> None:
                 _migrate_one_to_two(connection, applied_ns)
                 _migrate_two_to_three(connection, applied_ns + 1)
                 _migrate_three_to_four(connection, applied_ns + 2)
+                _migrate_four_to_five(connection, applied_ns + 3)
             elif current == 2:
                 _migrate_two_to_three(connection, applied_ns)
                 _migrate_three_to_four(connection, applied_ns + 1)
+                _migrate_four_to_five(connection, applied_ns + 2)
             elif current == 3:
                 _migrate_three_to_four(connection, applied_ns)
+                _migrate_four_to_five(connection, applied_ns + 1)
+            elif current == 4:
+                _migrate_four_to_five(connection, applied_ns)
             else:
                 raise RuntimeError(f"unsupported code migration start: {current}")
             validate_code_schema(connection)
             _validate_migration_history(connection)
+            _validate_code_storage_integrity(connection, label="code migrated state")
         except BaseException:
             connection.rollback()
             raise
         else:
             connection.commit()
     finally:
+        if rebuilds_path_identity:
+            connection.execute("PRAGMA legacy_alter_table=OFF")
+            connection.execute("PRAGMA foreign_keys=ON")
         connection.close()
 
 

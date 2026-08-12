@@ -648,9 +648,10 @@ Neocortex models status --json
 - FFprobe se requiere para el sondeo de audio y video; Video necesita FFmpeg
   para escenas, keyframes y frames. Ambos se informan en sus doctors.
 - qpdf es opcional y sólo participa en recuperación estructural PDF.
-- LibreOffice es el backend preferido para extraer DOC/XLS/PPT heredados;
-  `catdoc`, `xls2csv` y `catppt` son fallbacks locales. Todos se ejecutan con
-  entrada, salida, memoria y tiempo acotados.
+- DOC heredado prioriza LibreOffice y usa `catdoc` como fallback. XLS y PPT
+  priorizan `xls2csv` y `catppt`, respectivamente, y usan LibreOffice si falta
+  el extractor específico. Todos se ejecutan con entrada, salida, memoria y
+  tiempo acotados.
 - El cierre `full` requiere el Microsoft Visual C++ v14 Redistributable x64
   vigente para sus wheels nativos. Antes de promover, importa PyMuPDF, ONNX
   Runtime, PySide6, PyAV, CTranslate2 y OpenCV desde el runtime candidato;
@@ -1015,17 +1016,18 @@ downgrade de base atribuible a Knowledge; cualquier otra migración o cambio de
 estado realizado por comandos distintos conserva su propio contrato de
 recuperación.
 
-La fuente `0.9.0` declara framework v20, Dedup v10, PDF v12, Office v2 y Video
-v1. Framework 19→20 preserva
+La fuente `0.9.0` declara framework v22, Dedup v10, PDF v13, DOCX v6, Office
+v3, Audio v2, Video v2 y catálogo v7. Framework 19→20 preserva
 filas legacy como `normal`; Dedup 7→8 agrega la firma cruda de inventario a los
 scans, conserva scans/archivos/bytes e invalida checkpoints sin firma en vez de
 inventar evidencia. Dedup 8→9 conserva esas publicaciones y permite que
 `volume`, `journal_id` y `next_usn` sean todos `NULL` o todos presentes, para
 separar publicación de aceleración USN. Dedup 9→10 añade únicamente los índices
 para joins Knowledge ligados a identidad y preserva conteos y bytes de archivos
-y miembros planeados. PDF 11→12 y Office 1→2 son migraciones
-aditivas; la evidencia OCR/celda nueva se completa al reprocesar. Video v1 se
-crea sólo al ejecutar su ruta. Ninguna migración ofrece downgrade. Abra bases vivas sólo
+y miembros planeados. PDF 11→12 y Office 1→2 fueron migraciones aditivas; las
+migraciones posteriores de paths reconstruyen cada owner con la collation de
+la plataforma, sin fusionar filas Linux case-distinct. Video se crea sólo al
+ejecutar su ruta. Ninguna migración ofrece downgrade. Abra bases vivas sólo
 con el runtime versionado validado; el rollback exige paquete compatible y
 backup completo, nunca editar `schema_version`.
 

@@ -45,6 +45,8 @@ _NEOCORTEX_CORE_UI_ALLOWLIST = (
     ("neocortex.sdk", "_04_Nucleo_Operativo"),
     # Value review is a separate advisory-only public contract.
     ("neocortex.value_cli_adapter", "_04_Nucleo_Operativo.value_review_port"),
+    # Durable ReviewTask commands share the same bounded advisory-only port.
+    ("neocortex.review_task_cli_adapter", "_04_Nucleo_Operativo.value_review_port"),
 )
 
 # The v2 graph is acyclic.  Keep the baseline empty so that reintroducing even

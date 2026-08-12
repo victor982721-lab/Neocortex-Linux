@@ -21,6 +21,9 @@ WINDOWS_PHYSICAL_IDENTITY_SCHEME = "windows_file_id_birthtime"
 PHYSICAL_IDENTITY_SCHEMES = frozenset(
     {POSIX_PHYSICAL_IDENTITY_SCHEME, WINDOWS_PHYSICAL_IDENTITY_SCHEME}
 )
+WINDOWS_PATH_COLLATION = "NOCASE"
+POSIX_PATH_COLLATION = "BINARY"
+SQLITE_PATH_COLLATIONS = frozenset({WINDOWS_PATH_COLLATION, POSIX_PATH_COLLATION})
 
 _USER_DIR_PATTERN = re.compile(r'^XDG_DOCUMENTS_DIR=(?P<quote>["\'])(?P<value>.*)(?P=quote)$')
 
@@ -112,6 +115,7 @@ class PlatformPolicy:
     desktop_file: Path
     inventory_backend: str
     identity_backend: str
+    path_collation: str
     containment_backend: str
     elevation: str
     mutation_backend: str
@@ -151,6 +155,7 @@ def current_platform_policy(*, platform_name: str | None = None) -> PlatformPoli
             desktop_file=program_root / "Neocortex.lnk",
             inventory_backend="ntfs-usn",
             identity_backend="windows-volume-file-id",
+            path_collation=WINDOWS_PATH_COLLATION,
             containment_backend="windows-job-object",
             elevation="windows-administrator",
             mutation_backend="windows-handle-bound-ntfs",
@@ -176,6 +181,7 @@ def current_platform_policy(*, platform_name: str | None = None) -> PlatformPoli
         desktop_file=linux_data_home() / "applications" / "neocortex.desktop",
         inventory_backend="portable-full-scan",
         identity_backend="posix-st_dev-st_ino",
+        path_collation=POSIX_PATH_COLLATION,
         containment_backend="posix-session-process-group-rlimit",
         elevation="not-required",
         mutation_backend="intentionally-unavailable",
@@ -192,6 +198,20 @@ def default_corpus_root() -> Path:
             raise ValueError(f"NEOCORTEX_CORPUS_ROOT must name an absolute path: {candidate}")
         return candidate
     return current_platform_policy().corpus_root
+
+
+def sqlite_path_collation(*, platform_name: str | None = None) -> str:
+    """Return the allowlisted SQLite collation for filesystem paths.
+
+    This is deliberately a SQL token rather than user input.  Filesystem
+    identity remains physical; the collation only defines path equivalence for
+    uniqueness, lookup, reuse and cleanup projections.
+    """
+
+    collation = current_platform_policy(platform_name=platform_name).path_collation
+    if collation not in SQLITE_PATH_COLLATIONS:  # pragma: no cover - constructor invariant
+        raise RuntimeError(f"unsupported filesystem path collation: {collation}")
+    return collation
 
 
 def stat_birthtime_ns(
@@ -256,8 +276,11 @@ __all__ = [
     "APPLICATION_DIRECTORY_NAME",
     "LINUX_MUTATION_REASON",
     "PHYSICAL_IDENTITY_SCHEMES",
+    "POSIX_PATH_COLLATION",
     "POSIX_PHYSICAL_IDENTITY_SCHEME",
+    "SQLITE_PATH_COLLATIONS",
     "UNAVAILABLE_BIRTHTIME_NS",
+    "WINDOWS_PATH_COLLATION",
     "WINDOWS_PHYSICAL_IDENTITY_SCHEME",
     "PlatformPolicy",
     "current_platform_policy",
@@ -272,5 +295,6 @@ __all__ = [
     "linux_state_home",
     "physical_identity_scheme_for_birthtime",
     "resolve_xdg_documents_directory",
+    "sqlite_path_collation",
     "stat_birthtime_ns",
 ]

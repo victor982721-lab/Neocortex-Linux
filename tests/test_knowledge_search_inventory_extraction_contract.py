@@ -4,7 +4,6 @@
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
-
 # region [01] Dependencias del módulo
 from __future__ import annotations
 
@@ -54,9 +53,7 @@ INVENTORY_MODULE = "_04_Nucleo_Operativo.knowledge_search_inventory"
 EXPECTED_SIGNATURES = {
     "_open_direct_readonly_sqlite": "(path: 'Path') -> 'sqlite3.Connection'",
     "_decimal_identity_value": "(value: 'object') -> 'int'",
-    "_physical_identity_tuple": (
-        "(resource: 'ResourceRef') -> 'tuple[int, int, int] | None'"
-    ),
+    "_physical_identity_tuple": ("(resource: 'ResourceRef') -> 'tuple[int, int, int] | None'"),
     "_inventory_plan_heads": (
         "(snapshot: 'KnowledgeSnapshot') -> "
         "'tuple[tuple[tuple[int, int, int, int, int], ...], bool]'"
@@ -65,8 +62,7 @@ EXPECTED_SIGNATURES = {
     "_validated_inventory_blob": "(value: 'object') -> 'int'",
     "_valid_full_fingerprint": "(value: 'object') -> 'bool'",
     "_inventory_relation_row": (
-        "(row: 'sqlite3.Row') -> "
-        "'tuple[tuple[int, int, int], str, tuple[int, int, int]] | None'"
+        "(row: 'sqlite3.Row') -> 'tuple[tuple[int, int, int], str, tuple[int, int, int]] | None'"
     ),
     "_apply_inventory_dispositions": (
         "(paths: 'KnowledgeStatePaths', snapshot: 'KnowledgeSnapshot', "
@@ -149,11 +145,7 @@ def _snapshot(
         owners=(
             OwnerSnapshot(
                 "inventory",
-                (
-                    OwnerAvailability.AVAILABLE
-                    if available
-                    else OwnerAvailability.ABSENT
-                ),
+                (OwnerAvailability.AVAILABLE if available else OwnerAvailability.ABSENT),
                 7,
                 7 if available else None,
                 publications=publications,
@@ -237,7 +229,7 @@ def _relation_row(
         "member_present": 1,
         "member_order": 0 if role == "keep" else 1,
         "member_role": role,
-        "member_path": member_path.swapcase(),
+        "member_path": member_path,
         "member_size": size,
         "group_size": size,
         "redundant_count": 1,
@@ -250,7 +242,7 @@ def _relation_row(
         "keeper_role": "keep",
         "keeper_path": keeper_path,
         "keeper_size": size,
-        "keeper_file_path": keeper_path.swapcase(),
+        "keeper_file_path": keeper_path,
         "keeper_file_size": size,
         "keep_path_matches": 1,
         "member_count": 2,
@@ -290,9 +282,7 @@ def test_inventory_facade_seams_are_thin_late_bound_delegates(name: str) -> None
     assert isinstance(statement.value, ast.Call)
     assert isinstance(statement.value.func, ast.Name)
     assert statement.value.func.id.startswith("_inventory_")
-    referenced_names = {
-        node.id for node in ast.walk(function) if isinstance(node, ast.Name)
-    }
+    referenced_names = {node.id for node in ast.walk(function) if isinstance(node, ast.Name)}
     assert LATE_BOUND_GLOBALS[name] <= referenced_names
 
 
@@ -379,11 +369,7 @@ def test_inventory_facades_inject_every_current_provider_at_runtime(
         if value is expected:
             return True
         if isinstance(value, Mapping):
-            return any(
-                contains_identity(item, expected)
-                for pair in value.items()
-                for item in pair
-            )
+            return any(contains_identity(item, expected) for pair in value.items() for item in pair)
         if isinstance(value, (tuple, list, set, frozenset)):
             return any(contains_identity(item, expected) for item in value)
         return False
@@ -718,8 +704,7 @@ def test_direct_sqlite_setup_preserves_primary_and_close_note(
     assert events == ["EXECUTE", "CLOSE"]
     assert cleanup_labels == ["direct read-only SQLite close cleanup"]
     assert primary.__notes__ == [
-        "direct read-only SQLite close cleanup failed: "
-        "RuntimeError: connection close failed"
+        "direct read-only SQLite close cleanup failed: RuntimeError: connection close failed"
     ]
 
 
@@ -833,9 +818,7 @@ def test_inventory_relation_validation_preserves_roles_and_rejects_conflicts() -
     conflicting_keep["member_order"] = 1
     invalid_rows.append(conflicting_keep)
 
-    assert all(
-        knowledge_search._inventory_relation_row(row) is None for row in invalid_rows
-    )
+    assert all(knowledge_search._inventory_relation_row(row) is None for row in invalid_rows)
 
 
 def test_inventory_batches_in_sorted_order_and_preserves_safe_dispositions(
@@ -843,9 +826,7 @@ def test_inventory_batches_in_sorted_order_and_preserves_safe_dispositions(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     events: list[object] = []
-    query_calls: list[
-        tuple[tuple[int, int, int], tuple[int, int, int, int, int], int]
-    ] = []
+    query_calls: list[tuple[tuple[int, int, int], tuple[int, int, int, int, int], int]] = []
 
     class Result:
         def __init__(self, rows: list[Mapping[str, object]]) -> None:
@@ -1024,10 +1005,8 @@ def test_inventory_cancellation_preserves_primary_through_rollback_and_close_not
         "inventory read connection close cleanup",
     ]
     assert primary.__notes__ == [
-        "inventory read rollback cleanup failed: "
-        "RuntimeError: inventory rollback failed",
-        "inventory read connection close cleanup failed: "
-        "RuntimeError: inventory close failed",
+        "inventory read rollback cleanup failed: RuntimeError: inventory rollback failed",
+        "inventory read connection close cleanup failed: RuntimeError: inventory close failed",
     ]
 
 
@@ -1093,9 +1072,7 @@ def test_inventory_sqlite_callback_preserves_identity_through_both_cleanup_failu
             if statement == "ROLLBACK":
                 events.append("ROLLBACK")
                 raise rollback_failure
-            raise AssertionError(
-                f"unexpected statement after cancellation: {statement}"
-            )
+            raise AssertionError(f"unexpected statement after cancellation: {statement}")
 
         def close(self) -> None:
             events.append("CLOSE")
@@ -1121,10 +1098,8 @@ def test_inventory_sqlite_callback_preserves_identity_through_both_cleanup_failu
     assert raised.value is expected
     assert events == ["BEGIN", "ROLLBACK", "CLOSE"]
     assert expected.__notes__ == [
-        "inventory read rollback cleanup failed: "
-        "RuntimeError: inventory rollback failed",
-        "inventory read connection close cleanup failed: "
-        "RuntimeError: inventory close failed",
+        "inventory read rollback cleanup failed: RuntimeError: inventory rollback failed",
+        "inventory read connection close cleanup failed: RuntimeError: inventory close failed",
     ]
 
 
@@ -1154,9 +1129,7 @@ def test_execute_knowledge_search_preserves_inventory_sqlite_callback_identity(
                 inside_inventory = False
                 events.append("ROLLBACK")
                 return self
-            raise AssertionError(
-                f"unexpected statement after cancellation: {statement}"
-            )
+            raise AssertionError(f"unexpected statement after cancellation: {statement}")
 
         def close(self) -> None:
             events.append("CLOSE")
@@ -1251,9 +1224,7 @@ def test_inventory_sqlite_failure_reports_rollback_and_closes_in_order(
     assert not report.complete
     assert report.returned == 0
     assert report.rows_scanned == 0
-    assert report.reason == (
-        "owner_read_failed:ReadFailure:rollback_failed:RollbackFailure"
-    )
+    assert report.reason == ("owner_read_failed:ReadFailure:rollback_failed:RollbackFailure")
 
 
 def test_inventory_early_returns_are_complete_and_never_open_sqlite(
@@ -1942,9 +1913,7 @@ def test_inventory_reason_precedence_is_ambiguous_then_planned_then_uncovered(
     assert planned_report.reason == "inventory_exact_verification_unavailable"
 
     uncovered_updated, uncovered_report = run((uncovered,), [])
-    assert uncovered_updated[0].warnings[-1] == (
-        "inventory_duplicate_plan_coverage_unknown"
-    )
+    assert uncovered_updated[0].warnings[-1] == ("inventory_duplicate_plan_coverage_unknown")
     assert uncovered_report.returned == 0
     assert uncovered_report.reason == "inventory_plan_coverage_unknown"
 
@@ -2070,9 +2039,9 @@ def test_inventory_multielement_batches_keep_identity_then_head_parameter_order(
         "COMMIT",
         "CLOSE",
     ]
-    assert tuple(
-        candidate.resource.resource_id for candidate in updated["fts_pdf"]
-    ) == tuple(candidate.resource.resource_id for candidate in candidates)
+    assert tuple(candidate.resource.resource_id for candidate in updated["fts_pdf"]) == tuple(
+        candidate.resource.resource_id for candidate in candidates
+    )
     assert all(
         "inventory_duplicate_plan_coverage_unknown" in candidate.warnings
         for candidate in updated["fts_pdf"]
@@ -2466,8 +2435,7 @@ def test_inventory_non_sqlite_rollback_primary_survives_close_failure(
     assert raised.value is rollback_failure
     assert events == ["BEGIN", "SELECT", "ROLLBACK", "CLOSE"]
     assert rollback_failure.__notes__ == [
-        "inventory read connection close cleanup failed: "
-        "RuntimeError: inventory close failed"
+        "inventory read connection close cleanup failed: RuntimeError: inventory close failed"
     ]
 
 
@@ -2530,4 +2498,6 @@ def test_inventory_limit_rollback_failure_attempts_one_fallback_rollback(
     ]
     assert report.rows_scanned == 0
     assert report.reason == "owner_read_failed:OperationalError"
+
+
 # endregion [02]

@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from _02_Deduplicacion.inventory_schema import initialize_inventory_schema
+from _04_Nucleo_Operativo import framework_schema
 from _04_Nucleo_Operativo import retention_planner as retention_module
 from _04_Nucleo_Operativo.cli_app import main as cli_main
 from _04_Nucleo_Operativo.document_catalog import (
@@ -868,6 +869,24 @@ def test_schema_drift_blocks_without_modifying_main_database(tmp_path: Path) -> 
         "semantic.sqlite3-shm",
         "semantic.sqlite3-wal",
     }
+
+
+def test_framework_retention_requires_exact_current_v22_without_migrating_legacy(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "framework.sqlite3"
+    with closing(sqlite3.connect(database)) as connection:
+        framework_schema._build_v21_exact_schema(connection)
+        connection.execute("INSERT INTO metadata VALUES('schema_version','21')")
+        connection.commit()
+    before = database.read_bytes()
+
+    plan = plan_retention(tmp_path, stores=("framework",), now_ns=NOW_NS)
+
+    assert plan.stores[0].status == "blocked"
+    assert "framework schema is 21; expected 22" in str(plan.stores[0].detail)
+    assert plan.stores[0].items == ()
+    assert database.read_bytes() == before
 
 
 def test_invalid_cross_store_dependencies_block_even_empty_primary_store(

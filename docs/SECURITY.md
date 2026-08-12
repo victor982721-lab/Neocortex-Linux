@@ -62,7 +62,7 @@ La topología reservada es
 aliases/reparses y protege también un hardlink del launcher. Una raíz normal
 situada dentro de un árbol propio se rechaza; los árboles propios descendientes
 de un corpus permitido se excluyen. El estado no puede ser igual ni ancestro
-del corpus. Dedup v10 conserva la firma cruda de exclusión y Framework v21
+del corpus. Dedup v10 conserva la firma cruda de exclusión y Framework v22
 conserva la firma efectiva incorporada en v20, que también incluye las rutas
 internas.
 
@@ -125,9 +125,9 @@ El proveedor es `authority=advisory`, conserva `mutation_authority=false` y
 declara `uses_network=true` porque los tests podrían usar red; no es una
 autorización para modificar la raíz canónica.
 
-La finalización no confía únicamente en la CLI: Framework v21 conserva la
+La finalización no confía únicamente en la CLI: Framework v22 conserva la
 protección de v20 que impide enlazar
-acciones a un run protegido, Dedup v10 exige el scan ligado a su firma y Code v4
+acciones a un run protegido, Dedup v10 exige el scan ligado a su firma y Code v5
 conserva el run analítico. Los owners de mutación reciben
 `CorpusMutationGuard` y el commit exige ceros durables en candidatos, acciones
 y organización. Una identidad cambiada, un árbol intersectante o una frontera
@@ -219,7 +219,7 @@ policy, autorización, revalidación de identidad ni recibo de efecto.
 
 ### ReviewTask no es autorización
 
-Framework v21 conserva `ReviewTask` como una cola advisory: input/revisión,
+Framework v22 conserva `ReviewTask` como una cola advisory: input/revisión,
 snapshot, evidencia, motivo, incertidumbre, impacto, irreversibilidad,
 sugerencias y eventos de estado. La prioridad
 `impacto × incertidumbre × irreversibilidad` es una regla de ordenamiento, no
@@ -242,10 +242,12 @@ faltante, plan inválido o mismatch observado en una página conserva el estado
 Así, perder cobertura no puede retirar silenciosamente trabajo humano pendiente.
 
 Los eventos son append-only y las transiciones usan CAS. `RESOLVED` y
-`DISMISSED` requieren actor humano y decisión; un refresh posterior no los
-reabre ni los reemplaza automáticamente. `SUPERSEDED` no es una transición
-pública: sólo se acepta con actor sistémico y receipt exacto de successor o head
-fuente. Knowledge falla cerrado si ese head no reconcilia su source receipt,
+`DISMISSED` requieren actor humano, decisión y scope tipado. `permanent` no se
+reabre; `until-source-change` y `until-policy-change` sólo expiran al cambiar el
+hecho declarado y con successor receipt-backed. Decisiones legacy se conservan
+terminales. `SUPERSEDED` no es una transición pública: sólo se acepta con actor
+sistémico y receipt exacto de successor o head fuente. Knowledge falla cerrado
+si ese head no reconcilia su source receipt,
 progreso o cualquier receipt, batch o membership de la cadena publicada.
 Retention trata tareas y eventos humanos como holds y protege por separado el
 head vigente con toda esa cadena; el resto de la coordinación derivada puede
@@ -412,8 +414,9 @@ imagen y audio usan procesos supervisados en partes críticas; DOCX/Office
 aplican lectura acotada de contenedores. Archive valida cada nivel antes de
 descomprimir, conserva la cadena virtual y envía PDF/imágenes internas a un
 worker OCR aislado. La ruta `text` exige evidencia imprimible/RFC 5322/CFB y
-convierte DOC/XLS/PPT en un proceso aislado con perfil LibreOffice temporal;
-nunca carga macros ni ejecuta el documento original.
+extrae DOC/XLS/PPT en un proceso aislado con un único backend fijado; cuando el
+backend es LibreOffice usa un perfil temporal. Nunca carga macros ni ejecuta el
+documento original.
 
 Estos controles limitan impacto, pero no constituyen aislamiento de seguridad
 completo. Mantenga actualizadas las dependencias compatibles y no desactive
@@ -441,7 +444,7 @@ proveniencia.
 ## Herramientas externas
 
 NeoCortex puede localizar o usar Tesseract, FFprobe/FFmpeg, qpdf, LibreOffice y
-los fallbacks `catdoc`/`xls2csv`/`catppt`.
+los extractores Office heredados `catdoc`/`xls2csv`/`catppt`.
 
 - Use rutas absolutas verificadas cuando se proporcionen overrides.
 - No sustituya un binario mientras exista una corrida activa.

@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+import _04_Nucleo_Operativo.framework_schema as framework_schema
 import _04_Nucleo_Operativo.review_task_repository as review_task_repository
 from _04_Nucleo_Operativo.framework_schema import initialize_framework_schema
 from _04_Nucleo_Operativo.knowledge_contracts import (
@@ -104,8 +105,10 @@ def _task(
     supersedes_task_id: str | None = None,
     created_ns: int | None = None,
     impact: float = 0.8,
+    source_input_id: str | None = None,
 ) -> ReviewTaskDraft:
     item = _input(number)
+    effective_source_input_id = source_input_id or item.input_id
     evidence = EvidenceRef(
         evidence_id=f"evidence-{number}-v{task_version}",
         resource_id=item.resource.resource_id if item.resource is not None else "missing",
@@ -120,7 +123,7 @@ def _task(
         task_type=task_type,
         scope=scope,
         source_kind="review-decision",
-        source_input_id=item.input_id,
+        source_input_id=effective_source_input_id,
         snapshot=CanonicalJsonObject.from_mapping({"candidate": number, "version": task_version}),
         evidence=(evidence,),
         reason_code="uncertain-value",
@@ -427,6 +430,202 @@ def test_event_transition_is_cas_append_only_and_idempotent(tmp_path: Path) -> N
     assert list_current_review_tasks(database, limit=10).items == ()
     all_states = list_current_review_tasks(database, limit=10, states=(ReviewTaskState.RESOLVED,))
     assert all_states.items[0].current_event.decision is not None
+
+
+def _scoped_decision(record: object, scope: str) -> CanonicalJsonObject:
+    return CanonicalJsonObject.from_mapping(
+        {
+            "decision": "resolved",
+            "schema": "neocortex.review-task-decision/v1",
+            "scope": scope,
+            "selector_signature": record.selector_signature,
+            "source_input_fingerprint": record.source.fingerprint,
+            "source_snapshot_fingerprint": record.source_snapshot_fingerprint,
+        }
+    )
+
+
+def test_scoped_terminal_decision_can_be_reopened_only_by_exact_receipt(
+    tmp_path: Path,
+) -> None:
+    database = _database(tmp_path)
+    first = _publication(31, (1,), confirmed_ns=31_000)
+    publish_review_task_page(database, first, expected_progress_revision=None)
+    opened = list_current_review_tasks(database, limit=10).items[0]
+    transition = replace(
+        _transition(
+            opened.task.task_id,
+            opened.current_event.event_id,
+            ReviewTaskState.OPEN,
+            ReviewTaskState.RESOLVED,
+            310,
+        ),
+        decision=_scoped_decision(opened, "until-source-change"),
+        observed_ns=31_100,
+        recorded_ns=31_100,
+    )
+    terminal = append_review_task_event(database, transition).event
+    heads = lookup_review_task_version_heads(
+        database, (opened.task.logical_key,), scope="personal", task_type="value-review"
+    )
+    assert heads[0].decision == transition.decision
+
+    successor = _task(
+        1,
+        logical_key=opened.task.logical_key,
+        task_version=2,
+        supersedes_task_id=opened.task.task_id,
+        created_ns=31_200,
+    )
+    changed_input = replace(_input(1), fingerprint="f" * 64)
+    changed = _publication(
+        32,
+        (1,),
+        tasks=(successor,),
+        confirmed_ns=31_300,
+    )
+    changed = replace(changed, inputs=(changed_input,))
+    publish_review_task_page(database, changed, expected_progress_revision=None)
+    history = review_task_repository.read_review_task_history(database, opened.task.task_id)
+    assert [event.to_state for event in history] == [
+        ReviewTaskState.OPEN,
+        ReviewTaskState.RESOLVED,
+        ReviewTaskState.SUPERSEDED,
+    ]
+    assert history[-1].previous_event_id == terminal.event_id
+    assert history[-1].provenance.to_dict()["reason_code"] == ("terminal_decision_scope_expired")
+    assert list_current_review_tasks(database, limit=10).items[0].task.task_version == 2
+
+
+@pytest.mark.parametrize("scope", ("permanent", "until-policy-change"))
+def test_unexpired_terminal_decision_scope_cannot_be_replaced(
+    tmp_path: Path,
+    scope: str,
+) -> None:
+    database = _database(tmp_path)
+    first = _publication(33, (1,), confirmed_ns=33_000)
+    publish_review_task_page(database, first, expected_progress_revision=None)
+    opened = list_current_review_tasks(database, limit=10).items[0]
+    append_review_task_event(
+        database,
+        replace(
+            _transition(
+                opened.task.task_id,
+                opened.current_event.event_id,
+                ReviewTaskState.OPEN,
+                ReviewTaskState.RESOLVED,
+                330,
+            ),
+            decision=_scoped_decision(opened, scope),
+            observed_ns=33_100,
+            recorded_ns=33_100,
+        ),
+    )
+    successor = _task(
+        1,
+        logical_key=opened.task.logical_key,
+        task_version=2,
+        supersedes_task_id=opened.task.task_id,
+        created_ns=33_200,
+    )
+    with pytest.raises(ReviewTaskCASConflict, match=r"scope|permanent"):
+        publish_review_task_page(
+            database,
+            _publication(34, (1,), tasks=(successor,), confirmed_ns=33_300),
+            expected_progress_revision=None,
+        )
+    assert (
+        review_task_repository.read_review_task_history(database, opened.task.task_id)[-1].to_state
+        is ReviewTaskState.RESOLVED
+    )
+
+
+def test_policy_scoped_terminal_decision_reopens_only_after_selector_change(
+    tmp_path: Path,
+) -> None:
+    database = _database(tmp_path)
+    first = _publication(35, (1,), confirmed_ns=35_000)
+    publish_review_task_page(database, first, expected_progress_revision=None)
+    opened = list_current_review_tasks(database, limit=10).items[0]
+    append_review_task_event(
+        database,
+        replace(
+            _transition(
+                opened.task.task_id,
+                opened.current_event.event_id,
+                ReviewTaskState.OPEN,
+                ReviewTaskState.RESOLVED,
+                350,
+            ),
+            decision=_scoped_decision(opened, "until-policy-change"),
+            observed_ns=35_100,
+            recorded_ns=35_100,
+        ),
+    )
+    successor = _task(
+        1,
+        logical_key=opened.task.logical_key,
+        task_version=2,
+        supersedes_task_id=opened.task.task_id,
+        created_ns=35_200,
+    )
+    changed = _publication(36, (1,), tasks=(successor,), confirmed_ns=35_300)
+    changed_fence = _source_fence(36, selector="value-review-personal-v2")
+    changed = replace(changed, fence=changed_fence)
+
+    publish_review_task_page(database, changed, expected_progress_revision=None)
+
+    current = list_current_review_tasks(database, limit=10).items
+    assert len(current) == 1
+    assert current[0].task.task_version == 2
+    assert (
+        review_task_repository.read_review_task_history(database, opened.task.task_id)[-1].to_state
+        is ReviewTaskState.SUPERSEDED
+    )
+
+
+def test_progress_lookup_finds_complete_epoch_behind_multiple_incomplete_epochs(
+    tmp_path: Path,
+) -> None:
+    database = _database(tmp_path)
+    complete = _publication(37, (1,), confirmed_ns=37_000)
+    publish_review_task_page(database, complete, expected_progress_revision=None)
+    owner_snapshot = CanonicalJsonObject.from_mapping({"generation": 37, "owner": "inventory"})
+
+    for index in (1, 2):
+        fence = ReviewTaskSourceFence.create(
+            scope="personal",
+            task_type="value-review",
+            selector_signature=complete.fence.selector_signature,
+            source_snapshot={
+                "generation": 37,
+                "owner": "inventory",
+                "reference_day_ns": index,
+            },
+        )
+        partial = _publication(
+            37 + index,
+            (index + 1,),
+            coverage=ReviewTaskCoverage.PARTIAL,
+            cursor_after=CanonicalJsonObject.from_mapping({"offset": index}),
+            confirmed_ns=38_000 + index,
+        )
+        publish_review_task_page(
+            database,
+            replace(partial, fence=fence),
+            expected_progress_revision=None,
+        )
+
+    incomplete, found_complete = review_task_repository.find_review_task_scan_progress(
+        database,
+        scope="personal",
+        task_type="value-review",
+        selector_signature=complete.fence.selector_signature,
+        owner_source_snapshot=owner_snapshot,
+    )
+    assert incomplete is not None
+    assert found_complete is not None
+    assert found_complete.fence == complete.fence
 
 
 def test_batch_version_lookup_and_owner_local_supersession(tmp_path: Path) -> None:
@@ -1354,7 +1553,7 @@ def test_progress_integrity_validation_has_page_count_independent_vm_cost(
         ("INDEX", "review_tasks_queue_idx"),
     ),
 )
-def test_readers_require_the_exact_framework_v21_schema_objects(
+def test_readers_require_the_exact_framework_v22_schema_objects(
     tmp_path: Path,
     object_type: str,
     name: str,
@@ -1451,15 +1650,17 @@ def test_missing_or_old_framework_state_is_never_created_or_migrated(
 
     old = tmp_path / "old.sqlite3"
     with closing(sqlite3.connect(old)) as connection:
-        connection.execute("CREATE TABLE metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL)")
-        connection.execute("INSERT INTO metadata VALUES('schema_version','20')")
+        framework_schema._build_v21_exact_schema(connection)
+        connection.execute("INSERT INTO metadata VALUES('schema_version','21')")
         connection.commit()
-    with pytest.raises(ReviewTaskRepositoryError, match="schema 21"):
+    before = old.read_bytes()
+    with pytest.raises(ReviewTaskRepositoryError, match="schema 22"):
         list_current_review_tasks(old, limit=10)
+    assert old.read_bytes() == before
     with closing(sqlite3.connect(old)) as connection:
         assert connection.execute(
             "SELECT value FROM metadata WHERE key='schema_version'"
-        ).fetchone() == ("20",)
+        ).fetchone() == ("21",)
 
 
 def test_online_backup_restores_review_task_owner_facts(tmp_path: Path) -> None:

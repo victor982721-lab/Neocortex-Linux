@@ -1,9 +1,9 @@
 """Inventory relationship support for the Knowledge Search facade."""
+
 # region [00] Contexto del módulo
 # Módulo: _04_Nucleo_Operativo/knowledge_search_inventory.py
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
-
 # region [01] Dependencias del módulo
 from __future__ import annotations
 
@@ -19,7 +19,6 @@ from .knowledge_contracts import KnowledgeSnapshot, ResourceRef
 from .knowledge_search_contracts import KnowledgeCandidate, RankingExecution
 from .knowledge_snapshot import KnowledgeStatePaths
 # endregion [01]
-
 # region [02] Implementación
 
 
@@ -38,6 +37,7 @@ _RelationRow = Callable[
 _PhysicalIdentity = Callable[[ResourceRef], InventoryIdentity | None]
 _Replace = Callable[..., Any]
 _RankingFactory = type[RankingExecution]
+_PATH_COLLATION = platform_policy.sqlite_path_collation()
 
 
 @dataclass(frozen=True, slots=True)
@@ -421,21 +421,21 @@ def _inventory_rows(
         g.reclaimable_bytes AS group_reclaimable_bytes,g.full_fingerprint,keeper.volume_id AS keeper_volume_id,keeper.file_id AS keeper_file_id,
         keeper.birthtime_ns AS keeper_birthtime_ns,keeper.member_order AS keeper_member_order,keeper.role AS keeper_role,keeper.path AS keeper_path,keeper.size AS keeper_size,
         keeper_file.path AS keeper_file_path,keeper_file.size AS keeper_file_size,
-        CASE WHEN keeper.path=g.keep_path COLLATE NOCASE THEN 1 ELSE 0 END AS keep_path_matches,(SELECT COUNT(*) FROM planned_duplicate_members counted WHERE counted.group_id=g.group_id) AS member_count,
+        CASE WHEN keeper.path=g.keep_path COLLATE {_PATH_COLLATION} THEN 1 ELSE 0 END AS keep_path_matches,(SELECT COUNT(*) FROM planned_duplicate_members counted WHERE counted.group_id=g.group_id) AS member_count,
         (SELECT COUNT(DISTINCT counted.member_order) FROM planned_duplicate_members counted WHERE counted.group_id=g.group_id) AS distinct_member_order_count,
         (SELECT COUNT(*) FROM planned_duplicate_members counted WHERE counted.group_id=g.group_id AND counted.role='keep') AS keep_count,
         (SELECT COUNT(*) FROM planned_duplicate_members counted WHERE counted.group_id=g.group_id AND counted.role='redundant') AS redundant_role_count,
         (SELECT COUNT(*) FROM planned_duplicate_members counted WHERE counted.group_id=g.group_id AND NOT ((counted.role='keep' AND counted.member_order=0) OR (counted.role='redundant' AND counted.member_order BETWEEN 1 AND g.redundant_count))) AS invalid_role_order_count
-        FROM wanted w JOIN files f ON f.volume_id=w.volume_id AND f.file_id=w.file_id AND f.birthtime_ns=w.birthtime_ns
+        FROM wanted w CROSS JOIN files f ON f.volume_id=w.volume_id AND f.file_id=w.file_id AND f.birthtime_ns=w.birthtime_ns
         JOIN heads h ON h.scan_id=f.scan_id JOIN duplicate_plan_summaries summary ON summary.scan_id=h.scan_id AND summary.completed_ns=h.completed_ns AND summary.group_count=h.group_count AND summary.redundant_files=h.redundant_files AND summary.reclaimable_bytes=h.reclaimable_bytes
         LEFT JOIN planned_duplicate_members member
-        ON member.path=f.path COLLATE NOCASE AND member.volume_id=f.volume_id
+        ON member.path=f.path COLLATE {_PATH_COLLATION} AND member.volume_id=f.volume_id
         AND member.file_id=f.file_id AND member.birthtime_ns=f.birthtime_ns
         LEFT JOIN planned_duplicate_groups g ON g.group_id=member.group_id
         AND g.scan_id=f.scan_id LEFT JOIN planned_duplicate_members keeper
         ON keeper.group_id=g.group_id AND keeper.member_order=0
         LEFT JOIN files keeper_file ON keeper_file.scan_id=g.scan_id
-        AND keeper_file.path=keeper.path COLLATE NOCASE
+        AND keeper_file.path=keeper.path COLLATE {_PATH_COLLATION}
         AND keeper_file.volume_id=keeper.volume_id
         AND keeper_file.file_id=keeper.file_id
         AND keeper_file.birthtime_ns=keeper.birthtime_ns

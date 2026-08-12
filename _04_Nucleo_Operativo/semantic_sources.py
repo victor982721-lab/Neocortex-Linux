@@ -17,6 +17,7 @@ from pathlib import PureWindowsPath
 from _02_Deduplicacion import FileSnapshot
 from _02_Deduplicacion.hashing import FULL_ALGORITHM, stat_matches_snapshot
 from _02_Deduplicacion.path_io import native_io_path
+from neocortex.platform_policy import sqlite_path_collation
 
 from .file_identity import FileIdentityError, decode_file_identity
 from .derivation_contracts import MaterializationRef
@@ -77,6 +78,7 @@ MAX_SECTION_TEXT_BYTES = 32 * 1024 * 1024
 MAX_SECTION_TEXT_CHARS = 20_000_000
 FILE_HASH_BUFFER_BYTES = 4 * 1024 * 1024
 _TEXT_PUBLICATION_VALIDATION_BATCH = 250
+_PATH_COLLATION = sqlite_path_collation()
 
 
 @dataclass(frozen=True, slots=True)
@@ -1047,7 +1049,7 @@ def _image_rows(
                 # Reuse only the newest valid checkpoint generation.
                 query = f"""SELECT {image_projection}{ocr_projection},
                 fp.digest AS full_digest FROM images i
-                LEFT JOIN dedup.files f ON f.path=i.path COLLATE NOCASE
+                LEFT JOIN dedup.files f ON f.path=i.path COLLATE {_PATH_COLLATION}
                     AND f.size=i.size AND f.mtime_ns=i.mtime_ns
                     AND f.birthtime_ns=i.birthtime_ns
                     AND f.scan_id=(
@@ -1055,7 +1057,7 @@ def _image_rows(
                         JOIN dedup.inventory_checkpoints checkpoint
                           ON checkpoint.scan_id=candidate.scan_id
                          AND checkpoint.valid=1
-                        WHERE candidate.path=i.path COLLATE NOCASE
+                        WHERE candidate.path=i.path COLLATE {_PATH_COLLATION}
                           AND candidate.size=i.size
                           AND candidate.mtime_ns=i.mtime_ns
                           AND candidate.birthtime_ns=i.birthtime_ns
@@ -1069,7 +1071,7 @@ def _image_rows(
             else:
                 query = f"""SELECT {image_projection}{ocr_projection},
                 fp.digest AS full_digest FROM images i
-                LEFT JOIN dedup.files f ON f.path=i.path COLLATE NOCASE
+                LEFT JOIN dedup.files f ON f.path=i.path COLLATE {_PATH_COLLATION}
                     AND f.size=i.size AND f.mtime_ns=i.mtime_ns
                     AND f.birthtime_ns=i.birthtime_ns
                 LEFT JOIN dedup.fingerprints fp ON fp.volume_id=f.volume_id

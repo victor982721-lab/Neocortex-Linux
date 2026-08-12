@@ -27,6 +27,7 @@ from _03_Progreso import (
     ProgressMetric,
     emit_progress,
 )
+from neocortex.platform_policy import sqlite_path_collation
 
 from .action_policy import same_snapshot
 from .cancellation import CancellationToken
@@ -65,6 +66,7 @@ MAX_CORE_PROPERTIES_BYTES = 2 * 1024 * 1024
 MAX_XLSX_CELLS = 250_000
 MAX_XLSX_SHARED_STRINGS = 250_000
 OFFICE_COMMIT_BATCH = 16
+_PATH_COLLATION = sqlite_path_collation()
 OFFICE_REVIEW_REASON_CODES = frozenset(
     {
         "office_corrupt_container",
@@ -1496,7 +1498,7 @@ def _store_inventory(
     run_id: int,
 ) -> None:
     connection.execute(
-        "DELETE FROM office_inventory WHERE path=? COLLATE NOCASE AND file_key<>?",
+        f"DELETE FROM office_inventory WHERE path=? COLLATE {_PATH_COLLATION} AND file_key<>?",
         (snapshot.path, _file_key(snapshot)),
     )
     connection.execute(
@@ -1542,7 +1544,7 @@ def _remove_path_conflict(
     snapshot: FileSnapshot,
 ) -> None:
     conflict = connection.execute(
-        "SELECT file_key FROM documents WHERE path=? COLLATE NOCASE AND file_key<>?",
+        f"SELECT file_key FROM documents WHERE path=? COLLATE {_PATH_COLLATION} AND file_key<>?",
         (snapshot.path, _file_key(snapshot)),
     ).fetchone()
     if conflict is not None:

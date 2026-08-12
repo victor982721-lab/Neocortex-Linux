@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -23,6 +24,7 @@ from typing import Any, Protocol
 
 import xxhash
 
+from neocortex import __version__ as _NEOCORTEX_DISTRIBUTION_VERSION
 from neocortex.capability_broker import (
     CapabilityBinaryIdentity,
     CapabilityBroker,
@@ -96,6 +98,22 @@ from .text_state import TEXT_SCHEMA_VERSION, initialize_text_state, text_databas
 TEXT_ROUTE_VERSION = "text-route-v2"
 _TEXT_EXTRACT_STAGE_ID = "text.extract"
 _TEXT_EXTRACT_STAGE_VERSION = "2"
+# Checked-in digest of the normalized Text-owned extractor contract.  It is
+# neither a transitive digest of binaries/environment nor a runtime checkout
+# hash; the source characterization requires updating it when those symbols
+# change, which in turn changes every affected processing signature.
+_TEXT_EXTRACTOR_CONTRACT_SHA256 = (
+    "sha256:305ef30b10bc12ded58747be0b553704729fac02fe2765341283ffa7fa78cff4"
+)
+_TEXT_IMPLEMENTATION_SCHEMA = "neocortex.text-implementation-contract/v1"
+_TEXT_DISTRIBUTION_NAME = "neocortex-framework"
+_TEXT_IMPLEMENTATION_CONFIGURATION_KEYS = (
+    "implementation_digest",
+    "implementation_distribution",
+    "implementation_distribution_version",
+    "implementation_extractor_contract_sha256",
+    "implementation_schema",
+)
 _TEXT_SOURCE_REVISION_PRODUCER = "text.source"
 _TEXT_SOURCE_PROCESSING_SIGNATURE = "text-source-revision-v1:xxh3-128"
 _TEXT_REPRESENTATION_KIND = "text_representation"
@@ -127,6 +145,34 @@ _TEXT_CAPABILITY_POLICY = CapabilityPolicy(
     allowed_privacy=(CapabilityPrivacy.LOCAL_ONLY,),
     gpu_available=False,
 )
+
+
+def _text_implementation_configuration(
+    *,
+    distribution_version: str | None = None,
+    extractor_contract_sha256: str | None = None,
+) -> dict[str, str]:
+    """Return a packaged contractual identity, not a transitive artifact hash."""
+
+    contract = {
+        "implementation_distribution": _TEXT_DISTRIBUTION_NAME,
+        "implementation_distribution_version": (
+            _NEOCORTEX_DISTRIBUTION_VERSION
+            if distribution_version is None
+            else distribution_version
+        ),
+        "implementation_extractor_contract_sha256": (
+            _TEXT_EXTRACTOR_CONTRACT_SHA256
+            if extractor_contract_sha256 is None
+            else extractor_contract_sha256
+        ),
+        "implementation_schema": _TEXT_IMPLEMENTATION_SCHEMA,
+    }
+    encoded = canonical_json(contract).encode("utf-8")
+    return {
+        "implementation_digest": f"sha256:{hashlib.sha256(encoded).hexdigest()}",
+        **contract,
+    }
 
 
 class TextFrameworkState(Protocol):
@@ -166,6 +212,7 @@ class TextRouteConfig:
             "text-route",
             f"{TEXT_ROUTE_VERSION}:text.extract/{_TEXT_EXTRACT_STAGE_VERSION}",
             {
+                **_text_implementation_configuration(),
                 "max_text_chars": self.max_text_chars,
                 "worker_timeout_seconds": self.worker_timeout_seconds,
                 "worker_memory_bytes": self.worker_memory_bytes,
@@ -360,18 +407,22 @@ def _stage_descriptor(provenance: ProcessingProvenance) -> StageDescriptor:
     provider = configuration.get("capability_provider")
     provider_version = configuration.get("capability_provider_version")
     manifest_fingerprint = configuration.get("capability_manifest_fingerprint")
+    implementation_digest = configuration.get("implementation_digest")
     for name, value in (
         ("capability_provider", provider),
         ("capability_provider_version", provider_version),
         ("capability_manifest_fingerprint", manifest_fingerprint),
+        ("implementation_digest", implementation_digest),
     ):
         if value is not None and not isinstance(value, str):
             raise ValueError(f"Text {name} must be a string or null")
+    if implementation_digest is None:
+        raise ValueError("Text processing provenance has no implementation digest")
     return StageDescriptor(
         stage_id=_TEXT_EXTRACT_STAGE_ID,
         stage_version=_TEXT_EXTRACT_STAGE_VERSION,
         processing_signature=provenance.signature,
-        implementation_digest=None,
+        implementation_digest=implementation_digest,
         provider=provider,
         provider_version=provider_version,
     )
@@ -598,6 +649,9 @@ def _candidate_processing_provenance(
         "extractor_adapter": adapter,
         "output_content_kind": content_kind,
     }
+    effective_configuration.update(
+        {key: configuration[key] for key in _TEXT_IMPLEMENTATION_CONFIGURATION_KEYS}
+    )
     if selected_binary is not None:
         effective_configuration.update(
             {

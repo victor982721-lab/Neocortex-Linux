@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from functools import lru_cache
 from typing import cast
 
+from neocortex.platform_policy import sqlite_path_collation
+
 from .sqlite_schema_contract import (
     SQLiteSchemaContract,
     SQLiteSchemaContractError,
@@ -17,7 +19,8 @@ from .sqlite_schema_contract import (
 )
 
 
-SCHEMA_VERSION = 21
+SCHEMA_VERSION = 22
+_PATH_COLLATION = sqlite_path_collation()
 
 
 class _FrameworkSchemaMigrationError(RuntimeError):
@@ -25,6 +28,28 @@ class _FrameworkSchemaMigrationError(RuntimeError):
 
 
 # region [01] Canonical schema
+
+
+def _route_candidates_table_statement(path_collation: str) -> str:
+    if path_collation not in {"BINARY", "NOCASE"}:
+        raise ValueError(f"unsupported Framework path collation: {path_collation}")
+    return f"""
+    CREATE TABLE IF NOT EXISTS route_candidates (
+        run_id INTEGER NOT NULL,
+        mime TEXT NOT NULL,
+        path TEXT NOT NULL COLLATE {path_collation},
+        volume_id TEXT NOT NULL,
+        file_id TEXT NOT NULL,
+        size INTEGER NOT NULL,
+        mtime_ns INTEGER NOT NULL,
+        birthtime_ns INTEGER NOT NULL,
+        PRIMARY KEY(run_id, path)
+    ) WITHOUT ROWID
+    """
+
+
+_ROUTE_CANDIDATES_TABLE_STATEMENT = _route_candidates_table_statement(_PATH_COLLATION)
+_V21_ROUTE_CANDIDATES_TABLE_STATEMENT = _route_candidates_table_statement("NOCASE")
 
 
 _REVIEW_EVIDENCE_TABLE_STATEMENT = """
@@ -645,19 +670,7 @@ _TABLE_STATEMENTS = (
         ) ON DELETE RESTRICT
     )
     """,
-    """
-    CREATE TABLE IF NOT EXISTS route_candidates (
-        run_id INTEGER NOT NULL,
-        mime TEXT NOT NULL,
-        path TEXT NOT NULL COLLATE NOCASE,
-        volume_id TEXT NOT NULL,
-        file_id TEXT NOT NULL,
-        size INTEGER NOT NULL,
-        mtime_ns INTEGER NOT NULL,
-        birthtime_ns INTEGER NOT NULL,
-        PRIMARY KEY(run_id, path)
-    ) WITHOUT ROWID
-    """,
+    _ROUTE_CANDIDATES_TABLE_STATEMENT,
     """
     CREATE TABLE IF NOT EXISTS content_type_cache (
         volume_id TEXT NOT NULL,
@@ -848,17 +861,13 @@ _INDEX_STATEMENTS = (
     """,
 )
 
-_TRIGGER_STATEMENTS = (
-    """
-    CREATE TRIGGER IF NOT EXISTS initial_runs_corpus_policy_no_update
-    BEFORE UPDATE OF root,run_kind,corpus_access_mode,root_device_id_hex,
-    root_file_id_hex,root_birthtime_ns,state_directory,inventory_policy_signature
-    ON initial_runs
-    BEGIN
-        SELECT RAISE(ABORT, 'initial run corpus policy is immutable');
-    END
-    """,
-    """
+
+def _file_actions_corpus_policy_insert_trigger_statement(
+    path_collation: str,
+) -> str:
+    if path_collation not in {"BINARY", "NOCASE"}:
+        raise ValueError(f"unsupported Framework path collation: {path_collation}")
+    return f"""
     CREATE TRIGGER IF NOT EXISTS file_actions_corpus_policy_insert
     BEFORE INSERT ON file_actions
     WHEN NOT EXISTS(
@@ -873,7 +882,7 @@ _TRIGGER_STATEMENTS = (
              AND NEW.protected_root_birthtime_ns IS NULL)
             OR
             (NEW.corpus_access_mode='analyze_only'
-             AND NEW.protected_root=run.root COLLATE NOCASE
+             AND NEW.protected_root=run.root COLLATE {path_collation}
              AND NEW.protected_root_device_id_hex=run.root_device_id_hex
              AND NEW.protected_root_file_id_hex=run.root_file_id_hex
              AND NEW.protected_root_birthtime_ns=run.root_birthtime_ns)
@@ -882,7 +891,32 @@ _TRIGGER_STATEMENTS = (
     BEGIN
         SELECT RAISE(ABORT, 'file action corpus policy mismatch');
     END
+    """
+
+
+_FILE_ACTIONS_CORPUS_POLICY_INSERT_TRIGGER_STATEMENT = (
+    _file_actions_corpus_policy_insert_trigger_statement(_PATH_COLLATION)
+)
+_V21_FILE_ACTIONS_CORPUS_POLICY_INSERT_TRIGGER_STATEMENT = (
+    _file_actions_corpus_policy_insert_trigger_statement("NOCASE")
+)
+
+
+_V21_REVIEW_TASKS_VALIDATE_INSERT_TRIGGER_STATEMENT = "\n    CREATE TRIGGER IF NOT EXISTS review_tasks_validate_insert\n    BEFORE INSERT ON review_tasks\n    WHEN NOT (\n        EXISTS(\n            SELECT 1 FROM review_task_batches AS owner_batch,\n            json_each(owner_batch.receipt_json,'$.tasks') AS receipt_task,\n            json_each(owner_batch.receipt_json,'$.inputs') AS receipt_input\n            WHERE owner_batch.batch_id=NEW.batch_id\n              AND json_extract(receipt_task.value,'$.task_id')=NEW.task_id\n              AND json_extract(receipt_task.value,'$.source_input_id')=\n                  NEW.source_input_id\n              AND json_extract(receipt_input.value,'$.input_id')=\n                  NEW.source_input_id\n        ) AND\n        (\n            (\n                NEW.task_version=1 AND NEW.supersedes_task_id IS NULL AND\n                NOT EXISTS(\n                    SELECT 1 FROM review_tasks AS existing\n                    WHERE existing.logical_key=NEW.logical_key\n                )\n            ) OR\n            (\n                NEW.task_version>1 AND NEW.supersedes_task_id IS NOT NULL AND\n                EXISTS(\n                    SELECT 1 FROM review_tasks AS previous\n                    WHERE previous.task_id=NEW.supersedes_task_id\n                      AND previous.logical_key=NEW.logical_key\n                      AND previous.task_version=NEW.task_version-1\n                      AND previous.scope=NEW.scope\n                      AND previous.task_type=NEW.task_type\n                      AND previous.source_kind=NEW.source_kind\n                      AND previous.created_ns<NEW.created_ns\n                      AND EXISTS(\n                          SELECT 1 FROM review_task_events AS current_event\n                          WHERE current_event.task_id=previous.task_id\n                            AND (\n                                current_event.to_state IN ('open','in_review') OR\n                                (\n                                    current_event.to_state='superseded' AND\n                                    current_event.event_id=\n                                        NEW.supersession_event_id AND\n                                    current_event.actor_kind='system'\n                                )\n                            )\n                            AND NOT EXISTS(\n                                SELECT 1 FROM review_task_events AS later_event\n                                WHERE later_event.task_id=current_event.task_id\n                                  AND later_event.sequence>current_event.sequence\n                            )\n                      )\n                )\n            )\n        )\n    )\n    BEGIN\n        SELECT RAISE(ABORT, 'review task version chain conflict');\n    END\n    "
+_V21_REVIEW_TASK_EVENTS_VALIDATE_INSERT_TRIGGER_STATEMENT = "\n    CREATE TRIGGER IF NOT EXISTS review_task_events_validate_insert\n    BEFORE INSERT ON review_task_events\n    WHEN NOT (\n        EXISTS(\n            SELECT 1 FROM review_tasks AS owner_task\n            WHERE owner_task.task_id=NEW.task_id\n              AND owner_task.created_ns<=NEW.observed_ns\n        ) AND\n        (\n            (\n                NEW.sequence=1 AND NEW.previous_event_id IS NULL AND\n                NEW.from_state IS NULL AND NEW.to_state='open' AND\n                NOT EXISTS(\n                    SELECT 1 FROM review_task_events AS existing\n                    WHERE existing.task_id=NEW.task_id\n                )\n            ) OR\n            (\n                NEW.sequence>1 AND NEW.previous_event_id IS NOT NULL AND\n                NEW.from_state IS NOT NULL AND\n                EXISTS(\n                    SELECT 1 FROM review_task_events AS previous\n                    WHERE previous.event_id=NEW.previous_event_id\n                      AND previous.task_id=NEW.task_id\n                      AND previous.sequence=NEW.sequence-1\n                      AND previous.to_state=NEW.from_state\n                      AND previous.observed_ns<=NEW.observed_ns\n                      AND previous.recorded_ns<NEW.recorded_ns\n                ) AND\n                (\n                    (NEW.from_state='open' AND NEW.to_state IN (\n                        'in_review','resolved','dismissed','superseded'\n                    )) OR\n                    (NEW.from_state='in_review' AND NEW.to_state IN (\n                        'resolved','dismissed','superseded'\n                    ))\n                ) AND (\n                    (\n                        NEW.to_state='superseded' AND\n                        NEW.actor_kind='system' AND NEW.decision_json IS NULL AND\n                        (\n                            (\n                                NEW.actor_id='review-task-refresh' AND\n                                json_extract(NEW.provenance_json,'$.reason_code')=\n                                    'replacement_task_published' AND\n                                json_type(\n                                    NEW.provenance_json,'$.replacement_task_id'\n                                )='text' AND\n                                EXISTS(\n                                    SELECT 1\n                                    FROM review_tasks AS replaced_task\n                                    JOIN review_tasks AS replacement_task\n                                      ON replacement_task.supersedes_task_id=\n                                         replaced_task.task_id\n                                     AND replacement_task.supersession_event_id=\n                                         NEW.event_id\n                                    JOIN review_task_batches AS replacement_batch\n                                      ON replacement_batch.batch_id=\n                                         replacement_task.batch_id\n                                    JOIN json_each(\n                                        replacement_batch.receipt_json,'$.tasks'\n                                    ) AS replacement_receipt\n                                    WHERE replaced_task.task_id=NEW.task_id\n                                      AND json_extract(\n                                          replacement_receipt.value,'$.task_id'\n                                      )=replacement_task.task_id\n                                      AND replacement_task.task_id=json_extract(\n                                          NEW.provenance_json,'$.replacement_task_id'\n                                      )\n                                      AND replacement_batch.scope=\n                                          replaced_task.scope\n                                      AND replacement_batch.task_type=\n                                          replaced_task.task_type\n                                      AND replacement_batch.source_snapshot_fingerprint=\n                                          json_extract(\n                                              NEW.provenance_json,\n                                              '$.source_snapshot_fingerprint'\n                                          )\n                                      AND replacement_batch.confirmed_ns=\n                                          NEW.observed_ns\n                                      AND NEW.recorded_ns=NEW.observed_ns\n                                )\n                            ) OR (\n                                NEW.actor_id='review-task-source-publication' AND\n                                json_extract(NEW.provenance_json,'$.derived')=1 AND\n                                json_extract(NEW.provenance_json,'$.reason_code')=\n                                    'absent_from_complete_source_snapshot' AND\n                                EXISTS(\n                                    SELECT 1\n                                    FROM review_tasks AS effective_task\n                                    JOIN review_tasks AS replacement_task\n                                      ON replacement_task.supersedes_task_id=\n                                         effective_task.task_id\n                                     AND replacement_task.supersession_event_id=\n                                         NEW.event_id\n                                    JOIN review_task_batches AS effective_batch\n                                      ON effective_batch.batch_id=\n                                         effective_task.batch_id\n                                    JOIN review_task_source_publications AS source_head\n                                      ON source_head.publication_id=json_extract(\n                                          NEW.provenance_json,\n                                          '$.source_publication_id'\n                                      )\n                                     AND source_head.scope=effective_task.scope\n                                     AND source_head.task_type=\n                                         effective_task.task_type\n                                     AND source_head.selector_signature=\n                                         effective_batch.selector_signature\n                                    WHERE effective_task.task_id=NEW.task_id\n                                      AND effective_task.source_snapshot_fingerprint<>\n                                          source_head.source_snapshot_fingerprint\n                                      AND source_head.source_snapshot_fingerprint=\n                                          json_extract(\n                                              NEW.provenance_json,\n                                              '$.source_snapshot_fingerprint'\n                                          )\n                                      AND effective_batch.confirmed_ns<\n                                          source_head.confirmed_ns\n                                      AND NEW.observed_ns=source_head.confirmed_ns\n                                      AND NEW.recorded_ns=source_head.confirmed_ns\n                                      AND NOT EXISTS(\n                                          SELECT 1\n                                          FROM review_task_source_publications AS later_head\n                                          WHERE later_head.scope=source_head.scope\n                                            AND later_head.task_type=\n                                                source_head.task_type\n                                            AND later_head.selector_signature=\n                                                source_head.selector_signature\n                                            AND later_head.revision>\n                                                source_head.revision\n                                      )\n                                      AND NOT EXISTS(\n                                          SELECT 1\n                                          FROM review_tasks AS replacement\n                                          WHERE replacement.logical_key=\n                                                effective_task.logical_key\n                                            AND replacement.scope=\n                                                effective_task.scope\n                                            AND replacement.task_type=\n                                                effective_task.task_type\n                                            AND replacement.source_snapshot_fingerprint=\n                                                source_head.source_snapshot_fingerprint\n                                      )\n                                )\n                            )\n                        )\n                    ) OR (\n                        NEW.to_state<>'superseded' AND NOT EXISTS(\n                        SELECT 1 FROM review_tasks AS effective_task\n                        JOIN review_task_batches AS effective_batch\n                          ON effective_batch.batch_id=effective_task.batch_id\n                        JOIN review_task_source_publications AS source_head\n                          ON source_head.scope=effective_task.scope\n                         AND source_head.task_type=effective_task.task_type\n                         AND source_head.selector_signature=\n                             effective_batch.selector_signature\n                        JOIN review_task_events AS effective_previous\n                          ON effective_previous.event_id=NEW.previous_event_id\n                         AND effective_previous.task_id=NEW.task_id\n                        WHERE effective_task.task_id=NEW.task_id\n                          AND effective_task.source_snapshot_fingerprint<>\n                              source_head.source_snapshot_fingerprint\n                          AND effective_batch.confirmed_ns<=\n                              source_head.confirmed_ns\n                          AND effective_previous.recorded_ns<\n                              source_head.confirmed_ns\n                          AND NOT EXISTS(\n                              SELECT 1\n                              FROM review_task_source_publications AS later_head\n                              WHERE later_head.scope=source_head.scope\n                                AND later_head.task_type=source_head.task_type\n                                AND later_head.selector_signature=\n                                    source_head.selector_signature\n                                AND later_head.revision>source_head.revision\n                          )\n                          AND NOT EXISTS(\n                              SELECT 1 FROM review_tasks AS replacement\n                              WHERE replacement.logical_key=\n                                    effective_task.logical_key\n                                AND replacement.scope=effective_task.scope\n                                AND replacement.task_type=effective_task.task_type\n                                AND replacement.source_snapshot_fingerprint=\n                                    source_head.source_snapshot_fingerprint\n                          )\n                        )\n                    )\n                )\n            )\n        )\n    )\n    BEGIN\n        SELECT RAISE(ABORT, 'review task event CAS or transition conflict');\n    END\n    "
+
+
+_TRIGGER_STATEMENTS = (
+    """
+    CREATE TRIGGER IF NOT EXISTS initial_runs_corpus_policy_no_update
+    BEFORE UPDATE OF root,run_kind,corpus_access_mode,root_device_id_hex,
+    root_file_id_hex,root_birthtime_ns,state_directory,inventory_policy_signature
+    ON initial_runs
+    BEGIN
+        SELECT RAISE(ABORT, 'initial run corpus policy is immutable');
+    END
     """,
+    _FILE_ACTIONS_CORPUS_POLICY_INSERT_TRIGGER_STATEMENT,
     """
     CREATE TRIGGER IF NOT EXISTS file_actions_corpus_policy_no_update
     BEFORE UPDATE OF corpus_access_mode,protected_root,
@@ -956,9 +990,23 @@ _TRIGGER_STATEMENTS = (
                       AND previous.created_ns<NEW.created_ns
                       AND EXISTS(
                           SELECT 1 FROM review_task_events AS current_event
-                          WHERE current_event.task_id=previous.task_id
+                            WHERE current_event.task_id=previous.task_id
                             AND (
                                 current_event.to_state IN ('open','in_review') OR
+                                (
+                                    current_event.to_state IN (
+                                        'resolved','dismissed'
+                                    ) AND
+                                    json_extract(
+                                        current_event.decision_json,'$.schema'
+                                    )='neocortex.review-task-decision/v1' AND
+                                    json_extract(
+                                        current_event.decision_json,'$.scope'
+                                    ) IN (
+                                        'until-source-change',
+                                        'until-policy-change'
+                                    )
+                                ) OR
                                 (
                                     current_event.to_state='superseded' AND
                                     current_event.event_id=
@@ -1030,7 +1078,9 @@ _TRIGGER_STATEMENTS = (
                     )) OR
                     (NEW.from_state='in_review' AND NEW.to_state IN (
                         'resolved','dismissed','superseded'
-                    ))
+                    )) OR
+                    (NEW.from_state IN ('resolved','dismissed') AND
+                     NEW.to_state='superseded')
                 ) AND (
                     (
                         NEW.to_state='superseded' AND
@@ -1038,8 +1088,10 @@ _TRIGGER_STATEMENTS = (
                         (
                             (
                                 NEW.actor_id='review-task-refresh' AND
-                                json_extract(NEW.provenance_json,'$.reason_code')=
-                                    'replacement_task_published' AND
+                                json_extract(NEW.provenance_json,'$.reason_code') IN (
+                                    'replacement_task_published',
+                                    'terminal_decision_scope_expired'
+                                ) AND
                                 json_type(
                                     NEW.provenance_json,'$.replacement_task_id'
                                 )='text' AND
@@ -1076,6 +1128,35 @@ _TRIGGER_STATEMENTS = (
                                       AND replacement_batch.confirmed_ns=
                                           NEW.observed_ns
                                       AND NEW.recorded_ns=NEW.observed_ns
+                                ) AND (
+                                    NEW.from_state IN ('open','in_review') OR
+                                    (
+                                        NEW.from_state IN ('resolved','dismissed') AND
+                                        json_extract(
+                                            NEW.provenance_json,'$.reason_code'
+                                        )='terminal_decision_scope_expired' AND
+                                        json_extract(
+                                            (
+                                                SELECT terminal.decision_json
+                                                FROM review_task_events terminal
+                                                WHERE terminal.event_id=
+                                                    NEW.previous_event_id
+                                                  AND terminal.task_id=NEW.task_id
+                                            ),'$.schema'
+                                        )='neocortex.review-task-decision/v1' AND
+                                        json_extract(
+                                            (
+                                                SELECT terminal.decision_json
+                                                FROM review_task_events terminal
+                                                WHERE terminal.event_id=
+                                                    NEW.previous_event_id
+                                                  AND terminal.task_id=NEW.task_id
+                                            ),'$.scope'
+                                        ) IN (
+                                            'until-source-change',
+                                            'until-policy-change'
+                                        )
+                                    )
                                 )
                             ) OR (
                                 NEW.actor_id='review-task-source-publication' AND
@@ -1499,6 +1580,9 @@ _TRIGGER_STATEMENTS = (
     END
     """,
 )
+
+_REVIEW_TASKS_VALIDATE_INSERT_TRIGGER_STATEMENT = _TRIGGER_STATEMENTS[7]
+_REVIEW_TASK_EVENTS_VALIDATE_INSERT_TRIGGER_STATEMENT = _TRIGGER_STATEMENTS[10]
 
 _TABLE_NAMES = (
     "metadata",
@@ -2124,6 +2208,70 @@ def _migrate_20_to_21(connection: sqlite3.Connection) -> None:
         raise _FrameworkSchemaMigrationError("owner rows changed during empty version-21 migration")
 
 
+_ROUTE_CANDIDATE_COLUMNS = (
+    "run_id",
+    "mime",
+    "path",
+    "volume_id",
+    "file_id",
+    "size",
+    "mtime_ns",
+    "birthtime_ns",
+)
+
+
+def _migrate_21_to_22(connection: sqlite3.Connection) -> None:
+    """Adopt host path equivalence for the routing snapshot primary key."""
+
+    # v22 also tightens the ReviewTask lifecycle contract.  Recreate these
+    # triggers on every platform; Windows still needs the lifecycle upgrade
+    # even though its filesystem collation remains NOCASE.
+    # A direct v20→v22 upgrade creates the additive v21 tables before walking
+    # migrations, but their v21 triggers have never existed.  Existing v21
+    # databases do have them and must replace them.  Both routes converge on
+    # the same current triggers below without repairing an inexact source
+    # schema (the exact preflight already ran before this point).
+    connection.execute("DROP TRIGGER IF EXISTS review_tasks_validate_insert")
+    connection.execute("DROP TRIGGER IF EXISTS review_task_events_validate_insert")
+    if _PATH_COLLATION == "NOCASE":
+        return
+    legacy_table = "__neocortex_schema_22_route_candidates"
+    collision = connection.execute(
+        "SELECT type FROM sqlite_master WHERE name=?",
+        (legacy_table,),
+    ).fetchone()
+    if collision is not None:
+        raise _FrameworkSchemaMigrationError(
+            f"reserved migration object already exists: {legacy_table}"
+        )
+    source_count = int(connection.execute("SELECT COUNT(*) FROM route_candidates").fetchone()[0])
+    connection.execute("DROP TRIGGER IF EXISTS file_actions_corpus_policy_insert")
+    connection.execute("ALTER TABLE route_candidates RENAME TO " + _quoted_identifier(legacy_table))
+    connection.execute(_ROUTE_CANDIDATES_TABLE_STATEMENT)
+    column_sql = ",".join(_quoted_identifier(column) for column in _ROUTE_CANDIDATE_COLUMNS)
+    inserted = connection.execute(
+        f"INSERT INTO route_candidates({column_sql}) "
+        f"SELECT {column_sql} FROM {_quoted_identifier(legacy_table)}"
+    )
+    if inserted.rowcount != source_count:
+        raise _FrameworkSchemaMigrationError(
+            "route_candidates row count changed during version-22 migration"
+        )
+    missing = connection.execute(
+        f"SELECT {column_sql} FROM {_quoted_identifier(legacy_table)} "
+        f"EXCEPT SELECT {column_sql} FROM route_candidates LIMIT 1"
+    ).fetchone()
+    extra = connection.execute(
+        f"SELECT {column_sql} FROM route_candidates "
+        f"EXCEPT SELECT {column_sql} FROM {_quoted_identifier(legacy_table)} LIMIT 1"
+    ).fetchone()
+    if missing is not None or extra is not None:
+        raise _FrameworkSchemaMigrationError(
+            "route_candidates evidence changed during version-22 migration"
+        )
+    connection.execute(f"DROP TABLE {_quoted_identifier(legacy_table)}")
+
+
 _MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     1: _migrate_1_to_2,
     2: _migrate_2_to_3,
@@ -2145,6 +2293,7 @@ _MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     18: _migrate_18_to_19,
     19: _migrate_19_to_20,
     20: _migrate_20_to_21,
+    21: _migrate_21_to_22,
 }
 
 
@@ -2202,10 +2351,42 @@ def _build_exact_schema(connection: sqlite3.Connection) -> None:
         connection.execute(statement)
 
 
+def _build_v21_exact_schema(connection: sqlite3.Connection) -> None:
+    """Reconstruct the exact pre-path-policy Framework contract.
+
+    The public v21 validator intentionally uses the checked-in release
+    contract at HEAD; lifecycle-only v22 triggers must not retroactively alter
+    which deployed v21 databases are accepted for migration.
+    """
+
+    for statement in _TABLE_STATEMENTS:
+        connection.execute(
+            _V21_ROUTE_CANDIDATES_TABLE_STATEMENT
+            if statement == _ROUTE_CANDIDATES_TABLE_STATEMENT
+            else statement
+        )
+    for statement in _INDEX_STATEMENTS:
+        connection.execute(statement)
+    for statement in _TRIGGER_STATEMENTS:
+        if statement in {
+            _REVIEW_TASKS_VALIDATE_INSERT_TRIGGER_STATEMENT,
+            _REVIEW_TASK_EVENTS_VALIDATE_INSERT_TRIGGER_STATEMENT,
+        }:
+            statement = {
+                _REVIEW_TASKS_VALIDATE_INSERT_TRIGGER_STATEMENT: _V21_REVIEW_TASKS_VALIDATE_INSERT_TRIGGER_STATEMENT,
+                _REVIEW_TASK_EVENTS_VALIDATE_INSERT_TRIGGER_STATEMENT: _V21_REVIEW_TASK_EVENTS_VALIDATE_INSERT_TRIGGER_STATEMENT,
+            }[statement]
+        connection.execute(
+            _V21_FILE_ACTIONS_CORPUS_POLICY_INSERT_TRIGGER_STATEMENT
+            if statement == _FILE_ACTIONS_CORPUS_POLICY_INSERT_TRIGGER_STATEMENT
+            else statement
+        )
+
+
 def _build_v20_exact_schema(connection: sqlite3.Connection) -> None:
     """Reconstruct the exact v20 contract for read-only compatibility checks."""
 
-    _build_exact_schema(connection)
+    _build_v21_exact_schema(connection)
     for trigger in (
         "review_tasks_validate_insert",
         "review_tasks_no_update",
@@ -2273,6 +2454,11 @@ def _exact_schema_contract() -> SQLiteSchemaContract:
 
 
 @lru_cache(maxsize=1)
+def _v21_exact_schema_contract() -> SQLiteSchemaContract:
+    return schema_contract_from_builder(_build_v21_exact_schema)
+
+
+@lru_cache(maxsize=1)
 def _v20_exact_schema_contract() -> SQLiteSchemaContract:
     return schema_contract_from_builder(_build_v20_exact_schema)
 
@@ -2311,17 +2497,31 @@ def validate_framework_schema_v20(connection: sqlite3.Connection) -> None:
 
 
 def validate_framework_schema_v21(connection: sqlite3.Connection) -> None:
-    """Validate the exact current v21 contract without creating or migrating state."""
+    """Validate the exact legacy v21 contract without creating or migrating state."""
+
+    try:
+        validate_sqlite_schema_contract(
+            connection,
+            _v21_exact_schema_contract(),
+            label="framework v21 read compatibility",
+            exact=True,
+        )
+    except SQLiteSchemaContractError as exc:
+        raise RuntimeError(f"framework v21 schema contract validation failed: {exc}") from exc
+
+
+def validate_framework_schema_v22(connection: sqlite3.Connection) -> None:
+    """Validate the exact current v22 contract without creating or migrating state."""
 
     try:
         validate_sqlite_schema_contract(
             connection,
             _exact_schema_contract(),
-            label="framework v21",
+            label="framework v22",
             exact=True,
         )
     except SQLiteSchemaContractError as exc:
-        raise RuntimeError(f"framework v21 schema contract validation failed: {exc}") from exc
+        raise RuntimeError(f"framework v22 schema contract validation failed: {exc}") from exc
 
 
 @lru_cache(maxsize=1)
@@ -2564,6 +2764,11 @@ def initialize_framework_schema(
     if initial_version == SCHEMA_VERSION:
         # Reject a falsely current database without repairing or otherwise mutating it.
         _validate_schema(connection)
+        _validate_framework_storage_integrity(connection, label="framework v22")
+    elif initial_version == 21:
+        # The path-policy migration must start from the exact prior contract.
+        validate_framework_schema_v21(connection)
+        _validate_framework_storage_integrity(connection, label="framework v21")
     elif initial_version == 20:
         # The additive v21 migration must not silently repair damaged v20 state.
         validate_framework_schema_v20(connection)
@@ -2581,7 +2786,13 @@ def initialize_framework_schema(
                 (str(SCHEMA_VERSION),),
             )
         elif version < SCHEMA_VERSION:
-            if version == 20:
+            if version == 21:
+                validate_framework_schema_v21(connection)
+                _validate_framework_storage_integrity(
+                    connection,
+                    label="framework v21 locked preflight",
+                )
+            elif version == 20:
                 validate_framework_schema_v20(connection)
                 _validate_framework_storage_integrity(
                     connection,
@@ -2595,8 +2806,8 @@ def initialize_framework_schema(
         _validate_schema(connection)
         post_migration()
         _validate_schema(connection)
-        if initial_version == 20:
-            _validate_framework_storage_integrity(connection, label="framework v21 migration")
+        if initial_version in {20, 21}:
+            _validate_framework_storage_integrity(connection, label="framework v22 migration")
         connection.commit()
     except _FrameworkSchemaMigrationError as exc:
         connection.rollback()

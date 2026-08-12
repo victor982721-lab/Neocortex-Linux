@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from _02_Deduplicacion import FileSnapshot, snapshot_path
+from _04_Nucleo_Operativo import docx_schema
 from _04_Nucleo_Operativo.docx_route import (
     DOCX_MIME,
     PDF_MIME,
@@ -23,9 +24,11 @@ from _04_Nucleo_Operativo.docx_route import (
     extract_docx,
 )
 from _04_Nucleo_Operativo.docx_state import (
+    SCHEMA_VERSION,
     UNKNOWN_BIRTHTIME_NS,
     initialize_docx_state,
 )
+from neocortex.platform_policy import sqlite_path_collation
 
 
 # region [01] Test fixtures
@@ -229,7 +232,7 @@ class DocxRouteTests(unittest.TestCase):
                 row = connection.execute(
                     "SELECT file_key,processing_signature,birthtime_ns FROM documents"
                 ).fetchone()
-            self.assertEqual(version, "5")
+            self.assertEqual(version, str(SCHEMA_VERSION))
             self.assertIn("layout_signature", columns)
             self.assertIn("last_seen_run_id", columns)
             self.assertIn("birthtime_ns", columns)
@@ -302,20 +305,20 @@ class DocxRouteTests(unittest.TestCase):
                     for row in connection.execute("PRAGMA index_xinfo(docx_documents_path_idx)")
                     if row[5]
                 )
-            self.assertEqual(version, "5")
+            self.assertEqual(version, str(SCHEMA_VERSION))
             self.assertEqual(
                 (document["status"], document["birthtime_ns"]),
                 ("complete", UNKNOWN_BIRTHTIME_NS),
             )
             self.assertEqual(inventory_birthtime, UNKNOWN_BIRTHTIME_NS)
             self.assertEqual(cache_status, "miss")
-            self.assertEqual(path_collations, ("NOCASE",))
+            self.assertEqual(path_collations, (sqlite_path_collation(),))
 
     def test_migrates_schema_four_to_explicit_path_collations_without_data_loss(self):
         with tempfile.TemporaryDirectory() as directory:
             database = Path(directory) / "docx.sqlite3"
-            initialize_docx_state(database)
             with closing(sqlite3.connect(database)) as connection:
+                docx_schema._build_docx_v5_canonical_schema(connection)
                 connection.executescript(
                     """
                     DROP INDEX docx_documents_path_idx;
@@ -324,7 +327,7 @@ class DocxRouteTests(unittest.TestCase):
                         ON documents(path);
                     CREATE INDEX docx_documents_review_idx
                         ON documents(review_disposition,status,path);
-                    UPDATE metadata SET value='4' WHERE key='schema_version';
+                    INSERT INTO metadata VALUES('schema_version','4');
                     """
                 )
                 connection.execute(
@@ -355,10 +358,11 @@ class DocxRouteTests(unittest.TestCase):
                         )"""
                     )
                 }
-            self.assertEqual(version, "5")
+            self.assertEqual(version, str(SCHEMA_VERSION))
             self.assertEqual(preserved, ("preserved.docx", "complete"))
-            self.assertIn("PATH COLLATE NOCASE", index_sql["docx_documents_path_idx"])
-            self.assertIn("PATH COLLATE NOCASE", index_sql["docx_documents_review_idx"])
+            expected = f"PATH COLLATE {sqlite_path_collation()}"
+            self.assertIn(expected, index_sql["docx_documents_path_idx"])
+            self.assertIn(expected, index_sql["docx_documents_review_idx"])
 
     def test_extracts_searches_classifies_pairs_and_reuses_cache(self):
         with tempfile.TemporaryDirectory() as directory:

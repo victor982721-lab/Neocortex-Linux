@@ -21,6 +21,7 @@ from _03_Progreso import (
     ProgressMetric,
     emit_progress,
 )
+from neocortex.platform_policy import sqlite_path_collation
 
 from .action_policy import same_snapshot
 from .audio_models import (
@@ -72,6 +73,7 @@ VIDEO_MIME_TYPES = frozenset(
     }
 )
 AUDIO_COMMIT_BATCH = 8
+_PATH_COLLATION = sqlite_path_collation()
 AUDIO_REVIEW_REASON_CODES = frozenset(
     {
         "audio_duration_limit",
@@ -650,7 +652,7 @@ def _store_inventory(
 ) -> None:
     key = _file_key(snapshot)
     connection.execute(
-        "DELETE FROM audio_inventory WHERE path=? COLLATE NOCASE AND file_key<>?",
+        f"DELETE FROM audio_inventory WHERE path=? COLLATE {_PATH_COLLATION} AND file_key<>?",
         (snapshot.path, key),
     )
     connection.execute(
@@ -696,7 +698,7 @@ def _remove_path_conflict(
     snapshot: FileSnapshot,
 ) -> None:
     conflict = connection.execute(
-        "SELECT file_key FROM documents WHERE path=? COLLATE NOCASE AND file_key<>?",
+        f"SELECT file_key FROM documents WHERE path=? COLLATE {_PATH_COLLATION} AND file_key<>?",
         (snapshot.path, _file_key(snapshot)),
     ).fetchone()
     if conflict is not None:

@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from _02_Deduplicacion import FileSnapshot
+from neocortex.platform_policy import sqlite_path_collation
 
 from .cancellation import CancellationRequested
 from .code_contracts import (
@@ -54,6 +55,7 @@ from .sqlite_cancellation import (
 
 CODE_STATE_WRITE_BATCH = 512
 CODE_GRAPH_RESOLVER_SIGNATURE = "code-graph-resolver-v7"
+_PATH_COLLATION = sqlite_path_collation()
 _GRAPH_COMPLETION_KEY = "code_graph_completion_v3"
 _GRAPH_FENCE_SCHEMA_VERSION = 1
 _MAX_RELATIVE_DEPENDENCY_NAME_BYTES = 4_096
@@ -770,8 +772,8 @@ class CodeState:
         framework_run_id: int,
     ) -> tuple[int, ...]:
         rows = self.connection.execute(
-            """SELECT file_id,current_version_id FROM files
-            WHERE current_path=? COLLATE NOCASE AND status='current'
+            f"""SELECT file_id,current_version_id FROM files
+            WHERE current_path=? COLLATE {_PATH_COLLATION} AND status='current'
             AND NOT(volume_id=? AND physical_file_id=?)""",
             (path, volume_id, physical_file_id),
         ).fetchall()
@@ -1991,9 +1993,9 @@ class CodeState:
             )
 
             self.connection.execute(
-                """CREATE TEMP TABLE _nc_relative_dependency_candidates(
+                f"""CREATE TEMP TABLE _nc_relative_dependency_candidates(
                 dependency_id INTEGER NOT NULL,
-                candidate_path TEXT NOT NULL COLLATE NOCASE,
+                candidate_path TEXT NOT NULL COLLATE {_PATH_COLLATION},
                 PRIMARY KEY(dependency_id,candidate_path)) WITHOUT ROWID"""
             )
             relative_dependencies = self.connection.execute(
@@ -2030,12 +2032,12 @@ class CodeState:
                 version_id INTEGER NOT NULL) WITHOUT ROWID"""
             )
             self.connection.execute(
-                """INSERT INTO _nc_relative_dependency_targets(
+                f"""INSERT INTO _nc_relative_dependency_targets(
                 dependency_id,version_id)
                 SELECT candidates.dependency_id,MIN(files.current_version_id)
                 FROM _nc_relative_dependency_candidates candidates
                 JOIN files ON files.current_path=candidates.candidate_path
-                    COLLATE NOCASE AND files.status='current'
+                    COLLATE {_PATH_COLLATION} AND files.status='current'
                 JOIN _nc_current_versions current
                     ON current.version_id=files.current_version_id
                 GROUP BY candidates.dependency_id
@@ -2129,11 +2131,11 @@ class CodeState:
                 SELECT version_id FROM file_versions WHERE invalidated_ns IS NULL)"""
         )
         groups = self.connection.execute(
-            """SELECT m.project_id,MIN(m.proposed_path) AS proposed_path
+            f"""SELECT m.project_id,MIN(m.proposed_path) AS proposed_path
             FROM project_memberships m
             JOIN file_versions v ON v.version_id=m.version_id
             WHERE v.invalidated_ns IS NULL
-            GROUP BY m.project_id,m.proposed_path COLLATE NOCASE
+            GROUP BY m.project_id,m.proposed_path COLLATE {_PATH_COLLATION}
             HAVING COUNT(*)>1
             ORDER BY m.project_id,proposed_path COLLATE NOCASE"""
         )
@@ -2141,19 +2143,21 @@ class CodeState:
             for row in rows:
                 project_id = int(row[0])
                 proposed_path = str(row[1])
-                normalized_path = proposed_path.casefold()
+                normalized_path = (
+                    proposed_path.casefold() if _PATH_COLLATION == "NOCASE" else proposed_path
+                )
                 conflict_group = fingerprint_text(f"{project_id}\0{normalized_path}").xxh3_128
                 self.connection.execute(
-                    """UPDATE project_memberships SET selected=0,conflict_group=?
-                    WHERE project_id=? AND proposed_path=? COLLATE NOCASE
+                    f"""UPDATE project_memberships SET selected=0,conflict_group=?
+                    WHERE project_id=? AND proposed_path=? COLLATE {_PATH_COLLATION}
                     AND version_id IN(SELECT version_id FROM file_versions
                         WHERE invalidated_ns IS NULL)""",
                     (conflict_group, project_id, proposed_path),
                 )
                 members = self.connection.execute(
-                    """SELECT m.version_id FROM project_memberships m
+                    f"""SELECT m.version_id FROM project_memberships m
                     JOIN file_versions v ON v.version_id=m.version_id
-                    WHERE m.project_id=? AND m.proposed_path=? COLLATE NOCASE
+                    WHERE m.project_id=? AND m.proposed_path=? COLLATE {_PATH_COLLATION}
                     AND v.invalidated_ns IS NULL ORDER BY m.version_id""",
                     (project_id, proposed_path),
                 )

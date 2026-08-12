@@ -7,6 +7,8 @@ import time
 from collections.abc import Callable
 from functools import lru_cache
 
+from neocortex.platform_policy import sqlite_path_collation
+
 from .sqlite_schema_contract import (
     SQLiteSchemaContract,
     SQLiteSchemaContractError,
@@ -19,7 +21,8 @@ from .sqlite_schema_contract import (
 # region [01] Canonical schema
 
 
-CATALOG_SCHEMA_VERSION = 6
+CATALOG_SCHEMA_VERSION = 7
+_PATH_COLLATION = sqlite_path_collation()
 
 
 _V5_SCHEMA_DDL = (
@@ -222,11 +225,41 @@ _CURRENT_ORGANIZATION_DESTINATION_INDEX_DDL = """
 
 # The historical v5 contract must remain byte-for-byte structural evidence for
 # migration validation. Its final statement is replaced only in the v6 schema.
-_CURRENT_SCHEMA_DDL = (
+_V6_SCHEMA_DDL = (
     *_V5_SCHEMA_DDL[:-1],
     _CURRENT_ORGANIZATION_DESTINATION_INDEX_DDL,
     *_GENERATION_SCHEMA_DDL,
 )
+
+
+def _document_catalog_schema_ddl(path_collation: str) -> tuple[str, ...]:
+    if path_collation not in {"BINARY", "NOCASE"}:
+        raise ValueError(f"unsupported document catalog path collation: {path_collation}")
+    # classification_history.path remains an exact archival observation.  Only
+    # current filesystem identities, planning keys and publication members use
+    # the platform path-equivalence policy.
+    return tuple(
+        statement.replace(
+            "path TEXT NOT NULL COLLATE NOCASE",
+            f"path TEXT NOT NULL COLLATE {path_collation}",
+        )
+        .replace(
+            "source_path TEXT NOT NULL COLLATE NOCASE",
+            f"source_path TEXT NOT NULL COLLATE {path_collation}",
+        )
+        .replace(
+            "destination_path TEXT COLLATE NOCASE",
+            f"destination_path TEXT COLLATE {path_collation}",
+        )
+        .replace(
+            "organization_root TEXT NOT NULL COLLATE NOCASE",
+            f"organization_root TEXT NOT NULL COLLATE {path_collation}",
+        )
+        for statement in _V6_SCHEMA_DDL
+    )
+
+
+_CURRENT_SCHEMA_DDL = _document_catalog_schema_ddl(_PATH_COLLATION)
 
 
 def create_document_catalog_schema(connection: sqlite3.Connection) -> None:
@@ -238,7 +271,7 @@ def create_document_catalog_schema(connection: sqlite3.Connection) -> None:
 
 @lru_cache(maxsize=1)
 def document_catalog_schema_contract() -> SQLiteSchemaContract:
-    """Return the immutable structural contract for schema v6."""
+    """Return the immutable structural contract for schema v7."""
 
     return schema_contract_from_builder(create_document_catalog_schema)
 
@@ -427,8 +460,7 @@ def _migrate_to_v2(connection: sqlite3.Connection) -> None:
     ).fetchone()
     if reserved is not None:
         raise SQLiteSchemaContractError(
-            "document catalog migration reserved object "
-            "'classification_history_v2' already exists"
+            "document catalog migration reserved object 'classification_history_v2' already exists"
         )
     if _history_primary_key(connection)[-1:] == ("path",):
         return
@@ -459,18 +491,12 @@ def _migrate_to_v2(connection: sqlite3.Connection) -> None:
         FROM classification_history"""
     )
     target_count = int(
-        connection.execute(
-            "SELECT COUNT(*) FROM classification_history_v2"
-        ).fetchone()[0]
+        connection.execute("SELECT COUNT(*) FROM classification_history_v2").fetchone()[0]
     )
     if target_count != source_count:
-        raise RuntimeError(
-            "document catalog history row count changed during v1 to v2 migration"
-        )
+        raise RuntimeError("document catalog history row count changed during v1 to v2 migration")
     connection.execute("DROP TABLE classification_history")
-    connection.execute(
-        "ALTER TABLE classification_history_v2 RENAME TO classification_history"
-    )
+    connection.execute("ALTER TABLE classification_history_v2 RENAME TO classification_history")
 
 
 def _add_column_if_missing(
@@ -565,6 +591,27 @@ def validate_v5_document_catalog_schema(connection: sqlite3.Connection) -> None:
     )
 
 
+def _create_v6_schema(connection: sqlite3.Connection) -> None:
+    for statement in _V6_SCHEMA_DDL:
+        connection.execute(statement)
+
+
+@lru_cache(maxsize=1)
+def _v6_schema_contract() -> SQLiteSchemaContract:
+    return schema_contract_from_builder(_create_v6_schema)
+
+
+def validate_v6_document_catalog_schema(connection: sqlite3.Connection) -> None:
+    """Abstain before writable path migration if schema 6 is not exact."""
+
+    validate_sqlite_schema_contract(
+        connection,
+        _v6_schema_contract(),
+        label="document catalog v6 migration source",
+        exact=True,
+    )
+
+
 def _migrate_to_v6(connection: sqlite3.Connection) -> None:
     """Create isolated generations only from the exact understood v5 contract."""
 
@@ -627,9 +674,7 @@ def _migrate_to_v6(connection: sqlite3.Connection) -> None:
             ).fetchone()[0]
         )
         if staged_count != source_count:
-            raise RuntimeError(
-                "document catalog row count changed during v5 to v6 migration"
-            )
+            raise RuntimeError("document catalog row count changed during v5 to v6 migration")
         migrated_rows += staged_count
         connection.execute(
             """INSERT INTO catalog_publications(
@@ -638,12 +683,95 @@ def _migrate_to_v6(connection: sqlite3.Connection) -> None:
         )
     document_count = int(connection.execute("SELECT COUNT(*) FROM documents").fetchone()[0])
     if migrated_rows != document_count:
-        raise RuntimeError(
-            "document catalog total row count changed during v5 to v6 migration"
-        )
+        raise RuntimeError("document catalog total row count changed during v5 to v6 migration")
     violation = connection.execute("PRAGMA foreign_key_check").fetchone()
     if violation is not None:
         raise RuntimeError("document catalog v5 to v6 migration violated foreign keys")
+
+
+_PATH_REBUILD_TABLES = (
+    "documents",
+    "organization_plans",
+    "catalog_generation_documents",
+)
+
+
+def _quoted_identifier(value: str) -> str:
+    return '"' + value.replace('"', '""') + '"'
+
+
+def _ordered_columns(
+    connection: sqlite3.Connection,
+    table: str,
+    *,
+    schema: str = "main",
+) -> tuple[str, ...]:
+    if schema not in {"main", "temp"}:  # pragma: no cover - internal invariant
+        raise ValueError(f"unsupported SQLite schema: {schema}")
+    quoted = _quoted_identifier(table)
+    return tuple(str(row[1]) for row in connection.execute(f"PRAGMA {schema}.table_info({quoted})"))
+
+
+def _copy_catalog_table_exact(
+    connection: sqlite3.Connection,
+    *,
+    source: str,
+    target: str,
+) -> None:
+    source_columns = _ordered_columns(connection, source, schema="temp")
+    target_columns = _ordered_columns(connection, target)
+    if not source_columns or set(source_columns) != set(target_columns):
+        raise RuntimeError(
+            f"document catalog path migration columns changed for {target}: "
+            f"source={source_columns!r} target={target_columns!r}"
+        )
+    columns = ",".join(_quoted_identifier(column) for column in target_columns)
+    connection.execute(
+        f"INSERT INTO main.{_quoted_identifier(target)}({columns}) "
+        f"SELECT {columns} FROM temp.{_quoted_identifier(source)}"
+    )
+
+
+def _migrate_to_v7(connection: sqlite3.Connection) -> None:
+    """Apply platform-native path identity without losing catalog evidence."""
+
+    validate_v6_document_catalog_schema(connection)
+    if _PATH_COLLATION == "NOCASE":
+        return
+    row_counts = {
+        table: int(
+            connection.execute(f"SELECT COUNT(*) FROM main.{_quoted_identifier(table)}").fetchone()[
+                0
+            ]
+        )
+        for table in _PATH_REBUILD_TABLES
+    }
+    for table in _PATH_REBUILD_TABLES:
+        backup = f"document_catalog_v6_{table}"
+        connection.execute(
+            f"CREATE TEMP TABLE {_quoted_identifier(backup)} AS "
+            f"SELECT * FROM main.{_quoted_identifier(table)}"
+        )
+
+    connection.execute("DROP TABLE catalog_generation_documents")
+    connection.execute("DROP TABLE organization_plans")
+    connection.execute("DROP TABLE documents")
+    create_document_catalog_schema(connection)
+
+    for table in _PATH_REBUILD_TABLES:
+        backup = f"document_catalog_v6_{table}"
+        _copy_catalog_table_exact(connection, source=backup, target=table)
+        migrated_count = int(
+            connection.execute(f"SELECT COUNT(*) FROM main.{_quoted_identifier(table)}").fetchone()[
+                0
+            ]
+        )
+        if migrated_count != row_counts[table]:
+            raise RuntimeError(f"document catalog path migration changed {table} row count")
+        connection.execute(f"DROP TABLE temp.{_quoted_identifier(backup)}")
+    violation = connection.execute("PRAGMA foreign_key_check").fetchone()
+    if violation is not None:
+        raise RuntimeError("document catalog path migration violated foreign keys")
 
 
 def migrate_document_catalog_schema(
@@ -661,6 +789,7 @@ def migrate_document_catalog_schema(
         4: lambda: _migrate_to_v4(connection),
         5: lambda: _migrate_to_v5(connection),
         6: lambda: _migrate_to_v6(connection),
+        7: lambda: _migrate_to_v7(connection),
     }
     for target_version in range(prior_version + 1, CATALOG_SCHEMA_VERSION + 1):
         migrations[target_version]()
@@ -677,4 +806,5 @@ __all__ = [
     "document_catalog_schema_contract",
     "migrate_document_catalog_schema",
     "validate_v5_document_catalog_schema",
+    "validate_v6_document_catalog_schema",
 ]

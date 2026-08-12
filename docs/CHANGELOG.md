@@ -21,8 +21,11 @@ no se copian aquí para evitar que se conviertan en datos históricos sin contex
 - Cola durable paginada para que Personal pueda preseleccionar más de 25,000
   observaciones sin retirar el límite. Los estados
   `ready`/`partial`/`stale`/`absent`/`unavailable` exponen la causa; decisiones
-  humanas `RESOLVED`/`DISMISSED` sobreviven a refresh/reconstrucción y no se
-  reabren automáticamente.
+  humanas `RESOLVED`/`DISMISSED` sobreviven a refresh/reconstrucción.
+- Journey CLI `review task show|history|claim|decide`: lectura acotada, CAS,
+  actor explícito, retry idempotente y decisiones scoped `permanent`,
+  `until-source-change` o `until-policy-change`. Sólo una expiración tipada
+  permite successor receipt-backed; decisiones legacy no se reinterpretan.
 - Progreso Value separa fin del cursor (`scan_complete`) de integridad de la
   evidencia (`evidence_complete`). Una página parcial conserva su razón durante
   toda la corrida y no permite superseder tareas abiertas por ausencia, aunque
@@ -69,13 +72,21 @@ no se copian aquí para evitar que se conviertan en datos históricos sin contex
 
 ### Cambiado
 
+- Framework pasa de schema 21 a 22 y Code de 4 a 5 para aplicar una única
+  política de identidad de rutas: `BINARY` en Linux y `NOCASE` en Windows. La
+  migración Framework 21→22 reconstruye sólo `route_candidates` cuando hace
+  falta, conserva las filas ReviewTask y versiona sus dos triggers de lifecycle;
+  los productores y
+  Retention exigen v22 exacto. Knowledge valida v22 como current y admite
+  v19/v20/v21 sólo mediante sus validadores legacy exactos.
 - `review value` sin `--refresh` permanece read-only, pero prefiere una cola
-  ReviewTask vigente; si Framework v21 o la cola no existen conserva el preview
-  legacy sin crear ni migrar estado. Un fingerprint fuente distinto falla
-  cerrado como `stale`.
-- El snapshot Knowledge de Framework v21 valida y expone heads ReviewTask y
+  ReviewTask vigente; si Framework v22 o la cola no existen conserva el preview
+  legacy sin crear ni migrar estado. Un scan incompleto reanuda la época fijada
+  aunque cruce medianoche; al cambiar fuente o política, el último head completo
+  permanece visible como `stale` y conserva decisiones humanas actuales.
+- El snapshot Knowledge de Framework v22 valida y expone heads ReviewTask y
   agrega watermarks de batches, eventos y publicaciones fuente; mantiene
-  compatibilidad read-only validada con v19/v20. Retention protege tareas y
+  compatibilidad read-only validada con v19/v20/v21. Retention protege tareas y
   eventos humanos como holds y, por separado, cada head vigente con toda su
   cadena alcanzable de batches, memberships y progreso exactos. La auditoría
   falla cerrado bajo cotas explícitas y usa búsquedas indexadas por batch.
@@ -110,12 +121,27 @@ no se copian aquí para evitar que se conviertan en datos históricos sin contex
   owner-native cuando está disponible, en vez de depender sólo de una revisión
   sintética DB-local.
 
+### Corregido
+
+- XLS y PPT heredados priorizan sus extractores locales `xls2csv` y `catppt`
+  antes de LibreOffice. Cada intento conserva un único backend fijado y no cae
+  silenciosamente a otro si éste falla; los receipts siguen declarándose
+  `non_replayable`.
+- Semantic ya no clona una materialización base que tiene trabajo objetivo en
+  la generación sucesora. Los estados históricos que conservan un receipt de
+  clone y otro posterior para el mismo ID se reanudan usando únicamente el
+  productor cuyo fingerprint coincide con la materialización física vigente.
+- Video OCR participa en Knowledge lexical mediante el owner publicado, con
+  locator temporal y cobertura fail-closed; Audio enlazado no se duplica y no se
+  añadieron embeddings Video.
+
 ### Límites conocidos
 
 - `Knowledge Asset Health` general permanece parcial/planificado: los estados
   causales implementados sólo cubren la cola Value. ReviewTask para OCR,
   entities/claims, contradicciones, links, recovery y promoción shadow, además
-  de una GUI para refrescar/decidir tareas, todavía no está implementado.
+  de una GUI para refrescar/decidir tareas, todavía no está implementado; la CLI
+  sí cubre ya el lifecycle humano.
 - CapabilityBroker v1 sólo está conectado a la ruta Text. PDF, DOCX, la ruta
   Office, Semantic y plugins/providers externos permanecen planificados; no hay
   autodescubrimiento de plugins ni providers pesados obligatorios.

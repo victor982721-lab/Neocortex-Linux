@@ -26,6 +26,7 @@ from _03_Progreso import (
     ProgressMetric,
     emit_progress,
 )
+from neocortex.platform_policy import sqlite_path_collation
 
 from .cancellation import CancellationRequested, CancellationToken
 from .docx_layout import (
@@ -84,6 +85,7 @@ DOCX_COMMIT_BATCH = 8
 DOCX_PRUNE_BATCH = 256
 DOCX_REVIEW_BATCH = 64
 TEXT_CHUNK_CHARS = 256 * 1024
+_PATH_COLLATION = sqlite_path_collation()
 DOCX_REVIEW_REASON_CODES = frozenset(
     {
         "internal_parser_error",
@@ -1091,14 +1093,14 @@ class DocxRoute:
 
         key = _file_key(snapshot)
         conflict = connection.execute(
-            """SELECT d.file_key,EXISTS(
+            f"""SELECT d.file_key,EXISTS(
                 SELECT 1 FROM docx_inventory i
                 WHERE i.file_key=d.file_key AND i.last_seen_run_id=?
                 AND i.size=d.size AND i.mtime_ns=d.mtime_ns
                 AND (i.birthtime_ns=d.birthtime_ns OR d.birthtime_ns=?)
             ) AS owner_is_live
             FROM documents d
-            WHERE d.path=? COLLATE NOCASE AND d.file_key<>?
+            WHERE d.path=? COLLATE {_PATH_COLLATION} AND d.file_key<>?
             LIMIT 1""",
             (
                 self.run_id,
@@ -1255,12 +1257,13 @@ class DocxRoute:
         now = time.time_ns()
         failure_code = result.diagnostics[0].code if result.diagnostics else None
         connection.execute(
-            """DELETE FROM document_fts WHERE file_key IN(
-            SELECT file_key FROM documents WHERE path=? COLLATE NOCASE AND file_key<>?)""",
+            f"""DELETE FROM document_fts WHERE file_key IN(
+            SELECT file_key FROM documents
+            WHERE path=? COLLATE {_PATH_COLLATION} AND file_key<>?)""",
             (snapshot.path, key),
         )
         connection.execute(
-            "DELETE FROM documents WHERE path=? COLLATE NOCASE AND file_key<>?",
+            f"DELETE FROM documents WHERE path=? COLLATE {_PATH_COLLATION} AND file_key<>?",
             (snapshot.path, key),
         )
         connection.execute(
@@ -1359,12 +1362,13 @@ class DocxRoute:
         key = _file_key(snapshot)
         failure = classify_docx_exception(exc)
         connection.execute(
-            """DELETE FROM document_fts WHERE file_key=? OR file_key IN(
-            SELECT file_key FROM documents WHERE path=? COLLATE NOCASE AND file_key<>?)""",
+            f"""DELETE FROM document_fts WHERE file_key=? OR file_key IN(
+            SELECT file_key FROM documents
+            WHERE path=? COLLATE {_PATH_COLLATION} AND file_key<>?)""",
             (key, snapshot.path, key),
         )
         connection.execute(
-            "DELETE FROM documents WHERE path=? COLLATE NOCASE AND file_key<>?",
+            f"DELETE FROM documents WHERE path=? COLLATE {_PATH_COLLATION} AND file_key<>?",
             (snapshot.path, key),
         )
         connection.execute("DELETE FROM document_parts WHERE file_key=?", (key,))
@@ -1433,7 +1437,9 @@ class DocxRoute:
             str(row[0]) for row in connection.execute("SELECT DISTINCT stem FROM current_docx")
         )
         connection.execute(
-            "CREATE TEMP TABLE IF NOT EXISTS current_pdfs(path TEXT PRIMARY KEY,stem TEXT NOT NULL,parent TEXT NOT NULL) WITHOUT ROWID"
+            f"CREATE TEMP TABLE IF NOT EXISTS current_pdfs("
+            f"path TEXT PRIMARY KEY COLLATE {_PATH_COLLATION},"
+            "stem TEXT NOT NULL,parent TEXT NOT NULL) WITHOUT ROWID"
         )
         connection.execute("DELETE FROM current_pdfs")
         stale_candidates = 0

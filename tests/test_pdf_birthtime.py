@@ -27,6 +27,7 @@ from _04_Nucleo_Operativo.cancellation import (
     CancellationToken,
 )
 from _04_Nucleo_Operativo.pdf_cache import binary_fingerprint
+from _04_Nucleo_Operativo import pdf_schema
 from _04_Nucleo_Operativo.pdf_route import PdfRoute, PdfRouteConfig
 from _04_Nucleo_Operativo.pdf_route_cache import file_key
 from _04_Nucleo_Operativo.pdf_state import (
@@ -77,11 +78,11 @@ class PdfBirthtimeInvariantTests(unittest.TestCase):
     def test_schema_eleven_reclassifies_durable_timeouts_as_partial(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             state = Path(temporary) / "pdf.sqlite3"
-            initialize_pdf_state(state)
             snapshot = FileSnapshot("large.pdf", 1, 9, 100, 11, 12)
             config = PdfRouteConfig(state)
             with closing(sqlite3.connect(state)) as connection:
-                connection.execute("UPDATE metadata SET value='10' WHERE key='schema_version'")
+                pdf_schema._build_pdf_v12_canonical_schema(connection)
+                connection.execute("INSERT INTO metadata VALUES('schema_version','10')")
                 connection.execute(
                     """INSERT INTO documents(
                     file_key,path,size,mtime_ns,birthtime_ns,processing_signature,

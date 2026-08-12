@@ -13,7 +13,7 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
-from neocortex.platform_policy import stat_birthtime_ns
+from neocortex.platform_policy import sqlite_path_collation, stat_birthtime_ns
 from typing import TYPE_CHECKING, Iterator, Literal
 
 from _03_Progreso import (
@@ -43,6 +43,7 @@ from .document_catalog_schema import (
     document_catalog_schema_contract,
     migrate_document_catalog_schema,
     validate_v5_document_catalog_schema,
+    validate_v6_document_catalog_schema,
 )
 from .cancellation import CancellationRequested
 from .file_identity import decode_file_identity
@@ -65,6 +66,7 @@ CATALOG_WRITE_BATCH = 100
 CATALOG_PROGRESS_INTERVAL = 25
 SourceKind = Literal["pdf", "docx", "xlsx", "pptx", "odt", "text", "audio"]
 _CATALOG_WRITE_LOCK = threading.RLock()
+_PATH_COLLATION = sqlite_path_collation()
 _CATALOG_DOCUMENT_COLUMNS = (
     "source_kind",
     "file_key",
@@ -211,7 +213,7 @@ def document_catalog_database(path: Path, *, readonly: bool = False):
 
 
 def initialize_document_catalog(path: Path) -> None:
-    """Validate v6 read-only or atomically migrate one known legacy catalog."""
+    """Validate v7 read-only or atomically migrate one known legacy catalog."""
 
     with _CATALOG_WRITE_LOCK:
         prior = _read_catalog_version(path)
@@ -220,9 +222,17 @@ def initialize_document_catalog(path: Path) -> None:
         with document_catalog_database(path) as connection:
             connection.execute("BEGIN IMMEDIATE")
             try:
+                locked_prior = read_metadata_schema_version(
+                    connection,
+                    label="document catalog",
+                )
+                if locked_prior != prior:
+                    raise RuntimeError(
+                        "document catalog schema version changed before migration lock"
+                    )
                 migrate_document_catalog_schema(
                     connection,
-                    prior or 0,
+                    locked_prior or 0,
                     identity_migrator=_migrate_identity_text_to_decimal,
                 )
                 validate_sqlite_schema_contract(
@@ -257,6 +267,8 @@ def _read_catalog_version(path: Path) -> int | None:
             )
         elif version == 5:
             validate_v5_document_catalog_schema(connection)
+        elif version == 6:
+            validate_v6_document_catalog_schema(connection)
     return version
 
 
@@ -761,11 +773,11 @@ def _replace_catalog_projection(
     """Replace the compatible current projection inside the publish transaction."""
 
     connection.execute(
-        """UPDATE documents SET active=0,updated_ns=?
+        f"""UPDATE documents SET active=0,updated_ns=?
         WHERE source_kind<>? AND active=1 AND EXISTS(
             SELECT 1 FROM catalog_generation_documents AS staged
             WHERE staged.generation_id=? AND staged.active=1
-            AND staged.path=documents.path COLLATE NOCASE)""",
+            AND staged.path=documents.path COLLATE {_PATH_COLLATION})""",
         (now, build.source_kind, build.generation_id),
     )
     connection.execute(
@@ -1068,7 +1080,7 @@ def _catalog_cache_hit(
         return False
     classifier_signature = document_classifier_signature(taxonomy)
     return (
-        str(row["path"]).casefold() == document.path.casefold()
+        _catalog_paths_equal(str(row["path"]), document.path)
         and int(row["size"]) == document.size
         and int(row["mtime_ns"]) == document.mtime_ns
         and int(row["birthtime_ns"]) == document.birthtime_ns
@@ -1077,6 +1089,12 @@ def _catalog_cache_hit(
         and row["text_fingerprint"] == document.text_fingerprint
         and str(row["classifier_signature"]) == classifier_signature
     )
+
+
+def _catalog_paths_equal(left: str, right: str) -> bool:
+    if _PATH_COLLATION == "BINARY":
+        return left == right
+    return left.casefold() == right.casefold()
 
 
 def _stage_cached_document(

@@ -175,6 +175,48 @@ def build_human_parser() -> argparse.ArgumentParser:
         help="publica una página acotada de tareas durables; no muta archivos",
     )
     review_value.add_argument("--json", action="store_true")
+    review_task = review_commands.add_parser(
+        "task",
+        help="inspecciona o decide una tarea durable mediante CAS",
+        allow_abbrev=False,
+    )
+    review_task_commands = review_task.add_subparsers(dest="review_task_command", metavar="ACCIÓN")
+    review_task_show = review_task_commands.add_parser(
+        "show", help="muestra una tarea durable exacta", allow_abbrev=False
+    )
+    review_task_show.add_argument("task_id", metavar="TASK_ID")
+    _add_scope(review_task_show, default=ReadScope.PERSONAL)
+    review_task_show.add_argument("--json", action="store_true")
+    review_task_history = review_task_commands.add_parser(
+        "history", help="muestra el historial append-only de una tarea", allow_abbrev=False
+    )
+    review_task_history.add_argument("task_id", metavar="TASK_ID")
+    _add_scope(review_task_history, default=ReadScope.PERSONAL)
+    review_task_history.add_argument("--json", action="store_true")
+    review_task_claim = review_task_commands.add_parser(
+        "claim", help="reclama una tarea abierta mediante CAS", allow_abbrev=False
+    )
+    review_task_claim.add_argument("task_id", metavar="TASK_ID")
+    _add_scope(review_task_claim, default=ReadScope.PERSONAL)
+    review_task_claim.add_argument("--expected-event-id", required=True, metavar="EVENT_ID")
+    review_task_claim.add_argument("--actor", required=True, metavar="ACTOR")
+    review_task_claim.add_argument("--note", metavar="NOTA")
+    review_task_claim.add_argument("--json", action="store_true")
+    review_task_decide = review_task_commands.add_parser(
+        "decide", help="resuelve o descarta una tarea durable", allow_abbrev=False
+    )
+    review_task_decide.add_argument("task_id", metavar="TASK_ID")
+    _add_scope(review_task_decide, default=ReadScope.PERSONAL)
+    review_task_decide.add_argument("--expected-event-id", required=True, metavar="EVENT_ID")
+    review_task_decide.add_argument("--decision", required=True, choices=("resolved", "dismissed"))
+    review_task_decide.add_argument(
+        "--decision-scope",
+        required=True,
+        choices=("until-source-change", "until-policy-change", "permanent"),
+    )
+    review_task_decide.add_argument("--actor", required=True, metavar="ACTOR")
+    review_task_decide.add_argument("--note", metavar="NOTA")
+    review_task_decide.add_argument("--json", action="store_true")
 
     agent = commands.add_parser(
         "agent",
@@ -543,6 +585,53 @@ def _run_review_value(args: argparse.Namespace) -> int:
     )
 
 
+def _run_review_task(args: argparse.Namespace) -> int:
+    if args.scope == ReadScope.ALL.value:
+        _print(
+            "review task requiere --scope personal o framework; no se modificó estado.",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        adapter = importlib.import_module("neocortex.review_task_cli_adapter")
+    except (AttributeError, ImportError):
+        _print("La revisión durable no está disponible; no se modificó estado.", file=sys.stderr)
+        return 2
+    if args.review_task_command == "show":
+        return adapter.run_review_task_show(
+            task_id=args.task_id,
+            scope=args.scope,
+            json_output=args.json,
+        )
+    if args.review_task_command == "history":
+        return adapter.run_review_task_history(
+            task_id=args.task_id,
+            scope=args.scope,
+            json_output=args.json,
+        )
+    if args.review_task_command == "claim":
+        return adapter.run_review_task_claim(
+            task_id=args.task_id,
+            scope=args.scope,
+            expected_event_id=args.expected_event_id,
+            actor=args.actor,
+            note=args.note,
+            json_output=args.json,
+        )
+    if args.review_task_command == "decide":
+        return adapter.run_review_task_decide(
+            task_id=args.task_id,
+            scope=args.scope,
+            expected_event_id=args.expected_event_id,
+            decision=args.decision,
+            decision_scope=args.decision_scope,
+            actor=args.actor,
+            note=args.note,
+            json_output=args.json,
+        )
+    raise ValueError("review task requires show or decide")
+
+
 def _run_agent_serve() -> int:
     from .agent_server import run_stdio_server
 
@@ -567,6 +656,8 @@ def run_human_command(arguments: Sequence[str]) -> int:
         return _run_inspect_lineage(args)
     if args.command == "review" and args.review_command == "value":
         return _run_review_value(args)
+    if args.command == "review" and args.review_command == "task":
+        return _run_review_task(args)
     if args.command == "agent" and args.agent_command == "serve":
         return _run_agent_serve()
     parser.error("falta una acción concreta")

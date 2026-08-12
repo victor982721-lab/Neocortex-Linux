@@ -10,6 +10,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable
 
+from neocortex.platform_policy import sqlite_path_collation
+
 from .semantic_schema import SEMANTIC_SCHEMA_VERSION
 from .sqlite_paths import existing_sqlite_uri
 
@@ -58,6 +60,7 @@ class DocumentCacheSyncResult:
 _MIN_COMPATIBLE_SEMANTIC_SCHEMA = 1
 _MAX_COMPATIBLE_SEMANTIC_SCHEMA = SEMANTIC_SCHEMA_VERSION
 _PENDING_ACTION_SYNC_BATCH_SIZE = 256
+_PATH_COLLATION = sqlite_path_collation()
 
 
 def synchronize_moved_document(
@@ -353,7 +356,7 @@ def _sync_pdf_counterparts(
         parameters.append(now_ns)
     parameters.append(old_path)
     cursor = connection.execute(
-        f"UPDATE pdf_counterparts SET {assignment} WHERE pdf_path=? COLLATE NOCASE",
+        f"UPDATE pdf_counterparts SET {assignment} WHERE pdf_path=? COLLATE {_PATH_COLLATION}",
         tuple(parameters),
     )
     return cursor.rowcount
@@ -459,7 +462,7 @@ def _sync_framework_cache(
             "UPDATE route_candidates SET path=? "
             f"WHERE volume_id IN ({volume_placeholders}) "
             f"AND file_id IN ({file_placeholders}) "
-            f"AND path=? COLLATE NOCASE{running_predicate}",
+            f"AND path=? COLLATE {_PATH_COLLATION}{running_predicate}",
             (new_path, *volume_values, *file_values, old_path),
         )
         updated += cursor.rowcount
@@ -473,7 +476,7 @@ def _sync_framework_cache(
             "UPDATE review_candidates SET path=? "
             f"WHERE volume_id IN ({volume_placeholders}) "
             f"AND file_id IN ({file_placeholders}) "
-            "AND status='open' AND path=? COLLATE NOCASE",
+            f"AND status='open' AND path=? COLLATE {_PATH_COLLATION}",
             (new_path, *volume_values, *file_values, old_path),
         )
         updated += cursor.rowcount
@@ -498,14 +501,14 @@ def _sync_pending_file_actions(
     if not detailed:
         cursor = connection.execute(
             "UPDATE file_actions SET source_path=? WHERE status='planned' "
-            "AND source_path=? COLLATE NOCASE",
+            f"AND source_path=? COLLATE {_PATH_COLLATION}",
             (new_path, old_path),
         )
         return cursor.rowcount
     updated = 0
     while rows := connection.execute(
-        """SELECT action_id,action_type,target_path FROM file_actions
-        WHERE status='planned' AND source_path=? COLLATE NOCASE
+        f"""SELECT action_id,action_type,target_path FROM file_actions
+        WHERE status='planned' AND source_path=? COLLATE {_PATH_COLLATION}
         ORDER BY action_id LIMIT ?""",
         (old_path, _PENDING_ACTION_SYNC_BATCH_SIZE),
     ).fetchall():
@@ -528,7 +531,7 @@ def _sync_pending_file_actions(
         updated += batch_updated
     cursor = connection.execute(
         "UPDATE file_actions SET target_path=? WHERE status='planned' "
-        "AND target_path=? COLLATE NOCASE",
+        f"AND target_path=? COLLATE {_PATH_COLLATION}",
         (new_path, old_path),
     )
     return updated + cursor.rowcount
@@ -548,7 +551,7 @@ def _sync_dedup_cache(
     if _table_exists(connection, "files"):
         _require_columns(connection, "files", {"path", "volume_id", "file_id"})
         rows = connection.execute(
-            "SELECT volume_id,file_id FROM files WHERE path=? COLLATE NOCASE",
+            f"SELECT volume_id,file_id FROM files WHERE path=? COLLATE {_PATH_COLLATION}",
             (old_path,),
         ).fetchall()
         if rows:
@@ -561,7 +564,7 @@ def _sync_dedup_cache(
                     "in at least one retained generation"
                 )
             destination_rows = connection.execute(
-                "SELECT volume_id,file_id FROM files WHERE path=? COLLATE NOCASE",
+                f"SELECT volume_id,file_id FROM files WHERE path=? COLLATE {_PATH_COLLATION}",
                 (new_path,),
             ).fetchall()
             if any(
@@ -570,13 +573,13 @@ def _sync_dedup_cache(
             ):
                 raise RuntimeError("dedup files destination belongs to another identity")
             cursor = connection.execute(
-                "UPDATE files SET path=? WHERE path=? COLLATE NOCASE",
+                f"UPDATE files SET path=? WHERE path=? COLLATE {_PATH_COLLATION}",
                 (new_path, old_path),
             )
             updated += cursor.rowcount
         else:
             destinations = connection.execute(
-                "SELECT volume_id,file_id FROM files WHERE path=? COLLATE NOCASE",
+                f"SELECT volume_id,file_id FROM files WHERE path=? COLLATE {_PATH_COLLATION}",
                 (new_path,),
             ).fetchall()
             if any(
@@ -597,13 +600,13 @@ def _sync_dedup_cache(
             for row in connection.execute(
                 "SELECT group_id FROM planned_duplicate_members "
                 "WHERE role='keep' AND volume_id=? AND file_id=? "
-                "AND path=? COLLATE NOCASE",
+                f"AND path=? COLLATE {_PATH_COLLATION}",
                 (volume_blob, file_blob, old_path),
             )
         )
         cursor = connection.execute(
             "UPDATE planned_duplicate_members SET path=? "
-            "WHERE volume_id=? AND file_id=? AND path=? COLLATE NOCASE",
+            f"WHERE volume_id=? AND file_id=? AND path=? COLLATE {_PATH_COLLATION}",
             (new_path, volume_blob, file_blob, old_path),
         )
         updated += cursor.rowcount
@@ -616,7 +619,8 @@ def _sync_dedup_cache(
         placeholders = ",".join("?" for _ in keep_groups)
         cursor = connection.execute(
             f"UPDATE planned_duplicate_groups SET keep_path=? "
-            f"WHERE group_id IN ({placeholders}) AND keep_path=? COLLATE NOCASE",
+            f"WHERE group_id IN ({placeholders}) "
+            f"AND keep_path=? COLLATE {_PATH_COLLATION}",
             (new_path, *keep_groups, old_path),
         )
         updated += cursor.rowcount

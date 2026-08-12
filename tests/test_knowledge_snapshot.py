@@ -57,6 +57,7 @@ from _04_Nucleo_Operativo.semantic_state import (
 )
 from _04_Nucleo_Operativo.pdf_state import SCHEMA_VERSION as PDF_SCHEMA_VERSION
 from _04_Nucleo_Operativo.text_state import initialize_text_state
+from _04_Nucleo_Operativo.video_state import initialize_video_state
 # endregion [01]
 
 # region [02] Implementación
@@ -148,6 +149,8 @@ def _legacy_read_compatible_fixture(
             framework_schema_module._build_v19_exact_schema(connection)
         elif framework_version == 20:
             framework_schema_module._build_v20_exact_schema(connection)
+        elif framework_version == 21:
+            framework_schema_module._build_v21_exact_schema(connection)
         else:  # pragma: no cover - fixture invariant
             raise AssertionError(f"unsupported legacy fixture {framework_version}")
         connection.execute(
@@ -241,6 +244,47 @@ def _populate_review_task_watermark(database: Path, *, multipage: bool = False) 
             recorded_ns=104,
         ),
     )
+
+
+def _rewrite_framework_as_exact_v21(database: Path) -> None:
+    """Turn a populated current fixture into the exact predecessor DDL."""
+
+    columns = ",".join(framework_schema_module._ROUTE_CANDIDATE_COLUMNS)
+    route_index = next(
+        statement
+        for statement in framework_schema_module._INDEX_STATEMENTS
+        if "route_candidates_mime_idx" in statement
+    )
+    with sqlite3.connect(database) as connection:
+        connection.execute("PRAGMA foreign_keys=ON")
+        connection.execute("BEGIN IMMEDIATE")
+        connection.execute("DROP TRIGGER file_actions_corpus_policy_insert")
+        connection.execute("ALTER TABLE route_candidates RENAME TO __fixture_v22_route_candidates")
+        connection.execute(framework_schema_module._V21_ROUTE_CANDIDATES_TABLE_STATEMENT)
+        connection.execute(
+            f"INSERT INTO route_candidates({columns}) "
+            f"SELECT {columns} FROM __fixture_v22_route_candidates"
+        )
+        connection.execute("DROP TABLE __fixture_v22_route_candidates")
+        connection.execute(route_index)
+        for trigger_name, trigger_sql in (
+            (
+                "review_tasks_validate_insert",
+                framework_schema_module._V21_REVIEW_TASKS_VALIDATE_INSERT_TRIGGER_STATEMENT,
+            ),
+            (
+                "review_task_events_validate_insert",
+                framework_schema_module._V21_REVIEW_TASK_EVENTS_VALIDATE_INSERT_TRIGGER_STATEMENT,
+            ),
+        ):
+            connection.execute(f"DROP TRIGGER {trigger_name}")
+            connection.execute(trigger_sql)
+        connection.execute(
+            framework_schema_module._V21_FILE_ACTIONS_CORPUS_POLICY_INSERT_TRIGGER_STATEMENT
+        )
+        connection.execute("UPDATE metadata SET value='21' WHERE key='schema_version'")
+        framework_schema_module.validate_framework_schema_v21(connection)
+        connection.commit()
 
 
 def _delete_review_task_publication_fact(
@@ -669,7 +713,24 @@ def test_snapshot_collects_real_heads_and_marks_absent_owners(tmp_path: Path) ->
     assert not (state / "pdf.sqlite3").exists()
 
 
-@pytest.mark.parametrize("framework_version", (19, 20))
+def test_snapshot_exposes_existing_video_owner_without_creating_absent_state(
+    tmp_path: Path,
+) -> None:
+    state = tmp_path / "state"
+    state.mkdir()
+    initialize_video_state(state / "video.sqlite3")
+
+    snapshot = collect_knowledge_snapshot(
+        KnowledgeStatePaths.from_directory(state), source_version="0.9.0"
+    )
+
+    video = _owner(snapshot, "video")
+    assert video.state is OwnerAvailability.AVAILABLE
+    assert video.observed_schema_version == video.expected_schema_version
+    assert _owner(snapshot, "pdf").state is OwnerAvailability.ABSENT
+
+
+@pytest.mark.parametrize("framework_version", (19, 20, 21))
 def test_snapshot_reads_safe_previous_framework_and_abstains_inventory(
     tmp_path: Path,
     framework_version: int,
@@ -696,15 +757,25 @@ def test_snapshot_reads_safe_previous_framework_and_abstains_inventory(
     assert inventory_owner.publications == ()
     assert framework_owner.state is OwnerAvailability.AVAILABLE
     assert framework_owner.observed_schema_version == framework_version
-    assert framework_owner.warning == (f"legacy_schema_read_compatible:{framework_version}->21")
-    assert not any(
-        watermark.name.startswith("review_task_") for watermark in framework_owner.watermarks
-    )
+    assert framework_owner.warning == (f"legacy_schema_read_compatible:{framework_version}->22")
+    review_watermarks = {
+        watermark.name: watermark.value
+        for watermark in framework_owner.watermarks
+        if watermark.name.startswith("review_task_")
+    }
+    if framework_version == 21:
+        assert review_watermarks == {
+            "review_task_batches": "0:0",
+            "review_task_events": "0:0",
+            "review_task_source_publications": "0:0",
+        }
+    else:
+        assert review_watermarks == {}
     assert inventory.read_bytes() == inventory_before
     assert framework.read_bytes() == framework_before
 
 
-def test_snapshot_observes_v21_review_task_batches_and_events(tmp_path: Path) -> None:
+def test_snapshot_observes_v22_review_task_batches_and_events(tmp_path: Path) -> None:
     state = tmp_path / "state"
     state.mkdir()
     _populate_review_task_watermark(state / "framework.sqlite3")
@@ -717,7 +788,7 @@ def test_snapshot_observes_v21_review_task_batches_and_events(tmp_path: Path) ->
     framework_owner = _owner(snapshot, "framework")
     watermarks = {mark.name: mark.value for mark in framework_owner.watermarks}
     assert framework_owner.state is OwnerAvailability.AVAILABLE
-    assert framework_owner.observed_schema_version == 21
+    assert framework_owner.observed_schema_version == 22
     assert framework_owner.warning is None
     assert len(framework_owner.publications) == 1
     review_head = framework_owner.publications[0]
@@ -728,6 +799,33 @@ def test_snapshot_observes_v21_review_task_batches_and_events(tmp_path: Path) ->
     assert watermarks["review_task_batches"] == "1:100"
     assert watermarks["review_task_events"] == "2:104"
     assert watermarks["review_task_source_publications"] == "1:100"
+
+
+def test_snapshot_observes_populated_exact_v21_review_task_heads_read_only(
+    tmp_path: Path,
+) -> None:
+    state = tmp_path / "state"
+    state.mkdir()
+    database = state / "framework.sqlite3"
+    _populate_review_task_watermark(database)
+    _rewrite_framework_as_exact_v21(database)
+    before = database.read_bytes()
+
+    snapshot = collect_knowledge_snapshot(
+        KnowledgeStatePaths.from_directory(state),
+        source_version="0.9.0",
+    )
+
+    framework_owner = _owner(snapshot, "framework")
+    watermarks = {mark.name: mark.value for mark in framework_owner.watermarks}
+    assert framework_owner.state is OwnerAvailability.AVAILABLE
+    assert framework_owner.observed_schema_version == 21
+    assert framework_owner.warning == "legacy_schema_read_compatible:21->22"
+    assert len(framework_owner.publications) == 1
+    assert watermarks["review_task_batches"] == "1:100"
+    assert watermarks["review_task_events"] == "2:104"
+    assert watermarks["review_task_source_publications"] == "1:100"
+    assert database.read_bytes() == before
 
 
 @pytest.mark.parametrize(

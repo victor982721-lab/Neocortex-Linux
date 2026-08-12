@@ -290,6 +290,128 @@ def test_static_baseline_rejects_new_rule_even_when_total_is_lower() -> None:
     assert baseline["schema"] == BASELINE_SCHEMA
 
 
+def test_static_diagnostic_fingerprint_normalizes_message_and_binds_identity_fields(
+    tmp_path: Path,
+) -> None:
+    root = _repository_fixture(tmp_path)
+
+    def evidence(
+        *,
+        tool: str = "ruff",
+        version: str = "0.15.17",
+        path: str = "source.py",
+        rule: str = "F401",
+        severity: str = "error",
+        message: object = None,
+        anchor: str | None = "4:1-4:5",
+        symbol: str | None = "name",
+    ) -> quality_gate.StaticDiagnosticEvidence:
+        effective_message = (
+            f"{root}/source.py   imported\nname is unused" if message is None else message
+        )
+        return quality_gate._static_diagnostic_evidence(
+            tool=tool,
+            version=version,
+            path=path,
+            rule=rule,
+            severity=severity,
+            message=effective_message,
+            root=root,
+            anchor=anchor,
+            symbol=symbol,
+        )
+
+    first = evidence()
+    normalized_equivalent = evidence(message="<root>/source.py imported name is unused")
+
+    assert first.normalized_message == "<root>/source.py imported name is unused"
+    assert first.fingerprint == normalized_equivalent.fingerprint
+    assert (
+        len(
+            {
+                first.fingerprint,
+                evidence(tool="mypy").fingerprint,
+                evidence(version="0.15.18").fingerprint,
+                evidence(path="other.py").fingerprint,
+                evidence(rule="F821").fingerprint,
+                evidence(severity="warning").fingerprint,
+                evidence(message="a different diagnostic").fingerprint,
+                evidence(anchor="8:2-8:6").fingerprint,
+                evidence(symbol="other_name").fingerprint,
+            }
+        )
+        == 9
+    )
+
+
+def test_static_shadow_report_distinguishes_diagnostics_with_equal_gate_counts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _repository_fixture(tmp_path)
+
+    def observations(message: str, anchor: str) -> tuple[StaticObservation, ...]:
+        diagnostic = quality_gate._static_diagnostic_evidence(
+            tool="ruff",
+            version="1.0.0",
+            path="source.py",
+            rule="F401",
+            severity="error",
+            message=message,
+            root=root,
+            anchor=anchor,
+            symbol="imported_name",
+        )
+        return (
+            StaticObservation(
+                "ruff",
+                "1.0.0",
+                Counter({("source.py", "F401", "error"): 1}),
+                (diagnostic,),
+            ),
+            _observation("mypy"),
+            _observation("pyright"),
+        )
+
+    first = observations("first unused import", "4:1-4:5")
+    second = observations("second unused import", "9:1-9:6")
+    baseline = baseline_payload(first)
+    baseline_path = root / "static-baseline.json"
+    baseline_path.write_text(json.dumps(baseline), encoding="utf-8")
+
+    monkeypatch.setattr(quality_gate, "collect_static_observations", lambda _root: first)
+    first_report = quality_gate.run_static_gate(root, baseline_path)
+    monkeypatch.setattr(quality_gate, "collect_static_observations", lambda _root: second)
+    second_report = quality_gate.run_static_gate(root, baseline_path)
+
+    assert (
+        first_report["tools"]
+        == second_report["tools"]
+        == {
+            "ruff": {"version": "1.0.0", "total": 1},
+            "mypy": {"version": "1.0.0", "total": 0},
+            "pyright": {"version": "1.0.0", "total": 0},
+        }
+    )
+    assert baseline_payload(first) == baseline_payload(second) == baseline
+    persisted_baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
+    assert "diagnostic_shadow" not in persisted_baseline
+
+    first_shadow = first_report["diagnostic_shadow"]
+    second_shadow = second_report["diagnostic_shadow"]
+    assert isinstance(first_shadow, dict)
+    assert isinstance(second_shadow, dict)
+    assert first_shadow["enforced"] is second_shadow["enforced"] is False
+    first_tool = first_shadow["tools"]["ruff"]
+    second_tool = second_shadow["tools"]["ruff"]
+    assert first_tool["count_baseline_total"] == second_tool["count_baseline_total"] == 1
+    assert first_tool["coverage"] == second_tool["coverage"] == "complete"
+    first_diagnostic = first_tool["diagnostics"][0]
+    second_diagnostic = second_tool["diagnostics"][0]
+    assert first_diagnostic["fingerprint"] != second_diagnostic["fingerprint"]
+    assert first_tool["manifest_sha256"] != second_tool["manifest_sha256"]
+
+
 def test_pyright_policy_uses_the_live_interpreter_packages_not_missing_import_debt() -> None:
     root = Path(__file__).parents[1]
 

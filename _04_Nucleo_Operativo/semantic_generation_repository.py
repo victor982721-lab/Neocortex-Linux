@@ -241,17 +241,29 @@ def _prepare_base_clone_cursor(
 def _base_clone_rows(
     connection: sqlite3.Connection,
     base_generation_id: int,
+    generation_id: int,
     clone_cursor: Mapping[str, object],
 ) -> list[sqlite3.Row]:
     return connection.execute(
-        """SELECT generation_id,member_id,model_signature,entity_kind,entity_id,item_id,
-            item_revision_id,chunk_revision_id,payload_id,
-            content_xxh3_128,content_bytes,content_xxh3_64_guard,
-            provenance_json,updated_ns
-        FROM embedding_generation_members
-        WHERE generation_id=? AND member_id>? AND member_id<=?
-        ORDER BY member_id LIMIT ?""",
+        """SELECT base_member.generation_id,base_member.member_id,
+            base_member.model_signature,base_member.entity_kind,
+            base_member.entity_id,base_member.item_id,
+            base_member.item_revision_id,base_member.chunk_revision_id,
+            base_member.payload_id,base_member.content_xxh3_128,
+            base_member.content_bytes,base_member.content_xxh3_64_guard,
+            base_member.provenance_json,base_member.updated_ns,
+            EXISTS(
+                SELECT 1 FROM embedding_jobs target_job
+                WHERE target_job.generation_id=?
+                  AND target_job.entity_kind=base_member.entity_kind
+                  AND target_job.entity_id=base_member.entity_id
+            ) AS has_target_job
+        FROM embedding_generation_members base_member
+        WHERE base_member.generation_id=? AND base_member.member_id>?
+          AND base_member.member_id<=?
+        ORDER BY base_member.member_id LIMIT ?""",
         (
+            generation_id,
             base_generation_id,
             _base_clone_cursor_int(clone_cursor, "after_member_id"),
             _base_clone_cursor_int(clone_cursor, "last_member_id"),
@@ -291,6 +303,7 @@ def _insert_base_clone_rows(
                 int(row["member_id"]),
             )
             for row in rows
+            if not bool(row["has_target_job"])
         ),
     )
     _record_embedding_clone_batch(
@@ -413,7 +426,12 @@ def _clone_published_members(
                 generation_id,
                 selected_base_id,
             )
-            rows = _base_clone_rows(connection, selected_base_id, clone_cursor)
+            rows = _base_clone_rows(
+                connection,
+                selected_base_id,
+                generation_id,
+                clone_cursor,
+            )
             if not rows:
                 _finish_base_clone(
                     connection,

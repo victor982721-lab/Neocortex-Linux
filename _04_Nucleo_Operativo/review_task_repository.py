@@ -1,6 +1,6 @@
 """Owner-local persistence for bounded, append-only ReviewTask facts.
 
-The Framework owner must already be at schema 21.  This module never creates or
+The Framework owner must already be at schema 22.  This module never creates or
 migrates state.  Page publication and cursor advancement share one Framework
 transaction; human/system transitions are append-only compare-and-swap events.
 """
@@ -17,7 +17,7 @@ from typing import cast
 
 from . import review_task_contracts as _contracts
 from .framework_connection import connect_existing_framework
-from .framework_schema import validate_framework_schema_v21
+from .framework_schema import validate_framework_schema_v22
 from .review_task_contracts import (
     MAX_REVIEW_TASK_READ_PAGE,
     MAX_REVIEW_TASKS_PER_PAGE,
@@ -115,10 +115,10 @@ def _require_review_task_schema(connection: sqlite3.Connection) -> None:
             f"{REVIEW_TASK_FRAMEWORK_SCHEMA_VERSION}; observed {observed!r}"
         )
     try:
-        validate_framework_schema_v21(connection)
+        validate_framework_schema_v22(connection)
     except (RuntimeError, sqlite3.DatabaseError) as exc:
         raise ReviewTaskRepositoryError(
-            "Framework schema 21 does not match the exact ReviewTask contract"
+            "Framework schema 22 does not match the exact ReviewTask contract"
         ) from exc
 
 
@@ -278,6 +278,7 @@ def _task_record_from_row(row: sqlite3.Row) -> ReviewTaskRecord:
             source=source,
             source_snapshot_fingerprint=str(row["source_snapshot_fingerprint"]),
             batch_id=str(row["batch_id"]),
+            selector_signature=batch_fence.selector_signature,
             current_event=current_event,
         )
     except ReviewTaskRepositoryError:
@@ -531,7 +532,6 @@ def _validate_latest_review_task_source_publication_final_receipts(
 
     if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 1_024:
         raise ValueError("ReviewTask source publication limit must be between 1 and 1024")
-    _require_review_task_schema(connection)
     rows = connection.execute(
         f"SELECT {_SOURCE_PUBLICATION_COLUMNS} "
         "FROM review_task_source_publications head WHERE NOT EXISTS("
@@ -742,12 +742,12 @@ chain(batch_id) AS (
 )
 
 
-def audit_latest_review_task_source_publications_from_connection(
+def _audit_latest_review_task_source_publications_from_prevalidated_connection(
     connection: sqlite3.Connection,
     *,
     limit: int = MAX_REVIEW_TASK_SOURCE_PUBLICATION_HEADS,
 ) -> ReviewTaskSourcePublicationAudit:
-    """Audit current source heads and their complete bounded owner-local chains."""
+    """Audit heads after the caller validated an exact compatible owner schema."""
 
     publications = _validate_latest_review_task_source_publication_final_receipts(
         connection,
@@ -880,6 +880,20 @@ def audit_latest_review_task_source_publications_from_connection(
     )
 
 
+def audit_latest_review_task_source_publications_from_connection(
+    connection: sqlite3.Connection,
+    *,
+    limit: int = MAX_REVIEW_TASK_SOURCE_PUBLICATION_HEADS,
+) -> ReviewTaskSourcePublicationAudit:
+    """Audit source heads after requiring the exact current Framework schema."""
+
+    _require_review_task_schema(connection)
+    return _audit_latest_review_task_source_publications_from_prevalidated_connection(
+        connection,
+        limit=limit,
+    )
+
+
 def validate_latest_review_task_source_publications_from_connection(
     connection: sqlite3.Connection,
     *,
@@ -938,9 +952,9 @@ def _validate_record_event_chains(
     rows = connection.execute(
         "SELECT " + _EVENT_COLUMNS + f" FROM review_task_events WHERE task_id IN ({placeholders}) "
         "ORDER BY task_id,sequence LIMIT ?",
-        (*task_ids, len(task_ids) * 3 + 1),
+        (*task_ids, len(task_ids) * 4 + 1),
     ).fetchall()
-    if len(rows) > len(task_ids) * 3:
+    if len(rows) > len(task_ids) * 4:
         raise ReviewTaskRepositoryError("ReviewTask event history exceeds its state bound")
     events_by_task: dict[str, list[ReviewTaskEvent]] = {task_id: [] for task_id in task_ids}
     for row in rows:
@@ -962,6 +976,8 @@ def _validate_record_event_chains(
                 ReviewTaskState.SUPERSEDED,
             }
         ),
+        ReviewTaskState.RESOLVED: frozenset({ReviewTaskState.SUPERSEDED}),
+        ReviewTaskState.DISMISSED: frozenset({ReviewTaskState.SUPERSEDED}),
     }
     for task_id, record in record_by_id.items():
         events = events_by_task.get(task_id, [])
@@ -1410,6 +1426,7 @@ def _apply_effective_source_publications(
                 source=record.source,
                 source_snapshot_fingerprint=record.source_snapshot_fingerprint,
                 batch_id=record.batch_id,
+                selector_signature=record.selector_signature,
                 current_event=_source_supersession_event(record, publication),
             )
         )
@@ -1781,6 +1798,87 @@ def _insert_batch_memberships(
         )
 
 
+_SCOPED_DECISION_SCHEMA = "neocortex.review-task-decision/v1"
+
+
+def _scoped_terminal_decision(
+    record: ReviewTaskRecord,
+    *,
+    selector_signature: str,
+) -> tuple[str, str, str]:
+    decision = record.current_event.decision
+    if decision is None:
+        raise ReviewTaskCASConflict("terminal ReviewTask lacks a scoped human decision")
+    payload = decision.to_dict()
+    expected_keys = {
+        "decision",
+        "schema",
+        "scope",
+        "selector_signature",
+        "source_input_fingerprint",
+        "source_snapshot_fingerprint",
+    }
+    if set(payload) != expected_keys:
+        # Legacy decisions are deliberately permanent.  Do not invent a scope
+        # for an older human judgment that did not record one.
+        raise ReviewTaskCASConflict("legacy terminal ReviewTask cannot be reopened")
+    decision_value = payload.get("decision")
+    scope = payload.get("scope")
+    input_fingerprint = payload.get("source_input_fingerprint")
+    if (
+        payload.get("schema") != _SCOPED_DECISION_SCHEMA
+        or decision_value != record.current_event.to_state.value
+        or scope not in {"until-source-change", "until-policy-change", "permanent"}
+        or input_fingerprint != record.source.fingerprint
+        or payload.get("source_snapshot_fingerprint") != record.source_snapshot_fingerprint
+        or payload.get("selector_signature") != selector_signature
+    ):
+        raise ReviewTaskRepositoryError("terminal ReviewTask decision contract is contradictory")
+    return str(scope), str(input_fingerprint), selector_signature
+
+
+def _validate_terminal_scope_expiration(
+    connection: sqlite3.Connection,
+    predecessor_record: ReviewTaskRecord,
+    *,
+    task: ReviewTaskDraft,
+    publication: ReviewTaskPublication,
+) -> None:
+    row = connection.execute(
+        "SELECT selector_signature FROM review_task_batches WHERE batch_id=?",
+        (predecessor_record.batch_id,),
+    ).fetchone()
+    if row is None:
+        raise ReviewTaskRepositoryError("terminal ReviewTask lost its owner batch")
+    previous_selector = str(row[0])
+    scope, previous_fingerprint, previous_selector = _scoped_terminal_decision(
+        predecessor_record,
+        selector_signature=previous_selector,
+    )
+    if scope == "permanent":
+        raise ReviewTaskCASConflict("permanent terminal ReviewTask cannot be reopened")
+    source_by_id = {item.input_id: item for item in publication.inputs}
+    successor_source = source_by_id.get(task.source_input_id)
+    if successor_source is None:
+        raise ReviewTaskRepositoryError("ReviewTask successor lacks its exact source input")
+    previous_resource = predecessor_record.source.resource
+    successor_resource = successor_source.resource
+    if (
+        previous_resource is None
+        or successor_resource is None
+        or previous_resource.resource_id != successor_resource.resource_id
+        or previous_resource.physical_identity != successor_resource.physical_identity
+    ):
+        raise ReviewTaskCASConflict("terminal ReviewTask successor changed durable resource")
+    expired = (
+        successor_source.fingerprint != previous_fingerprint
+        if scope == "until-source-change"
+        else publication.fence.selector_signature != previous_selector
+    )
+    if not expired:
+        raise ReviewTaskCASConflict("terminal ReviewTask decision scope has not expired")
+
+
 def _prepare_predecessor_events(
     connection: sqlite3.Connection,
     publication: ReviewTaskPublication,
@@ -1833,9 +1931,16 @@ def _prepare_predecessor_events(
         if latest_version != task.task_version - 1:
             raise ReviewTaskCASConflict("ReviewTask predecessor is not the latest version")
         previous = predecessor_record.current_event
-        if previous.to_state in {ReviewTaskState.RESOLVED, ReviewTaskState.DISMISSED}:
-            raise ReviewTaskCASConflict(
-                "human-terminal ReviewTask cannot be replaced automatically"
+        terminal_reopen = previous.to_state in {
+            ReviewTaskState.RESOLVED,
+            ReviewTaskState.DISMISSED,
+        }
+        if terminal_reopen:
+            _validate_terminal_scope_expiration(
+                connection,
+                predecessor_record,
+                task=task,
+                publication=publication,
             )
         if previous.to_state is ReviewTaskState.SUPERSEDED:
             actual_previous = _latest_event(connection, task.supersedes_task_id)
@@ -1859,7 +1964,11 @@ def _prepare_predecessor_events(
             previous=previous,
             source_snapshot_fingerprint=(publication.fence.source_snapshot_fingerprint),
             observed_ns=publication.confirmed_ns,
-            reason_code="replacement_task_published",
+            reason_code=(
+                "terminal_decision_scope_expired"
+                if terminal_reopen
+                else "replacement_task_published"
+            ),
             replacement_task_id=task.task_id,
         )
     return result
@@ -2236,6 +2345,147 @@ def has_review_task_scan_history(
     return found
 
 
+def find_review_task_scan_progress(
+    database: str | Path,
+    *,
+    scope: str,
+    task_type: str,
+    selector_signature: str,
+    owner_source_snapshot: CanonicalJsonObject,
+    cancellation_check: CancellationCheck | None = None,
+) -> tuple[ReviewTaskScanProgress | None, ReviewTaskScanProgress | None]:
+    """Return newest incomplete/complete epochs for one exact owner snapshot.
+
+    The evaluation epoch is deliberately removed inside SQLite.  This keeps
+    lookup work bounded no matter how many daily epochs have been published.
+    """
+
+    _contracts._required_text("scope", scope, limit=_contracts.MAX_REVIEW_TASK_DOMAIN_CHARS)
+    _contracts._required_text("task_type", task_type, limit=_contracts.MAX_REVIEW_TASK_DOMAIN_CHARS)
+    _contracts._required_text(
+        "selector_signature",
+        selector_signature,
+        limit=_contracts.MAX_REVIEW_TASK_SELECTOR_CHARS,
+    )
+    owner_json = owner_source_snapshot.payload_json
+    bridge = SQLiteCancellationBridge(cancellation_check)
+    connection = connect_existing_framework(Path(database), readonly=True)
+    try:
+        with sqlite_cancellation_scope(connection, bridge):
+            _checkpoint(bridge)
+            connection.execute("BEGIN")
+            try:
+                _require_review_task_schema(connection)
+                parameters = (scope, task_type, selector_signature, owner_json)
+                statement = """SELECT p.progress_id,p.scope,p.task_type,
+                    p.selector_signature,p.source_snapshot_fingerprint,
+                    p.source_snapshot_json,p.cursor_json,p.last_batch_id,
+                    p.scanned_count,p.selected_count,p.complete,
+                    p.evidence_complete,p.evidence_reason,p.revision,
+                    p.created_ns,p.updated_ns
+                    FROM review_task_scan_progress p
+                    WHERE p.scope=? AND p.task_type=? AND p.selector_signature=?
+                      AND json_remove(p.source_snapshot_json,'$.reference_day_ns')=?
+                      AND p.complete=?
+                    ORDER BY p.updated_ns DESC,p.revision DESC,p.progress_id
+                    LIMIT 1"""
+                # Query each class independently.  A shared LIMIT could let two
+                # legacy incomplete epochs hide the last published complete
+                # epoch and make a durable queue appear to have no head.
+                rows = [
+                    *connection.execute(statement, (*parameters, 0)).fetchall(),
+                    *connection.execute(statement, (*parameters, 1)).fetchall(),
+                ]
+                incomplete: ReviewTaskScanProgress | None = None
+                complete: ReviewTaskScanProgress | None = None
+                for row in rows:
+                    progress = _progress_from_row(row)
+                    validated = _read_progress_in_connection(connection, progress.fence)
+                    if validated is None:  # pragma: no cover - same transaction invariant
+                        raise ReviewTaskRepositoryError(
+                            "ReviewTask progress disappeared during bounded lookup"
+                        )
+                    if validated.complete:
+                        if complete is None:
+                            complete = validated
+                    elif incomplete is None:
+                        incomplete = validated
+                result = (incomplete, complete)
+                _checkpoint(bridge)
+                connection.commit()
+            except BaseException:
+                if connection.in_transaction:
+                    connection.rollback()
+                raise
+    finally:
+        connection.close()
+    return result
+
+
+def read_latest_complete_review_task_progress(
+    database: str | Path,
+    *,
+    scope: str,
+    task_type: str,
+    selector_signature: str,
+    cancellation_check: CancellationCheck | None = None,
+) -> ReviewTaskScanProgress | None:
+    """Return the last fully published epoch for one selector.
+
+    This lookup deliberately ignores the owner snapshot.  It is the stable
+    public head used while a changed source is being rescanned; exact-source
+    progress remains the authority for resumable writes.
+    """
+
+    _contracts._required_text("scope", scope, limit=_contracts.MAX_REVIEW_TASK_DOMAIN_CHARS)
+    _contracts._required_text("task_type", task_type, limit=_contracts.MAX_REVIEW_TASK_DOMAIN_CHARS)
+    _contracts._required_text(
+        "selector_signature",
+        selector_signature,
+        limit=_contracts.MAX_REVIEW_TASK_SELECTOR_CHARS,
+    )
+    bridge = SQLiteCancellationBridge(cancellation_check)
+    connection = connect_existing_framework(Path(database), readonly=True)
+    try:
+        with sqlite_cancellation_scope(connection, bridge):
+            _checkpoint(bridge)
+            connection.execute("BEGIN")
+            try:
+                _require_review_task_schema(connection)
+                row = connection.execute(
+                    """SELECT p.progress_id,p.scope,p.task_type,
+                    p.selector_signature,p.source_snapshot_fingerprint,
+                    p.source_snapshot_json,p.cursor_json,p.last_batch_id,
+                    p.scanned_count,p.selected_count,p.complete,
+                    p.evidence_complete,p.evidence_reason,p.revision,
+                    p.created_ns,p.updated_ns
+                    FROM review_task_source_publications h
+                    JOIN review_task_scan_progress p ON p.last_batch_id=h.batch_id
+                    WHERE h.scope=? AND h.task_type=? AND h.selector_signature=?
+                      AND p.complete=1
+                    ORDER BY h.revision DESC LIMIT 1""",
+                    (scope, task_type, selector_signature),
+                ).fetchone()
+                if row is None:
+                    result = None
+                else:
+                    candidate = _progress_from_row(row)
+                    result = _read_progress_in_connection(connection, candidate.fence)
+                    if result is None or not result.complete:
+                        raise ReviewTaskRepositoryError(
+                            "published ReviewTask source head lacks complete progress"
+                        )
+                _checkpoint(bridge)
+                connection.commit()
+            except BaseException:
+                if connection.in_transaction:
+                    connection.rollback()
+                raise
+    finally:
+        connection.close()
+    return result
+
+
 def _normalized_states(
     states: Iterable[ReviewTaskState] | None,
 ) -> tuple[ReviewTaskState, ...]:
@@ -2258,6 +2508,7 @@ def list_current_review_tasks(
     scope: str | None = None,
     task_type: str | None = None,
     source_snapshot_fingerprint: str | None = None,
+    source_snapshot_as_published: bool = False,
     states: Iterable[ReviewTaskState] | None = None,
     after: ReviewTaskListCursor | None = None,
     cancellation_check: CancellationCheck | None = None,
@@ -2289,13 +2540,21 @@ def list_current_review_tasks(
             or any(character not in "0123456789abcdef" for character in suffix)
         ):
             raise ValueError("source_snapshot_fingerprint is invalid")
+    if not isinstance(source_snapshot_as_published, bool):
+        raise TypeError("source_snapshot_as_published must be a boolean")
+    if source_snapshot_as_published and source_snapshot_fingerprint is None:
+        raise ValueError("source_snapshot_as_published requires source_snapshot_fingerprint")
     if after is not None and not isinstance(after, ReviewTaskListCursor):
         raise TypeError("after must be a ReviewTaskListCursor when present")
     selected_states = _normalized_states(states)
     effective_state = (
-        "CASE WHEN "
-        + _EFFECTIVE_SOURCE_PUBLICATION_PREDICATE
-        + " THEN 'superseded' ELSE e.to_state END"
+        "e.to_state"
+        if source_snapshot_as_published
+        else (
+            "CASE WHEN "
+            + _EFFECTIVE_SOURCE_PUBLICATION_PREDICATE
+            + " THEN 'superseded' ELSE e.to_state END"
+        )
     )
     clauses = [
         "("
@@ -2304,7 +2563,8 @@ def list_current_review_tasks(
         + ",".join("?" for _ in selected_states)
         + ") OR e.task_id IS NULL)"
     ]
-    parameters: list[object] = [item.value for item in selected_states]
+    parameters: list[object] = []
+    parameters.extend(item.value for item in selected_states)
     if scope is not None:
         clauses.append("t.scope=?")
         parameters.append(scope)
@@ -2323,13 +2583,41 @@ def list_current_review_tasks(
             (after.priority, after.priority, after.created_ns, after.created_ns, after.task_id)
         )
     parameters.append(limit + 1)
+    unpublished_replacement = """event.to_state='superseded'
+        AND event.actor_kind='system' AND event.actor_id='review-task-refresh'
+        AND json_type(event.provenance_json,'$.replacement_task_id')='text'
+        AND NOT EXISTS(
+            SELECT 1 FROM review_tasks replacement
+            JOIN review_task_source_publications published
+              ON published.batch_id=replacement.batch_id
+            WHERE replacement.task_id=json_extract(
+                event.provenance_json,'$.replacement_task_id'
+            )
+        )"""
+    current_events_sql = (
+        """SELECT e.* FROM review_task_events e
+        WHERE NOT EXISTS(
+            SELECT 1 FROM review_task_events later
+            WHERE later.task_id=e.task_id AND later.sequence>e.sequence
+        )"""
+        if not source_snapshot_as_published
+        else (
+            "SELECT event.* FROM review_task_events event WHERE NOT EXISTS("
+            "SELECT 1 FROM review_task_events later WHERE later.task_id=event.task_id "
+            "AND later.sequence>event.sequence) AND NOT ("
+            + unpublished_replacement
+            + ") UNION ALL SELECT previous.* FROM review_task_events event "
+            "JOIN review_task_events previous ON previous.event_id=event.previous_event_id "
+            "AND previous.task_id=event.task_id WHERE NOT EXISTS(SELECT 1 FROM "
+            "review_task_events later WHERE later.task_id=event.task_id AND "
+            "later.sequence>event.sequence) AND (" + unpublished_replacement + ")"
+        )
+    )
     sql = (
         """WITH current_events AS (
-            SELECT e.* FROM review_task_events e
-            WHERE NOT EXISTS(
-                SELECT 1 FROM review_task_events later
-                WHERE later.task_id=e.task_id AND later.sequence>e.sequence
-            )
+            """
+        + current_events_sql
+        + """
         )
         SELECT t.*,b.selector_signature AS batch_selector_signature,
         b.source_snapshot_json AS batch_source_snapshot_json,
@@ -2353,7 +2641,28 @@ def list_current_review_tasks(
             try:
                 _require_review_task_schema(connection)
                 rows = connection.execute(sql, parameters).fetchall()
-                records = _validated_task_records(connection, rows)
+                if source_snapshot_as_published:
+                    records = tuple(_task_record_from_row(row) for row in rows)
+                    current_by_id = {
+                        record.task.task_id: record
+                        for record in _validated_records_by_task_ids(
+                            connection,
+                            tuple(record.task.task_id for record in records),
+                        )
+                    }
+                    for record in records:
+                        current = current_by_id.get(record.task.task_id)
+                        if (
+                            current is None
+                            or current.task != record.task
+                            or current.source != record.source
+                            or current.batch_id != record.batch_id
+                        ):
+                            raise ReviewTaskRepositoryError(
+                                "published ReviewTask view disagrees with current immutable facts"
+                            )
+                else:
+                    records = _validated_task_records(connection, rows)
                 _checkpoint(bridge)
                 connection.commit()
             except BaseException:
@@ -2451,8 +2760,116 @@ def lookup_review_task_version_heads(
             state=record.state,
             event_id=record.current_event.event_id,
             source_snapshot_fingerprint=record.source_snapshot_fingerprint,
+            source_input_fingerprint=record.source.fingerprint,
+            selector_signature=str(
+                next(
+                    row["batch_selector_signature"]
+                    for row in rows
+                    if str(row["task_id"]) == record.task.task_id
+                )
+            ),
+            decision=record.current_event.decision,
         )
     return tuple(by_key[key] for key in keys if key in by_key)
+
+
+def read_review_task(
+    database: str | Path,
+    task_id: str,
+    *,
+    cancellation_check: CancellationCheck | None = None,
+) -> ReviewTaskRecord | None:
+    """Read one exact current ReviewTask record without creating state."""
+
+    _contracts._required_text("task_id", task_id)
+    bridge = SQLiteCancellationBridge(cancellation_check)
+    connection = connect_existing_framework(Path(database), readonly=True)
+    try:
+        with sqlite_cancellation_scope(connection, bridge):
+            _checkpoint(bridge)
+            connection.execute("BEGIN")
+            try:
+                _require_review_task_schema(connection)
+                rows = connection.execute(
+                    """WITH current_events AS (
+                        SELECT e.* FROM review_task_events e WHERE e.task_id=?
+                        AND NOT EXISTS(
+                            SELECT 1 FROM review_task_events later
+                            WHERE later.task_id=e.task_id AND later.sequence>e.sequence
+                        )
+                    )
+                    SELECT t.*,b.selector_signature AS batch_selector_signature,
+                    b.source_snapshot_json AS batch_source_snapshot_json,
+                    b.source_snapshot_fingerprint AS batch_source_snapshot_fingerprint,"""
+                    + _CURRENT_EVENT_COLUMNS
+                    + ","
+                    + _EFFECTIVE_SOURCE_PUBLICATION_COLUMNS
+                    + " FROM review_tasks t LEFT JOIN current_events e ON e.task_id=t.task_id "
+                    "LEFT JOIN review_task_batches b ON b.batch_id=t.batch_id "
+                    + _EFFECTIVE_SOURCE_PUBLICATION_JOIN
+                    + " WHERE t.task_id=?",
+                    (task_id, task_id),
+                ).fetchall()
+                records = _validated_task_records(connection, rows)
+                result = None if not records else records[0]
+                _checkpoint(bridge)
+                connection.commit()
+            except BaseException:
+                if connection.in_transaction:
+                    connection.rollback()
+                raise
+    finally:
+        connection.close()
+    return result
+
+
+def read_review_task_history(
+    database: str | Path,
+    task_id: str,
+    *,
+    limit: int = MAX_REVIEW_TASK_READ_PAGE,
+    cancellation_check: CancellationCheck | None = None,
+) -> tuple[ReviewTaskEvent, ...]:
+    """Read one bounded, validated append-only event history."""
+
+    _contracts._required_text("task_id", task_id)
+    if (
+        isinstance(limit, bool)
+        or not isinstance(limit, int)
+        or not 1 <= limit <= (MAX_REVIEW_TASK_READ_PAGE)
+    ):
+        raise ValueError(f"limit must be between 1 and {MAX_REVIEW_TASK_READ_PAGE}")
+    bridge = SQLiteCancellationBridge(cancellation_check)
+    connection = connect_existing_framework(Path(database), readonly=True)
+    try:
+        with sqlite_cancellation_scope(connection, bridge):
+            _checkpoint(bridge)
+            connection.execute("BEGIN")
+            try:
+                _require_review_task_schema(connection)
+                records = _validated_records_by_task_ids(connection, (task_id,))
+                if not records:
+                    result: tuple[ReviewTaskEvent, ...] = ()
+                else:
+                    rows = connection.execute(
+                        "SELECT " + _EVENT_COLUMNS + " FROM review_task_events "
+                        "WHERE task_id=? ORDER BY sequence LIMIT ?",
+                        (task_id, limit + 1),
+                    ).fetchall()
+                    if len(rows) > limit:
+                        raise ReviewTaskRepositoryError(
+                            "ReviewTask event history exceeds the bounded read limit"
+                        )
+                    result = tuple(_event_from_row(row) for row in rows)
+                _checkpoint(bridge)
+                connection.commit()
+            except BaseException:
+                if connection.in_transaction:
+                    connection.rollback()
+                raise
+    finally:
+        connection.close()
+    return result
 
 
 def _event_matches_transition(
@@ -2561,6 +2978,41 @@ def append_review_task_event(
     return ReviewTaskEventResult(event, False)
 
 
+def read_review_task_event_by_key(
+    database: str | Path,
+    event_key: str,
+    *,
+    cancellation_check: CancellationCheck | None = None,
+) -> ReviewTaskEvent | None:
+    """Read one exact idempotency event without creating state."""
+
+    _contracts._required_text("event_key", event_key)
+    bridge = SQLiteCancellationBridge(cancellation_check)
+    connection = connect_existing_framework(Path(database), readonly=True)
+    try:
+        with sqlite_cancellation_scope(connection, bridge):
+            _checkpoint(bridge)
+            connection.execute("BEGIN")
+            try:
+                _require_review_task_schema(connection)
+                rows = connection.execute(
+                    "SELECT " + _EVENT_COLUMNS + " FROM review_task_events WHERE event_key=?",
+                    (event_key,),
+                ).fetchall()
+                if len(rows) > 1:
+                    raise ReviewTaskRepositoryError("ReviewTask event key is ambiguous")
+                result = None if not rows else _event_from_row(rows[0])
+                _checkpoint(bridge)
+                connection.commit()
+            except BaseException:
+                if connection.in_transaction:
+                    connection.rollback()
+                raise
+    finally:
+        connection.close()
+    return result
+
+
 __all__ = (
     "MAX_REVIEW_TASK_SOURCE_AUDIT_BYTES",
     "MAX_REVIEW_TASK_SOURCE_CHAIN_BATCHES",
@@ -2571,10 +3023,15 @@ __all__ = (
     "ReviewTaskSourcePublicationAudit",
     "append_review_task_event",
     "audit_latest_review_task_source_publications_from_connection",
+    "find_review_task_scan_progress",
     "has_review_task_scan_history",
     "list_current_review_tasks",
     "lookup_review_task_version_heads",
     "publish_review_task_page",
+    "read_latest_complete_review_task_progress",
+    "read_review_task",
+    "read_review_task_event_by_key",
+    "read_review_task_history",
     "read_review_task_progress",
     "validate_latest_review_task_source_publications_from_connection",
 )

@@ -9,9 +9,9 @@ from __future__ import annotations
 import argparse
 import sys
 from collections.abc import Sequence
+from pathlib import Path
 
 from .cli_operations import dispatch_direct_operation
-from .cli_parser import build_parser
 
 __all__ = ["dispatch_direct", "main", "run_framework"]
 
@@ -86,11 +86,160 @@ def _run_integrated_self_analysis() -> int:
 # region [04] Application control flow
 
 
+_LEAF_VALUE_OPTIONS = frozenset(
+    {
+        "--doctor-capabilities-select",
+        "--doctor-capabilities-mime-type",
+        "--doctor-capabilities-input-bytes",
+        "--root",
+        "--state-directory",
+    }
+)
+_LEAF_FLAG_OPTIONS = frozenset(
+    {
+        "--doctor-capabilities",
+        "--doctor-capabilities-json",
+        "--doctor-platform",
+        "--doctor-platform-json",
+    }
+)
+_CAPABILITIES_LEAF_OPTIONS = frozenset(
+    {
+        "--doctor-capabilities",
+        "--doctor-capabilities-json",
+        "--doctor-capabilities-select",
+        "--doctor-capabilities-mime-type",
+        "--doctor-capabilities-input-bytes",
+    }
+)
+_PLATFORM_LEAF_OPTIONS = frozenset({"--doctor-platform", "--doctor-platform-json"})
+
+
+def _leaf_arguments_supported(arguments: Sequence[str]) -> bool:
+    """Recognize one complete doctor leaf without accepting partial argv."""
+
+    position = 0
+    while position < len(arguments):
+        token = arguments[position]
+        option, separator, value = token.partition("=")
+        if option in _LEAF_FLAG_OPTIONS:
+            if separator:
+                return False
+            position += 1
+            continue
+        if option not in _LEAF_VALUE_OPTIONS:
+            return False
+        if separator:
+            if not value:
+                return False
+            position += 1
+            continue
+        if position + 1 >= len(arguments):
+            return False
+        position += 2
+    return True
+
+
+def _build_doctor_leaf_parser() -> argparse.ArgumentParser:
+    """Build only the hidden compatibility options consumed by doctor leaves."""
+
+    parser = argparse.ArgumentParser(
+        prog="Neocortex",
+        add_help=False,
+        allow_abbrev=False,
+        exit_on_error=False,
+    )
+    parser.add_argument("--doctor-capabilities", action="store_true")
+    parser.add_argument("--doctor-capabilities-json", action="store_true")
+    parser.add_argument("--doctor-capabilities-select")
+    parser.add_argument("--doctor-capabilities-mime-type")
+    parser.add_argument("--doctor-capabilities-input-bytes", type=int)
+    parser.add_argument("--doctor-platform", action="store_true")
+    parser.add_argument("--doctor-platform-json", action="store_true")
+    # Both doctors deliberately ignore these full-parser options and must not
+    # resolve or create state merely to accept them.
+    parser.add_argument("--root", type=Path)
+    parser.add_argument("--state-directory", type=Path)
+    return parser
+
+
+def _explicit_leaf_options(arguments: Sequence[str]) -> frozenset[str]:
+    destinations: set[str] = set()
+    for token in arguments:
+        if token.startswith("--"):
+            destinations.add(token.partition("=")[0][2:].replace("-", "_"))
+    return frozenset(destinations)
+
+
+def _run_doctor_leaf(arguments: Sequence[str]) -> int | None:
+    """Dispatch a valid doctor leaf without importing the integrated parser DAG."""
+
+    if not _leaf_arguments_supported(arguments):
+        return None
+    capabilities = "--doctor-capabilities" in arguments
+    platform = "--doctor-platform" in arguments
+    if capabilities == platform:
+        return None
+    supplied_options = {token.partition("=")[0] for token in arguments if token.startswith("--")}
+    unrelated_options = _PLATFORM_LEAF_OPTIONS if capabilities else _CAPABILITIES_LEAF_OPTIONS
+    if supplied_options.intersection(unrelated_options):
+        return None
+
+    parser = _build_doctor_leaf_parser()
+    try:
+        args = parser.parse_args(arguments)
+    except (argparse.ArgumentError, SystemExit):
+        # Preserve full-parser diagnostics for malformed values.  The fast path
+        # only owns an argv that is both complete and valid.
+        return None
+    args.apply = False
+    args.route = "none"
+    args._explicit_options = _explicit_leaf_options(arguments)
+    if capabilities:
+        from .cli_capabilities import run_doctor_capabilities
+        from .cli_capabilities_surface import validate_capabilities_arguments
+
+        try:
+            validate_capabilities_arguments(args)
+        except SystemExit:
+            return None
+        return run_doctor_capabilities(args)
+
+    from .cli_platform import run_doctor_platform
+    from .cli_platform_surface import validate_platform_arguments
+
+    try:
+        validate_platform_arguments(args)
+    except SystemExit:
+        return None
+    return run_doctor_platform(args)
+
+
+def _run_exact_version(arguments: Sequence[str]) -> None:
+    """Preserve argparse's exact version bytes and ``SystemExit(0)`` contract."""
+
+    from neocortex import __version__
+
+    parser = argparse.ArgumentParser(prog="Neocortex", add_help=False)
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
+    parser.parse_args(arguments)
+
+
 def main(arguments: Sequence[str] | None = None) -> int:
     """Parse, validate and dispatch one NeoCortex command invocation."""
 
+    forwarded = list(sys.argv[1:] if arguments is None else arguments)
+    if forwarded == ["--version"]:
+        _run_exact_version(forwarded)
+        raise AssertionError("argparse version action must exit")
+    leaf_exit_code = _run_doctor_leaf(forwarded)
+    if leaf_exit_code is not None:
+        return leaf_exit_code
+
+    from .cli_parser import build_parser
+
     parser = build_parser()
-    args = parser.parse_args(arguments)
+    args = parser.parse_args(forwarded)
 
     from .cli_validation import validate_arguments
 

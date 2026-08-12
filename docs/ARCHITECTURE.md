@@ -256,9 +256,10 @@ privacidad `local_only` y no ofrece GPU. El builtin conserva reproducibilidad
 validaciones físicas/causales de Text. Sólo los MIME builtin exigen
 incrementalidad en su `CapabilityRequest`. El worker Office heredado v2 declara
 `best_effort`, `non_replayable` e `incremental=false`. Su readiness resuelve y
-fija `soffice`/`libreoffice` o el backend exacto
-`catdoc`/`xls2csv`/`catppt`; la ausencia de LibreOffice no degrada texto plano.
-El orden de alternativas forma parte del manifest, readiness elige un único
+fija un backend exacto: DOC prueba `soffice`/`libreoffice` antes de `catdoc`;
+XLS y PPT prueban primero `xls2csv` y `catppt`, respectivamente, y después
+`soffice`/`libreoffice`. La ausencia de LibreOffice no degrada texto plano. El
+orden de alternativas forma parte del manifest, readiness elige un único
 launcher verificable y el worker no hace fallback oculto si éste falla.
 
 Provider y versión, fingerprint del manifest, política y su fingerprint,
@@ -300,7 +301,7 @@ a la vez después de estabilizar estos contratos, sin dependencias pesadas base.
 ## ReviewTask durable y salud del conocimiento
 
 **IMPLEMENTED — contrato transversal y primera vertical Value.** Framework
-schema 21 añade, dentro del owner que ya coordina revisión, seis familias:
+schema 21 añadió, dentro del owner que ya coordina revisión, seis familias:
 `review_task_batches`, `review_tasks`, `review_task_batch_memberships`,
 `review_task_events`, `review_task_scan_progress` y
 `review_task_source_publications`. No aparece una base global nueva. Cada batch fija
@@ -309,13 +310,18 @@ canónico y admite como máximo 1,000 inputs examinados y 100 tareas. Las tareas
 son versiones inmutables; sus eventos son append-only y las transiciones usan
 CAS sobre estado/evento anterior. La migración 20→21 sólo crea este contrato
 vacío: no convierte candidatos o decisiones históricos en tareas sintéticas.
+Framework schema 22 conserva esas seis familias y migra la identidad de rutas a
+`BINARY` en Linux y `NOCASE` en Windows. También versiona el contrato de
+lifecycle: v21 permanece validable como predecessor exacto y v22 permite sólo
+la reapertura receipt-backed de decisiones cuyo scope tipado expiró.
 
 `ReviewTask` mantiene separados el hallazgo derivado y la decisión humana. Sus
 estados son `OPEN`, `IN_REVIEW`, `RESOLVED`, `DISMISSED` y `SUPERSEDED`; una
-resolución o descarte exige actor humano y decisión durable. Un refresh puede
-reemplazar versiones abiertas mediante supersession efectiva derivada del head
-generacional, pero nunca reabre ni sobrescribe automáticamente una versión
-humana terminal. `SUPERSEDED` está reservado a receipts sistémicos exactos. El
+resolución o descarte exige actor humano y decisión durable. El scope puede ser
+permanente, hasta cambio de fuente o hasta cambio de selector; el repositorio
+revalida recurso, fingerprint, selector y successor dentro de la misma
+transacción. Decisiones legacy no se reabren. `SUPERSEDED` está reservado a
+receipts sistémicos exactos. El
 batch, memberships, tareas, eventos iniciales, progreso y, al terminar con
 evidencia completa, el head fuente se publican en transacciones Framework
 owner-local; no se
@@ -323,14 +329,15 @@ declara atomicidad con Inventory o Catalog. El fence fuente se vuelve a leer
 antes de publicar y cualquier cambio causa abstención.
 
 La primera productora real es `review value`. El comando predeterminado sigue
-read-only: consulta una cola vigente cuando existe y, ante Framework anterior a
-v21 o sin cola, conserva el preview legacy sin DDL. La variante explícita
+read-only: consulta una cola vigente cuando existe en Framework v22 y, ante un
+schema anterior o sin cola, conserva el preview legacy sin DDL. La variante explícita
 `review value --refresh --scope personal|framework` puede crear/migrar Framework
 y avanza exactamente una página keyset de 100 observaciones. Es advisory,
 rechaza `all`, nunca escribe Inventory/Catalog ni toca el corpus y permite
-recorrer más de 25,000 observaciones sin quitar la cota. Una cola cuyo
-fingerprint ya no coincide con sus owners fuente queda `stale` y no se presenta
-como vigente.
+recorrer más de 25,000 observaciones sin quitar la cota. El epoch de evaluación
+de un scan incompleto es durable a través de límites diarios; mientras se
+construye un epoch nuevo o cambia el owner fuente, el último head completo se
+mantiene visible como `stale` y conserva eventos humanos posteriores.
 
 El progreso distingue dos hechos independientes: `scan_complete` sólo confirma
 que el cursor keyset llegó al final; `evidence_complete` acumula la salud de
@@ -342,7 +349,7 @@ como causa durable, aunque la última página sí haya terminado el recorrido.
 
 Knowledge expone heads ReviewTask sólo después de reconciliar source receipt,
 progreso y la cadena completa alcanzable de batches y memberships; añade
-watermarks de batches, eventos y publicaciones fuente en Framework v21.
+watermarks de batches, eventos y publicaciones fuente en Framework v22.
 Retention trata tareas y eventos humanos como holds separados y protege además
 el head vigente, toda esa cadena publicada y su progreso exacto. La auditoría
 owner-local está acotada a 1,024 heads, 10,000 batches, 1,000,000 memberships y
@@ -665,8 +672,9 @@ descriptor, firma de entorno/configuración/comparabilidad, inputs, findings y
 counters normalizados. La suite y el fence de Code se confirman atómicamente;
 los proveedores no participan en el processing signature AST.
 
-Code schema v4 extiende la persistencia compatible v1-v3 con dos proyecciones
-portables. `external_metrics` vincula un nombre/valor/unidad con un sujeto
+Code schema v5 conserva las dos proyecciones portables introducidas en v4 y
+unifica la identidad de rutas a `BINARY` en Linux y `NOCASE` en Windows.
+`external_metrics` vincula un nombre/valor/unidad con un sujeto
 tipado (`file`, `symbol`, `module`, `project`, `run`, `contract` o `scc`);
 `external_relations` vincula dos sujetos tipados con dirección, confianza y
 metadata determinista. Sus IDs y digests no dependen de IDs SQLite locales. El
@@ -809,7 +817,7 @@ Ese backend es exclusivamente Windows. En Linux, `--apply` y
 `--organization-apply` se rechazan antes de crear estado con código `2` y razón
 `linux_mutation_backend_unavailable`; no existe un fallback con `Path.rename`.
 
-`file_actions` conserva en framework v21 la frontera incorporada en v18 y
+`file_actions` conserva en framework v22 la frontera incorporada en v18 y
 endurecida en v20:
 
 ```text
@@ -1025,7 +1033,7 @@ No todas existen antes de usar su ruta. La UI persiste configuración aparte, en
 `models\fastembed`. En Linux la UI usa el árbol de configuración XDG y
 FastEmbed el cache compartido `models/fastembed`.
 
-La Knowledge Plane no es otro owner persistente: conserva los diez owners
+La Knowledge Plane no es otro owner persistente: conserva once owners base
 históricos y agrega Archive y texto sólo cuando existen sus bases. Su snapshot
 y resultados viven en memoria y no introducen una migración propia.
 
@@ -1085,7 +1093,7 @@ revisiones, materializaciones ni recibos para trabajo legacy que no puede
 atribuirse. Las consultas de linaje lo presentan como
 `legacy_unattributed` hasta que el productor lo reprocese.
 
-En catálogo v6, cada `source_kind` construye filas en
+En catálogo v7, cada `source_kind` construye filas en
 `catalog_generation_documents`. Los lectores siguen viendo la proyección
 `documents` anterior hasta que una transacción reemplaza esa fuente, agrega el
 historial, reconcilia planes y cambia `catalog_publications` mediante CAS. Un
@@ -1264,11 +1272,11 @@ Los siguientes límites deben permanecer visibles:
 - la poda vigente de v10 conserva generaciones `building` y candidatos `complete` aún no
   publicados para evitar carreras; el planner dry-run diagnostica candidatos,
   pero todavía no ejecuta expiración/conciliación de un build abandonado;
-- semántica v7 preserva el staging y puntero/CAS de v6, y catálogo v6 publica
+- semántica v7 preserva el staging y puntero/CAS de v6, y catálogo v7 publica
   por puntero/CAS para sus lectores oficiales (`NC-AUD-012` y `NC-AUD-013`);
   los receipts Semantic nuevos no atribuyen trabajo legacy y SQL externo sobre
   tablas mutables no hereda el contrato;
-- el grafo de código conserva esquema 4 no generacional y una transacción global
+- el grafo de código conserva esquema 5 no generacional y una transacción global
   extensa (`NC-AUD-015`); es atómica para lectores, pero carece de reanudación y
   de cancelación dentro de una sentencia SQL. Los empates permanecen ambiguos y
   la firma global del registro puede invalidar lenguajes no afectados; no debe

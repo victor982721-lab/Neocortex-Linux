@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from _04_Nucleo_Operativo import semantic_generation_repository
+from _04_Nucleo_Operativo import semantic_lineage_repository
 from _04_Nucleo_Operativo import semantic_schema
 from _04_Nucleo_Operativo.semantic_chunking import (
     TextChunkingConfig,
@@ -601,6 +602,279 @@ def _published_fixture_with_members(
         count=extra_members,
     )
     return model, generation_id
+
+
+def _replace_item_identity(
+    path: Path,
+    *,
+    item_id: str,
+    text: str,
+    identity_version: str,
+    updated_ns: int,
+    metadata_revision: str | None = None,
+) -> None:
+    upsert_semantic_item(
+        path,
+        SemanticItem(
+            item_id,
+            "pdf",
+            f"identity:{item_id}:{identity_version}",
+            identity_version,
+            fingerprint_text(text),
+            path=f"C:/fixtures/{item_id}.pdf",
+            provenance={
+                "fixture": "replacement-identity",
+                "metadata_revision": metadata_revision or identity_version,
+            },
+        ),
+        refresh_token=f"item:{identity_version}",
+        updated_ns=updated_ns,
+    )
+
+
+def test_base_clone_skips_target_entities_with_existing_jobs(tmp_path: Path) -> None:
+    database = tmp_path / "semantic.sqlite3"
+    text = "protección de transformador con identidad reemplazada"
+    model = _initialize(database)
+    chunk = _stage(database, "clone-target", text, 1)
+    baseline = start_embedding_generation(
+        database,
+        model_signature=model.model_signature,
+        processing_signature="clone-target-base-v1",
+        provenance={"fixture": "clone-target-base-v1"},
+        started_ns=100,
+    )
+    assert enqueue_text_chunk_jobs(database, baseline, (chunk.chunk_id,), now_ns=101) == 1
+    _complete_jobs(database, baseline, now_ns=102)
+    finalize_embedding_generation(database, baseline, completed_ns=110)
+
+    _replace_item_identity(
+        database,
+        item_id="clone-target",
+        text=text,
+        identity_version="fixture-v2",
+        updated_ns=120,
+    )
+    stage_text_chunks(
+        database,
+        (chunk,),
+        refresh_token="clone-target-v2",
+        updated_ns=121,
+    )
+    finalize_text_chunk_refresh(
+        database,
+        item_id="clone-target",
+        chunking_signature=chunk.chunking_signature,
+        refresh_token="clone-target-v2",
+        updated_ns=122,
+    )
+    candidate = start_embedding_generation(
+        database,
+        model_signature=model.model_signature,
+        processing_signature="clone-target-successor-v1",
+        provenance={"fixture": "clone-target-successor-v1"},
+        materialize_base=False,
+        started_ns=130,
+    )
+    assert enqueue_text_chunk_jobs(database, candidate, (chunk.chunk_id,), now_ns=131) == 1
+    assert (
+        prepare_embedding_generation(
+            database,
+            candidate,
+            enumeration_complete=True,
+        )
+        is None
+    )
+
+    with semantic_database(database, readonly=True) as connection:
+        generation = connection.execute(
+            """SELECT base_clone_complete,cursor_json FROM embedding_generations
+            WHERE generation_id=?""",
+            (candidate,),
+        ).fetchone()
+        member_count = int(
+            connection.execute(
+                "SELECT COUNT(*) FROM embedding_generation_members WHERE generation_id=?",
+                (candidate,),
+            ).fetchone()[0]
+        )
+        clone_receipts = int(
+            connection.execute(
+                """SELECT COUNT(*) FROM semantic_work_receipts
+                WHERE generation_id=? AND stage_id='semantic.embedding.clone'""",
+                (candidate,),
+            ).fetchone()[0]
+        )
+    assert generation is not None
+    assert int(generation["base_clone_complete"]) == 1
+    assert json.loads(str(generation["cursor_json"]))["base_clone"]["scanned_members"] == 1
+    assert member_count == 0
+    assert clone_receipts == 0
+
+    assert reuse_cached_jobs(database, candidate, now_ns=140) == 1
+    finalize_embedding_generation(database, candidate, completed_ns=150)
+    with semantic_database(database, readonly=True) as connection:
+        member = connection.execute(
+            """SELECT member_id,base_member_id FROM embedding_generation_members
+            WHERE generation_id=? AND entity_kind='text_chunk' AND entity_id=?""",
+            (candidate, chunk.chunk_id),
+        ).fetchone()
+        assert member is not None
+        materialization_id = f"materialization:semantic:embedding-member:{int(member['member_id'])}"
+        producers = connection.execute(
+            """SELECT DISTINCT receipt.stage_id,receipt.execution_mode
+            FROM semantic_work_receipts receipt,
+                 json_each(receipt.receipt_json,'$.outputs') output
+            WHERE json_extract(
+                output.value,'$.materialization.materialization_id'
+            )=? ORDER BY receipt.receipt_id""",
+            (materialization_id,),
+        ).fetchall()
+    assert member["base_member_id"] is None
+    assert tuple(map(tuple, producers)) == (("semantic.embedding", "cache_hit"),)
+
+
+def test_historical_overwritten_clone_uses_exact_physical_producer(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "semantic.sqlite3"
+    text = "protección de transformador con productor histórico"
+    model = _initialize(database)
+    chunk = _stage(database, "historical-clone", text, 1)
+    baseline = start_embedding_generation(
+        database,
+        model_signature=model.model_signature,
+        processing_signature="historical-clone-base-v1",
+        provenance={"fixture": "historical-clone-base-v1"},
+        started_ns=100,
+    )
+    assert enqueue_text_chunk_jobs(database, baseline, (chunk.chunk_id,), now_ns=101) == 1
+    _complete_jobs(database, baseline, now_ns=102)
+    finalize_embedding_generation(database, baseline, completed_ns=110)
+
+    historical = start_embedding_generation(
+        database,
+        model_signature=model.model_signature,
+        processing_signature="historical-clone-corrupt-v1",
+        provenance={"fixture": "historical-clone-corrupt-v1"},
+        materialize_base=False,
+        started_ns=120,
+    )
+    semantic_generation_repository._clone_published_members(database, historical)
+    _replace_item_identity(
+        database,
+        item_id="historical-clone",
+        text=text,
+        identity_version="fixture-v2",
+        updated_ns=130,
+    )
+    stage_text_chunks(
+        database,
+        (chunk,),
+        refresh_token="historical-clone-v2",
+        updated_ns=131,
+    )
+    finalize_text_chunk_refresh(
+        database,
+        item_id="historical-clone",
+        chunking_signature=chunk.chunking_signature,
+        refresh_token="historical-clone-v2",
+        updated_ns=132,
+    )
+    assert enqueue_text_chunk_jobs(database, historical, (chunk.chunk_id,), now_ns=133) == 1
+    assert reuse_cached_jobs(database, historical, now_ns=140) == 1
+
+    with semantic_database(database, readonly=True) as connection:
+        member = connection.execute(
+            """SELECT member_id FROM embedding_generation_members
+            WHERE generation_id=? AND entity_kind='text_chunk' AND entity_id=?""",
+            (historical, chunk.chunk_id),
+        ).fetchone()
+        assert member is not None
+        member_id = int(member["member_id"])
+        materialization_id = f"materialization:semantic:embedding-member:{member_id}"
+        all_producers = connection.execute(
+            """SELECT DISTINCT receipt.receipt_id,receipt.stage_id
+            FROM semantic_work_receipts receipt,
+                 json_each(receipt.receipt_json,'$.outputs') output
+            WHERE json_extract(
+                output.value,'$.materialization.materialization_id'
+            )=? ORDER BY receipt.receipt_id""",
+            (materialization_id,),
+        ).fetchall()
+        exact_producer = semantic_lineage_repository._producer_receipts_for_embedding_members(
+            connection,
+            (member_id,),
+        )[member_id]
+    assert tuple(str(row["stage_id"]) for row in all_producers) == (
+        "semantic.embedding.clone",
+        "semantic.embedding",
+    )
+    assert exact_producer == int(all_producers[1]["receipt_id"])
+
+    finalize_embedding_generation(database, historical, completed_ns=150)
+    _replace_item_identity(
+        database,
+        item_id="historical-clone",
+        text=text,
+        identity_version="fixture-v2",
+        metadata_revision="fixture-v3",
+        updated_ns=155,
+    )
+    stage_text_chunks(
+        database,
+        (chunk,),
+        refresh_token="historical-clone-v3",
+        updated_ns=156,
+    )
+    finalize_text_chunk_refresh(
+        database,
+        item_id="historical-clone",
+        chunking_signature=chunk.chunking_signature,
+        refresh_token="historical-clone-v3",
+        updated_ns=157,
+    )
+    successor = start_embedding_generation(
+        database,
+        model_signature=model.model_signature,
+        processing_signature="historical-clone-successor-v1",
+        provenance={"fixture": "historical-clone-successor-v1"},
+        materialize_base=False,
+        started_ns=160,
+    )
+    assert enqueue_text_chunk_jobs(database, successor, (chunk.chunk_id,), now_ns=161) == 0
+    prepare_embedding_generation(
+        database,
+        successor,
+        enumeration_complete=True,
+    )
+    finalize_embedding_generation(database, successor, completed_ns=170)
+
+    with semantic_database(database, readonly=True) as connection:
+        selected_producer_key = str(
+            connection.execute(
+                "SELECT receipt_key FROM semantic_work_receipts WHERE receipt_id=?",
+                (exact_producer,),
+            ).fetchone()[0]
+        )
+        successor_member = connection.execute(
+            """SELECT member_id,base_member_id FROM embedding_generation_members
+            WHERE generation_id=? AND entity_kind='text_chunk' AND entity_id=?""",
+            (successor, chunk.chunk_id),
+        ).fetchone()
+        successor_receipt = connection.execute(
+            """SELECT execution_mode,receipt_json FROM semantic_work_receipts
+            WHERE generation_id=? AND stage_id='semantic.embedding'
+            ORDER BY receipt_id DESC LIMIT 1""",
+            (successor,),
+        ).fetchone()
+    assert successor_member is not None
+    assert successor_member["base_member_id"] is None
+    assert successor_receipt is not None
+    assert str(successor_receipt["execution_mode"]) == "replay"
+    assert json.loads(str(successor_receipt["receipt_json"]))["causation_id"] == (
+        selected_producer_key
+    )
 
 
 def test_new_processing_signature_closes_empty_uncloned_candidate(

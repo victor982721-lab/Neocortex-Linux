@@ -63,6 +63,13 @@ from _04_Nucleo_Operativo.knowledge_search import (
     fuse_evidence_rankings,
 )
 from _04_Nucleo_Operativo.knowledge_snapshot import KnowledgeStatePaths
+from _04_Nucleo_Operativo.video_models import VideoMediaProbe, VideoStreamProbe
+from _04_Nucleo_Operativo.video_state import (
+    VideoFrameEvidence,
+    initialize_video_state,
+    store_video_success,
+    video_database,
+)
 from _04_Nucleo_Operativo.semantic_chunking import TextChunkingConfig
 from _04_Nucleo_Operativo.semantic_config import multilingual_text_model
 from _04_Nucleo_Operativo.semantic_models import (
@@ -100,6 +107,60 @@ def _file_snapshot(path: Path) -> FileSnapshot:
         observed.st_mtime_ns,
         getattr(observed, "st_birthtime_ns", observed.st_ctime_ns),
     )
+
+
+def test_knowledge_search_returns_timestamped_video_ocr_evidence(tmp_path: Path) -> None:
+    paths = KnowledgeStatePaths.from_directory(tmp_path)
+    initialize_video_state(paths.video)
+    source = tmp_path / "Case.mp4"
+    source.write_bytes(b"video fixture")
+    file = _file_snapshot(source)
+    with video_database(paths.video, create=False) as connection:
+        store_video_success(
+            connection,
+            file,
+            "video/mp4",
+            "fixture-video-v1",
+            VideoMediaProbe(
+                5.0,
+                "mp4",
+                (VideoStreamProbe(0, "h264", 10, 10, 1.0, 5.0, None),),
+                0,
+                (),
+                0,
+            ),
+            (
+                VideoFrameEvidence(
+                    0,
+                    2500,
+                    ("interval",),
+                    10,
+                    10,
+                    "a" * 32,
+                    True,
+                    "MALPASO transformer plate",
+                    95.0,
+                    "fixture",
+                ),
+            ),
+            (),
+            None,
+            1,
+        )
+        connection.commit()
+    snapshot = _snapshot(OwnerSnapshot("video", OwnerAvailability.AVAILABLE, 2, 2))
+    plan = plan_knowledge_query(KnowledgeQuery("MALPASO", source_kinds=("video",), limit=5))
+
+    result = execute_knowledge_search(paths, plan, snapshot)
+
+    assert any(hit.resource.owner == "video" for hit in result.hits)
+    video = next(hit for hit in result.hits if hit.resource.owner == "video")
+    assert video.evidence.start_ms == 2500
+    assert video.evidence.end_ms == 2501
+    assert video.evidence.section_kind == "video_frame_ocr"
+    assert video.evidence.identifiers == (("neocortex.video.timestamp", "00:00:02.500"),)
+    assert video.resource.physical_identity is not None
+    assert video.revision.processing_signature == "fixture-video-v1"
 
 
 class _CodeInventory:

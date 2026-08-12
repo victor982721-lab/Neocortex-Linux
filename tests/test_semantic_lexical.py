@@ -673,12 +673,18 @@ def test_searches_all_fts_sources_as_separate_resolved_rankings(
         "fts_docx",
         "fts_office",
         "fts_audio",
+        "fts_video",
     )
-    assert all(result.availability is LexicalAvailability.AVAILABLE for result in results)
-    assert all(len(result.hits) == 1 for result in results)
+    assert all(
+        result.availability is LexicalAvailability.AVAILABLE
+        for result in results
+        if result.source_kind != "video"
+    )
+    assert results[-1].availability is LexicalAvailability.NOT_CONFIGURED
+    assert all(len(result.hits) == 1 for result in results[:-1])
     assert all(result.normalized_query == '"protección" AND "interruptor"' for result in results)
 
-    by_ranking = {result.ranking_name: result.hits[0] for result in results}
+    by_ranking = {result.ranking_name: result.hits[0] for result in results[:-1]}
     assert by_ranking["fts_pdf"].hit.item_id == "item:pdf:pdf-key"
     assert by_ranking["fts_pdf"].section_kind == "page"
     assert by_ranking["fts_pdf"].section_id == "7"
@@ -692,7 +698,7 @@ def test_searches_all_fts_sources_as_separate_resolved_rankings(
     assert by_ranking["fts_audio"].hit.item_id == "item:audio:audio-key"
     assert by_ranking["fts_audio"].source_status == "complete"
 
-    for result in results:
+    for result in results[:-1]:
         resolved = result.hits[0]
         assert result.search_hits == (resolved.hit,)
         assert resolved.hit.modality is EmbeddingModality.TEXT
@@ -715,12 +721,13 @@ def test_archive_source_is_additive_and_preserves_nested_member_provenance(
         "protección",
     )
 
-    assert len(legacy) == 4
+    assert len(legacy) == 5
     assert tuple(result.ranking_name for result in results) == (
         "fts_pdf",
         "fts_docx",
         "fts_office",
         "fts_audio",
+        "fts_video",
         "fts_archive",
     )
     hit = results[-1].hits[0]
@@ -753,6 +760,7 @@ def test_generic_text_source_is_additive_and_preserves_physical_evidence(
         "fts_docx",
         "fts_office",
         "fts_audio",
+        "fts_video",
         "fts_text",
     )
     hit = results[-1].hits[0]
@@ -892,7 +900,7 @@ def test_missing_and_unconfigured_sources_are_reported(tmp_path: Path) -> None:
         "interruptor",
     )
 
-    assert len(results) == 4
+    assert len(results) == 5
     assert results[0].availability is LexicalAvailability.DATABASE_MISSING
     assert results[0].unavailable_reason == "state_database_missing"
     assert results[0].hits == ()

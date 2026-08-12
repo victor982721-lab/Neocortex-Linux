@@ -39,7 +39,7 @@ _CANCELLATION_BATCH_ROWS = 128
 
 LEXICAL_MODEL_SIGNATURE = "sqlite-fts5-unicode61-rd2-cjk-substring-v3"
 LEXICAL_QUERY_POLICY_SIGNATURE = "sqlite-fts5-natural-strict-soft-cjk-v4"
-_SOURCE_ORDER = ("pdf", "docx", "office", "audio", "archive", "text")
+_SOURCE_ORDER = ("pdf", "docx", "office", "audio", "video", "archive", "text")
 
 
 class LexicalAvailability(StrEnum):
@@ -59,6 +59,7 @@ class LexicalStatePaths:
     docx: Path | None = None
     office: Path | None = None
     audio: Path | None = None
+    video: Path | None = None
     archive: Path | None = None
     text: Path | None = None
 
@@ -68,6 +69,7 @@ class LexicalStatePaths:
             ("docx", self.docx),
             ("office", self.office),
             ("audio", self.audio),
+            ("video", self.video),
         )
         optional: list[tuple[str, Path | None]] = []
         if self.archive is not None:
@@ -579,6 +581,41 @@ _SPECS = {
         WHERE d.status='complete' AND {conditions}
         ORDER BY length(f.body),f.path COLLATE NOCASE LIMIT ?""",
     ),
+    "video": _SourceSpec(
+        source_kind="video",
+        fts_table="frame_fts",
+        section_kind="video_frame_ocr",
+        cjk_content_expression="f.body",
+        sql="""SELECT f.rowid AS fts_rowid,f.file_key,f.path,
+        fr.frame_index,fr.timestamp_ms,fr.content_xxh3_128,
+        fr.ocr_mean_confidence,fr.ocr_provenance,
+        snippet(frame_fts,4,'[',']',' ... ',24) AS snippet,
+        bm25(frame_fts) AS raw_bm25,d.size AS source_size,
+        d.mtime_ns AS source_mtime_ns,d.birthtime_ns AS source_birthtime_ns,
+        d.processing_signature AS source_processing_signature,
+        d.last_seen_run_id AS source_last_seen_run_id,d.status AS source_status
+        FROM frame_fts AS f JOIN documents AS d ON d.file_key=f.file_key
+        JOIN frames AS fr ON fr.file_key=f.file_key
+        AND fr.timestamp_ms=CAST(f.timestamp_ms AS INTEGER)
+        WHERE frame_fts MATCH ? AND d.status IN ('complete','partial')
+        AND fr.ocr_available=1
+        ORDER BY raw_bm25,f.path COLLATE NOCASE,fr.timestamp_ms,fr.frame_index LIMIT ?""",
+        cjk_sql="""SELECT f.rowid AS fts_rowid,f.file_key,f.path,
+        fr.frame_index,fr.timestamp_ms,fr.content_xxh3_128,
+        fr.ocr_mean_confidence,fr.ocr_provenance,
+        substr(f.body,max(1,instr(f.body,?)-80),240) AS snippet,
+        CAST(length(f.body) AS REAL) AS raw_bm25,d.size AS source_size,
+        d.mtime_ns AS source_mtime_ns,d.birthtime_ns AS source_birthtime_ns,
+        d.processing_signature AS source_processing_signature,
+        d.last_seen_run_id AS source_last_seen_run_id,d.status AS source_status
+        FROM frame_fts AS f JOIN documents AS d ON d.file_key=f.file_key
+        JOIN frames AS fr ON fr.file_key=f.file_key
+        AND fr.timestamp_ms=CAST(f.timestamp_ms AS INTEGER)
+        WHERE d.status IN ('complete','partial') AND fr.ocr_available=1
+        AND {conditions}
+        ORDER BY length(f.body),f.path COLLATE NOCASE,
+        fr.timestamp_ms,fr.frame_index LIMIT ?""",
+    ),
     "archive": _SourceSpec(
         source_kind="archive",
         fts_table="document_fts",
@@ -673,6 +710,9 @@ def _resolved_hit(
     if spec.source_kind == "pdf":
         section_id = str(int(row["page_number"]))
         entity_id = f"lexical:pdf:{file_key}:page:{section_id}"
+    elif spec.source_kind == "video":
+        section_id = str(int(row["frame_index"]))
+        entity_id = f"lexical:video:{file_key}:frame:{section_id}"
     elif spec.source_kind == "archive":
         section_id = file_key
         entity_id = f"lexical:archive:{file_key}:member"
@@ -742,6 +782,20 @@ def _resolved_hit(
             "archive_depth": int(row["archive_depth"]),
             "content_kind": str(row["content_kind"]),
         }
+    elif spec.source_kind == "video":
+        timestamp_ms = int(row["timestamp_ms"])
+        section_provenance = {
+            "adapter": "video-frame-ocr-v1",
+            "start_ms": timestamp_ms,
+            "end_ms": timestamp_ms + 1,
+            "timestamp": _format_timestamp(timestamp_ms),
+            "frame_index": int(row["frame_index"]),
+            "content_xxh3_128": str(row["content_xxh3_128"]),
+        }
+        if row["ocr_mean_confidence"] is not None:
+            section_provenance["ocr_mean_confidence"] = float(row["ocr_mean_confidence"])
+        if row["ocr_provenance"] is not None:
+            section_provenance["ocr_provenance"] = str(row["ocr_provenance"])
     return ResolvedSearchHit(
         hit=SearchHit(
             ref_id=int(row["fts_rowid"]),
@@ -770,6 +824,13 @@ def _resolved_hit(
         end_char=None,
         snippet=_bounded_snippet(row["snippet"]),
     )
+
+
+def _format_timestamp(timestamp_ms: int) -> str:
+    hours, remainder = divmod(max(0, timestamp_ms), 3_600_000)
+    minutes, remainder = divmod(remainder, 60_000)
+    seconds, milliseconds = divmod(remainder, 1000)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}.{milliseconds:03d}"
 
 
 def _unavailable_ranking(

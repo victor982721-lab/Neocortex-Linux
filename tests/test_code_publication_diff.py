@@ -8,6 +8,7 @@ from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
+from _04_Nucleo_Operativo import code_schema as code_schema_module
 from _04_Nucleo_Operativo.code_architecture_analysis import (
     ArchitectureContract,
     ArchitectureCycle,
@@ -399,7 +400,8 @@ def _retain_only_legacy_ruff_and_migrate_v2_to_v3(database: Path) -> None:
 
     connection = sqlite3.connect(database)
     try:
-        connection.execute("PRAGMA foreign_keys=ON")
+        connection.execute("PRAGMA foreign_keys=OFF")
+        connection.execute("PRAGMA legacy_alter_table=ON")
         connection.execute("BEGIN IMMEDIATE")
         connection.execute(
             """DELETE FROM external_tool_runs WHERE tool_run_id IN (
@@ -415,6 +417,15 @@ def _retain_only_legacy_ruff_and_migrate_v2_to_v3(database: Path) -> None:
             "external_run_contracts",
         ):
             connection.execute(f"DROP TABLE {table}")
+        connection.execute("ALTER TABLE files RENAME TO files_current_fixture")
+        connection.execute(code_schema_module._LEGACY_FILES_TABLE_DDL)
+        columns = ",".join(code_schema_module._FILES_COLUMNS)
+        connection.execute(
+            f"INSERT INTO files({columns}) SELECT {columns} FROM files_current_fixture"
+        )
+        connection.execute("DROP TABLE files_current_fixture")
+        connection.execute(code_schema_module._FILES_CURRENT_PATH_INDEX_DDL)
+        connection.execute(code_schema_module._FILES_LAST_SEEN_INDEX_DDL)
         connection.execute("DELETE FROM schema_migrations WHERE version>=3")
         connection.execute("UPDATE metadata SET value='2' WHERE key='schema_version'")
         connection.execute("PRAGMA user_version=2")

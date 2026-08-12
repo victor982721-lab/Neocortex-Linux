@@ -26,6 +26,7 @@ from pathlib import Path
 from neocortex.platform_policy import (
     UNAVAILABLE_BIRTHTIME_NS,
     physical_identity_scheme_for_birthtime,
+    sqlite_path_collation,
 )
 
 from .code_detection import LANGUAGE_EXTENSIONS
@@ -70,6 +71,7 @@ _EXACT_INVENTORY_SQLITE_POLICY = SQLiteConnectionPolicy(
     timeout_seconds=60.0,
     row_factory=sqlite3.Row,
 )
+_PATH_COLLATION = sqlite_path_collation()
 
 
 def _duration_ns(clock_ns: Callable[[], int], started_ns: int) -> int:
@@ -1241,22 +1243,20 @@ def _rank_matches(
 def _basename_predicate(column: str) -> str:
     normalized = f"replace({column},'\\','/')"
     return (
-        f"(({normalized})=? COLLATE NOCASE OR "
-        f"(substr(({normalized}),-length(?))=? COLLATE NOCASE AND "
+        f"(({normalized})=? COLLATE {_PATH_COLLATION} OR "
+        f"(substr(({normalized}),-length(?))=? COLLATE {_PATH_COLLATION} AND "
         f"substr(({normalized}),-(length(?)+1),1)='/'))"
     )
 
 
 def _non_ascii_case_warning(term: ExactLookupTerm) -> tuple[str, ...]:
     if (
-        term.kind
-        in {
-            ExactLookupKind.PATH,
-            ExactLookupKind.NAME,
-            ExactLookupKind.IDENTIFIER,
-        }
-        and not term.value.isascii()
-    ):
+        term.kind is ExactLookupKind.IDENTIFIER
+        or (
+            _PATH_COLLATION == "NOCASE"
+            and term.kind in {ExactLookupKind.PATH, ExactLookupKind.NAME}
+        )
+    ) and not term.value.isascii():
         return ("sqlite_nocase_is_ascii_only",)
     return ()
 
@@ -1279,10 +1279,10 @@ def _inventory_current_vector(
     limit = _query_limit(control, requested)
     rows, steps = control.query(
         connection,
-        """SELECT c.root,c.scan_id,c.updated_ns,s.status
+        f"""SELECT c.root,c.scan_id,c.updated_ns,s.status
         FROM inventory_checkpoints c
         LEFT JOIN scans s ON s.scan_id=c.scan_id
-        AND s.root=c.root COLLATE NOCASE
+        AND s.root=c.root COLLATE {_PATH_COLLATION}
         WHERE c.valid=1 ORDER BY c.root COLLATE NOCASE LIMIT ?""",
         (limit,),
     )
@@ -1415,12 +1415,12 @@ def _inventory_term_rows(
         f.birthtime_ns"""
         if term.kind is ExactLookupKind.HASH:
             base += ",fp.algorithm,fp.digest"
-        base += """
+        base += f"""
         FROM expected e JOIN scans s ON s.scan_id=e.scan_id
-        AND s.root=e.root COLLATE NOCASE AND s.status='complete'
+        AND s.root=e.root COLLATE {_PATH_COLLATION} AND s.status='complete'
         JOIN files f ON f.scan_id=e.scan_id"""
         if term.kind is ExactLookupKind.PATH:
-            predicate = "f.path=? COLLATE NOCASE"
+            predicate = f"f.path=? COLLATE {_PATH_COLLATION}"
             term_parameters: tuple[object, ...] = (term.value,)
         elif term.kind is ExactLookupKind.NAME:
             predicate = _basename_predicate("f.path")
@@ -1686,7 +1686,7 @@ def _code_term_rows(
         term_parameters: tuple[object, ...] = (term.value, term.value)
         order = "s.qualified_name,s.symbol_id"
     elif term.kind is ExactLookupKind.PATH:
-        predicate = "f.current_path=? COLLATE NOCASE"
+        predicate = f"f.current_path=? COLLATE {_PATH_COLLATION}"
         term_parameters = (term.value,)
         order = "f.current_path COLLATE NOCASE,v.version_id"
     elif term.kind is ExactLookupKind.NAME:
@@ -2236,7 +2236,7 @@ def _catalog_term_rows(
         limit = _query_limit(control, remaining)
         expected = _expected_values(len(batch))
         if term.kind is ExactLookupKind.PATH:
-            predicate = "d.path=? COLLATE NOCASE"
+            predicate = f"d.path=? COLLATE {_PATH_COLLATION}"
             term_parameters: tuple[object, ...] = (term.value,)
         elif term.kind is ExactLookupKind.NAME:
             predicate = _basename_predicate("d.path")

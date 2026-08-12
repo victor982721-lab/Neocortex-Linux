@@ -230,9 +230,10 @@ existe cuando se cumplen juntos los criterios dinámicos de la última sección.
   fence de Inventory/Catalog antes de publicar y sólo escribe batches, tareas,
   eventos y progreso owner-local; nunca muta corpus ni owners fuente.
 - `review value` sin `--refresh` sigue estrictamente read-only. Usa la cola si
-  coincide con el fingerprint fuente y, si Framework v21 o la cola todavía no
-  existen, conserva el preview legacy sin DDL. Una cola desfasada se reporta
-  `stale`; no mezcla snapshots ni cae silenciosamente al preview.
+  coincide con el fingerprint fuente y, si Framework v22 o la cola todavía no
+  existen, conserva el preview legacy sin DDL. El epoch de un scan incompleto
+  persiste al cruzar medianoche; al cambiar fuente o política, el último head
+  completo permanece visible como `stale` mientras se construye el siguiente.
 - El cursor durable permite recorrer más de 25,000 observaciones sin retirar el
   límite que antes producía `scope_too_broad`. Cada invocación explícita avanza
   sólo una página; replay de un batch idéntico es idempotente.
@@ -240,21 +241,23 @@ existe cuando se cumplen juntos los criterios dinámicos de la última sección.
   página observa owner ausente, plan inválido o mismatch, la corrida completa
   permanece `partial` y no supersede pendientes por ausencia aunque una página
   posterior llegue al final del keyset.
-- `RESOLVED` y `DISMISSED` requieren decisión humana durable y no se reabren o
-  reemplazan automáticamente al refrescar. `SUPERSEDED` está reservado a
-  receipts sistémicos: el head fuente generacional deriva ausencias masivas sin
-  O(N) eventos ni borrar historial.
+- `review task show/history/claim/decide` cierra el journey CLI con actor y CAS.
+  `RESOLVED` y `DISMISSED` guardan scope `permanent`,
+  `until-source-change` o `until-policy-change`; sólo una expiración comprobada
+  permite successor receipt-backed. Retry exacto es idempotente y las
+  decisiones legacy permanecen terminales. `SUPERSEDED` sigue reservado a
+  receipts sistémicos.
 - El snapshot Knowledge de Framework v21 valida y expone heads ReviewTask y
   watermarks de batches, eventos y publicaciones fuente; conserva lectura
   legacy validada para v19/v20. Retention protege tareas y eventos humanos como
   holds y, por separado, el head vigente con toda la cadena alcanzable de
   batches, memberships y progreso exactos. La auditoría está acotada y falla
   cerrado ante receipts o vínculos históricos corruptos.
-- **PARTIAL / PLANNED:** esto no completa el árbol general de `Knowledge Asset
-  Health`. Los estados causales actuales corresponden sólo a la cola Value;
-  ReviewTask para OCR, entities/claims, contradicciones, links, recovery y
-  promociones shadow, así como una GUI para refrescar y decidir tareas, siguen
-  pendientes. El schema por sí solo no demuestra esos productores.
+- Video OCR ya participa en la búsqueda Knowledge canónica con locator temporal
+  y estado owner fail-closed; no se añadieron embeddings Video. **PARTIAL /
+  PLANNED:** esto no completa `Knowledge Asset Health`; ReviewTask para OCR,
+  entities/claims, contradicciones, links, recovery y promociones shadow, así
+  como una GUI para decidir tareas, siguen pendientes.
 - Este handoff documenta el árbol sin sustituir tests focales, gates, commit,
   release instalada ni CI del SHA final.
 
@@ -307,19 +310,20 @@ existe cuando se cumplen juntos los criterios dinámicos de la última sección.
 
 ## Próximos pasos, en orden
 
-1. Completar `Knowledge Asset Health` mediante una sola vertical causal sobre
+1. Cerrar esta release sobre un único SHA: gates canónicos, backups online,
+   instalación versionada, dos `Neocortex --all`, superficies instaladas, push
+   y CI verde conforme al criterio dinámico siguiente.
+2. Etiquetar con Víctor 20–50 consultas reales ES/EN/DE/ZH. La infraestructura
+   golden ya existe, pero no debe inventar juicios humanos ni promover modelos
+   por una métrica sintética.
+3. Completar `Knowledge Asset Health` mediante una sola vertical causal sobre
    facts/receipts/snapshots reales —sin score agregado— y exponerla primero en
    API/CLI/doctor/status; no fingir salud de dominios aún no instrumentados.
-2. Extender manifests, broker, representación documental y contrato causal a
-   PDF/DOCX/Office sólo una ruta a la vez, con characterization tests y sin
-   reescribir extractores;
-   mantener el legado no atribuible.
-3. Mantener `normalize`/`chunk` como deuda explícita hasta identificar fronteras
-   ejecutables reales; no crear stages nominales que no correspondan a trabajo.
-4. Etiquetar con Víctor 20–50 consultas ES/EN/DE/ZH y comparar MiniLM/CLIP
-   shadow sin mezclar espacios ni promover por intuición.
-5. Diseñar el backend Linux identity-bound sólo si la organización física en
-   Kubuntu se vuelve prioridad; hasta entonces mantener el rechazo actual.
+4. Extender manifests y contrato causal a PDF, luego DOCX y finalmente Office,
+   una ruta por vez; conservar legado no atribuible y no reescribir extractores.
+5. Mantener `normalize`/`chunk` como deuda explícita hasta identificar fronteras
+   ejecutables reales. Diseñar mutación Linux identity-bound sólo si la
+   organización física en Kubuntu se vuelve prioridad.
 
 ## Criterio dinámico de cierre de 0.9.0
 

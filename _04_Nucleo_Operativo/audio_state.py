@@ -15,6 +15,7 @@ from neocortex.sqlite_connection import (
     SQLiteWriterPragmas,
     connect_sqlite,
 )
+from neocortex.platform_policy import sqlite_path_collation
 
 from .sqlite_schema_contract import (
     SQLiteSchemaContract,
@@ -27,7 +28,8 @@ from .sqlite_schema_contract import (
 # region [01] Connections and additive schema
 
 
-AUDIO_SCHEMA_VERSION = 1
+AUDIO_SCHEMA_VERSION = 2
+_PATH_COLLATION = sqlite_path_collation()
 
 _AUDIO_SQLITE_POLICY = SQLiteConnectionPolicy(
     label="audio state",
@@ -43,14 +45,17 @@ _AUDIO_SQLITE_POLICY = SQLiteConnectionPolicy(
 )
 
 
-_AUDIO_SCHEMA_DDL = (
-    """CREATE TABLE IF NOT EXISTS metadata(
+def _audio_schema_ddl(path_collation: str) -> tuple[str, ...]:
+    if path_collation not in {"BINARY", "NOCASE"}:
+        raise ValueError(f"unsupported audio path collation: {path_collation}")
+    return (
+        """CREATE TABLE IF NOT EXISTS metadata(
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
     ) WITHOUT ROWID""",
-    """CREATE TABLE IF NOT EXISTS documents(
+        f"""CREATE TABLE IF NOT EXISTS documents(
         file_key TEXT PRIMARY KEY,
-        path TEXT NOT NULL COLLATE NOCASE,
+        path TEXT NOT NULL COLLATE {path_collation},
         mime TEXT NOT NULL,
         size INTEGER NOT NULL,
         mtime_ns INTEGER NOT NULL,
@@ -66,7 +71,7 @@ _AUDIO_SCHEMA_DDL = (
         backend_version TEXT,
         device TEXT,
         compute_type TEXT,
-        media_metadata_json TEXT NOT NULL DEFAULT '{}',
+        media_metadata_json TEXT NOT NULL DEFAULT '{{}}',
         text_zlib BLOB,
         text_chars INTEGER NOT NULL DEFAULT 0,
         text_xxh3_128 TEXT,
@@ -78,24 +83,24 @@ _AUDIO_SCHEMA_DDL = (
         last_seen_run_id INTEGER NOT NULL,
         updated_ns INTEGER NOT NULL
     ) WITHOUT ROWID""",
-    """CREATE UNIQUE INDEX IF NOT EXISTS audio_documents_path_idx
+        """CREATE UNIQUE INDEX IF NOT EXISTS audio_documents_path_idx
         ON documents(path)""",
-    """CREATE INDEX IF NOT EXISTS audio_documents_status_idx
+        """CREATE INDEX IF NOT EXISTS audio_documents_status_idx
         ON documents(status,review_disposition,path)""",
-    """CREATE TABLE IF NOT EXISTS audio_inventory(
+        f"""CREATE TABLE IF NOT EXISTS audio_inventory(
         file_key TEXT PRIMARY KEY,
-        path TEXT NOT NULL COLLATE NOCASE,
+        path TEXT NOT NULL COLLATE {path_collation},
         mime TEXT NOT NULL,
         size INTEGER NOT NULL,
         mtime_ns INTEGER NOT NULL,
         birthtime_ns INTEGER NOT NULL,
         last_seen_run_id INTEGER NOT NULL
     ) WITHOUT ROWID""",
-    """CREATE UNIQUE INDEX IF NOT EXISTS audio_inventory_path_idx
+        """CREATE UNIQUE INDEX IF NOT EXISTS audio_inventory_path_idx
         ON audio_inventory(path)""",
-    """CREATE INDEX IF NOT EXISTS audio_inventory_run_idx
+        """CREATE INDEX IF NOT EXISTS audio_inventory_run_idx
         ON audio_inventory(last_seen_run_id,file_key)""",
-    """CREATE TABLE IF NOT EXISTS segments(
+        """CREATE TABLE IF NOT EXISTS segments(
         file_key TEXT NOT NULL,
         segment_index INTEGER NOT NULL,
         start_ms INTEGER NOT NULL,
@@ -106,16 +111,20 @@ _AUDIO_SCHEMA_DDL = (
         PRIMARY KEY(file_key,segment_index),
         FOREIGN KEY(file_key) REFERENCES documents(file_key) ON DELETE CASCADE
     ) WITHOUT ROWID""",
-    """CREATE INDEX IF NOT EXISTS audio_segments_time_idx
+        """CREATE INDEX IF NOT EXISTS audio_segments_time_idx
         ON segments(file_key,start_ms,end_ms)""",
-    """CREATE VIRTUAL TABLE IF NOT EXISTS transcript_fts USING fts5(
+        """CREATE VIRTUAL TABLE IF NOT EXISTS transcript_fts USING fts5(
         file_key UNINDEXED,
         path UNINDEXED,
         title,
         body,
         tokenize='unicode61 remove_diacritics 2'
     )""",
-)
+    )
+
+
+_AUDIO_SCHEMA_DDL = _audio_schema_ddl(_PATH_COLLATION)
+_AUDIO_V1_SCHEMA_DDL = _audio_schema_ddl("NOCASE")
 
 
 def _create_audio_schema(connection: sqlite3.Connection) -> None:
@@ -123,9 +132,57 @@ def _create_audio_schema(connection: sqlite3.Connection) -> None:
         connection.execute(statement)
 
 
+def _create_audio_v1_schema(connection: sqlite3.Connection) -> None:
+    for statement in _AUDIO_V1_SCHEMA_DDL:
+        connection.execute(statement)
+
+
 @lru_cache(maxsize=1)
 def _audio_schema_contract() -> SQLiteSchemaContract:
     return schema_contract_from_builder(_create_audio_schema)
+
+
+@lru_cache(maxsize=1)
+def _audio_v1_schema_contract() -> SQLiteSchemaContract:
+    return schema_contract_from_builder(_create_audio_v1_schema)
+
+
+def _migrate_audio_v1_path_collation(connection: sqlite3.Connection) -> None:
+    if _PATH_COLLATION == "NOCASE":
+        return
+    row_counts = {
+        table: int(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+        for table in ("documents", "audio_inventory", "segments", "transcript_fts")
+    }
+    connection.execute("CREATE TEMP TABLE audio_documents_v1 AS SELECT * FROM documents")
+    connection.execute("CREATE TEMP TABLE audio_inventory_v1 AS SELECT * FROM audio_inventory")
+    connection.execute("CREATE TEMP TABLE audio_segments_v1 AS SELECT * FROM segments")
+    connection.execute(
+        """CREATE TEMP TABLE audio_transcript_fts_v1 AS
+        SELECT rowid AS source_rowid,file_key,path,title,body FROM transcript_fts"""
+    )
+    connection.execute("DROP TABLE transcript_fts")
+    connection.execute("DROP TABLE segments")
+    connection.execute("DROP TABLE audio_inventory")
+    connection.execute("DROP TABLE documents")
+    _create_audio_schema(connection)
+    connection.execute("INSERT INTO documents SELECT * FROM audio_documents_v1")
+    connection.execute("INSERT INTO audio_inventory SELECT * FROM audio_inventory_v1")
+    connection.execute("INSERT INTO segments SELECT * FROM audio_segments_v1")
+    connection.execute(
+        """INSERT INTO transcript_fts(rowid,file_key,path,title,body)
+        SELECT source_rowid,file_key,path,title,body FROM audio_transcript_fts_v1"""
+    )
+    for table, expected in row_counts.items():
+        actual = int(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+        if actual != expected:
+            raise RuntimeError(f"audio path migration changed {table} row count")
+    if connection.execute("PRAGMA foreign_key_check").fetchone() is not None:
+        raise RuntimeError("audio path migration foreign-key validation failed")
+    connection.execute("DROP TABLE audio_documents_v1")
+    connection.execute("DROP TABLE audio_inventory_v1")
+    connection.execute("DROP TABLE audio_segments_v1")
+    connection.execute("DROP TABLE audio_transcript_fts_v1")
 
 
 @contextmanager
@@ -137,13 +194,7 @@ def audio_database(
 ):
     """Open audio state, optionally refusing creation after initialization."""
 
-    mode = (
-        READONLY_EXISTING
-        if readonly
-        else READWRITE_CREATE
-        if create
-        else READWRITE_EXISTING
-    )
+    mode = READONLY_EXISTING if readonly else READWRITE_CREATE if create else READWRITE_EXISTING
     connection = connect_sqlite(
         path,
         mode=mode,
@@ -164,8 +215,7 @@ def initialize_audio_state(path: Path) -> None:
             prior = read_metadata_schema_version(connection, label="audio")
             if prior is not None and prior > AUDIO_SCHEMA_VERSION:
                 raise RuntimeError(
-                    f"audio schema {prior} is newer than supported "
-                    f"schema {AUDIO_SCHEMA_VERSION}"
+                    f"audio schema {prior} is newer than supported schema {AUDIO_SCHEMA_VERSION}"
                 )
             if prior == AUDIO_SCHEMA_VERSION:
                 validate_sqlite_schema_contract(
@@ -175,10 +225,30 @@ def initialize_audio_state(path: Path) -> None:
                     exact=True,
                 )
                 return
+            if prior == 1:
+                validate_sqlite_schema_contract(
+                    connection,
+                    _audio_v1_schema_contract(),
+                    label="audio schema 1 migration source",
+                    exact=True,
+                )
+            elif prior not in {None, 0}:
+                raise RuntimeError(f"unsupported audio migration start: {prior}")
 
     with audio_database(path, create=True) as connection:
         connection.execute("BEGIN IMMEDIATE")
         try:
+            locked_prior = read_metadata_schema_version(connection, label="audio")
+            if locked_prior == 1:
+                validate_sqlite_schema_contract(
+                    connection,
+                    _audio_v1_schema_contract(),
+                    label="audio schema 1 migration source",
+                    exact=True,
+                )
+                _migrate_audio_v1_path_collation(connection)
+            elif locked_prior not in {None, 0, AUDIO_SCHEMA_VERSION}:
+                raise RuntimeError(f"unsupported audio migration start: {locked_prior}")
             _create_audio_schema(connection)
             connection.execute(
                 "INSERT INTO metadata(key,value) VALUES('schema_version',?) "

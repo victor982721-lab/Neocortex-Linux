@@ -457,7 +457,10 @@ def test_value_review_queue_fails_stale_until_changed_source_is_refreshed(
         reference_time_ns=REFERENCE_NS,
     )
     assert stale.status is ValueReviewTaskQueueStatus.STALE
-    assert stale.records == ()
+    assert stale.reason == "review_task_source_changed"
+    assert stale.records
+    assert stale.fence is not None
+    assert stale.fence.source_snapshot_fingerprint == (first.fence.source_snapshot_fingerprint)
 
     refreshed = refresh_value_review_tasks(
         framework,
@@ -556,6 +559,105 @@ def test_value_review_refresh_never_reopens_human_terminal_task(
             for key in resolved_keys
         }
     assert all(value == [(1,)] for value in versions.values())
+
+
+def test_value_review_reopens_until_source_change_but_not_permanent(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "state"
+    paths = _create_state(root)
+    framework = root / "framework.sqlite3"
+    first = refresh_value_review_tasks(
+        framework,
+        paths,
+        scope="personal",
+        clock_ns=lambda: REFERENCE_NS,
+    )
+    assert first.status == "complete"
+    before = read_value_review_task_queue(
+        framework,
+        paths,
+        scope="personal",
+        limit=10,
+        reference_time_ns=REFERENCE_NS,
+    )
+    records = tuple(before.records[:2])
+    assert len(records) == 2
+    for index, (record, decision_scope) in enumerate(
+        zip(records, ("until-source-change", "permanent"), strict=True),
+        start=1,
+    ):
+        append_review_task_event(
+            framework,
+            ReviewTaskTransition(
+                event_id=f"value-scoped-terminal-{index}",
+                event_key=f"value-scoped-terminal-key-{index}",
+                task_id=record.task.task_id,
+                expected_event_id=record.current_event.event_id,
+                expected_state=ReviewTaskState.OPEN,
+                to_state=ReviewTaskState.RESOLVED,
+                actor_kind=ReviewTaskActorKind.HUMAN,
+                actor_id="fixture-reviewer",
+                provenance=CanonicalJsonObject.from_mapping({"surface": "test"}),
+                decision=CanonicalJsonObject.from_mapping(
+                    {
+                        "decision": "resolved",
+                        "schema": "neocortex.review-task-decision/v1",
+                        "scope": decision_scope,
+                        "selector_signature": record.selector_signature,
+                        "source_input_fingerprint": record.source.fingerprint,
+                        "source_snapshot_fingerprint": (record.source_snapshot_fingerprint),
+                    }
+                ),
+                note="confirmed",
+                observed_ns=REFERENCE_NS + index,
+                recorded_ns=REFERENCE_NS + index,
+            ),
+        )
+
+    with sqlite3.connect(paths.inventory) as connection:
+        connection.execute(
+            "UPDATE inventory_checkpoints SET updated_ns=updated_ns+1 WHERE root='/corpus'"
+        )
+        for record in records:
+            assert record.source.resource is not None
+            path = record.source.resource.current_path
+            connection.execute(
+                "UPDATE files SET mtime_ns=mtime_ns+1 WHERE path=?",
+                (path,),
+            )
+            connection.execute(
+                "UPDATE planned_duplicate_members SET mtime_ns=mtime_ns+1 WHERE path=?",
+                (path,),
+            )
+
+    with sqlite3.connect(paths.catalog) as connection:
+        for record in records:
+            assert record.source.resource is not None
+            connection.execute(
+                "UPDATE catalog_generation_documents SET mtime_ns=mtime_ns+1 WHERE path=?",
+                (record.source.resource.current_path,),
+            )
+
+    refreshed = refresh_value_review_tasks(
+        framework,
+        paths,
+        scope="personal",
+        clock_ns=lambda: REFERENCE_NS + 10,
+    )
+    assert refreshed.publication is not None
+    assert refreshed.publication.progress.complete
+    heads = review_task_repository.lookup_review_task_version_heads(
+        framework,
+        tuple(record.task.logical_key for record in records),
+        scope="personal",
+        task_type="value-review",
+    )
+    by_key = {head.logical_key: head for head in heads}
+    assert by_key[records[0].task.logical_key].task_version == 2
+    assert by_key[records[0].task.logical_key].state is ReviewTaskState.OPEN
+    assert by_key[records[1].task.logical_key].task_version == 1
+    assert by_key[records[1].task.logical_key].state is ReviewTaskState.RESOLVED
 
 
 def test_empty_durable_scan_becomes_stale_when_its_source_head_changes(
@@ -932,8 +1034,9 @@ def test_value_review_queue_stales_when_ranked_source_owner_disappears(
     )
     assert stale.status is ValueReviewTaskQueueStatus.STALE
     assert stale.fence is not None
-    assert stale.fence.source_snapshot_fingerprint != original_fingerprint
-    assert stale.records == ()
+    assert stale.fence.source_snapshot_fingerprint == original_fingerprint
+    assert stale.reason == "review_task_source_changed"
+    assert stale.records
 
 
 def test_value_review_refresh_abstains_if_source_changes_before_owner_commit(
@@ -1106,10 +1209,189 @@ def test_value_review_refresh_pages_scope_larger_than_legacy_safety_limit(
         root / "framework.sqlite3",
         paths,
         scope="personal",
-        clock_ns=lambda: REFERENCE_NS + 1,
+        clock_ns=lambda: REFERENCE_NS + DAY_NS + 1,
     )
     assert second.publication is not None
     assert second.publication.progress.scanned_count == 200
+    assert second.fence is not None
+    assert second.fence.source_snapshot_fingerprint == first.fence.source_snapshot_fingerprint
+    assert second.fence.source_snapshot.to_dict()["reference_day_ns"] == REFERENCE_NS
+
+
+def test_complete_value_queue_becomes_policy_stale_on_the_next_day(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "state"
+    paths = _create_state(root)
+    framework = root / "framework.sqlite3"
+    refreshed = refresh_value_review_tasks(
+        framework,
+        paths,
+        scope="personal",
+        clock_ns=lambda: REFERENCE_NS,
+    )
+    assert refreshed.status == "complete"
+
+    stale = read_value_review_task_queue(
+        framework,
+        paths,
+        scope="personal",
+        limit=10,
+        reference_time_ns=REFERENCE_NS + DAY_NS,
+    )
+
+    assert stale.status is ValueReviewTaskQueueStatus.STALE
+    assert stale.reason == "review_task_policy_time_stale"
+    assert stale.progress is not None and stale.progress.complete
+    assert stale.records
+
+    reevaluated = refresh_value_review_tasks(
+        framework,
+        paths,
+        scope="personal",
+        clock_ns=lambda: REFERENCE_NS + DAY_NS,
+    )
+    assert reevaluated.status == "complete"
+    assert reevaluated.fence is not None
+    assert reevaluated.fence.source_snapshot_fingerprint != (
+        refreshed.fence.source_snapshot_fingerprint
+    )
+
+
+def test_last_complete_value_queue_remains_visible_while_new_epoch_is_partial(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "state"
+    paths = _create_state(root)
+    monkeypatch.setattr(
+        "_04_Nucleo_Operativo.value_review_tasks.VALUE_REVIEW_TASK_PAGE_SIZE",
+        4,
+    )
+    framework = root / "framework.sqlite3"
+    first_day = None
+    for page_index in range(3):
+        result = refresh_value_review_tasks(
+            framework,
+            paths,
+            scope="personal",
+            clock_ns=lambda page_index=page_index: REFERENCE_NS + page_index,
+        )
+        first_day = result
+        if result.publication is not None and result.publication.progress.complete:
+            break
+    assert first_day is not None
+    assert first_day.publication is not None and first_day.publication.progress.complete
+    old_queue = read_value_review_task_queue(
+        framework,
+        paths,
+        scope="personal",
+        limit=100,
+        reference_time_ns=REFERENCE_NS,
+    )
+    assert old_queue.status is ValueReviewTaskQueueStatus.READY
+    old_fingerprint = old_queue.fence.source_snapshot_fingerprint
+
+    started = refresh_value_review_tasks(
+        framework,
+        paths,
+        scope="personal",
+        clock_ns=lambda: REFERENCE_NS + DAY_NS,
+    )
+    assert started.publication is not None
+    assert not started.publication.progress.complete
+
+    visible = read_value_review_task_queue(
+        framework,
+        paths,
+        scope="personal",
+        limit=100,
+        reference_time_ns=REFERENCE_NS + DAY_NS,
+    )
+    assert visible.status is ValueReviewTaskQueueStatus.STALE
+    assert visible.reason == "review_task_policy_time_stale"
+    assert visible.progress is not None and visible.progress.complete
+    assert visible.fence.source_snapshot_fingerprint == old_fingerprint
+    assert {record.task.task_id for record in visible.records} == {
+        record.task.task_id for record in old_queue.records
+    }
+
+
+def test_human_resolution_after_complete_head_remains_terminal_during_partial_epoch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "state"
+    paths = _create_state(root)
+    monkeypatch.setattr(
+        "_04_Nucleo_Operativo.value_review_tasks.VALUE_REVIEW_TASK_PAGE_SIZE",
+        4,
+    )
+    framework = root / "framework.sqlite3"
+    for page_index in range(3):
+        result = refresh_value_review_tasks(
+            framework,
+            paths,
+            scope="personal",
+            clock_ns=lambda page_index=page_index: REFERENCE_NS + page_index,
+        )
+        assert result.publication is not None
+        if result.publication.progress.complete:
+            break
+    else:  # pragma: no cover - protects bounded test convergence
+        pytest.fail("Value Review fixture did not complete within three pages")
+    current = read_value_review_task_queue(
+        framework,
+        paths,
+        scope="personal",
+        limit=100,
+        reference_time_ns=REFERENCE_NS,
+    )
+    resolved = current.records[0]
+    append_review_task_event(
+        framework,
+        ReviewTaskTransition(
+            event_id="value-human-resolution-after-head",
+            event_key="value-human-resolution-after-head-key",
+            task_id=resolved.task.task_id,
+            expected_event_id=resolved.current_event.event_id,
+            expected_state=ReviewTaskState.OPEN,
+            to_state=ReviewTaskState.RESOLVED,
+            actor_kind=ReviewTaskActorKind.HUMAN,
+            actor_id="victor",
+            provenance=CanonicalJsonObject.from_mapping({"surface": "test"}),
+            decision=CanonicalJsonObject.from_mapping(
+                {
+                    "decision": "resolved",
+                    "schema": "neocortex.review-task-decision/v1",
+                    "scope": "permanent",
+                    "selector_signature": resolved.selector_signature,
+                    "source_input_fingerprint": resolved.source.fingerprint,
+                    "source_snapshot_fingerprint": resolved.source_snapshot_fingerprint,
+                }
+            ),
+            note="confirmed after publication",
+            observed_ns=REFERENCE_NS + 10,
+            recorded_ns=REFERENCE_NS + 10,
+        ),
+    )
+
+    partial = refresh_value_review_tasks(
+        framework,
+        paths,
+        scope="personal",
+        clock_ns=lambda: REFERENCE_NS + DAY_NS,
+    )
+    assert partial.publication is not None and not partial.publication.progress.complete
+    stale = read_value_review_task_queue(
+        framework,
+        paths,
+        scope="personal",
+        limit=100,
+        reference_time_ns=REFERENCE_NS + DAY_NS,
+    )
+    assert stale.status is ValueReviewTaskQueueStatus.STALE
+    assert resolved.task.task_id not in {record.task.task_id for record in stale.records}
 
 
 def test_absent_state_is_not_created(tmp_path: Path) -> None:

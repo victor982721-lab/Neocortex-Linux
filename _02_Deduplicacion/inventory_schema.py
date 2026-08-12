@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import sqlite3
 from functools import lru_cache
 from pathlib import Path
@@ -17,13 +16,14 @@ from neocortex.sqlite_schema_lifecycle import (
     initialize_versioned_sqlite_schema,
     readonly_sqlite_uri,
 )
+from neocortex.platform_policy import sqlite_path_collation
 
 from .errors import InventoryError
 
 
 SCHEMA_VERSION = 10
 _SCHEMA_LABEL = "dedup inventory"
-_PATH_COLLATION = "NOCASE" if os.name == "nt" else "BINARY"
+_PATH_COLLATION = sqlite_path_collation()
 _METADATA_DDL = """
 CREATE TABLE metadata (
     key TEXT PRIMARY KEY,

@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from _01_Enumeracion import JournalCursor
 from _02_Deduplicacion import FileSnapshot, InventoryExclusionPolicy
+from neocortex.platform_policy import sqlite_path_collation
 
 from .content_types import DetectedType
 from .corpus_access import (
@@ -54,6 +55,8 @@ from .sqlite_paths import existing_sqlite_uri
 # endregion [01]
 
 # region [02] Implementación
+
+_PATH_COLLATION = sqlite_path_collation()
 
 if TYPE_CHECKING:
 
@@ -167,11 +170,11 @@ def read_latest_durable_inventory_owner(
     with quiescent_sqlite_database(database_path, timeout_seconds=60) as connection:
         try:
             row = connection.execute(
-                """SELECT run_id,scan_id,corpus_access_mode,
+                f"""SELECT run_id,scan_id,corpus_access_mode,
                 inventory_policy_signature,journal_volume,journal_id,end_usn,
                 root,root_device_id_hex,root_file_id_hex,root_birthtime_ns
                 FROM initial_runs
-                WHERE root=? COLLATE NOCASE AND status='completed'
+                WHERE root=? COLLATE {_PATH_COLLATION} AND status='completed'
                 AND scan_id IS NOT NULL
                 AND run_kind IN ('initial','self_analysis')
                 ORDER BY run_id DESC LIMIT 1""",
@@ -787,10 +790,10 @@ class FrameworkState:
         if corpus_access_mode not in {None, "normal", "analyze_only"}:
             raise ValueError("invalid corpus access mode filter")
         row = self._connection.execute(
-            """SELECT run_id,scan_id,corpus_access_mode,
+            f"""SELECT run_id,scan_id,corpus_access_mode,
             inventory_policy_signature,journal_volume,journal_id,end_usn
             FROM initial_runs
-            WHERE root=? COLLATE NOCASE AND status='completed'
+            WHERE root=? COLLATE {_PATH_COLLATION} AND status='completed'
             AND scan_id IS NOT NULL
             AND run_kind IN ('initial','self_analysis')
             ORDER BY run_id DESC LIMIT 1""",

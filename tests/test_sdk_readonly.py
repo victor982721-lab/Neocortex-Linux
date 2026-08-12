@@ -224,7 +224,7 @@ def test_sdk_status_tolerates_absent_optional_engines_without_creating_state(
         )
         snapshot = service.status()
         states = {owner.state.value for owner in snapshot.owners}
-        if len(snapshot.owners) != 10 or states != {"absent"}:
+        if len(snapshot.owners) != 11 or states != {"absent"}:
             raise SystemExit(f"unexpected absent-state snapshot: {states!r}")
         if state_directory.exists():
             raise SystemExit("SDK status created missing state")
@@ -247,7 +247,43 @@ def test_sdk_status_tolerates_absent_optional_engines_without_creating_state(
 
     assert completed.returncode == 0, completed.stderr
     assert "SDK_ABSENT_STATUS_OK" in completed.stdout
-    assert not state_directory.exists()
+
+
+def test_sdk_knowledge_paths_preserve_legacy_constructor_without_video(
+    tmp_path: Path,
+) -> None:
+    from neocortex.sdk import KnowledgeSearchService, KnowledgeStatePaths
+
+    state = tmp_path / "legacy-sdk-state"
+    paths = KnowledgeStatePaths(
+        inventory=state / "dedup.sqlite3",
+        framework=state / "framework.sqlite3",
+        catalog=state / "document_catalog.sqlite3",
+        pdf=state / "pdf.sqlite3",
+        docx=state / "docx.sqlite3",
+        office=state / "office.sqlite3",
+        audio=state / "audio.sqlite3",
+        image=state / "image.sqlite3",
+        semantic=state / "semantic.sqlite3",
+        code=state / "code.sqlite3",
+    )
+
+    assert paths.video is None
+    snapshot = KnowledgeSearchService(paths).status()
+    assert {owner.owner for owner in snapshot.owners} == {
+        "inventory",
+        "framework",
+        "catalog",
+        "pdf",
+        "docx",
+        "office",
+        "audio",
+        "image",
+        "semantic",
+        "code",
+    }
+    assert {owner.state.value for owner in snapshot.owners} == {"absent"}
+    assert not state.exists()
 
 
 # endregion [03]

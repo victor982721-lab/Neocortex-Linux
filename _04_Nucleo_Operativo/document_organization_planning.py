@@ -15,6 +15,8 @@ import time
 import unicodedata
 from pathlib import Path
 
+from neocortex.platform_policy import sqlite_path_collation
+
 from _03_Progreso import (
     ProgressCallback,
     ProgressEvent,
@@ -50,6 +52,7 @@ _WINDOWS_RESERVED_NAMES = frozenset(
 )
 
 _CLIENT_ACCOUNT_ORGANIZATIONS = frozenset({"ANDRITZ"})
+_PATH_COLLATION = sqlite_path_collation()
 _COMPACT_KIND_DIRECTORIES: dict[str, tuple[str, ...]] = {
     "accion_correctiva_preventiva": ("Pruebas_y_calidad", "Calidad"),
     "catalogo_equipo": ("Ingenieria_y_documentacion", "Manuales_catalogos_y_fichas"),
@@ -594,15 +597,15 @@ def _plan_destination_available(
     if os.path.lexists(destination):
         return False
     catalog_conflict = connection.execute(
-        """SELECT 1 FROM documents WHERE active=1 AND path=? COLLATE NOCASE
+        f"""SELECT 1 FROM documents WHERE active=1 AND path=? COLLATE {_PATH_COLLATION}
         AND NOT(source_kind=? AND file_key=?) LIMIT 1""",
         (str(destination), row["source_kind"], row["file_key"]),
     ).fetchone()
     if catalog_conflict is not None:
         return False
     plan_conflict = connection.execute(
-        """SELECT 1 FROM organization_plans
-        WHERE destination_path=? COLLATE NOCASE
+        f"""SELECT 1 FROM organization_plans
+        WHERE destination_path=? COLLATE {_PATH_COLLATION}
         AND status IN (
             'planned','applying','moved_cache_pending','recovery_required'
         ) LIMIT 1""",

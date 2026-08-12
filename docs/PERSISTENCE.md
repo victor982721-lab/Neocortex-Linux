@@ -1,8 +1,8 @@
 # Persistencia, esquemas y migraciones
 
 > **Estado del documento.** Contrato actualizado el 11 de agosto de 2026. El
-> árbol fuente `0.9.0` declara inventario Dedup v10, framework v21,
-> PDF v12, Text v2, catálogo v6 y semántica v7; la barrera integral y el paquete
+> árbol fuente `0.9.0` declara inventario Dedup v10, framework v22,
+> PDF v13, Text v2, catálogo v7 y semántica v7; la barrera integral y el paquete
 > final se registran por separado. En una auditoría histórica, bases vivas se
 > inspeccionaron sin
 > migrarlas: dedup permanecía
@@ -103,17 +103,17 @@ a los archivos vivos.
 |---|---|---:|---|---|
 | Base de `SqlitePathIndex` | `_01_Enumeracion.path_index_schema` / `path_index` | 1 | índice auxiliar MFT de `nodes` y `metadata` | `metadata.schema_version`; no migraciones legacy admitidas |
 | `dedup.sqlite3` | `_02_Deduplicacion.inventory_schema` / `DedupIndex` | **10 en fuente**; 6 en la base viva histórica inspeccionada | scans generacionales ligados a firma de inventario, checkpoint portable/USN opcional, archivos, fingerprints, summaries y grupos/miembros de plan | `metadata.schema_version`; migraciones 1→10 |
-| `framework.sqlite3` | `framework_schema`, `FrameworkState`, `FrameworkRouteState`, `review_task_repository` | **21** | runs, fases, policy/identidad de corpus, acciones con snapshot protegido, eventos append-only de transición/conciliación/manifest, candidatos de ruta, caché de tipo y ReviewTask durable | `metadata.schema_version`; migraciones secuenciales |
-| `pdf.sqlite3` | `pdf_schema`, `pdf_state`, `PdfRoute`, `PdfDerivedIndexer` | 12 | inventario, documentos, páginas, OCR efectivo/OSD/confianza/fallback, staging, errores, warnings, FTS, firmas, similitud y layout | `metadata.schema_version`; migraciones secuenciales |
-| `docx.sqlite3` | `docx_schema`, `docx_state`, `DocxRoute` | 5 | inventario, documentos, partes, diagnósticos, FTS, layouts y contrapartes PDF | `metadata.schema_version`; migraciones secuenciales |
-| `office.sqlite3` | `office_state`, `OfficeRoute` | 2 | inventario, documentos, celdas XLSX tipadas y FTS | `metadata.schema_version` |
+| `framework.sqlite3` | `framework_schema`, `FrameworkState`, `FrameworkRouteState`, `review_task_repository` | **22** | runs, fases, policy/identidad de corpus, acciones con snapshot protegido, eventos append-only de transición/conciliación/manifest, candidatos de ruta, caché de tipo y ReviewTask durable | `metadata.schema_version`; migraciones secuenciales |
+| `pdf.sqlite3` | `pdf_schema`, `pdf_state`, `PdfRoute`, `PdfDerivedIndexer` | 13 | inventario, documentos, páginas, OCR efectivo/OSD/confianza/fallback, staging, errores, warnings, FTS, firmas, similitud y layout | `metadata.schema_version`; migraciones secuenciales |
+| `docx.sqlite3` | `docx_schema`, `docx_state`, `DocxRoute` | 6 | inventario, documentos, partes, diagnósticos, FTS, layouts y contrapartes PDF | `metadata.schema_version`; migraciones secuenciales |
+| `office.sqlite3` | `office_state`, `OfficeRoute` | 3 | inventario, documentos, celdas XLSX tipadas y FTS | `metadata.schema_version`; migraciones secuenciales |
 | `archive.sqlite3` | `archive_state`, `ArchiveRoute` | 1 | contenedores ZIP, miembros y cadenas anidadas, incidencias, texto comprimido y FTS | `metadata.schema_version`; sin estado legacy |
 | `text.sqlite3` | `text_state`, `TextRoute`, `text_derivation_repository` | **2** | texto físico, EML y Office heredado; documento/FTS, revisiones, intentos, bindings, materializaciones, heads, receipts y outbox de derivación | `metadata.schema_version`; migración exacta 1→2 sin receipts sintéticos |
-| `audio.sqlite3` | `audio_state`, `AudioRoute` | 1 | inventario, documentos, segmentos y FTS de transcripción | `metadata.schema_version` |
-| `video.sqlite3` | `video_state`, `VideoRoute` | 1 | documentos, streams, frames, selección, OCR, timestamps, métricas y FTS | `metadata.schema_version`; sin estado legacy |
+| `audio.sqlite3` | `audio_state`, `AudioRoute` | 2 | inventario, documentos, segmentos y FTS de transcripción | `metadata.schema_version`; migraciones secuenciales |
+| `video.sqlite3` | `video_state`, `VideoRoute` | 2 | documentos, streams, frames, selección, OCR, timestamps, métricas y FTS | `metadata.schema_version`; migraciones secuenciales |
 | `image.sqlite3` | `image_state`, `ImageRoute` | 5 | imágenes, estado de extracción/clasificación y metadata | `metadata.schema_version`; migraciones aditivas |
-| `document_catalog.sqlite3` | `document_catalog_schema`, `document_catalog` | **6** | runs, generaciones/staging, publicación por fuente, proyección de documentos, historial y planes de organización | `metadata.schema_version`; migraciones secuenciales |
-| `code.sqlite3` | `code_schema`, `code_state` | 4 | proyectos, runs, archivos/versiones, símbolos, referencias, dependencias, grafo, chunks, FTS, métricas/relaciones y evidencia externa normalizada | metadata + `PRAGMA user_version` + `schema_migrations` exacto; migraciones secuenciales 1→4 |
+| `document_catalog.sqlite3` | `document_catalog_schema`, `document_catalog` | **7** | runs, generaciones/staging, publicación por fuente, proyección de documentos, historial y planes de organización | `metadata.schema_version`; migraciones secuenciales |
+| `code.sqlite3` | `code_schema`, `code_state` | 5 | proyectos, runs, archivos/versiones, símbolos, referencias, dependencias, grafo, chunks, FTS, métricas/relaciones y evidencia externa normalizada | metadata + `PRAGMA user_version` + `schema_migrations` exacto; migraciones secuenciales 1→5 |
 | `semantic.sqlite3` | `semantic_schema`, repositorios y servicio semántico | **7** | espacios/modelos, revisiones inmutables, miembros/heads generacionales, jobs, payloads, receipts, derivaciones de chunks y outbox | metadata + `PRAGMA user_version` + `schema_migrations` exacto; 6→7 aditiva sin atribución legacy |
 
 La base del índice MFT es una API auxiliar con ruta elegida por el llamador y
@@ -123,26 +123,27 @@ capacidades.
 
 ### Matriz de propietarios del snapshot Knowledge
 
-Knowledge conserva los diez propietarios históricos y agrega `archive` y
+Knowledge conserva once propietarios base y agrega `archive` y
 `text` sólo cuando existe la base correspondiente. No incorpora la base
 auxiliar de `SqlitePathIndex`. Antes de leer datos valida la versión y el
 contrato del propietario correspondiente; una instalación que todavía no
-ejecutó esas rutas mantiene el vector histórico de diez owners:
+ejecutó esas rutas mantiene el vector base de once owners:
 
 | Owner Knowledge | Archivo | Esquema esperado | Head o watermark lógico |
 |---|---|---:|---|
 | `inventory` | `dedup.sqlite3` | 10 | scan publicado por raíz y firma, checkpoint portable/USN opcional y señal de plan de duplicados completado |
-| `framework` | `framework.sqlite3` | 21 | máximos de run, evento y acción, heads ReviewTask validados y conteo/tiempo de batches, eventos y publicaciones fuente; `best_effort_non_generational` |
-| `catalog` | `document_catalog.sqlite3` | 6 | generación publicada por `source_kind` |
-| `pdf` | `pdf.sqlite3` | 12 | filas actuales, último update/run; `best_effort_non_generational` |
-| `docx` | `docx.sqlite3` | 5 | filas actuales, último update/run; `best_effort_non_generational` |
-| `office` | `office.sqlite3` | 2 | filas actuales, último update/run; `best_effort_non_generational` |
+| `framework` | `framework.sqlite3` | 22 | máximos de run, evento y acción, heads ReviewTask validados y conteo/tiempo de batches, eventos y publicaciones fuente; `best_effort_non_generational` |
+| `catalog` | `document_catalog.sqlite3` | 7 | generación publicada por `source_kind` |
+| `pdf` | `pdf.sqlite3` | 13 | filas actuales, último update/run; `best_effort_non_generational` |
+| `docx` | `docx.sqlite3` | 6 | filas actuales, último update/run; `best_effort_non_generational` |
+| `office` | `office.sqlite3` | 3 | filas actuales, último update/run; `best_effort_non_generational` |
 | `archive` (aditivo si existe) | `archive.sqlite3` | 1 | miembros actuales, último update/run; `best_effort_non_generational` |
 | `text` (aditivo si existe) | `text.sqlite3` | 2 | documentos actuales, último update/run; `best_effort_non_generational`; el linaje owner-local se consulta aparte |
-| `audio` | `audio.sqlite3` | 1 | filas actuales, último update/run; `best_effort_non_generational` |
+| `audio` | `audio.sqlite3` | 2 | filas actuales, último update/run; `best_effort_non_generational` |
+| `video` | `video.sqlite3` | 2 | frames/OCR actuales, último update/run; `best_effort_non_generational` |
 | `image` | `image.sqlite3` | 5 | imágenes actuales, último update/run; `best_effort_non_generational` |
 | `semantic` | `semantic.sqlite3` | 7 | generación `ready` publicada por modelo, espacio y firma de procesamiento; receipts nuevos no atribuyen filas legacy |
-| `code` | `code.sqlite3` | 4 | archivos actuales, última versión/run; `best_effort_non_generational` |
+| `code` | `code.sqlite3` | 5 | archivos actuales, última versión/run; `best_effort_non_generational` |
 
 Una base ausente se representa como `absent`; no se crea para completar la
 matriz. Una versión menor, futura, inconsistente o un contrato malformado
@@ -275,6 +276,13 @@ estado/evento mediante CAS; `RESOLVED` y `DISMISSED` requieren actor y decisión
 humanos. El progreso mutable está limitado al cursor/revisión de su scan y
 referencia el último batch confirmado.
 
+V22 conserva las tablas ReviewTask y versiona sus triggers de lifecycle para
+decisiones scoped sin reinterpretar filas v21. Además unifica la identidad de rutas de
+Framework con la política del host: `BINARY` en Linux y `NOCASE` en Windows.
+La clave de `route_candidates` y las comparaciones de raíz/ruta protegida usan
+esa misma collation; los labels y ordenamientos no identitarios conservan su
+semántica anterior.
+
 `publish_review_task_page()` confirma batch, memberships, tareas, eventos
 iniciales y progreso en una sola transacción Framework. Cuando el cursor y la
 evidencia acumulada están completos publica también un head fuente append-only;
@@ -360,16 +368,20 @@ especializados para no reprocesar archivos sin cambios. Sus claves se derivan
 de identidad durable, metadatos y firmas de procesamiento. Una caché no es
 respaldo del original.
 
-PDF v12 añade por página perfil/idiomas OCR efectivos, resultado OSD,
+PDF v13 conserva el contrato OCR de v12 y migra la equivalencia de paths a la
+política de plataforma; DOCX v6 hace lo mismo desde v5. PDF v12 añadió por
+página perfil/idiomas OCR efectivos, resultado OSD,
 confianza, fallback y procedencia; su migración 11→12 es aditiva y la
-reextracción actualiza la firma. Office v2 conserva cada celda XLSX no vacía con
+reextracción actualiza la firma. Office v3 y Audio v2 migran la equivalencia de
+paths sin inventar filas; Office v2 conservó cada celda XLSX no vacía con
 libro, hoja/ordinal, A1, tipo, valor lógico y raw, fórmula, valor cacheado,
 estilo/formato y proyección `XLSX_CELL` a texto/FTS; la migración v1→v2 no
 inventa celdas legacy, que aparecen al reprocesar.
 
 PDF y DOCX incluyen FTS y estructuras derivadas; Archive conserva miembros
 virtuales/cadenas ZIP y OCR; texto conserva cuerpo, asunto/autor y tipo; audio
-almacena segmentos. Video v1 conserva documentos, inventario, streams/probe,
+almacena segmentos. Video v2 migra la equivalencia de raíz/path; el contrato v1
+ya conservaba documentos, inventario, streams/probe,
 frames con razones de muestreo, timestamp, dimensiones, XXH3, OCR/provenance y
 FTS, además del vínculo exacto al transcript Audio cuando existe. Imagen
 almacena clasificación/evidencia y su ruta productora garantiza la huella
@@ -547,7 +559,7 @@ una generación completa por modelo seleccionada mediante
 `ready_partial` y `building` no son visibles. V7 agrega receipts/outbox de
 derivación sin convertir las filas preexistentes en hechos atribuidos.
 
-`code.embedding_links`, introducida en Code v2 y conservada por v4, tiene un
+`code.embedding_links`, introducida en Code v2 y conservada por v5, tiene un
 productor y un consumidor integrados. Tras publicar por completo texto de
 `source_kind=code`, `code-semantic-link-v1` prepara en una tabla TEMP la
 cobertura exacta del head y exige que cada chunk vigente no vacío resuelva por
@@ -660,7 +672,9 @@ cuatro columnas sin reinterpretar filas legacy y crea la bitácora de transició
 V19 valida el layout v18 y agrega la bitácora de conciliación append-only.
 V20 preserva esos owners y agrega evidencia inmutable de policy/identidad para
 autoanálisis y acciones. V21 preserva todo ese estado y agrega la cola
-ReviewTask vacía sin sintetizar hallazgos históricos.
+ReviewTask vacía sin sintetizar hallazgos históricos. V22 migra la identidad
+de rutas y versiona los dos triggers de lifecycle ReviewTask para decisiones
+scoped; conserva todas sus tablas y filas sin reinterpretarlas.
 
 ### Migración framework v17→v18
 
@@ -708,9 +722,30 @@ cola equivalente y no inventa decisiones humanas.
 Una segunda apertura es idempotente. Un objeto desconocido, JSON/DDL no
 canónico, FK inválida, schema futuro o excepción durante el writer provoca
 abstención o rollback. Un lector Knowledge puede aceptar v19/v20 bajo su
-validador read-only exacto, pero un productor ReviewTask exige v21. El rollback
+validador read-only exacto; v21 se incorpora como predecessor read-only desde
+v22. Los productores ReviewTask actuales exigen v22. El rollback
 operativo restaura backup y runtime compatibles; no se edita el número de
 schema para fingir downgrade.
+
+### Migración framework v21→v22
+
+La migración conserva exactamente las filas ReviewTask de v21 y reemplaza sólo
+los dos triggers de lifecycle por su contrato v22; el builder v21 mantiene sus
+literales exactos para lectura/migración. En
+Windows la collation de identidad ya es `NOCASE`, por lo que el paso sólo
+avanza metadata después de validar el contrato previo. En Linux reconstruye
+`route_candidates` dentro de la misma transacción para que `path` sea
+`BINARY`; así `Case` y `case` pueden coexistir sin que el orden de llegada
+cambie el resultado. Las comparaciones de raíz durable y raíz protegida usan la
+misma política.
+
+Antes de publicar v22 se exige el schema v21 exacto, `integrity_check=ok` y
+`foreign_key_check` vacío. Se reservan y validan los nombres temporales, se
+comparan conteos y evidencia origen/destino y se valida el contrato v22 dos
+veces alrededor del callback. Colisión de nombre, DDL desconocido, datos/FK
+inválidos, versión futura o cualquier excepción revierte tabla, filas y
+metadata. No existe downgrade por relabeling: se restaura un backup v21 y el
+runtime compatible.
 
 ### Migraciones PDF v11→v12 y Office v1→v2
 
@@ -1057,7 +1092,7 @@ pero la conservación histórica indefinida no sustituye un backup consistente.
 ### Cobertura declarada
 
 - Path index, Office e imagen no declaran foreign keys en sus esquemas actuales.
-- Framework v21 conserva relaciones append-only de transiciones y conciliaciones
+- Framework v22 conserva relaciones append-only de transiciones y conciliaciones
   a acciones, añade policy/identidad protegidas y liga batches, tareas, eventos
   memberships, progreso y publicaciones fuente ReviewTask con FKs locales;
   catálogo
@@ -1139,7 +1174,7 @@ Resultado lógico: 8/8 `integrity_check=['ok']`, 8/8 sin filas de
 `foreign_key_check`, ningún timeout; suma de los subprocesos, aproximadamente
 98.625 s. Un FK check vacío no valida relaciones lógicas no declaradas.
 
-La fuente soporta framework v21, Dedup v10, PDF v12, Text v2, catálogo v6 y
+La fuente soporta framework v22, Dedup v10, PDF v13, Text v2, catálogo v7 y
 semántica v7, mientras
 las bases vivas seguían en framework v16, dedup v6 y catálogo v5; semantic no
 existía. Esa diferencia es esperable antes de actualizar, pero demuestra que
@@ -1307,7 +1342,7 @@ actual sí permite inventariar una página protegida/elegible sin borrar.
 ### Planificador dry-run actual
 
 `Neocortex --retention-status` abre únicamente bases existentes y reconoce los
-contratos exactos de framework v21, inventario v10, catálogo v6 y semántica v7.
+contratos exactos de framework v22, inventario v10, catálogo v7 y semántica v7.
 No crea ni migra estado. `--retention-store` acota propietarios,
 `--retention-batch-size` limita 1..1000 y los cursores
 `--retention-<store>-after` avanzan por keyset, nunca por `OFFSET`.

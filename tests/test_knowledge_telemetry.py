@@ -4,7 +4,6 @@
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
-
 # region [01] Dependencias del módulo
 from __future__ import annotations
 
@@ -133,9 +132,7 @@ def test_clock_contract_reserves_the_runtime_signature_for_perf_counter() -> Non
 
 
 def test_telemetry_never_changes_context_identity_or_rendered_payload() -> None:
-    original = _context_result(
-        _context_hit(1, suffix="stable", snippet="known", page=2)
-    )
+    original = _context_result(_context_hit(1, suffix="stable", snippet="known", page=2))
     timing = KnowledgePhaseTiming(
         KnowledgeTimingPhase.FUSION,
         500_000,
@@ -165,7 +162,7 @@ def test_telemetry_never_changes_context_identity_or_rendered_payload() -> None:
 
 
 def test_lexical_records_each_owner_independently_in_nanoseconds() -> None:
-    clock = _SequenceClock(0, 11, 20, 33, 40, 57, 60, 83)
+    clock = _SequenceClock(0, 11, 20, 33, 40, 57, 60, 83, 90, 119)
 
     rankings = search_lexical_sources(
         LexicalStatePaths(),
@@ -178,8 +175,9 @@ def test_lexical_records_each_owner_independently_in_nanoseconds() -> None:
         "fts_docx",
         "fts_office",
         "fts_audio",
+        "fts_video",
     ]
-    assert [ranking.elapsed_ns for ranking in rankings] == [11, 13, 17, 23]
+    assert [ranking.elapsed_ns for ranking in rankings] == [11, 13, 17, 23, 29]
     assert all(not ranking.hits for ranking in rankings)
 
 
@@ -284,9 +282,7 @@ def test_broker_exposes_one_signed_clock_across_every_owner_and_phase(
         )
 
     def code(*_args: object, **_kwargs: object):
-        return (), RankingExecution(
-            "code_structural", "structural_code", True, True, True, 0
-        )
+        return (), RankingExecution("code_structural", "structural_code", True, True, True, 0)
 
     def catalog(*_args: object, **_kwargs: object):
         return (), RankingExecution("catalog_metadata", "catalog", True, True, True, 0)
@@ -305,9 +301,7 @@ def test_broker_exposes_one_signed_clock_across_every_owner_and_phase(
     monkeypatch.setattr(
         knowledge_search,
         "_planned",
-        lambda _plan, channel: (
-            channel in {"semantic", "exact", "structural_code", "catalog"}
-        ),
+        lambda _plan, channel: channel in {"semantic", "exact", "structural_code", "catalog"},
     )
     monkeypatch.setattr(
         knowledge_search,
@@ -365,10 +359,7 @@ def test_legacy_custom_broker_clock_never_masquerades_as_perf_counter(
     )
 
     assert result.telemetry is not None
-    assert (
-        result.telemetry.clock_signature
-        == KNOWLEDGE_TELEMETRY_UNIDENTIFIED_CLOCK_SIGNATURE
-    )
+    assert result.telemetry.clock_signature == KNOWLEDGE_TELEMETRY_UNIDENTIFIED_CLOCK_SIGNATURE
     assert result.telemetry.clock_signature != KNOWLEDGE_TELEMETRY_CLOCK_SIGNATURE
 
 
@@ -427,9 +418,7 @@ def test_service_merges_only_compatible_identified_clock_domains(
 
     assert result.telemetry is not None
     assert result.telemetry.clock_signature == clock_contract.signature
-    child_timings = tuple(
-        phase for phase in result.telemetry.phases if phase.owner == "child"
-    )
+    child_timings = tuple(phase for phase in result.telemetry.phases if phase.owner == "child")
     broker_durations = [
         phase.duration_ns
         for phase in result.telemetry.phases
@@ -482,10 +471,9 @@ def test_service_retry_retains_both_attempts_with_fake_clock(tmp_path: Path) -> 
         for phase in result.telemetry.phases
         if phase.phase is KnowledgeTimingPhase.SNAPSHOT_AFTER
     ] == [1, 2]
-    assert sum(
-        phase.phase is KnowledgeTimingPhase.PLANNER
-        for phase in result.telemetry.phases
-    ) == 1
+    assert (
+        sum(phase.phase is KnowledgeTimingPhase.PLANNER for phase in result.telemetry.phases) == 1
+    )
     assert "snapshot_retry_succeeded" in result.warnings
 
 
@@ -527,14 +515,18 @@ def test_context_timing_is_outside_the_pure_rendered_bundle(tmp_path: Path) -> N
 
     assert bundle.telemetry is not None
     assert bundle.telemetry.operation is KnowledgeTelemetryOperation.CONTEXT
-    assert sum(
-        phase.phase is KnowledgeTimingPhase.CONTEXT_COMPILE
-        for phase in bundle.telemetry.phases
-    ) == 1
+    assert (
+        sum(
+            phase.phase is KnowledgeTimingPhase.CONTEXT_COMPILE for phase in bundle.telemetry.phases
+        )
+        == 1
+    )
     assert bundle == pure
     assert bundle.rendered_context == pure.rendered_context
     assert bundle.budget == pure.budget
     assert bundle.citation_ids == pure.citation_ids
     assert "telemetry" in bundle.to_dict()
     assert "knowledge_query_telemetry" not in bundle.rendered_context
+
+
 # endregion [02]

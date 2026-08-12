@@ -645,12 +645,12 @@ CAPABILITY_MANIFESTS: tuple[CapabilityManifest, ...] = (
             ),
             CapabilityMimeBinaryAlternatives(
                 "application/vnd.ms-excel",
-                ("soffice", "libreoffice", "xls2csv"),
+                ("xls2csv", "soffice", "libreoffice"),
                 "legacy_office_extractor_unavailable",
             ),
             CapabilityMimeBinaryAlternatives(
                 "application/vnd.ms-powerpoint",
-                ("soffice", "libreoffice", "catppt"),
+                ("catppt", "soffice", "libreoffice"),
                 "legacy_office_extractor_unavailable",
             ),
         ),

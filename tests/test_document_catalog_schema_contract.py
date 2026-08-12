@@ -31,9 +31,7 @@ from _04_Nucleo_Operativo.sqlite_schema_contract import (
 
 def _metadata_value(database: Path, key: str) -> str | None:
     with sqlite3.connect(database) as connection:
-        row = connection.execute(
-            "SELECT value FROM metadata WHERE key=?", (key,)
-        ).fetchone()
+        row = connection.execute("SELECT value FROM metadata WHERE key=?", (key,)).fetchone()
     return None if row is None else str(row[0])
 
 
@@ -57,6 +55,9 @@ def _create_legacy_catalog(database: Path, version: int) -> None:
         if version >= 5:
             catalog_schema_module._migrate_to_v5(connection)
             catalog_schema_module._set_schema_version(connection, 5)
+        if version >= 6:
+            catalog_schema_module._migrate_to_v6(connection)
+            catalog_schema_module._set_schema_version(connection, 6)
         connection.commit()
 
 
@@ -132,9 +133,7 @@ def test_unknown_catalog_versions_are_rejected_without_writing(
     database = tmp_path / "document_catalog.sqlite3"
     initialize_document_catalog(database)
     with sqlite3.connect(database) as connection:
-        connection.execute(
-            "UPDATE metadata SET value=? WHERE key='schema_version'", (raw_version,)
-        )
+        connection.execute("UPDATE metadata SET value=? WHERE key='schema_version'", (raw_version,))
         connection.commit()
     original_bytes = database.read_bytes()
     modes = _record_connection_modes(monkeypatch)
@@ -154,9 +153,7 @@ def test_every_legacy_version_migrates_without_losing_rows(
     database = tmp_path / f"catalog-v{prior_version}.sqlite3"
     _create_legacy_catalog(database, prior_version)
     with sqlite3.connect(database) as connection:
-        connection.execute(
-            "INSERT INTO metadata(key,value) VALUES('sentinel','preserved')"
-        )
+        connection.execute("INSERT INTO metadata(key,value) VALUES('sentinel','preserved')")
         connection.execute(
             """INSERT INTO catalog_runs(
                 framework_run_id,source_kind,mode,status,started_ns,summary_json
@@ -175,7 +172,7 @@ def test_every_legacy_version_migrates_without_losing_rows(
             document_catalog_schema_contract(),
             label="document catalog",
         )
-    assert _metadata_value(database, "schema_version") == "6"
+    assert _metadata_value(database, "schema_version") == str(CATALOG_SCHEMA_VERSION)
     assert _metadata_value(database, "sentinel") == "preserved"
     assert tuple(row) == (7, "pdf", "complete")
 
@@ -228,9 +225,7 @@ def test_failed_legacy_migration_rolls_back_all_partial_writes(
     database = tmp_path / "document_catalog.sqlite3"
     _create_legacy_catalog(database, 2)
     with sqlite3.connect(database) as connection:
-        connection.execute(
-            "INSERT INTO metadata(key,value) VALUES('sentinel','before')"
-        )
+        connection.execute("INSERT INTO metadata(key,value) VALUES('sentinel','before')")
         connection.commit()
 
     def fail_after_write(connection: sqlite3.Connection) -> None:
@@ -309,9 +304,7 @@ def test_v5_migration_abstains_on_unknown_objects_without_writable_open(
         elif unknown_kind == "column":
             connection.execute("ALTER TABLE documents ADD COLUMN unknown_value TEXT")
         elif unknown_kind == "index":
-            connection.execute(
-                "CREATE INDEX unknown_catalog_index ON documents(updated_ns)"
-            )
+            connection.execute("CREATE INDEX unknown_catalog_index ON documents(updated_ns)")
         else:
             connection.execute(
                 """CREATE TRIGGER unknown_catalog_trigger AFTER INSERT ON documents
@@ -321,7 +314,7 @@ def test_v5_migration_abstains_on_unknown_objects_without_writable_open(
     original_bytes = database.read_bytes()
     modes = _record_connection_modes(monkeypatch)
 
-    with pytest.raises(SQLiteSchemaContractError, match="unexpected|incompatible"):
+    with pytest.raises(SQLiteSchemaContractError, match=r"unexpected|incompatible"):
         initialize_document_catalog(database)
 
     assert modes == [True]
@@ -351,9 +344,7 @@ def test_v5_to_v6_failure_rolls_back_populated_generation_objects(
         original(connection)
         raise injected
 
-    monkeypatch.setattr(
-        catalog_schema_module, "_migrate_to_v6", fail_after_generation_writes
-    )
+    monkeypatch.setattr(catalog_schema_module, "_migrate_to_v6", fail_after_generation_writes)
 
     with pytest.raises(type(injected), match="injected v6 migration"):
         initialize_document_catalog(database)
@@ -373,4 +364,6 @@ def test_v5_to_v6_failure_rolls_back_populated_generation_objects(
     assert generation_objects == 0
     assert path == r"C:\Fixture\legacy.pdf"
     assert integrity == "ok"
+
+
 # endregion [02]
