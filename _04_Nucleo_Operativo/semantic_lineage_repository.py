@@ -908,17 +908,27 @@ def _validate_embedding_causation_receipt(
     )
     if not any(_output_matches_input(output, expected_input) for output in cause.outputs):
         raise ValueError("semantic causation receipt does not produce the reused input")
+    expected_materialization = expected_input.materialization
+    if expected_materialization is None:
+        raise ValueError("semantic reused input lacks an exact materialization")
     if cause.stage.stage_id == SEMANTIC_LEGACY_PAYLOAD_ATTESTATION_STAGE:
         _validate_legacy_payload_attestation_receipt(connection, cause, cause_row)
     elif cause.stage.stage_id == SEMANTIC_EMBEDDING_STAGE:
-        cause_member = _embedding_member_row_for_receipt(connection, cause_row)
-        _validate_embedding_receipt_contract(
-            connection,
-            cause,
-            cause_row,
-            cause_member,
-            seen=seen,
-        )
+        if expected_materialization.kind == "semantic_vector_payload":
+            _validate_embedding_payload_producer_receipt(
+                connection,
+                cause,
+                cause_row,
+            )
+        else:
+            cause_member = _embedding_member_row_for_receipt(connection, cause_row)
+            _validate_embedding_receipt_contract(
+                connection,
+                cause,
+                cause_row,
+                cause_member,
+                seen=seen,
+            )
     elif cause.stage.stage_id == SEMANTIC_EMBEDDING_CLONE_STAGE:
         if (
             cause.outcome is not WorkOutcome.SUCCEEDED
@@ -928,6 +938,82 @@ def _validate_embedding_causation_receipt(
     else:
         raise ValueError("semantic reused input has an invalid causation stage")
     return cause, cause_row
+
+
+def _validate_embedding_payload_producer_receipt(
+    connection: sqlite3.Connection,
+    receipt: WorkReceipt,
+    receipt_row: sqlite3.Row,
+) -> None:
+    if receipt_row["payload_id"] is None or receipt_row["generation_id"] is None:
+        raise SemanticStateError("semantic reused vector payload producer lacks normalized facts")
+    payload_id = int(receipt_row["payload_id"])
+    generation = connection.execute(
+        """SELECT processing_signature,provenance_json FROM embedding_generations
+        WHERE generation_id=?""",
+        (int(receipt_row["generation_id"]),),
+    ).fetchone()
+    if generation is None:
+        raise SemanticStateError("semantic reused vector payload producer generation disappeared")
+    payload, provider = _payload_binding(connection, payload_id)
+    expected_payload = _output_contracts(
+        (payload,),
+        generation_id=int(receipt_row["generation_id"]),
+    )[0]
+    item_revision_id = (
+        None if receipt_row["item_revision_id"] is None else int(receipt_row["item_revision_id"])
+    )
+    chunk_revision_id = (
+        None if receipt_row["chunk_revision_id"] is None else int(receipt_row["chunk_revision_id"])
+    )
+    raw_inputs: list[Mapping[str, object]] = []
+    if item_revision_id is not None:
+        raw_inputs.append(_item_revision_binding(connection, item_revision_id))
+    if chunk_revision_id is not None:
+        raw_inputs.append(_chunk_revision_binding(connection, chunk_revision_id))
+    expected_inputs = _input_contracts(
+        tuple(raw_inputs),
+        stage_id=SEMANTIC_EMBEDDING_STAGE,
+        processing_signature=str(generation["processing_signature"]),
+        observed_ns=int(receipt_row["started_ns"]),
+    )
+    expected_config = _configuration_contract(
+        _json_object(
+            generation["provenance_json"],
+            label="embedding generation provenance",
+        ),
+        stage_id=SEMANTIC_EMBEDDING_STAGE,
+    )
+    expected_causation: str | None = None
+    if chunk_revision_id is not None and item_revision_id is not None:
+        cause = connection.execute(
+            """SELECT receipt.receipt_key
+            FROM semantic_chunk_derivations derivation
+            JOIN semantic_work_receipts receipt
+              ON receipt.receipt_id=derivation.materialization_receipt_id
+            WHERE derivation.chunk_revision_id=? AND derivation.item_revision_id=?
+            ORDER BY derivation.derivation_id DESC LIMIT 1""",
+            (chunk_revision_id, item_revision_id),
+        ).fetchone()
+        if cause is not None:
+            expected_causation = str(cause["receipt_key"])
+    if (
+        receipt.stage.stage_id != SEMANTIC_EMBEDDING_STAGE
+        or receipt.stage.stage_version != "semantic-embedding-v1"
+        or receipt.stage.processing_signature != str(generation["processing_signature"])
+        or receipt.outcome is not WorkOutcome.SUCCEEDED
+        or receipt.execution_mode is not WorkExecutionMode.EXECUTED
+        or receipt.stage.provider != str(provider["provider"])
+        or receipt.stage.model != str(provider["model_id"])
+        or receipt.stage.model_version != str(provider["model_version"])
+        or str(receipt_row["model_signature"]) != str(provider["model_signature"])
+        or int(receipt_row["payload_id"]) != payload_id
+        or receipt.inputs != expected_inputs
+        or receipt.effective_configuration != expected_config
+        or receipt.causation_id != expected_causation
+        or expected_payload not in receipt.outputs
+    ):
+        raise SemanticStateError("semantic reused vector payload producer is not canonical")
 
 
 def _validate_embedding_receipt_contract(
@@ -1809,64 +1895,112 @@ def _payload_causation_receipt(
     *,
     now_ns: int | None,
 ) -> int:
-    rows = connection.execute(
-        """SELECT receipt_id FROM semantic_work_receipts
-        WHERE stage_id=? AND status='succeeded' AND execution_mode='executed'
-          AND payload_id=? ORDER BY receipt_id LIMIT 2""",
-        (SEMANTIC_EMBEDDING_STAGE, payload_id),
-    ).fetchall()
-    if len(rows) > 1:
+    return _payload_causation_receipts(
+        connection,
+        (payload_id,),
+        now_ns=now_ns,
+    )[payload_id]
+
+
+def _payload_causation_receipts(
+    connection: sqlite3.Connection,
+    payload_ids: Sequence[int],
+    *,
+    now_ns: int | None,
+) -> dict[int, int]:
+    selected_ids = tuple(dict.fromkeys(int(payload_id) for payload_id in payload_ids))
+    if not selected_ids:
+        return {}
+    selected = set(selected_ids)
+    rows: list[sqlite3.Row] = []
+    for offset in range(0, len(selected_ids), 250):
+        batch = selected_ids[offset : offset + 250]
+        placeholders = ",".join("?" for _ in batch)
+        rows.extend(
+            connection.execute(
+                f"""SELECT receipt_id,payload_id FROM semantic_work_receipts
+                WHERE stage_id=? AND status='succeeded'
+                  AND execution_mode='executed'
+                  AND payload_id IN ({placeholders}) ORDER BY receipt_id""",
+                (SEMANTIC_EMBEDDING_STAGE, *batch),
+            ).fetchall()
+        )
+    producer_rows: dict[int, list[int]] = {payload_id: [] for payload_id in selected_ids}
+    for row in rows:
+        producer_rows[int(row["payload_id"])].append(int(row["receipt_id"]))
+    multiple = tuple(
+        payload_id for payload_id, receipt_ids in producer_rows.items() if len(receipt_ids) > 1
+    )
+    if multiple:
         raise SemanticStateError(
             "semantic reused vector payload has multiple executed producer receipts"
         )
-    if rows:
-        receipt_id = int(rows[0]["receipt_id"])
-        receipt, receipt_row = _validated_semantic_receipts(
+    producer_ids = tuple(receipt_ids[0] for receipt_ids in producer_rows.values() if receipt_ids)
+    validated = _validated_semantic_receipts(connection, producer_ids)
+    resolved: dict[int, int] = {}
+    for payload_id, receipt_ids in producer_rows.items():
+        if not receipt_ids:
+            continue
+        receipt_id = receipt_ids[0]
+        receipt, receipt_row = validated[receipt_id]
+        _validate_embedding_payload_producer_receipt(
             connection,
-            (receipt_id,),
-        )[receipt_id]
-        payload, _provider = _payload_binding(connection, payload_id)
-        expected_payload = _output_contracts(
-            (payload,),
-            generation_id=int(receipt_row["generation_id"]),
-        )[0]
-        if (
-            receipt.stage.stage_id != SEMANTIC_EMBEDDING_STAGE
-            or receipt.outcome is not WorkOutcome.SUCCEEDED
-            or receipt.execution_mode is not WorkExecutionMode.EXECUTED
-            or expected_payload not in receipt.outputs
-        ):
-            raise SemanticStateError("semantic reused vector payload producer is not canonical")
-        return receipt_id
-    attestations = connection.execute(
-        """SELECT receipt_id FROM semantic_work_receipts
-        WHERE stage_id=? AND status='succeeded' AND execution_mode='executed'
-          AND payload_id=? ORDER BY receipt_id LIMIT 2""",
-        (SEMANTIC_LEGACY_PAYLOAD_ATTESTATION_STAGE, payload_id),
-    ).fetchall()
-    if len(attestations) > 1:
+            receipt,
+            receipt_row,
+        )
+        resolved[payload_id] = receipt_id
+    unresolved = tuple(payload_id for payload_id in selected_ids if payload_id not in resolved)
+    attestation_rows: list[sqlite3.Row] = []
+    for offset in range(0, len(unresolved), 250):
+        batch = unresolved[offset : offset + 250]
+        if not batch:
+            continue
+        placeholders = ",".join("?" for _ in batch)
+        attestation_rows.extend(
+            connection.execute(
+                f"""SELECT receipt_id,payload_id FROM semantic_work_receipts
+                WHERE stage_id=? AND status='succeeded'
+                  AND execution_mode='executed'
+                  AND payload_id IN ({placeholders}) ORDER BY receipt_id""",
+                (SEMANTIC_LEGACY_PAYLOAD_ATTESTATION_STAGE, *batch),
+            ).fetchall()
+        )
+    attestations: dict[int, list[int]] = {payload_id: [] for payload_id in unresolved}
+    for row in attestation_rows:
+        payload_id = int(row["payload_id"])
+        if payload_id in selected:
+            attestations[payload_id].append(int(row["receipt_id"]))
+    multiple = tuple(
+        payload_id for payload_id, receipt_ids in attestations.items() if len(receipt_ids) > 1
+    )
+    if multiple:
         raise SemanticStateError("semantic legacy vector payload has multiple attestation receipts")
-    if attestations:
-        receipt_id = int(attestations[0]["receipt_id"])
-        receipt, receipt_row = _validated_semantic_receipts(
-            connection,
-            (receipt_id,),
-        )[receipt_id]
+    attestation_ids = tuple(receipt_ids[0] for receipt_ids in attestations.values() if receipt_ids)
+    validated_attestations = _validated_semantic_receipts(connection, attestation_ids)
+    for payload_id, receipt_ids in attestations.items():
+        if not receipt_ids:
+            continue
+        receipt_id = receipt_ids[0]
+        receipt, receipt_row = validated_attestations[receipt_id]
         _validate_legacy_payload_attestation_receipt(
             connection,
             receipt,
             receipt_row,
         )
-        return receipt_id
-    if now_ns is None:
-        raise SemanticStateError(
-            "semantic reused vector payload has no producer or legacy attestation"
-        )
-    return _record_legacy_payload_attestation(
-        connection,
-        payload_id,
-        now_ns=now_ns,
-    )
+        resolved[payload_id] = receipt_id
+    missing = tuple(payload_id for payload_id in selected_ids if payload_id not in resolved)
+    if missing:
+        if now_ns is None:
+            raise SemanticStateError(
+                "semantic reused vector payload has no producer or legacy attestation"
+            )
+        for payload_id in missing:
+            resolved[payload_id] = _record_legacy_payload_attestation(
+                connection,
+                payload_id,
+                now_ns=now_ns,
+            )
+    return resolved
 
 
 def _manifest_output_binding(
@@ -2937,6 +3071,7 @@ def _record_embedding_receipt(
     source_member_id: int | None = None,
     source_member_binding: Mapping[str, object] | None = None,
     source_causation_receipt_id: int | None = None,
+    payload_causation_receipt_id: int | None = None,
 ) -> int:
     generation = connection.execute(
         """SELECT processing_signature,provenance_json
@@ -2959,10 +3094,14 @@ def _record_embedding_receipt(
     if execution_mode in {"cache_hit", "replay"}:
         inputs.append(_renamed_binding(output, "reused_vector_payload"))
     if execution_mode == "cache_hit":
-        causation = _payload_causation_receipt(
-            connection,
-            payload_id,
-            now_ns=now_ns,
+        causation = (
+            _payload_causation_receipt(
+                connection,
+                payload_id,
+                now_ns=now_ns,
+            )
+            if payload_causation_receipt_id is None
+            else payload_causation_receipt_id
         )
         cause_receipt, _cause_row = _validated_semantic_receipts(
             connection,
@@ -3013,18 +3152,26 @@ def _record_embedding_receipt(
         ).fetchone()
         if cause is not None:
             causation = int(cause[0])
-    receipt_key = _stable_key(
-        SEMANTIC_EMBEDDING_STAGE,
-        (
-            generation_id,
-            entity_kind,
-            entity_id,
-            execution_mode,
-            job_id,
-            attempt,
-            source_member_id,
-        ),
+    receipt_identity: tuple[object, ...] = (
+        generation_id,
+        entity_kind,
+        entity_id,
+        execution_mode,
+        job_id,
+        attempt,
+        source_member_id,
     )
+    if execution_mode == "cache_hit":
+        materialization = member_output.get("materialization_ref")
+        if not isinstance(materialization, MaterializationRef):
+            raise SemanticStateError("semantic cached member has no exact materialization")
+        receipt_identity = (
+            *receipt_identity,
+            item_revision_id,
+            chunk_revision_id,
+            materialization.materialization_id,
+        )
+    receipt_key = _stable_key(SEMANTIC_EMBEDDING_STAGE, receipt_identity)
     started_ns = None
     if job_id is not None:
         job = connection.execute(
@@ -4072,6 +4219,7 @@ __all__ = (
     "SemanticEmbeddingDerivation",
     "SemanticRevisionChunkPage",
     "SemanticTextChunkLineage",
+    "_payload_causation_receipts",
     "_producer_receipts_for_embedding_members",
     "_record_chunk_materialization",
     "_record_chunk_refresh_publication",

@@ -1301,7 +1301,7 @@ def test_done_job_metadata_restage_rebinds_current_item_revision_without_inferen
     _complete_jobs(database, generation, now_ns=102)
     with semantic_database(database, readonly=True) as connection:
         baseline_member = connection.execute(
-            "SELECT item_revision_id,chunk_revision_id,payload_id "
+            "SELECT member_id,item_revision_id,chunk_revision_id,payload_id "
             "FROM embedding_generation_members "
             "WHERE generation_id=? AND entity_kind='text_chunk' AND entity_id=?",
             (generation, chunk.chunk_id),
@@ -1310,6 +1310,12 @@ def test_done_job_metadata_restage_rebinds_current_item_revision_without_inferen
             connection.execute("SELECT COUNT(*) FROM vector_payloads").fetchone()[0]
         )
     assert baseline_member is not None
+    before_rebind = semantic_lineage_repository.explain_text_chunk_lineage(
+        database,
+        chunk_id=chunk.chunk_id,
+        published_only=False,
+    )
+    assert tuple(item.execution_mode for item in before_rebind.embeddings) == ("executed",)
 
     upsert_semantic_item(
         database,
@@ -1325,14 +1331,56 @@ def test_done_job_metadata_restage_rebinds_current_item_revision_without_inferen
         refresh_token="metadata-move",
         updated_ns=120,
     )
-    enqueue_text_chunk_jobs(database, generation, (chunk.chunk_id,), now_ns=121)
+    assert enqueue_text_chunk_jobs(database, generation, (chunk.chunk_id,), now_ns=121) == 0
+    first_rebind = semantic_lineage_repository.explain_text_chunk_lineage(
+        database,
+        chunk_id=chunk.chunk_id,
+        published_only=False,
+    )
+    assert tuple(item.execution_mode for item in first_rebind.embeddings) == ("cache_hit",)
 
-    summary = finalize_embedding_generation(database, generation, completed_ns=122)
+    resumed = start_embedding_generation(
+        database,
+        model_signature=model.model_signature,
+        processing_signature="metadata-rebind",
+        started_ns=130,
+    )
+    assert resumed == generation
+    upsert_semantic_item(
+        database,
+        SemanticItem(
+            "metadata-document",
+            "pdf",
+            "identity:metadata-document",
+            "fixture-v1",
+            fingerprint_text(text),
+            path="C:/fixtures/moved-again/metadata-document.pdf",
+            provenance={"revision": 1},
+        ),
+        refresh_token="metadata-move-again",
+        updated_ns=131,
+    )
+    assert enqueue_text_chunk_jobs(database, resumed, (chunk.chunk_id,), now_ns=132) == 0
+    second_rebind = semantic_lineage_repository.explain_text_chunk_lineage(
+        database,
+        chunk_id=chunk.chunk_id,
+        published_only=False,
+    )
+    assert tuple(item.execution_mode for item in second_rebind.embeddings) == ("cache_hit",)
+    assert second_rebind.embeddings[0].receipt_id != first_rebind.embeddings[0].receipt_id
+
+    summary = finalize_embedding_generation(database, generation, completed_ns=140)
 
     assert summary.status == "ready"
+    published = semantic_lineage_repository.explain_text_chunk_lineage(
+        database,
+        chunk_id=chunk.chunk_id,
+    )
+    assert tuple(item.execution_mode for item in published.embeddings) == ("cache_hit",)
+    assert published.embeddings[0].receipt_id == second_rebind.embeddings[0].receipt_id
     with semantic_database(database, readonly=True) as connection:
         rebound_member = connection.execute(
-            "SELECT item_revision_id,chunk_revision_id,payload_id "
+            "SELECT member_id,item_revision_id,chunk_revision_id,payload_id "
             "FROM embedding_generation_members "
             "WHERE generation_id=? AND entity_kind='text_chunk' AND entity_id=?",
             (generation, chunk.chunk_id),
@@ -1349,13 +1397,34 @@ def test_done_job_metadata_restage_rebinds_current_item_revision_without_inferen
                 (model.model_signature,),
             ).fetchone()[0]
         )
+        embedding_receipts = connection.execute(
+            """SELECT receipt_key,execution_mode,item_revision_id,receipt_json
+            FROM semantic_work_receipts
+            WHERE generation_id=? AND stage_id='semantic.embedding'
+            ORDER BY receipt_id""",
+            (generation,),
+        ).fetchall()
     assert int(rebound_member["item_revision_id"]) != int(baseline_member["item_revision_id"])
     assert int(rebound_member["chunk_revision_id"]) == int(baseline_member["chunk_revision_id"])
     assert int(rebound_member["payload_id"]) == int(baseline_member["payload_id"])
     assert rebound_revision is not None
-    assert str(rebound_revision["path"]) == "C:/fixtures/moved/metadata-document.pdf"
+    assert str(rebound_revision["path"]) == "C:/fixtures/moved-again/metadata-document.pdf"
     assert payloads == baseline_payloads
     assert published_head == generation
+    assert [str(row["execution_mode"]) for row in embedding_receipts] == [
+        "executed",
+        "cache_hit",
+        "cache_hit",
+    ]
+    assert len({str(row["receipt_key"]) for row in embedding_receipts}) == 3
+    assert len({int(row["item_revision_id"]) for row in embedding_receipts}) == 3
+    producer_key = str(embedding_receipts[0]["receipt_key"])
+    assert {
+        str(json.loads(str(row["receipt_json"]))["causation_id"]) for row in embedding_receipts[1:]
+    } == {producer_key}
+    assert int(rebound_member["member_id"]) not in {
+        int(baseline_member["member_id"]),
+    }
 
 
 def test_done_replaced_title_job_is_reconciled_and_successor_can_publish(
@@ -2137,6 +2206,56 @@ def test_rebind_exact_producers_are_resolved_once_for_128_members(
     )
 
     assert enqueue_text_chunk_jobs(database, successor, chunk_ids, now_ns=430) == 0
+    assert len(calls) == 1
+    assert len(calls[0]) == 128
+
+
+def test_same_generation_payload_producers_are_resolved_once_for_128_rebinds(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "batched-same-generation-rebind.sqlite3"
+    _model_spec, generation = _completed_generation(
+        database,
+        member_count=128,
+        processing_signature="batched-same-generation-v1",
+    )
+    for offset in range(3):
+        _complete_jobs(database, generation, now_ns=200 + offset * 40)
+    with semantic_database(database) as connection:
+        chunk_ids = tuple(
+            str(row[0])
+            for row in connection.execute(
+                """SELECT entity_id FROM embedding_generation_members
+                WHERE generation_id=? ORDER BY member_id""",
+                (generation,),
+            )
+        )
+        connection.execute(
+            """UPDATE semantic_items SET source_revision_json=?,updated_ns=?
+            WHERE active=1""",
+            ('{"last_seen_run_id":61}', 410),
+        )
+    assert len(chunk_ids) == 128
+    original = semantic_generation_repository._payload_causation_receipts
+    calls: list[tuple[int, ...]] = []
+
+    def traced_payload_producers(
+        connection: sqlite3.Connection,
+        payload_ids: Sequence[int],
+        *,
+        now_ns: int | None,
+    ) -> dict[int, int]:
+        calls.append(tuple(payload_ids))
+        return original(connection, payload_ids, now_ns=now_ns)
+
+    monkeypatch.setattr(
+        semantic_generation_repository,
+        "_payload_causation_receipts",
+        traced_payload_producers,
+    )
+
+    assert enqueue_text_chunk_jobs(database, generation, chunk_ids, now_ns=420) == 0
     assert len(calls) == 1
     assert len(calls[0]) == 128
 

@@ -1403,7 +1403,7 @@ def test_embedding_success_keeps_the_item_revision_captured_at_queue_time(
     )
 
 
-def test_image_cache_hit_and_replay_reference_the_exact_producer_receipt(
+def test_image_cache_hits_reference_the_exact_payload_producer_after_rebind(
     tmp_path: Path,
 ) -> None:
     database = tmp_path / "image-cache-lineage.sqlite3"
@@ -1508,16 +1508,14 @@ def test_image_cache_hit_and_replay_reference_the_exact_producer_receipt(
     assert clone_receipt is not None
     assert [str(row["execution_mode"]) for row in reused_receipts] == [
         "cache_hit",
-        "replay",
+        "cache_hit",
     ]
-    causes = {
-        str(row["execution_mode"]): str(json.loads(str(row["receipt_json"]))["causation_id"])
-        for row in reused_receipts
-    }
-    assert causes == {
-        "cache_hit": str(baseline_receipt["receipt_key"]),
-        "replay": str(clone_receipt["receipt_key"]),
-    }
+    assert {
+        str(json.loads(str(row["receipt_json"]))["causation_id"]) for row in reused_receipts
+    } == {str(baseline_receipt["receipt_key"])}
+    assert str(clone_receipt["receipt_key"]) != str(
+        json.loads(str(reused_receipts[0]["receipt_json"]))["causation_id"]
+    )
 
     events = read_semantic_derivation_outbox(database, limit=100)
     projection = rebuild_derivation_projection(
@@ -1654,6 +1652,8 @@ def test_duplicate_provider_completions_keep_one_payload_producer(
     (
         "forged_cache_input",
         "corrupt_causation",
+        "forged_producer_input",
+        "forged_producer_provider",
         "mutated_vector_blob",
         "forged_clone_input",
     ),
@@ -1702,7 +1702,13 @@ def test_lineage_reader_fails_closed_on_exact_semantic_fact_corruption(
 
     selected_chunk_id = second.chunk_id
     with semantic_schema.semantic_database(database) as connection:
-        if fault in {"forged_cache_input", "corrupt_causation", "forged_clone_input"}:
+        if fault in {
+            "forged_cache_input",
+            "corrupt_causation",
+            "forged_producer_input",
+            "forged_producer_provider",
+            "forged_clone_input",
+        }:
             connection.execute("DROP TRIGGER semantic_work_receipts_no_update")
         if fault == "forged_cache_input":
             row = connection.execute(
@@ -1725,6 +1731,26 @@ def test_lineage_reader_fails_closed_on_exact_semantic_fact_corruption(
                 WHERE generation_id=? AND stage_id='semantic.embedding'
                   AND execution_mode='executed'""",
                 (baseline,),
+            )
+        elif fault in {"forged_producer_input", "forged_producer_provider"}:
+            row = connection.execute(
+                """SELECT receipt_id,receipt_json FROM semantic_work_receipts
+                WHERE generation_id=? AND stage_id='semantic.embedding'
+                  AND execution_mode='executed'""",
+                (baseline,),
+            ).fetchone()
+            payload = json.loads(str(row["receipt_json"]))
+            if fault == "forged_producer_input":
+                payload["inputs"][0]["revision"]["processing_signature"] = "forged"
+                payload["inputs"][0]["materialization"]["revision"]["processing_signature"] = (
+                    "forged"
+                )
+            else:
+                payload["stage"]["provider"] = "forged-provider"
+            forged = WorkReceipt.from_dict(payload).to_json()
+            connection.execute(
+                "UPDATE semantic_work_receipts SET receipt_json=? WHERE receipt_id=?",
+                (forged, int(row["receipt_id"])),
             )
         elif fault == "mutated_vector_blob":
             replacement, _norm = encode_vector(
@@ -1753,7 +1779,13 @@ def test_lineage_reader_fails_closed_on_exact_semantic_fact_corruption(
                 (forged, int(row["receipt_id"])),
             )
             selected_chunk_id = first.chunk_id
-        if fault in {"forged_cache_input", "corrupt_causation", "forged_clone_input"}:
+        if fault in {
+            "forged_cache_input",
+            "corrupt_causation",
+            "forged_producer_input",
+            "forged_producer_provider",
+            "forged_clone_input",
+        }:
             _restore_semantic_receipt_update_trigger(connection)
 
     with pytest.raises((ValueError, semantic_schema.SemanticStateError)):

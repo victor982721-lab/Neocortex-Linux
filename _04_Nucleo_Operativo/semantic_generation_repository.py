@@ -12,6 +12,7 @@ from pathlib import Path
 from .semantic_item_repository import _decode_chunk_text
 from .semantic_lineage_repository import (
     _embedding_member_binding_by_id,
+    _payload_causation_receipts,
     _producer_receipts_for_embedding_members,
     _record_discarded_embedding_execution,
     _record_embedding_clone_batch,
@@ -686,7 +687,13 @@ class _QueueJobContext:
     role: EmbeddingRole
     max_attempts: int
     now_ns: int
-    source_member_receipts: Mapping[int, int]
+    rebind_causations: Mapping[int, _RebindCausation]
+
+
+@dataclass(frozen=True, slots=True)
+class _RebindCausation:
+    execution_mode: str
+    receipt_id: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -993,17 +1000,16 @@ def _rebind_generation_member(
         connection,
         source_member_id,
     )
-    if source_member_id not in context.source_member_receipts:
+    if source_member_id not in context.rebind_causations:
         raise SemanticStateError("semantic rebind member was not causally classified")
-    classified_receipt_id = context.source_member_receipts[source_member_id]
-    source_causation_receipt_id = classified_receipt_id or None
-    # Schema-v5 payloads intentionally predate work receipts.  A physical
-    # member replay therefore has no causal producer to cite.  Re-adopt the
-    # immutable payload through the existing legacy attestation path rather
-    # than fabricating a replay or repeating model work.
-    execution_mode = "replay" if source_causation_receipt_id is not None else "cache_hit"
+    causation = context.rebind_causations[source_member_id]
+    execution_mode = causation.execution_mode
     source_generation_id = source_member_binding.get("generation_id")
     if source_generation_id == context.generation_id:
+        if execution_mode != "cache_hit":
+            raise SemanticStateError(
+                "semantic same-generation rebind must reuse its immutable payload"
+            )
         deleted = connection.execute(
             """DELETE FROM embedding_generation_members
             WHERE member_id=? AND generation_id=?""",
@@ -1044,7 +1050,10 @@ def _rebind_generation_member(
         now_ns=context.now_ns,
         source_member_id=source_member_id if execution_mode == "replay" else None,
         source_member_binding=(source_member_binding if execution_mode == "replay" else None),
-        source_causation_receipt_id=source_causation_receipt_id,
+        source_causation_receipt_id=(causation.receipt_id if execution_mode == "replay" else None),
+        payload_causation_receipt_id=(
+            causation.receipt_id if execution_mode == "cache_hit" else None
+        ),
     )
     if prior is not None:
         connection.execute(
@@ -1155,35 +1164,52 @@ def _rebind_candidate_member_ids(
     return tuple(candidates)
 
 
-def _rebind_source_member_receipts(
+def _rebind_causations(
     connection: sqlite3.Connection,
+    *,
+    generation_id: int,
     member_ids: tuple[int, ...],
-) -> dict[int, int]:
-    classified: dict[int, int] = {}
-    for offset in range(0, len(member_ids), 250):
-        batch = tuple(dict.fromkeys(member_ids[offset : offset + 250]))
+    now_ns: int,
+) -> dict[int, _RebindCausation]:
+    unique_ids = tuple(dict.fromkeys(member_ids))
+    member_rows: list[sqlite3.Row] = []
+    for offset in range(0, len(unique_ids), 250):
+        batch = unique_ids[offset : offset + 250]
         if not batch:
             continue
         placeholders = ",".join("?" for _ in batch)
-        member_rows = connection.execute(
-            f"""SELECT member.member_id,payload.legacy_before_receipts
+        member_rows.extend(
+            connection.execute(
+                f"""SELECT member.member_id,member.generation_id,member.payload_id,
+                    payload.legacy_before_receipts
             FROM embedding_generation_members member
             JOIN vector_payloads payload ON payload.payload_id=member.payload_id
             WHERE member.member_id IN ({placeholders})""",
-            batch,
-        ).fetchall()
-        legacy_by_member = {
-            int(row["member_id"]): bool(row["legacy_before_receipts"]) for row in member_rows
-        }
-        missing = set(batch).difference(legacy_by_member)
-        if missing:
-            raise SemanticStateError(
-                f"semantic source embedding member disappeared: {min(missing)}"
+                batch,
             )
+        )
+    row_by_member = {int(row["member_id"]): row for row in member_rows}
+    missing = set(unique_ids).difference(row_by_member)
+    if missing:
+        raise SemanticStateError(f"semantic source embedding member disappeared: {min(missing)}")
+    same_generation = tuple(
+        member_id
+        for member_id in unique_ids
+        if int(row_by_member[member_id]["generation_id"]) == generation_id
+    )
+    same_generation_set = frozenset(same_generation)
+    cross_generation = tuple(
+        member_id for member_id in unique_ids if member_id not in same_generation_set
+    )
+    attributed: set[int] = set()
+    for offset in range(0, len(cross_generation), 250):
+        batch = cross_generation[offset : offset + 250]
         materialization_to_member = {
             f"materialization:semantic:embedding-member:{member_id}": member_id
             for member_id in batch
         }
+        if not materialization_to_member:
+            continue
         placeholders = ",".join("?" for _ in materialization_to_member)
         receipt_rows = connection.execute(
             f"""SELECT DISTINCT
@@ -1196,17 +1222,49 @@ def _rebind_source_member_receipts(
             ) IN ({placeholders})""",
             tuple(materialization_to_member),
         ).fetchall()
-        attributed = {
+        attributed.update(
             materialization_to_member[str(row["materialization_id"])] for row in receipt_rows
-        }
-        unattributed_legacy = {
-            member_id
-            for member_id in batch
-            if legacy_by_member[member_id] and member_id not in attributed
-        }
-        required = tuple(member_id for member_id in batch if member_id not in unattributed_legacy)
-        classified.update(_producer_receipts_for_embedding_members(connection, required))
-        classified.update((member_id, 0) for member_id in unattributed_legacy)
+        )
+    unattributed_legacy = tuple(
+        member_id
+        for member_id in cross_generation
+        if bool(row_by_member[member_id]["legacy_before_receipts"]) and member_id not in attributed
+    )
+    unattributed_legacy_set = frozenset(unattributed_legacy)
+    exact_cross_generation = tuple(
+        member_id for member_id in cross_generation if member_id not in unattributed_legacy_set
+    )
+    classified = {
+        member_id: _RebindCausation("replay", receipt_id)
+        for member_id, receipt_id in _producer_receipts_for_embedding_members(
+            connection,
+            exact_cross_generation,
+        ).items()
+    }
+    payload_members = (*same_generation, *unattributed_legacy)
+    payload_ids = tuple(
+        dict.fromkeys(int(row_by_member[member_id]["payload_id"]) for member_id in payload_members)
+    )
+    payload_receipts = _payload_causation_receipts(
+        connection,
+        payload_ids,
+        now_ns=now_ns,
+    )
+    classified.update(
+        (
+            member_id,
+            _RebindCausation(
+                "cache_hit",
+                payload_receipts[int(row_by_member[member_id]["payload_id"])],
+            ),
+        )
+        for member_id in payload_members
+    )
+    unclassified = set(unique_ids).difference(classified)
+    if unclassified:
+        raise SemanticStateError(
+            f"semantic rebind member was not causally classified: {min(unclassified)}"
+        )
     return classified
 
 
@@ -1365,9 +1423,11 @@ def _queue_job_rows_bounded(
         role,
         max_attempts,
         now_ns,
-        _rebind_source_member_receipts(
+        _rebind_causations(
             connection,
-            rebind_member_ids,
+            generation_id=generation_id,
+            member_ids=rebind_member_ids,
+            now_ns=now_ns,
         ),
     )
     selection = _select_queue_rows(
