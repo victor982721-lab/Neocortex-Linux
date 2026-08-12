@@ -453,6 +453,15 @@ mantienen inferencia `abstained`, decisión `experiment_required` y
 recovery y reconciliación antes de formular una hipótesis de corrupción. Incluso
 una alineación exacta no prueba muerte de proceso, power loss ni recovery.
 
+Existe ya un experimento aislado específico para una incertidumbre más acotada:
+un proceso hijo `spawn` ejecuta staging de 130 items y termina con `os._exit(77)`
+al comenzar el item 129, después del prefijo durable de 128. El padre exige
+exactamente 128 items/256 chunks/256 jobs, generación `building` y ningún head;
+reanuda la misma generación y sólo después de completar 130/260/260 el worker
+publica atómicamente 260 miembros. Esto demuestra supervivencia y reanudación
+para ese crash point de proceso sobre SQLite; no simula power loss, corrupción
+de almacenamiento, todas las fronteras ni recuperación cross-owner.
+
 `recommendations` permanece vacío y `recommendation_status=abstained` porque
 v14 todavía no tiene un resolver independiente que enlace evidencia de
 comportamiento/contrato, contraevidencia y resultado experimental. Nombres como

@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import itertools
 import json
+import multiprocessing
+import os
 import sqlite3
 import zlib
 from collections.abc import Iterator, Sequence
@@ -263,21 +265,16 @@ def _logical_projection(database: Path) -> tuple[tuple[tuple[object, ...], ...],
     )
     with semantic_database(database, readonly=True) as connection:
         return tuple(
-            tuple(tuple(row) for row in connection.execute(query).fetchall())
-            for query in queries
+            tuple(tuple(row) for row in connection.execute(query).fetchall()) for query in queries
         )
 
 
 def _counts(database: Path) -> tuple[int, int, int]:
     with semantic_database(database, readonly=True) as connection:
         return (
-            int(
-                connection.execute("SELECT COUNT(*) FROM semantic_items").fetchone()[0]
-            ),
+            int(connection.execute("SELECT COUNT(*) FROM semantic_items").fetchone()[0]),
             int(connection.execute("SELECT COUNT(*) FROM text_chunks").fetchone()[0]),
-            int(
-                connection.execute("SELECT COUNT(*) FROM embedding_jobs").fetchone()[0]
-            ),
+            int(connection.execute("SELECT COUNT(*) FROM embedding_jobs").fetchone()[0]),
         )
 
 
@@ -287,11 +284,41 @@ def _assert_building_unpublished(database: Path, generation_id: int) -> None:
             "SELECT status FROM embedding_generations WHERE generation_id=?",
             (generation_id,),
         ).fetchone()[0]
-        heads = connection.execute(
-            "SELECT COUNT(*) FROM published_embedding_heads"
-        ).fetchone()[0]
+        heads = connection.execute("SELECT COUNT(*) FROM published_embedding_heads").fetchone()[0]
     assert status == "building"
     assert heads == 0
+
+
+def _stage_then_exit_process(database_text: str, generation_id: int, exit_on: int) -> None:
+    """Child-only deterministic crash point after a previously committed prefix."""
+
+    database = Path(database_text)
+    original_finalize = semantic_text_index._finalize_text_chunk_refresh
+    finalized = 0
+
+    def exit_after_committed_prefix(
+        connection: sqlite3.Connection,
+        *,
+        item_id: str,
+        chunking_signature: str,
+        refresh_token: str,
+        updated_ns: int,
+    ) -> int:
+        nonlocal finalized
+        finalized += 1
+        if finalized == exit_on:
+            os._exit(77)
+        return original_finalize(
+            connection,
+            item_id=item_id,
+            chunking_signature=chunking_signature,
+            refresh_token=refresh_token,
+            updated_ns=updated_ns,
+        )
+
+    semantic_text_index._finalize_text_chunk_refresh = exit_after_committed_prefix
+    _stage(database, generation_id, _records(130))
+    os._exit(78)
 
 
 def test_persistent_staging_is_logically_equivalent_to_legacy_flow(
@@ -378,9 +405,7 @@ def test_title_chunk_is_appended_versioned_and_path_rename_preserves_body(
         )
 
     assert str(active_rows[0][0]) == expected_body.chunk_id
-    assert zlib.decompress(bytes(active_rows[1][2])).decode("utf-8") == (
-        "renamed-transformer"
-    )
+    assert zlib.decompress(bytes(active_rows[1][2])).decode("utf-8") == ("renamed-transformer")
     assert inactive_titles == 1
 
 
@@ -443,9 +468,7 @@ def test_restage_preserves_completed_job_and_does_not_duplicate_state(
     with semantic_database(database, readonly=True) as connection:
         statuses = tuple(
             row[0]
-            for row in connection.execute(
-                "SELECT status FROM embedding_jobs ORDER BY job_id"
-            )
+            for row in connection.execute("SELECT status FROM embedding_jobs ORDER BY job_id")
         )
     assert _counts(database) == (1, 2, 2)
     assert statuses == ("done", "done")
@@ -606,8 +629,7 @@ def test_crash_resume_then_worker_atomically_publishes_complete_generation(
     assert work.failed == 0
     with semantic_database(database, readonly=True) as connection:
         head = connection.execute(
-            "SELECT generation_id FROM published_embedding_heads "
-            "WHERE model_signature=?",
+            "SELECT generation_id FROM published_embedding_heads WHERE model_signature=?",
             (_model().model_signature,),
         ).fetchone()
         members = connection.execute(
@@ -617,6 +639,58 @@ def test_crash_resume_then_worker_atomically_publishes_complete_generation(
     assert head is not None
     assert int(head[0]) == generation_id
     assert int(members) == 260
+
+
+def test_process_death_preserves_committed_prefix_and_resume_publishes_atomically(
+    tmp_path: Path,
+) -> None:
+    """Distinguish process-death safety from exception rollback behavior."""
+
+    database = tmp_path / "semantic.sqlite3"
+    generation_id = _generation(database)
+
+    context = multiprocessing.get_context("spawn")
+    process = context.Process(
+        target=_stage_then_exit_process,
+        args=(str(database), generation_id, 129),
+    )
+    process.start()
+    process.join(timeout=30)
+    if process.is_alive():
+        process.terminate()
+        process.join(timeout=5)
+        pytest.fail("process-death staging child exceeded its hard timeout")
+    assert process.exitcode == 77
+    assert _counts(database) == (128, 256, 256)
+    _assert_building_unpublished(database, generation_id)
+
+    records = _records(130)
+    assert _stage(database, generation_id, records) == (130, 260, 260)
+    work = run_generation(
+        database,
+        generation_id,
+        _FixtureBackend(_model()),
+        queued=260,
+    )
+
+    assert work.summary.status == "ready"
+    assert work.embedded == 260
+    assert work.failed == 0
+    with semantic_database(database, readonly=True) as connection:
+        head = int(
+            connection.execute(
+                "SELECT generation_id FROM published_embedding_heads WHERE model_signature=?",
+                (_model().model_signature,),
+            ).fetchone()[0]
+        )
+        members = int(
+            connection.execute(
+                "SELECT COUNT(*) FROM embedding_generation_members WHERE generation_id=?",
+                (generation_id,),
+            ).fetchone()[0]
+        )
+    assert head == generation_id
+    assert members == 260
 
 
 def test_cancellation_rolls_back_current_slice_and_preserves_original_exception(
