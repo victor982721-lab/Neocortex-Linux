@@ -105,11 +105,7 @@ def _optional_string_is_blank(name: str, value: object | None) -> bool:
 def _require_dimensions(value: object) -> int:
     """Reject bool and non-integers before using a bounded vector dimension."""
 
-    if (
-        isinstance(value, bool)
-        or not isinstance(value, int)
-        or not 1 <= value <= 65_536
-    ):
+    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 65_536:
         raise ValueError("dimensions must be an integer between 1 and 65536")
     return value
 
@@ -144,9 +140,7 @@ class ContentFingerprint:
         if len(self.xxh3_64_guard) != 16 or any(
             character not in "0123456789abcdef" for character in self.xxh3_64_guard
         ):
-            raise ValueError(
-                "xxh3_64_guard must be 16 lowercase hexadecimal characters"
-            )
+            raise ValueError("xxh3_64_guard must be 16 lowercase hexadecimal characters")
         if self.byte_count < 0:
             raise ValueError("byte_count cannot be negative")
 
@@ -303,9 +297,7 @@ class TextChunk:
         if not self.text:
             raise ValueError("text cannot be empty")
         if self.end_char - self.start_char < len(self.text):
-            raise ValueError(
-                "chunk locator span cannot be shorter than normalized text"
-            )
+            raise ValueError("chunk locator span cannot be shorter than normalized text")
         if fingerprint_text(self.text) != self.fingerprint:
             raise ValueError("fingerprint does not match chunk text")
         canonical_json(self.provenance)
@@ -350,8 +342,7 @@ class EmbeddingRequest:
     def __post_init__(self) -> None:
         _require_non_blank_string("request_id", self.request_id)
         payload_count = sum(
-            value is not None
-            for value in (self.text, self.image_path, self.image_bytes)
+            value is not None for value in (self.text, self.image_path, self.image_bytes)
         )
         if payload_count != 1:
             raise ValueError("exactly one request payload must be supplied")
@@ -477,9 +468,7 @@ class SemanticEvidence:
             self.feedback_reference,
         )
         if feedback_required and feedback_missing:
-            raise ValueError(
-                "calibrated, confirmed or rejected evidence requires feedback"
-            )
+            raise ValueError("calibrated, confirmed or rejected evidence requires feedback")
         canonical_json(self.provenance)
 
 
@@ -554,9 +543,7 @@ class ExactSearchQuery:
             _require_non_blank_string(
                 name,
                 value,
-                blank_message=(
-                    "query model signature and vector space cannot be blank"
-                ),
+                blank_message=("query model signature and vector space cannot be blank"),
             )
         validate_vector(self.vector, self.dimensions)
 
@@ -701,9 +688,7 @@ def validate_vector(
 
     validated_dimensions = _require_dimensions(dimensions)
     if len(values) != validated_dimensions:
-        raise ValueError(
-            f"expected {validated_dimensions} vector values, received {len(values)}"
-        )
+        raise ValueError(f"expected {validated_dimensions} vector values, received {len(values)}")
     vector = tuple(float(value) for value in values)
     if any(not math.isfinite(value) for value in vector):
         raise ValueError("embedding vectors must contain only finite values")
