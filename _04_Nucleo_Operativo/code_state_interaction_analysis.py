@@ -403,7 +403,7 @@ class CodeStateInteractionAnalysis:
             raise ValueError("state interaction policy is invalid")
         if self.authority != "advisory" or self.mutation_authority:
             raise ValueError("state interaction analysis must remain advisory and non-mutating")
-        for label, value in (
+        for label, count in (
             ("source files", self.source_files),
             ("source files with text", self.source_files_with_text),
             ("source files without text", self.source_files_without_text),
@@ -415,7 +415,7 @@ class CodeStateInteractionAnalysis:
             ("SQL interactions", self.interactions_count),
             ("transaction events", self.transaction_events_count),
         ):
-            _non_negative(label, value)
+            _non_negative(label, count)
         if self.source_files_with_text + self.source_files_without_text != self.source_files:
             raise ValueError("state interaction source-file partition is invalid")
         if self.parsed_sql_sites + self.parse_error_sites != self.literal_sql_sites:
@@ -613,7 +613,10 @@ class _Visitor(ast.NodeVisitor):
         self.generic_visit(node)
         self.symbol_stack.pop()
 
-    visit_AsyncFunctionDef = visit_FunctionDef
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self.symbol_stack.append(node.name)
+        self.generic_visit(node)
+        self.symbol_stack.pop()
 
     def _event(
         self,
@@ -1006,6 +1009,7 @@ def _evidence(
     *,
     workflow: bool,
 ) -> tuple[AnalysisEvidenceRef, ...]:
+    relation_facts: tuple[AnalysisFact, ...]
     if analysis.status == "abstained":
         return ()
     projection = analysis_identity(
@@ -1149,19 +1153,21 @@ def _evaluation(
     evidence = _evidence(analysis, subject, workflow=workflow)
     ready = bool(evidence)
     evidence_ids = tuple(item.evidence_id for item in evidence)
+    missing_reason = analysis.reason or "state_interaction_analysis_not_ready"
+    requirements: tuple[AnalysisRequirementEvaluation, ...]
     if workflow:
         requirements = (
             AnalysisRequirementEvaluation(
                 "workflow_implementation_binding",
                 "satisfied" if ready else "missing",
                 evidence_ids[:1],
-                "workflow_binding_resolved" if ready else analysis.reason,
+                "workflow_binding_resolved" if ready else missing_reason,
             ),
             AnalysisRequirementEvaluation(
                 "bound_symbol_sql_projection",
                 "satisfied" if ready else "missing",
                 evidence_ids[1:] if ready else (),
-                "bound_symbol_sql_projection_resolved" if ready else analysis.reason,
+                "bound_symbol_sql_projection_resolved" if ready else missing_reason,
             ),
             AnalysisRequirementEvaluation(
                 "runtime_transaction_order_observed",
@@ -1188,7 +1194,7 @@ def _evaluation(
                 "literal_sql_projection",
                 "satisfied" if ready else "missing",
                 evidence_ids,
-                "literal_sql_projection_resolved" if ready else analysis.reason,
+                "literal_sql_projection_resolved" if ready else missing_reason,
             ),
             AnalysisRequirementEvaluation(
                 "dynamic_sql_and_runtime_calls_resolved",
@@ -1301,12 +1307,16 @@ def parse_code_state_interaction_payload(
                     "resolved_symbols",
                     "transaction_event_kinds",
                 }:
+                    if not isinstance(value, Sequence) or isinstance(
+                        value, (str, bytes, bytearray)
+                    ):
+                        raise ValueError(f"state interaction {name} entry sequence is invalid")
                     entry[key] = tuple(value)
             parsed.append(model(**entry))
         values[name] = tuple(parsed)
     for name in ("dynamic_sql_examples", "parse_error_examples", "limitations"):
-        values[name] = tuple(values[name])
-    return CodeStateInteractionAnalysis(**values)
+        values[name] = _text_tuple(f"state interaction {name}", values[name])
+    return CodeStateInteractionAnalysis(**cast(Any, values))
 
 
 __all__ = [

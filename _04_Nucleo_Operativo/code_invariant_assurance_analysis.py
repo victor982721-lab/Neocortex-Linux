@@ -10,7 +10,7 @@ names, or authorize a change.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, fields, replace
-from typing import Literal, Mapping, Sequence, cast
+from typing import Any, Literal, Mapping, Sequence, cast
 
 from .code_analysis_epistemics import (
     AnalysisEvidenceRef,
@@ -788,8 +788,15 @@ def parse_code_invariant_assurance_payload(
     )
     values["question_specs"] = specs
     values["question_evaluations"] = evaluations
-    values["limitations"] = tuple(values["limitations"])
-    return CodeInvariantAssuranceAnalysis(**values)
+    raw_limitations = values["limitations"]
+    if not isinstance(raw_limitations, Sequence) or isinstance(
+        raw_limitations, (str, bytes, bytearray)
+    ):
+        raise ValueError("invariant assurance limitations are invalid")
+    values["limitations"] = tuple(
+        _required("invariant assurance limitation", item) for item in raw_limitations
+    )
+    return CodeInvariantAssuranceAnalysis(**cast(Any, values))
 
 
 __all__ = [

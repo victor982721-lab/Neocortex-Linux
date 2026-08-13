@@ -277,7 +277,7 @@ class RouteCapabilityObservation:
             raise ValueError("route capability observation requires exact route registration")
         if self.runtime_state not in {"available", "degraded", "unavailable"}:
             raise ValueError("route capability runtime state is invalid")
-        for label, value in (
+        for label, count in (
             ("declared components", self.declared_components),
             ("required components", self.required_components),
             ("available required components", self.available_required_components),
@@ -285,7 +285,7 @@ class RouteCapabilityObservation:
             ("owner watermarks", self.owner_watermarks),
             ("capability manifest count", self.capability_manifest_count),
         ):
-            _nonnegative(label, value)
+            _nonnegative(label, count)
         if not 0 <= self.available_required_components <= self.required_components:
             raise ValueError("available required component count is invalid")
         if self.required_components > self.declared_components:
@@ -674,6 +674,7 @@ def _evidence(
     kind: Literal["contract", "runtime", "owner", "counterevidence", "causal"],
 ) -> AnalysisEvidenceRef:
     subject_key = f"capability:route:{observation.route_name}"
+    facts: tuple[AnalysisFact, ...]
     if kind == "contract":
         role = "supporting"
         evidence_kind = "contract"

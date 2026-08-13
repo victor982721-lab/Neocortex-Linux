@@ -188,7 +188,7 @@ def _template(
     )
 
 
-CODE_EXPERIMENT_TEMPLATES = (
+CODE_EXPERIMENT_TEMPLATES: tuple[CodeExperimentTemplate, ...] = (
     _template(
         "analyzer.registered_invariant_scenarios",
         (

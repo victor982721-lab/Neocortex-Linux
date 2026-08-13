@@ -205,7 +205,7 @@ class CodeExperimentReceipt:
             != outcome_scenarios
         ):
             raise ValueError("experiment outcomes are not in canonical selection order")
-        for label, value in (
+        for label, count in (
             ("passed scenarios", self.passed),
             ("failed scenarios", self.failed),
             ("skipped scenarios", self.skipped),
@@ -214,7 +214,7 @@ class CodeExperimentReceipt:
             ("experiment stdout bytes", self.stdout_bytes),
             ("experiment stderr bytes", self.stderr_bytes),
         ):
-            _nonnegative(label, value)
+            _nonnegative(label, count)
         if (self.passed, self.failed, self.skipped) != (
             sum(item.outcome == "passed" for item in self.outcomes),
             sum(item.outcome == "failed" for item in self.outcomes),
