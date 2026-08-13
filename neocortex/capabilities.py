@@ -486,6 +486,14 @@ CAPABILITY_SPECS: Mapping[str, RuntimeCapabilitySpec] = MappingProxyType(
                     missing_reason="code_complexipy_provider_unavailable",
                     extra=None,
                 ),
+                _distribution(
+                    "sqlglot",
+                    "sqlglot",
+                    "sqlglot",
+                    required=False,
+                    missing_reason="code_sqlglot_provider_unavailable",
+                    extra="analysis",
+                ),
                 _executable(
                     "node",
                     "node",

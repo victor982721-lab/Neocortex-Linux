@@ -10,9 +10,11 @@ from _04_Nucleo_Operativo.knowledge_snapshot import KnowledgeStatePaths
 from _04_Nucleo_Operativo.state_topology_contracts import (
     STATE_STORE_REGISTRY,
     STATE_STORE_REGISTRY_SCHEMA,
+    TEXT_DERIVATION_IMPLEMENTATION_BINDING,
     TEXT_DERIVATION_WORKFLOW,
     DurableTransactionBoundaryContract,
     parse_durable_workflow_contract_payload,
+    parse_durable_workflow_implementation_binding_payload,
     parse_state_store_registry_payload,
 )
 
@@ -89,6 +91,23 @@ def test_boundary_cannot_claim_an_owner_that_disagrees_with_the_store() -> None:
 
     with pytest.raises(ValueError, match="store and state owner disagree"):
         replace(terminal, state_owner_id="semantic")
+
+
+def test_text_workflow_binds_boundaries_to_exact_code_symbols() -> None:
+    begin = TEXT_DERIVATION_IMPLEMENTATION_BINDING.boundary("text.derivation-attempt-begin")
+    terminal = TEXT_DERIVATION_IMPLEMENTATION_BINDING.boundary("text.terminal-publication")
+
+    assert begin.qualified_symbols == (
+        "text_derivation_repository.begin_text_derivation_attempt_from_connection",
+    )
+    assert "text_derivation_repository._persist_terminal_receipt" in terminal.qualified_symbols
+    payload = json.loads(json.dumps(TEXT_DERIVATION_IMPLEMENTATION_BINDING.as_payload()))
+    assert (
+        parse_durable_workflow_implementation_binding_payload(payload)
+        == TEXT_DERIVATION_IMPLEMENTATION_BINDING
+    )
+    with pytest.raises(ValueError, match="unbound transaction boundary"):
+        TEXT_DERIVATION_IMPLEMENTATION_BINDING.boundary("text.unknown")
 
 
 def test_boundary_cannot_hide_required_writes_as_conditional() -> None:

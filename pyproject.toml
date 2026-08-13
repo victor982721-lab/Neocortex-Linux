@@ -47,6 +47,7 @@ analysis = [
     "pytest>=9.1,<10",
     "radon>=6.0.1,<7",
     "ruff>=0.15,<0.16",
+    "sqlglot>=30.17,<31",
     "vulture>=2.16,<2.17",
 ]
 documents = [
@@ -93,6 +94,7 @@ full = [
     "pytesseract>=0.3.13,<0.4",
     "radon>=6.0.1,<7",
     "ruff>=0.15,<0.16",
+    "sqlglot>=30.17,<31",
     "vulture>=2.16,<2.17",
 ]
 dev = [

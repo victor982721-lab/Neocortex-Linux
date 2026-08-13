@@ -42,6 +42,7 @@ ANALYSIS_DEPENDENCIES = (
     "pytest>=9.1,<10",
     "radon>=6.0.1,<7",
     "ruff>=0.15,<0.16",
+    "sqlglot>=30.17,<31",
     "vulture>=2.16,<2.17",
 )
 
@@ -69,6 +70,7 @@ FULL_DEPENDENCIES = (
     "pytesseract>=0.3.13,<0.4",
     "radon>=6.0.1,<7",
     "ruff>=0.15,<0.16",
+    "sqlglot>=30.17,<31",
     "vulture>=2.16,<2.17",
 )
 
@@ -219,6 +221,7 @@ def test_missing_optional_runtimes_are_explicitly_unavailable_or_degraded() -> N
         "code_vulture_provider_unavailable",
         "code_grimp_provider_unavailable",
         "code_complexipy_provider_unavailable",
+        "code_sqlglot_provider_unavailable",
         "code_pyright_node_unavailable",
         "code_pyright_provider_unavailable",
     )

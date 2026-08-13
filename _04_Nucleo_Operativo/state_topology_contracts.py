@@ -31,6 +31,9 @@ STATE_STORE_REGISTRY_SCHEMA: Literal["neocortex.state-store-registry/v1"] = (
 DURABLE_WORKFLOW_CONTRACT_SCHEMA: Literal["neocortex.durable-workflow-contract/v1"] = (
     "neocortex.durable-workflow-contract/v1"
 )
+DURABLE_WORKFLOW_BINDING_SCHEMA: Literal["neocortex.durable-workflow-implementation-binding/v1"] = (
+    "neocortex.durable-workflow-implementation-binding/v1"
+)
 
 # Knowledge intentionally avoids importing image_state until the database is
 # present because that module loads the image-processing runtime.  The public
@@ -277,6 +280,69 @@ class DurableWorkflowContract:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class DurableBoundaryImplementationBinding:
+    """Exact Code symbols declared to implement one durable boundary.
+
+    These are source contracts.  The SQL analyzer still has to resolve the
+    symbols and their statements from a particular Code publication before the
+    binding counts as evidence.
+    """
+
+    boundary_id: str
+    qualified_symbols: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        _required_text("transaction boundary id", self.boundary_id)
+        _unique_texts("transaction boundary implementation symbol", self.qualified_symbols)
+        if not self.qualified_symbols:
+            raise ValueError("transaction boundary implementation binding cannot be empty")
+        TEXT_DERIVATION_WORKFLOW.boundary(self.boundary_id)
+
+    def as_payload(self) -> dict[str, object]:
+        return asdict(self)
+
+
+@dataclass(frozen=True, slots=True)
+class DurableWorkflowImplementationBinding:
+    schema: Literal["neocortex.durable-workflow-implementation-binding/v1"]
+    workflow_id: str
+    workflow_version: str
+    boundaries: tuple[DurableBoundaryImplementationBinding, ...]
+
+    def __post_init__(self) -> None:
+        if self.schema != DURABLE_WORKFLOW_BINDING_SCHEMA:
+            raise ValueError("durable workflow implementation binding schema is invalid")
+        if (
+            self.workflow_id != TEXT_DERIVATION_WORKFLOW.workflow_id
+            or self.workflow_version != TEXT_DERIVATION_WORKFLOW.version
+        ):
+            raise ValueError("durable workflow implementation binding target is invalid")
+        if not self.boundaries or any(
+            not isinstance(item, DurableBoundaryImplementationBinding) for item in self.boundaries
+        ):
+            raise ValueError("durable workflow implementation binding requires typed boundaries")
+        _unique_texts(
+            "bound implementation boundary id",
+            tuple(item.boundary_id for item in self.boundaries),
+        )
+
+    def boundary(self, boundary_id: str) -> DurableBoundaryImplementationBinding:
+        selected = _required_text("transaction boundary id", boundary_id)
+        match = next((item for item in self.boundaries if item.boundary_id == selected), None)
+        if match is None:
+            raise ValueError(f"unbound transaction boundary: {selected}")
+        return match
+
+    def as_payload(self) -> dict[str, object]:
+        return {
+            "schema": self.schema,
+            "workflow_id": self.workflow_id,
+            "workflow_version": self.workflow_version,
+            "boundaries": [item.as_payload() for item in self.boundaries],
+        }
+
+
 TEXT_DERIVATION_WORKFLOW = DurableWorkflowContract(
     schema=DURABLE_WORKFLOW_CONTRACT_SCHEMA,
     workflow_id="text.derivation-publication",
@@ -319,6 +385,30 @@ TEXT_DERIVATION_WORKFLOW = DurableWorkflowContract(
                 "text_materializations",
                 "text_derivation_output_bindings",
                 "text_materialization_heads",
+            ),
+        ),
+    ),
+)
+
+
+TEXT_DERIVATION_IMPLEMENTATION_BINDING = DurableWorkflowImplementationBinding(
+    schema=DURABLE_WORKFLOW_BINDING_SCHEMA,
+    workflow_id=TEXT_DERIVATION_WORKFLOW.workflow_id,
+    workflow_version=TEXT_DERIVATION_WORKFLOW.version,
+    boundaries=(
+        DurableBoundaryImplementationBinding(
+            boundary_id="text.derivation-attempt-begin",
+            qualified_symbols=(
+                "text_derivation_repository.begin_text_derivation_attempt_from_connection",
+            ),
+        ),
+        DurableBoundaryImplementationBinding(
+            boundary_id="text.terminal-publication",
+            qualified_symbols=(
+                "text_derivation_repository._persist_terminal_receipt",
+                "text_derivation_repository.cancel_text_derivation_attempt",
+                "text_derivation_repository.fail_text_derivation_attempt",
+                "text_derivation_repository.succeed_text_derivation_attempt",
             ),
         ),
     ),
@@ -381,16 +471,57 @@ def parse_durable_workflow_contract_payload(
     )
 
 
+def parse_durable_workflow_implementation_binding_payload(
+    payload: Mapping[str, object],
+) -> DurableWorkflowImplementationBinding:
+    if not isinstance(payload, Mapping) or payload.get("schema") != DURABLE_WORKFLOW_BINDING_SCHEMA:
+        raise ValueError("durable workflow implementation binding payload schema is invalid")
+    if set(payload) != {"schema", "workflow_id", "workflow_version", "boundaries"}:
+        raise ValueError("durable workflow implementation binding fields are invalid")
+    raw_boundaries = payload.get("boundaries")
+    if not isinstance(raw_boundaries, list):
+        raise ValueError("durable workflow implementation boundaries are invalid")
+    boundaries: list[DurableBoundaryImplementationBinding] = []
+    expected_fields = {field.name for field in fields(DurableBoundaryImplementationBinding)}
+    for raw in raw_boundaries:
+        if not isinstance(raw, Mapping) or set(raw) != expected_fields:
+            raise ValueError("durable workflow implementation boundary fields are invalid")
+        raw_symbols = raw.get("qualified_symbols")
+        if not isinstance(raw_symbols, Sequence) or isinstance(
+            raw_symbols, (str, bytes, bytearray)
+        ):
+            raise ValueError("durable workflow implementation symbols are invalid")
+        boundaries.append(
+            DurableBoundaryImplementationBinding(
+                boundary_id=_required_text("transaction boundary id", raw["boundary_id"]),
+                qualified_symbols=tuple(raw_symbols),
+            )
+        )
+    return DurableWorkflowImplementationBinding(
+        schema=DURABLE_WORKFLOW_BINDING_SCHEMA,
+        workflow_id=_required_text("durable workflow id", payload["workflow_id"]),
+        workflow_version=_required_text(
+            "durable workflow version", payload["workflow_version"], maximum=64
+        ),
+        boundaries=tuple(boundaries),
+    )
+
+
 __all__ = [
+    "DURABLE_WORKFLOW_BINDING_SCHEMA",
     "DURABLE_WORKFLOW_CONTRACT_SCHEMA",
     "KNOWLEDGE_IMAGE_SCHEMA_VERSION",
     "STATE_STORE_REGISTRY",
     "STATE_STORE_REGISTRY_SCHEMA",
+    "TEXT_DERIVATION_IMPLEMENTATION_BINDING",
     "TEXT_DERIVATION_WORKFLOW",
+    "DurableBoundaryImplementationBinding",
     "DurableTransactionBoundaryContract",
     "DurableWorkflowContract",
+    "DurableWorkflowImplementationBinding",
     "StateStoreContract",
     "StateStoreRegistry",
     "parse_durable_workflow_contract_payload",
+    "parse_durable_workflow_implementation_binding_payload",
     "parse_state_store_registry_payload",
 ]
