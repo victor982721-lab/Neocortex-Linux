@@ -1629,6 +1629,32 @@ def _emit_code_review_abstention_statuses(result: CodeReviewResult) -> None:
         )
 
 
+def _emit_code_review_question_summary(result: CodeReviewResult) -> None:
+    evaluations = result.question_evaluations
+    if not evaluations:
+        _print_console_line(
+            "CODE_ANALYSIS_QUESTIONS status=not_evaluated total=0 "
+            "confirmed=0 abstained=0 human_review_required=0 "
+            "experiment_required=0 decision_abstained=0 decisions=0 "
+            "mutation_authority=0"
+        )
+        return
+    _print_console_line(
+        "CODE_ANALYSIS_QUESTIONS status=ready "
+        f"total={len(evaluations)} "
+        f"confirmed={sum(item.observation_status == 'confirmed' for item in evaluations)} "
+        f"abstained={sum(item.observation_status == 'abstained' for item in evaluations)} "
+        "human_review_required="
+        f"{sum(item.decision_readiness == 'human_review_required' for item in evaluations)} "
+        "experiment_required="
+        f"{sum(item.decision_readiness == 'experiment_required' for item in evaluations)} "
+        "decision_abstained="
+        f"{sum(item.decision_readiness == 'abstained' for item in evaluations)} "
+        f"decisions={sum(item.decision is not None for item in evaluations)} "
+        f"mutation_authority={int(any(item.mutation_authority for item in evaluations))}"
+    )
+
+
 def _emit_code_review_work_package_supply_chain(
     package: CodeReviewWorkPackage,
 ) -> None:
@@ -1759,6 +1785,7 @@ def _emit_code_review_ready(result: CodeReviewResult) -> int:
     _emit_code_review_unused_result(result)
     _emit_code_review_supply_chain_result(result)
     _emit_code_review_abstention_statuses(result)
+    _emit_code_review_question_summary(result)
     for package in result.work_packages:
         _emit_code_review_work_package(package)
     _emit_code_review_ranked_evidence(result)

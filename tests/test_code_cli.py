@@ -694,6 +694,7 @@ def test_code_review_human_surfaces_architecture_and_work_package_context(
         recommendation_reason="none",
         work_package_status="ready",
         work_package_reason=None,
+        question_evaluations=(),
         limitations=(),
     )
     monkeypatch.setattr(code_review, "review_code_state", lambda *_args, **_kwargs: result)
@@ -719,6 +720,11 @@ def test_code_review_human_surfaces_architecture_and_work_package_context(
     assert "module_complexity_not_displaced" in output
     assert "CODE_REVIEW_TEST_COVERAGE status=ready suite=selected" in output
     assert "CODE_REVIEW_TEST_COVERAGE_GATE id=tests_passed status=passed" in output
+    assert (
+        "CODE_ANALYSIS_QUESTIONS status=not_evaluated total=0 confirmed=0 "
+        "abstained=0 human_review_required=0 experiment_required=0 "
+        "decision_abstained=0 decisions=0 mutation_authority=0"
+    ) in output
     assert "CODE_REVIEW_WORK_PACKAGE_COVERAGE status=executed" in output
     assert 'tests=["tests/test_app.py::test_handler"]' in output
     assert "missing_lines=[[19, 20]]" in output
@@ -735,6 +741,7 @@ def test_code_review_human_surfaces_architecture_and_work_package_context(
         "CODE_REVIEW_UNUSED ",
         "CODE_REVIEW_SUPPLY_CHAIN ",
         "CODE_REVIEW_RECOMMENDATION status=abstained",
+        "CODE_ANALYSIS_QUESTIONS ",
         "CODE_REVIEW_WORK_PACKAGE_SUPPLY_CHAIN ",
         "CODE_REVIEW_WORK_PACKAGE status=ready",
         "CODE_REVIEW_WORK_PACKAGE_ARCHITECTURE ",
