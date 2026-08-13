@@ -61,7 +61,7 @@ from .state_topology_contracts import (
 )
 
 CODE_STATE_INTERACTION_SCHEMA = "neocortex.code-state-interaction/v1"
-CODE_STATE_INTERACTION_POLICY = "literal-sql-sqlglot-sqlite-explicit-ownership-v1"
+CODE_STATE_INTERACTION_POLICY = "literal-sql-sqlglot-sqlite-explicit-ownership-v2"
 CODE_STATE_INTERACTION_EXAMPLE_LIMIT = 100
 CODE_STATE_INTERACTION_MAX_STATEMENTS = 50_000
 
@@ -517,6 +517,45 @@ def _literal_string(node: ast.AST) -> str | None:
     return value if isinstance(value, str) else None
 
 
+def _sqlglot_compatible_sqlite_sql(sql: str) -> str:
+    """Drop only numeric suffixes from SQLite ``?NNN`` bind parameters.
+
+    SQLGlot 30 accepts anonymous ``?`` placeholders but tokenizes SQLite's
+    numbered form as adjacent PLACEHOLDER and NUMBER tokens and then rejects
+    the number.  Reconstructing from token positions avoids changing quoted
+    strings, comments, named parameters, or digits that merely follow a
+    question mark inside data.
+    """
+
+    if sqlglot is None:
+        return sql
+    tokens = sqlglot.Tokenizer(dialect="sqlite").tokenize(sql)
+    removals: list[tuple[int, int]] = []
+    for index, token in enumerate(tokens[:-1]):
+        number = tokens[index + 1]
+        if (
+            token.token_type == sqlglot.TokenType.PLACEHOLDER
+            and number.token_type == sqlglot.TokenType.NUMBER
+            and token.end + 1 == number.start
+            and number.text.isdecimal()
+            and int(number.text) > 0
+            and (
+                number.end + 1 == len(sql)
+                or not (sql[number.end + 1].isalnum() or sql[number.end + 1] in {"_", "$"})
+            )
+        ):
+            removals.append((number.start, number.end + 1))
+    if not removals:
+        return sql
+    parts: list[str] = []
+    cursor = 0
+    for start, end in removals:
+        parts.append(sql[cursor:start])
+        cursor = end
+    parts.append(sql[cursor:])
+    return "".join(parts)
+
+
 def _attribute_name(node: ast.AST) -> str | None:
     return node.attr if isinstance(node, ast.Attribute) else None
 
@@ -669,7 +708,7 @@ class _Visitor(ast.NodeVisitor):
             self.generic_visit(node)
             return
         try:
-            expressions = tuple(sqlglot.parse(sql, read="sqlite"))
+            expressions = tuple(sqlglot.parse(_sqlglot_compatible_sqlite_sql(sql), read="sqlite"))
         except Exception as error:  # SQLGlot exposes several parse/token error types.
             self.parse_errors.append(f"{location}:{type(error).__name__}")
             self.generic_visit(node)

@@ -177,6 +177,29 @@ def test_execute_insert_literal_is_not_hidden_by_the_call_spelling(tmp_path: Pat
     assert result.interactions[0].state_store_ids == ()
 
 
+def test_sqlite_numbered_parameters_parse_without_rewriting_quoted_data(tmp_path: Path) -> None:
+    state = _published_code_state(
+        tmp_path,
+        {
+            "_04_Nucleo_Operativo/text_fixture.py": """
+def search(connection):
+    connection.execute(
+        \"\"\"WITH ranked AS MATERIALIZED (
+        SELECT * FROM document_fts WHERE document_fts MATCH ?1
+        ) SELECT * FROM ranked WHERE marker='?2' AND rowid=?2\"\"\"
+    )
+""",
+        },
+    )
+
+    result = analyze_code_state_interactions(state)
+
+    assert result.literal_sql_sites == result.parsed_sql_sites == 1
+    assert result.parse_error_sites == 0
+    assert result.interactions_count == 1
+    assert "document_fts" in result.interactions[0].read_tables
+
+
 def test_question_projection_remains_experiment_required_and_never_recommends_change(
     tmp_path: Path,
 ) -> None:
