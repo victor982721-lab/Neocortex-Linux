@@ -41,13 +41,13 @@ SECURITY_EVIDENCE_QUESTION = AnalysisQuestionSpec(
         ),
         AnalysisEvidenceRequirementSpec(
             "semgrep_invariant_provider_and_gate_evaluated",
-            "decision",
+            "question",
             "supporting",
             ("internal_fact",),
         ),
         AnalysisEvidenceRequirementSpec(
             "current_vulnerability_provider_and_gates_evaluated",
-            "decision",
+            "question",
             "supporting",
             ("internal_fact",),
         ),
@@ -105,13 +105,13 @@ DEPENDENCY_EVIDENCE_QUESTION = AnalysisQuestionSpec(
         ),
         AnalysisEvidenceRequirementSpec(
             "dependency_declaration_provider_and_gate_evaluated",
-            "decision",
+            "question",
             "supporting",
             ("internal_fact",),
         ),
         AnalysisEvidenceRequirementSpec(
             "installed_package_and_license_gates_evaluated",
-            "decision",
+            "question",
             "supporting",
             ("internal_fact",),
         ),
@@ -437,6 +437,11 @@ def _evaluation(
             "verification_experiment_result_not_linked",
         ),
     )
+    question_evidence_complete = all(
+        requirement.status == "satisfied"
+        for requirement_spec, requirement in zip(spec.requirements, requirements, strict=True)
+        if requirement_spec.stage == "question"
+    )
     evaluation = AnalysisQuestionEvaluation(
         evaluation_id=analysis_identity(
             f"code-{domain}-evidence-question-v1",
@@ -454,16 +459,24 @@ def _evaluation(
         subject=subject,
         evidence=evidence,
         requirements=requirements,
-        observation_status="confirmed",
+        observation_status="confirmed" if question_evidence_complete else "abstained",
         inference_status="abstained",
         inferences=(),
         hypotheses=spec.hypotheses,
-        question_readiness="ready",
-        decision_readiness="experiment_required",
+        question_readiness="ready" if question_evidence_complete else "abstained",
+        decision_readiness="experiment_required" if question_evidence_complete else "abstained",
         decision=None,
-        decision_reason="decision_evidence_incomplete",
+        decision_reason=(
+            "decision_evidence_incomplete"
+            if question_evidence_complete
+            else "question_evidence_incomplete"
+        ),
         counterevidence_status="not_evaluated",
-        next_action_ids=tuple(item.action_id for item in spec.next_actions),
+        next_action_ids=(
+            tuple(item.action_id for item in spec.next_actions)
+            if question_evidence_complete
+            else ()
+        ),
         limitations=_LIMITATIONS,
     )
     validate_analysis_question_evaluation(spec, evaluation)

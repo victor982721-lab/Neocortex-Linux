@@ -79,8 +79,9 @@ def test_missing_security_provider_is_observed_but_cannot_satisfy_decision_evide
     )
 
     security = evaluations[0]
-    assert security.question_readiness == "ready"
-    assert security.decision_readiness == "experiment_required"
+    assert security.observation_status == "abstained"
+    assert security.question_readiness == "abstained"
+    assert security.decision_readiness == "abstained"
     assert (
         _requirements(security)["current_vulnerability_provider_and_gates_evaluated"] == "missing"
     )
