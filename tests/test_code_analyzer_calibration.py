@@ -108,6 +108,10 @@ def test_antigoodhart_receipt_is_linked_without_overstating_general_invariance()
     assert by_kind["move"].status == "passed"
     assert by_kind["wrapper"].status == "passed"
     assert by_kind["call_spelling"].status == "passed"
+    assert len(by_kind["call_spelling"].test_nodeids) == 7
+    assert by_kind["call_spelling"].test_nodeids == tuple(
+        sorted(by_kind["call_spelling"].test_nodeids, key=lambda item: (item.casefold(), item))
+    )
     assert by_kind["metric_dilution"].status == "not_observed"
     assert result.anti_goodhart_passed == 4
     assert result.anti_goodhart_not_observed == 1

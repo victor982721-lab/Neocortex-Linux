@@ -247,14 +247,16 @@ class AntiGoodhartControl:
         "metric_dilution",
         "call_spelling",
     ]
-    test_nodeid: str
+    test_nodeids: tuple[str, ...]
     status: Literal["passed", "failed", "not_observed"]
     provider_run_id: int | None
     limitation: str
 
     def __post_init__(self) -> None:
         _required("anti-Goodhart control id", self.control_id, 256)
-        _required("anti-Goodhart test nodeid", self.test_nodeid, 16_384)
+        _texts("anti-Goodhart test nodeid", self.test_nodeids, sorted_values=True)
+        if not self.test_nodeids:
+            raise ValueError("anti-Goodhart control requires exact test nodeids")
         _required("anti-Goodhart limitation", self.limitation, 512)
         if self.transformation not in {
             "rename",
@@ -525,7 +527,7 @@ def _anti_goodhart_controls(
             AntiGoodhartControl(
                 control_id=f"antigoodhart:{transformation}:v1",
                 transformation=cast(Any, transformation),
-                test_nodeid=scenario.test_nodeids[0],
+                test_nodeids=scenario.test_nodeids,
                 status=status,
                 provider_run_id=run_id if status != "not_observed" else None,
                 limitation="one_declared_metamorphic_scenario_not_general_detector_invariance",
@@ -539,7 +541,7 @@ def _anti_goodhart_controls(
             "metric_dilution",
             (
                 "tests/test_code_analyzer_calibration.py::"
-                "test_metric_dilution_control_remains_explicit_until_executed"
+                "test_metric_dilution_control_remains_explicit_until_executed",
             ),
             "not_observed",
             None,
@@ -837,13 +839,18 @@ def parse_code_analyzer_calibration_payload(
     if not isinstance(raw_controls, Sequence) or isinstance(raw_controls, (str, bytes, bytearray)):
         raise ValueError("anti-Goodhart controls are invalid")
     control_fields = {field.name for field in fields(AntiGoodhartControl)}
-    controls = tuple(
-        AntiGoodhartControl(**cast(Any, dict(item)))
-        for item in raw_controls
-        if isinstance(item, Mapping) and set(item) == control_fields
-    )
-    if len(controls) != len(raw_controls):
-        raise ValueError("anti-Goodhart control fields are invalid")
+    parsed_controls: list[AntiGoodhartControl] = []
+    for item in raw_controls:
+        if not isinstance(item, Mapping) or set(item) != control_fields:
+            raise ValueError("anti-Goodhart control fields are invalid")
+        control_values = dict(item)
+        control_values["test_nodeids"] = _texts(
+            "anti-Goodhart test nodeid",
+            control_values["test_nodeids"],
+            sorted_values=True,
+        )
+        parsed_controls.append(AntiGoodhartControl(**cast(Any, control_values)))
+    controls = tuple(parsed_controls)
     values = {key: value for key, value in payload.items() if key != "schema"}
     values["corpora"] = tuple(corpora)
     values["anti_goodhart_controls"] = controls
