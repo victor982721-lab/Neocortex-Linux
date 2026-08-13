@@ -15,7 +15,7 @@ import time
 from dataclasses import asdict, dataclass, fields
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal, Mapping, Sequence
+from typing import Literal, Mapping, Sequence, cast
 
 from .code_analysis_epistemics import (
     AnalysisEvidenceRef,
@@ -138,6 +138,31 @@ def _text_tuple(label: str, values: object) -> tuple[str, ...]:
 def _non_negative_int(label: str, value: object) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise ValueError(f"{label} must be a non-negative integer")
+    return value
+
+
+def _optional_text(label: str, value: object, *, maximum: int = 32_768) -> str | None:
+    if value is None:
+        return None
+    return _required_text(label, value, maximum=maximum)
+
+
+def _optional_non_negative_int(label: str, value: object) -> int | None:
+    if value is None:
+        return None
+    return _non_negative_int(label, value)
+
+
+def _enum_text(label: str, value: object, allowed: set[str]) -> str:
+    result = _required_text(label, value, maximum=256)
+    if result not in allowed:
+        raise ValueError(f"{label} is invalid")
+    return result
+
+
+def _boolean(label: str, value: object) -> bool:
+    if not isinstance(value, bool):
+        raise ValueError(f"{label} must be boolean")
     return value
 
 
@@ -721,20 +746,143 @@ def parse_code_state_projection_payload(
     for raw in raw_heads:
         if not isinstance(raw, Mapping) or set(raw) != head_keys:
             raise ValueError("state projection head fields are invalid")
-        values = dict(raw)
-        for key in (
-            "missing_revision_ids",
-            "extra_revision_ids",
-            "invalid_owner_revision_ids",
-            "invalid_materialization_revision_ids",
-        ):
-            values[key] = _text_tuple(f"state projection {key}", values[key])
-        heads.append(TextSemanticHeadProjection(**values))
-    values = {key: value for key, value in payload.items() if key != "schema"}
-    values["heads"] = tuple(heads)
-    values["next_action_ids"] = _text_tuple("state projection action", values["next_action_ids"])
-    values["limitations"] = _text_tuple("state projection limitation", values["limitations"])
-    return CodeStateProjectionAnalysis(**values)
+        generation_status = _enum_text(
+            "state projection generation status",
+            raw.get("generation_status"),
+            {"ready", "ready_partial"},
+        )
+        if raw.get("authority") != "advisory":
+            raise ValueError("state projection head authority must remain advisory")
+        mutation_authority = _boolean(
+            "state projection head mutation authority",
+            raw.get("mutation_authority"),
+        )
+        if mutation_authority:
+            raise ValueError("state projection head cannot own mutation authority")
+        heads.append(
+            TextSemanticHeadProjection(
+                projection_id=_required_text(
+                    "state projection head id", raw.get("projection_id"), maximum=256
+                ),
+                model_signature=_required_text(
+                    "state projection model signature",
+                    raw.get("model_signature"),
+                    maximum=2_048,
+                ),
+                generation_id=_non_negative_int(
+                    "state projection generation id", raw.get("generation_id")
+                ),
+                generation_status=cast(Literal["ready", "ready_partial"], generation_status),
+                eligible_text_revisions=_non_negative_int(
+                    "state projection eligible revisions",
+                    raw.get("eligible_text_revisions"),
+                ),
+                published_text_revisions=_non_negative_int(
+                    "state projection published revisions",
+                    raw.get("published_text_revisions"),
+                ),
+                published_chunks=_non_negative_int(
+                    "state projection published chunks", raw.get("published_chunks")
+                ),
+                matching_revisions=_non_negative_int(
+                    "state projection matching revisions", raw.get("matching_revisions")
+                ),
+                missing_revision_ids=_text_tuple(
+                    "state projection missing revision", raw.get("missing_revision_ids")
+                ),
+                extra_revision_ids=_text_tuple(
+                    "state projection extra revision", raw.get("extra_revision_ids")
+                ),
+                invalid_owner_revision_ids=_text_tuple(
+                    "state projection invalid owner revision",
+                    raw.get("invalid_owner_revision_ids"),
+                ),
+                invalid_materialization_revision_ids=_text_tuple(
+                    "state projection invalid materialization revision",
+                    raw.get("invalid_materialization_revision_ids"),
+                ),
+                aligned=_boolean("state projection alignment", raw.get("aligned")),
+                authority="advisory",
+                mutation_authority=mutation_authority,
+            )
+        )
+    status = _enum_text("state projection status", payload.get("status"), {"ready", "abstained"})
+    observation_value = payload.get("observation")
+    observation = (
+        None
+        if observation_value is None
+        else _enum_text(
+            "state projection observation",
+            observation_value,
+            {"aligned", "delta_observed"},
+        )
+    )
+    inference_status = _enum_text(
+        "state projection inference status",
+        payload.get("inference_status"),
+        {"abstained"},
+    )
+    decision_readiness = _enum_text(
+        "state projection decision readiness",
+        payload.get("decision_readiness"),
+        {"experiment_required", "abstained"},
+    )
+    if payload.get("decision") is not None:
+        raise ValueError("state projection decision must be null")
+    if payload.get("authority") != "advisory":
+        raise ValueError("state projection authority must remain advisory")
+    mutation_authority = _boolean(
+        "state projection mutation authority", payload.get("mutation_authority")
+    )
+    if mutation_authority:
+        raise ValueError("state projection cannot own mutation authority")
+    return CodeStateProjectionAnalysis(
+        analysis_id=_required_text(
+            "state projection analysis id", payload.get("analysis_id"), maximum=256
+        ),
+        status=cast(Literal["ready", "abstained"], status),
+        reason=_optional_text("state projection reason", payload.get("reason"), maximum=256),
+        policy_id=_required_text("state projection policy", payload.get("policy_id"), maximum=256),
+        knowledge_snapshot_id=_optional_text(
+            "state projection Knowledge snapshot",
+            payload.get("knowledge_snapshot_id"),
+            maximum=2_048,
+        ),
+        knowledge_consistency=_optional_text(
+            "state projection Knowledge consistency",
+            payload.get("knowledge_consistency"),
+            maximum=256,
+        ),
+        text_owner_schema=_optional_non_negative_int(
+            "state projection Text schema", payload.get("text_owner_schema")
+        ),
+        semantic_owner_schema=_optional_non_negative_int(
+            "state projection Semantic schema", payload.get("semantic_owner_schema")
+        ),
+        complete_text_rows=_optional_non_negative_int(
+            "state projection complete Text rows", payload.get("complete_text_rows")
+        ),
+        eligible_text_rows=_optional_non_negative_int(
+            "state projection eligible Text rows", payload.get("eligible_text_rows")
+        ),
+        excluded_empty_text_rows=_optional_non_negative_int(
+            "state projection excluded empty Text rows",
+            payload.get("excluded_empty_text_rows"),
+        ),
+        excluded_other_text_rows=_optional_non_negative_int(
+            "state projection excluded other Text rows",
+            payload.get("excluded_other_text_rows"),
+        ),
+        heads=tuple(heads),
+        observation=cast(Literal["aligned", "delta_observed"] | None, observation),
+        inference_status=cast(Literal["abstained"], inference_status),
+        decision_readiness=cast(Literal["experiment_required", "abstained"], decision_readiness),
+        decision=None,
+        next_action_ids=_text_tuple("state projection action", payload.get("next_action_ids")),
+        limitations=_text_tuple("state projection limitation", payload.get("limitations")),
+        authority="advisory",
+        mutation_authority=mutation_authority,
+    )
 
 
 def state_projection_questions(

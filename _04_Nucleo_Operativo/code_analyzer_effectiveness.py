@@ -559,7 +559,12 @@ def _run_summary(row: sqlite3.Row) -> tuple[int, int, int, int]:
         raise CodeAnalyzerEffectivenessResolutionError("analysis_run_time_invalid")
     if completed < started:
         raise CodeAnalyzerEffectivenessResolutionError("analysis_run_time_invalid")
-    return (completed - started) // 1_000_000, *values
+    return (
+        (completed - started) // 1_000_000,
+        values[0],
+        values[1],
+        values[2],
+    )
 
 
 def _bounded(values: set[str]) -> tuple[str, ...]:
