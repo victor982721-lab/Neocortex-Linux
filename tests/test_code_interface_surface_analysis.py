@@ -201,6 +201,21 @@ def test_interface_surface_observes_modules_configuration_and_static_cli(
     assert cli.subcommand_examples == ("run",)
 
 
+def test_module_surface_aggregates_each_module_without_cross_file_count_leakage(
+    tmp_path: Path,
+) -> None:
+    analysis = _analysis(tmp_path)
+
+    large = analysis.modules[0]
+    assert large.direct_symbols == 1_050
+    assert large.public_direct_symbols == 1_050
+    assert large.direct_variables == 1_050
+    assert large.direct_functions == 0
+    assert large.direct_classes == 0
+    assert large.confirmed_dependencies == 0
+    assert large.confirmed_references == 0
+
+
 def test_interface_questions_never_convert_width_into_a_change_decision(tmp_path: Path) -> None:
     analysis = _analysis(tmp_path)
 

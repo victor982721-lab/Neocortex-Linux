@@ -757,25 +757,41 @@ def _module_observations(
 ) -> tuple[int, int, tuple[ModuleSurfaceObservation, ...]]:
     rows = tuple(
         connection.execute(
-            """SELECT v.version_id,v.path_observed,m.symbol_id,m.name,
+            """WITH symbol_counts AS (
+                   SELECT parent_symbol_id,COUNT(*) AS direct_symbols,
+                          SUM(CASE WHEN visibility='public' THEN 1 ELSE 0 END)
+                              AS public_symbols,
+                          SUM(CASE WHEN kind IN ('function','entrypoint') THEN 1 ELSE 0 END)
+                              AS functions,
+                          SUM(CASE WHEN kind='class' THEN 1 ELSE 0 END) AS classes,
+                          SUM(CASE WHEN kind='module_variable' THEN 1 ELSE 0 END) AS variables
+                   FROM symbols WHERE parent_symbol_id IS NOT NULL
+                   GROUP BY parent_symbol_id
+               ), dependency_counts AS (
+                   SELECT version_id,COUNT(*) AS dependencies
+                   FROM dependencies WHERE confirmed=1 GROUP BY version_id
+               ), reference_counts AS (
+                   SELECT version_id,COUNT(*) AS references_count
+                   FROM code_references WHERE confirmed=1 GROUP BY version_id
+               )
+               SELECT v.version_id,v.path_observed,m.symbol_id,m.name,
                       m.start_line,m.end_line,
-                      COUNT(c.symbol_id) AS direct_symbols,
-                      SUM(CASE WHEN c.visibility='public' THEN 1 ELSE 0 END) AS public_symbols,
-                      SUM(CASE WHEN c.kind IN ('function','entrypoint') THEN 1 ELSE 0 END) AS functions,
-                      SUM(CASE WHEN c.kind='class' THEN 1 ELSE 0 END) AS classes,
-                      SUM(CASE WHEN c.kind='module_variable' THEN 1 ELSE 0 END) AS variables,
-                      (SELECT COUNT(*) FROM dependencies d
-                       WHERE d.version_id=v.version_id AND d.confirmed=1) AS dependencies,
-                      (SELECT COUNT(*) FROM code_references r
-                       WHERE r.version_id=v.version_id AND r.confirmed=1) AS references_count
+                      COALESCE(sc.direct_symbols,0) AS direct_symbols,
+                      COALESCE(sc.public_symbols,0) AS public_symbols,
+                      COALESCE(sc.functions,0) AS functions,
+                      COALESCE(sc.classes,0) AS classes,
+                      COALESCE(sc.variables,0) AS variables,
+                      COALESCE(dc.dependencies,0) AS dependencies,
+                      COALESCE(rc.references_count,0) AS references_count
                FROM files f
                JOIN file_versions v ON v.version_id=f.current_version_id
                JOIN symbols m ON m.version_id=v.version_id AND m.kind='module'
-               LEFT JOIN symbols c ON c.parent_symbol_id=m.symbol_id
+               LEFT JOIN symbol_counts sc ON sc.parent_symbol_id=m.symbol_id
+               LEFT JOIN dependency_counts dc ON dc.version_id=v.version_id
+               LEFT JOIN reference_counts rc ON rc.version_id=v.version_id
                WHERE f.status='current' AND v.invalidated_ns IS NULL
                  AND v.language='python' AND v.analysis_status='complete'
                  AND m.confirmed=1
-               GROUP BY v.version_id,v.path_observed,m.symbol_id,m.name,m.start_line,m.end_line
                ORDER BY v.path_observed,m.symbol_id"""
         ).fetchall()
     )
