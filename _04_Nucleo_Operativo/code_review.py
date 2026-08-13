@@ -882,7 +882,10 @@ def review_code_state(
     require_sqlite_sidecars_absent(path)
     if not path.is_file():
         return _abstained(path, "code_state_missing")
-    read = _read_review(path, limit=limit)
+    try:
+        read = _read_review(path, limit=limit)
+    except CodeReviewEvidenceResolutionError:
+        return _abstained(path, "code_review_evidence_unresolvable")
     if read.latest_run is None:
         return _abstained(path, "code_run_missing")
     if read.latest_run.status != "completed":

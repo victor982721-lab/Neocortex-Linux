@@ -761,11 +761,13 @@ def test_review_rejects_current_rows_not_owned_by_the_latest_run(
         checkpoint_code_wal(connection)
     remove_checkpointed_code_sidecars(database)
 
-    with pytest.raises(
-        CodeReviewEvidenceResolutionError,
-        match="current_code_projection_not_owned_by_latest_completed_run",
-    ):
-        review_code_state(state_directory)
+    result = review_code_state(state_directory)
+
+    assert result.status == "abstained"
+    assert result.reason == "code_review_evidence_unresolvable"
+    assert result.findings == ()
+    assert result.question_specs == ()
+    assert result.question_evaluations == ()
 
 
 def test_review_abstains_when_its_evidence_resolver_cannot_verify_a_source(
