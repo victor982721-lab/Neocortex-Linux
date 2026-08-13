@@ -137,6 +137,7 @@ from .external_supply_chain_audit import (
     PipAuditExecution,
     execute_installed_package_inventory,
     execute_pip_audit_known_vulnerabilities,
+    installed_environment_distributions,
 )
 from .semantic_models import fingerprint_bytes
 
@@ -413,7 +414,7 @@ def _installed_distribution_signature(*, utc_date: str | None = None) -> str:
 
     rows: list[tuple[str, str]] = []
     names: set[str] = set()
-    for distribution in importlib.metadata.distributions():
+    for distribution in installed_environment_distributions():
         if len(rows) >= 2_000:
             raise ValueError("installed distribution count exceeds its bound")
         name = distribution.metadata.get("Name")

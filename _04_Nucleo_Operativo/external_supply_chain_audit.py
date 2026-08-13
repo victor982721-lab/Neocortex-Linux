@@ -99,6 +99,40 @@ _INVENTORY_LIMITATIONS = (
 )
 
 
+def installed_environment_distributions() -> tuple[importlib.metadata.Distribution, ...]:
+    """Enumerate installed metadata without treating the source cwd as a wheel.
+
+    ``importlib.metadata.distributions()`` implicitly searches ``sys.path``.
+    For a source-checkout invocation, its empty first entry therefore discovers
+    a local ``*.egg-info`` in addition to the installed wheel.  Supply-chain
+    evidence owns the interpreter environment, not project metadata, so search
+    every explicit, existing import root while excluding the resolved working
+    directory.  Genuine duplicate installed identities remain an error in the
+    downstream normalizer.
+    """
+
+    working_directory = Path.cwd().resolve(strict=True)
+    search_paths: list[str] = []
+    seen: set[str] = set()
+    for raw in sys.path:
+        if not raw:
+            continue
+        try:
+            path = Path(raw).resolve(strict=True)
+        except OSError:
+            continue
+        if path == working_directory or not path.is_dir():
+            continue
+        key = os.path.normcase(str(path))
+        if key in seen:
+            continue
+        seen.add(key)
+        search_paths.append(str(path))
+    if not search_paths:
+        raise ValueError("installed distribution search path is unavailable")
+    return tuple(importlib.metadata.distributions(path=search_paths))
+
+
 @dataclass(frozen=True, slots=True)
 class PipAuditCounters:
     packages_observed: int
@@ -1313,19 +1347,13 @@ class _RecordVerifier:
         self._verify_hash(path, file_metadata.st_size, algorithm, expected_digest)
 
     def _parse_entry(self, row: Sequence[str]) -> tuple[str, str, str] | None:
-        if (
-            len(row) != 3
-            or not row[0]
-            or len(row[0].encode("utf-8")) > _MAX_TEXT_BYTES
-        ):
+        if len(row) != 3 or not row[0] or len(row[0].encode("utf-8")) > _MAX_TEXT_BYTES:
             self._progress.malformed_entries += 1
             return None
         return row[0], row[1], row[2]
 
     def _admit_candidate(self, record_path: str) -> tuple[Path, os.stat_result] | None:
-        candidate = Path(str(self._distribution.locate_file(record_path))).resolve(
-            strict=False
-        )
+        candidate = Path(str(self._distribution.locate_file(record_path))).resolve(strict=False)
         if not _is_within(candidate, self._root):
             self._progress.unsafe_entries += 1
             return None
@@ -1457,7 +1485,7 @@ def _prepare_inventory_context(
         pyproject_path
     )
     rows = _distribution_rows(
-        importlib.metadata.distributions() if distributions is None else distributions
+        installed_environment_distributions() if distributions is None else distributions
     )
     rows_by_name = {row.normalized_name: row for row in rows}
     project_row = rows_by_name.get(project_name)
@@ -1704,7 +1732,9 @@ def _package_requirement_relations(
     )
 
 
-def _project_dependency_relations(context: _InventoryContext) -> tuple[ExternalProviderRelation, ...]:
+def _project_dependency_relations(
+    context: _InventoryContext,
+) -> tuple[ExternalProviderRelation, ...]:
     direct_edges: dict[str, list[_ProjectRequirement]] = defaultdict(list)
     for declaration in context.declarations:
         direct_edges[declaration.target].append(declaration)
@@ -1756,13 +1786,11 @@ def _inventory_summary(context: _InventoryContext) -> _InventorySummary:
         applicable_evaluations,
         sum(evaluation.target_installed for evaluation in applicable_evaluations),
         sum(not evaluation.target_installed for evaluation in applicable_evaluations),
-        sum(
-            evaluation.version_compatible is True for evaluation in applicable_evaluations
+        sum(evaluation.version_compatible is True for evaluation in applicable_evaluations),
+        sum(evaluation.version_compatible is False for evaluation in applicable_evaluations),
+        tuple(
+            declaration for declaration in context.declarations if declaration.group != "required"
         ),
-        sum(
-            evaluation.version_compatible is False for evaluation in applicable_evaluations
-        ),
-        tuple(declaration for declaration in context.declarations if declaration.group != "required"),
     )
 
 
@@ -1950,4 +1978,5 @@ __all__ = [
     "PipAuditExecution",
     "execute_installed_package_inventory",
     "execute_pip_audit_known_vulnerabilities",
+    "installed_environment_distributions",
 ]

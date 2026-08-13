@@ -22,6 +22,33 @@ _FIXTURES = Path(__file__).with_name("fixtures")
 _OBSERVED = datetime(2026, 8, 3, 12, 30, tzinfo=timezone.utc)
 
 
+def test_installed_environment_inventory_excludes_source_checkout_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source"
+    site_packages = tmp_path / "environment" / "site-packages"
+    source.mkdir()
+    site_packages.mkdir(parents=True)
+    monkeypatch.chdir(source)
+    monkeypatch.setattr(
+        audit.sys,
+        "path",
+        ["", str(source), str(site_packages), str(site_packages), str(tmp_path / "missing")],
+    )
+    observed_paths: list[tuple[str, ...]] = []
+    sentinel = cast("Distribution", object())
+
+    def distributions(*, path: list[str]):
+        observed_paths.append(tuple(path))
+        return (sentinel,)
+
+    monkeypatch.setattr(audit.importlib.metadata, "distributions", distributions)
+
+    assert audit.installed_environment_distributions() == (sentinel,)
+    assert observed_paths == [(str(site_packages.resolve()),)]
+
+
 class _FakeDistribution:
     def __init__(
         self,
@@ -115,9 +142,13 @@ def _install_fixture(tmp_path: Path) -> tuple[Path, Path, list[Distribution]]:
         version="1.5",
         license_expression="Apache-2.0",
     )
-    return install_root, package_file, cast(
-        list[Distribution],
-        [framework, dependency, mismatch],
+    return (
+        install_root,
+        package_file,
+        cast(
+            list[Distribution],
+            [framework, dependency, mismatch],
+        ),
     )
 
 
@@ -547,9 +578,7 @@ def test_installed_inventory_correlates_pyproject_licenses_requirements_and_reco
         and item.target_key == "package:demo-dep"
     )
     assert dependency.metadata["target_installed"] is True
-    demo_evaluation = _metadata_rows(
-        dependency.metadata["base_dependency_evaluations"]
-    )[0]
+    demo_evaluation = _metadata_rows(dependency.metadata["base_dependency_evaluations"])[0]
     assert demo_evaluation["marker_evaluated"] is True
     assert demo_evaluation["marker_applies"] is True
     assert demo_evaluation["presence_gate_evaluated"] is True
@@ -606,9 +635,7 @@ def test_base_dependency_gates_exclude_false_markers_and_optional_extras(
         if item.relation_kind == "project_declares_dependency"
         and item.target_key == "package:ignored-dep"
     )
-    ignored_evaluation = _metadata_rows(
-        ignored.metadata["base_dependency_evaluations"]
-    )[0]
+    ignored_evaluation = _metadata_rows(ignored.metadata["base_dependency_evaluations"])[0]
     assert ignored_evaluation["marker_applies"] is False
     assert ignored_evaluation["presence_gate_evaluated"] is False
     assert ignored_evaluation["version_constraint_evaluated"] is False
@@ -620,9 +647,7 @@ def test_base_dependency_gates_exclude_false_markers_and_optional_extras(
         and item.target_key == "package:mismatch-dep"
     )
     assert (
-        _metadata_rows(mismatch.metadata["base_dependency_evaluations"])[0][
-            "version_compatible"
-        ]
+        _metadata_rows(mismatch.metadata["base_dependency_evaluations"])[0]["version_compatible"]
         is False
     )
     optional = next(
@@ -730,23 +755,26 @@ def test_record_verification_mixed_entry_contract_is_deterministic(
     def encoded_digest(content: bytes) -> str:
         return base64.urlsafe_b64encode(hashlib.sha256(content).digest()).decode().rstrip("=")
 
-    record = "\n".join(
-        (
-            f"good.py,sha256={encoded_digest(contents['good.py'])},4",
-            f"wrong-hash.py,sha256={encoded_digest(b'different')},6",
-            f"wrong-size.py,sha256={encoded_digest(contents['wrong-size.py'])},2",
-            f"missing.py,sha256={encoded_digest(b'missing')},7",
-            f"../../../outside.txt,sha256={encoded_digest(b'outside')},7",
-            f"directory,sha256={encoded_digest(b'')},0",
-            "invalid-size.py,,not-a-number",
-            "invalid-hash.py,sha999=YWJj,4",
-            "blank.txt,,",
-            "pkg/cache.pyc,,",
-            "neocortex_framework-0.7.2.dist-info/RECORD,,",
-            "too,few",
-            ",sha256=YWJj,1",
+    record = (
+        "\n".join(
+            (
+                f"good.py,sha256={encoded_digest(contents['good.py'])},4",
+                f"wrong-hash.py,sha256={encoded_digest(b'different')},6",
+                f"wrong-size.py,sha256={encoded_digest(contents['wrong-size.py'])},2",
+                f"missing.py,sha256={encoded_digest(b'missing')},7",
+                f"../../../outside.txt,sha256={encoded_digest(b'outside')},7",
+                f"directory,sha256={encoded_digest(b'')},0",
+                "invalid-size.py,,not-a-number",
+                "invalid-hash.py,sha999=YWJj,4",
+                "blank.txt,,",
+                "pkg/cache.pyc,,",
+                "neocortex_framework-0.7.2.dist-info/RECORD,,",
+                "too,few",
+                ",sha256=YWJj,1",
+            )
         )
-    ) + "\n"
+        + "\n"
+    )
     fake_distribution, record_path = _record_fixture(install_root, record)
     distribution = cast(Distribution, fake_distribution)
     before = dict(contents)
@@ -792,9 +820,7 @@ def test_record_verification_absence_and_signature_are_frozen(tmp_path: Path) ->
         "(distribution: 'importlib.metadata.Distribution', *, "
         "installation_root: 'Path') -> '_RecordVerification'"
     )
-    assert asdict(
-        audit._record_verification(distribution, installation_root=tmp_path)
-    ) == {
+    assert asdict(audit._record_verification(distribution, installation_root=tmp_path)) == {
         "present": False,
         "digest": None,
         "entries": 0,
