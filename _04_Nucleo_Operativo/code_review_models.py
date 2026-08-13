@@ -743,6 +743,7 @@ class CodeReviewResult:
             state_projection=self.state_projection,
             state_topology=self.state_topology,
             change_evolution=self.change_evolution,
+            architecture=self.architecture,
             assurance=self.assurance,
             supply_chain=self.supply_chain,
             interface_surface=self.interface_surface,

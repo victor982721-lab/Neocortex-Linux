@@ -653,6 +653,13 @@ valores; YAML/text-only permanece `unsupported` o `incomplete`; y las llamadas
 `argparse` literales/dinámicas se observan sin ejecutar código. Ninguna de estas
 señales prueba cohesión, reachability o necesidad de refactor.
 
+El grafo Ruff/Grimp y los contratos de imports existentes también se proyectan
+como preguntas generales. Consenso estático y contratos evaluados son evidencia
+consultable, no ownership ni una orden de cambio. Como NeoCortex todavía no
+declara un registry versionado de logical owners, v15 publica esa carencia como
+`architecture.logical_owner_mapping_is_explicitly_declared` en abstención; nunca
+rellena el owner a partir del primer segmento del módulo.
+
 En la ubicación canónica de autoanálisis, v15 añade observaciones cross-owner:
 `neocortex.code-state-projection/v1`: abre Text y Semantic mediante lecturas
 SQLite `immutable=1` con fences de archivo y sidecars inactivos, y compara el

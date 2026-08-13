@@ -1028,6 +1028,7 @@ def review_code_state(
         state_projection=state_projection,
         state_topology=state_topology,
         change_evolution=read.change_evolution,
+        architecture=read.architecture,
         assurance=assurance,
         supply_chain=read.supply_chain,
         interface_surface=read.interface_surface,

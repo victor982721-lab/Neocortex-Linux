@@ -22,6 +22,8 @@ from .code_analysis_epistemics import (
     validate_analysis_question_set,
 )
 from .code_assurance_analysis import CodeAssuranceAnalysis, assurance_questions
+from .code_architecture_analysis import CodeArchitectureAnalysis
+from .code_architecture_questions import architecture_questions
 from .code_analyzer_effectiveness import (
     CodeAnalyzerEffectivenessAnalysis,
     analyzer_effectiveness_questions,
@@ -485,6 +487,7 @@ def expected_integrated_code_review_questions(
     state_projection: CodeStateProjectionAnalysis,
     state_topology: CodeStateTopologyAnalysis,
     change_evolution: CodeChangeEvolutionAnalysis,
+    architecture: CodeArchitectureAnalysis,
     assurance: CodeAssuranceAnalysis,
     supply_chain: CodeSupplyChainAnalysis,
     interface_surface: CodeInterfaceSurfaceAnalysis,
@@ -500,6 +503,15 @@ def expected_integrated_code_review_questions(
     )
     specs = list(base_specs)
     evaluations = list(base_evaluations)
+
+    architecture_specs, architecture_evaluations = architecture_questions(
+        architecture,
+        snapshot_id=snapshot.processing_signature,
+        snapshot_freshness=snapshot.freshness,
+        rank_offset=len(evaluations),
+    )
+    specs.extend(architecture_specs)
+    evaluations.extend(architecture_evaluations)
 
     interface_specs, interface_evaluations = interface_surface_questions(
         interface_surface,

@@ -668,8 +668,11 @@ def test_review_ranks_confirmed_hotspots_deterministically_with_diversity(
         "structure.cli_surface_has_runtime_contract_evidence",
         "assurance.evidence_providers_are_resolved",
         "capability.text_extract_evidence_provider_is_resolved",
+        "architecture.static_import_graph_is_comparably_observed",
+        "architecture.declared_import_contracts_are_evaluated",
+        "architecture.logical_owner_mapping_is_explicitly_declared",
     }
-    assert len(epistemics["evaluations"]) == len(first.findings) + 14
+    assert len(epistemics["evaluations"]) == len(first.findings) + 17
     first_evaluation = epistemics["evaluations"][0]
     assert first_evaluation["observation_status"] == "confirmed"
     assert first_evaluation["inference_status"] == "abstained"

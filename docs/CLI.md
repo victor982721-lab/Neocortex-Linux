@@ -301,6 +301,13 @@ no presenta option strings sintácticos como reachability o comportamiento del
 comando público. Formatos text-only o no soportados permanecen explícitamente
 incompletos.
 
+La proyección general incluye además preguntas sobre el grafo estático
+Ruff/Grimp y los contratos de imports versionados. Un contrato `failed` se
+conserva como observación, pero no crea automáticamente un patch. El primer
+segmento del módulo continúa siendo sólo `path_namespace_id`: mientras no exista
+un registry explícito y resoluble de logical owners, la pregunta
+`architecture.logical_owner_mapping_is_explicitly_declared` se abstiene.
+
 Cuando `--code-review` consume el estado canónico protegido, v15 también publica
 `neocortex.code-state-projection/v1`. La observación compara revisiones Text
 elegibles (`complete`, revisión presente, blob presente y `text_chars > 0`) con

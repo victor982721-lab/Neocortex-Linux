@@ -19,6 +19,10 @@ from .code_analyzer_effectiveness import (
     parse_code_analyzer_effectiveness_payload,
 )
 from .code_assurance_analysis import assurance_questions, parse_code_assurance_payload
+from .code_architecture_questions import (
+    architecture_questions,
+    parse_code_architecture_question_payload,
+)
 from .code_capability_reachability_analysis import (
     capability_reachability_questions,
     parse_capability_reachability_payload,
@@ -1588,6 +1592,7 @@ def _validate_review_v15_payload(payload: Mapping[str, object]) -> None:
 
         state_topology_payload = _mapping(payload.get("state_topology"))
         state_projection_payload = _mapping(payload.get("state_projection"))
+        architecture_payload = _mapping(payload.get("architecture"))
         change_evolution_payload = _mapping(payload.get("change_evolution"))
         assurance_payload = _mapping(payload.get("assurance"))
         capability_payload = _mapping(payload.get("capability_reachability"))
@@ -1599,6 +1604,7 @@ def _validate_review_v15_payload(payload: Mapping[str, object]) -> None:
             for item in (
                 state_topology_payload,
                 state_projection_payload,
+                architecture_payload,
                 change_evolution_payload,
                 assurance_payload,
                 capability_payload,
@@ -1610,6 +1616,7 @@ def _validate_review_v15_payload(payload: Mapping[str, object]) -> None:
             raise ValueError("ready code-review/v15 payload lacks integrated evidence")
         assert state_topology_payload is not None
         assert state_projection_payload is not None
+        assert architecture_payload is not None
         assert change_evolution_payload is not None
         assert assurance_payload is not None
         assert capability_payload is not None
@@ -1618,6 +1625,7 @@ def _validate_review_v15_payload(payload: Mapping[str, object]) -> None:
         assert interface_surface_payload is not None
         state_topology = parse_code_state_topology_payload(state_topology_payload)
         state_projection = parse_code_state_projection_payload(state_projection_payload)
+        architecture = parse_code_architecture_question_payload(architecture_payload)
         change_evolution = parse_code_change_evolution_payload(change_evolution_payload)
         assurance = parse_code_assurance_payload(assurance_payload)
         capability = parse_capability_reachability_payload(capability_payload)
@@ -1672,6 +1680,15 @@ def _validate_review_v15_payload(payload: Mapping[str, object]) -> None:
         expected_extra_specs: list[AnalysisQuestionSpec] = []
         expected_extra_evaluations: list[AnalysisQuestionEvaluation] = []
         offset = base_evaluation_count
+        architecture_specs, architecture_evaluations = architecture_questions(
+            architecture,
+            snapshot_id=snapshot_id,
+            snapshot_freshness=resolved_freshness,
+            rank_offset=offset,
+        )
+        expected_extra_specs.extend(architecture_specs)
+        expected_extra_evaluations.extend(architecture_evaluations)
+        offset += len(architecture_evaluations)
         interface_specs, interface_evaluations = interface_surface_questions(
             interface_surface,
             snapshot_freshness=resolved_freshness,

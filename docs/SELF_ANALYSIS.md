@@ -446,6 +446,16 @@ nunca valores. Para CLI selecciona archivos por calls
 construcción dinámica. No ejecuta builders ni afirma que esos parsers lleguen
 al comando público.
 
+La arquitectura publicada deja de ser sólo una sección paralela: v15 deriva
+preguntas generales para el grafo estático comparable y para las evaluaciones de
+los contratos de imports. Sus evidence refs conservan snapshot, digest, gates,
+conteos, discrepancias y violaciones; incluso un contrato fallido permanece
+advisory y sin autoridad de mutación. Una tercera pregunta hace explícito el
+límite pendiente: no existe todavía un registry versionado de logical owners ni
+una proyección módulo→owner. Por ello
+`architecture.logical_owner_mapping_is_explicitly_declared/v1` se abstiene y el
+campo histórico `path_namespace_id` nunca se promueve a ownership.
+
 La primera pregunta durable cross-owner no intenta fabricar un grafo SQL.
 `neocortex.code-state-projection/v1` compara, por modelo de texto publicado, el
 set de `documents.revision_id` realmente elegible para el adaptador Text con el
