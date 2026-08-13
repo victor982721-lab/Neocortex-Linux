@@ -501,9 +501,25 @@ def _pip_audit_cache_parent(environment: Mapping[str, str]) -> Path:
 
 
 def _pip_audit_exit_error(completed: subprocess.CompletedProcess[bytes]) -> ValueError:
-    detail = " ".join(
-        (completed.stderr or completed.stdout).decode("utf-8", errors="replace").split()
-    )[:2048]
+    raw_detail = completed.stderr or completed.stdout
+    normalized = " ".join(raw_detail.decode("utf-8", errors="replace").split())
+    folded = normalized.casefold()
+    if any(
+        marker in folded
+        for marker in (
+            "no address associated with hostname",
+            "temporary failure in name resolution",
+            "name or service not known",
+            "nameresolutionerror",
+            "connection refused",
+            "max retries exceeded",
+        )
+    ):
+        digest = hashlib.sha256(raw_detail).hexdigest()
+        return ValueError(
+            f"pip_audit_network_unavailable:{completed.returncode}:stderr_sha256:{digest}"
+        )
+    detail = normalized[:512]
     message = f"pip_audit_unexpected_exit:{completed.returncode}"
     return ValueError(message if not detail else f"{message}:{detail}")
 

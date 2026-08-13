@@ -470,6 +470,27 @@ def test_pip_audit_rejects_failed_exit_one_schema_drift_and_fix_claims(
     with pytest.raises(ValueError, match="unexpected_exit:1:fatal cache initialization"):
         audit.execute_pip_audit_known_vulnerabilities({}, observed_at=_OBSERVED)
 
+    network_error = b"urllib3 NameResolutionError: No address associated with hostname"
+    monkeypatch.setattr(
+        audit,
+        "run_bounded_capture",
+        lambda arguments, **_kwargs: subprocess.CompletedProcess(
+            arguments,
+            1,
+            b"",
+            network_error,
+        ),
+    )
+    with pytest.raises(
+        ValueError,
+        match=(
+            "^pip_audit_network_unavailable:1:stderr_sha256:"
+            + hashlib.sha256(network_error).hexdigest()
+            + "$"
+        ),
+    ):
+        audit.execute_pip_audit_known_vulnerabilities({}, observed_at=_OBSERVED)
+
     invalid_payloads = (
         b"[]",
         b'{"dependencies": [], "fixes": [], "future": true}',
