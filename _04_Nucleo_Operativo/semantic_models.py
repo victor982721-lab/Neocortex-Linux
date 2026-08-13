@@ -65,8 +65,8 @@ class EvidenceDisposition(StrEnum):
     REJECTED = "rejected"
 
 
-def canonical_json(value: Mapping[str, object] | None) -> str:
-    """Serialize provenance deterministically without hiding invalid values."""
+def canonical_json(value: object | None) -> str:
+    """Serialize JSON-compatible provenance without hiding invalid values."""
 
     return json.dumps(
         {} if value is None else value,

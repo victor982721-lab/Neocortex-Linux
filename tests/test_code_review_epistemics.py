@@ -656,5 +656,7 @@ def test_ready_review_rejects_unlinked_observations_and_stale_digest(
         replace(result, limitations=(*result.limitations, "invented_limitation"))
     with pytest.raises(ValueError, match="lacks evidence required"):
         replace(result, snapshot=None)
+    with pytest.raises(ValueError, match="requires resolved architecture analysis"):
+        replace(result, architecture=None)
     with pytest.raises(ValueError, match="invalid code-review result status"):
         replace(result, status="invented")  # type: ignore[arg-type]

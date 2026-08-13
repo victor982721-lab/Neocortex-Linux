@@ -678,6 +678,8 @@ class CodeReviewResult:
             raise ValueError("ready code-review result lacks evidence required by its digest")
         if self.structural_analysis is None:
             raise ValueError("ready code-review result requires resolved structural analysis")
+        if self.architecture is None:
+            raise ValueError("ready code-review result requires resolved architecture analysis")
         if self.state_projection is None:
             raise ValueError("ready code-review result requires a state projection result")
         if self.state_topology is None:
