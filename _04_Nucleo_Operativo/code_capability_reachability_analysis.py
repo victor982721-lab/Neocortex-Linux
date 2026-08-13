@@ -404,8 +404,10 @@ def abstained_capability_reachability(
     reason: str,
     *,
     source_version: str,
-    manifest_count: int,
+    manifest_count: int | None = None,
 ) -> CodeCapabilityReachabilityAnalysis:
+    if manifest_count is None:
+        manifest_count = len(_text_manifests())
     values: dict[str, object] = {
         "status": "abstained",
         "reason": _required_text("capability abstention reason", reason, maximum=256),

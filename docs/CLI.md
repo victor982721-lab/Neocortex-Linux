@@ -276,7 +276,7 @@ review y work packages consumen la misma evidencia; la ausencia o caducidad de
 un proveedor obliga a abstener sólo la dimensión afectada.
 
 `--code-review` consume esa publicación sin volver a analizar la raíz. El
-envelope `neocortex.code-review/v14` no declara compatibilidad con schemas
+envelope `neocortex.code-review/v15` no declara compatibilidad con schemas
 anteriores. Usa `neocortex.code-analysis-epistemics/v1`, una proyección general
 de preguntas con fingerprint de spec y evidencia resuelta contra IDs de
 registros Code. Publica observaciones estructurales confirmadas y separa hipótesis,
@@ -286,7 +286,7 @@ readiness de decisión. Los hotspots quedan `experiment_required`, con
 packages de cambio. La resolución prueba procedencia y concordancia del
 diagnóstico; no prueba daño, cohesión ni necesidad de refactor.
 
-v13 añade `neocortex.code-class-surface/v1`: observa clases Python actuales y
+La familia `neocortex.code-class-surface/v1` observa clases Python actuales y
 sus miembros AST directos confirmados. La selección `span >= 500` o
 `direct_methods >= 20` es deliberadamente un filtro provisional de atención.
 No deduce rol, ownership, cohesión, consumidores ni riesgo desde el nombre o la
@@ -294,7 +294,14 @@ ruta; una clase de pruebas, un `Protocol` o un composition root siguen visibles
 como controles negativos y quedan `experiment_required`. El límite solicitado
 se aplica por familia de pregunta.
 
-Cuando `--code-review` consume el estado canónico protegido, v14 también publica
+v15 añade `neocortex.code-interface-surface/v1`: observa módulos seleccionados
+por span/superficie directa, estructura de configuraciones JSON/TOML y llamadas
+estáticas `argparse`. No expone valores de configuración, no ejecuta módulos y
+no presenta option strings sintácticos como reachability o comportamiento del
+comando público. Formatos text-only o no soportados permanecen explícitamente
+incompletos.
+
+Cuando `--code-review` consume el estado canónico protegido, v15 también publica
 `neocortex.code-state-projection/v1`. La observación compara revisiones Text
 elegibles (`complete`, revisión presente, blob presente y `text_chars > 0`) con
 miembros del head Semantic de texto publicado. Las lecturas usan `immutable=1`,
@@ -303,13 +310,20 @@ estado de fixture o una ruta no canónica esta dimensión se abstiene con
 `document_state_not_configured_for_noncanonical_code_review`; no busca ni crea
 otro estado por convención de ruta.
 
+El output incluye además `CODE_STATE_TOPOLOGY`, `CODE_CHANGE_EVOLUTION`,
+`CODE_ASSURANCE`, `CODE_CAPABILITY_REACHABILITY`,
+`CODE_ANALYZER_EFFECTIVENESS` y `CODE_INTERFACE_SURFACE`. Las preguntas de
+seguridad y dependencias se alimentan del mismo `supply_chain`; un proveedor no
+registrado o stale permanece faltante. La proyección de autoeficacia compara el
+snapshot publicado contra archivos Git visibles por digest y no publica
+precision/recall ni decision rate sin etiquetas independientes.
+
 El planificador v5 puede entregar, de forma independiente, hasta tres paquetes
 `unused_characterization` únicamente cuando pasan los gates de precisión de
 calibración y holdout. Todos sus pasos son de caracterización, exigen revisión
 dinámica y confirmación humana, y declaran `mutation_authority=false`. La
 proyección Coverage demuestra ejecución por una suite passing y líneas/ramas no
-observadas; no demuestra que un test proteja un invariante, aunque algunos
-campos legacy todavía usen esa terminología. `--code-review-limit N
+observadas; no demuestra que un test proteja un invariante. `--code-review-limit N
 --code-json` permite inspeccionar entre 1 y 50 hotspots. No admite `--apply`,
 `--route` ni otra operación directa.
 

@@ -13,7 +13,7 @@ from .code_analysis_epistemics import (
 from .code_external_evidence import external_status_digest_payload
 from .semantic_models import canonical_json, fingerprint_text
 
-CODE_REVIEW_SCHEMA = "neocortex.code-review/v14"
+CODE_REVIEW_SCHEMA = "neocortex.code-review/v15"
 CODE_REVIEW_COMPATIBLE_SCHEMAS: tuple[str, ...] = ()
 RecommendationStatus = Literal["ready", "abstained", "not_evaluated"]
 
@@ -48,6 +48,12 @@ def build_code_review_digest(
     engineering_analytics: Any,
     structural_analysis: Any,
     state_projection: Any,
+    state_topology: Any,
+    change_evolution: Any,
+    assurance: Any,
+    capability_reachability: Any,
+    analyzer_effectiveness: Any,
+    interface_surface: Any,
     unused_analysis: Any,
     supply_chain: Any,
     question_specs: tuple[AnalysisQuestionSpec, ...],
@@ -91,6 +97,12 @@ def build_code_review_digest(
             },
             "structural_analysis": structural_analysis.as_payload(),
             "state_projection": state_projection.as_payload(),
+            "state_topology": state_topology.as_payload(),
+            "change_evolution": change_evolution.as_payload(),
+            "assurance": assurance.as_payload(),
+            "capability_reachability": capability_reachability.as_payload(),
+            "analyzer_effectiveness": analyzer_effectiveness.as_payload(),
+            "interface_surface": interface_surface.as_payload(),
             "unused_analysis": unused_analysis.digest_payload(),
             "supply_chain": {
                 "schema": supply_chain.as_payload()["schema"],
@@ -126,6 +138,12 @@ def rebuild_code_review_result_digest(result: Any) -> CodeReviewDigest:
         result.engineering_analytics,
         result.structural_analysis,
         result.state_projection,
+        result.state_topology,
+        result.change_evolution,
+        result.assurance,
+        result.capability_reachability,
+        result.analyzer_effectiveness,
+        result.interface_surface,
         result.unused_analysis,
         result.supply_chain,
     )
@@ -151,6 +169,12 @@ def rebuild_code_review_result_digest(result: Any) -> CodeReviewDigest:
         engineering_analytics=result.engineering_analytics,
         structural_analysis=result.structural_analysis,
         state_projection=result.state_projection,
+        state_topology=result.state_topology,
+        change_evolution=result.change_evolution,
+        assurance=result.assurance,
+        capability_reachability=result.capability_reachability,
+        analyzer_effectiveness=result.analyzer_effectiveness,
+        interface_surface=result.interface_surface,
         unused_analysis=result.unused_analysis,
         supply_chain=result.supply_chain,
         question_specs=result.question_specs,

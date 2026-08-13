@@ -17,7 +17,19 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal, Mapping, Sequence
 
-from .code_analysis_epistemics import analysis_identity
+from .code_analysis_epistemics import (
+    AnalysisEvidenceRef,
+    AnalysisEvidenceRequirementSpec,
+    AnalysisFact,
+    AnalysisNextActionSpec,
+    AnalysisQuestionEvaluation,
+    AnalysisQuestionSpec,
+    AnalysisRequirementEvaluation,
+    AnalysisSubjectRef,
+    analysis_identity,
+    analysis_question_spec_fingerprint,
+    validate_analysis_question_evaluation,
+)
 from .knowledge_contracts import (
     KnowledgeSnapshot,
     LogicalWatermark,
@@ -41,6 +53,57 @@ from .text_state import TEXT_SCHEMA_VERSION, text_schema_contract
 
 CODE_STATE_PROJECTION_SCHEMA = "neocortex.code-state-projection/v1"
 TEXT_SEMANTIC_PROJECTION_POLICY = "text-semantic-published-head-projection-v1"
+TEXT_SEMANTIC_PROJECTION_QUESTION = AnalysisQuestionSpec(
+    question_id="state.text_semantic_published_projection_is_aligned",
+    version="v1",
+    subject_kinds=("workflow",),
+    requirements=(
+        AnalysisEvidenceRequirementSpec(
+            "stable_cross_owner_snapshot",
+            "question",
+            "supporting",
+            ("internal_fact",),
+        ),
+        AnalysisEvidenceRequirementSpec(
+            "exact_published_head_projection",
+            "question",
+            "supporting",
+            ("internal_relation",),
+        ),
+        AnalysisEvidenceRequirementSpec(
+            "build_recovery_counterevidence_evaluated",
+            "decision",
+            "counterevidence",
+            ("internal_fact", "runtime_observation"),
+        ),
+        AnalysisEvidenceRequirementSpec(
+            "process_death_recovery_experiment_result",
+            "decision",
+            "experiment_result",
+            ("experiment_result",),
+        ),
+    ),
+    hypotheses=(
+        "published_projection_is_current_and_consistent",
+        "observed_delta_is_transient_or_exposes_a_recovery_gap",
+    ),
+    counterevidence_rules=(
+        "active_build_or_reconciliation_can_explain_a_delta",
+        "stable_alignment_does_not_prove_process_death_recovery",
+    ),
+    next_actions=(
+        AnalysisNextActionSpec(
+            "inspect_semantic_build_and_reconciliation_state",
+            "counterevidence_search",
+            "Resolve active builds, freshness, recovery and reconciliation before judging a delta.",
+        ),
+        AnalysisNextActionSpec(
+            "run_semantic_process_death_recovery_experiment",
+            "experiment",
+            "Terminate staging after a durable prefix and verify head isolation and convergence.",
+        ),
+    ),
+)
 
 _LIMITATIONS = (
     "comparison_is_cross_owner_observation_not_a_distributed_transaction",
@@ -666,21 +729,213 @@ def parse_code_state_projection_payload(
             "invalid_materialization_revision_ids",
         ):
             values[key] = _text_tuple(f"state projection {key}", values[key])
-        heads.append(TextSemanticHeadProjection(**values))  # type: ignore[arg-type]
+        heads.append(TextSemanticHeadProjection(**values))
     values = {key: value for key, value in payload.items() if key != "schema"}
     values["heads"] = tuple(heads)
     values["next_action_ids"] = _text_tuple("state projection action", values["next_action_ids"])
     values["limitations"] = _text_tuple("state projection limitation", values["limitations"])
-    return CodeStateProjectionAnalysis(**values)  # type: ignore[arg-type]
+    return CodeStateProjectionAnalysis(**values)
+
+
+def state_projection_questions(
+    analysis: CodeStateProjectionAnalysis,
+    *,
+    rank: int,
+) -> tuple[tuple[AnalysisQuestionSpec, ...], tuple[AnalysisQuestionEvaluation, ...]]:
+    """Project the exact Text/Semantic comparison into the generic question wire."""
+
+    if isinstance(rank, bool) or not isinstance(rank, int) or rank < 1:
+        raise ValueError("state projection question rank must be positive")
+    spec = TEXT_SEMANTIC_PROJECTION_QUESTION
+    fingerprint = analysis_question_spec_fingerprint(spec)
+    subject_snapshot = analysis.knowledge_snapshot_id or analysis.analysis_id
+    subject = AnalysisSubjectRef(
+        subject_kind="workflow",
+        subject_key="workflow:text-to-semantic-published-projection",
+        display_name="Text to Semantic published projection",
+        source_owner_id="knowledge",
+        snapshot_id=subject_snapshot,
+        snapshot_freshness="current" if analysis.status == "ready" else "unknown",
+        revision_id=analysis.policy_id,
+    )
+    if analysis.status != "ready":
+        evaluation = AnalysisQuestionEvaluation(
+            evaluation_id=analysis_identity(
+                "state-projection-question-evaluation-v1",
+                {"analysis_id": analysis.analysis_id, "rank": rank, "spec": fingerprint},
+            ),
+            question_id=spec.question_id,
+            question_version=spec.version,
+            question_spec_fingerprint=fingerprint,
+            rank=rank,
+            subject=subject,
+            evidence=(),
+            requirements=tuple(
+                AnalysisRequirementEvaluation(
+                    requirement.requirement_id,
+                    "not_evaluated" if requirement.role == "counterevidence" else "missing",
+                    (),
+                    analysis.reason or "state_projection_resolution_abstained",
+                )
+                for requirement in spec.requirements
+            ),
+            observation_status="abstained",
+            inference_status="abstained",
+            inferences=(),
+            hypotheses=spec.hypotheses,
+            question_readiness="abstained",
+            decision_readiness="abstained",
+            decision=None,
+            decision_reason="question_evidence_incomplete",
+            counterevidence_status="not_evaluated",
+            next_action_ids=(),
+            limitations=(*_LIMITATIONS, "state_projection_resolution_abstained"),
+        )
+        validate_analysis_question_evaluation(spec, evaluation)
+        return (spec,), (evaluation,)
+    assert analysis.knowledge_snapshot_id is not None
+    stable_projection = {
+        "knowledge_snapshot_id": analysis.knowledge_snapshot_id,
+        "knowledge_consistency": analysis.knowledge_consistency,
+        "text_owner_schema": analysis.text_owner_schema,
+        "semantic_owner_schema": analysis.semantic_owner_schema,
+        "complete_text_rows": analysis.complete_text_rows,
+        "eligible_text_rows": analysis.eligible_text_rows,
+        "excluded_empty_text_rows": analysis.excluded_empty_text_rows,
+        "excluded_other_text_rows": analysis.excluded_other_text_rows,
+    }
+    stable_digest = analysis_identity("state-projection-snapshot-source-v1", stable_projection)
+    stable = AnalysisEvidenceRef(
+        evidence_id=analysis_identity(
+            "state-projection-snapshot-evidence-v1",
+            {"snapshot": analysis.knowledge_snapshot_id, "digest": stable_digest},
+        ),
+        subject_key=subject.subject_key,
+        role="supporting",
+        evidence_kind="internal_fact",
+        source_owner_id="knowledge",
+        producer_id="text-semantic-published-projection-resolver",
+        producer_version="v1",
+        source_schema=CODE_STATE_PROJECTION_SCHEMA,
+        source_record_kind="stable_cross_owner_snapshot",
+        source_record_id=analysis.analysis_id,
+        source_projection_digest=stable_digest,
+        snapshot_id=subject.snapshot_id,
+        revision_id=subject.revision_id,
+        facts=tuple(AnalysisFact(key, value) for key, value in stable_projection.items()),
+        completeness="complete",
+        bounded=False,
+        truncated=False,
+        resolver_id="text-semantic-published-projection-resolver",
+        resolver_version="v1",
+        limitations=("stable_snapshot_is_observational_not_transactional",),
+    )
+    head_projection = {
+        "observation": analysis.observation,
+        "heads": len(analysis.heads),
+        "aligned_heads": sum(item.aligned for item in analysis.heads),
+        "missing_revisions": sum(len(item.missing_revision_ids) for item in analysis.heads),
+        "extra_revisions": sum(len(item.extra_revision_ids) for item in analysis.heads),
+        "invalid_owner_revisions": sum(
+            len(item.invalid_owner_revision_ids) for item in analysis.heads
+        ),
+        "invalid_materialization_revisions": sum(
+            len(item.invalid_materialization_revision_ids) for item in analysis.heads
+        ),
+    }
+    head_digest = analysis_identity("state-projection-head-source-v1", head_projection)
+    heads = AnalysisEvidenceRef(
+        evidence_id=analysis_identity(
+            "state-projection-head-evidence-v1",
+            {"snapshot": analysis.knowledge_snapshot_id, "digest": head_digest},
+        ),
+        subject_key=subject.subject_key,
+        role="supporting",
+        evidence_kind="internal_relation",
+        source_owner_id="semantic",
+        producer_id="text-semantic-published-projection-resolver",
+        producer_version="v1",
+        source_schema=CODE_STATE_PROJECTION_SCHEMA,
+        source_record_kind="published_head_revision_projection",
+        source_record_id=analysis.analysis_id,
+        source_projection_digest=head_digest,
+        snapshot_id=subject.snapshot_id,
+        revision_id=subject.revision_id,
+        facts=tuple(AnalysisFact(key, value) for key, value in head_projection.items()),
+        completeness="complete",
+        bounded=False,
+        truncated=False,
+        resolver_id="text-semantic-published-projection-resolver",
+        resolver_version="v1",
+        limitations=("published_head_alignment_does_not_prove_recovery",),
+    )
+    evaluation = AnalysisQuestionEvaluation(
+        evaluation_id=analysis_identity(
+            "state-projection-question-evaluation-v1",
+            {
+                "analysis_id": analysis.analysis_id,
+                "rank": rank,
+                "spec": fingerprint,
+                "evidence": (stable.evidence_id, heads.evidence_id),
+            },
+        ),
+        question_id=spec.question_id,
+        question_version=spec.version,
+        question_spec_fingerprint=fingerprint,
+        rank=rank,
+        subject=subject,
+        evidence=(stable, heads),
+        requirements=(
+            AnalysisRequirementEvaluation(
+                "stable_cross_owner_snapshot",
+                "satisfied",
+                (stable.evidence_id,),
+                "stable_knowledge_snapshot_resolved",
+            ),
+            AnalysisRequirementEvaluation(
+                "exact_published_head_projection",
+                "satisfied",
+                (heads.evidence_id,),
+                "exact_revision_sets_resolved_for_all_published_text_heads",
+            ),
+            AnalysisRequirementEvaluation(
+                "build_recovery_counterevidence_evaluated",
+                "not_evaluated",
+                (),
+                "build_and_reconciliation_state_not_linked",
+            ),
+            AnalysisRequirementEvaluation(
+                "process_death_recovery_experiment_result",
+                "missing",
+                (),
+                "process_death_recovery_result_not_linked",
+            ),
+        ),
+        observation_status="confirmed",
+        inference_status="abstained",
+        inferences=(),
+        hypotheses=spec.hypotheses,
+        question_readiness="ready",
+        decision_readiness="experiment_required",
+        decision=None,
+        decision_reason="decision_evidence_incomplete",
+        counterevidence_status="not_evaluated",
+        next_action_ids=tuple(item.action_id for item in spec.next_actions),
+        limitations=_LIMITATIONS,
+    )
+    validate_analysis_question_evaluation(spec, evaluation)
+    return (spec,), (evaluation,)
 
 
 __all__ = [
     "CODE_STATE_PROJECTION_SCHEMA",
     "TEXT_SEMANTIC_PROJECTION_POLICY",
+    "TEXT_SEMANTIC_PROJECTION_QUESTION",
     "CodeStateProjectionAnalysis",
     "CodeStateProjectionResolutionError",
     "TextSemanticHeadProjection",
     "abstained_code_state_projection",
     "analyze_text_semantic_projection",
     "parse_code_state_projection_payload",
+    "state_projection_questions",
 ]

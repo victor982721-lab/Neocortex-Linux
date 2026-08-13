@@ -191,18 +191,17 @@ def test_class_surface_question_preserves_protocol_counterexample_and_abstains_f
     result = review_code_state(state_directory, limit=10)
     payload = result.as_payload()
 
-    assert payload["schema"] == "neocortex.code-review/v14"
+    assert payload["schema"] == "neocortex.code-review/v15"
     assert result.findings == ()
     assert result.structural_analysis is not None
     assert result.structural_analysis.selected_classes == 3
-    assert len(result.question_specs) == 1
-    assert len(result.question_evaluations) == 3
-    assert {item.subject.subject_kind for item in result.question_evaluations} == {"class"}
-    assert all(item.inference_status == "abstained" for item in result.question_evaluations)
-    assert all(
-        item.decision_readiness == "experiment_required" for item in result.question_evaluations
+    class_evaluations = tuple(
+        item for item in result.question_evaluations if item.subject.subject_kind == "class"
     )
-    assert all(item.decision is None for item in result.question_evaluations)
+    assert len(class_evaluations) == 3
+    assert all(item.inference_status == "abstained" for item in class_evaluations)
+    assert all(item.decision_readiness == "experiment_required" for item in class_evaluations)
+    assert all(item.decision is None for item in class_evaluations)
     assert result.recommendations == ()
     assert result.work_packages == ()
     query = query_code_analysis(

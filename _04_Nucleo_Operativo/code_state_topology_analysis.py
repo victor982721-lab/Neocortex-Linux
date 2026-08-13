@@ -756,7 +756,7 @@ def state_topology_questions(
     *,
     rank: int,
 ) -> tuple[tuple[AnalysisQuestionSpec, ...], tuple[AnalysisQuestionEvaluation, ...]]:
-    """Project a ready resolved analysis into the generic v14 question contract."""
+    """Project a ready resolved analysis into the generic v15 question contract."""
 
     if analysis.status != "ready" or analysis.closure is None or analysis.snapshot_id is None:
         evaluation = AnalysisQuestionEvaluation(

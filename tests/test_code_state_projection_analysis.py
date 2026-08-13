@@ -11,6 +11,7 @@ import _04_Nucleo_Operativo.code_state_projection_analysis as projection_module
 from _04_Nucleo_Operativo.code_state_projection_analysis import (
     analyze_text_semantic_projection,
     parse_code_state_projection_payload,
+    state_projection_questions,
 )
 from _04_Nucleo_Operativo.derivation_contracts import (
     MaterializationRef,
@@ -375,3 +376,36 @@ def test_projection_wire_rejects_an_invented_alignment(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="advisory"):
         parse_code_state_projection_payload(payload)
+
+
+def test_projection_question_links_exact_state_but_requires_recovery_evidence(
+    tmp_path: Path,
+) -> None:
+    state_directory = tmp_path / "state"
+    _build_state(state_directory, include_second_revision=False)
+    analysis = analyze_text_semantic_projection(state_directory, source_version="fixture")
+
+    specs, evaluations = state_projection_questions(analysis, rank=3)
+
+    assert len(specs) == len(evaluations) == 1
+    evaluation = evaluations[0]
+    assert evaluation.rank == 3
+    assert evaluation.observation_status == "confirmed"
+    assert evaluation.decision_readiness == "experiment_required"
+    assert evaluation.counterevidence_status == "not_evaluated"
+    assert {item.source_record_kind for item in evaluation.evidence} == {
+        "stable_cross_owner_snapshot",
+        "published_head_revision_projection",
+    }
+    assert evaluation.decision is None
+
+
+def test_abstained_projection_question_cannot_publish_partial_evidence() -> None:
+    analysis = projection_module.abstained_code_state_projection("fixture")
+
+    _specs, evaluations = state_projection_questions(analysis, rank=1)
+
+    assert evaluations[0].observation_status == "abstained"
+    assert evaluations[0].evidence == ()
+    assert evaluations[0].decision_readiness == "abstained"
+    assert evaluations[0].next_action_ids == ()

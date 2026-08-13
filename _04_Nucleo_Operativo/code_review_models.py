@@ -13,6 +13,10 @@ from .code_analysis_epistemics import (
     validate_analysis_question_set,
 )
 from .code_architecture_analysis import CodeArchitectureAnalysis
+from .code_analyzer_effectiveness import CodeAnalyzerEffectivenessAnalysis
+from .code_assurance_analysis import CodeAssuranceAnalysis
+from .code_capability_reachability_analysis import CodeCapabilityReachabilityAnalysis
+from .code_change_evolution_analysis import CodeChangeEvolutionAnalysis
 from .code_class_surface_analysis import CodeClassSurfaceAnalysis
 from .code_coverage_analysis import (
     CODE_COVERAGE_SCHEMA,
@@ -29,6 +33,7 @@ from .code_engineering_analytics import (
     ModuleEngineeringProfile,
 )
 from .code_external_evidence import ExternalEvidenceStatus
+from .code_interface_surface_analysis import CodeInterfaceSurfaceAnalysis
 from .code_supply_chain_analysis import (
     CodeSupplyChainAnalysis,
     SupplyChainGateEvaluation,
@@ -49,10 +54,12 @@ from .code_review_serialization import (
     rebuild_code_review_result_digest,
 )
 from .code_state_projection_analysis import CodeStateProjectionAnalysis
+from .code_state_topology_analysis import CodeStateTopologyAnalysis
 from .external_evidence_models import ExternalEvidenceSuiteStatus
 from .semantic_models import canonical_json, fingerprint_text
 
-# v14 adds an independently bounded Text/Semantic published-state projection.
+# v15 integrates independently bounded state topology, change evolution,
+# assurance, and capability reachability projections into one public review.
 # Earlier contracts cannot satisfy the expanded wire, so no compatibility is
 # claimed without an explicit adapter.
 CODE_REVIEW_COVERAGE_EXAMPLE_LIMIT = 20
@@ -231,7 +238,7 @@ class CodeReviewFinding:
             raise ValueError("invalid structural observation-confidence scope")
         if self.recommended_change or self.actionability == "act_now":
             raise ValueError(
-                "code-review/v14 structural findings cannot authorize a change recommendation"
+                "code-review/v15 structural findings cannot authorize a change recommendation"
             )
         expected_actionability = (
             "characterize_first"
@@ -272,6 +279,8 @@ class CodeReviewFinding:
             expected_value = (
                 self.complexity if diagnostic.code == "high_complexity" else self.function_lines
             )
+            if diagnostic.threshold is None:
+                raise ValueError("structural finding diagnostic threshold is missing")
             expected_ratio = (10_000 * diagnostic.value) // diagnostic.threshold
             published_ratio = (
                 self.complexity_ratio_basis_points
@@ -362,7 +371,7 @@ class CodeReviewRecommendation:
     recommended_validation: tuple[str, ...]
 
     def __post_init__(self) -> None:
-        raise ValueError("code-review/v14 cannot construct semantic change recommendations")
+        raise ValueError("code-review/v15 cannot construct semantic change recommendations")
 
 
 @dataclass(frozen=True, slots=True)
@@ -416,7 +425,7 @@ class CodeReviewWorkPackage:
         if self.mutation_authority:
             raise ValueError("code review work package cannot authorize mutation")
         if self.package_kind != "unused_characterization":
-            raise ValueError("code-review/v14 only supports unused-code characterization packages")
+            raise ValueError("code-review/v15 only supports unused-code characterization packages")
         if not self.steps or any(step.phase != "characterize" for step in self.steps):
             raise ValueError("unused-code package may contain characterization steps only")
         if len(self.unused_candidates) != 1 or any(
@@ -595,6 +604,12 @@ class CodeReviewResult:
     engineering_analytics: CodeEngineeringAnalytics | None = None
     structural_analysis: CodeClassSurfaceAnalysis | None = None
     state_projection: CodeStateProjectionAnalysis | None = None
+    state_topology: CodeStateTopologyAnalysis | None = None
+    change_evolution: CodeChangeEvolutionAnalysis | None = None
+    assurance: CodeAssuranceAnalysis | None = None
+    capability_reachability: CodeCapabilityReachabilityAnalysis | None = None
+    analyzer_effectiveness: CodeAnalyzerEffectivenessAnalysis | None = None
+    interface_surface: CodeInterfaceSurfaceAnalysis | None = None
     question_specs: tuple[AnalysisQuestionSpec, ...] = ()
     question_evaluations: tuple[AnalysisQuestionEvaluation, ...] = ()
 
@@ -606,15 +621,15 @@ class CodeReviewResult:
         if self.work_package_status not in {"ready", "abstained", "not_evaluated"}:
             raise ValueError("invalid code-review work-package status")
         if self.recommendations:
-            raise ValueError("code-review/v14 cannot publish semantic change recommendations")
+            raise ValueError("code-review/v15 cannot publish semantic change recommendations")
         if self.recommendation_status == "ready":
-            raise ValueError("code-review/v14 recommendation status must abstain")
+            raise ValueError("code-review/v15 recommendation status must abstain")
         if self.recommendation_status == "abstained" and not self.recommendation_reason:
             raise ValueError("abstained recommendation status requires a reason")
         if self.recommendation_status == "not_evaluated" and not self.recommendation_reason:
             raise ValueError("not-evaluated recommendation status requires a reason")
         if any(package.package_kind != "unused_characterization" for package in self.work_packages):
-            raise ValueError("code-review/v14 cannot publish hotspot change packages")
+            raise ValueError("code-review/v15 cannot publish hotspot change packages")
         if (self.work_package_status == "ready") != bool(self.work_packages):
             raise ValueError("work-package readiness must match published packages")
         if self.work_package_status == "ready" and self.work_package_reason is not None:
@@ -637,6 +652,12 @@ class CodeReviewResult:
                         self.unused_analysis,
                         self.supply_chain,
                         self.engineering_analytics,
+                        self.state_topology,
+                        self.change_evolution,
+                        self.assurance,
+                        self.capability_reachability,
+                        self.analyzer_effectiveness,
+                        self.interface_surface,
                         self.digest,
                     )
                 )
@@ -653,25 +674,80 @@ class CodeReviewResult:
             raise ValueError("ready code-review result cannot carry an abstention reason")
         if self.digest is None:
             raise ValueError("ready code-review result requires an evidence digest")
+        if self.snapshot is None or self.coverage is None:
+            raise ValueError("ready code-review result lacks evidence required by its digest")
         if self.structural_analysis is None:
             raise ValueError("ready code-review result requires resolved structural analysis")
         if self.state_projection is None:
             raise ValueError("ready code-review result requires a state projection result")
+        if self.state_topology is None:
+            raise ValueError("ready code-review result requires state topology evidence")
+        if self.change_evolution is None:
+            raise ValueError("ready code-review result requires change evolution evidence")
+        if self.assurance is None:
+            raise ValueError("ready code-review result requires assurance evidence")
+        if self.capability_reachability is None:
+            raise ValueError("ready code-review result requires capability reachability evidence")
+        if self.analyzer_effectiveness is None:
+            raise ValueError("ready code-review result requires analyzer effectiveness evidence")
+        if self.interface_surface is None:
+            raise ValueError("ready code-review result requires interface surface evidence")
+        if self.supply_chain is None:
+            raise ValueError("ready code-review result requires supply-chain evidence")
+        if (
+            self.structural_analysis.snapshot_id != self.snapshot.processing_signature
+            or self.structural_analysis.snapshot_freshness != self.snapshot.freshness
+        ):
+            raise ValueError("code-review structural evidence disagrees with its snapshot")
+        if (
+            self.state_topology.source_version != CODE_REVIEW_SCHEMA
+            or self.capability_reachability.source_version != CODE_REVIEW_SCHEMA
+        ):
+            raise ValueError("code-review integrated projection version is inconsistent")
+        if (
+            self.assurance.snapshot_id != self.snapshot.processing_signature
+            or self.assurance.snapshot_freshness != self.snapshot.freshness
+        ):
+            raise ValueError("code-review assurance evidence disagrees with its snapshot")
+        if self.analyzer_effectiveness.status == "ready" and (
+            self.analyzer_effectiveness.analysis_run_id != self.snapshot.analysis_run_id
+            or self.analyzer_effectiveness.framework_run_id != self.snapshot.framework_run_id
+            or self.analyzer_effectiveness.processing_signature
+            != self.snapshot.processing_signature
+            or self.analyzer_effectiveness.snapshot_freshness != self.snapshot.freshness
+            or self.analyzer_effectiveness.source_version != CODE_REVIEW_SCHEMA
+        ):
+            raise ValueError("code-review analyzer effectiveness disagrees with its snapshot")
+        if self.supply_chain.analysis_run_id != self.snapshot.analysis_run_id:
+            raise ValueError("code-review supply-chain evidence disagrees with its snapshot")
+        if self.interface_surface.status == "ready" and (
+            self.interface_surface.analysis_run_id != self.snapshot.analysis_run_id
+            or self.interface_surface.processing_signature != self.snapshot.processing_signature
+        ):
+            raise ValueError("code-review interface surface disagrees with its snapshot")
+        surface = self.change_evolution.change_surface
+        if surface.status == "ready" and (
+            surface.current_analysis_run_id != self.snapshot.analysis_run_id
+            or surface.processing_signature != self.snapshot.processing_signature
+        ):
+            raise ValueError("code-review change surface disagrees with its snapshot")
         if rebuild_code_review_result_digest(self) != self.digest:
             raise ValueError("code-review result digest disagrees with published evidence")
         validate_analysis_question_set(self.question_specs, self.question_evaluations)
-        expected_evaluation_count = len(self.findings) + len(self.structural_analysis.observations)
-        if len(self.question_evaluations) != expected_evaluation_count:
-            raise ValueError(
-                "code-review questions must cover every published structural observation"
-            )
-        assert self.snapshot is not None
-        from .code_review_epistemics import expected_code_review_questions
+        from .code_review_epistemics import expected_integrated_code_review_questions
 
-        expected_specs, expected_evaluations = expected_code_review_questions(
+        expected_specs, expected_evaluations = expected_integrated_code_review_questions(
             self.findings,
             self.snapshot,
             self.structural_analysis,
+            state_projection=self.state_projection,
+            state_topology=self.state_topology,
+            change_evolution=self.change_evolution,
+            assurance=self.assurance,
+            supply_chain=self.supply_chain,
+            interface_surface=self.interface_surface,
+            capability_reachability=self.capability_reachability,
+            analyzer_effectiveness=self.analyzer_effectiveness,
         )
         if self.question_specs != expected_specs or self.question_evaluations != (
             expected_evaluations
@@ -732,6 +808,26 @@ class CodeReviewResult:
             ),
             "state_projection": (
                 None if self.state_projection is None else self.state_projection.as_payload()
+            ),
+            "state_topology": (
+                None if self.state_topology is None else self.state_topology.as_payload()
+            ),
+            "change_evolution": (
+                None if self.change_evolution is None else self.change_evolution.as_payload()
+            ),
+            "assurance": None if self.assurance is None else self.assurance.as_payload(),
+            "capability_reachability": (
+                None
+                if self.capability_reachability is None
+                else self.capability_reachability.as_payload()
+            ),
+            "analyzer_effectiveness": (
+                None
+                if self.analyzer_effectiveness is None
+                else self.analyzer_effectiveness.as_payload()
+            ),
+            "interface_surface": (
+                None if self.interface_surface is None else self.interface_surface.as_payload()
             ),
             "epistemics": analysis_questions_payload(
                 self.question_specs,
@@ -1024,7 +1120,7 @@ def build_code_review_recommendations(
 ) -> tuple[CodeReviewRecommendation, ...]:
     """Abstain until an independently resolvable decision-evidence model exists.
 
-    ``code-review/v14`` observes structural hotspots but deliberately exposes no
+    ``code-review/v15`` observes structural hotspots but deliberately exposes no
     factory for a semantic change decision.  Keeping the fail-closed boundary
     here prevents a legacy flag or a manually assembled object from reviving
     the former name-based recommendation path.

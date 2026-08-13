@@ -207,7 +207,7 @@ def test_review_query_accepts_and_indexes_source_linked_v13_questions(
     assert result["matches"][0]["facts"]["mutation_authority"] is False
 
 
-def test_review_query_rejects_forged_v13_evidence_linkage(
+def test_review_query_rejects_forged_v15_evidence_linkage(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -228,11 +228,11 @@ def test_review_query_rejects_forged_v13_evidence_linkage(
     evidence = cast("list[dict[str, object]]", evaluations[0]["evidence"])
     evidence[0]["source_record_id"] = "forged"
 
-    with pytest.raises(ValueError, match="not source-linked"):
+    with pytest.raises(ValueError, match="code-review/v15"):
         query_code_analysis(payload, CodeAnalysisQuery(surface="review"))
 
 
-def test_review_query_rejects_forged_v13_question_semantics(
+def test_review_query_rejects_forged_v15_question_semantics(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -253,7 +253,41 @@ def test_review_query_rejects_forged_v13_question_semantics(
     actions = cast("list[dict[str, object]]", specs[0]["next_actions"])
     actions[0]["description"] = "Delete the production symbol now."
 
-    with pytest.raises(ValueError, match="epistemic projection is not source-linked"):
+    with pytest.raises(ValueError, match="v15 integrated projection is malformed"):
+        query_code_analysis(payload, CodeAnalysisQuery(surface="review"))
+
+
+@pytest.mark.parametrize(
+    ("projection", "field"),
+    (
+        ("interface_surface", "total_modules"),
+        ("supply_chain", "analysis_run_id"),
+    ),
+)
+def test_review_query_rejects_tampered_v15_integrated_receipts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    projection: str,
+    field: str,
+) -> None:
+    import _04_Nucleo_Operativo.code_review as review_module
+    from _04_Nucleo_Operativo.code_review import review_code_state
+    from tests.test_code_review import _build_state, _status
+
+    state_directory = tmp_path / "state"
+    _build_state(state_directory)
+    monkeypatch.setattr(
+        review_module,
+        "read_self_analysis_status",
+        lambda _state, _run: _status(tmp_path),
+    )
+    payload = json.loads(json.dumps(review_code_state(state_directory, limit=1).as_payload()))
+    receipt = cast("dict[str, object]", payload[projection])
+    current = receipt[field]
+    assert isinstance(current, int) and not isinstance(current, bool)
+    receipt[field] = current + 1
+
+    with pytest.raises(ValueError, match="code-review/v15"):
         query_code_analysis(payload, CodeAnalysisQuery(surface="review"))
 
 

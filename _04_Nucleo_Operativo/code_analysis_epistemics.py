@@ -12,7 +12,8 @@ the human decision itself.
 from __future__ import annotations
 
 import math
-from dataclasses import asdict, dataclass
+from collections.abc import Mapping, Sequence
+from dataclasses import asdict, dataclass, fields
 from typing import Literal, get_args
 
 from .semantic_models import canonical_json, fingerprint_text
@@ -622,6 +623,147 @@ def analysis_questions_payload(
     }
 
 
+def _strict_mapping(label: str, value: object, expected: set[str]) -> Mapping[str, object]:
+    if not isinstance(value, Mapping) or set(value) != expected:
+        raise ValueError(f"{label} fields are invalid")
+    return value
+
+
+def _sequence(label: str, value: object) -> Sequence[object]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        raise ValueError(f"{label} must be a sequence")
+    return value
+
+
+def _text_sequence(label: str, value: object) -> tuple[str, ...]:
+    return tuple(_required_text(label, item, maximum=1_024) for item in _sequence(label, value))
+
+
+def _parse_question_spec(value: object) -> AnalysisQuestionSpec:
+    expected = {field.name for field in fields(AnalysisQuestionSpec)} | {"spec_fingerprint"}
+    raw = _strict_mapping("analysis question spec", value, expected)
+    requirement_fields = {field.name for field in fields(AnalysisEvidenceRequirementSpec)}
+    requirements: list[AnalysisEvidenceRequirementSpec] = []
+    for item in _sequence("analysis question requirements", raw["requirements"]):
+        values = dict(_strict_mapping("analysis evidence requirement", item, requirement_fields))
+        values["accepted_evidence_kinds"] = _text_sequence(
+            "accepted evidence kind", values["accepted_evidence_kinds"]
+        )
+        values["accepted_completeness"] = _text_sequence(
+            "accepted evidence completeness", values["accepted_completeness"]
+        )
+        requirements.append(AnalysisEvidenceRequirementSpec(**values))  # type: ignore[arg-type]
+    action_fields = {field.name for field in fields(AnalysisNextActionSpec)}
+    actions = tuple(
+        AnalysisNextActionSpec(
+            **dict(_strict_mapping("analysis next action", item, action_fields))  # type: ignore[arg-type]
+        )
+        for item in _sequence("analysis next actions", raw["next_actions"])
+    )
+    values = {key: item for key, item in raw.items() if key != "spec_fingerprint"}
+    values["subject_kinds"] = _text_sequence("analysis subject kind", values["subject_kinds"])
+    values["requirements"] = tuple(requirements)
+    values["hypotheses"] = _text_sequence("analysis hypothesis", values["hypotheses"])
+    values["counterevidence_rules"] = _text_sequence(
+        "analysis counterevidence rule", values["counterevidence_rules"]
+    )
+    values["next_actions"] = actions
+    spec = AnalysisQuestionSpec(**values)  # type: ignore[arg-type]
+    if raw["spec_fingerprint"] != analysis_question_spec_fingerprint(spec):
+        raise ValueError("analysis question spec fingerprint is invalid")
+    return spec
+
+
+def _parse_subject(value: object) -> AnalysisSubjectRef:
+    raw = _strict_mapping(
+        "analysis subject",
+        value,
+        {field.name for field in fields(AnalysisSubjectRef)},
+    )
+    values = dict(raw)
+    location = values["location"]
+    if location is not None:
+        values["location"] = AnalysisSourceLocation(
+            **dict(
+                _strict_mapping(
+                    "analysis source location",
+                    location,
+                    {field.name for field in fields(AnalysisSourceLocation)},
+                )
+            )  # type: ignore[arg-type]
+        )
+    return AnalysisSubjectRef(**values)  # type: ignore[arg-type]
+
+
+def _parse_evidence(value: object) -> AnalysisEvidenceRef:
+    raw = _strict_mapping(
+        "analysis evidence",
+        value,
+        {field.name for field in fields(AnalysisEvidenceRef)},
+    )
+    values = dict(raw)
+    fact_fields = {field.name for field in fields(AnalysisFact)}
+    values["facts"] = tuple(
+        AnalysisFact(
+            **dict(_strict_mapping("analysis fact", item, fact_fields))  # type: ignore[arg-type]
+        )
+        for item in _sequence("analysis evidence facts", values["facts"])
+    )
+    values["limitations"] = _text_sequence("analysis evidence limitation", values["limitations"])
+    return AnalysisEvidenceRef(**values)  # type: ignore[arg-type]
+
+
+def _parse_question_evaluation(value: object) -> AnalysisQuestionEvaluation:
+    raw = _strict_mapping(
+        "analysis question evaluation",
+        value,
+        {field.name for field in fields(AnalysisQuestionEvaluation)},
+    )
+    values = dict(raw)
+    values["subject"] = _parse_subject(values["subject"])
+    values["evidence"] = tuple(
+        _parse_evidence(item)
+        for item in _sequence("analysis question evidence", values["evidence"])
+    )
+    requirement_fields = {field.name for field in fields(AnalysisRequirementEvaluation)}
+    requirements: list[AnalysisRequirementEvaluation] = []
+    for item in _sequence("analysis requirement evaluations", values["requirements"]):
+        requirement_values = dict(
+            _strict_mapping("analysis requirement evaluation", item, requirement_fields)
+        )
+        requirement_values["evidence_ids"] = _text_sequence(
+            "analysis requirement evidence id", requirement_values["evidence_ids"]
+        )
+        requirements.append(
+            AnalysisRequirementEvaluation(**requirement_values)  # type: ignore[arg-type]
+        )
+    values["requirements"] = tuple(requirements)
+    values["inferences"] = tuple(_sequence("analysis inferences", values["inferences"]))
+    values["hypotheses"] = _text_sequence("analysis hypothesis", values["hypotheses"])
+    values["next_action_ids"] = _text_sequence("analysis next action id", values["next_action_ids"])
+    values["limitations"] = _text_sequence("analysis limitation", values["limitations"])
+    return AnalysisQuestionEvaluation(**values)  # type: ignore[arg-type]
+
+
+def parse_analysis_questions_payload(
+    payload: Mapping[str, object],
+) -> tuple[tuple[AnalysisQuestionSpec, ...], tuple[AnalysisQuestionEvaluation, ...]]:
+    """Strictly reconstruct and validate one generic epistemic wire envelope."""
+
+    raw = _strict_mapping("analysis epistemic payload", payload, {"schema", "specs", "evaluations"})
+    if raw["schema"] != CODE_ANALYSIS_EPISTEMICS_SCHEMA:
+        raise ValueError("analysis epistemic payload schema is invalid")
+    specs = tuple(
+        _parse_question_spec(item) for item in _sequence("analysis question specs", raw["specs"])
+    )
+    evaluations = tuple(
+        _parse_question_evaluation(item)
+        for item in _sequence("analysis question evaluations", raw["evaluations"])
+    )
+    validate_analysis_question_set(specs, evaluations)
+    return specs, evaluations
+
+
 __all__ = [
     "CODE_ANALYSIS_EPISTEMICS_SCHEMA",
     "AnalysisEvidenceRef",
@@ -636,6 +778,7 @@ __all__ = [
     "analysis_identity",
     "analysis_question_spec_fingerprint",
     "analysis_questions_payload",
+    "parse_analysis_questions_payload",
     "validate_analysis_question_evaluation",
     "validate_analysis_question_set",
 ]

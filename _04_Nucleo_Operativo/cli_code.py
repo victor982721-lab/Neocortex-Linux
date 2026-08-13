@@ -1333,6 +1333,105 @@ def _emit_code_review_ranked_evidence(result: CodeReviewResult) -> None:
             f"authority={state_projection.authority} "
             f"mutation_authority={int(state_projection.mutation_authority)}"
         )
+    state_topology = getattr(result, "state_topology", None)
+    if state_topology is not None:
+        closure = state_topology.closure
+        _print_console_line(
+            "CODE_STATE_TOPOLOGY "
+            f"status={state_topology.status} "
+            f"reason={json.dumps(state_topology.reason, ensure_ascii=True)} "
+            f"workflow={state_topology.workflow_id} "
+            f"boundary={state_topology.boundary_id} "
+            f"observation={state_topology.observation} "
+            f"decision={state_topology.decision_readiness} "
+            f"terminal_attempts={0 if closure is None else closure.terminal_attempts} "
+            f"receipts={0 if closure is None else closure.receipts} "
+            f"outbox_events={0 if closure is None else closure.outbox_events} "
+            f"relationally_closed={int(bool(closure and closure.relationally_closed))} "
+            f"authority={state_topology.authority} "
+            f"mutation_authority={int(state_topology.mutation_authority)}"
+        )
+    change_evolution = getattr(result, "change_evolution", None)
+    if change_evolution is not None:
+        surface = change_evolution.change_surface
+        _print_console_line(
+            "CODE_CHANGE_EVOLUTION "
+            f"status={change_evolution.status} "
+            f"reason={json.dumps(change_evolution.reason, ensure_ascii=True)} "
+            f"surface={surface.status} history={change_evolution.history.status} "
+            f"schema={change_evolution.code_schema.status} "
+            f"observations={surface.total_observations} "
+            f"truncated={int(surface.truncated)} "
+            f"authority={change_evolution.authority} "
+            f"mutation_authority={int(change_evolution.mutation_authority)}"
+        )
+    assurance = getattr(result, "assurance", None)
+    if assurance is not None:
+        _print_console_line(
+            "CODE_ASSURANCE "
+            f"status={assurance.status} "
+            f"reason={json.dumps(assurance.reason, ensure_ascii=True)} "
+            f"eligible={assurance.eligible_symbols} "
+            f"returned={assurance.returned_symbols} "
+            f"truncated={int(assurance.selection_truncated)} "
+            f"calibration={assurance.calibration.status} "
+            f"behavioral_claims={assurance.calibration.behavioral_assurance_claims} "
+            f"authority={assurance.authority} "
+            f"mutation_authority={int(assurance.mutation_authority)}"
+        )
+    capability = getattr(result, "capability_reachability", None)
+    if capability is not None:
+        published = sum(item.manifest_matching_current_heads for item in capability.observations)
+        _print_console_line(
+            "CODE_CAPABILITY_REACHABILITY "
+            f"status={capability.status} "
+            f"reason={json.dumps(capability.reason, ensure_ascii=True)} "
+            f"manifests={capability.manifest_count} "
+            f"attempts={capability.total_attempts} "
+            f"unattributed={capability.unattributed_attempts} "
+            f"manifest_matching_current_heads={published} "
+            f"authority={capability.authority} "
+            f"mutation_authority={int(capability.mutation_authority)}"
+        )
+    analyzer = getattr(result, "analyzer_effectiveness", None)
+    if analyzer is not None:
+        _print_console_line(
+            "CODE_ANALYZER_EFFECTIVENESS "
+            f"status={analyzer.status} "
+            f"reason={json.dumps(analyzer.reason, ensure_ascii=True)} "
+            f"inventory={analyzer.inventory_observation} "
+            f"recorded={analyzer.scoped_recorded_files} "
+            f"git_visible={analyzer.git_visible_files} "
+            f"content_equal={analyzer.exact_content_files} "
+            f"content_changed={analyzer.content_changed_files} "
+            f"missing={analyzer.missing_recorded_files} "
+            f"unindexed={analyzer.unindexed_git_visible_files} "
+            f"duration_ms={analyzer.duration_ms} "
+            f"providers_ready={analyzer.providers_ready}/{analyzer.providers_observed} "
+            f"calibration={analyzer.calibration_status} "
+            f"independent_labels={analyzer.independent_outcome_labels} "
+            f"authority={analyzer.authority} "
+            f"mutation_authority={int(analyzer.mutation_authority)}"
+        )
+    interface = getattr(result, "interface_surface", None)
+    if interface is not None:
+        _print_console_line(
+            "CODE_INTERFACE_SURFACE "
+            f"status={interface.status} "
+            f"reason={json.dumps(interface.reason, ensure_ascii=True)} "
+            f"modules={interface.selected_modules}/{interface.total_modules} "
+            f"module_examples={interface.returned_modules} "
+            f"module_truncated={int(interface.module_selection_truncated)} "
+            f"config_exact={interface.exact_configuration_artifacts}/"
+            f"{interface.configuration_artifacts} "
+            f"config_unsupported={interface.unsupported_configuration_artifacts} "
+            f"config_incomplete={interface.incomplete_configuration_artifacts} "
+            f"cli_exact={interface.exact_cli_files}/{interface.cli_candidate_files} "
+            f"argparse_calls={interface.ast_argparse_call_sites}/"
+            f"{interface.recorded_argparse_call_sites} "
+            f"authority={interface.authority} "
+            f"mutation_authority={int(interface.mutation_authority)}"
+        )
     structural = getattr(result, "structural_analysis", None)
     if structural is not None:
         _print_console_line(

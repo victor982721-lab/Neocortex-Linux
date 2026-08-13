@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from typing import Literal, Protocol, cast
+from collections.abc import Sequence
+from dataclasses import replace
+from typing import Literal, Protocol
 
 from .code_analysis_epistemics import (
     AnalysisEvidenceRef,
@@ -18,52 +20,127 @@ from .code_analysis_epistemics import (
     AnalysisSubjectRef,
     analysis_identity,
     analysis_question_spec_fingerprint,
+    validate_analysis_question_evaluation,
     validate_analysis_question_set,
+)
+from .code_assurance_analysis import CodeAssuranceAnalysis
+from .code_analyzer_effectiveness import (
+    CodeAnalyzerEffectivenessAnalysis,
+    analyzer_effectiveness_questions,
+)
+from .code_capability_reachability_analysis import (
+    CodeCapabilityReachabilityAnalysis,
+    capability_reachability_questions,
+)
+from .code_change_evolution_analysis import (
+    CodeChangeEvolutionAnalysis,
+    expected_code_change_evolution_questions,
 )
 from .code_class_surface_analysis import (
     CodeClassSurfaceAnalysis,
     expected_class_surface_questions,
     read_code_class_surface_analysis,
 )
+from .code_interface_surface_analysis import (
+    CodeInterfaceSurfaceAnalysis,
+    interface_surface_questions,
+)
 from .code_review_actionability import (
     CODE_REVIEW_QUESTION_ID,
     CODE_REVIEW_QUESTION_VERSION,
 )
+from .code_security_dependency_questions import security_dependency_questions
 from .code_schema import CODE_SCHEMA_VERSION
+from .code_supply_chain_analysis import CodeSupplyChainAnalysis
+from .code_state_topology_analysis import (
+    CodeStateTopologyAnalysis,
+    state_topology_questions,
+)
+from .code_state_projection_analysis import (
+    CodeStateProjectionAnalysis,
+    state_projection_questions,
+)
 
 
 class _DiagnosticEvidence(Protocol):
-    diagnostic_id: int
-    code: Literal["high_complexity", "long_function"]
-    value: int
-    threshold: int | None
-    source: str
-    tool_name: str
-    tool_version: str
-    confirmed: bool
-    confidence: float
+    @property
+    def diagnostic_id(self) -> int: ...
+
+    @property
+    def code(self) -> Literal["high_complexity", "long_function"]: ...
+
+    @property
+    def value(self) -> int: ...
+
+    @property
+    def threshold(self) -> int | None: ...
+
+    @property
+    def source(self) -> str: ...
+
+    @property
+    def tool_name(self) -> str: ...
+
+    @property
+    def tool_version(self) -> str: ...
+
+    @property
+    def confirmed(self) -> bool: ...
+
+    @property
+    def confidence(self) -> float: ...
 
 
 class _FindingEvidence(Protocol):
-    finding_id: str
-    hotspot_id: str
-    rank: int
-    path: str
-    symbol: str
-    start_line: int
-    end_line: int
-    start_column: int
-    end_column: int
-    start_byte: int
-    end_byte: int
-    file_xxh3_128: str | None
-    file_xxh3_64_guard: str | None
-    diagnostics: tuple[_DiagnosticEvidence, ...]
+    @property
+    def finding_id(self) -> str: ...
+
+    @property
+    def hotspot_id(self) -> str: ...
+
+    @property
+    def rank(self) -> int: ...
+
+    @property
+    def path(self) -> str: ...
+
+    @property
+    def symbol(self) -> str: ...
+
+    @property
+    def start_line(self) -> int: ...
+
+    @property
+    def end_line(self) -> int: ...
+
+    @property
+    def start_column(self) -> int: ...
+
+    @property
+    def end_column(self) -> int: ...
+
+    @property
+    def start_byte(self) -> int: ...
+
+    @property
+    def end_byte(self) -> int: ...
+
+    @property
+    def file_xxh3_128(self) -> str | None: ...
+
+    @property
+    def file_xxh3_64_guard(self) -> str | None: ...
+
+    @property
+    def diagnostics(self) -> tuple[_DiagnosticEvidence, ...]: ...
 
 
 class _SnapshotEvidence(Protocol):
-    processing_signature: str
-    freshness: str
+    @property
+    def processing_signature(self) -> str: ...
+
+    @property
+    def freshness(self) -> Literal["current", "publication_only", "unknown"]: ...
 
 
 STRUCTURAL_HOTSPOT_QUESTION = AnalysisQuestionSpec(
@@ -313,10 +390,7 @@ def _evaluation(
         display_name=finding.symbol,
         source_owner_id="code",
         snapshot_id=snapshot.processing_signature,
-        snapshot_freshness=cast(
-            Literal["current", "publication_only", "unknown"],
-            snapshot.freshness,
-        ),
+        snapshot_freshness=snapshot.freshness,
         revision_id=_revision_id(finding),
         location=AnalysisSourceLocation(
             finding.path,
@@ -387,7 +461,7 @@ def _evaluation(
 
 
 def expected_code_review_questions(
-    findings: tuple[_FindingEvidence, ...],
+    findings: Sequence[_FindingEvidence],
     snapshot: _SnapshotEvidence,
     class_surface: CodeClassSurfaceAnalysis,
 ) -> tuple[tuple[AnalysisQuestionSpec, ...], tuple[AnalysisQuestionEvaluation, ...]]:
@@ -405,9 +479,101 @@ def expected_code_review_questions(
     return specs, evaluations
 
 
+def expected_integrated_code_review_questions(
+    findings: Sequence[_FindingEvidence],
+    snapshot: _SnapshotEvidence,
+    class_surface: CodeClassSurfaceAnalysis,
+    *,
+    state_projection: CodeStateProjectionAnalysis,
+    state_topology: CodeStateTopologyAnalysis,
+    change_evolution: CodeChangeEvolutionAnalysis,
+    assurance: CodeAssuranceAnalysis,
+    supply_chain: CodeSupplyChainAnalysis,
+    interface_surface: CodeInterfaceSurfaceAnalysis,
+    capability_reachability: CodeCapabilityReachabilityAnalysis,
+    analyzer_effectiveness: CodeAnalyzerEffectivenessAnalysis,
+) -> tuple[tuple[AnalysisQuestionSpec, ...], tuple[AnalysisQuestionEvaluation, ...]]:
+    """Rebuild every v15 question from its already-resolved owner projection."""
+
+    base_specs, base_evaluations = expected_code_review_questions(
+        findings,
+        snapshot,
+        class_surface,
+    )
+    specs = list(base_specs)
+    evaluations = list(base_evaluations)
+
+    interface_specs, interface_evaluations = interface_surface_questions(
+        interface_surface,
+        snapshot_freshness=snapshot.freshness,
+        rank_offset=len(evaluations),
+    )
+    specs.extend(interface_specs)
+    evaluations.extend(interface_evaluations)
+
+    projection_specs, projection_evaluations = state_projection_questions(
+        state_projection,
+        rank=len(evaluations) + 1,
+    )
+    specs.extend(projection_specs)
+    evaluations.extend(projection_evaluations)
+
+    topology_specs, topology_evaluations = state_topology_questions(
+        state_topology,
+        rank=len(evaluations) + 1,
+    )
+    specs.extend(topology_specs)
+    evaluations.extend(topology_evaluations)
+
+    evolution_specs, evolution_evaluations = expected_code_change_evolution_questions(
+        change_evolution,
+        rank_offset=len(evaluations),
+    )
+    specs.extend(evolution_specs)
+    evaluations.extend(evolution_evaluations)
+
+    if assurance.question_evaluations:
+        specs.extend(assurance.question_specs)
+        assurance_evaluations = tuple(
+            replace(item, rank=len(evaluations) + index)
+            for index, item in enumerate(assurance.question_evaluations, start=1)
+        )
+        for item in assurance_evaluations:
+            validate_analysis_question_evaluation(assurance.question_specs[0], item)
+        evaluations.extend(assurance_evaluations)
+
+    security_specs, security_evaluations = security_dependency_questions(
+        supply_chain,
+        snapshot_id=snapshot.processing_signature,
+        snapshot_freshness=snapshot.freshness,
+        rank_offset=len(evaluations),
+    )
+    specs.extend(security_specs)
+    evaluations.extend(security_evaluations)
+
+    capability_specs, capability_evaluations = capability_reachability_questions(
+        capability_reachability,
+        rank_offset=len(evaluations),
+    )
+    specs.extend(capability_specs)
+    evaluations.extend(capability_evaluations)
+
+    effectiveness_specs, effectiveness_evaluations = analyzer_effectiveness_questions(
+        analyzer_effectiveness,
+        rank_offset=len(evaluations),
+    )
+    specs.extend(effectiveness_specs)
+    evaluations.extend(effectiveness_evaluations)
+
+    frozen_specs = tuple(specs)
+    frozen_evaluations = tuple(evaluations)
+    validate_analysis_question_set(frozen_specs, frozen_evaluations)
+    return frozen_specs, frozen_evaluations
+
+
 def resolve_code_review_questions(
     connection: sqlite3.Connection,
-    findings: tuple[_FindingEvidence, ...],
+    findings: Sequence[_FindingEvidence],
     snapshot: _SnapshotEvidence,
     *,
     class_limit: int,
@@ -427,10 +593,7 @@ def resolve_code_review_questions(
         class_surface = read_code_class_surface_analysis(
             connection,
             snapshot_id=snapshot.processing_signature,
-            snapshot_freshness=cast(
-                Literal["current", "publication_only", "unknown"],
-                snapshot.freshness,
-            ),
+            snapshot_freshness=snapshot.freshness,
             limit=class_limit,
         )
     except ValueError as exc:
@@ -449,5 +612,6 @@ __all__ = [
     "STRUCTURAL_HOTSPOT_QUESTION",
     "CodeReviewEvidenceResolutionError",
     "expected_code_review_questions",
+    "expected_integrated_code_review_questions",
     "resolve_code_review_questions",
 ]

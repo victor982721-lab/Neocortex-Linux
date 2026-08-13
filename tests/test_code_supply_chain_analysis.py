@@ -10,12 +10,15 @@ from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
 
+import pytest
+
 from _04_Nucleo_Operativo.code_external_evidence import ExternalEvidencePublication
 from _04_Nucleo_Operativo.code_supply_chain_analysis import (
     CODE_SUPPLY_CHAIN_OBSERVATION_LIMIT,
     CODE_SUPPLY_CHAIN_REQUIRED_PROVIDERS,
     CODE_SUPPLY_CHAIN_SCHEMA,
     analyze_code_supply_chain,
+    parse_code_supply_chain_payload,
     read_code_supply_chain_analysis,
 )
 from _04_Nucleo_Operativo.external_evidence_models import (
@@ -601,6 +604,18 @@ def test_supply_chain_analysis_is_ready_and_replay_stable(tmp_path: Path) -> Non
     assert all(item.execution == "cache_replay" for item in replay.providers)
     payload = json.dumps(baseline.as_payload(), ensure_ascii=False, sort_keys=True)
     assert len(payload.encode("utf-8")) < 512 * 1024
+    assert parse_code_supply_chain_payload(json.loads(payload)) == baseline
+
+
+def test_supply_chain_wire_rejects_a_tampered_gate_without_a_new_digest(
+    tmp_path: Path,
+) -> None:
+    analysis = _read(_database(tmp_path, findings=False), 1)
+    payload = json.loads(json.dumps(analysis.as_payload()))
+    payload["gates"][0]["status"] = "failed"
+
+    with pytest.raises(ValueError, match="digest"):
+        parse_code_supply_chain_payload(payload)
 
 
 def test_zero_findings_is_valid_and_all_absolute_gates_pass(tmp_path: Path) -> None:

@@ -12,7 +12,7 @@ import json
 import math
 import sqlite3
 from collections.abc import Mapping, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import Literal, Protocol, cast
 
@@ -1227,6 +1227,185 @@ def analyze_code_supply_chain(
     return _abstained(str(database), None, reason)
 
 
+def _wire_items(label: str, value: object) -> tuple[object, ...]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        raise ValueError(f"{label} must be a sequence")
+    return tuple(value)
+
+
+def _wire_mapping(
+    label: str,
+    value: object,
+    expected_fields: frozenset[str],
+) -> Mapping[str, object]:
+    if not isinstance(value, Mapping) or set(value) != expected_fields:
+        raise ValueError(f"{label} fields are invalid")
+    return value
+
+
+def _wire_texts(label: str, value: object) -> tuple[str, ...]:
+    items = _wire_items(label, value)
+    if any(not isinstance(item, str) or not item or item.strip() != item for item in items):
+        raise ValueError(f"{label} contains invalid text")
+    return cast(tuple[str, ...], items)
+
+
+def _wire_nonnegative(label: str, value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"{label} must be a non-negative integer")
+    return value
+
+
+def parse_code_supply_chain_payload(payload: Mapping[str, object]) -> CodeSupplyChainAnalysis:
+    """Strictly reconstruct and re-digest the public supply-chain projection."""
+
+    expected = {field.name for field in fields(CodeSupplyChainAnalysis)} | {"kind", "schema"}
+    if (
+        not isinstance(payload, Mapping)
+        or set(payload) != expected
+        or payload.get("kind") != "code-supply-chain-analysis"
+        or payload.get("schema") != CODE_SUPPLY_CHAIN_SCHEMA
+    ):
+        raise ValueError("supply-chain payload envelope is invalid")
+
+    provider_fields = frozenset(field.name for field in fields(SupplyChainProviderStatus))
+    providers: list[SupplyChainProviderStatus] = []
+    for raw in _wire_items("supply-chain providers", payload.get("providers")):
+        item = _wire_mapping("supply-chain provider", raw, provider_fields)
+        values = dict(item)
+        values["limitations"] = _wire_texts(
+            "supply-chain provider limitations", values.get("limitations")
+        )
+        provider = SupplyChainProviderStatus(**values)  # type: ignore[arg-type]
+        if (
+            provider.status not in {"ready", "abstained", "not_recorded"}
+            or provider.freshness not in {"current", "stale", "unknown", "not_applicable"}
+            or provider.authority != "advisory"
+            or provider.mutation_authority
+        ):
+            raise ValueError("supply-chain provider authority or status is invalid")
+        for count in (provider.findings, provider.metrics, provider.relations):
+            _wire_nonnegative("supply-chain provider evidence count", count)
+        if provider.status == "ready" and provider.reason is not None:
+            raise ValueError("ready supply-chain provider cannot carry an abstention reason")
+        if provider.status != "ready" and not provider.reason:
+            raise ValueError("unready supply-chain provider requires a reason")
+        providers.append(provider)
+    provider_tuple = tuple(providers)
+    provider_ids = tuple(item.provider_id for item in provider_tuple)
+    if provider_ids and provider_ids != CODE_SUPPLY_CHAIN_REQUIRED_PROVIDERS:
+        raise ValueError("supply-chain provider registry is not canonical")
+
+    observation_fields = frozenset(field.name for field in fields(SupplyChainObservation))
+    observations: list[SupplyChainObservation] = []
+    for raw in _wire_items("supply-chain observations", payload.get("observations")):
+        item = _wire_mapping("supply-chain observation", raw, observation_fields)
+        observation = SupplyChainObservation(**dict(item))  # type: ignore[arg-type]
+        if (
+            observation.provider_id not in CODE_SUPPLY_CHAIN_REQUIRED_PROVIDERS
+            or observation.evidence_kind not in {"finding", "metric", "relation"}
+            or observation.category not in set().union(*_PROVIDER_CATEGORIES.values())
+            or observation.authority != "advisory"
+            or observation.mutation_authority
+        ):
+            raise ValueError("supply-chain observation semantics are invalid")
+        observations.append(observation)
+    observation_tuple = tuple(observations)
+    if len({item.observation_id for item in observation_tuple}) != len(observation_tuple):
+        raise ValueError("supply-chain observation identities repeat")
+
+    count_fields = frozenset(field.name for field in fields(SupplyChainCounts))
+    raw_counts = _wire_mapping("supply-chain counts", payload.get("counts"), count_fields)
+    counts = SupplyChainCounts(**dict(raw_counts))  # type: ignore[arg-type]
+    for field in fields(SupplyChainCounts):
+        value = getattr(counts, field.name)
+        if field.name == "observations_truncated":
+            if not isinstance(value, bool):
+                raise ValueError("supply-chain truncation flag is invalid")
+        else:
+            _wire_nonnegative(f"supply-chain {field.name}", value)
+    if counts.observations != len(observation_tuple):
+        raise ValueError("supply-chain bounded observation count is inconsistent")
+    if counts.observations_truncated != (
+        counts.findings + counts.metrics + counts.relations > counts.observations
+    ):
+        raise ValueError("supply-chain truncation is not derived from exact counts")
+
+    gate_fields = frozenset(field.name for field in fields(SupplyChainGateEvaluation))
+    gates: list[SupplyChainGateEvaluation] = []
+    for raw in _wire_items("supply-chain gates", payload.get("gates")):
+        item = _wire_mapping("supply-chain gate", raw, gate_fields)
+        gate = SupplyChainGateEvaluation(**dict(item))  # type: ignore[arg-type]
+        if gate.status not in {"passed", "failed", "abstained", "not_evaluated"}:
+            raise ValueError("supply-chain gate status is invalid")
+        _wire_nonnegative("supply-chain gate evidence count", gate.evidence_count)
+        gates.append(gate)
+    gate_tuple = tuple(gates)
+    expected_gate_owners = tuple(
+        (item.gate, item.provider_id) for item in _not_evaluated_gates("wire_validation")
+    )
+    if tuple((item.gate, item.provider_id) for item in gate_tuple) != expected_gate_owners:
+        raise ValueError("supply-chain gate registry is not canonical")
+
+    limitations = _wire_texts("supply-chain limitations", payload.get("limitations"))
+    digest_fields = frozenset(field.name for field in fields(SupplyChainDigest))
+    raw_digest = _wire_mapping("supply-chain digest", payload.get("digest"), digest_fields)
+    digest = SupplyChainDigest(**dict(raw_digest))  # type: ignore[arg-type]
+    if (
+        not isinstance(digest.xxh3_128, str)
+        or not digest.xxh3_128
+        or not isinstance(digest.xxh3_64_guard, str)
+        or not digest.xxh3_64_guard
+    ):
+        raise ValueError("supply-chain digest identity is invalid")
+    _wire_nonnegative("supply-chain digest byte count", digest.byte_count)
+
+    status = payload.get("status")
+    reason = payload.get("reason")
+    analysis_run_id = payload.get("analysis_run_id")
+    if status not in {"ready", "abstained"}:
+        raise ValueError("supply-chain analysis status is invalid")
+    if status == "ready" and reason is not None:
+        raise ValueError("ready supply-chain analysis cannot carry a reason")
+    if status == "abstained" and (not isinstance(reason, str) or not reason):
+        raise ValueError("abstained supply-chain analysis requires a reason")
+    if analysis_run_id is not None and (
+        isinstance(analysis_run_id, bool)
+        or not isinstance(analysis_run_id, int)
+        or analysis_run_id < 1
+    ):
+        raise ValueError("supply-chain analysis run identity is invalid")
+    if payload.get("authority") != "advisory" or payload.get("mutation_authority") is not False:
+        raise ValueError("supply-chain analysis authority is invalid")
+    database = payload.get("database")
+    if not isinstance(database, str):
+        raise ValueError("supply-chain database identity is invalid")
+
+    expected_digest = _digest(
+        cast(SupplyChainStatus, status),
+        cast(str | None, reason),
+        provider_tuple,
+        observation_tuple,
+        counts,
+        gate_tuple,
+        limitations,
+    )
+    if digest != expected_digest:
+        raise ValueError("supply-chain payload digest is invalid")
+    return CodeSupplyChainAnalysis(
+        database=database,
+        analysis_run_id=analysis_run_id,
+        status=cast(SupplyChainStatus, status),
+        reason=cast(str | None, reason),
+        providers=provider_tuple,
+        observations=observation_tuple,
+        counts=counts,
+        gates=gate_tuple,
+        limitations=limitations,
+        digest=digest,
+    )
+
+
 __all__ = [
     "CODE_SUPPLY_CHAIN_OBSERVATION_LIMIT",
     "CODE_SUPPLY_CHAIN_REQUIRED_PROVIDERS",
@@ -1238,5 +1417,6 @@ __all__ = [
     "SupplyChainObservation",
     "SupplyChainProviderStatus",
     "analyze_code_supply_chain",
+    "parse_code_supply_chain_payload",
     "read_code_supply_chain_analysis",
 ]

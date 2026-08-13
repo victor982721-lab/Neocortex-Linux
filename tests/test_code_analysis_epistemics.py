@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 
 import pytest
@@ -18,6 +19,7 @@ from _04_Nucleo_Operativo.code_analysis_epistemics import (
     analysis_identity,
     analysis_question_spec_fingerprint,
     analysis_questions_payload,
+    parse_analysis_questions_payload,
     validate_analysis_question_evaluation,
 )
 
@@ -223,3 +225,27 @@ def test_external_evidence_requires_a_provider_run_receipt() -> None:
 def test_generic_question_never_owns_a_human_decision() -> None:
     with pytest.raises(ValueError, match="never owns a human decision"):
         replace(_evaluation(), decision="recommend_change")  # type: ignore[arg-type]
+
+
+def test_generic_question_wire_roundtrip_is_strict_and_revalidates_links() -> None:
+    spec = _spec()
+    evaluation = _evaluation()
+    payload = json.loads(json.dumps(analysis_questions_payload((spec,), (evaluation,))))
+
+    assert parse_analysis_questions_payload(payload) == ((spec,), (evaluation,))
+
+    payload["evaluations"][0]["requirements"][0]["evidence_ids"] = ["forged"]
+    with pytest.raises(ValueError, match="unknown evidence"):
+        parse_analysis_questions_payload(payload)
+
+
+def test_generic_question_wire_rejects_unknown_fields_and_spec_tampering() -> None:
+    payload = json.loads(json.dumps(analysis_questions_payload((_spec(),), (_evaluation(),))))
+    payload["unknown"] = True
+    with pytest.raises(ValueError, match="fields are invalid"):
+        parse_analysis_questions_payload(payload)
+
+    payload = json.loads(json.dumps(analysis_questions_payload((_spec(),), (_evaluation(),))))
+    payload["specs"][0]["hypotheses"][0] = "tampered"
+    with pytest.raises(ValueError, match="fingerprint is invalid"):
+        parse_analysis_questions_payload(payload)

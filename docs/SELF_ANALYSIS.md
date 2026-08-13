@@ -407,7 +407,7 @@ explícitamente como **convención de ruta**, no como ownership ni reachability 
 runtime. `hotspot_id` identifica establemente la evidencia física y el símbolo;
 `finding_id` identifica la interpretación versionada.
 
-El envelope vigente es `neocortex.code-review/v14` y no declara compatibilidad
+El envelope vigente es `neocortex.code-review/v15` y no declara compatibilidad
 con schemas anteriores: conserva el corte de autoridad y usa el contrato general
 `neocortex.code-analysis-epistemics/v1`. Cada finding separa
 observación, hipótesis, readiness
@@ -436,6 +436,16 @@ declarativa, protocolaria o un composition root intencional. Hasta resolver rol,
 consumidores, cohesión método-estado, historia y contraevidencia, toda evaluación
 queda `experiment_required`, sin recomendación ni autoridad de mutación.
 
+`neocortex.code-interface-surface/v1` amplía la observación a módulos,
+configuraciones y CLI. Para módulos conserva span, símbolos directos, API
+pública, dependencias y referencias confirmadas; los thresholds sólo
+seleccionan atención. Para configuración decodifica el texto publicado con
+límites, parsea JSON/TOML y publica exclusivamente conteos y nombres de keys,
+nunca valores. Para CLI selecciona archivos por calls
+`add_argument`/`add_parser`, reabre el AST publicado y separa literales de
+construcción dinámica. No ejecuta builders ni afirma que esos parsers lleguen
+al comando público.
+
 La primera pregunta durable cross-owner no intenta fabricar un grafo SQL.
 `neocortex.code-state-projection/v1` compara, por modelo de texto publicado, el
 set de `documents.revision_id` realmente elegible para el adaptador Text con el
@@ -462,8 +472,21 @@ publica atómicamente 260 miembros. Esto demuestra supervivencia y reanudación
 para ese crash point de proceso sobre SQLite; no simula power loss, corrupción
 de almacenamiento, todas las fronteras ni recuperación cross-owner.
 
+v15 integra además `code-state-topology`, `code-change-evolution`,
+`code-assurance`, `code-capability-reachability` y
+`code-analyzer-effectiveness`. Topología verifica el cierre relacional terminal
+Text owner-local; evolución separa contenido/API, relocations, historia Git y el
+schema Code; assurance distingue ejecución de tests, mutación, ASSERTS y
+escenarios; reachability enlaza manifests Text con receipts/outbox/heads; y
+autoeficacia compara por digest la publicación más reciente contra el inventario
+Git visible. Las preguntas de seguridad/dependencias consumen los seis gates ya
+existentes de `supply_chain`. Provider ausente, stale, parcial o incompatible se
+publica como evidencia faltante, nunca como ausencia de problema. Precision,
+recall y finding→decision permanecen sin calcular hasta enlazar outcomes humanos
+o defectos escapados independientes.
+
 `recommendations` permanece vacío y `recommendation_status=abstained` porque
-v14 todavía no tiene un resolver independiente que enlace evidencia de
+v15 todavía no tiene un resolver independiente que enlace evidencia de
 comportamiento/contrato, contraevidencia y resultado experimental. Nombres como
 `repository`, `commit`, `build`, `read` o `run`, mover el archivo o añadir un
 wrapper no pueden producir una recomendación. Los constructors y factories

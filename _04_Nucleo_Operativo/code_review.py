@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, cast
@@ -11,6 +12,16 @@ from typing import Literal, cast
 from .code_architecture_analysis import (
     CodeArchitectureAnalysis,
     read_code_architecture_analysis,
+)
+from .code_analyzer_effectiveness import analyze_code_analyzer_effectiveness
+from .code_assurance_analysis import analyze_code_assurance
+from .code_capability_reachability_analysis import (
+    abstained_capability_reachability,
+    analyze_capability_reachability,
+)
+from .code_change_evolution_analysis import (
+    CodeChangeEvolutionAnalysis,
+    read_code_change_evolution_analysis,
 )
 from .code_coverage_analysis import (
     CodeCoverageAnalysis,
@@ -23,6 +34,11 @@ from .code_engineering_analytics import (
 from .code_external_evidence import (
     ExternalEvidenceStatus,
     read_external_evidence,
+)
+from .code_interface_surface_analysis import (
+    CodeInterfaceSurfaceAnalysis,
+    abstained_code_interface_surface,
+    read_code_interface_surface_analysis,
 )
 from .code_unused_analysis import (
     CodeUnusedAnalysis,
@@ -60,6 +76,7 @@ from .code_review_models import (
 from .code_review_serialization import build_code_review_digest
 from .code_review_epistemics import (
     CodeReviewEvidenceResolutionError,
+    expected_integrated_code_review_questions,
     resolve_code_review_questions,
 )
 from .code_review_work_packages import (
@@ -70,12 +87,18 @@ from .code_state_projection_analysis import (
     abstained_code_state_projection,
     analyze_text_semantic_projection,
 )
+from .code_state_topology_analysis import (
+    CodeStateTopologyResolutionError,
+    abstained_code_state_topology,
+    analyze_text_terminal_publication,
+    resolve_state_topology_questions,
+)
 from .code_schema import (
     CODE_SCHEMA_VERSION,
     readonly_code_database,
     validate_code_schema,
 )
-from .external_evidence_models import ExternalEvidenceSuiteStatus
+from .external_evidence_models import ExternalEvidenceSuiteStatus, ExternalProviderEvidence
 from .external_evidence_store import (
     read_external_evidence_suite,
     read_external_provider_evidence,
@@ -147,6 +170,9 @@ class _ReviewRead:
     engineering_analytics: CodeEngineeringAnalytics
     unused_analysis: CodeUnusedAnalysis
     supply_chain: CodeSupplyChainAnalysis
+    provider_evidence: Mapping[str, ExternalProviderEvidence]
+    change_evolution: CodeChangeEvolutionAnalysis
+    interface_surface: CodeInterfaceSurfaceAnalysis
 
 
 _CANDIDATE_SQL = """
@@ -729,10 +755,11 @@ def _read_review(path: Path, *, limit: int) -> _ReviewRead:
             analysis_run_id,
             database=str(path),
         )
+        provider_evidence = read_external_provider_evidence(connection, analysis_run_id)
         engineering_analytics = analyze_code_engineering(
             architecture,
             test_coverage,
-            read_external_provider_evidence(connection, analysis_run_id),
+            provider_evidence,
             database=str(path),
             analysis_run_id=analysis_run_id,
         )
@@ -745,6 +772,22 @@ def _read_review(path: Path, *, limit: int) -> _ReviewRead:
             connection,
             analysis_run_id,
             database=str(path),
+        )
+        change_evolution = read_code_change_evolution_analysis(
+            connection,
+            database=str(path),
+            limit=limit,
+        )
+        interface_surface = (
+            abstained_code_interface_surface("code_run_missing", database=str(path))
+            if latest_run is None
+            else read_code_interface_surface_analysis(
+                connection,
+                analysis_run_id=analysis_run_id,
+                processing_signature=latest_run.processing_signature,
+                database=str(path),
+                limit=limit,
+            )
         )
     return _ReviewRead(
         latest_run=latest_run,
@@ -767,6 +810,9 @@ def _read_review(path: Path, *, limit: int) -> _ReviewRead:
         engineering_analytics=engineering_analytics,
         unused_analysis=unused_analysis,
         supply_chain=supply_chain,
+        provider_evidence=provider_evidence,
+        change_evolution=change_evolution,
+        interface_surface=interface_surface,
     )
 
 
@@ -900,7 +946,7 @@ def review_code_state(
     try:
         with readonly_code_database(path) as connection:
             validate_code_schema(connection)
-            structural_analysis, question_specs, question_evaluations = (
+            structural_analysis, _structural_specs, _structural_evaluations = (
                 resolve_code_review_questions(
                     connection,
                     read.findings,
@@ -910,20 +956,84 @@ def review_code_state(
             )
     except CodeReviewEvidenceResolutionError:
         return _abstained(path, "code_review_evidence_unresolvable")
+    document_state: Path | None = None
     try:
         from .app_paths import self_analysis_data_directory
 
         if state_directory.resolve() == self_analysis_data_directory().resolve():
+            document_state = self_analysis_data_directory().parent / "state"
             state_projection = analyze_text_semantic_projection(
-                self_analysis_data_directory().parent / "state",
+                document_state,
+                source_version=CODE_REVIEW_SCHEMA,
+            )
+            state_topology = analyze_text_terminal_publication(
+                document_state,
+                source_version=CODE_REVIEW_SCHEMA,
+            )
+            capability_reachability = analyze_capability_reachability(
+                document_state,
                 source_version=CODE_REVIEW_SCHEMA,
             )
         else:
             state_projection = abstained_code_state_projection(
                 "document_state_not_configured_for_noncanonical_code_review"
             )
+            state_topology = abstained_code_state_topology(
+                "document_state_not_configured_for_noncanonical_code_review",
+                source_version=CODE_REVIEW_SCHEMA,
+            )
+            capability_reachability = abstained_capability_reachability(
+                "document_state_not_configured_for_noncanonical_code_review",
+                source_version=CODE_REVIEW_SCHEMA,
+            )
     except (OSError, RuntimeError, ValueError):
         state_projection = abstained_code_state_projection("document_state_boundary_unresolvable")
+        state_topology = abstained_code_state_topology(
+            "document_state_boundary_unresolvable",
+            source_version=CODE_REVIEW_SCHEMA,
+        )
+        capability_reachability = abstained_capability_reachability(
+            "document_state_boundary_unresolvable",
+            source_version=CODE_REVIEW_SCHEMA,
+        )
+    if document_state is not None and state_topology.status == "ready":
+        try:
+            resolve_state_topology_questions(document_state, state_topology, rank=1)
+        except CodeStateTopologyResolutionError:
+            state_topology = abstained_code_state_topology(
+                "state_topology_changed_during_review",
+                source_version=CODE_REVIEW_SCHEMA,
+            )
+    assurance = analyze_code_assurance(
+        read.test_coverage,
+        read.provider_evidence,
+        snapshot_id=snapshot.processing_signature,
+        snapshot_freshness=snapshot.freshness,
+        limit=limit,
+    )
+    analyzer_effectiveness = analyze_code_analyzer_effectiveness(
+        path,
+        Path(snapshot.root),
+        source_version=CODE_REVIEW_SCHEMA,
+        snapshot_freshness=snapshot.freshness,
+        findings_observed=len(read.findings),
+        recommendations_observed=len(recommendations),
+        work_packages_observed=len(work_packages),
+        providers=read.external_evidence_suite.providers,
+    )
+    question_specs, question_evaluations = expected_integrated_code_review_questions(
+        read.findings,
+        snapshot,
+        structural_analysis,
+        state_projection=state_projection,
+        state_topology=state_topology,
+        change_evolution=read.change_evolution,
+        assurance=assurance,
+        supply_chain=read.supply_chain,
+        interface_surface=read.interface_surface,
+        capability_reachability=capability_reachability,
+        analyzer_effectiveness=analyzer_effectiveness,
+    )
     limitation_tuple = tuple(limitations)
     return CodeReviewResult(
         database=str(path),
@@ -950,6 +1060,12 @@ def review_code_state(
         engineering_analytics=read.engineering_analytics,
         structural_analysis=structural_analysis,
         state_projection=state_projection,
+        state_topology=state_topology,
+        change_evolution=read.change_evolution,
+        assurance=assurance,
+        capability_reachability=capability_reachability,
+        analyzer_effectiveness=analyzer_effectiveness,
+        interface_surface=read.interface_surface,
         question_specs=question_specs,
         question_evaluations=question_evaluations,
         limitations=limitation_tuple,
@@ -973,6 +1089,12 @@ def review_code_state(
             engineering_analytics=read.engineering_analytics,
             structural_analysis=structural_analysis,
             state_projection=state_projection,
+            state_topology=state_topology,
+            change_evolution=read.change_evolution,
+            assurance=assurance,
+            capability_reachability=capability_reachability,
+            analyzer_effectiveness=analyzer_effectiveness,
+            interface_surface=read.interface_surface,
             unused_analysis=read.unused_analysis,
             supply_chain=read.supply_chain,
             question_specs=question_specs,

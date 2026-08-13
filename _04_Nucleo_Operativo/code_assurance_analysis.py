@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 from typing import Literal, cast
 
 from .code_analysis_epistemics import (
@@ -31,8 +31,10 @@ from .code_analysis_epistemics import (
     AnalysisRequirementEvaluation,
     AnalysisSourceLocation,
     AnalysisSubjectRef,
+    CODE_ANALYSIS_EPISTEMICS_SCHEMA,
     analysis_identity,
     analysis_question_spec_fingerprint,
+    parse_analysis_questions_payload,
     validate_analysis_question_set,
 )
 from .code_coverage_analysis import (
@@ -1566,6 +1568,86 @@ def analyze_code_assurance(
     )
 
 
+def _strict_mapping(label: str, value: object, expected: set[str]) -> Mapping[str, object]:
+    if not isinstance(value, Mapping) or set(value) != expected:
+        raise ValueError(f"{label} fields are invalid")
+    return value
+
+
+def _wire_sequence(label: str, value: object) -> Sequence[object]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        raise ValueError(f"{label} must be a sequence")
+    return value
+
+
+def _wire_texts(label: str, value: object) -> tuple[str, ...]:
+    return tuple(
+        _required_text(label, item, maximum=16_384) for item in _wire_sequence(label, value)
+    )
+
+
+def parse_code_assurance_payload(payload: Mapping[str, object]) -> CodeAssuranceAnalysis:
+    """Strictly reconstruct one JSON-compatible assurance v1 projection."""
+
+    expected = {field.name for field in fields(CodeAssuranceAnalysis)} | {"schema"}
+    raw = _strict_mapping("assurance payload", payload, expected)
+    if raw["schema"] != CODE_ASSURANCE_SCHEMA:
+        raise ValueError("assurance payload schema is invalid")
+    raw_specs = _wire_sequence("assurance question specs", raw["question_specs"])
+    if raw_specs:
+        if canonical_json(raw_specs) != canonical_json((asdict(ASSURANCE_QUESTION),)):
+            raise ValueError("assurance question spec is not canonical")
+        wire_specs: list[dict[str, object]] = [
+            {
+                **asdict(ASSURANCE_QUESTION),
+                "spec_fingerprint": analysis_question_spec_fingerprint(ASSURANCE_QUESTION),
+            }
+        ]
+    else:
+        wire_specs = []
+    specs, evaluations = parse_analysis_questions_payload(
+        {
+            "schema": CODE_ANALYSIS_EPISTEMICS_SCHEMA,
+            "specs": wire_specs,
+            "evaluations": raw["question_evaluations"],
+        }
+    )
+    mutation_fields = {field.name for field in fields(MutationAssuranceObservation)}
+    observation_fields = {field.name for field in fields(SymbolAssuranceObservation)}
+    observations: list[SymbolAssuranceObservation] = []
+    for item in _wire_sequence("assurance observations", raw["observations"]):
+        values = dict(_strict_mapping("assurance observation", item, observation_fields))
+        mutation = dict(_strict_mapping("assurance mutation", values["mutation"], mutation_fields))
+        mutation["test_selectors"] = _wire_texts(
+            "assurance mutation selector", mutation["test_selectors"]
+        )
+        values["mutation"] = MutationAssuranceObservation(**mutation)  # type: ignore[arg-type]
+        values["executing_tests"] = _wire_texts(
+            "assurance executing test", values["executing_tests"]
+        )
+        values["limitations"] = _wire_texts(
+            "assurance observation limitation", values["limitations"]
+        )
+        observations.append(SymbolAssuranceObservation(**values))  # type: ignore[arg-type]
+    calibration_values = dict(
+        _strict_mapping(
+            "assurance calibration",
+            raw["calibration"],
+            {field.name for field in fields(CodeAssuranceCalibration)},
+        )
+    )
+    calibration_values["limitations"] = _wire_texts(
+        "assurance calibration limitation", calibration_values["limitations"]
+    )
+    values = {key: value for key, value in raw.items() if key != "schema"}
+    values["observations"] = tuple(observations)
+    values["question_specs"] = specs
+    values["question_evaluations"] = evaluations
+    values["calibration"] = CodeAssuranceCalibration(**calibration_values)  # type: ignore[arg-type]
+    values["limitations"] = _wire_texts("assurance limitation", values["limitations"])
+    return CodeAssuranceAnalysis(**values)  # type: ignore[arg-type]
+
+
 __all__ = [
     "ASSURANCE_QUESTION",
     "CODE_ASSURANCE_POLICY",
@@ -1576,4 +1658,5 @@ __all__ = [
     "MutationAssuranceObservation",
     "SymbolAssuranceObservation",
     "analyze_code_assurance",
+    "parse_code_assurance_payload",
 ]

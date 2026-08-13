@@ -616,8 +616,8 @@ manifest registra `journal.status=unavailable`, el status nunca afirma
 `current=true` y la ruta code todavía reutiliza por caché los archivos sin
 cambios.
 
-`--code-review` convierte la publicación en observaciones estructurales
-explicables. El envelope `neocortex.code-review/v14` no declara schemas
+`--code-review` convierte la publicación en observaciones y preguntas
+explicables. El envelope `neocortex.code-review/v15` no declara schemas
 compatibles: conserva el corte fail-closed y usa la proyección general
 `neocortex.code-analysis-epistemics/v1`. Cada finding separa observación,
 hipótesis, readiness de pregunta, evidencia faltante, contraevidencia por
@@ -626,7 +626,7 @@ buscar, siguiente acción y readiness de decisión. Un hotspot queda
 autoriza mutación.
 
 Mientras no exista un resolver trazable de evidencia de comportamiento,
-contraevidencia y resultados experimentales, v14 publica cero recomendaciones
+contraevidencia y resultados experimentales, v15 publica cero recomendaciones
 de cambio y cero packages hotspot. El planificador v5 sólo puede entregar hasta
 tres paquetes `unused_characterization` calibrados: todos sus pasos son de
 caracterización, requieren confirmación humana y declaran
@@ -637,7 +637,7 @@ superficie usa `executing_tests` y
 --code-json` amplía de 1 a 50 la vista
 auditable. La consulta es estrictamente read-only; un snapshot full sin USN se
 etiqueta `publication_only` y un journal avanzado/discontinuo causa abstención.
-Cada evaluación v14 fija el fingerprint de la pregunta, el snapshot y la
+Cada evaluación v15 fija el fingerprint de la pregunta, el snapshot y la
 revisión. Los hotspots enlazan los IDs de diagnóstico exactos; la nueva familia
 `class_surface` vuelve a resolver el símbolo de clase y todos sus miembros AST
 directos confirmados. Sus umbrales provisionales de 500 líneas o 20 métodos son
@@ -646,13 +646,30 @@ filtros de atención, no riesgo calibrado ni evidencia de una *god class*.
 concordancia con los registros; no convierte tamaño, nombres o rutas en daño ni
 en una decisión humana.
 
-En la ubicación canónica de autoanálisis, v14 añade una observación cross-owner
+Además de funciones y clases, v15 publica una proyección acotada de módulos,
+configuraciones y construcción CLI. Los módulos se seleccionan por conteos
+estructurales explícitos; JSON/TOML se parsean desde el snapshot sin exponer
+valores; YAML/text-only permanece `unsupported` o `incomplete`; y las llamadas
+`argparse` literales/dinámicas se observan sin ejecutar código. Ninguna de estas
+señales prueba cohesión, reachability o necesidad de refactor.
+
+En la ubicación canónica de autoanálisis, v15 añade observaciones cross-owner:
 `neocortex.code-state-projection/v1`: abre Text y Semantic mediante lecturas
 SQLite `immutable=1` con fences de archivo y sidecars inactivos, y compara el
 conjunto exacto de revisiones Text elegibles con cada head Semantic publicado de
 modalidad texto. Conserva por separado filas completas vacías y no las convierte
 en faltantes. Alineación o delta siguen siendo observaciones: no prueban una
 transacción distribuida, recuperación ante muerte de proceso ni un defecto.
+`neocortex.code-state-topology/v1` verifica por separado el cierre relacional de
+la publicación terminal Text contra receipts y outbox owner-local.
+
+El mismo envelope integra change/schema evolution, assurance, supply-chain,
+capability reachability y autoeficacia. La ausencia o caducidad de Git history,
+Coverage, Semgrep, Deptry, pip-audit o inventario instalado queda visible como
+evidencia faltante y nunca como gate aprobado. Autoeficacia compara por contenido
+la última publicación Code con el inventario Git visible y deja precision,
+recall y finding→decision sin calcular mientras no existan outcomes humanos o
+defectos escapados enlazados independientemente.
 
 `--code-publication-diff` publica el envelope
 `neocortex.code-publication-diff/v10`, sin declarar compatibilidad estructural

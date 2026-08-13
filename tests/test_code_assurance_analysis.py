@@ -10,6 +10,7 @@ import pytest
 from _04_Nucleo_Operativo.code_assurance_analysis import (
     CODE_ASSURANCE_SCHEMA,
     analyze_code_assurance,
+    parse_code_assurance_payload,
 )
 from _04_Nucleo_Operativo.code_coverage_analysis import (
     CodeCoverageAnalysis,
@@ -401,3 +402,37 @@ def test_missing_coverage_abstains_without_question_evidence() -> None:
     assert analysis.question_evaluations == ()
     assert analysis.calibration.evaluated_subjects == 0
     assert analysis.calibration.precision_at_k is None
+
+
+def test_assurance_wire_roundtrip_revalidates_nested_epistemic_evidence() -> None:
+    analysis = analyze_code_assurance(
+        _coverage(),
+        {},
+        snapshot_id=SNAPSHOT_ID,
+        snapshot_freshness="current",
+    )
+    payload = json.loads(json.dumps(analysis.as_payload()))
+
+    assert parse_code_assurance_payload(payload) == analysis
+
+    payload["question_evaluations"][0]["decision_readiness"] = "human_review_required"
+    with pytest.raises(ValueError, match="readiness is not derived"):
+        parse_code_assurance_payload(payload)
+
+
+def test_assurance_wire_rejects_unknown_fields_and_forged_behavior_claims() -> None:
+    analysis = analyze_code_assurance(
+        _coverage(),
+        {},
+        snapshot_id=SNAPSHOT_ID,
+        snapshot_freshness="current",
+    )
+    payload = json.loads(json.dumps(analysis.as_payload()))
+    payload["observations"][0]["behavioral_assurance_status"] = "established"
+    with pytest.raises(ValueError, match="cannot claim behavioral protection"):
+        parse_code_assurance_payload(payload)
+
+    payload = json.loads(json.dumps(analysis.as_payload()))
+    payload["unknown"] = True
+    with pytest.raises(ValueError, match="fields are invalid"):
+        parse_code_assurance_payload(payload)

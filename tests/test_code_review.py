@@ -609,7 +609,7 @@ def test_review_ranks_confirmed_hotspots_deterministically_with_diversity(
 
     assert first.status == "ready"
     assert first_json == second_json
-    assert first.as_payload()["schema"] == "neocortex.code-review/v14"
+    assert first.as_payload()["schema"] == "neocortex.code-review/v15"
     assert first.as_payload()["compatible_schemas"] == []
     assert first.supply_chain is not None
     assert first.supply_chain.status == "abstained"
@@ -618,6 +618,16 @@ def test_review_ranks_confirmed_hotspots_deterministically_with_diversity(
     assert first.state_projection.reason == (
         "document_state_not_configured_for_noncanonical_code_review"
     )
+    assert first.state_topology is not None
+    assert first.state_topology.status == "abstained"
+    assert first.change_evolution is not None
+    assert first.change_evolution.code_schema.status == "ready"
+    assert first.assurance is not None
+    assert first.assurance.status == "abstained"
+    assert first.capability_reachability is not None
+    assert first.capability_reachability.status == "abstained"
+    assert first.interface_surface is not None
+    assert first.interface_surface.status == "ready"
     assert len(first.findings) == 10
     assert len(expanded.findings) == 11
     assert expanded.findings[:10] == first.findings
@@ -642,8 +652,22 @@ def test_review_ranks_confirmed_hotspots_deterministically_with_diversity(
     epistemics = first.as_payload()["epistemics"]
     assert isinstance(epistemics, dict)
     assert epistemics["schema"] == "neocortex.code-analysis-epistemics/v1"
-    assert len(epistemics["specs"]) == 1
-    assert len(epistemics["evaluations"]) == len(first.findings)
+    assert {item["question_id"] for item in epistemics["specs"]} == {
+        "maintenance.structural_hotspot_requires_change",
+        "state.text_semantic_published_projection_is_aligned",
+        "state.text_terminal_publication_is_relationally_closed",
+        "evolution.change_surface_requires_review",
+        "evolution.change_history_requires_companion_review",
+        "evolution.code_owner_schema_requires_migration_review",
+        "analyzer.latest_publication_matches_git_visible_worktree",
+        "analyzer.finding_to_human_decision_effectiveness_is_calibrated",
+        "security.static_invariants_and_vulnerability_evidence_is_resolved",
+        "dependency.declaration_installation_and_license_evidence_is_resolved",
+        "structure.module_surface_concentration_requires_characterization",
+        "structure.configuration_surface_is_completely_observed",
+        "structure.cli_surface_has_runtime_contract_evidence",
+    }
+    assert len(epistemics["evaluations"]) == len(first.findings) + 12
     first_evaluation = epistemics["evaluations"][0]
     assert first_evaluation["observation_status"] == "confirmed"
     assert first_evaluation["inference_status"] == "abstained"
