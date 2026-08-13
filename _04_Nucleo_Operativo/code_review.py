@@ -271,6 +271,22 @@ def _latest_run(connection: sqlite3.Connection) -> CodeRunStatusEvidence | None:
     )
 
 
+def _current_versions_match_latest_run(
+    connection: sqlite3.Connection,
+    latest_run: CodeRunStatusEvidence,
+) -> bool:
+    """Reject a mixed projection whose current rows were not observed by the head run."""
+
+    row = connection.execute(
+        """SELECT COUNT(*) FROM files f JOIN file_versions v
+        ON v.version_id=f.current_version_id
+        WHERE f.status='current' AND v.invalidated_ns IS NULL
+        AND (v.last_observed_run_id<>? OR v.processing_signature<>?)""",
+        (latest_run.framework_run_id, latest_run.processing_signature),
+    ).fetchone()
+    return row is not None and int(row[0]) == 0
+
+
 def _candidate(row: sqlite3.Row) -> _Candidate:
     complexity = int(row["complexity"])
     function_lines = int(row["function_lines"])
@@ -698,6 +714,13 @@ def _read_review(path: Path, *, limit: int) -> _ReviewRead:
         if schema_version != CODE_SCHEMA_VERSION:
             raise RuntimeError(f"code state schema {schema_version} is unsupported for review")
         latest_run = _latest_run(connection)
+        if latest_run is not None and not _current_versions_match_latest_run(
+            connection,
+            latest_run,
+        ):
+            raise CodeReviewEvidenceResolutionError(
+                "current_code_projection_not_owned_by_latest_completed_run"
+            )
         rows = connection.execute(
             _CANDIDATE_SQL,
             (CODE_REVIEW_MAX_CANDIDATES,),

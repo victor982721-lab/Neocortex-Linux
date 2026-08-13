@@ -739,6 +739,35 @@ def test_review_ranks_confirmed_hotspots_deterministically_with_diversity(
     ]
 
 
+def test_review_rejects_current_rows_not_owned_by_the_latest_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state_directory = tmp_path / "state"
+    _build_state(state_directory)
+    monkeypatch.setattr(
+        code_review_module,
+        "read_self_analysis_status",
+        lambda _state, _run: _status(tmp_path),
+    )
+    database = state_directory / "code.sqlite3"
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "UPDATE file_versions SET last_observed_run_id=last_observed_run_id-1 "
+            "WHERE version_id=(SELECT current_version_id FROM files "
+            "WHERE status='current' ORDER BY file_id LIMIT 1)"
+        )
+        connection.commit()
+        checkpoint_code_wal(connection)
+    remove_checkpointed_code_sidecars(database)
+
+    with pytest.raises(
+        CodeReviewEvidenceResolutionError,
+        match="current_code_projection_not_owned_by_latest_completed_run",
+    ):
+        review_code_state(state_directory)
+
+
 def test_review_abstains_when_its_evidence_resolver_cannot_verify_a_source(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
