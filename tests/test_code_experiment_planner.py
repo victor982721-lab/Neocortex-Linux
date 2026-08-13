@@ -33,18 +33,18 @@ def _provider() -> ExternalProviderEvidence:
                 PYTEST_COVERAGE_PROVIDER_ID,
                 relation_kind="declared_test_outcome",
                 source_kind="contract",
-                source_key=f"pytest-nodeid:{scenario.test_nodeid}",
+                source_key=f"pytest-nodeid:{nodeid}",
                 target_kind="run",
                 target_key="coverage-run:fixture",
             ),
             "declared_test_outcome",
             "contract",
-            f"pytest-nodeid:{scenario.test_nodeid}",
+            f"pytest-nodeid:{nodeid}",
             "run",
             "coverage-run:fixture",
             confidence=1.0,
             metadata={
-                "nodeid": scenario.test_nodeid,
+                "nodeid": nodeid,
                 "outcome": "passed",
                 "claim_scope": "exact_selected_test_execution_outcome",
                 "assertion_or_invariant_proof": False,
@@ -52,6 +52,7 @@ def _provider() -> ExternalProviderEvidence:
             },
         )
         for scenario in RUNTIME_SCENARIOS
+        for nodeid in scenario.test_nodeids
     )
     return ExternalProviderEvidence(
         PYTEST_COVERAGE_PROVIDER_ID,

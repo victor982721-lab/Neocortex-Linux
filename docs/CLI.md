@@ -331,8 +331,10 @@ v16 añade `CODE_STATE_INTERACTIONS`, `CODE_INVARIANT_ASSURANCE`,
 `CODE_ROUTE_CAPABILITIES`, `CODE_ANALYZER_CALIBRATION` y
 `CODE_EXPERIMENT_PLAN`. SQL literal se parsea con el dialecto SQLite y se liga a
 store/workflow sólo por contratos explícitos. El assurance de invariantes sólo
-acepta outcomes de los nodeids registrados; `passed` es evidencia del escenario,
-no prueba universal. La calibración conserva las 40 etiquetas existentes como
+acepta outcomes de todos los nodeids exactos registrados para cada escenario;
+un selector parametrizado se expande y debe quedar cubierto por completo.
+`passed` es evidencia del escenario, no prueba universal. La calibración conserva
+las 40 etiquetas existentes como
 `provisional_not_human_validated` y no calcula precision/recall con ellas.
 
 El review imprime hasta 20 `CODE_EXPERIMENT_PROPOSAL` ejecutables. Para ejecutar
@@ -345,7 +347,9 @@ Neocortex --state-directory STATE --code-experiment-run PROPOSAL_ID --code-json
 El ID debe pertenecer al plan reconstruido en esa misma invocación. El único
 runner v1 usa la selección trusted-deep allow-listed, temporal fuera del repo,
 presupuesto duro y manifest exacto; si cambia fuente, proposal, provider o base
-Code, falla cerrado. El receipt es advisory, conserva digests before/after y no
+Code, falla cerrado. El receipt agrega por escenario únicamente después de
+recibir un outcome terminal por cada nodeid expandido; es advisory, conserva
+digests before/after y no
 es una decisión humana ni una autorización de patch.
 
 El planificador v5 puede entregar, de forma independiente, hasta tres paquetes

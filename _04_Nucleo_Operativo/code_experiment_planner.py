@@ -173,7 +173,7 @@ def _template(
 ) -> CodeExperimentTemplate:
     return CodeExperimentTemplate(
         template_id,
-        "v1",
+        "v2" if template_id == "analyzer.registered_invariant_scenarios" else "v1",
         action_ids,
         experiment_kind,
         isolation,
@@ -200,7 +200,7 @@ CODE_EXPERIMENT_TEMPLATES = (
         "spawned_process_and_tmp_path",
         "bounded",
         timeout=300,
-        max_items=4,
+        max_items=sum(len(item.test_nodeids) for item in RUNTIME_SCENARIOS),
         attention=5,
         scenarios=tuple(item.scenario_id for item in RUNTIME_SCENARIOS),
         runner="trusted_deep_declared_scenarios",

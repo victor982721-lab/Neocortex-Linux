@@ -41,11 +41,11 @@ from .external_deep_coverage import (
 from .external_evidence_models import ExternalProviderEvidence, ExternalProviderRelation
 
 CODE_INVARIANT_ASSURANCE_SCHEMA = "neocortex.code-invariant-assurance/v1"
-CODE_INVARIANT_ASSURANCE_POLICY = "declared-invariant-exact-test-outcome-receipts-v1"
+CODE_INVARIANT_ASSURANCE_POLICY = "declared-invariant-exact-test-outcome-receipts-v2"
 
 INVARIANT_ASSURANCE_QUESTION = AnalysisQuestionSpec(
     question_id="assurance.declared_invariant_scenarios_are_observed",
-    version="v1",
+    version="v2",
     subject_kinds=("invariant",),
     requirements=(
         AnalysisEvidenceRequirementSpec(
@@ -119,7 +119,7 @@ def _required(label: str, value: object, maximum: int = 16_384) -> str:
 @dataclass(frozen=True, slots=True)
 class InvariantScenarioOutcome:
     scenario_id: str
-    test_nodeid: str
+    test_nodeids: tuple[str, ...]
     status: Literal["passed", "failed", "skipped", "not_selected", "provider_abstained"]
     provider_run_id: int | None
     relation_id: str | None
@@ -127,7 +127,15 @@ class InvariantScenarioOutcome:
 
     def __post_init__(self) -> None:
         _required("scenario id", self.scenario_id, 256)
-        _required("scenario test nodeid", self.test_nodeid)
+        if (
+            not self.test_nodeids
+            or len(set(self.test_nodeids)) != len(self.test_nodeids)
+            or self.test_nodeids
+            != tuple(sorted(self.test_nodeids, key=lambda item: (item.casefold(), item)))
+        ):
+            raise ValueError("scenario test nodeids are invalid")
+        for test_nodeid in self.test_nodeids:
+            _required("scenario test nodeid", test_nodeid)
         if self.status not in {
             "passed",
             "failed",
@@ -324,27 +332,45 @@ def _outcome_relations(
 
 def _scenario_outcome(
     scenario_id: str,
-    nodeid: str,
+    nodeids: tuple[str, ...],
     *,
     provider: ExternalProviderEvidence | None,
     relations: Mapping[str, ExternalProviderRelation],
 ) -> InvariantScenarioOutcome:
     if provider is None:
-        return InvariantScenarioOutcome(scenario_id, nodeid, "not_selected", None, None, None)
+        return InvariantScenarioOutcome(scenario_id, nodeids, "not_selected", None, None, None)
     if provider.status != "ready" or provider.effective_tool_run_id is None:
-        return InvariantScenarioOutcome(scenario_id, nodeid, "provider_abstained", None, None, None)
-    relation = relations.get(nodeid)
-    if relation is None:
-        return InvariantScenarioOutcome(scenario_id, nodeid, "not_selected", None, None, None)
-    outcome = str(relation.metadata["outcome"])
-    scope = relation.metadata.get("measurement_scope_signature")
+        return InvariantScenarioOutcome(
+            scenario_id, nodeids, "provider_abstained", None, None, None
+        )
+    selected = tuple(relations[nodeid] for nodeid in nodeids if nodeid in relations)
+    if not selected:
+        return InvariantScenarioOutcome(scenario_id, nodeids, "not_selected", None, None, None)
+    scopes = {relation.metadata.get("measurement_scope_signature") for relation in selected}
+    if len(selected) != len(nodeids) or len(scopes) != 1 or None in scopes:
+        return InvariantScenarioOutcome(scenario_id, nodeids, "not_selected", None, None, None)
+    observed_outcomes = tuple(str(relation.metadata["outcome"]) for relation in selected)
+    outcome = (
+        "failed"
+        if "failed" in observed_outcomes
+        else "skipped"
+        if "skipped" in observed_outcomes
+        else "passed"
+    )
+    relation_projection = analysis_identity(
+        "invariant-scenario-outcome-relation-set-v1",
+        {
+            "scenario_id": scenario_id,
+            "relation_ids": tuple(relation.portable_relation_id for relation in selected),
+        },
+    )
     return InvariantScenarioOutcome(
         scenario_id,
-        nodeid,
+        nodeids,
         outcome,  # type: ignore[arg-type]
         provider.effective_tool_run_id,
-        relation.portable_relation_id,
-        str(scope) if isinstance(scope, str) else None,
+        relation_projection,
+        str(next(iter(scopes))),
     )
 
 
@@ -358,7 +384,7 @@ def _observation(
     outcomes = tuple(
         _scenario_outcome(
             scenario_id,
-            scenarios_by_id[scenario_id].test_nodeid,
+            scenarios_by_id[scenario_id].test_nodeids,
             provider=provider,
             relations=relations,
         )
@@ -742,7 +768,12 @@ def parse_code_invariant_assurance_payload(
         if not isinstance(raw, Mapping):
             raise ValueError("invariant assurance observation is invalid")
         item = dict(raw)
-        item["scenarios"] = tuple(InvariantScenarioOutcome(**entry) for entry in item["scenarios"])
+        scenarios: list[InvariantScenarioOutcome] = []
+        for raw_scenario in item["scenarios"]:
+            scenario = dict(raw_scenario)
+            scenario["test_nodeids"] = tuple(scenario["test_nodeids"])
+            scenarios.append(InvariantScenarioOutcome(**scenario))
+        item["scenarios"] = tuple(scenarios)
         parsed_observations.append(InvariantAssuranceObservation(**item))
     values["observations"] = tuple(parsed_observations)
     # The generic parser provides full forged-wire validation for these nested contracts.

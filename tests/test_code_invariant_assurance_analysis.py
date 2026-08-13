@@ -88,7 +88,9 @@ def test_registry_is_canonical_versioned_and_every_scenario_is_linked() -> None:
 
 
 def test_exact_passing_scenario_receipts_are_observed_but_never_become_a_decision() -> None:
-    provider = _provider({item.test_nodeid: "passed" for item in RUNTIME_SCENARIOS})
+    provider = _provider(
+        {nodeid: "passed" for item in RUNTIME_SCENARIOS for nodeid in item.test_nodeids}
+    )
 
     result = analyze_code_invariant_assurance(
         {PYTEST_COVERAGE_PROVIDER_ID: provider},
@@ -110,8 +112,8 @@ def test_exact_passing_scenario_receipts_are_observed_but_never_become_a_decisio
 
 
 def test_failed_scenario_is_preserved_as_counterevidence_not_change_authority() -> None:
-    outcomes = {item.test_nodeid: "passed" for item in RUNTIME_SCENARIOS}
-    failed_nodeid = RUNTIME_SCENARIOS[0].test_nodeid
+    outcomes = {nodeid: "passed" for item in RUNTIME_SCENARIOS for nodeid in item.test_nodeids}
+    failed_nodeid = RUNTIME_SCENARIOS[0].test_nodeids[0]
     outcomes[failed_nodeid] = "failed"
 
     result = analyze_code_invariant_assurance(
@@ -138,7 +140,11 @@ def test_failed_scenario_is_preserved_as_counterevidence_not_change_authority() 
 def test_partial_selection_remains_partial_and_unselected_is_not_a_failure() -> None:
     selected = RUNTIME_SCENARIOS[:2]
     result = analyze_code_invariant_assurance(
-        {PYTEST_COVERAGE_PROVIDER_ID: _provider({item.test_nodeid: "passed" for item in selected})},
+        {
+            PYTEST_COVERAGE_PROVIDER_ID: _provider(
+                {nodeid: "passed" for item in selected for nodeid in item.test_nodeids}
+            )
+        },
         snapshot_id="snapshot-fixture",
         snapshot_freshness="current",
     )
@@ -183,7 +189,7 @@ def test_missing_or_abstained_provider_fails_closed_without_nominal_evidence() -
 
 def test_forged_test_outcome_relation_and_authority_are_rejected() -> None:
     scenario = RUNTIME_SCENARIOS[0]
-    valid = _relation(scenario.test_nodeid, "passed", 1)
+    valid = _relation(scenario.test_nodeids[0], "passed", 1)
     forged = replace(
         valid,
         metadata={**valid.metadata, "assertion_or_invariant_proof": True},
@@ -201,7 +207,9 @@ def test_forged_test_outcome_relation_and_authority_are_rejected() -> None:
 
 
 def test_wire_round_trip_and_digest_bound_counts_reject_forgery() -> None:
-    provider = _provider({item.test_nodeid: "passed" for item in RUNTIME_SCENARIOS})
+    provider = _provider(
+        {nodeid: "passed" for item in RUNTIME_SCENARIOS for nodeid in item.test_nodeids}
+    )
     result = analyze_code_invariant_assurance(
         {PYTEST_COVERAGE_PROVIDER_ID: provider},
         snapshot_id="snapshot-fixture",

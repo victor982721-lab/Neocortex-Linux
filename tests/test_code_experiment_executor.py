@@ -63,13 +63,13 @@ def _receipt(
 
     proposal = _proposal()
     scenarios = tuple(item.scenario_id for item in RUNTIME_SCENARIOS)
-    nodeids = tuple(item.test_nodeid for item in RUNTIME_SCENARIOS)
+    nodeids = tuple(nodeid for item in RUNTIME_SCENARIOS for nodeid in item.test_nodeids)
     outcomes = tuple(
         CodeExperimentOutcome(
             item.scenario_id,
-            item.test_nodeid,
+            item.test_nodeids,
             outcome,  # type: ignore[arg-type]
-            f"relation:{index}",
+            tuple(f"relation:{index}:{ordinal}" for ordinal, _ in enumerate(item.test_nodeids)),
         )
         for index, item in enumerate(RUNTIME_SCENARIOS)
     )
@@ -85,10 +85,10 @@ def _receipt(
     values = {
         "status": status,
         "reason": "provider_failed" if status == "abstained" else None,
-        "policy_id": "allowlisted-trusted-deep-scenarios-v1",
+        "policy_id": "allowlisted-trusted-deep-scenarios-v2",
         "proposal_id": proposal.proposal_id,
         "template_id": "analyzer.registered_invariant_scenarios",
-        "template_version": "v1",
+        "template_version": "v2",
         "runner_kind": "trusted_deep_declared_scenarios",
         "source_root": "/fixture/repository",
         "source_version": "source-fixture",
@@ -199,9 +199,9 @@ def test_outcome_cannot_claim_an_unregistered_nodeid() -> None:
     with pytest.raises(ValueError, match="declared scenario"):
         CodeExperimentOutcome(
             scenario.scenario_id,
-            "tests/test_fake.py::test_delete_production",
+            ("tests/test_fake.py::test_delete_production",),
             "passed",
-            "relation:fake",
+            ("relation:fake",),
         )
 
 

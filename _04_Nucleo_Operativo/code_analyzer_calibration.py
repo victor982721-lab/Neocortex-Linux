@@ -525,7 +525,7 @@ def _anti_goodhart_controls(
             AntiGoodhartControl(
                 control_id=f"antigoodhart:{transformation}:v1",
                 transformation=cast(Any, transformation),
-                test_nodeid=scenario.test_nodeid,
+                test_nodeid=scenario.test_nodeids[0],
                 status=status,
                 provider_run_id=run_id if status != "not_observed" else None,
                 limitation="one_declared_metamorphic_scenario_not_general_detector_invariance",

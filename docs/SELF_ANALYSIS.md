@@ -497,8 +497,9 @@ o suffix `repository`.
 
 Evolución separa contenido/API, relocations, historia Git y el schema Code;
 assurance distingue ejecución de tests, mutación, ASSERTS y escenarios; el
-registry de invariantes enlaza cuatro escenarios exactos y sólo acepta outcomes
-trusted-deep actuales. Reachability enlaza manifests Text con
+registry de invariantes enlaza cuatro escenarios exactos —diez nodeids una vez
+expandidos los parámetros— y sólo acepta outcomes trusted-deep actuales para el
+conjunto completo de cada escenario. Reachability enlaza manifests Text con
 receipts/outbox/heads, mientras el registry de rutas demuestra sólo el nivel de
 evidencia realmente disponible para las nueve rutas built-in. Calibración
 preserva labels provisionales sin convertirlas en ground truth y autoeficacia
@@ -514,7 +515,8 @@ El planner `neocortex.code-experiment-plan/v1` cubre toda evaluación
 Templates sin runner siguen como planes de caracterización; el runner v1 sólo
 admite los cuatro escenarios source-versioned. `--code-experiment-run` exige un
 proposal ID del plan vigente, ejecuta pytest/coverage en temporal aislado con
-timeout y emite un receipt con identidad del provider, manifest, outcomes y
+timeout y emite un receipt con identidad del provider, manifest, outcomes de
+todos los nodeids expandidos y
 digests Code before/after. El receipt confirma únicamente esos escenarios y no
 otorga autoridad sobre fuente o estado de producto.
 

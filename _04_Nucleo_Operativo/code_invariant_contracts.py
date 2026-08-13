@@ -26,7 +26,7 @@ def _required(label: str, value: object, maximum: int = 512) -> str:
 class RuntimeScenarioSpec:
     scenario_id: str
     version: str
-    test_nodeid: str
+    test_nodeids: tuple[str, ...]
     scenario_kind: Literal["state_fixture", "process_death", "metamorphic"]
     isolation: Literal["pytest_tmp_path", "spawned_process_and_tmp_path"]
     limitation: str
@@ -35,12 +35,20 @@ class RuntimeScenarioSpec:
         for label, value, maximum in (
             ("scenario id", self.scenario_id, 256),
             ("scenario version", self.version, 64),
-            ("scenario test nodeid", self.test_nodeid, 16_384),
             ("scenario limitation", self.limitation, 512),
         ):
             _required(label, value, maximum)
-        if "::test_" not in self.test_nodeid:
-            raise ValueError("runtime scenario must bind one exact pytest test")
+        if (
+            not self.test_nodeids
+            or len(set(self.test_nodeids)) != len(self.test_nodeids)
+            or self.test_nodeids
+            != tuple(sorted(self.test_nodeids, key=lambda item: (item.casefold(), item)))
+        ):
+            raise ValueError("runtime scenario nodeids must be non-empty, unique, and ordered")
+        for test_nodeid in self.test_nodeids:
+            _required("scenario test nodeid", test_nodeid, 16_384)
+            if "::test_" not in test_nodeid:
+                raise ValueError("runtime scenario must bind exact pytest tests")
         if self.scenario_kind not in {"state_fixture", "process_death", "metamorphic"}:
             raise ValueError("runtime scenario kind is invalid")
         if self.isolation not in {"pytest_tmp_path", "spawned_process_and_tmp_path"}:
@@ -75,9 +83,48 @@ RUNTIME_SCENARIOS = (
     RuntimeScenarioSpec(
         scenario_id="analyzer.hotspot_name_path_call_invariance",
         version="v1",
-        test_nodeid=(
-            "tests/test_code_review_epistemics.py::"
-            "test_names_paths_and_outgoing_call_spellings_cannot_change_epistemic_state"
+        test_nodeids=(
+            (
+                "tests/test_code_review_epistemics.py::"
+                "test_names_paths_and_outgoing_call_spellings_cannot_change_epistemic_state"
+                "[/repo/pkg/semantic_lineage_reader.py-"
+                "semantic_lineage_reader.lookup_text_chunk_lineage-outgoing_calls0]"
+            ),
+            (
+                "tests/test_code_review_epistemics.py::"
+                "test_names_paths_and_outgoing_call_spellings_cannot_change_epistemic_state"
+                "[/repo/pkg/semantic_lineage_repository.py-"
+                "semantic_lineage_repository.run_text_chunk_lineage-outgoing_calls2]"
+            ),
+            (
+                "tests/test_code_review_epistemics.py::"
+                "test_names_paths_and_outgoing_call_spellings_cannot_change_epistemic_state"
+                "[/repo/pkg/semantic_lineage_store.py-"
+                "semantic_lineage_store.build_text_chunk_lineage-outgoing_calls1]"
+            ),
+            (
+                "tests/test_code_review_epistemics.py::"
+                "test_names_paths_and_outgoing_call_spellings_cannot_change_epistemic_state"
+                "[/repo/pkg/state_writer.py-state_writer.persist_and_enqueue-outgoing_calls3]"
+            ),
+            (
+                "tests/test_code_review_epistemics.py::"
+                "test_names_paths_and_outgoing_call_spellings_cannot_change_epistemic_state"
+                "[/repo/pkg/value_review_repository.py-"
+                "value_review_repository._observation-outgoing_calls5]"
+            ),
+            (
+                "tests/test_code_review_epistemics.py::"
+                "test_names_paths_and_outgoing_call_spellings_cannot_change_epistemic_state"
+                "[/repo/pkg/value_review_tasks.py-"
+                "value_review_tasks.read_value_review_task_queue-outgoing_calls4]"
+            ),
+            (
+                "tests/test_code_review_epistemics.py::"
+                "test_names_paths_and_outgoing_call_spellings_cannot_change_epistemic_state"
+                "[/repo/tests/test_semantic_lineage.py-"
+                "test_semantic_lineage.compute-outgoing_calls6]"
+            ),
         ),
         scenario_kind="metamorphic",
         isolation="pytest_tmp_path",
@@ -86,9 +133,11 @@ RUNTIME_SCENARIOS = (
     RuntimeScenarioSpec(
         scenario_id="semantic.staging_process_death_resume",
         version="v1",
-        test_nodeid=(
-            "tests/test_semantic_text_staging_session.py::"
-            "test_process_death_preserves_committed_prefix_and_resume_publishes_atomically"
+        test_nodeids=(
+            (
+                "tests/test_semantic_text_staging_session.py::"
+                "test_process_death_preserves_committed_prefix_and_resume_publishes_atomically"
+            ),
         ),
         scenario_kind="process_death",
         isolation="spawned_process_and_tmp_path",
@@ -97,9 +146,11 @@ RUNTIME_SCENARIOS = (
     RuntimeScenarioSpec(
         scenario_id="state.text_semantic_exact_projection",
         version="v1",
-        test_nodeid=(
-            "tests/test_code_state_projection_analysis.py::"
-            "test_projection_excludes_empty_text_and_observes_exact_alignment"
+        test_nodeids=(
+            (
+                "tests/test_code_state_projection_analysis.py::"
+                "test_projection_excludes_empty_text_and_observes_exact_alignment"
+            ),
         ),
         scenario_kind="state_fixture",
         isolation="pytest_tmp_path",
@@ -108,9 +159,11 @@ RUNTIME_SCENARIOS = (
     RuntimeScenarioSpec(
         scenario_id="state.text_terminal_relational_closure",
         version="v1",
-        test_nodeid=(
-            "tests/test_code_state_topology_analysis.py::"
-            "test_exact_text_closure_preserves_running_and_legacy_negative_controls"
+        test_nodeids=(
+            (
+                "tests/test_code_state_topology_analysis.py::"
+                "test_exact_text_closure_preserves_running_and_legacy_negative_controls"
+            ),
         ),
         scenario_kind="state_fixture",
         isolation="pytest_tmp_path",

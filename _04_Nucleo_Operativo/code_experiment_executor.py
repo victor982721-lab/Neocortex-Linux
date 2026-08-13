@@ -31,7 +31,7 @@ from .external_evidence_providers import PytestCoverageTrustedDeepProvider
 from .semantic_models import fingerprint_chunks
 
 CODE_EXPERIMENT_RECEIPT_SCHEMA = "neocortex.code-experiment-receipt/v1"
-CODE_EXPERIMENT_EXECUTION_POLICY = "allowlisted-trusted-deep-scenarios-v1"
+CODE_EXPERIMENT_EXECUTION_POLICY = "allowlisted-trusted-deep-scenarios-v2"
 CODE_EXPERIMENT_RECEIPT_MAX_OUTCOMES = 128
 
 
@@ -61,21 +61,23 @@ def _texts(label: str, values: object, *, sorted_values: bool = False) -> tuple[
 @dataclass(frozen=True, slots=True)
 class CodeExperimentOutcome:
     scenario_id: str
-    test_nodeid: str
+    test_nodeids: tuple[str, ...]
     outcome: Literal["passed", "failed", "skipped"]
-    relation_id: str
+    relation_ids: tuple[str, ...]
 
     def __post_init__(self) -> None:
         _required("experiment scenario id", self.scenario_id, 256)
-        _required("experiment test nodeid", self.test_nodeid, 16_384)
-        _required("experiment relation id", self.relation_id, 1_024)
+        _texts("experiment test nodeid", self.test_nodeids)
+        _texts("experiment relation id", self.relation_ids, sorted_values=True)
+        if not self.test_nodeids or len(self.relation_ids) != len(self.test_nodeids):
+            raise ValueError("experiment outcome requires one receipt per selected nodeid")
         if self.outcome not in {"passed", "failed", "skipped"}:
             raise ValueError("experiment scenario outcome is invalid")
         scenario = next(
             (item for item in RUNTIME_SCENARIOS if item.scenario_id == self.scenario_id),
             None,
         )
-        if scenario is None or scenario.test_nodeid != self.test_nodeid:
+        if scenario is None or scenario.test_nodeids != self.test_nodeids:
             raise ValueError("experiment outcome is not bound to its declared scenario")
 
 
@@ -175,22 +177,33 @@ class CodeExperimentReceipt:
         ):
             raise ValueError("experiment outcomes are invalid or out of bounds")
         template = experiment_template(self.template_id)
-        scenario_map = {item.scenario_id: item.test_nodeid for item in RUNTIME_SCENARIOS}
+        scenario_map = {item.scenario_id: item.test_nodeids for item in RUNTIME_SCENARIOS}
         if (
             self.template_version != template.version
             or self.runner_kind != template.runner_kind
             or self.selected_scenarios != template.scenario_ids
             or self.selected_nodeids
-            != tuple(scenario_map[item] for item in self.selected_scenarios)
+            != tuple(
+                nodeid
+                for scenario_id in self.selected_scenarios
+                for nodeid in scenario_map[scenario_id]
+            )
         ):
             raise ValueError("experiment receipt selection is not derived from its template")
-        expected_pairs = tuple(zip(self.selected_scenarios, self.selected_nodeids, strict=True))
-        outcome_pairs = tuple((item.scenario_id, item.test_nodeid) for item in self.outcomes)
-        if len(set(outcome_pairs)) != len(outcome_pairs) or any(
-            pair not in expected_pairs for pair in outcome_pairs
+        expected_scenarios = tuple(self.selected_scenarios)
+        outcome_scenarios = tuple(item.scenario_id for item in self.outcomes)
+        if len(set(outcome_scenarios)) != len(outcome_scenarios) or any(
+            scenario_id not in expected_scenarios for scenario_id in outcome_scenarios
         ):
             raise ValueError("experiment outcomes are not a unique subset of the selection")
-        if tuple(pair for pair in expected_pairs if pair in set(outcome_pairs)) != outcome_pairs:
+        if (
+            tuple(
+                scenario_id
+                for scenario_id in expected_scenarios
+                if scenario_id in set(outcome_scenarios)
+            )
+            != outcome_scenarios
+        ):
             raise ValueError("experiment outcomes are not in canonical selection order")
         for label, value in (
             ("passed scenarios", self.passed),
@@ -298,9 +311,11 @@ def _manifest_digest(files: tuple[ExternalEvidenceFile, ...]) -> str:
 def _outcomes(
     publication, selected_scenarios: tuple[str, ...]
 ) -> tuple[CodeExperimentOutcome, ...]:
-    scenario_by_nodeid = {item.test_nodeid: item for item in RUNTIME_SCENARIOS}
+    scenario_by_nodeid = {
+        nodeid: item for item in RUNTIME_SCENARIOS for nodeid in item.test_nodeids
+    }
     selected = set(selected_scenarios)
-    result: list[CodeExperimentOutcome] = []
+    relations_by_scenario: dict[str, list[tuple[str, str, str]]] = {}
     for relation in publication.relations:
         if relation.relation_kind != "declared_test_outcome":
             continue
@@ -318,18 +333,38 @@ def _outcomes(
             }
         ):
             continue
+        relations_by_scenario.setdefault(scenario.scenario_id, []).append(
+            (str(nodeid), str(outcome), relation.portable_relation_id)
+        )
+    result: list[CodeExperimentOutcome] = []
+    scenarios = {item.scenario_id: item for item in RUNTIME_SCENARIOS}
+    for scenario_id in sorted(selected):
+        scenario = scenarios[scenario_id]
+        receipts = tuple(
+            sorted(relations_by_scenario.get(scenario_id, ()), key=lambda item: item[0])
+        )
+        if not receipts:
+            continue
+        observed_nodeids = tuple(item[0] for item in receipts)
+        if observed_nodeids != scenario.test_nodeids:
+            continue
+        observed_outcomes = tuple(item[1] for item in receipts)
+        aggregate = (
+            "failed"
+            if "failed" in observed_outcomes
+            else "skipped"
+            if "skipped" in observed_outcomes
+            else "passed"
+        )
         result.append(
             CodeExperimentOutcome(
-                scenario.scenario_id,
-                scenario.test_nodeid,
-                cast(Any, outcome),
-                relation.portable_relation_id,
+                scenario_id,
+                scenario.test_nodeids,
+                cast(Any, aggregate),
+                tuple(sorted(item[2] for item in receipts)),
             )
         )
-    ordered = tuple(sorted(result, key=lambda item: item.scenario_id))
-    if len({item.scenario_id for item in ordered}) != len(ordered):
-        raise ValueError("experiment provider repeated a scenario outcome")
-    return ordered
+    return tuple(result)
 
 
 def _provider_test_counts(publication) -> tuple[int, int, int, int]:
@@ -407,13 +442,15 @@ def execute_code_experiment(
     manifest_digest = _manifest_digest(files)
     scenario_map = {item.scenario_id: item for item in RUNTIME_SCENARIOS}
     selected_scenarios = template.scenario_ids
-    selected_nodeids = tuple(scenario_map[item].test_nodeid for item in selected_scenarios)
+    selected_nodeids = tuple(
+        nodeid for item in selected_scenarios for nodeid in scenario_map[item].test_nodeids
+    )
     payload = deep_configuration_payload(
         analysis_profile="trusted-deep",
         test_selectors=selected_nodeids,
         max_tests=len(selected_nodeids),
         time_budget_seconds=template.timeout_seconds,
-        shard_size=min(len(selected_nodeids), 4),
+        shard_size=min(len(selected_nodeids), 50),
     )
     signature = deep_configuration_signature(payload)
     provider = PytestCoverageTrustedDeepProvider(source, payload, signature)
@@ -425,8 +462,8 @@ def execute_code_experiment(
     tests_selected, tests_passed, tests_failed, tests_skipped = _provider_test_counts(publication)
     complete_aggregate_pass = (
         not outcomes
-        and tests_selected == len(selected_scenarios)
-        and tests_passed == len(selected_scenarios)
+        and tests_selected == len(selected_nodeids)
+        and tests_passed == len(selected_nodeids)
         and tests_failed == 0
         and tests_skipped == 0
         and publication.coverage_complete
@@ -437,25 +474,24 @@ def execute_code_experiment(
         outcomes = tuple(
             CodeExperimentOutcome(
                 scenario_id,
-                nodeid,
+                scenario_map[scenario_id].test_nodeids,
                 "passed",
-                analysis_identity(
-                    "code-experiment-aggregate-outcome-v1",
-                    {
-                        "provider_publication": publication.portable_publication_id,
-                        "provider_result": publication.result_digest,
-                        "scenario_id": scenario_id,
-                        "nodeid": nodeid,
-                        "selected": tests_selected,
-                        "passed": tests_passed,
-                    },
+                tuple(
+                    analysis_identity(
+                        "code-experiment-aggregate-outcome-v1",
+                        {
+                            "provider_publication": publication.portable_publication_id,
+                            "provider_result": publication.result_digest,
+                            "scenario_id": scenario_id,
+                            "nodeid": nodeid,
+                            "selected": tests_selected,
+                            "passed": tests_passed,
+                        },
+                    )
+                    for nodeid in scenario_map[scenario_id].test_nodeids
                 ),
             )
-            for scenario_id, nodeid in zip(
-                selected_scenarios,
-                selected_nodeids,
-                strict=True,
-            )
+            for scenario_id in selected_scenarios
         )
     provider_status = publication.status
     status: Literal["passed", "failed", "abstained"] = (
@@ -549,13 +585,17 @@ def parse_code_experiment_receipt_payload(
     if not isinstance(raw_outcomes, Sequence) or isinstance(raw_outcomes, (str, bytes, bytearray)):
         raise ValueError("experiment receipt outcomes are invalid")
     outcome_fields = {field.name for field in fields(CodeExperimentOutcome)}
-    outcomes = tuple(
-        CodeExperimentOutcome(**cast(Any, dict(item)))
-        for item in raw_outcomes
-        if isinstance(item, Mapping) and set(item) == outcome_fields
-    )
-    if len(outcomes) != len(raw_outcomes):
-        raise ValueError("experiment receipt outcome fields are invalid")
+    parsed_outcomes: list[CodeExperimentOutcome] = []
+    for item in raw_outcomes:
+        if not isinstance(item, Mapping) or set(item) != outcome_fields:
+            raise ValueError("experiment receipt outcome fields are invalid")
+        values = dict(item)
+        values["test_nodeids"] = _texts("experiment test nodeid", values["test_nodeids"])
+        values["relation_ids"] = _texts(
+            "experiment relation id", values["relation_ids"], sorted_values=True
+        )
+        parsed_outcomes.append(CodeExperimentOutcome(**cast(Any, values)))
+    outcomes = tuple(parsed_outcomes)
     values = {key: value for key, value in payload.items() if key != "schema"}
     values["outcomes"] = outcomes
     values["selected_scenarios"] = _texts(

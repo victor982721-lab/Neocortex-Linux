@@ -234,11 +234,13 @@ de proveedores por sí solo no constituye el cierre del autoanálisis.
 
 Si el review publica `CODE_EXPERIMENT_PROPOSAL`, el operador puede copiar su ID
 exacto y ejecutar sólo ese experimento con `--code-experiment-run`. No se admite
-selector pytest ni comando arbitrario: el registry fija escenarios, timeout,
-aislamiento y gates. El comando vuelve a validar el plan, la raíz canónica y el
+selector pytest ni comando arbitrario: el registry fija escenarios, sus nodeids
+parametrizados ya expandidos, timeout, aislamiento y gates. El comando vuelve a
+validar el plan, la raíz canónica y el
 manifest actual; conserva un digest streaming de `code.sqlite3` antes/después y
-retorna código `0` únicamente cuando todos los outcomes declarados pasan y el
-owner permanece idéntico. No use esta operación sobre una publicación stale:
+retorna código `0` únicamente cuando todos los nodeids declarados pasan, cada
+escenario queda completo y el owner permanece idéntico. No use esta operación
+sobre una publicación stale:
 regenere antes el autoanálisis aislado.
 
 `trusted-static` ejecuta 13 proveedores independientes: Ruff basic, Ruff
