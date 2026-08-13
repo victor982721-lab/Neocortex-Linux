@@ -391,7 +391,8 @@ cambia ranking, actionability o selección de paquetes. `findings` selecciona
 sólo diagnósticos Python confirmados `high_complexity` y `long_function`,
 enumera hasta 10 000 hotspots y mantiene el ranking v2 auditable. Devuelve 10
 por defecto, primero uno por archivo y luego un segundo hasta completar;
-`--code-review-limit` admite de 1 a 50 y exige JSON por encima de 10. La
+`--code-review-limit` acota cada familia de observaciones de 1 a 50 y exige
+JSON por encima de 10. La
 puntuación bruta no cambió:
 
 ```text

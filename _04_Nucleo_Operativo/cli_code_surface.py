@@ -107,7 +107,9 @@ def register_code_arguments(
         type=int,
         default=10,
         metavar="N",
-        help=("inspect 1 to 50 raw hotspots; values above 10 require --code-json"),
+        help=(
+            "bound each review surface to 1 to 50 observations; values above 10 require --code-json"
+        ),
     )
     code.add_argument(
         "--code-publication-diff",

@@ -333,7 +333,8 @@ calibración y holdout. Todos sus pasos son de caracterización, exigen revisió
 dinámica y confirmación humana, y declaran `mutation_authority=false`. La
 proyección Coverage demuestra ejecución por una suite passing y líneas/ramas no
 observadas; no demuestra que un test proteja un invariante. `--code-review-limit N
---code-json` permite inspeccionar entre 1 y 50 hotspots. No admite `--apply`,
+--code-json` permite inspeccionar entre 1 y 50 observaciones por familia. No
+admite `--apply`,
 `--route` ni otra operación directa.
 
 `--code-publication-diff BASELINE_STATE` compara ese baseline con el owner Code

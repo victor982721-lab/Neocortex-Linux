@@ -194,7 +194,9 @@ EXPECTED_CODE_ACTIONS = (
         default=10,
         type_name="int",
         metavar="N",
-        help_text=("inspect 1 to 50 raw hotspots; values above 10 require --code-json"),
+        help_text=(
+            "bound each review surface to 1 to 50 observations; values above 10 require --code-json"
+        ),
     ),
     _expected_store(
         "--code-publication-diff",
@@ -338,8 +340,8 @@ EXPECTED_CODE_HELP = (
     "  --code-review         show deterministic read-only structural observations,\n"
     "                        open questions and the underlying hotspot ranking\n"
     "  --code-review-limit N\n"
-    "                        inspect 1 to 50 raw hotspots; values above 10 require\n"
-    "                        --code-json\n"
+    "                        bound each review surface to 1 to 50 observations;\n"
+    "                        values above 10 require --code-json\n"
     "  --code-publication-diff BASELINE_STATE\n"
     "                        compare the current completed Code publication with a\n"
     "                        baseline state without writing either owner\n"
