@@ -131,6 +131,11 @@ DIRECT_ARGUMENT_CASES = (
     ("code_status", "run_code_status", ("--code-status",)),
     ("code_review", "run_code_review", ("--code-review",)),
     (
+        "code_experiment_run",
+        "run_code_experiment",
+        ("--code-experiment-run", "experiment-proposal-v1:fixture"),
+    ),
+    (
         "code_publication_diff",
         "run_code_publication_diff",
         ("--code-publication-diff", "baseline"),
