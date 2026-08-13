@@ -75,6 +75,7 @@ _IMPORT_MODULES = (
     "nudenet",
     "numpy",
     "pytesseract",
+    "sqlglot",
 )
 
 

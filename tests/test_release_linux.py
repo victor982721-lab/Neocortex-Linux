@@ -83,6 +83,10 @@ def test_pip_bootstrap_policy_is_hash_pinned_and_matches_constraints() -> None:
     assert len(release_linux.PIP_BOOTSTRAP_SHA256) == 64
 
 
+def test_linux_release_smoke_imports_sqlglot_required_by_code_analysis() -> None:
+    assert "sqlglot" in release_linux._IMPORT_MODULES
+
+
 def test_pip_bootstrap_rejects_wrong_artifact_before_creating_venv(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
