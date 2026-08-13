@@ -252,3 +252,19 @@ def test_missing_state_abstains_without_nominal_evidence(tmp_path: Path) -> None
     assert result.reason == "code_state_missing"
     assert result.interactions == ()
     assert result.workflow_boundaries == ()
+
+
+def test_public_envelope_rejects_ready_without_a_bound_source_publication(
+    tmp_path: Path,
+) -> None:
+    abstained = analyze_code_state_interactions(tmp_path / "absent")
+    with pytest.raises(ValueError, match="invalid readiness"):
+        replace(
+            abstained,
+            status="ready",
+            reason=None,
+            analysis_run_id=1,
+            source_schema_version=5,
+            source_files=1,
+            source_files_without_text=1,
+        )

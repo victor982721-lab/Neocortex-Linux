@@ -445,9 +445,36 @@ class CodeStateInteractionAnalysis:
         if self.examples_truncated != expected_example_truncation:
             raise ValueError("state interaction diagnostic truncation is invalid")
         if self.status == "abstained":
-            if self.reason is None:
+            if (
+                self.reason is None
+                or self.analysis_run_id is not None
+                or self.source_processing_signature is not None
+                or self.source_schema_version is not None
+                or self.source_files
+                or self.source_files_with_text
+                or self.source_files_without_text
+                or self.literal_sql_sites
+                or self.parsed_sql_sites
+                or self.dynamic_sql_sites
+                or self.parse_error_sites
+                or self.statement_count
+                or self.interactions_count
+                or self.interactions
+                or self.transaction_events_count
+                or self.transaction_events
+                or self.dynamic_sql_examples
+                or self.parse_error_examples
+                or self.workflow_boundaries
+            ):
                 raise ValueError("abstained state interaction analysis requires a reason")
-        elif self.reason is not None or self.analysis_run_id is None:
+        elif (
+            self.reason is not None
+            or self.analysis_run_id is None
+            or self.analysis_run_id < 1
+            or self.source_processing_signature is None
+            or self.source_schema_version != CODE_SCHEMA_VERSION
+            or self.source_files < 1
+        ):
             raise ValueError("observed state interaction analysis has invalid readiness")
         if self.sql_parser == "sqlglot" and self.sql_parser_version is None:
             raise ValueError("SQLGlot analysis requires its version")
