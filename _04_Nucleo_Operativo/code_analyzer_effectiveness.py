@@ -44,7 +44,7 @@ CODE_ANALYZER_EFFECTIVENESS_MAX_GIT_OUTPUT_BYTES = 16 * 1024 * 1024
 CODE_ANALYZER_EFFECTIVENESS_EXAMPLE_LIMIT = 50
 
 ANALYZER_FRESHNESS_QUESTION = AnalysisQuestionSpec(
-    question_id="analyzer.latest_publication_matches_git_visible_worktree",
+    question_id="analyzer.latest_publication_is_compared_to_git_visible_worktree",
     version="v1",
     subject_kinds=("analyzer",),
     requirements=(
@@ -96,7 +96,7 @@ ANALYZER_FRESHNESS_QUESTION = AnalysisQuestionSpec(
 )
 
 ANALYZER_CALIBRATION_QUESTION = AnalysisQuestionSpec(
-    question_id="analyzer.finding_to_human_decision_effectiveness_is_calibrated",
+    question_id="analyzer.effectiveness_requires_independent_outcome_calibration",
     version="v1",
     subject_kinds=("analyzer",),
     requirements=(
