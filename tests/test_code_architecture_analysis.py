@@ -366,6 +366,15 @@ def test_architecture_analysis_is_ready_and_replay_exact(tmp_path: Path) -> None
         f"transitive_reach_is_exact_until_module_limit:{CODE_ARCHITECTURE_REACHABILITY_LIMIT}"
         in baseline.limitations
     )
+    assert (
+        "logical_ownership_is_observed_only_by_the_separate_explicit_partial_registry"
+        in baseline.limitations
+    )
+    assert (
+        "repository_and_state_ownership_are_not_observed_by_the_import_graph"
+        in baseline.limitations
+    )
+    assert "logical_and_repository_ownership_are_not_observed" not in baseline.limitations
     assert baseline.symbols[0].symbol_id == "pkg.a:run:1:2"
     assert "pkg.a:run:1:2" not in modules
     assert all(item.execution == "cache_replay" for item in replay.providers)
