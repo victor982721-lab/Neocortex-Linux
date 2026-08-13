@@ -314,6 +314,7 @@ def execute_code_experiment(
     code_database_path: Path,
     scratch_root: Path,
     source_version: str,
+    expected_source_root: Path | None = None,
 ) -> CodeExperimentReceipt:
     """Execute exactly one registered proposal through its allow-listed runner."""
 
@@ -327,6 +328,10 @@ def execute_code_experiment(
     scratch = Path(scratch_root).resolve(strict=True)
     if not source.is_dir() or not scratch.is_dir() or not database.is_file():
         raise ValueError("experiment execution roots are invalid")
+    if expected_source_root is not None:
+        expected = Path(expected_source_root).resolve(strict=True)
+        if source != expected:
+            raise ValueError("experiment source root does not match the published manifest root")
     source_normalized = os.path.normcase(os.path.abspath(source))
     scratch_normalized = os.path.normcase(os.path.abspath(scratch))
     if os.path.commonpath((source_normalized, scratch_normalized)) == source_normalized:

@@ -198,3 +198,28 @@ def test_wire_rejects_free_form_runner_and_missing_outcomes() -> None:
     payload["outcomes"].pop()
     with pytest.raises(ValueError, match="cover selected scenarios"):
         parse_code_experiment_receipt_payload(payload)
+
+
+def test_execution_rejects_a_source_root_different_from_the_published_manifest(
+    tmp_path,
+) -> None:
+    from _04_Nucleo_Operativo.code_experiment_executor import execute_code_experiment
+
+    source = tmp_path / "source"
+    expected = tmp_path / "expected"
+    scratch = tmp_path / "scratch"
+    source.mkdir()
+    expected.mkdir()
+    scratch.mkdir()
+    database = tmp_path / "code.sqlite3"
+    database.write_bytes(b"not-reached")
+
+    with pytest.raises(ValueError, match="manifest root"):
+        execute_code_experiment(
+            _proposal(),
+            source_root=source,
+            code_database_path=database,
+            scratch_root=scratch,
+            source_version="fixture",
+            expected_source_root=expected,
+        )
