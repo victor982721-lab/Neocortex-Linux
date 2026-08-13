@@ -200,7 +200,15 @@ class CodeAnalyzerEffectivenessAnalysis:
     framework_run_id: int | None
     processing_signature: str | None
     snapshot_freshness: Literal["current", "publication_only", "unknown"]
-    inventory_observation: Literal["exact", "stale"] | None
+    inventory_observation: (
+        Literal[
+            "exact",
+            "content_stale",
+            "scope_incomplete",
+            "content_stale_and_scope_incomplete",
+        ]
+        | None
+    )
     recorded_current_files: int
     scoped_recorded_files: int
     recorded_files_outside_root: int
@@ -376,15 +384,20 @@ class CodeAnalyzerEffectivenessAnalysis:
                 if isinstance(run_value, bool) or not isinstance(run_value, int) or run_value < 1:
                     raise ValueError(f"{run_label} must be positive")
             _required_text("analyzer processing signature", self.processing_signature)
-            stale = any(
-                (
-                    self.content_changed_files,
-                    self.missing_recorded_files,
-                    self.unindexed_git_visible_files,
-                    self.nonregular_files,
-                )
+            content_stale = bool(
+                self.content_changed_files or self.missing_recorded_files or self.nonregular_files
             )
-            if self.inventory_observation != ("stale" if stale else "exact"):
+            scope_incomplete = bool(self.unindexed_git_visible_files)
+            expected_observation = (
+                "content_stale_and_scope_incomplete"
+                if content_stale and scope_incomplete
+                else "content_stale"
+                if content_stale
+                else "scope_incomplete"
+                if scope_incomplete
+                else "exact"
+            )
+            if self.inventory_observation != expected_observation:
                 raise ValueError("analyzer inventory observation is not derived")
             if (
                 self.exact_content_files
@@ -673,7 +686,13 @@ def analyze_code_analyzer_effectiveness(
             "processing_signature": str(run["processing_signature"]),
             "snapshot_freshness": snapshot_freshness,
             "inventory_observation": (
-                "stale" if changed or missing or unindexed or nonregular else "exact"
+                "content_stale_and_scope_incomplete"
+                if (changed or missing or nonregular) and unindexed
+                else "content_stale"
+                if changed or missing or nonregular
+                else "scope_incomplete"
+                if unindexed
+                else "exact"
             ),
             "recorded_current_files": len(rows),
             "scoped_recorded_files": len(scoped),

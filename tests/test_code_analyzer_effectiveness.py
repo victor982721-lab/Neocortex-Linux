@@ -111,7 +111,7 @@ def test_content_change_missing_and_unindexed_files_are_distinct_observations(
     analysis = _analyze(database, root)
 
     assert analysis.status == "ready"
-    assert analysis.inventory_observation == "stale"
+    assert analysis.inventory_observation == "content_stale_and_scope_incomplete"
     assert analysis.content_changed_files == 1
     assert analysis.missing_recorded_files == 1
     assert analysis.unindexed_git_visible_files == 1
@@ -123,6 +123,19 @@ def test_content_change_missing_and_unindexed_files_are_distinct_observations(
     assert analysis.mutation_authority is False
 
 
+def test_changed_recorded_content_is_not_confused_with_scope_incompleteness(
+    tmp_path: Path,
+) -> None:
+    database, root = _build_state(tmp_path)
+    (root / "alpha.py").write_text("changed\n", encoding="utf-8")
+
+    analysis = _analyze(database, root)
+
+    assert analysis.inventory_observation == "content_stale"
+    assert analysis.content_changed_files == 1
+    assert analysis.unindexed_git_visible_files == 0
+
+
 def test_ignored_file_is_outside_the_git_visible_inventory_claim(tmp_path: Path) -> None:
     database, root = _build_state(tmp_path)
     (root / ".gitignore").write_text("ignored.py\n", encoding="utf-8")
@@ -132,7 +145,7 @@ def test_ignored_file_is_outside_the_git_visible_inventory_claim(tmp_path: Path)
     analysis = _analyze(database, root)
 
     assert analysis.status == "ready"
-    assert analysis.inventory_observation == "stale"
+    assert analysis.inventory_observation == "scope_incomplete"
     assert analysis.unindexed_git_visible_examples == (".gitignore",)
     assert "ignored.py" not in analysis.unindexed_git_visible_examples
     assert "git_visible_inventory_excludes_ignored_files" in analysis.limitations

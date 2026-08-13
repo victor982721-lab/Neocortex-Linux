@@ -417,8 +417,8 @@ v15 emite también topología Text, cambio/schema evolution, assurance,
 seguridad/dependencias, reachability de `text.extract`, superficies de
 módulo/configuración/CLI y autoeficacia. Ninguna dimensión ejecuta código del
 repositorio durante la consulta. La autoeficacia usa `git ls-files` sin locks y
-digests de contenido; un worktree distinto de la publicación se muestra
-`stale`. Los proveedores faltantes permanecen explícitos y los indicadores de
+digests de contenido; distingue `content_stale` de `scope_incomplete` y de su
+combinación. Los proveedores faltantes permanecen explícitos y los indicadores de
 precision/recall/decision rate no existen sin outcomes independientes.
 
 El manifest guarda `Neocortex` como primer elemento de su argv canónico. Antes
