@@ -1,0 +1,815 @@
+"""Cheapest-first, non-mutating experiment plans for Code questions.
+
+Question producers own their action identifiers.  This registry gives those
+identifiers an execution class, isolation contract, hard budget and explicit
+acceptance gates.  Unregistered actions remain visible as planning gaps; they
+are never converted into shell commands or silently dropped.
+
+Version 1 selects at most one executable experiment per evaluation and keeps
+characterization/counterevidence actions as advisory alternatives.  Execution
+is a separate boundary and requires a typed template whose runner is
+allow-listed by code, not free-form text from a repository.
+"""
+
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass, fields
+from typing import Any, Literal, Mapping, Sequence, cast
+
+from .code_analysis_epistemics import (
+    AnalysisQuestionEvaluation,
+    AnalysisQuestionSpec,
+    analysis_identity,
+    validate_analysis_question_evaluation,
+)
+from .code_invariant_contracts import RUNTIME_SCENARIOS
+
+CODE_EXPERIMENT_PLAN_SCHEMA = "neocortex.code-experiment-plan/v1"
+CODE_EXPERIMENT_TEMPLATE_REGISTRY_SCHEMA = "neocortex.code-experiment-template-registry/v1"
+CODE_EXPERIMENT_PLANNING_POLICY = "registered-cheapest-discriminating-experiment-v1"
+CODE_EXPERIMENT_MAX_PROPOSALS = 256
+
+ExperimentKind = Literal[
+    "static_characterization",
+    "read_only_probe",
+    "isolated_pytest",
+    "isolated_fault_injection",
+    "isolated_mutation",
+    "isolated_upgrade_matrix",
+    "human_outcome_linkage",
+]
+IsolationKind = Literal[
+    "read_only_process",
+    "pytest_tmp_path",
+    "spawned_process_and_tmp_path",
+    "disposable_state_copy",
+    "disposable_worktree_and_state",
+    "review_task_pointer_only",
+]
+RunnerKind = Literal["none", "trusted_deep_declared_scenarios"]
+CostTier = Literal["metadata", "focal", "bounded", "deep"]
+
+_COST_ORDER = {"metadata": 0, "focal": 1, "bounded": 2, "deep": 3}
+
+
+def _required(label: str, value: object, maximum: int = 512) -> str:
+    if not isinstance(value, str) or not value or value.strip() != value or len(value) > maximum:
+        raise ValueError(f"{label} is invalid")
+    return value
+
+
+def _texts(label: str, values: object, *, sorted_values: bool = False) -> tuple[str, ...]:
+    if not isinstance(values, Sequence) or isinstance(values, (str, bytes, bytearray)):
+        raise ValueError(f"{label} must be a sequence")
+    result = tuple(_required(label, item, 16_384) for item in values)
+    if len(set(result)) != len(result):
+        raise ValueError(f"{label} cannot repeat")
+    if sorted_values and result != tuple(sorted(result)):
+        raise ValueError(f"{label} must be sorted")
+    return result
+
+
+@dataclass(frozen=True, slots=True)
+class CodeExperimentTemplate:
+    template_id: str
+    version: str
+    action_ids: tuple[str, ...]
+    experiment_kind: ExperimentKind
+    isolation: IsolationKind
+    runner_kind: RunnerKind
+    cost_tier: CostTier
+    estimated_attention_minutes: int
+    timeout_seconds: int
+    max_items: int
+    scenario_ids: tuple[str, ...]
+    acceptance_gates: tuple[str, ...]
+    limitations: tuple[str, ...]
+    authority: Literal["advisory"] = "advisory"
+    mutation_authority: Literal[False] = False
+
+    def __post_init__(self) -> None:
+        _required("experiment template id", self.template_id, 256)
+        _required("experiment template version", self.version, 64)
+        _texts("experiment action id", self.action_ids)
+        if not self.action_ids:
+            raise ValueError("experiment template requires at least one action id")
+        if self.experiment_kind not in {
+            "static_characterization",
+            "read_only_probe",
+            "isolated_pytest",
+            "isolated_fault_injection",
+            "isolated_mutation",
+            "isolated_upgrade_matrix",
+            "human_outcome_linkage",
+        }:
+            raise ValueError("experiment kind is invalid")
+        if self.isolation not in {
+            "read_only_process",
+            "pytest_tmp_path",
+            "spawned_process_and_tmp_path",
+            "disposable_state_copy",
+            "disposable_worktree_and_state",
+            "review_task_pointer_only",
+        }:
+            raise ValueError("experiment isolation is invalid")
+        if self.runner_kind not in {"none", "trusted_deep_declared_scenarios"}:
+            raise ValueError("experiment runner kind is invalid")
+        if self.cost_tier not in _COST_ORDER:
+            raise ValueError("experiment cost tier is invalid")
+        for label, value, minimum, maximum in (
+            ("attention minutes", self.estimated_attention_minutes, 0, 240),
+            ("timeout seconds", self.timeout_seconds, 1, 900),
+            ("maximum items", self.max_items, 1, 5_000),
+        ):
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, int)
+                or not minimum <= value <= maximum
+            ):
+                raise ValueError(f"experiment {label} is outside its bound")
+        _texts("experiment scenario id", self.scenario_ids, sorted_values=True)
+        _texts("experiment acceptance gate", self.acceptance_gates)
+        _texts("experiment limitation", self.limitations)
+        if not self.acceptance_gates or not self.limitations:
+            raise ValueError("experiment template requires gates and limitations")
+        declared_scenarios = {item.scenario_id for item in RUNTIME_SCENARIOS}
+        if not set(self.scenario_ids) <= declared_scenarios:
+            raise ValueError("experiment template references an unknown runtime scenario")
+        if self.runner_kind == "trusted_deep_declared_scenarios":
+            if not self.scenario_ids or self.isolation not in {
+                "pytest_tmp_path",
+                "spawned_process_and_tmp_path",
+            }:
+                raise ValueError("trusted-deep template requires exact isolated scenarios")
+        elif self.scenario_ids:
+            raise ValueError("non-executable template cannot claim scenario selectors")
+        if self.experiment_kind == "isolated_mutation" and self.mutation_authority:
+            raise ValueError(
+                "mutation experiments mutate only disposable state, never product state"
+            )
+        if self.authority != "advisory" or self.mutation_authority:
+            raise ValueError("experiment templates must remain advisory and non-mutating")
+
+    @property
+    def executable(self) -> bool:
+        return self.runner_kind != "none"
+
+
+def _template(
+    template_id: str,
+    action_ids: tuple[str, ...],
+    experiment_kind: ExperimentKind,
+    isolation: IsolationKind,
+    cost_tier: CostTier,
+    *,
+    timeout: int,
+    max_items: int,
+    attention: int,
+    scenarios: tuple[str, ...] = (),
+    runner: RunnerKind = "none",
+    gates: tuple[str, ...],
+    limitations: tuple[str, ...],
+) -> CodeExperimentTemplate:
+    return CodeExperimentTemplate(
+        template_id,
+        "v1",
+        action_ids,
+        experiment_kind,
+        isolation,
+        runner,
+        cost_tier,
+        attention,
+        timeout,
+        max_items,
+        tuple(sorted(scenarios)),
+        gates,
+        limitations,
+    )
+
+
+CODE_EXPERIMENT_TEMPLATES = (
+    _template(
+        "analyzer.registered_invariant_scenarios",
+        (
+            "run_independent_invariant_scenario",
+            "run_semantic_process_death_recovery_experiment",
+            "terminate_after_text_begin_and_before_terminal_commit_then_restart",
+        ),
+        "isolated_fault_injection",
+        "spawned_process_and_tmp_path",
+        "bounded",
+        timeout=300,
+        max_items=4,
+        attention=5,
+        scenarios=tuple(item.scenario_id for item in RUNTIME_SCENARIOS),
+        runner="trusted_deep_declared_scenarios",
+        gates=(
+            "all_selected_nodeids_report_terminal_outcomes",
+            "no_canonical_state_or_corpus_path_is_used",
+            "result_digest_and_environment_receipt_are_recorded",
+        ),
+        limitations=(
+            "scenario_pass_is_not_formal_proof",
+            "process_death_is_not_power_loss",
+            "coverage_is_main_process_only",
+        ),
+    ),
+    _template(
+        "state.runtime_sql_trace",
+        (
+            "trace_sql_and_transaction_events_in_isolation",
+            "inject_failure_at_each_durable_boundary",
+        ),
+        "isolated_fault_injection",
+        "disposable_state_copy",
+        "bounded",
+        timeout=300,
+        max_items=50,
+        attention=10,
+        gates=(
+            "every_observed_query_is_bound_to_connection_store_and_workflow",
+            "commit_rollback_and_exception_events_are_recorded",
+            "canonical_state_digests_are_unchanged",
+        ),
+        limitations=(
+            "runtime_trace_observes_only_selected_paths",
+            "fault_injection_does_not_model_power_loss",
+        ),
+    ),
+    _template(
+        "capability.public_route_acceptance",
+        (
+            "exercise_text_capability_from_public_entrypoint",
+            "exercise_bounded_route_from_public_entrypoint",
+            "observe_user_visible_consumer_of_text_result",
+        ),
+        "isolated_pytest",
+        "disposable_state_copy",
+        "bounded",
+        timeout=300,
+        max_items=20,
+        attention=10,
+        gates=(
+            "public_entrypoint_exit_status_is_recorded",
+            "receipt_output_and_read_consumer_are_correlated",
+            "user_visible_result_or_exact_abstention_is_observed",
+        ),
+        limitations=(
+            "fixture_acceptance_does_not_measure_human_product_value",
+            "routes_without_receipts_remain_unattributed",
+        ),
+    ),
+    _template(
+        "assurance.targeted_mutation_or_runtime",
+        (
+            "run_focal_mutation_or_declared_runtime_scenario",
+            "seek_negative_control_or_surviving_mutant",
+        ),
+        "isolated_mutation",
+        "disposable_worktree_and_state",
+        "deep",
+        timeout=600,
+        max_items=20,
+        attention=15,
+        gates=(
+            "mutations_are_bounded_to_declared_target",
+            "survivors_and_killed_mutants_are_preserved",
+            "source_and_canonical_state_are_unchanged",
+        ),
+        limitations=(
+            "mutation_score_is_not_test_quality_probability",
+            "selected_mutants_do_not_measure_global_assurance",
+        ),
+    ),
+    _template(
+        "evolution.affected_contract",
+        (
+            "run_smallest_affected_contract_experiment",
+            "run_companion_sensitive_contract_test",
+            "run_bounded_code_schema_upgrade_matrix",
+        ),
+        "isolated_upgrade_matrix",
+        "disposable_state_copy",
+        "bounded",
+        timeout=600,
+        max_items=20,
+        attention=15,
+        gates=(
+            "baseline_and_candidate_are_comparable",
+            "populated_fixture_or_contract_scenario_is_used",
+            "result_records_counterexamples_and_abstentions",
+        ),
+        limitations=(
+            "selected_history_is_not_product_intent",
+            "fixture_matrix_is_not_every_deployed_state",
+        ),
+    ),
+    _template(
+        "architecture.boundary_acceptance",
+        (
+            "run_architecture_boundary_acceptance_scenario",
+            "exercise_declared_architecture_boundary",
+            "exercise_representative_logical_owner_boundary",
+        ),
+        "isolated_pytest",
+        "disposable_state_copy",
+        "bounded",
+        timeout=300,
+        max_items=20,
+        attention=10,
+        gates=(
+            "declared_owner_mapping_is_resolved",
+            "static_and_dynamic_boundary_evidence_are_separated",
+            "counterexamples_are_preserved",
+        ),
+        limitations=(
+            "selected_boundary_is_not_complete_runtime_reachability",
+            "module_ownership_is_never_inferred_from_names",
+        ),
+    ),
+    _template(
+        "interfaces.public_contract_acceptance",
+        (
+            "exercise_configuration_override_and_default_scenarios",
+            "execute_public_help_and_dispatch_acceptance_scenarios",
+            "rerun_interface_surface_projection",
+        ),
+        "isolated_pytest",
+        "disposable_state_copy",
+        "focal",
+        timeout=180,
+        max_items=20,
+        attention=5,
+        gates=(
+            "public_contract_output_is_captured",
+            "defaults_overrides_and_dispatch_are_observed",
+            "no_configuration_value_is_inferred_from_key_names",
+        ),
+        limitations=(
+            "selected_entrypoints_do_not_cover_every_dynamic_interface",
+            "help_output_does_not_prove_product_value",
+        ),
+    ),
+    _template(
+        "security.bounded_boundary_scenarios",
+        (
+            "execute_bounded_security_boundary_scenarios",
+            "compare_built_artifact_with_lock_and_installed_inventory",
+            "run_missing_or_stale_security_providers",
+            "run_missing_dependency_and_inventory_providers",
+        ),
+        "isolated_pytest",
+        "disposable_worktree_and_state",
+        "deep",
+        timeout=600,
+        max_items=50,
+        attention=15,
+        gates=(
+            "untrusted_inputs_are_bounded_and_local",
+            "provider_versions_and_result_digests_are_recorded",
+            "no_credentials_or_network_are_available_by_default",
+        ),
+        limitations=(
+            "selected_security_scenarios_do_not_prove_absence_of_vulnerabilities",
+            "known_vulnerability_feeds_are_time_bound",
+        ),
+    ),
+    _template(
+        "analyzer.seeded_holdout",
+        (
+            "run_seeded_holdout_and_negative_control_calibration",
+            "rerun_bounded_self_analysis_then_compare_again",
+        ),
+        "isolated_pytest",
+        "disposable_worktree_and_state",
+        "bounded",
+        timeout=600,
+        max_items=50,
+        attention=20,
+        gates=(
+            "positive_negative_and_holdout_partitions_are_distinct",
+            "labels_are_independent_of_detector_output",
+            "renames_moves_wrappers_and_metric_dilution_are_tested",
+        ),
+        limitations=(
+            "seeded_defects_are_not_all_real_world_defects",
+            "holdout_quality_depends_on_independent_labels",
+        ),
+    ),
+)
+
+
+def _validate_registry() -> None:
+    template_ids = tuple(item.template_id for item in CODE_EXPERIMENT_TEMPLATES)
+    if template_ids != tuple(sorted(template_ids)) or len(set(template_ids)) != len(template_ids):
+        raise ValueError("experiment template registry must be sorted and unique")
+    action_ids = [action for item in CODE_EXPERIMENT_TEMPLATES for action in item.action_ids]
+    if len(set(action_ids)) != len(action_ids):
+        raise ValueError("experiment action identifiers cannot map to multiple templates")
+
+
+# Keep the registry order canonical while declarations remain grouped by domain.
+CODE_EXPERIMENT_TEMPLATES = tuple(
+    sorted(CODE_EXPERIMENT_TEMPLATES, key=lambda item: item.template_id)
+)
+_validate_registry()
+
+
+def experiment_template_registry_payload() -> dict[str, object]:
+    return {
+        "schema": CODE_EXPERIMENT_TEMPLATE_REGISTRY_SCHEMA,
+        "templates": tuple(asdict(item) for item in CODE_EXPERIMENT_TEMPLATES),
+    }
+
+
+def experiment_template_registry_fingerprint() -> str:
+    return analysis_identity(
+        "code-experiment-template-registry-v1",
+        experiment_template_registry_payload(),
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class CodeExperimentProposal:
+    proposal_id: str
+    evaluation_id: str
+    question_id: str
+    subject_key: str
+    selected_action_id: str | None
+    template_id: str | None
+    template_version: str | None
+    cost_tier: CostTier | None
+    estimated_attention_minutes: int | None
+    timeout_seconds: int | None
+    max_items: int | None
+    isolation: IsolationKind | None
+    runner_kind: RunnerKind | None
+    scenario_ids: tuple[str, ...]
+    acceptance_gates: tuple[str, ...]
+    missing_requirement_ids: tuple[str, ...]
+    alternative_action_ids: tuple[str, ...]
+    planning_status: Literal["planned", "registry_gap", "not_required"]
+    reason: str
+    authority: Literal["advisory"] = "advisory"
+    mutation_authority: Literal[False] = False
+
+    def __post_init__(self) -> None:
+        for label, value in (
+            ("experiment proposal id", self.proposal_id),
+            ("experiment evaluation id", self.evaluation_id),
+            ("experiment question id", self.question_id),
+            ("experiment subject key", self.subject_key),
+            ("experiment proposal reason", self.reason),
+        ):
+            _required(label, value, 2_048)
+        _texts("experiment proposal scenario", self.scenario_ids, sorted_values=True)
+        _texts("experiment proposal gate", self.acceptance_gates)
+        _texts("missing requirement id", self.missing_requirement_ids, sorted_values=True)
+        _texts("alternative action id", self.alternative_action_ids)
+        if self.planning_status not in {"planned", "registry_gap", "not_required"}:
+            raise ValueError("experiment proposal status is invalid")
+        optionals = (
+            self.selected_action_id,
+            self.template_id,
+            self.template_version,
+            self.cost_tier,
+            self.estimated_attention_minutes,
+            self.timeout_seconds,
+            self.max_items,
+            self.isolation,
+            self.runner_kind,
+        )
+        if self.planning_status == "planned":
+            if any(value is None for value in optionals):
+                raise ValueError("planned experiment requires a complete registered template")
+            template = experiment_template(cast(str, self.template_id))
+            if (
+                self.selected_action_id not in template.action_ids
+                or self.template_version != template.version
+                or self.cost_tier != template.cost_tier
+                or self.estimated_attention_minutes != template.estimated_attention_minutes
+                or self.timeout_seconds != template.timeout_seconds
+                or self.max_items != template.max_items
+                or self.isolation != template.isolation
+                or self.runner_kind != template.runner_kind
+                or self.scenario_ids != template.scenario_ids
+                or self.acceptance_gates != template.acceptance_gates
+            ):
+                raise ValueError("experiment proposal is not derived from its template")
+        elif (
+            any(value is not None for value in optionals)
+            or self.scenario_ids
+            or self.acceptance_gates
+        ):
+            raise ValueError("unplanned experiment proposal cannot claim execution details")
+        if self.authority != "advisory" or self.mutation_authority:
+            raise ValueError("experiment proposals must remain advisory and non-mutating")
+        expected_id = analysis_identity(
+            "code-experiment-proposal-v1",
+            {key: value for key, value in asdict(self).items() if key != "proposal_id"},
+        )
+        if self.proposal_id != expected_id:
+            raise ValueError("experiment proposal identity is invalid")
+
+
+@dataclass(frozen=True, slots=True)
+class CodeExperimentPlan:
+    plan_id: str
+    status: Literal["ready", "partial", "not_required", "abstained"]
+    reason: str | None
+    policy_id: str
+    registry_fingerprint: str
+    source_evaluation_count: int
+    experiment_required_count: int
+    planned_count: int
+    executable_count: int
+    registry_gap_count: int
+    proposals: tuple[CodeExperimentProposal, ...]
+    limitations: tuple[str, ...]
+    authority: Literal["advisory"] = "advisory"
+    mutation_authority: Literal[False] = False
+
+    def __post_init__(self) -> None:
+        _required("experiment plan id", self.plan_id)
+        if self.status not in {"ready", "partial", "not_required", "abstained"}:
+            raise ValueError("experiment plan status is invalid")
+        if self.policy_id != CODE_EXPERIMENT_PLANNING_POLICY:
+            raise ValueError("experiment planning policy is invalid")
+        if self.registry_fingerprint != experiment_template_registry_fingerprint():
+            raise ValueError("experiment plan registry fingerprint is invalid")
+        for label, value in (
+            ("source evaluations", self.source_evaluation_count),
+            ("experiment-required evaluations", self.experiment_required_count),
+            ("planned proposals", self.planned_count),
+            ("executable proposals", self.executable_count),
+            ("registry gaps", self.registry_gap_count),
+        ):
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"experiment plan {label} must be non-negative")
+        if not isinstance(self.proposals, tuple) or any(
+            not isinstance(item, CodeExperimentProposal) for item in self.proposals
+        ):
+            raise ValueError("experiment plan proposals are invalid")
+        if len(self.proposals) > CODE_EXPERIMENT_MAX_PROPOSALS:
+            raise ValueError("experiment plan exceeds its proposal bound")
+        if tuple(item.proposal_id for item in self.proposals) != tuple(
+            sorted(item.proposal_id for item in self.proposals)
+        ):
+            raise ValueError("experiment proposals must be deterministically ordered")
+        if len({item.evaluation_id for item in self.proposals}) != len(self.proposals):
+            raise ValueError("experiment plan can contain at most one proposal per evaluation")
+        derived_required = sum(item.planning_status != "not_required" for item in self.proposals)
+        derived_planned = sum(item.planning_status == "planned" for item in self.proposals)
+        derived_executable = sum(
+            item.planning_status == "planned" and item.runner_kind != "none"
+            for item in self.proposals
+        )
+        derived_gaps = sum(item.planning_status == "registry_gap" for item in self.proposals)
+        if (
+            self.experiment_required_count != derived_required
+            or self.planned_count != derived_planned
+            or self.executable_count != derived_executable
+            or self.registry_gap_count != derived_gaps
+        ):
+            raise ValueError("experiment plan counts are not derived from proposals")
+        expected_status = (
+            "abstained"
+            if self.source_evaluation_count > CODE_EXPERIMENT_MAX_PROPOSALS
+            else "not_required"
+            if self.experiment_required_count == 0
+            else "partial"
+            if self.registry_gap_count
+            else "ready"
+        )
+        if self.status != expected_status:
+            raise ValueError("experiment plan status is not derived from coverage")
+        if self.status in {"not_required", "abstained"}:
+            _required("experiment plan reason", self.reason, 256)
+        elif self.reason is not None:
+            raise ValueError("ready or partial experiment plan cannot carry a reason")
+        _texts("experiment plan limitation", self.limitations)
+        if not self.limitations:
+            raise ValueError("experiment plan requires limitations")
+        if self.authority != "advisory" or self.mutation_authority:
+            raise ValueError("experiment plan must remain advisory and non-mutating")
+        expected_id = analysis_identity(
+            "code-experiment-plan-v1",
+            {key: value for key, value in asdict(self).items() if key != "plan_id"},
+        )
+        if self.plan_id != expected_id:
+            raise ValueError("experiment plan identity is invalid")
+
+    def as_payload(self) -> dict[str, object]:
+        return {"schema": CODE_EXPERIMENT_PLAN_SCHEMA, **asdict(self)}
+
+
+def experiment_template(template_id: str) -> CodeExperimentTemplate:
+    selected = _required("experiment template id", template_id, 256)
+    match = next((item for item in CODE_EXPERIMENT_TEMPLATES if item.template_id == selected), None)
+    if match is None:
+        raise ValueError(f"unknown experiment template: {selected}")
+    return match
+
+
+def _template_by_action() -> dict[str, CodeExperimentTemplate]:
+    return {
+        action: template for template in CODE_EXPERIMENT_TEMPLATES for action in template.action_ids
+    }
+
+
+def _proposal(
+    evaluation: AnalysisQuestionEvaluation,
+    *,
+    template: CodeExperimentTemplate | None,
+    selected_action: str | None,
+) -> CodeExperimentProposal:
+    missing = tuple(
+        sorted(
+            item.requirement_id for item in evaluation.requirements if item.status != "satisfied"
+        )
+    )
+    alternatives = tuple(
+        action for action in evaluation.next_action_ids if action != selected_action
+    )
+    values: dict[str, object] = {
+        "evaluation_id": evaluation.evaluation_id,
+        "question_id": evaluation.question_id,
+        "subject_key": evaluation.subject.subject_key,
+        "selected_action_id": selected_action,
+        "template_id": None if template is None else template.template_id,
+        "template_version": None if template is None else template.version,
+        "cost_tier": None if template is None else template.cost_tier,
+        "estimated_attention_minutes": (
+            None if template is None else template.estimated_attention_minutes
+        ),
+        "timeout_seconds": None if template is None else template.timeout_seconds,
+        "max_items": None if template is None else template.max_items,
+        "isolation": None if template is None else template.isolation,
+        "runner_kind": None if template is None else template.runner_kind,
+        "scenario_ids": () if template is None else template.scenario_ids,
+        "acceptance_gates": () if template is None else template.acceptance_gates,
+        "missing_requirement_ids": missing,
+        "alternative_action_ids": alternatives,
+        "planning_status": "registry_gap" if template is None else "planned",
+        "reason": (
+            "no_registered_experiment_template_for_any_next_action"
+            if template is None
+            else "cheapest_registered_discriminating_experiment_selected"
+        ),
+        "authority": "advisory",
+        "mutation_authority": False,
+    }
+    return CodeExperimentProposal(
+        proposal_id=analysis_identity("code-experiment-proposal-v1", values),
+        **values,  # type: ignore[arg-type]
+    )
+
+
+def plan_code_experiments(
+    specs: tuple[AnalysisQuestionSpec, ...],
+    evaluations: tuple[AnalysisQuestionEvaluation, ...],
+) -> CodeExperimentPlan:
+    specs_by_id = {(item.question_id, item.version): item for item in specs}
+    if len(specs_by_id) != len(specs):
+        raise ValueError("experiment planning question specs repeat")
+    for evaluation in evaluations:
+        spec = specs_by_id.get((evaluation.question_id, evaluation.question_version))
+        if spec is None:
+            raise ValueError("experiment planning evaluation references an unknown spec")
+        validate_analysis_question_evaluation(spec, evaluation)
+    limitations = (
+        "plan_selects_only_registered_templates_not_free_form_commands",
+        "proposal_is_not_execution_result_or_change_authority",
+        "characterization_and_counterevidence_actions_remain_visible_as_alternatives",
+        "runner_executes_only_explicit_source_versioned_scenarios_in_disposable_state",
+    )
+    if len(evaluations) > CODE_EXPERIMENT_MAX_PROPOSALS:
+        values: dict[str, object] = {
+            "status": "abstained",
+            "reason": "evaluation_bound_exceeded",
+            "policy_id": CODE_EXPERIMENT_PLANNING_POLICY,
+            "registry_fingerprint": experiment_template_registry_fingerprint(),
+            "source_evaluation_count": len(evaluations),
+            "experiment_required_count": 0,
+            "planned_count": 0,
+            "executable_count": 0,
+            "registry_gap_count": 0,
+            "proposals": (),
+            "limitations": limitations,
+            "authority": "advisory",
+            "mutation_authority": False,
+        }
+    else:
+        by_action = _template_by_action()
+        proposals: list[CodeExperimentProposal] = []
+        for evaluation in evaluations:
+            if evaluation.decision_readiness != "experiment_required":
+                continue
+            candidates = tuple(
+                (action, by_action[action])
+                for action in evaluation.next_action_ids
+                if action in by_action
+            )
+            selected_action: str | None = None
+            selected_template: CodeExperimentTemplate | None = None
+            if candidates:
+                selected_action, selected_template = min(
+                    candidates,
+                    key=lambda item: (
+                        _COST_ORDER[item[1].cost_tier],
+                        item[1].estimated_attention_minutes,
+                        item[1].timeout_seconds,
+                        item[1].template_id,
+                        item[0],
+                    ),
+                )
+            proposals.append(
+                _proposal(
+                    evaluation,
+                    template=selected_template,
+                    selected_action=selected_action,
+                )
+            )
+        ordered = tuple(sorted(proposals, key=lambda item: item.proposal_id))
+        required = len(ordered)
+        planned = sum(item.planning_status == "planned" for item in ordered)
+        executable = sum(
+            item.planning_status == "planned" and item.runner_kind != "none" for item in ordered
+        )
+        gaps = sum(item.planning_status == "registry_gap" for item in ordered)
+        values = {
+            "status": "not_required" if not required else "partial" if gaps else "ready",
+            "reason": "no_evaluation_requires_an_experiment" if not required else None,
+            "policy_id": CODE_EXPERIMENT_PLANNING_POLICY,
+            "registry_fingerprint": experiment_template_registry_fingerprint(),
+            "source_evaluation_count": len(evaluations),
+            "experiment_required_count": required,
+            "planned_count": planned,
+            "executable_count": executable,
+            "registry_gap_count": gaps,
+            "proposals": ordered,
+            "limitations": limitations,
+            "authority": "advisory",
+            "mutation_authority": False,
+        }
+    identity_values = dict(values)
+    identity_values["proposals"] = tuple(
+        asdict(item) if isinstance(item, CodeExperimentProposal) else item
+        for item in cast(tuple[object, ...], values["proposals"])
+    )
+    return CodeExperimentPlan(
+        plan_id=analysis_identity("code-experiment-plan-v1", identity_values),
+        **values,  # type: ignore[arg-type]
+    )
+
+
+def parse_code_experiment_plan_payload(payload: Mapping[str, object]) -> CodeExperimentPlan:
+    if not isinstance(payload, Mapping) or payload.get("schema") != CODE_EXPERIMENT_PLAN_SCHEMA:
+        raise ValueError("experiment plan payload schema is invalid")
+    expected = {field.name for field in fields(CodeExperimentPlan)} | {"schema"}
+    if set(payload) != expected:
+        raise ValueError("experiment plan payload fields are invalid")
+    raw_proposals = payload.get("proposals")
+    if not isinstance(raw_proposals, Sequence) or isinstance(
+        raw_proposals, (str, bytes, bytearray)
+    ):
+        raise ValueError("experiment plan proposals are invalid")
+    proposal_fields = {field.name for field in fields(CodeExperimentProposal)}
+    proposals: list[CodeExperimentProposal] = []
+    for raw in raw_proposals:
+        if not isinstance(raw, Mapping) or set(raw) != proposal_fields:
+            raise ValueError("experiment proposal payload fields are invalid")
+        values = dict(raw)
+        for key in (
+            "scenario_ids",
+            "acceptance_gates",
+            "missing_requirement_ids",
+            "alternative_action_ids",
+        ):
+            values[key] = _texts(
+                f"experiment proposal {key}",
+                values[key],
+                sorted_values=key in {"scenario_ids", "missing_requirement_ids"},
+            )
+        proposals.append(CodeExperimentProposal(**cast(Any, values)))
+    values = {key: value for key, value in payload.items() if key != "schema"}
+    values["proposals"] = tuple(proposals)
+    values["limitations"] = _texts("experiment plan limitation", values["limitations"])
+    return CodeExperimentPlan(**cast(Any, values))
+
+
+__all__ = [
+    "CODE_EXPERIMENT_MAX_PROPOSALS",
+    "CODE_EXPERIMENT_PLANNING_POLICY",
+    "CODE_EXPERIMENT_PLAN_SCHEMA",
+    "CODE_EXPERIMENT_TEMPLATES",
+    "CODE_EXPERIMENT_TEMPLATE_REGISTRY_SCHEMA",
+    "CodeExperimentPlan",
+    "CodeExperimentProposal",
+    "CodeExperimentTemplate",
+    "experiment_template",
+    "experiment_template_registry_fingerprint",
+    "experiment_template_registry_payload",
+    "parse_code_experiment_plan_payload",
+    "plan_code_experiments",
+]
