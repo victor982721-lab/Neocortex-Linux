@@ -8,6 +8,7 @@ import pytest
 from _04_Nucleo_Operativo.code_experiment_planner import (
     CODE_EXPERIMENT_MAX_PROPOSALS,
     CODE_EXPERIMENT_TEMPLATES,
+    experiment_template,
     experiment_template_registry_fingerprint,
     parse_code_experiment_plan_payload,
     plan_code_experiments,
@@ -79,6 +80,7 @@ def test_registry_is_canonical_non_mutating_and_bounded() -> None:
     assert all(item.authority == "advisory" for item in CODE_EXPERIMENT_TEMPLATES)
     assert all(item.mutation_authority is False for item in CODE_EXPERIMENT_TEMPLATES)
     assert all(1 <= item.timeout_seconds <= 900 for item in CODE_EXPERIMENT_TEMPLATES)
+    assert experiment_template("structure.static_characterization").cost_tier == "metadata"
     assert experiment_template_registry_fingerprint().startswith(
         "code-experiment-template-registry-v1:xxh3_128:"
     )

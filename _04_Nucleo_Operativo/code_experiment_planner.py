@@ -216,6 +216,29 @@ CODE_EXPERIMENT_TEMPLATES = (
         ),
     ),
     _template(
+        "structure.static_characterization",
+        (
+            "design_lowest_cost_discriminating_experiment",
+            "characterize_class_clusters_without_source_changes",
+            "compare_module_change_clusters_with_runtime_consumers",
+        ),
+        "static_characterization",
+        "read_only_process",
+        "metadata",
+        timeout=120,
+        max_items=50,
+        attention=5,
+        gates=(
+            "subject_identity_and_source_snapshot_are_preserved",
+            "observations_counterevidence_and_missing_evidence_are_separated",
+            "no_source_or_product_state_is_mutated",
+        ),
+        limitations=(
+            "static_characterization_does_not_select_a_refactor",
+            "clusters_and_consumers_do_not_prove_product_intent",
+        ),
+    ),
+    _template(
         "state.runtime_sql_trace",
         (
             "trace_sql_and_transaction_events_in_isolation",
