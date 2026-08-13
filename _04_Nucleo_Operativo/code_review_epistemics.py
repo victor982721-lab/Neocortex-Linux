@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections.abc import Sequence
-from dataclasses import replace
 from typing import Literal, Protocol
 
 from .code_analysis_epistemics import (
@@ -20,10 +19,9 @@ from .code_analysis_epistemics import (
     AnalysisSubjectRef,
     analysis_identity,
     analysis_question_spec_fingerprint,
-    validate_analysis_question_evaluation,
     validate_analysis_question_set,
 )
-from .code_assurance_analysis import CodeAssuranceAnalysis
+from .code_assurance_analysis import CodeAssuranceAnalysis, assurance_questions
 from .code_analyzer_effectiveness import (
     CodeAnalyzerEffectivenessAnalysis,
     analyzer_effectiveness_questions,
@@ -532,15 +530,12 @@ def expected_integrated_code_review_questions(
     specs.extend(evolution_specs)
     evaluations.extend(evolution_evaluations)
 
-    if assurance.question_evaluations:
-        specs.extend(assurance.question_specs)
-        assurance_evaluations = tuple(
-            replace(item, rank=len(evaluations) + index)
-            for index, item in enumerate(assurance.question_evaluations, start=1)
-        )
-        for item in assurance_evaluations:
-            validate_analysis_question_evaluation(assurance.question_specs[0], item)
-        evaluations.extend(assurance_evaluations)
+    assurance_specs, assurance_evaluations = assurance_questions(
+        assurance,
+        rank_offset=len(evaluations),
+    )
+    specs.extend(assurance_specs)
+    evaluations.extend(assurance_evaluations)
 
     security_specs, security_evaluations = security_dependency_questions(
         supply_chain,

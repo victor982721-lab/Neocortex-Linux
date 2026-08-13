@@ -8,8 +8,10 @@ from dataclasses import replace
 import pytest
 
 from _04_Nucleo_Operativo.code_assurance_analysis import (
+    ASSURANCE_AVAILABILITY_QUESTION,
     CODE_ASSURANCE_SCHEMA,
     analyze_code_assurance,
+    assurance_questions,
     parse_code_assurance_payload,
 )
 from _04_Nucleo_Operativo.code_coverage_analysis import (
@@ -402,6 +404,23 @@ def test_missing_coverage_abstains_without_question_evidence() -> None:
     assert analysis.question_evaluations == ()
     assert analysis.calibration.evaluated_subjects == 0
     assert analysis.calibration.precision_at_k is None
+
+    specs, evaluations = assurance_questions(analysis, rank_offset=7)
+    assert specs == (ASSURANCE_AVAILABILITY_QUESTION,)
+    assert len(evaluations) == 1
+    evaluation = evaluations[0]
+    assert evaluation.rank == 8
+    assert evaluation.subject.subject_kind == "run"
+    assert evaluation.observation_status == "abstained"
+    assert evaluation.question_readiness == "abstained"
+    assert evaluation.decision_readiness == "abstained"
+    assert evaluation.decision is None
+    assert {item.requirement_id: item.status for item in evaluation.requirements} == {
+        "coverage_provider_run_resolved": "missing",
+        "assertion_or_invariant_provider_resolved": "missing",
+        "mutation_or_runtime_scenario_provider_resolved": "missing",
+        "negative_control_provider_resolved": "not_evaluated",
+    }
 
 
 def test_assurance_wire_roundtrip_revalidates_nested_epistemic_evidence() -> None:

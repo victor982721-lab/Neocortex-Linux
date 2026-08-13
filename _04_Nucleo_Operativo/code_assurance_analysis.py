@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping, Sequence
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, fields, replace
 from typing import Literal, cast
 
 from .code_analysis_epistemics import (
@@ -35,6 +35,7 @@ from .code_analysis_epistemics import (
     analysis_identity,
     analysis_question_spec_fingerprint,
     parse_analysis_questions_payload,
+    validate_analysis_question_evaluation,
     validate_analysis_question_set,
 )
 from .code_coverage_analysis import (
@@ -153,6 +154,58 @@ ASSURANCE_QUESTION = AnalysisQuestionSpec(
             "run_focal_mutation_or_declared_runtime_scenario",
             "experiment",
             "Run the cheapest focal mutation campaign or declared runtime scenario that discriminates behavior.",
+        ),
+    ),
+)
+
+ASSURANCE_AVAILABILITY_QUESTION = AnalysisQuestionSpec(
+    question_id="assurance.evidence_providers_are_resolved",
+    version="v1",
+    subject_kinds=("run",),
+    requirements=(
+        AnalysisEvidenceRequirementSpec(
+            "coverage_provider_run_resolved",
+            "question",
+            "supporting",
+            ("external_metric",),
+        ),
+        AnalysisEvidenceRequirementSpec(
+            "assertion_or_invariant_provider_resolved",
+            "decision",
+            "supporting",
+            ("contract", "internal_relation", "external_relation"),
+        ),
+        AnalysisEvidenceRequirementSpec(
+            "mutation_or_runtime_scenario_provider_resolved",
+            "decision",
+            "experiment_result",
+            ("experiment_result",),
+        ),
+        AnalysisEvidenceRequirementSpec(
+            "negative_control_provider_resolved",
+            "decision",
+            "counterevidence",
+            ("experiment_result",),
+        ),
+    ),
+    hypotheses=(
+        "behavioral_assurance_evidence_is_available_for_symbol_questions",
+        "coverage_or_behavioral_evidence_is_missing_incompatible_or_incomplete",
+    ),
+    counterevidence_rules=(
+        "absence_of_a_coverage_publication_is_not_zero_coverage",
+        "passing_tests_without_assertion_links_are_execution_evidence_only",
+    ),
+    next_actions=(
+        AnalysisNextActionSpec(
+            "run_declared_coverage_with_dynamic_contexts",
+            "experiment",
+            "Run the bounded declared suite with coverage contexts and publish its receipt.",
+        ),
+        AnalysisNextActionSpec(
+            "register_assertion_invariant_and_runtime_scenario_evidence",
+            "characterization",
+            "Resolve explicit assertion, invariant, mutation, and runtime-scenario providers.",
         ),
     ),
 )
@@ -1568,6 +1621,92 @@ def analyze_code_assurance(
     )
 
 
+def assurance_questions(
+    analysis: CodeAssuranceAnalysis,
+    *,
+    rank_offset: int,
+) -> tuple[tuple[AnalysisQuestionSpec, ...], tuple[AnalysisQuestionEvaluation, ...]]:
+    """Project symbol questions or one explicit provider-availability gap."""
+
+    if isinstance(rank_offset, bool) or not isinstance(rank_offset, int) or rank_offset < 0:
+        raise ValueError("assurance question rank offset must be non-negative")
+    if analysis.status == "ready":
+        evaluations = tuple(
+            replace(item, rank=rank_offset + index)
+            for index, item in enumerate(analysis.question_evaluations, start=1)
+        )
+        for evaluation in evaluations:
+            validate_analysis_question_evaluation(ASSURANCE_QUESTION, evaluation)
+        return analysis.question_specs, evaluations
+
+    spec = ASSURANCE_AVAILABILITY_QUESTION
+    subject = AnalysisSubjectRef(
+        subject_kind="run",
+        subject_key=f"code-assurance-run:{analysis.snapshot_id}",
+        display_name="Code behavioral assurance evidence",
+        source_owner_id="code",
+        snapshot_id=analysis.snapshot_id,
+        snapshot_freshness=analysis.snapshot_freshness,
+        revision_id=CODE_ASSURANCE_SCHEMA,
+    )
+    reason = analysis.reason or "assurance_evidence_unavailable"
+    evaluation = AnalysisQuestionEvaluation(
+        evaluation_id=analysis_identity(
+            "code-assurance-availability-question-v1",
+            {
+                "analysis_id": analysis.analysis_id,
+                "question": spec.question_id,
+                "reason": reason,
+            },
+        ),
+        question_id=spec.question_id,
+        question_version=spec.version,
+        question_spec_fingerprint=analysis_question_spec_fingerprint(spec),
+        rank=rank_offset + 1,
+        subject=subject,
+        evidence=(),
+        requirements=(
+            AnalysisRequirementEvaluation(
+                "coverage_provider_run_resolved",
+                "missing",
+                (),
+                reason,
+            ),
+            AnalysisRequirementEvaluation(
+                "assertion_or_invariant_provider_resolved",
+                "missing",
+                (),
+                "assertion_invariant_evidence_provider_not_registered",
+            ),
+            AnalysisRequirementEvaluation(
+                "mutation_or_runtime_scenario_provider_resolved",
+                "missing",
+                (),
+                "behavioral_experiment_cannot_be_correlated_without_coverage_subjects",
+            ),
+            AnalysisRequirementEvaluation(
+                "negative_control_provider_resolved",
+                "not_evaluated",
+                (),
+                "counterevidence_not_evaluated_without_a_resolved_subject",
+            ),
+        ),
+        observation_status="abstained",
+        inference_status="abstained",
+        inferences=(),
+        hypotheses=spec.hypotheses,
+        question_readiness="abstained",
+        decision_readiness="abstained",
+        decision=None,
+        decision_reason="question_evidence_incomplete",
+        counterevidence_status="not_evaluated",
+        next_action_ids=(),
+        limitations=(*_ANALYSIS_LIMITATIONS, reason),
+    )
+    validate_analysis_question_evaluation(spec, evaluation)
+    return (spec,), (evaluation,)
+
+
 def _strict_mapping(label: str, value: object, expected: set[str]) -> Mapping[str, object]:
     if not isinstance(value, Mapping) or set(value) != expected:
         raise ValueError(f"{label} fields are invalid")
@@ -1649,6 +1788,7 @@ def parse_code_assurance_payload(payload: Mapping[str, object]) -> CodeAssurance
 
 
 __all__ = [
+    "ASSURANCE_AVAILABILITY_QUESTION",
     "ASSURANCE_QUESTION",
     "CODE_ASSURANCE_POLICY",
     "CODE_ASSURANCE_SCHEMA",
@@ -1658,5 +1798,6 @@ __all__ = [
     "MutationAssuranceObservation",
     "SymbolAssuranceObservation",
     "analyze_code_assurance",
+    "assurance_questions",
     "parse_code_assurance_payload",
 ]

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass
 from typing import Literal, cast
 
 from .code_analysis_epistemics import (
@@ -18,7 +18,7 @@ from .code_analyzer_effectiveness import (
     analyzer_effectiveness_questions,
     parse_code_analyzer_effectiveness_payload,
 )
-from .code_assurance_analysis import parse_code_assurance_payload
+from .code_assurance_analysis import assurance_questions, parse_code_assurance_payload
 from .code_capability_reachability_analysis import (
     capability_reachability_questions,
     parse_capability_reachability_payload,
@@ -1701,14 +1701,13 @@ def _validate_review_v15_payload(payload: Mapping[str, object]) -> None:
         expected_extra_specs.extend(evolution_specs)
         expected_extra_evaluations.extend(evolution_evaluations)
         offset += len(evolution_evaluations)
-        if assurance.question_evaluations:
-            expected_extra_specs.extend(assurance.question_specs)
-            re_ranked = tuple(
-                replace(item, rank=offset + index)
-                for index, item in enumerate(assurance.question_evaluations, start=1)
-            )
-            expected_extra_evaluations.extend(re_ranked)
-            offset += len(re_ranked)
+        assurance_specs, assurance_evaluations = assurance_questions(
+            assurance,
+            rank_offset=offset,
+        )
+        expected_extra_specs.extend(assurance_specs)
+        expected_extra_evaluations.extend(assurance_evaluations)
+        offset += len(assurance_evaluations)
         security_specs, security_evaluations = security_dependency_questions(
             supply_chain,
             snapshot_id=snapshot_id,
