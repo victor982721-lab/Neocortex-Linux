@@ -304,9 +304,11 @@ incompletos.
 La proyección general incluye además preguntas sobre el grafo estático
 Ruff/Grimp y los contratos de imports versionados. Un contrato `failed` se
 conserva como observación, pero no crea automáticamente un patch. El primer
-segmento del módulo continúa siendo sólo `path_namespace_id`: mientras no exista
-un registry explícito y resoluble de logical owners, la pregunta
-`architecture.logical_owner_mapping_is_explicitly_declared` se abstiene.
+segmento del módulo continúa siendo sólo `path_namespace_id`. El registry v1 de
+logical owners declara selectores exactos para `text`, `semantic`, `knowledge`,
+`review`, `retention` y `framework`; es parcial, publica unmapped/overlap y no
+asigna un owner por defecto. Su pregunta queda lista para caracterización, no
+para una decisión de cambio.
 
 Cuando `--code-review` consume el estado canónico protegido, v15 también publica
 `neocortex.code-state-projection/v1`. La observación compara revisiones Text

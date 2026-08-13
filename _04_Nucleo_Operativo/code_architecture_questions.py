@@ -40,6 +40,15 @@ from .code_architecture_analysis import (
     ArchitectureSymbolComplexity,
     CodeArchitectureAnalysis,
 )
+from .logical_owner_contracts import (
+    LOGICAL_OWNER_CONTRACT_SCHEMA,
+    LOGICAL_OWNER_SPECS,
+    logical_owner_registry_fingerprint,
+    logical_owner_registry_payload,
+    matching_logical_owners,
+)
+
+_OWNER_EXAMPLE_LIMIT = 50
 
 ARCHITECTURE_STATIC_GRAPH_QUESTION = AnalysisQuestionSpec(
     question_id="architecture.static_import_graph_is_comparably_observed",
@@ -173,6 +182,8 @@ ARCHITECTURE_LOGICAL_OWNER_QUESTION = AnalysisQuestionSpec(
             "question",
             "supporting",
             ("internal_relation",),
+            accepted_completeness=("complete", "partial"),
+            allow_truncated=True,
         ),
         AnalysisEvidenceRequirementSpec(
             "unmapped_and_overlapping_owner_counterevidence_evaluated",
@@ -188,8 +199,8 @@ ARCHITECTURE_LOGICAL_OWNER_QUESTION = AnalysisQuestionSpec(
         ),
     ),
     hypotheses=(
-        "package_namespaces_coincide_with_intended_logical_ownership",
-        "logical_ownership_crosscuts_packages_and_requires_an_explicit_mapping",
+        "the_declared_partial_mapping_covers_each_relevant_logical_owner_boundary",
+        "unmapped_or_overlapping_modules_hide_additional_logical_owner_boundaries",
     ),
     counterevidence_rules=(
         "path_prefixes_never_establish_logical_or_state_ownership_by_themselves",
@@ -198,9 +209,9 @@ ARCHITECTURE_LOGICAL_OWNER_QUESTION = AnalysisQuestionSpec(
     ),
     next_actions=(
         AnalysisNextActionSpec(
-            "declare_versioned_logical_owner_registry",
+            "extend_versioned_logical_owner_registry",
             "characterization",
-            "Declare owners, exact module selectors, boundary policy, and contract fingerprint.",
+            "Extend explicit selectors only where a real owner contract is known.",
         ),
         AnalysisNextActionSpec(
             "inspect_unmapped_and_overlapping_modules",
@@ -219,7 +230,8 @@ _LIMITATIONS = (
     "static_imports_do_not_observe_dynamic_dispatch_or_runtime_reachability",
     "package_path_namespace_is_not_logical_repository_or_state_ownership",
     "architecture_contract_status_does_not_authorize_a_source_change",
-    "logical_owner_registry_is_not_declared_in_v1",
+    "logical_owner_registry_v1_is_explicitly_partial_and_has_no_default_owner",
+    "logical_owner_does_not_imply_state_store_or_repository_ownership",
     "human_decision_not_owned_by_code_analysis",
 )
 
@@ -389,6 +401,152 @@ def _contract_evidence(
     )
 
 
+def _logical_owner_evidence(
+    analysis: CodeArchitectureAnalysis,
+    subject: AnalysisSubjectRef,
+) -> tuple[AnalysisEvidenceRef, AnalysisEvidenceRef]:
+    registry_payload = logical_owner_registry_payload()
+    registry_fingerprint = logical_owner_registry_fingerprint()
+    registry = AnalysisEvidenceRef(
+        evidence_id=analysis_identity(
+            "logical-owner-registry-evidence-v1",
+            {"subject": subject.subject_key, "registry": registry_fingerprint},
+        ),
+        subject_key=subject.subject_key,
+        role="supporting",
+        evidence_kind="contract",
+        source_owner_id="code",
+        producer_id="logical-owner-contract-registry",
+        producer_version=LOGICAL_OWNER_CONTRACT_SCHEMA,
+        source_schema=LOGICAL_OWNER_CONTRACT_SCHEMA,
+        source_record_kind="versioned_logical_owner_registry",
+        source_record_id=registry_fingerprint,
+        source_projection_digest=registry_fingerprint,
+        snapshot_id=subject.snapshot_id,
+        revision_id=subject.revision_id,
+        facts=(
+            AnalysisFact("declared_logical_owners", len(LOGICAL_OWNER_SPECS), "count"),
+            AnalysisFact(
+                "declared_module_selectors",
+                sum(len(item.selectors) for item in LOGICAL_OWNER_SPECS),
+                "count",
+            ),
+            AnalysisFact("registry_schema", LOGICAL_OWNER_CONTRACT_SCHEMA),
+            AnalysisFact("registry_fingerprint", registry_fingerprint),
+            AnalysisFact(
+                "owner_ids_json",
+                json.dumps(
+                    tuple(item.owner_id for item in LOGICAL_OWNER_SPECS),
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
+            ),
+            AnalysisFact(
+                "coverage_policy",
+                str(registry_payload["coverage_policy"]),
+            ),
+        ),
+        completeness="complete",
+        bounded=False,
+        truncated=False,
+        resolver_id="logical-owner-contract-registry-resolver",
+        resolver_version="v1",
+        limitations=(
+            "registry_is_source_versioned_not_discovered_from_module_names",
+            "registry_is_deliberately_partial",
+        ),
+    )
+
+    assignments = {
+        item.module_id: matching_logical_owners(item.module_id) for item in analysis.modules
+    }
+    mapped = tuple(sorted(module for module, owners in assignments.items() if len(owners) == 1))
+    unmapped = tuple(sorted(module for module, owners in assignments.items() if not owners))
+    overlapping = tuple(sorted(module for module, owners in assignments.items() if len(owners) > 1))
+    cross_owner_edges = tuple(
+        sorted(
+            (
+                edge.source_module,
+                edge.target_module,
+                assignments[edge.source_module][0],
+                assignments[edge.target_module][0],
+            )
+            for edge in analysis.imports
+            if len(assignments.get(edge.source_module, ())) == 1
+            and len(assignments.get(edge.target_module, ())) == 1
+            and assignments[edge.source_module][0] != assignments[edge.target_module][0]
+        )
+    )
+    mapped_examples = mapped[:_OWNER_EXAMPLE_LIMIT]
+    unmapped_examples = unmapped[:_OWNER_EXAMPLE_LIMIT]
+    overlap_examples = overlapping[:_OWNER_EXAMPLE_LIMIT]
+    edge_examples = cross_owner_edges[:_OWNER_EXAMPLE_LIMIT]
+    truncated = any(
+        len(values) > _OWNER_EXAMPLE_LIMIT
+        for values in (mapped, unmapped, overlapping, cross_owner_edges)
+    )
+    projection_payload = {
+        "registry_fingerprint": registry_fingerprint,
+        "modules": tuple((module, assignments[module]) for module in sorted(assignments)),
+        "cross_owner_edges": cross_owner_edges,
+    }
+    projection_digest = analysis_identity(
+        "logical-owner-module-projection-v1",
+        projection_payload,
+    )
+    projection = AnalysisEvidenceRef(
+        evidence_id=analysis_identity(
+            "logical-owner-module-projection-ref-v1",
+            {"subject": subject.subject_key, "projection": projection_digest},
+        ),
+        subject_key=subject.subject_key,
+        role="supporting",
+        evidence_kind="internal_relation",
+        source_owner_id="code",
+        producer_id="logical-owner-module-projection",
+        producer_version=LOGICAL_OWNER_CONTRACT_SCHEMA,
+        source_schema=CODE_ARCHITECTURE_SCHEMA,
+        source_record_kind="explicit_module_to_logical_owner_projection",
+        source_record_id=str(analysis.analysis_run_id),
+        source_projection_digest=projection_digest,
+        snapshot_id=subject.snapshot_id,
+        revision_id=subject.revision_id,
+        facts=(
+            AnalysisFact("architecture_modules", len(assignments), "count"),
+            AnalysisFact("mapped_modules", len(mapped), "count"),
+            AnalysisFact("unmapped_modules", len(unmapped), "count"),
+            AnalysisFact("overlapping_modules", len(overlapping), "count"),
+            AnalysisFact("cross_logical_owner_import_edges", len(cross_owner_edges), "count"),
+            AnalysisFact(
+                "mapped_module_examples_json",
+                json.dumps(mapped_examples, ensure_ascii=False, separators=(",", ":")),
+            ),
+            AnalysisFact(
+                "unmapped_module_examples_json",
+                json.dumps(unmapped_examples, ensure_ascii=False, separators=(",", ":")),
+            ),
+            AnalysisFact(
+                "overlapping_module_examples_json",
+                json.dumps(overlap_examples, ensure_ascii=False, separators=(",", ":")),
+            ),
+            AnalysisFact(
+                "cross_owner_edge_examples_json",
+                json.dumps(edge_examples, ensure_ascii=False, separators=(",", ":")),
+            ),
+        ),
+        completeness="complete" if not unmapped and not overlapping else "partial",
+        bounded=True,
+        truncated=truncated,
+        resolver_id="logical-owner-module-projection-resolver",
+        resolver_version="v1",
+        limitations=(
+            "unmatched_modules_remain_unmapped",
+            "cross_owner_edges_include_only_exactly_mapped_endpoints",
+        ),
+    )
+    return registry, projection
+
+
 def _evaluation(
     spec: AnalysisQuestionSpec,
     subject: AnalysisSubjectRef,
@@ -493,7 +651,7 @@ def architecture_questions(
             "logical_owner_mapping_resolved",
             "missing",
             (),
-            "logical_owner_registry_not_declared",
+            "logical_owner_registry_is_partial_for_the_static_graph",
         ),
         AnalysisRequirementEvaluation(
             "dynamic_dependency_counterevidence_evaluated",
@@ -554,18 +712,27 @@ def architecture_questions(
             "boundary_acceptance_experiment_not_recorded",
         ),
     )
+    owner_evidence = _logical_owner_evidence(analysis, owner_subject) if ready else ()
     owner_requirements = (
         AnalysisRequirementEvaluation(
             "versioned_logical_owner_registry",
-            "missing",
-            (),
-            "logical_owner_registry_not_declared",
+            "satisfied" if owner_evidence else "missing",
+            () if not owner_evidence else (owner_evidence[0].evidence_id,),
+            (
+                "explicit_partial_logical_owner_registry_resolved"
+                if owner_evidence
+                else "architecture_projection_required_for_owner_registry_join"
+            ),
         ),
         AnalysisRequirementEvaluation(
             "module_to_logical_owner_projection",
-            "missing",
-            (),
-            "module_to_logical_owner_projection_not_resolved",
+            "satisfied" if owner_evidence else "missing",
+            () if not owner_evidence else (owner_evidence[1].evidence_id,),
+            (
+                "explicit_module_to_logical_owner_projection_resolved"
+                if owner_evidence
+                else "module_to_logical_owner_projection_not_resolved"
+            ),
         ),
         AnalysisRequirementEvaluation(
             "unmapped_and_overlapping_owner_counterevidence_evaluated",
@@ -604,9 +771,9 @@ def architecture_questions(
             owner_subject,
             analysis_id=analysis_identity("architecture-analysis-v1", analysis.digest_payload()),
             rank=rank_offset + 3,
-            evidence=(),
+            evidence=owner_evidence,
             requirements=owner_requirements,
-            reason="logical_owner_registry_not_declared",
+            reason=None if owner_evidence else "logical_owner_projection_unavailable",
         ),
     )
     return specs, evaluations

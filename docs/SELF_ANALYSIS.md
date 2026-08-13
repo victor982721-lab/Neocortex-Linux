@@ -451,10 +451,12 @@ preguntas generales para el grafo estático comparable y para las evaluaciones d
 los contratos de imports. Sus evidence refs conservan snapshot, digest, gates,
 conteos, discrepancias y violaciones; incluso un contrato fallido permanece
 advisory y sin autoridad de mutación. Una tercera pregunta hace explícito el
-límite pendiente: no existe todavía un registry versionado de logical owners ni
-una proyección módulo→owner. Por ello
-`architecture.logical_owner_mapping_is_explicitly_declared/v1` se abstiene y el
-campo histórico `path_namespace_id` nunca se promueve a ownership.
+límite y la cobertura de un registry versionado, deliberadamente parcial, para
+`text`, `semantic`, `knowledge`, `review`, `retention` y `framework`. La
+proyección módulo→owner conserva módulos no mapeados, solapamientos y edges
+cross-owner; no asigna un owner por defecto. El campo histórico
+`path_namespace_id` nunca se promueve a ownership y logical owner tampoco se
+confunde con state owner o state store.
 
 La primera pregunta durable cross-owner no intenta fabricar un grafo SQL.
 `neocortex.code-state-projection/v1` compara, por modelo de texto publicado, el

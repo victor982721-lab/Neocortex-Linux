@@ -142,7 +142,7 @@ def test_ready_architecture_exposes_graph_contract_and_owner_gap_without_a_decis
     assert tuple(item.observation_status for item in evaluations) == (
         "confirmed",
         "confirmed",
-        "abstained",
+        "confirmed",
     )
     assert all(item.inference_status == "abstained" for item in evaluations)
     assert all(item.decision is None for item in evaluations)
@@ -153,7 +153,7 @@ def test_ready_architecture_exposes_graph_contract_and_owner_gap_without_a_decis
     assert contract_facts["contract_violations"] == 1
 
 
-def test_path_namespace_rename_never_resolves_logical_ownership_or_authorizes_change() -> None:
+def test_path_namespace_rename_does_not_change_explicit_owner_projection_or_authority() -> None:
     first = _ready_architecture()
     renamed = replace(
         first,
@@ -173,10 +173,20 @@ def test_path_namespace_rename_never_resolves_logical_ownership_or_authorizes_ch
         rank_offset=0,
     )
 
-    assert first_evaluations[2].observation_status == "abstained"
-    assert renamed_evaluations[2].observation_status == "abstained"
+    assert first_evaluations[2].observation_status == "confirmed"
+    assert renamed_evaluations[2].observation_status == "confirmed"
     assert first_evaluations[2].decision is renamed_evaluations[2].decision is None
-    assert first_evaluations[2].evidence == renamed_evaluations[2].evidence == ()
+    assert tuple(
+        (fact.name, fact.value)
+        for evidence in first_evaluations[2].evidence
+        for fact in evidence.facts
+        if fact.name in {"mapped_modules", "unmapped_modules", "overlapping_modules"}
+    ) == tuple(
+        (fact.name, fact.value)
+        for evidence in renamed_evaluations[2].evidence
+        for fact in evidence.facts
+        if fact.name in {"mapped_modules", "unmapped_modules", "overlapping_modules"}
+    )
 
 
 def test_unavailable_architecture_abstains_every_question_without_partial_evidence() -> None:

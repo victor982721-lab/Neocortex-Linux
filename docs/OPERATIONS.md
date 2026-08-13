@@ -422,9 +422,10 @@ combinación. Los proveedores faltantes permanecen explícitos y los indicadores
 precision/recall/decision rate no existen sin outcomes independientes.
 
 El registro general también proyecta el grafo Ruff/Grimp y los contratos de
-imports. `path_namespace_id` no es ownership: hasta declarar un contrato
-versionado módulo→logical-owner, la pregunta correspondiente debe aparecer
-`observation:abstained`, nunca resolverse por nombres o rutas.
+imports. `path_namespace_id` no es ownership: el contrato v1 módulo→logical-owner
+usa selectores explícitos, cubre sólo seis owners y conserva unmapped/overlap.
+Nunca deduce owner por nombre, asigna un default ni confunde logical owner con
+state owner.
 
 El manifest guarda `Neocortex` como primer elemento de su argv canónico. Antes
 de promover el launcher estable, use la ruta exacta del runtime versionado para
