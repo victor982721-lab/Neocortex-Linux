@@ -223,7 +223,14 @@ el piloto del perfil estático es:
 
 ```powershell
 Neocortex --self-analysis --analysis-profile trusted-static --root $MiniRoot --state-directory $MiniState
+Neocortex --state-directory $MiniState --code-review --code-review-limit 10 --code-json
 ```
+
+La segunda invocación es el resultado consumible del auditor. Debe emitir
+`neocortex.code-review/v15`, enlazar cada evaluación a evidencia publicada,
+mantener `recommendations=[]`, `decision=null` y `mutation_authority=false`, y
+explicar por pregunta qué provider, contraevidencia o experimento falta. Un run
+de proveedores por sí solo no constituye el cierre del autoanálisis.
 
 `trusted-static` ejecuta 13 proveedores independientes: Ruff basic, Ruff
 con la política acotada `E4,E7,E9,F,B,C4,PIE,RUF`, Mypy, Pyright, Ruff Analyze,
