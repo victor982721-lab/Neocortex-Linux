@@ -15,8 +15,9 @@ from _04_Nucleo_Operativo.code_experiment_planner import (
 )
 from _04_Nucleo_Operativo.code_invariant_assurance_analysis import (
     analyze_code_invariant_assurance,
+    invariant_assurance_questions,
 )
-from _04_Nucleo_Operativo.code_invariant_contracts import RUNTIME_SCENARIOS
+from _04_Nucleo_Operativo.code_invariant_contracts import INVARIANT_SPECS, RUNTIME_SCENARIOS
 from _04_Nucleo_Operativo.external_deep_coverage import PYTEST_COVERAGE_PROVIDER_ID
 from _04_Nucleo_Operativo.external_evidence_models import (
     ExternalProviderEvidence,
@@ -106,6 +107,27 @@ def test_cheapest_registered_experiment_is_selected_without_change_authority() -
         for item in result.proposals
     )
     assert parse_code_experiment_plan_payload(json.loads(json.dumps(result.as_payload()))) == result
+
+
+def test_missing_runtime_provider_plans_the_allowlisted_experiment_instead_of_deadlocking() -> None:
+    analysis = analyze_code_invariant_assurance(
+        {},
+        snapshot_id="snapshot-fixture",
+        snapshot_freshness="publication_only",
+    )
+    specs, evaluations = invariant_assurance_questions(analysis, rank_offset=0)
+
+    result = plan_code_experiments(specs, evaluations)
+
+    assert result.status == "ready"
+    assert result.experiment_required_count == len(INVARIANT_SPECS)
+    assert result.executable_count == len(INVARIANT_SPECS)
+    assert result.registry_gap_count == 0
+    assert all(
+        proposal.template_id == "analyzer.registered_invariant_scenarios"
+        and proposal.runner_kind == "trusted_deep_declared_scenarios"
+        for proposal in result.proposals
+    )
 
 
 def test_unregistered_action_is_preserved_as_registry_gap_not_shell_text() -> None:

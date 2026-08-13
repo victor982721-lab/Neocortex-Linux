@@ -175,7 +175,10 @@ def test_missing_or_abstained_provider_fails_closed_without_nominal_evidence() -
     assert len(specs) == 1
     assert len(evaluations) == len(INVARIANT_SPECS)
     assert tuple(item.rank for item in evaluations) == tuple(range(12, 12 + len(INVARIANT_SPECS)))
-    assert all(item.observation_status == "abstained" for item in evaluations)
+    assert all(item.observation_status == "confirmed" for item in evaluations)
+    assert all(item.question_readiness == "ready" for item in evaluations)
+    assert all(item.decision_readiness == "experiment_required" for item in evaluations)
+    assert all(item.decision is None for item in evaluations)
 
 
 def test_forged_test_outcome_relation_and_authority_are_rejected() -> None:

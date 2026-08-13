@@ -56,7 +56,7 @@ INVARIANT_ASSURANCE_QUESTION = AnalysisQuestionSpec(
         ),
         AnalysisEvidenceRequirementSpec(
             "exact_selected_runtime_scenario_outcomes",
-            "question",
+            "decision",
             "supporting",
             ("external_relation",),
         ),
@@ -567,7 +567,12 @@ def _evaluation(
             "independent_additional_scenario_not_recorded",
         ),
     )
-    question_ready = scenario_evidence is not None
+    # The versioned invariant/scenario contract is sufficient to formulate the
+    # question.  Requiring the runtime outcome before the question became ready
+    # made the registered experiment impossible to plan when its provider was
+    # precisely the missing evidence.  Runtime outcomes remain decision-stage
+    # evidence and therefore never become a semantic decision by themselves.
+    question_ready = True
     result = AnalysisQuestionEvaluation(
         evaluation_id=analysis_identity(
             "invariant-assurance-question-evaluation-v1",
