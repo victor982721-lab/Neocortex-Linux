@@ -343,6 +343,8 @@ def execute_code_experiment(
     before = _file_digest(database)
     with readonly_code_database(database) as connection:
         files = read_external_evidence_files(connection, source)
+    if not files:
+        raise ValueError("experiment source manifest contains no current Python inputs")
     manifest_digest = _manifest_digest(files)
     scenario_map = {item.scenario_id: item for item in RUNTIME_SCENARIOS}
     selected_scenarios = template.scenario_ids
