@@ -261,11 +261,11 @@ existe cuando se cumplen juntos los criterios dinámicos de la última sección.
 - Este handoff documenta el árbol sin sustituir tests focales, gates, commit,
   release instalada ni CI del SHA final.
 
-## Corte local pendiente de publicación — Autoanalizador v15
+## Corte local pendiente de publicación — Autoanalizador v16
 
 - `Neocortex --state-directory ESTADO --code-review` ya no es una vista que
   convierte nombres, rutas o tamaño en recomendaciones. El envelope
-  `neocortex.code-review/v15` publica un registro general de preguntas y
+  `neocortex.code-review/v16` publica un registro general de preguntas y
   evaluaciones enlazadas a registros fuente; separa observación, inferencia,
   hipótesis, contraevidencia, evidencia faltante, experimento, decisión y
   autoridad. Toda evaluación es advisory y `mutation_authority=false`.
@@ -298,16 +298,36 @@ existe cuando se cumplen juntos los criterios dinámicos de la última sección.
   receipts y heads publicados. El autoanálisis compara su publicación con el
   checkout Git por contenido y expone coste/cobertura, pero no publica
   precision, recall ni utilidad humana sin outcomes independientes.
+- v16 incorpora ownership lógico explícito, interacciones SQL/SQLite ligadas a
+  los 13 stores declarados, fronteras transaccionales/workflow, reachability de
+  las nueve rutas built-in, cuatro invariantes, calibración anti-Goodhart y un
+  planificador de experimentos sin comandos libres. SQL dinámico, parser no
+  disponible, provider stale o evidencia truncada producen abstención.
+- `--code-experiment-run PROPOSAL_ID` reconstruye el plan vigente y ejecuta sólo
+  escenarios allow-listed en temporales externos. El contrato actual cubre
+  cuatro escenarios y diez nodeids exactos —incluidos siete casos
+  parametrizados anti-Goodhart—, conserva receipt/digests antes/después y nunca
+  autoriza fuente, estado o patch.
 - El reader rechaza o abstiene ante publicaciones Code mezcladas, vuelve a
   resolver evidencias, verifica digests y conserva queries dimensionadas
   (`observation:*`, `question:*`, `decision:*`). La salida humana resume
   preguntas confirmadas/abstenidas, decisiones y autoridad de mutación.
-- Validación local aislada: los dos shards canónicos aprobaron 4,753 tests,
+- Validación histórica v15: los dos shards canónicos aprobaron 4,753 tests,
   144 skips y 109 subtests; arquitectura quedó en 350 módulos, 1,510 relaciones,
   cero violaciones y cero SCC; el gate estático volvió al baseline
   Ruff/Mypy/Pyright sin deuda nueva. El perfil `trusted-static` publicó 12 de
   13 proveedores; pip-audit se abstuvo por red y el comando estricto devolvió
   2, como corresponde. Esto aún no implica push, release instalada ni CI.
+- Validación aislada v16 en `/tmp`, sin tocar el estado canónico: una publicación
+  protected completa analizó 742 candidatos y su replay obtuvo 742/742 cache
+  hits. El experimento v2 pasó 4/4 escenarios y 10/10 nodeids en 45 s con tres
+  procesos; todas las bases aisladas conservaron el mismo SHA-256. Una
+  publicación trusted-deep releyó 4/4 invariantes desde Code y el replay
+  posterior reutilizó 12 providers. La salida final mantiene cero
+  recomendaciones, cero work packages y `mutation_authority=false`. Este corte
+  sigue sin push, release instalada ni CI; dos providers supply se abstuvieron
+  en el laboratorio porque el `PYTHONPATH` aislado contenía otra distribución
+  pip, no por una afirmación de seguridad verde.
 
 ## Capacidades que permanecen fail-closed
 
