@@ -7,6 +7,7 @@ import pytest
 
 from _04_Nucleo_Operativo.code_invariant_assurance_analysis import (
     analyze_code_invariant_assurance,
+    invariant_assurance_questions,
     parse_code_invariant_assurance_payload,
 )
 from _04_Nucleo_Operativo.code_invariant_contracts import (
@@ -170,6 +171,11 @@ def test_missing_or_abstained_provider_fails_closed_without_nominal_evidence() -
     assert missing.status == abstained.status == "abstained"
     assert missing.observations == abstained.observations == ()
     assert missing.question_evaluations == abstained.question_evaluations == ()
+    specs, evaluations = invariant_assurance_questions(missing, rank_offset=11)
+    assert len(specs) == 1
+    assert len(evaluations) == len(INVARIANT_SPECS)
+    assert tuple(item.rank for item in evaluations) == tuple(range(12, 12 + len(INVARIANT_SPECS)))
+    assert all(item.observation_status == "abstained" for item in evaluations)
 
 
 def test_forged_test_outcome_relation_and_authority_are_rejected() -> None:

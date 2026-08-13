@@ -9,7 +9,7 @@ names, or authorize a change.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, fields, replace
 from typing import Literal, Mapping, Sequence, cast
 
 from .code_analysis_epistemics import (
@@ -694,6 +694,35 @@ def analyze_code_invariant_assurance(
     )
 
 
+def invariant_assurance_questions(
+    analysis: CodeInvariantAssuranceAnalysis,
+    *,
+    rank_offset: int,
+) -> tuple[tuple[AnalysisQuestionSpec, ...], tuple[AnalysisQuestionEvaluation, ...]]:
+    """Expose one question per invariant, including an honest provider abstention."""
+
+    if isinstance(rank_offset, bool) or not isinstance(rank_offset, int) or rank_offset < 0:
+        raise ValueError("invariant assurance rank offset must be non-negative")
+    if analysis.status == "abstained":
+        canonical = tuple(
+            _evaluation(
+                _observation(invariant, provider=None, relations={}),
+                snapshot_id=analysis.snapshot_id,
+                snapshot_freshness=analysis.snapshot_freshness,
+                rank=index,
+            )
+            for index, invariant in enumerate(INVARIANT_SPECS, start=1)
+        )
+    else:
+        canonical = analysis.question_evaluations
+    specs = (INVARIANT_ASSURANCE_QUESTION,)
+    validate_analysis_question_set(specs, canonical)
+    evaluations = tuple(
+        replace(item, rank=rank_offset + index) for index, item in enumerate(canonical, start=1)
+    )
+    return specs, evaluations
+
+
 def parse_code_invariant_assurance_payload(
     payload: Mapping[str, object],
 ) -> CodeInvariantAssuranceAnalysis:
@@ -735,5 +764,6 @@ __all__ = [
     "InvariantAssuranceObservation",
     "InvariantScenarioOutcome",
     "analyze_code_invariant_assurance",
+    "invariant_assurance_questions",
     "parse_code_invariant_assurance_payload",
 ]

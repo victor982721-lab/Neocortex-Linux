@@ -8,6 +8,7 @@ import pytest
 
 from _04_Nucleo_Operativo.code_analyzer_calibration import (
     analyze_code_analyzer_calibration,
+    analyzer_calibration_questions,
     parse_code_analyzer_calibration_payload,
 )
 from _04_Nucleo_Operativo.code_invariant_assurance_analysis import (
@@ -81,6 +82,18 @@ def test_provisional_fixture_is_observed_but_never_claims_effectiveness() -> Non
     assert result.mutation_authority is False
     assert all(not label.detector_independent for label in result.corpora[0].labels)
 
+    specs, evaluations = analyzer_calibration_questions(result, rank_offset=7)
+    assert len(specs) == len(evaluations) == 1
+    evaluation = evaluations[0]
+    assert evaluation.rank == 8
+    assert evaluation.question_readiness == "ready"
+    assert evaluation.decision_readiness == "experiment_required"
+    assert evaluation.decision is None
+    requirements = {item.requirement_id: item.status for item in evaluation.requirements}
+    assert requirements["versioned_calibration_corpus_observed"] == "satisfied"
+    assert requirements["independent_holdout_labels_linked"] == "missing"
+    assert requirements["antigoodhart_controls_evaluated"] == "not_evaluated"
+
 
 def test_antigoodhart_receipt_is_linked_without_overstating_general_invariance() -> None:
     result = analyze_code_analyzer_calibration(
@@ -120,6 +133,9 @@ def test_missing_fixture_fails_closed_without_labels_or_metrics(tmp_path: Path) 
     assert result.corpora == ()
     assert result.labels_total == 0
     assert result.precision_at_k is result.recall is None
+    _specs, evaluations = analyzer_calibration_questions(result, rank_offset=0)
+    assert evaluations[0].observation_status == "abstained"
+    assert evaluations[0].next_action_ids == ()
 
 
 def test_wire_round_trip_and_identity_reject_forgery() -> None:

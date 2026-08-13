@@ -21,7 +21,19 @@ from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import Any, Literal, Mapping, Sequence, cast
 
-from .code_analysis_epistemics import analysis_identity
+from .code_analysis_epistemics import (
+    AnalysisEvidenceRef,
+    AnalysisEvidenceRequirementSpec,
+    AnalysisFact,
+    AnalysisNextActionSpec,
+    AnalysisQuestionEvaluation,
+    AnalysisQuestionSpec,
+    AnalysisRequirementEvaluation,
+    AnalysisSubjectRef,
+    analysis_identity,
+    analysis_question_spec_fingerprint,
+    validate_analysis_question_evaluation,
+)
 from .code_invariant_assurance_analysis import CodeInvariantAssuranceAnalysis
 from .code_invariant_contracts import RUNTIME_SCENARIOS
 
@@ -29,6 +41,64 @@ CODE_ANALYZER_CALIBRATION_SCHEMA = "neocortex.code-analyzer-calibration/v1"
 CODE_ANALYZER_CALIBRATION_POLICY = "independent-labels-holdout-and-antigoodhart-v1"
 CODE_ANALYZER_CALIBRATION_MAX_LABELS = 2_000
 CODE_ANALYZER_CALIBRATION_MAX_CORPORA = 32
+
+ANALYZER_CALIBRATION_EVIDENCE_QUESTION = AnalysisQuestionSpec(
+    question_id="analyzer.calibration_evidence_is_independent_and_antigoodhart_resistant",
+    version="v1",
+    subject_kinds=("analyzer",),
+    requirements=(
+        AnalysisEvidenceRequirementSpec(
+            "versioned_calibration_corpus_observed",
+            "question",
+            "supporting",
+            ("contract",),
+        ),
+        AnalysisEvidenceRequirementSpec(
+            "independent_holdout_labels_linked",
+            "decision",
+            "supporting",
+            ("internal_relation",),
+        ),
+        AnalysisEvidenceRequirementSpec(
+            "antigoodhart_controls_evaluated",
+            "decision",
+            "counterevidence",
+            ("experiment_result",),
+        ),
+        AnalysisEvidenceRequirementSpec(
+            "human_decision_attention_result_linked",
+            "decision",
+            "experiment_result",
+            ("experiment_result",),
+        ),
+    ),
+    hypotheses=(
+        "independent_labels_and_controls_support_useful_analyzer_calibration",
+        "provisional_or_detector_coupled_labels_overstate_analyzer_effectiveness",
+    ),
+    counterevidence_rules=(
+        "provisional_labels_never_establish_precision_recall_or_decision_utility",
+        "registered_but_unexecuted_antigoodhart_controls_are_missing_evidence",
+        "a_passing_internal_control_does_not_replace_an_independent_holdout",
+    ),
+    next_actions=(
+        AnalysisNextActionSpec(
+            "link_review_task_outcomes_without_copying_human_decisions",
+            "characterization",
+            "Link existing human ReviewTask outcomes by stable pointers without copying authority.",
+        ),
+        AnalysisNextActionSpec(
+            "execute_registered_antigoodhart_controls",
+            "experiment",
+            "Execute every registered rename, move, wrapper, call-spelling, and dilution control.",
+        ),
+        AnalysisNextActionSpec(
+            "run_seeded_holdout_and_negative_control_calibration",
+            "experiment",
+            "Run an independently labelled seeded holdout and acceptable negative controls.",
+        ),
+    ),
+)
 
 LabelStatus = Literal["independent_human_validated", "provisional_not_human_validated"]
 Partition = Literal["calibration", "negative_control", "holdout"]
@@ -533,6 +603,200 @@ def analyze_code_analyzer_calibration(
     )
 
 
+def analyzer_calibration_questions(
+    analysis: CodeAnalyzerCalibrationAnalysis,
+    *,
+    rank_offset: int,
+) -> tuple[tuple[AnalysisQuestionSpec, ...], tuple[AnalysisQuestionEvaluation, ...]]:
+    """Project the calibration corpus without promoting provisional labels."""
+
+    if isinstance(rank_offset, bool) or not isinstance(rank_offset, int) or rank_offset < 0:
+        raise ValueError("analyzer calibration rank offset must be non-negative")
+    spec = ANALYZER_CALIBRATION_EVIDENCE_QUESTION
+    subject = AnalysisSubjectRef(
+        subject_kind="analyzer",
+        subject_key="analyzer:code-self-analysis",
+        display_name="Code self-analysis calibration evidence",
+        source_owner_id="code",
+        snapshot_id=analysis.analysis_id,
+        snapshot_freshness="unknown",
+        revision_id=analysis.source_version,
+    )
+    corpus_evidence: AnalysisEvidenceRef | None = None
+    if analysis.corpora:
+        corpus_evidence = AnalysisEvidenceRef(
+            evidence_id=analysis_identity(
+                "analyzer-calibration-corpus-evidence-v1",
+                {
+                    "analysis": analysis.analysis_id,
+                    "corpora": tuple(item.corpus_id for item in analysis.corpora),
+                },
+            ),
+            subject_key=subject.subject_key,
+            role="supporting",
+            evidence_kind="contract",
+            source_owner_id="code",
+            producer_id="code-analyzer-calibration",
+            producer_version=CODE_ANALYZER_CALIBRATION_SCHEMA,
+            source_schema=CODE_ANALYZER_CALIBRATION_SCHEMA,
+            source_record_kind="versioned_label_corpora",
+            source_record_id=",".join(item.corpus_id for item in analysis.corpora),
+            source_projection_digest=analysis.analysis_id,
+            snapshot_id=subject.snapshot_id,
+            revision_id=subject.revision_id,
+            facts=(
+                AnalysisFact("labels_total", analysis.labels_total, "count"),
+                AnalysisFact("independent_labels", analysis.independent_labels, "count"),
+                AnalysisFact("provisional_labels", analysis.provisional_labels, "count"),
+                AnalysisFact("holdout_labels", analysis.holdout_labels, "count"),
+                AnalysisFact("calibration_status", analysis.status),
+            ),
+            completeness="complete",
+            bounded=True,
+            truncated=False,
+            resolver_id="code-analyzer-calibration-corpus-resolver",
+            resolver_version="v1",
+            limitations=(
+                "label_status_is_preserved_from_each_source_corpus",
+                "provisional_labels_are_not_independent_ground_truth",
+            ),
+        )
+    independent_evidence: AnalysisEvidenceRef | None = None
+    if analysis.independent_labels and analysis.holdout_labels:
+        independent_evidence = AnalysisEvidenceRef(
+            evidence_id=analysis_identity(
+                "analyzer-independent-holdout-evidence-v1",
+                {
+                    "analysis": analysis.analysis_id,
+                    "independent": analysis.independent_labels,
+                    "holdout": analysis.holdout_labels,
+                },
+            ),
+            subject_key=subject.subject_key,
+            role="supporting",
+            evidence_kind="internal_relation",
+            source_owner_id="code",
+            producer_id="code-analyzer-calibration",
+            producer_version=CODE_ANALYZER_CALIBRATION_SCHEMA,
+            source_schema=CODE_ANALYZER_CALIBRATION_SCHEMA,
+            source_record_kind="independent_holdout_label_links",
+            source_record_id=analysis.analysis_id,
+            source_projection_digest=analysis.analysis_id,
+            snapshot_id=subject.snapshot_id,
+            revision_id=subject.revision_id,
+            facts=(
+                AnalysisFact("independent_labels", analysis.independent_labels, "count"),
+                AnalysisFact("holdout_labels", analysis.holdout_labels, "count"),
+            ),
+            completeness="complete",
+            bounded=True,
+            truncated=False,
+            resolver_id="code-analyzer-independent-label-resolver",
+            resolver_version="v1",
+            limitations=("human_decision_authority_remains_in_framework_review_tasks",),
+        )
+    controls_evidence: AnalysisEvidenceRef | None = None
+    if analysis.anti_goodhart_controls and analysis.anti_goodhart_not_observed == 0:
+        controls_evidence = AnalysisEvidenceRef(
+            evidence_id=analysis_identity(
+                "analyzer-antigoodhart-evidence-v1",
+                {
+                    "analysis": analysis.analysis_id,
+                    "controls": tuple(asdict(item) for item in analysis.anti_goodhart_controls),
+                },
+            ),
+            subject_key=subject.subject_key,
+            role="counterevidence",
+            evidence_kind="experiment_result",
+            source_owner_id="code",
+            producer_id="code-analyzer-calibration",
+            producer_version=CODE_ANALYZER_CALIBRATION_SCHEMA,
+            source_schema=CODE_ANALYZER_CALIBRATION_SCHEMA,
+            source_record_kind="antigoodhart_control_receipts",
+            source_record_id=analysis.analysis_id,
+            source_projection_digest=analysis.analysis_id,
+            snapshot_id=subject.snapshot_id,
+            revision_id=subject.revision_id,
+            facts=(
+                AnalysisFact("controls_passed", analysis.anti_goodhart_passed, "count"),
+                AnalysisFact("controls_failed", analysis.anti_goodhart_failed, "count"),
+            ),
+            completeness="complete",
+            bounded=True,
+            truncated=False,
+            resolver_id="code-analyzer-antigoodhart-receipt-resolver",
+            resolver_version="v1",
+            limitations=("controls_do_not_establish_real_world_recall",),
+        )
+    evidence = tuple(
+        item
+        for item in (corpus_evidence, independent_evidence, controls_evidence)
+        if item is not None
+    )
+    requirements = (
+        AnalysisRequirementEvaluation(
+            "versioned_calibration_corpus_observed",
+            "satisfied" if corpus_evidence is not None else "missing",
+            () if corpus_evidence is None else (corpus_evidence.evidence_id,),
+            "versioned_calibration_corpus_resolved"
+            if corpus_evidence is not None
+            else analysis.reason or "calibration_corpus_unavailable",
+        ),
+        AnalysisRequirementEvaluation(
+            "independent_holdout_labels_linked",
+            "satisfied" if independent_evidence is not None else "missing",
+            () if independent_evidence is None else (independent_evidence.evidence_id,),
+            "independent_holdout_labels_resolved"
+            if independent_evidence is not None
+            else "independent_holdout_labels_missing",
+        ),
+        AnalysisRequirementEvaluation(
+            "antigoodhart_controls_evaluated",
+            "satisfied" if controls_evidence is not None else "not_evaluated",
+            () if controls_evidence is None else (controls_evidence.evidence_id,),
+            "all_registered_controls_have_execution_outcomes"
+            if controls_evidence is not None
+            else "one_or_more_registered_controls_lack_execution_outcomes",
+        ),
+        AnalysisRequirementEvaluation(
+            "human_decision_attention_result_linked",
+            "missing",
+            (),
+            "no_human_decision_attention_receipt_is_linked",
+        ),
+    )
+    ready = corpus_evidence is not None
+    evaluation = AnalysisQuestionEvaluation(
+        evaluation_id=analysis_identity(
+            "analyzer-calibration-question-evaluation-v1",
+            {
+                "analysis": analysis.analysis_id,
+                "evidence": tuple(item.evidence_id for item in evidence),
+            },
+        ),
+        question_id=spec.question_id,
+        question_version=spec.version,
+        question_spec_fingerprint=analysis_question_spec_fingerprint(spec),
+        rank=rank_offset + 1,
+        subject=subject,
+        evidence=evidence,
+        requirements=requirements,
+        observation_status="confirmed" if ready else "abstained",
+        inference_status="abstained",
+        inferences=(),
+        hypotheses=spec.hypotheses,
+        question_readiness="ready" if ready else "abstained",
+        decision_readiness="experiment_required" if ready else "abstained",
+        decision=None,
+        decision_reason="decision_evidence_incomplete" if ready else "question_evidence_incomplete",
+        counterevidence_status="evaluated" if controls_evidence is not None else "not_evaluated",
+        next_action_ids=tuple(item.action_id for item in spec.next_actions) if ready else (),
+        limitations=_LIMITATIONS,
+    )
+    validate_analysis_question_evaluation(spec, evaluation)
+    return (spec,), (evaluation,)
+
+
 def parse_code_analyzer_calibration_payload(
     payload: Mapping[str, object],
 ) -> CodeAnalyzerCalibrationAnalysis:
@@ -588,6 +852,7 @@ def parse_code_analyzer_calibration_payload(
 
 
 __all__ = [
+    "ANALYZER_CALIBRATION_EVIDENCE_QUESTION",
     "CODE_ANALYZER_CALIBRATION_MAX_CORPORA",
     "CODE_ANALYZER_CALIBRATION_MAX_LABELS",
     "CODE_ANALYZER_CALIBRATION_POLICY",
@@ -597,5 +862,6 @@ __all__ = [
     "AntiGoodhartControl",
     "CodeAnalyzerCalibrationAnalysis",
     "analyze_code_analyzer_calibration",
+    "analyzer_calibration_questions",
     "parse_code_analyzer_calibration_payload",
 ]
