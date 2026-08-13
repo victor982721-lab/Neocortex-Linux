@@ -227,10 +227,19 @@ Neocortex --state-directory $MiniState --code-review --code-review-limit 10 --co
 ```
 
 La segunda invocación es el resultado consumible del auditor. Debe emitir
-`neocortex.code-review/v15`, enlazar cada evaluación a evidencia publicada,
+`neocortex.code-review/v16`, enlazar cada evaluación a evidencia publicada,
 mantener `recommendations=[]`, `decision=null` y `mutation_authority=false`, y
 explicar por pregunta qué provider, contraevidencia o experimento falta. Un run
 de proveedores por sí solo no constituye el cierre del autoanálisis.
+
+Si el review publica `CODE_EXPERIMENT_PROPOSAL`, el operador puede copiar su ID
+exacto y ejecutar sólo ese experimento con `--code-experiment-run`. No se admite
+selector pytest ni comando arbitrario: el registry fija escenarios, timeout,
+aislamiento y gates. El comando vuelve a validar el plan, la raíz canónica y el
+manifest actual; conserva un digest streaming de `code.sqlite3` antes/después y
+retorna código `0` únicamente cuando todos los outcomes declarados pasan y el
+owner permanece idéntico. No use esta operación sobre una publicación stale:
+regenere antes el autoanálisis aislado.
 
 `trusted-static` ejecuta 13 proveedores independientes: Ruff basic, Ruff
 con la política acotada `E4,E7,E9,F,B,C4,PIE,RUF`, Mypy, Pyright, Ruff Analyze,
@@ -406,24 +415,26 @@ bytes/analyze/persist/graph y 14 replays; `installed-package-inventory` se
 recalculó. Las consultas read-only status, review y diff tardaron 38.982,
 47.675 y 57.856 s. Esos artefactos históricos usaron architecture v2,
 engineering v1, review v10 y publication diff v8. El contrato vigente de review
-es `neocortex.code-review/v15`, no declara schemas compatibles, publica
+es `neocortex.code-review/v16`, no declara schemas compatibles, publica
 observaciones estructurales con inferencia abstained y evidencia enlazada a IDs
 Code después de resolución read-only; incluye clases seleccionadas por superficie
 AST directa, con umbrales provisionales explícitos, y no genera recomendaciones
 ni paquetes de cambio. Sólo puede publicar paquetes
 `unused_characterization`, advisory y sin autoridad de mutación.
 
-En el estado canónico, v15 consulta además Text/Semantic mediante conexiones
+En el estado canónico, v16 consulta además Text/Semantic mediante conexiones
 `immutable=1` y fences de main/WAL/SHM; nunca checkpointa ni elimina sidecars.
 Un WAL no vacío, layout no demostrado o cambio de fence produce abstención de
 esa dimensión. `aligned` significa exclusivamente igualdad de sets en el head
 publicado y contratos owner/materialization correctos; no demuestra crash
 recovery ni atomicidad cross-owner.
 
-v15 emite también topología Text, cambio/schema evolution, assurance,
-seguridad/dependencias, reachability de `text.extract`, superficies de
-módulo/configuración/CLI y autoeficacia. Ninguna dimensión ejecuta código del
-repositorio durante la consulta. La autoeficacia usa `git ls-files` sin locks y
+v16 emite también topología Text, interacciones SQL/transaccionales,
+cambio/schema evolution, assurance, invariantes, seguridad/dependencias,
+reachability de `text.extract`, las nueve rutas built-in, superficies de
+módulo/configuración/CLI, calibración y autoeficacia. Ninguna dimensión ejecuta
+código del repositorio durante la consulta; sólo el comando separado y explícito
+`--code-experiment-run` ejecuta los escenarios allow-listed. La autoeficacia usa `git ls-files` sin locks y
 digests de contenido; distingue `content_stale` de `scope_incomplete` y de su
 combinación. Los proveedores faltantes permanecen explícitos y los indicadores de
 precision/recall/decision rate no existen sin outcomes independientes.

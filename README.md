@@ -617,7 +617,7 @@ manifest registra `journal.status=unavailable`, el status nunca afirma
 cambios.
 
 `--code-review` convierte la publicación en observaciones y preguntas
-explicables. El envelope `neocortex.code-review/v15` no declara schemas
+explicables. El envelope `neocortex.code-review/v16` no declara schemas
 compatibles: conserva el corte fail-closed y usa la proyección general
 `neocortex.code-analysis-epistemics/v1`. Cada finding separa observación,
 hipótesis, readiness de pregunta, evidencia faltante, contraevidencia por
@@ -626,7 +626,7 @@ buscar, siguiente acción y readiness de decisión. Un hotspot queda
 autoriza mutación.
 
 Mientras no exista un resolver trazable de evidencia de comportamiento,
-contraevidencia y resultados experimentales, v15 publica cero recomendaciones
+contraevidencia y resultados experimentales, v16 publica cero recomendaciones
 de cambio y cero packages hotspot. El planificador v5 sólo puede entregar hasta
 tres paquetes `unused_characterization` calibrados: todos sus pasos son de
 caracterización, requieren confirmación humana y declaran
@@ -637,7 +637,7 @@ superficie usa `executing_tests` y
 --code-json` amplía de 1 a 50 la vista
 auditable. La consulta es estrictamente read-only; un snapshot full sin USN se
 etiqueta `publication_only` y un journal avanzado/discontinuo causa abstención.
-Cada evaluación v15 fija el fingerprint de la pregunta, el snapshot y la
+Cada evaluación v16 fija el fingerprint de la pregunta, el snapshot y la
 revisión. Los hotspots enlazan los IDs de diagnóstico exactos; la nueva familia
 `class_surface` vuelve a resolver el símbolo de clase y todos sus miembros AST
 directos confirmados. Sus umbrales provisionales de 500 líneas o 20 métodos son
@@ -646,7 +646,7 @@ filtros de atención, no riesgo calibrado ni evidencia de una *god class*.
 concordancia con los registros; no convierte tamaño, nombres o rutas en daño ni
 en una decisión humana.
 
-Además de funciones y clases, v15 publica una proyección acotada de módulos,
+Además de funciones y clases, v16 publica una proyección acotada de módulos,
 configuraciones y construcción CLI. Los módulos se seleccionan por conteos
 estructurales explícitos; JSON/TOML se parsean desde el snapshot sin exponer
 valores; YAML/text-only permanece `unsupported` o `incomplete`; y las llamadas
@@ -656,13 +656,13 @@ señales prueba cohesión, reachability o necesidad de refactor.
 El grafo Ruff/Grimp y los contratos de imports existentes también se proyectan
 como preguntas generales. Consenso estático y contratos evaluados son evidencia
 consultable, no ownership ni una orden de cambio. Como NeoCortex todavía no
-tenía un ownership explícito, v15 incorpora un registry versionado y
+tenía un ownership explícito, v16 incorpora un registry versionado y
 deliberadamente parcial para `text`, `semantic`, `knowledge`, `review`,
 `retention` y `framework`. La pregunta publica cobertura, módulos sin mapear,
 solapamientos y edges cross-owner; nunca rellena un owner por defecto ni a partir
 del primer segmento del módulo.
 
-En la ubicación canónica de autoanálisis, v15 añade observaciones cross-owner:
+En la ubicación canónica de autoanálisis, v16 añade observaciones cross-owner:
 `neocortex.code-state-projection/v1`: abre Text y Semantic mediante lecturas
 SQLite `immutable=1` con fences de archivo y sidecars inactivos, y compara el
 conjunto exacto de revisiones Text elegibles con cada head Semantic publicado de
@@ -679,6 +679,27 @@ evidencia faltante y nunca como gate aprobado. Autoeficacia compara por contenid
 la última publicación Code con el inventario Git visible y deja precision,
 recall y finding→decision sin calcular mientras no existan outcomes humanos o
 defectos escapados enlazados independientemente.
+
+v16 añade varias verticales productivas sobre ese mismo registro. La primera
+analiza SQL literal Python con SQLGlot en dialecto SQLite y publica por separado
+READ, WRITE, DDL, SQL dinámico/no parseable y eventos transaccionales; un store o
+workflow sólo se asigna mediante el registry explícito, nunca por el nombre de la
+función. La segunda enlaza cuatro invariantes versionados con sus escenarios
+pytest exactos, distingue ejecución, assertion y prueba formal, y conserva como
+faltante cualquier resultado trusted-deep ausente o stale. También proyecta las
+nueve rutas built-in desde el contrato público hasta estado owner-local; sólo
+Text tiene hoy un enlace causal completo, las demás quedan observadas pero no
+atribuidas.
+
+Cada evaluación `experiment_required` recibe una propuesta determinista del
+experimento registrado más barato. El plan no ejecuta comandos libres ni
+autoriza cambios. Las propuestas allow-listed con runner real aparecen como
+`CODE_EXPERIMENT_PROPOSAL`; una de ellas puede ejecutarse explícitamente con
+`--code-experiment-run PROPOSAL_ID [--code-json]`. El ejecutor vuelve a construir
+el review vigente, exige el mismo proposal ID, raíz física y manifest Code,
+ejecuta sólo los cuatro nodeids declarados en temporal aislado, aplica timeout y
+devuelve `neocortex.code-experiment-receipt/v1` con outcomes y digests
+before/after. Nunca escribe el owner Code ni tiene autoridad de mutación.
 
 `--code-publication-diff` publica el envelope
 `neocortex.code-publication-diff/v10`, sin declarar compatibilidad estructural

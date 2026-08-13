@@ -276,7 +276,7 @@ review y work packages consumen la misma evidencia; la ausencia o caducidad de
 un proveedor obliga a abstener sólo la dimensión afectada.
 
 `--code-review` consume esa publicación sin volver a analizar la raíz. El
-envelope `neocortex.code-review/v15` no declara compatibilidad con schemas
+envelope `neocortex.code-review/v16` no declara compatibilidad con schemas
 anteriores. Usa `neocortex.code-analysis-epistemics/v1`, una proyección general
 de preguntas con fingerprint de spec y evidencia resuelta contra IDs de
 registros Code. Publica observaciones estructurales confirmadas y separa hipótesis,
@@ -294,7 +294,7 @@ ruta; una clase de pruebas, un `Protocol` o un composition root siguen visibles
 como controles negativos y quedan `experiment_required`. El límite solicitado
 se aplica por familia de pregunta.
 
-v15 añade `neocortex.code-interface-surface/v1`: observa módulos seleccionados
+v16 añade `neocortex.code-interface-surface/v1`: observa módulos seleccionados
 por span/superficie directa, estructura de configuraciones JSON/TOML y llamadas
 estáticas `argparse`. No expone valores de configuración, no ejecuta módulos y
 no presenta option strings sintácticos como reachability o comportamiento del
@@ -310,7 +310,7 @@ logical owners declara selectores exactos para `text`, `semantic`, `knowledge`,
 asigna un owner por defecto. Su pregunta queda lista para caracterización, no
 para una decisión de cambio.
 
-Cuando `--code-review` consume el estado canónico protegido, v15 también publica
+Cuando `--code-review` consume el estado canónico protegido, v16 también publica
 `neocortex.code-state-projection/v1`. La observación compara revisiones Text
 elegibles (`complete`, revisión presente, blob presente y `text_chars > 0`) con
 miembros del head Semantic de texto publicado. Las lecturas usan `immutable=1`,
@@ -326,6 +326,27 @@ seguridad y dependencias se alimentan del mismo `supply_chain`; un proveedor no
 registrado o stale permanece faltante. La proyección de autoeficacia compara el
 snapshot publicado contra archivos Git visibles por digest y no publica
 precision/recall ni decision rate sin etiquetas independientes.
+
+v16 añade `CODE_STATE_INTERACTIONS`, `CODE_INVARIANT_ASSURANCE`,
+`CODE_ROUTE_CAPABILITIES`, `CODE_ANALYZER_CALIBRATION` y
+`CODE_EXPERIMENT_PLAN`. SQL literal se parsea con el dialecto SQLite y se liga a
+store/workflow sólo por contratos explícitos. El assurance de invariantes sólo
+acepta outcomes de los nodeids registrados; `passed` es evidencia del escenario,
+no prueba universal. La calibración conserva las 40 etiquetas existentes como
+`provisional_not_human_validated` y no calcula precision/recall con ellas.
+
+El review imprime hasta 20 `CODE_EXPERIMENT_PROPOSAL` ejecutables. Para ejecutar
+uno de forma explícita:
+
+```text
+Neocortex --state-directory STATE --code-experiment-run PROPOSAL_ID --code-json
+```
+
+El ID debe pertenecer al plan reconstruido en esa misma invocación. El único
+runner v1 usa la selección trusted-deep allow-listed, temporal fuera del repo,
+presupuesto duro y manifest exacto; si cambia fuente, proposal, provider o base
+Code, falla cerrado. El receipt es advisory, conserva digests before/after y no
+es una decisión humana ni una autorización de patch.
 
 El planificador v5 puede entregar, de forma independiente, hasta tres paquetes
 `unused_characterization` únicamente cuando pasan los gates de precisión de

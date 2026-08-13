@@ -408,7 +408,7 @@ explícitamente como **convención de ruta**, no como ownership ni reachability 
 runtime. `hotspot_id` identifica establemente la evidencia física y el símbolo;
 `finding_id` identifica la interpretación versionada.
 
-El envelope vigente es `neocortex.code-review/v15` y no declara compatibilidad
+El envelope vigente es `neocortex.code-review/v16` y no declara compatibilidad
 con schemas anteriores: conserva el corte de autoridad y usa el contrato general
 `neocortex.code-analysis-epistemics/v1`. Cada finding separa
 observación, hipótesis, readiness
@@ -447,7 +447,7 @@ nunca valores. Para CLI selecciona archivos por calls
 construcción dinámica. No ejecuta builders ni afirma que esos parsers lleguen
 al comando público.
 
-La arquitectura publicada deja de ser sólo una sección paralela: v15 deriva
+La arquitectura publicada deja de ser sólo una sección paralela: v16 deriva
 preguntas generales para el grafo estático comparable y para las evaluaciones de
 los contratos de imports. Sus evidence refs conservan snapshot, digest, gates,
 conteos, discrepancias y violaciones; incluso un contrato fallido permanece
@@ -485,21 +485,41 @@ publica atómicamente 260 miembros. Esto demuestra supervivencia y reanudación
 para ese crash point de proceso sobre SQLite; no simula power loss, corrupción
 de almacenamiento, todas las fronteras ni recuperación cross-owner.
 
-v15 integra además `code-state-topology`, `code-change-evolution`,
-`code-assurance`, `code-capability-reachability` y
-`code-analyzer-effectiveness`. Topología verifica el cierre relacional terminal
-Text owner-local; evolución separa contenido/API, relocations, historia Git y el
-schema Code; assurance distingue ejecución de tests, mutación, ASSERTS y
-escenarios; reachability enlaza manifests Text con receipts/outbox/heads; y
-autoeficacia compara por digest la publicación más reciente contra el inventario
-Git visible. Las preguntas de seguridad/dependencias consumen los seis gates ya
-existentes de `supply_chain`. Provider ausente, stale, parcial o incompatible se
-publica como evidencia faltante, nunca como ausencia de problema. Precision,
-recall y finding→decision permanecen sin calcular hasta enlazar outcomes humanos
-o defectos escapados independientes.
+v16 integra además `code-state-topology`, `code-state-interactions`,
+`code-change-evolution`, `code-assurance`, `code-invariant-assurance`,
+`code-capability-reachability`, `code-route-capabilities`,
+`code-analyzer-calibration` y `code-analyzer-effectiveness`. Topología verifica
+el cierre relacional terminal Text owner-local. El analizador de interacciones
+reabre el AST publicado, analiza SQL literal con SQLGlot/SQLite y separa
+READ/WRITE/DDL, SQL dinámico, errores de parseo, BEGIN/COMMIT/ROLLBACK y fronteras
+workflow declaradas. No infiere store por `connect`, `execute`, nombre de módulo
+o suffix `repository`.
+
+Evolución separa contenido/API, relocations, historia Git y el schema Code;
+assurance distingue ejecución de tests, mutación, ASSERTS y escenarios; el
+registry de invariantes enlaza cuatro escenarios exactos y sólo acepta outcomes
+trusted-deep actuales. Reachability enlaza manifests Text con
+receipts/outbox/heads, mientras el registry de rutas demuestra sólo el nivel de
+evidencia realmente disponible para las nueve rutas built-in. Calibración
+preserva labels provisionales sin convertirlas en ground truth y autoeficacia
+compara por digest la publicación más reciente contra el inventario Git visible.
+Las preguntas de seguridad/dependencias consumen los seis gates ya existentes de
+`supply_chain`. Provider ausente, stale, parcial o incompatible se publica como
+evidencia faltante, nunca como ausencia de problema. Precision, recall y
+finding→decision permanecen sin calcular hasta enlazar outcomes humanos o
+defectos escapados independientes.
+
+El planner `neocortex.code-experiment-plan/v1` cubre toda evaluación
+`experiment_required`, elige por coste/atención/timeout y conserva alternativas.
+Templates sin runner siguen como planes de caracterización; el runner v1 sólo
+admite los cuatro escenarios source-versioned. `--code-experiment-run` exige un
+proposal ID del plan vigente, ejecuta pytest/coverage en temporal aislado con
+timeout y emite un receipt con identidad del provider, manifest, outcomes y
+digests Code before/after. El receipt confirma únicamente esos escenarios y no
+otorga autoridad sobre fuente o estado de producto.
 
 `recommendations` permanece vacío y `recommendation_status=abstained` porque
-v15 todavía no tiene un resolver independiente que enlace evidencia de
+v16 todavía no tiene un resolver independiente que enlace evidencia de
 comportamiento/contrato, contraevidencia y resultado experimental. Nombres como
 `repository`, `commit`, `build`, `read` o `run`, mover el archivo o añadir un
 wrapper no pueden producir una recomendación. Los constructors y factories
