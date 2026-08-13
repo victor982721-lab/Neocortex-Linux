@@ -1474,6 +1474,7 @@ def _emit_code_review_ranked_evidence(result: CodeReviewResult) -> None:
             f"antigoodhart_passed={calibration.anti_goodhart_passed} "
             f"antigoodhart_failed={calibration.anti_goodhart_failed} "
             f"antigoodhart_missing={calibration.anti_goodhart_not_observed} "
+            f"antigoodhart_nodeids={sum(len(item.test_nodeids) for item in calibration.anti_goodhart_controls)} "
             f"authority={calibration.authority} "
             f"mutation_authority={int(calibration.mutation_authority)}"
         )
