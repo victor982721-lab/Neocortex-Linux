@@ -14,6 +14,10 @@ from _04_Nucleo_Operativo.code_experiment_executor import (
 )
 from _04_Nucleo_Operativo.code_experiment_planner import CodeExperimentProposal
 from _04_Nucleo_Operativo.code_invariant_contracts import RUNTIME_SCENARIOS
+from _04_Nucleo_Operativo.external_evidence_models import (
+    ExternalProviderMetric,
+    external_metric_identity,
+)
 
 
 def _proposal() -> CodeExperimentProposal:
@@ -263,3 +267,48 @@ def test_code_database_digest_is_streamed_without_read_bytes(
 
     assert first == second
     assert first.startswith("xxh3_128:")
+
+
+def test_complete_aggregate_counts_are_recovered_when_relation_payload_is_bounded() -> None:
+    import _04_Nucleo_Operativo.code_experiment_executor as executor
+
+    def metric(name: str, value: int) -> ExternalProviderMetric:
+        return ExternalProviderMetric(
+            external_metric_identity(
+                "pytest-coverage-trusted-deep",
+                subject_kind="run",
+                subject_key="coverage-run:fixture",
+                category="coverage",
+                metric_name=name,
+                unit="count",
+            ),
+            "run",
+            "coverage-run:fixture",
+            "coverage",
+            name,
+            float(value),
+            "count",
+        )
+
+    publication = type(
+        "Publication",
+        (),
+        {
+            "metrics": (
+                metric("tests_selected", 4),
+                metric("tests_passed", 4),
+                metric("tests_failed", 0),
+                metric("tests_skipped", 0),
+            )
+        },
+    )()
+
+    assert executor._provider_test_counts(publication) == (4, 4, 0, 0)
+
+    forged = type(
+        "Publication",
+        (),
+        {"metrics": (*publication.metrics, metric("tests_passed", 4))},
+    )()
+    with pytest.raises(ValueError, match="not canonical"):
+        executor._provider_test_counts(forged)

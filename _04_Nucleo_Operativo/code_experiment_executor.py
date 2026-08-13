@@ -332,6 +332,40 @@ def _outcomes(
     return ordered
 
 
+def _provider_test_counts(publication) -> tuple[int, int, int, int]:
+    """Recover bounded run counts when no complete per-test receipt exists."""
+
+    counters: dict[str, int] = {}
+    for metric in publication.metrics:
+        if metric.subject_kind != "run" or metric.metric_name not in {
+            "tests_selected",
+            "tests_passed",
+            "tests_failed",
+            "tests_skipped",
+        }:
+            continue
+        value = metric.value
+        if not isinstance(value, (int, float)) or isinstance(value, bool) or value < 0:
+            raise ValueError("experiment provider test count is invalid")
+        integer = int(value)
+        if float(value) != float(integer) or metric.metric_name in counters:
+            raise ValueError("experiment provider test count is not canonical")
+        counters[metric.metric_name] = integer
+    if set(counters) != {
+        "tests_selected",
+        "tests_passed",
+        "tests_failed",
+        "tests_skipped",
+    }:
+        return 0, 0, 0, 0
+    return (
+        counters["tests_selected"],
+        counters["tests_passed"],
+        counters["tests_failed"],
+        counters["tests_skipped"],
+    )
+
+
 def execute_code_experiment(
     proposal: CodeExperimentProposal,
     *,
@@ -388,6 +422,41 @@ def execute_code_experiment(
     duration_ms = max(0, (time.monotonic_ns() - started) // 1_000_000)
     after = _file_digest(database)
     outcomes = _outcomes(publication, selected_scenarios)
+    tests_selected, tests_passed, tests_failed, tests_skipped = _provider_test_counts(publication)
+    complete_aggregate_pass = (
+        not outcomes
+        and tests_selected == len(selected_scenarios)
+        and tests_passed == len(selected_scenarios)
+        and tests_failed == 0
+        and tests_skipped == 0
+        and publication.coverage_complete
+    )
+    if complete_aggregate_pass:
+        from .code_analysis_epistemics import analysis_identity
+
+        outcomes = tuple(
+            CodeExperimentOutcome(
+                scenario_id,
+                nodeid,
+                "passed",
+                analysis_identity(
+                    "code-experiment-aggregate-outcome-v1",
+                    {
+                        "provider_publication": publication.portable_publication_id,
+                        "provider_result": publication.result_digest,
+                        "scenario_id": scenario_id,
+                        "nodeid": nodeid,
+                        "selected": tests_selected,
+                        "passed": tests_passed,
+                    },
+                ),
+            )
+            for scenario_id, nodeid in zip(
+                selected_scenarios,
+                selected_nodeids,
+                strict=True,
+            )
+        )
     provider_status = publication.status
     status: Literal["passed", "failed", "abstained"] = (
         "abstained"
@@ -447,6 +516,11 @@ def execute_code_experiment(
         "stderr_bytes": publication.counters.get("stderr_bytes", 0),
         "limitations": (
             "receipt_proves_selected_test_outcomes_not_formal_invariant_truth",
+            *(
+                ("per_test_outcome_relations_unavailable_aggregate_counts_only",)
+                if complete_aggregate_pass
+                else ()
+            ),
             "coverage_is_main_process_only",
             "process_death_scenario_is_not_power_loss",
             "no_product_mutation_authority",
