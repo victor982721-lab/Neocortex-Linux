@@ -25,6 +25,7 @@ from .code_analysis_epistemics import (
     analysis_questions_payload,
     analysis_question_spec_fingerprint,
     validate_analysis_question_evaluation,
+    validate_analysis_question_set,
 )
 from .code_invariant_contracts import (
     CODE_INVARIANT_REGISTRY_SCHEMA,
@@ -174,6 +175,14 @@ class InvariantAssuranceObservation:
         _required("invariant assurance observation", self.observation_id, 512)
         _required("invariant id", self.invariant_id, 256)
         _required("invariant statement", self.statement, 2048)
+        if self.scope not in {"state", "publication", "analyzer"}:
+            raise ValueError("invariant assurance observation scope is invalid")
+        if self.failure_impact not in {
+            "consistency",
+            "publication",
+            "analyzer_integrity",
+        }:
+            raise ValueError("invariant assurance failure impact is invalid")
         if not self.scenarios:
             raise ValueError("invariant assurance requires declared scenarios")
         counts = {
@@ -265,10 +274,20 @@ class CodeInvariantAssuranceAnalysis:
                 raise ValueError("observed invariant assurance has invalid readiness")
             if self.question_specs != (INVARIANT_ASSURANCE_QUESTION,):
                 raise ValueError("invariant assurance question registry is invalid")
-            for evaluation in self.question_evaluations:
-                validate_analysis_question_evaluation(INVARIANT_ASSURANCE_QUESTION, evaluation)
+            validate_analysis_question_set(self.question_specs, self.question_evaluations)
         if self.authority != "advisory" or self.mutation_authority:
             raise ValueError("invariant assurance analysis must remain advisory and non-mutating")
+        identity_payload = {
+            "snapshot": self.snapshot_id,
+            "freshness": self.snapshot_freshness,
+            "provider_status": self.provider_status,
+            "provider_run": self.provider_run_id,
+            "registry": self.registry_fingerprint,
+            "observations": tuple(asdict(item) for item in self.observations),
+            "policy": self.policy_id,
+        }
+        if self.analysis_id != analysis_identity("code-invariant-assurance-v1", identity_payload):
+            raise ValueError("invariant assurance identity is invalid")
 
     def as_payload(self) -> dict[str, object]:
         payload: dict[str, object] = {"schema": CODE_INVARIANT_ASSURANCE_SCHEMA, **asdict(self)}
