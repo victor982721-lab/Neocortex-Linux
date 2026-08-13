@@ -1,6 +1,6 @@
 # NeoCortex — handoff operativo actual
 
-> Actualizado: 2026-08-11. El nombre del archivo es histórico y se conserva
+> Actualizado: 2026-08-12. El nombre del archivo es histórico y se conserva
 > como ruta estable. Este documento es la fuente única de la frontera vigente;
 > no guarda un SHA de cierre porque Git, la release instalada y GitHub deben
 > demostrarlo dinámicamente.
@@ -260,6 +260,54 @@ existe cuando se cumplen juntos los criterios dinámicos de la última sección.
   como una GUI para decidir tareas, siguen pendientes.
 - Este handoff documenta el árbol sin sustituir tests focales, gates, commit,
   release instalada ni CI del SHA final.
+
+## Corte local pendiente de publicación — Autoanalizador v15
+
+- `Neocortex --state-directory ESTADO --code-review` ya no es una vista que
+  convierte nombres, rutas o tamaño en recomendaciones. El envelope
+  `neocortex.code-review/v15` publica un registro general de preguntas y
+  evaluaciones enlazadas a registros fuente; separa observación, inferencia,
+  hipótesis, contraevidencia, evidencia faltante, experimento, decisión y
+  autoridad. Toda evaluación es advisory y `mutation_authority=false`.
+- El camino estructural sólo confirma umbrales de funciones y clases. No existe
+  `act_now`, no hay recomendación semántica ni package hotspot; los únicos
+  packages posibles son caracterizaciones de código probablemente no usado,
+  calibradas y sin pasos de cambio.
+- La cobertura estructural ahora incluye módulos, configuración y superficie
+  CLI estática; los artefactos no parseados y la ausencia de contratos runtime
+  quedan explícitos. Los nombres de las preguntas describen la evidencia
+  pendiente, no afirman que la superficie ya sea completa.
+- Arquitectura conserva el consenso Ruff Analyze/Grimp, seis contratos y el
+  grafo físico. Un registro versionado y explícitamente parcial declara seis
+  logical owners sin owner predeterminado; módulos sin mapping y cruces entre
+  owners permanecen observaciones, no ownership inferido por path.
+- Estado incorpora un registro público de 13 stores, una pregunta exacta sobre
+  cierre relacional de la publicación terminal Text y otra sobre la proyección
+  publicada Text→Semantic. Un test aislado mata el proceso después de un
+  prefijo durable y verifica aislamiento del head y convergencia al reanudar;
+  no se presenta como prueba de pérdida de energía.
+- Evolución separa cambio de contenido, relocation e interfaz pública entre
+  publicaciones comparables; Git/co-change abstiene si su ventana excluye
+  commits grandes. Schema v1 observa el DDL y ledger del owner Code, no finge
+  snapshots históricos de los demás stores.
+- Assurance distingue tests que ejecutan líneas de tests que demuestran un
+  invariante; Coverage/mutación faltante produce abstención. Supply chain
+  conserva Semgrep, Deptry, pip-audit e inventario instalado por separado;
+  seguridad se abstiene si pip-audit no resuelve, aunque Semgrep haya pasado.
+- La primera ruta de capability reachability liga `text.extract` con intentos,
+  receipts y heads publicados. El autoanálisis compara su publicación con el
+  checkout Git por contenido y expone coste/cobertura, pero no publica
+  precision, recall ni utilidad humana sin outcomes independientes.
+- El reader rechaza o abstiene ante publicaciones Code mezcladas, vuelve a
+  resolver evidencias, verifica digests y conserva queries dimensionadas
+  (`observation:*`, `question:*`, `decision:*`). La salida humana resume
+  preguntas confirmadas/abstenidas, decisiones y autoridad de mutación.
+- Validación local aislada: los dos shards canónicos aprobaron 4,753 tests,
+  144 skips y 109 subtests; arquitectura quedó en 350 módulos, 1,510 relaciones,
+  cero violaciones y cero SCC; el gate estático volvió al baseline
+  Ruff/Mypy/Pyright sin deuda nueva. El perfil `trusted-static` publicó 12 de
+  13 proveedores; pip-audit se abstuvo por red y el comando estricto devolvió
+  2, como corresponde. Esto aún no implica push, release instalada ni CI.
 
 ## Capacidades que permanecen fail-closed
 
