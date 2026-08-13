@@ -119,6 +119,59 @@ CAPABILITY_REACHABILITY_QUESTION = AnalysisQuestionSpec(
     ),
 )
 
+CAPABILITY_REACHABILITY_AVAILABILITY_QUESTION = AnalysisQuestionSpec(
+    question_id="capability.text_extract_evidence_provider_is_resolved",
+    version="v1",
+    subject_kinds=("run",),
+    requirements=(
+        AnalysisEvidenceRequirementSpec(
+            "text_owner_snapshot_resolved",
+            "question",
+            "supporting",
+            ("contract", "runtime_observation"),
+        ),
+        AnalysisEvidenceRequirementSpec(
+            "manifest_and_route_contract_resolved",
+            "question",
+            "supporting",
+            ("contract",),
+        ),
+        AnalysisEvidenceRequirementSpec(
+            "durable_execution_projection_resolved",
+            "decision",
+            "supporting",
+            ("runtime_observation",),
+        ),
+        AnalysisEvidenceRequirementSpec(
+            "public_entrypoint_counterevidence_evaluated",
+            "decision",
+            "counterevidence",
+            ("runtime_observation", "experiment_result"),
+        ),
+    ),
+    hypotheses=(
+        "capability_evidence_is_unavailable_or_incompatible",
+        "capability_evidence_is_resolved_for_characterization",
+    ),
+    counterevidence_rules=(
+        "an_unresolved_text_owner_snapshot_cannot_support_a_reachability_claim",
+        "a_manifest_without_owner_native_runtime_evidence_is_declaration_only",
+        "provider_absence_is_not_evidence_that_the_capability_is_unreachable",
+    ),
+    next_actions=(
+        AnalysisNextActionSpec(
+            "resolve_text_owner_snapshot",
+            "characterization",
+            "Resolve a current compatible Text owner snapshot before evaluating reachability.",
+        ),
+        AnalysisNextActionSpec(
+            "rerun_capability_reachability_projection",
+            "experiment",
+            "Rerun the bounded capability projection against the resolved owner snapshot.",
+        ),
+    ),
+)
+
 
 class CapabilityReachabilityResolutionError(ValueError):
     """The exact Text capability projection cannot be resolved."""
@@ -896,7 +949,75 @@ def capability_reachability_questions(
     if isinstance(rank_offset, bool) or not isinstance(rank_offset, int) or rank_offset < 0:
         raise ValueError("capability question rank offset must be non-negative")
     if analysis.status != "ready" or analysis.snapshot_id is None:
-        return (), ()
+        spec = CAPABILITY_REACHABILITY_AVAILABILITY_QUESTION
+        reason = analysis.reason or "capability_reachability_evidence_unavailable"
+        evaluation = AnalysisQuestionEvaluation(
+            evaluation_id=analysis_identity(
+                "code-capability-reachability-availability-question-v1",
+                {
+                    "analysis_id": analysis.analysis_id,
+                    "question": spec.question_id,
+                    "reason": reason,
+                },
+            ),
+            question_id=spec.question_id,
+            question_version=spec.version,
+            question_spec_fingerprint=analysis_question_spec_fingerprint(spec),
+            rank=rank_offset + 1,
+            subject=AnalysisSubjectRef(
+                subject_kind="run",
+                subject_key=f"capability-reachability-analysis:{analysis.analysis_id}",
+                display_name="Text capability reachability evidence",
+                source_owner_id="code",
+                snapshot_id=analysis.analysis_id,
+                snapshot_freshness="unknown",
+                revision_id=analysis.source_version,
+            ),
+            evidence=(),
+            requirements=(
+                AnalysisRequirementEvaluation(
+                    "text_owner_snapshot_resolved",
+                    "missing",
+                    (),
+                    reason,
+                ),
+                AnalysisRequirementEvaluation(
+                    "manifest_and_route_contract_resolved",
+                    "not_evaluated",
+                    (),
+                    "route_contract_not_joined_without_owner_snapshot",
+                ),
+                AnalysisRequirementEvaluation(
+                    "durable_execution_projection_resolved",
+                    "missing",
+                    (),
+                    "owner_native_execution_projection_unavailable",
+                ),
+                AnalysisRequirementEvaluation(
+                    "public_entrypoint_counterevidence_evaluated",
+                    "not_evaluated",
+                    (),
+                    "counterevidence_not_evaluated_without_resolved_execution_subject",
+                ),
+            ),
+            observation_status="abstained",
+            inference_status="abstained",
+            inferences=(),
+            hypotheses=spec.hypotheses,
+            question_readiness="abstained",
+            decision_readiness="abstained",
+            decision=None,
+            decision_reason="question_evidence_incomplete",
+            counterevidence_status="not_evaluated",
+            next_action_ids=(),
+            limitations=(
+                *_LIMITATIONS,
+                "analysis_envelope_identity_is_not_a_resolved_text_owner_snapshot",
+                reason,
+            ),
+        )
+        validate_analysis_question_evaluation(spec, evaluation)
+        return (spec,), (evaluation,)
     fingerprint = analysis_question_spec_fingerprint(CAPABILITY_REACHABILITY_QUESTION)
     evaluations: list[AnalysisQuestionEvaluation] = []
     for index, observation in enumerate(analysis.observations, start=1):
@@ -1023,6 +1144,7 @@ def parse_capability_reachability_payload(
 
 
 __all__ = [
+    "CAPABILITY_REACHABILITY_AVAILABILITY_QUESTION",
     "CAPABILITY_REACHABILITY_MAX_ATTEMPTS",
     "CAPABILITY_REACHABILITY_POLICY",
     "CAPABILITY_REACHABILITY_QUESTION",

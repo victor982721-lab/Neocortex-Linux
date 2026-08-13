@@ -22,6 +22,7 @@ from _04_Nucleo_Operativo.code_interface_surface_analysis import (
     CLI_SURFACE_QUESTION,
     CONFIGURATION_SURFACE_QUESTION,
     MODULE_SURFACE_QUESTION,
+    abstained_code_interface_surface,
     interface_surface_questions,
     parse_code_interface_surface_payload,
     read_code_interface_surface_analysis,
@@ -250,3 +251,34 @@ def test_cli_static_view_does_not_claim_effective_parser_behavior(tmp_path: Path
     assert requirements["dynamic_cli_construction_counterevidence_evaluated"] == ("not_evaluated")
     assert cli.authority == "advisory"
     assert cli.mutation_authority is False
+
+
+def test_unresolved_interface_provider_is_an_explicit_abstained_question() -> None:
+    analysis = abstained_code_interface_surface(
+        "interface_surface_unresolvable:fixture",
+        database="fixture.sqlite3",
+    )
+
+    specs, evaluations = interface_surface_questions(
+        analysis,
+        snapshot_freshness="unknown",
+        rank_offset=3,
+    )
+
+    assert tuple(item.question_id for item in specs) == (
+        "structure.interface_evidence_provider_is_resolved",
+    )
+    assert len(evaluations) == 1
+    availability = evaluations[0]
+    assert availability.rank == 4
+    assert availability.observation_status == "abstained"
+    assert availability.question_readiness == "abstained"
+    assert availability.decision_readiness == "abstained"
+    assert availability.decision is None
+    assert availability.evidence == ()
+    assert tuple(item.status for item in availability.requirements) == (
+        "missing",
+        "missing",
+        "not_evaluated",
+        "not_evaluated",
+    )

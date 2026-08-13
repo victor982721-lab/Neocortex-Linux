@@ -287,7 +287,23 @@ def test_missing_future_and_bounded_state_abstain_without_partial_claims(
 ) -> None:
     missing = analyze_capability_reachability(tmp_path, source_version="source-fixture")
     assert missing.status == "abstained"
-    assert capability_reachability_questions(missing, rank_offset=0) == ((), ())
+    specs, evaluations = capability_reachability_questions(missing, rank_offset=0)
+    assert tuple(item.question_id for item in specs) == (
+        "capability.text_extract_evidence_provider_is_resolved",
+    )
+    assert len(evaluations) == 1
+    availability = evaluations[0]
+    assert availability.observation_status == "abstained"
+    assert availability.question_readiness == "abstained"
+    assert availability.decision_readiness == "abstained"
+    assert availability.decision is None
+    assert availability.evidence == ()
+    assert tuple(item.status for item in availability.requirements) == (
+        "missing",
+        "not_evaluated",
+        "missing",
+        "not_evaluated",
+    )
 
     path = tmp_path / "text.sqlite3"
     initialize_text_state(path)

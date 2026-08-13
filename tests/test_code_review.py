@@ -667,8 +667,9 @@ def test_review_ranks_confirmed_hotspots_deterministically_with_diversity(
         "structure.configuration_surface_is_completely_observed",
         "structure.cli_surface_has_runtime_contract_evidence",
         "assurance.evidence_providers_are_resolved",
+        "capability.text_extract_evidence_provider_is_resolved",
     }
-    assert len(epistemics["evaluations"]) == len(first.findings) + 13
+    assert len(epistemics["evaluations"]) == len(first.findings) + 14
     first_evaluation = epistemics["evaluations"][0]
     assert first_evaluation["observation_status"] == "confirmed"
     assert first_evaluation["inference_status"] == "abstained"

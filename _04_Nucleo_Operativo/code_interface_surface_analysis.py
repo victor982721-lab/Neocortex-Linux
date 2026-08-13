@@ -221,6 +221,59 @@ CLI_SURFACE_QUESTION = AnalysisQuestionSpec(
     ),
 )
 
+INTERFACE_SURFACE_AVAILABILITY_QUESTION = AnalysisQuestionSpec(
+    question_id="structure.interface_evidence_provider_is_resolved",
+    version="v1",
+    subject_kinds=("run",),
+    requirements=(
+        AnalysisEvidenceRequirementSpec(
+            "published_code_run_resolved",
+            "question",
+            "supporting",
+            ("contract", "internal_metric"),
+        ),
+        AnalysisEvidenceRequirementSpec(
+            "module_configuration_and_cli_projection_resolved",
+            "question",
+            "supporting",
+            ("internal_metric",),
+        ),
+        AnalysisEvidenceRequirementSpec(
+            "runtime_interface_contract_resolved",
+            "decision",
+            "supporting",
+            ("contract", "runtime_observation"),
+        ),
+        AnalysisEvidenceRequirementSpec(
+            "incomplete_or_dynamic_surface_counterevidence_evaluated",
+            "decision",
+            "counterevidence",
+            ("internal_fact", "runtime_observation", "experiment_result"),
+        ),
+    ),
+    hypotheses=(
+        "interface_surface_evidence_is_unavailable_or_incompatible",
+        "interface_surface_is_resolved_for_characterization",
+    ),
+    counterevidence_rules=(
+        "provider_absence_is_not_evidence_that_an_interface_surface_is_empty",
+        "an_unresolved_publication_cannot_support_module_configuration_or_cli_counts",
+        "a_static_projection_does_not_establish_runtime_reachability",
+    ),
+    next_actions=(
+        AnalysisNextActionSpec(
+            "resolve_published_code_interface_inputs",
+            "characterization",
+            "Resolve the published Code run and its bounded source projection.",
+        ),
+        AnalysisNextActionSpec(
+            "rerun_interface_surface_projection",
+            "experiment",
+            "Rerun module, configuration, and static CLI characterization.",
+        ),
+    ),
+)
+
 _LIMITATIONS = (
     "structural_counts_do_not_establish_a_defect_or_refactor",
     "configuration_values_are_never_exposed",
@@ -1304,7 +1357,75 @@ def interface_surface_questions(
     if snapshot_freshness not in {"current", "publication_only", "unknown"}:
         raise ValueError("interface surface snapshot freshness is invalid")
     if analysis.status != "ready":
-        return (), ()
+        spec = INTERFACE_SURFACE_AVAILABILITY_QUESTION
+        reason = analysis.reason or "interface_surface_evidence_unavailable"
+        evaluation = AnalysisQuestionEvaluation(
+            evaluation_id=analysis_identity(
+                "code-interface-surface-availability-question-v1",
+                {
+                    "analysis_id": analysis.analysis_id,
+                    "question": spec.question_id,
+                    "reason": reason,
+                },
+            ),
+            question_id=spec.question_id,
+            question_version=spec.version,
+            question_spec_fingerprint=analysis_question_spec_fingerprint(spec),
+            rank=rank_offset + 1,
+            subject=AnalysisSubjectRef(
+                subject_kind="run",
+                subject_key=f"interface-surface-analysis:{analysis.analysis_id}",
+                display_name="Code interface surface evidence",
+                source_owner_id="code",
+                snapshot_id=analysis.analysis_id,
+                snapshot_freshness=snapshot_freshness,
+                revision_id=CODE_INTERFACE_SURFACE_SCHEMA,
+            ),
+            evidence=(),
+            requirements=(
+                AnalysisRequirementEvaluation(
+                    "published_code_run_resolved",
+                    "missing",
+                    (),
+                    reason,
+                ),
+                AnalysisRequirementEvaluation(
+                    "module_configuration_and_cli_projection_resolved",
+                    "missing",
+                    (),
+                    "interface_projection_unavailable",
+                ),
+                AnalysisRequirementEvaluation(
+                    "runtime_interface_contract_resolved",
+                    "not_evaluated",
+                    (),
+                    "runtime_contract_not_evaluated_without_static_subjects",
+                ),
+                AnalysisRequirementEvaluation(
+                    "incomplete_or_dynamic_surface_counterevidence_evaluated",
+                    "not_evaluated",
+                    (),
+                    "counterevidence_not_evaluated_without_resolved_projection",
+                ),
+            ),
+            observation_status="abstained",
+            inference_status="abstained",
+            inferences=(),
+            hypotheses=spec.hypotheses,
+            question_readiness="abstained",
+            decision_readiness="abstained",
+            decision=None,
+            decision_reason="question_evidence_incomplete",
+            counterevidence_status="not_evaluated",
+            next_action_ids=(),
+            limitations=(
+                *_LIMITATIONS,
+                "analysis_envelope_identity_is_not_a_resolved_code_publication",
+                reason,
+            ),
+        )
+        validate_analysis_question_evaluation(spec, evaluation)
+        return (spec,), (evaluation,)
     specs = (MODULE_SURFACE_QUESTION, CONFIGURATION_SURFACE_QUESTION, CLI_SURFACE_QUESTION)
     domains: tuple[Literal["module", "configuration", "entrypoint"], ...] = (
         "module",
@@ -1373,6 +1494,7 @@ __all__ = [
     "CLI_SURFACE_QUESTION",
     "CODE_INTERFACE_SURFACE_SCHEMA",
     "CONFIGURATION_SURFACE_QUESTION",
+    "INTERFACE_SURFACE_AVAILABILITY_QUESTION",
     "MODULE_SURFACE_QUESTION",
     "CliSurfaceObservation",
     "CodeInterfaceSurfaceAnalysis",
