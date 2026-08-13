@@ -25,6 +25,7 @@ from .code_change_evolution_analysis import (
     read_code_change_evolution_analysis,
 )
 from .code_coverage_analysis import (
+    CODE_COVERAGE_PROVIDER_ID,
     CodeCoverageAnalysis,
     read_code_coverage_analysis,
 )
@@ -38,6 +39,8 @@ from .code_route_capability_analysis import (
     abstained_route_capability_analysis,
     analyze_route_capabilities,
 )
+from .external_deep_coverage import PYTEST_COVERAGE_PROVIDER_ID
+from .external_mutation_cosmic_ray import COSMIC_RAY_MUTATION_PROVIDER_ID
 from .code_external_evidence import (
     ExternalEvidenceStatus,
     read_external_evidence,
@@ -786,7 +789,18 @@ def _read_review(path: Path, *, limit: int) -> _ReviewRead:
             analysis_run_id,
             database=str(path),
         )
-        provider_evidence = read_external_provider_evidence(connection, analysis_run_id)
+        # Downstream review projections consume only coverage and focal mutation
+        # evidence.  Restricting at the SQL boundary avoids deserializing every
+        # deep provider payload a second time after the suite/architecture reads.
+        provider_evidence = read_external_provider_evidence(
+            connection,
+            analysis_run_id,
+            provider_ids=(
+                CODE_COVERAGE_PROVIDER_ID,
+                COSMIC_RAY_MUTATION_PROVIDER_ID,
+                PYTEST_COVERAGE_PROVIDER_ID,
+            ),
+        )
         engineering_analytics = analyze_code_engineering(
             architecture,
             test_coverage,

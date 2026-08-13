@@ -969,3 +969,37 @@ def test_review_with_zero_hotspots_is_ready_and_does_not_mutate_state(
     assert _digest(database) == before_digest
     assert not Path(f"{database}-wal").exists()
     assert not Path(f"{database}-shm").exists()
+
+
+def test_review_reads_only_provider_payloads_consumed_by_integrated_assurance(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state_directory = tmp_path / "state"
+    _build_state(state_directory, hotspots=False)
+    monkeypatch.setattr(
+        code_review_module,
+        "read_self_analysis_status",
+        lambda _state, _run: _status(tmp_path),
+    )
+    original = code_review_module.read_external_provider_evidence
+    observed_filters: list[tuple[str, ...] | None] = []
+
+    def capture_provider_filter(connection, analysis_run_id, *, provider_ids=None):
+        observed_filters.append(None if provider_ids is None else tuple(provider_ids))
+        return original(connection, analysis_run_id, provider_ids=provider_ids)
+
+    monkeypatch.setattr(
+        code_review_module,
+        "read_external_provider_evidence",
+        capture_provider_filter,
+    )
+
+    assert review_code_state(state_directory).status == "ready"
+    assert observed_filters == [
+        (
+            code_review_module.CODE_COVERAGE_PROVIDER_ID,
+            code_review_module.COSMIC_RAY_MUTATION_PROVIDER_ID,
+            code_review_module.PYTEST_COVERAGE_PROVIDER_ID,
+        )
+    ]
