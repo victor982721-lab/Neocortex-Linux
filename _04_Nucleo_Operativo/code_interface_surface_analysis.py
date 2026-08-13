@@ -106,7 +106,7 @@ MODULE_SURFACE_QUESTION = AnalysisQuestionSpec(
 )
 
 CONFIGURATION_SURFACE_QUESTION = AnalysisQuestionSpec(
-    question_id="structure.configuration_surface_is_completely_observed",
+    question_id="structure.configuration_inventory_requires_complete_parsing",
     version="v1",
     subject_kinds=("configuration",),
     requirements=(
@@ -164,7 +164,7 @@ CONFIGURATION_SURFACE_QUESTION = AnalysisQuestionSpec(
 )
 
 CLI_SURFACE_QUESTION = AnalysisQuestionSpec(
-    question_id="structure.cli_surface_has_runtime_contract_evidence",
+    question_id="structure.static_cli_calls_require_runtime_contract_evidence",
     version="v1",
     subject_kinds=("entrypoint",),
     requirements=(
