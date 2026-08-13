@@ -15,6 +15,7 @@ joined to explicit logical-owner, state-store, and workflow contracts.
 from __future__ import annotations
 
 import ast
+import importlib
 import json
 import logging
 import sqlite3
@@ -23,9 +24,9 @@ from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import Any, Literal, Mapping, Sequence, cast
 
-try:  # The analysis extra is optional in the product runtime.
-    import sqlglot
-    from sqlglot import exp
+try:  # Existing installed releases predate this declared full-runtime dependency.
+    sqlglot: Any = importlib.import_module("sqlglot")
+    exp: Any = importlib.import_module("sqlglot.expressions")
 except ImportError:  # pragma: no cover - exercised in an isolated import test
     sqlglot = None
     exp = None
@@ -589,8 +590,11 @@ def _write_target(expression: Any) -> str | None:
         return None
     target = getattr(expression, "this", None)
     if isinstance(target, exp.Schema):
-        target = target.this
-    return target.name if isinstance(target, exp.Table) and target.name else None
+        target = getattr(target, "this", None)
+    if not isinstance(target, exp.Table):
+        return None
+    name = getattr(target, "name", None)
+    return name if isinstance(name, str) and name else None
 
 
 def _classify_sql(expression: Any) -> tuple[str, tuple[str, ...], tuple[str, ...], tuple[str, ...]]:

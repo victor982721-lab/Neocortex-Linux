@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from _04_Nucleo_Operativo import code_state_interaction_analysis as state_interactions
 from _04_Nucleo_Operativo.code_schema import initialize_code_state
 from _04_Nucleo_Operativo.code_state_interaction_analysis import (
     CODE_STATE_INTERACTION_EXAMPLE_LIMIT,
@@ -275,6 +276,22 @@ def test_missing_state_abstains_without_nominal_evidence(tmp_path: Path) -> None
     assert result.reason == "code_state_missing"
     assert result.interactions == ()
     assert result.workflow_boundaries == ()
+
+
+def test_missing_sqlglot_abstains_before_reading_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(state_interactions, "sqlglot", None)
+    monkeypatch.setattr(state_interactions, "exp", None)
+
+    result = analyze_code_state_interactions(tmp_path / "unreadable")
+
+    assert result.status == "abstained"
+    assert result.reason == "sqlglot_unavailable"
+    assert result.sql_parser == "unavailable"
+    assert result.sql_parser_version is None
+    assert result.analysis_run_id is None
+    assert result.interactions == ()
 
 
 def test_public_envelope_rejects_ready_without_a_bound_source_publication(
