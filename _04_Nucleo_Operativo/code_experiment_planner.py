@@ -21,6 +21,7 @@ from .code_analysis_epistemics import (
     AnalysisQuestionSpec,
     analysis_identity,
     validate_analysis_question_evaluation,
+    validate_analysis_question_set,
 )
 from .code_invariant_contracts import RUNTIME_SCENARIOS
 
@@ -669,14 +670,13 @@ def plan_code_experiments(
     specs: tuple[AnalysisQuestionSpec, ...],
     evaluations: tuple[AnalysisQuestionEvaluation, ...],
 ) -> CodeExperimentPlan:
+    validate_analysis_question_set(specs, evaluations)
     specs_by_id = {(item.question_id, item.version): item for item in specs}
-    if len(specs_by_id) != len(specs):
-        raise ValueError("experiment planning question specs repeat")
     for evaluation in evaluations:
-        spec = specs_by_id.get((evaluation.question_id, evaluation.question_version))
-        if spec is None:
-            raise ValueError("experiment planning evaluation references an unknown spec")
-        validate_analysis_question_evaluation(spec, evaluation)
+        validate_analysis_question_evaluation(
+            specs_by_id[(evaluation.question_id, evaluation.question_version)],
+            evaluation,
+        )
     limitations = (
         "plan_selects_only_registered_templates_not_free_form_commands",
         "proposal_is_not_execution_result_or_change_authority",

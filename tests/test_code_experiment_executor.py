@@ -154,6 +154,8 @@ def test_receipt_identity_excludes_wall_clock_duration_but_not_evidence() -> Non
 
 def test_receipt_rejects_canonical_state_change_and_status_smuggling() -> None:
     receipt = _receipt()
+    with pytest.raises(ValueError, match="guard contradicts"):
+        replace(receipt, code_database_digest_after="digest:changed")
     with pytest.raises(ValueError, match="status is not derived"):
         replace(
             receipt,
@@ -162,6 +164,16 @@ def test_receipt_rejects_canonical_state_change_and_status_smuggling() -> None:
         )
     with pytest.raises(ValueError, match="advisory and non-mutating"):
         replace(receipt, mutation_authority=True)  # type: ignore[arg-type]
+
+
+def test_receipt_rejects_forged_provider_and_template_selection() -> None:
+    receipt = _receipt()
+    with pytest.raises(ValueError, match="provider identity"):
+        replace(receipt, provider_id="pytest-delete-production")
+    with pytest.raises(ValueError, match="provider status"):
+        replace(receipt, provider_status="ready")
+    with pytest.raises(ValueError, match="cover selected scenarios"):
+        replace(receipt, selected_scenarios=receipt.selected_scenarios[:-1])
 
 
 def test_outcome_cannot_claim_an_unregistered_nodeid() -> None:

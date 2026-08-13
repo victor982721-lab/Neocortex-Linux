@@ -19,6 +19,10 @@ from typing import Any, Literal, Mapping, Sequence, cast
 
 from .code_contracts import deep_configuration_payload, deep_configuration_signature
 from .code_experiment_planner import CodeExperimentProposal, experiment_template
+from .external_deep_coverage import (
+    DEEP_COVERAGE_PROVIDER_SCHEMA,
+    PYTEST_COVERAGE_PROVIDER_ID,
+)
 from .code_external_evidence import ExternalEvidenceFile, read_external_evidence_files
 from .code_invariant_contracts import RUNTIME_SCENARIOS, invariant_registry_fingerprint
 from .code_schema import readonly_code_database
@@ -144,6 +148,25 @@ class CodeExperimentReceipt:
             raise ValueError("experiment receipt runner is invalid")
         if not isinstance(self.canonical_state_unchanged, bool):
             raise ValueError("experiment canonical-state guard must be boolean")
+        if self.canonical_state_unchanged != (
+            self.code_database_digest_before == self.code_database_digest_after
+        ):
+            raise ValueError("experiment canonical-state guard contradicts its digests")
+        if (
+            self.provider_id != PYTEST_COVERAGE_PROVIDER_ID
+            or self.provider_schema != DEEP_COVERAGE_PROVIDER_SCHEMA
+        ):
+            raise ValueError("experiment receipt provider identity is invalid")
+        if self.provider_status not in {
+            "completed",
+            "failed",
+            "timeout",
+            "unavailable",
+            "skipped",
+        }:
+            raise ValueError("experiment receipt provider status is invalid")
+        if self.provider_execution not in {"full", "cache_replay", "skipped"}:
+            raise ValueError("experiment receipt provider execution is invalid")
         _texts("selected experiment scenario", self.selected_scenarios, sorted_values=True)
         _texts("selected experiment nodeid", self.selected_nodeids)
         _texts("experiment limitation", self.limitations)
@@ -155,6 +178,16 @@ class CodeExperimentReceipt:
             raise ValueError("experiment outcomes do not cover selected scenarios exactly")
         if tuple(item.test_nodeid for item in self.outcomes) != self.selected_nodeids:
             raise ValueError("experiment outcomes do not cover selected nodeids exactly")
+        template = experiment_template(self.template_id)
+        scenario_map = {item.scenario_id: item.test_nodeid for item in RUNTIME_SCENARIOS}
+        if (
+            self.template_version != template.version
+            or self.runner_kind != template.runner_kind
+            or self.selected_scenarios != template.scenario_ids
+            or self.selected_nodeids
+            != tuple(scenario_map[item] for item in self.selected_scenarios)
+        ):
+            raise ValueError("experiment receipt selection is not derived from its template")
         for label, value in (
             ("passed scenarios", self.passed),
             ("failed scenarios", self.failed),
@@ -308,7 +341,7 @@ def execute_code_experiment(
     manifest_digest = _manifest_digest(files)
     scenario_map = {item.scenario_id: item for item in RUNTIME_SCENARIOS}
     selected_scenarios = template.scenario_ids
-    selected_nodeids = tuple(sorted(scenario_map[item].test_nodeid for item in selected_scenarios))
+    selected_nodeids = tuple(scenario_map[item].test_nodeid for item in selected_scenarios)
     payload = deep_configuration_payload(
         analysis_profile="trusted-deep",
         test_selectors=selected_nodeids,
