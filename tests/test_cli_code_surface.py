@@ -199,6 +199,15 @@ EXPECTED_CODE_ACTIONS = (
         ),
     ),
     _expected_store(
+        "--code-experiment-run",
+        "code_experiment_run",
+        metavar="PROPOSAL_ID",
+        help_text=(
+            "execute one exact allow-listed experiment proposal from the current "
+            "code-review plan in isolated temporary state"
+        ),
+    ),
+    _expected_store(
         "--code-publication-diff",
         "code_publication_diff",
         metavar="BASELINE_STATE",
@@ -342,6 +351,10 @@ EXPECTED_CODE_HELP = (
     "  --code-review-limit N\n"
     "                        bound each review surface to 1 to 50 observations;\n"
     "                        values above 10 require --code-json\n"
+    "  --code-experiment-run PROPOSAL_ID\n"
+    "                        execute one exact allow-listed experiment proposal\n"
+    "                        from the current code-review plan in isolated\n"
+    "                        temporary state\n"
     "  --code-publication-diff BASELINE_STATE\n"
     "                        compare the current completed Code publication with a\n"
     "                        baseline state without writing either owner\n"

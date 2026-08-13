@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from dataclasses import asdict, replace
+from pathlib import Path
 
 import pytest
 
@@ -223,3 +225,29 @@ def test_execution_rejects_a_source_root_different_from_the_published_manifest(
             source_version="fixture",
             expected_source_root=expected,
         )
+
+
+def test_code_database_digest_is_streamed_without_read_bytes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import _04_Nucleo_Operativo.code_experiment_executor as executor
+
+    database = tmp_path / "code.sqlite3"
+    with sqlite3.connect(database) as connection:
+        connection.execute("CREATE TABLE evidence(value TEXT NOT NULL)")
+        connection.execute("INSERT INTO evidence VALUES('immutable')")
+
+    original = Path.read_bytes
+
+    def reject_database_read_bytes(path: Path) -> bytes:
+        if path == database:
+            raise AssertionError("Code database digest must be streamed")
+        return original(path)
+
+    monkeypatch.setattr(Path, "read_bytes", reject_database_read_bytes)
+    first = executor._file_digest(database)
+    second = executor._file_digest(database)
+
+    assert first == second
+    assert first.startswith("xxh3_128:")

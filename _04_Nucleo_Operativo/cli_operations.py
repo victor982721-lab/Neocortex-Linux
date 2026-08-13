@@ -286,6 +286,13 @@ DIRECT_OPERATIONS: tuple[DirectOperation, ...] = (
     DirectOperation("code_status", "run_code_status", _CODE, module_name=".cli_code"),
     DirectOperation("code_review", "run_code_review", _CODE, module_name=".cli_code"),
     DirectOperation(
+        "code_experiment_run",
+        "run_code_experiment",
+        _CODE,
+        _VALUE,
+        module_name=".cli_code",
+    ),
+    DirectOperation(
         "code_publication_diff",
         "run_code_publication_diff",
         _CODE,

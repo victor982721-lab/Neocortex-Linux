@@ -157,6 +157,10 @@ def test_code_route_configuration_is_translated_without_eager_analyzers(
             ("--code-projects", "--route", "code"),
             "direct code operations cannot be combined with --route",
         ),
+        (
+            ("--code-experiment-run", " "),
+            "--code-experiment-run must be non-empty",
+        ),
     ],
 )
 def test_code_direct_options_reject_ambiguous_or_unsafe_combinations(
@@ -256,6 +260,23 @@ def test_code_review_abstains_without_initializing_absent_state(
     assert not (tmp_path / "code.sqlite3").exists()
     assert not (tmp_path / "framework.sqlite3").exists()
     assert not (tmp_path / "dedup.sqlite3").exists()
+
+
+def test_code_experiment_rejects_an_unknown_proposal_without_initializing_state(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    args = _validated(
+        "--state-directory",
+        str(tmp_path),
+        "--code-experiment-run",
+        "proposal:unknown",
+        "--code-json",
+    )
+
+    assert dispatch_direct(args) == 2
+    assert "code review cannot plan experiments" in capsys.readouterr().err
+    assert not (tmp_path / "code.sqlite3").exists()
 
 
 def test_code_publication_diff_abstains_without_initializing_state(

@@ -262,6 +262,8 @@ def test_review_query_rejects_forged_v16_question_semantics(
     (
         ("interface_surface", "total_modules"),
         ("supply_chain", "analysis_run_id"),
+        ("state_interactions", "literal_sql_sites"),
+        ("analyzer_calibration", "labels_total"),
     ),
 )
 def test_review_query_rejects_tampered_v16_integrated_receipts(
@@ -286,6 +288,29 @@ def test_review_query_rejects_tampered_v16_integrated_receipts(
     current = receipt[field]
     assert isinstance(current, int) and not isinstance(current, bool)
     receipt[field] = current + 1
+
+    with pytest.raises(ValueError, match="code-review/v16"):
+        query_code_analysis(payload, CodeAnalysisQuery(surface="review"))
+
+
+def test_review_query_rejects_a_tampered_v16_experiment_plan(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import _04_Nucleo_Operativo.code_review as review_module
+    from _04_Nucleo_Operativo.code_review import review_code_state
+    from tests.test_code_review import _build_state, _status
+
+    state_directory = tmp_path / "state"
+    _build_state(state_directory)
+    monkeypatch.setattr(
+        review_module,
+        "read_self_analysis_status",
+        lambda _state, _run: _status(tmp_path),
+    )
+    payload = json.loads(json.dumps(review_code_state(state_directory, limit=1).as_payload()))
+    plan = cast("dict[str, object]", payload["experiment_plan"])
+    plan["executable_count"] = 999
 
     with pytest.raises(ValueError, match="code-review/v16"):
         query_code_analysis(payload, CodeAnalysisQuery(surface="review"))

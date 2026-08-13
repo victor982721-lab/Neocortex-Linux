@@ -28,7 +28,7 @@ from .code_invariant_contracts import RUNTIME_SCENARIOS, invariant_registry_fing
 from .code_schema import readonly_code_database
 from .external_evidence_models import external_provider_result_digest
 from .external_evidence_providers import PytestCoverageTrustedDeepProvider
-from .semantic_models import fingerprint_bytes
+from .semantic_models import fingerprint_chunks
 
 CODE_EXPERIMENT_RECEIPT_SCHEMA = "neocortex.code-experiment-receipt/v1"
 CODE_EXPERIMENT_EXECUTION_POLICY = "allowlisted-trusted-deep-scenarios-v1"
@@ -254,9 +254,30 @@ def _file_digest(path: Path) -> str:
     metadata = path.stat()
     if not path.is_file() or metadata.st_size > 4 * 1024 * 1024 * 1024:
         raise ValueError("experiment Code database is missing or exceeds its bound")
-    observed = fingerprint_bytes(path.read_bytes())
+    if metadata.st_size <= 0:
+        raise ValueError("experiment Code database is empty")
+
+    def chunks():
+        with path.open("rb", buffering=0) as stream:
+            before = os.fstat(stream.fileno())
+            if before.st_size != metadata.st_size or before.st_mtime_ns != metadata.st_mtime_ns:
+                raise ValueError("experiment Code database changed before digest read")
+            while chunk := stream.read(1024 * 1024):
+                yield chunk
+            after_stream = os.fstat(stream.fileno())
+            if (
+                after_stream.st_size != before.st_size
+                or after_stream.st_mtime_ns != before.st_mtime_ns
+            ):
+                raise ValueError("experiment Code database changed during digest read")
+
+    observed = fingerprint_chunks(chunks())
     after = path.stat()
-    if after.st_size != metadata.st_size or after.st_mtime_ns != metadata.st_mtime_ns:
+    if (
+        observed.byte_count != metadata.st_size
+        or after.st_size != metadata.st_size
+        or after.st_mtime_ns != metadata.st_mtime_ns
+    ):
         raise ValueError("experiment Code database changed during digest read")
     return f"xxh3_128:{observed.xxh3_128}:xxh3_64:{observed.xxh3_64_guard}"
 

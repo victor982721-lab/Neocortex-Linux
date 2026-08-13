@@ -7,6 +7,7 @@ import json
 import shutil
 import sqlite3
 import sys
+import tempfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, TextIO
@@ -1490,6 +1491,27 @@ def _emit_code_review_ranked_evidence(result: CodeReviewResult) -> None:
             f"authority={plan.authority} "
             f"mutation_authority={int(plan.mutation_authority)}"
         )
+        executable = tuple(
+            proposal
+            for proposal in plan.proposals
+            if proposal.planning_status == "planned" and proposal.runner_kind != "none"
+        )
+        for proposal in executable[:20]:
+            _print_console_line(
+                "CODE_EXPERIMENT_PROPOSAL "
+                f"proposal_id={proposal.proposal_id} "
+                f"question_id={proposal.question_id} "
+                f"subject={json.dumps(proposal.subject_key, ensure_ascii=True)} "
+                f"template={proposal.template_id} cost={proposal.cost_tier} "
+                f"timeout_seconds={proposal.timeout_seconds} "
+                f"scenarios={len(proposal.scenario_ids)} "
+                f"authority={proposal.authority} "
+                f"mutation_authority={int(proposal.mutation_authority)}"
+            )
+        if len(executable) > 20:
+            _print_console_line(
+                f"CODE_EXPERIMENT_PROPOSALS_TRUNCATED total={len(executable)} returned=20"
+            )
     interface = getattr(result, "interface_surface", None)
     if interface is not None:
         _print_console_line(
@@ -1886,6 +1908,59 @@ def run_code_review(args: argparse.Namespace) -> int:
     if result.status != "ready":
         return _emit_code_review_abstention(result)
     return _emit_code_review_ready(result)
+
+
+def run_code_experiment(args: argparse.Namespace) -> int:
+    """Execute one current, registered proposal without writing product state."""
+
+    try:
+        from .code_experiment_executor import execute_code_experiment
+        from .code_review import review_code_state
+
+        result = review_code_state(args.state_directory, limit=50)
+        if result.status != "ready" or result.snapshot is None or result.experiment_plan is None:
+            raise ValueError(f"code review cannot plan experiments: {result.reason}")
+        proposal_id = str(args.code_experiment_run)
+        matches = tuple(
+            proposal
+            for proposal in result.experiment_plan.proposals
+            if proposal.proposal_id == proposal_id
+        )
+        if len(matches) != 1:
+            raise ValueError("experiment proposal is absent from the current code-review plan")
+        proposal = matches[0]
+        if proposal.planning_status != "planned" or proposal.runner_kind == "none":
+            raise ValueError("experiment proposal has no executable allow-listed runner")
+        source_root = Path(result.snapshot.root).resolve(strict=True)
+        with tempfile.TemporaryDirectory(prefix="neocortex-code-experiment-") as temporary:
+            receipt = execute_code_experiment(
+                proposal,
+                source_root=source_root,
+                code_database_path=_state_path(args),
+                scratch_root=Path(temporary),
+                source_version=result.snapshot.processing_signature,
+                expected_source_root=source_root,
+            )
+    except (ImportError, OSError, sqlite3.Error, RuntimeError, TypeError, ValueError) as exc:
+        return _error("code-experiment", exc)
+    if args.code_json:
+        _emit(receipt.as_payload(), json_output=True)
+    else:
+        _print_console_line(
+            "CODE_EXPERIMENT_RECEIPT "
+            f"status={receipt.status} receipt_id={receipt.receipt_id} "
+            f"proposal_id={receipt.proposal_id} passed={receipt.passed} "
+            f"failed={receipt.failed} skipped={receipt.skipped} "
+            f"duration_ms={receipt.duration_ms} "
+            f"state_unchanged={int(receipt.canonical_state_unchanged)} "
+            f"authority={receipt.authority} "
+            f"mutation_authority={int(receipt.mutation_authority)}"
+        )
+        if receipt.reason is not None:
+            _print_console_line(f"CODE_EXPERIMENT_REASON {receipt.reason}")
+        for limitation in receipt.limitations:
+            _print_console_line(f"CODE_EXPERIMENT_LIMITATION {limitation}")
+    return 0 if receipt.status == "passed" else 2
 
 
 def _emit_code_publication_unused(analysis: CodeUnusedAnalysisDelta) -> None:
@@ -2389,6 +2464,7 @@ def run_code_reconstruct(args: argparse.Namespace) -> int:
 
 __all__ = [
     "run_code_doctor",
+    "run_code_experiment",
     "run_code_projects",
     "run_code_publication_diff",
     "run_code_query",

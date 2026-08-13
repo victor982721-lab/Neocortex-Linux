@@ -112,6 +112,14 @@ def register_code_arguments(
         ),
     )
     code.add_argument(
+        "--code-experiment-run",
+        metavar="PROPOSAL_ID",
+        help=(
+            "execute one exact allow-listed experiment proposal from the current "
+            "code-review plan in isolated temporary state"
+        ),
+    )
+    code.add_argument(
         "--code-publication-diff",
         metavar="BASELINE_STATE",
         help=(
@@ -218,6 +226,11 @@ def _validate_code_review_selection(
         raise SystemExit("--code-review-limit requires --code-review")
     if args.code_review and args.code_review_limit > 10 and not args.code_json:
         raise SystemExit("--code-review-limit above 10 requires --code-json")
+    if args.code_experiment_run is not None:
+        if not args.code_experiment_run.strip():
+            raise SystemExit("--code-experiment-run must be non-empty")
+        if len(args.code_experiment_run) > 1024:
+            raise SystemExit("--code-experiment-run cannot exceed 1024 characters")
 
 
 def _validate_code_query_selection(
