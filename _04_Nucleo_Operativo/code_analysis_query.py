@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass
-from typing import Literal, cast
+from typing import Any, Literal, cast
 
 from .code_analysis_epistemics import (
     AnalysisQuestionEvaluation,
@@ -18,7 +18,15 @@ from .code_analyzer_effectiveness import (
     analyzer_effectiveness_questions,
     parse_code_analyzer_effectiveness_payload,
 )
+from .code_analyzer_calibration import (
+    analyzer_calibration_questions,
+    parse_code_analyzer_calibration_payload,
+)
 from .code_assurance_analysis import assurance_questions, parse_code_assurance_payload
+from .code_invariant_assurance_analysis import (
+    invariant_assurance_questions,
+    parse_code_invariant_assurance_payload,
+)
 from .code_architecture_questions import (
     architecture_questions,
     parse_code_architecture_question_payload,
@@ -39,6 +47,14 @@ from .code_interface_surface_analysis import (
     interface_surface_questions,
     parse_code_interface_surface_payload,
 )
+from .code_experiment_planner import (
+    parse_code_experiment_plan_payload,
+    plan_code_experiments,
+)
+from .code_route_capability_analysis import (
+    parse_code_route_capability_payload,
+    route_capability_questions,
+)
 from .code_state_projection_analysis import (
     parse_code_state_projection_payload,
     state_projection_questions,
@@ -46,6 +62,10 @@ from .code_state_projection_analysis import (
 from .code_state_topology_analysis import (
     parse_code_state_topology_payload,
     state_topology_questions,
+)
+from .code_state_interaction_analysis import (
+    parse_code_state_interaction_payload,
+    state_interaction_questions,
 )
 from .code_review_epistemics import STRUCTURAL_HOTSPOT_QUESTION
 from .code_security_dependency_questions import security_dependency_questions
@@ -76,6 +96,7 @@ _CODE_REVIEW_V12 = "neocortex.code-review/v12"
 _CODE_REVIEW_V13 = "neocortex.code-review/v13"
 _CODE_REVIEW_V14 = "neocortex.code-review/v14"
 _CODE_REVIEW_V15 = "neocortex.code-review/v15"
+_CODE_REVIEW_V16 = "neocortex.code-review/v16"
 _CODE_ANALYSIS_EPISTEMICS_V1 = "neocortex.code-analysis-epistemics/v1"
 _UNUSED_V11_STEP_REQUIREMENTS = (
     "verify_import_reexport_callback_registry_protocol_and_entry_point_usage",
@@ -1757,6 +1778,234 @@ def _validate_review_v15_payload(payload: Mapping[str, object]) -> None:
         raise ValueError("code-review/v15 integrated projection is malformed") from exc
 
 
+def _validate_review_v16_payload(payload: Mapping[str, object]) -> None:
+    """Validate v16's new evidence verticals and reproducible experiment plan."""
+
+    added = (
+        "state_interactions",
+        "invariant_assurance",
+        "route_capabilities",
+        "analyzer_calibration",
+        "experiment_plan",
+    )
+    epistemics = _mapping(payload.get("epistemics"))
+    if epistemics is None:
+        raise ValueError("code-review/v16 payload lacks its epistemic contract")
+    if payload.get("status") == "abstained":
+        if any(payload.get(key) is not None for key in added):
+            raise ValueError("abstained code-review/v16 payload asserts integrated evidence")
+        projected = dict(payload)
+        projected["schema"] = _CODE_REVIEW_V15
+        for key in added:
+            projected.pop(key, None)
+        _validate_review_v15_payload(projected)
+        return
+    try:
+        specs, evaluations = parse_analysis_questions_payload(epistemics)
+        findings = _mapping_items(payload.get("findings"))
+        structural_payload = _mapping(payload.get("structural_analysis"))
+        snapshot = _mapping(payload.get("snapshot"))
+        if structural_payload is None or snapshot is None:
+            raise ValueError("ready code-review/v16 payload lacks structural snapshot evidence")
+        structural = parse_code_class_surface_payload(structural_payload)
+        class_specs, class_evaluations = expected_class_surface_questions(
+            structural,
+            rank_offset=len(findings),
+        )
+        base_spec_count = (1 if findings else 0) + len(class_specs)
+        base_evaluation_count = len(findings) + len(class_evaluations)
+        projected = dict(payload)
+        projected["schema"] = _CODE_REVIEW_V14
+        for key in (
+            "state_topology",
+            "change_evolution",
+            "assurance",
+            "capability_reachability",
+            "analyzer_effectiveness",
+            "interface_surface",
+            *added,
+        ):
+            projected.pop(key, None)
+        projected["epistemics"] = analysis_questions_payload(
+            specs[:base_spec_count],
+            evaluations[:base_evaluation_count],
+        )
+        _validate_review_v14_payload(projected)
+
+        nested_keys = (
+            "state_topology",
+            "state_projection",
+            "state_interactions",
+            "architecture",
+            "change_evolution",
+            "assurance",
+            "invariant_assurance",
+            "capability_reachability",
+            "route_capabilities",
+            "analyzer_effectiveness",
+            "analyzer_calibration",
+            "experiment_plan",
+            "supply_chain",
+            "interface_surface",
+        )
+        nested = {key: _mapping(payload.get(key)) for key in nested_keys}
+        if any(value is None for value in nested.values()):
+            raise ValueError("ready code-review/v16 payload lacks integrated evidence")
+        state_topology = parse_code_state_topology_payload(cast(Any, nested["state_topology"]))
+        state_projection = parse_code_state_projection_payload(
+            cast(Any, nested["state_projection"])
+        )
+        state_interactions = parse_code_state_interaction_payload(
+            cast(Any, nested["state_interactions"])
+        )
+        architecture = parse_code_architecture_question_payload(cast(Any, nested["architecture"]))
+        change_evolution = parse_code_change_evolution_payload(
+            cast(Any, nested["change_evolution"])
+        )
+        assurance = parse_code_assurance_payload(cast(Any, nested["assurance"]))
+        invariant_assurance = parse_code_invariant_assurance_payload(
+            cast(Any, nested["invariant_assurance"])
+        )
+        capability = parse_capability_reachability_payload(
+            cast(Any, nested["capability_reachability"])
+        )
+        route_capabilities = parse_code_route_capability_payload(
+            cast(Any, nested["route_capabilities"])
+        )
+        analyzer_effectiveness = parse_code_analyzer_effectiveness_payload(
+            cast(Any, nested["analyzer_effectiveness"])
+        )
+        analyzer_calibration = parse_code_analyzer_calibration_payload(
+            cast(Any, nested["analyzer_calibration"])
+        )
+        experiment_plan = parse_code_experiment_plan_payload(cast(Any, nested["experiment_plan"]))
+        supply_chain = parse_code_supply_chain_payload(cast(Any, nested["supply_chain"]))
+        interface_surface = parse_code_interface_surface_payload(
+            cast(Any, nested["interface_surface"])
+        )
+        if (
+            state_topology.source_version != _CODE_REVIEW_V16
+            or capability.source_version != _CODE_REVIEW_V16
+            or route_capabilities.source_version != _CODE_REVIEW_V16
+            or analyzer_calibration.source_version != _CODE_REVIEW_V16
+        ):
+            raise ValueError("code-review/v16 integrated source version is inconsistent")
+        snapshot_id = _first_text(snapshot, "processing_signature")
+        snapshot_freshness = _first_text(snapshot, "freshness")
+        if snapshot_id is None or snapshot_freshness not in {
+            "current",
+            "publication_only",
+            "unknown",
+        }:
+            raise ValueError("code-review/v16 snapshot identity is inconsistent")
+        resolved_freshness = cast(
+            Literal["current", "publication_only", "unknown"], snapshot_freshness
+        )
+        if (
+            assurance.snapshot_id != snapshot_id
+            or assurance.snapshot_freshness != snapshot_freshness
+            or invariant_assurance.snapshot_id != snapshot_id
+            or invariant_assurance.snapshot_freshness != snapshot_freshness
+        ):
+            raise ValueError("code-review/v16 assurance snapshot is inconsistent")
+        if state_interactions.status != "abstained" and (
+            state_interactions.analysis_run_id != snapshot.get("analysis_run_id")
+            or state_interactions.source_processing_signature != snapshot_id
+        ):
+            raise ValueError("code-review/v16 state interaction snapshot is inconsistent")
+        if change_evolution.change_surface.status == "ready" and (
+            change_evolution.change_surface.current_analysis_run_id
+            != snapshot.get("analysis_run_id")
+            or change_evolution.change_surface.processing_signature != snapshot_id
+        ):
+            raise ValueError("code-review/v16 change transition snapshot is inconsistent")
+        if supply_chain.analysis_run_id != snapshot.get("analysis_run_id"):
+            raise ValueError("code-review/v16 supply-chain snapshot is inconsistent")
+        if interface_surface.status == "ready" and (
+            interface_surface.analysis_run_id != snapshot.get("analysis_run_id")
+            or interface_surface.processing_signature != snapshot_id
+        ):
+            raise ValueError("code-review/v16 interface surface snapshot is inconsistent")
+        if analyzer_effectiveness.status == "ready" and (
+            analyzer_effectiveness.analysis_run_id != snapshot.get("analysis_run_id")
+            or analyzer_effectiveness.framework_run_id != snapshot.get("framework_run_id")
+            or analyzer_effectiveness.processing_signature != snapshot_id
+            or analyzer_effectiveness.snapshot_freshness != snapshot_freshness
+            or analyzer_effectiveness.source_version != _CODE_REVIEW_V16
+        ):
+            raise ValueError("code-review/v16 analyzer effectiveness snapshot is inconsistent")
+
+        expected_specs: list[AnalysisQuestionSpec] = []
+        expected_evaluations: list[AnalysisQuestionEvaluation] = []
+        offset = base_evaluation_count
+
+        def append_questions(
+            resolved: tuple[
+                tuple[AnalysisQuestionSpec, ...], tuple[AnalysisQuestionEvaluation, ...]
+            ],
+        ) -> None:
+            nonlocal offset
+            new_specs, new_evaluations = resolved
+            expected_specs.extend(new_specs)
+            expected_evaluations.extend(new_evaluations)
+            offset += len(new_evaluations)
+
+        append_questions(
+            architecture_questions(
+                architecture,
+                snapshot_id=snapshot_id,
+                snapshot_freshness=resolved_freshness,
+                rank_offset=offset,
+            )
+        )
+        append_questions(
+            interface_surface_questions(
+                interface_surface,
+                snapshot_freshness=resolved_freshness,
+                rank_offset=offset,
+            )
+        )
+        append_questions(state_projection_questions(state_projection, rank=offset + 1))
+        append_questions(state_topology_questions(state_topology, rank=offset + 1))
+        append_questions(
+            state_interaction_questions(
+                state_interactions,
+                snapshot_id=snapshot_id,
+                snapshot_freshness=resolved_freshness,
+                rank_offset=offset,
+            )
+        )
+        append_questions(
+            expected_code_change_evolution_questions(change_evolution, rank_offset=offset)
+        )
+        append_questions(assurance_questions(assurance, rank_offset=offset))
+        append_questions(invariant_assurance_questions(invariant_assurance, rank_offset=offset))
+        append_questions(
+            security_dependency_questions(
+                supply_chain,
+                snapshot_id=snapshot_id,
+                snapshot_freshness=resolved_freshness,
+                rank_offset=offset,
+            )
+        )
+        append_questions(capability_reachability_questions(capability, rank_offset=offset))
+        append_questions(route_capability_questions(route_capabilities, rank_offset=offset))
+        append_questions(
+            analyzer_effectiveness_questions(analyzer_effectiveness, rank_offset=offset)
+        )
+        append_questions(analyzer_calibration_questions(analyzer_calibration, rank_offset=offset))
+        if specs[base_spec_count:] != tuple(expected_specs) or evaluations[
+            base_evaluation_count:
+        ] != tuple(expected_evaluations):
+            raise ValueError("code-review/v16 integrated question projection is not canonical")
+        if experiment_plan != plan_code_experiments(specs, evaluations):
+            raise ValueError("code-review/v16 experiment plan is not canonical")
+    except (TypeError, ValueError) as exc:
+        if isinstance(exc, ValueError) and str(exc).startswith("code-review/v16"):
+            raise
+        raise ValueError("code-review/v16 integrated projection is malformed") from exc
+
+
 def query_code_analysis(
     payload: Mapping[str, object],
     query: CodeAnalysisQuery,
@@ -1775,7 +2024,9 @@ def query_code_analysis(
         )
     if query.surface == "review":
         review_schema = payload.get("schema")
-        if review_schema == _CODE_REVIEW_V15:
+        if review_schema == _CODE_REVIEW_V16:
+            _validate_review_v16_payload(payload)
+        elif review_schema == _CODE_REVIEW_V15:
             _validate_review_v15_payload(payload)
         elif review_schema == _CODE_REVIEW_V14:
             _validate_review_v14_payload(payload)

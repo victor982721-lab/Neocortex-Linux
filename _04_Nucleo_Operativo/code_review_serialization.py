@@ -13,7 +13,7 @@ from .code_analysis_epistemics import (
 from .code_external_evidence import external_status_digest_payload
 from .semantic_models import canonical_json, fingerprint_text
 
-CODE_REVIEW_SCHEMA = "neocortex.code-review/v15"
+CODE_REVIEW_SCHEMA = "neocortex.code-review/v16"
 CODE_REVIEW_COMPATIBLE_SCHEMAS: tuple[str, ...] = ()
 RecommendationStatus = Literal["ready", "abstained", "not_evaluated"]
 
@@ -49,10 +49,15 @@ def build_code_review_digest(
     structural_analysis: Any,
     state_projection: Any,
     state_topology: Any,
+    state_interactions: Any,
     change_evolution: Any,
     assurance: Any,
+    invariant_assurance: Any,
     capability_reachability: Any,
+    route_capabilities: Any,
     analyzer_effectiveness: Any,
+    analyzer_calibration: Any,
+    experiment_plan: Any,
     interface_surface: Any,
     unused_analysis: Any,
     supply_chain: Any,
@@ -98,10 +103,15 @@ def build_code_review_digest(
             "structural_analysis": structural_analysis.as_payload(),
             "state_projection": state_projection.as_payload(),
             "state_topology": state_topology.as_payload(),
+            "state_interactions": state_interactions.as_payload(),
             "change_evolution": change_evolution.as_payload(),
             "assurance": assurance.as_payload(),
+            "invariant_assurance": invariant_assurance.as_payload(),
             "capability_reachability": capability_reachability.as_payload(),
+            "route_capabilities": route_capabilities.as_payload(),
             "analyzer_effectiveness": analyzer_effectiveness.as_payload(),
+            "analyzer_calibration": analyzer_calibration.as_payload(),
+            "experiment_plan": experiment_plan.as_payload(),
             "interface_surface": interface_surface.as_payload(),
             "unused_analysis": unused_analysis.digest_payload(),
             "supply_chain": {
@@ -139,10 +149,15 @@ def rebuild_code_review_result_digest(result: Any) -> CodeReviewDigest:
         result.structural_analysis,
         result.state_projection,
         result.state_topology,
+        result.state_interactions,
         result.change_evolution,
         result.assurance,
+        result.invariant_assurance,
         result.capability_reachability,
+        result.route_capabilities,
         result.analyzer_effectiveness,
+        result.analyzer_calibration,
+        result.experiment_plan,
         result.interface_surface,
         result.unused_analysis,
         result.supply_chain,
@@ -170,10 +185,15 @@ def rebuild_code_review_result_digest(result: Any) -> CodeReviewDigest:
         structural_analysis=result.structural_analysis,
         state_projection=result.state_projection,
         state_topology=result.state_topology,
+        state_interactions=result.state_interactions,
         change_evolution=result.change_evolution,
         assurance=result.assurance,
+        invariant_assurance=result.invariant_assurance,
         capability_reachability=result.capability_reachability,
+        route_capabilities=result.route_capabilities,
         analyzer_effectiveness=result.analyzer_effectiveness,
+        analyzer_calibration=result.analyzer_calibration,
+        experiment_plan=result.experiment_plan,
         interface_surface=result.interface_surface,
         unused_analysis=result.unused_analysis,
         supply_chain=result.supply_chain,

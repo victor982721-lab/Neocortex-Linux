@@ -609,7 +609,7 @@ def test_review_ranks_confirmed_hotspots_deterministically_with_diversity(
 
     assert first.status == "ready"
     assert first_json == second_json
-    assert first.as_payload()["schema"] == "neocortex.code-review/v15"
+    assert first.as_payload()["schema"] == "neocortex.code-review/v16"
     assert first.as_payload()["compatible_schemas"] == []
     assert first.supply_chain is not None
     assert first.supply_chain.status == "abstained"
@@ -671,8 +671,13 @@ def test_review_ranks_confirmed_hotspots_deterministically_with_diversity(
         "architecture.static_import_graph_is_comparably_observed",
         "architecture.declared_import_contracts_are_evaluated",
         "architecture.logical_owner_mapping_is_explicitly_declared",
+        "state.static_sql_interactions_are_resolved",
+        "state.declared_workflow_sql_matches_implementation",
+        "assurance.declared_invariant_scenarios_are_observed",
+        "capability.route_portfolio_evidence_is_resolved",
+        "analyzer.calibration_evidence_is_independent_and_antigoodhart_resistant",
     }
-    assert len(epistemics["evaluations"]) == len(first.findings) + 17
+    assert len(epistemics["evaluations"]) == len(first.findings) + 25
     first_evaluation = epistemics["evaluations"][0]
     assert first_evaluation["observation_status"] == "confirmed"
     assert first_evaluation["inference_status"] == "abstained"

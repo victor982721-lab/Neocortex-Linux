@@ -1351,6 +1351,24 @@ def _emit_code_review_ranked_evidence(result: CodeReviewResult) -> None:
             f"authority={state_topology.authority} "
             f"mutation_authority={int(state_topology.mutation_authority)}"
         )
+    state_interactions = getattr(result, "state_interactions", None)
+    if state_interactions is not None:
+        _print_console_line(
+            "CODE_STATE_INTERACTIONS "
+            f"status={state_interactions.status} "
+            f"reason={json.dumps(state_interactions.reason, ensure_ascii=True)} "
+            f"files={state_interactions.source_files} "
+            f"literal_sql={state_interactions.literal_sql_sites} "
+            f"parsed_sql={state_interactions.parsed_sql_sites} "
+            f"dynamic_sql={state_interactions.dynamic_sql_sites} "
+            f"parse_errors={state_interactions.parse_error_sites} "
+            f"interactions={state_interactions.interactions_count} "
+            f"transactions={state_interactions.transaction_events_count} "
+            f"workflow_boundaries={len(state_interactions.workflow_boundaries)} "
+            f"parser={state_interactions.sql_parser} "
+            f"authority={state_interactions.authority} "
+            f"mutation_authority={int(state_interactions.mutation_authority)}"
+        )
     change_evolution = getattr(result, "change_evolution", None)
     if change_evolution is not None:
         surface = change_evolution.change_surface
@@ -1379,6 +1397,21 @@ def _emit_code_review_ranked_evidence(result: CodeReviewResult) -> None:
             f"authority={assurance.authority} "
             f"mutation_authority={int(assurance.mutation_authority)}"
         )
+    invariant_assurance = getattr(result, "invariant_assurance", None)
+    if invariant_assurance is not None:
+        _print_console_line(
+            "CODE_INVARIANT_ASSURANCE "
+            f"status={invariant_assurance.status} "
+            f"reason={json.dumps(invariant_assurance.reason, ensure_ascii=True)} "
+            f"provider={invariant_assurance.provider_status} "
+            f"invariants={invariant_assurance.declared_invariants} "
+            f"scenarios={invariant_assurance.declared_scenarios} "
+            f"resolved={invariant_assurance.resolved_scenarios} "
+            f"passed={invariant_assurance.passed_scenarios} "
+            f"counterevidence={invariant_assurance.counterevidence_scenarios} "
+            f"authority={invariant_assurance.authority} "
+            f"mutation_authority={int(invariant_assurance.mutation_authority)}"
+        )
     capability = getattr(result, "capability_reachability", None)
     if capability is not None:
         published = sum(item.manifest_matching_current_heads for item in capability.observations)
@@ -1392,6 +1425,20 @@ def _emit_code_review_ranked_evidence(result: CodeReviewResult) -> None:
             f"manifest_matching_current_heads={published} "
             f"authority={capability.authority} "
             f"mutation_authority={int(capability.mutation_authority)}"
+        )
+    routes = getattr(result, "route_capabilities", None)
+    if routes is not None:
+        _print_console_line(
+            "CODE_ROUTE_CAPABILITIES "
+            f"status={routes.status} "
+            f"reason={json.dumps(routes.reason, ensure_ascii=True)} "
+            f"routes={len(routes.observations)} "
+            "causal="
+            f"{sum(item.causal_durable_output_observed for item in routes.observations)} "
+            "owner_state_unattributed="
+            f"{sum(item.evidence_level == 'owner_state_observed_unattributed' for item in routes.observations)} "
+            f"authority={routes.authority} "
+            f"mutation_authority={int(routes.mutation_authority)}"
         )
     analyzer = getattr(result, "analyzer_effectiveness", None)
     if analyzer is not None:
@@ -1412,6 +1459,36 @@ def _emit_code_review_ranked_evidence(result: CodeReviewResult) -> None:
             f"independent_labels={analyzer.independent_outcome_labels} "
             f"authority={analyzer.authority} "
             f"mutation_authority={int(analyzer.mutation_authority)}"
+        )
+    calibration = getattr(result, "analyzer_calibration", None)
+    if calibration is not None:
+        _print_console_line(
+            "CODE_ANALYZER_CALIBRATION "
+            f"status={calibration.status} "
+            f"reason={json.dumps(calibration.reason, ensure_ascii=True)} "
+            f"labels={calibration.labels_total} "
+            f"independent={calibration.independent_labels} "
+            f"provisional={calibration.provisional_labels} "
+            f"holdout={calibration.holdout_labels} "
+            f"antigoodhart_passed={calibration.anti_goodhart_passed} "
+            f"antigoodhart_failed={calibration.anti_goodhart_failed} "
+            f"antigoodhart_missing={calibration.anti_goodhart_not_observed} "
+            f"authority={calibration.authority} "
+            f"mutation_authority={int(calibration.mutation_authority)}"
+        )
+    plan = getattr(result, "experiment_plan", None)
+    if plan is not None:
+        _print_console_line(
+            "CODE_EXPERIMENT_PLAN "
+            f"status={plan.status} "
+            f"reason={json.dumps(plan.reason, ensure_ascii=True)} "
+            f"evaluations={plan.source_evaluation_count} "
+            f"required={plan.experiment_required_count} "
+            f"planned={plan.planned_count} "
+            f"executable={plan.executable_count} "
+            f"registry_gaps={plan.registry_gap_count} "
+            f"authority={plan.authority} "
+            f"mutation_authority={int(plan.mutation_authority)}"
         )
     interface = getattr(result, "interface_surface", None)
     if interface is not None:

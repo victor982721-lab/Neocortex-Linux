@@ -207,7 +207,7 @@ def test_review_query_accepts_and_indexes_source_linked_v13_questions(
     assert result["matches"][0]["facts"]["mutation_authority"] is False
 
 
-def test_review_query_rejects_forged_v15_evidence_linkage(
+def test_review_query_rejects_forged_v16_evidence_linkage(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -228,11 +228,11 @@ def test_review_query_rejects_forged_v15_evidence_linkage(
     evidence = cast("list[dict[str, object]]", evaluations[0]["evidence"])
     evidence[0]["source_record_id"] = "forged"
 
-    with pytest.raises(ValueError, match="code-review/v15"):
+    with pytest.raises(ValueError, match="code-review/v16"):
         query_code_analysis(payload, CodeAnalysisQuery(surface="review"))
 
 
-def test_review_query_rejects_forged_v15_question_semantics(
+def test_review_query_rejects_forged_v16_question_semantics(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -253,7 +253,7 @@ def test_review_query_rejects_forged_v15_question_semantics(
     actions = cast("list[dict[str, object]]", specs[0]["next_actions"])
     actions[0]["description"] = "Delete the production symbol now."
 
-    with pytest.raises(ValueError, match="v15 integrated projection is malformed"):
+    with pytest.raises(ValueError, match="v16 integrated projection is malformed"):
         query_code_analysis(payload, CodeAnalysisQuery(surface="review"))
 
 
@@ -264,7 +264,7 @@ def test_review_query_rejects_forged_v15_question_semantics(
         ("supply_chain", "analysis_run_id"),
     ),
 )
-def test_review_query_rejects_tampered_v15_integrated_receipts(
+def test_review_query_rejects_tampered_v16_integrated_receipts(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     projection: str,
@@ -287,7 +287,7 @@ def test_review_query_rejects_tampered_v15_integrated_receipts(
     assert isinstance(current, int) and not isinstance(current, bool)
     receipt[field] = current + 1
 
-    with pytest.raises(ValueError, match="code-review/v15"):
+    with pytest.raises(ValueError, match="code-review/v16"):
         query_code_analysis(payload, CodeAnalysisQuery(surface="review"))
 
 

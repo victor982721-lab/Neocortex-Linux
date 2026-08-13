@@ -14,6 +14,7 @@ from .code_analysis_epistemics import (
 )
 from .code_architecture_analysis import CodeArchitectureAnalysis
 from .code_analyzer_effectiveness import CodeAnalyzerEffectivenessAnalysis
+from .code_analyzer_calibration import CodeAnalyzerCalibrationAnalysis
 from .code_assurance_analysis import CodeAssuranceAnalysis
 from .code_capability_reachability_analysis import CodeCapabilityReachabilityAnalysis
 from .code_change_evolution_analysis import CodeChangeEvolutionAnalysis
@@ -34,6 +35,10 @@ from .code_engineering_analytics import (
 )
 from .code_external_evidence import ExternalEvidenceStatus
 from .code_interface_surface_analysis import CodeInterfaceSurfaceAnalysis
+from .code_experiment_planner import CodeExperimentPlan, plan_code_experiments
+from .code_invariant_assurance_analysis import CodeInvariantAssuranceAnalysis
+from .code_route_capability_analysis import CodeRouteCapabilityAnalysis
+from .code_state_interaction_analysis import CodeStateInteractionAnalysis
 from .code_supply_chain_analysis import (
     CodeSupplyChainAnalysis,
     SupplyChainGateEvaluation,
@@ -58,8 +63,8 @@ from .code_state_topology_analysis import CodeStateTopologyAnalysis
 from .external_evidence_models import ExternalEvidenceSuiteStatus
 from .semantic_models import canonical_json, fingerprint_text
 
-# v15 integrates independently bounded state topology, change evolution,
-# assurance, and capability reachability projections into one public review.
+# v16 integrates SQL/state interactions, declared invariant outcomes, the
+# built-in route portfolio, explicit calibration, and an experiment plan.
 # Earlier contracts cannot satisfy the expanded wire, so no compatibility is
 # claimed without an explicit adapter.
 CODE_REVIEW_COVERAGE_EXAMPLE_LIMIT = 20
@@ -605,10 +610,15 @@ class CodeReviewResult:
     structural_analysis: CodeClassSurfaceAnalysis | None = None
     state_projection: CodeStateProjectionAnalysis | None = None
     state_topology: CodeStateTopologyAnalysis | None = None
+    state_interactions: CodeStateInteractionAnalysis | None = None
     change_evolution: CodeChangeEvolutionAnalysis | None = None
     assurance: CodeAssuranceAnalysis | None = None
+    invariant_assurance: CodeInvariantAssuranceAnalysis | None = None
     capability_reachability: CodeCapabilityReachabilityAnalysis | None = None
+    route_capabilities: CodeRouteCapabilityAnalysis | None = None
     analyzer_effectiveness: CodeAnalyzerEffectivenessAnalysis | None = None
+    analyzer_calibration: CodeAnalyzerCalibrationAnalysis | None = None
+    experiment_plan: CodeExperimentPlan | None = None
     interface_surface: CodeInterfaceSurfaceAnalysis | None = None
     question_specs: tuple[AnalysisQuestionSpec, ...] = ()
     question_evaluations: tuple[AnalysisQuestionEvaluation, ...] = ()
@@ -621,15 +631,15 @@ class CodeReviewResult:
         if self.work_package_status not in {"ready", "abstained", "not_evaluated"}:
             raise ValueError("invalid code-review work-package status")
         if self.recommendations:
-            raise ValueError("code-review/v15 cannot publish semantic change recommendations")
+            raise ValueError("code-review/v16 cannot publish semantic change recommendations")
         if self.recommendation_status == "ready":
-            raise ValueError("code-review/v15 recommendation status must abstain")
+            raise ValueError("code-review/v16 recommendation status must abstain")
         if self.recommendation_status == "abstained" and not self.recommendation_reason:
             raise ValueError("abstained recommendation status requires a reason")
         if self.recommendation_status == "not_evaluated" and not self.recommendation_reason:
             raise ValueError("not-evaluated recommendation status requires a reason")
         if any(package.package_kind != "unused_characterization" for package in self.work_packages):
-            raise ValueError("code-review/v15 cannot publish hotspot change packages")
+            raise ValueError("code-review/v16 cannot publish hotspot change packages")
         if (self.work_package_status == "ready") != bool(self.work_packages):
             raise ValueError("work-package readiness must match published packages")
         if self.work_package_status == "ready" and self.work_package_reason is not None:
@@ -653,10 +663,15 @@ class CodeReviewResult:
                         self.supply_chain,
                         self.engineering_analytics,
                         self.state_topology,
+                        self.state_interactions,
                         self.change_evolution,
                         self.assurance,
+                        self.invariant_assurance,
                         self.capability_reachability,
+                        self.route_capabilities,
                         self.analyzer_effectiveness,
+                        self.analyzer_calibration,
+                        self.experiment_plan,
                         self.interface_surface,
                         self.digest,
                     )
@@ -684,14 +699,24 @@ class CodeReviewResult:
             raise ValueError("ready code-review result requires a state projection result")
         if self.state_topology is None:
             raise ValueError("ready code-review result requires state topology evidence")
+        if self.state_interactions is None:
+            raise ValueError("ready code-review result requires state interaction evidence")
         if self.change_evolution is None:
             raise ValueError("ready code-review result requires change evolution evidence")
         if self.assurance is None:
             raise ValueError("ready code-review result requires assurance evidence")
+        if self.invariant_assurance is None:
+            raise ValueError("ready code-review result requires invariant assurance evidence")
         if self.capability_reachability is None:
             raise ValueError("ready code-review result requires capability reachability evidence")
+        if self.route_capabilities is None:
+            raise ValueError("ready code-review result requires route capability evidence")
         if self.analyzer_effectiveness is None:
             raise ValueError("ready code-review result requires analyzer effectiveness evidence")
+        if self.analyzer_calibration is None:
+            raise ValueError("ready code-review result requires analyzer calibration evidence")
+        if self.experiment_plan is None:
+            raise ValueError("ready code-review result requires an experiment plan")
         if self.interface_surface is None:
             raise ValueError("ready code-review result requires interface surface evidence")
         if self.supply_chain is None:
@@ -704,6 +729,8 @@ class CodeReviewResult:
         if (
             self.state_topology.source_version != CODE_REVIEW_SCHEMA
             or self.capability_reachability.source_version != CODE_REVIEW_SCHEMA
+            or self.route_capabilities.source_version != CODE_REVIEW_SCHEMA
+            or self.analyzer_calibration.source_version != CODE_REVIEW_SCHEMA
         ):
             raise ValueError("code-review integrated projection version is inconsistent")
         if (
@@ -720,6 +747,17 @@ class CodeReviewResult:
             or self.analyzer_effectiveness.source_version != CODE_REVIEW_SCHEMA
         ):
             raise ValueError("code-review analyzer effectiveness disagrees with its snapshot")
+        if self.state_interactions.status != "abstained" and (
+            self.state_interactions.analysis_run_id != self.snapshot.analysis_run_id
+            or self.state_interactions.source_processing_signature
+            != self.snapshot.processing_signature
+        ):
+            raise ValueError("code-review state interactions disagree with its snapshot")
+        if (
+            self.invariant_assurance.snapshot_id != self.snapshot.processing_signature
+            or self.invariant_assurance.snapshot_freshness != self.snapshot.freshness
+        ):
+            raise ValueError("code-review invariant assurance disagrees with its snapshot")
         if self.supply_chain.analysis_run_id != self.snapshot.analysis_run_id:
             raise ValueError("code-review supply-chain evidence disagrees with its snapshot")
         if self.interface_surface.status == "ready" and (
@@ -751,11 +789,19 @@ class CodeReviewResult:
             interface_surface=self.interface_surface,
             capability_reachability=self.capability_reachability,
             analyzer_effectiveness=self.analyzer_effectiveness,
+            state_interactions=self.state_interactions,
+            invariant_assurance=self.invariant_assurance,
+            route_capabilities=self.route_capabilities,
+            analyzer_calibration=self.analyzer_calibration,
         )
         if self.question_specs != expected_specs or self.question_evaluations != (
             expected_evaluations
         ):
             raise ValueError("code-review questions are not reproducible from published evidence")
+        if self.experiment_plan != plan_code_experiments(
+            self.question_specs, self.question_evaluations
+        ):
+            raise ValueError("code-review experiment plan is not reproducible from questions")
 
     def as_payload(self) -> dict[str, object]:
         if self.status == "ready":
@@ -815,19 +861,36 @@ class CodeReviewResult:
             "state_topology": (
                 None if self.state_topology is None else self.state_topology.as_payload()
             ),
+            "state_interactions": (
+                None if self.state_interactions is None else self.state_interactions.as_payload()
+            ),
             "change_evolution": (
                 None if self.change_evolution is None else self.change_evolution.as_payload()
             ),
             "assurance": None if self.assurance is None else self.assurance.as_payload(),
+            "invariant_assurance": (
+                None if self.invariant_assurance is None else self.invariant_assurance.as_payload()
+            ),
             "capability_reachability": (
                 None
                 if self.capability_reachability is None
                 else self.capability_reachability.as_payload()
             ),
+            "route_capabilities": (
+                None if self.route_capabilities is None else self.route_capabilities.as_payload()
+            ),
             "analyzer_effectiveness": (
                 None
                 if self.analyzer_effectiveness is None
                 else self.analyzer_effectiveness.as_payload()
+            ),
+            "analyzer_calibration": (
+                None
+                if self.analyzer_calibration is None
+                else self.analyzer_calibration.as_payload()
+            ),
+            "experiment_plan": (
+                None if self.experiment_plan is None else self.experiment_plan.as_payload()
             ),
             "interface_surface": (
                 None if self.interface_surface is None else self.interface_surface.as_payload()

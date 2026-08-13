@@ -24,6 +24,10 @@ from .code_analysis_epistemics import (
 from .code_assurance_analysis import CodeAssuranceAnalysis, assurance_questions
 from .code_architecture_analysis import CodeArchitectureAnalysis
 from .code_architecture_questions import architecture_questions
+from .code_analyzer_calibration import (
+    CodeAnalyzerCalibrationAnalysis,
+    analyzer_calibration_questions,
+)
 from .code_analyzer_effectiveness import (
     CodeAnalyzerEffectivenessAnalysis,
     analyzer_effectiveness_questions,
@@ -45,6 +49,14 @@ from .code_interface_surface_analysis import (
     CodeInterfaceSurfaceAnalysis,
     interface_surface_questions,
 )
+from .code_invariant_assurance_analysis import (
+    CodeInvariantAssuranceAnalysis,
+    invariant_assurance_questions,
+)
+from .code_route_capability_analysis import (
+    CodeRouteCapabilityAnalysis,
+    route_capability_questions,
+)
 from .code_review_actionability import (
     CODE_REVIEW_QUESTION_ID,
     CODE_REVIEW_QUESTION_VERSION,
@@ -55,6 +67,10 @@ from .code_supply_chain_analysis import CodeSupplyChainAnalysis
 from .code_state_topology_analysis import (
     CodeStateTopologyAnalysis,
     state_topology_questions,
+)
+from .code_state_interaction_analysis import (
+    CodeStateInteractionAnalysis,
+    state_interaction_questions,
 )
 from .code_state_projection_analysis import (
     CodeStateProjectionAnalysis,
@@ -493,8 +509,12 @@ def expected_integrated_code_review_questions(
     interface_surface: CodeInterfaceSurfaceAnalysis,
     capability_reachability: CodeCapabilityReachabilityAnalysis,
     analyzer_effectiveness: CodeAnalyzerEffectivenessAnalysis,
+    state_interactions: CodeStateInteractionAnalysis,
+    invariant_assurance: CodeInvariantAssuranceAnalysis,
+    route_capabilities: CodeRouteCapabilityAnalysis,
+    analyzer_calibration: CodeAnalyzerCalibrationAnalysis,
 ) -> tuple[tuple[AnalysisQuestionSpec, ...], tuple[AnalysisQuestionEvaluation, ...]]:
-    """Rebuild every v15 question from its already-resolved owner projection."""
+    """Rebuild every v16 question from its already-resolved owner projection."""
 
     base_specs, base_evaluations = expected_code_review_questions(
         findings,
@@ -535,6 +555,15 @@ def expected_integrated_code_review_questions(
     specs.extend(topology_specs)
     evaluations.extend(topology_evaluations)
 
+    interaction_specs, interaction_evaluations = state_interaction_questions(
+        state_interactions,
+        snapshot_id=snapshot.processing_signature,
+        snapshot_freshness=snapshot.freshness,
+        rank_offset=len(evaluations),
+    )
+    specs.extend(interaction_specs)
+    evaluations.extend(interaction_evaluations)
+
     evolution_specs, evolution_evaluations = expected_code_change_evolution_questions(
         change_evolution,
         rank_offset=len(evaluations),
@@ -548,6 +577,13 @@ def expected_integrated_code_review_questions(
     )
     specs.extend(assurance_specs)
     evaluations.extend(assurance_evaluations)
+
+    invariant_specs, invariant_evaluations = invariant_assurance_questions(
+        invariant_assurance,
+        rank_offset=len(evaluations),
+    )
+    specs.extend(invariant_specs)
+    evaluations.extend(invariant_evaluations)
 
     security_specs, security_evaluations = security_dependency_questions(
         supply_chain,
@@ -565,12 +601,26 @@ def expected_integrated_code_review_questions(
     specs.extend(capability_specs)
     evaluations.extend(capability_evaluations)
 
+    route_specs, route_evaluations = route_capability_questions(
+        route_capabilities,
+        rank_offset=len(evaluations),
+    )
+    specs.extend(route_specs)
+    evaluations.extend(route_evaluations)
+
     effectiveness_specs, effectiveness_evaluations = analyzer_effectiveness_questions(
         analyzer_effectiveness,
         rank_offset=len(evaluations),
     )
     specs.extend(effectiveness_specs)
     evaluations.extend(effectiveness_evaluations)
+
+    calibration_specs, calibration_evaluations = analyzer_calibration_questions(
+        analyzer_calibration,
+        rank_offset=len(evaluations),
+    )
+    specs.extend(calibration_specs)
+    evaluations.extend(calibration_evaluations)
 
     frozen_specs = tuple(specs)
     frozen_evaluations = tuple(evaluations)

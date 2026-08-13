@@ -14,6 +14,7 @@ from .code_architecture_analysis import (
     read_code_architecture_analysis,
 )
 from .code_analyzer_effectiveness import analyze_code_analyzer_effectiveness
+from .code_analyzer_calibration import analyze_code_analyzer_calibration
 from .code_assurance_analysis import analyze_code_assurance
 from .code_capability_reachability_analysis import (
     abstained_capability_reachability,
@@ -30,6 +31,12 @@ from .code_coverage_analysis import (
 from .code_engineering_analytics import (
     CodeEngineeringAnalytics,
     analyze_code_engineering,
+)
+from .code_experiment_planner import plan_code_experiments
+from .code_invariant_assurance_analysis import analyze_code_invariant_assurance
+from .code_route_capability_analysis import (
+    abstained_route_capability_analysis,
+    analyze_route_capabilities,
 )
 from .code_external_evidence import (
     ExternalEvidenceStatus,
@@ -87,6 +94,7 @@ from .code_state_projection_analysis import (
     abstained_code_state_projection,
     analyze_text_semantic_projection,
 )
+from .code_state_interaction_analysis import analyze_code_state_interactions
 from .code_state_topology_analysis import (
     CodeStateTopologyResolutionError,
     abstained_code_state_topology,
@@ -1000,6 +1008,10 @@ def review_code_state(
                 document_state,
                 source_version=CODE_REVIEW_SCHEMA,
             )
+            route_capabilities = analyze_route_capabilities(
+                document_state,
+                source_version=CODE_REVIEW_SCHEMA,
+            )
         else:
             state_projection = abstained_code_state_projection(
                 "document_state_not_configured_for_noncanonical_code_review"
@@ -1012,6 +1024,10 @@ def review_code_state(
                 "document_state_not_configured_for_noncanonical_code_review",
                 source_version=CODE_REVIEW_SCHEMA,
             )
+            route_capabilities = abstained_route_capability_analysis(
+                "document_state_not_configured_for_noncanonical_code_review",
+                source_version=CODE_REVIEW_SCHEMA,
+            )
     except (OSError, RuntimeError, ValueError):
         state_projection = abstained_code_state_projection("document_state_boundary_unresolvable")
         state_topology = abstained_code_state_topology(
@@ -1019,6 +1035,10 @@ def review_code_state(
             source_version=CODE_REVIEW_SCHEMA,
         )
         capability_reachability = abstained_capability_reachability(
+            "document_state_boundary_unresolvable",
+            source_version=CODE_REVIEW_SCHEMA,
+        )
+        route_capabilities = abstained_route_capability_analysis(
             "document_state_boundary_unresolvable",
             source_version=CODE_REVIEW_SCHEMA,
         )
@@ -1036,6 +1056,17 @@ def review_code_state(
         snapshot_id=snapshot.processing_signature,
         snapshot_freshness=snapshot.freshness,
         limit=limit,
+    )
+    invariant_assurance = analyze_code_invariant_assurance(
+        read.provider_evidence,
+        snapshot_id=snapshot.processing_signature,
+        snapshot_freshness=snapshot.freshness,
+    )
+    state_interactions = analyze_code_state_interactions(state_directory)
+    analyzer_calibration = analyze_code_analyzer_calibration(
+        Path(snapshot.root),
+        source_version=CODE_REVIEW_SCHEMA,
+        invariant_assurance=invariant_assurance,
     )
     analyzer_effectiveness = analyze_code_analyzer_effectiveness(
         path,
@@ -1060,7 +1091,12 @@ def review_code_state(
         interface_surface=read.interface_surface,
         capability_reachability=capability_reachability,
         analyzer_effectiveness=analyzer_effectiveness,
+        state_interactions=state_interactions,
+        invariant_assurance=invariant_assurance,
+        route_capabilities=route_capabilities,
+        analyzer_calibration=analyzer_calibration,
     )
+    experiment_plan = plan_code_experiments(question_specs, question_evaluations)
     limitation_tuple = tuple(limitations)
     return CodeReviewResult(
         database=str(path),
@@ -1088,10 +1124,15 @@ def review_code_state(
         structural_analysis=structural_analysis,
         state_projection=state_projection,
         state_topology=state_topology,
+        state_interactions=state_interactions,
         change_evolution=read.change_evolution,
         assurance=assurance,
+        invariant_assurance=invariant_assurance,
         capability_reachability=capability_reachability,
+        route_capabilities=route_capabilities,
         analyzer_effectiveness=analyzer_effectiveness,
+        analyzer_calibration=analyzer_calibration,
+        experiment_plan=experiment_plan,
         interface_surface=read.interface_surface,
         question_specs=question_specs,
         question_evaluations=question_evaluations,
@@ -1117,10 +1158,15 @@ def review_code_state(
             structural_analysis=structural_analysis,
             state_projection=state_projection,
             state_topology=state_topology,
+            state_interactions=state_interactions,
             change_evolution=read.change_evolution,
             assurance=assurance,
+            invariant_assurance=invariant_assurance,
             capability_reachability=capability_reachability,
+            route_capabilities=route_capabilities,
             analyzer_effectiveness=analyzer_effectiveness,
+            analyzer_calibration=analyzer_calibration,
+            experiment_plan=experiment_plan,
             interface_surface=read.interface_surface,
             unused_analysis=read.unused_analysis,
             supply_chain=read.supply_chain,
