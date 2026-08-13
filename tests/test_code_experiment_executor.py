@@ -49,7 +49,12 @@ def _proposal() -> CodeExperimentProposal:
     )
 
 
-def _receipt(*, outcome: str = "passed", provider_status: str = "completed"):
+def _receipt(
+    *,
+    outcome: str = "passed",
+    provider_status: str = "completed",
+    observed_outcomes: int | None = None,
+):
     from _04_Nucleo_Operativo.code_analysis_epistemics import analysis_identity
 
     proposal = _proposal()
@@ -64,6 +69,8 @@ def _receipt(*, outcome: str = "passed", provider_status: str = "completed"):
         )
         for index, item in enumerate(RUNTIME_SCENARIOS)
     )
+    if observed_outcomes is not None:
+        outcomes = outcomes[:observed_outcomes]
     status = (
         "abstained"
         if provider_status != "completed"
@@ -137,12 +144,17 @@ def test_receipt_round_trip_preserves_exact_scenario_outcomes() -> None:
 
 def test_failure_and_provider_abstention_remain_distinct() -> None:
     failed = _receipt(outcome="failed")
-    abstained = _receipt(provider_status="failed")
+    abstained = _receipt(provider_status="failed", observed_outcomes=0)
 
     assert failed.status == "failed"
     assert failed.failed == len(RUNTIME_SCENARIOS)
     assert abstained.status == "abstained"
     assert abstained.reason == "provider_failed"
+    assert abstained.outcomes == ()
+    assert (
+        parse_code_experiment_receipt_payload(json.loads(json.dumps(abstained.as_payload())))
+        == abstained
+    )
 
 
 def test_receipt_identity_excludes_wall_clock_duration_but_not_evidence() -> None:
@@ -174,7 +186,7 @@ def test_receipt_rejects_forged_provider_and_template_selection() -> None:
         replace(receipt, provider_id="pytest-delete-production")
     with pytest.raises(ValueError, match="provider status"):
         replace(receipt, provider_status="ready")
-    with pytest.raises(ValueError, match="cover selected scenarios"):
+    with pytest.raises(ValueError, match="selection is not derived"):
         replace(receipt, selected_scenarios=receipt.selected_scenarios[:-1])
 
 
@@ -198,7 +210,7 @@ def test_wire_rejects_free_form_runner_and_missing_outcomes() -> None:
 
     payload = json.loads(json.dumps(receipt.as_payload()))
     payload["outcomes"].pop()
-    with pytest.raises(ValueError, match="cover selected scenarios"):
+    with pytest.raises(ValueError, match="counts do not match"):
         parse_code_experiment_receipt_payload(payload)
 
 

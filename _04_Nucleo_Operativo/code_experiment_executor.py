@@ -174,10 +174,6 @@ class CodeExperimentReceipt:
             not isinstance(item, CodeExperimentOutcome) for item in self.outcomes
         ):
             raise ValueError("experiment outcomes are invalid or out of bounds")
-        if tuple(item.scenario_id for item in self.outcomes) != self.selected_scenarios:
-            raise ValueError("experiment outcomes do not cover selected scenarios exactly")
-        if tuple(item.test_nodeid for item in self.outcomes) != self.selected_nodeids:
-            raise ValueError("experiment outcomes do not cover selected nodeids exactly")
         template = experiment_template(self.template_id)
         scenario_map = {item.scenario_id: item.test_nodeid for item in RUNTIME_SCENARIOS}
         if (
@@ -188,6 +184,14 @@ class CodeExperimentReceipt:
             != tuple(scenario_map[item] for item in self.selected_scenarios)
         ):
             raise ValueError("experiment receipt selection is not derived from its template")
+        expected_pairs = tuple(zip(self.selected_scenarios, self.selected_nodeids, strict=True))
+        outcome_pairs = tuple((item.scenario_id, item.test_nodeid) for item in self.outcomes)
+        if len(set(outcome_pairs)) != len(outcome_pairs) or any(
+            pair not in expected_pairs for pair in outcome_pairs
+        ):
+            raise ValueError("experiment outcomes are not a unique subset of the selection")
+        if tuple(pair for pair in expected_pairs if pair in set(outcome_pairs)) != outcome_pairs:
+            raise ValueError("experiment outcomes are not in canonical selection order")
         for label, value in (
             ("passed scenarios", self.passed),
             ("failed scenarios", self.failed),
