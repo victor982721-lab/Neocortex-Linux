@@ -2,7 +2,7 @@
 
 > Actualizado: 2026-08-12. El nombre del archivo es histórico y se conserva
 > como ruta estable. Este documento es la fuente única de la frontera vigente;
-> no guarda un SHA de cierre porque Git, la release instalada y GitHub deben
+> no guarda un SHA de cierre porque Git y la release instalada deben
 > demostrarlo dinámicamente.
 
 ## Preferencia operativa de Víctor
@@ -10,7 +10,10 @@
 - GitHub conserva únicamente `main`; no se usan PR ni ramas para la evolución
   ordinaria de este proyecto personal.
 - Cada entrega se integra mediante commits atómicos directos en `main`, una
-  release Linux del SHA final exacto, el launcher público verificado y CI verde.
+  release Linux del SHA final exacto, el launcher público y los gates locales
+  verificados.
+- GitHub Actions está prohibido y deshabilitado. Windows es legado fuera del
+  alcance activo; toda validación vigente se ejecuta localmente en Linux.
 - El estado vivo, el corpus y el launcher instalado son el SSOT operativo.
 - En Linux no se usa `--apply` ni `--organization-apply`. Resultados de
   búsqueda, OCR, modelos o similitud nunca autorizan una mutación.
@@ -21,7 +24,7 @@
 
 La auditoría externa de 0.8.0 fue correcta en su diagnóstico central:
 NeoCortex ya era una plataforma local de conocimiento madura y fail-closed,
-pero CI, supply chain, rendimiento del guard y ciclos de imports no estaban al
+pero los gates locales, supply chain, rendimiento del guard y ciclos de imports no estaban al
 nivel de su amplitud. La campaña 0.9.0 cerró esos cuatro bloqueos y añadió un
 piloto de producto medido, sin habilitar mutación Linux ni fabricar calidad de
 modelos.
@@ -43,8 +46,8 @@ existe cuando se cumplen juntos los criterios dinámicos de la última sección.
   no alcanzables por su superficie, y vencen el **2026-09-30**. El runtime
   principal no hereda ninguna excepción.
 - Todo bootstrap mantenido parte de un venv sin pip y autentica el wheel oficial
-  `pip 26.1.2` por nombre y SHA-256 antes de ejecutarlo. CI, release Linux y la
-  receta Windows usan `python -I tools/bootstrap_pip.py`.
+  `pip 26.1.2` por nombre y SHA-256 antes de ejecutarlo. La release y los gates
+  locales Linux usan `python -I tools/bootstrap_pip.py`.
 - Pyright `1.1.411` se instala con Node `24.18.1` desde manifest y lock npm
   versionados. Se exige integridad exacta, `npm ci`, scripts deshabilitados,
   entorno hostil limpiado y verificación viva antes del gate estático.
@@ -53,7 +56,7 @@ existe cuando se cumplen juntos los criterios dinámicos de la última sección.
 - La distribución es privada (`LicenseRef-Proprietary`, clasificador
   `Private :: Do Not Upload`) y declara autor, mantenedor y URLs válidas.
 
-### Fase 1 — barreras integrales y CI
+### Fase 1 — barreras integrales locales históricas
 
 - El inventario dinámico final contiene **265 archivos de prueba**. La corrida
   integral de cierre ejecutó **4,138 passed, 144 skipped y 98 subtests**.
@@ -66,12 +69,12 @@ existe cuando se cumplen juntos los criterios dinámicos de la última sección.
 - Los dos shards son una partición exacta: 132 archivos con 2,003 passed,
   97 skipped y 83 subtests; 133 archivos con 2,135 passed, 47 skipped y
   15 subtests. La suma coincide exactamente con la suite completa.
-- La matriz obligatoria es el producto Windows/Ubuntu × Python 3.13/3.14 × dos
-  shards: **8 jobs**, no una rotación incompleta entre versión y shard.
-- CI construye e instala el wheel `full`, ejecuta un smoke fuera del checkout
-  sobre seis paquetes, `Orquestador`, package-data, metadata, versión y
-  entrypoint, y después prueba el árbol fuente completo. Cada job revalida SHA
-  y worktree limpio al final; `quality` también lo hace tras Coverage.
+- Los shards locales son una partición reproducible del inventario completo;
+  permiten distribuir la suite sin convertir una plataforma remota en gate.
+- El gate local construye e instala el wheel `full`, ejecuta un smoke fuera del
+  checkout sobre seis paquetes, `Orquestador`, package-data, metadata, versión
+  y entrypoint, y después prueba el árbol fuente completo. Revalida SHA y
+  worktree limpio al final y tras Coverage.
 - El gate estático versionado conserva deuda sin permitir crecimiento:
   límites Ruff **76**, Mypy **94**, Pyright **142**; la corrida de cierre observó
   Ruff **69**, Mypy **94** y Pyright **142**. Pyright queda ligado explícitamente
@@ -80,14 +83,9 @@ existe cuando se cumplen juntos los criterios dinámicos de la última sección.
   cero diagnósticos nuevos por ruta/regla y versión exacta de cada herramienta.
 - Grimp exige el baseline acíclico v2, seis contratos exactos y evidencia viva.
   Estado final: **325 módulos, 1,316 relaciones, 0 violaciones y 0 SCC**.
-- Supply chain real se evalúa en cada SHA con `pip-audit` del runtime principal
-  y del tool-runtime Semgrep contra su receipt/policy; Coverage JSON se publica
-  como artefacto ligado al SHA.
-- Las pruebas NTFS con mutación real sólo se recolectan como activas dentro del
-  job deep-Windows. Ese job crea su laboratorio en un directorio hermano del
-  checkout, fuera del repositorio, `$CODEX_HOME` y `.codex/vault`, liga ahí
-  temporales y bytecode, revalida las identidades y elimina la ruta exacta al
-  terminar. La matriz ordinaria no ejecuta esas fixtures sin laboratorio.
+- Supply chain real se evalúa localmente en cada SHA con `pip-audit` del runtime
+  principal y del tool-runtime Semgrep contra su receipt/policy; Coverage JSON
+  se conserva como evidencia local ligada al SHA.
 
 ### Fase 2 — rendimiento sin perder seguridad TOCTOU
 
@@ -170,8 +168,8 @@ existe cuando se cumplen juntos los criterios dinámicos de la última sección.
 - El alcance cerrado es la extracción/publicación Text y su cadena Semantic
   nueva. `normalize` no es todavía un stage durable independiente; PDF, DOCX,
   Office y el historial Semantic pre-v7 no se presentan como linaje completo.
-  El SHA comprometido, la release instalada y GitHub Actions siguen siendo la
-  evidencia dinámica de entrega, no este texto.
+  El SHA comprometido, los gates locales y la release Linux instalada siguen
+  siendo la evidencia dinámica de entrega, no este texto.
 
 ## Corte evolutivo actual — CapabilityManifest + CapabilityBroker v1
 
@@ -213,7 +211,7 @@ existe cuando se cumplen juntos los criterios dinámicos de la última sección.
   todavía no consumen este broker. No existe autodescubrimiento de plugins ni
   se añadieron dependencias pesadas obligatorias.
 - Este handoff describe el comportamiento del árbol; no sustituye tests, gates,
-  commit, release instalada ni CI del SHA final.
+  commit ni release Linux instalada del SHA final.
 
 ## Corte evolutivo actual — ReviewTask durable + Value
 
@@ -258,8 +256,8 @@ existe cuando se cumplen juntos los criterios dinámicos de la última sección.
   PLANNED:** esto no completa `Knowledge Asset Health`; ReviewTask para OCR,
   entities/claims, contradicciones, links, recovery y promociones shadow, así
   como una GUI para decidir tareas, siguen pendientes.
-- Este handoff documenta el árbol sin sustituir tests focales, gates, commit,
-  release instalada ni CI del SHA final.
+- Este handoff documenta el árbol sin sustituir tests focales, gates, commit ni
+  release Linux instalada del SHA final.
 
 ## Corte local pendiente de publicación — Autoanalizador v16
 
@@ -320,7 +318,7 @@ existe cuando se cumplen juntos los criterios dinámicos de la última sección.
   cero violaciones y cero SCC; el gate estático volvió al baseline
   Ruff/Mypy/Pyright sin deuda nueva. El perfil `trusted-static` publicó 12 de
   13 proveedores; pip-audit se abstuvo por red y el comando estricto devolvió
-  2, como corresponde. Esto aún no implica push, release instalada ni CI.
+  2, como corresponde. Esto aún no implica push ni release instalada.
 - Validación aislada v16 en `/tmp`, sin tocar el estado canónico: una publicación
   protected completa analizó 742 candidatos y su replay obtuvo 742/742 cache
   hits. El experimento v2 pasó 4/4 escenarios y 10/10 nodeids en 45 s con tres
@@ -328,7 +326,7 @@ existe cuando se cumplen juntos los criterios dinámicos de la última sección.
   publicación trusted-deep releyó 4/4 invariantes desde Code y el replay
   posterior reutilizó 12 providers. La salida final mantiene cero
   recomendaciones, cero work packages y `mutation_authority=false`. Este corte
-  sigue sin push, release instalada ni CI; dos providers supply se abstuvieron
+  sigue sin push ni release instalada; dos providers supply se abstuvieron
   en el laboratorio porque el `PYTHONPATH` aislado contenía otra distribución
   pip, no por una afirmación de seguridad verde.
 
@@ -367,8 +365,7 @@ existe cuando se cumplen juntos los criterios dinámicos de la última sección.
 - La suite integral prueba el árbol fuente después de instalar el wheel; el
   artefacto instalado tiene un smoke aislado fuerte, no una segunda ejecución
   artificial de los 4,138 casos que dependen también de tools/docs del checkout.
-- Windows conserva receta mantenida y CI completa, pero aún no tiene un
-  instalador Python integral equivalente a `tools/release_linux.py`.
+- Windows queda como legado no mantenido ni validado; no es deuda activa.
 - Las excepciones Semgrep dejan de ser válidas el 2026-09-30. Antes de esa fecha
   se actualiza o sustituye Semgrep; no se prolonga el vencimiento por rutina.
 - La poda Text deja páginas libres reutilizables dentro de `text.sqlite3`; no se
@@ -382,8 +379,8 @@ existe cuando se cumplen juntos los criterios dinámicos de la última sección.
 ## Próximos pasos, en orden
 
 1. Cerrar esta release sobre un único SHA: gates canónicos, backups online,
-   instalación versionada, dos `Neocortex --all`, superficies instaladas, push
-   y CI verde conforme al criterio dinámico siguiente.
+   instalación versionada, dos `Neocortex --all`, superficies instaladas y un
+   único push final conforme al criterio dinámico siguiente.
 2. Etiquetar con Víctor 20–50 consultas reales ES/EN/DE/ZH. La infraestructura
    golden ya existe, pero no debe inventar juicios humanos ni promover modelos
    por una métrica sintética.
@@ -414,8 +411,8 @@ el mismo SHA comprometido y un worktree limpio:
    `non_replayable` en vez de fingir cache hit;
 7. las trece bases, corpus before/after, status/search/ask/review, MCP stdio y GUI
    instalados aprueban;
-8. el push de GitHub termina con todos los checks verdes y GitHub sólo expone
-   `main`.
+8. `origin/main` apunta al mismo SHA y GitHub Actions permanece deshabilitado;
+   GitHub sólo expone `main`.
 
 La evidencia mínima de cierre se conserva bajo
 `$HOME/.codex/vault/evidence/neocortex-0.9-release-2026-08-10/`; el backup

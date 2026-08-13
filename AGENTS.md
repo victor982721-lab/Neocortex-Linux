@@ -37,19 +37,33 @@ un productor y un consumidor reales dentro del flujo integrado.
 
 ## Entorno canónico
 
-- Windows:
-  - Fuente: `C:\Users\Victor\Neocortex\Repository`
-  - Runtime versionado: `%LOCALAPPDATA%\Programs\Neocortex`
-  - Estado durable: `%LOCALAPPDATA%\Neocortex`
-  - Backend de inventario/mutación: USN y NTFS ligado a handles
-- Kubuntu/Linux:
+- Plataforma objetivo única vigente: Kubuntu/Linux.
   - Fuente: `~/Neocortex/Repository`
   - Corpus: `~/Documentos/NeoCortex/Corpus`, resuelto por `user-dirs.dirs`
   - Releases/modelos: `${XDG_DATA_HOME:-~/.local/share}/Neocortex`
   - Estado durable: `${XDG_STATE_HOME:-~/.local/state}/Neocortex/state`
   - Launcher estable: `~/.local/share/Neocortex/bin/Neocortex`
   - Alias público: `~/.local/bin/Neocortex`
-- Comando público en ambos sistemas: `Neocortex`
+- Windows es legado histórico fuera del alcance activo. El código existente se
+  puede conservar para no destruir inversión, pero no se prueba, mantiene,
+  depura, empaqueta ni usa como barrera hasta que Víctor lo solicite de nuevo.
+- GitHub Actions está prohibido para este repositorio. No crear ni conservar
+  workflows, no habilitarlo, no dispararlo y no usar sus checks como gate.
+- Toda validación de integración y release se ejecuta localmente en Linux con
+  los tests, quality gates, autoanalizador, artefacto instalado y launcher
+  público existentes.
+
+Rutas canónicas Linux:
+
+```text
+  - Fuente: `~/Neocortex/Repository`
+  - Corpus: `~/Documentos/NeoCortex/Corpus`, resuelto por `user-dirs.dirs`
+  - Releases/modelos: `${XDG_DATA_HOME:-~/.local/share}/Neocortex`
+  - Estado durable: `${XDG_STATE_HOME:-~/.local/state}/Neocortex/state`
+  - Launcher estable: `~/.local/share/Neocortex/bin/Neocortex`
+  - Alias público: `~/.local/bin/Neocortex`
+```
+- Comando público: `Neocortex`
 
 El instalador Linux prepara la raíz de corpus seleccionada como directorio real.
 El comando `Neocortex --all` reutiliza primero el servicio de autoanálisis
@@ -104,11 +118,11 @@ no pueda resolverse en la arquitectura existente.
 8. Mutación explícita. Separa observación, propuesta, revisión, autorización,
    aplicación y verificación. Usa preview y límites pequeños antes de cualquier
    acción.
-9. Contratos por plataforma. En Windows conserva USN, Job Objects,
-   `ReplaceFileW`, identidad NTFS y mutaciones ligadas a handles. En Linux usa
-   inventario portable, identidad `st_dev`/`st_ino`, `birthtime_ns=-1` cuando
-   no exista nacimiento real y contención POSIX; nunca presentes `ctime` como
-   nacimiento ni implementes mutación con una operación basada sólo en rutas.
+9. Contrato Linux. Usa inventario portable, identidad `st_dev`/`st_ino`,
+   `birthtime_ns=-1` cuando no exista nacimiento real y contención POSIX; nunca
+   presentes `ctime` como nacimiento ni implementes mutación con una operación
+   basada sólo en rutas. Los contratos Windows existentes son legado, no una
+   obligación activa.
 
 ## Acceso al estado y al corpus
 
@@ -198,13 +212,9 @@ humana. Sólo después de autorización explícita procede organization-apply co
 un máximo pequeño de acciones y verificación de destinos. Nunca uses --all
 --apply como smoke o piloto.
 
-Después de la validación inicial, `Neocortex --all --apply` debe conservarse en
-Windows como la interfaz cotidiana simplificada: un solo comando que ejecuta el
-flujo integrado y aplica únicamente acciones que superen sus protecciones
-internas. En Linux, la interfaz equivalente es `Neocortex --all` sin mutación.
-No elimines flags Windows ni obligues a Victor a sustituirlos por una secuencia
-manual. Si alguna etapa todavía no está integrada, corrige esa brecha y
-descríbela con honestidad.
+La interfaz cotidiana vigente es `Neocortex --all` en Linux, sin mutación. Si
+alguna etapa todavía no está integrada, corrige esa brecha y descríbela con
+honestidad. Las interfaces Windows son legado fuera del alcance activo.
 
 ### Watcher
 
@@ -245,18 +255,20 @@ fronteras que no modificó.
 
 ## Dependencias, código y herramientas
 
-- Mantén compatibilidad con Windows 11 y Kubuntu/Ubuntu 26.04, CPython
-  3.13–3.14; conserva 3.13 como piso sintáctico mientras ambos intérpretes
-  estén soportados.
-- Usa PowerShell para la capa externa Windows y Bash para Linux. Para trabajo
-  pequeño elige la solución más simple y legible; usa Python cuando la lógica
-  por elemento o el volumen lo justifiquen.
+- Mantén compatibilidad con Kubuntu/Ubuntu 26.04 y CPython 3.13–3.14; conserva
+  3.13 como piso sintáctico mientras siga soportado.
+- Usa Bash para la capa externa Linux. Para trabajo pequeño elige la solución
+  más simple y legible; usa Python cuando la lógica por elemento o el volumen
+  lo justifiquen.
 - Usa rg o rg --files para búsquedas acotadas.
 - Prefiere apply_patch para ediciones y revisa siempre el diff.
 - No sustituyas el launcher público con imports desde el árbol al validar la
   instalación.
 - Añade una regresión al corregir un defecto. No cambies expectativas sólo para
   hacer pasar la prueba.
+- No uses GitHub Actions ni servicios remotos como sustituto de las barreras
+  locales. Antes de un push ejecuta localmente las comprobaciones aplicables y
+  publica una sola vez; `origin/main` sólo confirma entrega Git, no calidad.
 - No crees un venv permanente alternativo al runtime personal.
 - No instales `pip`, Node ni dependencias Python globalmente. En Linux usa
   `tools/release_linux.py`; conserva releases anteriores para rollback y no

@@ -26,7 +26,12 @@ def test_project_metadata_uses_package_version_and_installed_command() -> None:
         metadata = tomllib.load(stream)
 
     assert metadata["project"]["dynamic"] == ["version"]
+    assert metadata["project"]["description"] == (
+        "Linux-first incremental personal content framework"
+    )
     assert metadata["project"]["requires-python"] == ">=3.13,<3.15"
+    assert "Operating System :: POSIX :: Linux" in metadata["project"]["classifiers"]
+    assert not any("Windows" in classifier for classifier in metadata["project"]["classifiers"])
     assert metadata["project"]["scripts"]["Neocortex"] == ("neocortex.cli:entrypoint")
     assert metadata["tool"]["setuptools"]["dynamic"]["version"] == {"attr": "neocortex.__version__"}
     assert neocortex.__version__ == "0.9.0"

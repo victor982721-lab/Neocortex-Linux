@@ -188,64 +188,11 @@ def test_pytest_lab_rejects_codex_home_before_creating_artifacts(
     assert not codex_home.exists()
 
 
-def test_push_ci_uses_dynamic_total_shards_instead_of_manual_test_lists() -> None:
-    workflow_path = Path(__file__).parents[1] / ".github" / "workflows" / "ci.yml"
-    workflow = workflow_path.read_text(encoding="utf-8")
-    fast_and_quality, remaining = workflow.split("  standard:\n", 1)
-    fast, quality = fast_and_quality.split("  quality:\n", 1)
-    standard, deep = remaining.split("  deep-windows:\n", 1)
-    deep_windows, _deep_linux = deep.split("  deep-linux:\n", 1)
+def test_repository_does_not_configure_github_actions() -> None:
+    workflow_root = Path(__file__).parents[1] / ".github" / "workflows"
+    workflows = () if not workflow_root.exists() else tuple(workflow_root.glob("*.y*ml"))
 
-    assert "tests/test_" not in fast_and_quality
-    assert "tests/test_" not in standard
-    assert "quality_gate.py inventory --shard-count 2" in fast_and_quality
-    assert "quality_gate.py coverage" in fast_and_quality
-    assert "actions/upload-artifact@v7" in fast_and_quality
-    assert "--no-install-recommends ffmpeg libegl1" not in fast
-    assert (
-        "--no-install-recommends\n"
-        "          ffmpeg fonts-noto-core libegl1 qpdf desktop-file-utils" in quality
-    )
-    assert "tesseract-ocr-deu tesseract-ocr-chi-sim tesseract-ocr-chi-tra" in quality
-    assert "semgrep_tool_runtime.py install" in fast_and_quality
-    assert "runtime=$(python -c 'import sys; print(sys.prefix)')" in quality
-    assert 'pyright_root="$runtime/tools/pyright"' in quality
-    assert 'pyright_runtime.py install --target "$pyright_root"' in quality
-    assert 'pyright_runtime.py verify --target "$runtime/tools/pyright"' in quality
-    assert quality.index('pyright_root="$runtime/tools/pyright"') < quality.index(
-        "quality_gate.py coverage"
-    )
-    assert quality.index("semgrep_tool_runtime.py install") < quality.index(
-        "quality_gate.py coverage"
-    )
-    assert "--tool-receipt" in fast_and_quality
-    assert "quality_gate.py tests" in standard
-    assert "--no-install-recommends ffmpeg libegl1" in standard
-    assert "choco install ffmpeg" not in standard
-    assert "ffmpeg-9.0-essentials_build.7z" in standard
-    assert (
-        'expectedSha256 = "ffb866303866995734849995027533b9756971215e8c55ef408073628cdc27a2"'
-        in standard
-    )
-    assert "Get-FileHash -Algorithm SHA256" in standard
-    assert "$bin | Out-File -FilePath $env:GITHUB_PATH" in standard
-    assert "os: [ubuntu-latest, windows-latest]" in standard
-    assert 'python: ["3.13", "3.14"]' in standard
-    assert "shard: [0, 1]" in standard
-    assert workflow.count("python -I tools/bootstrap_pip.py") == 5
-    assert workflow.count("python -I tools/pyright_runtime.py install --target") == 2
-    assert "npm install --prefix" not in workflow
-    assert "NEOCORTEX_BOOTSTRAP_PIP_VERSION" not in workflow
-    assert '--constraint constraints.txt ".[analysis]"' in fast_and_quality
-    assert "quality_gate.py wheel-smoke" in standard
-    assert 'Join-Path (Split-Path -Parent $env:GITHUB_WORKSPACE) "Laboratory"' in deep_windows
-    assert "$env:NEOCORTEX_AUDIT_LAB_ROOT = $laboratory" in deep_windows
-    assert "$env:TEMP = $temporary" in deep_windows
-    assert "$env:TMP = $temporary" in deep_windows
-    assert "$env:TMPDIR = $temporary" in deep_windows
-    assert "$env:PYTHONPYCACHEPREFIX = $pycache" in deep_windows
-    assert '--basetemp "$laboratory\\pytest"' in deep_windows
-    assert workflow.count("git-snapshot --sha") == 6
+    assert workflows == ()
     assert WHEEL_PACKAGE_ROOTS == (
         "_01_Enumeracion",
         "_02_Deduplicacion",

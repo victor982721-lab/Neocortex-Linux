@@ -28,14 +28,12 @@ observado y la siguiente acción única, está en el
 [handoff operativo vigente](https://github.com/victor982721-lab/Neocortex/blob/main/.codex/handoffs/NEOCORTEX_0.7.2_PAUSE_2026-07-30.md).
 
 Esta precaución aplica al arranque y diagnóstico, no elimina la experiencia
-simple buscada. En Windows, una vez validado el entorno,
-`Neocortex --all --apply` sigue siendo el comando cotidiano integrado y sólo
-aplica acciones ligadas al backend seguro NTFS. En Linux el flujo cotidiano es
-`Neocortex --all`: inventario, procesamiento y búsqueda están disponibles, pero
-`--apply` y `--organization-apply` se abstienen deliberadamente hasta que exista
-un backend ext4 con garantías equivalentes.
+simple buscada. El flujo cotidiano vigente es `Neocortex --all` en Linux:
+inventario, procesamiento y búsqueda están disponibles, pero `--apply` y
+`--organization-apply` se abstienen deliberadamente hasta que exista un backend
+ext4 con garantías equivalentes.
 
-En ambos sistemas `--all` inicia primero el autoanálisis protegido del checkout
+`--all` inicia primero el autoanálisis protegido del checkout
 canónico y guarda esa evidencia en el estado separado de autoanálisis. Después
 continúa con el corpus documental. Si la raíz documental fue eliminada o no es
 utilizable, el autoanálisis todavía se ejecuta y la etapa de corpus termina con
@@ -124,17 +122,7 @@ contrato schema 1; la selección por trabajo sólo se activa con `--select`.
 
 ## Topología canónica por usuario
 
-La fuente, el runtime y el estado ocupan árboles separados. En Windows:
-
-```text
-Fuente:       %USERPROFILE%\Neocortex\Repository
-Runtime:      %LOCALAPPDATA%\Programs\Neocortex\versions\<runtime-id>\venv
-Launcher:     %LOCALAPPDATA%\Programs\Neocortex\bin\Neocortex.exe
-Estado:       %LOCALAPPDATA%\Neocortex\state
-Autoanálisis: %LOCALAPPDATA%\Neocortex\self-analysis
-```
-
-En Kubuntu/Linux:
+La fuente, el runtime y el estado ocupan árboles separados en Kubuntu/Linux:
 
 ```text
 Fuente:       ~/Neocortex/Repository
@@ -150,14 +138,14 @@ Modelos:      ~/.local/share/Neocortex/models
 Las rutas Linux respetan `XDG_CONFIG_HOME`, `XDG_STATE_HOME` y
 `XDG_DATA_HOME`; el directorio Documentos se resuelve de forma segura desde
 `user-dirs.dirs`. Cada runtime es versionado e inmutable. El launcher estable
-sólo se promueve después de validar el artefacto y su entorno aislado. En ambos
-sistemas la invocación pública continúa siendo `Neocortex`.
+sólo se promueve después de validar el artefacto y su entorno aislado. La
+invocación pública es `Neocortex`.
 
 ## Instalación compatible
 
-El paquete admite Windows 11 y Linux con CPython `>=3.13,<3.15`; CI valida
-Python 3.13 y 3.14 en ambos sistemas. No instale el paquete, `pip`, Node ni sus
-dependencias contra runtimes globales.
+La plataforma activa es Kubuntu/Linux con CPython `>=3.13,<3.15`. Windows queda
+como legado sin soporte ni validación vigente. No instale el paquete, `pip`,
+Node ni sus dependencias contra runtimes globales.
 
 Los extras `agent` y `analysis` son superficies de distribución para la API MCP
 y los analizadores, no elecciones operativas que Víctor deba administrar. Las
@@ -166,7 +154,7 @@ las capacidades documentales, multimedia, Semantic y UI. Semgrep queda fuera
 incluso de `analysis`/`full`: se provisiona y verifica en su tool-runtime
 administrado, separado del runtime principal.
 
-CI y cualquier instalación mantenida autentican `pip` antes de instalar otra
+La instalación y los gates locales autentican `pip` antes de instalar otra
 dependencia. El comando canónico no depende del `pip` ambiental: descarga el
 wheel oficial `26.1.2`, exige su nombre y SHA-256 fijados, lo instala sin índice
 ni dependencias y verifica la versión bajo Python aislado:
@@ -205,22 +193,7 @@ que descarga el conjunto de producción deliberadamente. La entrada KDE muestra
 mutaciones. Consulte [Kubuntu/Linux](docs/LINUX_KUBUNTU.md) para requisitos,
 rutas XDG, recibos y rollback.
 
-### Windows
-
-Instale primero en un entorno virtual aislado fuera del repositorio; no ejecute
-`pip install .` contra el Python global:
-
-```powershell
-$Repository = Join-Path $HOME 'Neocortex\Repository'
-$RuntimeId = '0.9.0-artifact-id' # sustituya por el identificador validado
-$Venv = Join-Path $env:LOCALAPPDATA "Programs\Neocortex\versions\$RuntimeId\venv"
-py -3 -m venv --without-pip $Venv
-Set-Location -LiteralPath $Repository
-& "$Venv\Scripts\python.exe" -I tools/bootstrap_pip.py
-& "$Venv\Scripts\python.exe" -m pip install -c constraints.txt ".[full]"
-```
-
-Para el uso personal de Victor, `full` es la instalación canónica: el comando
+Para el uso personal de Víctor, `full` es la instalación canónica: el comando
 `Neocortex` debe exponer documentos, audio, imagen, Semantic y UI sin exigirle
 elegir perfiles. Si una capacidad central aparece `unavailable`, se repara la
 instalación o su declaración antes de operar; no se trata como una decisión
@@ -749,31 +722,14 @@ descendientes. `--code-query-limit` acepta 1–500 (50 por defecto) y
 conservan dimensiones, evidencia y limitaciones por separado: no calculan un
 score agregado ni una probabilidad de defecto, y nunca autorizan una mutación.
 
-El workflow `Neocortex CI` en `.github/workflows/ci.yml` mantiene un lint rápido
-en Ubuntu/Python 3.14, un gate Linux de arquitectura viva, supply chain, deuda
-estática y cobertura de líneas/ramas sin regresión, y una matriz Windows/Ubuntu
-con Python 3.13 y 3.14. El gate canónico de cobertura ejecuta el mismo inventario
-dinámico completo sobre Linux/Python 3.14, compara ambas dimensiones contra el
-baseline versionado y publica el reporte JSON ligado al SHA; nunca regenera el
-baseline al detectar una caída ni permite retirar silenciosamente una ruta de
-test o fuente ya aprobada. Ese mismo job provisiona y verifica el runtime
-Semgrep aislado y concilia su auditoría viva con el recibo/policy explícitos. La
-instalación de Pyright usa `tools/pyright_runtime.py` con manifest y lock
-versionados, integridad npm exacta, scripts deshabilitados y verificación viva
-de Node `24.18.1`/Pyright `1.1.411`; no resuelve una spec suelta. La
-matriz construye e instala el wheel completo y reparte dinámicamente **todos**
-los módulos `test_*.py`/`*_test.py` en dos shards reproducibles por sistema
-operativo y versión de Python: las ocho combinaciones OS×Python×shard evitan
-confundir un shard con la cobertura de una versión. Agregar una prueba ya no
-exige editar una lista de CI. El smoke aislado ejecuta desde el wheel sus seis
-raíces de paquete, `Orquestador`, datos empaquetados, versión y entrypoint. CI
-revalida HEAD y árbol limpio después de Coverage y al final. Los carriles
-profundos Windows (NTFS) y Linux
-(inventario/contención/instalador) quedan reservados al cron semanal o a
-`workflow_dispatch`. CI usa dobles para los contratos de modelos y nunca
-descarga los pesos reales; éstos se verifican únicamente en la instalación
-local. Los fixtures profundos no sustituyen la identidad física local exigida
-por una corrida real `trusted-deep`.
+NeoCortex no usa GitHub Actions. La validación canónica ocurre localmente en
+Linux mediante `tools/quality_gate.py`: inventario dinámico completo, Ruff,
+Mypy, Pyright, arquitectura Grimp, supply chain, cobertura de líneas/ramas,
+smoke del wheel instalado y verificación del SHA. El baseline nunca se regenera
+implícitamente ante una caída ni permite retirar silenciosamente una ruta de
+test o fuente aprobada. El autoanalizador complementa esas barreras con
+evidencia publicada y abstenciones explícitas; no las sustituye ni convierte
+un resultado verde en autorización de mutación.
 
 Antes de un push directo a `main`, el intérprete de la release canónica puede
 ejecutar la misma barrera integral sobre un worktree limpio y ya comprometido:
@@ -810,12 +766,11 @@ módulo, estado, delta y work package con resultados acotados y sin score mágic
 El cierre factual completo está en
 [Programa de autoanálisis multianalizador](docs/SELF_ANALYSIS_PROGRAM_REPORT_2026-08-03.md).
 
-La corrida normal usa el mismo baseline portable cuando USN no existe o deja
-de estar disponible: publica el snapshot completo con cursor nulo y las rutas
-comparan ese inventario contra sus caches. USN permanece como acelerador en
-Windows, no como requisito de corrección. `journal_usn_span=unavailable`
-distingue esa ejecución; las acciones continúan sujetas a sus revalidaciones
-de identidad, contenido y destino.
+La corrida normal usa el baseline portable: publica el snapshot completo con
+cursor nulo y las rutas comparan ese inventario contra sus caches.
+`journal_usn_span=unavailable` distingue esa ejecución; las acciones continúan
+sujetas a sus revalidaciones de identidad, contenido y destino. USN permanece
+únicamente como implementación histórica fuera del alcance Linux vigente.
 El watcher aplica la misma política: USN despierta corridas cuando está
 disponible y, sin cursor compatible, programa inventarios normales portables a
 intervalos explícitos sin crear otro índice. Entre ciclos recarga el dueño

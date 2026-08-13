@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "neocortex-framework"
 dynamic = ["version"]
-description = "Cross-platform incremental personal content framework for Windows and Linux"
+description = "Linux-first incremental personal content framework"
 readme = "README.md"
 authors = [{name = "Víctor"}]
 maintainers = [{name = "Víctor"}]
@@ -13,7 +13,6 @@ license = "LicenseRef-Proprietary"
 requires-python = ">=3.13,<3.15"
 classifiers = [
     "Private :: Do Not Upload",
-    "Operating System :: Microsoft :: Windows :: Windows 11",
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
@@ -129,7 +128,7 @@ ignore = [
 "tests/**/*.py" = ["B017"]
 
 [tool.mypy]
-# Type-check against the supported floor; the installed-wheel CI also runs on 3.14.
+# Type-check against the supported floor; local installed-wheel gates also use 3.14.
 python_version = "3.13"
 namespace_packages = true
 explicit_package_bases = true

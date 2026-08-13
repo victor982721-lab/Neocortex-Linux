@@ -39,7 +39,7 @@ auditoría integral no son el punto de partida.
 
 ## Bootstrap autenticado de pip
 
-Antes de cualquier instalación Python, CI y los flujos mantenidos ejecutan el
+Antes de cualquier instalación Python, los flujos locales mantenidos ejecutan el
 helper independiente del `pip` ambiental:
 
 ```bash
@@ -57,7 +57,7 @@ artefacto ya descargado en un flujo offline; no relaja la autenticación.
    de estado.
 2. Verifique el launcher y la ayuda:
 
-   ```powershell
+   ```bash
    Neocortex --version
    Neocortex --help
    ```
@@ -79,20 +79,7 @@ artefacto ya descargado en un flujo offline; no relaja la autenticación.
 5. Antes de una actualización, migración o acción sobre archivos, siga
    [RECOVERY.md](RECOVERY.md).
 
-La topología canónica Windows por usuario es:
-
-```text
-Fuente:       %USERPROFILE%\Neocortex\Repository
-Runtime:      %LOCALAPPDATA%\Programs\Neocortex\versions\<runtime-id>\venv
-Launcher:     %LOCALAPPDATA%\Programs\Neocortex\bin\Neocortex.exe
-Estado:       %LOCALAPPDATA%\Neocortex\state
-Autoanálisis: %LOCALAPPDATA%\Neocortex\self-analysis
-```
-
-El launcher de `bin` se promueve sólo después de validar el runtime exacto. No
-copie, sustituya ni compacte bases mientras exista un writer activo.
-
-En Linux, fuente, estado y release también permanecen separados:
+En Linux, fuente, estado y release permanecen separados:
 
 ```text
 Fuente:    ~/Neocortex/Repository
@@ -806,46 +793,17 @@ la verificación siguen siendo costos reales del replay; cero procesos no
 significa costo cero. El replay verifica inputs; no significa
 que se haya omitido la comprobación de frescura.
 
-## Integración continua por carriles
+## Validación local Linux
 
-`.github/workflows/ci.yml` es el único workflow de producto y se presenta como
-`Neocortex CI`:
+GitHub Actions está deshabilitado y el repositorio no conserva workflows. La
+barrera canónica se ejecuta localmente en Linux con la infraestructura del
+proyecto: inventario dinámico, suite completa, Coverage con ramas, arquitectura
+Grimp, Ruff/Mypy/Pyright, supply chain, autoanálisis, wheel instalado, launcher
+público y snapshots Git. Windows es legado fuera del alcance vigente.
 
-- `fast` corre en Ubuntu/Python 3.14 para pull requests y pushes: Ruff
-  check/format sobre toda fuente Python cambiada;
-- `quality` ejecuta en Linux el inventario completo y dinámico de pruebas, los
-  seis contratos Grimp v2 contra el árbol vivo (todos `passed`, sin SCC),
-  `pip-audit` del runtime principal y los
-  baselines de no-regresión Ruff/Mypy/Pyright. En cada SHA provisiona y verifica
-  el runtime Semgrep aislado, audita sus paquetes y concilia exactamente el
-  resultado con su recibo y policy. También ejecuta el inventario
-  dinámico completo bajo Coverage con ramas activadas, compara por separado
-  líneas y ramas contra el baseline versionado y publica el JSON ligado al SHA.
-  También ratchetea las rutas de test y fuente: admite adiciones, pero un retiro
-  requiere `--write-baseline` explícito y revisión. Una regresión falla: el
-  baseline nunca se regenera implícitamente. El baseline
-  estático conserva deuda heredada por ruta y regla: permite reducirla, pero no
-  añadirla ni cambiar de versión del analizador sin una actualización deliberada;
-- `standard` corre en Windows y Ubuntu sobre Python 3.13 y 3.14: construye el
-  wheel sin aislar la resolución ya declarada, instala `full` con constraints y
-  sólo wheels binarios, ejecuta `pip check` e imports nativos y distribuye todos
-  los archivos de prueba en dos shards deterministas. Cada combinación de
-  plataforma y versión ejecuta ambos shards: 2 OS × 2 Python × 2 shards = 8
-  jobs, de modo que ninguna versión se confunde con una mitad del inventario.
-  El smoke fuera del checkout exige desde el wheel las seis raíces de paquete,
-  `Orquestador`, reglas Semgrep/assets, versión y entrypoint exactos;
-- `deep-windows` sólo corre por cron semanal o `workflow_dispatch`: prepara
-  Pyright `1.1.411` aislado y prueba NTFS, Job Objects y workers trusted-deep;
-- `deep-linux`, con la misma cadencia, prueba inventario portable, identidad,
-  contención POSIX, instalador y UI sobre fixtures acotados. En `quality`,
-  `pip-audit --path` debe observar en el tool-runtime exactamente los tres PYSEC
-  cuyos aliases GHSA, versión, alcance no alcanzable y vencimiento están fijados
-  por la policy; el runtime principal no hereda esas excepciones.
-
-Los jobs revalidan el SHA y un árbol sin cambios ni archivos no rastreados al
-terminar; `quality` lo hace además inmediatamente después de Coverage. Así, una
-prueba no puede cambiar una policy o un gate y hacer que la evidencia posterior
-se atribuya al SHA original.
+Las validaciones deben terminar antes del push y quedar ligadas al SHA local
+comprometido. El push sólo transporta ese SHA a `origin/main`; no sustituye los
+gates locales ni dispara una segunda validación remota.
 
 El baseline de cobertura sólo cambia mediante una medición completa, verde y
 aprobada. La actualización es explícita y su diff debe revisarse; una corrida
@@ -873,15 +831,10 @@ estática, supply chain y el inventario completo de pruebas bajo Coverage;
 conserva SHA Git, hash de inventario, versiones, totales de líneas/ramas,
 comandos, snapshots de árbol limpio y resultado.
 
-Ningún carril descarga pesos de modelos reales; los contratos usan dobles y la
-conformidad de los pesos se comprueba durante la instalación local. El checkout
-efímero tampoco posee la identidad física exacta del repositorio personal; las
-pruebas profundas no debilitan ese lock ni sustituyen una corrida local real.
-El workflow usa las majors oficiales vigentes `actions/checkout@v7`,
-`actions/setup-python@v7` y `actions/setup-node@v7`. Sus fuentes canónicas son
-los repositorios oficiales de [checkout](https://github.com/actions/checkout),
-[setup-python](https://github.com/actions/setup-python) y
-[setup-node](https://github.com/actions/setup-node).
+Los gates no descargan pesos de modelos reales; los contratos usan dobles y la
+conformidad de los pesos se comprueba durante la instalación local. Ninguna
+prueba aislada sustituye la identidad física ni el estado vivo exigidos por una
+corrida local real.
 
 ## Cancelación de una corrida normal
 
@@ -890,11 +843,8 @@ El primer `Ctrl+C` solicita cierre cooperativo. La corrida se registra como
 liberación de workers y procesos hijos antes de iniciar otra corrida con el
 mismo estado.
 
-En Windows, los procesos iniciados por la frontera acotada de subprocess y los
-workers aislados se asocian por handle exacto a Job Objects kill-on-close. Un
-timeout, overflow o excepción termina ese árbol propio, espera al hijo directo
-y cierra pipes/handles; no sustituya este contrato con terminaciones amplias por
-nombre de ejecutable.
+La implementación histórica Windows usa Job Objects, pero permanece fuera del
+alcance activo y no constituye una barrera vigente.
 
 En Linux, cada subproceso usa una sesión/grupo propio; timeout y cancelación
 terminan hijos y nietos con `SIGTERM` y después `SIGKILL`. Los límites de memoria
