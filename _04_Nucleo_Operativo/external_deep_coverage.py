@@ -1451,6 +1451,50 @@ def _coverage_relations(
     )
 
 
+def _test_outcome_relations(
+    tests: Mapping[str, str],
+    *,
+    common: Mapping[str, object],
+    measurement_scope_signature: str,
+) -> tuple[ExternalProviderRelation, ...]:
+    """Publish each exact selected test outcome as a provider-owned receipt.
+
+    The relation intentionally uses portable contract/run endpoints because a
+    pytest nodeid is neither a Code symbol nor a durable first-class Test row in
+    schema v5.  It establishes execution outcome only; it does not claim that
+    the test asserts or proves any invariant.
+    """
+
+    run_key = f"coverage-run:{measurement_scope_signature}"
+    return tuple(
+        ExternalProviderRelation(
+            external_relation_identity(
+                PYTEST_COVERAGE_PROVIDER_ID,
+                relation_kind="declared_test_outcome",
+                source_kind="contract",
+                source_key=f"pytest-nodeid:{nodeid}",
+                target_kind="run",
+                target_key=run_key,
+            ),
+            "declared_test_outcome",
+            "contract",
+            f"pytest-nodeid:{nodeid}",
+            "run",
+            run_key,
+            confidence=1.0,
+            metadata={
+                **common,
+                "nodeid": nodeid,
+                "outcome": outcome,
+                "claim_scope": "exact_selected_test_execution_outcome",
+                "assertion_or_invariant_proof": False,
+                "measurement_scope_signature": measurement_scope_signature,
+            },
+        )
+        for nodeid, outcome in sorted(tests.items())
+    )
+
+
 def _symbol_coverage_metrics_and_relations(
     symbols: Mapping[tuple[str, str, str, int, int], _SymbolObservation],
     files: Mapping[str, _CoverageAggregate],
@@ -1651,7 +1695,7 @@ def _normalize(
     )
     metrics, modules, totals = _file_coverage_metrics(files, owners, common)
     metrics.extend(_module_coverage_metrics(modules, common))
-    symbol_metrics, relations = _symbol_coverage_metrics_and_relations(
+    symbol_metrics, coverage_relations = _symbol_coverage_metrics_and_relations(
         symbols,
         files,
         owners,
@@ -1660,6 +1704,16 @@ def _normalize(
         measurement_scope_signature,
     )
     metrics.extend(symbol_metrics)
+    relations = (
+        *coverage_relations,
+        *_test_outcome_relations(
+            tests,
+            common=common,
+            measurement_scope_signature=measurement_scope_signature,
+        ),
+    )
+    if len(relations) > _MAX_RELATIONS:
+        raise ValueError("deep coverage total relation count exceeds its bound")
     test_counts = _coverage_test_counts(
         tests,
         collected_count=collected_count,

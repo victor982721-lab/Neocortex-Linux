@@ -285,14 +285,21 @@ def test_normalizes_canonical_metrics_context_relations_and_missing_ranges(
     assert symbol_metric.subject_key == (
         f"{symbol_metric.metadata['module_key']}:{symbol_metric.metadata['qualified_name']}:1:4"
     )
-    assert len(result.relations) == 3
-    relation = result.relations[0]
+    coverage_relations = tuple(
+        item for item in result.relations if item.relation_kind == "test_covers_symbol"
+    )
+    outcome_relations = tuple(
+        item for item in result.relations if item.relation_kind == "declared_test_outcome"
+    )
+    assert len(result.relations) == 6
+    assert len(coverage_relations) == len(outcome_relations) == 3
+    relation = coverage_relations[0]
     assert relation.relation_kind == "test_covers_symbol"
     assert relation.source_key.startswith("pytest-nodeid:tests/test_logic.py::")
     assert relation.metadata["qualified_name"] == "_04_Nucleo_Operativo.logic.choose"
     assert relation.metadata["start_line"] == 1
     assert relation.metadata["end_line"] == 4
-    for relation in result.relations:
+    for relation in coverage_relations:
         test_nodeids = relation.metadata["test_nodeids"]
         assert isinstance(test_nodeids, list)
         assert len(test_nodeids) == 1
@@ -300,6 +307,10 @@ def test_normalizes_canonical_metrics_context_relations_and_missing_ranges(
         assert isinstance(nodeid, str)
         assert relation.metadata["lines"] == [1, 2, 3]
         assert relation.metadata["contexts"] == [f"{nodeid}|call"]
+    assert {item.metadata["outcome"] for item in outcome_relations} == {"passed"}
+    assert all(item.source_kind == "contract" for item in outcome_relations)
+    assert all(item.target_kind == "run" for item in outcome_relations)
+    assert all(item.metadata["assertion_or_invariant_proof"] is False for item in outcome_relations)
     assert result.findings == ()
 
 
