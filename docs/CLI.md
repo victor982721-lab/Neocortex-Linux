@@ -330,7 +330,8 @@ precision/recall ni decision rate sin etiquetas independientes.
 v16 añade `CODE_STATE_INTERACTIONS`, `CODE_INVARIANT_ASSURANCE`,
 `CODE_ROUTE_CAPABILITIES`, `CODE_ANALYZER_CALIBRATION` y
 `CODE_EXPERIMENT_PLAN`. SQL literal se parsea con el dialecto SQLite y se liga a
-store/workflow sólo por contratos explícitos. El assurance de invariantes sólo
+store/workflow sólo por contratos explícitos. Los placeholders SQLite `?NNN`
+se normalizan de forma token-aware únicamente para el parser. El assurance de invariantes sólo
 acepta outcomes de todos los nodeids exactos registrados para cada escenario;
 un selector parametrizado se expande y debe quedar cubierto por completo.
 `passed` es evidencia del escenario, no prueba universal. La calibración conserva

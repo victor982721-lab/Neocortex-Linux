@@ -302,7 +302,10 @@ existe cuando se cumplen juntos los criterios dinámicos de la última sección.
   los 13 stores declarados, fronteras transaccionales/workflow, reachability de
   las nueve rutas built-in, cuatro invariantes, calibración anti-Goodhart y un
   planificador de experimentos sin comandos libres. SQL dinámico, parser no
-  disponible, provider stale o evidencia truncada producen abstención.
+  disponible, provider stale o evidencia truncada producen abstención. Los
+  placeholders numerados válidos `?NNN` se adaptan token a token para SQLGlot
+  sin alterar strings ni el digest observado; dejaron de contarse como error
+  los dos sitios productivos Text/Archive que usaban esa sintaxis.
 - `--code-experiment-run PROPOSAL_ID` reconstruye el plan vigente y ejecuta sólo
   escenarios allow-listed en temporales externos. El contrato actual cubre
   cuatro escenarios y diez nodeids exactos —incluidos siete casos

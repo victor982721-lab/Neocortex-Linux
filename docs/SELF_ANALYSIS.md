@@ -492,7 +492,9 @@ v16 integra además `code-state-topology`, `code-state-interactions`,
 el cierre relacional terminal Text owner-local. El analizador de interacciones
 reabre el AST publicado, analiza SQL literal con SQLGlot/SQLite y separa
 READ/WRITE/DDL, SQL dinámico, errores de parseo, BEGIN/COMMIT/ROLLBACK y fronteras
-workflow declaradas. No infiere store por `connect`, `execute`, nombre de módulo
+workflow declaradas. Los parámetros numerados `?NNN` se adaptan mediante tokens
+al placeholder anónimo que entiende SQLGlot; no se modifica texto entre comillas
+ni la evidencia/digest original. No infiere store por `connect`, `execute`, nombre de módulo
 o suffix `repository`.
 
 Evolución separa contenido/API, relocations, historia Git y el schema Code;

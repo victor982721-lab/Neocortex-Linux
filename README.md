@@ -684,7 +684,9 @@ v16 añade varias verticales productivas sobre ese mismo registro. La primera
 analiza SQL literal Python con SQLGlot en dialecto SQLite y publica por separado
 READ, WRITE, DDL, SQL dinámico/no parseable y eventos transaccionales; un store o
 workflow sólo se asigna mediante el registry explícito, nunca por el nombre de la
-función. La segunda enlaza cuatro invariantes versionados con sus escenarios
+función. Los bind parameters numerados válidos de SQLite (`?1`, `?2`, ...)
+se normalizan token a token para el parser sin reescribir strings ni el digest
+de la fuente observada. La segunda enlaza cuatro invariantes versionados con sus escenarios
 pytest exactos, distingue ejecución, assertion y prueba formal, y conserva como
 faltante cualquier resultado trusted-deep ausente o stale. También proyecta las
 nueve rutas built-in desde el contrato público hasta estado owner-local; sólo
