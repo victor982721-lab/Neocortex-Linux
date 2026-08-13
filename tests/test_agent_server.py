@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import queue
@@ -9,7 +10,6 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 
-import anyio
 import pytest
 
 from neocortex import agent_server
@@ -17,7 +17,7 @@ from neocortex import agent_server
 
 def test_agent_server_exposes_only_read_only_fixed_scope_tools() -> None:
     server = agent_server.create_server()
-    tools = anyio.run(server.list_tools)
+    tools = asyncio.run(server.list_tools())
     names = {tool.name for tool in tools}
 
     assert names == {"status", "search", "context", "evidence", "inspect_code"}
@@ -36,7 +36,7 @@ def test_agent_status_tool_returns_structured_read_api_payload(
     monkeypatch.setattr(agent_server, "status_payload", lambda scope: {**expected, "scope": scope})
     server = agent_server.create_server()
 
-    result = anyio.run(server.call_tool, "status", {"scope": "personal"})
+    result = asyncio.run(server.call_tool("status", {"scope": "personal"}))
 
     _content, structured = result
     assert structured["kind"] == expected["kind"]
@@ -76,7 +76,7 @@ def test_windows_stdio_uses_upstream_cross_platform_adapter(
     monkeypatch.setattr(agent_server, "_asyncio_stdio_files", reject_asyncio_pipes)
     server = agent_server.create_server()
 
-    anyio.run(server.run_stdio_async)
+    asyncio.run(server.run_stdio_async())
 
     assert calls == [server]
 
@@ -102,17 +102,17 @@ def test_linux_stdio_private_sdk_boundary_is_versioned_and_fail_closed(
     reader = object()
     writer = object()
 
-    anyio.run(agent_server._run_fastmcp_over_streams, _Server(), reader, writer)
+    asyncio.run(agent_server._run_fastmcp_over_streams(_Server(), reader, writer))
 
     assert calls == [(reader, writer, {"fixture": "options"})]
 
     monkeypatch.setattr(agent_server.importlib.metadata, "version", lambda _name: "2.0.0")
     with pytest.raises(RuntimeError, match="unsupported MCP stdio bridge version"):
-        anyio.run(agent_server._run_fastmcp_over_streams, _Server(), reader, writer)
+        asyncio.run(agent_server._run_fastmcp_over_streams(_Server(), reader, writer))
 
     monkeypatch.setattr(agent_server.importlib.metadata, "version", lambda _name: "1.29.0")
     with pytest.raises(RuntimeError, match="bridge contract is unavailable"):
-        anyio.run(agent_server._run_fastmcp_over_streams, object(), reader, writer)
+        asyncio.run(agent_server._run_fastmcp_over_streams(object(), reader, writer))
 
 
 def test_server_instructions_treat_corpus_as_untrusted_and_deny_mutation() -> None:
