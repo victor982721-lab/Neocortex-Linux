@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import asdict, dataclass, fields
-from typing import Literal, Mapping, Sequence, cast
+from typing import Any, Literal, Mapping, Sequence, cast
 
 from .code_analysis_epistemics import (
     AnalysisEvidenceRef,
@@ -27,7 +27,6 @@ from .code_analysis_epistemics import (
     analysis_question_spec_fingerprint,
 )
 from .code_schema import CODE_SCHEMA_VERSION
-from .semantic_models import canonical_json
 
 CODE_CLASS_SURFACE_SCHEMA = "neocortex.code-class-surface/v1"
 CODE_CLASS_SURFACE_POLICY = "python-ast-direct-class-surface-v1"
@@ -745,8 +744,14 @@ def _class_evidence(observation: CodeClassSurfaceObservation) -> AnalysisEvidenc
             AnalysisFact("special_methods", observation.special_methods, "count"),
             AnalysisFact("class_variables", observation.class_variables, "count"),
             AnalysisFact("nested_classes", observation.nested_classes, "count"),
-            AnalysisFact("bases_json", canonical_json(observation.bases)),
-            AnalysisFact("decorators_json", canonical_json(observation.decorators)),
+            AnalysisFact(
+                "bases_json",
+                json.dumps(observation.bases, ensure_ascii=False, separators=(",", ":")),
+            ),
+            AnalysisFact(
+                "decorators_json",
+                json.dumps(observation.decorators, ensure_ascii=False, separators=(",", ":")),
+            ),
             AnalysisFact("selection_policy", CODE_CLASS_SURFACE_POLICY),
         ),
         completeness="complete",
@@ -879,7 +884,7 @@ def parse_code_class_surface_payload(payload: Mapping[str, object]) -> CodeClass
     values = {key: value for key, value in payload.items() if key != "schema"}
     values["observations"] = tuple(observations)
     values["limitations"] = _text_tuple("class analysis limitations", values["limitations"])
-    return CodeClassSurfaceAnalysis(**values)
+    return CodeClassSurfaceAnalysis(**cast(Any, values))
 
 
 __all__ = [

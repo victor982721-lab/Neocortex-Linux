@@ -14,7 +14,7 @@ import sqlite3
 from collections import Counter
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
-from typing import Literal, Mapping, Sequence
+from typing import Any, Literal, Mapping, Sequence, cast
 
 from neocortex.capabilities import CAPABILITY_MANIFESTS, TEXT_EXTRACT_CAPABILITY_ID
 from neocortex.capability_broker import CapabilityManifest
@@ -1140,7 +1140,7 @@ def parse_capability_reachability_payload(
     ):
         values[key] = _text_tuple(f"capability analysis {key}", values[key])
     values["observations"] = tuple(observations)
-    return CodeCapabilityReachabilityAnalysis(**values)
+    return CodeCapabilityReachabilityAnalysis(**cast(Any, values))
 
 
 __all__ = [
