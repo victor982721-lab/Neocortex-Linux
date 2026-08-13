@@ -353,13 +353,13 @@ def test_title_chunk_is_appended_versioned_and_path_rename_preserves_body(
     database = tmp_path / "semantic.sqlite3"
     generation_id = _generation(database)
     record = _records(1)[0]
-    expected_body = tuple(
+    expected_body = next(
         iter_text_chunks(
             record.item.item_id,
             (record.section,),
             CHUNKING,
         )
-    )[0]
+    )
 
     assert _stage(database, generation_id, (record,)) == (1, 2, 2)
     with semantic_database(database, readonly=True) as connection:
