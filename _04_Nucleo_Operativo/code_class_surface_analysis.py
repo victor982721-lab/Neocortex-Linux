@@ -276,7 +276,7 @@ class CodeClassSurfaceObservation:
             _required_text(label, value, maximum=maximum)
         if self.snapshot_freshness not in {"current", "publication_only", "unknown"}:
             raise ValueError("class snapshot freshness is invalid")
-        for label, value in (
+        for integer_label, integer_value in (
             ("class rank", self.rank),
             ("class symbol id", self.symbol_id),
             ("class version id", self.version_id),
@@ -285,8 +285,8 @@ class CodeClassSurfaceObservation:
             ("class end line", self.end_line),
             ("class span lines", self.span_lines),
         ):
-            _positive_int(label, value)
-        for label, value in (
+            _positive_int(integer_label, integer_value)
+        for count_label, count_value in (
             ("class start column", self.start_column),
             ("class end column", self.end_column),
             ("class start byte", self.start_byte),
@@ -298,7 +298,7 @@ class CodeClassSurfaceObservation:
             ("class variables", self.class_variables),
             ("nested classes", self.nested_classes),
         ):
-            _non_negative_int(label, value)
+            _non_negative_int(count_label, count_value)
         if self.end_line < self.start_line or self.end_byte < self.start_byte:
             raise ValueError("class source range is invalid")
         if self.span_lines != self.end_line - self.start_line + 1:
@@ -875,11 +875,11 @@ def parse_code_class_surface_payload(payload: Mapping[str, object]) -> CodeClass
         values = dict(raw)
         for key in ("bases", "decorators", "selection_signals", "limitations"):
             values[key] = _text_tuple(f"class observation {key}", values[key])
-        observations.append(CodeClassSurfaceObservation(**values))  # type: ignore[arg-type]
+        observations.append(CodeClassSurfaceObservation(**values))
     values = {key: value for key, value in payload.items() if key != "schema"}
     values["observations"] = tuple(observations)
     values["limitations"] = _text_tuple("class analysis limitations", values["limitations"])
-    return CodeClassSurfaceAnalysis(**values)  # type: ignore[arg-type]
+    return CodeClassSurfaceAnalysis(**values)
 
 
 __all__ = [

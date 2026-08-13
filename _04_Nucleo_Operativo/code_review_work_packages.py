@@ -269,7 +269,7 @@ def _normalized_path(value: str) -> str:
 
 def _path_matches_package(path: str, package: CodeReviewWorkPackage) -> bool:
     candidate_path = _normalized_path(path)
-    package_paths = {_normalized_path(member.path) for member in package.members} | {
+    package_paths = {
         _normalized_path(candidate.relative_path) for candidate in package.unused_candidates
     }
     return any(

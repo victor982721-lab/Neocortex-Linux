@@ -1989,23 +1989,6 @@ def _history_evidence(
     }
     metric_digest = analysis_identity("code-history-metric-source-v1", metric_projection)
     relation_digest = analysis_identity("code-history-relation-source-v1", relation_projection)
-    common = {
-        "subject_key": subject.subject_key,
-        "source_owner_id": "code",
-        "producer_id": history.provider_id,
-        "producer_version": history.provider_schema,
-        "source_schema": cast(str, history.provider_schema),
-        "source_record_id": str(history.tool_run_id),
-        "snapshot_id": subject.snapshot_id,
-        "revision_id": subject.revision_id,
-        "completeness": "complete",
-        "bounded": False,
-        "truncated": False,
-        "resolver_id": "code.external-git-history-resolver",
-        "resolver_version": "v1",
-        "limitations": ("history_observation_not_defect_probability",),
-        "provider_run_id": history.tool_run_id,
-    }
     metric = AnalysisEvidenceRef(
         evidence_id=analysis_identity(
             "code-history-metric-evidence-v1",
@@ -2021,7 +2004,21 @@ def _history_evidence(
             AnalysisFact("window_commits", history.window_commits, "count"),
             AnalysisFact("provider_result_digest", history.result_digest),
         ),
-        **common,
+        subject_key=subject.subject_key,
+        source_owner_id="code",
+        producer_id=history.provider_id,
+        producer_version=cast(str, history.provider_schema),
+        source_schema=cast(str, history.provider_schema),
+        source_record_id=str(history.tool_run_id),
+        snapshot_id=subject.snapshot_id,
+        revision_id=subject.revision_id,
+        completeness="complete",
+        bounded=False,
+        truncated=False,
+        resolver_id="code.external-git-history-resolver",
+        resolver_version="v1",
+        limitations=("history_observation_not_defect_probability",),
+        provider_run_id=history.tool_run_id,
     )
     relation = AnalysisEvidenceRef(
         evidence_id=analysis_identity(
@@ -2041,7 +2038,21 @@ def _history_evidence(
             ),
             AnalysisFact("provider_result_digest", history.result_digest),
         ),
-        **common,
+        subject_key=subject.subject_key,
+        source_owner_id="code",
+        producer_id=history.provider_id,
+        producer_version=cast(str, history.provider_schema),
+        source_schema=cast(str, history.provider_schema),
+        source_record_id=str(history.tool_run_id),
+        snapshot_id=subject.snapshot_id,
+        revision_id=subject.revision_id,
+        completeness="complete",
+        bounded=False,
+        truncated=False,
+        resolver_id="code.external-git-history-resolver",
+        resolver_version="v1",
+        limitations=("history_observation_not_defect_probability",),
+        provider_run_id=history.tool_run_id,
     )
     return metric, relation
 
