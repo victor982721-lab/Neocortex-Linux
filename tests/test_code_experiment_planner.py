@@ -115,6 +115,17 @@ def test_registry_is_canonical_non_mutating_and_bounded() -> None:
         question_id="state.declared_workflow_sql_matches_implementation",
         subject_key="capability:route:text",
     )
+    schema = experiment_template("evolution.code_schema_upgrade_matrix")
+    assert schema.executable is True
+    assert schema.scenario_ids == ("evolution.code_schema_upgrade_matrix",)
+    assert schema.applies_to(
+        question_id="evolution.code_owner_schema_requires_migration_review",
+        subject_key="code-owner-schema-subject-v1:fixture",
+    )
+    assert not schema.applies_to(
+        question_id="evolution.change_surface_requires_review",
+        subject_key="code-owner-schema-subject-v1:fixture",
+    )
     assert all(item.acceptance_gates for item in executable)
 
 

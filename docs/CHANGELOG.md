@@ -26,6 +26,12 @@ no se copian aquí para evitar que se conviertan en datos históricos sin contex
   autoriza mutación. El proceso de staging Semantic ante muerte del proceso se
   incorpora como tercer template ejecutable, con tres gates medidos y binding a
   la proyección publicada Text→Semantic.
+- Matriz experimental Code-owner para migraciones: cinco nodeids aislados
+  verifican upgrade poblado desde v1, preservación de rows/relations/FTS,
+  incorporación de receipts v6, rollback transaccional y rechazo read-only de
+  schemas futuros. Sus cuatro gates satisfacen únicamente la pregunta exacta de
+  evolución de schema y permiten una disposición técnica acotada, nunca una
+  autorización para migrar estado vivo.
 - Receipt loop acotado del autoanalizador: `--code-experiment-run` persiste el
   resultado terminal `neocortex.code-experiment-receipt/v3` en un envelope
   `neocortex.code-experiment-store/v1`; el review posterior enlaza únicamente
@@ -34,8 +40,9 @@ no se copian aquí para evitar que se conviertan en datos históricos sin contex
   completado anterior, mientras un terminal posterior fallido o abstenido lo
   invalida. Un envelope digest recalculable liga el contexto durable. Los
   bindings productivos cubren acceptance pública Text, workflow
-  SQL/transaccional Text y recuperación Semantic acotada; la evidencia exacta
-  no crea una decisión humana, recomendación ni autoridad de mutación.
+  SQL/transaccional Text, recuperación Semantic acotada y la matriz de schema
+  Code-owner; la evidencia exacta no crea una decisión humana, recomendación ni
+  autoridad de mutación.
 - Framework schema 21 con `ReviewTask` durable: batches y receipts acotados,
   memberships, tareas versionadas, eventos append-only con CAS, progreso keyset
   y heads fuente generacionales. Cada batch

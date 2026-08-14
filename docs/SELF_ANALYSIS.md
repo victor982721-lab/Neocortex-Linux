@@ -519,9 +519,11 @@ facts, completitud y requirements, pero excluye IDs locales de captura. Por
 ello un replay exacto conserva receipts y un cambio real de evidencia los
 invalida aunque el subject lógico conserve su nombre.
 Templates sin runner siguen como planes de caracterización. La CLI sólo ejecuta
-tres templates source-versioned con gates medidos: la ruta pública Text, con un
-nodeid; el workflow SQL/transaccional Text, con cuatro; y la recuperación
-Semantic ante muerte del proceso durante staging, con un nodeid y tres gates.
+cuatro templates source-versioned con gates medidos: la ruta pública Text, con
+un nodeid; el workflow SQL/transaccional Text, con cuatro; la recuperación
+Semantic ante muerte del proceso durante staging, con un nodeid y tres gates; y
+la matriz Code-owner de migración poblada, rollback y rechazo de schema futuro,
+con cinco nodeids y cuatro gates.
 Los escenarios restantes del assurance registry no son automáticamente
 propuestas ejecutables.
 
@@ -561,6 +563,8 @@ tengan un binding tipado a gates efectivamente aprobados. Hoy esos bindings
 cubren
 `capability.route_reaches_user_visible_outcome` con
 `capability.public_route_acceptance` y
+`evolution.code_owner_schema_requires_migration_review` con
+`evolution.code_schema_upgrade_matrix`,
 `state.declared_workflow_sql_matches_implementation` con
 `state.runtime_sql_trace`, y
 `state.text_semantic_published_projection_is_aligned/v2` con

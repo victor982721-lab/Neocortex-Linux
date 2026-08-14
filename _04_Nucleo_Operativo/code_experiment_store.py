@@ -682,6 +682,36 @@ _REQUIREMENT_BINDINGS: tuple[_RequirementBinding, ...] = (
         ),
     ),
     _RequirementBinding(
+        "evolution.code_owner_schema_requires_migration_review",
+        "evolution.code_schema_upgrade_matrix",
+        "populated_upgrade_and_recovery_evidence",
+        (
+            "migration_failure_rolls_back_schema_objects_and_existing_facts",
+            "oldest_populated_schema_upgrades_preserve_rows_relations_fts_and_reopen",
+            "receipt_schema_upgrade_preserves_existing_code_facts",
+        ),
+    ),
+    _RequirementBinding(
+        "evolution.code_owner_schema_requires_migration_review",
+        "evolution.code_schema_upgrade_matrix",
+        "schema_compatibility_counterevidence_evaluated",
+        (
+            "future_schema_is_rejected_without_mutation_or_sidecars",
+            "migration_failure_rolls_back_schema_objects_and_existing_facts",
+        ),
+    ),
+    _RequirementBinding(
+        "evolution.code_owner_schema_requires_migration_review",
+        "evolution.code_schema_upgrade_matrix",
+        "schema_upgrade_matrix_result",
+        (
+            "future_schema_is_rejected_without_mutation_or_sidecars",
+            "migration_failure_rolls_back_schema_objects_and_existing_facts",
+            "oldest_populated_schema_upgrades_preserve_rows_relations_fts_and_reopen",
+            "receipt_schema_upgrade_preserves_existing_code_facts",
+        ),
+    ),
+    _RequirementBinding(
         "state.declared_workflow_sql_matches_implementation",
         "state.runtime_sql_trace",
         "runtime_transaction_order_observed",

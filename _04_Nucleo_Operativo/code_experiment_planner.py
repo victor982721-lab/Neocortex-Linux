@@ -207,6 +207,7 @@ def _template(
     versions = {
         "analyzer.registered_invariant_scenarios": "v3",
         "capability.public_route_acceptance": "v2",
+        "evolution.code_schema_upgrade_matrix": "v1",
         "state.semantic_process_death_recovery": "v1",
         "state.runtime_sql_trace": "v2",
     }
@@ -381,7 +382,6 @@ CODE_EXPERIMENT_TEMPLATES: tuple[CodeExperimentTemplate, ...] = (
         (
             "run_smallest_affected_contract_experiment",
             "run_companion_sensitive_contract_test",
-            "run_bounded_code_schema_upgrade_matrix",
         ),
         "isolated_upgrade_matrix",
         "disposable_state_copy",
@@ -397,6 +397,30 @@ CODE_EXPERIMENT_TEMPLATES: tuple[CodeExperimentTemplate, ...] = (
         limitations=(
             "selected_history_is_not_product_intent",
             "fixture_matrix_is_not_every_deployed_state",
+        ),
+    ),
+    _template(
+        "evolution.code_schema_upgrade_matrix",
+        ("run_bounded_code_schema_upgrade_matrix",),
+        "isolated_upgrade_matrix",
+        "pytest_tmp_path",
+        "bounded",
+        timeout=300,
+        max_items=5,
+        attention=10,
+        scenarios=("evolution.code_schema_upgrade_matrix",),
+        runner="trusted_deep_declared_scenarios",
+        questions=("evolution.code_owner_schema_requires_migration_review",),
+        subject_prefixes=("code-owner-schema-subject-v1:",),
+        gates=(
+            "future_schema_is_rejected_without_mutation_or_sidecars",
+            "migration_failure_rolls_back_schema_objects_and_existing_facts",
+            "oldest_populated_schema_upgrades_preserve_rows_relations_fts_and_reopen",
+            "receipt_schema_upgrade_preserves_existing_code_facts",
+        ),
+        limitations=(
+            "fixture_matrix_does_not_cover_every_historical_database_or_filesystem_failure",
+            "successful_upgrade_tests_do_not_authorize_an_unreviewed_schema_change",
         ),
     ),
     _template(

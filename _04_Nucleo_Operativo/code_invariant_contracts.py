@@ -246,6 +246,70 @@ RUNTIME_SCENARIOS = (
         limitation="fixture_history_does_not_reconstruct_unobserved_product_intent",
     ),
     RuntimeScenarioSpec(
+        scenario_id="evolution.code_schema_upgrade_matrix",
+        version="v1",
+        test_nodeids=(
+            (
+                "tests/test_code_experiment_store.py::"
+                "test_populated_code_v5_migrates_to_append_only_receipts_without_fact_drift"
+            ),
+            (
+                "tests/test_code_experiment_store.py::"
+                "test_v5_to_v6_migration_failure_rolls_back_every_receipt_object"
+            ),
+            (
+                "tests/test_code_schema_migration_v1_v2.py::"
+                "test_v1_to_current_migration_failure_rolls_back_ddl_and_data"
+            ),
+            (
+                "tests/test_code_schema_migration_v1_v2.py::"
+                "test_v1_to_current_migration_preserves_rows_relations_and_fts"
+            ),
+            (
+                "tests/test_framework_code_path_collation.py::"
+                "test_code_future_schema_is_rejected_read_only_without_sidecars"
+            ),
+        ),
+        scenario_kind="state_fixture",
+        isolation="pytest_tmp_path",
+        limitation=(
+            "bounded_populated_code_schema_fixtures_do_not_cover_every_historical_"
+            "database_or_filesystem_failure"
+        ),
+        gate_specs=(
+            RuntimeScenarioGateSpec(
+                "future_schema_is_rejected_without_mutation_or_sidecars",
+                (
+                    "tests/test_framework_code_path_collation.py::"
+                    "test_code_future_schema_is_rejected_read_only_without_sidecars",
+                ),
+            ),
+            RuntimeScenarioGateSpec(
+                "migration_failure_rolls_back_schema_objects_and_existing_facts",
+                (
+                    "tests/test_code_experiment_store.py::"
+                    "test_v5_to_v6_migration_failure_rolls_back_every_receipt_object",
+                    "tests/test_code_schema_migration_v1_v2.py::"
+                    "test_v1_to_current_migration_failure_rolls_back_ddl_and_data",
+                ),
+            ),
+            RuntimeScenarioGateSpec(
+                "oldest_populated_schema_upgrades_preserve_rows_relations_fts_and_reopen",
+                (
+                    "tests/test_code_schema_migration_v1_v2.py::"
+                    "test_v1_to_current_migration_preserves_rows_relations_and_fts",
+                ),
+            ),
+            RuntimeScenarioGateSpec(
+                "receipt_schema_upgrade_preserves_existing_code_facts",
+                (
+                    "tests/test_code_experiment_store.py::"
+                    "test_populated_code_v5_migrates_to_append_only_receipts_without_fact_drift",
+                ),
+            ),
+        ),
+    ),
+    RuntimeScenarioSpec(
         scenario_id="interfaces.public_cli_and_static_surface",
         version="v1",
         test_nodeids=(
@@ -418,6 +482,7 @@ INVARIANT_SCENARIO_IDS = (
 
 EXPERIMENT_SCENARIO_IDS = (
     "capability.public_text_route_to_search",
+    "evolution.code_schema_upgrade_matrix",
     "semantic.staging_process_death_resume",
     "state.text_sql_runtime_trace",
 )
@@ -511,10 +576,7 @@ def _validate_registry() -> None:
     scenario_by_id = {item.scenario_id: item for item in RUNTIME_SCENARIOS}
     if any(not scenario_by_id[item].gate_specs for item in EXPERIMENT_SCENARIO_IDS):
         raise ValueError("executable experiment scenarios require measured gate contracts")
-    if any(
-        scenario_by_id[item].gate_specs
-        for item in declared - experiment_scenarios
-    ):
+    if any(scenario_by_id[item].gate_specs for item in declared - experiment_scenarios):
         raise ValueError("non-experiment scenarios cannot publish acceptance gate contracts")
     all_nodeids = tuple(nodeid for item in RUNTIME_SCENARIOS for nodeid in item.test_nodeids)
     if len(all_nodeids) != len(set(all_nodeids)):

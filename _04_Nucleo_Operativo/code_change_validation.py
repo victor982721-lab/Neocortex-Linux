@@ -270,7 +270,7 @@ class GitChangeSnapshot:
             raise ValueError("Git change content digest is invalid")
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class AffectedTestSelection:
     strategy: Literal["none", "affected", "full"]
     selectors: tuple[str, ...]
@@ -298,6 +298,29 @@ class AffectedTestSelection:
             for selector in self.selectors
         ):
             raise ValueError("affected-test selector is outside the Linux inventory")
+        for label, collection in (
+            ("direct", self.direct_tests),
+            ("dependency", self.dependency_tests),
+            ("convention", self.convention_tests),
+        ):
+            if (
+                tuple(sorted(set(collection), key=lambda item: (item.casefold(), item)))
+                != collection
+            ):
+                raise ValueError(f"affected-test {label} tests must be unique and canonical")
+            if any(item not in self.selectors for item in collection):
+                raise ValueError(f"affected-test {label} tests must belong to selectors")
+        if (
+            tuple(sorted(set(self.uncovered_sources), key=lambda item: (item.casefold(), item)))
+            != self.uncovered_sources
+        ):
+            raise ValueError("affected-test uncovered sources must be unique and canonical")
+        if any(_module_for_source(item) is None for item in self.uncovered_sources):
+            raise ValueError("affected-test uncovered source is not a Python source path")
+        if tuple(
+            sorted(set(self.reasons), key=lambda item: (item.casefold(), item))
+        ) != self.reasons or any(not item for item in self.reasons):
+            raise ValueError("affected-test reasons must be non-empty, unique and canonical")
 
 
 @dataclass(frozen=True, slots=True)
@@ -815,28 +838,13 @@ def select_affected_tests(
     if boundary:
         selectors = _linux_test_files(source)
         return AffectedTestSelection(
-            "full",
-            selectors,
-            direct,
-            (
-                "_04_Nucleo_Operativo/code_capability_",
-                "_04_Nucleo_Operativo/code_route_capability_",
-                "_04_Nucleo_Operativo/text_route",
-            ),
-            (
-                "_04_Nucleo_Operativo/code_state_interaction_",
-                "_04_Nucleo_Operativo/state_topology_",
-                "_04_Nucleo_Operativo/text_derivation_",
-                "_04_Nucleo_Operativo/text_route",
-                "_04_Nucleo_Operativo/text_state",
-            ),
-            (
-                "_04_Nucleo_Operativo/code_state_projection_",
-                "_04_Nucleo_Operativo/semantic_",
-                "_04_Nucleo_Operativo/text_derivation_",
-                "_04_Nucleo_Operativo/text_state",
-            ),
-            ("change_crosses_full_suite_boundary",),
+            strategy="full",
+            selectors=selectors,
+            direct_tests=direct,
+            dependency_tests=(),
+            convention_tests=(),
+            uncovered_sources=(),
+            reasons=("change_crosses_full_suite_boundary",),
         )
     dependency_tests: set[str] = set()
     sources_with_dependency_tests: set[str] = set()
@@ -906,13 +914,13 @@ def select_affected_tests(
     elif uncovered:
         reasons.append("some_changed_sources_lack_affected_test_evidence")
     return AffectedTestSelection(
-        "affected" if selected else "none",
-        selected,
-        direct,
-        tuple(sorted(dependency_tests)),
-        tuple(sorted(convention)),
-        uncovered,
-        tuple(sorted(set(reasons))),
+        strategy="affected" if selected else "none",
+        selectors=selected,
+        direct_tests=direct,
+        dependency_tests=tuple(sorted(dependency_tests)),
+        convention_tests=tuple(sorted(convention)),
+        uncovered_sources=uncovered,
+        reasons=tuple(sorted(set(reasons))),
     )
 
 
@@ -2023,11 +2031,14 @@ def _validation_question_scopes() -> tuple[_ValidationQuestionScope, ...]:
         _ValidationQuestionScope(
             "code_schema_migration",
             CODE_SCHEMA_EVOLUTION_QUESTION,
-            "",
-            None,
+            "code-owner-schema-subject-v1:",
+            "evolution.code_schema_upgrade_matrix",
             frozenset(
                 {
+                    "_04_Nucleo_Operativo/code_change_evolution_analysis.py",
+                    "_04_Nucleo_Operativo/code_experiment_store.py",
                     "_04_Nucleo_Operativo/code_schema.py",
+                    "tests/test_code_experiment_store.py",
                     "tests/test_code_schema_migration_v1_v2.py",
                     "tests/test_framework_code_path_collation.py",
                 }
@@ -2039,6 +2050,7 @@ def _validation_question_scopes() -> tuple[_ValidationQuestionScope, ...]:
                     "tests/test_framework_code_path_collation.py",
                 }
             ),
+            True,
         ),
         _ValidationQuestionScope(
             "security_supply_boundary",
@@ -2665,23 +2677,23 @@ def validate_code_change(
     if fallback_sources:
         fallback = _global_change_fallback_tests(source)
         selection = AffectedTestSelection(
-            "affected",
-            tuple(
+            strategy="affected",
+            selectors=tuple(
                 sorted(
                     {*selection.selectors, *fallback},
                     key=lambda item: (item.casefold(), item),
                 )
             ),
-            selection.direct_tests,
-            selection.dependency_tests,
-            tuple(
+            direct_tests=selection.direct_tests,
+            dependency_tests=selection.dependency_tests,
+            convention_tests=tuple(
                 sorted(
                     {*selection.convention_tests, *fallback},
                     key=lambda item: (item.casefold(), item),
                 )
             ),
-            fallback_sources,
-            tuple(
+            uncovered_sources=fallback_sources,
+            reasons=tuple(
                 sorted(
                     {
                         *selection.reasons,

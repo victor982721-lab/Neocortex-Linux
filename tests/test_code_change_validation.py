@@ -209,13 +209,13 @@ def _change_for(*paths: str) -> GitChangeSnapshot:
 def _selection(*selectors: str) -> AffectedTestSelection:
     ordered = tuple(sorted(selectors))
     return AffectedTestSelection(
-        "affected" if ordered else "none",
-        ordered,
-        ordered,
-        (),
-        (),
-        (),
-        ("fixture_selection",),
+        strategy="affected" if ordered else "none",
+        selectors=ordered,
+        direct_tests=ordered,
+        dependency_tests=(),
+        convention_tests=(),
+        uncovered_sources=(),
+        reasons=("fixture_selection",),
     )
 
 
@@ -429,13 +429,13 @@ def test_canonical_experiment_gate_persists_each_exact_receipt(
     }
 
 
-def test_relevant_manual_question_cannot_be_downgraded_to_not_required(
+def test_relevant_schema_question_requires_its_exact_allowlisted_runner(
     tmp_path: Path,
 ) -> None:
     evaluation = _question_evaluation(
         CODE_SCHEMA_EVOLUTION_QUESTION,
         evaluation_id="evaluation:schema",
-        subject_key="schema:code",
+        subject_key="code-owner-schema-subject-v1:fixture",
     )
     proposal = SimpleNamespace(
         proposal_id="proposal:schema-gap",
@@ -465,7 +465,7 @@ def test_relevant_manual_question_cannot_be_downgraded_to_not_required(
     assert gate.status == "abstained"
     assert gate.reason == "affected_question_requires_unresolved_evidence"
     assert gate.evidence["blocking_reasons"] == [
-        "affected_question_has_no_allowlisted_runner:code_schema_migration"
+        "affected_question_experiment_unavailable:code_schema_migration"
     ]
     assert receipts == ()
 
@@ -476,7 +476,7 @@ def test_manual_question_is_not_required_only_when_diff_binding_proves_disjoint(
     evaluation = _question_evaluation(
         CODE_SCHEMA_EVOLUTION_QUESTION,
         evaluation_id="evaluation:schema",
-        subject_key="schema:code",
+        subject_key="code-owner-schema-subject-v1:fixture",
     )
     review = SimpleNamespace(
         experiment_plan=SimpleNamespace(
@@ -612,6 +612,11 @@ def test_experiment_control_plane_change_binds_all_executable_question_scopes() 
             evaluation_id="evaluation:projection",
             subject_key="workflow:text-to-semantic-published-projection",
         ),
+        _question_evaluation(
+            CODE_SCHEMA_EVOLUTION_QUESTION,
+            evaluation_id="evaluation:schema",
+            subject_key="code-owner-schema-subject-v1:fixture",
+        ),
     )
     review = SimpleNamespace(question_evaluations=evaluations)
 
@@ -623,6 +628,7 @@ def test_experiment_control_plane_change_binds_all_executable_question_scopes() 
 
     assert errors == ()
     assert {scope.scope_id for scope, _evaluation in relevant} == {
+        "code_schema_migration",
         "public_text_route",
         "text_publication_sql",
         "text_semantic_projection_recovery",
@@ -632,6 +638,7 @@ def test_experiment_control_plane_change_binds_all_executable_question_scopes() 
         for item in bindings
         if item["scope_id"]
         in {
+            "code_schema_migration",
             "public_text_route",
             "text_publication_sql",
             "text_semantic_projection_recovery",
@@ -762,7 +769,66 @@ def test_packaging_boundary_selects_full_suite(tmp_path: Path) -> None:
 
     assert selection.strategy == "full"
     assert selection.selectors == ("tests/test_logic.py",)
+    assert selection.direct_tests == ()
+    assert selection.dependency_tests == ()
+    assert selection.convention_tests == ()
+    assert selection.uncovered_sources == ()
     assert selection.reasons == ("change_crosses_full_suite_boundary",)
+
+
+def test_full_suite_selection_cannot_publish_module_prefixes_as_uncovered_sources() -> None:
+    with pytest.raises(ValueError, match="not a Python source path"):
+        AffectedTestSelection(
+            strategy="full",
+            selectors=("tests/test_logic.py",),
+            direct_tests=(),
+            dependency_tests=(),
+            convention_tests=(),
+            uncovered_sources=("_04_Nucleo_Operativo/semantic_",),
+            reasons=("change_crosses_full_suite_boundary",),
+        )
+
+
+def test_validation_preserves_full_suite_strategy_without_a_false_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _repository(tmp_path)
+    (root / "pyproject.toml").write_text("[project]\nname='fixture'\n", encoding="utf-8")
+    change = GitChangeSnapshot(
+        "a" * 40,
+        "a" * 40,
+        ("pyproject.toml",),
+        (),
+        (),
+        (),
+        "b" * 64,
+    )
+    from _04_Nucleo_Operativo import code_change_validation
+
+    monkeypatch.setattr(
+        code_change_validation,
+        "capture_git_change",
+        lambda *_args, **_kwargs: change,
+    )
+
+    def runner(arguments, *, cwd, timeout, environment=None):
+        command = tuple(str(item) for item in arguments)
+        return subprocess.CompletedProcess(command, 1, "", "fixture stop after selection")
+
+    result = validate_code_change(
+        root=root,
+        state_directory=tmp_path / "state",
+        runner=runner,
+    )
+
+    assert result.status == "failed"
+    assert result.selection.strategy == "full"
+    assert result.selection.selectors == ("tests/test_logic.py",)
+    assert result.selection.dependency_tests == ()
+    assert result.selection.convention_tests == ()
+    assert result.selection.uncovered_sources == ()
+    assert result.selection.reasons == ("change_crosses_full_suite_boundary",)
 
 
 def test_code_schema_boundary_selects_its_bounded_compatibility_matrix(
@@ -1019,13 +1085,13 @@ def test_changed_source_never_trusts_a_stale_published_import_closure(
         code_change_validation,
         "select_affected_tests",
         lambda *_args, **_kwargs: code_change_validation.AffectedTestSelection(
-            "affected",
-            ("tests/test_import_consumer.py",),
-            (),
-            ("tests/test_import_consumer.py",),
-            (),
-            (),
-            (),
+            strategy="affected",
+            selectors=("tests/test_import_consumer.py",),
+            direct_tests=(),
+            dependency_tests=("tests/test_import_consumer.py",),
+            convention_tests=(),
+            uncovered_sources=(),
+            reasons=(),
         ),
     )
     monkeypatch.setattr(

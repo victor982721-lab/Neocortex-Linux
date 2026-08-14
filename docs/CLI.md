@@ -349,8 +349,9 @@ El ID debe pertenecer al plan reconstruido en esa misma invocación. El runner
 allow-listed usa trusted-deep, presupuesto acotado y manifest exacto; si cambia
 fuente, proposal, provider o base Code, falla cerrado. Hoy sólo son ejecutables
 `capability.public_route_acceptance` (un nodeid),
-`state.runtime_sql_trace` (cuatro nodeids) y
-`state.semantic_process_death_recovery` (un nodeid con tres gates). El registry general contiene otros
+`state.runtime_sql_trace` (cuatro nodeids),
+`state.semantic_process_death_recovery` (un nodeid con tres gates) y
+`evolution.code_schema_upgrade_matrix` (cinco nodeids con cuatro gates). El registry general contiene otros
 escenarios de assurance/calibración, pero no por ello son ejecutables desde esta
 opción.
 

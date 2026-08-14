@@ -27,7 +27,9 @@ from .code_analysis_epistemics import (
     validate_analysis_question_set,
 )
 from .code_experiment_store import ResolvedCodeExperimentReceipt
+from .code_change_evolution_analysis import CODE_SCHEMA_EVOLUTION_QUESTION
 from .code_route_capability_analysis import ROUTE_CAPABILITY_QUESTION
+from .code_schema import CODE_SCHEMA_VERSION
 from .code_state_interaction_analysis import WORKFLOW_SQL_QUESTION
 from .code_state_projection_analysis import TEXT_SEMANTIC_PROJECTION_QUESTION
 
@@ -94,6 +96,25 @@ _TECHNICAL_POLICIES = (
         (
             "fixture_acceptance_does_not_measure_human_product_value",
             "non_text_routes_are_outside_this_disposition",
+        ),
+    ),
+    _TechnicalPolicy(
+        CODE_SCHEMA_EVOLUTION_QUESTION.question_id,
+        CODE_SCHEMA_EVOLUTION_QUESTION.version,
+        analysis_question_spec_fingerprint(CODE_SCHEMA_EVOLUTION_QUESTION),
+        "code-owner-schema-subject-v1:",
+        "evolution.code_schema_upgrade_matrix",
+        (
+            "future_schema_is_rejected_without_mutation_or_sidecars",
+            "migration_failure_rolls_back_schema_objects_and_existing_facts",
+            "oldest_populated_schema_upgrades_preserve_rows_relations_fts_and_reopen",
+            "receipt_schema_upgrade_preserves_existing_code_facts",
+        ),
+        "the_code_owner_schema_matches_its_exact_contract_and_the_bounded_populated_upgrade_rollback_matrix_passes",
+        "code_owner_schema_upgrade_matrix_passed_without_a_change_signal",
+        (
+            "fixture_matrix_does_not_cover_every_historical_database_or_filesystem_failure",
+            "backup_restore_and_power_loss_remain_outside_this_disposition",
         ),
     ),
     _TechnicalPolicy(
@@ -321,9 +342,7 @@ def _record_facts(
     record_kind: str,
 ) -> tuple[dict[str, object], ...]:
     return tuple(
-        _fact_map(item)
-        for item in evaluation.evidence
-        if item.source_record_kind == record_kind
+        _fact_map(item) for item in evaluation.evidence if item.source_record_kind == record_kind
     )
 
 
@@ -386,12 +405,43 @@ def _projection_predicate(evaluation: AnalysisQuestionEvaluation) -> bool:
     )
 
 
+def _schema_predicate(evaluation: AnalysisQuestionEvaluation) -> bool:
+    projections = _record_facts(evaluation, "exact_sqlite_schema_and_migration_ledger")
+    if len(projections) != 1:
+        return False
+    projection = projections[0]
+    ddl_digest = projection.get("ddl_digest")
+    migration_digest = projection.get("migration_digest")
+    table_count = projection.get("table_count")
+    index_count = projection.get("index_count")
+    trigger_count = projection.get("trigger_count")
+    return (
+        projection.get("schema_version") == CODE_SCHEMA_VERSION
+        and projection.get("migration_count") == CODE_SCHEMA_VERSION
+        and isinstance(table_count, int)
+        and not isinstance(table_count, bool)
+        and table_count > 0
+        and isinstance(index_count, int)
+        and not isinstance(index_count, bool)
+        and index_count > 0
+        and isinstance(trigger_count, int)
+        and not isinstance(trigger_count, bool)
+        and trigger_count > 0
+        and isinstance(ddl_digest, str)
+        and ddl_digest.startswith("code-schema-ddl-v1:xxh3_128:")
+        and isinstance(migration_digest, str)
+        and migration_digest.startswith("code-schema-migrations-v1:xxh3_128:")
+    )
+
+
 def _policy_predicate(
     policy: _TechnicalPolicy,
     evaluation: AnalysisQuestionEvaluation,
 ) -> bool:
     if policy.question_id == ROUTE_CAPABILITY_QUESTION.question_id:
         return _capability_predicate(evaluation)
+    if policy.question_id == CODE_SCHEMA_EVOLUTION_QUESTION.question_id:
+        return _schema_predicate(evaluation)
     if policy.question_id == WORKFLOW_SQL_QUESTION.question_id:
         return _workflow_predicate(evaluation)
     if policy.question_id == TEXT_SEMANTIC_PROJECTION_QUESTION.question_id:
@@ -421,17 +471,14 @@ def _review(
     linked = tuple(receipt_by_id[item] for item in receipt_ids if item in receipt_by_id)
     if not receipt_ids or len(linked) != len(receipt_ids):
         return "technical_policy_requires_resolvable_passed_receipts"
-    if (
-        {item.receipt.template_id for item in linked} != {policy.template_id}
-        or any(
-            item.question_id != evaluation.question_id
-            or item.subject_key != evaluation.subject.subject_key
-            or item.receipt.status != "passed"
-            or not item.receipt.code_database_unchanged
-            or item.receipt.authority != "advisory"
-            or item.receipt.mutation_authority
-            for item in linked
-        )
+    if {item.receipt.template_id for item in linked} != {policy.template_id} or any(
+        item.question_id != evaluation.question_id
+        or item.subject_key != evaluation.subject.subject_key
+        or item.receipt.status != "passed"
+        or not item.receipt.code_database_unchanged
+        or item.receipt.authority != "advisory"
+        or item.receipt.mutation_authority
+        for item in linked
     ):
         return "technical_policy_receipt_scope_or_authority_mismatch"
     passed_gates = {
