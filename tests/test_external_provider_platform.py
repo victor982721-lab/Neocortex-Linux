@@ -7,6 +7,7 @@ import os
 import sqlite3
 import subprocess
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -38,7 +39,8 @@ class _Inventory:
     def __init__(self, paths: tuple[Path, ...]) -> None:
         self.paths = paths
 
-    def snapshots(self, _scan_id: int):
+    def snapshots(self, scan_id: int):
+        del scan_id
         for path in self.paths:
             observed = path.stat()
             yield FileSnapshot(
@@ -475,9 +477,11 @@ def test_pyright_parser_preserves_structured_range_and_rule(
     provider = PyrightTrustedProjectProvider(root)
 
     def fake_run(arguments, **kwargs):
+        assert arguments[1] == "--max-old-space-size=1792"
         config_path = Path(arguments[arguments.index("--project") + 1])
         config = json.loads(config_path.read_text(encoding="utf-8"))
         assert config["executionEnvironments"][0]["root"] == "source"
+        assert config["extraPaths"] == [str(provider._runtime_search_path())]
         staged_path = os.path.abspath(Path(kwargs["cwd"]) / config["include"][0])
         output = {
             "generalDiagnostics": [
@@ -555,7 +559,8 @@ def test_malformed_provider_output_abstains_without_partial_findings(
     assert publication.coverage_complete is False
     assert publication.findings == ()
     assert publication.counters["errors"] == 1
-    assert publication.publication.provenance["error"]["reason"] == (
+    error = cast(dict[str, object], publication.publication.provenance["error"])
+    assert error["reason"] == (
         "provider_failure:ValueError:mypy JSON Lines output is malformed"
     )
     assert publication.limitations[0].startswith("provider_failure:ValueError:")
@@ -631,7 +636,8 @@ def test_status_review_and_diff_consume_the_normalized_provider_contract(
     suite_payload = snapshot.external_evidence_suite
     assert suite_payload["schema"] == "neocortex.external-evidence-suite/v1"
     assert suite_payload["profile"] == "protected"
-    assert suite_payload["providers"][0]["provider_id"] == "ruff-protected-basic"
+    provider_payloads = cast(list[dict[str, object]], suite_payload["providers"])
+    assert provider_payloads[0]["provider_id"] == "ruff-protected-basic"
 
     status = SelfAnalysisStatus(
         "valid",
@@ -651,7 +657,8 @@ def test_status_review_and_diff_consume_the_normalized_provider_contract(
     assert review.external_evidence_suite is not None
     assert review.external_evidence_suite.profile == "protected"
     assert review.external_evidence_suite.providers[0].provider_id == ("ruff-protected-basic")
-    assert review.as_payload()["external_evidence_suite"]["schema"] == (
+    review_suite = cast(dict[str, object], review.as_payload()["external_evidence_suite"])
+    assert review_suite["schema"] == (
         "neocortex.external-evidence-suite/v1"
     )
 

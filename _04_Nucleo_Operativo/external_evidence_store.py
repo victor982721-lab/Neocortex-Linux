@@ -662,6 +662,30 @@ def publish_external_provider(
     return tool_run_id
 
 
+def _provider_baseline_fresh_until(
+    connection: sqlite3.Connection,
+    tool_run_id: int,
+    provider_id: str,
+) -> float | None:
+    """Return an explicitly published freshness fence for time-bound evidence."""
+
+    if provider_id != "pip-audit-known-vulnerabilities":
+        return None
+    rows = connection.execute(
+        """SELECT value FROM external_metrics
+        WHERE tool_run_id=? AND subject_kind='project'
+        AND subject_key='project:installed-environment'
+        AND category='known_vulnerability'
+        AND metric_name='audit_fresh_until_unix_seconds'
+        AND unit='unix_seconds' ORDER BY portable_metric_id LIMIT 2""",
+        (tool_run_id,),
+    ).fetchall()
+    if len(rows) != 1:
+        return None
+    value = float(rows[0][0])
+    return value if value > 0 else None
+
+
 def read_external_provider_baselines(
     connection: sqlite3.Connection,
     *,
@@ -729,6 +753,11 @@ def read_external_provider_baselines(
             ids,
             metric_ids,
             relation_ids,
+            _provider_baseline_fresh_until(
+                connection,
+                int(row["tool_run_id"]),
+                str(row["provider_id"]),
+            ),
         )
         if comparable is None and baseline.comparability_signature == comparability_signature:
             comparable = baseline

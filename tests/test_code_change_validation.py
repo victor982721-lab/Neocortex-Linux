@@ -1,0 +1,613 @@
+"""Contracts for the canonical local Linux source-change gate."""
+
+from __future__ import annotations
+
+import subprocess
+from dataclasses import replace
+from pathlib import Path
+from types import SimpleNamespace
+from typing import cast
+
+import pytest
+
+from _04_Nucleo_Operativo.code_change_validation import (
+    GitChangeSnapshot,
+    _fresh_review_gate,
+    _provider_failure,
+    _replay_gate,
+    capture_git_change,
+    select_affected_tests,
+    validate_code_change,
+)
+from _04_Nucleo_Operativo.external_evidence_providers import (
+    INSTALLED_PACKAGE_PROVIDER_ID,
+    PIP_AUDIT_PROVIDER_ID,
+)
+
+
+def test_optional_mutation_abstention_is_not_a_failed_machine_gate() -> None:
+    provider = SimpleNamespace(
+        provider_id="cosmic-ray-focal-mutation",
+        status="abstained",
+        gate="not_evaluated",
+        reason="provider_abstained:mutation_target_not_declared",
+    )
+
+    assert _provider_failure(provider) is False
+
+
+def test_linux_publication_only_snapshot_is_an_eligible_review_fence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from _04_Nucleo_Operativo import code_change_validation
+
+    monkeypatch.setattr(
+        code_change_validation,
+        "_TRUSTED_DEEP_REQUIRED_PROVIDER_IDS",
+        frozenset({"fixture-provider"}),
+    )
+    provider = SimpleNamespace(
+        provider_id="fixture-provider",
+        status="ready",
+        gate="baseline",
+        reason=None,
+    )
+    result = SimpleNamespace(
+        status="ready",
+        reason=None,
+        snapshot=SimpleNamespace(
+            analysis_run_id=9,
+            freshness="publication_only",
+            current=False,
+            processing_signature="fixture",
+        ),
+        external_evidence_suite=SimpleNamespace(
+            profile="trusted-deep",
+            providers=(provider,),
+        ),
+        question_evaluations=(),
+        supply_chain=None,
+        recommendations=(),
+        digest=None,
+        as_payload=lambda: {"schema": "neocortex.code-review/v16"},
+    )
+    monkeypatch.setattr(
+        code_change_validation,
+        "review_code_state",
+        lambda *_args, **_kwargs: result,
+    )
+
+    gate, observed = _fresh_review_gate(tmp_path)
+
+    assert observed is result
+    assert gate.status == "passed"
+    assert gate.reason == "fresh_review_has_no_failed_machine_gate"
+
+
+def _network_abstained_pip_provider() -> SimpleNamespace:
+    return SimpleNamespace(
+        provider_id=PIP_AUDIT_PROVIDER_ID,
+        status="abstained",
+        gate="not_evaluated",
+        reason="provider_abstained:pip_audit_network_unavailable:fixture",
+        result_digest=None,
+        comparability_signature="pip-fixture",
+        execution="full",
+    )
+
+
+def _review_with_providers(
+    analysis_run_id: int,
+    providers: tuple[SimpleNamespace, ...],
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        status="ready",
+        reason=None,
+        snapshot=SimpleNamespace(
+            analysis_run_id=analysis_run_id,
+            freshness="publication_only",
+            current=False,
+            processing_signature=f"fixture-{analysis_run_id}",
+        ),
+        external_evidence_suite=SimpleNamespace(
+            profile="trusted-deep",
+            providers=providers,
+        ),
+        question_evaluations=(),
+        supply_chain=None,
+        recommendations=(),
+        digest=None,
+        as_payload=lambda: {"schema": "neocortex.code-review/v16"},
+    )
+
+
+def test_network_only_pip_failure_uses_only_a_resolved_fresh_exact_inventory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from _04_Nucleo_Operativo import code_change_validation
+
+    monkeypatch.setattr(
+        code_change_validation,
+        "_TRUSTED_DEEP_REQUIRED_PROVIDER_IDS",
+        frozenset({PIP_AUDIT_PROVIDER_ID}),
+    )
+    result = _review_with_providers(9, (_network_abstained_pip_provider(),))
+    monkeypatch.setattr(code_change_validation, "review_code_state", lambda *_a, **_k: result)
+    change = GitChangeSnapshot(
+        "a" * 40,
+        "a" * 40,
+        ("neocortex/logic.py",),
+        (),
+        (),
+        (),
+        "b" * 64,
+    )
+    receipt = {
+        "tool_run_id": 71,
+        "analysis_run_id": 7,
+        "result_digest": "audit-digest",
+        "inventory_versions_identical": True,
+    }
+    monkeypatch.setattr(
+        code_change_validation,
+        "_historical_pip_audit_fallback",
+        lambda *_a, **_k: receipt,
+    )
+
+    gate, observed = _fresh_review_gate(tmp_path, change=change)
+
+    assert observed is result
+    assert gate.status == "passed"
+    assert gate.evidence["historical_pip_audit_fallback"] == receipt
+    assert gate.evidence["provider_failures"] == []
+
+    monkeypatch.setattr(
+        code_change_validation,
+        "_historical_pip_audit_fallback",
+        lambda *_a, **_k: None,
+    )
+    failed, _ = _fresh_review_gate(tmp_path, change=change)
+    assert failed.status == "failed"
+    assert failed.evidence["provider_failures"] == [PIP_AUDIT_PROVIDER_ID]
+
+
+def test_replay_accepts_the_same_resolved_fresh_pip_snapshot_only_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from _04_Nucleo_Operativo import code_change_validation
+
+    fixture_provider_id = "fixture-provider"
+    monkeypatch.setattr(
+        code_change_validation,
+        "_TRUSTED_DEEP_REQUIRED_PROVIDER_IDS",
+        frozenset(
+            {
+                fixture_provider_id,
+                INSTALLED_PACKAGE_PROVIDER_ID,
+                PIP_AUDIT_PROVIDER_ID,
+            }
+        ),
+    )
+    first_fixture = SimpleNamespace(
+        provider_id=fixture_provider_id,
+        status="ready",
+        gate="baseline",
+        reason=None,
+        result_digest="fixture-result",
+        comparability_signature="fixture-comparability",
+        execution="full",
+    )
+    replay_fixture = SimpleNamespace(
+        **{**vars(first_fixture), "execution": "cache_replay"}
+    )
+    first_inventory = SimpleNamespace(
+        provider_id=INSTALLED_PACKAGE_PROVIDER_ID,
+        status="ready",
+        gate="baseline",
+        reason=None,
+        result_digest="first-clock-bound-result",
+        comparability_signature="inventory-comparability",
+        execution="full",
+    )
+    replay_inventory = SimpleNamespace(
+        **{**vars(first_inventory), "result_digest": "replay-clock-bound-result"}
+    )
+    first = _review_with_providers(
+        10,
+        (first_fixture, first_inventory, _network_abstained_pip_provider()),
+    )
+    replay = _review_with_providers(
+        11,
+        (replay_fixture, replay_inventory, _network_abstained_pip_provider()),
+    )
+    change = GitChangeSnapshot(
+        "a" * 40,
+        "a" * 40,
+        ("neocortex/logic.py",),
+        (),
+        (),
+        (),
+        "b" * 64,
+    )
+    monkeypatch.setattr(
+        code_change_validation,
+        "_historical_pip_audit_fallback",
+        lambda *_a, **_k: {"tool_run_id": 71, "result_digest": "audit-digest"},
+    )
+    inventory_receipt = {
+        "semantic_projection_digest": "sha256:inventory",
+        "semantics_identical": True,
+    }
+    monkeypatch.setattr(
+        code_change_validation,
+        "_installed_inventory_replay_receipt",
+        lambda *_a, **_k: inventory_receipt,
+    )
+
+    gate = _replay_gate(
+        first,
+        replay,
+        state_directory=tmp_path,
+        change=change,
+    )
+
+    assert gate.status == "passed"
+    assert gate.evidence["cache_replays"] == [fixture_provider_id]
+    fallback = cast(dict[str, object], gate.evidence["historical_pip_audit_fallback"])
+    assert fallback["tool_run_id"] == 71
+    assert gate.evidence["installed_inventory_replay"] == inventory_receipt
+
+
+def _git(root: Path, *arguments: str) -> None:
+    subprocess.run(("git", *arguments), cwd=root, check=True, capture_output=True)
+
+
+def _repository(tmp_path: Path) -> Path:
+    root = tmp_path / "Repository"
+    (root / "neocortex").mkdir(parents=True)
+    (root / "tests").mkdir()
+    (root / "neocortex" / "logic.py").write_text("def choose():\n    return 1\n", encoding="utf-8")
+    (root / "tests" / "test_logic.py").write_text(
+        "from neocortex.logic import choose\n\ndef test_choose():\n    assert choose() == 1\n",
+        encoding="utf-8",
+    )
+    _git(root, "init", "-q")
+    _git(root, "config", "user.email", "fixture@example.invalid")
+    _git(root, "config", "user.name", "Fixture")
+    _git(root, "add", ".")
+    _git(root, "commit", "-qm", "fixture")
+    return root
+
+
+def test_git_change_includes_tracked_and_untracked_content(tmp_path: Path) -> None:
+    root = _repository(tmp_path)
+    (root / "neocortex" / "logic.py").write_text("def choose():\n    return 2\n", encoding="utf-8")
+    (root / "tests" / "test_new.py").write_text("def test_new(): pass\n", encoding="utf-8")
+
+    first = capture_git_change(root)
+    second = capture_git_change(root)
+
+    assert first == second
+    assert first.changed_paths == ("neocortex/logic.py", "tests/test_new.py")
+    assert first.untracked_paths == ("tests/test_new.py",)
+    assert len(first.content_digest) == 64
+
+
+def test_selection_preserves_changed_tests_and_convention(tmp_path: Path) -> None:
+    root = _repository(tmp_path)
+    change = GitChangeSnapshot(
+        "a" * 40,
+        "a" * 40,
+        ("neocortex/logic.py", "tests/test_logic.py"),
+        (),
+        (),
+        (),
+        "b" * 64,
+    )
+
+    selection = select_affected_tests(root, tmp_path / "missing-state", change)
+
+    assert selection.strategy == "affected"
+    assert selection.selectors == ("tests/test_logic.py",)
+    assert selection.direct_tests == ("tests/test_logic.py",)
+
+
+def test_packaging_boundary_selects_full_suite(tmp_path: Path) -> None:
+    root = _repository(tmp_path)
+    (root / "pyproject.toml").write_text("[project]\nname='fixture'\n", encoding="utf-8")
+    change = GitChangeSnapshot(
+        "a" * 40,
+        "a" * 40,
+        ("pyproject.toml",),
+        (),
+        (),
+        (),
+        "b" * 64,
+    )
+
+    selection = select_affected_tests(root, tmp_path / "state", change)
+
+    assert selection.strategy == "full"
+    assert selection.selectors == ("tests/test_logic.py",)
+    assert selection.reasons == ("change_crosses_full_suite_boundary",)
+
+
+def test_full_suite_excludes_retired_windows_runtime_but_keeps_portable_usn(
+    tmp_path: Path,
+) -> None:
+    root = _repository(tmp_path)
+    (root / "tests" / "test_release_windows.py").write_text(
+        "raise AssertionError('retired Windows test must not execute')\n",
+        encoding="utf-8",
+    )
+    (root / "tests" / "test_synthetic_usn.py").write_text(
+        "def test_portable_fixture(): pass\n",
+        encoding="utf-8",
+    )
+    change = GitChangeSnapshot(
+        "a" * 40,
+        "a" * 40,
+        ("pyproject.toml",),
+        (),
+        (),
+        (),
+        "b" * 64,
+    )
+
+    selection = select_affected_tests(root, tmp_path / "state", change)
+
+    assert selection.selectors == (
+        "tests/test_logic.py",
+        "tests/test_synthetic_usn.py",
+    )
+    assert "tests/test_release_windows.py" not in selection.selectors
+
+
+def test_rename_does_not_turn_an_abstention_into_success(tmp_path: Path) -> None:
+    root = _repository(tmp_path)
+    change = GitChangeSnapshot(
+        "a" * 40,
+        "a" * 40,
+        ("neocortex/logic.py",),
+        (),
+        (),
+        (),
+        "b" * 64,
+    )
+    before = select_affected_tests(root, tmp_path / "state", change)
+    (root / "neocortex" / "logic.py").rename(root / "neocortex" / "renamed.py")
+    renamed = replace(change, changed_paths=("neocortex/renamed.py",))
+    after = select_affected_tests(root, tmp_path / "state", renamed)
+
+    assert before.strategy == "affected"
+    assert before.selectors == ("tests/test_logic.py",)
+    assert after.strategy == "none"
+    assert after.selectors == ()
+    assert after.uncovered_sources == ("neocortex/renamed.py",)
+    assert "no_affected_test_evidence" in after.reasons
+
+
+def test_clean_tree_is_a_verified_noop_without_running_external_gates(tmp_path: Path) -> None:
+    root = _repository(tmp_path)
+    result = validate_code_change(
+        root=root,
+        state_directory=tmp_path / "state",
+    )
+
+    assert result.status == "passed"
+    assert result.reason is None
+    assert result.selection.strategy == "none"
+    assert tuple(item.gate_id for item in result.gates) == ("source_change_present",)
+    assert result.gates[0].status == "not_required"
+    assert result.experiment_receipts == ()
+    assert result.mutation_authority is False
+    assert result.digest.startswith("sha256:")
+
+
+def test_partial_affected_evidence_is_not_silently_green(tmp_path: Path) -> None:
+    root = _repository(tmp_path)
+    (root / "neocortex" / "uncovered.py").write_text("VALUE = 1\n", encoding="utf-8")
+    change = GitChangeSnapshot(
+        "a" * 40,
+        "a" * 40,
+        ("neocortex/logic.py", "neocortex/uncovered.py"),
+        (),
+        (),
+        (),
+        "b" * 64,
+    )
+
+    selection = select_affected_tests(root, tmp_path / "state", change)
+
+    assert selection.strategy == "affected"
+    assert selection.selectors == ("tests/test_logic.py",)
+    assert selection.uncovered_sources == ("neocortex/uncovered.py",)
+    assert "some_changed_sources_lack_affected_test_evidence" in selection.reasons
+
+
+def test_changed_source_never_trusts_a_stale_published_import_closure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _repository(tmp_path)
+    (root / "tests" / "test_import_consumer.py").write_text(
+        "from neocortex.logic import choose\n\ndef test_consumer(): assert choose() == 1\n",
+        encoding="utf-8",
+    )
+    (root / "tests" / "test_packaging_entrypoint.py").write_text(
+        "def test_public_boundary(): pass\n",
+        encoding="utf-8",
+    )
+    change = GitChangeSnapshot(
+        "a" * 40,
+        "a" * 40,
+        ("neocortex/logic.py",),
+        (),
+        (),
+        (),
+        "b" * 64,
+    )
+    from _04_Nucleo_Operativo import code_change_validation
+
+    monkeypatch.setattr(
+        code_change_validation,
+        "select_affected_tests",
+        lambda *_args, **_kwargs: code_change_validation.AffectedTestSelection(
+            "affected",
+            ("tests/test_import_consumer.py",),
+            (),
+            ("tests/test_import_consumer.py",),
+            (),
+            (),
+            (),
+        ),
+    )
+    monkeypatch.setattr(
+        code_change_validation,
+        "_unpublished_source_paths",
+        lambda *_args, **_kwargs: ("neocortex/logic.py",),
+    )
+    monkeypatch.setattr(
+        code_change_validation,
+        "capture_git_change",
+        lambda *_args, **_kwargs: change,
+    )
+    observed_commands: list[tuple[str, ...]] = []
+
+    def runner(arguments, *, cwd, timeout, environment=None):
+        command = tuple(str(item) for item in arguments)
+        observed_commands.append(command)
+        return subprocess.CompletedProcess(command, 1, "", "stop after selection")
+
+    result = validate_code_change(
+        root=root,
+        state_directory=tmp_path / "state",
+        runner=runner,
+    )
+
+    assert result.status == "failed"
+    assert "published_import_graph_stale_for_changed_source" in result.selection.reasons
+    assert result.selection.uncovered_sources == ("neocortex/logic.py",)
+    assert "tests/test_import_consumer.py" in result.selection.selectors
+    assert "tests/test_packaging_entrypoint.py" in result.selection.selectors
+    assert not any("--analysis-profile" in command for command in observed_commands)
+
+
+def test_validation_fallback_stays_bounded_and_runs_public_boundaries(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _repository(tmp_path)
+    (root / "neocortex" / "uncovered.py").write_text("VALUE = 1\n", encoding="utf-8")
+    for name in (
+        "test_cli_code_surface.py",
+        "test_code_review_epistemics.py",
+        "test_packaging_entrypoint.py",
+    ):
+        (root / "tests" / name).write_text("def test_boundary(): pass\n", encoding="utf-8")
+
+    from _04_Nucleo_Operativo import code_change_validation
+
+    change = GitChangeSnapshot(
+        "a" * 40,
+        "a" * 40,
+        ("neocortex/uncovered.py",),
+        (),
+        (),
+        (),
+        "b" * 64,
+    )
+    monkeypatch.setattr(code_change_validation, "capture_git_change", lambda *_args, **_kwargs: change)
+    observed_commands: list[tuple[str, ...]] = []
+
+    def runner(arguments, *, cwd, timeout, environment=None):
+        command = tuple(str(item) for item in arguments)
+        observed_commands.append(command)
+        if "static" in command or "architecture" in command:
+            return subprocess.CompletedProcess(command, 0, "fixture passed", "")
+        return subprocess.CompletedProcess(command, 1, "", "fixture stop after selection")
+
+    monkeypatch.setattr(
+        code_change_validation,
+        "_fresh_review_gate",
+        lambda *_args, **_kwargs: (
+            code_change_validation.ValidationGate(
+                "autoanalysis_verdict", "abstained", "fixture", 0, (), {}
+            ),
+            None,
+        ),
+    )
+    monkeypatch.setattr(
+        code_change_validation,
+        "_candidate_wheel_gate",
+        lambda *_args, **_kwargs: code_change_validation.ValidationGate(
+            "candidate_wheel_smoke", "abstained", "fixture", 0, (), {}
+        ),
+    )
+
+    result = validate_code_change(
+        root=root,
+        state_directory=tmp_path / "state",
+        runner=runner,
+    )
+
+    assert result.status == "failed"
+    assert result.selection.strategy == "affected"
+    assert result.selection.selectors == (
+        "tests/test_cli_code_surface.py",
+        "tests/test_code_review_epistemics.py",
+        "tests/test_packaging_entrypoint.py",
+    )
+    producer = next(command for command in observed_commands if "--analysis-profile" in command)
+    assert producer.count("--deep-test-selector") == 3
+
+
+def test_failed_static_gate_stops_before_trusted_execution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _repository(tmp_path)
+    (root / "neocortex" / "logic.py").write_text(
+        "def choose():\n    return 2\n",
+        encoding="utf-8",
+    )
+    observed_commands: list[tuple[str, ...]] = []
+
+    def runner(arguments, *, cwd, timeout, environment=None):
+        command = tuple(str(item) for item in arguments)
+        observed_commands.append(command)
+        if command[:2] == ("git", "rev-parse"):
+            return subprocess.CompletedProcess(command, 0, "a" * 40 + "\n", "")
+        if command[:2] == ("git", "diff") or command[:2] == ("git", "ls-files"):
+            return subprocess.CompletedProcess(command, 0, "", "")
+        return subprocess.CompletedProcess(command, 2, "", "static fixture failure")
+
+    change = GitChangeSnapshot(
+        "a" * 40,
+        "a" * 40,
+        ("neocortex/logic.py",),
+        (),
+        (),
+        (),
+        "b" * 64,
+    )
+    from _04_Nucleo_Operativo import code_change_validation
+
+    monkeypatch.setattr(code_change_validation, "capture_git_change", lambda *_args, **_kwargs: change)
+
+    result = validate_code_change(
+        root=root,
+        state_directory=tmp_path / "state",
+        runner=runner,
+    )
+
+    assert result.status == "failed"
+    assert result.reason == "failed_gate:static_no_regression"
+    assert tuple(item.gate_id for item in result.gates) == (
+        "static_no_regression",
+        "source_snapshot_unchanged",
+    )
+    assert not any("--analysis-profile" in command for command in observed_commands)

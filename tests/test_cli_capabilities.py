@@ -169,6 +169,31 @@ def test_canonical_argv_translates_to_hidden_flat_compatibility_flags() -> None:
         ]
     )
 
+    with patch("_04_Nucleo_Operativo.cli_app.main", return_value=5) as run_cli:
+        result = entrypoint(
+            (
+                "code",
+                "validate",
+                "--baseline=HEAD^",
+                "--max-tests",
+                "42",
+                "--time-budget-seconds=120",
+                "--json",
+            )
+        )
+
+    assert result == 5
+    run_cli.assert_called_once_with(
+        [
+            "--code-validate-change",
+            "--code-validation-baseline=HEAD^",
+            "--code-validation-max-tests",
+            "42",
+            "--code-validation-time-budget-seconds=120",
+            "--code-json",
+        ]
+    )
+
 
 def test_flat_alias_is_explicit_but_hidden_from_global_help() -> None:
     parser = build_parser()
@@ -221,6 +246,15 @@ def test_canonical_help_is_specific_without_changing_global_parser_help(
     assert "--mime-type" in captured.out
     assert "--input-bytes" in captured.out
     assert "--doctor-capabilities" not in captured.out
+
+    assert entrypoint(("code", "validate", "--help")) == 0
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert "usage: Neocortex code validate" in captured.out
+    assert "--baseline" in captured.out
+    assert "--max-tests" in captured.out
+    assert "--time-budget-seconds" in captured.out
+    assert "--code-validate-change" not in captured.out
 
 
 def test_available_capabilities_emit_canonical_json_and_exit_zero(

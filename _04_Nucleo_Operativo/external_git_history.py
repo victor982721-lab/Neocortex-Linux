@@ -971,7 +971,11 @@ def _git_history_counters(
 ) -> dict[str, int]:
     return {
         "eligible_files": len(window.owners),
-        "covered_files": files_with_history,
+        # Every eligible file was evaluated against the complete bounded
+        # history window. A file with no observed commit is still covered;
+        # that absence is preserved separately instead of corrupting the
+        # generic provider input-coverage contract.
+        "covered_files": len(window.owners),
         "files_without_observed_history": len(window.owners) - files_with_history,
         "commits_requested": window.config.max_commits,
         "commits_observed": len(window.commits),

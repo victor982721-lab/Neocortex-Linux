@@ -796,10 +796,58 @@ que se haya omitido la comprobación de frescura.
 ## Validación local Linux
 
 GitHub Actions está deshabilitado y el repositorio no conserva workflows. La
-barrera canónica se ejecuta localmente en Linux con la infraestructura del
-proyecto: inventario dinámico, suite completa, Coverage con ramas, arquitectura
-Grimp, Ruff/Mypy/Pyright, supply chain, autoanálisis, wheel instalado, launcher
-público y snapshots Git. Windows es legado fuera del alcance vigente.
+barrera canónica para todo cambio nuevo se ejecuta localmente con:
+
+```bash
+Neocortex code validate
+```
+
+Es un orquestador del autoanalizador, no otro linter: captura el diff; selecciona
+pruebas afectadas, completa huecos con fronteras públicas/escenarios registrados
+y escala a la suite Linux sólo ante cambios de packaging, schema o gates; ejecuta las barreras
+estática y arquitectónica existentes; publica `trusted-deep`; consume el review
+v16; ejecuta experimentos registrados; instala y prueba el wheel candidato fuera
+del checkout; y repite la misma publicación para demostrar replay. Un gate
+fallido produce `failed`, evidencia insuficiente produce `abstained`, y ambos
+devuelven código 2. La salida JSON canónica se obtiene con `--json`.
+La selección Linux excluye sólo los módulos que prueban el runtime Windows/NTFS
+retirado; no ejecuta ese legado como barrera y no confunde fixtures portables
+con soporte activo de Windows.
+
+La entrada hace preflight read-only de `MemAvailable`, swap y PSI y mantiene un
+lock exclusivo. El árbol completo se ejecuta en un servicio de usuario
+systemd/cgroup v2 con reserva adaptativa para KDE/Chrome, `MemoryHigh=75%` del
+presupuesto, `MemoryMax` adaptado (máximo 4 GiB), `MemorySwapMax` (máximo
+512 MiB), hasta cuatro CPUs, 512 tareas y 45 minutos. El watchdog observa el
+host cada 500 ms y detiene el grupo si desaparece la reserva del escritorio o
+la presión entra en el umbral de aborto. Un fallo de D-Bus, cgroup, preflight o
+watchdog es abstención operativa; nunca habilita un fallback sin contención.
+El servicio declara además `PrivateNetwork=yes`: el árbol no tiene ruta al host
+ni a Internet durante la validación.
+
+Para el árbol sucio normal, el baseline predeterminado es `HEAD`. Después de
+crear el commit local y antes del push se usa el padre explícito:
+
+```bash
+Neocortex code validate --baseline HEAD^
+```
+
+`tools/quality_gate.py` permanece como infraestructura interna y diagnóstico
+especializado. Las sesiones no deben ejecutar Ruff, Mypy, Pyright, pytest u
+otros componentes como rutas de aceptación independientes cuando `code
+validate` puede orquestarlos y emitir el recibo único. Windows es legado fuera
+del alcance vigente.
+
+El productor general `pip-audit` puede observar la red en una ejecución
+explícita distinta, pero `code validate` fuerza política offline. Su verdict sólo
+puede resolver el snapshot publicado previo mientras siga vigente, tenga cero
+vulnerabilidades y su inventario exacto de distribuciones/versiones coincida con
+el actual; cambios en packaging o política supply invalidan esa resolución. No
+se usa un resultado stale ni se interpreta la falta de red como ausencia de
+vulnerabilidades.
+El inventario local es `environment_bound` y se reobserva en el replay. Sus dos
+proyecciones deben ser idénticas en métricas, relaciones, findings y versiones;
+sólo el timestamp/ID del snapshot se excluye del digest comparado.
 
 Las validaciones deben terminar antes del push y quedar ligadas al SHA local
 comprometido. El push sólo transporta ese SHA a `origin/main`; no sustituye los
@@ -816,20 +864,9 @@ python tools/quality_gate.py coverage \
   --write-baseline
 ```
 
-La barrera local equivalente se ejecuta únicamente sobre `main`, con un
-worktree limpio y comprometido, mediante:
-
-```bash
-"${XDG_DATA_HOME:-$HOME/.local/share}/Neocortex/current/bin/python" \
-  tools/quality_gate.py pre-push \
-  --receipt "$HOME/.codex/vault/evidence/neocortex/pre-push.json"
-```
-
-`--receipt` es optativo, no escribe por defecto y debe apuntar fuera del
-repositorio. El JSON se publica atómicamente después de aprobar arquitectura,
-estática, supply chain y el inventario completo de pruebas bajo Coverage;
-conserva SHA Git, hash de inventario, versiones, totales de líneas/ramas,
-comandos, snapshots de árbol limpio y resultado.
+El gate histórico `pre-push` continúa disponible internamente para una campaña
+integral explícita, pero ya no es la interfaz ordinaria ni reemplaza el recibo
+diff-aware del autoanalizador.
 
 Los gates no descargan pesos de modelos reales; los contratos usan dobles y la
 conformidad de los pesos se comprueba durante la instalación local. Ninguna

@@ -18,6 +18,11 @@ from pathlib import Path
 
 
 _CANONICAL_COMMANDS = {
+    ("code", "validate"): (
+        "--code-validate-change",
+        "--code-json",
+        "Run the sole local Linux validation for a source change.",
+    ),
     ("doctor", "capabilities"): (
         "--doctor-capabilities",
         "--doctor-capabilities-json",
@@ -46,6 +51,12 @@ _CAPABILITIES_CANONICAL_OPTIONS = {
     "--select": "--doctor-capabilities-select",
     "--mime-type": "--doctor-capabilities-mime-type",
     "--input-bytes": "--doctor-capabilities-input-bytes",
+}
+
+_CODE_VALIDATION_CANONICAL_OPTIONS = {
+    "--baseline": "--code-validation-baseline",
+    "--max-tests": "--code-validation-max-tests",
+    "--time-budget-seconds": "--code-validation-time-budget-seconds",
 }
 
 # This first-token allowlist is intentionally duplicated at the installed
@@ -124,6 +135,10 @@ def _print_canonical_help(command: tuple[str, str]) -> None:
             metavar="BYTES",
             help="non-negative input size for --select",
         )
+    if command == ("code", "validate"):
+        parser.add_argument("--baseline", default="HEAD", help="Git baseline (default HEAD)")
+        parser.add_argument("--max-tests", type=int, default=5000)
+        parser.add_argument("--time-budget-seconds", type=int, default=900)
     parser.print_help()
 
 
@@ -150,6 +165,12 @@ def _translate_canonical_arguments(arguments: Sequence[str]) -> list[str]:
             and option in _CAPABILITIES_CANONICAL_OPTIONS
         ):
             translated.append(_CAPABILITIES_CANONICAL_OPTIONS[option] + separator + value)
+        elif (
+            translate_options
+            and command == ("code", "validate")
+            and option in _CODE_VALIDATION_CANONICAL_OPTIONS
+        ):
+            translated.append(_CODE_VALIDATION_CANONICAL_OPTIONS[option] + separator + value)
         else:
             translated.append(token)
     return translated

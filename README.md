@@ -722,30 +722,55 @@ descendientes. `--code-query-limit` acepta 1–500 (50 por defecto) y
 conservan dimensiones, evidencia y limitaciones por separado: no calculan un
 score agregado ni una probabilidad de defecto, y nunca autorizan una mutación.
 
-NeoCortex no usa GitHub Actions. La validación canónica ocurre localmente en
-Linux mediante `tools/quality_gate.py`: inventario dinámico completo, Ruff,
-Mypy, Pyright, arquitectura Grimp, supply chain, cobertura de líneas/ramas,
-smoke del wheel instalado y verificación del SHA. El baseline nunca se regenera
-implícitamente ante una caída ni permite retirar silenciosamente una ruta de
-test o fuente aprobada. El autoanalizador complementa esas barreras con
-evidencia publicada y abstenciones explícitas; no las sustituye ni convierte
-un resultado verde en autorización de mutación.
-
-Antes de un push directo a `main`, el intérprete de la release canónica puede
-ejecutar la misma barrera integral sobre un worktree limpio y ya comprometido:
+NeoCortex no usa GitHub Actions. La entrada cotidiana única para validar una
+implementación nueva es local y Linux-only:
 
 ```bash
-"${XDG_DATA_HOME:-$HOME/.local/share}/Neocortex/current/bin/python" \
-  tools/quality_gate.py pre-push \
-  --receipt "$HOME/.codex/vault/evidence/neocortex/pre-push.json"
+Neocortex code validate
 ```
 
-El recibo es opcional y sólo se escribe al solicitar una ruta explícita fuera
-del repositorio. Registra SHA Git, hash del inventario completo de pruebas,
-versiones/totales de los gates, cobertura de líneas y ramas, snapshots Git,
-comandos ejecutados y resultado. El pre-push ejecuta la suite dinámica completa bajo Coverage y
-exige además el recibo verificado del runtime Semgrep aislado; no acepta las
-excepciones MCP en el runtime principal.
+Antes de ejecutar herramientas, el comando toma un lock exclusivo, observa
+`MemAvailable`, swap y PSI, y reserva dinámicamente memoria para KDE/Chrome.
+Toda la validación y sus descendientes se reejecutan en un único cgroup de
+usuario con `MemoryHigh`, `MemoryMax`, `MemorySwapMax`, cuota de CPU y límite
+global de 45 minutos. Un watchdog detiene el grupo y devuelve abstención si se
+pierde la reserva del escritorio; nunca continúa a costa de provocar OOM en el
+entorno interactivo. El recibo enlaza la admisión
+`neocortex.code-validation-resources/v1` y la salida humana muestra el pico de
+memoria observado por systemd. El mismo servicio declara
+`PrivateNetwork=yes`, por lo que el worker y todos sus providers carecen de
+ruta hacia la red externa.
+
+El comando captura el diff y su digest, selecciona pruebas afectadas por cambio
+directo, convención y grafo de imports publicado, añade las fronteras públicas y
+escenarios registrados si el grafo queda incompleto, y sólo escala a la suite
+declarada cuando cambia packaging, schema o la política de gates.
+La suite declarada omite únicamente las pruebas del runtime Windows/NTFS
+retirado; conserva fixtures portables aunque modelen metadatos históricos.
+Después ejecuta los gates estáticos y arquitectónicos existentes, publica el
+perfil `trusted-deep`, consume `neocortex.code-review/v16`, ejecuta una vez cada
+plantilla de experimento allow-listed relevante, construye e instala el wheel
+candidato en un entorno efímero fuera del checkout, y repite la publicación
+idéntica para exigir replay de los proveedores. Devuelve un único recibo
+`neocortex.code-change-validation/v1` con salida `0` sólo si no hubo fallo ni
+abstención y si fuente/estado canónico permanecieron intactos. No autoriza
+patches, push, release ni mutación del corpus.
+
+`code validate` no inicia tráfico de red. Resuelve el último snapshot publicado
+de `pip-audit` todavía dentro de su ventana de 24 horas únicamente cuando el
+inventario instalado actual coincide paquete por paquete y versión por versión,
+el snapshot reportó cero vulnerabilidades y el diff no toca packaging ni la
+política supply. El recibo expone esa resolución; si falta un audit fresco o
+existe cualquier discrepancia, el gate se abstiene. La actualización deliberada
+del feed permanece fuera de esta validación local.
+El inventario instalado se vuelve a observar deliberadamente en el segundo run;
+el replay sólo pasa si métricas, relaciones, findings y versiones normalizados
+son idénticos, excluyendo únicamente el reloj y el ID efímero del snapshot.
+
+`tools/quality_gate.py` sigue siendo infraestructura interna reutilizada por el
+orquestador y sirve para diagnóstico especializado, no como flujo alternativo
+que cada sesión deba reconstruir manualmente. Para validar un commit ya creado
+contra su padre use `Neocortex code validate --baseline HEAD^`.
 
 La validación H6 sobre la raíz canónica produjo el work package
 `_04_Nucleo_Operativo.external_deep_coverage` /

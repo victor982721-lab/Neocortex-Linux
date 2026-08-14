@@ -208,6 +208,7 @@ def test_truncated_window_marks_absence_without_inventing_age(tmp_path: Path) ->
 
     assert result.history_truncated is True
     assert result.counters["commits_observed"] == 1
+    assert result.counters["covered_files"] == result.counters["eligible_files"]
     assert result.counters["files_without_observed_history"] == 2
     assert values[("pkg/b.py", "history_observed")] == 0
     assert ("pkg/b.py", "observed_age_seconds") not in values

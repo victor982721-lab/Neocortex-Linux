@@ -188,6 +188,38 @@ EXPECTED_CODE_ACTIONS = (
             "and the underlying hotspot ranking"
         ),
     ),
+    _expected_flag(
+        "--code-validate-change",
+        "code_validate_change",
+        (
+            "run the canonical local Linux validation: Git change, affected tests, "
+            "static and architecture gates, trusted-deep review, experiments, "
+            "installed candidate wheel, replay and one fail-closed verdict"
+        ),
+    ),
+    _expected_store(
+        "--code-validation-baseline",
+        "code_validation_baseline",
+        default="HEAD",
+        metavar="GIT_REVISION",
+        help_text="Git baseline used only by --code-validate-change (default HEAD)",
+    ),
+    _expected_store(
+        "--code-validation-max-tests",
+        "code_validation_max_tests",
+        default=5000,
+        type_name="int",
+        metavar="N",
+        help_text="maximum tests admitted by diff-aware trusted-deep coverage (1..5000)",
+    ),
+    _expected_store(
+        "--code-validation-time-budget-seconds",
+        "code_validation_time_budget_seconds",
+        default=900,
+        type_name="int",
+        metavar="SECONDS",
+        help_text="hard affected-test coverage budget (30..900 seconds; default 900)",
+    ),
     _expected_store(
         "--code-review-limit",
         "code_review_limit",
@@ -348,6 +380,20 @@ EXPECTED_CODE_HELP = (
     "  --code-status         show bounded code database, analyzer and index status\n"
     "  --code-review         show deterministic read-only structural observations,\n"
     "                        open questions and the underlying hotspot ranking\n"
+    "  --code-validate-change\n"
+    "                        run the canonical local Linux validation: Git change,\n"
+    "                        affected tests, static and architecture gates,\n"
+    "                        trusted-deep review, experiments, installed candidate\n"
+    "                        wheel, replay and one fail-closed verdict\n"
+    "  --code-validation-baseline GIT_REVISION\n"
+    "                        Git baseline used only by --code-validate-change\n"
+    "                        (default HEAD)\n"
+    "  --code-validation-max-tests N\n"
+    "                        maximum tests admitted by diff-aware trusted-deep\n"
+    "                        coverage (1..5000)\n"
+    "  --code-validation-time-budget-seconds SECONDS\n"
+    "                        hard affected-test coverage budget (30..900 seconds;\n"
+    "                        default 900)\n"
     "  --code-review-limit N\n"
     "                        bound each review surface to 1 to 50 observations;\n"
     "                        values above 10 require --code-json\n"

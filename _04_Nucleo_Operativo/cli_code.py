@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import sqlite3
 import sys
@@ -1911,6 +1912,82 @@ def run_code_review(args: argparse.Namespace) -> int:
     return _emit_code_review_ready(result)
 
 
+def run_code_validate_change(args: argparse.Namespace) -> int:
+    """Run the sole local Linux validation path for source changes."""
+
+    try:
+        from .app_paths import source_repository_directory
+        from .code_validation_resources import (
+            inside_code_validation_resource_boundary,
+            run_code_validation_in_resource_boundary,
+        )
+
+        if not inside_code_validation_resource_boundary():
+            command: list[str | os.PathLike[str]] = [
+                sys.executable,
+                "-m",
+                "neocortex",
+                "--code-validate-change",
+                "--code-validation-baseline",
+                str(args.code_validation_baseline),
+                "--code-validation-max-tests",
+                str(args.code_validation_max_tests),
+                "--code-validation-time-budget-seconds",
+                str(args.code_validation_time_budget_seconds),
+                "--state-directory",
+                str(args.state_directory),
+            ]
+            if args.code_json:
+                command.append("--code-json")
+            return run_code_validation_in_resource_boundary(
+                command,
+                cwd=source_repository_directory(),
+                json_output=bool(args.code_json),
+            )
+
+        from .code_change_validation import validate_code_change
+
+        result = validate_code_change(
+            baseline=args.code_validation_baseline,
+            max_tests=args.code_validation_max_tests,
+            time_budget_seconds=args.code_validation_time_budget_seconds,
+            progress=(
+                None
+                if args.code_json
+                else lambda message: _print_console_line(
+                    f"CODE_CHANGE_VALIDATION_PROGRESS {message}",
+                    file=sys.stderr,
+                )
+            ),
+        )
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        return _error("code-validate-change", exc)
+    if args.code_json:
+        _emit(result.as_payload(), json_output=True)
+    else:
+        _print_console_line(
+            "CODE_CHANGE_VALIDATION "
+            f"status={result.status} changed={len(result.git.changed_paths)} "
+            f"tests={len(result.selection.selectors)} "
+            f"selection={result.selection.strategy} gates={len(result.gates)} "
+            f"digest={result.digest} source_unchanged={int(result.source_unchanged)}"
+        )
+        if result.reason is not None:
+            _print_console_line(f"CODE_CHANGE_VALIDATION_REASON {result.reason}")
+        for gate in result.gates:
+            _print_console_line(
+                "CODE_CHANGE_VALIDATION_GATE "
+                f"id={gate.gate_id} status={gate.status} reason={gate.reason} "
+                f"duration_ms={gate.duration_ms}"
+            )
+        if result.executable_experiments:
+            _print_console_line(
+                "CODE_CHANGE_VALIDATION_EXPERIMENTS "
+                + json.dumps(result.executable_experiments, ensure_ascii=True)
+            )
+    return 0 if result.status == "passed" else 2
+
+
 def run_code_experiment(args: argparse.Namespace) -> int:
     """Execute one current, registered proposal without writing product state."""
 
@@ -2473,4 +2550,5 @@ __all__ = [
     "run_code_review",
     "run_code_search",
     "run_code_status",
+    "run_code_validate_change",
 ]

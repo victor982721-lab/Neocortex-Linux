@@ -751,11 +751,45 @@ Cierre writers y confirme quiescencia antes de ejecutar status.
 
 ## Topología y validación operativa
 
-El repositorio canónico es `%USERPROFILE%\Neocortex\Repository`; sus estados de
-autoanálisis pertenecen a árboles nuevos bajo
-`%LOCALAPPDATA%\Neocortex\self-analysis`, nunca dentro del repositorio. Cada
-smoke debe usar un estado independiente y el ejecutable exacto del runtime que
-se pretende promover. Un mini-root valida el contrato técnico, pero no sustituye
+Para cambios en la raíz canónica no se ensamblan manualmente Ruff, tipos,
+pytest, review y empaquetado. La superficie pública es:
+
+```bash
+Neocortex code validate
+```
+
+El orquestador liga toda la evidencia a un `GitChangeSnapshot`, publica una
+selección `trusted-deep`, consume el review vigente, ejecuta únicamente runners
+registrados, instala el wheel candidato en un venv efímero y exige un segundo
+run con replay exacto. Si el grafo no permite elegir pruebas, un proveedor no
+queda listo, la medición es incompleta o el snapshot cambia durante la corrida,
+se abstiene o falla: nunca traduce ausencia de evidencia en verde. Use
+`--baseline HEAD^` para verificar un commit ya integrado localmente.
+
+La observación empieza antes del primer provider: el padre captura memoria,
+swap y PSI, reserva headroom para el escritorio y crea un único cgroup de
+usuario para todo el proceso y sus descendientes. La evaluación conserva el
+recibo de admisión `neocortex.code-validation-resources/v1`; systemd mide el
+pico real y un watchdog cancela el grupo ante pérdida de reserva. Esta frontera
+evita que Pyright, Coverage u otro hijo satisfaga sus métricas a costa de OOM
+global. `PrivateNetwork=yes` impide además cualquier egress de providers en
+esta ruta canónica.
+
+La evidencia network-bound de `pip-audit` conserva su propia caducidad, pero
+`code validate` no abre red. Puede enlazar un snapshot previo aún vigente
+únicamente tras comprobar igualdad exacta del inventario instalado y ausencia
+de cambios supply; de otro modo se abstiene. Este enlace queda en el receipt y
+no altera ni republica el snapshot histórico.
+El provider de inventario instalado se ejecuta de nuevo por diseño: el replay
+compara su proyección semántica completa y sólo normaliza reloj/ID de captura,
+en vez de exigir un `cache_replay` imposible o aceptar sólo el conteo de
+paquetes.
+
+El repositorio canónico es `$HOME/Neocortex/Repository`; su estado de
+autoanálisis vive en
+`${XDG_STATE_HOME:-$HOME/.local/state}/Neocortex/self-analysis`, nunca dentro
+del repositorio. Cada smoke debe usar el ejecutable exacto del runtime que se
+pretende promover. Un mini-root valida el contrato técnico, pero no sustituye
 la validación explícita de la raíz completa ni autoriza reutilizar su estado.
 
 ## Route-only/resume con cero candidatos

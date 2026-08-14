@@ -350,7 +350,11 @@ def _bounded_argv(values: Sequence[str], *, label: str) -> list[str]:
     result = list(values)
     if (
         not result
-        or len(result) > 128
+        # A full Linux test inventory contributes two argv items per selector.
+        # Keep the manifest bounded, but do not reject the producer after it has
+        # already completed solely because an explicit selected suite exceeds
+        # the former 128-item envelope.
+        or len(result) > 4_096
         or any(
             not isinstance(value, str) or not value or len(value.encode("utf-8")) > 32_768
             for value in result

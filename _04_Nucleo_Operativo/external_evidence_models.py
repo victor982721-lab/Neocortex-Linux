@@ -551,6 +551,7 @@ class ExternalProviderBaseline:
     portable_finding_ids: tuple[str, ...]
     portable_metric_ids: tuple[str, ...] = ()
     portable_relation_ids: tuple[str, ...] = ()
+    fresh_until_unix_seconds: float | None = None
 
 
 @dataclass(frozen=True, slots=True)

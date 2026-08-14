@@ -103,6 +103,35 @@ def register_code_arguments(
         ),
     )
     code.add_argument(
+        "--code-validate-change",
+        action="store_true",
+        help=(
+            "run the canonical local Linux validation: Git change, affected tests, "
+            "static and architecture gates, trusted-deep review, experiments, "
+            "installed candidate wheel, replay and one fail-closed verdict"
+        ),
+    )
+    code.add_argument(
+        "--code-validation-baseline",
+        default="HEAD",
+        metavar="GIT_REVISION",
+        help="Git baseline used only by --code-validate-change (default HEAD)",
+    )
+    code.add_argument(
+        "--code-validation-max-tests",
+        type=int,
+        default=5000,
+        metavar="N",
+        help="maximum tests admitted by diff-aware trusted-deep coverage (1..5000)",
+    )
+    code.add_argument(
+        "--code-validation-time-budget-seconds",
+        type=int,
+        default=900,
+        metavar="SECONDS",
+        help="hard affected-test coverage budget (30..900 seconds; default 900)",
+    )
+    code.add_argument(
         "--code-review-limit",
         type=int,
         default=10,
@@ -233,6 +262,30 @@ def _validate_code_review_selection(
             raise SystemExit("--code-experiment-run cannot exceed 1024 characters")
 
 
+def _validate_change_validation(args: argparse.Namespace, explicit: set[str]) -> None:
+    controls = {
+        "code_validation_baseline",
+        "code_validation_max_tests",
+        "code_validation_time_budget_seconds",
+    }
+    if controls.intersection(explicit) and not args.code_validate_change:
+        raise SystemExit("code validation controls require --code-validate-change")
+    baseline = args.code_validation_baseline
+    if (
+        not isinstance(baseline, str)
+        or not baseline
+        or baseline.strip() != baseline
+        or len(baseline.encode("utf-8")) > 1024
+        or baseline.startswith("-")
+        or any(ord(character) < 32 or ord(character) == 127 for character in baseline)
+    ):
+        raise SystemExit("--code-validation-baseline is invalid")
+    if not 1 <= args.code_validation_max_tests <= 5000:
+        raise SystemExit("--code-validation-max-tests must be between 1 and 5000")
+    if not 30 <= args.code_validation_time_budget_seconds <= 900:
+        raise SystemExit("--code-validation-time-budget-seconds must be between 30 and 900")
+
+
 def _validate_code_query_selection(
     args: argparse.Namespace,
     explicit: set[str],
@@ -286,8 +339,9 @@ def validate_code_arguments(args: argparse.Namespace) -> None:
     if args.code_search_mode and len(set(args.code_search_mode)) != len(args.code_search_mode):
         raise SystemExit("--code-search-mode values cannot be duplicated")
 
-    explicit = set(getattr(args, "_explicit_options", ()))
+    explicit: set[str] = set(getattr(args, "_explicit_options", ()))
     _validate_code_review_selection(args, explicit)
+    _validate_change_validation(args, explicit)
     _validate_code_query_selection(args, explicit)
     search_options = {
         "code_search_mode",

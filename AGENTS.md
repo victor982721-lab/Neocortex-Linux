@@ -236,6 +236,25 @@ informes anteriores son sólo referencia histórica.
 
 ## Validación proporcional
 
+La entrada ordinaria y única para aceptar una implementación nueva es
+`Neocortex code validate` (`--baseline HEAD^` después de crear el commit). Este
+comando debe orquestar selección afectada, pruebas/Coverage, estática,
+arquitectura, publicación/review del autoanalizador, experimentos allow-listed,
+wheel candidato instalado y replay. No ejecutes Ruff, Mypy, Pyright, pytest ni
+`quality_gate.py` como rutas de aceptación paralelas por costumbre; se permiten
+sólo para diagnosticar un gate concreto que el recibo canónico haya señalado.
+Nunca declares el cambio validado si el comando termina `failed` o `abstained`.
+
+La validación canónica debe reejecutar todo su árbol dentro del cgroup de usuario
+Linux declarado por `neocortex.code-validation-resources/v1`. Antes de iniciar,
+reserva memoria física para KDE/Chrome mediante el coordinador global y rechaza
+la corrida si no hay headroom o PSI seguro. Durante la ejecución conserva
+`MemoryMax`, `MemorySwapMax`, cuota de CPU, límite total de tiempo y watchdog;
+si se pierde la reserva del escritorio, detén el grupo completo y abstente. No
+puede degradarse a subprocesses sin contención ni lanzar dos validaciones en
+paralelo. El mismo servicio debe usar una red privada sin ruta externa; la
+validación canónica nunca inicia egress.
+
 Usa la barrera más pequeña que demuestre el resultado y proteja la frontera
 modificada:
 

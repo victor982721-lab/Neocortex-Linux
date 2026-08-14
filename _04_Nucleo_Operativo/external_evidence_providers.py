@@ -11,6 +11,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import sysconfig
 import tempfile
 import time
 import tomllib
@@ -155,6 +156,7 @@ _STDERR_LIMIT_BYTES = 128 * 1024
 _TOOL_TIMEOUT_SECONDS = 180.0
 _MYPY_MEMORY_BYTES = 2 * 1024 * 1024 * 1024
 _PYRIGHT_MEMORY_BYTES = 2 * 1024 * 1024 * 1024
+_PYRIGHT_NODE_OLD_SPACE_MIB = 1792
 _RUFF_MEMORY_BYTES = 512 * 1024 * 1024
 _GRIMP_MEMORY_BYTES = 2 * 1024 * 1024 * 1024
 _COMPLEXIPY_MEMORY_BYTES = 2 * 1024 * 1024 * 1024
@@ -679,6 +681,7 @@ def _failure(
     status: ExternalRunStatus,
     reason: str,
     started_ns: int,
+    process_invocations: int | None = None,
 ) -> ExternalProviderPublication:
     input_signature = external_input_signature(files)
     execution = "unavailable" if status == "unavailable" else "attempted"
@@ -706,7 +709,11 @@ def _failure(
         "bytes_verified": 0,
         "bytes_read": 0,
         "bytes_staged": 0,
-        "process_invocations": int(status != "unavailable"),
+        "process_invocations": (
+            int(status != "unavailable")
+            if process_invocations is None
+            else process_invocations
+        ),
         "stdout_bytes": 0,
         "stderr_bytes": 0,
         "wall_milliseconds": max(0, (time.time_ns() - started_ns) // 1_000_000),
@@ -1165,7 +1172,7 @@ class RuffProtectedBasicProvider:
                 root,
                 files,
                 tool_version="unavailable",
-                status="unavailable",
+                status="failed",
                 reason="ruff_distribution_missing",
                 started_ns=started_ns,
             )
@@ -1696,11 +1703,11 @@ def provider_tool_versions() -> dict[str, str | None]:
 
 class PyrightTrustedProjectProvider(_TrustedStaticProvider):
     provider_id = PYRIGHT_PROVIDER_ID
-    provider_schema = "neocortex.pyright-trusted-project/v1"
+    provider_schema = "neocortex.pyright-trusted-project/v3"
     tool_name = "pyright"
     source = "external:pyright"
     memory_bound = _PYRIGHT_MEMORY_BYTES
-    execution_strategy = "trusted-config-staged-project-v1"
+    execution_strategy = "trusted-config-staged-project-runtime-search-node-memory-v3"
 
     def __init__(self, root: Path):
         self._node, self._index, self._pyright_version = _pyright_locations()
@@ -1739,7 +1746,19 @@ class PyrightTrustedProjectProvider(_TrustedStaticProvider):
             "python_platform": "Windows" if os.name == "nt" else platform.system(),
             "output": "json",
             "cache": "ephemeral-owned",
+            "import_resolution": "canonical-runtime-purelib-explicit-v1",
+            "node_old_space_mib": _PYRIGHT_NODE_OLD_SPACE_MIB,
         }
+
+    @staticmethod
+    def _runtime_search_path() -> Path:
+        value = sysconfig.get_path("purelib")
+        if not isinstance(value, str) or not value:
+            raise ValueError("canonical runtime purelib is unavailable")
+        path = Path(value)
+        if not path.is_dir():
+            raise ValueError("canonical runtime purelib is not a directory")
+        return path
 
     def _execute(
         self,
@@ -1768,6 +1787,11 @@ class PyrightTrustedProjectProvider(_TrustedStaticProvider):
                 "pythonPlatform": "Windows" if os.name == "nt" else platform.system(),
             }
         ]
+        # Pyright 1.1.411 does not discover a CPython 3.14 venv's purelib
+        # while intentionally checking 3.13-compatible source. Declare the
+        # active immutable runtime's import root explicitly instead of
+        # converting every third-party import into a project diagnostic.
+        payload["extraPaths"] = [str(self._runtime_search_path())]
         generated_config = stage_root / "pyrightconfig.json"
         generated_config.write_text(
             json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
@@ -1777,6 +1801,7 @@ class PyrightTrustedProjectProvider(_TrustedStaticProvider):
         selected_environment["PYRIGHT_TMPDIR"] = str(stage_root)
         command = (
             str(self._node),
+            f"--max-old-space-size={_PYRIGHT_NODE_OLD_SPACE_MIB}",
             str(self._index),
             "--outputjson",
             "--project",
@@ -2355,9 +2380,7 @@ class PipAuditKnownVulnerabilitiesProvider:
             self._installed_signature = None
         else:
             try:
-                self._installed_signature = _installed_distribution_signature(
-                    utc_date=self._utc_date
-                )
+                self._installed_signature = _installed_distribution_signature()
             except (OSError, RuntimeError, TypeError, ValueError) as exc:
                 self._installed_signature = None
                 self._environment_error = f"{type(exc).__name__}:{exc}"
@@ -2378,6 +2401,7 @@ class PipAuditKnownVulnerabilitiesProvider:
                 "service": PIP_AUDIT_SERVICE,
                 "input": "installed-python-environment",
                 "snapshot_freshness_seconds": 24 * 60 * 60,
+                "snapshot_replay": "published-fresh-until-fence-v1",
                 "descriptions": False,
                 "aliases": True,
                 "fix": False,
@@ -2387,10 +2411,13 @@ class PipAuditKnownVulnerabilitiesProvider:
                 tool_name="pip-audit",
                 tool_version=version,
                 installed_signature=self._installed_signature,
-                utc_date=self._utc_date,
             ),
             root_identity=external_root_identity(root),
             execution_strategy="installed-environment-pypi-snapshot-v1",
+            # The persisted v5 contract has no environment-local enum. The
+            # provider's input signature is nevertheless environment-only;
+            # keep the conservative project-wide label until that schema is
+            # versioned rather than writing an unsupported value.
             invalidation_strategy="project_wide",
             memory=_PIP_AUDIT_MEMORY_BYTES,
             loads_project_configuration=False,
@@ -2408,7 +2435,6 @@ class PipAuditKnownVulnerabilitiesProvider:
             "pip-audit-provider-input-v1",
             {
                 "installed_signature": self._installed_signature,
-                "utc_date": self._utc_date,
                 "service": PIP_AUDIT_SERVICE,
             },
         )
@@ -2445,7 +2471,12 @@ class PipAuditKnownVulnerabilitiesProvider:
             )
         signature = self.baseline_input_signature(())
         limitations = PIP_AUDIT_LIMITATIONS
-        if baseline is not None and baseline.input_signature == signature:
+        replay_is_fresh = (
+            baseline is not None
+            and baseline.fresh_until_unix_seconds is not None
+            and time.time() <= baseline.fresh_until_unix_seconds
+        )
+        if baseline is not None and baseline.input_signature == signature and replay_is_fresh:
             replay = _exact_replay(
                 self.descriptor,
                 root,
@@ -2466,11 +2497,29 @@ class PipAuditKnownVulnerabilitiesProvider:
                     ),
                 },
                 details={
-                    "utc_date": self._utc_date,
                     "whole_publication_replay": True,
+                    "fresh_until_unix_seconds": baseline.fresh_until_unix_seconds,
+                    "freshness_checked_at_unix_seconds": time.time(),
                     "uses_network": False,
                     "fix": False,
                 },
+            )
+        if (
+            os.environ.get("NEOCORTEX_PIP_AUDIT_NETWORK_POLICY")
+            == "disabled-by-code-validation"
+        ):
+            return _failure(
+                self.descriptor,
+                root,
+                (),
+                tool_version=self._version,
+                status="failed",
+                reason=(
+                    "pip_audit_network_unavailable:"
+                    "disabled_by_local_code_validation_policy"
+                ),
+                started_ns=started_ns,
+                process_invocations=0,
             )
         try:
             staging_parent = _validated_staging_parent(root, scratch_root)

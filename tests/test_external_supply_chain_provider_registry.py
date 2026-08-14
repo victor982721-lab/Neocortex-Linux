@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 
 import pytest
@@ -68,7 +69,12 @@ def _file(path: Path, root: Path, version_id: int) -> ExternalEvidenceFile:
     )
 
 
-def _baseline(publication, tool_run_id: int = 71) -> ExternalProviderBaseline:
+def _baseline(
+    publication,
+    tool_run_id: int = 71,
+    *,
+    fresh_until_unix_seconds: float | None = None,
+) -> ExternalProviderBaseline:
     assert publication.result_digest is not None
     return ExternalProviderBaseline(
         tool_run_id,
@@ -80,6 +86,7 @@ def _baseline(publication, tool_run_id: int = 71) -> ExternalProviderBaseline:
         tuple(item.portable_finding_id for item in publication.findings),
         (),
         (),
+        fresh_until_unix_seconds,
     )
 
 
@@ -230,11 +237,36 @@ def test_environment_providers_replay_declared_snapshots_with_real_inventory_cos
     pip_replay = pip_provider.run(
         root,
         (),
-        baseline=_baseline(pip_publication, 73),
+        baseline=_baseline(
+            pip_publication,
+            73,
+            fresh_until_unix_seconds=time.time() + 3600,
+        ),
         scratch_root=scratch,
     )
     assert pip_replay.execution == "cache_replay"
     assert pip_replay.counters["process_invocations"] == 0
+
+    executions = 0
+
+    def execute_after_expiry(environment: dict[str, str]) -> PipAuditExecution:
+        nonlocal executions
+        executions += 1
+        return execute_pip_audit(environment)
+
+    pip_provider.executor = execute_after_expiry
+    expired = pip_provider.run(
+        root,
+        (),
+        baseline=_baseline(
+            pip_publication,
+            74,
+            fresh_until_unix_seconds=time.time() - 1,
+        ),
+        scratch_root=scratch,
+    )
+    assert expired.execution == "full"
+    assert executions == 1
 
     inventory_limitations = (
         "optional_extra_and_transitive_requirement_constraints_are_recorded_not_gated",
@@ -286,6 +318,35 @@ def test_environment_providers_replay_declared_snapshots_with_real_inventory_cos
     assert replay.execution == "cache_replay"
     assert replay.counters["inventory_bytes_hashed"] == 4096
     assert replay.counters["bytes_read"] == 4096
+
+
+def test_code_validation_offline_policy_never_invokes_pip_audit_network(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, scratch = _root(tmp_path)
+    monkeypatch.setattr(providers_module, "_package_version", lambda _name: "test-1")
+    monkeypatch.setattr(
+        providers_module,
+        "_installed_distribution_signature",
+        lambda **_kwargs: "installed-environment:fixture",
+    )
+    monkeypatch.setenv(
+        "NEOCORTEX_PIP_AUDIT_NETWORK_POLICY",
+        "disabled-by-code-validation",
+    )
+    provider = PipAuditKnownVulnerabilitiesProvider(
+        root,
+        executor=lambda _environment: pytest.fail("offline validation attempted network"),
+    )
+
+    publication = provider.run(root, (), baseline=None, scratch_root=scratch)
+
+    assert publication.status == "failed"
+    assert publication.counters["process_invocations"] == 0
+    assert publication.publication.provenance["error"]["reason"] == (
+        "pip_audit_network_unavailable:disabled_by_local_code_validation_policy"
+    )
 
 
 def test_trusted_static_registry_exposes_supply_chain_providers(

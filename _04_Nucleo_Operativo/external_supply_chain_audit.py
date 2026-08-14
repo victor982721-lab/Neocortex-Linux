@@ -43,7 +43,7 @@ from .external_evidence_models import (
 )
 
 PIP_AUDIT_PROVIDER_ID = "pip-audit-known-vulnerabilities"
-PIP_AUDIT_PROVIDER_SCHEMA = "neocortex.pip-audit-known-vulnerabilities/v1"
+PIP_AUDIT_PROVIDER_SCHEMA = "neocortex.pip-audit-known-vulnerabilities/v2"
 INSTALLED_PACKAGE_PROVIDER_ID = "installed-package-inventory"
 INSTALLED_PACKAGE_PROVIDER_SCHEMA = "neocortex.installed-package-inventory/v1"
 

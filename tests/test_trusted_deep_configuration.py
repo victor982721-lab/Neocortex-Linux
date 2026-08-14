@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -70,14 +71,15 @@ def test_deep_projection_declares_execution_with_separate_signature(tmp_path: Pa
 
 
 def test_suite_controls_do_not_invalidate_ordinary_code_ast_signature(tmp_path: Path) -> None:
-    common = {
-        "state_path": tmp_path / "code.sqlite3",
-        "dedup_path": tmp_path / "dedup.sqlite3",
-        "analysis_profile": "trusted-deep",
-    }
-    full_suite = CodeRouteConfig(**common)
+    full_suite = CodeRouteConfig(
+        state_path=tmp_path / "code.sqlite3",
+        dedup_path=tmp_path / "dedup.sqlite3",
+        analysis_profile="trusted-deep",
+    )
     selected_suite = CodeRouteConfig(
-        **common,
+        state_path=tmp_path / "code.sqlite3",
+        dedup_path=tmp_path / "dedup.sqlite3",
+        analysis_profile="trusted-deep",
         deep_test_selectors=("tests/test_self_analysis_cli.py",),
         deep_max_tests=80,
         deep_time_budget_seconds=90,
@@ -140,6 +142,43 @@ def test_trusted_deep_command_and_manifest_are_exact(tmp_path: Path) -> None:
         **expected_deep.deep_configuration_payload,
         "configuration_signature": expected_deep.deep_configuration_signature,
     }
+
+
+def test_deep_manifest_preserves_a_full_linux_selector_inventory(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    state = tmp_path / "state"
+    root.mkdir()
+    selectors = tuple(f"tests/test_linux_boundary_{index:03d}.py" for index in range(300))
+    config = replace(
+        _deep_framework_config(root, state),
+        deep_test_selectors=selectors,
+        deep_mutation_target=None,
+        deep_mutation_symbol=None,
+        deep_mutation_max_mutants=20,
+        deep_mutation_timeout_seconds=30,
+        deep_mutation_time_budget_seconds=600,
+    )
+    commands = self_analysis_commands(config, root, state)
+
+    manifest, _payload = build_self_analysis_completion_manifest(
+        run={"run_id": 1},
+        inventory={"scan_id": 2},
+        inventory_policy=InventoryExclusionPolicy.compile((state,)),
+        code_processing_signature="code-v2:fixture",
+        code_summary={"processed": 1},
+        safety_counts={
+            "route_candidates": 0,
+            "file_actions": 0,
+            "run_actions": 0,
+            "organization_events": 0,
+        },
+        commands=commands,
+    )
+
+    manifest_commands = cast(dict[str, object], manifest["commands"])
+    deep_analysis = cast(dict[str, object], manifest["deep_analysis"])
+    assert manifest_commands["analyze"] == commands["analyze"]
+    assert deep_analysis["test_selectors"] == list(selectors)
 
 
 def test_deep_manifest_abstains_on_missing_or_duplicate_limits(tmp_path: Path) -> None:

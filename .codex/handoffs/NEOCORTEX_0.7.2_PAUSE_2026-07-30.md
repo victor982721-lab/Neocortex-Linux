@@ -259,7 +259,25 @@ existe cuando se cumplen juntos los criterios dinámicos de la última sección.
 - Este handoff documenta el árbol sin sustituir tests focales, gates, commit ni
   release Linux instalada del SHA final.
 
-## Corte local pendiente de publicación — Autoanalizador v16
+## Contrato operativo — Autoanalizador v16
+
+- La siguiente frontera operativa es `Neocortex code validate`: una sola entrada
+  Linux para validar implementaciones. Captura el diff, selecciona pruebas con
+  evidencia publicada, ejecuta estática/arquitectura, publica `trusted-deep`,
+  consume review v16, ejecuta experimentos allow-listed, instala el wheel
+  candidato fuera del checkout y exige replay. Las herramientas individuales
+  quedan como diagnóstico interno; no constituyen una aceptación paralela.
+- La entrada completa se reejecuta dentro de un único cgroup v2 de usuario. Un
+  preflight adaptativo reserva memoria para KDE/Chrome, sólo permite una corrida,
+  limita memoria/swap/CPU/tareas/tiempo y detiene todos los descendientes si el
+  watchdog observa pérdida de headroom o PSI crítico. Su admisión queda en el
+  recibo `neocortex.code-validation-resources/v1`; no existe fallback sin
+  contención. `PrivateNetwork=yes` elimina la ruta externa de todo el worker;
+  `code validate` resuelve sólo evidencia supply ya publicada y fresca.
+- La promoción de cualquier corte requiere el comando verde sobre el diff,
+  commit directo a `main`, repetición con `--baseline HEAD^`, release Linux del
+  SHA exacto, launcher público verificado, push único y coincidencia
+  `HEAD=main=origin/main=current`. Ninguno se infiere de este handoff.
 
 - `Neocortex --state-directory ESTADO --code-review` ya no es una vista que
   convierte nombres, rutas o tamaño en recomendaciones. El envelope
@@ -292,6 +310,12 @@ existe cuando se cumplen juntos los criterios dinámicos de la última sección.
   invariante; Coverage/mutación faltante produce abstención. Supply chain
   conserva Semgrep, Deptry, pip-audit e inventario instalado por separado;
   seguridad se abstiene si pip-audit no resuelve, aunque Semgrep haya pasado.
+  Una falla exclusivamente de red sólo puede resolverse con un audit publicado
+  aún vigente, cero vulnerabilidades, inventario instalado exactamente idéntico
+  y ningún cambio de packaging/política supply; el receipt conserva el run y
+  digest reutilizados.
+  El inventario local se reobserva en ambos runs y el replay exige igualdad
+  semántica completa, normalizando sólo reloj/ID efímero de captura.
 - La primera ruta de capability reachability liga `text.extract` con intentos,
   receipts y heads publicados. El autoanálisis compara su publicación con el
   checkout Git por contenido y expone coste/cobertura, pero no publica

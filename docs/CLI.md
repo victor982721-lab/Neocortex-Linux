@@ -611,6 +611,46 @@ eso no convierte el diagnóstico en una operación de reparación.
 modelos; los diagnósticos profundos siguen siendo específicos de PDF/OCR,
 audio, código y estado semántico.
 
+## Validación canónica de cambios de código
+
+```bash
+Neocortex code validate
+Neocortex code validate --baseline HEAD^ --json
+```
+
+Esta es la única entrada de aceptación local para una implementación nueva. El
+primer comando valida el árbol de trabajo contra `HEAD`; el segundo valida un
+commit ya creado contra su padre. Las opciones acotadas son `--max-tests N`
+(1–5000; 5000 por defecto) y `--time-budget-seconds N` (30–900; 900 por
+defecto). El presupuesto predeterminado cubre la medición real observada de la
+selección afectada; no amplía el límite global del cgroup.
+
+El proceso padre no ejecuta los gates directamente: hace preflight de memoria,
+swap y PSI, conserva una reserva adaptativa para el escritorio y reejecuta la
+validación completa en un servicio de usuario systemd/cgroup v2. El grupo tiene
+límites de memoria, swap, CPU, tareas y 45 minutos; un watchdog lo detiene si
+`MemAvailable` cae por debajo de la reserva. La falta de headroom o contención
+produce código 2, nunca una corrida sin límites. Sólo puede existir una
+validación canónica a la vez. `PrivateNetwork=yes` aísla por kernel el árbol
+completo, por lo que ningún provider puede producir egress durante este gate.
+
+El resultado `neocortex.code-change-validation/v1` enlaza el snapshot Git, la
+selección de pruebas, cada gate, los experimentos allow-listed ejecutados, el
+smoke del wheel candidato instalado fuera del checkout y el replay exacto del
+perfil `trusted-deep`, además de la admisión
+`neocortex.code-validation-resources/v1`. `passed` devuelve 0; `failed` o
+`abstained` devuelven 2.
+El recibo nunca concede autoridad de mutación, push o release.
+
+La validación canónica no abre red. Sólo puede reutilizar como evidencia un
+audit `pip-audit` ya publicado y aún fresco, con cero findings, enlazado a un
+inventario instalado exactamente idéntico y cuando el diff no cruza
+packaging/política supply. La resolución queda identificada en el recibo; sin
+esas condiciones el resultado se abstiene.
+El inventario instalado no finge un cache hit: se captura dos veces y el gate
+exige igualdad del digest semántico completo después de retirar únicamente los
+campos del reloj de observación.
+
 Sin opciones de selección, `doctor capabilities [--json]` conserva exactamente
 el reporte agregado schema 1 de `RuntimeCapabilitySpec`, incluido su orden y
 semántica de salida. El broker por trabajo es opt-in y en este corte sólo admite
