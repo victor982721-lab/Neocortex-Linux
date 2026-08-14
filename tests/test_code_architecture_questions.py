@@ -18,6 +18,7 @@ from _04_Nucleo_Operativo.code_architecture_questions import (
     architecture_questions,
     parse_code_architecture_question_payload,
 )
+from _04_Nucleo_Operativo.code_experiment_planner import plan_code_experiments
 
 
 def _provider(provider_id: str) -> ArchitectureProviderStatus:
@@ -151,6 +152,89 @@ def test_ready_architecture_exposes_graph_contract_and_owner_gap_without_a_decis
     contract_facts = {fact.name: fact.value for fact in evaluations[1].evidence[0].facts}
     assert contract_facts["failed_contracts"] == 1
     assert contract_facts["contract_violations"] == 1
+
+
+def test_full_baseline_and_exact_replay_preserve_declared_contract_question_identity() -> None:
+    baseline = replace(
+        _ready_architecture(),
+        gates=(
+            ArchitectureGateEvaluation("import_graph_consensus", "passed", None),
+            ArchitectureGateEvaluation("architecture_contracts", "baseline", None),
+            ArchitectureGateEvaluation(
+                "module_complexity_displacement",
+                "not_evaluated",
+                "baseline_not_supplied",
+            ),
+        ),
+        providers=tuple(
+            replace(item, provider_gate="baseline", execution="full")
+            for item in _ready_architecture().providers
+        ),
+        contracts=tuple(
+            replace(
+                item,
+                status="passed",
+                violations=0,
+                importer_modules=(),
+                imported_modules=(),
+                import_chains=(),
+            )
+            for item in _ready_architecture().contracts
+        ),
+    )
+    replay = replace(
+        baseline,
+        analysis_run_id=8,
+        gates=tuple(
+            replace(item, status="passed") if item.gate == "architecture_contracts" else item
+            for item in baseline.gates
+        ),
+        providers=tuple(
+            replace(
+                item,
+                provider_gate="passed",
+                execution="cache_replay",
+                tool_run_id=2,
+                source_tool_run_id=1,
+            )
+            for item in baseline.providers
+        ),
+    )
+
+    _baseline_specs, baseline_evaluations = architecture_questions(
+        baseline,
+        snapshot_id="same-processing-signature",
+        snapshot_freshness="publication_only",
+        rank_offset=0,
+    )
+    _replay_specs, replay_evaluations = architecture_questions(
+        replay,
+        snapshot_id="same-processing-signature",
+        snapshot_freshness="publication_only",
+        rank_offset=0,
+    )
+
+    baseline_contract = baseline_evaluations[1]
+    replay_contract = replay_evaluations[1]
+    assert baseline_contract.subject.subject_key == replay_contract.subject.subject_key
+    assert baseline_contract.evaluation_id == replay_contract.evaluation_id
+    assert baseline_contract.evidence[0].evidence_id == replay_contract.evidence[0].evidence_id
+    assert baseline_contract.evidence[0].source_projection_digest == (
+        replay_contract.evidence[0].source_projection_digest
+    )
+    baseline_plan = plan_code_experiments(_baseline_specs, baseline_evaluations)
+    replay_plan = plan_code_experiments(_replay_specs, replay_evaluations)
+    baseline_proposal = next(
+        item
+        for item in baseline_plan.proposals
+        if item.question_id == "architecture.declared_import_contracts_are_evaluated"
+    )
+    replay_proposal = next(
+        item
+        for item in replay_plan.proposals
+        if item.question_id == "architecture.declared_import_contracts_are_evaluated"
+    )
+    assert baseline_proposal.proposal_id == replay_proposal.proposal_id
 
 
 def test_path_namespace_rename_does_not_change_explicit_owner_projection_or_authority() -> None:

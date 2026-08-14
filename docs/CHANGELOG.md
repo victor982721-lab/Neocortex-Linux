@@ -14,6 +14,10 @@ no se copian aquí para evitar que se conviertan en datos históricos sin contex
   gates comprueban el grafo vivo, una frontera permitida y controles negativos
   de aristas/ciclos; el receipt puede cerrar una disposición técnica acotada,
   pero conserva como riesgos el dispatch dinámico y la intención no declarada.
+  La identidad portable excluye `baseline`/`passed`, IDs de tool-run y modo
+  full/replay: esas coordenadas no invalidan un receipt si proveedor, schema y
+  proyección de contratos son exactamente iguales; cualquier delta contractual
+  sí genera una identidad nueva.
 - Validación canónica `neocortex.code-change-validation/v2` ligada al diff:
   rutas y tests afectados se proyectan a
   preguntas/sujetos de aceptación versionados. Una pregunta relevante sin

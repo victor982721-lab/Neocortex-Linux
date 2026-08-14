@@ -236,6 +236,37 @@ _LIMITATIONS = (
 )
 
 
+def _contract_identity_payload(analysis: CodeArchitectureAnalysis) -> dict[str, object]:
+    """Return only evidence that can change the declared-contract conclusion.
+
+    ``baseline`` and ``passed`` are comparison coordinates of the provider run,
+    not different contract observations.  Keeping those coordinates out makes
+    a full publication and its exact replay share one portable question identity
+    while tool/schema changes and any contract delta still invalidate it.
+    """
+
+    providers: list[dict[str, object]] = []
+    for provider in analysis.providers:
+        if provider.provider_id != "grimp-architecture":
+            continue
+        item = asdict(provider)
+        for key in (
+            "provider_gate",
+            "execution",
+            "tool_run_id",
+            "source_tool_run_id",
+        ):
+            item.pop(key)
+        providers.append(item)
+    return {
+        "schema": CODE_ARCHITECTURE_SCHEMA,
+        "status": analysis.status,
+        "reason": analysis.reason,
+        "providers": providers,
+        "contracts": [asdict(item) for item in analysis.contracts],
+    }
+
+
 def _subject(
     analysis: CodeArchitectureAnalysis,
     *,
@@ -243,9 +274,15 @@ def _subject(
     snapshot_freshness: Literal["current", "publication_only", "unknown"],
     kind: Literal["run", "contract", "project"],
 ) -> AnalysisSubjectRef:
-    analysis_key = analysis_identity(
-        "code-architecture-question-subject-v1", analysis.digest_payload()
-    )
+    if kind == "contract":
+        analysis_key = analysis_identity(
+            "code-architecture-contract-question-subject-v2",
+            _contract_identity_payload(analysis),
+        )
+    else:
+        analysis_key = analysis_identity(
+            "code-architecture-question-subject-v1", analysis.digest_payload()
+        )
     labels = {
         "run": "Static architecture provider projection",
         "contract": "Declared import architecture contracts",
@@ -344,11 +381,11 @@ def _contract_evidence(
     analysis: CodeArchitectureAnalysis,
     subject: AnalysisSubjectRef,
 ) -> AnalysisEvidenceRef:
-    projection = tuple(asdict(item) for item in analysis.contracts)
-    digest = analysis_identity("code-architecture-contract-evidence-v1", projection)
+    projection = _contract_identity_payload(analysis)
+    digest = analysis_identity("code-architecture-contract-evidence-v2", projection)
     return AnalysisEvidenceRef(
         evidence_id=analysis_identity(
-            "code-architecture-contract-ref-v1",
+            "code-architecture-contract-ref-v2",
             {"subject": subject.subject_key, "projection": digest},
         ),
         subject_key=subject.subject_key,
@@ -760,7 +797,10 @@ def architecture_questions(
         _evaluation(
             specs[1],
             contract_subject,
-            analysis_id=analysis_identity("architecture-analysis-v1", analysis.digest_payload()),
+            analysis_id=analysis_identity(
+                "architecture-contract-analysis-v2",
+                _contract_identity_payload(analysis),
+            ),
             rank=rank_offset + 2,
             evidence=contract_evidence,
             requirements=contract_requirements,
