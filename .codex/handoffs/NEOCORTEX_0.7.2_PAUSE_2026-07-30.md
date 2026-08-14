@@ -354,22 +354,19 @@ existe cuando se cumplen juntos los criterios dinámicos de la última sección.
   resolver evidencias, verifica digests y conserva queries dimensionadas
   (`observation:*`, `question:*`, `decision:*`). La salida humana resume
   preguntas confirmadas/abstenidas, decisiones y autoridad de mutación.
-- Validación histórica v15: los dos shards canónicos aprobaron 4,753 tests,
-  144 skips y 109 subtests; arquitectura quedó en 350 módulos, 1,510 relaciones,
-  cero violaciones y cero SCC; el gate estático volvió al baseline
-  Ruff/Mypy/Pyright sin deuda nueva. El perfil `trusted-static` publicó 12 de
-  13 proveedores; pip-audit se abstuvo por red y el comando estricto devolvió
-  2, como corresponde. Esto aún no implica push ni release instalada.
-- Validación aislada v16 en `/tmp`, sin tocar el estado canónico: una publicación
-  protected completa analizó 742 candidatos y su replay obtuvo 742/742 cache
-  hits. El experimento v2 pasó 4/4 escenarios y 10/10 nodeids en 45 s con tres
-  procesos; todas las bases aisladas conservaron el mismo SHA-256. Una
-  publicación trusted-deep releyó 4/4 invariantes desde Code y el replay
-  posterior reutilizó 12 providers. La salida final mantiene cero
-  recomendaciones, cero work packages y `mutation_authority=false`. Este corte
-  sigue sin push ni release instalada; dos providers supply se abstuvieron
-  en el laboratorio porque el `PYTHONPATH` aislado contenía otra distribución
-  pip, no por una afirmación de seguridad verde.
+- El corte v17 aceptado por `Neocortex code validate --baseline HEAD^` aprobó
+  los once gates locales, incluida publicación `trusted-deep`, review,
+  Coverage afectada, wheel candidato, replay y snapshot de fuente inmutable.
+  El replay reconstruido enlazó los dos receipts `passed` por identidad
+  semántica portable —no por IDs de captura— y dejó ambas preguntas en
+  `human_review_required`, sin volver a proponer experimentos ya ejecutados.
+  La vista pública conserva cero recomendaciones, cero work packages y
+  `mutation_authority=false`.
+- Esta mejora no equivale a cobertura experimental total: permanecen 38
+  preguntas `experiment_required`, 11 huecos explícitos del registry y cero
+  propuestas ejecutables pendientes. Supply/coverage/mutation pueden abstenerse
+  por frescura, red deshabilitada o backend no disponible; esas ausencias no se
+  reinterpretan como resultado verde.
 
 ## Capacidades que permanecen fail-closed
 
@@ -419,9 +416,10 @@ existe cuando se cumplen juntos los criterios dinámicos de la última sección.
 
 ## Próximos pasos, en orden
 
-1. Cerrar esta release sobre un único SHA: gates canónicos, backups online,
-   instalación versionada, dos `Neocortex --all`, superficies instaladas y un
-   único push final conforme al criterio dinámico siguiente.
+1. Ampliar el registry de experimentos una familia verificable por vez,
+   empezando por los huecos de mayor impacto durable/assurance. Cada runner
+   nuevo debe producir receipt enlazable, invalidarse ante cambios semánticos y
+   conservar decisión humana y autoridad de mutación falsa.
 2. Etiquetar con Víctor 20–50 consultas reales ES/EN/DE/ZH. La infraestructura
    golden ya existe, pero no debe inventar juicios humanos ni promover modelos
    por una métrica sintética.
