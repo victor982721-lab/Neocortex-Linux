@@ -408,7 +408,7 @@ explícitamente como **convención de ruta**, no como ownership ni reachability 
 runtime. `hotspot_id` identifica establemente la evidencia física y el símbolo;
 `finding_id` identifica la interpretación versionada.
 
-El envelope vigente es `neocortex.code-review/v17` y no declara compatibilidad
+El envelope vigente es `neocortex.code-review/v18` y no declara compatibilidad
 con schemas anteriores: conserva el corte de autoridad y usa el contrato general
 `neocortex.code-analysis-epistemics/v1`. Cada finding separa
 observación, hipótesis, readiness
@@ -447,7 +447,7 @@ nunca valores. Para CLI selecciona archivos por calls
 construcción dinámica. No ejecuta builders ni afirma que esos parsers lleguen
 al comando público.
 
-La arquitectura publicada deja de ser sólo una sección paralela: v17 deriva
+La arquitectura publicada deja de ser sólo una sección paralela: v18 deriva
 preguntas generales para el grafo estático comparable y para las evaluaciones de
 los contratos de imports. Sus evidence refs conservan snapshot, digest, gates,
 conteos, discrepancias y violaciones; incluso un contrato fallido permanece
@@ -485,7 +485,7 @@ publica atómicamente 260 miembros. Esto demuestra supervivencia y reanudación
 para ese crash point de proceso sobre SQLite; no simula power loss, corrupción
 de almacenamiento, todas las fronteras ni recuperación cross-owner.
 
-v17 integra además `code-state-topology`, `code-state-interactions`,
+v18 integra además `code-state-topology`, `code-state-interactions`,
 `code-change-evolution`, `code-assurance`, `code-invariant-assurance`,
 `code-capability-reachability`, `code-route-capabilities`,
 `code-analyzer-calibration` y `code-analyzer-effectiveness`. Topología verifica
@@ -519,10 +519,11 @@ facts, completitud y requirements, pero excluye IDs locales de captura. Por
 ello un replay exacto conserva receipts y un cambio real de evidencia los
 invalida aunque el subject lógico conserve su nombre.
 Templates sin runner siguen como planes de caracterización. La CLI sólo ejecuta
-dos templates source-versioned con gates medidos: la ruta pública Text, con un
-nodeid, y el workflow SQL/transaccional Text, con cuatro. Los cuatro escenarios
-de invariantes y sus diez nodeids pertenecen al assurance registry, pero no son
-automáticamente propuestas ejecutables.
+tres templates source-versioned con gates medidos: la ruta pública Text, con un
+nodeid; el workflow SQL/transaccional Text, con cuatro; y la recuperación
+Semantic ante muerte del proceso durante staging, con un nodeid y tres gates.
+Los escenarios restantes del assurance registry no son automáticamente
+propuestas ejecutables.
 
 `--code-experiment-run` exige un proposal ID del plan vigente y ejecuta
 pytest/coverage con timeout sobre el checkout canónico confiable. El temporal
@@ -530,10 +531,11 @@ externo aloja runtime/checkpoints; no copia la fuente ni crea un sandbox de
 seguridad. Trusted-deep conserva el `HOME` canónico y declara
 `uses_network=true`. El receipt `neocortex.code-experiment-receipt/v3` conserva
 identidad del provider, manifest, outcomes y gates de los nodeids seleccionados,
-además del digest Code before/after. El provider recalcula antes y después la
+además del fence Code before/after. El provider recalcula antes y después la
 firma de los inputs Python publicados y del soporte Git observado; una
-diferencia rechaza el resultado. El digest cerca `code.sqlite3` durante la fase
-ejecutora. Ninguna de las dos barreras es un lock continuo ni prueba
+diferencia rechaza el resultado. El fence compara identidad Linux, sidecars y
+anclas acotadas de `code.sqlite3` sin releer toda la historia durante cada
+experimento. Ninguna de las dos barreras es un lock continuo ni prueba
 inmutabilidad del corpus u otros stores.
 
 Code schema v6 agrega el resultado terminal a
@@ -550,7 +552,7 @@ proposal y el review resuelve como máximo 256 proposals ejecutables. Repetir el
 mismo `receipt_id` y contexto es idempotente; una colisión o un bound excedido
 falla cerrado.
 
-v17 incorpora un linker fail-closed y de alcance explícito. Para cada proposal
+v18 conserva un linker fail-closed y de alcance explícito. Para cada proposal
 y processing signature vigentes, el review evalúa el terminal más nuevo y sólo
 proyecta `passed`; un `failed` o `abstained` posterior invalida un pass anterior.
 El receipt puede venir de un owner Code completado previo si la publicación
@@ -560,15 +562,22 @@ cubren
 `capability.route_reaches_user_visible_outcome` con
 `capability.public_route_acceptance` y
 `state.declared_workflow_sql_matches_implementation` con
-`state.runtime_sql_trace`. Un receipt fallido, abstenido, stale, corrupto o sin
-binding no puede avanzar readiness; una contradicción del store
+`state.runtime_sql_trace`, y
+`state.text_semantic_published_projection_is_aligned/v2` con
+`state.semantic_process_death_recovery`. Un receipt fallido, abstenido, stale,
+corrupto o sin binding no puede avanzar readiness; una contradicción del store
 abstiene el review.
 
-Cuando todos los requisitos de decisión de una de esas preguntas quedan
-satisfechos, la evaluación avanza como máximo a `human_review_required`. El gate
-demuestra el contrato de tests exactos, no una verdad formal. `recommendations`
-permanece vacío, `recommendation_status=abstained`, no nace una decisión ni un
-package semántico y `mutation_authority=false`. Nombres como `repository`,
+Cuando todos los requisitos de decisión quedan satisfechos, la evaluación
+conserva `human_review_required`: el receipt no se convierte en actor humano. En
+v18, un verificador técnico independiente y allow-listed vuelve a comprobar el
+fingerprint exacto de la pregunta, requisitos, contraevidencia, receipt, gates y
+predicados negativos de la vertical. Sólo entonces publica la disposición
+advisory `no_change_required_within_verified_scope`, con alcance y riesgos
+residuales explícitos. No prueba corrección global, no crea una decisión humana,
+no genera recomendación o package semántico y mantiene
+`mutation_authority=false`. Una pregunta completa sin política exacta se publica
+como gap `unresolved`, nunca como aceptación genérica. Nombres como `repository`,
 `commit`, `build`, `read` o `run`, mover el archivo o añadir un wrapper tampoco
 pueden producir una recomendación. Los constructors y factories públicos fallan
 cerrado ante `act_now`, una decisión autodeclarada o un package de cambio.
@@ -812,11 +821,27 @@ se abstiene o falla: nunca traduce ausencia de evidencia en verde. Use
 La observación empieza antes del primer provider: el padre captura memoria,
 swap y PSI, reserva headroom para el escritorio y crea un único cgroup de
 usuario para todo el proceso y sus descendientes. La evaluación conserva el
-recibo de admisión `neocortex.code-validation-resources/v1`; systemd mide el
-pico real y un watchdog cancela el grupo ante pérdida de reserva. Esta frontera
+recibo de admisión `neocortex.code-validation-resources/v2`; el worker verifica
+su transient unit exacto en `/proc/self/cgroup` y consulta en systemd el
+`PrivateNetwork=yes` efectivo. systemd mide el pico real y un watchdog cancela el grupo ante
+pérdida de reserva. Esta frontera
 evita que Pyright, Coverage u otro hijo satisfaga sus métricas a costa de OOM
 global. `PrivateNetwork=yes` impide además cualquier egress de providers en
 esta ruta canónica.
+
+El gate no equipara «sin runner» con «no requerido». Un binding versionado
+relaciona rutas/tests modificados con preguntas y sujetos de aceptación. Si una
+pregunta relevante conserva evidencia decisoria incompleta, un registry gap o
+carece de disposición técnica exacta después del replay, la validación se
+abstiene. Las preguntas disjuntas quedan `not_required` junto con los paths y
+selectores que demostraron esa irrelevancia.
+
+Los `added/resolved` portables de Mypy, Pyright, Vulture y demás providers son
+una comparación histórica advisory, no el baseline Git del cambio: sus IDs
+incluyen coordenadas y la publicación comparable más cercana puede ser más
+antigua que `HEAD^`. `code validate` los conserva en el receipt, pero bloquea
+regresiones estáticas con el gate versionado por path/regla/conteo que ya se
+ejecutó sobre el checkout actual.
 
 La evidencia network-bound de `pip-audit` conserva su propia caducidad, pero
 `code validate` no abre red. Puede enlazar un snapshot previo aún vigente

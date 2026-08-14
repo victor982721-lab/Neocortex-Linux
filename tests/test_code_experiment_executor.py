@@ -143,6 +143,7 @@ def _receipt(
         "limitations": (
             "receipt_proves_selected_test_outcomes_not_a_question_conclusion_or_formal_proof",
             "coverage_is_main_process_only",
+            "code_database_unchanged_uses_identity_sidecar_fence_and_bounded_content_anchors",
             "source_input_is_verified_before_and_after_but_corpus_and_other_state_are_not_guarded",
             "process_death_scenario_is_not_power_loss",
             "no_product_mutation_authority",
@@ -280,7 +281,7 @@ def test_execution_rejects_a_source_root_different_from_the_published_manifest(
         )
 
 
-def test_code_database_digest_is_streamed_without_read_bytes(
+def test_code_database_fence_is_fixed_cost_without_read_bytes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -303,7 +304,38 @@ def test_code_database_digest_is_streamed_without_read_bytes(
     second = executor._file_digest(database)
 
     assert first == second
-    assert first.startswith("xxh3_128:")
+    assert first.startswith("neocortex.code-database-identity-fence/v1:xxh3_128:")
+
+
+def test_code_database_fence_accepts_large_sparse_history_and_detects_mutation(
+    tmp_path: Path,
+) -> None:
+    import _04_Nucleo_Operativo.code_experiment_executor as executor
+
+    database = tmp_path / "code.sqlite3"
+    with database.open("wb") as stream:
+        stream.write(b"SQLite format 3\x00")
+        stream.seek(5 * 1024 * 1024 * 1024)
+        stream.write(b"tail")
+
+    before = executor._file_digest(database)
+    with database.open("r+b", buffering=0) as stream:
+        stream.seek(64)
+        stream.write(b"changed")
+    after = executor._file_digest(database)
+
+    assert before != after
+
+
+def test_code_database_fence_rejects_an_active_wal(tmp_path: Path) -> None:
+    import _04_Nucleo_Operativo.code_experiment_executor as executor
+
+    database = tmp_path / "code.sqlite3"
+    database.write_bytes(b"SQLite format 3\x00fixture")
+    Path(f"{database}-wal").write_bytes(b"active")
+
+    with pytest.raises(ValueError, match="cannot be fenced"):
+        executor._file_digest(database)
 
 
 def test_complete_aggregate_counts_are_recovered_when_relation_payload_is_bounded() -> None:

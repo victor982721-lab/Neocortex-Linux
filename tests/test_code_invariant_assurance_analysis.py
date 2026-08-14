@@ -74,7 +74,7 @@ def _provider(outcomes: dict[str, str]) -> ExternalProviderEvidence:
     )
 
 
-def test_registry_is_canonical_versioned_and_every_scenario_has_one_role() -> None:
+def test_registry_is_canonical_versioned_and_scenarios_have_explicit_roles() -> None:
     assert tuple(item.invariant_id for item in INVARIANT_SPECS) == tuple(
         sorted(item.invariant_id for item in INVARIANT_SPECS)
     )
@@ -84,11 +84,13 @@ def test_registry_is_canonical_versioned_and_every_scenario_has_one_role() -> No
     assert {
         scenario for invariant in INVARIANT_SPECS for scenario in invariant.scenario_ids
     } == set(INVARIANT_SCENARIO_IDS)
-    assert set(INVARIANT_SCENARIO_IDS).isdisjoint(EXPERIMENT_SCENARIO_IDS)
+    assert set(INVARIANT_SCENARIO_IDS) & set(EXPERIMENT_SCENARIO_IDS) == {
+        "semantic.staging_process_death_resume"
+    }
     assert (
         set(INVARIANT_SCENARIO_IDS) | set(EXPERIMENT_SCENARIO_IDS) | set(CALIBRATION_SCENARIO_IDS)
     ) == {item.scenario_id for item in RUNTIME_SCENARIOS}
-    assert invariant_registry_fingerprint().startswith("code-invariant-registry-v2:xxh3_128:")
+    assert invariant_registry_fingerprint().startswith("code-invariant-registry-v3:xxh3_128:")
     invariant_payload = invariant_registry_payload()
     assert "runtime_scenario_registry_fingerprint" not in invariant_payload
     assert {item["scenario_id"] for item in invariant_payload["scenarios"]} == set(

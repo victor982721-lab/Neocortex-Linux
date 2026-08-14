@@ -702,6 +702,25 @@ _REQUIREMENT_BINDINGS: tuple[_RequirementBinding, ...] = (
             "process_death_before_commit_rolls_back_and_restart_converges",
         ),
     ),
+    _RequirementBinding(
+        "state.text_semantic_published_projection_is_aligned",
+        "state.semantic_process_death_recovery",
+        "build_recovery_counterevidence_evaluated",
+        (
+            "dead_building_generation_remains_unpublished",
+            "resume_publishes_complete_generation_atomically",
+        ),
+    ),
+    _RequirementBinding(
+        "state.text_semantic_published_projection_is_aligned",
+        "state.semantic_process_death_recovery",
+        "process_death_recovery_experiment_result",
+        (
+            "committed_staging_prefix_survives_process_death",
+            "dead_building_generation_remains_unpublished",
+            "resume_publishes_complete_generation_atomically",
+        ),
+    ),
 )
 
 

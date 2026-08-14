@@ -65,13 +65,17 @@ from .code_review_serialization import (
 )
 from .code_state_projection_analysis import CodeStateProjectionAnalysis
 from .code_state_topology_analysis import CodeStateTopologyAnalysis
+from .code_technical_verification import (
+    CodeTechnicalVerification,
+    build_code_technical_verification,
+)
 from .external_evidence_models import ExternalEvidenceSuiteStatus
 from .semantic_models import canonical_json, fingerprint_text
 
-# v17 additionally links immutable, passed experiment receipts back into the
+# v18 links immutable, passed experiment receipts back into the
 # exact evidence requirements they measured.  Receipts remain advisory and a
-# complete evidence partition requires human review rather than a machine
-# decision.
+# separate allow-listed verifier can publish a scoped no-change technical
+# disposition without impersonating a human actor or authorizing mutation.
 # Earlier contracts cannot satisfy the expanded wire, so no compatibility is
 # claimed without an explicit adapter.
 CODE_REVIEW_COVERAGE_EXAMPLE_LIMIT = 20
@@ -631,6 +635,7 @@ class CodeReviewResult:
     question_specs: tuple[AnalysisQuestionSpec, ...] = ()
     question_evaluations: tuple[AnalysisQuestionEvaluation, ...] = ()
     experiment_receipts: tuple[ResolvedCodeExperimentReceipt, ...] = ()
+    technical_verification: CodeTechnicalVerification | None = None
     # Presentation-only bound.  The digest continues to bind the complete
     # evidence model while public example projections expose totals/truncation.
     materialization_limit: int = CODE_REVIEW_COVERAGE_EXAMPLE_LIMIT
@@ -649,15 +654,15 @@ class CodeReviewResult:
         if self.work_package_status not in {"ready", "abstained", "not_evaluated"}:
             raise ValueError("invalid code-review work-package status")
         if self.recommendations:
-            raise ValueError("code-review/v17 cannot publish semantic change recommendations")
+            raise ValueError("code-review/v18 cannot publish semantic change recommendations")
         if self.recommendation_status == "ready":
-            raise ValueError("code-review/v17 recommendation status must abstain")
+            raise ValueError("code-review/v18 recommendation status must abstain")
         if self.recommendation_status == "abstained" and not self.recommendation_reason:
             raise ValueError("abstained recommendation status requires a reason")
         if self.recommendation_status == "not_evaluated" and not self.recommendation_reason:
             raise ValueError("not-evaluated recommendation status requires a reason")
         if any(package.package_kind != "unused_characterization" for package in self.work_packages):
-            raise ValueError("code-review/v17 cannot publish hotspot change packages")
+            raise ValueError("code-review/v18 cannot publish hotspot change packages")
         if (self.work_package_status == "ready") != bool(self.work_packages):
             raise ValueError("work-package readiness must match published packages")
         if self.work_package_status == "ready" and self.work_package_reason is not None:
@@ -701,6 +706,7 @@ class CodeReviewResult:
                 or self.question_specs
                 or self.question_evaluations
                 or self.experiment_receipts
+                or self.technical_verification is not None
             ):
                 raise ValueError("abstained code-review result cannot publish unverified evidence")
             return
@@ -738,6 +744,8 @@ class CodeReviewResult:
             raise ValueError("ready code-review result requires an experiment plan")
         if self.interface_surface is None:
             raise ValueError("ready code-review result requires interface surface evidence")
+        if self.technical_verification is None:
+            raise ValueError("ready code-review result requires technical verification")
         if self.supply_chain is None:
             raise ValueError("ready code-review result requires supply-chain evidence")
         if (
@@ -843,6 +851,12 @@ class CodeReviewResult:
             self.question_specs, self.question_evaluations
         ):
             raise ValueError("code-review experiment plan is not reproducible from questions")
+        if self.technical_verification != build_code_technical_verification(
+            self.question_specs,
+            self.question_evaluations,
+            self.experiment_receipts,
+        ):
+            raise ValueError("code-review technical verification is not reproducible")
 
     def as_payload(self) -> dict[str, object]:
         if self.status == "ready":
@@ -947,6 +961,11 @@ class CodeReviewResult:
                 None if self.experiment_plan is None else self.experiment_plan.as_payload()
             ),
             "experiment_receipts": [item.as_payload() for item in self.experiment_receipts],
+            "technical_verification": (
+                None
+                if self.technical_verification is None
+                else self.technical_verification.as_payload()
+            ),
             "interface_surface": (
                 None if self.interface_surface is None else self.interface_surface.as_payload()
             ),

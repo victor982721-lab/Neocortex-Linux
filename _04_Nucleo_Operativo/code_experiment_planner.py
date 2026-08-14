@@ -26,8 +26,8 @@ from .code_analysis_epistemics import (
 from .code_invariant_contracts import INVARIANT_RUNTIME_SCENARIOS, RUNTIME_SCENARIOS
 
 CODE_EXPERIMENT_PLAN_SCHEMA = "neocortex.code-experiment-plan/v2"
-CODE_EXPERIMENT_TEMPLATE_REGISTRY_SCHEMA = "neocortex.code-experiment-template-registry/v2"
-CODE_EXPERIMENT_PLANNING_POLICY = "registered-applicable-cheapest-discriminating-experiment-v3"
+CODE_EXPERIMENT_TEMPLATE_REGISTRY_SCHEMA = "neocortex.code-experiment-template-registry/v3"
+CODE_EXPERIMENT_PLANNING_POLICY = "registered-applicable-cheapest-discriminating-experiment-v4"
 CODE_EXPERIMENT_MAX_PROPOSALS = 256
 
 ExperimentKind = Literal[
@@ -207,6 +207,7 @@ def _template(
     versions = {
         "analyzer.registered_invariant_scenarios": "v3",
         "capability.public_route_acceptance": "v2",
+        "state.semantic_process_death_recovery": "v1",
         "state.runtime_sql_trace": "v2",
     }
     return CodeExperimentTemplate(
@@ -233,7 +234,6 @@ CODE_EXPERIMENT_TEMPLATES: tuple[CodeExperimentTemplate, ...] = (
         "analyzer.registered_invariant_scenarios",
         (
             "run_independent_invariant_scenario",
-            "run_semantic_process_death_recovery_experiment",
             "terminate_after_text_begin_and_before_terminal_commit_then_restart",
         ),
         "isolated_fault_injection",
@@ -252,6 +252,29 @@ CODE_EXPERIMENT_TEMPLATES: tuple[CodeExperimentTemplate, ...] = (
             "scenario_pass_is_not_formal_proof",
             "process_death_is_not_power_loss",
             "coverage_is_main_process_only",
+        ),
+    ),
+    _template(
+        "state.semantic_process_death_recovery",
+        ("run_semantic_process_death_recovery_experiment",),
+        "isolated_fault_injection",
+        "spawned_process_and_tmp_path",
+        "bounded",
+        timeout=300,
+        max_items=1,
+        attention=5,
+        scenarios=("semantic.staging_process_death_resume",),
+        runner="trusted_deep_declared_scenarios",
+        questions=("state.text_semantic_published_projection_is_aligned",),
+        subject_prefixes=("workflow:text-to-semantic-published-projection",),
+        gates=(
+            "committed_staging_prefix_survives_process_death",
+            "dead_building_generation_remains_unpublished",
+            "resume_publishes_complete_generation_atomically",
+        ),
+        limitations=(
+            "process_death_is_not_power_loss_or_filesystem_failure",
+            "one_bounded_semantic_text_fixture_is_not_every_source_or_model",
         ),
     ),
     _template(
@@ -496,7 +519,7 @@ def experiment_template_registry_payload() -> dict[str, object]:
 
 def experiment_template_registry_fingerprint() -> str:
     return analysis_identity(
-        "code-experiment-template-registry-v2",
+        "code-experiment-template-registry-v3",
         experiment_template_registry_payload(),
     )
 

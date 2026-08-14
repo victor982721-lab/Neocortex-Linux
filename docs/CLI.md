@@ -276,7 +276,7 @@ review y work packages consumen la misma evidencia; la ausencia o caducidad de
 un proveedor obliga a abstener sólo la dimensión afectada.
 
 `--code-review` consume esa publicación sin volver a analizar la raíz. El
-envelope `neocortex.code-review/v17` no declara compatibilidad con schemas
+envelope `neocortex.code-review/v18` no declara compatibilidad con schemas
 anteriores. Usa `neocortex.code-analysis-epistemics/v1`, una proyección general
 de preguntas con fingerprint de spec y evidencia resuelta contra IDs de
 registros Code. Publica observaciones estructurales confirmadas y separa hipótesis,
@@ -294,7 +294,7 @@ ruta; una clase de pruebas, un `Protocol` o un composition root siguen visibles
 como controles negativos y quedan `experiment_required`. El límite solicitado
 se aplica por familia de pregunta.
 
-v17 conserva `neocortex.code-interface-surface/v1`: observa módulos seleccionados
+v18 conserva `neocortex.code-interface-surface/v1`: observa módulos seleccionados
 por span/superficie directa, estructura de configuraciones JSON/TOML y llamadas
 estáticas `argparse`. No expone valores de configuración, no ejecuta módulos y
 no presenta option strings sintácticos como reachability o comportamiento del
@@ -310,7 +310,7 @@ logical owners declara selectores exactos para `text`, `semantic`, `knowledge`,
 asigna un owner por defecto. Su pregunta queda lista para caracterización, no
 para una decisión de cambio.
 
-Cuando `--code-review` consume el estado canónico protegido, v17 también publica
+Cuando `--code-review` consume el estado canónico protegido, v18 también publica
 `neocortex.code-state-projection/v1`. La observación compara revisiones Text
 elegibles (`complete`, revisión presente, blob presente y `text_chars > 0`) con
 miembros del head Semantic de texto publicado. Las lecturas usan `immutable=1`,
@@ -327,7 +327,7 @@ registrado o stale permanece faltante. La proyección de autoeficacia compara el
 snapshot publicado contra archivos Git visibles por digest y no publica
 precision/recall ni decision rate sin etiquetas independientes.
 
-v17 conserva `CODE_STATE_INTERACTIONS`, `CODE_INVARIANT_ASSURANCE`,
+v18 conserva `CODE_STATE_INTERACTIONS`, `CODE_INVARIANT_ASSURANCE`,
 `CODE_ROUTE_CAPABILITIES`, `CODE_ANALYZER_CALIBRATION` y
 `CODE_EXPERIMENT_PLAN`. SQL literal se parsea con el dialecto SQLite y se liga a
 store/workflow sólo por contratos explícitos. Los placeholders SQLite `?NNN`
@@ -348,8 +348,9 @@ Neocortex --state-directory STATE --code-experiment-run PROPOSAL_ID --code-json
 El ID debe pertenecer al plan reconstruido en esa misma invocación. El runner
 allow-listed usa trusted-deep, presupuesto acotado y manifest exacto; si cambia
 fuente, proposal, provider o base Code, falla cerrado. Hoy sólo son ejecutables
-`capability.public_route_acceptance` (un nodeid) y
-`state.runtime_sql_trace` (cuatro nodeids). El registry general contiene otros
+`capability.public_route_acceptance` (un nodeid),
+`state.runtime_sql_trace` (cuatro nodeids) y
+`state.semantic_process_death_recovery` (un nodeid con tres gates). El registry general contiene otros
 escenarios de assurance/calibración, pero no por ello son ejecutables desde esta
 opción.
 
@@ -367,13 +368,17 @@ Al terminar, el comando **sí escribe** una evidencia acotada: inserta el receip
 en la tabla append-only de Code schema v6 y, con `--code-json`, devuelve el
 envelope `neocortex.code-experiment-store/v1` que contiene ese receipt. Por eso
 `code_database_unchanged=true` no significa que la invocación completa sea
-read-only. El review v17 posterior evalúa el terminal más nuevo del proposal y
+read-only. El review v18 posterior evalúa el terminal más nuevo del proposal y
 la processing signature vigentes; puede reutilizar un `passed` de un run Code
 completado previo cuando el vigente es un replay exacto con la misma firma. Un
 terminal posterior `failed` o `abstained`, o uno stale, corrupto o sin binding,
 permanece auditable pero no satisface evidencia. El envelope digest liga todo el
-contexto durable. Incluso un enlace completo sólo puede mover la evaluación a
-`human_review_required`: no crea una decisión humana ni autoriza un patch.
+contexto durable. El enlace no suplanta a un actor humano. El verificador
+técnico allow-listed de v18 puede publicar
+`no_change_required_within_verified_scope` tras volver a comprobar contrato,
+gates y controles negativos exactos; la disposición es advisory, conserva
+riesgos residuales y no autoriza un patch. Preguntas completas sin una política
+exacta quedan `unresolved`.
 
 `python-maintenance-work-packages-v5` puede entregar, de forma independiente,
 hasta tres paquetes
@@ -657,13 +662,24 @@ produce código 2, nunca una corrida sin límites. Sólo puede existir una
 validación canónica a la vez. `PrivateNetwork=yes` aísla por kernel el árbol
 completo, por lo que ningún provider puede producir egress durante este gate.
 
-El resultado `neocortex.code-change-validation/v1` enlaza el snapshot Git, la
+El resultado `neocortex.code-change-validation/v2` enlaza el snapshot Git, la
 selección de pruebas, cada gate, los experimentos allow-listed ejecutados, el
 smoke del wheel candidato instalado fuera del checkout y el replay exacto del
 perfil `trusted-deep`, además de la admisión
-`neocortex.code-validation-resources/v1`. `passed` devuelve 0; `failed` o
-`abstained` devuelven 2.
+`neocortex.code-validation-resources/v2`. El worker verifica en el kernel su
+cgroup exacto y consulta en systemd el `PrivateNetwork=yes` efectivo; un
+payload de entorno no basta.
+El gate enlaza además el diff con preguntas de aceptación versionadas: una
+pregunta relevante sin runner o disposición técnica produce `abstained`, y
+`not_required` exige evidencia explícita de que el diff no la afecta. `passed`
+devuelve 0; `failed` o `abstained` devuelven 2.
 El recibo nunca concede autoridad de mutación, push o release.
+
+Los conteos históricos `added/resolved` de cada provider se publican como
+observaciones advisory. No son una comparación contra `--baseline`: sus
+identidades portables incluyen coordenadas y su baseline comparable puede ser
+anterior. El gate estático versionado por path/regla/conteo es quien bloquea
+regresiones Ruff/Mypy/Pyright antes de consumir el review.
 
 La validación canónica no abre red. Sólo puede reutilizar como evidencia un
 audit `pip-audit` ya publicado y aún fresco, con cero findings, enlazado a un

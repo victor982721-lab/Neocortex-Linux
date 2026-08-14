@@ -1,0 +1,627 @@
+"""Independent, deterministic technical dispositions over completed Code evidence.
+
+The question engines and experiment executor remain evidence producers.  This
+module is a separate, allow-listed verifier: it rechecks complete requirement
+partitions, exact passed receipts, measured gates, and question-specific
+negative controls before it can say that no code change is required within the
+verified scope.
+
+It never impersonates a human actor, never records a Framework human decision,
+and never grants mutation authority.  Questions without an exact policy remain
+explicitly unresolved rather than being accepted by a generic "all tests pass"
+rule.
+"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import asdict, dataclass, fields
+from typing import Any, Literal, Mapping, Sequence, cast
+
+from .code_analysis_epistemics import (
+    AnalysisEvidenceRef,
+    AnalysisQuestionEvaluation,
+    AnalysisQuestionSpec,
+    analysis_identity,
+    analysis_question_spec_fingerprint,
+    validate_analysis_question_set,
+)
+from .code_experiment_store import ResolvedCodeExperimentReceipt
+from .code_route_capability_analysis import ROUTE_CAPABILITY_QUESTION
+from .code_state_interaction_analysis import WORKFLOW_SQL_QUESTION
+from .code_state_projection_analysis import TEXT_SEMANTIC_PROJECTION_QUESTION
+
+CODE_TECHNICAL_VERIFICATION_SCHEMA = "neocortex.code-technical-verification/v1"
+CODE_TECHNICAL_VERIFICATION_POLICY = (
+    "allowlisted-independent-evidence-complete-no-change-verifier-v1"
+)
+CODE_TECHNICAL_VERIFICATION_MAX_REVIEWS = 256
+
+TechnicalVerificationStatus = Literal["ready", "partial", "not_required"]
+TechnicalDisposition = Literal["no_change_required_within_verified_scope"]
+
+
+def _required(label: str, value: object, maximum: int = 2_048) -> str:
+    if not isinstance(value, str) or not value or value.strip() != value or len(value) > maximum:
+        raise ValueError(f"{label} is invalid")
+    return value
+
+
+def _texts(
+    label: str,
+    values: object,
+    *,
+    sorted_values: bool = False,
+    maximum: int = 2_048,
+) -> tuple[str, ...]:
+    if not isinstance(values, Sequence) or isinstance(values, (str, bytes, bytearray)):
+        raise ValueError(f"{label} must be a sequence")
+    result = tuple(_required(label, item, maximum) for item in values)
+    if len(set(result)) != len(result):
+        raise ValueError(f"{label} cannot repeat")
+    if sorted_values and result != tuple(sorted(result)):
+        raise ValueError(f"{label} must be sorted")
+    return result
+
+
+@dataclass(frozen=True, slots=True)
+class _TechnicalPolicy:
+    question_id: str
+    question_version: str
+    question_spec_fingerprint: str
+    subject_prefix: str
+    template_id: str
+    required_gate_ids: tuple[str, ...]
+    scope_statement: str
+    reason_code: str
+    residual_risks: tuple[str, ...]
+
+
+_TECHNICAL_POLICIES = (
+    _TechnicalPolicy(
+        ROUTE_CAPABILITY_QUESTION.question_id,
+        ROUTE_CAPABILITY_QUESTION.version,
+        analysis_question_spec_fingerprint(ROUTE_CAPABILITY_QUESTION),
+        "capability:route:text",
+        "capability.public_route_acceptance",
+        (
+            "partial_search_abstention_is_explicit_and_read_only",
+            "public_text_entrypoint_first_run_and_replay_observed",
+            "same_fixture_source_reaches_public_text_search_output",
+        ),
+        "the_public_text_route_reaches_its_read_only_search_consumer_for_the_bounded_fixture",
+        "public_text_route_contract_passed_without_a_change_signal",
+        (
+            "fixture_acceptance_does_not_measure_human_product_value",
+            "non_text_routes_are_outside_this_disposition",
+        ),
+    ),
+    _TechnicalPolicy(
+        WORKFLOW_SQL_QUESTION.question_id,
+        WORKFLOW_SQL_QUESTION.version,
+        analysis_question_spec_fingerprint(WORKFLOW_SQL_QUESTION),
+        "workflow:text.derivation-publication:",
+        "state.runtime_sql_trace",
+        (
+            "literal_sql_parser_preserves_dynamic_sql_as_missing_evidence",
+            "post_terminalization_exception_leaves_no_partial_publication",
+            "process_death_before_commit_rolls_back_and_restart_converges",
+            "successful_terminal_transaction_contains_required_text_tables",
+        ),
+        "the_declared_text_publication_workflow_satisfies_the_measured_transaction_and_fault_gates",
+        "text_workflow_runtime_contract_passed_without_a_change_signal",
+        (
+            "static_call_resolution_remains_partial_for_indirect_helpers",
+            "selected_fault_injection_is_not_power_loss_proof",
+        ),
+    ),
+    _TechnicalPolicy(
+        TEXT_SEMANTIC_PROJECTION_QUESTION.question_id,
+        TEXT_SEMANTIC_PROJECTION_QUESTION.version,
+        analysis_question_spec_fingerprint(TEXT_SEMANTIC_PROJECTION_QUESTION),
+        "workflow:text-to-semantic-published-projection",
+        "state.semantic_process_death_recovery",
+        (
+            "committed_staging_prefix_survives_process_death",
+            "dead_building_generation_remains_unpublished",
+            "resume_publishes_complete_generation_atomically",
+        ),
+        "the_published_text_semantic_projection_is_aligned_and_the_bounded_process_death_resume_contract_passes",
+        "text_semantic_projection_and_resume_contract_passed_without_a_change_signal",
+        (
+            "process_death_is_not_power_loss_or_filesystem_failure",
+            "only_published_text_modality_heads_and_one_bounded_fixture_are_verified",
+        ),
+    ),
+)
+
+
+def _technical_policy_registry_fingerprint() -> str:
+    return analysis_identity(
+        "code-technical-verification-policy-v1",
+        tuple(asdict(item) for item in _TECHNICAL_POLICIES),
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class CodeTechnicalReview:
+    review_id: str
+    evaluation_id: str
+    question_id: str
+    question_version: str
+    question_spec_fingerprint: str
+    subject_key: str
+    disposition: TechnicalDisposition
+    scope_statement: str
+    reason_code: str
+    verified_requirement_ids: tuple[str, ...]
+    evidence_ids: tuple[str, ...]
+    receipt_ids: tuple[str, ...]
+    residual_risks: tuple[str, ...]
+    verifier_id: Literal["code-independent-technical-policy-verifier"] = (
+        "code-independent-technical-policy-verifier"
+    )
+    verifier_version: Literal["v1"] = "v1"
+    authority: Literal["advisory"] = "advisory"
+    mutation_authority: Literal[False] = False
+
+    def __post_init__(self) -> None:
+        for label, value, maximum in (
+            ("technical review id", self.review_id, 1_024),
+            ("technical evaluation id", self.evaluation_id, 1_024),
+            ("technical question id", self.question_id, 256),
+            ("technical question version", self.question_version, 64),
+            ("technical question fingerprint", self.question_spec_fingerprint, 256),
+            ("technical subject key", self.subject_key, 1_024),
+            ("technical scope statement", self.scope_statement, 512),
+            ("technical reason code", self.reason_code, 256),
+        ):
+            _required(label, value, maximum)
+        if self.disposition != "no_change_required_within_verified_scope":
+            raise ValueError("technical disposition is invalid")
+        _texts(
+            "verified requirement id",
+            self.verified_requirement_ids,
+            sorted_values=True,
+        )
+        _texts("technical evidence id", self.evidence_ids, sorted_values=True)
+        _texts("technical receipt id", self.receipt_ids, sorted_values=True)
+        _texts("technical residual risk", self.residual_risks, sorted_values=True)
+        if not self.verified_requirement_ids or not self.evidence_ids or not self.receipt_ids:
+            raise ValueError("technical review requires requirements, evidence, and receipts")
+        if not self.residual_risks:
+            raise ValueError("technical review requires bounded residual risks")
+        if (
+            self.verifier_id != "code-independent-technical-policy-verifier"
+            or self.verifier_version != "v1"
+            or self.authority != "advisory"
+            or self.mutation_authority
+        ):
+            raise ValueError("technical review authority is invalid")
+        expected_id = analysis_identity(
+            "code-technical-review-v1",
+            {key: value for key, value in asdict(self).items() if key != "review_id"},
+        )
+        if self.review_id != expected_id:
+            raise ValueError("technical review identity is invalid")
+
+
+@dataclass(frozen=True, slots=True)
+class CodeTechnicalReviewGap:
+    evaluation_id: str
+    question_id: str
+    subject_key: str
+    reason: str
+
+    def __post_init__(self) -> None:
+        _required("technical gap evaluation id", self.evaluation_id, 1_024)
+        _required("technical gap question id", self.question_id, 256)
+        _required("technical gap subject key", self.subject_key, 1_024)
+        _required("technical gap reason", self.reason, 256)
+
+
+@dataclass(frozen=True, slots=True)
+class CodeTechnicalVerification:
+    verification_id: str
+    status: TechnicalVerificationStatus
+    reason: str | None
+    policy_id: str
+    policy_fingerprint: str
+    evidence_complete_evaluations: int
+    reviewed_count: int
+    no_change_required_count: int
+    unresolved_count: int
+    reviews: tuple[CodeTechnicalReview, ...]
+    gaps: tuple[CodeTechnicalReviewGap, ...]
+    limitations: tuple[str, ...]
+    authority: Literal["advisory"] = "advisory"
+    mutation_authority: Literal[False] = False
+
+    def __post_init__(self) -> None:
+        _required("technical verification id", self.verification_id, 1_024)
+        if self.status not in {"ready", "partial", "not_required"}:
+            raise ValueError("technical verification status is invalid")
+        if self.reason is not None:
+            _required("technical verification reason", self.reason, 256)
+        if self.policy_id != CODE_TECHNICAL_VERIFICATION_POLICY:
+            raise ValueError("technical verification policy is invalid")
+        if self.policy_fingerprint != _technical_policy_registry_fingerprint():
+            raise ValueError("technical verification policy fingerprint is invalid")
+        for label, value in (
+            ("eligible evaluations", self.evidence_complete_evaluations),
+            ("reviewed evaluations", self.reviewed_count),
+            ("no-change dispositions", self.no_change_required_count),
+            ("unresolved evaluations", self.unresolved_count),
+        ):
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"technical verification {label} must be non-negative")
+        if not isinstance(self.reviews, tuple) or any(
+            not isinstance(item, CodeTechnicalReview) for item in self.reviews
+        ):
+            raise ValueError("technical verification reviews are invalid")
+        if not isinstance(self.gaps, tuple) or any(
+            not isinstance(item, CodeTechnicalReviewGap) for item in self.gaps
+        ):
+            raise ValueError("technical verification gaps are invalid")
+        if len(self.reviews) + len(self.gaps) > CODE_TECHNICAL_VERIFICATION_MAX_REVIEWS:
+            raise ValueError("technical verification exceeds its public bound")
+        if tuple(item.review_id for item in self.reviews) != tuple(
+            sorted(item.review_id for item in self.reviews)
+        ):
+            raise ValueError("technical reviews must be deterministically ordered")
+        if tuple(item.evaluation_id for item in self.gaps) != tuple(
+            sorted(item.evaluation_id for item in self.gaps)
+        ):
+            raise ValueError("technical review gaps must be deterministically ordered")
+        if (
+            self.reviewed_count != len(self.reviews)
+            or self.no_change_required_count != len(self.reviews)
+            or self.unresolved_count != len(self.gaps)
+            or self.evidence_complete_evaluations != len(self.reviews) + len(self.gaps)
+        ):
+            raise ValueError("technical verification counts are not derived")
+        expected_status: TechnicalVerificationStatus = (
+            "not_required"
+            if self.evidence_complete_evaluations == 0
+            else "partial"
+            if self.gaps
+            else "ready"
+        )
+        expected_reason = (
+            "no_evidence_complete_question_requires_technical_disposition"
+            if expected_status == "not_required"
+            else "one_or_more_evidence_complete_questions_lack_a_verified_policy"
+            if expected_status == "partial"
+            else None
+        )
+        if self.status != expected_status or self.reason != expected_reason:
+            raise ValueError("technical verification status is not derived")
+        _texts("technical verification limitation", self.limitations, sorted_values=True)
+        if not self.limitations:
+            raise ValueError("technical verification requires explicit limitations")
+        if self.authority != "advisory" or self.mutation_authority:
+            raise ValueError("technical verification must remain advisory and non-mutating")
+        expected_id = analysis_identity(
+            "code-technical-verification-v1",
+            {key: value for key, value in asdict(self).items() if key != "verification_id"},
+        )
+        if self.verification_id != expected_id:
+            raise ValueError("technical verification identity is invalid")
+
+    def as_payload(self) -> dict[str, object]:
+        return {"schema": CODE_TECHNICAL_VERIFICATION_SCHEMA, **asdict(self)}
+
+
+def _fact_map(evidence: AnalysisEvidenceRef) -> dict[str, object]:
+    return {item.name: item.value for item in evidence.facts}
+
+
+def _record_facts(
+    evaluation: AnalysisQuestionEvaluation,
+    record_kind: str,
+) -> tuple[dict[str, object], ...]:
+    return tuple(
+        _fact_map(item)
+        for item in evaluation.evidence
+        if item.source_record_kind == record_kind
+    )
+
+
+def _capability_predicate(evaluation: AnalysisQuestionEvaluation) -> bool:
+    runtime = _record_facts(evaluation, "runtime_prerequisite_observation")
+    owner = _record_facts(evaluation, "state_owner_snapshot")
+    causal = _record_facts(evaluation, "causal_durable_output_projection")
+    return (
+        len(runtime) == 1
+        and runtime[0].get("runtime_state") == "available"
+        and runtime[0].get("missing_required_components") == 0
+        and len(owner) == 1
+        and owner[0].get("owner_state") == "available"
+        and owner[0].get("owner_schema_current") is True
+        and len(causal) == 1
+        and causal[0].get("causal_projection_status") == "resolved"
+        and causal[0].get("causal_durable_output_observed") is True
+    )
+
+
+def _workflow_predicate(evaluation: AnalysisQuestionEvaluation) -> bool:
+    projections = _record_facts(evaluation, "bound_workflow_sql_projection")
+    if len(projections) != 1:
+        return False
+    encoded = projections[0].get("boundary_projection_json")
+    if not isinstance(encoded, str):
+        return False
+    try:
+        boundaries = json.loads(encoded)
+    except (TypeError, ValueError):
+        return False
+    return bool(boundaries) and all(
+        isinstance(item, Mapping) and item.get("unexpected_write_tables") == []
+        for item in boundaries
+    )
+
+
+def _projection_predicate(evaluation: AnalysisQuestionEvaluation) -> bool:
+    snapshots = _record_facts(evaluation, "stable_cross_owner_snapshot")
+    heads = _record_facts(evaluation, "published_head_revision_projection")
+    head_count = heads[0].get("heads") if len(heads) == 1 else None
+    return (
+        len(snapshots) == 1
+        and snapshots[0].get("knowledge_consistency") == "stable"
+        and len(heads) == 1
+        and heads[0].get("observation") == "aligned"
+        and isinstance(head_count, int)
+        and not isinstance(head_count, bool)
+        and head_count > 0
+        and heads[0].get("aligned_heads") == head_count
+        and all(
+            heads[0].get(name) == 0
+            for name in (
+                "missing_revisions",
+                "extra_revisions",
+                "invalid_owner_revisions",
+                "invalid_materialization_revisions",
+            )
+        )
+    )
+
+
+def _policy_predicate(
+    policy: _TechnicalPolicy,
+    evaluation: AnalysisQuestionEvaluation,
+) -> bool:
+    if policy.question_id == ROUTE_CAPABILITY_QUESTION.question_id:
+        return _capability_predicate(evaluation)
+    if policy.question_id == WORKFLOW_SQL_QUESTION.question_id:
+        return _workflow_predicate(evaluation)
+    if policy.question_id == TEXT_SEMANTIC_PROJECTION_QUESTION.question_id:
+        return _projection_predicate(evaluation)
+    return False
+
+
+def _review(
+    policy: _TechnicalPolicy,
+    evaluation: AnalysisQuestionEvaluation,
+    receipts: tuple[ResolvedCodeExperimentReceipt, ...],
+) -> CodeTechnicalReview | str:
+    if (
+        evaluation.question_spec_fingerprint != policy.question_spec_fingerprint
+        or not evaluation.subject.subject_key.startswith(policy.subject_prefix)
+    ):
+        return "technical_policy_scope_or_question_contract_changed"
+    if evaluation.counterevidence_status != "evaluated" or any(
+        item.status != "satisfied" for item in evaluation.requirements
+    ):
+        return "technical_policy_requires_complete_evidence_and_counterevidence"
+    experiment_evidence = tuple(
+        item for item in evaluation.evidence if item.evidence_kind == "experiment_result"
+    )
+    receipt_ids = tuple(sorted({item.source_record_id for item in experiment_evidence}))
+    receipt_by_id = {item.receipt.receipt_id: item for item in receipts}
+    linked = tuple(receipt_by_id[item] for item in receipt_ids if item in receipt_by_id)
+    if not receipt_ids or len(linked) != len(receipt_ids):
+        return "technical_policy_requires_resolvable_passed_receipts"
+    if (
+        {item.receipt.template_id for item in linked} != {policy.template_id}
+        or any(
+            item.question_id != evaluation.question_id
+            or item.subject_key != evaluation.subject.subject_key
+            or item.receipt.status != "passed"
+            or not item.receipt.code_database_unchanged
+            or item.receipt.authority != "advisory"
+            or item.receipt.mutation_authority
+            for item in linked
+        )
+    ):
+        return "technical_policy_receipt_scope_or_authority_mismatch"
+    passed_gates = {
+        gate.gate_id
+        for item in linked
+        for gate in item.receipt.gate_outcomes
+        if gate.status == "passed"
+    }
+    if not set(policy.required_gate_ids) <= passed_gates:
+        return "technical_policy_required_gate_evidence_missing"
+    if not _policy_predicate(policy, evaluation):
+        return "technical_policy_negative_control_not_satisfied"
+    values: dict[str, object] = {
+        "evaluation_id": evaluation.evaluation_id,
+        "question_id": evaluation.question_id,
+        "question_version": evaluation.question_version,
+        "question_spec_fingerprint": evaluation.question_spec_fingerprint,
+        "subject_key": evaluation.subject.subject_key,
+        "disposition": "no_change_required_within_verified_scope",
+        "scope_statement": policy.scope_statement,
+        "reason_code": policy.reason_code,
+        "verified_requirement_ids": tuple(
+            sorted(item.requirement_id for item in evaluation.requirements)
+        ),
+        "evidence_ids": tuple(sorted(item.evidence_id for item in evaluation.evidence)),
+        "receipt_ids": receipt_ids,
+        "residual_risks": tuple(sorted(policy.residual_risks)),
+        "verifier_id": "code-independent-technical-policy-verifier",
+        "verifier_version": "v1",
+        "authority": "advisory",
+        "mutation_authority": False,
+    }
+    return CodeTechnicalReview(
+        review_id=analysis_identity("code-technical-review-v1", values),
+        **cast(Any, values),
+    )
+
+
+def build_code_technical_verification(
+    specs: tuple[AnalysisQuestionSpec, ...],
+    evaluations: tuple[AnalysisQuestionEvaluation, ...],
+    receipts: tuple[ResolvedCodeExperimentReceipt, ...],
+) -> CodeTechnicalVerification:
+    """Recheck evidence-complete questions and publish bounded dispositions."""
+
+    validate_analysis_question_set(specs, evaluations)
+    if not isinstance(receipts, tuple) or any(
+        not isinstance(item, ResolvedCodeExperimentReceipt) for item in receipts
+    ):
+        raise ValueError("technical verification receipts are invalid")
+    eligible = tuple(
+        item for item in evaluations if item.decision_readiness == "human_review_required"
+    )
+    if len(eligible) > CODE_TECHNICAL_VERIFICATION_MAX_REVIEWS:
+        raise ValueError("technical verification eligible evaluation bound exceeded")
+    policy_by_identity = {
+        (item.question_id, item.question_version): item for item in _TECHNICAL_POLICIES
+    }
+    reviews: list[CodeTechnicalReview] = []
+    gaps: list[CodeTechnicalReviewGap] = []
+    for evaluation in eligible:
+        policy = policy_by_identity.get((evaluation.question_id, evaluation.question_version))
+        result: CodeTechnicalReview | str = (
+            "no_registered_technical_verification_policy"
+            if policy is None
+            else _review(policy, evaluation, receipts)
+        )
+        if isinstance(result, CodeTechnicalReview):
+            reviews.append(result)
+        else:
+            gaps.append(
+                CodeTechnicalReviewGap(
+                    evaluation.evaluation_id,
+                    evaluation.question_id,
+                    evaluation.subject.subject_key,
+                    result,
+                )
+            )
+    ordered_reviews = tuple(sorted(reviews, key=lambda item: item.review_id))
+    ordered_gaps = tuple(sorted(gaps, key=lambda item: item.evaluation_id))
+    status: TechnicalVerificationStatus = (
+        "not_required" if not eligible else "partial" if ordered_gaps else "ready"
+    )
+    reason = (
+        "no_evidence_complete_question_requires_technical_disposition"
+        if status == "not_required"
+        else "one_or_more_evidence_complete_questions_lack_a_verified_policy"
+        if status == "partial"
+        else None
+    )
+    limitations = tuple(
+        sorted(
+            (
+                "technical_disposition_is_scoped_and_does_not_prove_global_correctness",
+                "technical_verifier_does_not_impersonate_a_human_actor_or_product_decision",
+                "technical_verifier_never_authorizes_source_or_product_state_mutation",
+                "unregistered_questions_remain_explicitly_unresolved",
+            )
+        )
+    )
+    values: dict[str, object] = {
+        "status": status,
+        "reason": reason,
+        "policy_id": CODE_TECHNICAL_VERIFICATION_POLICY,
+        "policy_fingerprint": _technical_policy_registry_fingerprint(),
+        "evidence_complete_evaluations": len(eligible),
+        "reviewed_count": len(ordered_reviews),
+        "no_change_required_count": len(ordered_reviews),
+        "unresolved_count": len(ordered_gaps),
+        "reviews": ordered_reviews,
+        "gaps": ordered_gaps,
+        "limitations": limitations,
+        "authority": "advisory",
+        "mutation_authority": False,
+    }
+    return CodeTechnicalVerification(
+        verification_id=analysis_identity(
+            "code-technical-verification-v1",
+            {
+                **values,
+                "reviews": tuple(asdict(item) for item in ordered_reviews),
+                "gaps": tuple(asdict(item) for item in ordered_gaps),
+            },
+        ),
+        **cast(Any, values),
+    )
+
+
+def parse_code_technical_verification_payload(
+    payload: Mapping[str, object],
+) -> CodeTechnicalVerification:
+    if (
+        not isinstance(payload, Mapping)
+        or payload.get("schema") != CODE_TECHNICAL_VERIFICATION_SCHEMA
+    ):
+        raise ValueError("technical verification payload schema is invalid")
+    expected = {field.name for field in fields(CodeTechnicalVerification)} | {"schema"}
+    if set(payload) != expected:
+        raise ValueError("technical verification payload fields are invalid")
+    raw_reviews = payload.get("reviews")
+    raw_gaps = payload.get("gaps")
+    if (
+        not isinstance(raw_reviews, Sequence)
+        or isinstance(raw_reviews, (str, bytes, bytearray))
+        or not isinstance(raw_gaps, Sequence)
+        or isinstance(raw_gaps, (str, bytes, bytearray))
+    ):
+        raise ValueError("technical verification records are invalid")
+    review_fields = {field.name for field in fields(CodeTechnicalReview)}
+    gap_fields = {field.name for field in fields(CodeTechnicalReviewGap)}
+    reviews: list[CodeTechnicalReview] = []
+    gaps: list[CodeTechnicalReviewGap] = []
+    for item in raw_reviews:
+        if not isinstance(item, Mapping) or set(item) != review_fields:
+            raise ValueError("technical review record fields are invalid")
+        values = dict(item)
+        for key in (
+            "verified_requirement_ids",
+            "evidence_ids",
+            "receipt_ids",
+            "residual_risks",
+        ):
+            values[key] = _texts(
+                f"technical review {key}",
+                values[key],
+                sorted_values=True,
+            )
+        reviews.append(CodeTechnicalReview(**cast(Any, values)))
+    for item in raw_gaps:
+        if not isinstance(item, Mapping) or set(item) != gap_fields:
+            raise ValueError("technical review gap fields are invalid")
+        gaps.append(CodeTechnicalReviewGap(**cast(Any, dict(item))))
+    values = {key: value for key, value in payload.items() if key != "schema"}
+    values["reviews"] = tuple(reviews)
+    values["gaps"] = tuple(gaps)
+    values["limitations"] = _texts(
+        "technical verification limitation",
+        values["limitations"],
+        sorted_values=True,
+    )
+    return CodeTechnicalVerification(**cast(Any, values))
+
+
+__all__ = [
+    "CODE_TECHNICAL_VERIFICATION_MAX_REVIEWS",
+    "CODE_TECHNICAL_VERIFICATION_POLICY",
+    "CODE_TECHNICAL_VERIFICATION_SCHEMA",
+    "CodeTechnicalReview",
+    "CodeTechnicalReviewGap",
+    "CodeTechnicalVerification",
+    "build_code_technical_verification",
+    "parse_code_technical_verification_payload",
+]

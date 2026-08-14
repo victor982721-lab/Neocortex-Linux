@@ -8,6 +8,24 @@ no se copian aquí para evitar que se conviertan en datos históricos sin contex
 
 ### Añadido
 
+- Validación canónica `neocortex.code-change-validation/v2` ligada al diff:
+  rutas y tests afectados se proyectan a
+  preguntas/sujetos de aceptación versionados. Una pregunta relevante sin
+  runner o sin disposición técnica exacta después del replay ahora abstiene;
+  `not_required` exige evidencia de que el cambio es disjunto. La admisión
+  `neocortex.code-validation-resources/v2` autentica contra el kernel la
+  membresía al cgroup transient y consulta en systemd el `PrivateNetwork=yes`
+  efectivo, de modo que un receipt de entorno forjado ya no puede fingir
+  contención.
+
+- Review `neocortex.code-review/v18` con verificación técnica independiente y
+  allow-listed. Sólo puede publicar
+  `no_change_required_within_verified_scope` cuando requisitos,
+  contraevidencia, receipt, gates y controles negativos específicos vuelven a
+  comprobarse; no suplanta un actor humano, conserva riesgos residuales y nunca
+  autoriza mutación. El proceso de staging Semantic ante muerte del proceso se
+  incorpora como tercer template ejecutable, con tres gates medidos y binding a
+  la proyección publicada Text→Semantic.
 - Receipt loop acotado del autoanalizador: `--code-experiment-run` persiste el
   resultado terminal `neocortex.code-experiment-receipt/v3` en un envelope
   `neocortex.code-experiment-store/v1`; el review posterior enlaza únicamente
@@ -15,9 +33,9 @@ no se copian aquí para evitar que se conviertan en datos históricos sin contex
   registrados; un replay Code exacto puede reutilizar el receipt de un run
   completado anterior, mientras un terminal posterior fallido o abstenido lo
   invalida. Un envelope digest recalculable liga el contexto durable. Los
-  bindings productivos se limitan a la acceptance pública Text y al workflow
-  SQL/transaccional Text; la evidencia exacta puede exigir revisión humana, pero
-  no crea una decisión, recomendación ni autoridad de mutación.
+  bindings productivos cubren acceptance pública Text, workflow
+  SQL/transaccional Text y recuperación Semantic acotada; la evidencia exacta
+  no crea una decisión humana, recomendación ni autoridad de mutación.
 - Framework schema 21 con `ReviewTask` durable: batches y receipts acotados,
   memberships, tareas versionadas, eventos append-only con CAS, progreso keyset
   y heads fuente generacionales. Cada batch
@@ -84,11 +102,13 @@ no se copian aquí para evitar que se conviertan en datos históricos sin contex
 
 - Code pasa de schema 5 a 6 mediante una migración aditiva que crea
   `code_experiment_receipts`, tabla append-only con triggers que impiden update y
-  delete. El wire vigente de review pasa a `neocortex.code-review/v17`, sin
+  delete. El wire de receipts se introdujo en `neocortex.code-review/v17` y el
+  vigente es `neocortex.code-review/v18`, sin
   declarar compatibilidad estructural con versiones anteriores, e incluye la
   proyección acotada de receipts exactos. El ejecutor verifica la firma de
-  inputs Python/soporte Git antes y después, y el digest unchanged de Code cubre
-  la fase de tests; la CLI escribe el receipt después y por ello no es read-only.
+  inputs Python/soporte Git antes y después, y un fence Linux de identidad,
+  sidecars y anclas acotadas cubre Code durante la fase de tests sin releer el
+  store completo; la CLI escribe el receipt después y por ello no es read-only.
 - Framework pasa de schema 21 a 22 y Code de 4 a 5 para aplicar una única
   política de identidad de rutas: `BINARY` en Linux y `NOCASE` en Windows. La
   migración Framework 21→22 reconstruye sólo `route_candidates` cuando hace

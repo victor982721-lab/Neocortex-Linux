@@ -109,6 +109,7 @@ from .code_state_topology_analysis import (
     analyze_text_terminal_publication,
     resolve_state_topology_questions,
 )
+from .code_technical_verification import build_code_technical_verification
 from .code_schema import (
     CODE_SCHEMA_VERSION,
     validate_code_schema,
@@ -1213,9 +1214,18 @@ def review_code_state(
             materialization_limit=limit,
         )
     experiment_plan = plan_code_experiments(question_specs, question_evaluations)
+    technical_verification = build_code_technical_verification(
+        question_specs,
+        question_evaluations,
+        experiment_receipts,
+    )
     if experiment_receipts:
         limitations.append(
             "passed_experiment_receipts_are_exact_test_contract_evidence_not_human_decisions"
+        )
+    if technical_verification.reviewed_count:
+        limitations.append(
+            "technical_no_change_dispositions_are_scoped_and_never_authorize_mutation"
         )
     try:
         post_fence, post_reason = _review_freshness_fence(state_directory, path)
@@ -1278,6 +1288,7 @@ def review_code_state(
         analyzer_calibration=analyzer_calibration,
         experiment_plan=experiment_plan,
         experiment_receipts=experiment_receipts,
+        technical_verification=technical_verification,
         interface_surface=read.interface_surface,
         question_specs=question_specs,
         question_evaluations=question_evaluations,
@@ -1314,6 +1325,7 @@ def review_code_state(
             analyzer_calibration=analyzer_calibration,
             experiment_plan=experiment_plan,
             experiment_receipts=experiment_receipts,
+            technical_verification=technical_verification,
             interface_surface=read.interface_surface,
             unused_analysis=read.unused_analysis,
             supply_chain=read.supply_chain,

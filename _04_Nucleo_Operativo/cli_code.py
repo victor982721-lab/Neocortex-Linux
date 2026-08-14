@@ -1513,8 +1513,30 @@ def _emit_code_review_ranked_evidence(result: CodeReviewResult) -> None:
             _print_console_line(
                 "CODE_EXPERIMENT_EVIDENCE "
                 f"receipts={len(receipts)} passed={sum(item.receipt.status == 'passed' for item in receipts)} "
-                "decision_authority=human mutation_authority=0"
+                "human_actor_impersonated=0 mutation_authority=0"
             )
+        technical = getattr(result, "technical_verification", None)
+        if technical is not None:
+            _print_console_line(
+                "CODE_TECHNICAL_VERIFICATION "
+                f"status={technical.status} "
+                f"eligible={technical.evidence_complete_evaluations} "
+                f"reviewed={technical.reviewed_count} "
+                f"no_change_required={technical.no_change_required_count} "
+                f"unresolved={technical.unresolved_count} "
+                f"authority={technical.authority} "
+                f"mutation_authority={int(technical.mutation_authority)}"
+            )
+            for item in technical.reviews:
+                _print_console_line(
+                    "CODE_TECHNICAL_DISPOSITION "
+                    f"question_id={item.question_id} "
+                    f"subject={json.dumps(item.subject_key, ensure_ascii=True)} "
+                    f"disposition={item.disposition} "
+                    f"reason={item.reason_code} "
+                    f"receipts={len(item.receipt_ids)} "
+                    f"mutation_authority={int(item.mutation_authority)}"
+                )
         executable = tuple(
             proposal
             for proposal in plan.proposals

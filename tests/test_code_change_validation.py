@@ -6,23 +6,42 @@ import subprocess
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
-from typing import cast
+from typing import Literal, cast
 
 import pytest
 
 from _04_Nucleo_Operativo.code_change_validation import (
+    AffectedTestSelection,
     GitChangeSnapshot,
     _experiment_gate,
     _fresh_review_gate,
     _provider_failure,
+    _relevant_question_state,
     _replay_gate,
+    _replay_technical_disposition_gate,
+    _scope_relevance,
+    _validation_question_scopes,
     capture_git_change,
     select_affected_tests,
     validate_code_change,
 )
+from _04_Nucleo_Operativo.code_analysis_epistemics import (
+    AnalysisQuestionEvaluation,
+    AnalysisQuestionSpec,
+    AnalysisSubjectRef,
+    analysis_question_spec_fingerprint,
+)
+from _04_Nucleo_Operativo.code_change_evolution_analysis import (
+    CODE_SCHEMA_EVOLUTION_QUESTION,
+)
 from _04_Nucleo_Operativo.external_evidence_providers import (
     INSTALLED_PACKAGE_PROVIDER_ID,
     PIP_AUDIT_PROVIDER_ID,
+)
+from _04_Nucleo_Operativo.code_route_capability_analysis import ROUTE_CAPABILITY_QUESTION
+from _04_Nucleo_Operativo.code_state_interaction_analysis import WORKFLOW_SQL_QUESTION
+from _04_Nucleo_Operativo.code_state_projection_analysis import (
+    TEXT_SEMANTIC_PROJECTION_QUESTION,
 )
 
 
@@ -32,6 +51,19 @@ def test_optional_mutation_abstention_is_not_a_failed_machine_gate() -> None:
         status="abstained",
         gate="not_evaluated",
         reason="provider_abstained:mutation_target_not_declared",
+    )
+
+    assert _provider_failure(provider) is False
+
+
+def test_ready_provider_delta_is_advisory_after_static_no_regression() -> None:
+    provider = SimpleNamespace(
+        provider_id="mypy-trusted-project",
+        status="ready",
+        gate="failed",
+        reason=None,
+        added=115,
+        resolved=59,
     )
 
     assert _provider_failure(provider) is False
@@ -71,7 +103,7 @@ def test_linux_publication_only_snapshot_is_an_eligible_review_fence(
         supply_chain=None,
         recommendations=(),
         digest=None,
-        as_payload=lambda: {"schema": "neocortex.code-review/v17"},
+        as_payload=lambda: {"schema": "neocortex.code-review/v18"},
     )
     monkeypatch.setattr(
         code_change_validation,
@@ -119,7 +151,71 @@ def _review_with_providers(
         supply_chain=None,
         recommendations=(),
         digest=None,
-        as_payload=lambda: {"schema": "neocortex.code-review/v17"},
+        as_payload=lambda: {"schema": "neocortex.code-review/v18"},
+    )
+
+
+def _question_evaluation(
+    spec: AnalysisQuestionSpec,
+    *,
+    evaluation_id: str,
+    subject_key: str,
+    readiness: Literal[
+        "human_review_required", "experiment_required", "abstained"
+    ] = "experiment_required",
+) -> AnalysisQuestionEvaluation:
+    return AnalysisQuestionEvaluation(
+        evaluation_id,
+        spec.question_id,
+        spec.version,
+        analysis_question_spec_fingerprint(spec),
+        1,
+        AnalysisSubjectRef(
+            spec.subject_kinds[0],
+            subject_key,
+            "Fixture subject",
+            "code",
+            "snapshot:fixture",
+            "current",
+        ),
+        (),
+        (),
+        "confirmed",
+        "abstained",
+        (),
+        spec.hypotheses,
+        "ready",
+        readiness,
+        None,
+        "fixture_decision_evidence_state",
+        "evaluated" if readiness == "human_review_required" else "not_evaluated",
+        tuple(item.action_id for item in spec.next_actions),
+        ("fixture_is_bounded",),
+    )
+
+
+def _change_for(*paths: str) -> GitChangeSnapshot:
+    return GitChangeSnapshot(
+        "a" * 40,
+        "a" * 40,
+        tuple(sorted(paths)),
+        (),
+        (),
+        (),
+        "b" * 64,
+    )
+
+
+def _selection(*selectors: str) -> AffectedTestSelection:
+    ordered = tuple(sorted(selectors))
+    return AffectedTestSelection(
+        "affected" if ordered else "none",
+        ordered,
+        ordered,
+        (),
+        (),
+        (),
+        ("fixture_selection",),
     )
 
 
@@ -267,9 +363,17 @@ def test_canonical_experiment_gate_persists_each_exact_receipt(
     import _04_Nucleo_Operativo.code_experiment_executor as executor
     import _04_Nucleo_Operativo.code_experiment_store as store
 
+    evaluation = _question_evaluation(
+        ROUTE_CAPABILITY_QUESTION,
+        evaluation_id="evaluation:exact",
+        subject_key="capability:route:text",
+    )
     proposal = SimpleNamespace(
         proposal_id="proposal:exact",
-        template_id="template:exact",
+        evaluation_id=evaluation.evaluation_id,
+        question_id=evaluation.question_id,
+        subject_key=evaluation.subject.subject_key,
+        template_id="capability.public_route_acceptance",
         template_version="v1",
         planning_status="planned",
         runner_kind="trusted_deep_declared_scenarios",
@@ -280,6 +384,8 @@ def test_canonical_experiment_gate_persists_each_exact_receipt(
             planned_count=1,
             registry_gap_count=0,
         ),
+        question_evaluations=(evaluation,),
+        technical_verification=SimpleNamespace(reviews=()),
         snapshot=SimpleNamespace(
             analysis_run_id=17,
             processing_signature="snapshot:exact",
@@ -307,6 +413,8 @@ def test_canonical_experiment_gate_persists_each_exact_receipt(
         review,
         root=tmp_path,
         state_directory=tmp_path,
+        change=_change_for("_04_Nucleo_Operativo/code_route_capability_analysis.py"),
+        selection=_selection("tests/test_code_public_route_experiments.py"),
     )
 
     assert gate.status == "passed"
@@ -319,6 +427,241 @@ def test_canonical_experiment_gate_persists_each_exact_receipt(
         "processing_signature": "snapshot:exact",
         "review_digest": "review:exact",
     }
+
+
+def test_relevant_manual_question_cannot_be_downgraded_to_not_required(
+    tmp_path: Path,
+) -> None:
+    evaluation = _question_evaluation(
+        CODE_SCHEMA_EVOLUTION_QUESTION,
+        evaluation_id="evaluation:schema",
+        subject_key="schema:code",
+    )
+    proposal = SimpleNamespace(
+        proposal_id="proposal:schema-gap",
+        evaluation_id=evaluation.evaluation_id,
+        planning_status="registry_gap",
+        runner_kind=None,
+        template_id=None,
+    )
+    review = SimpleNamespace(
+        experiment_plan=SimpleNamespace(
+            proposals=(proposal,),
+            planned_count=0,
+            registry_gap_count=1,
+        ),
+        question_evaluations=(evaluation,),
+        technical_verification=SimpleNamespace(reviews=()),
+    )
+
+    gate, receipts = _experiment_gate(
+        review,
+        root=tmp_path,
+        state_directory=tmp_path,
+        change=_change_for("_04_Nucleo_Operativo/code_schema.py"),
+        selection=_selection("tests/test_code_schema_migration_v1_v2.py"),
+    )
+
+    assert gate.status == "abstained"
+    assert gate.reason == "affected_question_requires_unresolved_evidence"
+    assert gate.evidence["blocking_reasons"] == [
+        "affected_question_has_no_allowlisted_runner:code_schema_migration"
+    ]
+    assert receipts == ()
+
+
+def test_manual_question_is_not_required_only_when_diff_binding_proves_disjoint(
+    tmp_path: Path,
+) -> None:
+    evaluation = _question_evaluation(
+        CODE_SCHEMA_EVOLUTION_QUESTION,
+        evaluation_id="evaluation:schema",
+        subject_key="schema:code",
+    )
+    review = SimpleNamespace(
+        experiment_plan=SimpleNamespace(
+            proposals=(),
+            planned_count=0,
+            registry_gap_count=1,
+        ),
+        question_evaluations=(evaluation,),
+        technical_verification=SimpleNamespace(reviews=()),
+    )
+
+    gate, receipts = _experiment_gate(
+        review,
+        root=tmp_path,
+        state_directory=tmp_path,
+        change=_change_for("neocortex/logic.py"),
+        selection=_selection("tests/test_logic.py"),
+    )
+
+    assert gate.status == "not_required"
+    assert gate.reason == "no_validation_required_question_is_affected"
+    binding = next(
+        item
+        for item in cast(list[dict[str, object]], gate.evidence["question_bindings"])
+        if item["scope_id"] == "code_schema_migration"
+    )
+    assert binding["relevance"] == "not_affected"
+    assert receipts == ()
+
+
+def test_relevant_existing_technical_disposition_closes_without_reexecution(
+    tmp_path: Path,
+) -> None:
+    evaluation = _question_evaluation(
+        ROUTE_CAPABILITY_QUESTION,
+        evaluation_id="evaluation:text-route",
+        subject_key="capability:route:text",
+        readiness="human_review_required",
+    )
+    technical = SimpleNamespace(
+        reviews=(
+            SimpleNamespace(
+                evaluation_id=evaluation.evaluation_id,
+                review_id="technical-review:text-route",
+                disposition="no_change_required_within_verified_scope",
+            ),
+        )
+    )
+    review = SimpleNamespace(
+        experiment_plan=SimpleNamespace(
+            proposals=(),
+            planned_count=0,
+            registry_gap_count=0,
+        ),
+        question_evaluations=(evaluation,),
+        technical_verification=technical,
+    )
+    change = _change_for("_04_Nucleo_Operativo/code_route_capability_analysis.py")
+    selection = _selection("tests/test_code_public_route_experiments.py")
+
+    gate, receipts = _experiment_gate(
+        review,
+        root=tmp_path,
+        state_directory=tmp_path,
+        change=change,
+        selection=selection,
+    )
+    replay_gate = _replay_technical_disposition_gate(
+        review,
+        change=change,
+        selection=selection,
+    )
+
+    assert gate.status == "passed"
+    assert gate.reason == "affected_questions_have_verified_technical_dispositions"
+    assert receipts == ()
+    assert replay_gate.status == "passed"
+    assert replay_gate.reason == "all_affected_questions_have_verified_technical_dispositions"
+
+
+def test_unknown_question_contract_abstains_instead_of_becoming_advisory(
+    tmp_path: Path,
+) -> None:
+    unknown_spec = replace(
+        ROUTE_CAPABILITY_QUESTION,
+        question_id="future.unclassified_acceptance_question",
+    )
+    evaluation = _question_evaluation(
+        unknown_spec,
+        evaluation_id="evaluation:unknown",
+        subject_key="capability:route:text",
+    )
+    review = SimpleNamespace(
+        experiment_plan=SimpleNamespace(
+            proposals=(),
+            planned_count=0,
+            registry_gap_count=1,
+        ),
+        question_evaluations=(evaluation,),
+        technical_verification=SimpleNamespace(reviews=()),
+    )
+
+    gate, receipts = _experiment_gate(
+        review,
+        root=tmp_path,
+        state_directory=tmp_path,
+        change=_change_for("neocortex/logic.py"),
+        selection=_selection("tests/test_logic.py"),
+    )
+
+    assert gate.status == "abstained"
+    assert gate.reason == "change_question_relevance_unresolvable"
+    assert gate.evidence["relevance_errors"] == [
+        "unclassified_question_contract:future.unclassified_acceptance_question:v1"
+    ]
+    assert receipts == ()
+
+
+def test_experiment_control_plane_change_binds_all_executable_question_scopes() -> None:
+    evaluations = (
+        _question_evaluation(
+            ROUTE_CAPABILITY_QUESTION,
+            evaluation_id="evaluation:route",
+            subject_key="capability:route:text",
+        ),
+        _question_evaluation(
+            WORKFLOW_SQL_QUESTION,
+            evaluation_id="evaluation:sql",
+            subject_key="workflow:text.derivation-publication:fixture",
+        ),
+        _question_evaluation(
+            TEXT_SEMANTIC_PROJECTION_QUESTION,
+            evaluation_id="evaluation:projection",
+            subject_key="workflow:text-to-semantic-published-projection",
+        ),
+    )
+    review = SimpleNamespace(question_evaluations=evaluations)
+
+    bindings, relevant, errors = _relevant_question_state(
+        review,
+        change=_change_for("_04_Nucleo_Operativo/code_change_validation.py"),
+        selection=_selection(),
+    )
+
+    assert errors == ()
+    assert {scope.scope_id for scope, _evaluation in relevant} == {
+        "public_text_route",
+        "text_publication_sql",
+        "text_semantic_projection_recovery",
+    }
+    assert all(
+        item["relevance"] == "affected"
+        for item in bindings
+        if item["scope_id"]
+        in {
+            "public_text_route",
+            "text_publication_sql",
+            "text_semantic_projection_recovery",
+        }
+    )
+
+
+def test_replay_cannot_pass_until_relevant_technical_disposition_exists() -> None:
+    evaluation = _question_evaluation(
+        ROUTE_CAPABILITY_QUESTION,
+        evaluation_id="evaluation:text-route",
+        subject_key="capability:route:text",
+        readiness="human_review_required",
+    )
+    review = SimpleNamespace(
+        question_evaluations=(evaluation,),
+        technical_verification=SimpleNamespace(reviews=()),
+    )
+
+    gate = _replay_technical_disposition_gate(
+        review,
+        change=_change_for("_04_Nucleo_Operativo/code_route_capability_analysis.py"),
+        selection=_selection("tests/test_code_public_route_experiments.py"),
+    )
+
+    assert gate.status == "abstained"
+    assert gate.reason == ("affected_question_lacks_verified_technical_disposition_after_replay")
+    assert gate.evidence["unresolved_relevant_evaluations"] == [
+        "public_text_route:evaluation:text-route"
+    ]
 
 
 def _git(root: Path, *arguments: str) -> None:
@@ -354,6 +697,33 @@ def test_git_change_includes_tracked_and_untracked_content(tmp_path: Path) -> No
     assert first.changed_paths == ("neocortex/logic.py", "tests/test_new.py")
     assert first.untracked_paths == ("tests/test_new.py",)
     assert len(first.content_digest) == 64
+
+
+def test_git_change_preserves_both_sides_of_a_renamed_acceptance_boundary(
+    tmp_path: Path,
+) -> None:
+    root = _repository(tmp_path)
+    schema = root / "_04_Nucleo_Operativo" / "code_schema.py"
+    schema.parent.mkdir()
+    schema.write_text("SCHEMA_VERSION = 1\n", encoding="utf-8")
+    _git(root, "add", ".")
+    _git(root, "commit", "-qm", "add schema boundary")
+    renamed = root / "neocortex" / "renamed_schema.py"
+    schema.rename(renamed)
+
+    change = capture_git_change(root)
+    selection = _selection("tests/test_code_schema_migration_v1_v2.py")
+    scope = next(
+        item for item in _validation_question_scopes() if item.scope_id == "code_schema_migration"
+    )
+
+    matched_paths, _matched_selectors = _scope_relevance(scope, change, selection)
+
+    assert change.changed_paths == (
+        "_04_Nucleo_Operativo/code_schema.py",
+        "neocortex/renamed_schema.py",
+    )
+    assert matched_paths == ("_04_Nucleo_Operativo/code_schema.py",)
 
 
 def test_selection_preserves_changed_tests_and_convention(tmp_path: Path) -> None:

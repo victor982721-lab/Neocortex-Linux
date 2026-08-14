@@ -101,7 +101,7 @@ Una corrida sin `--apply` puede leer el corpus y escribir inventario, cachés,
 eventos y planes; no es una consulta de sólo lectura. Empiece con un conjunto
 acotado:
 
-```powershell
+```bash
 $Root = 'C:\Datos'
 if (-not (Test-Path -LiteralPath $Root -PathType Container)) {
     throw "La raíz no existe o no es un directorio: $Root"
@@ -214,7 +214,7 @@ Neocortex --state-directory $MiniState --code-review --code-review-limit 10 --co
 ```
 
 La segunda invocación es el resultado consumible del auditor. Debe emitir
-`neocortex.code-review/v17`, enlazar cada evaluación a evidencia publicada,
+`neocortex.code-review/v18`, enlazar cada evaluación a evidencia publicada,
 mantener `recommendations=[]`, `decision=null` y `mutation_authority=false`, y
 explicar por pregunta qué provider, contraevidencia o experimento falta. Un run
 de proveedores por sí solo no constituye el cierre del autoanálisis.
@@ -224,15 +224,17 @@ exacto y ejecutar sólo ese experimento con `--code-experiment-run`. No se admit
 selector pytest ni comando arbitrario: el registry fija escenarios, sus nodeids
 parametrizados ya expandidos, timeout y gates tipados. El comando vuelve a
 validar el plan, la raíz canónica y el manifest actual. Actualmente ejecuta sólo
-`capability.public_route_acceptance` (un nodeid) o
-`state.runtime_sql_trace` (cuatro nodeids). Pytest corre sobre el checkout
+`capability.public_route_acceptance` (un nodeid),
+`state.runtime_sql_trace` (cuatro nodeids) o
+`state.semantic_process_death_recovery` (un nodeid y tres gates). Pytest corre sobre el checkout
 canónico confiable; el temporal externo aloja runtime/checkpoints, no una copia
 ni un sandbox. Trusted-deep puede usar red y conserva `HOME`.
 
 Antes y después de Pytest, el provider vuelve a calcular la firma exacta de los
 inputs Python publicados y del soporte Git observado; una diferencia rechaza el
-receipt. El digest streaming before/after cerca además `code.sqlite3` durante la
-ejecución. Estas barreras no son un lock continuo de la fuente y no incluyen el
+receipt. Un fence Linux before/after compara identidad, sidecars y anclas
+acotadas de `code.sqlite3` durante la ejecución sin releer todo su historial.
+Estas barreras no son un lock continuo de la fuente y no incluyen el
 corpus ni otros stores. Si los nodeids y gates terminan `passed`, retorna `0`;
 `failed` o `abstained` retornan `2`. Después, aun en esos estados terminales, la
 CLI inserta un receipt append-only en Code schema v6 y devuelve
@@ -243,15 +245,18 @@ sobre una publicación stale: regenere antes el autoanálisis. No la ejecute sob
 código que no confíe; la allowlist limita el selector, no los efectos del código
 de tests.
 
-El siguiente review v17 enlaza sólo el terminal más nuevo del proposal y la
+El siguiente review v18 enlaza sólo el terminal más nuevo del proposal y la
 processing signature exactos, con bindings de gates registrados. El terminal
 puede pertenecer a un run Code completado anterior cuando el run vigente es un
 replay exacto con la misma firma. El envelope digest liga y verifica run,
 evaluación, pregunta, sujeto, review, timestamp y payload. Un terminal posterior
 fallido o abstenido, o uno stale, corrupto o sin binding, no satisface evidencia.
-Incluso con evidencia completa, la readiness máxima es
-`human_review_required`; no nace una decisión, recomendación ni autoridad de
-mutación.
+Incluso con evidencia completa, el receipt no suplanta a un actor humano. El
+verificador técnico allow-listed de v18 puede publicar
+`no_change_required_within_verified_scope` sólo tras volver a comprobar el
+contrato exacto, sus gates y controles negativos. Esa disposición es advisory,
+expone riesgos residuales, no genera recomendación y no concede autoridad de
+mutación; preguntas sin política exacta quedan `unresolved`.
 
 `trusted-static` ejecuta 13 proveedores independientes: Ruff basic, Ruff
 con la política acotada `E4,E7,E9,F,B,C4,PIE,RUF`, Mypy, Pyright, Ruff Analyze,
@@ -427,21 +432,21 @@ bytes/analyze/persist/graph y 14 replays; `installed-package-inventory` se
 recalculó. Las consultas read-only status, review y diff tardaron 38.982,
 47.675 y 57.856 s. Esos artefactos históricos usaron architecture v2,
 engineering v1, review v10 y publication diff v8. El contrato vigente de review
-es `neocortex.code-review/v17`, no declara schemas compatibles, publica
+es `neocortex.code-review/v18`, no declara schemas compatibles, publica
 observaciones estructurales con inferencia abstained y evidencia enlazada a IDs
 Code después de resolución read-only; incluye clases seleccionadas por superficie
 AST directa, con umbrales provisionales explícitos, y no genera recomendaciones
 ni paquetes de cambio. Sólo puede publicar paquetes
 `unused_characterization`, advisory y sin autoridad de mutación.
 
-En el estado canónico, v17 consulta además Text/Semantic mediante conexiones
+En el estado canónico, v18 consulta además Text/Semantic mediante conexiones
 `immutable=1` y fences de main/WAL/SHM; nunca checkpointa ni elimina sidecars.
 Un WAL no vacío, layout no demostrado o cambio de fence produce abstención de
 esa dimensión. `aligned` significa exclusivamente igualdad de sets en el head
 publicado y contratos owner/materialization correctos; no demuestra crash
 recovery ni atomicidad cross-owner.
 
-v17 emite también topología Text, interacciones SQL/transaccionales,
+v18 emite también topología Text, interacciones SQL/transaccionales,
 cambio/schema evolution, assurance, invariantes, seguridad/dependencias,
 reachability de `text.extract`, las nueve rutas built-in, superficies de
 módulo/configuración/CLI, calibración y autoeficacia. Ninguna dimensión ejecuta
@@ -829,7 +834,7 @@ Es un orquestador del autoanalizador, no otro linter: captura el diff; seleccion
 pruebas afectadas, completa huecos con fronteras públicas/escenarios registrados
 y escala a la suite Linux sólo ante cambios de packaging, schema o gates; ejecuta las barreras
 estática y arquitectónica existentes; publica `trusted-deep`; consume el review
-v17; ejecuta experimentos registrados; instala y prueba el wheel candidato fuera
+v18; ejecuta experimentos registrados; instala y prueba el wheel candidato fuera
 del checkout; y repite la misma publicación para demostrar replay. Un gate
 fallido produce `failed`, evidencia insuficiente produce `abstained`, y ambos
 devuelven código 2. La salida JSON canónica se obtiene con `--json`.
@@ -846,7 +851,23 @@ host cada 500 ms y detiene el grupo si desaparece la reserva del escritorio o
 la presión entra en el umbral de aborto. Un fallo de D-Bus, cgroup, preflight o
 watchdog es abstención operativa; nunca habilita un fallback sin contención.
 El servicio declara además `PrivateNetwork=yes`: el árbol no tiene ruta al host
-ni a Internet durante la validación.
+ni a Internet durante la validación. La admisión
+`neocortex.code-validation-resources/v2` no confía sólo en el entorno: dentro
+del worker, NeoCortex compara el unit declarado con `/proc/self/cgroup` y
+consulta en systemd su `PrivateNetwork=yes` efectivo.
+
+La selección experimental también está ligada al diff mediante un registro
+versionado de rutas/tests→preguntas/sujetos. Un registry gap relevante o una
+pregunta sin disposición técnica exacta después del replay produce
+`abstained`; `not_required` sólo aparece cuando ese binding demuestra que la
+pregunta es disjunta al cambio.
+
+El delta `added/resolved` publicado por cada provider sigue visible para
+investigación histórica, pero no sustituye al baseline Git: puede comparar con
+una corrida compatible mucho más antigua y cambiar por movimiento de líneas.
+La aceptación estática se decide antes mediante el baseline versionado de
+Ruff/Mypy/Pyright por path, regla y conteo; un provider `ready` con delta global
+no se trata como fallo de ejecución.
 
 Para el árbol sucio normal, el baseline predeterminado es `HEAD`. Después de
 crear el commit local y antes del push se usa el padre explícito:

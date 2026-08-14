@@ -244,9 +244,17 @@ wheel candidato instalado y replay. No ejecutes Ruff, Mypy, Pyright, pytest ni
 `quality_gate.py` como rutas de aceptación paralelas por costumbre; se permiten
 sólo para diagnosticar un gate concreto que el recibo canónico haya señalado.
 Nunca declares el cambio validado si el comando termina `failed` o `abstained`.
+Los deltas portables `added/resolved` de providers permanecen como evidencia
+histórica advisory: pueden abarcar publicaciones anteriores al baseline Git y
+desplazamientos de coordenadas. La barrera estática canónica que bloquea una
+regresión es el baseline versionado por path/regla/conteo ejecutado antes del
+review; no conviertas esos deltas globales en un veto paralelo.
 
 La validación canónica debe reejecutar todo su árbol dentro del cgroup de usuario
-Linux declarado por `neocortex.code-validation-resources/v1`. Antes de iniciar,
+Linux declarado por `neocortex.code-validation-resources/v2`. El worker debe
+probar contra `/proc/self/cgroup` que pertenece al transient unit exacto y
+consultar en systemd que ese unit mantiene `PrivateNetwork=yes`; un receipt de
+entorno por sí solo nunca demuestra contención. Antes de iniciar,
 reserva memoria física para KDE/Chrome mediante el coordinador global y rechaza
 la corrida si no hay headroom o PSI seguro. Durante la ejecución conserva
 `MemoryMax`, `MemorySwapMax`, cuota de CPU, límite total de tiempo y watchdog;

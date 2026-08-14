@@ -24,15 +24,15 @@ import time
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import IO, Literal, cast
 
 from .global_resources import GlobalResourceCoordinator, GlobalResourceLimits
 from .memory_runtime import MemoryBudgetExceeded, MemoryHeadroomTimeout
 
 
-CODE_VALIDATION_RESOURCE_SCHEMA = "neocortex.code-validation-resources/v1"
-CODE_VALIDATION_RESOURCE_POLICY = "linux-desktop-preserving-cgroup-v1"
+CODE_VALIDATION_RESOURCE_SCHEMA = "neocortex.code-validation-resources/v2"
+CODE_VALIDATION_RESOURCE_POLICY = "linux-desktop-preserving-cgroup-v2"
 _BOUNDARY_ENV = "NEOCORTEX_CODE_VALIDATION_RESOURCE_BOUNDARY"
 _ADMISSION_ENV = "NEOCORTEX_CODE_VALIDATION_RESOURCE_ADMISSION"
 _PIP_AUDIT_NETWORK_POLICY_ENV = "NEOCORTEX_PIP_AUDIT_NETWORK_POLICY"
@@ -40,6 +40,9 @@ _SYSTEMD_RUN = Path("/usr/bin/systemd-run")
 _SYSTEMCTL = Path("/usr/bin/systemctl")
 _MEMINFO = Path("/proc/meminfo")
 _MEMORY_PRESSURE = Path("/proc/pressure/memory")
+_SELF_CGROUP = Path("/proc/self/cgroup")
+_CGROUP_TEXT_MAX_BYTES = 16 * 1024
+_SYSTEMCTL_PROPERTY_TIMEOUT_SECONDS = 5.0
 _MIB = 1024 * 1024
 _GIB = 1024 * _MIB
 _MONITOR_INTERVAL_SECONDS = 0.5
@@ -149,6 +152,8 @@ class CodeValidationResourceAdmission:
     cgroup_unit: str
     containment: Literal["systemd-user-service-cgroup-v2"]
     network_policy: Literal["private-network-namespace-no-external-egress"]
+    membership_contract: Literal["proc-self-cgroup-v2-exact-systemd-unit"]
+    private_network_contract: Literal["systemd-unit-private-network-yes"]
 
     def __post_init__(self) -> None:
         if self.schema != CODE_VALIDATION_RESOURCE_SCHEMA:
@@ -164,6 +169,10 @@ class CodeValidationResourceAdmission:
             raise ValueError("code-validation containment kind is invalid")
         if self.network_policy != "private-network-namespace-no-external-egress":
             raise ValueError("code-validation network policy is invalid")
+        if self.membership_contract != "proc-self-cgroup-v2-exact-systemd-unit":
+            raise ValueError("code-validation membership contract is invalid")
+        if self.private_network_contract != "systemd-unit-private-network-yes":
+            raise ValueError("code-validation private-network contract is invalid")
 
     def as_payload(self) -> dict[str, object]:
         return {
@@ -174,6 +183,8 @@ class CodeValidationResourceAdmission:
             "cgroup_unit": self.cgroup_unit,
             "containment": self.containment,
             "network_policy": self.network_policy,
+            "membership_contract": self.membership_contract,
+            "private_network_contract": self.private_network_contract,
         }
 
 
@@ -412,11 +423,102 @@ def parse_code_validation_resource_admission(
             Literal["private-network-namespace-no-external-egress"],
             _payload_text(payload, "network_policy"),
         ),
+        cast(
+            Literal["proc-self-cgroup-v2-exact-systemd-unit"],
+            _payload_text(payload, "membership_contract"),
+        ),
+        cast(
+            Literal["systemd-unit-private-network-yes"],
+            _payload_text(payload, "private_network_contract"),
+        ),
     )
 
 
+def _bounded_kernel_text(path: Path, *, label: str) -> str:
+    try:
+        with path.open("rb", buffering=0) as stream:
+            raw = stream.read(_CGROUP_TEXT_MAX_BYTES + 1)
+    except OSError as exc:
+        raise CodeValidationResourceError(f"{label}_unavailable") from exc
+    if not raw or len(raw) > _CGROUP_TEXT_MAX_BYTES or b"\x00" in raw:
+        raise CodeValidationResourceError(f"{label}_invalid")
+    try:
+        return raw.decode("ascii")
+    except UnicodeError as exc:
+        raise CodeValidationResourceError(f"{label}_invalid") from exc
+
+
+def _verified_cgroup_path(
+    admission: CodeValidationResourceAdmission,
+    *,
+    cgroup_path: Path | None = None,
+) -> str:
+    """Resolve one exact cgroup-v2 membership for the transient service."""
+
+    entries: list[str] = []
+    selected = _SELF_CGROUP if cgroup_path is None else Path(cgroup_path)
+    for line in _bounded_kernel_text(
+        selected,
+        label="code_validation_cgroup_membership",
+    ).splitlines():
+        hierarchy, separator, remainder = line.partition(":")
+        controllers, separator2, raw_path = remainder.partition(":")
+        if not separator or not separator2:
+            raise CodeValidationResourceError("code_validation_cgroup_membership_invalid")
+        if hierarchy == "0" and controllers == "":
+            entries.append(raw_path)
+    if len(entries) != 1:
+        raise CodeValidationResourceError("code_validation_cgroup_membership_invalid")
+    raw_path = entries[0]
+    path = PurePosixPath(raw_path)
+    if (
+        not raw_path.startswith("/")
+        or not path.parts
+        or any(part in {".", ".."} for part in path.parts)
+        or len(raw_path) > 4_096
+    ):
+        raise CodeValidationResourceError("code_validation_cgroup_membership_invalid")
+    expected_component = f"{admission.cgroup_unit}.service"
+    if path.name != expected_component:
+        raise CodeValidationResourceError(
+            "code_validation_admission_cgroup_mismatch:"
+            f"expected={expected_component}:observed={path.name or '/'}"
+        )
+    return raw_path
+
+
+def _verify_private_network_boundary(admission: CodeValidationResourceAdmission) -> None:
+    """Resolve the live transient-unit property from systemd, not the environment."""
+
+    try:
+        completed = subprocess.run(
+            (
+                str(_SYSTEMCTL),
+                "--user",
+                "show",
+                f"{admission.cgroup_unit}.service",
+                "--property=PrivateNetwork",
+                "--value",
+            ),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=_SYSTEMCTL_PROPERTY_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise CodeValidationResourceError(
+            "code_validation_private_network_property_unavailable"
+        ) from exc
+    if completed.returncode != 0:
+        raise CodeValidationResourceError("code_validation_private_network_property_unavailable")
+    if completed.stdout.strip() != "yes":
+        raise CodeValidationResourceError("code_validation_private_network_not_active")
+
+
 def current_code_validation_resource_admission() -> CodeValidationResourceAdmission | None:
-    """Return the verified worker boundary or ``None`` outside it."""
+    """Return one environment-and-kernel verified worker boundary."""
 
     if os.environ.get(_BOUNDARY_ENV) != CODE_VALIDATION_RESOURCE_POLICY:
         return None
@@ -431,9 +533,12 @@ def current_code_validation_resource_admission() -> CodeValidationResourceAdmiss
     if not isinstance(payload, Mapping):
         raise CodeValidationResourceError("code_validation_admission_receipt_invalid")
     try:
-        return parse_code_validation_resource_admission(payload)
+        admission = parse_code_validation_resource_admission(payload)
     except (KeyError, TypeError, ValueError) as exc:
         raise CodeValidationResourceError("code_validation_admission_receipt_invalid") from exc
+    _verified_cgroup_path(admission)
+    _verify_private_network_boundary(admission)
+    return admission
 
 
 def inside_code_validation_resource_boundary() -> bool:
@@ -442,9 +547,7 @@ def inside_code_validation_resource_boundary() -> bool:
 
 def _environment_arguments(admission: CodeValidationResourceAdmission) -> tuple[str, ...]:
     values = {
-        key: value
-        for key, value in os.environ.items()
-        if key in _SAFE_ENVIRONMENT_KEYS and value
+        key: value for key, value in os.environ.items() if key in _SAFE_ENVIRONMENT_KEYS and value
     }
     values[_BOUNDARY_ENV] = CODE_VALIDATION_RESOURCE_POLICY
     values[_ADMISSION_ENV] = _encode_admission(admission)
@@ -453,9 +556,7 @@ def _environment_arguments(admission: CodeValidationResourceAdmission) -> tuple[
     # validation verdict; the worker never initiates network egress itself.
     values[_PIP_AUDIT_NETWORK_POLICY_ENV] = "disabled-by-code-validation"
     return tuple(
-        value
-        for key, item in sorted(values.items())
-        for value in ("--setenv", f"{key}={item}")
+        value for key, item in sorted(values.items()) for value in ("--setenv", f"{key}={item}")
     )
 
 
@@ -604,6 +705,8 @@ def run_code_validation_in_resource_boundary(
         unit,
         "systemd-user-service-cgroup-v2",
         "private-network-namespace-no-external-egress",
+        "proc-self-cgroup-v2-exact-systemd-unit",
+        "systemd-unit-private-network-yes",
     )
     coordinator = GlobalResourceCoordinator(
         ("code-validation",),
@@ -637,8 +740,9 @@ def run_code_validation_in_resource_boundary(
         daemon=True,
     )
     try:
-        with _exclusive_validation_lock(), coordinator.admit(
-            "code-validation", policy.memory_max_bytes, 1
+        with (
+            _exclusive_validation_lock(),
+            coordinator.admit("code-validation", policy.memory_max_bytes, 1),
         ):
             watchdog.start()
             try:

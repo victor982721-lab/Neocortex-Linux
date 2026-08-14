@@ -687,11 +687,12 @@ no como una segunda base de hechos. Cada fila queda ligada al run Code
 completado, processing signature, evaluación/pregunta/sujeto, proposal/template,
 digest del review y payload `neocortex.code-experiment-receipt/v3`; los triggers
 rechazan update y delete. El writer admite estados `passed`, `failed` y
-`abstained`, pero el review `neocortex.code-review/v17` sólo proyecta el `passed`
+`abstained`, pero el review `neocortex.code-review/v18` sólo proyecta el `passed`
 más nuevo que siga coincidiendo con el proposal actual y con bindings tipados de
 gate a requisito. El enlace produce evidencia de tests exactos, no verdad formal
-ni decisión humana; como máximo cambia readiness a `human_review_required` y
-conserva `mutation_authority=false`.
+ni decisión humana. Un verificador técnico separado puede derivar únicamente una
+disposición allow-listed y acotada de no-cambio tras recomprobar controles
+negativos; conserva `authority=advisory` y `mutation_authority=false`.
 
 La capa arquitectónica divide fuente, política y consumo:
 

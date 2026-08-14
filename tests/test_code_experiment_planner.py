@@ -88,7 +88,7 @@ def test_registry_is_canonical_non_mutating_and_bounded() -> None:
     assert all(1 <= item.timeout_seconds <= 900 for item in CODE_EXPERIMENT_TEMPLATES)
     assert experiment_template("structure.static_characterization").cost_tier == "metadata"
     assert experiment_template_registry_fingerprint().startswith(
-        "code-experiment-template-registry-v2:xxh3_128:"
+        "code-experiment-template-registry-v3:xxh3_128:"
     )
     executable = tuple(item for item in CODE_EXPERIMENT_TEMPLATES if item.executable)
     assert {scenario for item in executable for scenario in item.scenario_ids} == set(
@@ -96,6 +96,12 @@ def test_registry_is_canonical_non_mutating_and_bounded() -> None:
     )
     assert all(len(item.scenario_ids) == 1 for item in executable)
     assert experiment_template("analyzer.registered_invariant_scenarios").executable is False
+    semantic = experiment_template("state.semantic_process_death_recovery")
+    assert semantic.executable is True
+    assert semantic.applies_to(
+        question_id="state.text_semantic_published_projection_is_aligned",
+        subject_key="workflow:text-to-semantic-published-projection",
+    )
     capability = experiment_template("capability.public_route_acceptance")
     assert capability.applies_to(
         question_id="capability.route_reaches_user_visible_outcome",

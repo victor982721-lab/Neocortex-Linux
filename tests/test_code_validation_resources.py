@@ -38,7 +38,31 @@ def _admission() -> resources.CodeValidationResourceAdmission:
         "neocortex-code-validate-123-abcdef123456",
         "systemd-user-service-cgroup-v2",
         "private-network-namespace-no-external-egress",
+        "proc-self-cgroup-v2-exact-systemd-unit",
+        "systemd-unit-private-network-yes",
     )
+
+
+def _bind_kernel_boundary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    admission: resources.CodeValidationResourceAdmission,
+    *,
+    member: bool = True,
+    private_network: bool = True,
+) -> None:
+    cgroup = tmp_path / "self-cgroup"
+    component = f"{admission.cgroup_unit}.service" if member else "unrelated.service"
+    cgroup.write_text(f"0::/user.slice/app.slice/{component}\n", encoding="ascii")
+    monkeypatch.setattr(resources, "_SELF_CGROUP", cgroup)
+
+    def verify_network(_admission) -> None:
+        if not private_network:
+            raise resources.CodeValidationResourceError(
+                "code_validation_private_network_not_active"
+            )
+
+    monkeypatch.setattr(resources, "_verify_private_network_boundary", verify_network)
 
 
 def test_linux_snapshot_parses_meminfo_and_pressure(tmp_path: Path) -> None:
@@ -98,9 +122,11 @@ def test_preflight_fails_closed_before_launch(snapshot, reason: str) -> None:
 
 
 def test_admission_roundtrip_is_typed_and_tamper_evident(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     admission = _admission()
+    _bind_kernel_boundary(tmp_path, monkeypatch, admission)
     encoded = base64.urlsafe_b64encode(
         json.dumps(admission.as_payload(), sort_keys=True).encode("ascii")
     ).decode("ascii")
@@ -114,15 +140,96 @@ def test_admission_roundtrip_is_typed_and_tamper_evident(
 
     payload = admission.as_payload()
     payload["required_available_memory_bytes"] = 1
-    forged = base64.urlsafe_b64encode(
-        json.dumps(payload, sort_keys=True).encode("ascii")
-    ).decode("ascii")
+    forged = base64.urlsafe_b64encode(json.dumps(payload, sort_keys=True).encode("ascii")).decode(
+        "ascii"
+    )
     monkeypatch.setenv("NEOCORTEX_CODE_VALIDATION_RESOURCE_ADMISSION", forged)
     with pytest.raises(
         resources.CodeValidationResourceError,
         match="code_validation_admission_receipt_invalid",
     ):
         resources.current_code_validation_resource_admission()
+
+
+def test_structurally_valid_admission_outside_claimed_cgroup_is_rejected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    admission = _admission()
+    _bind_kernel_boundary(tmp_path, monkeypatch, admission, member=False)
+    monkeypatch.setenv(
+        "NEOCORTEX_CODE_VALIDATION_RESOURCE_BOUNDARY",
+        resources.CODE_VALIDATION_RESOURCE_POLICY,
+    )
+    monkeypatch.setenv(
+        "NEOCORTEX_CODE_VALIDATION_RESOURCE_ADMISSION",
+        resources._encode_admission(admission),  # type: ignore[attr-defined]
+    )
+
+    with pytest.raises(
+        resources.CodeValidationResourceError,
+        match="code_validation_admission_cgroup_mismatch",
+    ):
+        resources.current_code_validation_resource_admission()
+
+
+def test_admission_rejects_a_unit_without_private_network(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    admission = _admission()
+    _bind_kernel_boundary(tmp_path, monkeypatch, admission, private_network=False)
+    monkeypatch.setenv(
+        "NEOCORTEX_CODE_VALIDATION_RESOURCE_BOUNDARY",
+        resources.CODE_VALIDATION_RESOURCE_POLICY,
+    )
+    monkeypatch.setenv(
+        "NEOCORTEX_CODE_VALIDATION_RESOURCE_ADMISSION",
+        resources._encode_admission(admission),  # type: ignore[attr-defined]
+    )
+
+    with pytest.raises(
+        resources.CodeValidationResourceError,
+        match="code_validation_private_network_not_active",
+    ):
+        resources.current_code_validation_resource_admission()
+
+
+def test_private_network_verification_queries_the_exact_live_unit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    admission = _admission()
+    observed: list[tuple[str, ...]] = []
+
+    def completed(arguments, **_kwargs):
+        observed.append(tuple(str(item) for item in arguments))
+        return subprocess.CompletedProcess(arguments, 0, "yes\n", "")
+
+    monkeypatch.setattr(resources.subprocess, "run", completed)
+
+    resources._verify_private_network_boundary(admission)  # type: ignore[attr-defined]
+
+    assert observed == [
+        (
+            "/usr/bin/systemctl",
+            "--user",
+            "show",
+            f"{admission.cgroup_unit}.service",
+            "--property=PrivateNetwork",
+            "--value",
+        )
+    ]
+
+    monkeypatch.setattr(
+        resources.subprocess,
+        "run",
+        lambda arguments, **_kwargs: subprocess.CompletedProcess(arguments, 0, "no\n", ""),
+    )
+    with pytest.raises(
+        resources.CodeValidationResourceError,
+        match="code_validation_private_network_not_active",
+    ):
+        resources._verify_private_network_boundary(admission)  # type: ignore[attr-defined]
 
 
 def test_systemd_command_contains_hard_tree_limits_without_secret_environment(
@@ -147,9 +254,7 @@ def test_systemd_command_contains_hard_tree_limits_without_secret_environment(
     assert "--property=RuntimeMaxSec=2700s" in command
     assert "--quiet" in command
     assert "NEOCORTEX_CODE_VALIDATION_RESOURCE_BOUNDARY=" in joined
-    assert (
-        "NEOCORTEX_PIP_AUDIT_NETWORK_POLICY=disabled-by-code-validation" in joined
-    )
+    assert "NEOCORTEX_PIP_AUDIT_NETWORK_POLICY=disabled-by-code-validation" in joined
     assert "must-not-cross" not in joined
 
 

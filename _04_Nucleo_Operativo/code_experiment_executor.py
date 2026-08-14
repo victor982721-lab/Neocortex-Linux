@@ -31,11 +31,18 @@ from .code_invariant_contracts import (
 from .code_schema import readonly_code_database
 from .external_evidence_models import external_provider_result_digest
 from .external_evidence_providers import PytestCoverageTrustedDeepProvider
-from .semantic_models import fingerprint_chunks
+from .semantic_models import canonical_json, fingerprint_chunks
+from .sqlite_immutable import (
+    ImmutableSQLiteUnavailable,
+    SQLiteFileIdentity,
+    capture_sqlite_immutable_fence,
+)
 
 CODE_EXPERIMENT_RECEIPT_SCHEMA = "neocortex.code-experiment-receipt/v3"
 CODE_EXPERIMENT_EXECUTION_POLICY = "allowlisted-measured-gates-trusted-deep-v4"
 CODE_EXPERIMENT_RECEIPT_MAX_OUTCOMES = 128
+_CODE_DATABASE_MAX_FENCE_BYTES = 64 * 1024 * 1024 * 1024
+_CODE_DATABASE_ANCHOR_BYTES = 64 * 1024
 
 
 def _required(label: str, value: object, maximum: int = 32_768) -> str:
@@ -350,36 +357,70 @@ def _receipt_identity_values(values: Mapping[str, object]) -> dict[str, object]:
     return result
 
 
+def _identity_matches_stat(identity: SQLiteFileIdentity, observed: os.stat_result) -> bool:
+    return (
+        identity.device == int(observed.st_dev)
+        and identity.inode == int(observed.st_ino)
+        and identity.mode == int(observed.st_mode)
+        and identity.size == int(observed.st_size)
+        and identity.mtime_ns == int(observed.st_mtime_ns)
+        and identity.ctime_ns == int(observed.st_ctime_ns)
+    )
+
+
 def _file_digest(path: Path) -> str:
-    metadata = path.stat()
-    if not path.is_file() or metadata.st_size > 4 * 1024 * 1024 * 1024:
-        raise ValueError("experiment Code database is missing or exceeds its bound")
-    if metadata.st_size <= 0:
-        raise ValueError("experiment Code database is empty")
+    """Digest a fixed-cost Linux identity fence plus bounded content anchors.
 
-    def chunks():
-        with path.open("rb", buffering=0) as stream:
-            before = os.fstat(stream.fileno())
-            if before.st_size != metadata.st_size or before.st_mtime_ns != metadata.st_mtime_ns:
-                raise ValueError("experiment Code database changed before digest read")
-            while chunk := stream.read(1024 * 1024):
-                yield chunk
-            after_stream = os.fstat(stream.fileno())
-            if (
-                after_stream.st_size != before.st_size
-                or after_stream.st_mtime_ns != before.st_mtime_ns
-            ):
-                raise ValueError("experiment Code database changed during digest read")
+    The experiment only needs to prove that its canonical Code owner did not
+    change while tests ran. Hashing the entire multi-gigabyte historical store
+    twice per proposal made the guard scale with accumulated history and then
+    rejected the live store at 4 GiB. Device/inode/size/mtime/ctime and inactive
+    sidecars detect any ordinary SQLite write; fixed head/tail anchors retain a
+    bounded content check without reading gigabytes.
+    """
 
-    observed = fingerprint_chunks(chunks())
-    after = path.stat()
-    if (
-        observed.byte_count != metadata.st_size
-        or after.st_size != metadata.st_size
-        or after.st_mtime_ns != metadata.st_mtime_ns
-    ):
-        raise ValueError("experiment Code database changed during digest read")
-    return f"xxh3_128:{observed.xxh3_128}:xxh3_64:{observed.xxh3_64_guard}"
+    selected = Path(path)
+    try:
+        before = capture_sqlite_immutable_fence(selected)
+    except (OSError, ImmutableSQLiteUnavailable) as exc:
+        raise ValueError("experiment Code database cannot be fenced") from exc
+    size = before.main.size
+    if size <= 0 or size > _CODE_DATABASE_MAX_FENCE_BYTES:
+        raise ValueError("experiment Code database is empty or exceeds its fence bound")
+    try:
+        with selected.open("rb", buffering=0) as stream:
+            opened = os.fstat(stream.fileno())
+            if not _identity_matches_stat(before.main, opened):
+                raise ValueError("experiment Code database changed before fence read")
+            head = stream.read(min(size, _CODE_DATABASE_ANCHOR_BYTES))
+            tail = b""
+            if size > _CODE_DATABASE_ANCHOR_BYTES:
+                stream.seek(max(0, size - _CODE_DATABASE_ANCHOR_BYTES))
+                tail = stream.read(_CODE_DATABASE_ANCHOR_BYTES)
+            closed = os.fstat(stream.fileno())
+            if not _identity_matches_stat(before.main, closed):
+                raise ValueError("experiment Code database changed during fence read")
+        after = capture_sqlite_immutable_fence(selected)
+    except (OSError, ImmutableSQLiteUnavailable) as exc:
+        raise ValueError("experiment Code database changed during fence read") from exc
+    if before != after:
+        raise ValueError("experiment Code database changed during fence read")
+    descriptor = canonical_json(
+        {
+            "schema": "neocortex.code-database-identity-fence/v1",
+            "main": asdict(before.main),
+            "sidecars": [
+                {"suffix": suffix, "identity": asdict(identity)}
+                for suffix, identity in before.sidecars
+            ],
+            "anchor_bytes": _CODE_DATABASE_ANCHOR_BYTES,
+        }
+    ).encode("utf-8")
+    observed = fingerprint_chunks((descriptor, head, tail))
+    return (
+        "neocortex.code-database-identity-fence/v1:"
+        f"xxh3_128:{observed.xxh3_128}:xxh3_64:{observed.xxh3_64_guard}"
+    )
 
 
 def _manifest_digest(files: tuple[ExternalEvidenceFile, ...]) -> str:
@@ -722,6 +763,7 @@ def execute_code_experiment(
                 else ()
             ),
             "coverage_is_main_process_only",
+            "code_database_unchanged_uses_identity_sidecar_fence_and_bounded_content_anchors",
             "source_input_is_verified_before_and_after_but_corpus_and_other_state_are_not_guarded",
             "process_death_scenario_is_not_power_loss",
             "no_product_mutation_authority",

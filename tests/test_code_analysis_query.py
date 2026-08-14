@@ -31,7 +31,7 @@ def _surface(name: str) -> dict[str, object]:
     return value
 
 
-def _closed_v17_experiment_payload(
+def _closed_v18_experiment_payload(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> dict[str, object]:
@@ -356,7 +356,7 @@ def test_review_query_accepts_and_indexes_source_linked_v13_questions(
     ]
 
 
-def test_review_query_rejects_forged_v17_evidence_linkage(
+def test_review_query_rejects_forged_v18_evidence_linkage(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -377,11 +377,11 @@ def test_review_query_rejects_forged_v17_evidence_linkage(
     evidence = cast("list[dict[str, object]]", evaluations[0]["evidence"])
     evidence[0]["source_record_id"] = "forged"
 
-    with pytest.raises(ValueError, match="code-review/v17"):
+    with pytest.raises(ValueError, match="code-review/v18"):
         query_code_analysis(payload, CodeAnalysisQuery(surface="review"))
 
 
-def test_review_query_rejects_forged_v17_question_semantics(
+def test_review_query_rejects_forged_v18_question_semantics(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -402,7 +402,7 @@ def test_review_query_rejects_forged_v17_question_semantics(
     actions = cast("list[dict[str, object]]", specs[0]["next_actions"])
     actions[0]["description"] = "Delete the production symbol now."
 
-    with pytest.raises(ValueError, match="v17 integrated projection is malformed"):
+    with pytest.raises(ValueError, match="v18 integrated projection is malformed"):
         query_code_analysis(payload, CodeAnalysisQuery(surface="review"))
 
 
@@ -415,7 +415,7 @@ def test_review_query_rejects_forged_v17_question_semantics(
         ("analyzer_calibration", "labels_total"),
     ),
 )
-def test_review_query_rejects_tampered_v17_integrated_projection(
+def test_review_query_rejects_tampered_v18_integrated_projection(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     projection: str,
@@ -438,11 +438,11 @@ def test_review_query_rejects_tampered_v17_integrated_projection(
     assert isinstance(current, int) and not isinstance(current, bool)
     receipt[field] = current + 1
 
-    with pytest.raises(ValueError, match="code-review/v17"):
+    with pytest.raises(ValueError, match="code-review/v18"):
         query_code_analysis(payload, CodeAnalysisQuery(surface="review"))
 
 
-def test_review_query_rejects_a_tampered_v17_experiment_plan(
+def test_review_query_rejects_a_tampered_v18_experiment_plan(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -461,15 +461,15 @@ def test_review_query_rejects_a_tampered_v17_experiment_plan(
     plan = cast("dict[str, object]", payload["experiment_plan"])
     plan["executable_count"] = 999
 
-    with pytest.raises(ValueError, match="code-review/v17"):
+    with pytest.raises(ValueError, match="code-review/v18"):
         query_code_analysis(payload, CodeAnalysisQuery(surface="review"))
 
 
-def test_review_query_projects_a_valid_v17_receipt_and_closes_the_experiment_loop(
+def test_review_query_projects_a_valid_v18_receipt_and_closes_the_experiment_loop(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    payload = _closed_v17_experiment_payload(tmp_path, monkeypatch)
+    payload = _closed_v18_experiment_payload(tmp_path, monkeypatch)
 
     closed_question = query_code_analysis(
         payload,
@@ -520,17 +520,37 @@ def test_review_query_projects_a_valid_v17_receipt_and_closes_the_experiment_loo
         item["record_type"] != "experiment_proposal" for item in experiment_records["matches"]
     )
 
+    technical_records = query_code_analysis(
+        payload,
+        CodeAnalysisQuery(surface="review", categories=("technical_verification",), limit=20),
+    )
+    technical_by_type = {
+        item["record_type"]: item for item in technical_records["matches"]
+    }
+    assert set(technical_by_type) == {
+        "technical_verification_summary",
+        "technical_verification_gap",
+    }
+    technical_summary = technical_by_type["technical_verification_summary"]
+    technical_gap = technical_by_type["technical_verification_gap"]
+    assert technical_summary["facts"]["status"] == "partial"
+    assert technical_summary["facts"]["reviewed_count"] == 0
+    assert technical_summary["facts"]["unresolved_count"] == 1
+    assert technical_gap["facts"]["reason"] == (
+        "technical_policy_scope_or_question_contract_changed"
+    )
 
-def test_review_query_rejects_a_tampered_v17_receipt_envelope(
+
+def test_review_query_rejects_a_tampered_v18_receipt_envelope(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    payload = _closed_v17_experiment_payload(tmp_path, monkeypatch)
+    payload = _closed_v18_experiment_payload(tmp_path, monkeypatch)
     tampered = deepcopy(payload)
     receipts = cast("list[dict[str, object]]", tampered["experiment_receipts"])
     receipts[0]["payload_xxh3_128"] = "forged"
 
-    with pytest.raises(ValueError, match="code-review/v17"):
+    with pytest.raises(ValueError, match="code-review/v18"):
         query_code_analysis(tampered, CodeAnalysisQuery(surface="review"))
 
     future_owner = deepcopy(payload)
@@ -553,8 +573,14 @@ def test_review_query_rejects_a_tampered_v17_receipt_envelope(
 
     missing_sequence = deepcopy(payload)
     missing_sequence.pop("experiment_receipts")
-    with pytest.raises(ValueError, match="code-review/v17"):
+    with pytest.raises(ValueError, match="code-review/v18"):
         query_code_analysis(missing_sequence, CodeAnalysisQuery(surface="review"))
+
+    forged_technical = deepcopy(payload)
+    technical = cast("dict[str, object]", forged_technical["technical_verification"])
+    technical["reviewed_count"] = 1
+    with pytest.raises(ValueError, match="code-review/v18"):
+        query_code_analysis(forged_technical, CodeAnalysisQuery(surface="review"))
 
 
 @pytest.mark.parametrize(

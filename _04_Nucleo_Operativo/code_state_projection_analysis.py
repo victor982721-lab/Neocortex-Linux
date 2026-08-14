@@ -52,10 +52,10 @@ from .sqlite_schema_contract import (
 from .text_state import TEXT_SCHEMA_VERSION, text_schema_contract
 
 CODE_STATE_PROJECTION_SCHEMA = "neocortex.code-state-projection/v1"
-TEXT_SEMANTIC_PROJECTION_POLICY = "text-semantic-published-head-projection-v1"
+TEXT_SEMANTIC_PROJECTION_POLICY = "text-semantic-published-head-projection-v2"
 TEXT_SEMANTIC_PROJECTION_QUESTION = AnalysisQuestionSpec(
     question_id="state.text_semantic_published_projection_is_aligned",
-    version="v1",
+    version="v2",
     subject_kinds=("workflow",),
     requirements=(
         AnalysisEvidenceRequirementSpec(
@@ -74,7 +74,7 @@ TEXT_SEMANTIC_PROJECTION_QUESTION = AnalysisQuestionSpec(
             "build_recovery_counterevidence_evaluated",
             "decision",
             "counterevidence",
-            ("internal_fact", "runtime_observation"),
+            ("internal_fact", "runtime_observation", "experiment_result"),
         ),
         AnalysisEvidenceRequirementSpec(
             "process_death_recovery_experiment_result",

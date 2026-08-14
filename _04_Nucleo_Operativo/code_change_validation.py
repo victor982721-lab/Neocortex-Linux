@@ -28,7 +28,24 @@ from typing import Any, Literal, Protocol, cast
 from neocortex import pip_bootstrap
 
 from .app_paths import self_analysis_data_directory, source_repository_directory
-from .code_validation_resources import current_code_validation_resource_admission
+from .code_analysis_epistemics import (
+    AnalysisQuestionEvaluation,
+    AnalysisQuestionSpec,
+    analysis_question_spec_fingerprint,
+)
+from .code_change_evolution_analysis import CODE_SCHEMA_EVOLUTION_QUESTION
+from .code_route_capability_analysis import ROUTE_CAPABILITY_QUESTION
+from .code_security_dependency_questions import (
+    DEPENDENCY_EVIDENCE_QUESTION,
+    SECURITY_EVIDENCE_QUESTION,
+)
+from .code_state_interaction_analysis import WORKFLOW_SQL_QUESTION
+from .code_state_projection_analysis import TEXT_SEMANTIC_PROJECTION_QUESTION
+from .code_validation_resources import (
+    CODE_VALIDATION_RESOURCE_SCHEMA,
+    current_code_validation_resource_admission,
+    parse_code_validation_resource_admission,
+)
 from .code_review import review_code_state
 from .code_schema import readonly_code_database, validate_code_schema
 from .external_evidence_providers import (
@@ -51,8 +68,8 @@ from .external_evidence_providers import (
 from .semantic_models import canonical_json
 
 
-CODE_CHANGE_VALIDATION_SCHEMA = "neocortex.code-change-validation/v1"
-CODE_CHANGE_VALIDATION_POLICY = "local-linux-diff-aware-validation-v1"
+CODE_CHANGE_VALIDATION_SCHEMA = "neocortex.code-change-validation/v2"
+CODE_CHANGE_VALIDATION_POLICY = "local-linux-diff-aware-validation-v2"
 MAX_CHANGED_PATHS = 2_000
 MAX_SELECTED_TEST_FILES = 2_000
 MAX_DEPENDENCY_DEPTH = 8
@@ -145,13 +162,39 @@ _SUPPLY_CHAIN_BOUNDARIES = frozenset(
 )
 _REGISTERED_SCENARIO_TESTS = frozenset(
     {
+        "tests/test_code_public_route_experiments.py",
         "tests/test_code_review_epistemics.py",
+        "tests/test_code_state_interaction_analysis.py",
         "tests/test_code_state_projection_analysis.py",
         "tests/test_code_state_topology_analysis.py",
         "tests/test_semantic_text_staging_session.py",
+        "tests/test_text_derivation_route.py",
     }
 )
 _CANONICAL_DEEP_SHARD_SIZE = 50
+
+_EXPERIMENT_CONTROL_PLANE_PATHS = frozenset(
+    {
+        "_04_Nucleo_Operativo/cli_code.py",
+        "_04_Nucleo_Operativo/code_analysis_epistemics.py",
+        "_04_Nucleo_Operativo/code_change_validation.py",
+        "_04_Nucleo_Operativo/code_experiment_executor.py",
+        "_04_Nucleo_Operativo/code_experiment_planner.py",
+        "_04_Nucleo_Operativo/code_experiment_store.py",
+        "_04_Nucleo_Operativo/code_invariant_contracts.py",
+        "_04_Nucleo_Operativo/code_review.py",
+        "_04_Nucleo_Operativo/code_review_models.py",
+        "_04_Nucleo_Operativo/code_review_serialization.py",
+        "_04_Nucleo_Operativo/code_technical_verification.py",
+        "_04_Nucleo_Operativo/code_validation_resources.py",
+        "tests/test_code_change_validation.py",
+        "tests/test_code_experiment_executor.py",
+        "tests/test_code_experiment_planner.py",
+        "tests/test_code_experiment_store.py",
+        "tests/test_code_technical_verification.py",
+        "tests/test_code_validation_resources.py",
+    }
+)
 
 # Windows is preserved as historical source but is not an active validation
 # target for Víctor's personal Linux installation.  Keep this list narrow and
@@ -258,6 +301,40 @@ class AffectedTestSelection:
 
 
 @dataclass(frozen=True, slots=True)
+class _ValidationQuestionScope:
+    """Versioned binding from a Git surface to one acceptance-relevant question."""
+
+    scope_id: str
+    spec: AnalysisQuestionSpec
+    subject_prefix: str
+    template_id: str | None
+    changed_paths: frozenset[str]
+    changed_prefixes: tuple[str, ...]
+    test_selectors: frozenset[str]
+    include_experiment_control_plane: bool = False
+
+    def __post_init__(self) -> None:
+        if not self.scope_id:
+            raise ValueError("validation question scope identity is invalid")
+        if not isinstance(self.spec, AnalysisQuestionSpec):
+            raise ValueError("validation question scope spec is invalid")
+        if self.template_id is not None and not self.template_id:
+            raise ValueError("validation question scope template is invalid")
+        if any(
+            not item or item.startswith("/") or ".." in PurePosixPath(item).parts
+            for item in self.changed_paths
+        ):
+            raise ValueError("validation question scope path is invalid")
+        if any(
+            not item or item.startswith("/") or ".." in PurePosixPath(item).parts
+            for item in self.changed_prefixes
+        ):
+            raise ValueError("validation question scope prefix is invalid")
+        if any(not _TEST_PATH.fullmatch(item) for item in self.test_selectors):
+            raise ValueError("validation question scope selector is invalid")
+
+
+@dataclass(frozen=True, slots=True)
 class ValidationGate:
     gate_id: str
     status: Literal["passed", "failed", "abstained", "not_required"]
@@ -333,8 +410,14 @@ class CodeChangeValidationResult:
         if self.resource_boundary is not None:
             if not isinstance(self.resource_boundary, Mapping):
                 raise ValueError("change validation resource boundary is invalid")
-            if self.resource_boundary.get("schema") != "neocortex.code-validation-resources/v1":
+            if self.resource_boundary.get("schema") != CODE_VALIDATION_RESOURCE_SCHEMA:
                 raise ValueError("change validation resource boundary schema is invalid")
+            try:
+                parsed_boundary = parse_code_validation_resource_admission(self.resource_boundary)
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ValueError("change validation resource boundary is invalid") from exc
+            if parsed_boundary.as_payload() != dict(self.resource_boundary):
+                raise ValueError("change validation resource boundary fields are invalid")
         if self.authority != "validation" or self.mutation_authority:
             raise ValueError("change validation cannot authorize mutation")
         if not self.digest.startswith("sha256:") or len(self.digest) != 71:
@@ -452,14 +535,29 @@ def capture_git_change(
         _run_text(
             runner,
             source,
-            ("git", "diff", "--cached", "--name-only", "-z", "--diff-filter=ACDMRTUXB"),
+            (
+                "git",
+                "diff",
+                "--cached",
+                "--no-renames",
+                "--name-only",
+                "-z",
+                "--diff-filter=ACDMRTUXB",
+            ),
         )
     )
     unstaged = _git_paths(
         _run_text(
             runner,
             source,
-            ("git", "diff", "--name-only", "-z", "--diff-filter=ACDMRTUXB"),
+            (
+                "git",
+                "diff",
+                "--no-renames",
+                "--name-only",
+                "-z",
+                "--diff-filter=ACDMRTUXB",
+            ),
         )
     )
     committed = _git_paths(
@@ -469,6 +567,7 @@ def capture_git_change(
             (
                 "git",
                 "diff",
+                "--no-renames",
                 "--name-only",
                 "-z",
                 "--diff-filter=ACDMRTUXB",
@@ -719,9 +818,24 @@ def select_affected_tests(
             "full",
             selectors,
             direct,
-            (),
-            (),
-            (),
+            (
+                "_04_Nucleo_Operativo/code_capability_",
+                "_04_Nucleo_Operativo/code_route_capability_",
+                "_04_Nucleo_Operativo/text_route",
+            ),
+            (
+                "_04_Nucleo_Operativo/code_state_interaction_",
+                "_04_Nucleo_Operativo/state_topology_",
+                "_04_Nucleo_Operativo/text_derivation_",
+                "_04_Nucleo_Operativo/text_route",
+                "_04_Nucleo_Operativo/text_state",
+            ),
+            (
+                "_04_Nucleo_Operativo/code_state_projection_",
+                "_04_Nucleo_Operativo/semantic_",
+                "_04_Nucleo_Operativo/text_derivation_",
+                "_04_Nucleo_Operativo/text_state",
+            ),
             ("change_crosses_full_suite_boundary",),
         )
     dependency_tests: set[str] = set()
@@ -870,9 +984,16 @@ def _run_gate_command(
 def _provider_failure(provider: object) -> bool:
     provider_id = str(getattr(provider, "provider_id", ""))
     status = str(getattr(provider, "status", ""))
-    gate = str(getattr(provider, "gate", ""))
     reason = getattr(provider, "reason", None)
-    if status == "ready" and gate != "failed":
+    # Portable-finding deltas are deliberately advisory here.  Their identity
+    # includes source coordinates and their nearest comparable publication can
+    # legitimately predate the Git baseline, so a refactor can yield
+    # added/resolved pairs without introducing a new diagnostic.  The
+    # preceding ``static_no_regression`` gate is the canonical, versioned
+    # path/rule/count enforcement boundary for Ruff, Mypy and Pyright.  This
+    # review gate therefore decides only whether each provider was observed
+    # successfully, not whether its historical delta happens to be zero.
+    if status == "ready":
         return False
     allowed = _OPTIONAL_PROVIDER_ABSTENTIONS.get(provider_id, frozenset())
     return not (status == "abstained" and isinstance(reason, str) and reason in allowed)
@@ -1313,6 +1434,15 @@ def _fresh_review_gate(
         if _provider_failure(item)
         and not (item is pip_provider and historical_pip_audit is not None)
     )
+    provider_delta_observations = tuple(
+        {
+            "provider_id": item.provider_id,
+            "added": item.added,
+            "resolved": item.resolved,
+        }
+        for item in providers
+        if item.status == "ready" and item.gate == "failed"
+    )
     evaluation_abstentions = sum(
         item.observation_status == "abstained" for item in result.question_evaluations
     )
@@ -1355,6 +1485,7 @@ def _fresh_review_gate(
                 "question_evaluations": len(result.question_evaluations),
                 "evaluation_abstentions": evaluation_abstentions,
                 "provider_failures": list(provider_failures),
+                "provider_delta_observations": list(provider_delta_observations),
                 "historical_pip_audit_fallback": historical_pip_audit,
                 "missing_providers": list(missing_providers),
                 "external_profile": None if suite is None else suite.profile,
@@ -1737,11 +1868,335 @@ def _replay_gate(
     )
 
 
+def _known_question_specs() -> tuple[AnalysisQuestionSpec, ...]:
+    """Return the complete v18 question vocabulary accepted by this validator.
+
+    Adding a new question to Code review without classifying it here makes the
+    canonical gate abstain.  This is intentional: an unknown question must not
+    become acceptance-irrelevant merely because no runner exists yet.
+    """
+
+    from .code_analyzer_calibration import ANALYZER_CALIBRATION_EVIDENCE_QUESTION
+    from .code_analyzer_effectiveness import (
+        ANALYZER_CALIBRATION_QUESTION,
+        ANALYZER_FRESHNESS_QUESTION,
+    )
+    from .code_architecture_questions import (
+        ARCHITECTURE_CONTRACT_QUESTION,
+        ARCHITECTURE_LOGICAL_OWNER_QUESTION,
+        ARCHITECTURE_STATIC_GRAPH_QUESTION,
+    )
+    from .code_assurance_analysis import ASSURANCE_AVAILABILITY_QUESTION, ASSURANCE_QUESTION
+    from .code_capability_reachability_analysis import (
+        CAPABILITY_REACHABILITY_AVAILABILITY_QUESTION,
+        CAPABILITY_REACHABILITY_QUESTION,
+    )
+    from .code_change_evolution_analysis import CHANGE_HISTORY_QUESTION, CHANGE_SURFACE_QUESTION
+    from .code_class_surface_analysis import CLASS_SURFACE_QUESTION
+    from .code_interface_surface_analysis import (
+        CLI_SURFACE_QUESTION,
+        CONFIGURATION_SURFACE_QUESTION,
+        INTERFACE_SURFACE_AVAILABILITY_QUESTION,
+        MODULE_SURFACE_QUESTION,
+    )
+    from .code_invariant_assurance_analysis import INVARIANT_ASSURANCE_QUESTION
+    from .code_review_epistemics import STRUCTURAL_HOTSPOT_QUESTION
+    from .code_route_capability_analysis import ROUTE_CAPABILITY_AVAILABILITY_QUESTION
+    from .code_state_interaction_analysis import SQL_INTERACTION_QUESTION
+    from .code_state_topology_analysis import TEXT_TERMINAL_PUBLICATION_QUESTION
+
+    return (
+        ANALYZER_CALIBRATION_EVIDENCE_QUESTION,
+        ANALYZER_CALIBRATION_QUESTION,
+        ANALYZER_FRESHNESS_QUESTION,
+        ARCHITECTURE_CONTRACT_QUESTION,
+        ARCHITECTURE_LOGICAL_OWNER_QUESTION,
+        ARCHITECTURE_STATIC_GRAPH_QUESTION,
+        ASSURANCE_AVAILABILITY_QUESTION,
+        ASSURANCE_QUESTION,
+        CAPABILITY_REACHABILITY_AVAILABILITY_QUESTION,
+        CAPABILITY_REACHABILITY_QUESTION,
+        CHANGE_HISTORY_QUESTION,
+        CHANGE_SURFACE_QUESTION,
+        CODE_SCHEMA_EVOLUTION_QUESTION,
+        CLASS_SURFACE_QUESTION,
+        CLI_SURFACE_QUESTION,
+        CONFIGURATION_SURFACE_QUESTION,
+        DEPENDENCY_EVIDENCE_QUESTION,
+        INTERFACE_SURFACE_AVAILABILITY_QUESTION,
+        INVARIANT_ASSURANCE_QUESTION,
+        MODULE_SURFACE_QUESTION,
+        ROUTE_CAPABILITY_AVAILABILITY_QUESTION,
+        ROUTE_CAPABILITY_QUESTION,
+        SECURITY_EVIDENCE_QUESTION,
+        SQL_INTERACTION_QUESTION,
+        STRUCTURAL_HOTSPOT_QUESTION,
+        TEXT_SEMANTIC_PROJECTION_QUESTION,
+        TEXT_TERMINAL_PUBLICATION_QUESTION,
+        WORKFLOW_SQL_QUESTION,
+    )
+
+
+def _validation_question_scopes() -> tuple[_ValidationQuestionScope, ...]:
+    """Declare which diff surfaces make unresolved evidence acceptance-critical."""
+
+    return (
+        _ValidationQuestionScope(
+            "public_text_route",
+            ROUTE_CAPABILITY_QUESTION,
+            "capability:route:text",
+            "capability.public_route_acceptance",
+            frozenset(
+                {
+                    "_04_Nucleo_Operativo/code_capability_reachability_analysis.py",
+                    "_04_Nucleo_Operativo/code_route_capability_analysis.py",
+                    "_04_Nucleo_Operativo/text_route.py",
+                    "neocortex/cli.py",
+                    "tests/test_code_public_route_experiments.py",
+                }
+            ),
+            (
+                "_04_Nucleo_Operativo/code_capability_",
+                "_04_Nucleo_Operativo/code_route_capability_",
+                "_04_Nucleo_Operativo/text_route",
+            ),
+            frozenset({"tests/test_code_public_route_experiments.py"}),
+            True,
+        ),
+        _ValidationQuestionScope(
+            "text_publication_sql",
+            WORKFLOW_SQL_QUESTION,
+            "workflow:text.derivation-publication:",
+            "state.runtime_sql_trace",
+            frozenset(
+                {
+                    "_04_Nucleo_Operativo/code_state_interaction_analysis.py",
+                    "_04_Nucleo_Operativo/state_topology_contracts.py",
+                    "_04_Nucleo_Operativo/text_derivation_repository.py",
+                    "_04_Nucleo_Operativo/text_route.py",
+                    "_04_Nucleo_Operativo/text_state.py",
+                    "tests/test_code_state_interaction_analysis.py",
+                    "tests/test_text_derivation_route.py",
+                }
+            ),
+            (
+                "_04_Nucleo_Operativo/code_state_interaction_",
+                "_04_Nucleo_Operativo/state_topology_",
+                "_04_Nucleo_Operativo/text_derivation_",
+                "_04_Nucleo_Operativo/text_route",
+                "_04_Nucleo_Operativo/text_state",
+            ),
+            frozenset(
+                {
+                    "tests/test_code_state_interaction_analysis.py",
+                    "tests/test_text_derivation_route.py",
+                }
+            ),
+            True,
+        ),
+        _ValidationQuestionScope(
+            "text_semantic_projection_recovery",
+            TEXT_SEMANTIC_PROJECTION_QUESTION,
+            "workflow:text-to-semantic-published-projection",
+            "state.semantic_process_death_recovery",
+            frozenset(
+                {
+                    "_04_Nucleo_Operativo/code_state_projection_analysis.py",
+                    "_04_Nucleo_Operativo/semantic_generation_repository.py",
+                    "_04_Nucleo_Operativo/semantic_generation_worker.py",
+                    "_04_Nucleo_Operativo/semantic_sources.py",
+                    "_04_Nucleo_Operativo/semantic_text_index.py",
+                    "_04_Nucleo_Operativo/text_derivation_repository.py",
+                    "_04_Nucleo_Operativo/text_state.py",
+                    "tests/test_semantic_text_staging_session.py",
+                }
+            ),
+            (
+                "_04_Nucleo_Operativo/code_state_projection_",
+                "_04_Nucleo_Operativo/semantic_",
+                "_04_Nucleo_Operativo/text_derivation_",
+                "_04_Nucleo_Operativo/text_state",
+            ),
+            frozenset({"tests/test_semantic_text_staging_session.py"}),
+            True,
+        ),
+        _ValidationQuestionScope(
+            "code_schema_migration",
+            CODE_SCHEMA_EVOLUTION_QUESTION,
+            "",
+            None,
+            frozenset(
+                {
+                    "_04_Nucleo_Operativo/code_schema.py",
+                    "tests/test_code_schema_migration_v1_v2.py",
+                    "tests/test_framework_code_path_collation.py",
+                }
+            ),
+            ("_04_Nucleo_Operativo/code_schema_migration_",),
+            frozenset(
+                {
+                    "tests/test_code_schema_migration_v1_v2.py",
+                    "tests/test_framework_code_path_collation.py",
+                }
+            ),
+        ),
+        _ValidationQuestionScope(
+            "security_supply_boundary",
+            SECURITY_EVIDENCE_QUESTION,
+            "project:neocortex-security-evidence",
+            None,
+            frozenset(
+                {
+                    "MANIFEST.in",
+                    "constraints.txt",
+                    "pyproject.toml",
+                    "_04_Nucleo_Operativo/code_security_dependency_questions.py",
+                    "_04_Nucleo_Operativo/code_supply_chain_analysis.py",
+                    "tools/quality_gate_supply_policy.json",
+                }
+            ),
+            (
+                "_04_Nucleo_Operativo/code_security_dependency_",
+                "_04_Nucleo_Operativo/code_supply_chain_",
+                "_04_Nucleo_Operativo/external_evidence_provider",
+            ),
+            frozenset(),
+        ),
+        _ValidationQuestionScope(
+            "dependency_artifact_boundary",
+            DEPENDENCY_EVIDENCE_QUESTION,
+            "dependency:neocortex-environment",
+            None,
+            frozenset(
+                {
+                    "MANIFEST.in",
+                    "constraints.txt",
+                    "pyproject.toml",
+                    "_04_Nucleo_Operativo/code_security_dependency_questions.py",
+                    "_04_Nucleo_Operativo/code_supply_chain_analysis.py",
+                    "tools/release_linux.py",
+                    "tools/quality_gate_supply_policy.json",
+                }
+            ),
+            (
+                "_04_Nucleo_Operativo/code_security_dependency_",
+                "_04_Nucleo_Operativo/code_supply_chain_",
+                "_04_Nucleo_Operativo/external_evidence_provider",
+            ),
+            frozenset(),
+        ),
+    )
+
+
+def _scope_relevance(
+    scope: _ValidationQuestionScope,
+    change: GitChangeSnapshot,
+    selection: AffectedTestSelection,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    relevant_paths = set(scope.changed_paths)
+    if scope.include_experiment_control_plane:
+        relevant_paths.update(_EXPERIMENT_CONTROL_PLANE_PATHS)
+    matched_paths = tuple(
+        path
+        for path in change.changed_paths
+        if path in relevant_paths
+        or any(path.startswith(prefix) for prefix in scope.changed_prefixes)
+    )
+    matched_selectors = tuple(
+        selector for selector in selection.selectors if selector in scope.test_selectors
+    )
+    return matched_paths, matched_selectors
+
+
+def _unknown_question_contracts(
+    evaluations: Sequence[AnalysisQuestionEvaluation],
+) -> tuple[tuple[str, str], ...]:
+    known = {
+        (spec.question_id, spec.version): analysis_question_spec_fingerprint(spec)
+        for spec in _known_question_specs()
+    }
+    unknown: set[tuple[str, str]] = set()
+    for evaluation in evaluations:
+        identity = (evaluation.question_id, evaluation.question_version)
+        if known.get(identity) != evaluation.question_spec_fingerprint:
+            unknown.add(identity)
+    return tuple(sorted(unknown))
+
+
+def _relevant_question_state(
+    review: object,
+    *,
+    change: GitChangeSnapshot,
+    selection: AffectedTestSelection,
+) -> tuple[
+    tuple[dict[str, object], ...],
+    tuple[tuple[_ValidationQuestionScope, AnalysisQuestionEvaluation], ...],
+    tuple[str, ...],
+]:
+    raw_evaluations = getattr(review, "question_evaluations", None)
+    if not isinstance(raw_evaluations, tuple) or any(
+        not isinstance(item, AnalysisQuestionEvaluation) for item in raw_evaluations
+    ):
+        return (), (), ("question_evaluations_missing_or_untyped",)
+    unknown = _unknown_question_contracts(raw_evaluations)
+    errors = tuple(
+        f"unclassified_question_contract:{question_id}:{version}"
+        for question_id, version in unknown
+    )
+    bindings: list[dict[str, object]] = []
+    relevant: list[tuple[_ValidationQuestionScope, AnalysisQuestionEvaluation]] = []
+    for scope in _validation_question_scopes():
+        matched_paths, matched_selectors = _scope_relevance(scope, change, selection)
+        affected = bool(matched_paths or matched_selectors)
+        evaluations = tuple(
+            item
+            for item in raw_evaluations
+            if item.question_id == scope.spec.question_id
+            and item.question_version == scope.spec.version
+            and item.question_spec_fingerprint == analysis_question_spec_fingerprint(scope.spec)
+            and (
+                not scope.subject_prefix
+                or item.subject.subject_key.startswith(scope.subject_prefix)
+            )
+        )
+        bindings.append(
+            {
+                "scope_id": scope.scope_id,
+                "question_id": scope.spec.question_id,
+                "question_version": scope.spec.version,
+                "subject_prefix": scope.subject_prefix,
+                "relevance": "affected" if affected else "not_affected",
+                "matched_changed_paths": list(matched_paths),
+                "matched_test_selectors": list(matched_selectors),
+                "evaluation_ids": [item.evaluation_id for item in evaluations],
+            }
+        )
+        if not affected:
+            continue
+        if not evaluations:
+            errors = (*errors, f"affected_question_evaluation_missing:{scope.scope_id}")
+            continue
+        relevant.extend((scope, item) for item in evaluations)
+    return tuple(bindings), tuple(relevant), errors
+
+
+def _technical_review_ids(review: object) -> dict[str, str]:
+    verification = getattr(review, "technical_verification", None)
+    raw_reviews = () if verification is None else getattr(verification, "reviews", ())
+    return {
+        item.evaluation_id: item.review_id
+        for item in raw_reviews
+        if getattr(item, "disposition", None) == "no_change_required_within_verified_scope"
+    }
+
+
 def _experiment_gate(
     review: object | None,
     *,
     root: Path,
     state_directory: Path,
+    change: GitChangeSnapshot,
+    selection: AffectedTestSelection,
 ) -> tuple[ValidationGate, tuple[Mapping[str, object], ...]]:
     started = time.monotonic_ns()
     command = ("Neocortex", "--code-experiment-run", "<registered-proposal>")
@@ -1758,20 +2213,109 @@ def _experiment_gate(
             ),
             (),
         )
-    proposals = tuple(
-        item
-        for item in plan.proposals
-        if item.planning_status == "planned" and item.runner_kind != "none"
+    bindings, relevant, relevance_errors = _relevant_question_state(
+        review,
+        change=change,
+        selection=selection,
     )
-    if not proposals:
+    evidence: dict[str, object] = {
+        "change_content_digest": change.content_digest,
+        "selection_strategy": selection.strategy,
+        "question_bindings": list(bindings),
+        "planned": plan.planned_count,
+        "registry_gaps": plan.registry_gap_count,
+    }
+    if relevance_errors:
+        evidence["relevance_errors"] = list(relevance_errors)
+        return (
+            _gate(
+                "allowlisted_experiments",
+                "abstained",
+                "change_question_relevance_unresolvable",
+                started,
+                command,
+                evidence,
+            ),
+            (),
+        )
+    if not relevant:
         return (
             _gate(
                 "allowlisted_experiments",
                 "not_required",
-                "no_executable_experiment_for_current_questions",
+                "no_validation_required_question_is_affected",
                 started,
                 command,
-                {"planned": plan.planned_count, "registry_gaps": plan.registry_gap_count},
+                evidence,
+            ),
+            (),
+        )
+    proposals_by_evaluation = {item.evaluation_id: item for item in plan.proposals}
+    technical_reviews = _technical_review_ids(review)
+    proposals: list[Any] = []
+    blockers: list[str] = []
+    relevant_states: list[dict[str, object]] = []
+    for scope, evaluation in relevant:
+        proposal = proposals_by_evaluation.get(evaluation.evaluation_id)
+        technical_review_id = technical_reviews.get(evaluation.evaluation_id)
+        state: dict[str, object] = {
+            "scope_id": scope.scope_id,
+            "evaluation_id": evaluation.evaluation_id,
+            "question_id": evaluation.question_id,
+            "subject_key": evaluation.subject.subject_key,
+            "decision_readiness": evaluation.decision_readiness,
+            "expected_template_id": scope.template_id,
+            "proposal_id": None if proposal is None else proposal.proposal_id,
+            "technical_review_id": technical_review_id,
+        }
+        if evaluation.decision_readiness == "human_review_required":
+            if technical_review_id is None:
+                blockers.append(f"affected_question_lacks_technical_disposition:{scope.scope_id}")
+                state["acceptance_state"] = "technical_disposition_missing"
+            else:
+                state["acceptance_state"] = "technical_disposition_verified"
+        elif evaluation.decision_readiness == "experiment_required":
+            if scope.template_id is None:
+                blockers.append(f"affected_question_has_no_allowlisted_runner:{scope.scope_id}")
+                state["acceptance_state"] = "allowlisted_runner_missing"
+            elif (
+                proposal is None
+                or proposal.planning_status != "planned"
+                or proposal.runner_kind == "none"
+                or proposal.template_id != scope.template_id
+            ):
+                blockers.append(f"affected_question_experiment_unavailable:{scope.scope_id}")
+                state["acceptance_state"] = "registered_experiment_unavailable"
+            else:
+                proposals.append(proposal)
+                state["acceptance_state"] = "registered_experiment_selected"
+        else:
+            blockers.append(f"affected_question_evidence_incomplete:{scope.scope_id}")
+            state["acceptance_state"] = "evidence_incomplete"
+        relevant_states.append(state)
+    evidence["relevant_questions"] = relevant_states
+    if blockers:
+        evidence["blocking_reasons"] = sorted(set(blockers))
+        return (
+            _gate(
+                "allowlisted_experiments",
+                "abstained",
+                "affected_question_requires_unresolved_evidence",
+                started,
+                command,
+                evidence,
+            ),
+            (),
+        )
+    if not proposals:
+        return (
+            _gate(
+                "allowlisted_experiments",
+                "passed",
+                "affected_questions_have_verified_technical_dispositions",
+                started,
+                command,
+                evidence,
             ),
             (),
         )
@@ -1788,6 +2332,7 @@ def _experiment_gate(
             ),
             (),
         )
+    ordered_proposals = tuple(sorted(proposals, key=lambda item: item.proposal_id))
     unique_template_count = len(
         {(proposal.template_id, proposal.template_version) for proposal in proposals}
     )
@@ -1804,7 +2349,7 @@ def _experiment_gate(
         review_digest = code_review_digest_identity(getattr(review, "digest", None))
         with tempfile.TemporaryDirectory(prefix="neocortex-change-experiment-") as temporary:
             scratch = Path(temporary)
-            for proposal in proposals:
+            for proposal in ordered_proposals:
                 receipt = execute_code_experiment(
                     cast(Any, proposal),
                     source_root=root,
@@ -1841,6 +2386,7 @@ def _experiment_gate(
                 {
                     "error": str(exc)[:4096],
                     "stored_receipt_ids": stored_receipt_ids,
+                    **evidence,
                 },
             ),
             tuple(receipts),
@@ -1869,9 +2415,94 @@ def _experiment_gate(
                 "unique_template_count": unique_template_count,
                 "receipt_ids": [item.get("receipt_id") for item in receipts],
                 "stored_receipt_ids": stored_receipt_ids,
+                **evidence,
             },
         ),
         tuple(receipts),
+    )
+
+
+def _replay_technical_disposition_gate(
+    review: object | None,
+    *,
+    change: GitChangeSnapshot,
+    selection: AffectedTestSelection,
+) -> ValidationGate:
+    """Prove that every acceptance-relevant question closed after replay."""
+
+    started = time.monotonic_ns()
+    command = ("Neocortex", "--code-review", "<replay-technical-verification>")
+    if review is None:
+        return _gate(
+            "diff_bound_technical_dispositions",
+            "abstained",
+            "replay_review_missing",
+            started,
+            command,
+            {},
+        )
+    bindings, relevant, relevance_errors = _relevant_question_state(
+        review,
+        change=change,
+        selection=selection,
+    )
+    evidence: dict[str, object] = {
+        "change_content_digest": change.content_digest,
+        "question_bindings": list(bindings),
+    }
+    if relevance_errors:
+        evidence["relevance_errors"] = list(relevance_errors)
+        return _gate(
+            "diff_bound_technical_dispositions",
+            "abstained",
+            "replay_change_question_relevance_unresolvable",
+            started,
+            command,
+            evidence,
+        )
+    if not relevant:
+        return _gate(
+            "diff_bound_technical_dispositions",
+            "not_required",
+            "no_validation_required_question_is_affected",
+            started,
+            command,
+            evidence,
+        )
+    technical_reviews = _technical_review_ids(review)
+    unresolved = tuple(
+        sorted(
+            {
+                f"{scope.scope_id}:{evaluation.evaluation_id}"
+                for scope, evaluation in relevant
+                if evaluation.decision_readiness != "human_review_required"
+                or evaluation.evaluation_id not in technical_reviews
+            }
+        )
+    )
+    evidence["relevant_evaluation_ids"] = [item.evaluation_id for _, item in relevant]
+    evidence["technical_review_ids"] = [
+        technical_reviews[item.evaluation_id]
+        for _, item in relevant
+        if item.evaluation_id in technical_reviews
+    ]
+    if unresolved:
+        evidence["unresolved_relevant_evaluations"] = list(unresolved)
+        return _gate(
+            "diff_bound_technical_dispositions",
+            "abstained",
+            "affected_question_lacks_verified_technical_disposition_after_replay",
+            started,
+            command,
+            evidence,
+        )
+    return _gate(
+        "diff_bound_technical_dispositions",
+        "passed",
+        "all_affected_questions_have_verified_technical_dispositions",
+        started,
+        command,
+        evidence,
     )
 
 
@@ -2217,6 +2848,8 @@ def validate_code_change(
         review,
         root=source,
         state_directory=state,
+        change=change,
+        selection=selection,
     )
     report(f"executed allow-listed experiment templates: receipts={len(experiment_receipts)}")
     gates.append(experiment_gate)
@@ -2275,6 +2908,13 @@ def validate_code_change(
             replay_review,
             state_directory=state,
             change=change,
+        )
+    )
+    gates.append(
+        _replay_technical_disposition_gate(
+            replay_review,
+            change=change,
+            selection=selection,
         )
     )
     report("verifying source snapshot remained unchanged")

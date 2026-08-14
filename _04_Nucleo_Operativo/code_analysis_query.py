@@ -74,6 +74,10 @@ from .code_state_interaction_analysis import (
     parse_code_state_interaction_payload,
     state_interaction_questions,
 )
+from .code_technical_verification import (
+    build_code_technical_verification,
+    parse_code_technical_verification_payload,
+)
 from .code_review_epistemics import STRUCTURAL_HOTSPOT_QUESTION
 from .code_security_dependency_questions import security_dependency_questions
 from .code_schema import CODE_SCHEMA_VERSION
@@ -116,6 +120,7 @@ _CODE_REVIEW_V14 = "neocortex.code-review/v14"
 _CODE_REVIEW_V15 = "neocortex.code-review/v15"
 _CODE_REVIEW_V16 = "neocortex.code-review/v16"
 _CODE_REVIEW_V17 = "neocortex.code-review/v17"
+_CODE_REVIEW_V18 = "neocortex.code-review/v18"
 _CODE_ANALYSIS_EPISTEMICS_V1 = "neocortex.code-analysis-epistemics/v1"
 _UNUSED_V11_STEP_REQUIREMENTS = (
     "verify_import_reexport_callback_registry_protocol_and_entry_point_usage",
@@ -926,7 +931,7 @@ def _question_fact_projection(
 
 
 def _experiment_plan(payload: Mapping[str, object]) -> Mapping[str, object] | None:
-    if payload.get("schema") not in {_CODE_REVIEW_V16, _CODE_REVIEW_V17}:
+    if payload.get("schema") not in {_CODE_REVIEW_V16, _CODE_REVIEW_V17, _CODE_REVIEW_V18}:
         return None
     return _mapping(payload.get("experiment_plan"))
 
@@ -940,17 +945,17 @@ def _experiment_proposals(
 def _experiment_receipt_payloads(
     payload: Mapping[str, object],
 ) -> tuple[Mapping[str, object], ...]:
-    """Return only the mandatory, bounded v17 receipt envelope sequence."""
+    """Return only the mandatory, bounded v17+ receipt envelope sequence."""
 
-    if payload.get("schema") != _CODE_REVIEW_V17:
+    if payload.get("schema") not in {_CODE_REVIEW_V17, _CODE_REVIEW_V18}:
         return ()
     raw = payload.get("experiment_receipts")
     if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes, bytearray)):
-        raise ValueError("code-review/v17 experiment receipts must be a sequence")
+        raise ValueError("code-review experiment receipts must be a sequence")
     if len(raw) > CODE_EXPERIMENT_STORE_MAX_RESOLVED:
-        raise ValueError("code-review/v17 experiment receipts exceed their public bound")
+        raise ValueError("code-review experiment receipts exceed their public bound")
     if any(not isinstance(item, Mapping) for item in raw):
-        raise ValueError("code-review/v17 experiment receipts contain a malformed envelope")
+        raise ValueError("code-review experiment receipts contain a malformed envelope")
     return tuple(cast(Mapping[str, object], item) for item in raw)
 
 
@@ -961,7 +966,7 @@ def _append_experiment_receipts(
     for index, envelope in enumerate(_experiment_receipt_payloads(payload)):
         receipt = _mapping(envelope.get("receipt"))
         if receipt is None:
-            raise ValueError("code-review/v17 experiment receipt lacks its public payload")
+            raise ValueError("code-review experiment receipt lacks its public payload")
         question_id = _first_text(envelope, "question_id") or "question"
         receipt_id = _first_text(receipt, "receipt_id") or str(index)
         gate_outcomes = _mapping_items(receipt.get("gate_outcomes"))
@@ -1067,11 +1072,79 @@ def _append_experiment_receipts(
         )
 
 
+def _append_technical_verification(
+    records: list[dict[str, object]],
+    payload: Mapping[str, object],
+) -> None:
+    if payload.get("schema") != _CODE_REVIEW_V18:
+        return
+    raw = _mapping(payload.get("technical_verification"))
+    if raw is None:
+        if payload.get("status") == "ready":
+            raise ValueError("ready code-review/v18 lacks technical verification")
+        return
+    verification = parse_code_technical_verification_payload(raw)
+    records.append(
+        _record(
+            record_type="technical_verification_summary",
+            record_id=verification.verification_id,
+            source_path="technical_verification",
+            categories=("technical_verification",),
+            statuses=(f"technical:{verification.status}",),
+            facts={
+                "status": verification.status,
+                "reason": verification.reason,
+                "policy_id": verification.policy_id,
+                "policy_fingerprint": verification.policy_fingerprint,
+                "evidence_complete_evaluations": verification.evidence_complete_evaluations,
+                "reviewed_count": verification.reviewed_count,
+                "no_change_required_count": verification.no_change_required_count,
+                "unresolved_count": verification.unresolved_count,
+                "limitations": list(verification.limitations),
+                "authority": verification.authority,
+                "mutation_authority": verification.mutation_authority,
+            },
+        )
+    )
+    for index, item in enumerate(verification.reviews):
+        records.append(
+            _record(
+                record_type="technical_disposition",
+                record_id=item.review_id,
+                source_path=f"technical_verification.reviews[{index}]",
+                categories=(
+                    "technical_verification",
+                    "technical_disposition",
+                    item.question_id,
+                ),
+                statuses=(f"technical:{item.disposition}",),
+                facts={
+                    **asdict(item),
+                    "verified_requirement_count": len(item.verified_requirement_ids),
+                    "evidence_count": len(item.evidence_ids),
+                    "receipt_count": len(item.receipt_ids),
+                },
+            )
+        )
+    for index, gap in enumerate(verification.gaps):
+        records.append(
+            _record(
+                record_type="technical_verification_gap",
+                record_id=gap.evaluation_id,
+                source_path=f"technical_verification.gaps[{index}]",
+                categories=("technical_verification", "technical_verification_gap", gap.question_id),
+                statuses=("technical:unresolved",),
+                facts=asdict(gap),
+            )
+        )
+
+
 def _extract_review(payload: Mapping[str, object]) -> list[dict[str, object]]:
     records = _extract_status(payload)
     plan = _experiment_plan(payload)
     _append_experiment_plan_summary(records, plan)
     _append_experiment_receipts(records, payload)
+    _append_technical_verification(records, payload)
     proposals = _experiment_proposals(plan)
     proposal_by_evaluation = {
         evaluation_id: proposal
@@ -2441,13 +2514,14 @@ def _validate_review_v15_payload(payload: Mapping[str, object]) -> None:
 
 
 def _validate_review_v16_payload(payload: Mapping[str, object]) -> None:
-    """Validate v16/v17 verticals, including v17's durable receipt linkage."""
+    """Validate v16-v18 verticals and their durable evidence projections."""
 
     review_schema = payload.get("schema")
-    if review_schema not in {_CODE_REVIEW_V16, _CODE_REVIEW_V17}:
-        raise ValueError("code-review/v16-v17 validator received an unsupported schema")
-    contract_label = "code-review/v17" if review_schema == _CODE_REVIEW_V17 else "code-review/v16"
-    has_receipts = review_schema == _CODE_REVIEW_V17
+    if review_schema not in {_CODE_REVIEW_V16, _CODE_REVIEW_V17, _CODE_REVIEW_V18}:
+        raise ValueError("code-review/v16-v18 validator received an unsupported schema")
+    contract_label = str(review_schema).replace("neocortex.", "")
+    has_receipts = review_schema in {_CODE_REVIEW_V17, _CODE_REVIEW_V18}
+    has_technical_verification = review_schema == _CODE_REVIEW_V18
 
     added = (
         "state_interactions",
@@ -2464,11 +2538,14 @@ def _validate_review_v16_payload(payload: Mapping[str, object]) -> None:
             raise ValueError(f"abstained {contract_label} payload asserts integrated evidence")
         if has_receipts and payload.get("experiment_receipts") != []:
             raise ValueError(f"abstained {contract_label} payload asserts experiment receipts")
+        if has_technical_verification and payload.get("technical_verification") is not None:
+            raise ValueError(f"abstained {contract_label} payload asserts technical verification")
         projected = dict(payload)
         projected["schema"] = _CODE_REVIEW_V15
         for key in added:
             projected.pop(key, None)
         projected.pop("experiment_receipts", None)
+        projected.pop("technical_verification", None)
         _validate_review_v15_payload(projected)
         return
     try:
@@ -2496,6 +2573,7 @@ def _validate_review_v16_payload(payload: Mapping[str, object]) -> None:
             "interface_surface",
             *added,
             "experiment_receipts",
+            "technical_verification",
         ):
             projected.pop(key, None)
         projected["epistemics"] = analysis_questions_payload(
@@ -2558,6 +2636,13 @@ def _validate_review_v16_payload(payload: Mapping[str, object]) -> None:
             )
             if has_receipts
             else ()
+        )
+        technical_verification = (
+            parse_code_technical_verification_payload(
+                cast(Any, _mapping(payload.get("technical_verification")))
+            )
+            if has_technical_verification
+            else None
         )
         supply_chain = parse_code_supply_chain_payload(cast(Any, nested["supply_chain"]))
         interface_surface = parse_code_interface_surface_payload(
@@ -2706,6 +2791,10 @@ def _validate_review_v16_payload(payload: Mapping[str, object]) -> None:
             raise ValueError(f"{contract_label} integrated question projection is not canonical")
         if experiment_plan != plan_code_experiments(specs, canonical_evaluations):
             raise ValueError(f"{contract_label} experiment plan is not canonical")
+        if has_technical_verification and technical_verification != (
+            build_code_technical_verification(specs, canonical_evaluations, receipts)
+        ):
+            raise ValueError(f"{contract_label} technical verification is not canonical")
     except (TypeError, ValueError) as exc:
         if isinstance(exc, ValueError) and str(exc).startswith(contract_label):
             raise
@@ -2778,7 +2867,7 @@ def query_code_analysis(
         )
     if query.surface == "review":
         review_schema = payload.get("schema")
-        if review_schema in {_CODE_REVIEW_V16, _CODE_REVIEW_V17}:
+        if review_schema in {_CODE_REVIEW_V16, _CODE_REVIEW_V17, _CODE_REVIEW_V18}:
             _validate_review_v16_payload(payload)
         elif review_schema == _CODE_REVIEW_V15:
             _validate_review_v15_payload(payload)

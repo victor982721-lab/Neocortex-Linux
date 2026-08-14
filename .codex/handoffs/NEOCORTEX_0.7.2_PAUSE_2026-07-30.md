@@ -1,6 +1,6 @@
 # NeoCortex — handoff operativo actual
 
-> Actualizado: 2026-08-12. El nombre del archivo es histórico y se conserva
+> Actualizado: 2026-08-14. El nombre del archivo es histórico y se conserva
 > como ruta estable. Este documento es la fuente única de la frontera vigente;
 > no guarda un SHA de cierre porque Git y la release instalada deben
 > demostrarlo dinámicamente.
@@ -259,19 +259,27 @@ existe cuando se cumplen juntos los criterios dinámicos de la última sección.
 - Este handoff documenta el árbol sin sustituir tests focales, gates, commit ni
   release Linux instalada del SHA final.
 
-## Contrato operativo — Autoanalizador v17
+## Contrato operativo — Autoanalizador v18
 
 - La siguiente frontera operativa es `Neocortex code validate`: una sola entrada
   Linux para validar implementaciones. Captura el diff, selecciona pruebas con
   evidencia publicada, ejecuta estática/arquitectura, publica `trusted-deep`,
-  consume review v17, ejecuta experimentos allow-listed, instala el wheel
+  consume review v18, ejecuta experimentos allow-listed, instala el wheel
   candidato fuera del checkout y exige replay. Las herramientas individuales
   quedan como diagnóstico interno; no constituyen una aceptación paralela.
+- Los deltas portables `added/resolved` siguen siendo evidencia histórica
+  advisory: pueden usar una publicación comparable anterior a `HEAD^` y variar
+  al mover coordenadas. La barrera estática bloqueante es el baseline
+  versionado por path/regla/conteo que `code validate` ejecuta antes del review;
+  un provider `ready` no falla sólo por conservar un delta global distinto de
+  cero.
 - La entrada completa se reejecuta dentro de un único cgroup v2 de usuario. Un
   preflight adaptativo reserva memoria para KDE/Chrome, sólo permite una corrida,
   limita memoria/swap/CPU/tareas/tiempo y detiene todos los descendientes si el
   watchdog observa pérdida de headroom o PSI crítico. Su admisión queda en el
-  recibo `neocortex.code-validation-resources/v1`; no existe fallback sin
+  recibo `neocortex.code-validation-resources/v2`; el worker comprueba su unit
+  exacto en `/proc/self/cgroup` y consulta en systemd el `PrivateNetwork=yes`
+  efectivo, por lo que un receipt de entorno no puede fingir contención. No existe fallback sin
   contención. `PrivateNetwork=yes` elimina la ruta externa de todo el worker;
   `code validate` resuelve sólo evidencia supply ya publicada y fresca.
 - La promoción de cualquier corte requiere el comando verde sobre el diff,
@@ -281,7 +289,7 @@ existe cuando se cumplen juntos los criterios dinámicos de la última sección.
 
 - `Neocortex --state-directory ESTADO --code-review` ya no es una vista que
   convierte nombres, rutas o tamaño en recomendaciones. El envelope
-  `neocortex.code-review/v17` publica un registro general de preguntas y
+  `neocortex.code-review/v18` publica un registro general de preguntas y
   evaluaciones enlazadas a registros fuente; separa observación, inferencia,
   hipótesis, contraevidencia, evidencia faltante, experimento, decisión y
   autoridad. Toda evaluación es advisory y `mutation_authority=false`.
@@ -320,7 +328,7 @@ existe cuando se cumplen juntos los criterios dinámicos de la última sección.
   receipts y heads publicados. El autoanálisis compara su publicación con el
   checkout Git por contenido y expone coste/cobertura, pero no publica
   precision, recall ni utilidad humana sin outcomes independientes.
-- v17 conserva ownership lógico explícito, interacciones SQL/SQLite ligadas a
+- v18 conserva ownership lógico explícito, interacciones SQL/SQLite ligadas a
   los 13 stores declarados, fronteras transaccionales/workflow, reachability de
   las nueve rutas built-in, cuatro invariantes, calibración anti-Goodhart y un
   planificador de experimentos sin comandos libres. SQL dinámico, parser no
@@ -329,27 +337,33 @@ existe cuando se cumplen juntos los criterios dinámicos de la última sección.
   sin alterar strings ni el digest observado; dejaron de contarse como error
   los dos sitios productivos Text/Archive que usaban esa sintaxis.
 - `--code-experiment-run PROPOSAL_ID` reconstruye el plan vigente y sólo admite
-  dos templates ejecutables: acceptance pública Text (un nodeid) y trace/fault
-  boundaries del workflow Text (cuatro nodeids). Los cuatro escenarios/diez
-  nodeids del assurance de invariantes y los controles de calibración permanecen
-  en el registry, pero no se convierten automáticamente en runners. Pytest corre
+  tres templates ejecutables: acceptance pública Text (un nodeid), trace/fault
+  boundaries del workflow Text (cuatro nodeids) y recuperación Semantic ante
+  muerte del proceso durante staging (un nodeid con tres gates). Los escenarios
+  restantes del assurance de invariantes y los controles de calibración
+  permanecen en el registry, pero no se convierten automáticamente en runners. Pytest corre
   directamente sobre el checkout canónico confiable; el temporal externo aloja
   runtime/checkpoints y no constituye copia ni sandbox. Trusted-deep puede usar
   red y conserva `HOME`. El provider verifica antes/después la firma exacta de
-  los inputs Python publicados y del soporte Git observado; el digest de
-  `code.sqlite3` queda cercado durante la fase ejecutora. No hay lock continuo
+  los inputs Python publicados y del soporte Git observado; un fence Linux de
+  identidad, sidecars y anclas acotadas cerca `code.sqlite3` durante la fase
+  ejecutora sin releer todo el store. No hay lock continuo
   del checkout y corpus/otros stores quedan fuera.
 - Code schema v6 persiste después cada terminal
   `neocortex.code-experiment-receipt/v3` en una tabla append-only y devuelve
   `neocortex.code-experiment-store/v1`. Por eso `code_database_unchanged=true`
-  no vuelve read-only a la invocación completa. El review v17 evalúa el terminal
+  no vuelve read-only a la invocación completa. El review v18 evalúa el terminal
   más nuevo del proposal/signature actual y bindings de gates explícitos; puede
   reutilizar un `passed` de un run completado anterior ante replay exacto con la
   misma firma, mientras un terminal posterior `failed`/`abstained` lo invalida.
   El envelope digest liga todo el contexto durable; evidencia stale, corrupta o
-  no registrada tampoco satisface. Incluso con todos los gates, la readiness máxima es
-  `human_review_required`, sin decisión, recomendación, patch ni autoridad de
-  mutación.
+  no registrada tampoco satisface. El receipt mantiene la readiness epistémica
+  `human_review_required`, pero un verificador técnico separado y allow-listed
+  puede publicar `no_change_required_within_verified_scope` tras recomprobar
+  requisitos, contraevidencia, gates y controles negativos de la pregunta. La
+  disposición es advisory, conserva riesgos residuales y no crea decisión
+  humana, recomendación, patch ni autoridad de mutación. Preguntas completas sin
+  política exacta quedan `unresolved`.
 - El reader rechaza o abstiene ante publicaciones Code mezcladas, vuelve a
   resolver evidencias, verifica digests y conserva queries dimensionadas
   (`observation:*`, `question:*`, `decision:*`). La salida humana resume
@@ -416,19 +430,25 @@ existe cuando se cumplen juntos los criterios dinámicos de la última sección.
 
 ## Próximos pasos, en orden
 
-1. Ampliar el registry de experimentos una familia verificable por vez,
-   empezando por los huecos de mayor impacto durable/assurance. Cada runner
-   nuevo debe producir receipt enlazable, invalidarse ante cambios semánticos y
-   conservar decisión humana y autoridad de mutación falsa.
-2. Etiquetar con Víctor 20–50 consultas reales ES/EN/DE/ZH. La infraestructura
+1. Ampliar el registry de experimentos una familia verificable por vez. La
+   primera vertical de recuperación Semantic ya tiene runner y verificador
+   técnico acotado; la siguiente debe elegirse entre los huecos de mayor impacto
+   durable/assurance y añadir a la vez receipt enlazable, controles negativos y
+   una política técnica exacta. Todo cambio semántico debe invalidar el receipt y
+   `mutation_authority` permanece falso.
+2. Mantener junto con cada nueva familia el binding de aceptación
+   ruta/test→pregunta/sujeto. Una pregunta relevante sin runner o disposición
+   técnica exacta debe abstener; sólo una relación disjunta demostrada puede
+   quedar `not_required`.
+3. Etiquetar con Víctor 20–50 consultas reales ES/EN/DE/ZH. La infraestructura
    golden ya existe, pero no debe inventar juicios humanos ni promover modelos
    por una métrica sintética.
-3. Completar `Knowledge Asset Health` mediante una sola vertical causal sobre
+4. Completar `Knowledge Asset Health` mediante una sola vertical causal sobre
    facts/receipts/snapshots reales —sin score agregado— y exponerla primero en
    API/CLI/doctor/status; no fingir salud de dominios aún no instrumentados.
-4. Extender manifests y contrato causal a PDF, luego DOCX y finalmente Office,
+5. Extender manifests y contrato causal a PDF, luego DOCX y finalmente Office,
    una ruta por vez; conservar legado no atribuible y no reescribir extractores.
-5. Mantener `normalize`/`chunk` como deuda explícita hasta identificar fronteras
+6. Mantener `normalize`/`chunk` como deuda explícita hasta identificar fronteras
    ejecutables reales. Diseñar mutación Linux identity-bound sólo si la
    organización física en Kubuntu se vuelve prioridad.
 

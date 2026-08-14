@@ -12,8 +12,8 @@ from typing import Literal
 
 from .code_analysis_epistemics import analysis_identity
 
-CODE_INVARIANT_REGISTRY_SCHEMA = "neocortex.code-invariant-registry/v2"
-CODE_RUNTIME_SCENARIO_REGISTRY_SCHEMA = "neocortex.code-runtime-scenario-registry/v2"
+CODE_INVARIANT_REGISTRY_SCHEMA = "neocortex.code-invariant-registry/v3"
+CODE_RUNTIME_SCENARIO_REGISTRY_SCHEMA = "neocortex.code-runtime-scenario-registry/v3"
 
 
 def _required(label: str, value: object, maximum: int = 512) -> str:
@@ -299,6 +299,29 @@ RUNTIME_SCENARIOS = (
         scenario_kind="process_death",
         isolation="spawned_process_and_tmp_path",
         limitation="process_exit_is_observed_but_power_loss_and_filesystem_failure_are_not",
+        gate_specs=(
+            RuntimeScenarioGateSpec(
+                "committed_staging_prefix_survives_process_death",
+                (
+                    "tests/test_semantic_text_staging_session.py::"
+                    "test_process_death_preserves_committed_prefix_and_resume_publishes_atomically",
+                ),
+            ),
+            RuntimeScenarioGateSpec(
+                "dead_building_generation_remains_unpublished",
+                (
+                    "tests/test_semantic_text_staging_session.py::"
+                    "test_process_death_preserves_committed_prefix_and_resume_publishes_atomically",
+                ),
+            ),
+            RuntimeScenarioGateSpec(
+                "resume_publishes_complete_generation_atomically",
+                (
+                    "tests/test_semantic_text_staging_session.py::"
+                    "test_process_death_preserves_committed_prefix_and_resume_publishes_atomically",
+                ),
+            ),
+        ),
     ),
     RuntimeScenarioSpec(
         scenario_id="state.text_semantic_exact_projection",
@@ -395,6 +418,7 @@ INVARIANT_SCENARIO_IDS = (
 
 EXPERIMENT_SCENARIO_IDS = (
     "capability.public_text_route_to_search",
+    "semantic.staging_process_death_resume",
     "state.text_sql_runtime_trace",
 )
 
@@ -476,12 +500,11 @@ def _validate_registry() -> None:
         tuple(INVARIANT_SCENARIO_IDS) != tuple(sorted(INVARIANT_SCENARIO_IDS))
         or tuple(EXPERIMENT_SCENARIO_IDS) != tuple(sorted(EXPERIMENT_SCENARIO_IDS))
         or tuple(CALIBRATION_SCENARIO_IDS) != tuple(sorted(CALIBRATION_SCENARIO_IDS))
-        or invariant_scenarios & experiment_scenarios
         or invariant_scenarios & calibration_scenarios
         or experiment_scenarios & calibration_scenarios
         or invariant_scenarios | experiment_scenarios | calibration_scenarios != declared
     ):
-        raise ValueError("runtime scenarios must have one canonical registry role")
+        raise ValueError("runtime scenarios must have canonical assurance roles")
     referenced = {scenario for item in INVARIANT_SPECS for scenario in item.scenario_ids}
     if referenced != invariant_scenarios:
         raise ValueError("invariant specs must reference exactly invariant runtime scenarios")
@@ -490,7 +513,7 @@ def _validate_registry() -> None:
         raise ValueError("executable experiment scenarios require measured gate contracts")
     if any(
         scenario_by_id[item].gate_specs
-        for item in (*INVARIANT_SCENARIO_IDS, *CALIBRATION_SCENARIO_IDS)
+        for item in declared - experiment_scenarios
     ):
         raise ValueError("non-experiment scenarios cannot publish acceptance gate contracts")
     all_nodeids = tuple(nodeid for item in RUNTIME_SCENARIOS for nodeid in item.test_nodeids)
@@ -514,7 +537,7 @@ def runtime_scenario_registry_payload() -> dict[str, object]:
 
 def runtime_scenario_registry_fingerprint() -> str:
     return analysis_identity(
-        "code-runtime-scenario-registry-v2", runtime_scenario_registry_payload()
+        "code-runtime-scenario-registry-v3", runtime_scenario_registry_payload()
     )
 
 
@@ -529,7 +552,7 @@ def invariant_registry_payload() -> dict[str, object]:
 
 
 def invariant_registry_fingerprint() -> str:
-    return analysis_identity("code-invariant-registry-v2", invariant_registry_payload())
+    return analysis_identity("code-invariant-registry-v3", invariant_registry_payload())
 
 
 def runtime_scenario(scenario_id: str) -> RuntimeScenarioSpec:

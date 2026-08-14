@@ -135,15 +135,25 @@ confiable. La barrera `PrivateNetwork=yes` de `Neocortex code validate` pertenec
 al orquestador Linux y no debe atribuirse a una invocación standalone.
 
 El ejecutor recalcula antes/después la firma exacta de los inputs Python
-publicados y del soporte Git observado, y compara el digest de `code.sqlite3`
-durante la fase de tests. No mantiene un lock continuo del checkout ni cerca el
+publicados y del soporte Git observado, y compara un fence Linux de identidad,
+sidecars y anclas acotadas de `code.sqlite3` durante la fase de tests. No
+mantiene un lock continuo del checkout ni cerca el
 corpus u otros owners. Tras medir, la CLI escribe deliberadamente el receipt
 terminal en la tabla inmutable append-only de Code schema v6;
 `code_database_unchanged=true` no significa que todo el comando sea read-only.
-El review v17 verifica además el envelope digest y sólo enlaza el terminal
+La frontera canónica publica `neocortex.code-validation-resources/v2`: el
+worker exige que `/proc/self/cgroup` termine en el transient unit exacto y
+consulta en systemd su `PrivateNetwork=yes` efectivo. Un receipt de entorno
+forjado no puede declarar una contención inexistente. La ausencia de runner tampoco
+degrada una pregunta afectada a `not_required`; el binding diff→pregunta debe
+demostrar irrelevancia o el gate se abstiene.
+El review v18 verifica además el envelope digest y sólo enlaza el terminal
 `passed` más nuevo por proposal/firma a gates registrados; un terminal posterior
 fallido o abstenido lo invalida. Los trata como evidencia del contrato de tests
-y nunca como autorización, verdad formal o decisión humana.
+y nunca como autorización, verdad formal o decisión humana. La disposición
+técnica allow-listed de v18 tampoco concede autoridad: está limitada a la
+pregunta y gates exactos, publica riesgos residuales y mantiene
+`mutation_authority=false`.
 
 La finalización no confía únicamente en la CLI: Framework v22 conserva la
 protección de v20 que impide enlazar

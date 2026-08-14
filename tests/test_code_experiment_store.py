@@ -1356,5 +1356,5 @@ def test_review_consumes_a_persisted_receipt_and_does_not_propose_it_again(
     assert after.experiment_plan.executable_count == 0
     assert after.digest != before.digest
     payload = after.as_payload()
-    assert payload["schema"] == "neocortex.code-review/v17"
+    assert payload["schema"] == "neocortex.code-review/v18"
     assert len(payload["experiment_receipts"]) == 1
