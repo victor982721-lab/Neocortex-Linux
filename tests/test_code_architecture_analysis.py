@@ -26,7 +26,7 @@ from _04_Nucleo_Operativo.external_evidence_models import (
     external_relation_identity,
 )
 from _04_Nucleo_Operativo.external_evidence_store import publish_external_provider
-from tests.test_external_provider_schema_v4 import _create_current_owner
+from tests.test_external_provider_schema_v4 import _complete_owner, _create_current_owner
 
 
 def _descriptor(provider_id: str) -> ProviderDescriptor:
@@ -300,8 +300,10 @@ def _database(tmp_path: Path) -> Path:
         source_ids = tuple(
             publish_external_provider(connection, 1, publication) for publication in publications
         )
+        _complete_owner(connection, 1)
         for publication, source_id in zip(publications, source_ids, strict=True):
             publish_external_provider(connection, 2, _replay(publication, source_id))
+        _complete_owner(connection, 2)
         connection.commit()
     finally:
         connection.close()

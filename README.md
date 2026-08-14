@@ -683,11 +683,15 @@ autoriza cambios. Las propuestas allow-listed con runner real aparecen como
 `CODE_EXPERIMENT_PROPOSAL`; una de ellas puede ejecutarse explícitamente con
 `--code-experiment-run PROPOSAL_ID [--code-json]`. El ejecutor vuelve a construir
 el review vigente, exige el mismo proposal ID, raíz física y manifest Code, y
-sólo admite cuatro templates ejecutables registrados: acceptance de la ruta
+sólo admite cinco templates ejecutables registrados: acceptance de la ruta
 pública Text (un nodeid), trace/fault boundaries del workflow Text (cuatro
 nodeids), recuperación Semantic ante muerte del proceso durante staging (un
-nodeid con tres gates medidos) y una matriz Code-owner de migración poblada,
-rollback y rechazo de schema futuro (cinco nodeids con cuatro gates).
+nodeid con tres gates medidos), una matriz Code-owner de migración poblada,
+rollback y rechazo de schema futuro (cinco nodeids con cuatro gates), y la
+aceptación acotada de los contratos de imports declarados (tres nodeids y cuatro
+gates). Esta última comprueba el grafo vivo, una frontera permitida y controles
+negativos de aristas/ciclos; no demuestra dispatch dinámico ni toda la intención
+arquitectónica.
 Pytest se ejecuta sobre el checkout canónico confiable; el temporal aloja
 runtime/checkpoints, no una copia ni un sandbox de seguridad. El provider puede
 usar red y conserva `HOME`. El provider vuelve a verificar antes y después la

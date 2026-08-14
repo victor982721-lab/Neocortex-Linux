@@ -31,6 +31,7 @@ from _04_Nucleo_Operativo.code_analysis_epistemics import (
     AnalysisSubjectRef,
     analysis_question_spec_fingerprint,
 )
+from _04_Nucleo_Operativo.code_architecture_questions import ARCHITECTURE_CONTRACT_QUESTION
 from _04_Nucleo_Operativo.code_change_evolution_analysis import (
     CODE_SCHEMA_EVOLUTION_QUESTION,
 )
@@ -413,7 +414,7 @@ def test_canonical_experiment_gate_persists_each_exact_receipt(
         review,
         root=tmp_path,
         state_directory=tmp_path,
-        change=_change_for("_04_Nucleo_Operativo/code_route_capability_analysis.py"),
+        change=_change_for("tests/test_code_public_route_experiments.py"),
         selection=_selection("tests/test_code_public_route_experiments.py"),
     )
 
@@ -458,7 +459,7 @@ def test_relevant_schema_question_requires_its_exact_allowlisted_runner(
         review,
         root=tmp_path,
         state_directory=tmp_path,
-        change=_change_for("_04_Nucleo_Operativo/code_schema.py"),
+        change=_change_for("tests/test_code_schema_migration_v1_v2.py"),
         selection=_selection("tests/test_code_schema_migration_v1_v2.py"),
     )
 
@@ -492,8 +493,8 @@ def test_manual_question_is_not_required_only_when_diff_binding_proves_disjoint(
         review,
         root=tmp_path,
         state_directory=tmp_path,
-        change=_change_for("neocortex/logic.py"),
-        selection=_selection("tests/test_logic.py"),
+        change=_change_for("docs/OPERATIONS.md"),
+        selection=_selection(),
     )
 
     assert gate.status == "not_required"
@@ -534,7 +535,7 @@ def test_relevant_existing_technical_disposition_closes_without_reexecution(
         question_evaluations=(evaluation,),
         technical_verification=technical,
     )
-    change = _change_for("_04_Nucleo_Operativo/code_route_capability_analysis.py")
+    change = _change_for("tests/test_code_public_route_experiments.py")
     selection = _selection("tests/test_code_public_route_experiments.py")
 
     gate, receipts = _experiment_gate(
@@ -583,8 +584,8 @@ def test_unknown_question_contract_abstains_instead_of_becoming_advisory(
         review,
         root=tmp_path,
         state_directory=tmp_path,
-        change=_change_for("neocortex/logic.py"),
-        selection=_selection("tests/test_logic.py"),
+        change=_change_for("docs/OPERATIONS.md"),
+        selection=_selection(),
     )
 
     assert gate.status == "abstained"
@@ -597,6 +598,11 @@ def test_unknown_question_contract_abstains_instead_of_becoming_advisory(
 
 def test_experiment_control_plane_change_binds_all_executable_question_scopes() -> None:
     evaluations = (
+        _question_evaluation(
+            ARCHITECTURE_CONTRACT_QUESTION,
+            evaluation_id="evaluation:architecture-contract",
+            subject_key="architecture:contract:fixture",
+        ),
         _question_evaluation(
             ROUTE_CAPABILITY_QUESTION,
             evaluation_id="evaluation:route",
@@ -629,6 +635,7 @@ def test_experiment_control_plane_change_binds_all_executable_question_scopes() 
     assert errors == ()
     assert {scope.scope_id for scope, _evaluation in relevant} == {
         "code_schema_migration",
+        "declared_import_architecture_contracts",
         "public_text_route",
         "text_publication_sql",
         "text_semantic_projection_recovery",
@@ -639,10 +646,50 @@ def test_experiment_control_plane_change_binds_all_executable_question_scopes() 
         if item["scope_id"]
         in {
             "code_schema_migration",
+            "declared_import_architecture_contracts",
             "public_text_route",
             "text_publication_sql",
             "text_semantic_projection_recovery",
         }
+    )
+
+
+def test_production_python_change_makes_declared_architecture_contracts_acceptance_critical() -> (
+    None
+):
+    evaluation = _question_evaluation(
+        ARCHITECTURE_CONTRACT_QUESTION,
+        evaluation_id="evaluation:architecture-contract",
+        subject_key="architecture:contract:fixture",
+    )
+    review = SimpleNamespace(question_evaluations=(evaluation,))
+
+    bindings, relevant, errors = _relevant_question_state(
+        review,
+        change=_change_for("neocortex/logic.py"),
+        selection=_selection("tests/test_logic.py"),
+    )
+
+    assert errors == ()
+    assert tuple(scope.scope_id for scope, _evaluation in relevant) == (
+        "declared_import_architecture_contracts",
+    )
+    assert bindings[0]["relevance"] == "affected"
+    assert bindings[0]["matched_changed_paths"] == ["neocortex/logic.py"]
+
+
+def test_production_python_change_abstains_when_architecture_evaluation_is_missing() -> None:
+    review = SimpleNamespace(question_evaluations=())
+
+    _bindings, relevant, errors = _relevant_question_state(
+        review,
+        change=_change_for("neocortex/logic.py"),
+        selection=_selection("tests/test_logic.py"),
+    )
+
+    assert relevant == ()
+    assert errors == (
+        "affected_question_evaluation_missing:declared_import_architecture_contracts",
     )
 
 
@@ -660,7 +707,7 @@ def test_replay_cannot_pass_until_relevant_technical_disposition_exists() -> Non
 
     gate = _replay_technical_disposition_gate(
         review,
-        change=_change_for("_04_Nucleo_Operativo/code_route_capability_analysis.py"),
+        change=_change_for("tests/test_code_public_route_experiments.py"),
         selection=_selection("tests/test_code_public_route_experiments.py"),
     )
 

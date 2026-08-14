@@ -337,11 +337,13 @@ existe cuando se cumplen juntos los criterios dinámicos de la última sección.
   sin alterar strings ni el digest observado; dejaron de contarse como error
   los dos sitios productivos Text/Archive que usaban esa sintaxis.
 - `--code-experiment-run PROPOSAL_ID` reconstruye el plan vigente y sólo admite
-  cuatro templates ejecutables: acceptance pública Text (un nodeid), trace/fault
+  cinco templates ejecutables: contratos de imports declarados (tres nodeids y
+  cuatro gates), acceptance pública Text (un nodeid), trace/fault
   boundaries del workflow Text (cuatro nodeids), recuperación Semantic ante
   muerte del proceso durante staging (un nodeid con tres gates) y una matriz
   Code-owner de migración poblada/rollback/schema futuro (cinco nodeids y cuatro
-  gates). Los escenarios
+  gates). La aceptación arquitectónica preserva como límites el dispatch dinámico
+  y la intención no declarada. Los escenarios
   restantes del assurance de invariantes y los controles de calibración
   permanecen en el registry, pero no se convierten automáticamente en runners. Pytest corre
   directamente sobre el checkout canónico confiable; el temporal externo aloja
@@ -433,11 +435,12 @@ existe cuando se cumplen juntos los criterios dinámicos de la última sección.
 ## Próximos pasos, en orden
 
 1. Ampliar el registry de experimentos una familia verificable por vez. Las
-   verticales de recuperación Semantic y migración Code-owner ya tienen runner,
-   receipt enlazable, controles negativos y verificador técnico acotado. La
-   siguiente debe elegirse entre Framework ReviewTask y Retention por impacto
-   durable, manteniendo una política técnica exacta. Todo cambio semántico debe
-   invalidar el receipt y `mutation_authority` permanece falso.
+   verticales de recuperación Semantic, migración Code-owner y contratos de
+   imports declarados ya tienen runner, receipt enlazable, controles negativos
+   y verificador técnico acotado. La siguiente debe elegirse entre Framework
+   ReviewTask y Retention por impacto durable, manteniendo una política técnica
+   exacta. Todo cambio semántico debe invalidar el receipt y
+   `mutation_authority` permanece falso.
 2. Mantener junto con cada nueva familia el binding de aceptación
    ruta/test→pregunta/sujeto. Una pregunta relevante sin runner o disposición
    técnica exacta debe abstener; sólo una relación disjunta demostrada puede

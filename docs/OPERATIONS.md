@@ -224,10 +224,15 @@ exacto y ejecutar sólo ese experimento con `--code-experiment-run`. No se admit
 selector pytest ni comando arbitrario: el registry fija escenarios, sus nodeids
 parametrizados ya expandidos, timeout y gates tipados. El comando vuelve a
 validar el plan, la raíz canónica y el manifest actual. Actualmente ejecuta sólo
-`capability.public_route_acceptance` (un nodeid),
+`architecture.declared_import_contract_acceptance` (tres nodeids y cuatro
+gates), `capability.public_route_acceptance` (un nodeid),
 `state.runtime_sql_trace` (cuatro nodeids),
 `state.semantic_process_death_recovery` (un nodeid y tres gates) o
-`evolution.code_schema_upgrade_matrix` (cinco nodeids y cuatro gates). Pytest corre sobre el checkout
+`evolution.code_schema_upgrade_matrix` (cinco nodeids y cuatro gates). El
+template arquitectónico liga el diff Python productivo a la pregunta exacta de
+contratos de imports y abstiene si no puede cerrar el receipt o su disposición
+técnica; sus controles no prueban dispatch dinámico ni intención arquitectónica
+completa. Pytest corre sobre el checkout
 canónico confiable; el temporal externo aloja runtime/checkpoints, no una copia
 ni un sandbox. Trusted-deep puede usar red y conserva `HOME`.
 

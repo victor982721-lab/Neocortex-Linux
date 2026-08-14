@@ -8,6 +8,12 @@ no se copian aquí para evitar que se conviertan en datos históricos sin contex
 
 ### Añadido
 
+- Acceptance experimental de contratos arquitectónicos declarados: cualquier
+  cambio Python productivo queda ligado a
+  `architecture.declared_import_contracts_are_evaluated`. Tres nodeids y cuatro
+  gates comprueban el grafo vivo, una frontera permitida y controles negativos
+  de aristas/ciclos; el receipt puede cerrar una disposición técnica acotada,
+  pero conserva como riesgos el dispatch dinámico y la intención no declarada.
 - Validación canónica `neocortex.code-change-validation/v2` ligada al diff:
   rutas y tests afectados se proyectan a
   preguntas/sujetos de aceptación versionados. Una pregunta relevante sin
@@ -39,7 +45,8 @@ no se copian aquí para evitar que se conviertan en datos históricos sin contex
   registrados; un replay Code exacto puede reutilizar el receipt de un run
   completado anterior, mientras un terminal posterior fallido o abstenido lo
   invalida. Un envelope digest recalculable liga el contexto durable. Los
-  bindings productivos cubren acceptance pública Text, workflow
+  bindings productivos cubren contratos de imports declarados, acceptance
+  pública Text, workflow
   SQL/transaccional Text, recuperación Semantic acotada y la matriz de schema
   Code-owner; la evidencia exacta no crea una decisión humana, recomendación ni
   autoridad de mutación.

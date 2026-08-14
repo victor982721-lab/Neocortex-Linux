@@ -348,12 +348,15 @@ Neocortex --state-directory STATE --code-experiment-run PROPOSAL_ID --code-json
 El ID debe pertenecer al plan reconstruido en esa misma invocación. El runner
 allow-listed usa trusted-deep, presupuesto acotado y manifest exacto; si cambia
 fuente, proposal, provider o base Code, falla cerrado. Hoy sólo son ejecutables
-`capability.public_route_acceptance` (un nodeid),
+`architecture.declared_import_contract_acceptance` (tres nodeids y cuatro
+gates), `capability.public_route_acceptance` (un nodeid),
 `state.runtime_sql_trace` (cuatro nodeids),
 `state.semantic_process_death_recovery` (un nodeid con tres gates) y
 `evolution.code_schema_upgrade_matrix` (cinco nodeids con cuatro gates). El registry general contiene otros
 escenarios de assurance/calibración, pero no por ello son ejecutables desde esta
-opción.
+opción. El escenario arquitectónico verifica sólo los contratos de imports
+declarados, el grafo vivo y controles negativos seleccionados; no observa
+dispatch dinámico ni prueba que el diseño completo sea el correcto.
 
 Pytest corre directamente sobre la raíz canónica confiable. El temporal fuera
 del repo aloja runtime y checkpoints: no es una copia de la fuente ni un sandbox;

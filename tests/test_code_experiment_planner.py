@@ -88,7 +88,7 @@ def test_registry_is_canonical_non_mutating_and_bounded() -> None:
     assert all(1 <= item.timeout_seconds <= 900 for item in CODE_EXPERIMENT_TEMPLATES)
     assert experiment_template("structure.static_characterization").cost_tier == "metadata"
     assert experiment_template_registry_fingerprint().startswith(
-        "code-experiment-template-registry-v3:xxh3_128:"
+        "code-experiment-template-registry-v4:xxh3_128:"
     )
     executable = tuple(item for item in CODE_EXPERIMENT_TEMPLATES if item.executable)
     assert {scenario for item in executable for scenario in item.scenario_ids} == set(
@@ -125,6 +125,17 @@ def test_registry_is_canonical_non_mutating_and_bounded() -> None:
     assert not schema.applies_to(
         question_id="evolution.change_surface_requires_review",
         subject_key="code-owner-schema-subject-v1:fixture",
+    )
+    architecture = experiment_template("architecture.declared_import_contract_acceptance")
+    assert architecture.executable is True
+    assert architecture.scenario_ids == ("architecture.declared_import_contract_acceptance",)
+    assert architecture.applies_to(
+        question_id="architecture.declared_import_contracts_are_evaluated",
+        subject_key="architecture:contract:fixture",
+    )
+    assert not architecture.applies_to(
+        question_id="architecture.static_import_graph_is_comparably_observed",
+        subject_key="architecture:run:fixture",
     )
     assert all(item.acceptance_gates for item in executable)
 

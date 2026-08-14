@@ -519,13 +519,18 @@ facts, completitud y requirements, pero excluye IDs locales de captura. Por
 ello un replay exacto conserva receipts y un cambio real de evidencia los
 invalida aunque el subject lógico conserve su nombre.
 Templates sin runner siguen como planes de caracterización. La CLI sólo ejecuta
-cuatro templates source-versioned con gates medidos: la ruta pública Text, con
-un nodeid; el workflow SQL/transaccional Text, con cuatro; la recuperación
+cinco templates source-versioned con gates medidos: los contratos de imports
+declarados, con tres nodeids y cuatro gates; la ruta pública Text, con un
+nodeid; el workflow SQL/transaccional Text, con cuatro; la recuperación
 Semantic ante muerte del proceso durante staging, con un nodeid y tres gates; y
 la matriz Code-owner de migración poblada, rollback y rechazo de schema futuro,
 con cinco nodeids y cuatro gates.
 Los escenarios restantes del assurance registry no son automáticamente
-propuestas ejecutables.
+propuestas ejecutables. La vertical arquitectónica acepta únicamente la matriz
+versionada de contratos de imports cuando el grafo vivo no tiene violaciones y
+los controles permitidos/prohibidos conservan evidencia de cadena, línea y
+ciclo; no eleva ese resultado a prueba de dispatch dinámico o de intención
+arquitectónica completa.
 
 `--code-experiment-run` exige un proposal ID del plan vigente y ejecuta
 pytest/coverage con timeout sobre el checkout canónico confiable. El temporal
@@ -561,6 +566,8 @@ El receipt puede venir de un owner Code completado previo si la publicación
 actual es un replay exacto con la misma firma. Sólo reemplaza requisitos que
 tengan un binding tipado a gates efectivamente aprobados. Hoy esos bindings
 cubren
+`architecture.declared_import_contracts_are_evaluated` con
+`architecture.declared_import_contract_acceptance`,
 `capability.route_reaches_user_visible_outcome` con
 `capability.public_route_acceptance` y
 `evolution.code_owner_schema_requires_migration_review` con

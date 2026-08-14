@@ -33,6 +33,7 @@ from .code_analysis_epistemics import (
     AnalysisQuestionSpec,
     analysis_question_spec_fingerprint,
 )
+from .code_architecture_questions import ARCHITECTURE_CONTRACT_QUESTION
 from .code_change_evolution_analysis import CODE_SCHEMA_EVOLUTION_QUESTION
 from .code_route_capability_analysis import ROUTE_CAPABILITY_QUESTION
 from .code_security_dependency_questions import (
@@ -1949,6 +1950,31 @@ def _validation_question_scopes() -> tuple[_ValidationQuestionScope, ...]:
     """Declare which diff surfaces make unresolved evidence acceptance-critical."""
 
     return (
+        _ValidationQuestionScope(
+            "declared_import_architecture_contracts",
+            ARCHITECTURE_CONTRACT_QUESTION,
+            "architecture:contract:",
+            "architecture.declared_import_contract_acceptance",
+            frozenset(
+                {
+                    "Orquestador.py",
+                    "tests/test_code_architecture_analysis.py",
+                    "tests/test_code_architecture_contracts.py",
+                    "tests/test_code_architecture_questions.py",
+                }
+            ),
+            (
+                "_01_Enumeracion/",
+                "_02_Deduplicacion/",
+                "_03_Progreso/",
+                "_04_Nucleo_Operativo/",
+                "_05_Interfaz/",
+                "neocortex/",
+                "tests/test_code_architecture_",
+            ),
+            frozenset({"tests/test_code_architecture_contracts.py"}),
+            True,
+        ),
         _ValidationQuestionScope(
             "public_text_route",
             ROUTE_CAPABILITY_QUESTION,

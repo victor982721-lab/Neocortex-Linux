@@ -660,6 +660,35 @@ class _RequirementBinding:
 
 _REQUIREMENT_BINDINGS: tuple[_RequirementBinding, ...] = (
     _RequirementBinding(
+        "architecture.declared_import_contracts_are_evaluated",
+        "architecture.declared_import_contract_acceptance",
+        "observed_violation_impact_characterized",
+        (
+            "forbidden_edges_and_cycles_preserve_shortest_chain_and_line_evidence",
+            "live_repository_graph_has_no_declared_contract_violation",
+        ),
+    ),
+    _RequirementBinding(
+        "architecture.declared_import_contracts_are_evaluated",
+        "architecture.declared_import_contract_acceptance",
+        "contract_exception_counterevidence_evaluated",
+        (
+            "declared_boundary_fixture_accepts_required_entrypoints",
+            "public_facade_crossings_match_the_explicit_contract",
+        ),
+    ),
+    _RequirementBinding(
+        "architecture.declared_import_contracts_are_evaluated",
+        "architecture.declared_import_contract_acceptance",
+        "boundary_acceptance_experiment_result",
+        (
+            "declared_boundary_fixture_accepts_required_entrypoints",
+            "forbidden_edges_and_cycles_preserve_shortest_chain_and_line_evidence",
+            "live_repository_graph_has_no_declared_contract_violation",
+            "public_facade_crossings_match_the_explicit_contract",
+        ),
+    ),
+    _RequirementBinding(
         "capability.route_reaches_user_visible_outcome",
         "capability.public_route_acceptance",
         "causal_durable_execution_path_observed",

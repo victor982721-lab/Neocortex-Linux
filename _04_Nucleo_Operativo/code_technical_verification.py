@@ -26,6 +26,7 @@ from .code_analysis_epistemics import (
     analysis_question_spec_fingerprint,
     validate_analysis_question_set,
 )
+from .code_architecture_questions import ARCHITECTURE_CONTRACT_QUESTION
 from .code_experiment_store import ResolvedCodeExperimentReceipt
 from .code_change_evolution_analysis import CODE_SCHEMA_EVOLUTION_QUESTION
 from .code_route_capability_analysis import ROUTE_CAPABILITY_QUESTION
@@ -80,6 +81,25 @@ class _TechnicalPolicy:
 
 
 _TECHNICAL_POLICIES = (
+    _TechnicalPolicy(
+        ARCHITECTURE_CONTRACT_QUESTION.question_id,
+        ARCHITECTURE_CONTRACT_QUESTION.version,
+        analysis_question_spec_fingerprint(ARCHITECTURE_CONTRACT_QUESTION),
+        "architecture:contract:",
+        "architecture.declared_import_contract_acceptance",
+        (
+            "declared_boundary_fixture_accepts_required_entrypoints",
+            "forbidden_edges_and_cycles_preserve_shortest_chain_and_line_evidence",
+            "live_repository_graph_has_no_declared_contract_violation",
+            "public_facade_crossings_match_the_explicit_contract",
+        ),
+        "the_versioned_import_contracts_have_no_observed_violation_and_the_bounded_positive_and_negative_boundary_controls_pass",
+        "declared_import_contract_matrix_passed_without_a_change_signal",
+        (
+            "static_import_contracts_do_not_observe_runtime_dispatch_or_plugin_edges",
+            "passing_declared_contracts_do_not_establish_complete_architectural_intent",
+        ),
+    ),
     _TechnicalPolicy(
         ROUTE_CAPABILITY_QUESTION.question_id,
         ROUTE_CAPABILITY_QUESTION.version,
@@ -434,10 +454,46 @@ def _schema_predicate(evaluation: AnalysisQuestionEvaluation) -> bool:
     )
 
 
+def _architecture_contract_predicate(evaluation: AnalysisQuestionEvaluation) -> bool:
+    projections = _record_facts(evaluation, "versioned_import_contract_evaluations")
+    if len(projections) != 1:
+        return False
+    projection = projections[0]
+    contracts = projection.get("contracts")
+    passed_contracts = projection.get("passed_contracts")
+    failed_contracts = projection.get("failed_contracts")
+    violations = projection.get("contract_violations")
+    contract_ids_json = projection.get("contract_ids_json")
+    try:
+        contract_ids = json.loads(contract_ids_json) if isinstance(contract_ids_json, str) else None
+    except (TypeError, ValueError):
+        return False
+    return (
+        isinstance(contracts, int)
+        and not isinstance(contracts, bool)
+        and contracts > 0
+        and isinstance(passed_contracts, int)
+        and not isinstance(passed_contracts, bool)
+        and passed_contracts == contracts
+        and isinstance(failed_contracts, int)
+        and not isinstance(failed_contracts, bool)
+        and failed_contracts == 0
+        and isinstance(violations, int)
+        and not isinstance(violations, bool)
+        and violations == 0
+        and isinstance(contract_ids, list)
+        and len(contract_ids) == contracts
+        and all(isinstance(item, str) and item for item in contract_ids)
+        and len(set(contract_ids)) == contracts
+    )
+
+
 def _policy_predicate(
     policy: _TechnicalPolicy,
     evaluation: AnalysisQuestionEvaluation,
 ) -> bool:
+    if policy.question_id == ARCHITECTURE_CONTRACT_QUESTION.question_id:
+        return _architecture_contract_predicate(evaluation)
     if policy.question_id == ROUTE_CAPABILITY_QUESTION.question_id:
         return _capability_predicate(evaluation)
     if policy.question_id == CODE_SCHEMA_EVOLUTION_QUESTION.question_id:

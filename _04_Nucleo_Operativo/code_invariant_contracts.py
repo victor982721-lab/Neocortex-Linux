@@ -13,7 +13,7 @@ from typing import Literal
 from .code_analysis_epistemics import analysis_identity
 
 CODE_INVARIANT_REGISTRY_SCHEMA = "neocortex.code-invariant-registry/v3"
-CODE_RUNTIME_SCENARIO_REGISTRY_SCHEMA = "neocortex.code-runtime-scenario-registry/v3"
+CODE_RUNTIME_SCENARIO_REGISTRY_SCHEMA = "neocortex.code-runtime-scenario-registry/v4"
 
 
 def _required(label: str, value: object, maximum: int = 512) -> str:
@@ -191,6 +191,60 @@ RUNTIME_SCENARIOS = (
         scenario_kind="metamorphic",
         isolation="pytest_tmp_path",
         limitation="selected_static_boundaries_do_not_establish_complete_runtime_reachability",
+    ),
+    RuntimeScenarioSpec(
+        scenario_id="architecture.declared_import_contract_acceptance",
+        version="v1",
+        test_nodeids=(
+            (
+                "tests/test_code_architecture_contracts.py::"
+                "test_declared_boundary_entry_points_pass_with_acyclic_v2_baseline"
+            ),
+            (
+                "tests/test_code_architecture_contracts.py::"
+                "test_live_repository_graph_satisfies_published_architecture_contracts"
+            ),
+            (
+                "tests/test_code_architecture_contracts.py::"
+                "test_violations_expose_shortest_chains_lines_and_new_cycle"
+            ),
+        ),
+        scenario_kind="metamorphic",
+        isolation="pytest_tmp_path",
+        limitation=(
+            "declared_static_import_contracts_and_selected_negative_controls_do_not_"
+            "establish_complete_runtime_dependency_reachability"
+        ),
+        gate_specs=(
+            RuntimeScenarioGateSpec(
+                "declared_boundary_fixture_accepts_required_entrypoints",
+                (
+                    "tests/test_code_architecture_contracts.py::"
+                    "test_declared_boundary_entry_points_pass_with_acyclic_v2_baseline",
+                ),
+            ),
+            RuntimeScenarioGateSpec(
+                "forbidden_edges_and_cycles_preserve_shortest_chain_and_line_evidence",
+                (
+                    "tests/test_code_architecture_contracts.py::"
+                    "test_violations_expose_shortest_chains_lines_and_new_cycle",
+                ),
+            ),
+            RuntimeScenarioGateSpec(
+                "live_repository_graph_has_no_declared_contract_violation",
+                (
+                    "tests/test_code_architecture_contracts.py::"
+                    "test_live_repository_graph_satisfies_published_architecture_contracts",
+                ),
+            ),
+            RuntimeScenarioGateSpec(
+                "public_facade_crossings_match_the_explicit_contract",
+                (
+                    "tests/test_code_architecture_contracts.py::"
+                    "test_live_repository_graph_satisfies_published_architecture_contracts",
+                ),
+            ),
+        ),
     ),
     RuntimeScenarioSpec(
         scenario_id="capability.public_text_route_to_search",
@@ -481,6 +535,7 @@ INVARIANT_SCENARIO_IDS = (
 )
 
 EXPERIMENT_SCENARIO_IDS = (
+    "architecture.declared_import_contract_acceptance",
     "capability.public_text_route_to_search",
     "evolution.code_schema_upgrade_matrix",
     "semantic.staging_process_death_resume",
@@ -599,7 +654,7 @@ def runtime_scenario_registry_payload() -> dict[str, object]:
 
 def runtime_scenario_registry_fingerprint() -> str:
     return analysis_identity(
-        "code-runtime-scenario-registry-v3", runtime_scenario_registry_payload()
+        "code-runtime-scenario-registry-v4", runtime_scenario_registry_payload()
     )
 
 

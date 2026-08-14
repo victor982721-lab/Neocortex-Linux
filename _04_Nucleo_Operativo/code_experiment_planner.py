@@ -26,8 +26,8 @@ from .code_analysis_epistemics import (
 from .code_invariant_contracts import INVARIANT_RUNTIME_SCENARIOS, RUNTIME_SCENARIOS
 
 CODE_EXPERIMENT_PLAN_SCHEMA = "neocortex.code-experiment-plan/v2"
-CODE_EXPERIMENT_TEMPLATE_REGISTRY_SCHEMA = "neocortex.code-experiment-template-registry/v3"
-CODE_EXPERIMENT_PLANNING_POLICY = "registered-applicable-cheapest-discriminating-experiment-v4"
+CODE_EXPERIMENT_TEMPLATE_REGISTRY_SCHEMA = "neocortex.code-experiment-template-registry/v4"
+CODE_EXPERIMENT_PLANNING_POLICY = "registered-applicable-cheapest-discriminating-experiment-v5"
 CODE_EXPERIMENT_MAX_PROPOSALS = 256
 
 ExperimentKind = Literal[
@@ -206,6 +206,7 @@ def _template(
 ) -> CodeExperimentTemplate:
     versions = {
         "analyzer.registered_invariant_scenarios": "v3",
+        "architecture.declared_import_contract_acceptance": "v1",
         "capability.public_route_acceptance": "v2",
         "evolution.code_schema_upgrade_matrix": "v1",
         "state.semantic_process_death_recovery": "v1",
@@ -427,7 +428,6 @@ CODE_EXPERIMENT_TEMPLATES: tuple[CodeExperimentTemplate, ...] = (
         "architecture.boundary_acceptance",
         (
             "run_architecture_boundary_acceptance_scenario",
-            "exercise_declared_architecture_boundary",
             "exercise_representative_logical_owner_boundary",
         ),
         "isolated_pytest",
@@ -444,6 +444,30 @@ CODE_EXPERIMENT_TEMPLATES: tuple[CodeExperimentTemplate, ...] = (
         limitations=(
             "selected_boundary_is_not_complete_runtime_reachability",
             "module_ownership_is_never_inferred_from_names",
+        ),
+    ),
+    _template(
+        "architecture.declared_import_contract_acceptance",
+        ("exercise_declared_architecture_boundary",),
+        "isolated_pytest",
+        "pytest_tmp_path",
+        "bounded",
+        timeout=300,
+        max_items=3,
+        attention=10,
+        scenarios=("architecture.declared_import_contract_acceptance",),
+        runner="trusted_deep_declared_scenarios",
+        questions=("architecture.declared_import_contracts_are_evaluated",),
+        subject_prefixes=("architecture:contract:",),
+        gates=(
+            "declared_boundary_fixture_accepts_required_entrypoints",
+            "forbidden_edges_and_cycles_preserve_shortest_chain_and_line_evidence",
+            "live_repository_graph_has_no_declared_contract_violation",
+            "public_facade_crossings_match_the_explicit_contract",
+        ),
+        limitations=(
+            "declared_import_contracts_do_not_observe_runtime_dispatch_or_plugin_edges",
+            "selected_negative_controls_do_not_prove_complete_architectural_intent",
         ),
     ),
     _template(
@@ -543,7 +567,7 @@ def experiment_template_registry_payload() -> dict[str, object]:
 
 def experiment_template_registry_fingerprint() -> str:
     return analysis_identity(
-        "code-experiment-template-registry-v3",
+        "code-experiment-template-registry-v4",
         experiment_template_registry_payload(),
     )
 
