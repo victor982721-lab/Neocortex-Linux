@@ -1548,6 +1548,8 @@ def _trusted_deep_command(
     max_tests: int,
     time_budget_seconds: int,
 ) -> tuple[str | os.PathLike[str], ...]:
+    if not selectors:
+        raise ChangeValidationError("trusted_deep_requires_selected_tests")
     command: list[str | os.PathLike[str]] = [
         sys.executable,
         "-m",
@@ -1573,6 +1575,23 @@ def _trusted_deep_command(
         )
     )
     return tuple(command)
+
+
+def _documentation_only_change(change: GitChangeSnapshot) -> bool:
+    """Recognize bounded documentation paths without classifying unknown files."""
+
+    if not change.changed_paths:
+        return False
+    for relative in change.changed_paths:
+        path = PurePosixPath(relative)
+        if path.suffix.casefold() != ".md":
+            return False
+        if len(path.parts) == 1 or path.parts[0] == "docs":
+            continue
+        if len(path.parts) >= 3 and path.parts[:2] == (".codex", "handoffs"):
+            continue
+        return False
+    return True
 
 
 def _review_digest_payload(review: object) -> Mapping[str, object] | None:
@@ -2097,15 +2116,49 @@ def validate_code_change(
 
     selectors = selection.selectors
     if not selectors:
-        gates.append(
-            ValidationGate(
-                "affected_coverage",
-                "abstained" if change.changed_paths else "not_required",
-                "no_affected_test_evidence" if change.changed_paths else "no_source_change",
-                0,
-                (),
-                {},
+        documentation_only = _documentation_only_change(change)
+        gates.extend(
+            (
+                ValidationGate(
+                    "affected_coverage",
+                    "not_required" if documentation_only else "abstained",
+                    (
+                        "documentation_change_has_no_affected_tests"
+                        if documentation_only
+                        else "no_affected_test_evidence"
+                    ),
+                    0,
+                    (),
+                    {
+                        "changed_paths": list(change.changed_paths),
+                        "documentation_only": documentation_only,
+                    },
+                ),
+                ValidationGate(
+                    "trusted_deep_publication",
+                    "not_required",
+                    (
+                        "documentation_change_does_not_require_runtime_evidence"
+                        if documentation_only
+                        else "empty_selection_must_not_expand_to_full_suite"
+                    ),
+                    0,
+                    (),
+                    {"selection_strategy": selection.strategy},
+                ),
             )
+        )
+        report(
+            "documentation-only change; trusted execution is not required"
+            if documentation_only
+            else "affected evidence is empty; abstaining without expanding to a full suite"
+        )
+        return _finalize_validation(
+            source=source,
+            state=state,
+            change=change,
+            selection=selection,
+            gates=gates,
         )
     # The trusted-deep producer publishes static and executable evidence in
     # one run.  The review below is the sole consumer and verdict surface.

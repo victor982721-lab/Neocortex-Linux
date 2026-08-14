@@ -509,6 +509,97 @@ def test_clean_tree_is_a_verified_noop_without_running_external_gates(tmp_path: 
     assert result.digest.startswith("sha256:")
 
 
+def test_non_executable_change_never_expands_empty_selection_to_full_suite(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _repository(tmp_path)
+    from _04_Nucleo_Operativo import code_change_validation
+
+    change = GitChangeSnapshot(
+        "a" * 40,
+        "a" * 40,
+        ("docs/OPERATIONS.md",),
+        (),
+        (),
+        (),
+        "b" * 64,
+    )
+    monkeypatch.setattr(
+        code_change_validation,
+        "capture_git_change",
+        lambda *_args, **_kwargs: change,
+    )
+    monkeypatch.setattr(code_change_validation, "_capture_unchanged", lambda *_args: True)
+    observed_commands: list[tuple[str, ...]] = []
+
+    def runner(arguments, *, cwd, timeout, environment=None):
+        command = tuple(str(item) for item in arguments)
+        observed_commands.append(command)
+        return subprocess.CompletedProcess(command, 0, "fixture passed", "")
+
+    result = validate_code_change(
+        root=root,
+        state_directory=tmp_path / "state",
+        runner=runner,
+    )
+
+    assert result.status == "passed"
+    assert result.selection.strategy == "none"
+    assert tuple(item.gate_id for item in result.gates) == (
+        "static_no_regression",
+        "architecture_contracts",
+        "affected_coverage",
+        "trusted_deep_publication",
+        "source_snapshot_unchanged",
+    )
+    assert result.gates[2].status == "not_required"
+    assert result.gates[3].status == "not_required"
+    assert not any("--analysis-profile" in command for command in observed_commands)
+
+
+def test_unknown_change_with_empty_selection_abstains_without_running_full_suite(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _repository(tmp_path)
+    from _04_Nucleo_Operativo import code_change_validation
+
+    change = GitChangeSnapshot(
+        "a" * 40,
+        "a" * 40,
+        ("tools/maintenance.sh",),
+        (),
+        (),
+        (),
+        "b" * 64,
+    )
+    monkeypatch.setattr(
+        code_change_validation,
+        "capture_git_change",
+        lambda *_args, **_kwargs: change,
+    )
+    monkeypatch.setattr(code_change_validation, "_capture_unchanged", lambda *_args: True)
+    observed_commands: list[tuple[str, ...]] = []
+
+    def runner(arguments, *, cwd, timeout, environment=None):
+        command = tuple(str(item) for item in arguments)
+        observed_commands.append(command)
+        return subprocess.CompletedProcess(command, 0, "fixture passed", "")
+
+    result = validate_code_change(
+        root=root,
+        state_directory=tmp_path / "state",
+        runner=runner,
+    )
+
+    assert result.status == "abstained"
+    assert result.reason == "abstained_gate:affected_coverage"
+    assert result.gates[2].reason == "no_affected_test_evidence"
+    assert result.gates[3].reason == "empty_selection_must_not_expand_to_full_suite"
+    assert not any("--analysis-profile" in command for command in observed_commands)
+
+
 def test_partial_affected_evidence_is_not_silently_green(tmp_path: Path) -> None:
     root = _repository(tmp_path)
     (root / "neocortex" / "uncovered.py").write_text("VALUE = 1\n", encoding="utf-8")
