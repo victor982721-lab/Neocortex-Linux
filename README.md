@@ -773,13 +773,13 @@ Antes de ejecutar herramientas, el comando toma un lock exclusivo, observa
 `MemAvailable`, swap y PSI, y reserva dinámicamente memoria para KDE/Chrome.
 Toda la validación y sus descendientes se reejecutan en un único cgroup de
 usuario con `MemoryHigh`, `MemoryMax`, `MemorySwapMax`, cuota de CPU y límite
-global de 45 minutos. Un watchdog detiene el grupo y devuelve abstención si se
-pierde la reserva del escritorio; nunca continúa a costa de provocar OOM en el
-entorno interactivo. El recibo enlaza la admisión
-`neocortex.code-validation-resources/v2`; el worker la autentica contra su
-membresía exacta en `/proc/self/cgroup` y consulta en systemd el
-`PrivateNetwork=yes` efectivo del unit, en vez de confiar únicamente en
-variables de entorno. La salida
+global de 45 minutos. Un watchdog detiene cooperativamente el grupo con SIGINT
+si se pierde la reserva del escritorio; el reclaim aislado por `MemoryHigh` no
+se confunde con riesgo para KDE/Chrome mientras exista headroom físico. El
+recibo enlaza la admisión `neocortex.code-validation-resources/v3`; el worker
+la autentica contra su membresía exacta en `/proc/self/cgroup`, consulta en
+systemd el `PrivateNetwork=yes` del unit y prueba ante el kernel que AF_INET y
+AF_INET6 están realmente denegados. La salida
 humana muestra el pico de memoria observado por systemd. El mismo servicio
 declara `PrivateNetwork=yes`, por lo que el worker y todos sus providers carecen
 de ruta hacia la red externa.
@@ -795,7 +795,7 @@ perfil `trusted-deep`, consume `neocortex.code-review/v18`, ejecuta una vez cada
 plantilla de experimento allow-listed relevante, construye e instala el wheel
 candidato en un entorno efímero fuera del checkout, y repite la publicación
 idéntica para exigir replay de los proveedores. Devuelve un único recibo
-`neocortex.code-change-validation/v2` con salida `0` sólo si no hubo fallo ni
+`neocortex.code-change-validation/v3` con salida `0` sólo si no hubo fallo ni
 abstención y si fuente/estado canónico permanecieron intactos. No autoriza
 patches, push, release ni mutación del corpus.
 

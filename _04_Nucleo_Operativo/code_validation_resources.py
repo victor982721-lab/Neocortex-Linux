@@ -13,10 +13,12 @@ the local experiment bounded, observable and fail-closed.
 from __future__ import annotations
 
 import base64
+import errno
 import fcntl
 import json
 import os
 import re
+import socket
 import subprocess
 import sys
 import threading
@@ -31,7 +33,7 @@ from .global_resources import GlobalResourceCoordinator, GlobalResourceLimits
 from .memory_runtime import MemoryBudgetExceeded, MemoryHeadroomTimeout
 
 
-CODE_VALIDATION_RESOURCE_SCHEMA = "neocortex.code-validation-resources/v2"
+CODE_VALIDATION_RESOURCE_SCHEMA = "neocortex.code-validation-resources/v3"
 CODE_VALIDATION_RESOURCE_POLICY = "linux-desktop-preserving-cgroup-v2"
 _BOUNDARY_ENV = "NEOCORTEX_CODE_VALIDATION_RESOURCE_BOUNDARY"
 _ADMISSION_ENV = "NEOCORTEX_CODE_VALIDATION_RESOURCE_ADMISSION"
@@ -151,9 +153,10 @@ class CodeValidationResourceAdmission:
     required_available_memory_bytes: int
     cgroup_unit: str
     containment: Literal["systemd-user-service-cgroup-v2"]
-    network_policy: Literal["private-network-namespace-no-external-egress"]
+    network_policy: Literal["systemd-private-network-plus-kernel-denied-inet"]
     membership_contract: Literal["proc-self-cgroup-v2-exact-systemd-unit"]
     private_network_contract: Literal["systemd-unit-private-network-yes"]
+    socket_family_contract: Literal["kernel-denies-af-inet-and-af-inet6"]
 
     def __post_init__(self) -> None:
         if self.schema != CODE_VALIDATION_RESOURCE_SCHEMA:
@@ -167,12 +170,14 @@ class CodeValidationResourceAdmission:
             raise ValueError("code-validation cgroup unit is invalid")
         if self.containment != "systemd-user-service-cgroup-v2":
             raise ValueError("code-validation containment kind is invalid")
-        if self.network_policy != "private-network-namespace-no-external-egress":
+        if self.network_policy != "systemd-private-network-plus-kernel-denied-inet":
             raise ValueError("code-validation network policy is invalid")
         if self.membership_contract != "proc-self-cgroup-v2-exact-systemd-unit":
             raise ValueError("code-validation membership contract is invalid")
         if self.private_network_contract != "systemd-unit-private-network-yes":
             raise ValueError("code-validation private-network contract is invalid")
+        if self.socket_family_contract != "kernel-denies-af-inet-and-af-inet6":
+            raise ValueError("code-validation socket-family contract is invalid")
 
     def as_payload(self) -> dict[str, object]:
         return {
@@ -185,6 +190,7 @@ class CodeValidationResourceAdmission:
             "network_policy": self.network_policy,
             "membership_contract": self.membership_contract,
             "private_network_contract": self.private_network_contract,
+            "socket_family_contract": self.socket_family_contract,
         }
 
 
@@ -420,7 +426,7 @@ def parse_code_validation_resource_admission(
             _payload_text(payload, "containment"),
         ),
         cast(
-            Literal["private-network-namespace-no-external-egress"],
+            Literal["systemd-private-network-plus-kernel-denied-inet"],
             _payload_text(payload, "network_policy"),
         ),
         cast(
@@ -430,6 +436,10 @@ def parse_code_validation_resource_admission(
         cast(
             Literal["systemd-unit-private-network-yes"],
             _payload_text(payload, "private_network_contract"),
+        ),
+        cast(
+            Literal["kernel-denies-af-inet-and-af-inet6"],
+            _payload_text(payload, "socket_family_contract"),
         ),
     )
 
@@ -517,6 +527,24 @@ def _verify_private_network_boundary(admission: CodeValidationResourceAdmission)
         raise CodeValidationResourceError("code_validation_private_network_not_active")
 
 
+def _verify_inet_socket_boundary() -> None:
+    """Prove the kernel denies both IP socket families inside the worker."""
+
+    for family in (socket.AF_INET, socket.AF_INET6):
+        try:
+            candidate = socket.socket(family, socket.SOCK_STREAM)
+        except OSError as exc:
+            if exc.errno in {errno.EPERM, errno.EAFNOSUPPORT, errno.EPROTONOSUPPORT}:
+                continue
+            raise CodeValidationResourceError(
+                f"code_validation_inet_socket_probe_failed:{family}:{exc.errno}"
+            ) from exc
+        candidate.close()
+        raise CodeValidationResourceError(
+            f"code_validation_inet_socket_boundary_not_active:{family}"
+        )
+
+
 def current_code_validation_resource_admission() -> CodeValidationResourceAdmission | None:
     """Return one environment-and-kernel verified worker boundary."""
 
@@ -538,6 +566,7 @@ def current_code_validation_resource_admission() -> CodeValidationResourceAdmiss
         raise CodeValidationResourceError("code_validation_admission_receipt_invalid") from exc
     _verified_cgroup_path(admission)
     _verify_private_network_boundary(admission)
+    _verify_inet_socket_boundary()
     return admission
 
 
@@ -587,10 +616,24 @@ def _systemd_command(
         "--property=Nice=10",
         "--property=OOMPolicy=stop",
         "--property=KillMode=control-group",
+        # A plain systemd stop uses SIGTERM, which cannot be caught by Python's
+        # normal exception boundary and can therefore leave owner-local runs in
+        # ``running``.  SIGINT becomes ``KeyboardInterrupt`` in every Python
+        # process in the group, allowing Code/Framework to publish their
+        # terminal cancellation before systemd escalates after TimeoutStopSec.
+        "--property=KillSignal=SIGINT",
+        "--property=FinalKillSignal=SIGKILL",
+        "--property=SendSIGKILL=yes",
         "--property=Restart=no",
-        # All descendants receive a private namespace without an external
-        # route, so provider metadata cannot leave the machine.
+        # Request a private namespace as defense in depth.  The actual no-IP
+        # guarantee is established independently below, because user systemd
+        # may retain this property even when namespace creation is unavailable.
         "--property=PrivateNetwork=yes",
+        # Some user managers can retain the declarative PrivateNetwork=yes
+        # property even when creating the namespace is unavailable.  This
+        # independent seccomp-backed family restriction is verified from the
+        # child by attempting AF_INET and AF_INET6 socket creation.
+        "--property=RestrictAddressFamilies=AF_UNIX",
         "--property=TimeoutStopSec=10s",
         f"--property=RuntimeMaxSec={policy.overall_runtime_seconds}s",
         *_environment_arguments(admission),
@@ -651,11 +694,24 @@ def _watch_resources(
             snapshot.pressure_full_avg10,
         )
         reason = None
+        # Host PSI also includes reclaim deliberately caused by this cgroup's
+        # own MemoryHigh.  With abundant physical headroom that throttling is
+        # containment working as designed, not evidence that KDE/Chrome is in
+        # danger.  Pressure therefore becomes an abort signal only once the
+        # host has less than the desktop reserve plus the validation high-water
+        # budget.  Crossing the desktop reserve itself always aborts.
+        pressure_headroom = policy.desktop_reserve_bytes + policy.memory_high_bytes
         if snapshot.available_memory_bytes < policy.desktop_reserve_bytes:
             reason = "desktop_memory_reserve_breached"
-        elif snapshot.pressure_full_avg10 > policy.abort_full_avg10_max:
+        elif (
+            snapshot.available_memory_bytes < pressure_headroom
+            and snapshot.pressure_full_avg10 > policy.abort_full_avg10_max
+        ):
             reason = "memory_pressure_full_abort_threshold"
-        elif snapshot.pressure_some_avg10 > policy.abort_some_avg10_max:
+        elif (
+            snapshot.available_memory_bytes < pressure_headroom
+            and snapshot.pressure_some_avg10 > policy.abort_some_avg10_max
+        ):
             reason = "memory_pressure_some_abort_threshold"
         if reason is not None:
             state.abort_reason = reason
@@ -704,9 +760,10 @@ def run_code_validation_in_resource_boundary(
         policy.desktop_reserve_bytes + policy.memory_max_bytes,
         unit,
         "systemd-user-service-cgroup-v2",
-        "private-network-namespace-no-external-egress",
+        "systemd-private-network-plus-kernel-denied-inet",
         "proc-self-cgroup-v2-exact-systemd-unit",
         "systemd-unit-private-network-yes",
+        "kernel-denies-af-inet-and-af-inet6",
     )
     coordinator = GlobalResourceCoordinator(
         ("code-validation",),

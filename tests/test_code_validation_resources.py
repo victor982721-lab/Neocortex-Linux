@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import base64
+import errno
 import json
+import socket
 import subprocess
 from contextlib import contextmanager
 from pathlib import Path
@@ -37,9 +39,10 @@ def _admission() -> resources.CodeValidationResourceAdmission:
         policy.desktop_reserve_bytes + policy.memory_max_bytes,
         "neocortex-code-validate-123-abcdef123456",
         "systemd-user-service-cgroup-v2",
-        "private-network-namespace-no-external-egress",
+        "systemd-private-network-plus-kernel-denied-inet",
         "proc-self-cgroup-v2-exact-systemd-unit",
         "systemd-unit-private-network-yes",
+        "kernel-denies-af-inet-and-af-inet6",
     )
 
 
@@ -63,6 +66,7 @@ def _bind_kernel_boundary(
             )
 
     monkeypatch.setattr(resources, "_verify_private_network_boundary", verify_network)
+    monkeypatch.setattr(resources, "_verify_inet_socket_boundary", lambda: None)
 
 
 def test_linux_snapshot_parses_meminfo_and_pressure(tmp_path: Path) -> None:
@@ -232,6 +236,38 @@ def test_private_network_verification_queries_the_exact_live_unit(
         resources._verify_private_network_boundary(admission)  # type: ignore[attr-defined]
 
 
+def test_inet_socket_boundary_requires_kernel_denial_for_both_families(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: list[int] = []
+
+    def denied(family: int, _kind: int):
+        observed.append(family)
+        raise OSError(errno.EAFNOSUPPORT, "denied")
+
+    monkeypatch.setattr(resources.socket, "socket", denied)
+
+    resources._verify_inet_socket_boundary()  # type: ignore[attr-defined]
+
+    assert observed == [socket.AF_INET, socket.AF_INET6]
+
+
+def test_inet_socket_boundary_rejects_a_structurally_valid_but_open_socket(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class OpenSocket:
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(resources.socket, "socket", lambda _family, _kind: OpenSocket())
+
+    with pytest.raises(
+        resources.CodeValidationResourceError,
+        match="code_validation_inet_socket_boundary_not_active",
+    ):
+        resources._verify_inet_socket_boundary()  # type: ignore[attr-defined]
+
+
 def test_systemd_command_contains_hard_tree_limits_without_secret_environment(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -249,13 +285,90 @@ def test_systemd_command_contains_hard_tree_limits_without_secret_environment(
     assert "--property=MemoryMax=4294967296" in command
     assert "--property=MemorySwapMax=536870912" in command
     assert "--property=KillMode=control-group" in command
+    assert "--property=KillSignal=SIGINT" in command
+    assert "--property=FinalKillSignal=SIGKILL" in command
+    assert "--property=SendSIGKILL=yes" in command
     assert "--property=OOMPolicy=stop" in command
     assert "--property=PrivateNetwork=yes" in command
+    assert "--property=RestrictAddressFamilies=AF_UNIX" in command
     assert "--property=RuntimeMaxSec=2700s" in command
     assert "--quiet" in command
     assert "NEOCORTEX_CODE_VALIDATION_RESOURCE_BOUNDARY=" in joined
     assert "NEOCORTEX_PIP_AUDIT_NETWORK_POLICY=disabled-by-code-validation" in joined
     assert "must-not-cross" not in joined
+
+
+def test_watchdog_does_not_mistake_contained_reclaim_for_desktop_pressure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    admission = _admission()
+    snapshots = iter((_snapshot(available=10 * GIB, full=6.0),))
+    monkeypatch.setattr(
+        resources,
+        "read_linux_resource_snapshot",
+        lambda **_kwargs: next(snapshots),
+    )
+    stopped_units: list[str] = []
+    monkeypatch.setattr(resources, "_stop_unit", stopped_units.append)
+
+    class StopAfterOneSample:
+        calls = 0
+
+        def wait(self, _timeout: float) -> bool:
+            self.calls += 1
+            return self.calls > 1
+
+    state = resources._WatchdogState(  # type: ignore[attr-defined]
+        admission.before.available_memory_bytes,
+        admission.before.free_swap_bytes,
+        0.0,
+        0.0,
+    )
+
+    resources._watch_resources(  # type: ignore[attr-defined]
+        admission,
+        StopAfterOneSample(),  # type: ignore[arg-type]
+        state,
+    )
+
+    assert state.max_pressure_full_avg10 == 6.0
+    assert state.abort_reason is None
+    assert stopped_units == []
+
+
+def test_watchdog_aborts_pressure_when_desktop_headroom_is_threatened(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    admission = _admission()
+    pressure_headroom = admission.policy.desktop_reserve_bytes + admission.policy.memory_high_bytes
+    snapshot = _snapshot(available=pressure_headroom - 1, full=6.0)
+    monkeypatch.setattr(
+        resources,
+        "read_linux_resource_snapshot",
+        lambda **_kwargs: snapshot,
+    )
+    stopped_units: list[str] = []
+    monkeypatch.setattr(resources, "_stop_unit", stopped_units.append)
+
+    class OneSample:
+        def wait(self, _timeout: float) -> bool:
+            return False
+
+    state = resources._WatchdogState(  # type: ignore[attr-defined]
+        admission.before.available_memory_bytes,
+        admission.before.free_swap_bytes,
+        0.0,
+        0.0,
+    )
+
+    resources._watch_resources(  # type: ignore[attr-defined]
+        admission,
+        OneSample(),  # type: ignore[arg-type]
+        state,
+    )
+
+    assert state.abort_reason == "memory_pressure_full_abort_threshold"
+    assert stopped_units == [admission.cgroup_unit]
 
 
 def test_boundary_does_not_launch_when_live_headroom_is_insufficient(

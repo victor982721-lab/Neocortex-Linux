@@ -853,14 +853,19 @@ lock exclusivo. El árbol completo se ejecuta en un servicio de usuario
 systemd/cgroup v2 con reserva adaptativa para KDE/Chrome, `MemoryHigh=75%` del
 presupuesto, `MemoryMax` adaptado (máximo 4 GiB), `MemorySwapMax` (máximo
 512 MiB), hasta cuatro CPUs, 512 tareas y 45 minutos. El watchdog observa el
-host cada 500 ms y detiene el grupo si desaparece la reserva del escritorio o
-la presión entra en el umbral de aborto. Un fallo de D-Bus, cgroup, preflight o
+host cada 500 ms y detiene cooperativamente el grupo con SIGINT si desaparece
+la reserva del escritorio o si la presión cruza el umbral mientras también
+falta el headroom físico reservado. El reclaim aislado por `MemoryHigh` con
+memoria abundante no se interpreta como riesgo global. Un fallo de D-Bus, cgroup, preflight o
 watchdog es abstención operativa; nunca habilita un fallback sin contención.
 El servicio declara además `PrivateNetwork=yes`: el árbol no tiene ruta al host
 ni a Internet durante la validación. La admisión
-`neocortex.code-validation-resources/v2` no confía sólo en el entorno: dentro
+`neocortex.code-validation-resources/v3` no confía sólo en el entorno: dentro
 del worker, NeoCortex compara el unit declarado con `/proc/self/cgroup` y
-consulta en systemd su `PrivateNetwork=yes` efectivo.
+consulta en systemd su `PrivateNetwork=yes`. Como esa propiedad puede
+conservarse aunque el namespace no llegue a crearse, el unit restringe además
+las familias a `AF_UNIX` y el worker demuestra que el kernel rechaza AF_INET y
+AF_INET6.
 
 La selección experimental también está ligada al diff mediante un registro
 versionado de rutas/tests→preguntas/sujetos. Un registry gap relevante o una

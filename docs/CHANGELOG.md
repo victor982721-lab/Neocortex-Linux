@@ -18,15 +18,16 @@ no se copian aquí para evitar que se conviertan en datos históricos sin contex
   full/replay: esas coordenadas no invalidan un receipt si proveedor, schema y
   proyección de contratos son exactamente iguales; cualquier delta contractual
   sí genera una identidad nueva.
-- Validación canónica `neocortex.code-change-validation/v2` ligada al diff:
+- Validación canónica `neocortex.code-change-validation/v3` ligada al diff:
   rutas y tests afectados se proyectan a
   preguntas/sujetos de aceptación versionados. Una pregunta relevante sin
   runner o sin disposición técnica exacta después del replay ahora abstiene;
   `not_required` exige evidencia de que el cambio es disjunto. La admisión
-  `neocortex.code-validation-resources/v2` autentica contra el kernel la
-  membresía al cgroup transient y consulta en systemd el `PrivateNetwork=yes`
-  efectivo, de modo que un receipt de entorno forjado ya no puede fingir
-  contención.
+  `neocortex.code-validation-resources/v3` autentica contra el kernel la
+  membresía al cgroup transient, consulta en systemd el `PrivateNetwork=yes` y
+  prueba que la restricción `AF_UNIX` deniega realmente AF_INET/AF_INET6. El
+  watchdog diferencia reclaim aislado con headroom de presión que amenaza al
+  escritorio y detiene con SIGINT para permitir terminalización durable.
 
 - Review `neocortex.code-review/v18` con verificación técnica independiente y
   allow-listed. Sólo puede publicar

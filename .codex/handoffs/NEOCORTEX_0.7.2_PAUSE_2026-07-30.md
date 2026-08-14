@@ -276,11 +276,13 @@ existe cuando se cumplen juntos los criterios dinámicos de la última sección.
 - La entrada completa se reejecuta dentro de un único cgroup v2 de usuario. Un
   preflight adaptativo reserva memoria para KDE/Chrome, sólo permite una corrida,
   limita memoria/swap/CPU/tareas/tiempo y detiene todos los descendientes si el
-  watchdog observa pérdida de headroom o PSI crítico. Su admisión queda en el
-  recibo `neocortex.code-validation-resources/v2`; el worker comprueba su unit
-  exacto en `/proc/self/cgroup` y consulta en systemd el `PrivateNetwork=yes`
-  efectivo, por lo que un receipt de entorno no puede fingir contención. No existe fallback sin
-  contención. `PrivateNetwork=yes` elimina la ruta externa de todo el worker;
+  watchdog observa pérdida de headroom o PSI crítico con memoria física
+  amenazada. Su admisión queda en el recibo
+  `neocortex.code-validation-resources/v3`; el worker comprueba su unit exacto
+  en `/proc/self/cgroup`, consulta en systemd el `PrivateNetwork=yes` y prueba
+  que la restricción `AF_UNIX` deniega AF_INET/AF_INET6, por lo que ni un
+  receipt de entorno ni una propiedad declarativa pueden fingir contención. No
+  existe fallback sin contención. La denegación comprobada elimina el egress IP;
   `code validate` resuelve sólo evidencia supply ya publicada y fresca.
 - La promoción de cualquier corte requiere el comando verde sobre el diff,
   commit directo a `main`, repetición con `--baseline HEAD^`, release Linux del

@@ -141,10 +141,11 @@ mantiene un lock continuo del checkout ni cerca el
 corpus u otros owners. Tras medir, la CLI escribe deliberadamente el receipt
 terminal en la tabla inmutable append-only de Code schema v6;
 `code_database_unchanged=true` no significa que todo el comando sea read-only.
-La frontera canónica publica `neocortex.code-validation-resources/v2`: el
-worker exige que `/proc/self/cgroup` termine en el transient unit exacto y
-consulta en systemd su `PrivateNetwork=yes` efectivo. Un receipt de entorno
-forjado no puede declarar una contención inexistente. La ausencia de runner tampoco
+La frontera canónica publica `neocortex.code-validation-resources/v3`: el
+worker exige que `/proc/self/cgroup` termine en el transient unit exacto,
+consulta en systemd su `PrivateNetwork=yes` y prueba ante el kernel que la
+restricción a `AF_UNIX` deniega AF_INET y AF_INET6. Una propiedad systemd o un
+receipt de entorno sin esa prueba no pueden declarar ausencia de egress. La ausencia de runner tampoco
 degrada una pregunta afectada a `not_required`; el binding diff→pregunta debe
 demostrar irrelevancia o el gate se abstiene.
 El review v18 verifica además el envelope digest y sólo enlaza el terminal

@@ -379,6 +379,22 @@ def test_pyright_policy_uses_the_live_interpreter_packages_not_missing_import_de
     assert payload["typeCheckingMode"] == "basic"
 
 
+def test_pyright_command_enforces_the_bounded_node_heap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executable = tmp_path / "pyright"
+    executable.write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setenv("NEOCORTEX_PYRIGHT", str(executable))
+    monkeypatch.setenv("NODE_OPTIONS", "--max-old-space-size=999999")
+    monkeypatch.setattr(quality_gate.shutil, "which", lambda _name: None)
+
+    selected, environment = quality_gate._pyright_command()
+
+    assert selected == executable.resolve()
+    assert environment["NODE_OPTIONS"] == "--max-old-space-size=1792"
+
+
 def test_coverage_baseline_is_branch_aware_versioned_and_uses_production_scope() -> None:
     report = _coverage_report()
     baseline = coverage_baseline_payload(

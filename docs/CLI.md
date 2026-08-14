@@ -666,13 +666,14 @@ produce código 2, nunca una corrida sin límites. Sólo puede existir una
 validación canónica a la vez. `PrivateNetwork=yes` aísla por kernel el árbol
 completo, por lo que ningún provider puede producir egress durante este gate.
 
-El resultado `neocortex.code-change-validation/v2` enlaza el snapshot Git, la
+El resultado `neocortex.code-change-validation/v3` enlaza el snapshot Git, la
 selección de pruebas, cada gate, los experimentos allow-listed ejecutados, el
 smoke del wheel candidato instalado fuera del checkout y el replay exacto del
 perfil `trusted-deep`, además de la admisión
-`neocortex.code-validation-resources/v2`. El worker verifica en el kernel su
-cgroup exacto y consulta en systemd el `PrivateNetwork=yes` efectivo; un
-payload de entorno no basta.
+`neocortex.code-validation-resources/v3`. El worker verifica en el kernel su
+cgroup exacto, consulta en systemd el `PrivateNetwork=yes` y demuestra que la
+restricción `AF_UNIX` rechaza sockets AF_INET/AF_INET6; un payload de entorno no
+basta.
 El gate enlaza además el diff con preguntas de aceptación versionadas: una
 pregunta relevante sin runner o disposición técnica produce `abstained`, y
 `not_required` exige evidencia explícita de que el diff no la afecta. `passed`

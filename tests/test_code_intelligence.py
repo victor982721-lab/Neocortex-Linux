@@ -966,6 +966,36 @@ def test_cancelled_fast_path_does_not_advance_graph_fence(
     assert statuses == [("completed",), ("cancelled",), ("completed",)]
 
 
+def test_systemd_sigint_terminalizes_the_current_code_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "interrupted.py"
+    source.write_text("def interrupted():\n    return True\n", encoding="utf-8")
+    config = _config(tmp_path)
+    inventory = _Inventory((source,))
+
+    def interrupt_graph(
+        _state: CodeState,
+        _framework_run_id: int,
+        *,
+        cancellation_check=None,
+    ) -> int:
+        del cancellation_check
+        raise KeyboardInterrupt("systemd SIGINT")
+
+    monkeypatch.setattr(CodeState, "finalize_graph", interrupt_graph)
+
+    with pytest.raises(KeyboardInterrupt, match="systemd SIGINT"):
+        CodeRoute(config, inventory, _FrameworkState(), 1, 1).run()
+
+    with sqlite3.connect(config.state_path) as connection:
+        observed = connection.execute(
+            "SELECT status,error_type,error_message FROM analysis_runs"
+        ).fetchone()
+    assert observed == ("cancelled", "KeyboardInterrupt", "systemd SIGINT")
+
+
 def test_cancelled_sqlite_graph_preserves_fence_and_rebuilds_later(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

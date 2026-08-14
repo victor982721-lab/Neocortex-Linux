@@ -832,13 +832,15 @@ se abstiene o falla: nunca traduce ausencia de evidencia en verde. Use
 La observación empieza antes del primer provider: el padre captura memoria,
 swap y PSI, reserva headroom para el escritorio y crea un único cgroup de
 usuario para todo el proceso y sus descendientes. La evaluación conserva el
-recibo de admisión `neocortex.code-validation-resources/v2`; el worker verifica
+recibo de admisión `neocortex.code-validation-resources/v3`; el worker verifica
 su transient unit exacto en `/proc/self/cgroup` y consulta en systemd el
-`PrivateNetwork=yes` efectivo. systemd mide el pico real y un watchdog cancela el grupo ante
-pérdida de reserva. Esta frontera
+`PrivateNetwork=yes`. El unit restringe además las familias a `AF_UNIX` y el
+worker comprueba que crear sockets AF_INET/AF_INET6 falla realmente. systemd
+mide el pico real y un watchdog cancela cooperativamente el grupo ante pérdida
+de reserva o presión con headroom insuficiente. Esta frontera
 evita que Pyright, Coverage u otro hijo satisfaga sus métricas a costa de OOM
-global. `PrivateNetwork=yes` impide además cualquier egress de providers en
-esta ruta canónica.
+global. La denegación comprobada de AF_INET/AF_INET6 impide además cualquier
+egress IP de providers en esta ruta canónica.
 
 El gate no equipara «sin runner» con «no requerido». Un binding versionado
 relaciona rutas/tests modificados con preguntas y sujetos de aceptación. Si una

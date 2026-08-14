@@ -251,14 +251,17 @@ regresión es el baseline versionado por path/regla/conteo ejecutado antes del
 review; no conviertas esos deltas globales en un veto paralelo.
 
 La validación canónica debe reejecutar todo su árbol dentro del cgroup de usuario
-Linux declarado por `neocortex.code-validation-resources/v2`. El worker debe
+Linux declarado por `neocortex.code-validation-resources/v3`. El worker debe
 probar contra `/proc/self/cgroup` que pertenece al transient unit exacto y
-consultar en systemd que ese unit mantiene `PrivateNetwork=yes`; un receipt de
-entorno por sí solo nunca demuestra contención. Antes de iniciar,
+consultar en systemd que ese unit mantiene `PrivateNetwork=yes`; además debe
+probar ante el kernel que AF_INET y AF_INET6 están denegados por la restricción
+de familias del unit. Un receipt de entorno ni una propiedad declarativa por sí
+solos demuestran contención. Antes de iniciar,
 reserva memoria física para KDE/Chrome mediante el coordinador global y rechaza
 la corrida si no hay headroom o PSI seguro. Durante la ejecución conserva
 `MemoryMax`, `MemorySwapMax`, cuota de CPU, límite total de tiempo y watchdog;
-si se pierde la reserva del escritorio, detén el grupo completo y abstente. No
+si se pierde la reserva del escritorio, detén cooperativamente el grupo con
+SIGINT y abstente; systemd conserva SIGKILL como último recurso acotado. No
 puede degradarse a subprocesses sin contención ni lanzar dos validaciones en
 paralelo. El mismo servicio debe usar una red privada sin ruta externa; la
 validación canónica nunca inicia egress.
