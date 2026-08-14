@@ -672,8 +672,8 @@ descriptor, firma de entorno/configuración/comparabilidad, inputs, findings y
 counters normalizados. La suite y el fence de Code se confirman atómicamente;
 los proveedores no participan en el processing signature AST.
 
-Code schema v5 conserva las dos proyecciones portables introducidas en v4 y
-unifica la identidad de rutas a `BINARY` en Linux y `NOCASE` en Windows.
+Code schema v6 conserva las dos proyecciones portables introducidas en v4 y la
+identidad de rutas introducida en v5 (`BINARY` en Linux y `NOCASE` en Windows).
 `external_metrics` vincula un nombre/valor/unidad con un sujeto
 tipado (`file`, `symbol`, `module`, `project`, `run`, `contract` o `scc`);
 `external_relations` vincula dos sujetos tipados con dirección, confianza y
@@ -681,6 +681,17 @@ metadata determinista. Sus IDs y digests no dependen de IDs SQLite locales. El
 replay enlaza esas filas desde el run fuente; status, review, diff y work
 packages son sus consumidores, de modo que la plataforma no acumula métricas o
 relaciones sin una decisión pública.
+
+V6 añade `code_experiment_receipts` como evidencia machine-produced append-only,
+no como una segunda base de hechos. Cada fila queda ligada al run Code
+completado, processing signature, evaluación/pregunta/sujeto, proposal/template,
+digest del review y payload `neocortex.code-experiment-receipt/v3`; los triggers
+rechazan update y delete. El writer admite estados `passed`, `failed` y
+`abstained`, pero el review `neocortex.code-review/v17` sólo proyecta el `passed`
+más nuevo que siga coincidiendo con el proposal actual y con bindings tipados de
+gate a requisito. El enlace produce evidencia de tests exactos, no verdad formal
+ni decisión humana; como máximo cambia readiness a `human_review_required` y
+conserva `mutation_authority=false`.
 
 La capa arquitectónica divide fuente, política y consumo:
 

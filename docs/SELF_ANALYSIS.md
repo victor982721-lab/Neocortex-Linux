@@ -408,7 +408,7 @@ explícitamente como **convención de ruta**, no como ownership ni reachability 
 runtime. `hotspot_id` identifica establemente la evidencia física y el símbolo;
 `finding_id` identifica la interpretación versionada.
 
-El envelope vigente es `neocortex.code-review/v16` y no declara compatibilidad
+El envelope vigente es `neocortex.code-review/v17` y no declara compatibilidad
 con schemas anteriores: conserva el corte de autoridad y usa el contrato general
 `neocortex.code-analysis-epistemics/v1`. Cada finding separa
 observación, hipótesis, readiness
@@ -447,7 +447,7 @@ nunca valores. Para CLI selecciona archivos por calls
 construcción dinámica. No ejecuta builders ni afirma que esos parsers lleguen
 al comando público.
 
-La arquitectura publicada deja de ser sólo una sección paralela: v16 deriva
+La arquitectura publicada deja de ser sólo una sección paralela: v17 deriva
 preguntas generales para el grafo estático comparable y para las evaluaciones de
 los contratos de imports. Sus evidence refs conservan snapshot, digest, gates,
 conteos, discrepancias y violaciones; incluso un contrato fallido permanece
@@ -485,7 +485,7 @@ publica atómicamente 260 miembros. Esto demuestra supervivencia y reanudación
 para ese crash point de proceso sobre SQLite; no simula power loss, corrupción
 de almacenamiento, todas las fronteras ni recuperación cross-owner.
 
-v16 integra además `code-state-topology`, `code-state-interactions`,
+v17 integra además `code-state-topology`, `code-state-interactions`,
 `code-change-evolution`, `code-assurance`, `code-invariant-assurance`,
 `code-capability-reachability`, `code-route-capabilities`,
 `code-analyzer-calibration` y `code-analyzer-effectiveness`. Topología verifica
@@ -512,23 +512,66 @@ evidencia faltante, nunca como ausencia de problema. Precision, recall y
 finding→decision permanecen sin calcular hasta enlazar outcomes humanos o
 defectos escapados independientes.
 
-El planner `neocortex.code-experiment-plan/v1` cubre toda evaluación
+El planner `neocortex.code-experiment-plan/v2` cubre toda evaluación
 `experiment_required`, elige por coste/atención/timeout y conserva alternativas.
-Templates sin runner siguen como planes de caracterización; el runner v1 sólo
-admite los cuatro escenarios source-versioned. `--code-experiment-run` exige un
-proposal ID del plan vigente, ejecuta pytest/coverage en temporal aislado con
-timeout y emite un receipt con identidad del provider, manifest, outcomes de
-todos los nodeids expandidos y
-digests Code before/after. El receipt confirma únicamente esos escenarios y no
-otorga autoridad sobre fuente o estado de producto.
+La identidad portable de cada propuesta incluye una proyección de contratos,
+facts, completitud y requirements, pero excluye IDs locales de captura. Por
+ello un replay exacto conserva receipts y un cambio real de evidencia los
+invalida aunque el subject lógico conserve su nombre.
+Templates sin runner siguen como planes de caracterización. La CLI sólo ejecuta
+dos templates source-versioned con gates medidos: la ruta pública Text, con un
+nodeid, y el workflow SQL/transaccional Text, con cuatro. Los cuatro escenarios
+de invariantes y sus diez nodeids pertenecen al assurance registry, pero no son
+automáticamente propuestas ejecutables.
 
-`recommendations` permanece vacío y `recommendation_status=abstained` porque
-v16 todavía no tiene un resolver independiente que enlace evidencia de
-comportamiento/contrato, contraevidencia y resultado experimental. Nombres como
-`repository`, `commit`, `build`, `read` o `run`, mover el archivo o añadir un
-wrapper no pueden producir una recomendación. Los constructors y factories
-públicos fallan cerrado ante `act_now`, una decisión autodeclarada o un package
-de cambio.
+`--code-experiment-run` exige un proposal ID del plan vigente y ejecuta
+pytest/coverage con timeout sobre el checkout canónico confiable. El temporal
+externo aloja runtime/checkpoints; no copia la fuente ni crea un sandbox de
+seguridad. Trusted-deep conserva el `HOME` canónico y declara
+`uses_network=true`. El receipt `neocortex.code-experiment-receipt/v3` conserva
+identidad del provider, manifest, outcomes y gates de los nodeids seleccionados,
+además del digest Code before/after. El provider recalcula antes y después la
+firma de los inputs Python publicados y del soporte Git observado; una
+diferencia rechaza el resultado. El digest cerca `code.sqlite3` durante la fase
+ejecutora. Ninguna de las dos barreras es un lock continuo ni prueba
+inmutabilidad del corpus u otros stores.
+
+Code schema v6 agrega el resultado terminal a
+`code_experiment_receipts`, tabla append-only protegida contra update/delete. La
+salida JSON del comando es `neocortex.code-experiment-store/v1` y contiene el
+receipt medido. La escritura ocurre **después** del digest after: por tanto
+`code_database_unchanged=true` no describe la invocación completa como read-only.
+Se almacenan `passed`, `failed` y `abstained`, ligados al run, processing
+signature, evaluación, pregunta, sujeto, proposal, template y digest del review;
+un envelope digest recalculable cubre también timestamp y digests/tamaño del
+payload.
+El payload canónico está limitado a 1 MiB, el store admite hasta 32 receipts por
+proposal y el review resuelve como máximo 256 proposals ejecutables. Repetir el
+mismo `receipt_id` y contexto es idempotente; una colisión o un bound excedido
+falla cerrado.
+
+v17 incorpora un linker fail-closed y de alcance explícito. Para cada proposal
+y processing signature vigentes, el review evalúa el terminal más nuevo y sólo
+proyecta `passed`; un `failed` o `abstained` posterior invalida un pass anterior.
+El receipt puede venir de un owner Code completado previo si la publicación
+actual es un replay exacto con la misma firma. Sólo reemplaza requisitos que
+tengan un binding tipado a gates efectivamente aprobados. Hoy esos bindings
+cubren
+`capability.route_reaches_user_visible_outcome` con
+`capability.public_route_acceptance` y
+`state.declared_workflow_sql_matches_implementation` con
+`state.runtime_sql_trace`. Un receipt fallido, abstenido, stale, corrupto o sin
+binding no puede avanzar readiness; una contradicción del store
+abstiene el review.
+
+Cuando todos los requisitos de decisión de una de esas preguntas quedan
+satisfechos, la evaluación avanza como máximo a `human_review_required`. El gate
+demuestra el contrato de tests exactos, no una verdad formal. `recommendations`
+permanece vacío, `recommendation_status=abstained`, no nace una decisión ni un
+package semántico y `mutation_authority=false`. Nombres como `repository`,
+`commit`, `build`, `read` o `run`, mover el archivo o añadir un wrapper tampoco
+pueden producir una recomendación. Los constructors y factories públicos fallan
+cerrado ante `act_now`, una decisión autodeclarada o un package de cambio.
 
 `python-maintenance-work-packages-v5` publica únicamente paquetes
 `unused_characterization`, y sólo cuando los dos gates de precisión del

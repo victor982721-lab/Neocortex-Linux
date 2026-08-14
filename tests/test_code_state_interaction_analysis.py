@@ -10,6 +10,7 @@ import pytest
 
 from _04_Nucleo_Operativo import code_state_interaction_analysis as state_interactions
 from _04_Nucleo_Operativo.code_schema import initialize_code_state
+from _04_Nucleo_Operativo.code_experiment_planner import plan_code_experiments
 from _04_Nucleo_Operativo.code_state_interaction_analysis import (
     CODE_STATE_INTERACTION_EXAMPLE_LIMIT,
     analyze_code_state_interactions,
@@ -224,11 +225,52 @@ def test_question_projection_remains_experiment_required_and_never_recommends_ch
         "state.static_sql_interactions_are_resolved",
         "state.declared_workflow_sql_matches_implementation",
     )
+    assert tuple(item.subject.subject_key for item in evaluations) == (
+        "state-interactions:project",
+        "workflow:text.derivation-publication:state-interaction-projection",
+    )
     assert all(item.inference_status == "abstained" for item in evaluations)
     assert all(item.decision is None for item in evaluations)
     assert all(item.decision_readiness == "experiment_required" for item in evaluations)
     assert all(item.authority == "advisory" for item in evaluations)
     assert all(item.mutation_authority is False for item in evaluations)
+
+    assert analysis.analysis_run_id is not None
+    replay_analysis = replace(
+        analysis,
+        analysis_id="code-state-interaction-v1:replayed-capture",
+        analysis_run_id=analysis.analysis_run_id + 1,
+    )
+    first_specs, first_evaluations = state_interaction_questions(
+        analysis,
+        snapshot_id="fixture-snapshot",
+        snapshot_freshness="current",
+        rank_offset=0,
+    )
+    replay_specs, replay_evaluations = state_interaction_questions(
+        replay_analysis,
+        snapshot_id="fixture-snapshot-replay",
+        snapshot_freshness="current",
+        rank_offset=0,
+    )
+    first_plan = plan_code_experiments(first_specs, first_evaluations)
+    replay_plan = plan_code_experiments(replay_specs, replay_evaluations)
+    first_workflow = next(
+        item
+        for item in first_plan.proposals
+        if item.question_id == "state.declared_workflow_sql_matches_implementation"
+    )
+    replay_workflow = next(
+        item
+        for item in replay_plan.proposals
+        if item.question_id == "state.declared_workflow_sql_matches_implementation"
+    )
+    assert first_workflow.evaluation_id != replay_workflow.evaluation_id
+    assert (
+        first_workflow.evaluation_binding_fingerprint
+        == replay_workflow.evaluation_binding_fingerprint
+    )
+    assert first_workflow.proposal_id == replay_workflow.proposal_id
 
 
 def test_wire_round_trip_rejects_forged_counts_and_decision_authority(tmp_path: Path) -> None:

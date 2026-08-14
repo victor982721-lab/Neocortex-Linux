@@ -12,7 +12,10 @@ from _02_Deduplicacion import InventoryExclusionPolicy
 from _04_Nucleo_Operativo.application_config_projections import (
     code_route_config_from_application,
 )
-from _04_Nucleo_Operativo.code_contracts import CodeRouteConfig
+from _04_Nucleo_Operativo.code_contracts import (
+    MAX_DEEP_TEST_SELECTORS,
+    CodeRouteConfig,
+)
 from _04_Nucleo_Operativo.models import FrameworkConfig
 from _04_Nucleo_Operativo.self_analysis import (
     build_self_analysis_completion_manifest,
@@ -179,6 +182,54 @@ def test_deep_manifest_preserves_a_full_linux_selector_inventory(tmp_path: Path)
     deep_analysis = cast(dict[str, object], manifest["deep_analysis"])
     assert manifest_commands["analyze"] == commands["analyze"]
     assert deep_analysis["test_selectors"] == list(selectors)
+
+
+def test_deep_selector_envelope_is_rejected_before_analysis_work(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    state = tmp_path / "state"
+    root.mkdir()
+    maximum = tuple(
+        f"tests/test_manifest_boundary_{index:04d}.py" for index in range(MAX_DEEP_TEST_SELECTORS)
+    )
+    config = replace(
+        _deep_framework_config(root, state),
+        deep_test_selectors=maximum,
+        deep_mutation_target=None,
+        deep_mutation_symbol=None,
+        deep_mutation_max_mutants=20,
+        deep_mutation_timeout_seconds=30,
+        deep_mutation_time_budget_seconds=600,
+    )
+
+    commands = self_analysis_commands(config, root, state)
+    manifest, payload = build_self_analysis_completion_manifest(
+        run={"run_id": 1},
+        inventory={"scan_id": 2},
+        inventory_policy=InventoryExclusionPolicy.compile((state,)),
+        code_processing_signature="code-v2:fixture",
+        code_summary={"processed": 1},
+        safety_counts={
+            "route_candidates": 0,
+            "file_actions": 0,
+            "run_actions": 0,
+            "organization_events": 0,
+        },
+        commands=commands,
+    )
+
+    assert len(manifest["deep_analysis"]["test_selectors"]) == MAX_DEEP_TEST_SELECTORS
+    assert len(payload.encode("utf-8")) <= 256 * 1024
+
+    with pytest.raises(ValueError, match="too many deep test selectors"):
+        self_analysis_commands(
+            replace(config, deep_test_selectors=(*maximum, "tests/test_manifest_overflow.py")),
+            root,
+            state,
+        )
+
+    oversized = tuple(f"tests/test_{index:02d}_{'x' * 3900}.py" for index in range(50))
+    with pytest.raises(ValueError, match="wire bound"):
+        self_analysis_commands(replace(config, deep_test_selectors=oversized), root, state)
 
 
 def test_deep_manifest_abstains_on_missing_or_duplicate_limits(tmp_path: Path) -> None:

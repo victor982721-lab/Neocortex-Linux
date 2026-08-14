@@ -18,6 +18,26 @@ from pathlib import Path
 
 
 _CANONICAL_COMMANDS = {
+    ("code", "experiment"): (
+        "--code-experiment-run",
+        "--code-json",
+        "Execute one allow-listed test-contract experiment against current source with disposable fixture state.",
+    ),
+    ("code", "query"): (
+        "--code-query",
+        "--code-json",
+        "Query published analyzer evidence, evidence gaps and experiment proposals.",
+    ),
+    ("code", "review"): (
+        "--code-review",
+        "--code-json",
+        "Review the current protected self-analysis publication without mutating source or state.",
+    ),
+    ("code", "status"): (
+        "--code-status",
+        "--code-json",
+        "Inspect the current protected self-analysis publication and provider readiness.",
+    ),
     ("code", "validate"): (
         "--code-validate-change",
         "--code-json",
@@ -58,6 +78,27 @@ _CODE_VALIDATION_CANONICAL_OPTIONS = {
     "--max-tests": "--code-validation-max-tests",
     "--time-budget-seconds": "--code-validation-time-budget-seconds",
 }
+
+_CODE_QUERY_CANONICAL_OPTIONS = {
+    "--provider": "--code-query-provider",
+    "--category": "--code-query-category",
+    "--question-id": "--code-query-category",
+    "--module": "--code-query-module",
+    "--status": "--code-query-status",
+    "--delta": "--code-query-delta",
+    "--work-package": "--code-query-work-package",
+    "--limit": "--code-query-limit",
+    "--baseline-state": "--code-query-baseline",
+}
+
+_CODE_ANALYSIS_CANONICAL_COMMANDS = frozenset(
+    {
+        ("code", "experiment"),
+        ("code", "query"),
+        ("code", "review"),
+        ("code", "status"),
+    }
+)
 
 # This first-token allowlist is intentionally duplicated at the installed
 # entrypoint boundary.  Importing ``human_cli`` merely to ask whether an argv
@@ -118,6 +159,45 @@ def _print_canonical_help(command: tuple[str, str]) -> None:
         action="store_true",
         help="emit one canonical JSON capability report",
     )
+    if command in _CODE_ANALYSIS_CANONICAL_COMMANDS:
+        from _04_Nucleo_Operativo.app_paths import self_analysis_data_directory
+
+        parser.add_argument(
+            "--state-directory",
+            default=str(self_analysis_data_directory()),
+            metavar="DIRECTORY",
+            help="published self-analysis state (defaults to the canonical personal owner)",
+        )
+    if command == ("code", "review"):
+        parser.add_argument(
+            "--limit",
+            type=int,
+            default=10,
+            help="bounded observations per review surface (1..50)",
+        )
+    if command == ("code", "query"):
+        parser.add_argument("surface", choices=("status", "review", "diff"))
+        parser.add_argument("--provider", action="append", metavar="ID")
+        parser.add_argument("--category", action="append", metavar="VALUE")
+        parser.add_argument("--question-id", action="append", metavar="ID")
+        parser.add_argument("--module", action="append", metavar="MODULE")
+        parser.add_argument(
+            "--status",
+            action="append",
+            metavar="DIMENSION:VALUE",
+            help=("exact dimension such as decision:experiment_required or execution:executable"),
+        )
+        parser.add_argument("--delta", action="append", metavar="VALUE")
+        parser.add_argument("--work-package", action="append", metavar="VALUE")
+        parser.add_argument(
+            "--executable-only",
+            action="store_true",
+            help="return only questions or proposals with an allow-listed runner",
+        )
+        parser.add_argument("--limit", type=int, default=50)
+        parser.add_argument("--baseline-state", metavar="DIRECTORY")
+    if command == ("code", "experiment"):
+        parser.add_argument("proposal_id", metavar="PROPOSAL_ID")
     if command == ("doctor", "capabilities"):
         parser.add_argument(
             "--select",
@@ -150,9 +230,53 @@ def _translate_canonical_arguments(arguments: Sequence[str]) -> list[str]:
     if command is None:
         return forwarded
     flat_flag, json_flat_flag, _description = _CANONICAL_COMMANDS[command]
+    remaining = list(forwarded[2:])
     translated = [flat_flag]
+    if command in {("code", "query"), ("code", "experiment")}:
+        value_options = (
+            {
+                "--state-directory",
+                "--provider",
+                "--category",
+                "--question-id",
+                "--module",
+                "--status",
+                "--delta",
+                "--work-package",
+                "--limit",
+                "--baseline-state",
+            }
+            if command == ("code", "query")
+            else {"--state-directory"}
+        )
+        expects_value = False
+        positional_index: int | None = None
+        for index, token in enumerate(remaining):
+            if expects_value:
+                expects_value = False
+                continue
+            if token == "--":
+                if index + 1 < len(remaining):
+                    positional_index = index + 1
+                break
+            option, separator, _value = token.partition("=")
+            if option in value_options and not separator:
+                expects_value = True
+                continue
+            if not token.startswith("-"):
+                positional_index = index
+                break
+        if positional_index is not None:
+            translated.append(remaining.pop(positional_index))
+    if command in _CODE_ANALYSIS_CANONICAL_COMMANDS and not any(
+        token == "--state-directory" or token.startswith("--state-directory=")
+        for token in remaining
+    ):
+        from _04_Nucleo_Operativo.app_paths import self_analysis_data_directory
+
+        translated.extend(("--state-directory", str(self_analysis_data_directory())))
     translate_options = True
-    for token in forwarded[2:]:
+    for token in remaining:
         option, separator, value = token.partition("=")
         if token == "--":
             translate_options = False
@@ -171,6 +295,15 @@ def _translate_canonical_arguments(arguments: Sequence[str]) -> list[str]:
             and option in _CODE_VALIDATION_CANONICAL_OPTIONS
         ):
             translated.append(_CODE_VALIDATION_CANONICAL_OPTIONS[option] + separator + value)
+        elif command == ("code", "review") and option == "--limit":
+            translated.append("--code-review-limit" + separator + value)
+        elif command == ("code", "query") and option in _CODE_QUERY_CANONICAL_OPTIONS:
+            translated.append(_CODE_QUERY_CANONICAL_OPTIONS[option] + separator + value)
+        elif command == ("code", "query") and option == "--executable-only":
+            if separator:
+                translated.append(token)
+            else:
+                translated.extend(("--code-query-status", "execution:executable"))
         else:
             translated.append(token)
     return translated

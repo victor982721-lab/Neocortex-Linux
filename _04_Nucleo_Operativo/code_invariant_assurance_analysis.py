@@ -30,7 +30,7 @@ from .code_analysis_epistemics import (
 from .code_invariant_contracts import (
     CODE_INVARIANT_REGISTRY_SCHEMA,
     INVARIANT_SPECS,
-    RUNTIME_SCENARIOS,
+    INVARIANT_RUNTIME_SCENARIOS,
     InvariantSpec,
     invariant_registry_fingerprint,
 )
@@ -258,7 +258,7 @@ class CodeInvariantAssuranceAnalysis:
         if (self.provider_status == "ready") != (self.provider_run_id is not None):
             raise ValueError("invariant assurance provider identity is inconsistent")
         if self.declared_invariants != len(INVARIANT_SPECS) or self.declared_scenarios != len(
-            RUNTIME_SCENARIOS
+            INVARIANT_RUNTIME_SCENARIOS
         ):
             raise ValueError("invariant assurance registry counts are invalid")
         outcomes = tuple(
@@ -380,7 +380,7 @@ def _observation(
     provider: ExternalProviderEvidence | None,
     relations: Mapping[str, ExternalProviderRelation],
 ) -> InvariantAssuranceObservation:
-    scenarios_by_id = {item.scenario_id: item for item in RUNTIME_SCENARIOS}
+    scenarios_by_id = {item.scenario_id: item for item in INVARIANT_RUNTIME_SCENARIOS}
     outcomes = tuple(
         _scenario_outcome(
             scenario_id,
@@ -677,7 +677,7 @@ def analyze_code_invariant_assurance(
         evaluations: tuple[AnalysisQuestionEvaluation, ...] = ()
         specs: tuple[AnalysisQuestionSpec, ...] = ()
     else:
-        status = "ready" if resolved == len(RUNTIME_SCENARIOS) else "partial"
+        status = "ready" if resolved == len(INVARIANT_RUNTIME_SCENARIOS) else "partial"
         reason = None
         published_observations = observations
         evaluations = tuple(
@@ -715,7 +715,7 @@ def analyze_code_invariant_assurance(
         ),
         registry_fingerprint=invariant_registry_fingerprint(),
         declared_invariants=len(INVARIANT_SPECS),
-        declared_scenarios=len(RUNTIME_SCENARIOS),
+        declared_scenarios=len(INVARIANT_RUNTIME_SCENARIOS),
         resolved_scenarios=resolved if status != "abstained" else 0,
         passed_scenarios=passed if status != "abstained" else 0,
         counterevidence_scenarios=negatives if status != "abstained" else 0,

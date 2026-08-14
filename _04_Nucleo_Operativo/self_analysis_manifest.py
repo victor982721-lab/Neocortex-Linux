@@ -22,7 +22,9 @@ from neocortex.platform_policy import UNAVAILABLE_BIRTHTIME_NS
 
 from .self_analysis import (
     LEGACY_SELF_ANALYSIS_MANIFEST_SCHEMAS,
+    MAX_SELF_ANALYSIS_COMMAND_ARGUMENTS,
     MAX_SELF_ANALYSIS_MANIFEST_BYTES,
+    MAX_SELF_ANALYSIS_STATUS_ARGUMENTS,
     SELF_ANALYSIS_MANIFEST_SCHEMA,
     SELF_ANALYSIS_PROFILE_VERSION,
     _deep_analysis_from_argv,
@@ -434,8 +436,15 @@ def _validate_commands(manifest: Mapping[str, object]) -> None:
         label="manifest commands",
         keys=frozenset({"analyze", "status"}),
     )
-    for name in ("analyze", "status"):
-        argv = _string_list(commands.get(name), label=f"manifest {name} command")
+    for name, maximum_items in (
+        ("analyze", MAX_SELF_ANALYSIS_COMMAND_ARGUMENTS),
+        ("status", MAX_SELF_ANALYSIS_STATUS_ARGUMENTS),
+    ):
+        argv = _string_list(
+            commands.get(name),
+            label=f"manifest {name} command",
+            maximum_items=maximum_items,
+        )
         if not argv or argv[0] != "Neocortex":
             raise InvalidSelfAnalysisManifest(f"manifest {name} command is incompatible")
 
@@ -451,6 +460,7 @@ def _validate_deep_analysis(
     analyze = _string_list(
         commands.get("analyze"),
         label="manifest analyze command",
+        maximum_items=MAX_SELF_ANALYSIS_COMMAND_ARGUMENTS,
     )
     try:
         expected = _deep_analysis_from_argv(analyze)

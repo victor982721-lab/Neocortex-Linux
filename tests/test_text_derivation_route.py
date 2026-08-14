@@ -5,11 +5,13 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import multiprocessing
 import os
 import sqlite3
 import subprocess
 import sys
 import zlib
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -97,6 +99,19 @@ def _attempts(path: Path) -> list[sqlite3.Row]:
         return connection.execute(
             "SELECT * FROM text_derivation_attempts ORDER BY recorded_ns,attempt_id"
         ).fetchall()
+
+
+def _exit_during_text_terminal_publication(state: str, source: str) -> None:
+    """Terminate after owner-local terminal writes but before their COMMIT."""
+
+    original = text_route_module.succeed_text_derivation_attempt
+
+    def exit_after_terminalization(*args, **kwargs):
+        original(*args, **kwargs)
+        os._exit(77)
+
+    text_route_module.succeed_text_derivation_attempt = exit_after_terminalization
+    _route(Path(state), Path(source), 1).run()
 
 
 def test_first_execution_and_cache_hit_publish_complete_causal_receipts(
@@ -829,6 +844,90 @@ def test_terminal_publication_rollback_leaves_no_partial_document_or_fts(
         assert _scalar(connection, "SELECT COUNT(*) FROM text_work_receipts") == 0
         assert _scalar(connection, "SELECT COUNT(*) FROM text_materializations") == 0
         assert _scalar(connection, "SELECT COUNT(*) FROM text_derivation_outbox") == 0
+
+
+def test_text_terminal_publication_exposes_a_closed_traceable_transaction_boundary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "fuente.txt"
+    source.write_text("contenido transaccional observable", encoding="utf-8")
+    state = tmp_path / "text.sqlite3"
+    traced_statements: list[str] = []
+    original_database = text_route_module.text_database
+
+    @contextmanager
+    def traced_database(path: Path, *, readonly: bool = False, create: bool = True):
+        with original_database(path, readonly=readonly, create=create) as connection:
+            connection.set_trace_callback(traced_statements.append)
+            yield connection
+
+    monkeypatch.setattr(text_route_module, "text_database", traced_database)
+
+    result = _route(state, source, 1).run()
+
+    assert result.extracted == 1
+    normalized = tuple(" ".join(statement.upper().split()) for statement in traced_statements)
+    begin = tuple(
+        index for index, statement in enumerate(normalized) if statement.startswith("BEGIN")
+    )
+    commits = tuple(index for index, statement in enumerate(normalized) if statement == "COMMIT")
+    assert begin
+    assert len(begin) == len(commits)
+    required_tables = (
+        "DOCUMENTS",
+        "DOCUMENT_FTS",
+        "TEXT_WORK_RECEIPTS",
+        "TEXT_DERIVATION_OUTBOX",
+    )
+    terminal_transactions = tuple(
+        normalized[start : end + 1]
+        for start, end in zip(begin, commits, strict=True)
+        if start < end
+        and all(
+            any(table in statement for statement in normalized[start : end + 1])
+            for table in required_tables
+        )
+    )
+    assert len(terminal_transactions) == 1
+    assert not any(statement == "ROLLBACK" for statement in normalized)
+
+
+def test_process_death_before_text_terminal_commit_rolls_back_and_recovers(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "fuente.txt"
+    source.write_text("contenido durable tras reinicio", encoding="utf-8")
+    state = tmp_path / "text.sqlite3"
+    process = multiprocessing.get_context("spawn").Process(
+        target=_exit_during_text_terminal_publication,
+        args=(os.fspath(state), os.fspath(source)),
+    )
+
+    process.start()
+    process.join(20)
+    if process.is_alive():
+        process.terminate()
+        process.join(5)
+        pytest.fail("text process-death fixture exceeded its hard timeout")
+    assert process.exitcode == 77
+
+    assert [row["status"] for row in _attempts(state)] == ["running"]
+    with sqlite3.connect(state) as connection:
+        assert _scalar(connection, "SELECT COUNT(*) FROM documents") == 0
+        assert _scalar(connection, "SELECT COUNT(*) FROM document_fts") == 0
+        assert _scalar(connection, "SELECT COUNT(*) FROM text_work_receipts") == 0
+        assert _scalar(connection, "SELECT COUNT(*) FROM text_derivation_outbox") == 0
+
+    recovered = _route(state, source, 2).run()
+
+    assert recovered.extracted == 1
+    assert [row["status"] for row in _attempts(state)] == ["abandoned", "succeeded"]
+    with sqlite3.connect(state) as connection:
+        assert _scalar(connection, "SELECT COUNT(*) FROM documents") == 1
+        assert _scalar(connection, "SELECT COUNT(*) FROM document_fts") == 1
+        assert _scalar(connection, "SELECT COUNT(*) FROM text_work_receipts") == 2
+        assert _scalar(connection, "SELECT COUNT(*) FROM text_derivation_outbox") == 2
 
 
 def test_failed_terminalization_rollback_preserves_previous_published_outputs(

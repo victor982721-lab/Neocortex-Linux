@@ -91,6 +91,12 @@ LEGACY_SELF_ANALYSIS_MANIFEST_SCHEMAS = frozenset({"neocortex.self-analysis-mani
 SELF_ANALYSIS_MANIFEST_PHASE = "self-analysis-manifest"
 SELF_ANALYSIS_MANIFEST_MESSAGE = "Manifest de autoanálisis publicado"
 MAX_SELF_ANALYSIS_MANIFEST_BYTES = 256 * 1024
+# One selected pytest file contributes an option/value pair to the recorded
+# command.  Keep producer and decoder on the same explicit bound so a completed
+# selected-suite run cannot become unreadable solely because it selected more
+# than the decoder's generic 128-item collection limit.
+MAX_SELF_ANALYSIS_COMMAND_ARGUMENTS = 4_096
+MAX_SELF_ANALYSIS_STATUS_ARGUMENTS = 16
 
 _EXCLUDED_DIRECTORY_NAMES = (
     ".cache",
@@ -346,7 +352,12 @@ def self_analysis_commands(
     }
 
 
-def _bounded_argv(values: Sequence[str], *, label: str) -> list[str]:
+def _bounded_argv(
+    values: Sequence[str],
+    *,
+    label: str,
+    maximum_items: int = MAX_SELF_ANALYSIS_COMMAND_ARGUMENTS,
+) -> list[str]:
     result = list(values)
     if (
         not result
@@ -354,7 +365,7 @@ def _bounded_argv(values: Sequence[str], *, label: str) -> list[str]:
         # Keep the manifest bounded, but do not reject the producer after it has
         # already completed solely because an explicit selected suite exceeds
         # the former 128-item envelope.
-        or len(result) > 4_096
+        or len(result) > maximum_items
         or any(
             not isinstance(value, str) or not value or len(value.encode("utf-8")) > 32_768
             for value in result
@@ -500,7 +511,11 @@ def build_self_analysis_completion_manifest(
     if set(commands) != {"analyze", "status"}:
         raise ValueError("self-analysis commands are incomplete")
     analyze_argv = _bounded_argv(commands["analyze"], label="analyze")
-    status_argv = _bounded_argv(commands["status"], label="status")
+    status_argv = _bounded_argv(
+        commands["status"],
+        label="status",
+        maximum_items=MAX_SELF_ANALYSIS_STATUS_ARGUMENTS,
+    )
     deep_analysis = _deep_analysis_from_argv(analyze_argv)
     manifest: dict[str, object] = {
         "schema": SELF_ANALYSIS_MANIFEST_SCHEMA,
@@ -539,7 +554,9 @@ def build_self_analysis_completion_manifest(
 
 __all__ = [
     "LEGACY_SELF_ANALYSIS_MANIFEST_SCHEMAS",
+    "MAX_SELF_ANALYSIS_COMMAND_ARGUMENTS",
     "MAX_SELF_ANALYSIS_MANIFEST_BYTES",
+    "MAX_SELF_ANALYSIS_STATUS_ARGUMENTS",
     "SELF_ANALYSIS_MANIFEST_MESSAGE",
     "SELF_ANALYSIS_MANIFEST_PHASE",
     "SELF_ANALYSIS_MANIFEST_SCHEMA",

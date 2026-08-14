@@ -1,7 +1,7 @@
 """Isolated execution and receipts for allow-listed Code experiments.
 
-The executor deliberately supports one runner in v1: the exact invariant
-scenarios declared in :mod:`code_invariant_contracts`.  It delegates to the
+The executor deliberately supports one runner in v2: exact, source-versioned
+runtime scenarios declared in :mod:`code_invariant_contracts`.  It delegates to the
 existing trusted-deep provider, which owns canonical-root validation, bounded
 pytest execution, coverage collection, output limits, process containment and
 durable shard checkpoints.  This adapter adds an experiment-level receipt and
@@ -24,14 +24,17 @@ from .external_deep_coverage import (
     PYTEST_COVERAGE_PROVIDER_ID,
 )
 from .code_external_evidence import ExternalEvidenceFile, read_external_evidence_files
-from .code_invariant_contracts import RUNTIME_SCENARIOS, invariant_registry_fingerprint
+from .code_invariant_contracts import (
+    RUNTIME_SCENARIOS,
+    runtime_scenario_registry_fingerprint,
+)
 from .code_schema import readonly_code_database
 from .external_evidence_models import external_provider_result_digest
 from .external_evidence_providers import PytestCoverageTrustedDeepProvider
 from .semantic_models import fingerprint_chunks
 
-CODE_EXPERIMENT_RECEIPT_SCHEMA = "neocortex.code-experiment-receipt/v1"
-CODE_EXPERIMENT_EXECUTION_POLICY = "allowlisted-trusted-deep-scenarios-v2"
+CODE_EXPERIMENT_RECEIPT_SCHEMA = "neocortex.code-experiment-receipt/v3"
+CODE_EXPERIMENT_EXECUTION_POLICY = "allowlisted-measured-gates-trusted-deep-v4"
 CODE_EXPERIMENT_RECEIPT_MAX_OUTCOMES = 128
 
 
@@ -82,6 +85,55 @@ class CodeExperimentOutcome:
 
 
 @dataclass(frozen=True, slots=True)
+class CodeExperimentGateOutcome:
+    gate_id: str
+    scenario_id: str
+    test_nodeids: tuple[str, ...]
+    status: Literal["passed", "failed", "not_evaluated"]
+    relation_ids: tuple[str, ...]
+    reason: str
+    claim_scope: Literal["exact_test_contract_outcome_not_formal_truth"] = (
+        "exact_test_contract_outcome_not_formal_truth"
+    )
+
+    def __post_init__(self) -> None:
+        _required("experiment gate id", self.gate_id, 256)
+        _required("experiment gate scenario id", self.scenario_id, 256)
+        _texts("experiment gate test nodeid", self.test_nodeids)
+        _texts("experiment gate relation id", self.relation_ids, sorted_values=True)
+        _required("experiment gate reason", self.reason, 512)
+        if self.status not in {"passed", "failed", "not_evaluated"}:
+            raise ValueError("experiment gate status is invalid")
+        scenario = next(
+            (item for item in RUNTIME_SCENARIOS if item.scenario_id == self.scenario_id),
+            None,
+        )
+        gate = (
+            None
+            if scenario is None
+            else next(
+                (item for item in scenario.gate_specs if item.gate_id == self.gate_id),
+                None,
+            )
+        )
+        if gate is None or gate.test_nodeids != self.test_nodeids:
+            raise ValueError("experiment gate outcome is not bound to its declared contract")
+        expected_reason = {
+            "passed": "all_bound_test_contracts_passed",
+            "failed": "one_or_more_bound_test_contracts_failed",
+            "not_evaluated": "bound_test_contracts_not_all_observed_as_terminal_pass_or_fail",
+        }[self.status]
+        if self.reason != expected_reason:
+            raise ValueError("experiment gate reason is not derived from its status")
+        if self.status in {"passed", "failed"} and len(self.relation_ids) != len(self.test_nodeids):
+            raise ValueError("evaluated experiment gate requires one receipt per nodeid")
+        if len(self.relation_ids) > len(self.test_nodeids):
+            raise ValueError("experiment gate has excess evidence")
+        if self.claim_scope != "exact_test_contract_outcome_not_formal_truth":
+            raise ValueError("experiment gate claim scope is invalid")
+
+
+@dataclass(frozen=True, slots=True)
 class CodeExperimentReceipt:
     receipt_id: str
     status: Literal["passed", "failed", "abstained"]
@@ -96,9 +148,9 @@ class CodeExperimentReceipt:
     source_manifest_digest: str
     code_database_digest_before: str
     code_database_digest_after: str
-    canonical_state_unchanged: bool
+    code_database_unchanged: bool
     configuration_signature: str
-    invariant_registry_fingerprint: str
+    scenario_registry_fingerprint: str
     provider_id: str
     provider_schema: str
     provider_status: str
@@ -108,6 +160,7 @@ class CodeExperimentReceipt:
     selected_scenarios: tuple[str, ...]
     selected_nodeids: tuple[str, ...]
     outcomes: tuple[CodeExperimentOutcome, ...]
+    gate_outcomes: tuple[CodeExperimentGateOutcome, ...]
     passed: int
     failed: int
     skipped: int
@@ -132,7 +185,7 @@ class CodeExperimentReceipt:
             ("experiment Code digest before", self.code_database_digest_before),
             ("experiment Code digest after", self.code_database_digest_after),
             ("experiment configuration signature", self.configuration_signature),
-            ("experiment invariant registry", self.invariant_registry_fingerprint),
+            ("experiment scenario registry", self.scenario_registry_fingerprint),
             ("experiment provider id", self.provider_id),
             ("experiment provider schema", self.provider_schema),
             ("experiment provider status", self.provider_status),
@@ -148,12 +201,12 @@ class CodeExperimentReceipt:
             raise ValueError("experiment execution policy is invalid")
         if self.runner_kind != "trusted_deep_declared_scenarios":
             raise ValueError("experiment receipt runner is invalid")
-        if not isinstance(self.canonical_state_unchanged, bool):
-            raise ValueError("experiment canonical-state guard must be boolean")
-        if self.canonical_state_unchanged != (
+        if not isinstance(self.code_database_unchanged, bool):
+            raise ValueError("experiment Code-database guard must be boolean")
+        if self.code_database_unchanged != (
             self.code_database_digest_before == self.code_database_digest_after
         ):
-            raise ValueError("experiment canonical-state guard contradicts its digests")
+            raise ValueError("experiment Code-database guard contradicts its digests")
         if (
             self.provider_id != PYTEST_COVERAGE_PROVIDER_ID
             or self.provider_schema != DEEP_COVERAGE_PROVIDER_SCHEMA
@@ -176,6 +229,10 @@ class CodeExperimentReceipt:
             not isinstance(item, CodeExperimentOutcome) for item in self.outcomes
         ):
             raise ValueError("experiment outcomes are invalid or out of bounds")
+        if len(self.gate_outcomes) > CODE_EXPERIMENT_RECEIPT_MAX_OUTCOMES or any(
+            not isinstance(item, CodeExperimentGateOutcome) for item in self.gate_outcomes
+        ):
+            raise ValueError("experiment gate outcomes are invalid or out of bounds")
         template = experiment_template(self.template_id)
         scenario_map = {item.scenario_id: item.test_nodeids for item in RUNTIME_SCENARIOS}
         if (
@@ -205,6 +262,21 @@ class CodeExperimentReceipt:
             != outcome_scenarios
         ):
             raise ValueError("experiment outcomes are not in canonical selection order")
+        expected_gates = tuple(
+            gate.gate_id
+            for scenario_id in self.selected_scenarios
+            for gate in next(
+                item for item in RUNTIME_SCENARIOS if item.scenario_id == scenario_id
+            ).gate_specs
+        )
+        observed_gates = tuple(item.gate_id for item in self.gate_outcomes)
+        if (
+            len(set(observed_gates)) != len(observed_gates)
+            or any(gate_id not in expected_gates for gate_id in observed_gates)
+            or tuple(gate_id for gate_id in expected_gates if gate_id in set(observed_gates))
+            != observed_gates
+        ):
+            raise ValueError("experiment gate outcomes are not a canonical subset")
         for label, count in (
             ("passed scenarios", self.passed),
             ("failed scenarios", self.failed),
@@ -225,8 +297,13 @@ class CodeExperimentReceipt:
             "abstained"
             if self.provider_status != "completed"
             or len(self.outcomes) != len(self.selected_scenarios)
+            or len(self.gate_outcomes) != len(expected_gates)
+            or any(item.status == "not_evaluated" for item in self.gate_outcomes)
             else "failed"
-            if self.failed or self.skipped or not self.canonical_state_unchanged
+            if self.failed
+            or self.skipped
+            or not self.code_database_unchanged
+            or any(item.status == "failed" for item in self.gate_outcomes)
             else "passed"
         )
         if self.status != expected_status:
@@ -251,7 +328,7 @@ def _receipt_identity(receipt: CodeExperimentReceipt) -> str:
     values = {key: value for key, value in asdict(receipt).items() if key != "receipt_id"}
     values["duration_ms"] = 0
     return analysis_identity(
-        "code-experiment-receipt-v1",
+        "code-experiment-receipt-v3",
         values,
     )
 
@@ -263,6 +340,12 @@ def _receipt_identity_values(values: Mapping[str, object]) -> dict[str, object]:
     if isinstance(outcomes, tuple):
         result["outcomes"] = tuple(
             asdict(item) if isinstance(item, CodeExperimentOutcome) else item for item in outcomes
+        )
+    gate_outcomes = result.get("gate_outcomes")
+    if isinstance(gate_outcomes, tuple):
+        result["gate_outcomes"] = tuple(
+            asdict(item) if isinstance(item, CodeExperimentGateOutcome) else item
+            for item in gate_outcomes
         )
     return result
 
@@ -367,6 +450,58 @@ def _outcomes(
     return tuple(result)
 
 
+def _gate_outcomes(
+    publication,
+    selected_scenarios: tuple[str, ...],
+) -> tuple[CodeExperimentGateOutcome, ...]:
+    observed: dict[str, list[tuple[str, str]]] = {}
+    selected_nodeids = {
+        nodeid
+        for scenario in RUNTIME_SCENARIOS
+        if scenario.scenario_id in set(selected_scenarios)
+        for nodeid in scenario.test_nodeids
+    }
+    for relation in publication.relations:
+        if relation.relation_kind != "declared_test_outcome":
+            continue
+        nodeid = str(relation.metadata.get("nodeid"))
+        outcome = str(relation.metadata.get("outcome"))
+        if nodeid not in selected_nodeids or outcome not in {"passed", "failed", "skipped"}:
+            continue
+        observed.setdefault(nodeid, []).append((outcome, relation.portable_relation_id))
+    scenario_by_id = {item.scenario_id: item for item in RUNTIME_SCENARIOS}
+    results: list[CodeExperimentGateOutcome] = []
+    for scenario_id in selected_scenarios:
+        scenario = scenario_by_id[scenario_id]
+        for gate in scenario.gate_specs:
+            rows = tuple(observed.get(nodeid, ()) for nodeid in gate.test_nodeids)
+            complete = all(len(items) == 1 for items in rows)
+            outcomes = tuple(items[0][0] for items in rows if len(items) == 1)
+            status: Literal["passed", "failed", "not_evaluated"] = (
+                "not_evaluated"
+                if not complete or "skipped" in outcomes
+                else "failed"
+                if "failed" in outcomes
+                else "passed"
+            )
+            reason = {
+                "passed": "all_bound_test_contracts_passed",
+                "failed": "one_or_more_bound_test_contracts_failed",
+                "not_evaluated": "bound_test_contracts_not_all_observed_as_terminal_pass_or_fail",
+            }[status]
+            results.append(
+                CodeExperimentGateOutcome(
+                    gate_id=gate.gate_id,
+                    scenario_id=scenario_id,
+                    test_nodeids=gate.test_nodeids,
+                    status=status,
+                    relation_ids=tuple(sorted(item[0][1] for item in rows if len(item) == 1)),
+                    reason=reason,
+                )
+            )
+    return tuple(results)
+
+
 def _provider_test_counts(publication) -> tuple[int, int, int, int]:
     """Recover bounded run counts when no complete per-test receipt exists."""
 
@@ -399,6 +534,17 @@ def _provider_test_counts(publication) -> tuple[int, int, int, int]:
         counters["tests_failed"],
         counters["tests_skipped"],
     )
+
+
+def _require_stable_source_input(
+    before: str,
+    published: str,
+    after: str,
+) -> None:
+    """Reject test outcomes that cannot be tied to one exact source tree."""
+
+    if not before or published != before or after != before:
+        raise ValueError("experiment source input changed during execution")
 
 
 def execute_code_experiment(
@@ -454,11 +600,20 @@ def execute_code_experiment(
     )
     signature = deep_configuration_signature(payload)
     provider = PytestCoverageTrustedDeepProvider(source, payload, signature)
+    source_input_signature = provider.baseline_input_signature(files)
     started = time.monotonic_ns()
     publication = provider.run(source, files, baseline=None, scratch_root=scratch)
     duration_ms = max(0, (time.monotonic_ns() - started) // 1_000_000)
+    post_provider = PytestCoverageTrustedDeepProvider(source, payload, signature)
+    post_source_input_signature = post_provider.baseline_input_signature(files)
+    _require_stable_source_input(
+        source_input_signature,
+        publication.input_signature,
+        post_source_input_signature,
+    )
     after = _file_digest(database)
     outcomes = _outcomes(publication, selected_scenarios)
+    gate_outcomes = _gate_outcomes(publication, selected_scenarios)
     tests_selected, tests_passed, tests_failed, tests_skipped = _provider_test_counts(publication)
     complete_aggregate_pass = (
         not outcomes
@@ -496,9 +651,13 @@ def execute_code_experiment(
     provider_status = publication.status
     status: Literal["passed", "failed", "abstained"] = (
         "abstained"
-        if provider_status != "completed" or len(outcomes) != len(selected_scenarios)
+        if provider_status != "completed"
+        or len(outcomes) != len(selected_scenarios)
+        or any(item.status == "not_evaluated" for item in gate_outcomes)
         else "failed"
-        if any(item.outcome != "passed" for item in outcomes) or before != after
+        if any(item.outcome != "passed" for item in outcomes)
+        or any(item.status == "failed" for item in gate_outcomes)
+        or before != after
         else "passed"
     )
     reason = (
@@ -506,7 +665,11 @@ def execute_code_experiment(
         if status != "abstained"
         else str(
             publication.publication.provenance.get("reason")
-            or "provider_did_not_publish_complete_outcomes"
+            or (
+                "acceptance_gate_evidence_incomplete"
+                if any(item.status == "not_evaluated" for item in gate_outcomes)
+                else "provider_did_not_publish_complete_outcomes"
+            )
         )[:512]
     )
     provider_result = (
@@ -531,9 +694,9 @@ def execute_code_experiment(
         "source_manifest_digest": manifest_digest,
         "code_database_digest_before": before,
         "code_database_digest_after": after,
-        "canonical_state_unchanged": before == after,
+        "code_database_unchanged": before == after,
         "configuration_signature": signature,
-        "invariant_registry_fingerprint": invariant_registry_fingerprint(),
+        "scenario_registry_fingerprint": runtime_scenario_registry_fingerprint(),
         "provider_id": publication.descriptor.provider_id,
         "provider_schema": publication.descriptor.provider_schema,
         "provider_status": provider_status,
@@ -543,6 +706,7 @@ def execute_code_experiment(
         "selected_scenarios": selected_scenarios,
         "selected_nodeids": selected_nodeids,
         "outcomes": outcomes,
+        "gate_outcomes": gate_outcomes,
         "passed": sum(item.outcome == "passed" for item in outcomes),
         "failed": sum(item.outcome == "failed" for item in outcomes),
         "skipped": sum(item.outcome == "skipped" for item in outcomes),
@@ -551,13 +715,14 @@ def execute_code_experiment(
         "stdout_bytes": publication.counters.get("stdout_bytes", 0),
         "stderr_bytes": publication.counters.get("stderr_bytes", 0),
         "limitations": (
-            "receipt_proves_selected_test_outcomes_not_formal_invariant_truth",
+            "receipt_proves_selected_test_outcomes_not_a_question_conclusion_or_formal_proof",
             *(
                 ("per_test_outcome_relations_unavailable_aggregate_counts_only",)
                 if complete_aggregate_pass
                 else ()
             ),
             "coverage_is_main_process_only",
+            "source_input_is_verified_before_and_after_but_corpus_and_other_state_are_not_guarded",
             "process_death_scenario_is_not_power_loss",
             "no_product_mutation_authority",
         ),
@@ -568,7 +733,7 @@ def execute_code_experiment(
 
     identity_values = _receipt_identity_values(values)
     return CodeExperimentReceipt(
-        receipt_id=analysis_identity("code-experiment-receipt-v1", identity_values),
+        receipt_id=analysis_identity("code-experiment-receipt-v3", identity_values),
         **values,  # type: ignore[arg-type]
     )
 
@@ -596,8 +761,27 @@ def parse_code_experiment_receipt_payload(
         )
         parsed_outcomes.append(CodeExperimentOutcome(**cast(Any, values)))
     outcomes = tuple(parsed_outcomes)
+    raw_gate_outcomes = payload.get("gate_outcomes")
+    if not isinstance(raw_gate_outcomes, Sequence) or isinstance(
+        raw_gate_outcomes, (str, bytes, bytearray)
+    ):
+        raise ValueError("experiment gate outcomes are invalid")
+    gate_fields = {field.name for field in fields(CodeExperimentGateOutcome)}
+    parsed_gates: list[CodeExperimentGateOutcome] = []
+    for item in raw_gate_outcomes:
+        if not isinstance(item, Mapping) or set(item) != gate_fields:
+            raise ValueError("experiment gate outcome fields are invalid")
+        gate_values = dict(item)
+        gate_values["test_nodeids"] = _texts(
+            "experiment gate test nodeid", gate_values["test_nodeids"]
+        )
+        gate_values["relation_ids"] = _texts(
+            "experiment gate relation id", gate_values["relation_ids"], sorted_values=True
+        )
+        parsed_gates.append(CodeExperimentGateOutcome(**cast(Any, gate_values)))
     values = {key: value for key, value in payload.items() if key != "schema"}
     values["outcomes"] = outcomes
+    values["gate_outcomes"] = tuple(parsed_gates)
     values["selected_scenarios"] = _texts(
         "selected experiment scenario", values["selected_scenarios"], sorted_values=True
     )
@@ -610,6 +794,7 @@ __all__ = [
     "CODE_EXPERIMENT_EXECUTION_POLICY",
     "CODE_EXPERIMENT_RECEIPT_MAX_OUTCOMES",
     "CODE_EXPERIMENT_RECEIPT_SCHEMA",
+    "CodeExperimentGateOutcome",
     "CodeExperimentOutcome",
     "CodeExperimentReceipt",
     "execute_code_experiment",

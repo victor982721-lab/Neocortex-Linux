@@ -268,7 +268,9 @@ def _rematerialize_replay_projection(
         c.project_configuration_digest,c.environment_signature,c.input_signature,
         c.comparability_signature,c.execution,c.result_digest,c.coverage_complete
         FROM external_tool_runs r JOIN external_run_contracts c
-        ON c.tool_run_id=r.tool_run_id WHERE r.tool_run_id=?""",
+        ON c.tool_run_id=r.tool_run_id JOIN analysis_runs a
+        ON a.analysis_run_id=r.analysis_run_id
+        WHERE r.tool_run_id=? AND a.status='completed'""",
         (source_tool_run_id,),
     ).fetchone()
     expected_source = (
@@ -686,6 +688,43 @@ def _provider_baseline_fresh_until(
     return value if value > 0 else None
 
 
+def _provider_projection_versions_are_current(
+    connection: sqlite3.Connection,
+    tool_run_id: int,
+) -> bool:
+    """Return whether every version-bound fact can be replayed into the live graph.
+
+    Portable identities from an older publication remain useful as a comparable
+    baseline after Code creates new file versions.  Its physical projection does
+    not: replaying those rows would attach current diagnostics/metrics/relations
+    to superseded versions.  Reject only exact replay here so providers can run
+    again while still calculating added/resolved deltas from portable IDs.
+    """
+
+    stale = connection.execute(
+        """SELECT 1 FROM (
+        SELECT version_id FROM external_findings WHERE tool_run_id=?
+        UNION
+        SELECT version_id FROM external_metrics
+        WHERE tool_run_id=? AND version_id IS NOT NULL
+        UNION
+        SELECT source_version_id FROM external_relations
+        WHERE tool_run_id=? AND source_version_id IS NOT NULL
+        UNION
+        SELECT target_version_id FROM external_relations
+        WHERE tool_run_id=? AND target_version_id IS NOT NULL
+        ) refs
+        WHERE NOT EXISTS(
+            SELECT 1 FROM files f JOIN file_versions v
+            ON v.version_id=f.current_version_id
+            WHERE v.version_id=refs.version_id
+            AND f.status='current' AND v.invalidated_ns IS NULL
+        ) LIMIT 1""",
+        (tool_run_id, tool_run_id, tool_run_id, tool_run_id),
+    ).fetchone()
+    return stale is None
+
+
 def read_external_provider_baselines(
     connection: sqlite3.Connection,
     *,
@@ -702,11 +741,13 @@ def read_external_provider_baselines(
         """SELECT r.tool_run_id,r.tool_version,c.provider_id,c.input_signature,
         c.comparability_signature,c.result_digest
         FROM external_tool_runs r JOIN external_run_contracts c
-        ON c.tool_run_id=r.tool_run_id
+        ON c.tool_run_id=r.tool_run_id JOIN analysis_runs a
+        ON a.analysis_run_id=r.analysis_run_id
         WHERE c.provider_id=? AND c.profile=? AND r.tool_version=?
         AND r.configuration_signature=? AND c.environment_signature=?
         AND c.root_identity=? AND r.status='completed'
-        AND c.coverage_complete=1 ORDER BY r.tool_run_id DESC LIMIT 128""",
+        AND a.status='completed' AND c.coverage_complete=1
+        ORDER BY r.tool_run_id DESC LIMIT 128""",
         (
             provider_id,
             profile,
@@ -764,6 +805,10 @@ def read_external_provider_baselines(
         if (
             baseline.comparability_signature == comparability_signature
             and baseline.input_signature == input_signature
+            and _provider_projection_versions_are_current(
+                connection,
+                baseline.tool_run_id,
+            )
         ):
             exact = baseline
             break
@@ -958,6 +1003,14 @@ def _effective_provider_run_id(
     row: sqlite3.Row | Mapping[str, object],
 ) -> int:
     tool_run_id = int(str(row["tool_run_id"]))
+    owner = connection.execute(
+        """SELECT a.status FROM external_tool_runs r
+        JOIN analysis_runs a ON a.analysis_run_id=r.analysis_run_id
+        WHERE r.tool_run_id=?""",
+        (tool_run_id,),
+    ).fetchone()
+    if owner is None or str(owner["status"]) != "completed":
+        raise ValueError("external_provider_owner_not_completed")
     if str(row["execution"]) != "cache_replay":
         return tool_run_id
     replay = connection.execute(
@@ -972,7 +1025,8 @@ def _effective_provider_run_id(
         """SELECT r.status,c.provider_id,c.result_digest,c.input_signature,
         c.comparability_signature FROM external_tool_runs r
         JOIN external_run_contracts c ON c.tool_run_id=r.tool_run_id
-        WHERE r.tool_run_id=?""",
+        JOIN analysis_runs a ON a.analysis_run_id=r.analysis_run_id
+        WHERE r.tool_run_id=? AND a.status='completed'""",
         (effective_run_id,),
     ).fetchone()
     if (
@@ -1156,6 +1210,30 @@ def _provider_status(
     row: sqlite3.Row | Mapping[str, object],
 ) -> _ProviderStatusProjection:
     try:
+        tool_run_id = int(str(row["tool_run_id"]))
+    except (KeyError, TypeError, ValueError):
+        return (
+            _abstained_provider(row, "external_provider_projection_invalid"),
+            (),
+            None,
+            (),
+            (),
+        )
+    owner = connection.execute(
+        """SELECT a.status FROM external_tool_runs r
+        JOIN analysis_runs a ON a.analysis_run_id=r.analysis_run_id
+        WHERE r.tool_run_id=?""",
+        (tool_run_id,),
+    ).fetchone()
+    if owner is None or str(owner["status"]) != "completed":
+        return (
+            _abstained_provider(row, "external_provider_owner_not_completed"),
+            (),
+            None,
+            (),
+            (),
+        )
+    try:
         context = _provider_read_context(connection, row)
         terminal = _terminal_provider_projection(row, context)
         if terminal is not None:
@@ -1170,6 +1248,7 @@ def _provider_status(
             (),
             (),
         )
+
 
 def _legacy_provider_status(status: ExternalEvidenceStatus) -> ExternalProviderStatus:
     return ExternalProviderStatus(
@@ -1587,33 +1666,19 @@ def read_external_provider_finding_ids(
 ) -> dict[str, frozenset[str]]:
     """Return portable finding identities for each latest normalized provider."""
 
-    rows = connection.execute(
-        """SELECT c.provider_id,r.tool_run_id,c.execution
-        FROM external_tool_runs r JOIN external_run_contracts c
-        ON c.tool_run_id=r.tool_run_id WHERE r.analysis_run_id=?
-        ORDER BY c.provider_id,r.tool_run_id DESC LIMIT ?""",
-        (analysis_run_id, _PROVIDER_STATUS_LIMIT + 1),
-    ).fetchall()
+    rows = _provider_run_rows(connection, analysis_run_id, None)
     if len(rows) > _PROVIDER_STATUS_LIMIT:
         raise ValueError("external provider identity read exceeds its bound")
-    latest: dict[str, tuple[int, str]] = {}
+    latest: dict[str, sqlite3.Row] = {}
     for row in rows:
-        latest.setdefault(
-            str(row["provider_id"]),
-            (int(row["tool_run_id"]), str(row["execution"])),
-        )
+        latest.setdefault(str(row["provider_id"]), row)
     result: dict[str, frozenset[str]] = {}
-    for provider_id, (tool_run_id, execution) in latest.items():
-        effective = tool_run_id
-        if execution == "cache_replay":
-            replay = connection.execute(
-                "SELECT source_tool_run_id FROM external_run_replays WHERE tool_run_id=?",
-                (tool_run_id,),
-            ).fetchone()
-            if replay is None:
-                result[provider_id] = frozenset()
-                continue
-            effective = int(replay["source_tool_run_id"])
+    for provider_id, row in latest.items():
+        try:
+            effective = _effective_provider_run_id(connection, row)
+        except (TypeError, ValueError):
+            result[provider_id] = frozenset()
+            continue
         result[provider_id] = frozenset(_portable_finding_ids(connection, effective, provider_id))
     return result
 
@@ -1634,16 +1699,11 @@ def read_external_provider_findings(
         latest.setdefault(str(row["provider_id"]), row)
     result: dict[str, tuple[ExternalProviderFinding, ...]] = {}
     for provider_id, row in sorted(latest.items()):
-        effective = int(row["tool_run_id"])
-        if str(row["execution"]) == "cache_replay":
-            replay = connection.execute(
-                "SELECT source_tool_run_id FROM external_run_replays WHERE tool_run_id=?",
-                (effective,),
-            ).fetchone()
-            if replay is None:
-                result[provider_id] = ()
-                continue
-            effective = int(replay["source_tool_run_id"])
+        try:
+            effective = _effective_provider_run_id(connection, row)
+        except (TypeError, ValueError):
+            result[provider_id] = ()
+            continue
         result[provider_id] = _portable_provider_findings(
             connection,
             effective,

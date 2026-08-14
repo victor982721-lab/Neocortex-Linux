@@ -287,6 +287,14 @@ class CodeState:
         """Complete one run and optionally publish its graph-completion fence."""
 
         with self.connection:
+            # Provider publishers use SAVEPOINT so each projection is internally
+            # consistent.  A top-level RELEASE commits immediately when no outer
+            # transaction exists, however, which could leave earlier providers
+            # published beneath an owner that later fails.  Start the bundle
+            # transaction explicitly so providers, legacy evidence, the owner
+            # transition and graph fence commit or roll back together.
+            if not self.connection.in_transaction:
+                self.connection.execute("BEGIN IMMEDIATE")
             if isinstance(external_evidence, ExternalEvidencePublication):
                 self._publish_external_evidence(
                     analysis_run_id,
@@ -372,12 +380,13 @@ class CodeState:
         input_signature = external_input_signature(files)
         normalized_root = os.path.normcase(os.path.abspath(root))
         rows = self.connection.execute(
-            """SELECT tool_run_id,analysis_run_id,tool_version,
-            configuration_signature,status,provenance_json
-            FROM external_tool_runs
-            WHERE tool_name=? AND tool_version=? AND configuration_signature=?
-            AND status='completed'
-            ORDER BY tool_run_id DESC LIMIT 128""",
+            """SELECT r.tool_run_id,r.analysis_run_id,r.tool_version,
+            r.configuration_signature,r.status,r.provenance_json
+            FROM external_tool_runs r JOIN analysis_runs a
+            ON a.analysis_run_id=r.analysis_run_id
+            WHERE r.tool_name=? AND r.tool_version=? AND r.configuration_signature=?
+            AND r.status='completed' AND a.status='completed'
+            ORDER BY r.tool_run_id DESC LIMIT 128""",
             (tool_name, tool_version, configuration_signature),
         ).fetchall()
         comparable: ExternalEvidenceBaseline | None = None

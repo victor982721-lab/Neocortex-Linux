@@ -710,6 +710,17 @@ def test_review_unused_payload_bounds_candidates_and_nested_evidence() -> None:
     assert bounded_signals["evidence_ids_total"] == 25
     assert bounded_signals["evidence_ids_truncated"] is True
 
+    small_payload = bounded_code_unused_payload(analysis, limit=2)
+    small_candidates = small_payload["candidates"]
+    assert isinstance(small_candidates, list)
+    assert len(small_candidates) == 2
+    small_first = small_candidates[0]
+    assert isinstance(small_first, dict)
+    assert len(small_first["evidence"]) == 2
+    small_signals = small_first["signals"]
+    assert isinstance(small_signals, dict)
+    assert len(small_signals["evidence_ids"]) == 2
+
 
 def test_unused_package_adds_bounded_architecture_context_without_changing_identity() -> None:
     findings = _planning_findings()
@@ -1070,6 +1081,18 @@ def test_review_json_bounds_coverage_and_work_package_examples_to_twenty() -> No
         "mutation_measurement_complete",
         "mutation_score_recorded",
     ]
+
+    small_coverage = bounded_code_coverage_payload(coverage, limit=2)
+    small_engineering = bounded_code_engineering_payload(engineering, limit=2)
+    small_package = bounded_code_review_work_package_payload(package, limit=2)
+    assert len(small_coverage["failed_test_examples"]) == 2
+    assert len(small_coverage["module_missing_examples"]) == 2
+    assert len(small_coverage["symbol_missing_examples"]) == 2
+    assert len(small_coverage["test_relation_examples"]) == 2
+    assert len(small_engineering["modules"]) == 2
+    assert len(small_package["test_coverage"]["executing_tests"]) == 2
+    assert len(small_package["test_coverage_scope"]["missing_line_ranges"]) == 2
+    assert len(small_package["engineering_profile"]["mutation"]["metrics"]) == 2
 
 
 def test_rc14_rc19_history_is_descriptive_not_decision_ground_truth() -> None:

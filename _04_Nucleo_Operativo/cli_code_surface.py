@@ -145,7 +145,7 @@ def register_code_arguments(
         metavar="PROPOSAL_ID",
         help=(
             "execute one exact allow-listed experiment proposal from the current "
-            "code-review plan in isolated temporary state"
+            "code-review plan against current source with disposable fixture state"
         ),
     )
     code.add_argument(

@@ -236,7 +236,7 @@ EXPECTED_CODE_ACTIONS = (
         metavar="PROPOSAL_ID",
         help_text=(
             "execute one exact allow-listed experiment proposal from the current "
-            "code-review plan in isolated temporary state"
+            "code-review plan against current source with disposable fixture state"
         ),
     ),
     _expected_store(
@@ -399,8 +399,8 @@ EXPECTED_CODE_HELP = (
     "                        values above 10 require --code-json\n"
     "  --code-experiment-run PROPOSAL_ID\n"
     "                        execute one exact allow-listed experiment proposal\n"
-    "                        from the current code-review plan in isolated\n"
-    "                        temporary state\n"
+    "                        from the current code-review plan against current\n"
+    "                        source with disposable fixture state\n"
     "  --code-publication-diff BASELINE_STATE\n"
     "                        compare the current completed Code publication with a\n"
     "                        baseline state without writing either owner\n"

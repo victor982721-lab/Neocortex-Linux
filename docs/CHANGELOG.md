@@ -8,6 +8,16 @@ no se copian aquí para evitar que se conviertan en datos históricos sin contex
 
 ### Añadido
 
+- Receipt loop acotado del autoanalizador: `--code-experiment-run` persiste el
+  resultado terminal `neocortex.code-experiment-receipt/v3` en un envelope
+  `neocortex.code-experiment-store/v1`; el review posterior enlaza únicamente
+  terminales `passed` más nuevos del proposal/signature vigentes y gates
+  registrados; un replay Code exacto puede reutilizar el receipt de un run
+  completado anterior, mientras un terminal posterior fallido o abstenido lo
+  invalida. Un envelope digest recalculable liga el contexto durable. Los
+  bindings productivos se limitan a la acceptance pública Text y al workflow
+  SQL/transaccional Text; la evidencia exacta puede exigir revisión humana, pero
+  no crea una decisión, recomendación ni autoridad de mutación.
 - Framework schema 21 con `ReviewTask` durable: batches y receipts acotados,
   memberships, tareas versionadas, eventos append-only con CAS, progreso keyset
   y heads fuente generacionales. Cada batch
@@ -72,6 +82,13 @@ no se copian aquí para evitar que se conviertan en datos históricos sin contex
 
 ### Cambiado
 
+- Code pasa de schema 5 a 6 mediante una migración aditiva que crea
+  `code_experiment_receipts`, tabla append-only con triggers que impiden update y
+  delete. El wire vigente de review pasa a `neocortex.code-review/v17`, sin
+  declarar compatibilidad estructural con versiones anteriores, e incluye la
+  proyección acotada de receipts exactos. El ejecutor verifica la firma de
+  inputs Python/soporte Git antes y después, y el digest unchanged de Code cubre
+  la fase de tests; la CLI escribe el receipt después y por ello no es read-only.
 - Framework pasa de schema 21 a 22 y Code de 4 a 5 para aplicar una única
   política de identidad de rutas: `BINARY` en Linux y `NOCASE` en Windows. La
   migración Framework 21→22 reconstruye sólo `route_candidates` cuando hace

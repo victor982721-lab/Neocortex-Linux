@@ -27,12 +27,14 @@ DEFAULT_DEEP_SHARD_SIZE = 20
 DEFAULT_DEEP_MUTATION_MAX_MUTANTS = 20
 DEFAULT_DEEP_MUTATION_TIMEOUT_SECONDS = 30
 DEFAULT_DEEP_MUTATION_TIME_BUDGET_SECONDS = 600
+MAX_DEEP_TEST_SELECTORS = 2_000
+MAX_DEEP_TEST_SELECTOR_WIRE_BYTES = 180 * 1024
 
 
 def normalize_deep_test_selectors(values: Sequence[str]) -> tuple[str, ...]:
     """Validate and canonicalize relative pytest paths and node identifiers."""
 
-    if len(values) > 5000:
+    if len(values) > MAX_DEEP_TEST_SELECTORS:
         raise ValueError("too many deep test selectors")
     normalized: list[str] = []
     seen: set[str] = set()
@@ -67,6 +69,11 @@ def normalize_deep_test_selectors(values: Sequence[str]) -> tuple[str, ...]:
             raise ValueError("deep test selectors contain a duplicate")
         seen.add(identity)
         normalized.append(canonical)
+    wire_bytes = sum(
+        len(selector.encode("utf-8")) + len("--deep-test-selector") + 8 for selector in normalized
+    )
+    if wire_bytes > MAX_DEEP_TEST_SELECTOR_WIRE_BYTES:
+        raise ValueError("deep test selectors exceed the completion-manifest wire bound")
     return tuple(sorted(normalized, key=lambda item: (item.casefold(), item)))
 
 
@@ -813,6 +820,8 @@ __all__ = [
     "DEFAULT_DEEP_SHARD_SIZE",
     "DEFAULT_DEEP_TIME_BUDGET_SECONDS",
     "LEGACY_DEEP_CONFIGURATION_SCHEMA",
+    "MAX_DEEP_TEST_SELECTORS",
+    "MAX_DEEP_TEST_SELECTOR_WIRE_BYTES",
     "AnalysisStatus",
     "ArtifactClassification",
     "ArtifactKind",

@@ -45,6 +45,7 @@ def test_declared_boundary_entry_points_pass_with_acyclic_v2_baseline() -> None:
     imports = (
         ModuleImport("_02_Deduplicacion.__main__", "_04_Nucleo_Operativo.app_paths"),
         ModuleImport("_02_Deduplicacion.__main__", "_04_Nucleo_Operativo.cli_app"),
+        ModuleImport("neocortex.cli", "_04_Nucleo_Operativo.app_paths"),
         ModuleImport("neocortex.cli", "_04_Nucleo_Operativo.cli_app"),
         ModuleImport("neocortex.cli", "_05_Interfaz.app"),
         ModuleImport("neocortex.cli", "_05_Interfaz.worker"),

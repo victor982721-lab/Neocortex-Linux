@@ -36,6 +36,10 @@ _DEDUP_CORE_ALLOWLIST = (
     ("_02_Deduplicacion.__main__", "_04_Nucleo_Operativo.cli_app"),
 )
 _NEOCORTEX_CORE_UI_ALLOWLIST = (
+    # Canonical code-analysis facades need the protected owner default without
+    # importing the operational CLI graph merely to render help or translate
+    # an omitted --state-directory.
+    ("neocortex.cli", "_04_Nucleo_Operativo.app_paths"),
     ("neocortex.cli", "_04_Nucleo_Operativo.cli_app"),
     ("neocortex.cli", "_05_Interfaz.app"),
     ("neocortex.cli", "_05_Interfaz.worker"),

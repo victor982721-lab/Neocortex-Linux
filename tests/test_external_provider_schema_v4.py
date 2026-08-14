@@ -13,8 +13,21 @@ from typing import cast
 import pytest
 
 from _04_Nucleo_Operativo import code_schema, external_evidence_store
-from _04_Nucleo_Operativo.code_external_evidence import ExternalEvidencePublication
+from _04_Nucleo_Operativo.code_external_evidence import (
+    EXTERNAL_EVIDENCE_SCHEMA,
+    RUFF_CONFIGURATION_SIGNATURE,
+    ExternalDiagnostic,
+    ExternalEvidenceFile,
+    ExternalEvidencePublication,
+    _configuration_payload,
+    _external_diagnostic_identity,
+    _external_result_digest,
+    external_input_signature,
+    read_external_evidence,
+)
+from _04_Nucleo_Operativo.code_state import CodeState
 from _04_Nucleo_Operativo.external_evidence_models import (
+    ExternalEvidenceBundle,
     ExternalProviderFinding,
     ExternalProviderMetric,
     ExternalProviderPublication,
@@ -36,6 +49,18 @@ from _04_Nucleo_Operativo.external_evidence_store import (
     read_external_provider_evidence,
     read_external_provider_findings,
     read_external_provider_finding_ids,
+)
+
+
+_EXTERNAL_PROVIDER_TABLES = (
+    "external_tool_runs",
+    "external_run_contracts",
+    "external_run_inputs",
+    "external_run_counters",
+    "external_run_replays",
+    "external_findings",
+    "external_metrics",
+    "external_relations",
 )
 
 
@@ -76,6 +101,15 @@ def _create_current_owner(database: Path, *analysis_run_ids: int) -> None:
         connection.commit()
     finally:
         connection.close()
+
+
+def _complete_owner(connection: sqlite3.Connection, analysis_run_id: int) -> None:
+    updated = connection.execute(
+        """UPDATE analysis_runs SET status='completed',completed_ns=2
+        WHERE analysis_run_id=? AND status='running'""",
+        (analysis_run_id,),
+    )
+    assert updated.rowcount == 1
 
 
 def _descriptor(provider_id: str) -> ProviderDescriptor:
@@ -211,6 +245,101 @@ def _full_publication_with_finding(provider_id: str) -> ExternalProviderPublicat
     )
 
 
+def _legacy_publication(
+    root: Path,
+    files: tuple[ExternalEvidenceFile, ...],
+    *,
+    diagnostics: tuple[ExternalDiagnostic, ...] = (),
+) -> ExternalEvidencePublication:
+    result_digest = _external_result_digest(diagnostics)
+    return ExternalEvidencePublication(
+        "ruff",
+        "fixture-ruff",
+        RUFF_CONFIGURATION_SIGNATURE,
+        "completed",
+        1,
+        2,
+        {
+            "schema": EXTERNAL_EVIDENCE_SCHEMA,
+            "root": str(root),
+            "execution": "full",
+            "configuration": _configuration_payload(),
+            "input": {
+                "signature": external_input_signature(files),
+                "eligible_files": len(files),
+                "total_bytes": sum(item.size for item in files),
+                "version_ids": [item.version_id for item in files],
+            },
+            "result": {
+                "digest": result_digest,
+                "diagnostics": len(diagnostics),
+                "diagnostic_ids": [item.identity for item in diagnostics],
+                "records": [item.result_payload() for item in diagnostics],
+                "comparable": False,
+                "baseline_tool_run_id": None,
+                "added": None,
+                "resolved": None,
+            },
+            "mutation_authority": False,
+            "content_executed": False,
+        },
+        diagnostics,
+    )
+
+
+def _legacy_replay_publication(
+    source: ExternalEvidencePublication,
+    source_tool_run_id: int,
+) -> ExternalEvidencePublication:
+    source_result = cast(dict[str, object], source.provenance["result"])
+    return replace(
+        source,
+        status="skipped",
+        started_ns=3,
+        completed_ns=4,
+        provenance={
+            **source.provenance,
+            "execution": "cache_replay",
+            "reused_tool_run_id": source_tool_run_id,
+            "result": {
+                **source_result,
+                "records": None,
+                "comparable": True,
+                "baseline_tool_run_id": source_tool_run_id,
+                "added": 0,
+                "resolved": 0,
+            },
+        },
+        diagnostics=(),
+    )
+
+
+def _retarget_legacy_fixture(
+    connection: sqlite3.Connection,
+    root: Path,
+) -> tuple[ExternalEvidenceFile, ...]:
+    path = root / "a.py"
+    connection.execute(
+        "UPDATE files SET current_path=? WHERE file_id=1",
+        (str(path),),
+    )
+    connection.execute(
+        "UPDATE file_versions SET path_observed=? WHERE version_id=1",
+        (str(path),),
+    )
+    return (
+        ExternalEvidenceFile(
+            1,
+            str(path),
+            "a.py",
+            4,
+            1,
+            "raw-128",
+            "raw-64",
+        ),
+    )
+
+
 def _legacy_pyright_publication(stage_root: str) -> ExternalProviderPublication:
     provider_id = "pyright-trusted-project"
     message = f"Cycle detected in import chain\n  {stage_root}/a.py"
@@ -341,9 +470,13 @@ def _downgrade_fixture_to_populated_v3(database: Path) -> tuple[tuple[object, ..
             result_digest=external_findings_digest(()),
         )
         publish_external_provider(connection, 1, publication)
+        _complete_owner(connection, 1)
         connection.commit()
         connection.execute("PRAGMA foreign_keys=OFF")
         connection.execute("PRAGMA legacy_alter_table=ON")
+        connection.execute("DROP TRIGGER IF EXISTS code_experiment_receipts_no_update")
+        connection.execute("DROP TRIGGER IF EXISTS code_experiment_receipts_no_delete")
+        connection.execute("DROP TABLE IF EXISTS code_experiment_receipts")
         connection.execute("DROP TABLE external_relations")
         connection.execute("DROP TABLE external_metrics")
         connection.execute("ALTER TABLE files RENAME TO files_current_fixture")
@@ -418,6 +551,7 @@ def test_suite_reader_signature_transaction_and_idempotency_are_frozen(
             1,
             _full_publication("architecture-provider"),
         )
+        _complete_owner(connection, 1)
         connection.commit()
         connection.execute("BEGIN")
         changes_before = connection.total_changes
@@ -455,6 +589,8 @@ def test_legacy_pyright_stage_paths_read_as_one_portable_identity(tmp_path: Path
     try:
         publish_external_provider(connection, 1, first)
         publish_external_provider(connection, 2, second)
+        _complete_owner(connection, 1)
+        _complete_owner(connection, 2)
         raw_ids = tuple(
             str(row[0])
             for row in connection.execute(
@@ -518,22 +654,25 @@ def test_terminal_non_replay_skip_is_publicly_abstained_but_replay_remains_ready
     tmp_path: Path,
 ) -> None:
     database = tmp_path / "terminal-abstention.sqlite3"
-    _create_current_owner(database, 1, 2)
+    _create_current_owner(database, 1, 2, 3)
     connection = code_schema.connect_code_state(database, create=False)
     try:
         abstained = _abstained_publication("focal-provider")
         publish_external_provider(connection, 1, abstained)
+        _complete_owner(connection, 1)
         abstained_suite = read_external_evidence_suite(
             connection,
             1,
             enforce_current_runtime=False,
         )
         source = _full_publication("replay-provider")
-        source_id = publish_external_provider(connection, 1, source)
-        publish_external_provider(connection, 2, _replay_publication(source, source_id))
+        source_id = publish_external_provider(connection, 2, source)
+        _complete_owner(connection, 2)
+        publish_external_provider(connection, 3, _replay_publication(source, source_id))
+        _complete_owner(connection, 3)
         replay_suite = read_external_evidence_suite(
             connection,
-            2,
+            3,
             enforce_current_runtime=False,
         )
         connection.commit()
@@ -649,6 +788,7 @@ def test_publication_replay_and_baseline_resolve_all_evidence(tmp_path: Path) ->
     try:
         source = _full_publication("architecture-provider")
         source_run_id = publish_external_provider(connection, 1, source)
+        _complete_owner(connection, 1)
         connection.execute(
             """INSERT INTO diagnostics(
             version_id,source,code,severity,message,tool_name,tool_version,
@@ -661,6 +801,7 @@ def test_publication_replay_and_baseline_resolve_all_evidence(tmp_path: Path) ->
             2,
             _replay_publication(source, source_run_id),
         )
+        _complete_owner(connection, 2)
         remaining_projection_count = connection.execute(
             """SELECT COUNT(*) FROM diagnostics
             WHERE source='external:architecture-provider'"""
@@ -696,6 +837,189 @@ def test_publication_replay_and_baseline_resolve_all_evidence(tmp_path: Path) ->
     assert exact.portable_relation_ids == (source.relations[0].portable_relation_id,)
 
 
+def test_stale_version_projection_is_comparable_but_not_exactly_replayable(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "stale-replay-baseline.sqlite3"
+    _create_current_owner(database, 1, 2)
+    connection = code_schema.connect_code_state(database, create=False)
+    try:
+        source = _full_publication_with_finding("architecture-provider")
+        publish_external_provider(connection, 1, source)
+        _complete_owner(connection, 1)
+        connection.execute(
+            "UPDATE files SET current_version_id=NULL,status='missing',last_seen_run_id=2"
+        )
+        connection.execute(
+            """UPDATE file_versions SET invalidated_ns=2,
+            invalidation_reason='superseded' WHERE version_id=1"""
+        )
+
+        exact, comparable = read_external_provider_baselines(
+            connection,
+            provider_id="architecture-provider",
+            profile="protected",
+            tool_version="1.0",
+            configuration_signature="fixture-configuration",
+            environment_signature="fixture-environment",
+            root_identity="fixture-root",
+            input_signature="fixture-input",
+            comparability_signature="fixture-comparability:architecture-provider",
+        )
+    finally:
+        connection.close()
+
+    assert exact is None
+    assert comparable is not None
+    assert comparable.portable_finding_ids == (source.findings[0].portable_finding_id,)
+    assert comparable.portable_metric_ids == (source.metrics[0].portable_metric_id,)
+    assert comparable.portable_relation_ids == (source.relations[0].portable_relation_id,)
+
+
+@pytest.mark.parametrize(
+    "owner_status",
+    ("running", "partial", "failed", "cancelled", "interrupted"),
+)
+def test_noncompleted_owner_provider_is_never_public_or_reusable(
+    tmp_path: Path,
+    owner_status: str,
+) -> None:
+    database = tmp_path / f"{owner_status}-owner-provider.sqlite3"
+    _create_current_owner(database, 1, 2)
+    source = _full_publication_with_finding("architecture-provider")
+    connection = code_schema.connect_code_state(database, create=False)
+    try:
+        source_run_id = publish_external_provider(connection, 1, source)
+        if owner_status != "running":
+            connection.execute(
+                """UPDATE analysis_runs SET status=?,completed_ns=2
+                WHERE analysis_run_id=1""",
+                (owner_status,),
+            )
+        connection.commit()
+
+        exact, comparable = read_external_provider_baselines(
+            connection,
+            provider_id="architecture-provider",
+            profile="protected",
+            tool_version="1.0",
+            configuration_signature="fixture-configuration",
+            environment_signature="fixture-environment",
+            root_identity="fixture-root",
+            input_signature="fixture-input",
+            comparability_signature="fixture-comparability:architecture-provider",
+        )
+        suite = read_external_evidence_suite(
+            connection,
+            1,
+            enforce_current_runtime=False,
+        )
+        evidence = read_external_provider_evidence(connection, 1)
+        finding_ids = read_external_provider_finding_ids(connection, 1)
+        findings = read_external_provider_findings(connection, 1)
+        with pytest.raises(ValueError, match="replay source is incompatible"):
+            publish_external_provider(
+                connection,
+                2,
+                _replay_publication(source, source_run_id),
+            )
+        target_rows = connection.execute(
+            "SELECT COUNT(*) FROM external_tool_runs WHERE analysis_run_id=2"
+        ).fetchone()[0]
+    finally:
+        connection.close()
+
+    assert exact is comparable is None
+    assert suite.status == "abstained"
+    assert suite.providers[0].status == "abstained"
+    assert suite.providers[0].reason == "external_provider_owner_not_completed"
+    assert evidence["architecture-provider"].status == "abstained"
+    assert evidence["architecture-provider"].reason == "external_provider_owner_not_completed"
+    assert finding_ids == {"architecture-provider": frozenset()}
+    assert findings == {"architecture-provider": ()}
+    assert target_rows == 0
+
+
+def test_legacy_failed_owner_is_neither_public_baseline_nor_replay_source(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "failed-legacy-owner.sqlite3"
+    root = tmp_path / "root"
+    root.mkdir()
+    _create_current_owner(database, 1, 2)
+
+    with CodeState(database) as state:
+        files = _retarget_legacy_fixture(state.connection, root)
+        state.connection.commit()
+        source_diagnostic = ExternalDiagnostic(
+            1,
+            "a.py",
+            "E001",
+            "Legacy owner must be completed before publication is visible",
+            1,
+            0,
+            1,
+            1,
+            None,
+            False,
+            _external_diagnostic_identity(
+                "a.py",
+                "E001",
+                "Legacy owner must be completed before publication is visible",
+                1,
+                0,
+                1,
+                1,
+            ),
+        )
+        source = _legacy_publication(root, files, diagnostics=(source_diagnostic,))
+        state._publish_external_evidence(1, source)
+        source_tool_run_id = int(
+            state.connection.execute("SELECT MAX(tool_run_id) FROM external_tool_runs").fetchone()[
+                0
+            ]
+        )
+        state.connection.execute(
+            """UPDATE analysis_runs SET status='failed',completed_ns=2,
+            error_type='FixtureFailure',error_message='injected'
+            WHERE analysis_run_id=1"""
+        )
+        state.connection.commit()
+
+        source_status, source_ids, _source_row = read_external_evidence(
+            state.connection,
+            1,
+            enforce_current_runtime=False,
+        )
+        exact, comparable = state.external_evidence_baselines(
+            root=root,
+            tool_name="ruff",
+            tool_version=source.tool_version,
+            configuration_signature=source.configuration_signature,
+            files=files,
+        )
+
+        state._publish_external_evidence(
+            2,
+            _legacy_replay_publication(source, source_tool_run_id),
+        )
+        _complete_owner(state.connection, 2)
+        state.connection.commit()
+        replay_status, replay_ids, _replay_row = read_external_evidence(
+            state.connection,
+            2,
+            enforce_current_runtime=False,
+        )
+
+    assert source_status.status == "abstained"
+    assert source_status.reason == "external_provider_owner_not_completed"
+    assert source_ids == frozenset()
+    assert exact is comparable is None
+    assert replay_status.status == "abstained"
+    assert replay_status.reason == "external_replay_source_invalid"
+    assert replay_ids == frozenset()
+
+
 def test_exact_replay_rematerializes_a_deleted_diagnostic_projection(
     tmp_path: Path,
 ) -> None:
@@ -705,6 +1029,7 @@ def test_exact_replay_rematerializes_a_deleted_diagnostic_projection(
     try:
         source = _full_publication_with_finding("architecture-provider")
         source_run_id = publish_external_provider(connection, 1, source)
+        _complete_owner(connection, 1)
         connection.execute("DELETE FROM diagnostics WHERE source='external:architecture-provider'")
         assert (
             connection.execute(
@@ -720,6 +1045,20 @@ def test_exact_replay_rematerializes_a_deleted_diagnostic_projection(
             2,
             _replay_publication(source, source_run_id),
         )
+        pending_status = read_external_evidence_suite(
+            connection,
+            2,
+            enforce_current_runtime=False,
+        )
+        pending_evidence = read_external_provider_evidence(connection, 2)
+        assert pending_status.status == "abstained"
+        assert pending_status.providers[0].reason == "external_provider_owner_not_completed"
+        assert pending_evidence["architecture-provider"].status == "abstained"
+        assert read_external_provider_finding_ids(connection, 2) == {
+            "architecture-provider": frozenset()
+        }
+        assert read_external_provider_findings(connection, 2) == {"architecture-provider": ()}
+        _complete_owner(connection, 2)
         first_status = read_external_evidence_suite(
             connection,
             2,
@@ -730,6 +1069,7 @@ def test_exact_replay_rematerializes_a_deleted_diagnostic_projection(
             3,
             _replay_publication(source, source_run_id),
         )
+        _complete_owner(connection, 3)
         second_status = read_external_evidence_suite(
             connection,
             3,
@@ -778,6 +1118,7 @@ def test_one_corrupt_provider_abstains_without_hiding_a_valid_provider(
     try:
         first_id = publish_external_provider(connection, 1, _full_publication("first"))
         publish_external_provider(connection, 1, _full_publication("second"))
+        _complete_owner(connection, 1)
         connection.execute(
             "UPDATE external_metrics SET metadata_json='not-json' WHERE tool_run_id=?",
             (first_id,),
@@ -810,6 +1151,7 @@ def test_provider_status_freezes_projection_order_and_stops_after_counter_mismat
             1,
             _full_publication("ordered-provider"),
         )
+        _complete_owner(connection, 1)
         connection.commit()
         events: list[tuple[str, int]] = []
         original_counters = external_evidence_store._counter_map
@@ -911,6 +1253,7 @@ def test_provider_filter_skips_unrequested_projection_reads_and_preserves_replay
     try:
         source = _full_publication("selected")
         source_run_id = publish_external_provider(connection, 1, source)
+        _complete_owner(connection, 1)
         replay_run_id = publish_external_provider(
             connection,
             2,
@@ -921,6 +1264,7 @@ def test_provider_filter_skips_unrequested_projection_reads_and_preserves_replay
             2,
             _full_publication("unrequested-large-provider"),
         )
+        _complete_owner(connection, 2)
         connection.commit()
 
         metric_reads: list[int] = []
@@ -999,3 +1343,251 @@ def test_invalid_provider_publication_rolls_back_its_whole_savepoint(
             assert connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
     finally:
         connection.close()
+
+
+def test_run_completion_rolls_back_the_entire_provider_bundle_and_failed_owner_is_not_reused(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "atomic-provider-bundle.sqlite3"
+    _create_current_owner(database, 1, 2)
+    good = _full_publication("good-provider")
+    invalid = _full_publication("invalid-provider")
+    invalid = replace(
+        invalid,
+        metrics=(invalid.metrics[0], invalid.metrics[0]),
+        counters={**invalid.counters, "metrics": 2},
+        result_digest=external_provider_result_digest(
+            (),
+            (invalid.metrics[0], invalid.metrics[0]),
+            invalid.relations,
+        ),
+    )
+    summary = {
+        "candidates": 1,
+        "processed": 1,
+        "cache_hits": 0,
+        "errors": 0,
+    }
+
+    with CodeState(database) as state:
+        with pytest.raises(ValueError, match="duplicate metric identities"):
+            state.complete_run(
+                1,
+                summary,
+                partial=False,
+                graph_current=True,
+                external_evidence=ExternalEvidenceBundle(None, (good, invalid)),
+            )
+
+        assert state.connection.in_transaction is False
+        assert (
+            state.connection.execute(
+                "SELECT status FROM analysis_runs WHERE analysis_run_id=1"
+            ).fetchone()[0]
+            == "running"
+        )
+        for table in _EXTERNAL_PROVIDER_TABLES:
+            assert state.connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+        assert (
+            state.connection.execute(
+                "SELECT value FROM metadata WHERE key='code_graph_completion_v3'"
+            ).fetchone()
+            is None
+        )
+
+        state.fail_run(1, ValueError("injected provider failure"))
+        exact, comparable = read_external_provider_baselines(
+            state.connection,
+            provider_id="good-provider",
+            profile="protected",
+            tool_version="1.0",
+            configuration_signature="fixture-configuration",
+            environment_signature="fixture-environment",
+            root_identity="fixture-root",
+            input_signature="fixture-input",
+            comparability_signature="fixture-comparability:good-provider",
+        )
+        assert exact is comparable is None
+        with pytest.raises(ValueError, match="replay source is incompatible"):
+            publish_external_provider(
+                state.connection,
+                2,
+                _replay_publication(good, 1),
+            )
+        assert (
+            state.connection.execute("SELECT COUNT(*) FROM external_tool_runs").fetchone()[0] == 0
+        )
+
+
+def test_graph_fence_failure_rolls_back_provider_rows_and_diagnostic_projection(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "provider-graph-fence.sqlite3"
+    _create_current_owner(database, 1)
+    publication = _full_publication_with_finding("good-provider")
+    summary = {
+        "candidates": 1,
+        "processed": 1,
+        "cache_hits": 0,
+        "errors": 0,
+    }
+
+    with CodeState(database) as state:
+
+        def deny_graph_fence(
+            action: int,
+            argument_one: str | None,
+            _argument_two: str | None,
+            _database: str | None,
+            _trigger: str | None,
+        ) -> int:
+            if action == sqlite3.SQLITE_INSERT and argument_one == "metadata":
+                return sqlite3.SQLITE_DENY
+            return sqlite3.SQLITE_OK
+
+        state.connection.set_authorizer(deny_graph_fence)
+        try:
+            with pytest.raises(sqlite3.DatabaseError):
+                state.complete_run(
+                    1,
+                    summary,
+                    partial=False,
+                    graph_current=True,
+                    external_evidence=(publication,),
+                )
+        finally:
+            state.connection.set_authorizer(None)
+
+        assert state.connection.in_transaction is False
+        assert (
+            state.connection.execute(
+                "SELECT status FROM analysis_runs WHERE analysis_run_id=1"
+            ).fetchone()[0]
+            == "running"
+        )
+        for table in _EXTERNAL_PROVIDER_TABLES:
+            assert state.connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+        assert (
+            state.connection.execute(
+                "SELECT COUNT(*) FROM diagnostics WHERE source='external:good-provider'"
+            ).fetchone()[0]
+            == 0
+        )
+        assert (
+            state.connection.execute(
+                "SELECT value FROM metadata WHERE key='code_graph_completion_v3'"
+            ).fetchone()
+            is None
+        )
+
+
+def test_invalid_legacy_publication_rolls_back_prior_normalized_provider(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "normalized-then-invalid-legacy.sqlite3"
+    root = tmp_path / "root"
+    root.mkdir()
+    _create_current_owner(database, 1, 2)
+    normalized = _full_publication_with_finding("good-provider")
+    prior_diagnostic = ExternalDiagnostic(
+        1,
+        "a.py",
+        "E001",
+        "Existing valid legacy projection",
+        1,
+        0,
+        1,
+        1,
+        None,
+        False,
+        _external_diagnostic_identity(
+            "a.py",
+            "E001",
+            "Existing valid legacy projection",
+            1,
+            0,
+            1,
+            1,
+        ),
+    )
+    invalid_diagnostic = ExternalDiagnostic(
+        999,
+        "a.py",
+        "E999",
+        "Invalid legacy diagnostic owner",
+        1,
+        0,
+        1,
+        1,
+        None,
+        False,
+        "legacy-invalid-version",
+    )
+    summary = {
+        "candidates": 1,
+        "processed": 1,
+        "cache_hits": 0,
+        "errors": 0,
+    }
+
+    with CodeState(database) as state:
+        files = _retarget_legacy_fixture(state.connection, root)
+        state.connection.commit()
+        state._publish_external_evidence(
+            1,
+            _legacy_publication(root, files, diagnostics=(prior_diagnostic,)),
+        )
+        _complete_owner(state.connection, 1)
+        state.connection.commit()
+        counts_before = {
+            table: state.connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            for table in _EXTERNAL_PROVIDER_TABLES
+        }
+        diagnostics_before = tuple(
+            tuple(row)
+            for row in state.connection.execute(
+                """SELECT source,code,message,metadata_json FROM diagnostics
+                WHERE source LIKE 'external:%' ORDER BY diagnostic_id"""
+            )
+        )
+        legacy = _legacy_publication(
+            root,
+            files,
+            diagnostics=(invalid_diagnostic,),
+        )
+
+        with pytest.raises(RuntimeError, match="diagnostic version is no longer current"):
+            state.complete_run(
+                2,
+                summary,
+                partial=False,
+                graph_current=True,
+                external_evidence=ExternalEvidenceBundle(legacy, (normalized,)),
+            )
+
+        assert state.connection.in_transaction is False
+        assert (
+            state.connection.execute(
+                "SELECT status FROM analysis_runs WHERE analysis_run_id=2"
+            ).fetchone()[0]
+            == "running"
+        )
+        for table in _EXTERNAL_PROVIDER_TABLES:
+            assert (
+                state.connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                == counts_before[table]
+            )
+        diagnostics_after = tuple(
+            tuple(row)
+            for row in state.connection.execute(
+                """SELECT source,code,message,metadata_json FROM diagnostics
+                WHERE source LIKE 'external:%' ORDER BY diagnostic_id"""
+            )
+        )
+        assert diagnostics_after == diagnostics_before
+        assert (
+            state.connection.execute(
+                "SELECT value FROM metadata WHERE key='code_graph_completion_v3'"
+            ).fetchone()
+            is None
+        )

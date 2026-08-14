@@ -125,9 +125,29 @@ El proveedor es `authority=advisory`, conserva `mutation_authority=false` y
 declara `uses_network=true` porque los tests podrían usar red; no es una
 autorización para modificar la raíz canónica.
 
+`--code-experiment-run` reutiliza esa misma frontera trusted-deep para nodeids
+allow-listed. El directorio temporal contiene runtime/checkpoints, pero Pytest
+ejecuta el checkout canónico directamente: no es una copia, contenedor, namespace
+de red ni sandbox de filesystem. Conserva el `HOME` canónico y el descriptor
+declara `uses_network=true`; la allowlist limita qué tests se seleccionan, no los
+efectos que pueda realizar su código. Debe usarse sólo sobre este repositorio
+confiable. La barrera `PrivateNetwork=yes` de `Neocortex code validate` pertenece
+al orquestador Linux y no debe atribuirse a una invocación standalone.
+
+El ejecutor recalcula antes/después la firma exacta de los inputs Python
+publicados y del soporte Git observado, y compara el digest de `code.sqlite3`
+durante la fase de tests. No mantiene un lock continuo del checkout ni cerca el
+corpus u otros owners. Tras medir, la CLI escribe deliberadamente el receipt
+terminal en la tabla inmutable append-only de Code schema v6;
+`code_database_unchanged=true` no significa que todo el comando sea read-only.
+El review v17 verifica además el envelope digest y sólo enlaza el terminal
+`passed` más nuevo por proposal/firma a gates registrados; un terminal posterior
+fallido o abstenido lo invalida. Los trata como evidencia del contrato de tests
+y nunca como autorización, verdad formal o decisión humana.
+
 La finalización no confía únicamente en la CLI: Framework v22 conserva la
 protección de v20 que impide enlazar
-acciones a un run protegido, Dedup v10 exige el scan ligado a su firma y Code v5
+acciones a un run protegido, Dedup v10 exige el scan ligado a su firma y Code v6
 conserva el run analítico. Los owners de mutación reciben
 `CorpusMutationGuard` y el commit exige ceros durables en candidatos, acciones
 y organización. Una identidad cambiada, un árbol intersectante o una frontera

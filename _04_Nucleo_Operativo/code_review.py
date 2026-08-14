@@ -34,6 +34,11 @@ from .code_engineering_analytics import (
     analyze_code_engineering,
 )
 from .code_experiment_planner import plan_code_experiments
+from .code_experiment_store import (
+    CodeExperimentStoreError,
+    apply_code_experiment_receipts,
+    read_code_experiment_receipts,
+)
 from .code_invariant_assurance_analysis import analyze_code_invariant_assurance
 from .code_route_capability_analysis import (
     abstained_route_capability_analysis,
@@ -47,7 +52,6 @@ from .code_external_evidence import (
 )
 from .code_interface_surface_analysis import (
     CodeInterfaceSurfaceAnalysis,
-    abstained_code_interface_surface,
     read_code_interface_surface_analysis,
 )
 from .code_unused_analysis import (
@@ -82,6 +86,7 @@ from .code_review_models import (
     CodeReviewSnapshot,
     FindingCategory,
     RecommendationStatus,
+    ReviewFreshness,
 )
 from .code_review_serialization import build_code_review_digest
 from .code_review_epistemics import (
@@ -106,7 +111,6 @@ from .code_state_topology_analysis import (
 )
 from .code_schema import (
     CODE_SCHEMA_VERSION,
-    readonly_code_database,
     validate_code_schema,
 )
 from .external_evidence_models import ExternalEvidenceSuiteStatus, ExternalProviderEvidence
@@ -116,6 +120,8 @@ from .external_evidence_store import (
 )
 from .self_analysis_status import (
     CodeRunStatusEvidence,
+    SelfAnalysisStatus,
+    quiescent_sqlite_database,
     read_self_analysis_status,
     require_sqlite_sidecars_absent,
 )
@@ -126,6 +132,7 @@ CODE_REVIEW_LIMIT = 10
 CODE_REVIEW_MAX_LIMIT = 50
 CODE_REVIEW_MAX_PER_FILE = 2
 CODE_REVIEW_MAX_CANDIDATES = 10_000
+CODE_REVIEW_CANDIDATE_SCAN_FACTOR = 20
 CODE_REVIEW_CALLER_EXAMPLES = 3
 CODE_REVIEW_CONSUMER_MODULE_EXAMPLES = 5
 CODE_REVIEW_OUTGOING_CALL_LIMIT = 256
@@ -170,7 +177,7 @@ class _Candidate:
 
 @dataclass(frozen=True, slots=True)
 class _ReviewRead:
-    latest_run: CodeRunStatusEvidence | None
+    latest_run: CodeRunStatusEvidence
     coverage: CodeReviewCoverage
     findings: tuple[CodeReviewFinding, ...]
     enumeration_truncated: bool
@@ -184,6 +191,15 @@ class _ReviewRead:
     provider_evidence: Mapping[str, ExternalProviderEvidence]
     change_evolution: CodeChangeEvolutionAnalysis
     interface_surface: CodeInterfaceSurfaceAnalysis
+
+
+@dataclass(frozen=True, slots=True)
+class _ReviewFreshnessFence:
+    latest_run: CodeRunStatusEvidence
+    status: SelfAnalysisStatus
+    freshness: ReviewFreshness
+    freshness_limitation: str | None
+    root: str
 
 
 _CANDIDATE_SQL = """
@@ -296,6 +312,50 @@ def _current_versions_match_latest_run(
         (latest_run.framework_run_id, latest_run.processing_signature),
     ).fetchone()
     return row is not None and int(row[0]) == 0
+
+
+def _candidate_scan_limit(limit: int) -> int:
+    """Bound diversity look-ahead while retaining an explicit truncation signal."""
+
+    return min(CODE_REVIEW_MAX_CANDIDATES, limit * CODE_REVIEW_CANDIDATE_SCAN_FACTOR)
+
+
+def _review_freshness_fence(
+    state_directory: Path,
+    path: Path,
+) -> tuple[_ReviewFreshnessFence | None, str | None]:
+    """Resolve the latest run and manifest before materializing review evidence."""
+
+    with quiescent_sqlite_database(path, timeout_seconds=60) as connection:
+        validate_code_schema(connection)
+        schema_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+        if schema_version != CODE_SCHEMA_VERSION:
+            raise RuntimeError(f"code state schema {schema_version} is unsupported for review")
+        latest_run = _latest_run(connection)
+        if latest_run is None:
+            return None, "code_run_missing"
+        if latest_run.status != "completed":
+            return None, f"code_run_not_completed:{latest_run.status}"
+        if not _current_versions_match_latest_run(connection, latest_run):
+            raise CodeReviewEvidenceResolutionError(
+                "current_code_projection_not_owned_by_latest_completed_run"
+            )
+    status = read_self_analysis_status(state_directory, latest_run)
+    reason, freshness, freshness_limitation = code_review_eligibility(status)
+    if reason is not None:
+        return None, reason
+    if status is None or freshness is None:
+        raise AssertionError("eligible code review requires self-analysis status")
+    return (
+        _ReviewFreshnessFence(
+            latest_run=latest_run,
+            status=status,
+            freshness=freshness,
+            freshness_limitation=freshness_limitation,
+            root=self_analysis_manifest_root(status),
+        ),
+        None,
+    )
 
 
 def _candidate(row: sqlite3.Row) -> _Candidate:
@@ -718,23 +778,27 @@ def _finding(
     )
 
 
-def _read_review(path: Path, *, limit: int) -> _ReviewRead:
-    with readonly_code_database(path) as connection:
+def _read_review(
+    path: Path,
+    *,
+    limit: int,
+    expected_latest_run: CodeRunStatusEvidence,
+) -> _ReviewRead:
+    with quiescent_sqlite_database(path, timeout_seconds=60) as connection:
         validate_code_schema(connection)
         schema_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
         if schema_version != CODE_SCHEMA_VERSION:
             raise RuntimeError(f"code state schema {schema_version} is unsupported for review")
         latest_run = _latest_run(connection)
-        if latest_run is not None and not _current_versions_match_latest_run(
-            connection,
-            latest_run,
-        ):
+        if latest_run is None or latest_run != expected_latest_run:
+            raise CodeReviewEvidenceResolutionError("latest_code_run_changed_during_review")
+        if not _current_versions_match_latest_run(connection, latest_run):
             raise CodeReviewEvidenceResolutionError(
                 "current_code_projection_not_owned_by_latest_completed_run"
             )
         rows = connection.execute(
             _CANDIDATE_SQL,
-            (CODE_REVIEW_MAX_CANDIDATES,),
+            (_candidate_scan_limit(limit),),
         ).fetchall()
         candidates = tuple(_candidate(row) for row in rows)
         total_candidates = int(rows[0]["total_candidates"]) if rows else 0
@@ -768,7 +832,7 @@ def _read_review(path: Path, *, limit: int) -> _ReviewRead:
         ).fetchone()
         current_python = int(current_python_files)
         complete_python = int(complete_python_files or 0)
-        analysis_run_id = -1 if latest_run is None else latest_run.analysis_run_id
+        analysis_run_id = latest_run.analysis_run_id
         external_evidence = read_external_evidence(
             connection,
             analysis_run_id,
@@ -783,6 +847,7 @@ def _read_review(path: Path, *, limit: int) -> _ReviewRead:
             connection,
             analysis_run_id,
             database=str(path),
+            reachability_limit=limit,
         )
         test_coverage = read_code_coverage_analysis(
             connection,
@@ -823,16 +888,12 @@ def _read_review(path: Path, *, limit: int) -> _ReviewRead:
             database=str(path),
             limit=limit,
         )
-        interface_surface = (
-            abstained_code_interface_surface("code_run_missing", database=str(path))
-            if latest_run is None
-            else read_code_interface_surface_analysis(
-                connection,
-                analysis_run_id=analysis_run_id,
-                processing_signature=latest_run.processing_signature,
-                database=str(path),
-                limit=limit,
-            )
+        interface_surface = read_code_interface_surface_analysis(
+            connection,
+            analysis_run_id=analysis_run_id,
+            processing_signature=latest_run.processing_signature,
+            database=str(path),
+            limit=limit,
         )
     return _ReviewRead(
         latest_run=latest_run,
@@ -861,7 +922,12 @@ def _read_review(path: Path, *, limit: int) -> _ReviewRead:
     )
 
 
-def _abstained(path: Path, reason: str) -> CodeReviewResult:
+def _abstained(
+    path: Path,
+    reason: str,
+    *,
+    materialization_limit: int = CODE_REVIEW_LIMIT,
+) -> CodeReviewResult:
     return CodeReviewResult(
         database=str(path),
         status="abstained",
@@ -887,6 +953,7 @@ def _abstained(path: Path, reason: str) -> CodeReviewResult:
         unused_analysis=None,
         supply_chain=None,
         engineering_analytics=None,
+        materialization_limit=materialization_limit,
     )
 
 
@@ -903,22 +970,33 @@ def review_code_state(
     path = state_directory / "code.sqlite3"
     require_sqlite_sidecars_absent(path)
     if not path.is_file():
-        return _abstained(path, "code_state_missing")
+        return _abstained(path, "code_state_missing", materialization_limit=limit)
     try:
-        read = _read_review(path, limit=limit)
+        fence, fence_reason = _review_freshness_fence(state_directory, path)
     except CodeReviewEvidenceResolutionError:
-        return _abstained(path, "code_review_evidence_unresolvable")
-    if read.latest_run is None:
-        return _abstained(path, "code_run_missing")
-    if read.latest_run.status != "completed":
-        return _abstained(path, f"code_run_not_completed:{read.latest_run.status}")
-    status = read_self_analysis_status(state_directory, read.latest_run)
-    reason, freshness, freshness_limitation = code_review_eligibility(status)
-    if reason is not None:
-        return _abstained(path, reason)
-    if status is None or freshness is None:
-        raise AssertionError("eligible code review requires self-analysis status")
+        return _abstained(
+            path,
+            "code_review_evidence_unresolvable",
+            materialization_limit=limit,
+        )
+    if fence_reason is not None:
+        return _abstained(path, fence_reason, materialization_limit=limit)
+    if fence is None:
+        raise AssertionError("eligible code review requires a freshness fence")
+    try:
+        read = _read_review(
+            path,
+            limit=limit,
+            expected_latest_run=fence.latest_run,
+        )
+    except CodeReviewEvidenceResolutionError:
+        return _abstained(
+            path,
+            "code_review_evidence_unresolvable",
+            materialization_limit=limit,
+        )
     limitations = [
+        f"public_example_materialization_limit:{limit}",
         "raw_ranking_score_is_not_calibrated_risk",
         "structural_hotspot_opens_a_question_not_a_change_decision",
         "intentional_complexity_requires_human_confirmation",
@@ -927,8 +1005,8 @@ def review_code_state(
         "work_package_relationships_are_bounded_to_two_static_call_hops",
         "probable_dead_symbol_is_suppressed_uncalibrated_evidence",
     ]
-    if freshness_limitation is not None:
-        limitations.insert(0, freshness_limitation)
+    if fence.freshness_limitation is not None:
+        limitations.insert(0, fence.freshness_limitation)
     if read.enumeration_truncated:
         limitations.append("candidate_enumeration_truncated")
     if read.external_evidence.status != "ready":
@@ -972,10 +1050,10 @@ def review_code_state(
         framework_run_id=read.latest_run.framework_run_id,
         scan_id=read.latest_run.scan_id,
         processing_signature=read.latest_run.processing_signature,
-        root=self_analysis_manifest_root(status),
-        freshness=freshness,
-        current=status.freshness.current,
-        journal_status=status.freshness.journal_status,
+        root=fence.root,
+        freshness=fence.freshness,
+        current=fence.status.freshness.current,
+        journal_status=fence.status.freshness.journal_status,
     )
     recommendations: tuple[CodeReviewRecommendation, ...] = ()
     recommendation_status: RecommendationStatus = "abstained"
@@ -992,7 +1070,7 @@ def review_code_state(
         supply_chain=read.supply_chain,
     )
     try:
-        with readonly_code_database(path) as connection:
+        with quiescent_sqlite_database(path, timeout_seconds=60) as connection:
             validate_code_schema(connection)
             structural_analysis, _structural_specs, _structural_evaluations = (
                 resolve_code_review_questions(
@@ -1003,7 +1081,11 @@ def review_code_state(
                 )
             )
     except CodeReviewEvidenceResolutionError:
-        return _abstained(path, "code_review_evidence_unresolvable")
+        return _abstained(
+            path,
+            "code_review_evidence_unresolvable",
+            materialization_limit=limit,
+        )
     document_state: Path | None = None
     try:
         from .app_paths import self_analysis_data_directory
@@ -1092,7 +1174,7 @@ def review_code_state(
         work_packages_observed=len(work_packages),
         providers=read.external_evidence_suite.providers,
     )
-    question_specs, question_evaluations = expected_integrated_code_review_questions(
+    question_specs, base_question_evaluations = expected_integrated_code_review_questions(
         read.findings,
         snapshot,
         structural_analysis,
@@ -1110,7 +1192,55 @@ def review_code_state(
         route_capabilities=route_capabilities,
         analyzer_calibration=analyzer_calibration,
     )
+    base_experiment_plan = plan_code_experiments(question_specs, base_question_evaluations)
+    try:
+        experiment_receipts = read_code_experiment_receipts(
+            path,
+            analysis_run_id=snapshot.analysis_run_id,
+            processing_signature=snapshot.processing_signature,
+            plan=base_experiment_plan,
+        )
+        question_evaluations = apply_code_experiment_receipts(
+            question_specs,
+            base_question_evaluations,
+            base_experiment_plan,
+            experiment_receipts,
+        )
+    except (CodeExperimentStoreError, ValueError):
+        return _abstained(
+            path,
+            "code_experiment_receipt_evidence_unresolvable",
+            materialization_limit=limit,
+        )
     experiment_plan = plan_code_experiments(question_specs, question_evaluations)
+    if experiment_receipts:
+        limitations.append(
+            "passed_experiment_receipts_are_exact_test_contract_evidence_not_human_decisions"
+        )
+    try:
+        post_fence, post_reason = _review_freshness_fence(state_directory, path)
+    except CodeReviewEvidenceResolutionError:
+        return _abstained(
+            path,
+            "code_review_evidence_unresolvable",
+            materialization_limit=limit,
+        )
+    if post_reason is not None:
+        return _abstained(path, post_reason, materialization_limit=limit)
+    if post_fence is None:
+        raise AssertionError("completed code review requires a post-read freshness fence")
+    if post_fence.latest_run != fence.latest_run:
+        return _abstained(
+            path,
+            "latest_code_run_changed_during_review",
+            materialization_limit=limit,
+        )
+    if post_fence != fence:
+        return _abstained(
+            path,
+            "self_analysis_freshness_changed_during_review",
+            materialization_limit=limit,
+        )
     limitation_tuple = tuple(limitations)
     return CodeReviewResult(
         database=str(path),
@@ -1147,9 +1277,11 @@ def review_code_state(
         analyzer_effectiveness=analyzer_effectiveness,
         analyzer_calibration=analyzer_calibration,
         experiment_plan=experiment_plan,
+        experiment_receipts=experiment_receipts,
         interface_surface=read.interface_surface,
         question_specs=question_specs,
         question_evaluations=question_evaluations,
+        materialization_limit=limit,
         limitations=limitation_tuple,
         digest=build_code_review_digest(
             snapshot,
@@ -1181,6 +1313,7 @@ def review_code_state(
             analyzer_effectiveness=analyzer_effectiveness,
             analyzer_calibration=analyzer_calibration,
             experiment_plan=experiment_plan,
+            experiment_receipts=experiment_receipts,
             interface_surface=read.interface_surface,
             unused_analysis=read.unused_analysis,
             supply_chain=read.supply_chain,

@@ -36,6 +36,11 @@ from .code_engineering_analytics import (
 from .code_external_evidence import ExternalEvidenceStatus
 from .code_interface_surface_analysis import CodeInterfaceSurfaceAnalysis
 from .code_experiment_planner import CodeExperimentPlan, plan_code_experiments
+from .code_experiment_store import (
+    CODE_EXPERIMENT_STORE_MAX_RESOLVED,
+    ResolvedCodeExperimentReceipt,
+    apply_code_experiment_receipts,
+)
 from .code_invariant_assurance_analysis import CodeInvariantAssuranceAnalysis
 from .code_route_capability_analysis import CodeRouteCapabilityAnalysis
 from .code_state_interaction_analysis import CodeStateInteractionAnalysis
@@ -63,13 +68,16 @@ from .code_state_topology_analysis import CodeStateTopologyAnalysis
 from .external_evidence_models import ExternalEvidenceSuiteStatus
 from .semantic_models import canonical_json, fingerprint_text
 
-# v16 integrates SQL/state interactions, declared invariant outcomes, the
-# built-in route portfolio, explicit calibration, and an experiment plan.
+# v17 additionally links immutable, passed experiment receipts back into the
+# exact evidence requirements they measured.  Receipts remain advisory and a
+# complete evidence partition requires human review rather than a machine
+# decision.
 # Earlier contracts cannot satisfy the expanded wire, so no compatibility is
 # claimed without an explicit adapter.
 CODE_REVIEW_COVERAGE_EXAMPLE_LIMIT = 20
 CODE_REVIEW_ENGINEERING_EXAMPLE_LIMIT = 20
 CODE_REVIEW_UNUSED_EXAMPLE_LIMIT = 20
+CODE_REVIEW_PUBLIC_MATERIALIZATION_MAX = 50
 
 _UNUSED_CHARACTERIZATION_REQUIREMENTS = (
     "verify_import_reexport_callback_registry_protocol_and_entry_point_usage",
@@ -622,8 +630,18 @@ class CodeReviewResult:
     interface_surface: CodeInterfaceSurfaceAnalysis | None = None
     question_specs: tuple[AnalysisQuestionSpec, ...] = ()
     question_evaluations: tuple[AnalysisQuestionEvaluation, ...] = ()
+    experiment_receipts: tuple[ResolvedCodeExperimentReceipt, ...] = ()
+    # Presentation-only bound.  The digest continues to bind the complete
+    # evidence model while public example projections expose totals/truncation.
+    materialization_limit: int = CODE_REVIEW_COVERAGE_EXAMPLE_LIMIT
 
     def __post_init__(self) -> None:
+        if (
+            isinstance(self.materialization_limit, bool)
+            or not isinstance(self.materialization_limit, int)
+            or not 1 <= self.materialization_limit <= CODE_REVIEW_PUBLIC_MATERIALIZATION_MAX
+        ):
+            raise ValueError("code-review materialization limit must be between 1 and 50")
         if self.status not in {"ready", "abstained"}:
             raise ValueError("invalid code-review result status")
         if self.recommendation_status not in {"ready", "abstained", "not_evaluated"}:
@@ -631,15 +649,15 @@ class CodeReviewResult:
         if self.work_package_status not in {"ready", "abstained", "not_evaluated"}:
             raise ValueError("invalid code-review work-package status")
         if self.recommendations:
-            raise ValueError("code-review/v16 cannot publish semantic change recommendations")
+            raise ValueError("code-review/v17 cannot publish semantic change recommendations")
         if self.recommendation_status == "ready":
-            raise ValueError("code-review/v16 recommendation status must abstain")
+            raise ValueError("code-review/v17 recommendation status must abstain")
         if self.recommendation_status == "abstained" and not self.recommendation_reason:
             raise ValueError("abstained recommendation status requires a reason")
         if self.recommendation_status == "not_evaluated" and not self.recommendation_reason:
             raise ValueError("not-evaluated recommendation status requires a reason")
         if any(package.package_kind != "unused_characterization" for package in self.work_packages):
-            raise ValueError("code-review/v16 cannot publish hotspot change packages")
+            raise ValueError("code-review/v17 cannot publish hotspot change packages")
         if (self.work_package_status == "ready") != bool(self.work_packages):
             raise ValueError("work-package readiness must match published packages")
         if self.work_package_status == "ready" and self.work_package_reason is not None:
@@ -682,6 +700,7 @@ class CodeReviewResult:
                 or self.state_projection is not None
                 or self.question_specs
                 or self.question_evaluations
+                or self.experiment_receipts
             ):
                 raise ValueError("abstained code-review result cannot publish unverified evidence")
             return
@@ -721,6 +740,21 @@ class CodeReviewResult:
             raise ValueError("ready code-review result requires interface surface evidence")
         if self.supply_chain is None:
             raise ValueError("ready code-review result requires supply-chain evidence")
+        if (
+            not isinstance(self.experiment_receipts, tuple)
+            or len(self.experiment_receipts) > CODE_EXPERIMENT_STORE_MAX_RESOLVED
+            or any(
+                not isinstance(item, ResolvedCodeExperimentReceipt)
+                for item in self.experiment_receipts
+            )
+        ):
+            raise ValueError("code-review experiment receipts are invalid or out of bounds")
+        if any(
+            item.analysis_run_id > self.snapshot.analysis_run_id
+            or item.receipt.source_version != self.snapshot.processing_signature
+            for item in self.experiment_receipts
+        ):
+            raise ValueError("code-review experiment receipts disagree with their snapshot")
         if (
             self.structural_analysis.snapshot_id != self.snapshot.processing_signature
             or self.structural_analysis.snapshot_freshness != self.snapshot.freshness
@@ -794,9 +828,16 @@ class CodeReviewResult:
             route_capabilities=self.route_capabilities,
             analyzer_calibration=self.analyzer_calibration,
         )
-        if self.question_specs != expected_specs or self.question_evaluations != (
-            expected_evaluations
-        ):
+        if self.question_specs != expected_specs:
+            raise ValueError("code-review question specs are not reproducible from evidence")
+        base_plan = plan_code_experiments(expected_specs, expected_evaluations)
+        expected_evaluations = apply_code_experiment_receipts(
+            expected_specs,
+            expected_evaluations,
+            base_plan,
+            self.experiment_receipts,
+        )
+        if self.question_evaluations != expected_evaluations:
             raise ValueError("code-review questions are not reproducible from published evidence")
         if self.experiment_plan != plan_code_experiments(
             self.question_specs, self.question_evaluations
@@ -823,7 +864,11 @@ class CodeReviewResult:
             "findings": [asdict(item) for item in self.findings],
             "recommendations": [],
             "work_packages": [
-                bounded_code_review_work_package_payload(item) for item in self.work_packages
+                bounded_code_review_work_package_payload(
+                    item,
+                    limit=self.materialization_limit,
+                )
+                for item in self.work_packages
             ],
             "external_evidence": (
                 None if self.external_evidence is None else self.external_evidence.as_payload()
@@ -837,20 +882,29 @@ class CodeReviewResult:
             "test_coverage": (
                 None
                 if self.test_coverage is None
-                else bounded_code_coverage_payload(self.test_coverage)
+                else bounded_code_coverage_payload(
+                    self.test_coverage,
+                    limit=self.materialization_limit,
+                )
             ),
             "limitations": list(self.limitations),
             "digest": None if self.digest is None else asdict(self.digest),
             "unused_analysis": (
                 None
                 if self.unused_analysis is None
-                else bounded_code_unused_payload(self.unused_analysis)
+                else bounded_code_unused_payload(
+                    self.unused_analysis,
+                    limit=self.materialization_limit,
+                )
             ),
             "supply_chain": (None if self.supply_chain is None else self.supply_chain.as_payload()),
             "engineering_analytics": (
                 None
                 if self.engineering_analytics is None
-                else bounded_code_engineering_payload(self.engineering_analytics)
+                else bounded_code_engineering_payload(
+                    self.engineering_analytics,
+                    limit=self.materialization_limit,
+                )
             ),
             "structural_analysis": (
                 None if self.structural_analysis is None else self.structural_analysis.as_payload()
@@ -892,6 +946,7 @@ class CodeReviewResult:
             "experiment_plan": (
                 None if self.experiment_plan is None else self.experiment_plan.as_payload()
             ),
+            "experiment_receipts": [item.as_payload() for item in self.experiment_receipts],
             "interface_surface": (
                 None if self.interface_surface is None else self.interface_surface.as_payload()
             ),
@@ -908,8 +963,22 @@ class CodeReviewResult:
         }
 
 
-def _bounded_scope_payload(scope: CoverageScopeSummary) -> dict[str, object]:
-    limit = CODE_REVIEW_COVERAGE_EXAMPLE_LIMIT
+def _public_materialization_limit(limit: int) -> int:
+    if (
+        isinstance(limit, bool)
+        or not isinstance(limit, int)
+        or not 1 <= limit <= CODE_REVIEW_PUBLIC_MATERIALIZATION_MAX
+    ):
+        raise ValueError("public Code review limit must be between 1 and 50")
+    return limit
+
+
+def _bounded_scope_payload(
+    scope: CoverageScopeSummary,
+    *,
+    limit: int = CODE_REVIEW_COVERAGE_EXAMPLE_LIMIT,
+) -> dict[str, object]:
+    limit = _public_materialization_limit(limit)
     return {
         "subject_kind": scope.subject_kind,
         "subject_key": scope.subject_key,
@@ -938,8 +1007,10 @@ def _bounded_scope_payload(scope: CoverageScopeSummary) -> dict[str, object]:
 
 def _bounded_unused_candidate_payload(
     candidate: UnusedConsensusCandidate,
+    *,
+    limit: int = CODE_REVIEW_UNUSED_EXAMPLE_LIMIT,
 ) -> dict[str, object]:
-    limit = CODE_REVIEW_UNUSED_EXAMPLE_LIMIT
+    limit = _public_materialization_limit(limit)
     payload = asdict(candidate)
     for field_name in ("provider_ids", "reasons", "evidence", "limitations"):
         values = getattr(candidate, field_name)
@@ -955,13 +1026,18 @@ def _bounded_unused_candidate_payload(
     return payload
 
 
-def bounded_code_unused_payload(analysis: CodeUnusedAnalysis) -> dict[str, object]:
+def bounded_code_unused_payload(
+    analysis: CodeUnusedAnalysis,
+    *,
+    limit: int = CODE_REVIEW_UNUSED_EXAMPLE_LIMIT,
+) -> dict[str, object]:
     """Project small public examples while the digest retains every candidate."""
 
-    limit = CODE_REVIEW_UNUSED_EXAMPLE_LIMIT
+    limit = _public_materialization_limit(limit)
     payload = analysis.as_payload()
     payload["candidates"] = [
-        _bounded_unused_candidate_payload(candidate) for candidate in analysis.candidates[:limit]
+        _bounded_unused_candidate_payload(candidate, limit=limit)
+        for candidate in analysis.candidates[:limit]
     ]
     payload["candidates_total"] = len(analysis.candidates)
     payload["candidates_truncated"] = len(analysis.candidates) > limit
@@ -974,8 +1050,12 @@ def bounded_code_unused_payload(analysis: CodeUnusedAnalysis) -> dict[str, objec
     return payload
 
 
-def _bounded_relation_payload(relation: TestToSymbolRelation) -> dict[str, object]:
-    limit = CODE_REVIEW_COVERAGE_EXAMPLE_LIMIT
+def _bounded_relation_payload(
+    relation: TestToSymbolRelation,
+    *,
+    limit: int = CODE_REVIEW_COVERAGE_EXAMPLE_LIMIT,
+) -> dict[str, object]:
+    limit = _public_materialization_limit(limit)
     return {
         "relation_id": relation.relation_id,
         "test_key": relation.test_key,
@@ -1007,8 +1087,10 @@ def _missing_scope_examples(
 
 def bounded_code_coverage_payload(
     analysis: CodeCoverageAnalysis,
+    *,
+    limit: int = CODE_REVIEW_COVERAGE_EXAMPLE_LIMIT,
 ) -> dict[str, object]:
-    limit = CODE_REVIEW_COVERAGE_EXAMPLE_LIMIT
+    limit = _public_materialization_limit(limit)
     missing_modules = _missing_scope_examples(analysis.modules)
     missing_symbols = _missing_scope_examples(analysis.symbols)
     return {
@@ -1041,15 +1123,15 @@ def bounded_code_coverage_payload(
         "failed_test_examples": list(analysis.failed_test_nodeids[:limit]),
         "failed_test_examples_truncated": len(analysis.failed_test_nodeids) > limit,
         "module_missing_examples": [
-            _bounded_scope_payload(item) for item in missing_modules[:limit]
+            _bounded_scope_payload(item, limit=limit) for item in missing_modules[:limit]
         ],
         "module_missing_examples_truncated": len(missing_modules) > limit,
         "symbol_missing_examples": [
-            _bounded_scope_payload(item) for item in missing_symbols[:limit]
+            _bounded_scope_payload(item, limit=limit) for item in missing_symbols[:limit]
         ],
         "symbol_missing_examples_truncated": len(missing_symbols) > limit,
         "test_relation_examples": [
-            _bounded_relation_payload(item) for item in analysis.test_relations[:limit]
+            _bounded_relation_payload(item, limit=limit) for item in analysis.test_relations[:limit]
         ],
         "test_relation_examples_truncated": len(analysis.test_relations) > limit,
         "gates": [asdict(item) for item in analysis.gates],
@@ -1059,8 +1141,10 @@ def bounded_code_coverage_payload(
 
 def _bounded_engineering_dimension_payload(
     dimension: EngineeringDimension,
+    *,
+    limit: int = CODE_REVIEW_ENGINEERING_EXAMPLE_LIMIT,
 ) -> dict[str, object]:
-    limit = CODE_REVIEW_ENGINEERING_EXAMPLE_LIMIT
+    limit = _public_materialization_limit(limit)
     return {
         "dimension": dimension.dimension,
         "status": dimension.status,
@@ -1079,24 +1163,29 @@ def _bounded_engineering_dimension_payload(
 
 def _bounded_engineering_profile_payload(
     profile: ModuleEngineeringProfile,
+    *,
+    limit: int = CODE_REVIEW_ENGINEERING_EXAMPLE_LIMIT,
 ) -> dict[str, object]:
+    limit = _public_materialization_limit(limit)
     return {
         "module_id": profile.module_id,
         "path_namespace_id": profile.path_namespace_id,
-        "complexity": _bounded_engineering_dimension_payload(profile.complexity),
-        "coverage": _bounded_engineering_dimension_payload(profile.coverage),
-        "mutation": _bounded_engineering_dimension_payload(profile.mutation),
-        "history": _bounded_engineering_dimension_payload(profile.history),
-        "graph": _bounded_engineering_dimension_payload(profile.graph),
+        "complexity": _bounded_engineering_dimension_payload(profile.complexity, limit=limit),
+        "coverage": _bounded_engineering_dimension_payload(profile.coverage, limit=limit),
+        "mutation": _bounded_engineering_dimension_payload(profile.mutation, limit=limit),
+        "history": _bounded_engineering_dimension_payload(profile.history, limit=limit),
+        "graph": _bounded_engineering_dimension_payload(profile.graph, limit=limit),
     }
 
 
 def bounded_code_engineering_payload(
     analysis: CodeEngineeringAnalytics,
+    *,
+    limit: int = CODE_REVIEW_ENGINEERING_EXAMPLE_LIMIT,
 ) -> dict[str, object]:
     """Project bounded module examples without changing analytics authority."""
 
-    limit = CODE_REVIEW_ENGINEERING_EXAMPLE_LIMIT
+    limit = _public_materialization_limit(limit)
     return {
         "kind": "code-engineering-analytics",
         "schema": CODE_ENGINEERING_ANALYTICS_SCHEMA,
@@ -1108,7 +1197,8 @@ def bounded_code_engineering_payload(
         "providers_total": len(analysis.providers),
         "providers_truncated": len(analysis.providers) > limit,
         "modules": [
-            _bounded_engineering_profile_payload(item) for item in analysis.modules[:limit]
+            _bounded_engineering_profile_payload(item, limit=limit)
+            for item in analysis.modules[:limit]
         ],
         "modules_total": len(analysis.modules),
         "modules_truncated": len(analysis.modules) > limit,
@@ -1130,20 +1220,22 @@ def bounded_code_engineering_payload(
 
 def bounded_code_review_work_package_payload(
     package: CodeReviewWorkPackage,
+    *,
+    limit: int = CODE_REVIEW_COVERAGE_EXAMPLE_LIMIT,
 ) -> dict[str, object]:
+    limit = _public_materialization_limit(limit)
     payload = asdict(
         replace(
             package,
             test_coverage=None,
             test_coverage_scope=None,
-            unused_candidates=package.unused_candidates[:CODE_REVIEW_UNUSED_EXAMPLE_LIMIT],
+            unused_candidates=package.unused_candidates[:limit],
             engineering_profile=None,
             engineering_gates=(),
         )
     )
     projection = package.test_coverage
     if projection is not None:
-        limit = CODE_REVIEW_COVERAGE_EXAMPLE_LIMIT
         payload["test_coverage"] = {
             "primary_symbol": projection.primary_symbol,
             "status": projection.status,
@@ -1156,26 +1248,24 @@ def bounded_code_review_work_package_payload(
             "gate": asdict(projection.gate),
         }
     if package.test_coverage_scope is not None:
-        payload["test_coverage_scope"] = _bounded_scope_payload(package.test_coverage_scope)
+        payload["test_coverage_scope"] = _bounded_scope_payload(
+            package.test_coverage_scope,
+            limit=limit,
+        )
     payload["unused_candidates"] = [
-        _bounded_unused_candidate_payload(item)
-        for item in package.unused_candidates[:CODE_REVIEW_UNUSED_EXAMPLE_LIMIT]
+        _bounded_unused_candidate_payload(item, limit=limit)
+        for item in package.unused_candidates[:limit]
     ]
     payload["unused_candidates_total"] = len(package.unused_candidates)
-    payload["unused_candidates_truncated"] = (
-        len(package.unused_candidates) > CODE_REVIEW_UNUSED_EXAMPLE_LIMIT
-    )
+    payload["unused_candidates_truncated"] = len(package.unused_candidates) > limit
     if package.engineering_profile is not None:
         payload["engineering_profile"] = _bounded_engineering_profile_payload(
-            package.engineering_profile
+            package.engineering_profile,
+            limit=limit,
         )
-    payload["engineering_gates"] = [
-        asdict(item) for item in package.engineering_gates[:CODE_REVIEW_ENGINEERING_EXAMPLE_LIMIT]
-    ]
+    payload["engineering_gates"] = [asdict(item) for item in package.engineering_gates[:limit]]
     payload["engineering_gates_total"] = len(package.engineering_gates)
-    payload["engineering_gates_truncated"] = (
-        len(package.engineering_gates) > CODE_REVIEW_ENGINEERING_EXAMPLE_LIMIT
-    )
+    payload["engineering_gates_truncated"] = len(package.engineering_gates) > limit
     return payload
 
 

@@ -590,7 +590,7 @@ manifest registra `journal.status=unavailable`, el status nunca afirma
 cambios.
 
 `--code-review` convierte la publicación en observaciones y preguntas
-explicables. El envelope `neocortex.code-review/v16` no declara schemas
+explicables. El envelope `neocortex.code-review/v17` no declara schemas
 compatibles: conserva el corte fail-closed y usa la proyección general
 `neocortex.code-analysis-epistemics/v1`. Cada finding separa observación,
 hipótesis, readiness de pregunta, evidencia faltante, contraevidencia por
@@ -598,9 +598,13 @@ buscar, siguiente acción y readiness de decisión. Un hotspot queda
 `experiment_required`; no infiere construcción ni riesgo por nombres y nunca
 autoriza mutación.
 
-Mientras no exista un resolver trazable de evidencia de comportamiento,
-contraevidencia y resultados experimentales, v16 publica cero recomendaciones
-de cambio y cero packages hotspot. El planificador v5 sólo puede entregar hasta
+v17 incorpora un resolver trazable, pero deliberadamente acotado: sólo enlaza
+receipts `passed` del run, processing signature, evaluación, proposal, template y
+gates registrados exactos. Hoy puede satisfacer requisitos de las preguntas de
+la ruta pública Text y del workflow SQL/transaccional Text; el resto conserva su
+evidencia faltante. Aun cuando una evaluación avanza a
+`human_review_required`, no crea una decisión, recomendación o package de cambio.
+`python-maintenance-work-packages-v5` sólo puede entregar hasta
 tres paquetes `unused_characterization` calibrados: todos sus pasos son de
 caracterización, requieren confirmación humana y declaran
 `mutation_authority=false`. Coverage v2 aporta evidencia de ejecución por una
@@ -610,7 +614,7 @@ superficie usa `executing_tests` y
 --code-json` amplía de 1 a 50 la vista
 auditable. La consulta es estrictamente read-only; un snapshot full sin USN se
 etiqueta `publication_only` y un journal avanzado/discontinuo causa abstención.
-Cada evaluación v16 fija el fingerprint de la pregunta, el snapshot y la
+Cada evaluación v17 fija el fingerprint de la pregunta, el snapshot y la
 revisión. Los hotspots enlazan los IDs de diagnóstico exactos; la nueva familia
 `class_surface` vuelve a resolver el símbolo de clase y todos sus miembros AST
 directos confirmados. Sus umbrales provisionales de 500 líneas o 20 métodos son
@@ -619,7 +623,7 @@ filtros de atención, no riesgo calibrado ni evidencia de una *god class*.
 concordancia con los registros; no convierte tamaño, nombres o rutas en daño ni
 en una decisión humana.
 
-Además de funciones y clases, v16 publica una proyección acotada de módulos,
+Además de funciones y clases, v17 publica una proyección acotada de módulos,
 configuraciones y construcción CLI. Los módulos se seleccionan por conteos
 estructurales explícitos; JSON/TOML se parsean desde el snapshot sin exponer
 valores; YAML/text-only permanece `unsupported` o `incomplete`; y las llamadas
@@ -629,13 +633,13 @@ señales prueba cohesión, reachability o necesidad de refactor.
 El grafo Ruff/Grimp y los contratos de imports existentes también se proyectan
 como preguntas generales. Consenso estático y contratos evaluados son evidencia
 consultable, no ownership ni una orden de cambio. Como NeoCortex todavía no
-tenía un ownership explícito, v16 incorpora un registry versionado y
+tenía un ownership explícito, v17 incorpora un registry versionado y
 deliberadamente parcial para `text`, `semantic`, `knowledge`, `review`,
 `retention` y `framework`. La pregunta publica cobertura, módulos sin mapear,
 solapamientos y edges cross-owner; nunca rellena un owner por defecto ni a partir
 del primer segmento del módulo.
 
-En la ubicación canónica de autoanálisis, v16 añade observaciones cross-owner:
+En la ubicación canónica de autoanálisis, v17 añade observaciones cross-owner:
 `neocortex.code-state-projection/v1`: abre Text y Semantic mediante lecturas
 SQLite `immutable=1` con fences de archivo y sidecars inactivos, y compara el
 conjunto exacto de revisiones Text elegibles con cada head Semantic publicado de
@@ -653,7 +657,7 @@ la última publicación Code con el inventario Git visible y deja precision,
 recall y finding→decision sin calcular mientras no existan outcomes humanos o
 defectos escapados enlazados independientemente.
 
-v16 añade varias verticales productivas sobre ese mismo registro. La primera
+v17 conserva varias verticales productivas sobre ese mismo registro. La primera
 analiza SQL literal Python con SQLGlot en dialecto SQLite y publica por separado
 READ, WRITE, DDL, SQL dinámico/no parseable y eventos transaccionales; un store o
 workflow sólo se asigna mediante el registry explícito, nunca por el nombre de la
@@ -671,10 +675,30 @@ experimento registrado más barato. El plan no ejecuta comandos libres ni
 autoriza cambios. Las propuestas allow-listed con runner real aparecen como
 `CODE_EXPERIMENT_PROPOSAL`; una de ellas puede ejecutarse explícitamente con
 `--code-experiment-run PROPOSAL_ID [--code-json]`. El ejecutor vuelve a construir
-el review vigente, exige el mismo proposal ID, raíz física y manifest Code,
-ejecuta sólo los cuatro nodeids declarados en temporal aislado, aplica timeout y
-devuelve `neocortex.code-experiment-receipt/v1` con outcomes y digests
-before/after. Nunca escribe el owner Code ni tiene autoridad de mutación.
+el review vigente, exige el mismo proposal ID, raíz física y manifest Code, y
+sólo admite dos templates ejecutables registrados: acceptance de la ruta pública
+Text (un nodeid) y trace/fault boundaries del workflow Text (cuatro nodeids).
+Pytest se ejecuta sobre el checkout canónico confiable; el temporal aloja
+runtime/checkpoints, no una copia ni un sandbox de seguridad. El provider puede
+usar red y conserva `HOME`. El provider vuelve a verificar antes y después la
+firma exacta de los inputs Python publicados y del soporte Git observado; si
+cambia, el receipt se rechaza. El digest de `code.sqlite3` también queda cercado
+durante la fase de prueba. No existe un lock continuo del checkout y ni el
+corpus ni otros stores quedan dentro de esa barrera.
+
+El resultado medido es `neocortex.code-experiment-receipt/v3`. Después de
+terminar, la CLI lo agrega como `neocortex.code-experiment-store/v1` a la tabla
+inmutable y append-only `code_experiment_receipts` de Code schema v6. Por ello
+`code_database_unchanged=true` describe la fase ejecutora antes de persistir, no
+que el comando completo deje Code byte a byte idéntico. El siguiente review
+v17 sólo proyecta el receipt terminal `passed` más nuevo ligado al proposal y a
+la processing signature actuales. Puede provenir de una publicación Code
+completada anterior cuando la publicación vigente es un replay exacto con la
+misma firma; su envelope digest vuelve verificable todo ese contexto. Un receipt
+posterior `failed` o `abstained`, o uno stale, corrupto o sin binding, invalida
+la satisfacción.
+Cada gate prueba exclusivamente el contrato de sus tests exactos, no una verdad
+formal ni una decisión humana; `mutation_authority=false` se conserva.
 
 `--code-publication-diff` publica el envelope
 `neocortex.code-publication-diff/v10`, sin declarar compatibilidad estructural
@@ -748,7 +772,7 @@ declarada cuando cambia packaging, schema o la política de gates.
 La suite declarada omite únicamente las pruebas del runtime Windows/NTFS
 retirado; conserva fixtures portables aunque modelen metadatos históricos.
 Después ejecuta los gates estáticos y arquitectónicos existentes, publica el
-perfil `trusted-deep`, consume `neocortex.code-review/v16`, ejecuta una vez cada
+perfil `trusted-deep`, consume `neocortex.code-review/v17`, ejecuta una vez cada
 plantilla de experimento allow-listed relevante, construye e instala el wheel
 candidato en un entorno efímero fuera del checkout, y repite la publicación
 idéntica para exigir replay de los proveedores. Devuelve un único recibo

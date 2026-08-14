@@ -403,6 +403,9 @@ def _retain_only_legacy_ruff_and_migrate_v2_to_v3(database: Path) -> None:
         connection.execute("PRAGMA foreign_keys=OFF")
         connection.execute("PRAGMA legacy_alter_table=ON")
         connection.execute("BEGIN IMMEDIATE")
+        connection.execute("DROP TRIGGER IF EXISTS code_experiment_receipts_no_update")
+        connection.execute("DROP TRIGGER IF EXISTS code_experiment_receipts_no_delete")
+        connection.execute("DROP TABLE IF EXISTS code_experiment_receipts")
         connection.execute(
             """DELETE FROM external_tool_runs WHERE tool_run_id IN (
             SELECT tool_run_id FROM external_run_contracts)"""

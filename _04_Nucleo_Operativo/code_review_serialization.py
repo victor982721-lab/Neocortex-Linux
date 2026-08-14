@@ -13,7 +13,7 @@ from .code_analysis_epistemics import (
 from .code_external_evidence import external_status_digest_payload
 from .semantic_models import canonical_json, fingerprint_text
 
-CODE_REVIEW_SCHEMA = "neocortex.code-review/v16"
+CODE_REVIEW_SCHEMA = "neocortex.code-review/v17"
 CODE_REVIEW_COMPATIBLE_SCHEMAS: tuple[str, ...] = ()
 RecommendationStatus = Literal["ready", "abstained", "not_evaluated"]
 
@@ -58,6 +58,7 @@ def build_code_review_digest(
     analyzer_effectiveness: Any,
     analyzer_calibration: Any,
     experiment_plan: Any,
+    experiment_receipts: tuple[Any, ...],
     interface_surface: Any,
     unused_analysis: Any,
     supply_chain: Any,
@@ -112,6 +113,7 @@ def build_code_review_digest(
             "analyzer_effectiveness": analyzer_effectiveness.as_payload(),
             "analyzer_calibration": analyzer_calibration.as_payload(),
             "experiment_plan": experiment_plan.as_payload(),
+            "experiment_receipts": [item.as_payload() for item in experiment_receipts],
             "interface_surface": interface_surface.as_payload(),
             "unused_analysis": unused_analysis.digest_payload(),
             "supply_chain": {
@@ -194,6 +196,7 @@ def rebuild_code_review_result_digest(result: Any) -> CodeReviewDigest:
         analyzer_effectiveness=result.analyzer_effectiveness,
         analyzer_calibration=result.analyzer_calibration,
         experiment_plan=result.experiment_plan,
+        experiment_receipts=result.experiment_receipts,
         interface_surface=result.interface_surface,
         unused_analysis=result.unused_analysis,
         supply_chain=result.supply_chain,

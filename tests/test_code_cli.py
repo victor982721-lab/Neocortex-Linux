@@ -13,6 +13,7 @@ import inspect
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
@@ -248,7 +249,7 @@ def test_code_review_abstains_without_initializing_absent_state(
     payload = json.loads(capsys.readouterr().out)
 
     assert payload["kind"] == "code-review"
-    assert payload["schema"] == "neocortex.code-review/v16"
+    assert payload["schema"] == "neocortex.code-review/v17"
     assert payload["compatible_schemas"] == []
     assert payload["status"] == "abstained"
     assert payload["reason"] == "code_state_missing"
@@ -277,6 +278,92 @@ def test_code_experiment_rejects_an_unknown_proposal_without_initializing_state(
     assert dispatch_direct(args) == 2
     assert "code review cannot plan experiments" in capsys.readouterr().err
     assert not (tmp_path / "code.sqlite3").exists()
+
+
+def test_code_experiment_persists_the_exact_public_receipt(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    proposal = SimpleNamespace(
+        proposal_id="proposal:exact",
+        planning_status="planned",
+        runner_kind="trusted_deep_declared_scenarios",
+    )
+    review = SimpleNamespace(
+        status="ready",
+        reason=None,
+        snapshot=SimpleNamespace(
+            root=str(tmp_path),
+            processing_signature="snapshot:exact",
+            analysis_run_id=17,
+        ),
+        experiment_plan=SimpleNamespace(proposals=(proposal,)),
+        digest=SimpleNamespace(
+            xxh3_128="review-primary",
+            xxh3_64_guard="review-guard",
+            byte_count=123,
+        ),
+    )
+    receipt = SimpleNamespace(
+        status="passed",
+        receipt_id="receipt:exact",
+        proposal_id=proposal.proposal_id,
+        passed=1,
+        failed=0,
+        skipped=0,
+        duration_ms=9,
+        code_database_unchanged=True,
+        authority="advisory",
+        mutation_authority=False,
+        reason=None,
+        limitations=(),
+    )
+    stored = SimpleNamespace(
+        recorded_ns=99,
+        as_payload=lambda: {
+            "schema": "neocortex.code-experiment-store/v1",
+            "receipt": {"receipt_id": receipt.receipt_id, "status": "passed"},
+        },
+    )
+    args = _validated(
+        "--state-directory",
+        str(tmp_path),
+        "--code-experiment-run",
+        proposal.proposal_id,
+        "--code-json",
+    )
+
+    with (
+        patch(
+            "_04_Nucleo_Operativo.code_review.review_code_state",
+            return_value=review,
+        ),
+        patch(
+            "_04_Nucleo_Operativo.code_experiment_executor.execute_code_experiment",
+            return_value=receipt,
+        ) as execute,
+        patch(
+            "_04_Nucleo_Operativo.code_experiment_store.code_review_digest_identity",
+            return_value="review:exact",
+        ),
+        patch(
+            "_04_Nucleo_Operativo.code_experiment_store.record_code_experiment_receipt",
+            return_value=stored,
+        ) as record,
+    ):
+        assert dispatch_direct(args) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == stored.as_payload()
+    execute.assert_called_once()
+    record.assert_called_once_with(
+        tmp_path / "code.sqlite3",
+        receipt,
+        proposal,
+        analysis_run_id=17,
+        processing_signature="snapshot:exact",
+        review_digest="review:exact",
+    )
 
 
 def test_code_publication_diff_abstains_without_initializing_state(

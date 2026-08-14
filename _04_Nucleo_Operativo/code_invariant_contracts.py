@@ -12,14 +12,32 @@ from typing import Literal
 
 from .code_analysis_epistemics import analysis_identity
 
-CODE_INVARIANT_REGISTRY_SCHEMA = "neocortex.code-invariant-registry/v1"
-CODE_RUNTIME_SCENARIO_REGISTRY_SCHEMA = "neocortex.code-runtime-scenario-registry/v1"
+CODE_INVARIANT_REGISTRY_SCHEMA = "neocortex.code-invariant-registry/v2"
+CODE_RUNTIME_SCENARIO_REGISTRY_SCHEMA = "neocortex.code-runtime-scenario-registry/v2"
 
 
 def _required(label: str, value: object, maximum: int = 512) -> str:
     if not isinstance(value, str) or not value or value.strip() != value or len(value) > maximum:
         raise ValueError(f"{label} is invalid")
     return value
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeScenarioGateSpec:
+    gate_id: str
+    test_nodeids: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        _required("runtime scenario gate id", self.gate_id, 256)
+        if (
+            not self.test_nodeids
+            or len(set(self.test_nodeids)) != len(self.test_nodeids)
+            or self.test_nodeids
+            != tuple(sorted(self.test_nodeids, key=lambda item: (item.casefold(), item)))
+        ):
+            raise ValueError("runtime scenario gate nodeids must be non-empty, unique, and ordered")
+        for nodeid in self.test_nodeids:
+            _required("runtime scenario gate nodeid", nodeid, 16_384)
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,6 +48,7 @@ class RuntimeScenarioSpec:
     scenario_kind: Literal["state_fixture", "process_death", "metamorphic"]
     isolation: Literal["pytest_tmp_path", "spawned_process_and_tmp_path"]
     limitation: str
+    gate_specs: tuple[RuntimeScenarioGateSpec, ...] = ()
 
     def __post_init__(self) -> None:
         for label, value, maximum in (
@@ -53,6 +72,15 @@ class RuntimeScenarioSpec:
             raise ValueError("runtime scenario kind is invalid")
         if self.isolation not in {"pytest_tmp_path", "spawned_process_and_tmp_path"}:
             raise ValueError("runtime scenario isolation is invalid")
+        if not isinstance(self.gate_specs, tuple) or any(
+            not isinstance(item, RuntimeScenarioGateSpec) for item in self.gate_specs
+        ):
+            raise ValueError("runtime scenario gate specs are invalid")
+        gate_ids = tuple(item.gate_id for item in self.gate_specs)
+        if gate_ids != tuple(sorted(gate_ids)) or len(set(gate_ids)) != len(gate_ids):
+            raise ValueError("runtime scenario gate ids must be unique and ordered")
+        if any(not set(item.test_nodeids) <= set(self.test_nodeids) for item in self.gate_specs):
+            raise ValueError("runtime scenario gate references an undeclared nodeid")
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,6 +108,23 @@ class InvariantSpec:
 
 
 RUNTIME_SCENARIOS = (
+    RuntimeScenarioSpec(
+        scenario_id="analyzer.calibration_and_worktree_controls",
+        version="v1",
+        test_nodeids=(
+            (
+                "tests/test_code_analyzer_calibration.py::"
+                "test_antigoodhart_receipt_is_linked_without_overstating_general_invariance"
+            ),
+            (
+                "tests/test_code_analyzer_effectiveness.py::"
+                "test_exact_visible_checkout_is_observed_without_claiming_calibration"
+            ),
+        ),
+        scenario_kind="metamorphic",
+        isolation="pytest_tmp_path",
+        limitation="seeded_and_checkout_controls_do_not_establish_real_world_precision_or_recall",
+    ),
     RuntimeScenarioSpec(
         scenario_id="analyzer.hotspot_name_path_call_invariance",
         version="v1",
@@ -131,6 +176,118 @@ RUNTIME_SCENARIOS = (
         limitation="declared_transformations_only_not_general_detector_invariance",
     ),
     RuntimeScenarioSpec(
+        scenario_id="architecture.declared_boundary_and_owner_mapping",
+        version="v1",
+        test_nodeids=(
+            (
+                "tests/test_code_architecture_questions.py::"
+                "test_path_namespace_rename_does_not_change_explicit_owner_projection_or_authority"
+            ),
+            (
+                "tests/test_code_architecture_questions.py::"
+                "test_ready_architecture_exposes_graph_contract_and_owner_gap_without_a_decision"
+            ),
+        ),
+        scenario_kind="metamorphic",
+        isolation="pytest_tmp_path",
+        limitation="selected_static_boundaries_do_not_establish_complete_runtime_reachability",
+    ),
+    RuntimeScenarioSpec(
+        scenario_id="capability.public_text_route_to_search",
+        version="v1",
+        test_nodeids=(
+            (
+                "tests/test_code_public_route_experiments.py::"
+                "test_public_text_route_replays_and_reaches_search_output"
+            ),
+        ),
+        scenario_kind="state_fixture",
+        isolation="pytest_tmp_path",
+        limitation="one_text_fixture_proves_a_public_path_not_human_product_value_or_other_routes",
+        gate_specs=(
+            RuntimeScenarioGateSpec(
+                "partial_search_abstention_is_explicit_and_read_only",
+                (
+                    "tests/test_code_public_route_experiments.py::"
+                    "test_public_text_route_replays_and_reaches_search_output",
+                ),
+            ),
+            RuntimeScenarioGateSpec(
+                "public_text_entrypoint_first_run_and_replay_observed",
+                (
+                    "tests/test_code_public_route_experiments.py::"
+                    "test_public_text_route_replays_and_reaches_search_output",
+                ),
+            ),
+            RuntimeScenarioGateSpec(
+                "same_fixture_source_reaches_public_text_search_output",
+                (
+                    "tests/test_code_public_route_experiments.py::"
+                    "test_public_text_route_replays_and_reaches_search_output",
+                ),
+            ),
+        ),
+    ),
+    RuntimeScenarioSpec(
+        scenario_id="evolution.change_surface_antigoodhart_controls",
+        version="v1",
+        test_nodeids=(
+            (
+                "tests/test_code_change_evolution_analysis.py::"
+                "test_change_history_schema_vertical_preserves_epistemic_boundaries"
+            ),
+            (
+                "tests/test_code_change_evolution_analysis.py::"
+                "test_corrected_call_resolution_cannot_claim_change_success"
+            ),
+        ),
+        scenario_kind="metamorphic",
+        isolation="pytest_tmp_path",
+        limitation="fixture_history_does_not_reconstruct_unobserved_product_intent",
+    ),
+    RuntimeScenarioSpec(
+        scenario_id="interfaces.public_cli_and_static_surface",
+        version="v1",
+        test_nodeids=(
+            (
+                "tests/test_cli_capabilities.py::"
+                "test_canonical_argv_translates_to_hidden_flat_compatibility_flags"
+            ),
+            (
+                "tests/test_code_interface_surface_analysis.py::"
+                "test_cli_static_view_does_not_claim_effective_parser_behavior"
+            ),
+            (
+                "tests/test_code_interface_surface_analysis.py::"
+                "test_interface_surface_observes_modules_configuration_and_static_cli"
+            ),
+        ),
+        scenario_kind="state_fixture",
+        isolation="pytest_tmp_path",
+        limitation="selected_cli_dispatch_and_static_inventory_do_not_cover_every_dynamic_interface",
+    ),
+    RuntimeScenarioSpec(
+        scenario_id="security.supply_chain_gate_controls",
+        version="v1",
+        test_nodeids=(
+            (
+                "tests/test_code_supply_chain_analysis.py::"
+                "test_missing_provider_never_passes_its_gates"
+            ),
+            (
+                "tests/test_code_supply_chain_analysis.py::"
+                "test_zero_findings_is_valid_and_all_absolute_gates_pass"
+            ),
+            (
+                "tests/test_external_supply_chain_audit.py::"
+                "test_pip_audit_public_contract_phase_order_and_complete_result"
+            ),
+        ),
+        scenario_kind="state_fixture",
+        isolation="pytest_tmp_path",
+        limitation="local_fixture_receipts_do_not_prove_future_advisory_feeds_are_complete",
+    ),
+    RuntimeScenarioSpec(
         scenario_id="semantic.staging_process_death_resume",
         version="v1",
         test_nodeids=(
@@ -157,6 +314,64 @@ RUNTIME_SCENARIOS = (
         limitation="fixture_alignment_is_not_live_cross_owner_recovery_evidence",
     ),
     RuntimeScenarioSpec(
+        scenario_id="state.text_sql_runtime_trace",
+        version="v1",
+        test_nodeids=(
+            (
+                "tests/test_code_state_interaction_analysis.py::"
+                "test_literal_sql_is_parsed_and_dynamic_sql_remains_missing_evidence"
+            ),
+            (
+                "tests/test_text_derivation_route.py::"
+                "test_process_death_before_text_terminal_commit_rolls_back_and_recovers"
+            ),
+            (
+                "tests/test_text_derivation_route.py::"
+                "test_terminal_publication_rollback_leaves_no_partial_document_or_fts"
+            ),
+            (
+                "tests/test_text_derivation_route.py::"
+                "test_text_terminal_publication_exposes_a_closed_traceable_transaction_boundary"
+            ),
+        ),
+        scenario_kind="state_fixture",
+        isolation="pytest_tmp_path",
+        limitation=(
+            "one_text_workflow_trace_and_process_death_probe_do_not_observe_every_dynamic_sql_"
+            "path_store_or_power_loss"
+        ),
+        gate_specs=(
+            RuntimeScenarioGateSpec(
+                "literal_sql_parser_preserves_dynamic_sql_as_missing_evidence",
+                (
+                    "tests/test_code_state_interaction_analysis.py::"
+                    "test_literal_sql_is_parsed_and_dynamic_sql_remains_missing_evidence",
+                ),
+            ),
+            RuntimeScenarioGateSpec(
+                "post_terminalization_exception_leaves_no_partial_publication",
+                (
+                    "tests/test_text_derivation_route.py::"
+                    "test_terminal_publication_rollback_leaves_no_partial_document_or_fts",
+                ),
+            ),
+            RuntimeScenarioGateSpec(
+                "process_death_before_commit_rolls_back_and_restart_converges",
+                (
+                    "tests/test_text_derivation_route.py::"
+                    "test_process_death_before_text_terminal_commit_rolls_back_and_recovers",
+                ),
+            ),
+            RuntimeScenarioGateSpec(
+                "successful_terminal_transaction_contains_required_text_tables",
+                (
+                    "tests/test_text_derivation_route.py::"
+                    "test_text_terminal_publication_exposes_a_closed_traceable_transaction_boundary",
+                ),
+            ),
+        ),
+    ),
+    RuntimeScenarioSpec(
         scenario_id="state.text_terminal_relational_closure",
         version="v1",
         test_nodeids=(
@@ -170,6 +385,31 @@ RUNTIME_SCENARIOS = (
         limitation="final_relational_closure_does_not_prove_historical_atomicity",
     ),
 )
+
+INVARIANT_SCENARIO_IDS = (
+    "analyzer.hotspot_name_path_call_invariance",
+    "semantic.staging_process_death_resume",
+    "state.text_semantic_exact_projection",
+    "state.text_terminal_relational_closure",
+)
+
+EXPERIMENT_SCENARIO_IDS = (
+    "capability.public_text_route_to_search",
+    "state.text_sql_runtime_trace",
+)
+
+CALIBRATION_SCENARIO_IDS = (
+    "analyzer.calibration_and_worktree_controls",
+    "architecture.declared_boundary_and_owner_mapping",
+    "evolution.change_surface_antigoodhart_controls",
+    "interfaces.public_cli_and_static_surface",
+    "security.supply_chain_gate_controls",
+)
+
+INVARIANT_RUNTIME_SCENARIOS = tuple(
+    item for item in RUNTIME_SCENARIOS if item.scenario_id in set(INVARIANT_SCENARIO_IDS)
+)
+
 
 INVARIANT_SPECS = (
     InvariantSpec(
@@ -229,12 +469,53 @@ def _validate_registry() -> None:
     ):
         raise ValueError("invariant registry must be unique and canonically ordered")
     declared = set(scenario_ids)
+    invariant_scenarios = set(INVARIANT_SCENARIO_IDS)
+    experiment_scenarios = set(EXPERIMENT_SCENARIO_IDS)
+    calibration_scenarios = set(CALIBRATION_SCENARIO_IDS)
+    if (
+        tuple(INVARIANT_SCENARIO_IDS) != tuple(sorted(INVARIANT_SCENARIO_IDS))
+        or tuple(EXPERIMENT_SCENARIO_IDS) != tuple(sorted(EXPERIMENT_SCENARIO_IDS))
+        or tuple(CALIBRATION_SCENARIO_IDS) != tuple(sorted(CALIBRATION_SCENARIO_IDS))
+        or invariant_scenarios & experiment_scenarios
+        or invariant_scenarios & calibration_scenarios
+        or experiment_scenarios & calibration_scenarios
+        or invariant_scenarios | experiment_scenarios | calibration_scenarios != declared
+    ):
+        raise ValueError("runtime scenarios must have one canonical registry role")
     referenced = {scenario for item in INVARIANT_SPECS for scenario in item.scenario_ids}
-    if referenced != declared:
-        raise ValueError("every runtime scenario must be linked by exactly the registry surface")
+    if referenced != invariant_scenarios:
+        raise ValueError("invariant specs must reference exactly invariant runtime scenarios")
+    scenario_by_id = {item.scenario_id: item for item in RUNTIME_SCENARIOS}
+    if any(not scenario_by_id[item].gate_specs for item in EXPERIMENT_SCENARIO_IDS):
+        raise ValueError("executable experiment scenarios require measured gate contracts")
+    if any(
+        scenario_by_id[item].gate_specs
+        for item in (*INVARIANT_SCENARIO_IDS, *CALIBRATION_SCENARIO_IDS)
+    ):
+        raise ValueError("non-experiment scenarios cannot publish acceptance gate contracts")
+    all_nodeids = tuple(nodeid for item in RUNTIME_SCENARIOS for nodeid in item.test_nodeids)
+    if len(all_nodeids) != len(set(all_nodeids)):
+        raise ValueError("runtime scenario nodeids must be globally unique")
 
 
 _validate_registry()
+
+
+def runtime_scenario_registry_payload() -> dict[str, object]:
+    return {
+        "schema": CODE_RUNTIME_SCENARIO_REGISTRY_SCHEMA,
+        "scenarios": tuple(asdict(item) for item in RUNTIME_SCENARIOS),
+        "invariant_scenario_ids": INVARIANT_SCENARIO_IDS,
+        "experiment_scenario_ids": EXPERIMENT_SCENARIO_IDS,
+        "calibration_scenario_ids": CALIBRATION_SCENARIO_IDS,
+        "claim_scope": "allowlisted_test_scenarios_not_question_conclusions_or_formal_proof",
+    }
+
+
+def runtime_scenario_registry_fingerprint() -> str:
+    return analysis_identity(
+        "code-runtime-scenario-registry-v2", runtime_scenario_registry_payload()
+    )
 
 
 def invariant_registry_payload() -> dict[str, object]:
@@ -242,13 +523,13 @@ def invariant_registry_payload() -> dict[str, object]:
         "schema": CODE_INVARIANT_REGISTRY_SCHEMA,
         "scenario_schema": CODE_RUNTIME_SCENARIO_REGISTRY_SCHEMA,
         "invariants": tuple(asdict(item) for item in INVARIANT_SPECS),
-        "scenarios": tuple(asdict(item) for item in RUNTIME_SCENARIOS),
+        "scenarios": tuple(asdict(item) for item in INVARIANT_RUNTIME_SCENARIOS),
         "claim_scope": "declared_scenario_execution_not_formal_proof",
     }
 
 
 def invariant_registry_fingerprint() -> str:
-    return analysis_identity("code-invariant-registry-v1", invariant_registry_payload())
+    return analysis_identity("code-invariant-registry-v2", invariant_registry_payload())
 
 
 def runtime_scenario(scenario_id: str) -> RuntimeScenarioSpec:
@@ -260,13 +541,20 @@ def runtime_scenario(scenario_id: str) -> RuntimeScenarioSpec:
 
 
 __all__ = [
+    "CALIBRATION_SCENARIO_IDS",
     "CODE_INVARIANT_REGISTRY_SCHEMA",
     "CODE_RUNTIME_SCENARIO_REGISTRY_SCHEMA",
+    "EXPERIMENT_SCENARIO_IDS",
+    "INVARIANT_RUNTIME_SCENARIOS",
+    "INVARIANT_SCENARIO_IDS",
     "INVARIANT_SPECS",
     "RUNTIME_SCENARIOS",
     "InvariantSpec",
+    "RuntimeScenarioGateSpec",
     "RuntimeScenarioSpec",
     "invariant_registry_fingerprint",
     "invariant_registry_payload",
     "runtime_scenario",
+    "runtime_scenario_registry_fingerprint",
+    "runtime_scenario_registry_payload",
 ]

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 import sqlite3
-import stat as stat_module
 from collections.abc import Callable, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -42,6 +41,11 @@ from .self_analysis_manifest import (
     manifest_integer,
     manifest_mapping,
 )
+from .sqlite_immutable import (
+    ImmutableSQLiteUnavailable,
+    capture_sqlite_immutable_fence,
+    immutable_sqlite_database,
+)
 
 
 # region [01] Public status schema
@@ -50,94 +54,46 @@ from .self_analysis_manifest import (
 ManifestStatus = Literal["valid", "missing", "ambiguous", "invalid"]
 JournalProbe = Callable[[JournalCursor], JournalStatus]
 _MAX_STATUS_TEXT_BYTES = 32_768
-_SQLITE_SIDECAR_SUFFIXES = ("-wal", "-shm", "-journal")
 
 
 class QuiescentSQLiteUnavailable(RuntimeError):
     """An immutable status snapshot could not be proven quiescent."""
 
 
-@dataclass(frozen=True, slots=True)
-class _SQLiteFileFence:
-    device: int
-    inode: int
-    size: int
-    mtime_ns: int
-    birthtime_ns: int | None
-
-
-def _sqlite_sidecars(database: Path) -> tuple[Path, ...]:
-    return tuple(Path(f"{database}{suffix}") for suffix in _SQLITE_SIDECAR_SUFFIXES)
-
-
 def require_sqlite_sidecars_absent(database: Path) -> None:
-    """Abstain when WAL, SHM, or rollback evidence is present."""
+    """Reject active SQLite journals while accepting its exact inactive layout.
 
-    sidecars = tuple(sidecar for sidecar in _sqlite_sidecars(database) if os.path.lexists(sidecar))
-    if sidecars:
-        raise QuiescentSQLiteUnavailable(f"SQLite state has active sidecars: {database}")
+    The public name is retained for compatibility.  SQLite commonly leaves an
+    empty WAL and a 32 KiB SHM after the last writer or reader exits; those files
+    do not contain unpublished state.  The shared immutable fence validates that
+    exact layout and still rejects a non-empty WAL, rollback journal, malformed
+    SHM, symlink, or unstable main file.
+    """
 
-
-def _capture_sqlite_fence(database: Path) -> _SQLiteFileFence:
+    selected = Path(database)
+    if not selected.is_file():
+        return
     try:
-        metadata = os.stat(database, follow_symlinks=False)
-    except OSError as exc:
-        raise QuiescentSQLiteUnavailable(f"SQLite state is unavailable: {database}") from exc
-    attributes = int(getattr(metadata, "st_file_attributes", 0))
-    reparse = int(getattr(stat_module, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
-    if (
-        not stat_module.S_ISREG(metadata.st_mode)
-        or database.is_symlink()
-        or attributes & reparse
-        or metadata.st_size <= 0
-    ):
-        raise QuiescentSQLiteUnavailable(f"SQLite state is not a stable regular file: {database}")
-    birthtime = getattr(metadata, "st_birthtime_ns", None)
-    return _SQLiteFileFence(
-        int(metadata.st_dev),
-        int(metadata.st_ino),
-        int(metadata.st_size),
-        int(metadata.st_mtime_ns),
-        None if birthtime is None else int(birthtime),
-    )
-
-
-def _require_quiescent_sqlite(
-    database: Path,
-    expected: _SQLiteFileFence,
-) -> None:
-    require_sqlite_sidecars_absent(database)
-    if _capture_sqlite_fence(database) != expected:
-        raise QuiescentSQLiteUnavailable(
-            f"SQLite state changed during read-only status: {database}"
-        )
+        capture_sqlite_immutable_fence(selected)
+    except ImmutableSQLiteUnavailable as exc:
+        raise QuiescentSQLiteUnavailable(str(exc)) from exc
 
 
 @contextmanager
 def quiescent_sqlite_database(database: Path, *, timeout_seconds: float = 10.0):
-    """Open a sidecar-free immutable snapshot and fence it before and after."""
+    """Open one immutable snapshot and fence main/sidecars before and after."""
 
     if timeout_seconds <= 0:
         raise ValueError("SQLite status timeout must be positive")
     database = Path(os.path.abspath(os.fspath(database)))
-    expected = _capture_sqlite_fence(database)
-    _require_quiescent_sqlite(database, expected)
-    uri = f"{database.as_uri()}?mode=ro&immutable=1"
-    connection = sqlite3.connect(uri, uri=True, timeout=timeout_seconds)
     try:
-        connection.row_factory = sqlite3.Row
-        connection.execute(f"PRAGMA busy_timeout={max(1, round(timeout_seconds * 1000))}")
-        connection.execute("PRAGMA foreign_keys=ON")
-        if int(connection.execute("PRAGMA foreign_keys").fetchone()[0]) != 1:
-            raise RuntimeError("SQLite status could not enable foreign keys")
-        connection.execute("PRAGMA query_only=ON")
-        if int(connection.execute("PRAGMA query_only").fetchone()[0]) != 1:
-            raise RuntimeError("SQLite status is not query-only")
-        _require_quiescent_sqlite(database, expected)
-        yield connection
-    finally:
-        connection.close()
-        _require_quiescent_sqlite(database, expected)
+        with immutable_sqlite_database(
+            database,
+            timeout_seconds=timeout_seconds,
+        ) as connection:
+            yield connection
+    except ImmutableSQLiteUnavailable as exc:
+        raise QuiescentSQLiteUnavailable(str(exc)) from exc
 
 
 @dataclass(frozen=True, slots=True)

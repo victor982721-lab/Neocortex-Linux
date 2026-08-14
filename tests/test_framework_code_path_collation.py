@@ -365,7 +365,7 @@ def test_populated_code_v4_migrates_exactly_and_preserves_foreign_keys(
     with sqlite3.connect(database) as connection:
         assert connection.execute(
             "SELECT value FROM metadata WHERE key='schema_version'"
-        ).fetchone() == ("5",)
+        ).fetchone() == (str(code_schema.CODE_SCHEMA_VERSION),)
         assert connection.execute("SELECT file_id,current_path,status FROM files").fetchone() == (
             7,
             "/fixture/Case.py",
@@ -407,19 +407,20 @@ def test_code_v4_migration_failure_rolls_back_schema_version_and_rows(
 
 def test_code_future_schema_is_rejected_read_only_without_sidecars(tmp_path: Path) -> None:
     database = tmp_path / "future-code.sqlite3"
+    future_version = code_schema.CODE_SCHEMA_VERSION + 1
     with sqlite3.connect(database) as connection:
         connection.executescript(
-            """
+            f"""
             CREATE TABLE metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL) WITHOUT ROWID;
-            INSERT INTO metadata VALUES('schema_version','6');
+            INSERT INTO metadata VALUES('schema_version','{future_version}');
             CREATE TABLE sentinel(value TEXT);
             INSERT INTO sentinel VALUES('preserve');
-            PRAGMA user_version=6;
+            PRAGMA user_version={future_version};
             """
         )
     before = database.read_bytes()
 
-    with pytest.raises(RuntimeError, match="schema 6 is unsupported"):
+    with pytest.raises(RuntimeError, match=f"schema {future_version} is unsupported"):
         code_schema.initialize_code_state(database)
 
     assert database.read_bytes() == before

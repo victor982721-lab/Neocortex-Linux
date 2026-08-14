@@ -113,7 +113,7 @@ a los archivos vivos.
 | `video.sqlite3` | `video_state`, `VideoRoute` | 2 | documentos, streams, frames, selección, OCR, timestamps, métricas y FTS | `metadata.schema_version`; migraciones secuenciales |
 | `image.sqlite3` | `image_state`, `ImageRoute` | 5 | imágenes, estado de extracción/clasificación y metadata | `metadata.schema_version`; migraciones aditivas |
 | `document_catalog.sqlite3` | `document_catalog_schema`, `document_catalog` | **7** | runs, generaciones/staging, publicación por fuente, proyección de documentos, historial y planes de organización | `metadata.schema_version`; migraciones secuenciales |
-| `code.sqlite3` | `code_schema`, `code_state` | 5 | proyectos, runs, archivos/versiones, símbolos, referencias, dependencias, grafo, chunks, FTS, métricas/relaciones y evidencia externa normalizada | metadata + `PRAGMA user_version` + `schema_migrations` exacto; migraciones secuenciales 1→5 |
+| `code.sqlite3` | `code_schema`, `code_state`, `code_experiment_store` | 6 | proyectos, runs, archivos/versiones, símbolos, referencias, dependencias, grafo, chunks, FTS, métricas/relaciones, evidencia externa normalizada y receipts de experimentos append-only | metadata + `PRAGMA user_version` + `schema_migrations` exacto; migraciones secuenciales 1→6; 5→6 añade receipts sin reinterpretar evidencia previa |
 | `semantic.sqlite3` | `semantic_schema`, repositorios y servicio semántico | **7** | espacios/modelos, revisiones inmutables, miembros/heads generacionales, jobs, payloads, receipts, derivaciones de chunks y outbox | metadata + `PRAGMA user_version` + `schema_migrations` exacto; 6→7 aditiva sin atribución legacy |
 
 La base del índice MFT es una API auxiliar con ruta elegida por el llamador y
@@ -143,7 +143,7 @@ ejecutó esas rutas mantiene el vector base de once owners:
 | `video` | `video.sqlite3` | 2 | frames/OCR actuales, último update/run; `best_effort_non_generational` |
 | `image` | `image.sqlite3` | 5 | imágenes actuales, último update/run; `best_effort_non_generational` |
 | `semantic` | `semantic.sqlite3` | 7 | generación `ready` publicada por modelo, espacio y firma de procesamiento; receipts nuevos no atribuyen filas legacy |
-| `code` | `code.sqlite3` | 5 | archivos actuales, última versión/run; `best_effort_non_generational` |
+| `code` | `code.sqlite3` | 6 | archivos actuales, última versión/run y receipts de experimentos posteriores a publicación; `best_effort_non_generational` |
 
 Una base ausente se representa como `absent`; no se crea para completar la
 matriz. Una versión menor, futura, inconsistente o un contrato malformado

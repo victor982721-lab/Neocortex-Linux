@@ -11,9 +11,14 @@ from _04_Nucleo_Operativo.code_invariant_assurance_analysis import (
     parse_code_invariant_assurance_payload,
 )
 from _04_Nucleo_Operativo.code_invariant_contracts import (
+    CALIBRATION_SCENARIO_IDS,
+    EXPERIMENT_SCENARIO_IDS,
     INVARIANT_SPECS,
+    INVARIANT_RUNTIME_SCENARIOS,
+    INVARIANT_SCENARIO_IDS,
     RUNTIME_SCENARIOS,
     invariant_registry_fingerprint,
+    invariant_registry_payload,
     runtime_scenario,
 )
 from _04_Nucleo_Operativo.external_deep_coverage import PYTEST_COVERAGE_PROVIDER_ID
@@ -69,17 +74,28 @@ def _provider(outcomes: dict[str, str]) -> ExternalProviderEvidence:
     )
 
 
-def test_registry_is_canonical_versioned_and_every_scenario_is_linked() -> None:
+def test_registry_is_canonical_versioned_and_every_scenario_has_one_role() -> None:
     assert tuple(item.invariant_id for item in INVARIANT_SPECS) == tuple(
         sorted(item.invariant_id for item in INVARIANT_SPECS)
     )
     assert tuple(item.scenario_id for item in RUNTIME_SCENARIOS) == tuple(
         sorted(item.scenario_id for item in RUNTIME_SCENARIOS)
     )
-    assert {scenario for invariant in INVARIANT_SPECS for scenario in invariant.scenario_ids} == {
-        item.scenario_id for item in RUNTIME_SCENARIOS
-    }
-    assert invariant_registry_fingerprint().startswith("code-invariant-registry-v1:xxh3_128:")
+    assert {
+        scenario for invariant in INVARIANT_SPECS for scenario in invariant.scenario_ids
+    } == set(INVARIANT_SCENARIO_IDS)
+    assert set(INVARIANT_SCENARIO_IDS).isdisjoint(EXPERIMENT_SCENARIO_IDS)
+    assert (
+        set(INVARIANT_SCENARIO_IDS) | set(EXPERIMENT_SCENARIO_IDS) | set(CALIBRATION_SCENARIO_IDS)
+    ) == {item.scenario_id for item in RUNTIME_SCENARIOS}
+    assert invariant_registry_fingerprint().startswith("code-invariant-registry-v2:xxh3_128:")
+    invariant_payload = invariant_registry_payload()
+    assert "runtime_scenario_registry_fingerprint" not in invariant_payload
+    assert {item["scenario_id"] for item in invariant_payload["scenarios"]} == set(
+        INVARIANT_SCENARIO_IDS
+    )
+    all_nodeids = tuple(nodeid for item in RUNTIME_SCENARIOS for nodeid in item.test_nodeids)
+    assert len(all_nodeids) == len(set(all_nodeids))
     assert runtime_scenario("semantic.staging_process_death_resume").scenario_kind == (
         "process_death"
     )
@@ -89,7 +105,7 @@ def test_registry_is_canonical_versioned_and_every_scenario_is_linked() -> None:
 
 def test_exact_passing_scenario_receipts_are_observed_but_never_become_a_decision() -> None:
     provider = _provider(
-        {nodeid: "passed" for item in RUNTIME_SCENARIOS for nodeid in item.test_nodeids}
+        {nodeid: "passed" for item in INVARIANT_RUNTIME_SCENARIOS for nodeid in item.test_nodeids}
     )
 
     result = analyze_code_invariant_assurance(
@@ -99,7 +115,7 @@ def test_exact_passing_scenario_receipts_are_observed_but_never_become_a_decisio
     )
 
     assert result.status == "ready"
-    assert result.resolved_scenarios == result.passed_scenarios == len(RUNTIME_SCENARIOS)
+    assert result.resolved_scenarios == result.passed_scenarios == len(INVARIANT_RUNTIME_SCENARIOS)
     assert result.counterevidence_scenarios == 0
     assert all(item.status == "all_declared_scenarios_passed" for item in result.observations)
     assert all(item.observation_status == "confirmed" for item in result.question_evaluations)
@@ -112,8 +128,10 @@ def test_exact_passing_scenario_receipts_are_observed_but_never_become_a_decisio
 
 
 def test_failed_scenario_is_preserved_as_counterevidence_not_change_authority() -> None:
-    outcomes = {nodeid: "passed" for item in RUNTIME_SCENARIOS for nodeid in item.test_nodeids}
-    failed_nodeid = RUNTIME_SCENARIOS[0].test_nodeids[0]
+    outcomes = {
+        nodeid: "passed" for item in INVARIANT_RUNTIME_SCENARIOS for nodeid in item.test_nodeids
+    }
+    failed_nodeid = INVARIANT_RUNTIME_SCENARIOS[0].test_nodeids[0]
     outcomes[failed_nodeid] = "failed"
 
     result = analyze_code_invariant_assurance(
@@ -138,7 +156,7 @@ def test_failed_scenario_is_preserved_as_counterevidence_not_change_authority() 
 
 
 def test_partial_selection_remains_partial_and_unselected_is_not_a_failure() -> None:
-    selected = RUNTIME_SCENARIOS[:2]
+    selected = INVARIANT_RUNTIME_SCENARIOS[:2]
     result = analyze_code_invariant_assurance(
         {
             PYTEST_COVERAGE_PROVIDER_ID: _provider(
@@ -188,7 +206,7 @@ def test_missing_or_abstained_provider_fails_closed_without_nominal_evidence() -
 
 
 def test_forged_test_outcome_relation_and_authority_are_rejected() -> None:
-    scenario = RUNTIME_SCENARIOS[0]
+    scenario = INVARIANT_RUNTIME_SCENARIOS[0]
     valid = _relation(scenario.test_nodeids[0], "passed", 1)
     forged = replace(
         valid,
@@ -208,7 +226,7 @@ def test_forged_test_outcome_relation_and_authority_are_rejected() -> None:
 
 def test_wire_round_trip_and_digest_bound_counts_reject_forgery() -> None:
     provider = _provider(
-        {nodeid: "passed" for item in RUNTIME_SCENARIOS for nodeid in item.test_nodeids}
+        {nodeid: "passed" for item in INVARIANT_RUNTIME_SCENARIOS for nodeid in item.test_nodeids}
     )
     result = analyze_code_invariant_assurance(
         {PYTEST_COVERAGE_PROVIDER_ID: provider},

@@ -14,6 +14,7 @@ from neocortex.capabilities import (
 from _04_Nucleo_Operativo.code_capability_reachability_analysis import (
     abstained_capability_reachability,
 )
+from _04_Nucleo_Operativo.code_experiment_planner import plan_code_experiments
 from _04_Nucleo_Operativo.code_route_capability_analysis import (
     parse_code_route_capability_payload,
     resolve_route_capability_analysis,
@@ -33,6 +34,7 @@ from _04_Nucleo_Operativo.state_topology_contracts import STATE_STORE_REGISTRY
 def _snapshot(
     *,
     changed: bool = False,
+    code_watermark: str = "1",
     state_by_owner: dict[str, OwnerAvailability] | None = None,
 ) -> KnowledgeSnapshot:
     selected = state_by_owner or {}
@@ -48,7 +50,12 @@ def _snapshot(
                 observed_schema_version=(
                     store.expected_schema_version if state is OwnerAvailability.AVAILABLE else None
                 ),
-                watermarks=(LogicalWatermark("fixture", "1"),)
+                watermarks=(
+                    LogicalWatermark(
+                        "fixture",
+                        code_watermark if store.state_owner_id == "code" else "1",
+                    ),
+                )
                 if state is OwnerAvailability.AVAILABLE
                 else (),
                 data_version_before=1 if state is OwnerAvailability.AVAILABLE else None,
@@ -113,6 +120,34 @@ def test_all_builtin_routes_have_explicit_bounded_observations() -> None:
     assert all(item.observation_status == "confirmed" for item in evaluations)
     assert all(item.decision_readiness == "experiment_required" for item in evaluations)
     assert all(item.decision is None and not item.mutation_authority for item in evaluations)
+
+
+def test_text_experiment_identity_ignores_unrelated_code_capture_watermark() -> None:
+    first = resolve_route_capability_analysis(
+        _snapshot(code_watermark="analysis-run:79"),
+        _runtime(),
+        source_version="source-fixture",
+    )
+    replay = resolve_route_capability_analysis(
+        _snapshot(code_watermark="analysis-run:80"),
+        _runtime(),
+        source_version="source-fixture",
+    )
+    first_specs, first_evaluations = route_capability_questions(first, rank_offset=0)
+    replay_specs, replay_evaluations = route_capability_questions(replay, rank_offset=0)
+    first_plan = plan_code_experiments(first_specs, first_evaluations)
+    replay_plan = plan_code_experiments(replay_specs, replay_evaluations)
+    first_text = next(
+        item for item in first_plan.proposals if item.subject_key == "capability:route:text"
+    )
+    replay_text = next(
+        item for item in replay_plan.proposals if item.subject_key == "capability:route:text"
+    )
+
+    assert first.knowledge_snapshot_id != replay.knowledge_snapshot_id
+    assert first_text.evaluation_id != replay_text.evaluation_id
+    assert first_text.evaluation_binding_fingerprint == replay_text.evaluation_binding_fingerprint
+    assert first_text.proposal_id == replay_text.proposal_id
 
 
 def test_owner_state_and_runtime_availability_never_become_user_value() -> None:

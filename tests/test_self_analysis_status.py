@@ -260,6 +260,82 @@ def _publish_trusted_deep_manifest(prepared: _PreparedStatus) -> dict[str, objec
         connection.close()
 
 
+def _publish_many_selector_manifest(
+    prepared: _PreparedStatus,
+    *,
+    selector_count: int,
+) -> dict[str, object]:
+    """Publish lexical manifest evidence for a realistically wide selected suite."""
+
+    database = prepared.state / "framework.sqlite3"
+    connection = sqlite3.connect(database)
+    try:
+        row = connection.execute(
+            """SELECT details_json FROM run_events
+            WHERE run_id=? AND phase=? AND message=?""",
+            (
+                prepared.run_id,
+                SELF_ANALYSIS_MANIFEST_PHASE,
+                SELF_ANALYSIS_MANIFEST_MESSAGE,
+            ),
+        ).fetchone()
+        assert row is not None and isinstance(row[0], str)
+        manifest = json.loads(row[0])
+        selectors = tuple(f"tests/test_selected_{index:04d}.py" for index in range(selector_count))
+        analyze = list(manifest["commands"]["analyze"])
+        analyze.extend(("--analysis-profile", "trusted-deep"))
+        for selector in selectors:
+            analyze.extend(("--deep-test-selector", selector))
+        analyze.extend(
+            (
+                "--deep-max-tests",
+                "3000",
+                "--deep-time-budget-seconds",
+                "900",
+                "--deep-shard-size",
+                "20",
+                "--deep-mutation-max-mutants",
+                "20",
+                "--deep-mutation-timeout-seconds",
+                "30",
+                "--deep-mutation-time-budget-seconds",
+                "600",
+            )
+        )
+        deep = deep_configuration_payload(
+            analysis_profile="trusted-deep",
+            test_selectors=selectors,
+            max_tests=3000,
+            time_budget_seconds=900,
+            shard_size=20,
+        )
+        manifest["commands"]["analyze"] = analyze
+        manifest["deep_analysis"] = {
+            **deep,
+            "configuration_signature": deep_configuration_signature(deep),
+        }
+        raw = json.dumps(
+            manifest,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        connection.execute(
+            """UPDATE run_events SET details_json=?
+            WHERE run_id=? AND phase=? AND message=?""",
+            (
+                raw,
+                prepared.run_id,
+                SELF_ANALYSIS_MANIFEST_PHASE,
+                SELF_ANALYSIS_MANIFEST_MESSAGE,
+            ),
+        )
+        connection.commit()
+        return manifest
+    finally:
+        connection.close()
+
+
 def _prepare_unavailable_status(tmp_path: Path) -> _PreparedStatus:
     root = tmp_path / "corpus"
     state = tmp_path / "state"
@@ -497,6 +573,24 @@ def test_trusted_deep_manifest_is_valid_and_bound_to_recorded_argv(
     assert result.freshness.current
 
 
+def test_trusted_deep_manifest_accepts_a_wide_selected_suite_command(
+    prepared_status: _PreparedStatus,
+) -> None:
+    expected = _publish_many_selector_manifest(prepared_status, selector_count=298)
+
+    result = read_self_analysis_status(
+        prepared_status.state,
+        prepared_status.evidence,
+        journal_probe=lambda _cursor: "unchanged",
+    )
+
+    assert result is not None
+    assert result.manifest_status == "valid"
+    assert result.manifest == expected
+    assert len(expected["commands"]["analyze"]) > 128
+    assert result.freshness.current
+
+
 @pytest.mark.parametrize("mutation", ("missing", "signature", "limits"))
 def test_trusted_deep_manifest_inconsistency_is_structured_invalid(
     prepared_status: _PreparedStatus,
@@ -547,11 +641,13 @@ def test_trusted_deep_manifest_inconsistency_is_structured_invalid(
     "database_name",
     ("code.sqlite3", "framework.sqlite3", "dedup.sqlite3"),
 )
-def test_code_status_abstains_on_any_wal_shm_without_touching_state(
+def test_code_status_accepts_exact_inactive_wal_shm_without_touching_state(
     prepared_status: _PreparedStatus,
     database_name: str,
+    monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    _set_unchanged_journal(monkeypatch)
     database = prepared_status.state / database_name
     writer = sqlite3.connect(database)
     try:
@@ -563,15 +659,14 @@ def test_code_status_abstains_on_any_wal_shm_without_touching_state(
         assert shm.is_file() and shm.stat().st_size > 0
         before = _state_file_snapshot(prepared_status.state)
 
-        with pytest.raises(QuiescentSQLiteUnavailable, match="active sidecars"):
-            with quiescent_sqlite_database(database):
-                pytest.fail("WAL/SHM evidence must prevent immutable status")
-        assert dispatch_direct(_validated_status(prepared_status.state)) == 2
-        captured = capsys.readouterr()
+        with quiescent_sqlite_database(database) as connection:
+            assert connection.execute("SELECT 1").fetchone()[0] == 1
+        assert dispatch_direct(_validated_status(prepared_status.state)) == 0
+        payload = json.loads(capsys.readouterr().out)
 
-        assert not captured.out
-        assert "active sidecars" in captured.err
-        assert str(database) in captured.err
+        assert payload["latest_run"]["analysis_run_id"] == prepared_status.analysis_run_id
+        assert payload["self_analysis"]["manifest_status"] == "valid"
+        assert payload["self_analysis"]["freshness"]["current"] is True
         assert _state_file_snapshot(prepared_status.state) == before
     finally:
         writer.rollback()
@@ -582,16 +677,69 @@ def test_code_status_abstains_on_any_wal_shm_without_touching_state(
     "database_name",
     ("code.sqlite3", "framework.sqlite3", "dedup.sqlite3"),
 )
-def test_code_status_abstains_on_detached_zero_wal_and_shm(
+def test_code_status_accepts_detached_inactive_wal_and_shm(
     prepared_status: _PreparedStatus,
     database_name: str,
+    monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    _set_unchanged_journal(monkeypatch)
     database = prepared_status.state / database_name
     wal = Path(f"{database}-wal")
     shm = Path(f"{database}-shm")
     wal.write_bytes(b"")
     shm.write_bytes(bytes(32_768))
+    before = _state_file_snapshot(prepared_status.state)
+
+    assert dispatch_direct(_validated_status(prepared_status.state)) == 0
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["latest_run"]["analysis_run_id"] == prepared_status.analysis_run_id
+    assert payload["self_analysis"]["manifest_status"] == "valid"
+    assert payload["self_analysis"]["freshness"]["current"] is True
+    assert _state_file_snapshot(prepared_status.state) == before
+
+
+@pytest.mark.parametrize(
+    "database_name",
+    ("code.sqlite3", "framework.sqlite3", "dedup.sqlite3"),
+)
+def test_code_status_rejects_nonempty_wal_without_touching_state(
+    prepared_status: _PreparedStatus,
+    database_name: str,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    database = prepared_status.state / database_name
+    writer = sqlite3.connect(database)
+    try:
+        assert writer.execute("PRAGMA journal_mode").fetchone() == ("wal",)
+        writer.execute("PRAGMA wal_autocheckpoint=0")
+        writer.execute("CREATE TABLE sidecar_probe(value INTEGER)")
+        writer.commit()
+        wal = Path(f"{database}-wal")
+        assert wal.is_file() and wal.stat().st_size > 0
+        before = _state_file_snapshot(prepared_status.state)
+
+        with pytest.raises(QuiescentSQLiteUnavailable, match="non-empty WAL"):
+            with quiescent_sqlite_database(database):
+                pytest.fail("an unpublished WAL must prevent immutable status")
+        assert dispatch_direct(_validated_status(prepared_status.state)) == 2
+        captured = capsys.readouterr()
+
+        assert not captured.out
+        assert "non-empty WAL" in captured.err
+        assert _state_file_snapshot(prepared_status.state) == before
+    finally:
+        writer.close()
+
+
+def test_code_status_rejects_malformed_inactive_sidecars(
+    prepared_status: _PreparedStatus,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    database = prepared_status.state / "code.sqlite3"
+    Path(f"{database}-wal").write_bytes(b"")
+    Path(f"{database}-shm").write_bytes(b"not-a-valid-shm")
     before = _state_file_snapshot(prepared_status.state)
 
     assert (
@@ -608,8 +756,7 @@ def test_code_status_abstains_on_detached_zero_wal_and_shm(
     captured = capsys.readouterr()
 
     assert not captured.out
-    assert "active sidecars" in captured.err
-    assert str(database) in captured.err
+    assert "sidecars are not proven inactive" in captured.err
     assert _state_file_snapshot(prepared_status.state) == before
 
 

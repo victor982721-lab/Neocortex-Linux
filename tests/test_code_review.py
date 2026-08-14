@@ -609,7 +609,7 @@ def test_review_ranks_confirmed_hotspots_deterministically_with_diversity(
 
     assert first.status == "ready"
     assert first_json == second_json
-    assert first.as_payload()["schema"] == "neocortex.code-review/v16"
+    assert first.as_payload()["schema"] == "neocortex.code-review/v17"
     assert first.as_payload()["compatible_schemas"] == []
     assert first.supply_chain is not None
     assert first.supply_chain.status == "abstained"
@@ -903,6 +903,7 @@ def test_review_freshness_is_fail_closed_with_portable_full_snapshot_exception(
 ) -> None:
     state_directory = tmp_path / "state"
     _build_state(state_directory)
+    original_read_review = code_review_module._read_review
 
     monkeypatch.setattr(
         code_review_module,
@@ -913,10 +914,18 @@ def test_review_freshness_is_fail_closed_with_portable_full_snapshot_exception(
             current=False,
         ),
     )
+    monkeypatch.setattr(
+        code_review_module,
+        "_read_review",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("stale review must stop before heavy evidence materialization")
+        ),
+    )
     advanced = review_code_state(state_directory)
     assert advanced.status == "abstained"
     assert advanced.reason == "self_analysis_journal_advanced"
 
+    monkeypatch.setattr(code_review_module, "_read_review", original_read_review)
     monkeypatch.setattr(
         code_review_module,
         "read_self_analysis_status",
@@ -932,6 +941,32 @@ def test_review_freshness_is_fail_closed_with_portable_full_snapshot_exception(
     assert portable.snapshot.freshness == "publication_only"
     assert portable.snapshot.current is False
     assert "live_tree_freshness_not_proven_without_journal" in portable.limitations
+
+
+def test_review_post_fence_rejects_freshness_changed_during_materialization(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state_directory = tmp_path / "state"
+    _build_state(state_directory)
+    observed_status_reads = 0
+
+    def changing_status(_state: Path, _run: object) -> SelfAnalysisStatus:
+        nonlocal observed_status_reads
+        observed_status_reads += 1
+        if observed_status_reads == 1:
+            return _status(tmp_path)
+        return _status(tmp_path, journal_status="advanced", current=False)
+
+    monkeypatch.setattr(code_review_module, "read_self_analysis_status", changing_status)
+
+    result = review_code_state(state_directory, limit=1)
+
+    assert observed_status_reads == 2
+    assert result.status == "abstained"
+    assert result.reason == "self_analysis_journal_advanced"
+    assert result.findings == ()
+    assert result.digest is None
 
 
 def test_review_with_zero_hotspots_is_ready_and_does_not_mutate_state(
@@ -1003,3 +1038,40 @@ def test_review_reads_only_provider_payloads_consumed_by_integrated_assurance(
             code_review_module.PYTEST_COVERAGE_PROVIDER_ID,
         )
     ]
+
+
+def test_review_limit_bounds_candidate_scan_architecture_reach_and_public_projection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state_directory = tmp_path / "state"
+    _build_state(state_directory)
+    monkeypatch.setattr(
+        code_review_module,
+        "read_self_analysis_status",
+        lambda _state, _run: _status(tmp_path),
+    )
+    original = code_review_module.read_code_architecture_analysis
+    observed_reachability_limits: list[int] = []
+
+    def capture_architecture_limit(connection, analysis_run_id, **kwargs):
+        observed_reachability_limits.append(kwargs["reachability_limit"])
+        return original(connection, analysis_run_id, **kwargs)
+
+    monkeypatch.setattr(
+        code_review_module,
+        "read_code_architecture_analysis",
+        capture_architecture_limit,
+    )
+
+    result = review_code_state(state_directory, limit=1)
+
+    assert result.status == "ready"
+    assert result.materialization_limit == 1
+    assert "public_example_materialization_limit:1" in result.limitations
+    assert observed_reachability_limits == [1]
+    assert result.coverage is not None
+    assert result.coverage.enumerated_hotspots <= (
+        code_review_module.CODE_REVIEW_CANDIDATE_SCAN_FACTOR
+    )
+    assert len(result.findings) == 1

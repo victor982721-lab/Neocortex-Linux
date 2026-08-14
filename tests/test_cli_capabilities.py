@@ -18,6 +18,7 @@ from unittest.mock import patch
 import pytest
 
 import _04_Nucleo_Operativo.cli_capabilities as cli_capabilities
+from _04_Nucleo_Operativo.app_paths import self_analysis_data_directory
 from neocortex.capability_broker import (
     CapabilityAvailability,
     CapabilityBroker,
@@ -169,6 +170,74 @@ def test_canonical_argv_translates_to_hidden_flat_compatibility_flags() -> None:
         ]
     )
 
+    canonical_state = str(self_analysis_data_directory())
+    with patch("_04_Nucleo_Operativo.cli_app.main", return_value=9) as run_cli:
+        result = entrypoint(
+            (
+                "code",
+                "query",
+                "review",
+                "--question-id",
+                "state.text_terminal_publication_is_relationally_closed",
+                "--status=decision:experiment_required",
+                "--executable-only",
+                "--limit",
+                "25",
+                "--json",
+            )
+        )
+
+    assert result == 9
+    run_cli.assert_called_once_with(
+        [
+            "--code-query",
+            "review",
+            "--state-directory",
+            canonical_state,
+            "--code-query-category",
+            "state.text_terminal_publication_is_relationally_closed",
+            "--code-query-status=decision:experiment_required",
+            "--code-query-status",
+            "execution:executable",
+            "--code-query-limit",
+            "25",
+            "--code-json",
+        ]
+    )
+
+    assert _translate_canonical_arguments(
+        ("code", "review", "--state-directory=/tmp/code", "--limit=7")
+    ) == [
+        "--code-review",
+        "--state-directory=/tmp/code",
+        "--code-review-limit=7",
+    ]
+    assert _translate_canonical_arguments(("code", "experiment", "proposal-v1", "--json")) == [
+        "--code-experiment-run",
+        "proposal-v1",
+        "--state-directory",
+        canonical_state,
+        "--code-json",
+    ]
+    assert _translate_canonical_arguments(
+        ("code", "query", "--json", "--limit", "3", "review")
+    ) == [
+        "--code-query",
+        "review",
+        "--state-directory",
+        canonical_state,
+        "--code-json",
+        "--code-query-limit",
+        "3",
+    ]
+    assert _translate_canonical_arguments(("code", "experiment", "--json", "proposal-v1")) == [
+        "--code-experiment-run",
+        "proposal-v1",
+        "--state-directory",
+        canonical_state,
+        "--code-json",
+    ]
+
     with patch("_04_Nucleo_Operativo.cli_app.main", return_value=5) as run_cli:
         result = entrypoint(
             (
@@ -255,6 +324,24 @@ def test_canonical_help_is_specific_without_changing_global_parser_help(
     assert "--max-tests" in captured.out
     assert "--time-budget-seconds" in captured.out
     assert "--code-validate-change" not in captured.out
+
+    assert entrypoint(("code", "query", "--help")) == 0
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert "usage: Neocortex code query" in captured.out
+    assert "{status,review,diff}" in captured.out
+    assert "--question-id" in captured.out
+    assert "--executable-only" in captured.out
+    assert "--state-directory" in captured.out
+    assert "--code-query" not in captured.out
+
+    assert entrypoint(("code", "experiment", "--help")) == 0
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert "usage: Neocortex code experiment" in captured.out
+    assert "PROPOSAL_ID" in captured.out
+    assert "--state-directory" in captured.out
+    assert "--code-experiment-run" not in captured.out
 
 
 def test_available_capabilities_emit_canonical_json_and_exit_zero(

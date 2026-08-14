@@ -8,12 +8,13 @@ from pathlib import Path
 import pytest
 
 from _04_Nucleo_Operativo.code_experiment_executor import (
+    CodeExperimentGateOutcome,
     CodeExperimentOutcome,
     CodeExperimentReceipt,
     parse_code_experiment_receipt_payload,
 )
 from _04_Nucleo_Operativo.code_experiment_planner import CodeExperimentProposal
-from _04_Nucleo_Operativo.code_invariant_contracts import RUNTIME_SCENARIOS
+from _04_Nucleo_Operativo.code_invariant_contracts import RUNTIME_SCENARIOS, runtime_scenario
 from _04_Nucleo_Operativo.external_evidence_models import (
     ExternalProviderMetric,
     external_metric_identity,
@@ -24,12 +25,13 @@ def _proposal() -> CodeExperimentProposal:
     from _04_Nucleo_Operativo.code_analysis_epistemics import analysis_identity
     from _04_Nucleo_Operativo.code_experiment_planner import experiment_template
 
-    template = experiment_template("analyzer.registered_invariant_scenarios")
+    template = experiment_template("capability.public_route_acceptance")
     values = {
         "evaluation_id": "evaluation:fixture",
-        "question_id": "assurance.declared_invariant_scenarios_are_observed",
-        "subject_key": "invariant:fixture",
-        "selected_action_id": "run_independent_invariant_scenario",
+        "evaluation_binding_fingerprint": "evaluation-binding:fixture",
+        "question_id": "capability.route_reaches_user_visible_outcome",
+        "subject_key": "capability:route:text",
+        "selected_action_id": "exercise_text_capability_from_public_entrypoint",
         "template_id": template.template_id,
         "template_version": template.version,
         "cost_tier": template.cost_tier,
@@ -40,7 +42,7 @@ def _proposal() -> CodeExperimentProposal:
         "runner_kind": template.runner_kind,
         "scenario_ids": template.scenario_ids,
         "acceptance_gates": template.acceptance_gates,
-        "missing_requirement_ids": ("independent_additional_scenario_result",),
+        "missing_requirement_ids": ("public_acceptance_scenario",),
         "alternative_action_ids": (),
         "planning_status": "planned",
         "reason": "cheapest_registered_discriminating_experiment_selected",
@@ -48,7 +50,10 @@ def _proposal() -> CodeExperimentProposal:
         "mutation_authority": False,
     }
     return CodeExperimentProposal(
-        proposal_id=analysis_identity("code-experiment-proposal-v1", values),
+        proposal_id=analysis_identity(
+            "code-experiment-proposal-v2",
+            {key: value for key, value in values.items() if key != "evaluation_id"},
+        ),
         **values,  # type: ignore[arg-type]
     )
 
@@ -62,8 +67,9 @@ def _receipt(
     from _04_Nucleo_Operativo.code_analysis_epistemics import analysis_identity
 
     proposal = _proposal()
-    scenarios = tuple(item.scenario_id for item in RUNTIME_SCENARIOS)
-    nodeids = tuple(nodeid for item in RUNTIME_SCENARIOS for nodeid in item.test_nodeids)
+    scenario_specs = tuple(runtime_scenario(item) for item in proposal.scenario_ids)
+    scenarios = tuple(item.scenario_id for item in scenario_specs)
+    nodeids = tuple(nodeid for item in scenario_specs for nodeid in item.test_nodeids)
     outcomes = tuple(
         CodeExperimentOutcome(
             item.scenario_id,
@@ -71,13 +77,32 @@ def _receipt(
             outcome,  # type: ignore[arg-type]
             tuple(f"relation:{index}:{ordinal}" for ordinal, _ in enumerate(item.test_nodeids)),
         )
-        for index, item in enumerate(RUNTIME_SCENARIOS)
+        for index, item in enumerate(scenario_specs)
     )
     if observed_outcomes is not None:
         outcomes = outcomes[:observed_outcomes]
+    gate_status = "not_evaluated" if outcome == "skipped" else outcome
+    gate_outcomes = tuple(
+        CodeExperimentGateOutcome(
+            gate.gate_id,
+            scenario.scenario_id,
+            gate.test_nodeids,
+            gate_status,  # type: ignore[arg-type]
+            tuple(
+                f"gate-relation:{gate.gate_id}:{index}" for index, _ in enumerate(gate.test_nodeids)
+            ),
+            {
+                "passed": "all_bound_test_contracts_passed",
+                "failed": "one_or_more_bound_test_contracts_failed",
+                "not_evaluated": "bound_test_contracts_not_all_observed_as_terminal_pass_or_fail",
+            }[gate_status],
+        )
+        for scenario in scenario_specs
+        for gate in scenario.gate_specs
+    )
     status = (
         "abstained"
-        if provider_status != "completed"
+        if provider_status != "completed" or outcome == "skipped"
         else "failed"
         if outcome != "passed"
         else "passed"
@@ -85,19 +110,19 @@ def _receipt(
     values = {
         "status": status,
         "reason": "provider_failed" if status == "abstained" else None,
-        "policy_id": "allowlisted-trusted-deep-scenarios-v2",
+        "policy_id": "allowlisted-measured-gates-trusted-deep-v4",
         "proposal_id": proposal.proposal_id,
-        "template_id": "analyzer.registered_invariant_scenarios",
-        "template_version": "v2",
-        "runner_kind": "trusted_deep_declared_scenarios",
+        "template_id": proposal.template_id,
+        "template_version": proposal.template_version,
+        "runner_kind": proposal.runner_kind,
         "source_root": "/fixture/repository",
         "source_version": "source-fixture",
         "source_manifest_digest": "manifest:fixture",
         "code_database_digest_before": "digest:same",
         "code_database_digest_after": "digest:same",
-        "canonical_state_unchanged": True,
+        "code_database_unchanged": True,
         "configuration_signature": "config:fixture",
-        "invariant_registry_fingerprint": "registry:fixture",
+        "scenario_registry_fingerprint": "registry:fixture",
         "provider_id": "pytest-coverage-trusted-deep",
         "provider_schema": "neocortex.pytest-coverage-trusted-deep/v1",
         "provider_status": provider_status,
@@ -107,6 +132,7 @@ def _receipt(
         "selected_scenarios": scenarios,
         "selected_nodeids": nodeids,
         "outcomes": outcomes,
+        "gate_outcomes": gate_outcomes,
         "passed": sum(item.outcome == "passed" for item in outcomes),
         "failed": sum(item.outcome == "failed" for item in outcomes),
         "skipped": sum(item.outcome == "skipped" for item in outcomes),
@@ -115,8 +141,9 @@ def _receipt(
         "stdout_bytes": 100,
         "stderr_bytes": 0,
         "limitations": (
-            "receipt_proves_selected_test_outcomes_not_formal_invariant_truth",
+            "receipt_proves_selected_test_outcomes_not_a_question_conclusion_or_formal_proof",
             "coverage_is_main_process_only",
+            "source_input_is_verified_before_and_after_but_corpus_and_other_state_are_not_guarded",
             "process_death_scenario_is_not_power_loss",
             "no_product_mutation_authority",
         ),
@@ -126,8 +153,9 @@ def _receipt(
     identity_values = dict(values)
     identity_values["duration_ms"] = 0
     identity_values["outcomes"] = tuple(asdict(item) for item in outcomes)
+    identity_values["gate_outcomes"] = tuple(asdict(item) for item in gate_outcomes)
     return CodeExperimentReceipt(
-        receipt_id=analysis_identity("code-experiment-receipt-v1", identity_values),
+        receipt_id=analysis_identity("code-experiment-receipt-v3", identity_values),
         **values,  # type: ignore[arg-type]
     )
 
@@ -136,9 +164,11 @@ def test_receipt_round_trip_preserves_exact_scenario_outcomes() -> None:
     receipt = _receipt()
 
     assert receipt.status == "passed"
-    assert receipt.passed == len(RUNTIME_SCENARIOS)
+    assert receipt.passed == len(receipt.selected_scenarios)
     assert receipt.failed == receipt.skipped == 0
-    assert receipt.canonical_state_unchanged
+    assert receipt.code_database_unchanged
+    assert receipt.gate_outcomes
+    assert all(item.status == "passed" for item in receipt.gate_outcomes)
     assert receipt.mutation_authority is False
     assert (
         parse_code_experiment_receipt_payload(json.loads(json.dumps(receipt.as_payload())))
@@ -151,7 +181,7 @@ def test_failure_and_provider_abstention_remain_distinct() -> None:
     abstained = _receipt(provider_status="failed", observed_outcomes=0)
 
     assert failed.status == "failed"
-    assert failed.failed == len(RUNTIME_SCENARIOS)
+    assert failed.failed == len(failed.selected_scenarios)
     assert abstained.status == "abstained"
     assert abstained.reason == "provider_failed"
     assert abstained.outcomes == ()
@@ -177,8 +207,15 @@ def test_receipt_rejects_canonical_state_change_and_status_smuggling() -> None:
     with pytest.raises(ValueError, match="status is not derived"):
         replace(
             receipt,
-            canonical_state_unchanged=False,
+            code_database_unchanged=False,
             code_database_digest_after="digest:changed",
+        )
+
+    with pytest.raises(ValueError, match="derived from execution"):
+        replace(
+            receipt,
+            status="passed",
+            gate_outcomes=receipt.gate_outcomes[:-1],
         )
     with pytest.raises(ValueError, match="advisory and non-mutating"):
         replace(receipt, mutation_authority=True)  # type: ignore[arg-type]
@@ -312,3 +349,23 @@ def test_complete_aggregate_counts_are_recovered_when_relation_payload_is_bounde
     )()
     with pytest.raises(ValueError, match="not canonical"):
         executor._provider_test_counts(forged)
+
+
+@pytest.mark.parametrize(
+    ("published", "after"),
+    (("source:changed", "source:exact"), ("source:exact", "source:changed")),
+)
+def test_experiment_rejects_outcomes_if_the_exact_source_input_changes(
+    published: str,
+    after: str,
+) -> None:
+    import _04_Nucleo_Operativo.code_experiment_executor as executor
+
+    with pytest.raises(ValueError, match="source input changed"):
+        executor._require_stable_source_input("source:exact", published, after)
+
+    executor._require_stable_source_input(
+        "source:exact",
+        "source:exact",
+        "source:exact",
+    )

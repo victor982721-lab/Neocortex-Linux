@@ -11,13 +11,16 @@ from pathlib import Path
 import pytest
 
 from _04_Nucleo_Operativo.code_unused_analysis import (
+    CODE_UNUSED_REFERENCE_LIMIT,
     DEFAULT_CALIBRATION_SAMPLES,
     DEFAULT_HOLDOUT_SAMPLES,
     CodeUnusedAnalysis,
     UnusedConsensusCandidate,
     UnusedEvidenceSignals,
     UnusedProviderStatus,
+    _CurrentSymbol,
     _classify,
+    _graph_observations,
     analyze_code_unused,
     build_unused_analysis,
     classify_unused_candidate,
@@ -27,6 +30,55 @@ from _04_Nucleo_Operativo.code_unused_analysis import (
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "unused_consensus"
+
+
+def _graph_connection() -> sqlite3.Connection:
+    connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
+    connection.executescript(
+        """
+        CREATE TABLE files(
+            file_id INTEGER PRIMARY KEY,
+            current_version_id INTEGER,
+            status TEXT NOT NULL
+        );
+        CREATE TABLE file_versions(
+            version_id INTEGER PRIMARY KEY,
+            file_id INTEGER NOT NULL,
+            invalidated_ns INTEGER
+        );
+        CREATE TABLE code_references(
+            reference_id INTEGER PRIMARY KEY,
+            version_id INTEGER NOT NULL,
+            source_symbol_id INTEGER,
+            target_symbol_id INTEGER,
+            kind TEXT NOT NULL,
+            name TEXT NOT NULL,
+            target_hint TEXT
+        );
+        """
+    )
+    return connection
+
+
+def _current_symbol(
+    symbol_id: int,
+    *,
+    version_id: int = 2,
+    parent_symbol_id: int | None = None,
+    name: str = "candidate",
+) -> _CurrentSymbol:
+    return _CurrentSymbol(
+        symbol_id=symbol_id,
+        version_id=version_id,
+        parent_symbol_id=parent_symbol_id,
+        kind="function",
+        name=name,
+        qualified_name=f"pkg.{name}",
+        start_line=1,
+        end_line=2,
+        path_observed="pkg/current.py",
+    )
 
 
 def _signals(**changes: object) -> UnusedEvidenceSignals:
@@ -325,3 +377,115 @@ def test_reader_abstains_cleanly_when_normalized_provider_state_is_missing() -> 
     assert analysis.reason is not None
     assert analysis.candidates == ()
     assert analysis.mutation_authority is False
+
+
+def test_graph_bound_excludes_more_than_half_a_million_historical_references() -> None:
+    connection = _graph_connection()
+    historical_version = 1
+    current_version = 2
+    candidate_id = 10
+    caller_id = 20
+    connection.executemany(
+        "INSERT INTO file_versions(version_id,file_id,invalidated_ns) VALUES(?,?,?)",
+        (
+            (historical_version, 1, 100),
+            (current_version, 1, None),
+        ),
+    )
+    connection.execute(
+        "INSERT INTO files(file_id,current_version_id,status) VALUES(1,?,'current')",
+        (current_version,),
+    )
+    connection.execute(
+        """WITH RECURSIVE sequence(reference_id) AS (
+        SELECT 1 UNION ALL SELECT reference_id + 1 FROM sequence WHERE reference_id < ?
+        )
+        INSERT INTO code_references(
+            reference_id,version_id,source_symbol_id,target_symbol_id,kind,name,target_hint
+        )
+        SELECT reference_id,?,?,?,'call','candidate',NULL FROM sequence""",
+        (CODE_UNUSED_REFERENCE_LIMIT + 1, historical_version, caller_id, candidate_id),
+    )
+    connection.execute(
+        """INSERT INTO code_references(
+        reference_id,version_id,source_symbol_id,target_symbol_id,kind,name,target_hint
+        ) VALUES(?,?,?,?,?,?,NULL)""",
+        (
+            CODE_UNUSED_REFERENCE_LIMIT + 2,
+            current_version,
+            caller_id,
+            candidate_id,
+            "call",
+            "candidate",
+        ),
+    )
+
+    graph = _graph_observations(
+        connection,
+        (_current_symbol(candidate_id), _current_symbol(caller_id, name="caller")),
+        frozenset({candidate_id}),
+    )
+
+    assert connection.execute("SELECT COUNT(*) FROM code_references").fetchone()[0] == (
+        CODE_UNUSED_REFERENCE_LIMIT + 2
+    )
+    assert graph[candidate_id].calls == 1
+    assert graph[candidate_id].references == 0
+    assert graph[candidate_id].imports == 0
+
+
+def test_graph_ignores_invalidated_reference_to_current_candidate() -> None:
+    connection = _graph_connection()
+    connection.executemany(
+        "INSERT INTO file_versions(version_id,file_id,invalidated_ns) VALUES(?,?,?)",
+        (
+            (1, 1, 100),
+            (2, 1, None),
+        ),
+    )
+    connection.execute("INSERT INTO files(file_id,current_version_id,status) VALUES(1,2,'current')")
+    connection.executemany(
+        """INSERT INTO code_references(
+        reference_id,version_id,source_symbol_id,target_symbol_id,kind,name,target_hint
+        ) VALUES(?,?,?,?,?,?,NULL)""",
+        (
+            (1, 1, 20, 10, "call", "candidate"),
+            (2, 2, 20, 10, "import", "candidate"),
+        ),
+    )
+
+    graph = _graph_observations(
+        connection,
+        (_current_symbol(10), _current_symbol(20, name="caller")),
+        frozenset({10}),
+    )
+
+    assert graph[10].calls == 0
+    assert graph[10].imports == 1
+
+
+def test_graph_bound_still_applies_to_the_current_projection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = _graph_connection()
+    connection.execute(
+        "INSERT INTO file_versions(version_id,file_id,invalidated_ns) VALUES(2,1,NULL)"
+    )
+    connection.execute("INSERT INTO files(file_id,current_version_id,status) VALUES(1,2,'current')")
+    connection.executemany(
+        """INSERT INTO code_references(
+        reference_id,version_id,source_symbol_id,target_symbol_id,kind,name,target_hint
+        ) VALUES(?,2,20,10,'call','candidate',NULL)""",
+        ((1,), (2,)),
+    )
+    monkeypatch.setattr(
+        "_04_Nucleo_Operativo.code_unused_analysis.CODE_UNUSED_REFERENCE_LIMIT",
+        1,
+    )
+
+    with pytest.raises(ValueError, match="unused code reference bound exceeded"):
+        _graph_observations(
+            connection,
+            (_current_symbol(10), _current_symbol(20, name="caller")),
+            frozenset({10}),
+        )

@@ -247,10 +247,7 @@ def _configuration_payload() -> dict[str, object]:
 
 
 def _configuration_signature(payload: Mapping[str, object]) -> str:
-    return (
-        "external-ruff-v1:xxh3_128:"
-        + fingerprint_text(canonical_json(payload)).xxh3_128
-    )
+    return "external-ruff-v1:xxh3_128:" + fingerprint_text(canonical_json(payload)).xxh3_128
 
 
 RUFF_CONFIGURATION_SIGNATURE = _configuration_signature(_configuration_payload())
@@ -273,9 +270,7 @@ def _controlled_environment() -> dict[str, str]:
         "tmpdir",
         "windir",
     }
-    environment = {
-        key: value for key, value in os.environ.items() if key.casefold() in allowed
-    }
+    environment = {key: value for key, value in os.environ.items() if key.casefold() in allowed}
     environment.update(
         {
             "NO_COLOR": "1",
@@ -372,10 +367,7 @@ def _read_exact_current_file(item: ExternalEvidenceFile) -> bytes:
         raise ValueError(f"Ruff input changed during bounded read: {item.path}")
     content = b"".join(chunks)
     observed = fingerprint_bytes(content)
-    if (
-        observed.xxh3_128 != item.raw_xxh3_128
-        or observed.xxh3_64_guard != item.raw_xxh3_64_guard
-    ):
+    if observed.xxh3_128 != item.raw_xxh3_128 or observed.xxh3_64_guard != item.raw_xxh3_64_guard:
         raise ValueError(f"Ruff input fingerprint is stale: {item.path}")
     return content
 
@@ -503,11 +495,7 @@ def _diagnostic_sort_key(item: ExternalDiagnostic) -> tuple[object, ...]:
 
 def _external_result_digest(records: Sequence[ExternalDiagnostic]) -> str:
     portable = [
-        {
-            key: value
-            for key, value in item.result_payload().items()
-            if key != "version_id"
-        }
+        {key: value for key, value in item.result_payload().items() if key != "version_id"}
         for item in records
     ]
     canonical = canonical_json({"diagnostics": portable})
@@ -540,8 +528,7 @@ def _decode_result_record(raw: object) -> ExternalDiagnostic | None:
         or "\\" in relative_path
         or PurePosixPath(relative_path).is_absolute()
         or any(
-            part in {"", ".", ".."} or ":" in part
-            for part in PurePosixPath(relative_path).parts
+            part in {"", ".", ".."} or ":" in part for part in PurePosixPath(relative_path).parts
         )
         or not isinstance(code, str)
         or not code
@@ -628,14 +615,8 @@ def read_external_evidence_files(
             common = os.path.commonpath((normalized_root, normalized_path))
             relative_path = os.path.relpath(path, root_text).replace("\\", "/")
         except (OSError, TypeError, ValueError) as exc:
-            raise ValueError(
-                "external evidence path is outside the owner root"
-            ) from exc
-        if (
-            common != normalized_root
-            or relative_path == ".."
-            or relative_path.startswith("../")
-        ):
+            raise ValueError("external evidence path is outside the owner root") from exc
+        if common != normalized_root or relative_path == ".." or relative_path.startswith("../"):
             raise ValueError("external evidence path is outside the owner root")
         if normalized_path in seen_paths:
             raise ValueError("external evidence contains duplicate current paths")
@@ -692,9 +673,7 @@ def _parse_diagnostics(
     for raw_item in decoded:
         if not isinstance(raw_item, Mapping):
             raise ValueError("Ruff diagnostic is not an object")
-        filename = _bounded_text(
-            raw_item.get("filename"), label="filename", maximum=32_768
-        )
+        filename = _bounded_text(raw_item.get("filename"), label="filename", maximum=32_768)
         normalized = os.path.normcase(os.path.abspath(filename))
         owner = files_by_path.get(normalized)
         if owner is None:
@@ -702,19 +681,11 @@ def _parse_diagnostics(
         code = _bounded_text(raw_item.get("code"), label="code", maximum=128)
         message = _bounded_text(raw_item.get("message"), label="message", maximum=2_048)
         start_line, start_column = _location(raw_item.get("location"), label="location")
-        end_line, end_column = _location(
-            raw_item.get("end_location"), label="end_location"
-        )
-        if end_line < start_line or (
-            end_line == start_line and end_column < start_column
-        ):
+        end_line, end_column = _location(raw_item.get("end_location"), label="end_location")
+        if end_line < start_line or (end_line == start_line and end_column < start_column):
             raise ValueError("Ruff diagnostic range is invalid")
         url_value = raw_item.get("url")
-        url = (
-            None
-            if url_value is None
-            else _bounded_text(url_value, label="url", maximum=2_048)
-        )
+        url = None if url_value is None else _bounded_text(url_value, label="url", maximum=2_048)
         identity = _external_diagnostic_identity(
             owner.relative_path,
             code,
@@ -896,9 +867,7 @@ def _run_staged_batches(
                 ),
                 cwd=stage_root,
                 environment=environment,
-                memory_limit_bytes=(
-                    RUFF_MEMORY_LIMIT_BYTES if os.name == "nt" else None
-                ),
+                memory_limit_bytes=(RUFF_MEMORY_LIMIT_BYTES if os.name == "nt" else None),
             )
         except subprocess.TimeoutExpired as exc:
             return _ExternalAttemptFailure("timeout", "batch_timeout", exc)
@@ -920,9 +889,9 @@ def _run_staged_batches(
 def _validated_staging_parent(root: Path, scratch_root: Path | None) -> Path:
     try:
         owner = root.resolve(strict=True)
-        selected = (
-            Path(tempfile.gettempdir()) if scratch_root is None else scratch_root
-        ).resolve(strict=True)
+        selected = (Path(tempfile.gettempdir()) if scratch_root is None else scratch_root).resolve(
+            strict=True
+        )
     except (OSError, RuntimeError, ValueError) as exc:
         raise ValueError("Ruff staging parent cannot be resolved") from exc
     if not selected.is_dir():
@@ -1026,9 +995,7 @@ class RuffEvidenceProvider:
             )
         try:
             diagnostics = tuple(
-                item
-                for output in outputs
-                for item in _parse_diagnostics(output, files_by_path)
+                item for output in outputs for item in _parse_diagnostics(output, files_by_path)
             )
             diagnostics = tuple(sorted(diagnostics, key=_diagnostic_sort_key))
             if len(diagnostics) > RUFF_MAX_DIAGNOSTICS:
@@ -1176,10 +1143,7 @@ def _decode_external_record(
         provenance = json.loads(raw_provenance)
     except (TypeError, ValueError, json.JSONDecodeError):
         return None
-    if (
-        not isinstance(provenance, dict)
-        or provenance.get("schema") != EXTERNAL_EVIDENCE_SCHEMA
-    ):
+    if not isinstance(provenance, dict) or provenance.get("schema") != EXTERNAL_EVIDENCE_SCHEMA:
         return None
     input_payload = provenance.get("input")
     result = provenance.get("result")
@@ -1214,8 +1178,7 @@ def _decode_external_record(
         or not isinstance(version_ids, list)
         or len(version_ids) != eligible_files
         or any(
-            not isinstance(item, int) or isinstance(item, bool) or item <= 0
-            for item in version_ids
+            not isinstance(item, int) or isinstance(item, bool) or item <= 0 for item in version_ids
         )
         or len(set(version_ids)) != len(version_ids)
     ):
@@ -1434,9 +1397,7 @@ def external_status_from_row(
         if isinstance(error, dict) and isinstance(error.get("reason"), str):
             reason = str(error["reason"])
         raw_eligible = (
-            input_payload.get("eligible_files", 0)
-            if isinstance(input_payload, dict)
-            else 0
+            input_payload.get("eligible_files", 0) if isinstance(input_payload, dict) else 0
         )
         eligible_files = (
             raw_eligible
@@ -1480,9 +1441,7 @@ def external_status_from_row(
     else:
         gate = "failed"
     eligible = input_payload.get("eligible_files", 0)
-    eligible_files = (
-        eligible if isinstance(eligible, int) and not isinstance(eligible, bool) else 0
-    )
+    eligible_files = eligible if isinstance(eligible, int) and not isinstance(eligible, bool) else 0
     effective = provenance.get("reused_tool_run_id", tool_run_id)
     effective_tool_run_id = (
         effective if isinstance(effective, int) and effective > 0 else tool_run_id
@@ -1581,10 +1540,12 @@ def read_external_evidence(
     """Read one external owner and verify its current diagnostic projection."""
 
     raw_row = connection.execute(
-        """SELECT tool_run_id,analysis_run_id,tool_version,
-        configuration_signature,status,provenance_json
-        FROM external_tool_runs WHERE analysis_run_id=? AND tool_name='ruff'
-        ORDER BY tool_run_id DESC LIMIT 1""",
+        """SELECT r.tool_run_id,r.analysis_run_id,r.tool_version,
+        r.configuration_signature,r.status,r.provenance_json,a.status AS owner_status
+        FROM external_tool_runs r
+        JOIN analysis_runs a ON a.analysis_run_id=r.analysis_run_id
+        WHERE r.analysis_run_id=? AND r.tool_name='ruff'
+        ORDER BY r.tool_run_id DESC LIMIT 1""",
         (analysis_run_id,),
     ).fetchone()
     row = None if raw_row is None else dict(raw_row)
@@ -1595,6 +1556,12 @@ def read_external_evidence(
     )
     if row is None or status.status != "ready":
         return status, frozenset(), row
+    if row.get("owner_status") != "completed":
+        return (
+            _abstain_external_status(status, "external_provider_owner_not_completed"),
+            frozenset(),
+            row,
+        )
     decoded = _decode_external_record(
         int(row["tool_run_id"]),
         int(row["analysis_run_id"]),
@@ -1641,10 +1608,12 @@ def read_external_evidence(
         )
     if status.execution == "cache_replay":
         source_row = connection.execute(
-            """SELECT tool_run_id,analysis_run_id,tool_version,
-            configuration_signature,status,provenance_json
-            FROM external_tool_runs WHERE tool_run_id=? AND tool_name='ruff'
-            AND status='completed'""",
+            """SELECT r.tool_run_id,r.analysis_run_id,r.tool_version,
+            r.configuration_signature,r.status,r.provenance_json
+            FROM external_tool_runs r JOIN analysis_runs a
+            ON a.analysis_run_id=r.analysis_run_id
+            WHERE r.tool_run_id=? AND r.tool_name='ruff'
+            AND r.status='completed' AND a.status='completed'""",
             (effective_tool_run_id,),
         ).fetchone()
         if source_row is None:
@@ -1672,8 +1641,7 @@ def read_external_evidence(
         replay_root = _normalized_absolute_path(baseline.root)
         if (
             source_baseline.tool_version != baseline.tool_version
-            or source_baseline.configuration_signature
-            != baseline.configuration_signature
+            or source_baseline.configuration_signature != baseline.configuration_signature
             or source_root is None
             or replay_root is None
             or source_root != replay_root
@@ -1735,22 +1703,16 @@ def read_external_evidence(
                 row,
             )
         identity = (
-            metadata.get("external_diagnostic_identity")
-            if isinstance(metadata, dict)
-            else None
+            metadata.get("external_diagnostic_identity") if isinstance(metadata, dict) else None
         )
-        owner = (
-            metadata.get("external_tool_run_id") if isinstance(metadata, dict) else None
-        )
+        owner = metadata.get("external_tool_run_id") if isinstance(metadata, dict) else None
         try:
             current_path = os.path.abspath(str(projection["current_path"]))
             normalized_current_path = _normalized_absolute_path(current_path)
             if normalized_current_path is None:
                 raise ValueError("external projection path is invalid")
             common = os.path.commonpath((normalized_root, normalized_current_path))
-            relative_path = os.path.relpath(current_path, baseline.root).replace(
-                "\\", "/"
-            )
+            relative_path = os.path.relpath(current_path, baseline.root).replace("\\", "/")
         except (OSError, TypeError, ValueError):
             common = ""
             relative_path = ".."
@@ -1761,9 +1723,7 @@ def read_external_evidence(
         end_line = projection["end_line"]
         end_column = projection["end_column"]
         url = metadata.get("url") if isinstance(metadata, dict) else None
-        fix_available = (
-            metadata.get("fix_available") if isinstance(metadata, dict) else None
-        )
+        fix_available = metadata.get("fix_available") if isinstance(metadata, dict) else None
         if (
             common != normalized_root
             or relative_path == ".."
@@ -1892,23 +1852,23 @@ def external_status_digest_payload(
 
 __all__ = [
     "EXTERNAL_EVIDENCE_SCHEMA",
+    "RUFF_CONFIGURATION_SIGNATURE",
+    "RUFF_SOURCE",
+    "RUFF_TOOL_NAME",
     "ExternalDiagnostic",
     "ExternalEvidenceBaseline",
     "ExternalEvidenceFile",
     "ExternalEvidencePublication",
     "ExternalEvidenceStatus",
-    "RUFF_CONFIGURATION_SIGNATURE",
-    "RUFF_SOURCE",
-    "RUFF_TOOL_NAME",
     "RuffEvidenceProvider",
-    "decode_external_baseline",
     "current_external_status_from_row",
+    "decode_external_baseline",
     "external_input_signature",
-    "read_external_evidence_files",
-    "read_external_evidence",
     "external_status_digest_payload",
     "external_status_from_row",
     "failed_external_publication",
+    "read_external_evidence",
+    "read_external_evidence_files",
     "skipped_external_publication",
     "validate_external_inputs",
 ]

@@ -259,12 +259,12 @@ existe cuando se cumplen juntos los criterios dinámicos de la última sección.
 - Este handoff documenta el árbol sin sustituir tests focales, gates, commit ni
   release Linux instalada del SHA final.
 
-## Contrato operativo — Autoanalizador v16
+## Contrato operativo — Autoanalizador v17
 
 - La siguiente frontera operativa es `Neocortex code validate`: una sola entrada
   Linux para validar implementaciones. Captura el diff, selecciona pruebas con
   evidencia publicada, ejecuta estática/arquitectura, publica `trusted-deep`,
-  consume review v16, ejecuta experimentos allow-listed, instala el wheel
+  consume review v17, ejecuta experimentos allow-listed, instala el wheel
   candidato fuera del checkout y exige replay. Las herramientas individuales
   quedan como diagnóstico interno; no constituyen una aceptación paralela.
 - La entrada completa se reejecuta dentro de un único cgroup v2 de usuario. Un
@@ -281,7 +281,7 @@ existe cuando se cumplen juntos los criterios dinámicos de la última sección.
 
 - `Neocortex --state-directory ESTADO --code-review` ya no es una vista que
   convierte nombres, rutas o tamaño en recomendaciones. El envelope
-  `neocortex.code-review/v16` publica un registro general de preguntas y
+  `neocortex.code-review/v17` publica un registro general de preguntas y
   evaluaciones enlazadas a registros fuente; separa observación, inferencia,
   hipótesis, contraevidencia, evidencia faltante, experimento, decisión y
   autoridad. Toda evaluación es advisory y `mutation_authority=false`.
@@ -320,7 +320,7 @@ existe cuando se cumplen juntos los criterios dinámicos de la última sección.
   receipts y heads publicados. El autoanálisis compara su publicación con el
   checkout Git por contenido y expone coste/cobertura, pero no publica
   precision, recall ni utilidad humana sin outcomes independientes.
-- v16 incorpora ownership lógico explícito, interacciones SQL/SQLite ligadas a
+- v17 conserva ownership lógico explícito, interacciones SQL/SQLite ligadas a
   los 13 stores declarados, fronteras transaccionales/workflow, reachability de
   las nueve rutas built-in, cuatro invariantes, calibración anti-Goodhart y un
   planificador de experimentos sin comandos libres. SQL dinámico, parser no
@@ -328,11 +328,28 @@ existe cuando se cumplen juntos los criterios dinámicos de la última sección.
   placeholders numerados válidos `?NNN` se adaptan token a token para SQLGlot
   sin alterar strings ni el digest observado; dejaron de contarse como error
   los dos sitios productivos Text/Archive que usaban esa sintaxis.
-- `--code-experiment-run PROPOSAL_ID` reconstruye el plan vigente y ejecuta sólo
-  escenarios allow-listed en temporales externos. El contrato actual cubre
-  cuatro escenarios y diez nodeids exactos —incluidos siete casos
-  parametrizados anti-Goodhart—, conserva receipt/digests antes/después y nunca
-  autoriza fuente, estado o patch.
+- `--code-experiment-run PROPOSAL_ID` reconstruye el plan vigente y sólo admite
+  dos templates ejecutables: acceptance pública Text (un nodeid) y trace/fault
+  boundaries del workflow Text (cuatro nodeids). Los cuatro escenarios/diez
+  nodeids del assurance de invariantes y los controles de calibración permanecen
+  en el registry, pero no se convierten automáticamente en runners. Pytest corre
+  directamente sobre el checkout canónico confiable; el temporal externo aloja
+  runtime/checkpoints y no constituye copia ni sandbox. Trusted-deep puede usar
+  red y conserva `HOME`. El provider verifica antes/después la firma exacta de
+  los inputs Python publicados y del soporte Git observado; el digest de
+  `code.sqlite3` queda cercado durante la fase ejecutora. No hay lock continuo
+  del checkout y corpus/otros stores quedan fuera.
+- Code schema v6 persiste después cada terminal
+  `neocortex.code-experiment-receipt/v3` en una tabla append-only y devuelve
+  `neocortex.code-experiment-store/v1`. Por eso `code_database_unchanged=true`
+  no vuelve read-only a la invocación completa. El review v17 evalúa el terminal
+  más nuevo del proposal/signature actual y bindings de gates explícitos; puede
+  reutilizar un `passed` de un run completado anterior ante replay exacto con la
+  misma firma, mientras un terminal posterior `failed`/`abstained` lo invalida.
+  El envelope digest liga todo el contexto durable; evidencia stale, corrupta o
+  no registrada tampoco satisface. Incluso con todos los gates, la readiness máxima es
+  `human_review_required`, sin decisión, recomendación, patch ni autoridad de
+  mutación.
 - El reader rechaza o abstiene ante publicaciones Code mezcladas, vuelve a
   resolver evidencias, verifica digests y conserva queries dimensionadas
   (`observation:*`, `question:*`, `decision:*`). La salida humana resume

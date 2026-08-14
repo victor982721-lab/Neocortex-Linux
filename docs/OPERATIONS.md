@@ -214,7 +214,7 @@ Neocortex --state-directory $MiniState --code-review --code-review-limit 10 --co
 ```
 
 La segunda invocación es el resultado consumible del auditor. Debe emitir
-`neocortex.code-review/v16`, enlazar cada evaluación a evidencia publicada,
+`neocortex.code-review/v17`, enlazar cada evaluación a evidencia publicada,
 mantener `recommendations=[]`, `decision=null` y `mutation_authority=false`, y
 explicar por pregunta qué provider, contraevidencia o experimento falta. Un run
 de proveedores por sí solo no constituye el cierre del autoanálisis.
@@ -222,13 +222,36 @@ de proveedores por sí solo no constituye el cierre del autoanálisis.
 Si el review publica `CODE_EXPERIMENT_PROPOSAL`, el operador puede copiar su ID
 exacto y ejecutar sólo ese experimento con `--code-experiment-run`. No se admite
 selector pytest ni comando arbitrario: el registry fija escenarios, sus nodeids
-parametrizados ya expandidos, timeout, aislamiento y gates. El comando vuelve a
-validar el plan, la raíz canónica y el
-manifest actual; conserva un digest streaming de `code.sqlite3` antes/después y
-retorna código `0` únicamente cuando todos los nodeids declarados pasan, cada
-escenario queda completo y el owner permanece idéntico. No use esta operación
-sobre una publicación stale:
-regenere antes el autoanálisis aislado.
+parametrizados ya expandidos, timeout y gates tipados. El comando vuelve a
+validar el plan, la raíz canónica y el manifest actual. Actualmente ejecuta sólo
+`capability.public_route_acceptance` (un nodeid) o
+`state.runtime_sql_trace` (cuatro nodeids). Pytest corre sobre el checkout
+canónico confiable; el temporal externo aloja runtime/checkpoints, no una copia
+ni un sandbox. Trusted-deep puede usar red y conserva `HOME`.
+
+Antes y después de Pytest, el provider vuelve a calcular la firma exacta de los
+inputs Python publicados y del soporte Git observado; una diferencia rechaza el
+receipt. El digest streaming before/after cerca además `code.sqlite3` durante la
+ejecución. Estas barreras no son un lock continuo de la fuente y no incluyen el
+corpus ni otros stores. Si los nodeids y gates terminan `passed`, retorna `0`;
+`failed` o `abstained` retornan `2`. Después, aun en esos estados terminales, la
+CLI inserta un receipt append-only en Code schema v6 y devuelve
+`neocortex.code-experiment-store/v1` con
+`neocortex.code-experiment-receipt/v3` anidado. Por eso esta operación no es
+read-only y el digest unchanged no incluye la escritura posterior. No la use
+sobre una publicación stale: regenere antes el autoanálisis. No la ejecute sobre
+código que no confíe; la allowlist limita el selector, no los efectos del código
+de tests.
+
+El siguiente review v17 enlaza sólo el terminal más nuevo del proposal y la
+processing signature exactos, con bindings de gates registrados. El terminal
+puede pertenecer a un run Code completado anterior cuando el run vigente es un
+replay exacto con la misma firma. El envelope digest liga y verifica run,
+evaluación, pregunta, sujeto, review, timestamp y payload. Un terminal posterior
+fallido o abstenido, o uno stale, corrupto o sin binding, no satisface evidencia.
+Incluso con evidencia completa, la readiness máxima es
+`human_review_required`; no nace una decisión, recomendación ni autoridad de
+mutación.
 
 `trusted-static` ejecuta 13 proveedores independientes: Ruff basic, Ruff
 con la política acotada `E4,E7,E9,F,B,C4,PIE,RUF`, Mypy, Pyright, Ruff Analyze,
@@ -404,21 +427,21 @@ bytes/analyze/persist/graph y 14 replays; `installed-package-inventory` se
 recalculó. Las consultas read-only status, review y diff tardaron 38.982,
 47.675 y 57.856 s. Esos artefactos históricos usaron architecture v2,
 engineering v1, review v10 y publication diff v8. El contrato vigente de review
-es `neocortex.code-review/v16`, no declara schemas compatibles, publica
+es `neocortex.code-review/v17`, no declara schemas compatibles, publica
 observaciones estructurales con inferencia abstained y evidencia enlazada a IDs
 Code después de resolución read-only; incluye clases seleccionadas por superficie
 AST directa, con umbrales provisionales explícitos, y no genera recomendaciones
 ni paquetes de cambio. Sólo puede publicar paquetes
 `unused_characterization`, advisory y sin autoridad de mutación.
 
-En el estado canónico, v16 consulta además Text/Semantic mediante conexiones
+En el estado canónico, v17 consulta además Text/Semantic mediante conexiones
 `immutable=1` y fences de main/WAL/SHM; nunca checkpointa ni elimina sidecars.
 Un WAL no vacío, layout no demostrado o cambio de fence produce abstención de
 esa dimensión. `aligned` significa exclusivamente igualdad de sets en el head
 publicado y contratos owner/materialization correctos; no demuestra crash
 recovery ni atomicidad cross-owner.
 
-v16 emite también topología Text, interacciones SQL/transaccionales,
+v17 emite también topología Text, interacciones SQL/transaccionales,
 cambio/schema evolution, assurance, invariantes, seguridad/dependencias,
 reachability de `text.extract`, las nueve rutas built-in, superficies de
 módulo/configuración/CLI, calibración y autoeficacia. Ninguna dimensión ejecuta
@@ -806,7 +829,7 @@ Es un orquestador del autoanalizador, no otro linter: captura el diff; seleccion
 pruebas afectadas, completa huecos con fronteras públicas/escenarios registrados
 y escala a la suite Linux sólo ante cambios de packaging, schema o gates; ejecuta las barreras
 estática y arquitectónica existentes; publica `trusted-deep`; consume el review
-v16; ejecuta experimentos registrados; instala y prueba el wheel candidato fuera
+v17; ejecuta experimentos registrados; instala y prueba el wheel candidato fuera
 del checkout; y repite la misma publicación para demostrar replay. Un gate
 fallido produce `failed`, evidencia insuficiente produce `abstained`, y ambos
 devuelven código 2. La salida JSON canónica se obtiene con `--json`.

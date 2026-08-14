@@ -12,6 +12,7 @@ import pytest
 
 from _04_Nucleo_Operativo.code_change_validation import (
     GitChangeSnapshot,
+    _experiment_gate,
     _fresh_review_gate,
     _provider_failure,
     _replay_gate,
@@ -70,7 +71,7 @@ def test_linux_publication_only_snapshot_is_an_eligible_review_fence(
         supply_chain=None,
         recommendations=(),
         digest=None,
-        as_payload=lambda: {"schema": "neocortex.code-review/v16"},
+        as_payload=lambda: {"schema": "neocortex.code-review/v17"},
     )
     monkeypatch.setattr(
         code_change_validation,
@@ -118,7 +119,7 @@ def _review_with_providers(
         supply_chain=None,
         recommendations=(),
         digest=None,
-        as_payload=lambda: {"schema": "neocortex.code-review/v16"},
+        as_payload=lambda: {"schema": "neocortex.code-review/v17"},
     )
 
 
@@ -200,9 +201,7 @@ def test_replay_accepts_the_same_resolved_fresh_pip_snapshot_only_once(
         comparability_signature="fixture-comparability",
         execution="full",
     )
-    replay_fixture = SimpleNamespace(
-        **{**vars(first_fixture), "execution": "cache_replay"}
-    )
+    replay_fixture = SimpleNamespace(**{**vars(first_fixture), "execution": "cache_replay"})
     first_inventory = SimpleNamespace(
         provider_id=INSTALLED_PACKAGE_PROVIDER_ID,
         status="ready",
@@ -259,6 +258,67 @@ def test_replay_accepts_the_same_resolved_fresh_pip_snapshot_only_once(
     fallback = cast(dict[str, object], gate.evidence["historical_pip_audit_fallback"])
     assert fallback["tool_run_id"] == 71
     assert gate.evidence["installed_inventory_replay"] == inventory_receipt
+
+
+def test_canonical_experiment_gate_persists_each_exact_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import _04_Nucleo_Operativo.code_experiment_executor as executor
+    import _04_Nucleo_Operativo.code_experiment_store as store
+
+    proposal = SimpleNamespace(
+        proposal_id="proposal:exact",
+        template_id="template:exact",
+        template_version="v1",
+        planning_status="planned",
+        runner_kind="trusted_deep_declared_scenarios",
+    )
+    review = SimpleNamespace(
+        experiment_plan=SimpleNamespace(
+            proposals=(proposal,),
+            planned_count=1,
+            registry_gap_count=0,
+        ),
+        snapshot=SimpleNamespace(
+            analysis_run_id=17,
+            processing_signature="snapshot:exact",
+        ),
+        digest=SimpleNamespace(),
+    )
+    receipt = SimpleNamespace(
+        receipt_id="receipt:exact",
+        status="passed",
+        as_payload=lambda: {"receipt_id": "receipt:exact", "status": "passed"},
+    )
+    stored = SimpleNamespace(receipt=receipt)
+    observed: list[tuple[object, ...]] = []
+
+    monkeypatch.setattr(executor, "execute_code_experiment", lambda *args, **kwargs: receipt)
+    monkeypatch.setattr(store, "code_review_digest_identity", lambda _digest: "review:exact")
+
+    def record(*args, **kwargs):
+        observed.append((*args, kwargs))
+        return stored
+
+    monkeypatch.setattr(store, "record_code_experiment_receipt", record)
+
+    gate, receipts = _experiment_gate(
+        review,
+        root=tmp_path,
+        state_directory=tmp_path,
+    )
+
+    assert gate.status == "passed"
+    assert gate.evidence["stored_receipt_ids"] == ["receipt:exact"]
+    assert receipts == ({"receipt_id": "receipt:exact", "status": "passed"},)
+    assert len(observed) == 1
+    assert observed[0][0] == tmp_path / "code.sqlite3"
+    assert observed[0][-1] == {
+        "analysis_run_id": 17,
+        "processing_signature": "snapshot:exact",
+        "review_digest": "review:exact",
+    }
 
 
 def _git(root: Path, *arguments: str) -> None:
@@ -333,6 +393,48 @@ def test_packaging_boundary_selects_full_suite(tmp_path: Path) -> None:
     assert selection.strategy == "full"
     assert selection.selectors == ("tests/test_logic.py",)
     assert selection.reasons == ("change_crosses_full_suite_boundary",)
+
+
+def test_code_schema_boundary_selects_its_bounded_compatibility_matrix(
+    tmp_path: Path,
+) -> None:
+    root = _repository(tmp_path)
+    schema = root / "_04_Nucleo_Operativo" / "code_schema.py"
+    schema.parent.mkdir()
+    schema.write_text("SCHEMA_VERSION = 2\n", encoding="utf-8")
+    expected = (
+        "tests/test_code_change_evolution_analysis.py",
+        "tests/test_code_experiment_store.py",
+        "tests/test_code_intelligence.py",
+        "tests/test_code_publication_diff.py",
+        "tests/test_code_schema_migration_v1_v2.py",
+        "tests/test_external_provider_schema_v4.py",
+        "tests/test_framework_code_path_collation.py",
+    )
+    for relative in expected:
+        (root / relative).write_text("def test_schema_boundary(): pass\n", encoding="utf-8")
+    (root / "tests" / "test_unrelated_media_route.py").write_text(
+        "def test_unrelated(): pass\n",
+        encoding="utf-8",
+    )
+    change = GitChangeSnapshot(
+        "a" * 40,
+        "a" * 40,
+        ("_04_Nucleo_Operativo/code_schema.py",),
+        (),
+        (),
+        (),
+        "b" * 64,
+    )
+
+    selection = select_affected_tests(root, tmp_path / "state", change)
+
+    assert selection.strategy == "affected"
+    assert selection.selectors == expected
+    assert selection.convention_tests == expected
+    assert selection.uncovered_sources == ()
+    assert "tests/test_unrelated_media_route.py" not in selection.selectors
+    assert "change_crosses_full_suite_boundary" not in selection.reasons
 
 
 def test_full_suite_excludes_retired_windows_runtime_but_keeps_portable_usn(
@@ -520,7 +622,9 @@ def test_validation_fallback_stays_bounded_and_runs_public_boundaries(
         (),
         "b" * 64,
     )
-    monkeypatch.setattr(code_change_validation, "capture_git_change", lambda *_args, **_kwargs: change)
+    monkeypatch.setattr(
+        code_change_validation, "capture_git_change", lambda *_args, **_kwargs: change
+    )
     observed_commands: list[tuple[str, ...]] = []
 
     def runner(arguments, *, cwd, timeout, environment=None):
@@ -563,6 +667,7 @@ def test_validation_fallback_stays_bounded_and_runs_public_boundaries(
     )
     producer = next(command for command in observed_commands if "--analysis-profile" in command)
     assert producer.count("--deep-test-selector") == 3
+    assert producer[producer.index("--deep-shard-size") + 1] == "50"
 
 
 def test_failed_static_gate_stops_before_trusted_execution(
@@ -596,7 +701,9 @@ def test_failed_static_gate_stops_before_trusted_execution(
     )
     from _04_Nucleo_Operativo import code_change_validation
 
-    monkeypatch.setattr(code_change_validation, "capture_git_change", lambda *_args, **_kwargs: change)
+    monkeypatch.setattr(
+        code_change_validation, "capture_git_change", lambda *_args, **_kwargs: change
+    )
 
     result = validate_code_change(
         root=root,

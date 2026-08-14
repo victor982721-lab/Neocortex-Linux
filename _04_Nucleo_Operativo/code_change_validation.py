@@ -121,6 +121,19 @@ _FULL_SUITE_BOUNDARIES = frozenset(
         "tools/quality_gate_supply_policy.json",
     }
 )
+_SOURCE_BOUNDARY_TESTS = {
+    "_04_Nucleo_Operativo/code_schema.py": frozenset(
+        {
+            "tests/test_code_change_evolution_analysis.py",
+            "tests/test_code_experiment_store.py",
+            "tests/test_code_intelligence.py",
+            "tests/test_code_publication_diff.py",
+            "tests/test_code_schema_migration_v1_v2.py",
+            "tests/test_external_provider_schema_v4.py",
+            "tests/test_framework_code_path_collation.py",
+        }
+    )
+}
 _SUPPLY_CHAIN_BOUNDARIES = frozenset(
     {
         "constraints.txt",
@@ -138,6 +151,7 @@ _REGISTERED_SCENARIO_TESTS = frozenset(
         "tests/test_semantic_text_staging_session.py",
     }
 )
+_CANONICAL_DEEP_SHARD_SIZE = 50
 
 # Windows is preserved as historical source but is not an active validation
 # target for Víctor's personal Linux installation.  Keep this list narrow and
@@ -191,7 +205,10 @@ class GitChangeSnapshot:
             self.staged_paths,
             self.unstaged_paths,
         ):
-            if tuple(sorted(set(collection), key=lambda item: (item.casefold(), item))) != collection:
+            if (
+                tuple(sorted(set(collection), key=lambda item: (item.casefold(), item)))
+                != collection
+            ):
                 raise ValueError("Git change paths must be unique and canonical")
             if any(
                 PurePosixPath(path).is_absolute()
@@ -202,7 +219,9 @@ class GitChangeSnapshot:
                 raise ValueError("Git change contains an unsafe path")
         if any(path not in self.changed_paths for path in self.untracked_paths):
             raise ValueError("Git untracked paths must belong to the change")
-        if any(path not in self.changed_paths for path in (*self.staged_paths, *self.unstaged_paths)):
+        if any(
+            path not in self.changed_paths for path in (*self.staged_paths, *self.unstaged_paths)
+        ):
             raise ValueError("Git tracked paths must belong to the change")
         if re.fullmatch(r"[0-9a-f]{64}", self.content_digest) is None:
             raise ValueError("Git change content digest is invalid")
@@ -232,8 +251,7 @@ class AffectedTestSelection:
         if self.strategy in {"affected", "full"} and not self.selectors:
             raise ValueError("non-empty selection strategy requires selectors")
         if any(
-            not _TEST_PATH.fullmatch(selector)
-            or selector in _LINUX_EXCLUDED_TEST_MODULES
+            not _TEST_PATH.fullmatch(selector) or selector in _LINUX_EXCLUDED_TEST_MODULES
             for selector in self.selectors
         ):
             raise ValueError("affected-test selector is outside the Linux inventory")
@@ -315,10 +333,7 @@ class CodeChangeValidationResult:
         if self.resource_boundary is not None:
             if not isinstance(self.resource_boundary, Mapping):
                 raise ValueError("change validation resource boundary is invalid")
-            if (
-                self.resource_boundary.get("schema")
-                != "neocortex.code-validation-resources/v1"
-            ):
+            if self.resource_boundary.get("schema") != "neocortex.code-validation-resources/v1":
                 raise ValueError("change validation resource boundary schema is invalid")
         if self.authority != "validation" or self.mutation_authority:
             raise ValueError("change validation cannot authorize mutation")
@@ -523,6 +538,21 @@ def _convention_candidates(root: Path, relative: str) -> tuple[str, ...]:
     )
 
 
+def _source_boundary_tests(root: Path, relative: str) -> tuple[str, ...]:
+    """Return the bounded compatibility matrix declared for a source boundary."""
+
+    return tuple(
+        sorted(
+            (
+                test
+                for test in _SOURCE_BOUNDARY_TESTS.get(relative, ())
+                if (root / test).is_file() and not (root / test).is_symlink()
+            ),
+            key=lambda item: (item.casefold(), item),
+        )
+    )
+
+
 def _linux_test_files(root: Path) -> tuple[str, ...]:
     """Return the declared Linux test inventory without retired platform suites."""
 
@@ -677,7 +707,6 @@ def select_affected_tests(
             (
                 "tools/release_",
                 "neocortex/platform_policy",
-                "_04_Nucleo_Operativo/code_schema",
                 "_04_Nucleo_Operativo/framework_schema",
             )
         )
@@ -735,7 +764,14 @@ def select_affected_tests(
                 sources_with_dependency_tests.add(production_path)
     elif production:
         reasons.append("published_import_graph_unavailable")
-    convention = {test for path in production for test in _convention_candidates(source, path)}
+    convention = {
+        test
+        for path in production
+        for test in (
+            *_convention_candidates(source, path),
+            *_source_boundary_tests(source, path),
+        )
+    }
     selected = tuple(
         sorted(
             {*direct, *dependency_tests, *convention},
@@ -747,7 +783,9 @@ def select_affected_tests(
     uncovered = tuple(
         path
         for path in production
-        if not _convention_candidates(source, path) and path not in sources_with_dependency_tests
+        if not _convention_candidates(source, path)
+        and not _source_boundary_tests(source, path)
+        and path not in sources_with_dependency_tests
     )
     if production and not selected:
         reasons.append("no_affected_test_evidence")
@@ -1376,9 +1414,12 @@ def _candidate_wheel_gate(
             candidate = workspace / "candidate"
             venv.EnvBuilder(with_pip=False, clear=False, symlinks=True).create(candidate)
             candidate_python = pip_bootstrap.environment_python(candidate)
-            dependency_source = Path(sys.prefix) / "lib" / (
-                f"python{sys.version_info.major}.{sys.version_info.minor}"
-            ) / "site-packages"
+            dependency_source = (
+                Path(sys.prefix)
+                / "lib"
+                / (f"python{sys.version_info.major}.{sys.version_info.minor}")
+                / "site-packages"
+            )
             if not dependency_source.is_dir():
                 raise ChangeValidationError("canonical_runtime_site_packages_missing")
             install_result = runner(
@@ -1528,7 +1569,7 @@ def _trusted_deep_command(
             "--deep-time-budget-seconds",
             str(time_budget_seconds),
             "--deep-shard-size",
-            str(min(20, max_tests)),
+            str(min(_CANONICAL_DEEP_SHARD_SIZE, max_tests)),
         )
     )
     return tuple(command)
@@ -1604,8 +1645,7 @@ def _replay_gate(
         first_historical_pip is not None
         and replay_historical_pip is not None
         and first_historical_pip["tool_run_id"] == replay_historical_pip["tool_run_id"]
-        and first_historical_pip["result_digest"]
-        == replay_historical_pip["result_digest"]
+        and first_historical_pip["result_digest"] == replay_historical_pip["result_digest"]
     )
     installed_inventory_replay = _installed_inventory_replay_receipt(
         state_directory,
@@ -1729,17 +1769,23 @@ def _experiment_gate(
             ),
             (),
         )
-    unique: dict[tuple[str | None, str | None], object] = {}
-    for proposal in proposals:
-        unique.setdefault((proposal.template_id, proposal.template_version), proposal)
+    unique_template_count = len(
+        {(proposal.template_id, proposal.template_version) for proposal in proposals}
+    )
     receipts: list[Mapping[str, object]] = []
+    stored_receipt_ids: list[str] = []
     try:
         from .code_experiment_executor import execute_code_experiment
+        from .code_experiment_store import (
+            code_review_digest_identity,
+            record_code_experiment_receipt,
+        )
 
         database = Path(state_directory) / "code.sqlite3"
+        review_digest = code_review_digest_identity(getattr(review, "digest", None))
         with tempfile.TemporaryDirectory(prefix="neocortex-change-experiment-") as temporary:
             scratch = Path(temporary)
-            for proposal in unique.values():
+            for proposal in proposals:
                 receipt = execute_code_experiment(
                     cast(Any, proposal),
                     source_root=root,
@@ -1749,7 +1795,23 @@ def _experiment_gate(
                     expected_source_root=root,
                 )
                 receipts.append(receipt.as_payload())
-    except (OSError, RuntimeError, TypeError, ValueError, subprocess.TimeoutExpired) as exc:
+                stored = record_code_experiment_receipt(
+                    database,
+                    receipt,
+                    cast(Any, proposal),
+                    analysis_run_id=snapshot.analysis_run_id,
+                    processing_signature=snapshot.processing_signature,
+                    review_digest=review_digest,
+                )
+                stored_receipt_ids.append(stored.receipt.receipt_id)
+    except (
+        OSError,
+        RuntimeError,
+        sqlite3.Error,
+        TypeError,
+        ValueError,
+        subprocess.TimeoutExpired,
+    ) as exc:
         return (
             _gate(
                 "allowlisted_experiments",
@@ -1757,7 +1819,10 @@ def _experiment_gate(
                 f"experiment_execution_unavailable:{type(exc).__name__}",
                 started,
                 command,
-                {"error": str(exc)[:4096]},
+                {
+                    "error": str(exc)[:4096],
+                    "stored_receipt_ids": stored_receipt_ids,
+                },
             ),
             tuple(receipts),
         )
@@ -1782,8 +1847,9 @@ def _experiment_gate(
             command,
             {
                 "proposal_count": len(proposals),
-                "unique_template_count": len(unique),
+                "unique_template_count": unique_template_count,
                 "receipt_ids": [item.get("receipt_id") for item in receipts],
+                "stored_receipt_ids": stored_receipt_ids,
             },
         ),
         tuple(receipts),

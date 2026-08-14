@@ -1046,9 +1046,12 @@ def _graph_observations(
     decorators: dict[int, set[str]] = {}
     protocol_symbols: set[int] = set()
     rows = connection.execute(
-        """SELECT reference_id,version_id,source_symbol_id,target_symbol_id,
-        kind,name,target_hint FROM code_references
-        ORDER BY reference_id LIMIT ?""",
+        """SELECT r.reference_id,r.version_id,r.source_symbol_id,r.target_symbol_id,
+        r.kind,r.name,r.target_hint FROM code_references r
+        JOIN file_versions v ON v.version_id=r.version_id
+        JOIN files f ON f.current_version_id=v.version_id
+        WHERE f.status='current' AND v.invalidated_ns IS NULL
+        ORDER BY r.reference_id LIMIT ?""",
         (CODE_UNUSED_REFERENCE_LIMIT + 1,),
     ).fetchall()
     if len(rows) > CODE_UNUSED_REFERENCE_LIMIT:

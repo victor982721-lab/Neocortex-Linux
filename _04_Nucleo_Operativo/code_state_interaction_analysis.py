@@ -1030,9 +1030,9 @@ def _subject(
     return AnalysisSubjectRef(
         subject_kind=kind,
         subject_key=(
-            f"state-interactions:{analysis.analysis_id}"
+            "state-interactions:project"
             if kind == "project"
-            else f"workflow:{TEXT_DERIVATION_WORKFLOW.workflow_id}:{analysis.analysis_id}"
+            else f"workflow:{TEXT_DERIVATION_WORKFLOW.workflow_id}:state-interaction-projection"
         ),
         display_name=(
             "NeoCortex static SQL and transaction interaction projection"

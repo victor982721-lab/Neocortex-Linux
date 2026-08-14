@@ -276,7 +276,7 @@ review y work packages consumen la misma evidencia; la ausencia o caducidad de
 un proveedor obliga a abstener sólo la dimensión afectada.
 
 `--code-review` consume esa publicación sin volver a analizar la raíz. El
-envelope `neocortex.code-review/v16` no declara compatibilidad con schemas
+envelope `neocortex.code-review/v17` no declara compatibilidad con schemas
 anteriores. Usa `neocortex.code-analysis-epistemics/v1`, una proyección general
 de preguntas con fingerprint de spec y evidencia resuelta contra IDs de
 registros Code. Publica observaciones estructurales confirmadas y separa hipótesis,
@@ -294,7 +294,7 @@ ruta; una clase de pruebas, un `Protocol` o un composition root siguen visibles
 como controles negativos y quedan `experiment_required`. El límite solicitado
 se aplica por familia de pregunta.
 
-v16 añade `neocortex.code-interface-surface/v1`: observa módulos seleccionados
+v17 conserva `neocortex.code-interface-surface/v1`: observa módulos seleccionados
 por span/superficie directa, estructura de configuraciones JSON/TOML y llamadas
 estáticas `argparse`. No expone valores de configuración, no ejecuta módulos y
 no presenta option strings sintácticos como reachability o comportamiento del
@@ -310,7 +310,7 @@ logical owners declara selectores exactos para `text`, `semantic`, `knowledge`,
 asigna un owner por defecto. Su pregunta queda lista para caracterización, no
 para una decisión de cambio.
 
-Cuando `--code-review` consume el estado canónico protegido, v16 también publica
+Cuando `--code-review` consume el estado canónico protegido, v17 también publica
 `neocortex.code-state-projection/v1`. La observación compara revisiones Text
 elegibles (`complete`, revisión presente, blob presente y `text_chars > 0`) con
 miembros del head Semantic de texto publicado. Las lecturas usan `immutable=1`,
@@ -327,7 +327,7 @@ registrado o stale permanece faltante. La proyección de autoeficacia compara el
 snapshot publicado contra archivos Git visibles por digest y no publica
 precision/recall ni decision rate sin etiquetas independientes.
 
-v16 añade `CODE_STATE_INTERACTIONS`, `CODE_INVARIANT_ASSURANCE`,
+v17 conserva `CODE_STATE_INTERACTIONS`, `CODE_INVARIANT_ASSURANCE`,
 `CODE_ROUTE_CAPABILITIES`, `CODE_ANALYZER_CALIBRATION` y
 `CODE_EXPERIMENT_PLAN`. SQL literal se parsea con el dialecto SQLite y se liga a
 store/workflow sólo por contratos explícitos. Los placeholders SQLite `?NNN`
@@ -345,15 +345,38 @@ uno de forma explícita:
 Neocortex --state-directory STATE --code-experiment-run PROPOSAL_ID --code-json
 ```
 
-El ID debe pertenecer al plan reconstruido en esa misma invocación. El único
-runner v1 usa la selección trusted-deep allow-listed, temporal fuera del repo,
-presupuesto duro y manifest exacto; si cambia fuente, proposal, provider o base
-Code, falla cerrado. El receipt agrega por escenario únicamente después de
-recibir un outcome terminal por cada nodeid expandido; es advisory, conserva
-digests before/after y no
-es una decisión humana ni una autorización de patch.
+El ID debe pertenecer al plan reconstruido en esa misma invocación. El runner
+allow-listed usa trusted-deep, presupuesto acotado y manifest exacto; si cambia
+fuente, proposal, provider o base Code, falla cerrado. Hoy sólo son ejecutables
+`capability.public_route_acceptance` (un nodeid) y
+`state.runtime_sql_trace` (cuatro nodeids). El registry general contiene otros
+escenarios de assurance/calibración, pero no por ello son ejecutables desde esta
+opción.
 
-El planificador v5 puede entregar, de forma independiente, hasta tres paquetes
+Pytest corre directamente sobre la raíz canónica confiable. El temporal fuera
+del repo aloja runtime y checkpoints: no es una copia de la fuente ni un sandbox;
+el provider declara `uses_network=true` y conserva el `HOME` canónico. Antes y
+después se recalcula la firma de los inputs Python publicados y del soporte Git
+observado; una diferencia falla cerrado. El digest before/after cerca además
+`code.sqlite3` durante la ejecución. No hay lock continuo del checkout y el
+corpus y otros owners quedan fuera. El receipt medido
+`neocortex.code-experiment-receipt/v3` agrega por escenario únicamente después
+de outcomes terminales y gates tipados para todos sus nodeids.
+
+Al terminar, el comando **sí escribe** una evidencia acotada: inserta el receipt
+en la tabla append-only de Code schema v6 y, con `--code-json`, devuelve el
+envelope `neocortex.code-experiment-store/v1` que contiene ese receipt. Por eso
+`code_database_unchanged=true` no significa que la invocación completa sea
+read-only. El review v17 posterior evalúa el terminal más nuevo del proposal y
+la processing signature vigentes; puede reutilizar un `passed` de un run Code
+completado previo cuando el vigente es un replay exacto con la misma firma. Un
+terminal posterior `failed` o `abstained`, o uno stale, corrupto o sin binding,
+permanece auditable pero no satisface evidencia. El envelope digest liga todo el
+contexto durable. Incluso un enlace completo sólo puede mover la evaluación a
+`human_review_required`: no crea una decisión humana ni autoriza un patch.
+
+`python-maintenance-work-packages-v5` puede entregar, de forma independiente,
+hasta tres paquetes
 `unused_characterization` únicamente cuando pasan los gates de precisión de
 calibración y holdout. Todos sus pasos son de caracterización, exigen revisión
 dinámica y confirmación humana, y declaran `mutation_authority=false`. La

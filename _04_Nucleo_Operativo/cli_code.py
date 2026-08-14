@@ -668,6 +668,7 @@ def _missing_code_status_payload(path: Path, analyzers: object) -> dict[str, obj
     )
     return {
         "kind": "code-status",
+        "schema": "neocortex.code-status/v1",
         "database": str(path),
         "exists": False,
         "analyzers": analyzers,
@@ -1028,6 +1029,7 @@ def _code_status_payload(
     latest = snapshot.latest_run
     return {
         "kind": "code-status",
+        "schema": "neocortex.code-status/v1",
         "database": str(path),
         "exists": True,
         "schema_version": snapshot.schema_version,
@@ -1223,7 +1225,10 @@ def _read_code_query_source(args: argparse.Namespace) -> dict[str, object]:
     if surface == "review":
         from .code_review import review_code_state
 
-        return review_code_state(args.state_directory, limit=50).as_payload()
+        return review_code_state(
+            args.state_directory,
+            limit=args.code_query_limit,
+        ).as_payload()
     if surface == "diff":
         from .code_publication_diff import compare_code_publications
 
@@ -1481,9 +1486,19 @@ def _emit_code_review_ranked_evidence(result: CodeReviewResult) -> None:
         )
     plan = getattr(result, "experiment_plan", None)
     if plan is not None:
+        execution_readiness = (
+            "not_required"
+            if plan.experiment_required_count == 0
+            else "executable"
+            if plan.executable_count > 0
+            else "registry_gap"
+            if plan.registry_gap_count > 0
+            else "manual"
+        )
         _print_console_line(
             "CODE_EXPERIMENT_PLAN "
             f"status={plan.status} "
+            f"execution={execution_readiness} "
             f"reason={json.dumps(plan.reason, ensure_ascii=True)} "
             f"evaluations={plan.source_evaluation_count} "
             f"required={plan.experiment_required_count} "
@@ -1493,6 +1508,13 @@ def _emit_code_review_ranked_evidence(result: CodeReviewResult) -> None:
             f"authority={plan.authority} "
             f"mutation_authority={int(plan.mutation_authority)}"
         )
+        receipts = getattr(result, "experiment_receipts", ())
+        if receipts:
+            _print_console_line(
+                "CODE_EXPERIMENT_EVIDENCE "
+                f"receipts={len(receipts)} passed={sum(item.receipt.status == 'passed' for item in receipts)} "
+                "decision_authority=human mutation_authority=0"
+            )
         executable = tuple(
             proposal
             for proposal in plan.proposals
@@ -1989,10 +2011,14 @@ def run_code_validate_change(args: argparse.Namespace) -> int:
 
 
 def run_code_experiment(args: argparse.Namespace) -> int:
-    """Execute one current, registered proposal without writing product state."""
+    """Execute one proposal and append its non-mutating Code evidence receipt."""
 
     try:
         from .code_experiment_executor import execute_code_experiment
+        from .code_experiment_store import (
+            code_review_digest_identity,
+            record_code_experiment_receipt,
+        )
         from .code_review import review_code_state
 
         result = review_code_state(args.state_directory, limit=50)
@@ -2019,10 +2045,20 @@ def run_code_experiment(args: argparse.Namespace) -> int:
                 source_version=result.snapshot.processing_signature,
                 expected_source_root=source_root,
             )
+        if result.digest is None:
+            raise ValueError("code review has no digest for experiment receipt provenance")
+        stored_receipt = record_code_experiment_receipt(
+            _state_path(args),
+            receipt,
+            proposal,
+            analysis_run_id=result.snapshot.analysis_run_id,
+            processing_signature=result.snapshot.processing_signature,
+            review_digest=code_review_digest_identity(result.digest),
+        )
     except (ImportError, OSError, sqlite3.Error, RuntimeError, TypeError, ValueError) as exc:
         return _error("code-experiment", exc)
     if args.code_json:
-        _emit(receipt.as_payload(), json_output=True)
+        _emit(stored_receipt.as_payload(), json_output=True)
     else:
         _print_console_line(
             "CODE_EXPERIMENT_RECEIPT "
@@ -2030,7 +2066,8 @@ def run_code_experiment(args: argparse.Namespace) -> int:
             f"proposal_id={receipt.proposal_id} passed={receipt.passed} "
             f"failed={receipt.failed} skipped={receipt.skipped} "
             f"duration_ms={receipt.duration_ms} "
-            f"state_unchanged={int(receipt.canonical_state_unchanged)} "
+            f"persisted=1 recorded_ns={stored_receipt.recorded_ns} "
+            f"code_database_unchanged={int(receipt.code_database_unchanged)} "
             f"authority={receipt.authority} "
             f"mutation_authority={int(receipt.mutation_authority)}"
         )

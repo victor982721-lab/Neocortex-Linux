@@ -30,7 +30,7 @@ from .sqlite_schema_contract import (
 # region [01] Versioned DDL
 
 
-CODE_SCHEMA_VERSION = 5
+CODE_SCHEMA_VERSION = 6
 _PATH_COLLATION = sqlite_path_collation()
 
 
@@ -625,6 +625,59 @@ _V4_DDL = (
 )
 
 
+_V6_DDL = (
+    """CREATE TABLE code_experiment_receipts(
+        receipt_id TEXT PRIMARY KEY,
+        analysis_run_id INTEGER NOT NULL,
+        source_evaluation_id TEXT NOT NULL,
+        question_id TEXT NOT NULL,
+        subject_key TEXT NOT NULL,
+        proposal_id TEXT NOT NULL,
+        template_id TEXT NOT NULL,
+        template_version TEXT NOT NULL,
+        source_processing_signature TEXT NOT NULL,
+        review_digest TEXT NOT NULL,
+        envelope_digest TEXT NOT NULL CHECK(length(envelope_digest)>0),
+        receipt_schema TEXT NOT NULL CHECK(
+            receipt_schema='neocortex.code-experiment-receipt/v3'
+        ),
+        receipt_status TEXT NOT NULL CHECK(receipt_status IN (
+            'passed','failed','abstained'
+        )),
+        payload_json TEXT NOT NULL,
+        payload_xxh3_128 TEXT NOT NULL,
+        payload_xxh3_64_guard TEXT NOT NULL,
+        payload_bytes INTEGER NOT NULL CHECK(
+            payload_bytes BETWEEN 1 AND 1048576
+            AND payload_bytes=length(CAST(payload_json AS BLOB))
+        ),
+        recorded_ns INTEGER NOT NULL CHECK(recorded_ns>0),
+        authority TEXT NOT NULL CHECK(authority='advisory'),
+        mutation_authority INTEGER NOT NULL CHECK(mutation_authority=0),
+        FOREIGN KEY(analysis_run_id) REFERENCES analysis_runs(analysis_run_id)
+            ON DELETE RESTRICT
+    ) WITHOUT ROWID""",
+    """CREATE INDEX code_experiment_receipts_context_idx
+        ON code_experiment_receipts(
+            analysis_run_id,source_evaluation_id,recorded_ns DESC,receipt_id
+        )""",
+    """CREATE INDEX code_experiment_receipts_proposal_idx
+        ON code_experiment_receipts(
+            proposal_id,receipt_status,recorded_ns DESC,receipt_id
+        )""",
+    """CREATE TRIGGER code_experiment_receipts_no_update
+        BEFORE UPDATE ON code_experiment_receipts
+        BEGIN
+            SELECT RAISE(ABORT,'Code experiment receipts are immutable');
+        END""",
+    """CREATE TRIGGER code_experiment_receipts_no_delete
+        BEFORE DELETE ON code_experiment_receipts
+        BEGIN
+            SELECT RAISE(ABORT,'Code experiment receipts are immutable');
+        END""",
+)
+
+
 # endregion [01]
 
 
@@ -726,15 +779,16 @@ def _build_current_schema(connection: sqlite3.Connection) -> None:
     _execute(connection, _V2_DDL)
     _execute(connection, _V3_DDL)
     _execute(connection, _V4_DDL)
+    _execute(connection, _V6_DDL)
 
 
 def _build_legacy_schema(
     connection: sqlite3.Connection,
     version: int,
 ) -> None:
-    if version not in {1, 2, 3, 4}:
+    if version not in {1, 2, 3, 4, 5}:
         raise ValueError(f"unsupported legacy Code schema: {version}")
-    _execute(connection, _LEGACY_V1_DDL)
+    _execute(connection, _CURRENT_V1_DDL if version == 5 else _LEGACY_V1_DDL)
     if version >= 2:
         _execute(connection, _V2_DDL)
     if version >= 3:
@@ -748,7 +802,7 @@ def code_schema_contract() -> SQLiteSchemaContract:
     return schema_contract_from_builder(_build_current_schema)
 
 
-@lru_cache(maxsize=4)
+@lru_cache(maxsize=5)
 def _legacy_code_schema_contract(version: int) -> SQLiteSchemaContract:
     return schema_contract_from_builder(
         lambda connection: _build_legacy_schema(connection, version)
@@ -876,6 +930,13 @@ def _create_fresh(connection: sqlite3.Connection, applied_ns: int) -> None:
         "platform-aware current filesystem path identity",
         applied_ns + 4,
     )
+    _execute(connection, _V6_DDL)
+    _record_migration(
+        connection,
+        6,
+        "immutable post-publication Code experiment receipts",
+        applied_ns + 5,
+    )
 
 
 def _migrate_one_to_two(connection: sqlite3.Connection, applied_ns: int) -> None:
@@ -963,6 +1024,19 @@ def _migrate_four_to_five(connection: sqlite3.Connection, applied_ns: int) -> No
     )
 
 
+def _migrate_five_to_six(connection: sqlite3.Connection, applied_ns: int) -> None:
+    """Add append-only experiment receipts without reinterpreting prior facts."""
+
+    _validate_legacy_code_schema(connection, 5)
+    _execute(connection, _V6_DDL)
+    _record_migration(
+        connection,
+        6,
+        "immutable post-publication Code experiment receipts",
+        applied_ns,
+    )
+
+
 def _validate_migration_history(connection: sqlite3.Connection) -> None:
     rows = connection.execute(
         "SELECT version,description,applied_ns FROM schema_migrations ORDER BY version"
@@ -994,7 +1068,7 @@ def initialize_code_state(path: Path) -> None:
                 )
 
     connection = connect_code_state(path, create=True)
-    rebuilds_path_identity = prior is not None and _PATH_COLLATION != "NOCASE"
+    rebuilds_path_identity = prior is not None and prior < 5 and _PATH_COLLATION != "NOCASE"
     try:
         if rebuilds_path_identity:
             connection.execute("PRAGMA foreign_keys=OFF")
@@ -1014,15 +1088,21 @@ def initialize_code_state(path: Path) -> None:
                 _migrate_two_to_three(connection, applied_ns + 1)
                 _migrate_three_to_four(connection, applied_ns + 2)
                 _migrate_four_to_five(connection, applied_ns + 3)
+                _migrate_five_to_six(connection, applied_ns + 4)
             elif current == 2:
                 _migrate_two_to_three(connection, applied_ns)
                 _migrate_three_to_four(connection, applied_ns + 1)
                 _migrate_four_to_five(connection, applied_ns + 2)
+                _migrate_five_to_six(connection, applied_ns + 3)
             elif current == 3:
                 _migrate_three_to_four(connection, applied_ns)
                 _migrate_four_to_five(connection, applied_ns + 1)
+                _migrate_five_to_six(connection, applied_ns + 2)
             elif current == 4:
                 _migrate_four_to_five(connection, applied_ns)
+                _migrate_five_to_six(connection, applied_ns + 1)
+            elif current == 5:
+                _migrate_five_to_six(connection, applied_ns)
             else:
                 raise RuntimeError(f"unsupported code migration start: {current}")
             validate_code_schema(connection)

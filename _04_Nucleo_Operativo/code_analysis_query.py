@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from typing import Any, Literal, cast
@@ -48,8 +49,14 @@ from .code_interface_surface_analysis import (
     parse_code_interface_surface_payload,
 )
 from .code_experiment_planner import (
+    experiment_template,
     parse_code_experiment_plan_payload,
     plan_code_experiments,
+)
+from .code_experiment_store import (
+    CODE_EXPERIMENT_STORE_MAX_RESOLVED,
+    apply_code_experiment_receipts,
+    parse_resolved_code_experiment_receipt_payload,
 )
 from .code_route_capability_analysis import (
     parse_code_route_capability_payload,
@@ -74,6 +81,17 @@ from .code_supply_chain_analysis import parse_code_supply_chain_payload
 from .semantic_models import canonical_json
 
 CODE_ANALYSIS_QUERY_SCHEMA = "neocortex.code-analysis-query/v1"
+CODE_ANALYSIS_QUERY_MAX_FILTERS_PER_DIMENSION = 32
+CODE_ANALYSIS_QUERY_MAX_FILTERS_TOTAL = 64
+CODE_ANALYSIS_QUERY_MAX_FILTER_VALUE_BYTES = 512
+CODE_ANALYSIS_QUERY_MAX_FILTER_BYTES_TOTAL = 8 * 1024
+CODE_ANALYSIS_QUERY_MAX_SOURCE_SEQUENCE_ITEMS = 20_000
+CODE_ANALYSIS_QUERY_MAX_SOURCE_RECORDS = 20_000
+CODE_ANALYSIS_QUERY_MAX_RECORD_BYTES = 64 * 1024
+CODE_ANALYSIS_QUERY_MAX_OUTPUT_BYTES = 2 * 1024 * 1024
+CODE_ANALYSIS_QUERY_MAX_ACTIONS = 16
+CODE_ANALYSIS_QUERY_MAX_TEMPLATE_LIMITATIONS = 16
+CODE_ANALYSIS_QUERY_MAX_RECEIPT_DETAILS = 16
 
 _SURFACE_KINDS = {
     "status": "code-status",
@@ -97,6 +115,7 @@ _CODE_REVIEW_V13 = "neocortex.code-review/v13"
 _CODE_REVIEW_V14 = "neocortex.code-review/v14"
 _CODE_REVIEW_V15 = "neocortex.code-review/v15"
 _CODE_REVIEW_V16 = "neocortex.code-review/v16"
+_CODE_REVIEW_V17 = "neocortex.code-review/v17"
 _CODE_ANALYSIS_EPISTEMICS_V1 = "neocortex.code-analysis-epistemics/v1"
 _UNUSED_V11_STEP_REQUIREMENTS = (
     "verify_import_reexport_callback_registry_protocol_and_entry_point_usage",
@@ -106,16 +125,44 @@ _UNUSED_V11_STEP_REQUIREMENTS = (
 )
 
 
+def _public_json_bytes(value: object) -> int:
+    """Measure the exact one-line JSON representation used by the public CLI."""
+
+    try:
+        encoded = json.dumps(
+            value,
+            ensure_ascii=True,
+            allow_nan=False,
+            sort_keys=True,
+        ).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise ValueError("query projection is not canonical JSON") from exc
+    return len(encoded) + 1  # The CLI terminates the public report with one newline.
+
+
 def _normalize_filter(values: tuple[str, ...], *, name: str) -> tuple[str, ...]:
     if not isinstance(values, tuple):
         raise TypeError(f"{name} filters must be a tuple")
+    if len(values) > CODE_ANALYSIS_QUERY_MAX_FILTERS_PER_DIMENSION:
+        raise ValueError(
+            f"{name} filters exceed {CODE_ANALYSIS_QUERY_MAX_FILTERS_PER_DIMENSION} values"
+        )
     normalized: set[str] = set()
     for value in values:
         if not isinstance(value, str):
             raise TypeError(f"{name} filters must contain strings")
+        if len(value.encode("utf-8")) > CODE_ANALYSIS_QUERY_MAX_FILTER_VALUE_BYTES:
+            raise ValueError(
+                f"{name} filter exceeds {CODE_ANALYSIS_QUERY_MAX_FILTER_VALUE_BYTES} UTF-8 bytes"
+            )
         candidate = value.strip().casefold()
         if not candidate:
             raise ValueError(f"{name} filters must be non-empty")
+        if len(candidate.encode("utf-8")) > CODE_ANALYSIS_QUERY_MAX_FILTER_VALUE_BYTES:
+            raise ValueError(
+                f"normalized {name} filter exceeds "
+                f"{CODE_ANALYSIS_QUERY_MAX_FILTER_VALUE_BYTES} UTF-8 bytes"
+            )
         normalized.add(candidate)
     return tuple(sorted(normalized))
 
@@ -142,12 +189,27 @@ class CodeAnalysisQuery:
         if not 1 <= self.limit <= 500:
             raise ValueError("limit must be between 1 and 500")
         object.__setattr__(self, "surface", surface)
+        normalized_filters: dict[str, tuple[str, ...]] = {}
+        filter_count = 0
+        filter_bytes = 0
         for name in _DIMENSIONS:
-            object.__setattr__(
-                self,
-                name,
-                _normalize_filter(getattr(self, name), name=name),
+            raw_values = getattr(self, name)
+            normalized_filters[name] = _normalize_filter(raw_values, name=name)
+            filter_count += len(raw_values)
+            filter_bytes += sum(len(value.encode("utf-8")) for value in raw_values)
+        if filter_count > CODE_ANALYSIS_QUERY_MAX_FILTERS_TOTAL:
+            raise ValueError(
+                f"query filters exceed {CODE_ANALYSIS_QUERY_MAX_FILTERS_TOTAL} total values"
             )
+        normalized_filter_bytes = sum(
+            len(value.encode("utf-8")) for values in normalized_filters.values() for value in values
+        )
+        if max(filter_bytes, normalized_filter_bytes) > CODE_ANALYSIS_QUERY_MAX_FILTER_BYTES_TOTAL:
+            raise ValueError(
+                f"query filters exceed {CODE_ANALYSIS_QUERY_MAX_FILTER_BYTES_TOTAL} total UTF-8 bytes"
+            )
+        for name, values in normalized_filters.items():
+            object.__setattr__(self, name, values)
 
 
 def _mapping(value: object) -> Mapping[str, object] | None:
@@ -157,6 +219,8 @@ def _mapping(value: object) -> Mapping[str, object] | None:
 def _mapping_items(value: object) -> tuple[Mapping[str, object], ...]:
     if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
         return ()
+    if len(value) > CODE_ANALYSIS_QUERY_MAX_SOURCE_SEQUENCE_ITEMS:
+        raise ValueError("query source sequence exceeds its item bound")
     return tuple(item for item in value if isinstance(item, Mapping))
 
 
@@ -166,6 +230,8 @@ def _string_items(value: object) -> tuple[str, ...]:
         return (candidate,) if candidate else ()
     if not isinstance(value, Sequence) or isinstance(value, (bytes, bytearray)):
         return ()
+    if len(value) > CODE_ANALYSIS_QUERY_MAX_SOURCE_SEQUENCE_ITEMS:
+        raise ValueError("query source text sequence exceeds its item bound")
     return tuple(item.strip() for item in value if isinstance(item, str) and item.strip())
 
 
@@ -268,13 +334,16 @@ def _record(
         "deltas": _dimension_values(deltas),
         "work_packages": _dimension_values(work_packages),
     }
-    return {
+    record: dict[str, object] = {
         "id": _bounded_text(f"{source_path}:{record_id}", limit=1024),
         "record_type": record_type,
         "source_path": source_path,
         "dimensions": dimensions,
         "facts": dict(facts or {}),
     }
+    if _public_json_bytes(record) > CODE_ANALYSIS_QUERY_MAX_RECORD_BYTES:
+        raise ValueError("query record exceeds its public JSON byte bound")
+    return record
 
 
 def _provider_values(item: Mapping[str, object]) -> tuple[str, ...]:
@@ -342,7 +411,22 @@ def _append_architecture(
 ) -> None:
     if architecture is None:
         return
-    for index, module in enumerate(_mapping_items(architecture.get("modules"))):
+    modules = _mapping_items(architecture.get("modules"))
+    if not modules and _mapping(architecture.get("counts")) is not None:
+        records.append(
+            _record(
+                record_type="architecture_summary",
+                record_id=str(architecture.get("analysis_run_id") or "current"),
+                source_path=f"{source_path}.summary",
+                categories=("architecture", "summary"),
+                statuses=_texts(architecture, "status", "gate"),
+                facts={
+                    **_facts(architecture, "reason", "analysis_run_id"),
+                    **(dict(_mapping(architecture.get("counts")) or {})),
+                },
+            )
+        )
+    for index, module in enumerate(modules):
         module_id = _first_text(module, "module_id", "module") or str(index)
         records.append(
             _record(
@@ -556,8 +640,452 @@ def _work_package_providers(item: Mapping[str, object]) -> tuple[str, ...]:
     return tuple(providers)
 
 
+def _question_specs_by_identity(
+    epistemics: Mapping[str, object] | None,
+) -> dict[tuple[str, str], Mapping[str, object]]:
+    if epistemics is None:
+        return {}
+    result: dict[tuple[str, str], Mapping[str, object]] = {}
+    for spec in _mapping_items(epistemics.get("specs")):
+        question_id = _first_text(spec, "question_id")
+        version = _first_text(spec, "version")
+        if question_id is None or version is None:
+            raise ValueError("analysis question spec identity is incomplete")
+        identity = (question_id, version)
+        if identity in result:
+            raise ValueError("analysis question spec identity is duplicated")
+        result[identity] = spec
+    return result
+
+
+def _next_action_projection(
+    spec: Mapping[str, object] | None,
+) -> tuple[dict[str, str], ...]:
+    if spec is None:
+        return ()
+    raw_actions = _mapping_items(spec.get("next_actions"))
+    if len(raw_actions) > CODE_ANALYSIS_QUERY_MAX_ACTIONS:
+        raise ValueError("analysis question next actions exceed their query bound")
+    actions: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in raw_actions:
+        action_id = _first_text(item, "action_id")
+        kind = _first_text(item, "kind")
+        description = _first_text(item, "description")
+        if action_id is None or kind is None or description is None:
+            raise ValueError("analysis question next action is incomplete")
+        if action_id in seen:
+            raise ValueError("analysis question next action is duplicated")
+        seen.add(action_id)
+        actions.append(
+            {
+                "action_id": _bounded_text(action_id, limit=256),
+                "kind": _bounded_text(kind, limit=64),
+                "description": _bounded_text(description),
+            }
+        )
+    return tuple(actions)
+
+
+def _template_limitations(proposal: Mapping[str, object] | None) -> tuple[str, ...]:
+    if proposal is None:
+        return ()
+    template_id = _first_text(proposal, "template_id")
+    template_version = _first_text(proposal, "template_version")
+    if template_id is None:
+        if template_version is not None:
+            raise ValueError("experiment proposal template identity is incomplete")
+        return ()
+    template = experiment_template(template_id)
+    if template.version != template_version:
+        raise ValueError("experiment proposal template version is not query-compatible")
+    if len(template.limitations) > CODE_ANALYSIS_QUERY_MAX_TEMPLATE_LIMITATIONS:
+        raise ValueError("experiment template limitations exceed their query bound")
+    return tuple(_bounded_text(item) for item in template.limitations)
+
+
+def _manual_reason(proposal: Mapping[str, object] | None) -> str | None:
+    if proposal is None:
+        return None
+    planning_status = _first_text(proposal, "planning_status")
+    runner_kind = _first_text(proposal, "runner_kind")
+    if planning_status == "registry_gap":
+        return "no_registered_experiment_template_for_any_next_action"
+    if planning_status == "planned" and runner_kind in {None, "none"}:
+        return "registered_template_has_no_allowlisted_runner"
+    return None
+
+
+def _plan_count(plan: Mapping[str, object], key: str) -> int:
+    value = plan.get(key)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"experiment plan {key} is invalid")
+    return value
+
+
+def _experiment_plan_axes(plan: Mapping[str, object]) -> tuple[str, str, int]:
+    status = _first_text(plan, "status")
+    if status not in {"ready", "partial", "not_required", "abstained"}:
+        raise ValueError("experiment plan status is invalid")
+    required = _plan_count(plan, "experiment_required_count")
+    planned = _plan_count(plan, "planned_count")
+    executable = _plan_count(plan, "executable_count")
+    gaps = _plan_count(plan, "registry_gap_count")
+    if executable > planned or planned + gaps != required:
+        raise ValueError("experiment plan counts cannot derive query readiness")
+    expected_status = (
+        "abstained"
+        if status == "abstained"
+        else "not_required"
+        if required == 0
+        else "partial"
+        if gaps
+        else "ready"
+    )
+    if status != expected_status or (status == "abstained" and required != 0):
+        raise ValueError("experiment plan status cannot derive query readiness")
+    manual = planned - executable
+    if status == "abstained":
+        return "abstained", "abstained", manual
+    if required == 0:
+        return "not_required", "not_required", manual
+    planning_coverage = "partial" if gaps else "complete"
+    execution_readiness = (
+        "all_executable"
+        if executable == required
+        else "partially_executable"
+        if executable
+        else "manual_with_registry_gaps"
+        if manual and gaps
+        else "manual_only"
+        if manual
+        else "registry_gap_only"
+    )
+    return planning_coverage, execution_readiness, manual
+
+
+def _append_experiment_plan_summary(
+    records: list[dict[str, object]],
+    plan: Mapping[str, object] | None,
+) -> None:
+    if plan is None:
+        return
+    planning_coverage, execution_readiness, manual_count = _experiment_plan_axes(plan)
+    plan_status = _first_text(plan, "status") or "abstained"
+    limitations = _string_items(plan.get("limitations"))
+    if len(limitations) > CODE_ANALYSIS_QUERY_MAX_TEMPLATE_LIMITATIONS:
+        raise ValueError("experiment plan limitations exceed their query bound")
+    records.append(
+        _record(
+            record_type="experiment_plan_summary",
+            record_id=_first_text(plan, "plan_id") or "current",
+            source_path="experiment_plan",
+            categories=("experiment_plan", "summary"),
+            statuses=(
+                f"experiment:{plan_status}",
+                f"planning:{planning_coverage}",
+                f"execution:{execution_readiness}",
+            ),
+            facts={
+                **_facts(
+                    plan,
+                    "plan_id",
+                    "status",
+                    "reason",
+                    "policy_id",
+                    "registry_fingerprint",
+                    "source_evaluation_count",
+                    "experiment_required_count",
+                    "planned_count",
+                    "executable_count",
+                    "registry_gap_count",
+                    "authority",
+                    "mutation_authority",
+                ),
+                "planning_coverage": planning_coverage,
+                "execution_readiness": execution_readiness,
+                "manual_count": manual_count,
+                "limitations": [_bounded_text(item) for item in limitations],
+            },
+        )
+    )
+
+
+def _question_fact_projection(
+    evaluation: Mapping[str, object],
+    proposal: Mapping[str, object] | None,
+    spec: Mapping[str, object] | None,
+) -> dict[str, object]:
+    """Expose the bounded evidence gap and its selected next experiment."""
+
+    facts = {
+        **_facts(
+            evaluation,
+            "evaluation_id",
+            "question_id",
+            "question_version",
+            "question_spec_fingerprint",
+            "rank",
+            "observation_status",
+            "inference_status",
+            "question_readiness",
+            "decision_readiness",
+            "decision",
+            "decision_reason",
+            "counterevidence_status",
+            "authority",
+            "mutation_authority",
+        ),
+    }
+    requirements = _mapping_items(evaluation.get("requirements"))
+    requirement_states: list[str] = []
+    requirement_reasons: list[str] = []
+    missing: list[str] = []
+    satisfied: list[str] = []
+    contradicted: list[str] = []
+    for requirement in requirements[:16]:
+        requirement_id = _first_text(requirement, "requirement_id")
+        status = _first_text(requirement, "status")
+        reason = _first_text(requirement, "reason")
+        if requirement_id is None or status is None:
+            continue
+        requirement_states.append(_bounded_text(f"{requirement_id}:{status}"))
+        if reason is not None:
+            requirement_reasons.append(_bounded_text(f"{requirement_id}:{reason}"))
+        if status == "satisfied":
+            satisfied.append(requirement_id)
+        elif status == "contradicted":
+            contradicted.append(requirement_id)
+        else:
+            missing.append(requirement_id)
+    declared_actions = _next_action_projection(spec)
+    action_by_id = {item["action_id"]: item for item in declared_actions}
+    evaluation_action_ids = _string_items(evaluation.get("next_action_ids"))
+    if any(action_id not in action_by_id for action_id in evaluation_action_ids):
+        raise ValueError("analysis question action projection is inconsistent")
+    actions = tuple(action_by_id[action_id] for action_id in evaluation_action_ids)
+    facts.update(
+        {
+            "requirements": requirement_states,
+            "requirement_reasons": requirement_reasons,
+            "satisfied_requirement_ids": satisfied,
+            "missing_requirement_ids": missing,
+            "contradicted_requirement_ids": contradicted,
+            "next_action_ids": [
+                _bounded_text(item)
+                for item in evaluation_action_ids[:CODE_ANALYSIS_QUERY_MAX_ACTIONS]
+            ],
+            "next_actions": list(actions),
+            "hypotheses": [
+                _bounded_text(item) for item in _string_items(evaluation.get("hypotheses"))[:8]
+            ],
+            "limitations": [
+                _bounded_text(item) for item in _string_items(evaluation.get("limitations"))[:8]
+            ],
+            "evidence_count": len(_mapping_items(evaluation.get("evidence"))),
+        }
+    )
+    if proposal is not None:
+        runner_kind = _first_text(proposal, "runner_kind")
+        facts.update(
+            _facts(
+                proposal,
+                "proposal_id",
+                "planning_status",
+                "selected_action_id",
+                "template_id",
+                "template_version",
+                "cost_tier",
+                "estimated_attention_minutes",
+                "timeout_seconds",
+                "max_items",
+                "isolation",
+                "runner_kind",
+                "reason",
+            )
+        )
+        facts["proposal_executable"] = runner_kind not in {None, "none"}
+        facts["scenario_ids"] = [
+            _bounded_text(item) for item in _string_items(proposal.get("scenario_ids"))[:16]
+        ]
+        facts["acceptance_gates"] = [
+            _bounded_text(item) for item in _string_items(proposal.get("acceptance_gates"))[:16]
+        ]
+        selected_action_id = _first_text(proposal, "selected_action_id")
+        facts["selected_action"] = (
+            None if selected_action_id is None else action_by_id.get(selected_action_id)
+        )
+        facts["template_limitations"] = list(_template_limitations(proposal))
+        facts["manual_reason"] = _manual_reason(proposal)
+    else:
+        facts["proposal_executable"] = False
+        facts["selected_action"] = None
+        facts["template_limitations"] = []
+        facts["manual_reason"] = None
+    return facts
+
+
+def _experiment_plan(payload: Mapping[str, object]) -> Mapping[str, object] | None:
+    if payload.get("schema") not in {_CODE_REVIEW_V16, _CODE_REVIEW_V17}:
+        return None
+    return _mapping(payload.get("experiment_plan"))
+
+
+def _experiment_proposals(
+    plan: Mapping[str, object] | None,
+) -> tuple[Mapping[str, object], ...]:
+    return () if plan is None else _mapping_items(plan.get("proposals"))
+
+
+def _experiment_receipt_payloads(
+    payload: Mapping[str, object],
+) -> tuple[Mapping[str, object], ...]:
+    """Return only the mandatory, bounded v17 receipt envelope sequence."""
+
+    if payload.get("schema") != _CODE_REVIEW_V17:
+        return ()
+    raw = payload.get("experiment_receipts")
+    if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes, bytearray)):
+        raise ValueError("code-review/v17 experiment receipts must be a sequence")
+    if len(raw) > CODE_EXPERIMENT_STORE_MAX_RESOLVED:
+        raise ValueError("code-review/v17 experiment receipts exceed their public bound")
+    if any(not isinstance(item, Mapping) for item in raw):
+        raise ValueError("code-review/v17 experiment receipts contain a malformed envelope")
+    return tuple(cast(Mapping[str, object], item) for item in raw)
+
+
+def _append_experiment_receipts(
+    records: list[dict[str, object]],
+    payload: Mapping[str, object],
+) -> None:
+    for index, envelope in enumerate(_experiment_receipt_payloads(payload)):
+        receipt = _mapping(envelope.get("receipt"))
+        if receipt is None:
+            raise ValueError("code-review/v17 experiment receipt lacks its public payload")
+        question_id = _first_text(envelope, "question_id") or "question"
+        receipt_id = _first_text(receipt, "receipt_id") or str(index)
+        gate_outcomes = _mapping_items(receipt.get("gate_outcomes"))
+        selected_scenarios = _string_items(receipt.get("selected_scenarios"))
+        limitations = _string_items(receipt.get("limitations"))
+        detail_limit = CODE_ANALYSIS_QUERY_MAX_RECEIPT_DETAILS
+        gate_states = [
+            _bounded_text(
+                f"{_first_text(item, 'gate_id') or 'gate'}:"
+                f"{_first_text(item, 'status') or 'unknown'}"
+            )
+            for item in gate_outcomes[:detail_limit]
+        ]
+        gate_reasons = [
+            _bounded_text(
+                f"{_first_text(item, 'gate_id') or 'gate'}:"
+                f"{_first_text(item, 'reason') or 'unknown'}"
+            )
+            for item in gate_outcomes[:detail_limit]
+        ]
+        database_state = (
+            "database:unchanged"
+            if receipt.get("code_database_unchanged") is True
+            else "database:changed"
+        )
+        records.append(
+            _record(
+                record_type="experiment_receipt",
+                record_id=receipt_id,
+                source_path=f"experiment_receipts[{index}]",
+                providers=_texts(receipt, "provider_id"),
+                categories=(
+                    "experiment_receipt",
+                    "experiment_plan",
+                    f"experiment-question:{question_id}",
+                    _first_text(receipt, "template_id") or "template",
+                ),
+                statuses=(
+                    f"receipt:{_first_text(receipt, 'status') or 'unknown'}",
+                    f"provider:{_first_text(receipt, 'provider_status') or 'unknown'}",
+                    database_state,
+                ),
+                facts={
+                    **_facts(
+                        envelope,
+                        "analysis_run_id",
+                        "source_evaluation_id",
+                        "question_id",
+                        "subject_key",
+                        "review_digest",
+                        "recorded_ns",
+                        "payload_xxh3_128",
+                        "payload_xxh3_64_guard",
+                        "payload_bytes",
+                    ),
+                    **_facts(
+                        receipt,
+                        "receipt_id",
+                        "status",
+                        "reason",
+                        "policy_id",
+                        "proposal_id",
+                        "template_id",
+                        "template_version",
+                        "runner_kind",
+                        "source_version",
+                        "source_manifest_digest",
+                        "code_database_digest_before",
+                        "code_database_digest_after",
+                        "code_database_unchanged",
+                        "configuration_signature",
+                        "scenario_registry_fingerprint",
+                        "provider_id",
+                        "provider_schema",
+                        "provider_status",
+                        "provider_execution",
+                        "provider_input_signature",
+                        "provider_result_digest",
+                        "passed",
+                        "failed",
+                        "skipped",
+                        "duration_ms",
+                        "process_invocations",
+                        "stdout_bytes",
+                        "stderr_bytes",
+                        "authority",
+                        "mutation_authority",
+                    ),
+                    "selected_scenarios": [
+                        _bounded_text(item) for item in selected_scenarios[:detail_limit]
+                    ],
+                    "selected_scenarios_count": len(selected_scenarios),
+                    "selected_scenarios_truncated": len(selected_scenarios) > detail_limit,
+                    "gate_states": gate_states,
+                    "gate_reasons": gate_reasons,
+                    "gate_outcomes_count": len(gate_outcomes),
+                    "gate_outcomes_truncated": len(gate_outcomes) > detail_limit,
+                    "limitations": [_bounded_text(item) for item in limitations[:detail_limit]],
+                    "limitations_count": len(limitations),
+                    "limitations_truncated": len(limitations) > detail_limit,
+                },
+            )
+        )
+
+
 def _extract_review(payload: Mapping[str, object]) -> list[dict[str, object]]:
     records = _extract_status(payload)
+    plan = _experiment_plan(payload)
+    _append_experiment_plan_summary(records, plan)
+    _append_experiment_receipts(records, payload)
+    proposals = _experiment_proposals(plan)
+    proposal_by_evaluation = {
+        evaluation_id: proposal
+        for proposal in proposals
+        if (evaluation_id := _first_text(proposal, "evaluation_id")) is not None
+    }
+    epistemics = _mapping(payload.get("epistemics"))
+    specs_by_identity = _question_specs_by_identity(epistemics)
+    evaluations = () if epistemics is None else _mapping_items(epistemics.get("evaluations"))
+    evaluation_by_id = {
+        evaluation_id: evaluation
+        for evaluation in evaluations
+        if (evaluation_id := _first_text(evaluation, "evaluation_id")) is not None
+    }
     for index, finding in enumerate(_mapping_items(payload.get("findings"))):
         finding_id = _first_text(finding, "finding_id", "hotspot_id") or str(index)
         category = _first_text(finding, "category") or "finding"
@@ -603,16 +1131,35 @@ def _extract_review(payload: Mapping[str, object]) -> list[dict[str, object]]:
                 ),
             )
         )
-    epistemics = _mapping(payload.get("epistemics"))
     if epistemics is not None:
-        for index, evaluation in enumerate(_mapping_items(epistemics.get("evaluations"))):
+        for index, evaluation in enumerate(evaluations):
             evaluation_id = _first_text(evaluation, "evaluation_id") or str(index)
             subject = _mapping(evaluation.get("subject")) or {}
             question_id = _first_text(evaluation, "question_id") or "question"
+            question_version = _first_text(evaluation, "question_version")
+            spec = (
+                None
+                if question_version is None
+                else specs_by_identity.get((question_id, question_version))
+            )
             subject_kind = _first_text(subject, "subject_kind") or "subject"
             location = _mapping(subject.get("location")) or {}
             evidence = _mapping_items(evaluation.get("evidence"))
             modules = _module_values(location)
+            proposal = proposal_by_evaluation.get(evaluation_id)
+            runner_kind = None if proposal is None else _first_text(proposal, "runner_kind")
+            proposal_statuses = (
+                ()
+                if proposal is None
+                else (
+                    f"experiment:{_first_text(proposal, 'planning_status') or 'unknown'}",
+                    (
+                        "execution:executable"
+                        if runner_kind not in {None, "none"}
+                        else "execution:manual"
+                    ),
+                )
+            )
             records.append(
                 _record(
                     record_type="analysis_question",
@@ -635,18 +1182,10 @@ def _extract_review(payload: Mapping[str, object]) -> list[dict[str, object]]:
                             ("counterevidence", "counterevidence_status"),
                         )
                         for value in _texts(evaluation, field_name)
-                    ),
+                    )
+                    + proposal_statuses,
                     facts={
-                        **_facts(
-                            evaluation,
-                            "question_id",
-                            "question_version",
-                            "question_spec_fingerprint",
-                            "rank",
-                            "decision_reason",
-                            "authority",
-                            "mutation_authority",
-                        ),
+                        **_question_fact_projection(evaluation, proposal, spec),
                         **_facts(
                             subject,
                             "subject_kind",
@@ -660,6 +1199,100 @@ def _extract_review(payload: Mapping[str, object]) -> list[dict[str, object]]:
                     },
                 )
             )
+    for index, proposal in enumerate(proposals):
+        proposal_id = _first_text(proposal, "proposal_id") or str(index)
+        question_id = _first_text(proposal, "question_id") or "question"
+        evaluation_id = _first_text(proposal, "evaluation_id")
+        proposal_evaluation = None if evaluation_id is None else evaluation_by_id.get(evaluation_id)
+        question_version = (
+            None
+            if proposal_evaluation is None
+            else _first_text(proposal_evaluation, "question_version")
+        )
+        spec = (
+            None
+            if question_version is None
+            else specs_by_identity.get((question_id, question_version))
+        )
+        actions = _next_action_projection(spec)
+        action_by_id = {item["action_id"]: item for item in actions}
+        selected_action_id = _first_text(proposal, "selected_action_id")
+        selected_action = (
+            None if selected_action_id is None else action_by_id.get(selected_action_id)
+        )
+        if selected_action_id is not None and selected_action is None:
+            raise ValueError("experiment proposal selected action is not declared")
+        alternative_action_ids = _string_items(proposal.get("alternative_action_ids"))
+        alternative_actions = [
+            action_by_id[action_id]
+            for action_id in alternative_action_ids
+            if action_id in action_by_id
+        ]
+        if actions and len(alternative_actions) != len(alternative_action_ids):
+            raise ValueError("experiment proposal alternative action is not declared")
+        planning_status = _first_text(proposal, "planning_status") or "unknown"
+        runner_kind = _first_text(proposal, "runner_kind")
+        executable = runner_kind not in {None, "none"}
+        records.append(
+            _record(
+                record_type="experiment_proposal",
+                record_id=proposal_id,
+                source_path=f"experiment_plan.proposals[{index}]",
+                categories=(
+                    "experiment_plan",
+                    f"experiment-question:{question_id}",
+                    _first_text(proposal, "template_id") or "registry_gap",
+                    _first_text(proposal, "selected_action_id") or "unregistered_action",
+                ),
+                statuses=(
+                    f"experiment:{planning_status}",
+                    "execution:executable" if executable else "execution:manual",
+                ),
+                facts={
+                    **_facts(
+                        proposal,
+                        "proposal_id",
+                        "evaluation_id",
+                        "question_id",
+                        "subject_key",
+                        "selected_action_id",
+                        "template_id",
+                        "template_version",
+                        "cost_tier",
+                        "estimated_attention_minutes",
+                        "timeout_seconds",
+                        "max_items",
+                        "isolation",
+                        "runner_kind",
+                        "planning_status",
+                        "reason",
+                        "authority",
+                        "mutation_authority",
+                    ),
+                    "scenario_ids": [
+                        _bounded_text(item)
+                        for item in _string_items(proposal.get("scenario_ids"))[:16]
+                    ],
+                    "acceptance_gates": [
+                        _bounded_text(item)
+                        for item in _string_items(proposal.get("acceptance_gates"))[:16]
+                    ],
+                    "missing_requirement_ids": [
+                        _bounded_text(item)
+                        for item in _string_items(proposal.get("missing_requirement_ids"))[:16]
+                    ],
+                    "alternative_action_ids": [
+                        _bounded_text(item)
+                        for item in alternative_action_ids[:CODE_ANALYSIS_QUERY_MAX_ACTIONS]
+                    ],
+                    "selected_action": selected_action,
+                    "alternative_actions": alternative_actions,
+                    "template_limitations": list(_template_limitations(proposal)),
+                    "manual_reason": _manual_reason(proposal),
+                    "executable": executable,
+                },
+            )
+        )
     parent_status = _first_text(payload, "work_package_status") or "unknown"
     for index, package in enumerate(_mapping_items(payload.get("work_packages"))):
         package_id = _first_text(package, "package_id") or str(index)
@@ -1074,6 +1707,18 @@ def _source_status(payload: Mapping[str, object], surface: str) -> str:
             status = _first_text(latest, "status")
             if status and status.casefold() not in {"completed", "ready"}:
                 return "abstained"
+        self_analysis = _mapping(payload.get("self_analysis"))
+        freshness = None if self_analysis is None else _mapping(self_analysis.get("freshness"))
+        if (
+            self_analysis is None
+            or self_analysis.get("manifest_status") != "valid"
+            or freshness is None
+            or freshness.get("current") is not True
+        ):
+            return "abstained"
+        suite = _mapping(payload.get("external_evidence_suite"))
+        if suite is None or _first_text(suite, "status") not in {"ready", "completed"}:
+            return "abstained"
         return "ready"
     status = _first_text(payload, "status")
     return "ready" if status and status.casefold() == "ready" else "abstained"
@@ -1105,6 +1750,23 @@ def _source_limitations(payload: Mapping[str, object], status: str) -> list[str]
     if status != "ready":
         reason = _first_text(payload, "reason") or "source_publication_not_ready"
         limitations.append(reason)
+        if payload.get("kind") == "code-status":
+            self_analysis = _mapping(payload.get("self_analysis"))
+            if self_analysis is None:
+                limitations.append("self_analysis_evidence_missing")
+            else:
+                manifest = _first_text(self_analysis, "manifest_status") or "missing"
+                if manifest != "valid":
+                    limitations.append(f"self_analysis_manifest_{manifest}")
+                freshness = _mapping(self_analysis.get("freshness"))
+                if freshness is None or freshness.get("current") is not True:
+                    limitations.append("self_analysis_freshness_not_current")
+            suite = _mapping(payload.get("external_evidence_suite"))
+            suite_status = (
+                "missing" if suite is None else (_first_text(suite, "status") or "missing")
+            )
+            if suite_status not in {"ready", "completed"}:
+                limitations.append(f"external_evidence_suite_status_{suite_status}")
     limitations.append("explicit_public_projection_only")
     if payload.get("schema") in {_CODE_REVIEW_V12, _CODE_REVIEW_V13, _CODE_REVIEW_V14}:
         limitations.append("query_adapter_does_not_reopen_source_records")
@@ -1779,7 +2441,13 @@ def _validate_review_v15_payload(payload: Mapping[str, object]) -> None:
 
 
 def _validate_review_v16_payload(payload: Mapping[str, object]) -> None:
-    """Validate v16's new evidence verticals and reproducible experiment plan."""
+    """Validate v16/v17 verticals, including v17's durable receipt linkage."""
+
+    review_schema = payload.get("schema")
+    if review_schema not in {_CODE_REVIEW_V16, _CODE_REVIEW_V17}:
+        raise ValueError("code-review/v16-v17 validator received an unsupported schema")
+    contract_label = "code-review/v17" if review_schema == _CODE_REVIEW_V17 else "code-review/v16"
+    has_receipts = review_schema == _CODE_REVIEW_V17
 
     added = (
         "state_interactions",
@@ -1790,14 +2458,17 @@ def _validate_review_v16_payload(payload: Mapping[str, object]) -> None:
     )
     epistemics = _mapping(payload.get("epistemics"))
     if epistemics is None:
-        raise ValueError("code-review/v16 payload lacks its epistemic contract")
+        raise ValueError(f"{contract_label} payload lacks its epistemic contract")
     if payload.get("status") == "abstained":
         if any(payload.get(key) is not None for key in added):
-            raise ValueError("abstained code-review/v16 payload asserts integrated evidence")
+            raise ValueError(f"abstained {contract_label} payload asserts integrated evidence")
+        if has_receipts and payload.get("experiment_receipts") != []:
+            raise ValueError(f"abstained {contract_label} payload asserts experiment receipts")
         projected = dict(payload)
         projected["schema"] = _CODE_REVIEW_V15
         for key in added:
             projected.pop(key, None)
+        projected.pop("experiment_receipts", None)
         _validate_review_v15_payload(projected)
         return
     try:
@@ -1806,7 +2477,7 @@ def _validate_review_v16_payload(payload: Mapping[str, object]) -> None:
         structural_payload = _mapping(payload.get("structural_analysis"))
         snapshot = _mapping(payload.get("snapshot"))
         if structural_payload is None or snapshot is None:
-            raise ValueError("ready code-review/v16 payload lacks structural snapshot evidence")
+            raise ValueError(f"ready {contract_label} payload lacks structural snapshot evidence")
         structural = parse_code_class_surface_payload(structural_payload)
         class_specs, class_evaluations = expected_class_surface_questions(
             structural,
@@ -1824,6 +2495,7 @@ def _validate_review_v16_payload(payload: Mapping[str, object]) -> None:
             "analyzer_effectiveness",
             "interface_surface",
             *added,
+            "experiment_receipts",
         ):
             projected.pop(key, None)
         projected["epistemics"] = analysis_questions_payload(
@@ -1850,7 +2522,7 @@ def _validate_review_v16_payload(payload: Mapping[str, object]) -> None:
         )
         nested = {key: _mapping(payload.get(key)) for key in nested_keys}
         if any(value is None for value in nested.values()):
-            raise ValueError("ready code-review/v16 payload lacks integrated evidence")
+            raise ValueError(f"ready {contract_label} payload lacks integrated evidence")
         state_topology = parse_code_state_topology_payload(cast(Any, nested["state_topology"]))
         state_projection = parse_code_state_projection_payload(
             cast(Any, nested["state_projection"])
@@ -1879,25 +2551,48 @@ def _validate_review_v16_payload(payload: Mapping[str, object]) -> None:
             cast(Any, nested["analyzer_calibration"])
         )
         experiment_plan = parse_code_experiment_plan_payload(cast(Any, nested["experiment_plan"]))
+        receipts = (
+            tuple(
+                parse_resolved_code_experiment_receipt_payload(item)
+                for item in _experiment_receipt_payloads(payload)
+            )
+            if has_receipts
+            else ()
+        )
         supply_chain = parse_code_supply_chain_payload(cast(Any, nested["supply_chain"]))
         interface_surface = parse_code_interface_surface_payload(
             cast(Any, nested["interface_surface"])
         )
         if (
-            state_topology.source_version != _CODE_REVIEW_V16
-            or capability.source_version != _CODE_REVIEW_V16
-            or route_capabilities.source_version != _CODE_REVIEW_V16
-            or analyzer_calibration.source_version != _CODE_REVIEW_V16
+            state_topology.source_version != review_schema
+            or capability.source_version != review_schema
+            or route_capabilities.source_version != review_schema
+            or analyzer_calibration.source_version != review_schema
         ):
-            raise ValueError("code-review/v16 integrated source version is inconsistent")
+            raise ValueError(f"{contract_label} integrated source version is inconsistent")
         snapshot_id = _first_text(snapshot, "processing_signature")
         snapshot_freshness = _first_text(snapshot, "freshness")
-        if snapshot_id is None or snapshot_freshness not in {
-            "current",
-            "publication_only",
-            "unknown",
-        }:
+        snapshot_run_id = snapshot.get("analysis_run_id")
+        if (
+            snapshot_id is None
+            or snapshot_freshness
+            not in {
+                "current",
+                "publication_only",
+                "unknown",
+            }
+            or (
+                isinstance(snapshot_run_id, bool)
+                or not isinstance(snapshot_run_id, int)
+                or snapshot_run_id < 1
+            )
+        ):
             raise ValueError("code-review/v16 snapshot identity is inconsistent")
+        if any(
+            item.analysis_run_id > snapshot_run_id or item.receipt.source_version != snapshot_id
+            for item in receipts
+        ):
+            raise ValueError(f"{contract_label} experiment receipt snapshot is inconsistent")
         resolved_freshness = cast(
             Literal["current", "publication_only", "unknown"], snapshot_freshness
         )
@@ -1931,7 +2626,7 @@ def _validate_review_v16_payload(payload: Mapping[str, object]) -> None:
             or analyzer_effectiveness.framework_run_id != snapshot.get("framework_run_id")
             or analyzer_effectiveness.processing_signature != snapshot_id
             or analyzer_effectiveness.snapshot_freshness != snapshot_freshness
-            or analyzer_effectiveness.source_version != _CODE_REVIEW_V16
+            or analyzer_effectiveness.source_version != review_schema
         ):
             raise ValueError("code-review/v16 analyzer effectiveness snapshot is inconsistent")
 
@@ -1994,16 +2689,75 @@ def _validate_review_v16_payload(payload: Mapping[str, object]) -> None:
             analyzer_effectiveness_questions(analyzer_effectiveness, rank_offset=offset)
         )
         append_questions(analyzer_calibration_questions(analyzer_calibration, rank_offset=offset))
-        if specs[base_spec_count:] != tuple(expected_specs) or evaluations[
-            base_evaluation_count:
-        ] != tuple(expected_evaluations):
-            raise ValueError("code-review/v16 integrated question projection is not canonical")
-        if experiment_plan != plan_code_experiments(specs, evaluations):
-            raise ValueError("code-review/v16 experiment plan is not canonical")
+        canonical_specs = specs[:base_spec_count] + tuple(expected_specs)
+        canonical_base_evaluations = evaluations[:base_evaluation_count] + tuple(
+            expected_evaluations
+        )
+        if specs != canonical_specs:
+            raise ValueError(f"{contract_label} question registry is not canonical")
+        base_plan = plan_code_experiments(canonical_specs, canonical_base_evaluations)
+        canonical_evaluations = apply_code_experiment_receipts(
+            canonical_specs,
+            canonical_base_evaluations,
+            base_plan,
+            receipts,
+        )
+        if evaluations != canonical_evaluations:
+            raise ValueError(f"{contract_label} integrated question projection is not canonical")
+        if experiment_plan != plan_code_experiments(specs, canonical_evaluations):
+            raise ValueError(f"{contract_label} experiment plan is not canonical")
     except (TypeError, ValueError) as exc:
-        if isinstance(exc, ValueError) and str(exc).startswith("code-review/v16"):
+        if isinstance(exc, ValueError) and str(exc).startswith(contract_label):
             raise
-        raise ValueError("code-review/v16 integrated projection is malformed") from exc
+        raise ValueError(f"{contract_label} integrated projection is malformed") from exc
+
+
+def _query_result_payload(
+    *,
+    query: CodeAnalysisQuery,
+    expected_kind: str,
+    source_payload: Mapping[str, object],
+    status: str,
+    filters: Mapping[str, list[str]],
+    available: int,
+    matched: int,
+    returned: list[dict[str, object]],
+    limitations: list[str],
+    byte_truncated: bool,
+) -> dict[str, object]:
+    projected_limitations = (
+        _dimension_values((*limitations, "query_output_byte_bound_applied"))
+        if byte_truncated
+        else limitations
+    )
+    return {
+        "kind": "code-analysis-query",
+        "schema": CODE_ANALYSIS_QUERY_SCHEMA,
+        "surface": query.surface,
+        "status": status,
+        "source": {
+            "kind": expected_kind,
+            "schema": _source_schema(source_payload, query.surface),
+            "digest": _source_digest(source_payload),
+        },
+        "filters": dict(filters),
+        "counts": {
+            "available": available,
+            "matched": matched,
+            "returned": len(returned),
+            "truncated": len(returned) < matched,
+        },
+        "matches": returned,
+        "limitations": projected_limitations,
+        "output_bound": {
+            "max_public_json_bytes": CODE_ANALYSIS_QUERY_MAX_OUTPUT_BYTES,
+            "byte_truncated": byte_truncated,
+        },
+        "authority": "advisory",
+        "mutation_authority": False,
+        "aggregate_score": None,
+        "defect_probability": None,
+    }
 
 
 def query_code_analysis(
@@ -2024,7 +2778,7 @@ def query_code_analysis(
         )
     if query.surface == "review":
         review_schema = payload.get("schema")
-        if review_schema == _CODE_REVIEW_V16:
+        if review_schema in {_CODE_REVIEW_V16, _CODE_REVIEW_V17}:
             _validate_review_v16_payload(payload)
         elif review_schema == _CODE_REVIEW_V15:
             _validate_review_v15_payload(payload)
@@ -2044,35 +2798,64 @@ def query_code_analysis(
         "diff": _extract_diff,
     }
     records = extractors[query.surface](payload)
+    if len(records) > CODE_ANALYSIS_QUERY_MAX_SOURCE_RECORDS:
+        raise ValueError("query source projection exceeds its record bound")
     records.sort(key=lambda item: (str(item["record_type"]), str(item["id"])))
     matched = [record for record in records if _record_matches(record, query)]
     returned = matched[: query.limit]
     status = _source_status(payload, query.surface)
     filters = {name: list(getattr(query, name)) for name in _DIMENSIONS}
-    return {
-        "kind": "code-analysis-query",
-        "schema": CODE_ANALYSIS_QUERY_SCHEMA,
-        "surface": query.surface,
-        "status": status,
-        "source": {
-            "kind": expected_kind,
-            "schema": _source_schema(payload, query.surface),
-            "digest": _source_digest(payload),
-        },
-        "filters": filters,
-        "counts": {
-            "available": len(records),
-            "matched": len(matched),
-            "returned": len(returned),
-            "truncated": len(returned) < len(matched),
-        },
-        "matches": returned,
-        "limitations": _source_limitations(payload, status),
-        "authority": "advisory",
-        "mutation_authority": False,
-        "aggregate_score": None,
-        "defect_probability": None,
-    }
+    limitations = _source_limitations(payload, status)
+    result = _query_result_payload(
+        query=query,
+        expected_kind=expected_kind,
+        source_payload=payload,
+        status=status,
+        filters=filters,
+        available=len(records),
+        matched=len(matched),
+        returned=returned,
+        limitations=limitations,
+        byte_truncated=False,
+    )
+    if _public_json_bytes(result) <= CODE_ANALYSIS_QUERY_MAX_OUTPUT_BYTES:
+        return result
+
+    lower = 0
+    upper = len(returned)
+    while lower < upper:
+        midpoint = (lower + upper + 1) // 2
+        candidate = _query_result_payload(
+            query=query,
+            expected_kind=expected_kind,
+            source_payload=payload,
+            status=status,
+            filters=filters,
+            available=len(records),
+            matched=len(matched),
+            returned=returned[:midpoint],
+            limitations=limitations,
+            byte_truncated=True,
+        )
+        if _public_json_bytes(candidate) <= CODE_ANALYSIS_QUERY_MAX_OUTPUT_BYTES:
+            lower = midpoint
+        else:
+            upper = midpoint - 1
+    bounded = _query_result_payload(
+        query=query,
+        expected_kind=expected_kind,
+        source_payload=payload,
+        status=status,
+        filters=filters,
+        available=len(records),
+        matched=len(matched),
+        returned=returned[:lower],
+        limitations=limitations,
+        byte_truncated=True,
+    )
+    if _public_json_bytes(bounded) > CODE_ANALYSIS_QUERY_MAX_OUTPUT_BYTES:
+        raise ValueError("query output cannot satisfy its public JSON byte bound")
+    return bounded
 
 
 __all__ = ["CODE_ANALYSIS_QUERY_SCHEMA", "CodeAnalysisQuery", "query_code_analysis"]

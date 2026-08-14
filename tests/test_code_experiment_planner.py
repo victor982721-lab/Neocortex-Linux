@@ -17,7 +17,11 @@ from _04_Nucleo_Operativo.code_invariant_assurance_analysis import (
     analyze_code_invariant_assurance,
     invariant_assurance_questions,
 )
-from _04_Nucleo_Operativo.code_invariant_contracts import INVARIANT_SPECS, RUNTIME_SCENARIOS
+from _04_Nucleo_Operativo.code_invariant_contracts import (
+    EXPERIMENT_SCENARIO_IDS,
+    INVARIANT_SPECS,
+    INVARIANT_RUNTIME_SCENARIOS,
+)
 from _04_Nucleo_Operativo.external_deep_coverage import PYTEST_COVERAGE_PROVIDER_ID
 from _04_Nucleo_Operativo.external_evidence_models import (
     ExternalProviderEvidence,
@@ -51,7 +55,7 @@ def _provider() -> ExternalProviderEvidence:
                 "measurement_scope_signature": "fixture",
             },
         )
-        for scenario in RUNTIME_SCENARIOS
+        for scenario in INVARIANT_RUNTIME_SCENARIOS
         for nodeid in scenario.test_nodeids
     )
     return ExternalProviderEvidence(
@@ -84,11 +88,31 @@ def test_registry_is_canonical_non_mutating_and_bounded() -> None:
     assert all(1 <= item.timeout_seconds <= 900 for item in CODE_EXPERIMENT_TEMPLATES)
     assert experiment_template("structure.static_characterization").cost_tier == "metadata"
     assert experiment_template_registry_fingerprint().startswith(
-        "code-experiment-template-registry-v1:xxh3_128:"
+        "code-experiment-template-registry-v2:xxh3_128:"
     )
+    executable = tuple(item for item in CODE_EXPERIMENT_TEMPLATES if item.executable)
+    assert {scenario for item in executable for scenario in item.scenario_ids} == set(
+        EXPERIMENT_SCENARIO_IDS
+    )
+    assert all(len(item.scenario_ids) == 1 for item in executable)
+    assert experiment_template("analyzer.registered_invariant_scenarios").executable is False
+    capability = experiment_template("capability.public_route_acceptance")
+    assert capability.applies_to(
+        question_id="capability.route_reaches_user_visible_outcome",
+        subject_key="capability:route:text",
+    )
+    assert not capability.applies_to(
+        question_id="capability.route_reaches_user_visible_outcome",
+        subject_key="capability:route:pdf",
+    )
+    assert not capability.applies_to(
+        question_id="state.declared_workflow_sql_matches_implementation",
+        subject_key="capability:route:text",
+    )
+    assert all(item.acceptance_gates for item in executable)
 
 
-def test_cheapest_registered_experiment_is_selected_without_change_authority() -> None:
+def test_unimplemented_independent_invariant_experiment_remains_manual() -> None:
     specs, evaluations = _invariant_questions()
 
     result = plan_code_experiments(specs, evaluations)
@@ -96,12 +120,12 @@ def test_cheapest_registered_experiment_is_selected_without_change_authority() -
     assert result.status == "ready"
     assert result.experiment_required_count == len(evaluations)
     assert result.planned_count == len(evaluations)
-    assert result.executable_count == len(evaluations)
+    assert result.executable_count == 0
     assert result.registry_gap_count == 0
     assert {item.template_id for item in result.proposals} == {
         "analyzer.registered_invariant_scenarios"
     }
-    assert all(item.runner_kind == "trusted_deep_declared_scenarios" for item in result.proposals)
+    assert all(item.runner_kind == "none" for item in result.proposals)
     assert all(item.mutation_authority is False for item in result.proposals)
     assert all(
         "result_digest_and_environment_receipt_are_recorded" in item.acceptance_gates
@@ -110,7 +134,7 @@ def test_cheapest_registered_experiment_is_selected_without_change_authority() -
     assert parse_code_experiment_plan_payload(json.loads(json.dumps(result.as_payload()))) == result
 
 
-def test_missing_runtime_provider_plans_the_allowlisted_experiment_instead_of_deadlocking() -> None:
+def test_missing_runtime_provider_plans_without_claiming_an_independent_runner() -> None:
     analysis = analyze_code_invariant_assurance(
         {},
         snapshot_id="snapshot-fixture",
@@ -122,11 +146,11 @@ def test_missing_runtime_provider_plans_the_allowlisted_experiment_instead_of_de
 
     assert result.status == "ready"
     assert result.experiment_required_count == len(INVARIANT_SPECS)
-    assert result.executable_count == len(INVARIANT_SPECS)
+    assert result.executable_count == 0
     assert result.registry_gap_count == 0
     assert all(
         proposal.template_id == "analyzer.registered_invariant_scenarios"
-        and proposal.runner_kind == "trusted_deep_declared_scenarios"
+        and proposal.runner_kind == "none"
         for proposal in result.proposals
     )
 
@@ -185,6 +209,21 @@ def test_no_experiment_required_produces_explicit_empty_plan() -> None:
     assert result.proposals == ()
     assert result.source_evaluation_count == 0
     del specs, evaluations
+
+
+def test_proposal_identity_survives_an_exact_replay_evaluation_identity() -> None:
+    specs, evaluations = _invariant_questions()
+    original = plan_code_experiments(specs, evaluations)
+    replayed = plan_code_experiments(
+        specs,
+        (replace(evaluations[0], evaluation_id="evaluation:exact-replay"),),
+    )
+    original_proposal = next(
+        item for item in original.proposals if item.evaluation_id == evaluations[0].evaluation_id
+    )
+
+    assert replayed.proposals[0].evaluation_id == "evaluation:exact-replay"
+    assert replayed.proposals[0].proposal_id == original_proposal.proposal_id
 
 
 def test_evaluation_bound_abstains_without_partial_proposals() -> None:

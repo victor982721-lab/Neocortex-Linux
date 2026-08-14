@@ -23,11 +23,11 @@ from .code_analysis_epistemics import (
     validate_analysis_question_evaluation,
     validate_analysis_question_set,
 )
-from .code_invariant_contracts import RUNTIME_SCENARIOS
+from .code_invariant_contracts import INVARIANT_RUNTIME_SCENARIOS, RUNTIME_SCENARIOS
 
-CODE_EXPERIMENT_PLAN_SCHEMA = "neocortex.code-experiment-plan/v1"
-CODE_EXPERIMENT_TEMPLATE_REGISTRY_SCHEMA = "neocortex.code-experiment-template-registry/v1"
-CODE_EXPERIMENT_PLANNING_POLICY = "registered-cheapest-discriminating-experiment-v1"
+CODE_EXPERIMENT_PLAN_SCHEMA = "neocortex.code-experiment-plan/v2"
+CODE_EXPERIMENT_TEMPLATE_REGISTRY_SCHEMA = "neocortex.code-experiment-template-registry/v2"
+CODE_EXPERIMENT_PLANNING_POLICY = "registered-applicable-cheapest-discriminating-experiment-v3"
 CODE_EXPERIMENT_MAX_PROPOSALS = 256
 
 ExperimentKind = Literal[
@@ -75,6 +75,8 @@ class CodeExperimentTemplate:
     template_id: str
     version: str
     action_ids: tuple[str, ...]
+    applicable_question_ids: tuple[str, ...]
+    applicable_subject_key_prefixes: tuple[str, ...]
     experiment_kind: ExperimentKind
     isolation: IsolationKind
     runner_kind: RunnerKind
@@ -94,6 +96,16 @@ class CodeExperimentTemplate:
         _texts("experiment action id", self.action_ids)
         if not self.action_ids:
             raise ValueError("experiment template requires at least one action id")
+        _texts(
+            "experiment applicable question id",
+            self.applicable_question_ids,
+            sorted_values=True,
+        )
+        _texts(
+            "experiment applicable subject prefix",
+            self.applicable_subject_key_prefixes,
+            sorted_values=True,
+        )
         if self.experiment_kind not in {
             "static_characterization",
             "read_only_probe",
@@ -142,6 +154,16 @@ class CodeExperimentTemplate:
                 "spawned_process_and_tmp_path",
             }:
                 raise ValueError("trusted-deep template requires exact isolated scenarios")
+            if not self.applicable_question_ids or not self.applicable_subject_key_prefixes:
+                raise ValueError("executable template requires exact question and subject scope")
+            scenario_by_id = {item.scenario_id: item for item in RUNTIME_SCENARIOS}
+            measured_gates = tuple(
+                gate.gate_id
+                for scenario_id in self.scenario_ids
+                for gate in scenario_by_id[scenario_id].gate_specs
+            )
+            if self.acceptance_gates != measured_gates:
+                raise ValueError("executable template gates must be measured by its scenarios")
         elif self.scenario_ids:
             raise ValueError("non-executable template cannot claim scenario selectors")
         if self.experiment_kind == "isolated_mutation" and self.mutation_authority:
@@ -154,6 +176,15 @@ class CodeExperimentTemplate:
     @property
     def executable(self) -> bool:
         return self.runner_kind != "none"
+
+    def applies_to(self, *, question_id: str, subject_key: str) -> bool:
+        question_matches = not self.applicable_question_ids or question_id in set(
+            self.applicable_question_ids
+        )
+        subject_matches = not self.applicable_subject_key_prefixes or any(
+            subject_key.startswith(prefix) for prefix in self.applicable_subject_key_prefixes
+        )
+        return question_matches and subject_matches
 
 
 def _template(
@@ -168,13 +199,22 @@ def _template(
     attention: int,
     scenarios: tuple[str, ...] = (),
     runner: RunnerKind = "none",
+    questions: tuple[str, ...] = (),
+    subject_prefixes: tuple[str, ...] = (),
     gates: tuple[str, ...],
     limitations: tuple[str, ...],
 ) -> CodeExperimentTemplate:
+    versions = {
+        "analyzer.registered_invariant_scenarios": "v3",
+        "capability.public_route_acceptance": "v2",
+        "state.runtime_sql_trace": "v2",
+    }
     return CodeExperimentTemplate(
         template_id,
-        "v2" if template_id == "analyzer.registered_invariant_scenarios" else "v1",
+        versions.get(template_id, "v1"),
         action_ids,
+        tuple(sorted(questions)),
+        tuple(sorted(subject_prefixes)),
         experiment_kind,
         isolation,
         runner,
@@ -200,16 +240,15 @@ CODE_EXPERIMENT_TEMPLATES: tuple[CodeExperimentTemplate, ...] = (
         "spawned_process_and_tmp_path",
         "bounded",
         timeout=300,
-        max_items=sum(len(item.test_nodeids) for item in RUNTIME_SCENARIOS),
+        max_items=sum(len(item.test_nodeids) for item in INVARIANT_RUNTIME_SCENARIOS),
         attention=5,
-        scenarios=tuple(item.scenario_id for item in RUNTIME_SCENARIOS),
-        runner="trusted_deep_declared_scenarios",
         gates=(
             "all_selected_nodeids_report_terminal_outcomes",
             "no_canonical_state_or_corpus_path_is_used",
             "result_digest_and_environment_receipt_are_recorded",
         ),
         limitations=(
+            "no_independent_additional_scenario_runner_is_registered",
             "scenario_pass_is_not_formal_proof",
             "process_death_is_not_power_loss",
             "coverage_is_main_process_only",
@@ -245,15 +284,20 @@ CODE_EXPERIMENT_TEMPLATES: tuple[CodeExperimentTemplate, ...] = (
             "inject_failure_at_each_durable_boundary",
         ),
         "isolated_fault_injection",
-        "disposable_state_copy",
+        "pytest_tmp_path",
         "bounded",
         timeout=300,
         max_items=50,
         attention=10,
+        scenarios=("state.text_sql_runtime_trace",),
+        runner="trusted_deep_declared_scenarios",
+        questions=("state.declared_workflow_sql_matches_implementation",),
+        subject_prefixes=("workflow:text.derivation-publication:",),
         gates=(
-            "every_observed_query_is_bound_to_connection_store_and_workflow",
-            "commit_rollback_and_exception_events_are_recorded",
-            "canonical_state_digests_are_unchanged",
+            "literal_sql_parser_preserves_dynamic_sql_as_missing_evidence",
+            "post_terminalization_exception_leaves_no_partial_publication",
+            "process_death_before_commit_rolls_back_and_restart_converges",
+            "successful_terminal_transaction_contains_required_text_tables",
         ),
         limitations=(
             "runtime_trace_observes_only_selected_paths",
@@ -268,15 +312,19 @@ CODE_EXPERIMENT_TEMPLATES: tuple[CodeExperimentTemplate, ...] = (
             "observe_user_visible_consumer_of_text_result",
         ),
         "isolated_pytest",
-        "disposable_state_copy",
+        "pytest_tmp_path",
         "bounded",
         timeout=300,
         max_items=20,
         attention=10,
+        scenarios=("capability.public_text_route_to_search",),
+        runner="trusted_deep_declared_scenarios",
+        questions=("capability.route_reaches_user_visible_outcome",),
+        subject_prefixes=("capability:route:text",),
         gates=(
-            "public_entrypoint_exit_status_is_recorded",
-            "receipt_output_and_read_consumer_are_correlated",
-            "user_visible_result_or_exact_abstention_is_observed",
+            "partial_search_abstention_is_explicit_and_read_only",
+            "public_text_entrypoint_first_run_and_replay_observed",
+            "same_fixture_source_reaches_public_text_search_output",
         ),
         limitations=(
             "fixture_acceptance_does_not_measure_human_product_value",
@@ -448,7 +496,7 @@ def experiment_template_registry_payload() -> dict[str, object]:
 
 def experiment_template_registry_fingerprint() -> str:
     return analysis_identity(
-        "code-experiment-template-registry-v1",
+        "code-experiment-template-registry-v2",
         experiment_template_registry_payload(),
     )
 
@@ -457,6 +505,7 @@ def experiment_template_registry_fingerprint() -> str:
 class CodeExperimentProposal:
     proposal_id: str
     evaluation_id: str
+    evaluation_binding_fingerprint: str
     question_id: str
     subject_key: str
     selected_action_id: str | None
@@ -481,6 +530,7 @@ class CodeExperimentProposal:
         for label, value in (
             ("experiment proposal id", self.proposal_id),
             ("experiment evaluation id", self.evaluation_id),
+            ("experiment evaluation binding", self.evaluation_binding_fingerprint),
             ("experiment question id", self.question_id),
             ("experiment subject key", self.subject_key),
             ("experiment proposal reason", self.reason),
@@ -518,6 +568,10 @@ class CodeExperimentProposal:
                 or self.runner_kind != template.runner_kind
                 or self.scenario_ids != template.scenario_ids
                 or self.acceptance_gates != template.acceptance_gates
+                or not template.applies_to(
+                    question_id=self.question_id,
+                    subject_key=self.subject_key,
+                )
             ):
                 raise ValueError("experiment proposal is not derived from its template")
         elif (
@@ -529,8 +583,12 @@ class CodeExperimentProposal:
         if self.authority != "advisory" or self.mutation_authority:
             raise ValueError("experiment proposals must remain advisory and non-mutating")
         expected_id = analysis_identity(
-            "code-experiment-proposal-v1",
-            {key: value for key, value in asdict(self).items() if key != "proposal_id"},
+            "code-experiment-proposal-v2",
+            {
+                key: value
+                for key, value in asdict(self).items()
+                if key not in {"proposal_id", "evaluation_id"}
+            },
         )
         if self.proposal_id != expected_id:
             raise ValueError("experiment proposal identity is invalid")
@@ -617,7 +675,7 @@ class CodeExperimentPlan:
         if self.authority != "advisory" or self.mutation_authority:
             raise ValueError("experiment plan must remain advisory and non-mutating")
         expected_id = analysis_identity(
-            "code-experiment-plan-v1",
+            "code-experiment-plan-v2",
             {key: value for key, value in asdict(self).items() if key != "plan_id"},
         )
         if self.plan_id != expected_id:
@@ -641,6 +699,94 @@ def _template_by_action() -> dict[str, CodeExperimentTemplate]:
     }
 
 
+def experiment_evaluation_binding_fingerprint(
+    evaluation: AnalysisQuestionEvaluation,
+) -> str:
+    """Fingerprint decision-relevant evidence without capture-local identities.
+
+    Evaluation, evidence, snapshot and provider-run IDs identify one capture.
+    They must not make an otherwise exact replay look like a new experiment.
+    Facts, contracts, completeness, requirement outcomes and the stable subject
+    do remain in the binding so a real semantic or state change invalidates the
+    previous receipt.
+    """
+
+    if not isinstance(evaluation, AnalysisQuestionEvaluation):
+        raise ValueError("experiment evaluation binding input is invalid")
+    evidence_projection: dict[str, dict[str, object]] = {}
+    for evidence in evaluation.evidence:
+        semantic: dict[str, object] = {
+            "subject_key": evidence.subject_key,
+            "role": evidence.role,
+            "evidence_kind": evidence.evidence_kind,
+            "source_owner_id": evidence.source_owner_id,
+            "producer_id": evidence.producer_id,
+            "producer_version": evidence.producer_version,
+            "source_schema": evidence.source_schema,
+            "source_record_kind": evidence.source_record_kind,
+            "revision_id": evidence.revision_id,
+            "facts": tuple(
+                asdict(item) for item in sorted(evidence.facts, key=lambda item: item.name)
+            ),
+            "completeness": evidence.completeness,
+            "bounded": evidence.bounded,
+            "truncated": evidence.truncated,
+            "resolver_id": evidence.resolver_id,
+            "resolver_version": evidence.resolver_version,
+            "resolution_status": evidence.resolution_status,
+            "limitations": tuple(sorted(evidence.limitations)),
+            "authority": evidence.authority,
+            "mutation_authority": evidence.mutation_authority,
+        }
+        evidence_projection[evidence.evidence_id] = semantic
+    requirements = tuple(
+        {
+            "requirement_id": item.requirement_id,
+            "status": item.status,
+            "reason": item.reason,
+            "evidence": tuple(
+                sorted(
+                    analysis_identity(
+                        "code-experiment-evidence-binding-v1",
+                        evidence_projection[evidence_id],
+                    )
+                    for evidence_id in item.evidence_ids
+                )
+            ),
+        }
+        for item in evaluation.requirements
+    )
+    subject = evaluation.subject
+    return analysis_identity(
+        "code-experiment-evaluation-binding-v1",
+        {
+            "question_id": evaluation.question_id,
+            "question_version": evaluation.question_version,
+            "question_spec_fingerprint": evaluation.question_spec_fingerprint,
+            "subject": {
+                "kind": subject.subject_kind,
+                "key": subject.subject_key,
+                "source_owner_id": subject.source_owner_id,
+                "snapshot_freshness": subject.snapshot_freshness,
+                "revision_id": subject.revision_id,
+                "location": None if subject.location is None else asdict(subject.location),
+            },
+            "requirements": requirements,
+            "observation_status": evaluation.observation_status,
+            "inference_status": evaluation.inference_status,
+            "hypotheses": evaluation.hypotheses,
+            "question_readiness": evaluation.question_readiness,
+            "decision_readiness": evaluation.decision_readiness,
+            "decision_reason": evaluation.decision_reason,
+            "counterevidence_status": evaluation.counterevidence_status,
+            "next_action_ids": evaluation.next_action_ids,
+            "limitations": tuple(sorted(evaluation.limitations)),
+            "authority": evaluation.authority,
+            "mutation_authority": evaluation.mutation_authority,
+        },
+    )
+
+
 def _proposal(
     evaluation: AnalysisQuestionEvaluation,
     *,
@@ -657,6 +803,7 @@ def _proposal(
     )
     values: dict[str, object] = {
         "evaluation_id": evaluation.evaluation_id,
+        "evaluation_binding_fingerprint": experiment_evaluation_binding_fingerprint(evaluation),
         "question_id": evaluation.question_id,
         "subject_key": evaluation.subject.subject_key,
         "selected_action_id": selected_action,
@@ -684,7 +831,10 @@ def _proposal(
         "mutation_authority": False,
     }
     return CodeExperimentProposal(
-        proposal_id=analysis_identity("code-experiment-proposal-v1", values),
+        proposal_id=analysis_identity(
+            "code-experiment-proposal-v2",
+            {key: value for key, value in values.items() if key != "evaluation_id"},
+        ),
         **values,  # type: ignore[arg-type]
     )
 
@@ -732,6 +882,10 @@ def plan_code_experiments(
                 (action, by_action[action])
                 for action in evaluation.next_action_ids
                 if action in by_action
+                and by_action[action].applies_to(
+                    question_id=evaluation.question_id,
+                    subject_key=evaluation.subject.subject_key,
+                )
             )
             selected_action: str | None = None
             selected_template: CodeExperimentTemplate | None = None
@@ -781,7 +935,7 @@ def plan_code_experiments(
         for item in cast(tuple[object, ...], values["proposals"])
     )
     return CodeExperimentPlan(
-        plan_id=analysis_identity("code-experiment-plan-v1", identity_values),
+        plan_id=analysis_identity("code-experiment-plan-v2", identity_values),
         **values,  # type: ignore[arg-type]
     )
 
@@ -830,6 +984,7 @@ __all__ = [
     "CodeExperimentPlan",
     "CodeExperimentProposal",
     "CodeExperimentTemplate",
+    "experiment_evaluation_binding_fingerprint",
     "experiment_template",
     "experiment_template_registry_fingerprint",
     "experiment_template_registry_payload",

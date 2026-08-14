@@ -27,6 +27,7 @@ from _04_Nucleo_Operativo.code_external_evidence import (
     ExternalEvidencePublication,
 )
 from _04_Nucleo_Operativo.code_schema import (
+    CODE_SCHEMA_VERSION,
     checkpoint_code_wal,
     remove_checkpointed_code_sidecars,
 )
@@ -485,8 +486,8 @@ def test_change_history_schema_vertical_preserves_epistemic_boundaries(tmp_path:
     assert result.history.companions[0].source_changed is True
     assert result.history.companions[0].target_changed is True
     assert result.code_schema.status == "ready"
-    assert result.code_schema.schema_version == 5
-    assert result.code_schema.migration_count == 5
+    assert result.code_schema.schema_version == CODE_SCHEMA_VERSION
+    assert result.code_schema.migration_count == CODE_SCHEMA_VERSION
     assert result.code_schema.ddl_digest is not None
     assert result.code_schema.migration_digest is not None
 

@@ -89,11 +89,11 @@ def test_code_query_review_uses_public_payload_and_exact_query_contract(
 
     monkeypatch.setattr(code_review, "review_code_state", review_code_state)
     _install_engine(monkeypatch, query_code_analysis)
-    args = _args(tmp_path, "review")
+    args = _args(tmp_path, "review", limit=2)
 
     assert cli_code.run_code_query(args) == 0
 
-    assert calls["review"] == (tmp_path, 50)
+    assert calls["review"] == (tmp_path, 2)
     assert calls["serialized"] is True
     payload, query = cast(tuple[dict[str, object], _FakeQuery], calls["engine"])
     assert payload == {"kind": "code-review", "status": "ready"}
@@ -105,7 +105,7 @@ def test_code_query_review_uses_public_payload_and_exact_query_contract(
         statuses=("ready",),
         deltas=("added",),
         work_packages=("wp-1",),
-        limit=50,
+        limit=2,
     )
     assert json.loads(capsys.readouterr().out) == query_code_analysis(payload, query)
 
