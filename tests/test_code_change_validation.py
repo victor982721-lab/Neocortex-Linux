@@ -920,6 +920,41 @@ def test_code_schema_boundary_selects_its_bounded_compatibility_matrix(
     assert "change_crosses_full_suite_boundary" not in selection.reasons
 
 
+def test_quality_gate_source_selects_its_bounded_compatibility_matrix(
+    tmp_path: Path,
+) -> None:
+    root = _repository(tmp_path)
+    gate = root / "tools" / "quality_gate.py"
+    gate.parent.mkdir()
+    gate.write_text("def run(): pass\n", encoding="utf-8")
+    expected = (
+        "tests/test_code_change_validation.py",
+        "tests/test_packaging_entrypoint.py",
+        "tests/test_quality_gate.py",
+        "tests/test_release_artifacts.py",
+        "tests/test_release_linux.py",
+    )
+    for relative in expected:
+        (root / relative).write_text("def test_quality_boundary(): pass\n", encoding="utf-8")
+    change = GitChangeSnapshot(
+        "a" * 40,
+        "a" * 40,
+        ("tools/quality_gate.py",),
+        (),
+        (),
+        (),
+        "b" * 64,
+    )
+
+    selection = select_affected_tests(root, tmp_path / "state", change)
+
+    assert selection.strategy == "affected"
+    assert selection.selectors == expected
+    assert selection.convention_tests == expected
+    assert selection.uncovered_sources == ()
+    assert "change_crosses_full_suite_boundary" not in selection.reasons
+
+
 def test_full_suite_excludes_retired_windows_runtime_but_keeps_portable_usn(
     tmp_path: Path,
 ) -> None:

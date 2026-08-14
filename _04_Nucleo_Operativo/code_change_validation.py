@@ -133,13 +133,21 @@ _FULL_SUITE_BOUNDARIES = frozenset(
         "constraints.txt",
         "MANIFEST.in",
         "pyproject.toml",
-        "tools/quality_gate.py",
         "tools/quality_gate_coverage_baseline.json",
         "tools/quality_gate_static_baseline.json",
         "tools/quality_gate_supply_policy.json",
     }
 )
 _SOURCE_BOUNDARY_TESTS = {
+    "tools/quality_gate.py": frozenset(
+        {
+            "tests/test_code_change_validation.py",
+            "tests/test_packaging_entrypoint.py",
+            "tests/test_quality_gate.py",
+            "tests/test_release_artifacts.py",
+            "tests/test_release_linux.py",
+        }
+    ),
     "_04_Nucleo_Operativo/code_schema.py": frozenset(
         {
             "tests/test_code_change_evolution_analysis.py",

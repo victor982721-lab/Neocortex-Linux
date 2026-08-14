@@ -28,6 +28,9 @@ no se copian aquí para evitar que se conviertan en datos históricos sin contex
   prueba que la restricción `AF_UNIX` deniega realmente AF_INET/AF_INET6. El
   watchdog diferencia reclaim aislado con headroom de presión que amenaza al
   escritorio y detiene con SIGINT para permitir terminalización durable.
+  Los cambios al ejecutor `tools/quality_gate.py` usan una matriz acotada de sus
+  cinco contratos consumidores; los baselines de Coverage, packaging y policy
+  continúan siendo fronteras de suite Linux completa.
 
 - Review `neocortex.code-review/v18` con verificación técnica independiente y
   allow-listed. Sólo puede publicar
