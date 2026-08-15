@@ -487,6 +487,122 @@ def test_chunk_lineage_origins_are_sql_bounded_with_exact_truncation(
     assert lineage.embeddings_truncated is False
 
 
+def test_chunk_lineage_filters_models_and_bounds_embedding_members(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "bounded-embeddings.sqlite3"
+    primary_model = _initialize(database)
+    alternate_model = EmbeddingModelSpec(
+        "lineage-model-v2",
+        "lineage-space-v2",
+        EmbeddingModality.TEXT,
+        "fixture/lineage-model-alternate",
+        "2",
+        4,
+        "test-deterministic",
+        (EmbeddingRole.QUERY, EmbeddingRole.PASSAGE),
+    )
+    register_embedding_model(database, alternate_model, allow_test_provider=True)
+    chunk = _stage(
+        database,
+        item_id="multi-model-item",
+        source_revision_id="revision:text:multi-model",
+        text="representacion semantica con dos espacios vectoriales",
+        ordinal=1,
+    )
+    generation_ids: list[int] = []
+    for ordinal, model in enumerate((primary_model, alternate_model), start=1):
+        generation_id = _generation(
+            database,
+            model,
+            chunk.chunking_signature,
+            processing_signature=f"lineage-multi-model-v{ordinal}",
+            started_ns=ordinal * 1_000,
+        )
+        assert (
+            enqueue_text_chunk_jobs(
+                database,
+                generation_id,
+                (chunk.chunk_id,),
+                now_ns=ordinal * 1_000 + 100,
+            )
+            == 1
+        )
+        _execute(database, generation_id, now_ns=ordinal * 1_000 + 200)
+        finalize_embedding_generation(
+            database,
+            generation_id,
+            completed_ns=ordinal * 1_000 + 300,
+        )
+        generation_ids.append(generation_id)
+
+    bounded = explain_text_chunk_lineage(
+        database,
+        chunk_id=chunk.chunk_id,
+        embedding_limit=1,
+    )
+    assert bounded.embedding_count == 2
+    assert len(bounded.embeddings) == 1
+    assert bounded.embeddings_truncated is True
+    assert bounded.embeddings[0].generation_id == generation_ids[0]
+
+    selected = explain_text_chunk_lineage(
+        database,
+        chunk_id=chunk.chunk_id,
+        model_signature=alternate_model.model_signature,
+        embedding_limit=1,
+    )
+    assert selected.embedding_count == 1
+    assert selected.embeddings_truncated is False
+    assert tuple(embedding.model_signature for embedding in selected.embeddings) == (
+        alternate_model.model_signature,
+    )
+    assert tuple(embedding.generation_id for embedding in selected.embeddings) == (
+        generation_ids[1],
+    )
+
+
+@pytest.mark.parametrize(
+    ("chunk_id", "origin_limit", "embedding_limit", "message"),
+    (
+        ("   ", 1, 1, "chunk_id cannot be blank"),
+        ("chunk", 0, 1, "origin_limit must be between"),
+        (
+            "chunk",
+            1_001,
+            1,
+            "origin_limit must be between",
+        ),
+        (
+            "chunk",
+            1,
+            0,
+            "embedding_limit must be between",
+        ),
+        (
+            "chunk",
+            1,
+            1_001,
+            "embedding_limit must be between",
+        ),
+    ),
+)
+def test_chunk_lineage_rejects_invalid_public_bounds_before_opening_state(
+    tmp_path: Path,
+    chunk_id: str,
+    origin_limit: int,
+    embedding_limit: int,
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        explain_text_chunk_lineage(
+            tmp_path / "absent.sqlite3",
+            chunk_id=chunk_id,
+            origin_limit=origin_limit,
+            embedding_limit=embedding_limit,
+        )
+
+
 def test_published_chunk_refresh_rejects_late_members_without_rewriting_receipt(
     tmp_path: Path,
 ) -> None:
