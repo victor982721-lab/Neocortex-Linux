@@ -792,7 +792,10 @@ def _validate_code_review_snapshot_contracts(result: CodeReviewResult) -> None:
     supply_chain = cast(CodeSupplyChainAnalysis, result.supply_chain)
     interface_surface = cast(CodeInterfaceSurfaceAnalysis, result.interface_surface)
     change_evolution = cast(CodeChangeEvolutionAnalysis, result.change_evolution)
-    contracts = (
+    contracts: tuple[
+        tuple[tuple[object, ...], tuple[object, ...], str],
+        ...,
+    ] = (
         (
             (structural.snapshot_id, structural.snapshot_freshness),
             (snapshot.processing_signature, snapshot.freshness),

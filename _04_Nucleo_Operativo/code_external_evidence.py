@@ -1887,9 +1887,13 @@ def read_external_evidence(
             "external_provider_owner_not_completed",
             row,
         )
+    tool_run_id = _external_plain_int(row["tool_run_id"])
+    owner_run_id = _external_plain_int(row["analysis_run_id"])
+    if tool_run_id is None or owner_run_id is None:
+        return _abstained_external_read(status, "external_evidence_provenance_invalid", row)
     decoded = _decode_external_record(
-        int(row["tool_run_id"]),
-        int(row["analysis_run_id"]),
+        tool_run_id,
+        owner_run_id,
         str(row["tool_version"]),
         str(row["configuration_signature"]),
         str(row["provenance_json"]),
