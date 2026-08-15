@@ -62,6 +62,7 @@ from .code_review_actionability import (
     CODE_REVIEW_QUESTION_ID,
     CODE_REVIEW_QUESTION_VERSION,
 )
+from .code_review_task_analysis import framework_review_task_questions
 from .code_security_dependency_questions import security_dependency_questions
 from .code_schema import CODE_SCHEMA_VERSION
 from .code_supply_chain_analysis import CodeSupplyChainAnalysis
@@ -516,7 +517,7 @@ def expected_integrated_code_review_questions(
     route_capabilities: CodeRouteCapabilityAnalysis,
     analyzer_calibration: CodeAnalyzerCalibrationAnalysis,
 ) -> tuple[tuple[AnalysisQuestionSpec, ...], tuple[AnalysisQuestionEvaluation, ...]]:
-    """Rebuild every v19 question from its already-resolved owner projection."""
+    """Rebuild every v20 question from its already-resolved owner projection."""
 
     base_specs, base_evaluations = expected_code_review_questions(
         findings,
@@ -593,6 +594,14 @@ def expected_integrated_code_review_questions(
     )
     specs.extend(invariant_specs)
     evaluations.extend(invariant_evaluations)
+
+    review_task_specs, review_task_evaluations = framework_review_task_questions(
+        snapshot_id=snapshot.processing_signature,
+        snapshot_freshness=snapshot.freshness,
+        rank=len(evaluations) + 1,
+    )
+    specs.extend(review_task_specs)
+    evaluations.extend(review_task_evaluations)
 
     security_specs, security_evaluations = security_dependency_questions(
         supply_chain,

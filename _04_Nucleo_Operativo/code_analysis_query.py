@@ -81,6 +81,7 @@ from .code_retention_analysis import (
     parse_code_retention_analysis_payload,
     retention_questions,
 )
+from .code_review_task_analysis import framework_review_task_questions
 from .code_state_projection_analysis import (
     CodeStateProjectionAnalysis,
     parse_code_state_projection_payload,
@@ -148,6 +149,7 @@ _CODE_REVIEW_V16 = "neocortex.code-review/v16"
 _CODE_REVIEW_V17 = "neocortex.code-review/v17"
 _CODE_REVIEW_V18 = "neocortex.code-review/v18"
 _CODE_REVIEW_V19 = "neocortex.code-review/v19"
+_CODE_REVIEW_V20 = "neocortex.code-review/v20"
 _CODE_ANALYSIS_EPISTEMICS_V1 = "neocortex.code-analysis-epistemics/v1"
 _UNUSED_V11_STEP_REQUIREMENTS = (
     "verify_import_reexport_callback_registry_protocol_and_entry_point_usage",
@@ -963,6 +965,7 @@ def _experiment_plan(payload: Mapping[str, object]) -> Mapping[str, object] | No
         _CODE_REVIEW_V17,
         _CODE_REVIEW_V18,
         _CODE_REVIEW_V19,
+        _CODE_REVIEW_V20,
     }:
         return None
     return _mapping(payload.get("experiment_plan"))
@@ -979,7 +982,12 @@ def _experiment_receipt_payloads(
 ) -> tuple[Mapping[str, object], ...]:
     """Return only the mandatory, bounded v17+ receipt envelope sequence."""
 
-    if payload.get("schema") not in {_CODE_REVIEW_V17, _CODE_REVIEW_V18, _CODE_REVIEW_V19}:
+    if payload.get("schema") not in {
+        _CODE_REVIEW_V17,
+        _CODE_REVIEW_V18,
+        _CODE_REVIEW_V19,
+        _CODE_REVIEW_V20,
+    }:
         return ()
     raw = payload.get("experiment_receipts")
     if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes, bytearray)):
@@ -1108,7 +1116,11 @@ def _append_technical_verification(
     records: list[dict[str, object]],
     payload: Mapping[str, object],
 ) -> None:
-    if payload.get("schema") not in {_CODE_REVIEW_V18, _CODE_REVIEW_V19}:
+    if payload.get("schema") not in {
+        _CODE_REVIEW_V18,
+        _CODE_REVIEW_V19,
+        _CODE_REVIEW_V20,
+    }:
         return
     raw = _mapping(payload.get("technical_verification"))
     if raw is None:
@@ -2552,6 +2564,7 @@ class _ReviewV16Contract:
     has_receipts: bool
     has_technical_verification: bool
     has_retention: bool
+    has_review_task_protocol: bool
     added_keys: tuple[str, ...]
 
 
@@ -2592,12 +2605,23 @@ def _review_v16_contract(payload: Mapping[str, object]) -> _ReviewV16Contract:
         _CODE_REVIEW_V17,
         _CODE_REVIEW_V18,
         _CODE_REVIEW_V19,
+        _CODE_REVIEW_V20,
     }:
-        raise ValueError("code-review/v16-v19 validator received an unsupported schema")
+        raise ValueError("code-review/v16-v20 validator received an unsupported schema")
     schema = str(review_schema)
-    has_receipts = schema in {_CODE_REVIEW_V17, _CODE_REVIEW_V18, _CODE_REVIEW_V19}
-    has_technical_verification = schema in {_CODE_REVIEW_V18, _CODE_REVIEW_V19}
-    has_retention = schema == _CODE_REVIEW_V19
+    has_receipts = schema in {
+        _CODE_REVIEW_V17,
+        _CODE_REVIEW_V18,
+        _CODE_REVIEW_V19,
+        _CODE_REVIEW_V20,
+    }
+    has_technical_verification = schema in {
+        _CODE_REVIEW_V18,
+        _CODE_REVIEW_V19,
+        _CODE_REVIEW_V20,
+    }
+    has_retention = schema in {_CODE_REVIEW_V19, _CODE_REVIEW_V20}
+    has_review_task_protocol = schema == _CODE_REVIEW_V20
     added_keys = (
         "state_interactions",
         "invariant_assurance",
@@ -2611,6 +2635,7 @@ def _review_v16_contract(payload: Mapping[str, object]) -> _ReviewV16Contract:
         has_receipts=has_receipts,
         has_technical_verification=has_technical_verification,
         has_retention=has_retention,
+        has_review_task_protocol=has_review_task_protocol,
         added_keys=added_keys,
     )
 
@@ -2881,6 +2906,7 @@ def _validate_review_v16_effectiveness_link(
 def _canonical_review_v16_questions(
     base: _ReviewV16BaseProjection,
     evidence: _ReviewV16IntegratedEvidence,
+    contract: _ReviewV16Contract,
     *,
     snapshot_id: str,
     snapshot_freshness: Literal["current", "publication_only", "unknown"],
@@ -2937,6 +2963,14 @@ def _canonical_review_v16_questions(
     append_questions(
         invariant_assurance_questions(evidence.invariant_assurance, rank_offset=offset)
     )
+    if contract.has_review_task_protocol:
+        append_questions(
+            framework_review_task_questions(
+                snapshot_id=snapshot_id,
+                snapshot_freshness=snapshot_freshness,
+                rank=offset + 1,
+            )
+        )
     append_questions(
         security_dependency_questions(
             evidence.supply_chain,
@@ -2988,7 +3022,7 @@ def _validate_review_v16_experiment_projection(
 
 
 def _validate_review_v16_payload(payload: Mapping[str, object]) -> None:
-    """Validate v16-v19 verticals and their durable evidence projections."""
+    """Validate v16-v20 verticals and their durable evidence projections."""
 
     contract = _review_v16_contract(payload)
     epistemics = _mapping(payload.get("epistemics"))
@@ -3023,6 +3057,7 @@ def _validate_review_v16_payload(payload: Mapping[str, object]) -> None:
         canonical_specs, canonical_base_evaluations = _canonical_review_v16_questions(
             base,
             evidence,
+            contract,
             snapshot_id=snapshot_id,
             snapshot_freshness=snapshot_freshness,
         )
@@ -3110,6 +3145,7 @@ def query_code_analysis(
             _CODE_REVIEW_V17,
             _CODE_REVIEW_V18,
             _CODE_REVIEW_V19,
+            _CODE_REVIEW_V20,
         }:
             _validate_review_v16_payload(payload)
         elif review_schema == _CODE_REVIEW_V15:

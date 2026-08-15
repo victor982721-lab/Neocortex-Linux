@@ -8,6 +8,17 @@ no se copian aquí para evitar que se conviertan en datos históricos sin contex
 
 ### Añadido
 
+- Review `neocortex.code-review/v20` con la vertical experimental del protocolo
+  durable Framework ReviewTask. Una pregunta versionada vuelve a resolver owner
+  lógico `review`, state owner/store Framework, schemas y frontera pública antes
+  de exigir evidencia runtime. El template allow-listed ejecuta ocho nodeids y
+  cinco gates sobre SQLite/XDG temporales: publicación, CAS, replay, rollback y
+  el journey público `show → claim → retry → decide → retry → history`. El
+  receipt sólo permite la disposición técnica acotada tras recomprobar facts y
+  gates exactos; el actor de prueba es sintético/no autenticado, los fallos son
+  excepciones inyectadas —no power loss— y `mutation_authority=false` permanece
+  invariable. El binding diff→pregunta vuelve esta evidencia obligatoria al
+  cambiar el contrato, repositorio, schema, adaptador o control plane asociado.
 - Review `neocortex.code-review/v19` con una vertical Retention durable y
   estrictamente read-only. Proyecta el plan dry-run de Semantic, Catalog,
   Inventory y Framework, vuelve a resolver sus schemas, holds, conteos y

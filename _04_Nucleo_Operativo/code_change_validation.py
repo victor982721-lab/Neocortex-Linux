@@ -38,6 +38,7 @@ from .code_architecture_questions import ARCHITECTURE_CONTRACT_QUESTION
 from .code_change_evolution_analysis import CODE_SCHEMA_EVOLUTION_QUESTION
 from .code_route_capability_analysis import ROUTE_CAPABILITY_QUESTION
 from .code_retention_analysis import RETENTION_HOLD_QUESTION
+from .code_review_task_analysis import FRAMEWORK_REVIEW_TASK_PROTOCOL_QUESTION
 from .code_security_dependency_questions import (
     DEPENDENCY_EVIDENCE_QUESTION,
     SECURITY_EVIDENCE_QUESTION,
@@ -174,6 +175,7 @@ _SUPPLY_CHAIN_BOUNDARIES = frozenset(
 )
 _REGISTERED_SCENARIO_TESTS = frozenset(
     {
+        "tests/test_code_framework_review_task_experiments.py",
         "tests/test_code_public_route_experiments.py",
         "tests/test_code_review_epistemics.py",
         "tests/test_code_retention_analysis.py",
@@ -182,6 +184,8 @@ _REGISTERED_SCENARIO_TESTS = frozenset(
         "tests/test_code_state_topology_analysis.py",
         "tests/test_semantic_text_staging_session.py",
         "tests/test_retention_planner.py",
+        "tests/test_review_task_cli_adapter.py",
+        "tests/test_review_tasks.py",
         "tests/test_text_derivation_route.py",
     }
 )
@@ -1931,7 +1935,7 @@ def _replay_gate(
 
 
 def _known_question_specs() -> tuple[AnalysisQuestionSpec, ...]:
-    """Return the complete v19 question vocabulary accepted by this validator.
+    """Return the complete v20 question vocabulary accepted by this validator.
 
     Adding a new question to Code review without classifying it here makes the
     canonical gate abstain.  This is intentional: an unknown question must not
@@ -1985,6 +1989,7 @@ def _known_question_specs() -> tuple[AnalysisQuestionSpec, ...]:
         CLI_SURFACE_QUESTION,
         CONFIGURATION_SURFACE_QUESTION,
         DEPENDENCY_EVIDENCE_QUESTION,
+        FRAMEWORK_REVIEW_TASK_PROTOCOL_QUESTION,
         INTERFACE_SURFACE_AVAILABILITY_QUESTION,
         INVARIANT_ASSURANCE_QUESTION,
         MODULE_SURFACE_QUESTION,
@@ -2159,6 +2164,42 @@ def _validation_question_scopes() -> tuple[_ValidationQuestionScope, ...]:
                 {
                     "tests/test_code_retention_analysis.py",
                     "tests/test_retention_planner.py",
+                }
+            ),
+            True,
+        ),
+        _ValidationQuestionScope(
+            "framework_review_task_protocol",
+            FRAMEWORK_REVIEW_TASK_PROTOCOL_QUESTION,
+            "contract:framework-review-task-protocol",
+            "framework.review_task_protocol_acceptance",
+            frozenset(
+                {
+                    "_04_Nucleo_Operativo/code_review_task_analysis.py",
+                    "_04_Nucleo_Operativo/framework_connection.py",
+                    "_04_Nucleo_Operativo/framework_schema.py",
+                    "_04_Nucleo_Operativo/logical_owner_contracts.py",
+                    "_04_Nucleo_Operativo/review_task_contracts.py",
+                    "_04_Nucleo_Operativo/review_task_repository.py",
+                    "_04_Nucleo_Operativo/state_topology_contracts.py",
+                    "_04_Nucleo_Operativo/value_review_port.py",
+                    "neocortex/cli.py",
+                    "neocortex/human_cli.py",
+                    "neocortex/review_task_cli_adapter.py",
+                    "tests/test_code_framework_review_task_experiments.py",
+                    "tests/test_review_task_cli_adapter.py",
+                    "tests/test_review_tasks.py",
+                }
+            ),
+            (
+                "_04_Nucleo_Operativo/review_task_",
+                "neocortex/review_task_",
+            ),
+            frozenset(
+                {
+                    "tests/test_code_framework_review_task_experiments.py",
+                    "tests/test_review_task_cli_adapter.py",
+                    "tests/test_review_tasks.py",
                 }
             ),
             True,

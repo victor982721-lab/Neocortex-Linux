@@ -32,7 +32,7 @@ def _surface(name: str) -> dict[str, object]:
     return value
 
 
-def _closed_v19_experiment_payload(
+def _closed_v20_experiment_payload(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> dict[str, object]:
@@ -77,6 +77,7 @@ def _closed_v19_experiment_payload(
         "expected_code_change_evolution_questions",
         "assurance_questions",
         "invariant_assurance_questions",
+        "framework_review_task_questions",
         "security_dependency_questions",
         "route_capability_questions",
         "analyzer_effectiveness_questions",
@@ -358,7 +359,7 @@ def test_review_query_accepts_and_indexes_source_linked_v13_questions(
     ]
 
 
-def test_review_query_rejects_forged_v19_evidence_linkage(
+def test_review_query_rejects_forged_v20_evidence_linkage(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -379,11 +380,11 @@ def test_review_query_rejects_forged_v19_evidence_linkage(
     evidence = cast("list[dict[str, object]]", evaluations[0]["evidence"])
     evidence[0]["source_record_id"] = "forged"
 
-    with pytest.raises(ValueError, match="code-review/v19"):
+    with pytest.raises(ValueError, match="code-review/v20"):
         query_code_analysis(payload, CodeAnalysisQuery(surface="review"))
 
 
-def test_review_query_rejects_forged_v19_question_semantics(
+def test_review_query_rejects_forged_v20_question_semantics(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -404,7 +405,7 @@ def test_review_query_rejects_forged_v19_question_semantics(
     actions = cast("list[dict[str, object]]", specs[0]["next_actions"])
     actions[0]["description"] = "Delete the production symbol now."
 
-    with pytest.raises(ValueError, match="v19 integrated projection is malformed"):
+    with pytest.raises(ValueError, match="v20 integrated projection is malformed"):
         query_code_analysis(payload, CodeAnalysisQuery(surface="review"))
 
 
@@ -417,7 +418,7 @@ def test_review_query_rejects_forged_v19_question_semantics(
         ("analyzer_calibration", "labels_total"),
     ),
 )
-def test_review_query_rejects_tampered_v19_integrated_projection(
+def test_review_query_rejects_tampered_v20_integrated_projection(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     projection: str,
@@ -440,11 +441,11 @@ def test_review_query_rejects_tampered_v19_integrated_projection(
     assert isinstance(current, int) and not isinstance(current, bool)
     receipt[field] = current + 1
 
-    with pytest.raises(ValueError, match="code-review/v19"):
+    with pytest.raises(ValueError, match="code-review/v20"):
         query_code_analysis(payload, CodeAnalysisQuery(surface="review"))
 
 
-def test_review_query_rejects_a_tampered_v19_retention_projection(
+def test_review_query_rejects_a_tampered_v20_retention_projection(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -463,11 +464,11 @@ def test_review_query_rejects_a_tampered_v19_retention_projection(
     retention = cast("dict[str, object]", payload["retention_analysis"])
     retention["analysis_id"] = "code-retention-analysis-v1:forged"
 
-    with pytest.raises(ValueError, match="code-review/v19"):
+    with pytest.raises(ValueError, match="code-review/v20"):
         query_code_analysis(payload, CodeAnalysisQuery(surface="review"))
 
 
-def test_review_query_rejects_a_tampered_v19_experiment_plan(
+def test_review_query_rejects_a_tampered_v20_experiment_plan(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -486,7 +487,7 @@ def test_review_query_rejects_a_tampered_v19_experiment_plan(
     plan = cast("dict[str, object]", payload["experiment_plan"])
     plan["executable_count"] = 999
 
-    with pytest.raises(ValueError, match="code-review/v19"):
+    with pytest.raises(ValueError, match="code-review/v20"):
         query_code_analysis(payload, CodeAnalysisQuery(surface="review"))
 
 
@@ -497,9 +498,10 @@ def test_review_query_rejects_a_tampered_v19_experiment_plan(
         "neocortex.code-review/v17",
         "neocortex.code-review/v18",
         "neocortex.code-review/v19",
+        "neocortex.code-review/v20",
     ),
 )
-def test_review_query_preserves_abstained_v16_v19_compatibility(
+def test_review_query_preserves_abstained_v16_v20_compatibility(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     schema: str,
@@ -533,7 +535,7 @@ def test_review_query_preserves_abstained_v16_v19_compatibility(
     assert result["matches"] == []
 
 
-def test_review_query_preserves_ready_v19_fail_closed_validation_order_and_bound(
+def test_review_query_preserves_ready_v20_fail_closed_validation_order_and_bound(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -553,7 +555,7 @@ def test_review_query_preserves_ready_v19_fail_closed_validation_order_and_bound
     oversized = deepcopy(payload)
     oversized["findings"] = [{}] * (CODE_ANALYSIS_QUERY_MAX_SOURCE_SEQUENCE_ITEMS + 1)
     oversized["structural_analysis"] = None
-    with pytest.raises(ValueError, match="v19 integrated projection is malformed") as bounded:
+    with pytest.raises(ValueError, match="v20 integrated projection is malformed") as bounded:
         query_code_analysis(oversized, CodeAnalysisQuery(surface="review"))
     assert bounded.value.__cause__ is not None
     assert str(bounded.value.__cause__) == "query source sequence exceeds its item bound"
@@ -562,19 +564,19 @@ def test_review_query_preserves_ready_v19_fail_closed_validation_order_and_bound
     missing_integrated["state_topology"] = None
     snapshot = cast("dict[str, object]", missing_integrated["snapshot"])
     snapshot["analysis_run_id"] = False
-    with pytest.raises(ValueError, match="v19 integrated projection is malformed") as staged:
+    with pytest.raises(ValueError, match="v20 integrated projection is malformed") as staged:
         query_code_analysis(missing_integrated, CodeAnalysisQuery(surface="review"))
     assert staged.value.__cause__ is not None
     assert str(staged.value.__cause__) == (
-        "ready code-review/v19 payload lacks integrated evidence"
+        "ready code-review/v20 payload lacks integrated evidence"
     )
 
 
-def test_review_query_projects_a_valid_v19_receipt_and_closes_the_experiment_loop(
+def test_review_query_projects_a_valid_v20_receipt_and_closes_the_experiment_loop(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    payload = _closed_v19_experiment_payload(tmp_path, monkeypatch)
+    payload = _closed_v20_experiment_payload(tmp_path, monkeypatch)
 
     closed_question = query_code_analysis(
         payload,
@@ -646,16 +648,16 @@ def test_review_query_projects_a_valid_v19_receipt_and_closes_the_experiment_loo
     )
 
 
-def test_review_query_rejects_a_tampered_v19_receipt_envelope(
+def test_review_query_rejects_a_tampered_v20_receipt_envelope(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    payload = _closed_v19_experiment_payload(tmp_path, monkeypatch)
+    payload = _closed_v20_experiment_payload(tmp_path, monkeypatch)
     tampered = deepcopy(payload)
     receipts = cast("list[dict[str, object]]", tampered["experiment_receipts"])
     receipts[0]["payload_xxh3_128"] = "forged"
 
-    with pytest.raises(ValueError, match="code-review/v19"):
+    with pytest.raises(ValueError, match="code-review/v20"):
         query_code_analysis(tampered, CodeAnalysisQuery(surface="review"))
 
     future_owner = deepcopy(payload)
@@ -678,13 +680,13 @@ def test_review_query_rejects_a_tampered_v19_receipt_envelope(
 
     missing_sequence = deepcopy(payload)
     missing_sequence.pop("experiment_receipts")
-    with pytest.raises(ValueError, match="code-review/v19"):
+    with pytest.raises(ValueError, match="code-review/v20"):
         query_code_analysis(missing_sequence, CodeAnalysisQuery(surface="review"))
 
     forged_technical = deepcopy(payload)
     technical = cast("dict[str, object]", forged_technical["technical_verification"])
     technical["reviewed_count"] = 1
-    with pytest.raises(ValueError, match="code-review/v19"):
+    with pytest.raises(ValueError, match="code-review/v20"):
         query_code_analysis(forged_technical, CodeAnalysisQuery(surface="review"))
 
 

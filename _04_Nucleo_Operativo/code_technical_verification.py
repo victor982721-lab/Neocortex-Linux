@@ -31,6 +31,7 @@ from .code_experiment_store import ResolvedCodeExperimentReceipt
 from .code_change_evolution_analysis import CODE_SCHEMA_EVOLUTION_QUESTION
 from .code_route_capability_analysis import ROUTE_CAPABILITY_QUESTION
 from .code_retention_analysis import RETENTION_EXPECTED_HOLDS, RETENTION_HOLD_QUESTION
+from .code_review_task_analysis import FRAMEWORK_REVIEW_TASK_PROTOCOL_QUESTION
 from .code_schema import CODE_SCHEMA_VERSION
 from .code_security_dependency_questions import (
     DEPENDENCY_EVIDENCE_QUESTION,
@@ -41,7 +42,7 @@ from .code_state_projection_analysis import TEXT_SEMANTIC_PROJECTION_QUESTION
 
 CODE_TECHNICAL_VERIFICATION_SCHEMA = "neocortex.code-technical-verification/v1"
 CODE_TECHNICAL_VERIFICATION_POLICY = (
-    "allowlisted-independent-evidence-complete-no-change-verifier-v3"
+    "allowlisted-independent-evidence-complete-no-change-verifier-v4"
 )
 CODE_TECHNICAL_VERIFICATION_MAX_REVIEWS = 256
 
@@ -83,6 +84,20 @@ class _TechnicalPolicy:
     scope_statement: str
     reason_code: str
     residual_risks: tuple[str, ...]
+
+
+_FRAMEWORK_REVIEW_TASK_COUNTER_GATES = (
+    "faulted_publication_and_event_transactions_preserve_previous_heads",
+    "progress_and_event_heads_reject_stale_compare_and_swap",
+    "semantically_changed_retry_is_rejected_as_snapshot_changed",
+)
+_FRAMEWORK_REVIEW_TASK_ALL_GATES = (
+    "exact_human_claim_and_terminal_decision_retries_are_idempotent",
+    "faulted_publication_and_event_transactions_preserve_previous_heads",
+    "page_publication_is_atomic_resumable_and_idempotent",
+    "progress_and_event_heads_reject_stale_compare_and_swap",
+    "semantically_changed_retry_is_rejected_as_snapshot_changed",
+)
 
 
 _TECHNICAL_POLICIES = (
@@ -160,6 +175,21 @@ _TECHNICAL_POLICIES = (
             "development_environment_evidence_does_not_replace_candidate_wheel_install_and_replay",
             "license_metadata_presence_does_not_establish_legal_compatibility",
             "manifest_and_import_agreement_does_not_prove_runtime_reachability",
+        ),
+    ),
+    _TechnicalPolicy(
+        FRAMEWORK_REVIEW_TASK_PROTOCOL_QUESTION.question_id,
+        FRAMEWORK_REVIEW_TASK_PROTOCOL_QUESTION.version,
+        analysis_question_spec_fingerprint(FRAMEWORK_REVIEW_TASK_PROTOCOL_QUESTION),
+        "contract:framework-review-task-protocol",
+        "framework.review_task_protocol_acceptance",
+        _FRAMEWORK_REVIEW_TASK_ALL_GATES,
+        "the_versioned_framework_review_task_owner_and_public_protocol_contracts_match_and_the_bounded_atomicity_cas_fault_and_exact_retry_controls_pass_without_creating_human_authority",
+        "framework_review_task_protocol_matrix_passed_without_a_change_signal",
+        (
+            "bounded_injected_exceptions_are_not_process_death_power_loss_or_filesystem_failure",
+            "fixture_human_actor_proves_typed_protocol_not_identity_authentication_or_a_human_outcome",
+            "selected_review_task_protocol_fixtures_do_not_cover_every_future_producer",
         ),
     ),
     _TechnicalPolicy(
@@ -245,7 +275,7 @@ _TECHNICAL_POLICIES = (
 
 def _technical_policy_registry_fingerprint() -> str:
     return analysis_identity(
-        "code-technical-verification-policy-v3",
+        "code-technical-verification-policy-v4",
         tuple(asdict(item) for item in _TECHNICAL_POLICIES),
     )
 
@@ -604,6 +634,121 @@ def _retention_predicate(evaluation: AnalysisQuestionEvaluation) -> bool:
     )
 
 
+def _exact_record_facts(
+    evaluation: AnalysisQuestionEvaluation,
+    record_kind: str,
+    expected: Mapping[str, object],
+) -> bool:
+    records = _record_facts(evaluation, record_kind)
+    if len(records) != 1 or set(records[0]) != set(expected):
+        return False
+    return all(
+        type(records[0][name]) is type(value) and records[0][name] == value
+        for name, value in expected.items()
+    )
+
+
+def _review_task_requirement_experiment(
+    evaluation: AnalysisQuestionEvaluation,
+    requirement_id: str,
+    *,
+    role: Literal["counterevidence", "experiment_result"],
+    gate_ids: tuple[str, ...],
+    relation_count: int,
+) -> AnalysisEvidenceRef | None:
+    requirements = tuple(
+        item for item in evaluation.requirements if item.requirement_id == requirement_id
+    )
+    if len(requirements) != 1 or len(requirements[0].evidence_ids) != 1:
+        return None
+    evidence_by_id = {item.evidence_id: item for item in evaluation.evidence}
+    evidence = evidence_by_id.get(requirements[0].evidence_ids[0])
+    if evidence is None:
+        return None
+    facts = _fact_map(evidence)
+    expected_fact_names = {
+        "receipt_status",
+        "template_id",
+        "source_evaluation_replayed",
+        "gate_ids",
+        "gate_count",
+        "relation_count",
+        "recorded_ns",
+    }
+    recorded_ns = facts.get("recorded_ns")
+    if not (
+        evidence.role == role
+        and evidence.evidence_kind == "experiment_result"
+        and evidence.source_record_kind == "code_experiment_receipt"
+        and evidence.completeness == "complete"
+        and evidence.bounded
+        and not evidence.truncated
+        and evidence.authority == "advisory"
+        and not evidence.mutation_authority
+        and set(facts) == expected_fact_names
+        and facts.get("receipt_status") == "passed"
+        and facts.get("template_id") == "framework.review_task_protocol_acceptance"
+        and facts.get("source_evaluation_replayed") is False
+        and facts.get("gate_ids") == ",".join(gate_ids)
+        and facts.get("gate_count") == len(gate_ids)
+        and facts.get("relation_count") == relation_count
+        and isinstance(recorded_ns, int)
+        and not isinstance(recorded_ns, bool)
+        and recorded_ns > 0
+    ):
+        return None
+    return evidence
+
+
+def _framework_review_task_protocol_predicate(
+    evaluation: AnalysisQuestionEvaluation,
+) -> bool:
+    """Recheck the frozen Framework contract and both declared outcome sets."""
+
+    if not _exact_record_facts(
+        evaluation,
+        "framework_review_task_owner_store_contract",
+        {
+            "logical_owner_id": "review",
+            "state_owner_id": "framework",
+            "state_store_id": "sqlite:framework.sqlite3",
+            "database_name": "framework.sqlite3",
+            "framework_schema_version": 22,
+            "review_task_contract_version": 1,
+        },
+    ) or not _exact_record_facts(
+        evaluation,
+        "framework_review_task_public_protocol_contract",
+        {
+            "public_adapter_module": "neocortex.review_task_cli_adapter",
+            "public_port_module": "_04_Nucleo_Operativo.value_review_port",
+            "terminal_states": "dismissed,resolved",
+            "terminal_decisions_require_human": True,
+            "superseded_repository_only": True,
+        },
+    ):
+        return False
+    counterevidence = _review_task_requirement_experiment(
+        evaluation,
+        "review_task_stale_head_and_fault_counterevidence_evaluated",
+        role="counterevidence",
+        gate_ids=_FRAMEWORK_REVIEW_TASK_COUNTER_GATES,
+        relation_count=5,
+    )
+    experiment = _review_task_requirement_experiment(
+        evaluation,
+        "isolated_review_task_protocol_experiment_result",
+        role="experiment_result",
+        gate_ids=_FRAMEWORK_REVIEW_TASK_ALL_GATES,
+        relation_count=8,
+    )
+    return (
+        counterevidence is not None
+        and experiment is not None
+        and counterevidence.source_record_id == experiment.source_record_id
+    )
+
+
 def _nonnegative_integer(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value >= 0
 
@@ -700,6 +845,8 @@ def _policy_predicate(
         return _schema_predicate(evaluation)
     if policy.question_id == DEPENDENCY_EVIDENCE_QUESTION.question_id:
         return _supply_chain_predicate(evaluation, domain="dependency")
+    if policy.question_id == FRAMEWORK_REVIEW_TASK_PROTOCOL_QUESTION.question_id:
+        return _framework_review_task_protocol_predicate(evaluation)
     if policy.question_id == RETENTION_HOLD_QUESTION.question_id:
         return _retention_predicate(evaluation)
     if policy.question_id == SECURITY_EVIDENCE_QUESTION.question_id:
@@ -779,6 +926,38 @@ def _review(
     )
 
 
+def _technical_policy_for_evaluation(
+    evaluation: AnalysisQuestionEvaluation,
+) -> tuple[_TechnicalPolicy | None, str | None]:
+    """Resolve one exact question/version/subject policy without key collapse.
+
+    A question may deliberately expose several independently verified subjects.
+    The subject prefix therefore participates in policy identity; reducing the
+    registry to ``(question_id, version)`` would silently overwrite one policy.
+    Overlapping prefixes are treated as an invalid registry rather than being
+    resolved by declaration order.
+    """
+
+    same_question = tuple(
+        item
+        for item in _TECHNICAL_POLICIES
+        if item.question_id == evaluation.question_id
+        and item.question_version == evaluation.question_version
+    )
+    matching = tuple(
+        item
+        for item in same_question
+        if evaluation.subject.subject_key.startswith(item.subject_prefix)
+    )
+    if len(matching) == 1:
+        return matching[0], None
+    if len(matching) > 1:
+        return None, "technical_policy_subject_prefix_is_ambiguous"
+    if same_question:
+        return None, "technical_policy_scope_or_question_contract_changed"
+    return None, "no_registered_technical_verification_policy"
+
+
 def build_code_technical_verification(
     specs: tuple[AnalysisQuestionSpec, ...],
     evaluations: tuple[AnalysisQuestionEvaluation, ...],
@@ -796,18 +975,16 @@ def build_code_technical_verification(
     )
     if len(eligible) > CODE_TECHNICAL_VERIFICATION_MAX_REVIEWS:
         raise ValueError("technical verification eligible evaluation bound exceeded")
-    policy_by_identity = {
-        (item.question_id, item.question_version): item for item in _TECHNICAL_POLICIES
-    }
     reviews: list[CodeTechnicalReview] = []
     gaps: list[CodeTechnicalReviewGap] = []
     for evaluation in eligible:
-        policy = policy_by_identity.get((evaluation.question_id, evaluation.question_version))
-        result: CodeTechnicalReview | str = (
-            "no_registered_technical_verification_policy"
-            if policy is None
-            else _review(policy, evaluation, receipts)
-        )
+        policy, selection_gap = _technical_policy_for_evaluation(evaluation)
+        if policy is None:
+            result: CodeTechnicalReview | str = (
+                selection_gap or "no_registered_technical_verification_policy"
+            )
+        else:
+            result = _review(policy, evaluation, receipts)
         if isinstance(result, CodeTechnicalReview):
             reviews.append(result)
         else:

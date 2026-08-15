@@ -21,7 +21,7 @@ from _04_Nucleo_Operativo.semantic_state import initialize_semantic_state
 
 
 REFERENCE_NS = 10_000_000_000
-SOURCE_VERSION = "neocortex.code-review/v19"
+SOURCE_VERSION = "neocortex.code-review/v20"
 
 
 def _initialized_state(path: Path) -> Path:

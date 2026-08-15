@@ -687,19 +687,29 @@ no como una segunda base de hechos. Cada fila queda ligada al run Code
 completado, processing signature, evaluación/pregunta/sujeto, proposal/template,
 digest del review y payload `neocortex.code-experiment-receipt/v3`; los triggers
 rechazan update y delete. El writer admite estados `passed`, `failed` y
-`abstained`, pero el review `neocortex.code-review/v19` sólo proyecta el `passed`
+`abstained`, pero el review `neocortex.code-review/v20` sólo proyecta el `passed`
 más nuevo que siga coincidiendo con el proposal actual y con bindings tipados de
 gate a requisito. El enlace produce evidencia de tests exactos, no verdad formal
 ni decisión humana. Un verificador técnico separado puede derivar únicamente una
 disposición allow-listed y acotada de no-cambio tras recomprobar controles
 negativos; conserva `authority=advisory` y `mutation_authority=false`.
 
-Review v19 incorpora además una proyección Retention owner-local sobre los
+Review v20 incorpora además una proyección Retention owner-local sobre los
 cuatro stores productivos. Reutiliza el planner dry-run y sus holds declarados,
 publica paginación y gaps, y exige una segunda lectura idéntica. El template
 ejecutable sólo cubre una matriz aislada de catorce nodeids exactos; aun con receipt
 `passed`, la disposición excluye power loss, atomicidad cross-store y cualquier
 ejecutor de borrado.
+
+La vertical Framework ReviewTask no añade otro datastore ni duplica tareas o
+decisiones. Su `QuestionSpec` vuelve a resolver desde contratos versionados el
+owner lógico `review`, el state owner/store Framework, schemas, adapter y puerto
+públicos. La evidencia de decisión sólo puede provenir del template
+`framework.review_task_protocol_acceptance`: ocho nodeids sobre SQLite/XDG
+temporales, cinco gates de publicación, CAS, replay, rollback y journey CLI. El
+verificador técnico vuelve a comprobar los dos records estructurales y el
+receipt exacto. Esto demuestra únicamente el protocolo acotado; el actor del
+fixture no está autenticado y las excepciones inyectadas no prueban power loss.
 
 La capa arquitectónica divide fuente, política y consumo:
 

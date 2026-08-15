@@ -200,6 +200,137 @@ def _question(
     return spec, evaluation
 
 
+def _framework_review_task_question(
+    snapshot_id: str = "snapshot:fixture",
+) -> tuple[AnalysisQuestionSpec, AnalysisQuestionEvaluation]:
+    subject_key = "contract:framework-review-task-protocol"
+    spec = AnalysisQuestionSpec(
+        question_id=(
+            "framework.review_task_lifecycle_preserves_atomicity_and_human_authority"
+        ),
+        version="v1",
+        subject_kinds=("contract",),
+        requirements=(
+            AnalysisEvidenceRequirementSpec(
+                "framework_review_task_owner_store_contract",
+                "question",
+                "supporting",
+                ("contract",),
+            ),
+            AnalysisEvidenceRequirementSpec(
+                "framework_review_task_public_protocol_contract",
+                "question",
+                "supporting",
+                ("contract",),
+            ),
+            AnalysisEvidenceRequirementSpec(
+                "review_task_stale_head_and_fault_counterevidence_evaluated",
+                "decision",
+                "counterevidence",
+                ("experiment_result",),
+            ),
+            AnalysisEvidenceRequirementSpec(
+                "isolated_review_task_protocol_experiment_result",
+                "decision",
+                "experiment_result",
+                ("experiment_result",),
+            ),
+        ),
+        hypotheses=(
+            "review_task_protocol_preserves_atomicity_and_human_authority",
+            "review_task_protocol_can_publish_partial_or_non_human_terminal_state",
+        ),
+        counterevidence_rules=(
+            "stale_heads_faults_and_changed_retries_must_fail_closed",
+        ),
+        next_actions=(
+            AnalysisNextActionSpec(
+                "run_framework_review_task_protocol_experiment",
+                "experiment",
+                "Exercise the bounded Framework ReviewTask protocol controls.",
+            ),
+        ),
+    )
+    owner_contract = replace(
+        _source_evidence(subject_key, snapshot_id),
+        evidence_id="contract:framework-review-task-owner-store",
+        source_record_kind="framework_review_task_owner_store_contract",
+        source_record_id="framework-review-task-owner-store",
+        source_projection_digest="projection:framework-review-task-owner-store",
+        facts=(
+            AnalysisFact("logical_owner_id", "review"),
+            AnalysisFact("state_owner_id", "framework"),
+            AnalysisFact("state_store_id", "sqlite:framework.sqlite3"),
+        ),
+    )
+    public_contract = replace(
+        owner_contract,
+        evidence_id="contract:framework-review-task-public-protocol",
+        source_record_kind="framework_review_task_public_protocol_contract",
+        source_record_id="framework-review-task-public-protocol",
+        source_projection_digest="projection:framework-review-task-public-protocol",
+        facts=(
+            AnalysisFact("public_adapter_module", "neocortex.review_task_cli_adapter"),
+            AnalysisFact("terminal_decisions_require_human", True),
+        ),
+    )
+    evaluation = AnalysisQuestionEvaluation(
+        evaluation_id="evaluation:framework-review-task-protocol",
+        question_id=spec.question_id,
+        question_version=spec.version,
+        question_spec_fingerprint=analysis_question_spec_fingerprint(spec),
+        rank=1,
+        subject=AnalysisSubjectRef(
+            "contract",
+            subject_key,
+            "Framework ReviewTask protocol",
+            "framework",
+            snapshot_id,
+            "current",
+        ),
+        evidence=(owner_contract, public_contract),
+        requirements=(
+            AnalysisRequirementEvaluation(
+                "framework_review_task_owner_store_contract",
+                "satisfied",
+                (owner_contract.evidence_id,),
+                "owner_store_contract_resolved",
+            ),
+            AnalysisRequirementEvaluation(
+                "framework_review_task_public_protocol_contract",
+                "satisfied",
+                (public_contract.evidence_id,),
+                "public_protocol_contract_resolved",
+            ),
+            AnalysisRequirementEvaluation(
+                "review_task_stale_head_and_fault_counterevidence_evaluated",
+                "missing",
+                (),
+                "registered_experiment_not_recorded",
+            ),
+            AnalysisRequirementEvaluation(
+                "isolated_review_task_protocol_experiment_result",
+                "missing",
+                (),
+                "registered_experiment_not_recorded",
+            ),
+        ),
+        observation_status="confirmed",
+        inference_status="abstained",
+        inferences=(),
+        hypotheses=spec.hypotheses,
+        question_readiness="ready",
+        decision_readiness="experiment_required",
+        decision=None,
+        decision_reason="decision_evidence_incomplete",
+        counterevidence_status="not_evaluated",
+        next_action_ids=("run_framework_review_task_protocol_experiment",),
+        limitations=("fixture_contract_requires_registered_runtime_evidence",),
+    )
+    validate_analysis_question_evaluation(spec, evaluation)
+    return spec, evaluation
+
+
 def _receipt(
     proposal,
     *,
@@ -505,6 +636,60 @@ def test_passed_receipt_is_persisted_idempotently_and_closes_only_human_readines
             connection.execute("DELETE FROM code_experiment_receipts")
     finally:
         connection.close()
+
+
+def test_framework_review_task_receipt_projects_only_its_two_bound_requirements(
+    tmp_path: Path,
+) -> None:
+    spec, evaluation = _framework_review_task_question()
+    plan = plan_code_experiments((spec,), (evaluation,))
+    assert plan.status == "ready"
+    assert plan.executable_count == 1
+    proposal = plan.proposals[0]
+    assert proposal.template_id == "framework.review_task_protocol_acceptance"
+    assert proposal.template_version == "v1"
+    database = _database(tmp_path)
+    stored = record_code_experiment_receipt(
+        database,
+        _receipt(proposal),
+        proposal,
+        analysis_run_id=1,
+        processing_signature="snapshot:fixture",
+        review_digest="review:framework-review-task-fixture",
+        recorded_ns=10,
+    )
+
+    projected = apply_code_experiment_receipts(
+        (spec,),
+        (evaluation,),
+        plan,
+        (stored,),
+    )[0]
+    requirements = {item.requirement_id: item for item in projected.requirements}
+    original_requirements = {item.requirement_id: item for item in evaluation.requirements}
+    experiment_requirements = {
+        "review_task_stale_head_and_fault_counterevidence_evaluated",
+        "isolated_review_task_protocol_experiment_result",
+    }
+
+    assert projected.decision_readiness == "human_review_required"
+    assert projected.decision is None
+    assert projected.next_action_ids == ()
+    assert projected.counterevidence_status == "evaluated"
+    assert all(requirements[item].status == "satisfied" for item in experiment_requirements)
+    assert all(
+        requirements[item] == original_requirements[item]
+        for item in set(requirements) - experiment_requirements
+    )
+    linked = tuple(
+        evidence
+        for evidence in projected.evidence
+        if evidence.evidence_kind == "experiment_result"
+    )
+    assert len(linked) == 2
+    assert {item.role for item in linked} == {"counterevidence", "experiment_result"}
+    assert {item.source_record_id for item in linked} == {stored.receipt.receipt_id}
+    assert plan_code_experiments((spec,), (projected,)).status == "not_required"
 
 
 @pytest.mark.parametrize(
@@ -1357,5 +1542,5 @@ def test_review_consumes_a_persisted_receipt_and_does_not_propose_it_again(
     assert after.experiment_plan.executable_count == 0
     assert after.digest != before.digest
     payload = after.as_payload()
-    assert payload["schema"] == "neocortex.code-review/v19"
+    assert payload["schema"] == "neocortex.code-review/v20"
     assert len(payload["experiment_receipts"]) == 1

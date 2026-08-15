@@ -43,6 +43,9 @@ from _04_Nucleo_Operativo.external_evidence_providers import (
 )
 from _04_Nucleo_Operativo.code_route_capability_analysis import ROUTE_CAPABILITY_QUESTION
 from _04_Nucleo_Operativo.code_retention_analysis import RETENTION_HOLD_QUESTION
+from _04_Nucleo_Operativo.code_review_task_analysis import (
+    FRAMEWORK_REVIEW_TASK_PROTOCOL_QUESTION,
+)
 from _04_Nucleo_Operativo.code_security_dependency_questions import (
     DEPENDENCY_EVIDENCE_QUESTION,
     SECURITY_EVIDENCE_QUESTION,
@@ -131,7 +134,7 @@ def test_linux_publication_only_snapshot_is_an_eligible_review_fence(
         supply_chain=None,
         recommendations=(),
         digest=None,
-        as_payload=lambda: {"schema": "neocortex.code-review/v19"},
+        as_payload=lambda: {"schema": "neocortex.code-review/v20"},
     )
     monkeypatch.setattr(
         code_change_validation,
@@ -179,7 +182,7 @@ def _review_with_providers(
         supply_chain=None,
         recommendations=(),
         digest=None,
-        as_payload=lambda: {"schema": "neocortex.code-review/v19"},
+        as_payload=lambda: {"schema": "neocortex.code-review/v20"},
     )
 
 
@@ -783,6 +786,11 @@ def test_experiment_control_plane_change_binds_all_executable_question_scopes() 
             evaluation_id="evaluation:retention",
             subject_key="retention:canonical-durable-holds",
         ),
+        _question_evaluation(
+            FRAMEWORK_REVIEW_TASK_PROTOCOL_QUESTION,
+            evaluation_id="evaluation:framework-review-task",
+            subject_key="contract:framework-review-task-protocol",
+        ),
     )
     review = SimpleNamespace(question_evaluations=evaluations)
 
@@ -798,6 +806,7 @@ def test_experiment_control_plane_change_binds_all_executable_question_scopes() 
         "declared_import_architecture_contracts",
         "public_text_route",
         "durable_retention_holds",
+        "framework_review_task_protocol",
         "text_publication_sql",
         "text_semantic_projection_recovery",
     }
@@ -810,10 +819,50 @@ def test_experiment_control_plane_change_binds_all_executable_question_scopes() 
             "declared_import_architecture_contracts",
             "public_text_route",
             "durable_retention_holds",
+            "framework_review_task_protocol",
             "text_publication_sql",
             "text_semantic_projection_recovery",
         }
     )
+
+
+def test_review_task_protocol_change_binds_architecture_retention_and_its_exact_question() -> None:
+    architecture = _question_evaluation(
+        ARCHITECTURE_CONTRACT_QUESTION,
+        evaluation_id="evaluation:architecture-contract",
+        subject_key="architecture:contract:fixture",
+    )
+    retention = _question_evaluation(
+        RETENTION_HOLD_QUESTION,
+        evaluation_id="evaluation:retention",
+        subject_key="retention:canonical-durable-holds",
+    )
+    review_task = _question_evaluation(
+        FRAMEWORK_REVIEW_TASK_PROTOCOL_QUESTION,
+        evaluation_id="evaluation:framework-review-task",
+        subject_key="contract:framework-review-task-protocol",
+    )
+    review = SimpleNamespace(question_evaluations=(architecture, retention, review_task))
+
+    bindings, relevant, errors = _relevant_question_state(
+        review,
+        change=_change_for("_04_Nucleo_Operativo/review_task_repository.py"),
+        selection=_selection("tests/test_review_tasks.py"),
+    )
+
+    assert errors == ()
+    assert {scope.scope_id for scope, _evaluation in relevant} == {
+        "declared_import_architecture_contracts",
+        "durable_retention_holds",
+        "framework_review_task_protocol",
+    }
+    binding = next(
+        item for item in bindings if item["scope_id"] == "framework_review_task_protocol"
+    )
+    assert binding["matched_changed_paths"] == [
+        "_04_Nucleo_Operativo/review_task_repository.py"
+    ]
+    assert binding["matched_test_selectors"] == ["tests/test_review_tasks.py"]
 
 
 def test_retention_planner_change_makes_durable_hold_evidence_acceptance_critical() -> None:

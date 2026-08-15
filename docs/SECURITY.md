@@ -148,11 +148,11 @@ restricción a `AF_UNIX` deniega AF_INET y AF_INET6. Una propiedad systemd o un
 receipt de entorno sin esa prueba no pueden declarar ausencia de egress. La ausencia de runner tampoco
 degrada una pregunta afectada a `not_required`; el binding diff→pregunta debe
 demostrar irrelevancia o el gate se abstiene.
-El review v19 verifica además el envelope digest y sólo enlaza el terminal
+El review v20 verifica además el envelope digest y sólo enlaza el terminal
 `passed` más nuevo por proposal/firma a gates registrados; un terminal posterior
 fallido o abstenido lo invalida. Los trata como evidencia del contrato de tests
 y nunca como autorización, verdad formal o decisión humana. La disposición
-técnica allow-listed de v19 tampoco concede autoridad: está limitada a la
+técnica allow-listed de v20 tampoco concede autoridad: está limitada a la
 pregunta y gates exactos, publica riesgos residuales y mantiene
 `mutation_authority=false`.
 
@@ -285,6 +285,14 @@ head vigente con toda esa cadena; el resto de la coordinación derivada puede
 reconstruirse. Recovery de acciones, OCR dudoso, entities/claims y otros
 dominios todavía no producen ReviewTask general: esa ausencia no debe ocultarse
 creando tareas nominales o habilitando decisiones automáticas.
+
+El experimento del autoanalizador para este protocolo tampoco concede autoridad:
+usa un actor sintético declarado, no autentica una identidad humana y opera sólo
+sobre estado Framework aislado. Sus cinco gates comprueban CAS, publicación,
+replay y rollback ante excepciones inyectadas; un receipt `passed` no equivale a
+una decisión humana, muerte real del proceso ni garantía frente a pérdida de
+energía. La única disposición derivable permanece advisory y
+`mutation_authority=false`.
 
 ### Receipts y linaje como datos sensibles
 

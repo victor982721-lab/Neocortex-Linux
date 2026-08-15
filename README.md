@@ -590,7 +590,7 @@ manifest registra `journal.status=unavailable`, el status nunca afirma
 cambios.
 
 `--code-review` convierte la publicación en observaciones y preguntas
-explicables. El envelope `neocortex.code-review/v19` no declara schemas
+explicables. El envelope `neocortex.code-review/v20` no declara schemas
 compatibles: conserva el corte fail-closed y usa la proyección general
 `neocortex.code-analysis-epistemics/v1`. Cada finding separa observación,
 hipótesis, readiness de pregunta, evidencia faltante, contraevidencia por
@@ -598,15 +598,16 @@ buscar, siguiente acción y readiness de decisión. Un hotspot queda
 `experiment_required`; no infiere construcción ni riesgo por nombres y nunca
 autoriza mutación.
 
-v19 conserva el resolver trazable introducido en v17, deliberadamente acotado:
+v20 conserva el resolver trazable introducido en v17, deliberadamente acotado:
 sólo enlaza
 receipts `passed` del run, processing signature, evaluación, proposal, template y
-gates registrados exactos. Hoy puede satisfacer requisitos de seis familias:
+gates registrados exactos. Hoy puede satisfacer requisitos de ocho familias:
 ruta pública Text, workflow SQL/transaccional Text, recuperación Semantic,
-migración Code-owner, contratos de imports y Retention durable; el resto conserva
-su evidencia faltante. Aun cuando una evaluación avanza a
+migración Code-owner, contratos de imports, Retention durable, seguridad/supply
+chain y el protocolo durable Framework ReviewTask; el resto conserva su evidencia
+faltante. Aun cuando una evaluación avanza a
 `human_review_required`, no crea una decisión humana, recomendación o package de
-cambio. v19 conserva el verificador técnico determinista y allow-listed que puede
+cambio. v20 conserva el verificador técnico determinista y allow-listed que puede
 publicar únicamente `no_change_required_within_verified_scope` cuando vuelve a
 comprobar la partición de evidencia, el receipt, sus gates y los controles
 negativos específicos. La disposición es advisory, conserva riesgos residuales,
@@ -622,7 +623,7 @@ superficie usa `executing_tests` y
 --code-json` amplía de 1 a 50 la vista
 auditable. La consulta es estrictamente read-only; un snapshot full sin USN se
 etiqueta `publication_only` y un journal avanzado/discontinuo causa abstención.
-Cada evaluación v19 fija el fingerprint de la pregunta, el snapshot y la
+Cada evaluación v20 fija el fingerprint de la pregunta, el snapshot y la
 revisión. Los hotspots enlazan los IDs de diagnóstico exactos; la nueva familia
 `class_surface` vuelve a resolver el símbolo de clase y todos sus miembros AST
 directos confirmados. Sus umbrales provisionales de 500 líneas o 20 métodos son
@@ -631,7 +632,7 @@ filtros de atención, no riesgo calibrado ni evidencia de una *god class*.
 concordancia con los registros; no convierte tamaño, nombres o rutas en daño ni
 en una decisión humana.
 
-Además de funciones y clases, v19 publica una proyección acotada de módulos,
+Además de funciones y clases, v20 publica una proyección acotada de módulos,
 configuraciones y construcción CLI. Los módulos se seleccionan por conteos
 estructurales explícitos; JSON/TOML se parsean desde el snapshot sin exponer
 valores; YAML/text-only permanece `unsupported` o `incomplete`; y las llamadas
@@ -641,13 +642,13 @@ señales prueba cohesión, reachability o necesidad de refactor.
 El grafo Ruff/Grimp y los contratos de imports existentes también se proyectan
 como preguntas generales. Consenso estático y contratos evaluados son evidencia
 consultable, no ownership ni una orden de cambio. Como NeoCortex todavía no
-tenía un ownership explícito, v19 conserva un registry versionado y
+tenía un ownership explícito, v20 conserva un registry versionado y
 deliberadamente parcial para `text`, `semantic`, `knowledge`, `review`,
 `retention` y `framework`. La pregunta publica cobertura, módulos sin mapear,
 solapamientos y edges cross-owner; nunca rellena un owner por defecto ni a partir
 del primer segmento del módulo.
 
-En la ubicación canónica de autoanálisis, v19 publica observaciones cross-owner:
+En la ubicación canónica de autoanálisis, v20 publica observaciones cross-owner:
 `neocortex.code-state-projection/v1`: abre Text y Semantic mediante lecturas
 SQLite `immutable=1` con fences de archivo y sidecars inactivos, y compara el
 conjunto exacto de revisiones Text elegibles con cada head Semantic publicado de
@@ -657,12 +658,12 @@ transacción distribuida, recuperación ante muerte de proceso ni un defecto.
 `neocortex.code-state-topology/v1` verifica por separado el cierre relacional de
 la publicación terminal Text contra receipts y outbox owner-local.
 
-v19 añade `neocortex.code-retention-analysis/v1`: vuelve a ejecutar el planner
+v20 añade `neocortex.code-retention-analysis/v1`: vuelve a ejecutar el planner
 dry-run sobre Semantic, Catalog, Inventory y Framework, publica schemas, holds,
 conteos y cursores acotados, y conserva como contraevidencia cualquier owner
 bloqueado o hold declarado ausente. Una segunda lectura debe reproducir la misma
 proyección. El resultado nunca autoriza borrar; la disposición técnica requiere
-además los nueve controles aislados del template Retention exacto.
+además los catorce nodeids aislados del template Retention exacto.
 
 El mismo envelope integra change/schema evolution, assurance, supply-chain,
 capability reachability y autoeficacia. La ausencia o caducidad de Git history,
@@ -672,7 +673,7 @@ la última publicación Code con el inventario Git visible y deja precision,
 recall y finding→decision sin calcular mientras no existan outcomes humanos o
 defectos escapados enlazados independientemente.
 
-v19 conserva varias verticales productivas sobre ese mismo registro. La primera
+v20 conserva varias verticales productivas sobre ese mismo registro. La primera
 analiza SQL literal Python con SQLGlot en dialecto SQLite y publica por separado
 READ, WRITE, DDL, SQL dinámico/no parseable y eventos transaccionales; un store o
 workflow sólo se asigna mediante el registry explícito, nunca por el nombre de la
@@ -691,14 +692,19 @@ autoriza cambios. Las propuestas allow-listed con runner real aparecen como
 `CODE_EXPERIMENT_PROPOSAL`; una de ellas puede ejecutarse explícitamente con
 `--code-experiment-run PROPOSAL_ID [--code-json]`. El ejecutor vuelve a construir
 el review vigente, exige el mismo proposal ID, raíz física y manifest Code, y
-sólo admite seis templates ejecutables registrados: acceptance de la ruta
+sólo admite ocho templates ejecutables registrados: acceptance de la ruta
 pública Text (un nodeid), trace/fault boundaries del workflow Text (cuatro
 nodeids), recuperación Semantic ante muerte del proceso durante staging (un
 nodeid con tres gates medidos), una matriz Code-owner de migración poblada,
 rollback y rechazo de schema futuro (cinco nodeids con cuatro gates), y la
 aceptación acotada de los contratos de imports declarados (tres nodeids y cuatro
-gates), más la seguridad durable de Retention en dry-run sobre los cuatro owners
-(catorce nodeids exactos y cuatro gates). Retention comprueba heads, builders, leases,
+gates), la seguridad durable de Retention en dry-run sobre los cuatro owners
+(catorce nodeids exactos y cuatro gates), siete controles supply-chain locales y
+el protocolo Framework ReviewTask (ocho nodeids y cinco gates). ReviewTask prueba
+publicación, CAS, replay y rollback en SQLite temporal y recorre la CLI pública;
+el actor usado es sintético y su identidad no se autentica, y las excepciones
+inyectadas no demuestran muerte de proceso ni pérdida de energía. Retention
+comprueba heads, builders, leases,
 evidencia humana, fallos de schema/receipts y lectura concurrente; nunca autoriza
 ni valida un futuro ejecutor de borrado. La aceptación arquitectónica comprueba
 el grafo vivo, una frontera permitida y controles negativos de aristas/ciclos;
@@ -717,7 +723,7 @@ terminar, la CLI lo agrega como `neocortex.code-experiment-store/v1` a la tabla
 inmutable y append-only `code_experiment_receipts` de Code schema v6. Por ello
 `code_database_unchanged=true` describe esa barrera acotada durante la fase
 ejecutora antes de persistir, no una equivalencia byte a byte del store ni que el
-comando completo no escriba su receipt. El siguiente review v19
+comando completo no escriba su receipt. El siguiente review v20
 sólo proyecta el receipt terminal `passed` más nuevo ligado al proposal y a
 la processing signature actuales. Puede provenir de una publicación Code
 completada anterior cuando la publicación vigente es un replay exacto con la
@@ -804,7 +810,7 @@ declarada cuando cambia packaging, schema o la política de gates.
 La suite declarada omite únicamente las pruebas del runtime Windows/NTFS
 retirado; conserva fixtures portables aunque modelen metadatos históricos.
 Después ejecuta los gates estáticos y arquitectónicos existentes, publica el
-perfil `trusted-deep`, consume `neocortex.code-review/v19`, ejecuta una vez cada
+perfil `trusted-deep`, consume `neocortex.code-review/v20`, ejecuta una vez cada
 plantilla de experimento allow-listed relevante, construye e instala el wheel
 candidato en un entorno efímero fuera del checkout, y repite la publicación
 idéntica para exigir replay de los proveedores. Devuelve un único recibo

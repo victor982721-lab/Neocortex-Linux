@@ -276,7 +276,7 @@ review y work packages consumen la misma evidencia; la ausencia o caducidad de
 un proveedor obliga a abstener sólo la dimensión afectada.
 
 `--code-review` consume esa publicación sin volver a analizar la raíz. El
-envelope `neocortex.code-review/v19` no declara compatibilidad con schemas
+envelope `neocortex.code-review/v20` no declara compatibilidad con schemas
 anteriores. Usa `neocortex.code-analysis-epistemics/v1`, una proyección general
 de preguntas con fingerprint de spec y evidencia resuelta contra IDs de
 registros Code. Publica observaciones estructurales confirmadas y separa hipótesis,
@@ -294,7 +294,7 @@ ruta; una clase de pruebas, un `Protocol` o un composition root siguen visibles
 como controles negativos y quedan `experiment_required`. El límite solicitado
 se aplica por familia de pregunta.
 
-v19 conserva `neocortex.code-interface-surface/v1`: observa módulos seleccionados
+v20 conserva `neocortex.code-interface-surface/v1`: observa módulos seleccionados
 por span/superficie directa, estructura de configuraciones JSON/TOML y llamadas
 estáticas `argparse`. No expone valores de configuración, no ejecuta módulos y
 no presenta option strings sintácticos como reachability o comportamiento del
@@ -310,7 +310,7 @@ logical owners declara selectores exactos para `text`, `semantic`, `knowledge`,
 asigna un owner por defecto. Su pregunta queda lista para caracterización, no
 para una decisión de cambio.
 
-Cuando `--code-review` consume el estado canónico protegido, v19 también publica
+Cuando `--code-review` consume el estado canónico protegido, v20 también publica
 `neocortex.code-state-projection/v1`. La observación compara revisiones Text
 elegibles (`complete`, revisión presente, blob presente y `text_chars > 0`) con
 miembros del head Semantic de texto publicado. Las lecturas usan `immutable=1`,
@@ -334,7 +334,7 @@ registrado o stale permanece faltante. La proyección de autoeficacia compara el
 snapshot publicado contra archivos Git visibles por digest y no publica
 precision/recall ni decision rate sin etiquetas independientes.
 
-v19 conserva `CODE_STATE_INTERACTIONS`, `CODE_INVARIANT_ASSURANCE`,
+v20 conserva `CODE_STATE_INTERACTIONS`, `CODE_INVARIANT_ASSURANCE`,
 `CODE_ROUTE_CAPABILITIES`, `CODE_ANALYZER_CALIBRATION` y
 `CODE_EXPERIMENT_PLAN`. SQL literal se parsea con el dialecto SQLite y se liga a
 store/workflow sólo por contratos explícitos. Los placeholders SQLite `?NNN`
@@ -359,13 +359,19 @@ fuente, proposal, provider o base Code, falla cerrado. Hoy sólo son ejecutables
 gates), `capability.public_route_acceptance` (un nodeid),
 `state.runtime_sql_trace` (cuatro nodeids),
 `state.semantic_process_death_recovery` (un nodeid con tres gates),
-`evolution.code_schema_upgrade_matrix` (cinco nodeids con cuatro gates) y
-`retention.durable_hold_safety` (catorce nodeids exactos y cuatro gates). El registry
+`evolution.code_schema_upgrade_matrix` (cinco nodeids con cuatro gates),
+`retention.durable_hold_safety` (catorce nodeids exactos y cuatro gates),
+`security.bounded_boundary_scenarios` (diez nodeids y siete gates) y
+`framework.review_task_protocol_acceptance` (ocho nodeids y cinco gates). El registry
 general contiene otros
 escenarios de assurance/calibración, pero no por ello son ejecutables desde esta
 opción. El escenario arquitectónico verifica sólo los contratos de imports
 declarados, el grafo vivo y controles negativos seleccionados; no observa
 dispatch dinámico ni prueba que el diseño completo sea el correcto.
+El escenario ReviewTask usa un Framework SQLite temporal y recorre
+`show → claim → retry → decide → retry → history` por la CLI pública. Comprueba
+CAS, replay y rollback acotados, pero el actor es sintético/no autenticado y las
+excepciones inyectadas no demuestran muerte de proceso ni pérdida de energía.
 
 Pytest corre directamente sobre la raíz canónica confiable. El temporal fuera
 del repo aloja runtime y checkpoints: no es una copia de la fuente ni un sandbox;
@@ -381,13 +387,13 @@ Al terminar, el comando **sí escribe** una evidencia acotada: inserta el receip
 en la tabla append-only de Code schema v6 y, con `--code-json`, devuelve el
 envelope `neocortex.code-experiment-store/v1` que contiene ese receipt. Por eso
 `code_database_unchanged=true` no significa que la invocación completa sea
-read-only. El review v19 posterior evalúa el terminal más nuevo del proposal y
+read-only. El review v20 posterior evalúa el terminal más nuevo del proposal y
 la processing signature vigentes; puede reutilizar un `passed` de un run Code
 completado previo cuando el vigente es un replay exacto con la misma firma. Un
 terminal posterior `failed` o `abstained`, o uno stale, corrupto o sin binding,
 permanece auditable pero no satisface evidencia. El envelope digest liga todo el
 contexto durable. El enlace no suplanta a un actor humano. El verificador
-técnico allow-listed de v19 puede publicar
+técnico allow-listed de v20 puede publicar
 `no_change_required_within_verified_scope` tras volver a comprobar contrato,
 gates y controles negativos exactos; la disposición es advisory, conserva
 riesgos residuales y no autoriza un patch. Preguntas completas sin una política

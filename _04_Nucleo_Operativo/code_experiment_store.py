@@ -761,6 +761,28 @@ _REQUIREMENT_BINDINGS: tuple[_RequirementBinding, ...] = (
         ),
     ),
     _RequirementBinding(
+        "framework.review_task_lifecycle_preserves_atomicity_and_human_authority",
+        "framework.review_task_protocol_acceptance",
+        "review_task_stale_head_and_fault_counterevidence_evaluated",
+        (
+            "faulted_publication_and_event_transactions_preserve_previous_heads",
+            "progress_and_event_heads_reject_stale_compare_and_swap",
+            "semantically_changed_retry_is_rejected_as_snapshot_changed",
+        ),
+    ),
+    _RequirementBinding(
+        "framework.review_task_lifecycle_preserves_atomicity_and_human_authority",
+        "framework.review_task_protocol_acceptance",
+        "isolated_review_task_protocol_experiment_result",
+        (
+            "exact_human_claim_and_terminal_decision_retries_are_idempotent",
+            "faulted_publication_and_event_transactions_preserve_previous_heads",
+            "page_publication_is_atomic_resumable_and_idempotent",
+            "progress_and_event_heads_reject_stale_compare_and_swap",
+            "semantically_changed_retry_is_rejected_as_snapshot_changed",
+        ),
+    ),
+    _RequirementBinding(
         "retention.dry_run_preserves_declared_durable_holds",
         "retention.durable_hold_safety",
         "isolated_retention_safety_experiment_result",

@@ -26,8 +26,8 @@ from .code_analysis_epistemics import (
 from .code_invariant_contracts import INVARIANT_RUNTIME_SCENARIOS, RUNTIME_SCENARIOS
 
 CODE_EXPERIMENT_PLAN_SCHEMA = "neocortex.code-experiment-plan/v2"
-CODE_EXPERIMENT_TEMPLATE_REGISTRY_SCHEMA = "neocortex.code-experiment-template-registry/v7"
-CODE_EXPERIMENT_PLANNING_POLICY = "registered-applicable-cheapest-discriminating-experiment-v8"
+CODE_EXPERIMENT_TEMPLATE_REGISTRY_SCHEMA = "neocortex.code-experiment-template-registry/v8"
+CODE_EXPERIMENT_PLANNING_POLICY = "registered-applicable-cheapest-discriminating-experiment-v9"
 CODE_EXPERIMENT_MAX_PROPOSALS = 256
 
 ExperimentKind = Literal[
@@ -209,6 +209,7 @@ def _template(
         "architecture.declared_import_contract_acceptance": "v1",
         "capability.public_route_acceptance": "v2",
         "evolution.code_schema_upgrade_matrix": "v1",
+        "framework.review_task_protocol_acceptance": "v1",
         "retention.durable_hold_safety": "v2",
         "security.bounded_boundary_scenarios": "v2",
         "state.semantic_process_death_recovery": "v1",
@@ -427,6 +428,35 @@ CODE_EXPERIMENT_TEMPLATES: tuple[CodeExperimentTemplate, ...] = (
         ),
     ),
     _template(
+        "framework.review_task_protocol_acceptance",
+        ("run_framework_review_task_protocol_experiment",),
+        "isolated_fault_injection",
+        "pytest_tmp_path",
+        "bounded",
+        timeout=300,
+        max_items=8,
+        attention=10,
+        scenarios=("framework.review_task_protocol_acceptance",),
+        runner="trusted_deep_declared_scenarios",
+        questions=(
+            "framework.review_task_lifecycle_preserves_atomicity_and_human_authority",
+        ),
+        subject_prefixes=("contract:framework-review-task-protocol",),
+        gates=(
+            "exact_human_claim_and_terminal_decision_retries_are_idempotent",
+            "faulted_publication_and_event_transactions_preserve_previous_heads",
+            "page_publication_is_atomic_resumable_and_idempotent",
+            "progress_and_event_heads_reject_stale_compare_and_swap",
+            "semantically_changed_retry_is_rejected_as_snapshot_changed",
+        ),
+        limitations=(
+            "bounded_sqlite_fixtures_do_not_observe_every_review_task_producer",
+            "injected_exceptions_are_not_process_death_power_loss_or_filesystem_failure",
+            "public_cli_actor_is_synthetic_and_not_identity_authenticated",
+            "passing_protocol_controls_do_not_create_or_impersonate_a_human_decision",
+        ),
+    ),
+    _template(
         "architecture.boundary_acceptance",
         (
             "run_architecture_boundary_acceptance_scenario",
@@ -609,7 +639,7 @@ def experiment_template_registry_payload() -> dict[str, object]:
 
 def experiment_template_registry_fingerprint() -> str:
     return analysis_identity(
-        "code-experiment-template-registry-v7",
+        "code-experiment-template-registry-v8",
         experiment_template_registry_payload(),
     )
 

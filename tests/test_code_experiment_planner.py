@@ -89,7 +89,7 @@ def test_registry_is_canonical_non_mutating_and_bounded() -> None:
     assert all(1 <= item.timeout_seconds <= 900 for item in CODE_EXPERIMENT_TEMPLATES)
     assert experiment_template("structure.static_characterization").cost_tier == "metadata"
     assert experiment_template_registry_fingerprint().startswith(
-        "code-experiment-template-registry-v7:xxh3_128:"
+        "code-experiment-template-registry-v8:xxh3_128:"
     )
     executable = tuple(item for item in CODE_EXPERIMENT_TEMPLATES if item.executable)
     assert {scenario for item in executable for scenario in item.scenario_ids} == set(
@@ -126,6 +126,37 @@ def test_registry_is_canonical_non_mutating_and_bounded() -> None:
     assert not schema.applies_to(
         question_id="evolution.change_surface_requires_review",
         subject_key="code-owner-schema-subject-v1:fixture",
+    )
+    framework_review_task = experiment_template("framework.review_task_protocol_acceptance")
+    assert framework_review_task.executable is True
+    assert framework_review_task.version == "v1"
+    assert framework_review_task.max_items == 8
+    assert framework_review_task.scenario_ids == (
+        "framework.review_task_protocol_acceptance",
+    )
+    assert framework_review_task.applies_to(
+        question_id=(
+            "framework.review_task_lifecycle_preserves_atomicity_and_human_authority"
+        ),
+        subject_key="contract:framework-review-task-protocol",
+    )
+    assert not framework_review_task.applies_to(
+        question_id="framework.some_other_question",
+        subject_key="contract:framework-review-task-protocol",
+    )
+    assert not framework_review_task.applies_to(
+        question_id=(
+            "framework.review_task_lifecycle_preserves_atomicity_and_human_authority"
+        ),
+        subject_key="contract:some-other-framework-protocol",
+    )
+    framework_scenario = runtime_scenario("framework.review_task_protocol_acceptance")
+    assert framework_scenario.version == "v1"
+    assert framework_scenario.scenario_kind == "state_fixture"
+    assert framework_scenario.isolation == "pytest_tmp_path"
+    assert len(framework_scenario.test_nodeids) == framework_review_task.max_items
+    assert tuple(item.gate_id for item in framework_scenario.gate_specs) == (
+        framework_review_task.acceptance_gates
     )
     architecture = experiment_template("architecture.declared_import_contract_acceptance")
     assert architecture.executable is True
@@ -334,3 +365,20 @@ def test_wire_and_public_constructor_reject_execution_smuggling() -> None:
     payload["proposals"][0]["runner_kind"] = "shell"
     with pytest.raises(ValueError, match="derived from its template"):
         parse_code_experiment_plan_payload(payload)
+
+
+def test_ready_plan_rejects_stale_policy_and_registry_fingerprint_fail_closed() -> None:
+    specs, evaluations = _invariant_questions()
+    result = plan_code_experiments(specs, evaluations)
+
+    stale_policy = json.loads(json.dumps(result.as_payload()))
+    stale_policy["policy_id"] = "registered-applicable-cheapest-discriminating-experiment-v8"
+    with pytest.raises(ValueError, match="planning policy is invalid"):
+        parse_code_experiment_plan_payload(stale_policy)
+
+    stale_registry = json.loads(json.dumps(result.as_payload()))
+    stale_registry["registry_fingerprint"] = (
+        "code-experiment-template-registry-v7:xxh3_128:stale"
+    )
+    with pytest.raises(ValueError, match="registry fingerprint is invalid"):
+        parse_code_experiment_plan_payload(stale_registry)

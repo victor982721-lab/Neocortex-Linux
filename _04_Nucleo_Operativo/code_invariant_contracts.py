@@ -13,7 +13,7 @@ from typing import Literal
 from .code_analysis_epistemics import analysis_identity
 
 CODE_INVARIANT_REGISTRY_SCHEMA = "neocortex.code-invariant-registry/v3"
-CODE_RUNTIME_SCENARIO_REGISTRY_SCHEMA = "neocortex.code-runtime-scenario-registry/v7"
+CODE_RUNTIME_SCENARIO_REGISTRY_SCHEMA = "neocortex.code-runtime-scenario-registry/v8"
 
 
 def _required(label: str, value: object, maximum: int = 512) -> str:
@@ -374,6 +374,112 @@ RUNTIME_SCENARIOS = (
                 (
                     "tests/test_code_experiment_store.py::"
                     "test_populated_code_v5_migrates_to_append_only_receipts_without_fact_drift",
+                ),
+            ),
+        ),
+    ),
+    RuntimeScenarioSpec(
+        scenario_id="framework.review_task_protocol_acceptance",
+        version="v1",
+        test_nodeids=(
+            (
+                "tests/test_code_framework_review_task_experiments.py::"
+                "test_public_entrypoint_review_task_journey_preserves_cas_idempotency_"
+                "and_human_authority"
+            ),
+            (
+                "tests/test_review_task_cli_adapter.py::"
+                "test_review_task_cli_changed_command_is_not_mistaken_for_retry"
+            ),
+            (
+                "tests/test_review_task_cli_adapter.py::"
+                "test_review_task_cli_claim_decide_history_and_exact_retries"
+            ),
+            (
+                "tests/test_review_tasks.py::"
+                "test_event_crash_rolls_back_without_changing_current_head"
+            ),
+            (
+                "tests/test_review_tasks.py::"
+                "test_event_transition_is_cas_append_only_and_idempotent"
+            ),
+            (
+                "tests/test_review_tasks.py::"
+                "test_final_page_crash_cannot_publish_source_head_or_partial_supersession"
+            ),
+            (
+                "tests/test_review_tasks.py::"
+                "test_progress_cursor_and_revision_are_exact_cas"
+            ),
+            (
+                "tests/test_review_tasks.py::"
+                "test_publish_page_is_atomic_resumable_and_idempotent"
+            ),
+        ),
+        scenario_kind="state_fixture",
+        isolation="pytest_tmp_path",
+        limitation=(
+            "bounded_sqlite_fixtures_and_injected_exceptions_do_not_model_process_death_"
+            "power_loss_or_every_review_task_producer;public_cli_actor_is_synthetic_"
+            "and_not_identity_authenticated"
+        ),
+        gate_specs=(
+            RuntimeScenarioGateSpec(
+                "exact_human_claim_and_terminal_decision_retries_are_idempotent",
+                (
+                    (
+                        "tests/test_code_framework_review_task_experiments.py::"
+                        "test_public_entrypoint_review_task_journey_preserves_cas_"
+                        "idempotency_and_human_authority"
+                    ),
+                    (
+                        "tests/test_review_task_cli_adapter.py::"
+                        "test_review_task_cli_claim_decide_history_and_exact_retries"
+                    ),
+                ),
+            ),
+            RuntimeScenarioGateSpec(
+                "faulted_publication_and_event_transactions_preserve_previous_heads",
+                (
+                    (
+                        "tests/test_review_tasks.py::"
+                        "test_event_crash_rolls_back_without_changing_current_head"
+                    ),
+                    (
+                        "tests/test_review_tasks.py::"
+                        "test_final_page_crash_cannot_publish_source_head_or_partial_supersession"
+                    ),
+                ),
+            ),
+            RuntimeScenarioGateSpec(
+                "page_publication_is_atomic_resumable_and_idempotent",
+                (
+                    (
+                        "tests/test_review_tasks.py::"
+                        "test_publish_page_is_atomic_resumable_and_idempotent"
+                    ),
+                ),
+            ),
+            RuntimeScenarioGateSpec(
+                "progress_and_event_heads_reject_stale_compare_and_swap",
+                (
+                    (
+                        "tests/test_review_tasks.py::"
+                        "test_event_transition_is_cas_append_only_and_idempotent"
+                    ),
+                    (
+                        "tests/test_review_tasks.py::"
+                        "test_progress_cursor_and_revision_are_exact_cas"
+                    ),
+                ),
+            ),
+            RuntimeScenarioGateSpec(
+                "semantically_changed_retry_is_rejected_as_snapshot_changed",
+                (
+                    (
+                        "tests/test_review_task_cli_adapter.py::"
+                        "test_review_task_cli_changed_command_is_not_mistaken_for_retry"
+                    ),
                 ),
             ),
         ),
@@ -762,6 +868,7 @@ EXPERIMENT_SCENARIO_IDS = (
     "architecture.declared_import_contract_acceptance",
     "capability.public_text_route_to_search",
     "evolution.code_schema_upgrade_matrix",
+    "framework.review_task_protocol_acceptance",
     "retention.durable_hold_safety",
     "security.supply_chain_gate_controls",
     "semantic.staging_process_death_resume",
@@ -879,7 +986,7 @@ def runtime_scenario_registry_payload() -> dict[str, object]:
 
 def runtime_scenario_registry_fingerprint() -> str:
     return analysis_identity(
-        "code-runtime-scenario-registry-v7", runtime_scenario_registry_payload()
+        "code-runtime-scenario-registry-v8", runtime_scenario_registry_payload()
     )
 
 

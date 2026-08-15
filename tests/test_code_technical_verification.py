@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+import _04_Nucleo_Operativo.code_technical_verification as technical_verification_module
 from _04_Nucleo_Operativo.code_architecture_questions import architecture_questions
 from _04_Nucleo_Operativo.code_experiment_planner import plan_code_experiments
 from _04_Nucleo_Operativo.code_experiment_store import (
@@ -25,6 +26,10 @@ from _04_Nucleo_Operativo.code_state_projection_analysis import (
 from _04_Nucleo_Operativo.code_retention_analysis import (
     analyze_code_retention,
     retention_questions,
+)
+from _04_Nucleo_Operativo.code_review_task_analysis import (
+    FRAMEWORK_REVIEW_TASK_PROTOCOL_QUESTION_ID,
+    framework_review_task_questions,
 )
 from _04_Nucleo_Operativo.code_security_dependency_questions import (
     DEPENDENCY_EVIDENCE_QUESTION,
@@ -86,6 +91,37 @@ def _closed_semantic_projection(
         resolved,
     )
     return specs, evaluations, base_plan, resolved, projected
+
+
+def _closed_framework_review_task_protocol(tmp_path: Path):
+    specs, evaluations = framework_review_task_questions(
+        snapshot_id="snapshot:fixture",
+        snapshot_freshness="current",
+        rank=1,
+    )
+    plan = plan_code_experiments(specs, evaluations)
+    proposal = plan.proposals[0]
+    experiment_root = tmp_path / "framework-review-task-experiment"
+    experiment_root.mkdir()
+    database = _database(experiment_root)
+    stored = record_code_experiment_receipt(
+        database,
+        _receipt(proposal),
+        proposal,
+        analysis_run_id=1,
+        processing_signature="snapshot:fixture",
+        review_digest="review:framework-review-task-fixture",
+        recorded_ns=10,
+    )
+    receipts = read_code_experiment_receipts(
+        database,
+        analysis_run_id=1,
+        processing_signature="snapshot:fixture",
+        plan=plan,
+    )
+    assert receipts == (stored,)
+    projected = apply_code_experiment_receipts(specs, evaluations, plan, receipts)
+    return specs, evaluations, plan, receipts, projected
 
 
 def _closed_schema_evolution(tmp_path: Path):
@@ -588,6 +624,161 @@ def test_passed_architecture_scenario_cannot_hide_a_live_contract_violation_or_f
     assert verification.status == "partial"
     assert verification.reviews == ()
     assert verification.gaps[0].reason == "technical_policy_negative_control_not_satisfied"
+
+
+def test_framework_review_task_receipt_closes_exact_contract_and_outcome_evidence(
+    tmp_path: Path,
+) -> None:
+    specs, _evaluations, plan, receipts, projected = (
+        _closed_framework_review_task_protocol(tmp_path)
+    )
+    proposal = plan.proposals[0]
+    assert proposal.question_id == FRAMEWORK_REVIEW_TASK_PROTOCOL_QUESTION_ID
+    assert proposal.template_id == "framework.review_task_protocol_acceptance"
+    assert proposal.scenario_ids == ("framework.review_task_protocol_acceptance",)
+    assert proposal.acceptance_gates == (
+        "exact_human_claim_and_terminal_decision_retries_are_idempotent",
+        "faulted_publication_and_event_transactions_preserve_previous_heads",
+        "page_publication_is_atomic_resumable_and_idempotent",
+        "progress_and_event_heads_reject_stale_compare_and_swap",
+        "semantically_changed_retry_is_rejected_as_snapshot_changed",
+    )
+    evaluation = projected[0]
+    assert evaluation.decision_readiness == "human_review_required"
+    assert evaluation.counterevidence_status == "evaluated"
+    assert all(item.status == "satisfied" for item in evaluation.requirements)
+
+    verification = build_code_technical_verification(specs, projected, receipts)
+
+    assert verification.status == "ready"
+    assert verification.evidence_complete_evaluations == 1
+    assert verification.no_change_required_count == 1
+    assert verification.unresolved_count == 0
+    assert verification.reviews[0].question_id == (
+        "framework.review_task_lifecycle_preserves_atomicity_and_human_authority"
+    )
+    assert verification.reviews[0].reason_code == (
+        "framework_review_task_protocol_matrix_passed_without_a_change_signal"
+    )
+    assert verification.reviews[0].disposition == "no_change_required_within_verified_scope"
+    assert verification.reviews[0].receipt_ids == (receipts[0].receipt.receipt_id,)
+    assert not verification.mutation_authority
+    assert (
+        parse_code_technical_verification_payload(json.loads(json.dumps(verification.as_payload())))
+        == verification
+    )
+
+
+def test_framework_review_task_policy_revalidates_declared_experiment_outcomes(
+    tmp_path: Path,
+) -> None:
+    specs, _evaluations, _plan, receipts, projected = (
+        _closed_framework_review_task_protocol(tmp_path)
+    )
+    evaluation = projected[0]
+    experiment_requirement = next(
+        item
+        for item in evaluation.requirements
+        if item.requirement_id == "isolated_review_task_protocol_experiment_result"
+    )
+    experiment_evidence = next(
+        item
+        for item in evaluation.evidence
+        if item.evidence_id == experiment_requirement.evidence_ids[0]
+    )
+    forged_outcome = replace(
+        experiment_evidence,
+        facts=tuple(
+            replace(fact, value=7) if fact.name == "relation_count" else fact
+            for fact in experiment_evidence.facts
+        ),
+    )
+    forged_evaluation = replace(
+        evaluation,
+        evidence=tuple(
+            forged_outcome if item.evidence_id == experiment_evidence.evidence_id else item
+            for item in evaluation.evidence
+        ),
+    )
+
+    verification = build_code_technical_verification(specs, (forged_evaluation,), receipts)
+
+    assert verification.status == "partial"
+    assert verification.reviews == ()
+    assert verification.gaps[0].reason == "technical_policy_negative_control_not_satisfied"
+
+
+@pytest.mark.parametrize(
+    ("authority_fact", "forged_value"),
+    (
+        ("terminal_decisions_require_human", False),
+        ("terminal_decisions_require_human", 1),
+        ("superseded_repository_only", False),
+    ),
+)
+def test_framework_review_task_policy_rejects_weakened_human_authority_contract(
+    tmp_path: Path,
+    authority_fact: str,
+    forged_value: bool | int,
+) -> None:
+    specs, _evaluations, _plan, receipts, projected = (
+        _closed_framework_review_task_protocol(tmp_path)
+    )
+    evaluation = projected[0]
+    contract_evidence = next(
+        item
+        for item in evaluation.evidence
+        if item.source_record_kind == "framework_review_task_public_protocol_contract"
+    )
+    weakened_contract = replace(
+        contract_evidence,
+        facts=tuple(
+            replace(fact, value=forged_value) if fact.name == authority_fact else fact
+            for fact in contract_evidence.facts
+        ),
+    )
+    weakened_evaluation = replace(
+        evaluation,
+        evidence=tuple(
+            weakened_contract if item.evidence_id == contract_evidence.evidence_id else item
+            for item in evaluation.evidence
+        ),
+    )
+
+    verification = build_code_technical_verification(specs, (weakened_evaluation,), receipts)
+
+    assert verification.status == "partial"
+    assert verification.reviews == ()
+    assert verification.gaps[0].reason == "technical_policy_negative_control_not_satisfied"
+
+
+def test_technical_policy_selection_keeps_same_question_subject_policies_distinct(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    specs, _evaluations, _plan, receipts, projected = (
+        _closed_framework_review_task_protocol(tmp_path)
+    )
+    current = next(
+        item
+        for item in technical_verification_module._TECHNICAL_POLICIES
+        if item.question_id == FRAMEWORK_REVIEW_TASK_PROTOCOL_QUESTION_ID
+    )
+    sibling = replace(
+        current,
+        subject_prefix="contract:framework-review-task-secondary-protocol",
+    )
+    monkeypatch.setattr(
+        technical_verification_module,
+        "_TECHNICAL_POLICIES",
+        (*technical_verification_module._TECHNICAL_POLICIES, sibling),
+    )
+
+    verification = build_code_technical_verification(specs, projected, receipts)
+
+    assert verification.status == "ready"
+    assert verification.reviews[0].subject_key == "contract:framework-review-task-protocol"
+    assert verification.gaps == ()
 
 
 def test_technical_verification_rejects_tampering_and_unregistered_authority(
