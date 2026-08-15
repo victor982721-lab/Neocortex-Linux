@@ -3631,6 +3631,263 @@ def _record_generation_publication_receipt(
     )
 
 
+def _query_text_chunk_embedding_rows(
+    connection: sqlite3.Connection,
+    *,
+    version: int,
+    chunk_id: str,
+    model_signature: str | None,
+    published_only: bool,
+    limit: int,
+) -> tuple[sqlite3.Row, ...]:
+    """Read the bounded normalized embedding rows for one text chunk."""
+
+    publication_join = (
+        "JOIN published_embedding_heads h ON h.generation_id=member.generation_id"
+        if published_only
+        else "LEFT JOIN published_embedding_heads h ON h.generation_id=member.generation_id"
+    )
+    model_filter = "" if model_signature is None else "AND member.model_signature=?"
+    if version == 7:
+        parameters: tuple[object, ...] = (
+            (
+                SEMANTIC_EMBEDDING_STAGE,
+                chunk_id,
+                SEMANTIC_EMBEDDING_CLONE_STAGE,
+                chunk_id,
+                limit,
+            )
+            if model_signature is None
+            else (
+                SEMANTIC_EMBEDDING_STAGE,
+                chunk_id,
+                SEMANTIC_EMBEDDING_CLONE_STAGE,
+                chunk_id,
+                model_signature,
+                limit,
+            )
+        )
+        rows = connection.execute(
+            f"""WITH latest_receipt AS (
+                SELECT generation_id,entity_id,payload_id,
+                    MAX(receipt_id) AS receipt_id
+                FROM semantic_work_receipts
+                WHERE stage_id=? AND status='succeeded' AND entity_id=?
+                GROUP BY generation_id,entity_id,payload_id)
+            SELECT member.*,g.processing_signature,
+                g.status AS generation_status,
+                m.model_id,m.model_version,m.provider,m.vector_space,
+                payload.dimensions,payload.vector_dtype,payload.original_norm,
+                payload.content_xxh3_128 AS payload_xxh3_128,
+                payload.content_bytes AS payload_bytes,
+                payload.content_xxh3_64_guard AS payload_xxh3_64_guard,
+                h.generation_id AS published_generation_id,
+                COALESCE(receipt.receipt_id,clone_receipt.receipt_id)
+                  AS work_receipt_id,
+                COALESCE(receipt.stage_id,clone_receipt.stage_id)
+                  AS derivation_stage_id,
+                COALESCE(receipt.execution_mode,clone_receipt.execution_mode)
+                  AS execution_mode,COUNT(*) OVER() AS total_count
+            FROM embedding_generation_members member
+            JOIN embedding_generations g
+              ON g.generation_id=member.generation_id
+            JOIN embedding_models m
+              ON m.model_signature=member.model_signature
+            JOIN vector_payloads payload ON payload.payload_id=member.payload_id
+            {publication_join}
+            LEFT JOIN latest_receipt selected_receipt
+              ON selected_receipt.generation_id=member.generation_id
+             AND selected_receipt.entity_id=member.entity_id
+             AND selected_receipt.payload_id=member.payload_id
+            LEFT JOIN semantic_work_receipts receipt
+              ON receipt.receipt_id=selected_receipt.receipt_id
+            LEFT JOIN semantic_work_receipts clone_receipt
+              ON clone_receipt.generation_id=member.generation_id
+             AND clone_receipt.stage_id=?
+             AND EXISTS(
+                SELECT 1 FROM json_each(clone_receipt.receipt_json,'$.outputs') output
+                WHERE json_extract(
+                    output.value,
+                    '$.materialization.materialization_id'
+                )='materialization:semantic:embedding-member:' || member.member_id)
+            WHERE member.entity_kind='text_chunk' AND member.entity_id=?
+              {model_filter}
+            ORDER BY member.generation_id,member.member_id LIMIT ?""",
+            parameters,
+        ).fetchall()
+    else:
+        legacy_parameters: tuple[object, ...] = (
+            (chunk_id, limit)
+            if model_signature is None
+            else (chunk_id, model_signature, limit)
+        )
+        rows = connection.execute(
+            f"""SELECT member.*,g.processing_signature,
+                g.status AS generation_status,
+                m.model_id,m.model_version,m.provider,m.vector_space,
+                h.generation_id AS published_generation_id,
+                NULL AS work_receipt_id,NULL AS derivation_stage_id,
+                NULL AS execution_mode,
+                COUNT(*) OVER() AS total_count
+            FROM embedding_generation_members member
+            JOIN embedding_generations g
+              ON g.generation_id=member.generation_id
+            JOIN embedding_models m
+              ON m.model_signature=member.model_signature
+            {publication_join}
+            WHERE member.entity_kind='text_chunk' AND member.entity_id=?
+              {model_filter}
+            ORDER BY member.generation_id,member.member_id LIMIT ?""",
+            legacy_parameters,
+        ).fetchall()
+    return tuple(rows)
+
+
+def _materialize_text_chunk_embedding_derivation(
+    connection: sqlite3.Connection,
+    *,
+    member: sqlite3.Row,
+    member_receipts: dict[int, tuple[WorkReceipt, sqlite3.Row]],
+) -> SemanticEmbeddingDerivation:
+    """Verify one normalized member and expose its durable derivation."""
+
+    receipt_id = (
+        None if member["work_receipt_id"] is None else int(member["work_receipt_id"])
+    )
+    mode = (
+        "legacy_unattributed"
+        if member["execution_mode"] is None
+        else str(member["execution_mode"])
+    )
+    stage_id = (
+        "legacy_unattributed"
+        if member["derivation_stage_id"] is None
+        else str(member["derivation_stage_id"])
+    )
+    if receipt_id is not None:
+        receipt, receipt_row = member_receipts[receipt_id]
+        expected_member = _output_contracts(
+            (_embedding_member_binding_from_row(member),),
+            generation_id=int(member["generation_id"]),
+        )[0]
+        member_output_matches = any(
+            output.materialization == expected_member.materialization
+            and output.fingerprint == expected_member.fingerprint
+            and output.fingerprint_algorithm == expected_member.fingerprint_algorithm
+            for output in receipt.outputs
+        )
+        normalized_member = (
+            receipt.stage.stage_id == stage_id
+            and receipt.outcome is WorkOutcome.SUCCEEDED
+            and receipt.execution_mode.value == mode
+            and int(receipt_row["generation_id"]) == int(member["generation_id"])
+            and member_output_matches
+        )
+        if stage_id == SEMANTIC_EMBEDDING_STAGE:
+            normalized_member = (
+                normalized_member
+                and str(receipt_row["entity_id"]) == str(member["entity_id"])
+                and int(receipt_row["item_revision_id"])
+                == int(member["item_revision_id"])
+                and int(receipt_row["chunk_revision_id"])
+                == int(member["chunk_revision_id"])
+                and int(receipt_row["payload_id"]) == int(member["payload_id"])
+                and str(receipt_row["model_signature"])
+                == str(member["model_signature"])
+            )
+            if normalized_member:
+                try:
+                    _validate_embedding_receipt_contract(
+                        connection,
+                        receipt,
+                        receipt_row,
+                        member,
+                    )
+                except SemanticStateError as exc:
+                    raise ValueError(
+                        "semantic embedding physical facts are corrupt"
+                    ) from exc
+        elif stage_id == SEMANTIC_EMBEDDING_CLONE_STAGE:
+            if normalized_member:
+                _validate_embedding_clone_receipt_contract(
+                    connection,
+                    receipt,
+                    receipt_row,
+                )
+        else:
+            normalized_member = False
+        if not normalized_member:
+            raise ValueError(
+                "semantic embedding receipt contradicts normalized member facts"
+            )
+    return SemanticEmbeddingDerivation(
+        member_id=int(member["member_id"]),
+        generation_id=int(member["generation_id"]),
+        generation_status=str(member["generation_status"]),
+        published=member["published_generation_id"] is not None,
+        processing_signature=str(member["processing_signature"]),
+        model_signature=str(member["model_signature"]),
+        model_id=str(member["model_id"]),
+        model_version=str(member["model_version"]),
+        provider=str(member["provider"]),
+        vector_space=str(member["vector_space"]),
+        payload_id=int(member["payload_id"]),
+        item_revision_id=int(member["item_revision_id"]),
+        chunk_revision_id=int(member["chunk_revision_id"]),
+        stage_id=stage_id,
+        execution_mode=mode,
+        receipt_id=receipt_id,
+        lineage_status=(
+            "recorded" if receipt_id is not None else "legacy_unattributed"
+        ),
+    )
+
+
+def _read_text_chunk_embedding_derivations(
+    connection: sqlite3.Connection,
+    *,
+    version: int,
+    chunk_id: str,
+    model_signature: str | None,
+    published_only: bool,
+    limit: int,
+) -> tuple[tuple[SemanticEmbeddingDerivation, ...], int]:
+    """Read and verify the bounded embedding side of one chunk lineage."""
+
+    member_rows = _query_text_chunk_embedding_rows(
+        connection,
+        version=version,
+        chunk_id=chunk_id,
+        model_signature=model_signature,
+        published_only=published_only,
+        limit=limit,
+    )
+    member_receipts = (
+        {}
+        if version != 7
+        else _validated_semantic_receipts(
+            connection,
+            (
+                int(member["work_receipt_id"])
+                for member in member_rows
+                if member["work_receipt_id"] is not None
+            ),
+        )
+    )
+    embedding_count = 0 if not member_rows else int(member_rows[0]["total_count"])
+    return (
+        tuple(
+            _materialize_text_chunk_embedding_derivation(
+                connection,
+                member=member,
+                member_receipts=member_receipts,
+            )
+            for member in member_rows
+        ),
+        embedding_count,
+    )
+
+
 def explain_text_chunk_lineage(
     path: Path,
     *,
@@ -3831,209 +4088,14 @@ def explain_text_chunk_lineage(
                         ),
                     )
                 )
-        publication_join = (
-            "JOIN published_embedding_heads h ON h.generation_id=member.generation_id"
-            if published_only
-            else "LEFT JOIN published_embedding_heads h ON h.generation_id=member.generation_id"
+        embeddings, embedding_count = _read_text_chunk_embedding_derivations(
+            connection,
+            version=version,
+            chunk_id=chunk_id,
+            model_signature=model_signature,
+            published_only=published_only,
+            limit=embedding_limit,
         )
-        model_filter = "" if model_signature is None else "AND member.model_signature=?"
-        if version == 7:
-            parameters: tuple[object, ...] = (
-                (
-                    SEMANTIC_EMBEDDING_STAGE,
-                    chunk_id,
-                    SEMANTIC_EMBEDDING_CLONE_STAGE,
-                    chunk_id,
-                    embedding_limit,
-                )
-                if model_signature is None
-                else (
-                    SEMANTIC_EMBEDDING_STAGE,
-                    chunk_id,
-                    SEMANTIC_EMBEDDING_CLONE_STAGE,
-                    chunk_id,
-                    model_signature,
-                    embedding_limit,
-                )
-            )
-            member_rows = connection.execute(
-                f"""WITH latest_receipt AS (
-                    SELECT generation_id,entity_id,payload_id,
-                        MAX(receipt_id) AS receipt_id
-                    FROM semantic_work_receipts
-                    WHERE stage_id=? AND status='succeeded' AND entity_id=?
-                    GROUP BY generation_id,entity_id,payload_id)
-                SELECT member.*,g.processing_signature,
-                    g.status AS generation_status,
-                    m.model_id,m.model_version,m.provider,m.vector_space,
-                    payload.dimensions,payload.vector_dtype,payload.original_norm,
-                    payload.content_xxh3_128 AS payload_xxh3_128,
-                    payload.content_bytes AS payload_bytes,
-                    payload.content_xxh3_64_guard AS payload_xxh3_64_guard,
-                    h.generation_id AS published_generation_id,
-                    COALESCE(receipt.receipt_id,clone_receipt.receipt_id)
-                      AS work_receipt_id,
-                    COALESCE(receipt.stage_id,clone_receipt.stage_id)
-                      AS derivation_stage_id,
-                    COALESCE(receipt.execution_mode,clone_receipt.execution_mode)
-                      AS execution_mode,COUNT(*) OVER() AS total_count
-                FROM embedding_generation_members member
-                JOIN embedding_generations g
-                  ON g.generation_id=member.generation_id
-                JOIN embedding_models m
-                  ON m.model_signature=member.model_signature
-                JOIN vector_payloads payload ON payload.payload_id=member.payload_id
-                {publication_join}
-                LEFT JOIN latest_receipt selected_receipt
-                  ON selected_receipt.generation_id=member.generation_id
-                 AND selected_receipt.entity_id=member.entity_id
-                 AND selected_receipt.payload_id=member.payload_id
-                LEFT JOIN semantic_work_receipts receipt
-                  ON receipt.receipt_id=selected_receipt.receipt_id
-                LEFT JOIN semantic_work_receipts clone_receipt
-                  ON clone_receipt.generation_id=member.generation_id
-                 AND clone_receipt.stage_id=?
-                 AND EXISTS(
-                    SELECT 1 FROM json_each(clone_receipt.receipt_json,'$.outputs') output
-                    WHERE json_extract(
-                        output.value,
-                        '$.materialization.materialization_id'
-                    )='materialization:semantic:embedding-member:' || member.member_id)
-                WHERE member.entity_kind='text_chunk' AND member.entity_id=?
-                  {model_filter}
-                ORDER BY member.generation_id,member.member_id LIMIT ?""",
-                parameters,
-            ).fetchall()
-        else:
-            legacy_parameters: tuple[object, ...] = (
-                (chunk_id, embedding_limit)
-                if model_signature is None
-                else (chunk_id, model_signature, embedding_limit)
-            )
-            member_rows = connection.execute(
-                f"""SELECT member.*,g.processing_signature,
-                    g.status AS generation_status,
-                    m.model_id,m.model_version,m.provider,m.vector_space,
-                    h.generation_id AS published_generation_id,
-                    NULL AS work_receipt_id,NULL AS derivation_stage_id,
-                    NULL AS execution_mode,
-                    COUNT(*) OVER() AS total_count
-                FROM embedding_generation_members member
-                JOIN embedding_generations g
-                  ON g.generation_id=member.generation_id
-                JOIN embedding_models m
-                  ON m.model_signature=member.model_signature
-                {publication_join}
-                WHERE member.entity_kind='text_chunk' AND member.entity_id=?
-                  {model_filter}
-                ORDER BY member.generation_id,member.member_id LIMIT ?""",
-                legacy_parameters,
-            ).fetchall()
-        embeddings: list[SemanticEmbeddingDerivation] = []
-        member_receipts = (
-            {}
-            if version != 7
-            else _validated_semantic_receipts(
-                connection,
-                (
-                    int(member["work_receipt_id"])
-                    for member in member_rows
-                    if member["work_receipt_id"] is not None
-                ),
-            )
-        )
-        embedding_count = 0 if not member_rows else int(member_rows[0]["total_count"])
-        for member in member_rows:
-            receipt_id = (
-                None if member["work_receipt_id"] is None else int(member["work_receipt_id"])
-            )
-            mode = (
-                "legacy_unattributed"
-                if member["execution_mode"] is None
-                else str(member["execution_mode"])
-            )
-            stage_id = (
-                "legacy_unattributed"
-                if member["derivation_stage_id"] is None
-                else str(member["derivation_stage_id"])
-            )
-            if receipt_id is not None:
-                receipt, receipt_row = member_receipts[receipt_id]
-                expected_member = _output_contracts(
-                    (_embedding_member_binding_from_row(member),),
-                    generation_id=int(member["generation_id"]),
-                )[0]
-                member_output_matches = any(
-                    output.materialization == expected_member.materialization
-                    and output.fingerprint == expected_member.fingerprint
-                    and output.fingerprint_algorithm == expected_member.fingerprint_algorithm
-                    for output in receipt.outputs
-                )
-                normalized_member = (
-                    receipt.stage.stage_id == stage_id
-                    and receipt.outcome is WorkOutcome.SUCCEEDED
-                    and receipt.execution_mode.value == mode
-                    and int(receipt_row["generation_id"]) == int(member["generation_id"])
-                    and member_output_matches
-                )
-                if stage_id == SEMANTIC_EMBEDDING_STAGE:
-                    normalized_member = (
-                        normalized_member
-                        and str(receipt_row["entity_id"]) == str(member["entity_id"])
-                        and int(receipt_row["item_revision_id"]) == int(member["item_revision_id"])
-                        and int(receipt_row["chunk_revision_id"])
-                        == int(member["chunk_revision_id"])
-                        and int(receipt_row["payload_id"]) == int(member["payload_id"])
-                        and str(receipt_row["model_signature"]) == str(member["model_signature"])
-                    )
-                    if normalized_member:
-                        try:
-                            _validate_embedding_receipt_contract(
-                                connection,
-                                receipt,
-                                receipt_row,
-                                member,
-                            )
-                        except SemanticStateError as exc:
-                            raise ValueError(
-                                "semantic embedding physical facts are corrupt"
-                            ) from exc
-                elif stage_id == SEMANTIC_EMBEDDING_CLONE_STAGE:
-                    if normalized_member:
-                        _validate_embedding_clone_receipt_contract(
-                            connection,
-                            receipt,
-                            receipt_row,
-                        )
-                else:
-                    normalized_member = False
-                if not normalized_member:
-                    raise ValueError(
-                        "semantic embedding receipt contradicts normalized member facts"
-                    )
-            embeddings.append(
-                SemanticEmbeddingDerivation(
-                    member_id=int(member["member_id"]),
-                    generation_id=int(member["generation_id"]),
-                    generation_status=str(member["generation_status"]),
-                    published=member["published_generation_id"] is not None,
-                    processing_signature=str(member["processing_signature"]),
-                    model_signature=str(member["model_signature"]),
-                    model_id=str(member["model_id"]),
-                    model_version=str(member["model_version"]),
-                    provider=str(member["provider"]),
-                    vector_space=str(member["vector_space"]),
-                    payload_id=int(member["payload_id"]),
-                    item_revision_id=int(member["item_revision_id"]),
-                    chunk_revision_id=int(member["chunk_revision_id"]),
-                    stage_id=stage_id,
-                    execution_mode=mode,
-                    receipt_id=receipt_id,
-                    lineage_status=(
-                        "recorded" if receipt_id is not None else "legacy_unattributed"
-                    ),
-                )
-            )
         signature = str(chunk["chunking_signature"])
         current_refresh = str(chunk["refresh_token"])
         published = any(
