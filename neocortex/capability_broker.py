@@ -1073,6 +1073,178 @@ def _metric_map(manifest: CapabilityManifest) -> dict[str, CapabilityQualityMetr
     return {item.metric_id: item for item in manifest.quality_metrics}
 
 
+def _availability_rejections(
+    manifest: CapabilityManifest,
+    request: CapabilityRequest,
+    availability: CapabilityAvailability | None,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Separate broker-owned availability failures from provider observations."""
+
+    reasons: list[str] = []
+    observed_reasons: tuple[str, ...] = ()
+    if availability is None:
+        reasons.append("runtime_availability_unknown")
+    elif availability.execution_request_fingerprint != request.execution_contract_fingerprint:
+        reasons.append("runtime_observation_request_mismatch")
+    elif availability.manifest_fingerprint != manifest.contract_fingerprint:
+        reasons.append("runtime_observation_manifest_mismatch")
+    elif not availability.available:
+        observed_reasons = availability.reasons
+    return tuple(reasons), observed_reasons
+
+
+def _request_rejections(
+    manifest: CapabilityManifest,
+    request: CapabilityRequest,
+    policy: CapabilityPolicy,
+) -> tuple[str, ...]:
+    """Evaluate request/manifest compatibility without ranking preferences."""
+
+    reasons: list[str] = []
+    if request.modality not in manifest.modalities:
+        reasons.append("modality_unsupported")
+    if manifest.lifecycle is CapabilityLifecycle.DISABLED:
+        reasons.append("implementation_disabled")
+    elif manifest.lifecycle is CapabilityLifecycle.SHADOW and not policy.allow_shadow:
+        reasons.append("shadow_not_allowed")
+    if request.platform is None:
+        reasons.append("platform_required")
+    elif request.platform not in manifest.supported_platforms:
+        reasons.append("platform_unsupported")
+    if request.input_schema not in manifest.input_schemas:
+        reasons.append("input_schema_unsupported")
+    if request.output_schema not in manifest.output_schemas:
+        reasons.append("output_schema_unsupported")
+    if request.mime_type is None:
+        reasons.append("mime_type_required")
+    elif request.mime_type not in manifest.mime_types:
+        reasons.append("mime_type_unsupported")
+    if request.language is None:
+        reasons.append("language_required")
+    elif manifest.language_mode is CapabilityLanguageMode.DECLARED:
+        if request.language not in manifest.languages:
+            reasons.append("language_unsupported")
+    elif manifest.language_mode is CapabilityLanguageMode.DETECTS:
+        if request.language != "unknown" and request.language not in manifest.languages:
+            reasons.append("language_unsupported")
+    if manifest.max_input_bytes is not None:
+        if request.input_bytes is None:
+            reasons.append("input_size_unknown")
+        elif request.input_bytes > manifest.max_input_bytes:
+            reasons.append("input_limit_exceeded")
+    if request.acceptable_reproducibility and not (
+        set(request.acceptable_reproducibility) & set(manifest.reproducibility_classes)
+    ):
+        reasons.append("reproducibility_not_supported")
+    if request.require_deterministic and manifest.deterministic is not True:
+        reasons.append("determinism_not_guaranteed")
+    if request.require_incremental and not manifest.incremental:
+        reasons.append("incremental_not_supported")
+    if request.require_cancellation and not manifest.cancellation:
+        reasons.append("cancellation_not_supported")
+    if request.require_checkpointing and not manifest.checkpointing:
+        reasons.append("checkpointing_not_supported")
+    return tuple(reasons)
+
+
+def _policy_rejections(
+    manifest: CapabilityManifest,
+    policy: CapabilityPolicy,
+) -> tuple[str, ...]:
+    """Evaluate provider, privacy and resource policy hard filters."""
+
+    reasons: list[str] = []
+    if policy.allowed_providers and manifest.provider not in policy.allowed_providers:
+        reasons.append("provider_not_allowed")
+    if manifest.provider in policy.denied_providers:
+        reasons.append("provider_denied")
+    if (
+        policy.allowed_implementations
+        and manifest.implementation_id not in policy.allowed_implementations
+    ):
+        reasons.append("implementation_not_allowed")
+    if manifest.implementation_id in policy.denied_implementations:
+        reasons.append("implementation_denied")
+    if not policy.allow_network and (
+        manifest.network_required or manifest.privacy is not CapabilityPrivacy.LOCAL_ONLY
+    ):
+        reasons.append("network_forbidden")
+    if manifest.privacy not in policy.allowed_privacy:
+        reasons.append(f"privacy_not_allowed:{manifest.privacy.value}")
+    if manifest.gpu_required and not policy.gpu_available:
+        reasons.append("gpu_unavailable")
+    if policy.max_cpu_threads is not None:
+        if manifest.cpu_threads is None:
+            reasons.append("cpu_requirement_unknown")
+        elif manifest.cpu_threads > policy.max_cpu_threads:
+            reasons.append("cpu_budget_exceeded")
+    if policy.max_ram_bytes is not None:
+        if manifest.ram_bytes is None:
+            reasons.append("ram_requirement_unknown")
+        elif manifest.ram_bytes > policy.max_ram_bytes:
+            reasons.append("ram_budget_exceeded")
+    if policy.max_estimated_cost is not None:
+        if manifest.estimated_cost is None:
+            reasons.append("estimated_cost_unknown")
+        elif manifest.estimated_cost > policy.max_estimated_cost:
+            reasons.append("estimated_cost_budget_exceeded")
+    if policy.max_estimated_latency_ms is not None:
+        if manifest.estimated_latency_ms is None:
+            reasons.append("estimated_latency_unknown")
+        elif manifest.estimated_latency_ms > policy.max_estimated_latency_ms:
+            reasons.append("estimated_latency_budget_exceeded")
+    return tuple(reasons)
+
+
+def _quality_rejections(
+    manifest: CapabilityManifest,
+    policy: CapabilityPolicy,
+) -> tuple[str, ...]:
+    """Evaluate measured quality requirements and their exact evidence."""
+
+    reasons: list[str] = []
+    metrics = _metric_map(manifest)
+    for requirement in policy.quality_requirements:
+        metric = metrics.get(requirement.metric_id)
+        if metric is None:
+            reasons.append(
+                _bounded_derived_text("quality_metric_unavailable", requirement.metric_id)
+            )
+            continue
+        if requirement.unit is not None and metric.unit != requirement.unit:
+            reasons.append(
+                _bounded_derived_text("quality_unit_mismatch", requirement.metric_id)
+            )
+            continue
+        if requirement.evidence is None:
+            reasons.append(
+                _bounded_derived_text("quality_evidence_required", requirement.metric_id)
+            )
+            continue
+        if metric.evidence != requirement.evidence:
+            reasons.append(
+                _bounded_derived_text("quality_evidence_mismatch", requirement.metric_id)
+            )
+            continue
+        if (
+            requirement.prefer_higher is not None
+            and metric.higher_is_better is not requirement.prefer_higher
+        ):
+            reasons.append(
+                _bounded_derived_text("quality_direction_mismatch", requirement.metric_id)
+            )
+            continue
+        if requirement.minimum is not None and metric.value < requirement.minimum:
+            reasons.append(
+                _bounded_derived_text("quality_below_minimum", requirement.metric_id)
+            )
+        if requirement.maximum is not None and metric.value > requirement.maximum:
+            reasons.append(
+                _bounded_derived_text("quality_above_maximum", requirement.metric_id)
+            )
+    return tuple(reasons)
+
+
 def _execution_evidence(
     evaluation: CapabilityCandidateEvaluation,
 ) -> dict[str, object]:
@@ -1142,139 +1314,18 @@ class CapabilityBroker:
         request: CapabilityRequest,
         policy: CapabilityPolicy,
     ) -> CapabilityCandidateEvaluation:
-        reasons: list[str] = []
-        observed_reasons: tuple[str, ...] = ()
         availability = self._availability.get(manifest.implementation_id)
-        if availability is None:
-            reasons.append("runtime_availability_unknown")
-        elif availability.execution_request_fingerprint != request.execution_contract_fingerprint:
-            reasons.append("runtime_observation_request_mismatch")
-        elif availability.manifest_fingerprint != manifest.contract_fingerprint:
-            reasons.append("runtime_observation_manifest_mismatch")
-        elif not availability.available:
-            observed_reasons = availability.reasons
-        if request.modality not in manifest.modalities:
-            reasons.append("modality_unsupported")
-        if manifest.lifecycle is CapabilityLifecycle.DISABLED:
-            reasons.append("implementation_disabled")
-        elif manifest.lifecycle is CapabilityLifecycle.SHADOW and not policy.allow_shadow:
-            reasons.append("shadow_not_allowed")
-        if request.platform is None:
-            reasons.append("platform_required")
-        elif request.platform not in manifest.supported_platforms:
-            reasons.append("platform_unsupported")
-        if request.input_schema not in manifest.input_schemas:
-            reasons.append("input_schema_unsupported")
-        if request.output_schema not in manifest.output_schemas:
-            reasons.append("output_schema_unsupported")
-        if request.mime_type is None:
-            reasons.append("mime_type_required")
-        elif request.mime_type not in manifest.mime_types:
-            reasons.append("mime_type_unsupported")
-        if request.language is None:
-            reasons.append("language_required")
-        else:
-            if manifest.language_mode is CapabilityLanguageMode.DECLARED:
-                if request.language not in manifest.languages:
-                    reasons.append("language_unsupported")
-            elif manifest.language_mode is CapabilityLanguageMode.DETECTS:
-                if request.language != "unknown" and request.language not in manifest.languages:
-                    reasons.append("language_unsupported")
-        if manifest.max_input_bytes is not None:
-            if request.input_bytes is None:
-                reasons.append("input_size_unknown")
-            elif request.input_bytes > manifest.max_input_bytes:
-                reasons.append("input_limit_exceeded")
-        if request.acceptable_reproducibility and not (
-            set(request.acceptable_reproducibility) & set(manifest.reproducibility_classes)
-        ):
-            reasons.append("reproducibility_not_supported")
-        if request.require_deterministic and manifest.deterministic is not True:
-            reasons.append("determinism_not_guaranteed")
-        if request.require_incremental and not manifest.incremental:
-            reasons.append("incremental_not_supported")
-        if request.require_cancellation and not manifest.cancellation:
-            reasons.append("cancellation_not_supported")
-        if request.require_checkpointing and not manifest.checkpointing:
-            reasons.append("checkpointing_not_supported")
-        if policy.allowed_providers and manifest.provider not in policy.allowed_providers:
-            reasons.append("provider_not_allowed")
-        if manifest.provider in policy.denied_providers:
-            reasons.append("provider_denied")
-        if (
-            policy.allowed_implementations
-            and manifest.implementation_id not in policy.allowed_implementations
-        ):
-            reasons.append("implementation_not_allowed")
-        if manifest.implementation_id in policy.denied_implementations:
-            reasons.append("implementation_denied")
-        if not policy.allow_network and (
-            manifest.network_required or manifest.privacy is not CapabilityPrivacy.LOCAL_ONLY
-        ):
-            reasons.append("network_forbidden")
-        if manifest.privacy not in policy.allowed_privacy:
-            reasons.append(f"privacy_not_allowed:{manifest.privacy.value}")
-        if manifest.gpu_required and not policy.gpu_available:
-            reasons.append("gpu_unavailable")
-        if policy.max_cpu_threads is not None:
-            if manifest.cpu_threads is None:
-                reasons.append("cpu_requirement_unknown")
-            elif manifest.cpu_threads > policy.max_cpu_threads:
-                reasons.append("cpu_budget_exceeded")
-        if policy.max_ram_bytes is not None:
-            if manifest.ram_bytes is None:
-                reasons.append("ram_requirement_unknown")
-            elif manifest.ram_bytes > policy.max_ram_bytes:
-                reasons.append("ram_budget_exceeded")
-        if policy.max_estimated_cost is not None:
-            if manifest.estimated_cost is None:
-                reasons.append("estimated_cost_unknown")
-            elif manifest.estimated_cost > policy.max_estimated_cost:
-                reasons.append("estimated_cost_budget_exceeded")
-        if policy.max_estimated_latency_ms is not None:
-            if manifest.estimated_latency_ms is None:
-                reasons.append("estimated_latency_unknown")
-            elif manifest.estimated_latency_ms > policy.max_estimated_latency_ms:
-                reasons.append("estimated_latency_budget_exceeded")
-        metrics = _metric_map(manifest)
-        for requirement in policy.quality_requirements:
-            metric = metrics.get(requirement.metric_id)
-            if metric is None:
-                reasons.append(
-                    _bounded_derived_text("quality_metric_unavailable", requirement.metric_id)
-                )
-                continue
-            if requirement.unit is not None and metric.unit != requirement.unit:
-                reasons.append(
-                    _bounded_derived_text("quality_unit_mismatch", requirement.metric_id)
-                )
-                continue
-            if requirement.evidence is None:
-                reasons.append(
-                    _bounded_derived_text("quality_evidence_required", requirement.metric_id)
-                )
-                continue
-            if metric.evidence != requirement.evidence:
-                reasons.append(
-                    _bounded_derived_text("quality_evidence_mismatch", requirement.metric_id)
-                )
-                continue
-            if (
-                requirement.prefer_higher is not None
-                and metric.higher_is_better is not requirement.prefer_higher
-            ):
-                reasons.append(
-                    _bounded_derived_text("quality_direction_mismatch", requirement.metric_id)
-                )
-                continue
-            if requirement.minimum is not None and metric.value < requirement.minimum:
-                reasons.append(
-                    _bounded_derived_text("quality_below_minimum", requirement.metric_id)
-                )
-            if requirement.maximum is not None and metric.value > requirement.maximum:
-                reasons.append(
-                    _bounded_derived_text("quality_above_maximum", requirement.metric_id)
-                )
+        availability_reasons, observed_reasons = _availability_rejections(
+            manifest,
+            request,
+            availability,
+        )
+        reasons = (
+            *availability_reasons,
+            *_request_rejections(manifest, request, policy),
+            *_policy_rejections(manifest, policy),
+            *_quality_rejections(manifest, policy),
+        )
 
         # Runtime observations and hard filters may report the same cause.  An
         # abstention must remain data, not become an exception because two
