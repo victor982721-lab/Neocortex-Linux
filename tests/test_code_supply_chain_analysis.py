@@ -626,6 +626,65 @@ def test_supply_chain_wire_rejects_a_tampered_gate_without_a_new_digest(
         parse_code_supply_chain_payload(payload)
 
 
+@pytest.mark.parametrize(
+    ("section", "field", "value", "message"),
+    (
+        (
+            "providers",
+            "mutation_authority",
+            True,
+            "supply-chain provider authority or status is invalid",
+        ),
+        (
+            "observations",
+            "authority",
+            "binding",
+            "supply-chain observation semantics are invalid",
+        ),
+        (
+            "counts",
+            "findings",
+            -1,
+            "supply-chain findings must be a non-negative integer",
+        ),
+        (
+            "gates",
+            "evidence_count",
+            -1,
+            "supply-chain gate evidence count must be a non-negative integer",
+        ),
+        (
+            "digest",
+            "byte_count",
+            -1,
+            "supply-chain digest byte count must be a non-negative integer",
+        ),
+        (
+            None,
+            "mutation_authority",
+            True,
+            "supply-chain analysis authority is invalid",
+        ),
+    ),
+)
+def test_supply_chain_wire_validates_semantics_before_accepting_a_digest(
+    tmp_path: Path,
+    section: str | None,
+    field: str,
+    value: object,
+    message: str,
+) -> None:
+    analysis = _read(_database(tmp_path, findings=False), 1)
+    payload = json.loads(json.dumps(analysis.as_payload()))
+    target = payload if section is None else payload[section]
+    if isinstance(target, list):
+        target = target[0]
+    target[field] = value
+
+    with pytest.raises(ValueError, match=message):
+        parse_code_supply_chain_payload(payload)
+
+
 def test_zero_findings_is_valid_and_all_absolute_gates_pass(tmp_path: Path) -> None:
     analysis = _read(_database(tmp_path, findings=False), 1)
 

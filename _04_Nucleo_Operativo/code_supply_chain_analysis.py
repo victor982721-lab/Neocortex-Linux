@@ -1256,21 +1256,10 @@ def _wire_nonnegative(label: str, value: object) -> int:
     return value
 
 
-def parse_code_supply_chain_payload(payload: Mapping[str, object]) -> CodeSupplyChainAnalysis:
-    """Strictly reconstruct and re-digest the public supply-chain projection."""
-
-    expected = {field.name for field in fields(CodeSupplyChainAnalysis)} | {"kind", "schema"}
-    if (
-        not isinstance(payload, Mapping)
-        or set(payload) != expected
-        or payload.get("kind") != "code-supply-chain-analysis"
-        or payload.get("schema") != CODE_SUPPLY_CHAIN_SCHEMA
-    ):
-        raise ValueError("supply-chain payload envelope is invalid")
-
+def _parse_wire_providers(value: object) -> tuple[SupplyChainProviderStatus, ...]:
     provider_fields = frozenset(field.name for field in fields(SupplyChainProviderStatus))
     providers: list[SupplyChainProviderStatus] = []
-    for raw in _wire_items("supply-chain providers", payload.get("providers")):
+    for raw in _wire_items("supply-chain providers", value):
         item = _wire_mapping("supply-chain provider", raw, provider_fields)
         values = dict(item)
         values["limitations"] = _wire_texts(
@@ -1295,10 +1284,13 @@ def parse_code_supply_chain_payload(payload: Mapping[str, object]) -> CodeSupply
     provider_ids = tuple(item.provider_id for item in provider_tuple)
     if provider_ids and provider_ids != CODE_SUPPLY_CHAIN_REQUIRED_PROVIDERS:
         raise ValueError("supply-chain provider registry is not canonical")
+    return provider_tuple
 
+
+def _parse_wire_observations(value: object) -> tuple[SupplyChainObservation, ...]:
     observation_fields = frozenset(field.name for field in fields(SupplyChainObservation))
     observations: list[SupplyChainObservation] = []
-    for raw in _wire_items("supply-chain observations", payload.get("observations")):
+    for raw in _wire_items("supply-chain observations", value):
         item = _wire_mapping("supply-chain observation", raw, observation_fields)
         observation = SupplyChainObservation(**dict(item))  # type: ignore[arg-type]
         if (
@@ -1313,27 +1305,36 @@ def parse_code_supply_chain_payload(payload: Mapping[str, object]) -> CodeSupply
     observation_tuple = tuple(observations)
     if len({item.observation_id for item in observation_tuple}) != len(observation_tuple):
         raise ValueError("supply-chain observation identities repeat")
+    return observation_tuple
 
+
+def _parse_wire_counts(
+    value: object,
+    observations: tuple[SupplyChainObservation, ...],
+) -> SupplyChainCounts:
     count_fields = frozenset(field.name for field in fields(SupplyChainCounts))
-    raw_counts = _wire_mapping("supply-chain counts", payload.get("counts"), count_fields)
+    raw_counts = _wire_mapping("supply-chain counts", value, count_fields)
     counts = SupplyChainCounts(**dict(raw_counts))  # type: ignore[arg-type]
     for field in fields(SupplyChainCounts):
-        value = getattr(counts, field.name)
+        count = getattr(counts, field.name)
         if field.name == "observations_truncated":
-            if not isinstance(value, bool):
+            if not isinstance(count, bool):
                 raise ValueError("supply-chain truncation flag is invalid")
         else:
-            _wire_nonnegative(f"supply-chain {field.name}", value)
-    if counts.observations != len(observation_tuple):
+            _wire_nonnegative(f"supply-chain {field.name}", count)
+    if counts.observations != len(observations):
         raise ValueError("supply-chain bounded observation count is inconsistent")
     if counts.observations_truncated != (
         counts.findings + counts.metrics + counts.relations > counts.observations
     ):
         raise ValueError("supply-chain truncation is not derived from exact counts")
+    return counts
 
+
+def _parse_wire_gates(value: object) -> tuple[SupplyChainGateEvaluation, ...]:
     gate_fields = frozenset(field.name for field in fields(SupplyChainGateEvaluation))
     gates: list[SupplyChainGateEvaluation] = []
-    for raw in _wire_items("supply-chain gates", payload.get("gates")):
+    for raw in _wire_items("supply-chain gates", value):
         item = _wire_mapping("supply-chain gate", raw, gate_fields)
         gate = SupplyChainGateEvaluation(**dict(item))  # type: ignore[arg-type]
         if gate.status not in {"passed", "failed", "abstained", "not_evaluated"}:
@@ -1346,10 +1347,12 @@ def parse_code_supply_chain_payload(payload: Mapping[str, object]) -> CodeSupply
     )
     if tuple((item.gate, item.provider_id) for item in gate_tuple) != expected_gate_owners:
         raise ValueError("supply-chain gate registry is not canonical")
+    return gate_tuple
 
-    limitations = _wire_texts("supply-chain limitations", payload.get("limitations"))
+
+def _parse_wire_digest(value: object) -> SupplyChainDigest:
     digest_fields = frozenset(field.name for field in fields(SupplyChainDigest))
-    raw_digest = _wire_mapping("supply-chain digest", payload.get("digest"), digest_fields)
+    raw_digest = _wire_mapping("supply-chain digest", value, digest_fields)
     digest = SupplyChainDigest(**dict(raw_digest))  # type: ignore[arg-type]
     if (
         not isinstance(digest.xxh3_128, str)
@@ -1359,7 +1362,12 @@ def parse_code_supply_chain_payload(payload: Mapping[str, object]) -> CodeSupply
     ):
         raise ValueError("supply-chain digest identity is invalid")
     _wire_nonnegative("supply-chain digest byte count", digest.byte_count)
+    return digest
 
+
+def _parse_wire_analysis_identity(
+    payload: Mapping[str, object],
+) -> tuple[SupplyChainStatus, str | None, int | None, str]:
     status = payload.get("status")
     reason = payload.get("reason")
     analysis_run_id = payload.get("analysis_run_id")
@@ -1380,10 +1388,37 @@ def parse_code_supply_chain_payload(payload: Mapping[str, object]) -> CodeSupply
     database = payload.get("database")
     if not isinstance(database, str):
         raise ValueError("supply-chain database identity is invalid")
-
-    expected_digest = _digest(
+    return (
         cast(SupplyChainStatus, status),
         cast(str | None, reason),
+        cast(int | None, analysis_run_id),
+        database,
+    )
+
+
+def parse_code_supply_chain_payload(payload: Mapping[str, object]) -> CodeSupplyChainAnalysis:
+    """Strictly reconstruct and re-digest the public supply-chain projection."""
+
+    expected = {field.name for field in fields(CodeSupplyChainAnalysis)} | {"kind", "schema"}
+    if (
+        not isinstance(payload, Mapping)
+        or set(payload) != expected
+        or payload.get("kind") != "code-supply-chain-analysis"
+        or payload.get("schema") != CODE_SUPPLY_CHAIN_SCHEMA
+    ):
+        raise ValueError("supply-chain payload envelope is invalid")
+
+    provider_tuple = _parse_wire_providers(payload.get("providers"))
+    observation_tuple = _parse_wire_observations(payload.get("observations"))
+    counts = _parse_wire_counts(payload.get("counts"), observation_tuple)
+    gate_tuple = _parse_wire_gates(payload.get("gates"))
+    limitations = _wire_texts("supply-chain limitations", payload.get("limitations"))
+    digest = _parse_wire_digest(payload.get("digest"))
+    status, reason, analysis_run_id, database = _parse_wire_analysis_identity(payload)
+
+    expected_digest = _digest(
+        status,
+        reason,
         provider_tuple,
         observation_tuple,
         counts,
@@ -1395,8 +1430,8 @@ def parse_code_supply_chain_payload(payload: Mapping[str, object]) -> CodeSupply
     return CodeSupplyChainAnalysis(
         database=database,
         analysis_run_id=analysis_run_id,
-        status=cast(SupplyChainStatus, status),
-        reason=cast(str | None, reason),
+        status=status,
+        reason=reason,
         providers=provider_tuple,
         observations=observation_tuple,
         counts=counts,
