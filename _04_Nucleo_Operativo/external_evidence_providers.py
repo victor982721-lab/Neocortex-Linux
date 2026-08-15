@@ -844,6 +844,8 @@ def _exact_replay(
     )
     if not input_signature or len(input_signature.encode("utf-8")) > 512:
         raise ValueError("external provider input signature is invalid")
+    if baseline.reuse_mode != "exact_replay":
+        raise ValueError("external provider baseline is comparison-only")
     if baseline.input_signature != input_signature:
         raise ValueError("external provider replay input signature is not exact")
     counters = {
@@ -921,6 +923,19 @@ def _exact_replay(
         baseline.tool_run_id,
         verification,
         tuple(limitations),
+    )
+
+
+def _baseline_allows_exact_replay(
+    baseline: ExternalProviderBaseline | None,
+    input_signature: str,
+) -> bool:
+    """Keep portable comparison evidence separate from physical replay authority."""
+
+    return (
+        baseline is not None
+        and baseline.reuse_mode == "exact_replay"
+        and baseline.input_signature == input_signature
     )
 
 
@@ -1120,8 +1135,12 @@ class RuffProtectedBasicProvider:
         """Normalize the already-executed legacy Ruff result without rerunning it."""
 
         if publication.execution == "cache_replay":
-            if baseline is None:
-                raise ValueError("normalized Ruff replay has no normalized source")
+            if not _baseline_allows_exact_replay(
+                baseline,
+                external_input_signature(files),
+            ):
+                raise ValueError("normalized Ruff replay has no exact normalized source")
+            assert baseline is not None
             return _exact_replay(self.descriptor, root, files, baseline)
         if publication.status != "completed":
             reason = "ruff_protected_failed"
@@ -1163,7 +1182,8 @@ class RuffProtectedBasicProvider:
         baseline: ExternalProviderBaseline | None,
         scratch_root: Path,
     ) -> ExternalProviderPublication:
-        if baseline is not None and baseline.input_signature == external_input_signature(files):
+        if _baseline_allows_exact_replay(baseline, external_input_signature(files)):
+            assert baseline is not None
             return _exact_replay(self.descriptor, root, files, baseline)
         started_ns = time.time_ns()
         if self._version is None:
@@ -1295,7 +1315,8 @@ class _TrustedStaticProvider:
         baseline: ExternalProviderBaseline | None,
         scratch_root: Path,
     ) -> ExternalProviderPublication:
-        if baseline is not None and baseline.input_signature == external_input_signature(files):
+        if _baseline_allows_exact_replay(baseline, external_input_signature(files)):
+            assert baseline is not None
             return _exact_replay(
                 self.descriptor,
                 root,
@@ -1953,7 +1974,8 @@ class VultureUnusedStaticProvider:
         baseline: ExternalProviderBaseline | None,
         scratch_root: Path,
     ) -> ExternalProviderPublication:
-        if baseline is not None and baseline.input_signature == external_input_signature(files):
+        if _baseline_allows_exact_replay(baseline, external_input_signature(files)):
+            assert baseline is not None
             return _exact_replay(
                 self.descriptor,
                 root,
@@ -2103,7 +2125,8 @@ class SemgrepNeocortexInvariantsProvider:
     ) -> ExternalProviderPublication:
         selected = self._files(files)
         signature = external_input_signature(selected)
-        if baseline is not None and baseline.input_signature == signature:
+        if _baseline_allows_exact_replay(baseline, signature):
+            assert baseline is not None
             return _exact_replay(
                 self.descriptor,
                 root,
@@ -2266,7 +2289,8 @@ class DeptryProjectDependenciesProvider:
     ) -> ExternalProviderPublication:
         selected = self._files(files)
         signature = external_input_signature(selected)
-        if baseline is not None and baseline.input_signature == signature:
+        if _baseline_allows_exact_replay(baseline, signature):
+            assert baseline is not None
             return _exact_replay(
                 self.descriptor,
                 root,
@@ -2472,11 +2496,13 @@ class PipAuditKnownVulnerabilitiesProvider:
         signature = self.baseline_input_signature(())
         limitations = PIP_AUDIT_LIMITATIONS
         replay_is_fresh = (
-            baseline is not None
+            _baseline_allows_exact_replay(baseline, signature)
+            and baseline is not None
             and baseline.fresh_until_unix_seconds is not None
             and time.time() <= baseline.fresh_until_unix_seconds
         )
-        if baseline is not None and baseline.input_signature == signature and replay_is_fresh:
+        if replay_is_fresh:
+            assert baseline is not None
             replay = _exact_replay(
                 self.descriptor,
                 root,
@@ -2807,7 +2833,8 @@ class InstalledPackageInventoryProvider:
                 reason=f"provider_failure:{type(exc).__name__}:{exc}"[:4096],
                 started_ns=started_ns,
             )
-        if baseline is not None and baseline.input_signature == signature:
+        if _baseline_allows_exact_replay(baseline, signature):
+            assert baseline is not None
             replay = _exact_replay(
                 self.descriptor,
                 root,
@@ -3030,7 +3057,8 @@ class GitHistoryLocalProvider:
             ]
             if snapshot.repository_shallow:
                 replay_limitations.append("shallow_repository_history_incomplete")
-            if baseline is not None and baseline.input_signature == signature:
+            if _baseline_allows_exact_replay(baseline, signature):
+                assert baseline is not None
                 replay = _exact_replay(
                     self.descriptor,
                     root,
@@ -3166,7 +3194,8 @@ class _TrustedArchitectureProvider:
         scratch_root: Path,
     ) -> ExternalProviderPublication:
         selected = _architecture_files(files)
-        if baseline is not None and baseline.input_signature == external_input_signature(selected):
+        if _baseline_allows_exact_replay(baseline, external_input_signature(selected)):
+            assert baseline is not None
             return _exact_replay(self.descriptor, root, selected, baseline)
         started_ns = time.time_ns()
         if self._version is None:
@@ -3520,7 +3549,8 @@ class CosmicRayFocalMutationProvider:
                 configuration=self.deep_configuration,
                 execution=None,
             )
-        if baseline is not None and baseline.input_signature == input_signature:
+        if _baseline_allows_exact_replay(baseline, input_signature):
+            assert baseline is not None
             replay = _exact_replay(
                 self.descriptor,
                 root,
@@ -3888,10 +3918,11 @@ class PytestCoverageTrustedDeepProvider:
                 execution=None,
             )
         assert prepared is not None
-        if (
-            baseline is not None
-            and baseline.input_signature == prepared.publication_input_signature
+        if _baseline_allows_exact_replay(
+            baseline,
+            prepared.publication_input_signature,
         ):
+            assert baseline is not None
             replay = _exact_replay(
                 self.descriptor,
                 root,

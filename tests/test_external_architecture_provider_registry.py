@@ -34,7 +34,7 @@ def _external_file(path: Path, root: Path, version_id: int) -> ExternalEvidenceF
     )
 
 
-def test_architecture_provider_uses_only_production_domain_and_replays_without_process(
+def test_architecture_provider_executes_comparison_only_and_replays_exact_without_process(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -81,6 +81,33 @@ def test_architecture_provider_uses_only_production_domain_and_replays_without_p
     assert publication.counters["process_invocations"] == 1
 
     assert publication.result_digest is not None
+    comparison_only = ExternalProviderBaseline(
+        17,
+        publication.descriptor.provider_id,
+        publication.publication.tool_version,
+        publication.input_signature,
+        publication.descriptor.comparability_signature,
+        publication.result_digest,
+        (),
+        (),
+        (),
+    )
+    compared = provider.run(
+        root,
+        files,
+        baseline=comparison_only,
+        scratch_root=scratch,
+    )
+
+    assert compared.execution == "full"
+    assert compared.replay_source_tool_run_id is None
+    assert compared.counters["process_invocations"] == 1
+    assert compared.counters["comparable"] == 1
+    assert observed_paths == [
+        ("_04_Nucleo_Operativo/sample.py",),
+        ("_04_Nucleo_Operativo/sample.py",),
+    ]
+
     baseline = ExternalProviderBaseline(
         17,
         publication.descriptor.provider_id,
@@ -91,6 +118,7 @@ def test_architecture_provider_uses_only_production_domain_and_replays_without_p
         (),
         (),
         (),
+        reuse_mode="exact_replay",
     )
     provider.executor = lambda *_args: pytest.fail("exact replay executed a provider")
     replay = provider.run(root, files, baseline=baseline, scratch_root=scratch)
@@ -166,6 +194,7 @@ def test_vulture_provider_uses_exact_project_wide_input_and_replays(
         (),
         (),
         (),
+        reuse_mode="exact_replay",
     )
     provider.executor = lambda *_args: pytest.fail("exact replay executed Vulture")
     replay = provider.run(root, files, baseline=baseline, scratch_root=scratch)

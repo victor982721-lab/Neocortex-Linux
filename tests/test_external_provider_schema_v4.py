@@ -833,6 +833,8 @@ def test_publication_replay_and_baseline_resolve_all_evidence(tmp_path: Path) ->
     assert suite.providers[0].metrics == suite.providers[0].relations == 1
     assert suite.providers[0].result_digest == source.result_digest
     assert exact is not None and comparable is not None
+    assert exact.reuse_mode == "exact_replay"
+    assert comparable.reuse_mode == "comparison_only"
     assert exact.portable_metric_ids == (source.metrics[0].portable_metric_id,)
     assert exact.portable_relation_ids == (source.relations[0].portable_relation_id,)
 
@@ -871,6 +873,7 @@ def test_stale_version_projection_is_comparable_but_not_exactly_replayable(
 
     assert exact is None
     assert comparable is not None
+    assert comparable.reuse_mode == "comparison_only"
     assert comparable.portable_finding_ids == (source.findings[0].portable_finding_id,)
     assert comparable.portable_metric_ids == (source.metrics[0].portable_metric_id,)
     assert comparable.portable_relation_ids == (source.relations[0].portable_relation_id,)

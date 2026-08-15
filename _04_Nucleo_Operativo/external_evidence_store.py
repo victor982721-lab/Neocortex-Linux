@@ -810,7 +810,7 @@ def read_external_provider_baselines(
                 baseline.tool_run_id,
             )
         ):
-            exact = baseline
+            exact = replace(baseline, reuse_mode="exact_replay")
             break
     return exact, comparable
 

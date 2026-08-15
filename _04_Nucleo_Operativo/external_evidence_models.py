@@ -552,6 +552,11 @@ class ExternalProviderBaseline:
     portable_metric_ids: tuple[str, ...] = ()
     portable_relation_ids: tuple[str, ...] = ()
     fresh_until_unix_seconds: float | None = None
+    reuse_mode: Literal["comparison_only", "exact_replay"] = "comparison_only"
+
+    def __post_init__(self) -> None:
+        if self.reuse_mode not in {"comparison_only", "exact_replay"}:
+            raise ValueError("external provider baseline reuse mode is invalid")
 
 
 @dataclass(frozen=True, slots=True)

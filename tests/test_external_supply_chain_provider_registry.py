@@ -87,6 +87,7 @@ def _baseline(
         (),
         (),
         fresh_until_unix_seconds,
+        reuse_mode="exact_replay",
     )
 
 

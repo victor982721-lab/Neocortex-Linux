@@ -230,6 +230,7 @@ def test_exact_replay_observes_support_and_never_executes_pytest(
         (),
         (),
         (),
+        reuse_mode="exact_replay",
     )
     replay_provider = PytestCoverageTrustedDeepProvider(
         root,

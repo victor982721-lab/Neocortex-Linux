@@ -93,6 +93,7 @@ def _baseline(publication, tool_run_id: int = 41) -> ExternalProviderBaseline:
         tuple(item.portable_finding_id for item in publication.findings),
         tuple(item.portable_metric_id for item in publication.metrics),
         tuple(item.portable_relation_id for item in publication.relations),
+        reuse_mode="exact_replay",
     )
 
 
