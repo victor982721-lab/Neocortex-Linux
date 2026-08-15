@@ -11,6 +11,7 @@ from typing import cast
 import pytest
 
 from _04_Nucleo_Operativo.code_analysis_query import (
+    CODE_ANALYSIS_QUERY_MAX_SOURCE_SEQUENCE_ITEMS,
     CODE_ANALYSIS_QUERY_SCHEMA,
     CodeAnalysisQuery,
     query_code_analysis,
@@ -487,6 +488,86 @@ def test_review_query_rejects_a_tampered_v19_experiment_plan(
 
     with pytest.raises(ValueError, match="code-review/v19"):
         query_code_analysis(payload, CodeAnalysisQuery(surface="review"))
+
+
+@pytest.mark.parametrize(
+    "schema",
+    (
+        "neocortex.code-review/v16",
+        "neocortex.code-review/v17",
+        "neocortex.code-review/v18",
+        "neocortex.code-review/v19",
+    ),
+)
+def test_review_query_preserves_abstained_v16_v19_compatibility(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    schema: str,
+) -> None:
+    import _04_Nucleo_Operativo.code_review as review_module
+    from _04_Nucleo_Operativo.code_review import review_code_state
+    from _04_Nucleo_Operativo.code_review_epistemics import CodeReviewEvidenceResolutionError
+    from tests.test_code_review import _build_state, _status
+
+    state_directory = tmp_path / "state"
+    _build_state(state_directory)
+    monkeypatch.setattr(
+        review_module,
+        "read_self_analysis_status",
+        lambda _state, _run: _status(tmp_path),
+    )
+    monkeypatch.setattr(
+        review_module,
+        "resolve_code_review_questions",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            CodeReviewEvidenceResolutionError("source record changed")
+        ),
+    )
+    payload = review_code_state(state_directory).as_payload()
+    assert payload["status"] == "abstained"
+    payload["schema"] = schema
+
+    result = query_code_analysis(payload, CodeAnalysisQuery(surface="review"))
+
+    assert result["status"] == "abstained"
+    assert result["matches"] == []
+
+
+def test_review_query_preserves_ready_v19_fail_closed_validation_order_and_bound(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import _04_Nucleo_Operativo.code_review as review_module
+    from _04_Nucleo_Operativo.code_review import review_code_state
+    from tests.test_code_review import _build_state, _status
+
+    state_directory = tmp_path / "state"
+    _build_state(state_directory)
+    monkeypatch.setattr(
+        review_module,
+        "read_self_analysis_status",
+        lambda _state, _run: _status(tmp_path),
+    )
+    payload = json.loads(json.dumps(review_code_state(state_directory, limit=1).as_payload()))
+
+    oversized = deepcopy(payload)
+    oversized["findings"] = [{}] * (CODE_ANALYSIS_QUERY_MAX_SOURCE_SEQUENCE_ITEMS + 1)
+    oversized["structural_analysis"] = None
+    with pytest.raises(ValueError, match="v19 integrated projection is malformed") as bounded:
+        query_code_analysis(oversized, CodeAnalysisQuery(surface="review"))
+    assert bounded.value.__cause__ is not None
+    assert str(bounded.value.__cause__) == "query source sequence exceeds its item bound"
+
+    missing_integrated = deepcopy(payload)
+    missing_integrated["state_topology"] = None
+    snapshot = cast("dict[str, object]", missing_integrated["snapshot"])
+    snapshot["analysis_run_id"] = False
+    with pytest.raises(ValueError, match="v19 integrated projection is malformed") as staged:
+        query_code_analysis(missing_integrated, CodeAnalysisQuery(surface="review"))
+    assert staged.value.__cause__ is not None
+    assert str(staged.value.__cause__) == (
+        "ready code-review/v19 payload lacks integrated evidence"
+    )
 
 
 def test_review_query_projects_a_valid_v19_receipt_and_closes_the_experiment_loop(
