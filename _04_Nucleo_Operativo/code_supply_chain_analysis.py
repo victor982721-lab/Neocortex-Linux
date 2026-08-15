@@ -1391,7 +1391,7 @@ def _parse_wire_analysis_identity(
     return (
         cast(SupplyChainStatus, status),
         cast(str | None, reason),
-        cast(int | None, analysis_run_id),
+        analysis_run_id,
         database,
     )
 
