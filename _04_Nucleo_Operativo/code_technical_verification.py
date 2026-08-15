@@ -619,19 +619,23 @@ def _supply_chain_predicate(
     if len(coverage_records) != 1 or len(provider_records) != 2:
         return False
     coverage = coverage_records[0]
-    digest = coverage.get("supply_chain_digest")
+    digest = coverage.get("supply_chain_semantic_digest")
+    digest_prefix = f"code-supply-{domain}-decision-projection-v1:xxh3_128:"
     if not (
         coverage.get("supply_chain_status") == "ready"
         and coverage.get("supply_chain_reason") is None
-        and _nonnegative_integer(coverage.get("analysis_run_id"))
         and coverage.get("required_provider_count") == 2
         and coverage.get("ready_provider_count") == 2
         and coverage.get("evaluated_gate_count") == 3
         and coverage.get("failed_gate_count") == 0
         and isinstance(coverage.get("observation_projection_truncated"), bool)
         and isinstance(digest, str)
-        and len(digest) == 32
-        and all(character in "0123456789abcdef" for character in digest)
+        and digest.startswith(digest_prefix)
+        and len(digest.removeprefix(digest_prefix)) == 32
+        and all(
+            character in "0123456789abcdef"
+            for character in digest.removeprefix(digest_prefix)
+        )
     ):
         return False
     expected = (

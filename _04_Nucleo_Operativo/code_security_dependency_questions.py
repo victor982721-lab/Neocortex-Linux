@@ -164,10 +164,78 @@ _LIMITATIONS = (
 )
 
 
+def _domain_provider_ids(domain: Literal["security", "dependency"]) -> tuple[str, str]:
+    return (
+        ("semgrep-neocortex-invariants", "pip-audit-known-vulnerabilities")
+        if domain == "security"
+        else ("deptry-project-dependencies", "installed-package-inventory")
+    )
+
+
+def _semantic_projection_digest(
+    analysis: CodeSupplyChainAnalysis,
+    *,
+    domain: Literal["security", "dependency"],
+) -> str:
+    """Identify decision-relevant supply evidence without capture-local run data."""
+
+    provider_ids = _domain_provider_ids(domain)
+    providers = {item.provider_id: item for item in analysis.providers}
+    provider_projection: list[object] = []
+    for provider_id in provider_ids:
+        provider = providers.get(provider_id)
+        if provider is None:
+            provider_projection.append({"provider_id": provider_id, "status": "absent"})
+            continue
+        provider_projection.append(
+            {
+                "provider_id": provider.provider_id,
+                "status": provider.status,
+                "reason": provider.reason,
+                "profile": provider.profile,
+                "tool_name": provider.tool_name,
+                "tool_version": provider.tool_version,
+                "provider_schema": provider.provider_schema,
+                "comparability_signature": provider.comparability_signature,
+                "findings": provider.findings,
+                "metrics": provider.metrics,
+                "relations": provider.relations,
+                "freshness": provider.freshness,
+                "limitations": tuple(sorted(provider.limitations)),
+                "authority": provider.authority,
+                "mutation_authority": provider.mutation_authority,
+            }
+        )
+    gates = tuple(
+        (
+            item.gate,
+            item.provider_id,
+            item.status,
+            item.reason,
+            item.evidence_count,
+        )
+        for item in sorted(analysis.gates, key=lambda item: (item.provider_id, item.gate))
+        if item.provider_id in provider_ids
+    )
+    return analysis_identity(
+        f"code-supply-{domain}-decision-projection-v1",
+        {
+            "status": analysis.status,
+            "reason": analysis.reason,
+            "providers": tuple(provider_projection),
+            "gates": gates,
+            "observations_truncated": analysis.counts.observations_truncated,
+            "authority": analysis.authority,
+            "mutation_authority": analysis.mutation_authority,
+        },
+    )
+
+
 def _subject(
     analysis: CodeSupplyChainAnalysis,
     *,
     kind: Literal["project", "dependency"],
+    domain: Literal["security", "dependency"],
     snapshot_id: str,
     snapshot_freshness: Literal["current", "publication_only", "unknown"],
 ) -> AnalysisSubjectRef:
@@ -186,7 +254,7 @@ def _subject(
         source_owner_id="code",
         snapshot_id=snapshot_id,
         snapshot_freshness=snapshot_freshness,
-        revision_id=analysis.digest.xxh3_128,
+        revision_id=_semantic_projection_digest(analysis, domain=domain),
     )
 
 
@@ -196,11 +264,7 @@ def _coverage_evidence(
     *,
     domain: Literal["security", "dependency"],
 ) -> AnalysisEvidenceRef:
-    provider_ids = (
-        ("semgrep-neocortex-invariants", "pip-audit-known-vulnerabilities")
-        if domain == "security"
-        else ("deptry-project-dependencies", "installed-package-inventory")
-    )
+    provider_ids = _domain_provider_ids(domain)
     providers = {item.provider_id: item for item in analysis.providers}
     gates = tuple(item for item in analysis.gates if item.provider_id in provider_ids)
     projection = {
@@ -220,10 +284,10 @@ def _coverage_evidence(
     projection_digest = analysis_identity(
         f"code-{domain}-provider-coverage-projection-v1", projection
     )
+    semantic_digest = _semantic_projection_digest(analysis, domain=domain)
     facts = (
         AnalysisFact("supply_chain_status", analysis.status),
         AnalysisFact("supply_chain_reason", analysis.reason),
-        AnalysisFact("analysis_run_id", analysis.analysis_run_id),
         AnalysisFact("required_provider_count", len(provider_ids), "count"),
         AnalysisFact(
             "ready_provider_count",
@@ -240,7 +304,7 @@ def _coverage_evidence(
         ),
         AnalysisFact("failed_gate_count", sum(item.status == "failed" for item in gates), "count"),
         AnalysisFact("observation_projection_truncated", analysis.counts.observations_truncated),
-        AnalysisFact("supply_chain_digest", analysis.digest.xxh3_128),
+        AnalysisFact("supply_chain_semantic_digest", semantic_digest),
     )
     return AnalysisEvidenceRef(
         evidence_id=analysis_identity(
@@ -364,6 +428,7 @@ def _evaluation(
     subject = _subject(
         analysis,
         kind="project" if domain == "security" else "dependency",
+        domain=domain,
         snapshot_id=snapshot_id,
         snapshot_freshness=snapshot_freshness,
     )

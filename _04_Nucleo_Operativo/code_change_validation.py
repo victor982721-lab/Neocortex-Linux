@@ -1874,20 +1874,35 @@ def _replay_gate(
         )
     )
     expected = tuple(sorted(_TRUSTED_DEEP_REQUIRED_PROVIDER_IDS))
-    expected_cache_replays = tuple(sorted(identity_provider_ids))
+    identical_full_reobservations = tuple(
+        sorted(
+            provider_id
+            for provider_id in identity_provider_ids
+            if provider_id in replay_providers
+            and replay_providers[provider_id].execution == "full"
+        )
+    )
+    unresolved_execution_ids = tuple(
+        sorted(
+            provider_id
+            for provider_id in identity_provider_ids
+            if provider_id not in replay_providers
+            or replay_providers[provider_id].execution not in {"cache_replay", "full"}
+        )
+    )
     status: Literal["passed", "failed", "abstained"] = (
         "failed"
         if not identities_match
         else "abstained"
-        if tuple(sorted(cache_replays)) != expected_cache_replays
+        if unresolved_execution_ids
         else "passed"
     )
     reason = (
         "provider_results_changed_on_replay"
         if status == "failed"
-        else "not_all_required_providers_replayed"
+        else "provider_replay_or_reobservation_unresolved"
         if status == "abstained"
-        else "all_required_provider_evidence_exactly_replayed"
+        else "all_required_provider_evidence_replayed_or_reobserved_identically"
     )
     return _gate(
         "trusted_deep_replay",
@@ -1904,8 +1919,9 @@ def _replay_gate(
             "replay_review_digest": _review_digest_payload(replay_review),
             "provider_result_identities_match": identities_match,
             "required_provider_ids": list(expected),
-            "expected_cache_replay_ids": list(expected_cache_replays),
             "cache_replays": list(cache_replays),
+            "identical_full_reobservations": list(identical_full_reobservations),
+            "unresolved_execution_ids": list(unresolved_execution_ids),
             "historical_pip_audit_fallback": (
                 replay_historical_pip if historical_pip_replayed else None
             ),
@@ -2984,8 +3000,10 @@ def validate_code_change(
             experiment_receipts=experiment_receipts,
         )
 
-    # An identical second producer run must reuse exact provider publications.
-    # This proves resumability instead of treating one green run as enough.
+    # An identical second producer run must reuse physically current provider
+    # publications or reobserve an identical semantic result when version-bound
+    # evidence makes physical replay unsafe.  Both paths prove resumability
+    # without granting a comparable baseline replay authority.
     report("replaying identical trusted-deep publication")
     gates.append(
         _run_gate_command(

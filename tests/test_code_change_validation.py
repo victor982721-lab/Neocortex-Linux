@@ -384,6 +384,42 @@ def test_replay_accepts_the_same_resolved_fresh_pip_snapshot_only_once(
     assert gate.evidence["installed_inventory_replay"] == inventory_receipt
 
 
+def test_replay_accepts_identical_full_reobservation_when_physical_replay_is_unsafe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from _04_Nucleo_Operativo import code_change_validation
+
+    provider_id = "fixture-version-bound-provider"
+    monkeypatch.setattr(
+        code_change_validation,
+        "_TRUSTED_DEEP_REQUIRED_PROVIDER_IDS",
+        frozenset({provider_id}),
+    )
+    provider = SimpleNamespace(
+        provider_id=provider_id,
+        status="ready",
+        gate="baseline",
+        reason=None,
+        result_digest="stable-semantic-result",
+        comparability_signature="stable-comparability",
+        execution="full",
+    )
+
+    gate = _replay_gate(
+        _review_with_providers(20, (provider,)),
+        _review_with_providers(21, (provider,)),
+        state_directory=tmp_path,
+        change=_change_for("neocortex/logic.py"),
+    )
+
+    assert gate.status == "passed"
+    assert gate.reason == "all_required_provider_evidence_replayed_or_reobserved_identically"
+    assert gate.evidence["cache_replays"] == []
+    assert gate.evidence["identical_full_reobservations"] == [provider_id]
+    assert gate.evidence["unresolved_execution_ids"] == []
+
+
 def test_canonical_experiment_gate_persists_each_exact_receipt(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
