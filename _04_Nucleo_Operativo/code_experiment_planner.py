@@ -26,8 +26,8 @@ from .code_analysis_epistemics import (
 from .code_invariant_contracts import INVARIANT_RUNTIME_SCENARIOS, RUNTIME_SCENARIOS
 
 CODE_EXPERIMENT_PLAN_SCHEMA = "neocortex.code-experiment-plan/v2"
-CODE_EXPERIMENT_TEMPLATE_REGISTRY_SCHEMA = "neocortex.code-experiment-template-registry/v4"
-CODE_EXPERIMENT_PLANNING_POLICY = "registered-applicable-cheapest-discriminating-experiment-v5"
+CODE_EXPERIMENT_TEMPLATE_REGISTRY_SCHEMA = "neocortex.code-experiment-template-registry/v6"
+CODE_EXPERIMENT_PLANNING_POLICY = "registered-applicable-cheapest-discriminating-experiment-v7"
 CODE_EXPERIMENT_MAX_PROPOSALS = 256
 
 ExperimentKind = Literal[
@@ -209,6 +209,7 @@ def _template(
         "architecture.declared_import_contract_acceptance": "v1",
         "capability.public_route_acceptance": "v2",
         "evolution.code_schema_upgrade_matrix": "v1",
+        "retention.durable_hold_safety": "v2",
         "state.semantic_process_death_recovery": "v1",
         "state.runtime_sql_trace": "v2",
     }
@@ -494,6 +495,31 @@ CODE_EXPERIMENT_TEMPLATES: tuple[CodeExperimentTemplate, ...] = (
         ),
     ),
     _template(
+        "retention.durable_hold_safety",
+        ("run_retention_hold_safety_experiment",),
+        "isolated_pytest",
+        "pytest_tmp_path",
+        "bounded",
+        timeout=300,
+        max_items=14,
+        attention=10,
+        scenarios=("retention.durable_hold_safety",),
+        runner="trusted_deep_declared_scenarios",
+        questions=("retention.dry_run_preserves_declared_durable_holds",),
+        subject_prefixes=("retention:canonical-durable-holds",),
+        gates=(
+            "current_previous_builders_leases_and_human_evidence_are_protected",
+            "dry_run_never_supports_deletion_and_preserves_phase_order",
+            "incomplete_review_receipt_or_schema_drift_fails_closed_without_mutation",
+            "reader_snapshot_does_not_mix_concurrent_owner_commit",
+        ),
+        limitations=(
+            "bounded_owner_fixtures_do_not_prove_power_loss",
+            "passing_dry_run_controls_do_not_authorize_or_validate_a_future_delete_executor",
+            "owner_snapshots_are_not_a_cross_database_atomic_snapshot",
+        ),
+    ),
+    _template(
         "security.bounded_boundary_scenarios",
         (
             "execute_bounded_security_boundary_scenarios",
@@ -567,7 +593,7 @@ def experiment_template_registry_payload() -> dict[str, object]:
 
 def experiment_template_registry_fingerprint() -> str:
     return analysis_identity(
-        "code-experiment-template-registry-v4",
+        "code-experiment-template-registry-v6",
         experiment_template_registry_payload(),
     )
 

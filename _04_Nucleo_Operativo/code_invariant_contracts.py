@@ -13,7 +13,7 @@ from typing import Literal
 from .code_analysis_epistemics import analysis_identity
 
 CODE_INVARIANT_REGISTRY_SCHEMA = "neocortex.code-invariant-registry/v3"
-CODE_RUNTIME_SCENARIO_REGISTRY_SCHEMA = "neocortex.code-runtime-scenario-registry/v4"
+CODE_RUNTIME_SCENARIO_REGISTRY_SCHEMA = "neocortex.code-runtime-scenario-registry/v6"
 
 
 def _required(label: str, value: object, maximum: int = 512) -> str:
@@ -105,6 +105,21 @@ class InvariantSpec:
             raise ValueError("invariant scenarios must be non-empty and unique")
         if self.failure_impact not in {"consistency", "publication", "analyzer_integrity"}:
             raise ValueError("invariant failure impact is invalid")
+
+
+_RETENTION_INCOMPLETE_REVIEW_RECEIPT_NODEIDS = tuple(
+    "tests/test_retention_planner.py::"
+    "test_framework_retention_fails_closed_on_incomplete_review_source_receipt"
+    f"[{case}]"
+    for case in (
+        "batch_cursor",
+        "membership",
+        "membership_binding",
+        "progress",
+        "progress_mismatch",
+        "source_receipt",
+    )
+)
 
 
 RUNTIME_SCENARIOS = (
@@ -385,6 +400,106 @@ RUNTIME_SCENARIOS = (
         limitation="selected_cli_dispatch_and_static_inventory_do_not_cover_every_dynamic_interface",
     ),
     RuntimeScenarioSpec(
+        scenario_id="retention.durable_hold_safety",
+        version="v2",
+        test_nodeids=(
+            (
+                "tests/test_retention_planner.py::"
+                "test_catalog_protects_publications_builders_and_uncertain_actions"
+            ),
+            (
+                "tests/test_retention_planner.py::"
+                "test_framework_protects_uncertain_actions_and_human_evidence"
+            ),
+            *_RETENTION_INCOMPLETE_REVIEW_RECEIPT_NODEIDS,
+            (
+                "tests/test_retention_planner.py::"
+                "test_framework_retention_holds_and_validates_complete_review_batch_chain"
+            ),
+            (
+                "tests/test_retention_planner.py::"
+                "test_inventory_protects_current_previous_builder_candidate_and_framework_use"
+            ),
+            (
+                "tests/test_retention_planner.py::"
+                "test_plan_retention_signature_and_snapshot_then_planning_phase_order"
+            ),
+            (
+                "tests/test_retention_planner.py::"
+                "test_reader_snapshot_does_not_mix_concurrent_semantic_commit"
+            ),
+            (
+                "tests/test_retention_planner.py::"
+                "test_schema_drift_blocks_without_modifying_main_database"
+            ),
+            (
+                "tests/test_retention_planner.py::"
+                "test_semantic_policy_protects_heads_builders_leases_and_base_chain"
+            ),
+        ),
+        scenario_kind="state_fixture",
+        isolation="pytest_tmp_path",
+        limitation=(
+            "bounded_owner_fixtures_do_not_prove_power_loss_or_the_safety_of_a_future_"
+            "delete_executor"
+        ),
+        gate_specs=(
+            RuntimeScenarioGateSpec(
+                "current_previous_builders_leases_and_human_evidence_are_protected",
+                (
+                    (
+                        "tests/test_retention_planner.py::"
+                        "test_catalog_protects_publications_builders_and_uncertain_actions"
+                    ),
+                    (
+                        "tests/test_retention_planner.py::"
+                        "test_framework_protects_uncertain_actions_and_human_evidence"
+                    ),
+                    (
+                        "tests/test_retention_planner.py::"
+                        "test_framework_retention_holds_and_validates_complete_review_batch_chain"
+                    ),
+                    (
+                        "tests/test_retention_planner.py::"
+                        "test_inventory_protects_current_previous_builder_candidate_and_framework_use"
+                    ),
+                    (
+                        "tests/test_retention_planner.py::"
+                        "test_semantic_policy_protects_heads_builders_leases_and_base_chain"
+                    ),
+                ),
+            ),
+            RuntimeScenarioGateSpec(
+                "dry_run_never_supports_deletion_and_preserves_phase_order",
+                (
+                    (
+                        "tests/test_retention_planner.py::"
+                        "test_plan_retention_signature_and_snapshot_then_planning_phase_order"
+                    ),
+                ),
+            ),
+            RuntimeScenarioGateSpec(
+                "incomplete_review_receipt_or_schema_drift_fails_closed_without_mutation",
+                (
+                    *_RETENTION_INCOMPLETE_REVIEW_RECEIPT_NODEIDS,
+                    (
+                        "tests/test_retention_planner.py::"
+                        "test_schema_drift_blocks_without_modifying_main_database"
+                    ),
+                ),
+            ),
+            RuntimeScenarioGateSpec(
+                "reader_snapshot_does_not_mix_concurrent_owner_commit",
+                (
+                    (
+                        "tests/test_retention_planner.py::"
+                        "test_reader_snapshot_does_not_mix_concurrent_semantic_commit"
+                    ),
+                ),
+            ),
+        ),
+    ),
+    RuntimeScenarioSpec(
         scenario_id="security.supply_chain_gate_controls",
         version="v1",
         test_nodeids=(
@@ -538,6 +653,7 @@ EXPERIMENT_SCENARIO_IDS = (
     "architecture.declared_import_contract_acceptance",
     "capability.public_text_route_to_search",
     "evolution.code_schema_upgrade_matrix",
+    "retention.durable_hold_safety",
     "semantic.staging_process_death_resume",
     "state.text_sql_runtime_trace",
 )
@@ -654,7 +770,7 @@ def runtime_scenario_registry_payload() -> dict[str, object]:
 
 def runtime_scenario_registry_fingerprint() -> str:
     return analysis_identity(
-        "code-runtime-scenario-registry-v4", runtime_scenario_registry_payload()
+        "code-runtime-scenario-registry-v6", runtime_scenario_registry_payload()
     )
 
 

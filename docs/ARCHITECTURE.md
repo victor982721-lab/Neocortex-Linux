@@ -687,12 +687,19 @@ no como una segunda base de hechos. Cada fila queda ligada al run Code
 completado, processing signature, evaluación/pregunta/sujeto, proposal/template,
 digest del review y payload `neocortex.code-experiment-receipt/v3`; los triggers
 rechazan update y delete. El writer admite estados `passed`, `failed` y
-`abstained`, pero el review `neocortex.code-review/v18` sólo proyecta el `passed`
+`abstained`, pero el review `neocortex.code-review/v19` sólo proyecta el `passed`
 más nuevo que siga coincidiendo con el proposal actual y con bindings tipados de
 gate a requisito. El enlace produce evidencia de tests exactos, no verdad formal
 ni decisión humana. Un verificador técnico separado puede derivar únicamente una
 disposición allow-listed y acotada de no-cambio tras recomprobar controles
 negativos; conserva `authority=advisory` y `mutation_authority=false`.
+
+Review v19 incorpora además una proyección Retention owner-local sobre los
+cuatro stores productivos. Reutiliza el planner dry-run y sus holds declarados,
+publica paginación y gaps, y exige una segunda lectura idéntica. El template
+ejecutable sólo cubre una matriz aislada de catorce nodeids exactos; aun con receipt
+`passed`, la disposición excluye power loss, atomicidad cross-store y cualquier
+ejecutor de borrado.
 
 La capa arquitectónica divide fuente, política y consumo:
 

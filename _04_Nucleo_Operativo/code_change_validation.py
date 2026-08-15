@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import re
+import signal
 import sqlite3
 import subprocess
 import sys
@@ -36,6 +37,7 @@ from .code_analysis_epistemics import (
 from .code_architecture_questions import ARCHITECTURE_CONTRACT_QUESTION
 from .code_change_evolution_analysis import CODE_SCHEMA_EVOLUTION_QUESTION
 from .code_route_capability_analysis import ROUTE_CAPABILITY_QUESTION
+from .code_retention_analysis import RETENTION_HOLD_QUESTION
 from .code_security_dependency_questions import (
     DEPENDENCY_EVIDENCE_QUESTION,
     SECURITY_EVIDENCE_QUESTION,
@@ -70,12 +72,13 @@ from .semantic_models import canonical_json
 
 
 CODE_CHANGE_VALIDATION_SCHEMA = "neocortex.code-change-validation/v3"
-CODE_CHANGE_VALIDATION_POLICY = "local-linux-diff-aware-validation-v2"
+CODE_CHANGE_VALIDATION_POLICY = "local-linux-diff-aware-validation-v4"
 MAX_CHANGED_PATHS = 2_000
 MAX_SELECTED_TEST_FILES = 2_000
 MAX_DEPENDENCY_DEPTH = 8
 MAX_COMMAND_OUTPUT_BYTES = 32 * 1024
 _COMMAND_HEARTBEAT_SECONDS = 30.0
+_COMMAND_INTERRUPT_GRACE_SECONDS = 15.0
 _TEST_PATH = re.compile(r"^tests/(?:.*/)?test_[^/]+\.py$")
 _PYTHON_SOURCE_ROOTS = frozenset(
     {
@@ -173,10 +176,12 @@ _REGISTERED_SCENARIO_TESTS = frozenset(
     {
         "tests/test_code_public_route_experiments.py",
         "tests/test_code_review_epistemics.py",
+        "tests/test_code_retention_analysis.py",
         "tests/test_code_state_interaction_analysis.py",
         "tests/test_code_state_projection_analysis.py",
         "tests/test_code_state_topology_analysis.py",
         "tests/test_semantic_text_staging_session.py",
+        "tests/test_retention_planner.py",
         "tests/test_text_derivation_route.py",
     }
 )
@@ -474,16 +479,40 @@ def _default_runner(
     timeout: float,
     environment: Mapping[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        tuple(os.fspath(item) for item in arguments),
+    command = tuple(os.fspath(item) for item in arguments)
+    process = subprocess.Popen(
+        command,
         cwd=cwd,
         env=None if environment is None else dict(environment),
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        timeout=timeout,
-        check=False,
+        start_new_session=True,
     )
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        try:
+            os.killpg(process.pid, signal.SIGINT)
+        except ProcessLookupError:
+            pass
+        try:
+            stdout, stderr = process.communicate(timeout=_COMMAND_INTERRUPT_GRACE_SECONDS)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            stdout, stderr = process.communicate()
+        raise subprocess.TimeoutExpired(
+            command,
+            timeout,
+            output=stdout,
+            stderr=stderr,
+        ) from exc
+    if process.returncode is None:
+        raise RuntimeError("validation subprocess has no terminal return code")
+    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
 
 
 def _bounded_output(completed: subprocess.CompletedProcess[str]) -> str:
@@ -1886,7 +1915,7 @@ def _replay_gate(
 
 
 def _known_question_specs() -> tuple[AnalysisQuestionSpec, ...]:
-    """Return the complete v18 question vocabulary accepted by this validator.
+    """Return the complete v19 question vocabulary accepted by this validator.
 
     Adding a new question to Code review without classifying it here makes the
     canonical gate abstain.  This is intentional: an unknown question must not
@@ -1945,6 +1974,7 @@ def _known_question_specs() -> tuple[AnalysisQuestionSpec, ...]:
         MODULE_SURFACE_QUESTION,
         ROUTE_CAPABILITY_AVAILABILITY_QUESTION,
         ROUTE_CAPABILITY_QUESTION,
+        RETENTION_HOLD_QUESTION,
         SECURITY_EVIDENCE_QUESTION,
         SQL_INTERACTION_QUESTION,
         STRUCTURAL_HOTSPOT_QUESTION,
@@ -2082,6 +2112,37 @@ def _validation_question_scopes() -> tuple[_ValidationQuestionScope, ...]:
                 {
                     "tests/test_code_schema_migration_v1_v2.py",
                     "tests/test_framework_code_path_collation.py",
+                }
+            ),
+            True,
+        ),
+        _ValidationQuestionScope(
+            "durable_retention_holds",
+            RETENTION_HOLD_QUESTION,
+            "retention:canonical-durable-holds",
+            "retention.durable_hold_safety",
+            frozenset(
+                {
+                    "_02_Deduplicacion/inventory_schema.py",
+                    "_04_Nucleo_Operativo/code_retention_analysis.py",
+                    "_04_Nucleo_Operativo/document_catalog.py",
+                    "_04_Nucleo_Operativo/framework_schema.py",
+                    "_04_Nucleo_Operativo/retention_planner.py",
+                    "_04_Nucleo_Operativo/review_task_contracts.py",
+                    "_04_Nucleo_Operativo/review_task_repository.py",
+                    "_04_Nucleo_Operativo/semantic_schema.py",
+                    "tests/test_code_retention_analysis.py",
+                    "tests/test_retention_planner.py",
+                }
+            ),
+            (
+                "_04_Nucleo_Operativo/retention_",
+                "_04_Nucleo_Operativo/review_task_",
+            ),
+            frozenset(
+                {
+                    "tests/test_code_retention_analysis.py",
+                    "tests/test_retention_planner.py",
                 }
             ),
             True,

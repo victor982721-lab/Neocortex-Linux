@@ -47,6 +47,9 @@ from _04_Nucleo_Operativo.code_review_epistemics import (
     CodeReviewEvidenceResolutionError,
     resolve_code_review_questions,
 )
+from _04_Nucleo_Operativo.code_review_serialization import (
+    rebuild_code_review_result_digest,
+)
 from _04_Nucleo_Operativo.code_state import CodeState
 from _04_Nucleo_Operativo.self_analysis_freshness import SelfAnalysisFreshness
 from _04_Nucleo_Operativo.self_analysis_status import SelfAnalysisStatus
@@ -609,7 +612,7 @@ def test_review_ranks_confirmed_hotspots_deterministically_with_diversity(
 
     assert first.status == "ready"
     assert first_json == second_json
-    assert first.as_payload()["schema"] == "neocortex.code-review/v18"
+    assert first.as_payload()["schema"] == "neocortex.code-review/v19"
     assert first.as_payload()["compatible_schemas"] == []
     assert first.supply_chain is not None
     assert first.supply_chain.status == "abstained"
@@ -620,6 +623,11 @@ def test_review_ranks_confirmed_hotspots_deterministically_with_diversity(
     )
     assert first.state_topology is not None
     assert first.state_topology.status == "abstained"
+    assert first.retention_analysis is not None
+    assert first.retention_analysis.status == "abstained"
+    assert first.retention_analysis.reason == (
+        "document_state_not_configured_for_noncanonical_code_review"
+    )
     assert first.change_evolution is not None
     assert first.change_evolution.code_schema.status == "ready"
     assert first.assurance is not None
@@ -656,6 +664,7 @@ def test_review_ranks_confirmed_hotspots_deterministically_with_diversity(
         "maintenance.structural_hotspot_requires_change",
         "state.text_semantic_published_projection_is_aligned",
         "state.text_terminal_publication_is_relationally_closed",
+        "retention.dry_run_preserves_declared_durable_holds",
         "evolution.change_surface_requires_review",
         "evolution.change_history_requires_companion_review",
         "evolution.code_owner_schema_requires_migration_review",
@@ -677,7 +686,7 @@ def test_review_ranks_confirmed_hotspots_deterministically_with_diversity(
         "capability.route_portfolio_evidence_is_resolved",
         "analyzer.calibration_evidence_is_independent_and_antigoodhart_resistant",
     }
-    assert len(epistemics["evaluations"]) == len(first.findings) + 25
+    assert len(epistemics["evaluations"]) == len(first.findings) + 26
     first_evaluation = epistemics["evaluations"][0]
     assert first_evaluation["observation_status"] == "confirmed"
     assert first_evaluation["inference_status"] == "abstained"
@@ -742,6 +751,40 @@ def test_review_ranks_confirmed_hotspots_deterministically_with_diversity(
     assert [finding.finding_id for finding in reinterpreted.findings] != [
         finding.finding_id for finding in first.findings
     ]
+
+
+def test_canonical_review_integrates_the_reproducible_retention_projection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import _04_Nucleo_Operativo.app_paths as app_paths
+    from tests.test_code_retention_analysis import _initialized_state
+
+    self_analysis = tmp_path / "self-analysis"
+    _build_state(self_analysis)
+    _initialized_state(tmp_path / "state")
+    monkeypatch.setattr(app_paths, "self_analysis_data_directory", lambda: self_analysis)
+    monkeypatch.setattr(
+        code_review_module,
+        "read_self_analysis_status",
+        lambda _state, _run: _status(tmp_path),
+    )
+
+    result = review_code_state(self_analysis, limit=1)
+
+    assert result.status == "ready"
+    assert result.retention_analysis is not None
+    assert result.retention_analysis.status == "ready"
+    assert result.retention_analysis.observation == "declared_holds_resolved"
+    evaluation = next(
+        item
+        for item in result.question_evaluations
+        if item.question_id == "retention.dry_run_preserves_declared_durable_holds"
+    )
+    assert evaluation.question_readiness == "ready"
+    assert evaluation.decision_readiness == "experiment_required"
+    assert evaluation.decision is None
+    assert result.digest == rebuild_code_review_result_digest(result)
 
 
 def test_review_rejects_current_rows_not_owned_by_the_latest_run(

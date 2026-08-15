@@ -57,6 +57,7 @@ from .code_route_capability_analysis import (
     CodeRouteCapabilityAnalysis,
     route_capability_questions,
 )
+from .code_retention_analysis import CodeRetentionAnalysis, retention_questions
 from .code_review_actionability import (
     CODE_REVIEW_QUESTION_ID,
     CODE_REVIEW_QUESTION_VERSION,
@@ -502,6 +503,7 @@ def expected_integrated_code_review_questions(
     *,
     state_projection: CodeStateProjectionAnalysis,
     state_topology: CodeStateTopologyAnalysis,
+    retention_analysis: CodeRetentionAnalysis,
     change_evolution: CodeChangeEvolutionAnalysis,
     architecture: CodeArchitectureAnalysis,
     assurance: CodeAssuranceAnalysis,
@@ -514,7 +516,7 @@ def expected_integrated_code_review_questions(
     route_capabilities: CodeRouteCapabilityAnalysis,
     analyzer_calibration: CodeAnalyzerCalibrationAnalysis,
 ) -> tuple[tuple[AnalysisQuestionSpec, ...], tuple[AnalysisQuestionEvaluation, ...]]:
-    """Rebuild every v16 question from its already-resolved owner projection."""
+    """Rebuild every v19 question from its already-resolved owner projection."""
 
     base_specs, base_evaluations = expected_code_review_questions(
         findings,
@@ -554,6 +556,13 @@ def expected_integrated_code_review_questions(
     )
     specs.extend(topology_specs)
     evaluations.extend(topology_evaluations)
+
+    retention_specs, retention_evaluations = retention_questions(
+        retention_analysis,
+        rank=len(evaluations) + 1,
+    )
+    specs.extend(retention_specs)
+    evaluations.extend(retention_evaluations)
 
     interaction_specs, interaction_evaluations = state_interaction_questions(
         state_interactions,

@@ -21,6 +21,7 @@ from _04_Nucleo_Operativo.code_invariant_contracts import (
     EXPERIMENT_SCENARIO_IDS,
     INVARIANT_SPECS,
     INVARIANT_RUNTIME_SCENARIOS,
+    runtime_scenario,
 )
 from _04_Nucleo_Operativo.external_deep_coverage import PYTEST_COVERAGE_PROVIDER_ID
 from _04_Nucleo_Operativo.external_evidence_models import (
@@ -88,7 +89,7 @@ def test_registry_is_canonical_non_mutating_and_bounded() -> None:
     assert all(1 <= item.timeout_seconds <= 900 for item in CODE_EXPERIMENT_TEMPLATES)
     assert experiment_template("structure.static_characterization").cost_tier == "metadata"
     assert experiment_template_registry_fingerprint().startswith(
-        "code-experiment-template-registry-v4:xxh3_128:"
+        "code-experiment-template-registry-v6:xxh3_128:"
     )
     executable = tuple(item for item in CODE_EXPERIMENT_TEMPLATES if item.executable)
     assert {scenario for item in executable for scenario in item.scenario_ids} == set(
@@ -136,6 +137,27 @@ def test_registry_is_canonical_non_mutating_and_bounded() -> None:
     assert not architecture.applies_to(
         question_id="architecture.static_import_graph_is_comparably_observed",
         subject_key="architecture:run:fixture",
+    )
+    retention = experiment_template("retention.durable_hold_safety")
+    assert retention.executable is True
+    assert retention.version == "v2"
+    assert retention.max_items == 14
+    assert retention.scenario_ids == ("retention.durable_hold_safety",)
+    retention_scenario = runtime_scenario("retention.durable_hold_safety")
+    assert retention_scenario.version == "v2"
+    assert len(retention_scenario.test_nodeids) == 14
+    assert all(
+        "test_framework_retention_fails_closed_on_incomplete_review_source_receipt["
+        in nodeid
+        for nodeid in retention_scenario.test_nodeids[2:8]
+    )
+    assert retention.applies_to(
+        question_id="retention.dry_run_preserves_declared_durable_holds",
+        subject_key="retention:canonical-durable-holds",
+    )
+    assert not retention.applies_to(
+        question_id="retention.dry_run_preserves_declared_durable_holds",
+        subject_key="retention:some-other-policy",
     )
     assert all(item.acceptance_gates for item in executable)
 

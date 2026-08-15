@@ -741,6 +741,17 @@ _REQUIREMENT_BINDINGS: tuple[_RequirementBinding, ...] = (
         ),
     ),
     _RequirementBinding(
+        "retention.dry_run_preserves_declared_durable_holds",
+        "retention.durable_hold_safety",
+        "isolated_retention_safety_experiment_result",
+        (
+            "current_previous_builders_leases_and_human_evidence_are_protected",
+            "dry_run_never_supports_deletion_and_preserves_phase_order",
+            "incomplete_review_receipt_or_schema_drift_fails_closed_without_mutation",
+            "reader_snapshot_does_not_mix_concurrent_owner_commit",
+        ),
+    ),
+    _RequirementBinding(
         "state.declared_workflow_sql_matches_implementation",
         "state.runtime_sql_trace",
         "runtime_transaction_order_observed",

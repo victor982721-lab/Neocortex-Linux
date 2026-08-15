@@ -259,12 +259,12 @@ existe cuando se cumplen juntos los criterios dinámicos de la última sección.
 - Este handoff documenta el árbol sin sustituir tests focales, gates, commit ni
   release Linux instalada del SHA final.
 
-## Contrato operativo — Autoanalizador v18
+## Contrato operativo — Autoanalizador v19
 
 - La siguiente frontera operativa es `Neocortex code validate`: una sola entrada
   Linux para validar implementaciones. Captura el diff, selecciona pruebas con
   evidencia publicada, ejecuta estática/arquitectura, publica `trusted-deep`,
-  consume review v18, ejecuta experimentos allow-listed, instala el wheel
+  consume review v19, ejecuta experimentos allow-listed, instala el wheel
   candidato fuera del checkout y exige replay. Las herramientas individuales
   quedan como diagnóstico interno; no constituyen una aceptación paralela.
 - Los deltas portables `added/resolved` siguen siendo evidencia histórica
@@ -291,7 +291,7 @@ existe cuando se cumplen juntos los criterios dinámicos de la última sección.
 
 - `Neocortex --state-directory ESTADO --code-review` ya no es una vista que
   convierte nombres, rutas o tamaño en recomendaciones. El envelope
-  `neocortex.code-review/v18` publica un registro general de preguntas y
+  `neocortex.code-review/v19` publica un registro general de preguntas y
   evaluaciones enlazadas a registros fuente; separa observación, inferencia,
   hipótesis, contraevidencia, evidencia faltante, experimento, decisión y
   autoridad. Toda evaluación es advisory y `mutation_authority=false`.
@@ -330,7 +330,7 @@ existe cuando se cumplen juntos los criterios dinámicos de la última sección.
   receipts y heads publicados. El autoanálisis compara su publicación con el
   checkout Git por contenido y expone coste/cobertura, pero no publica
   precision, recall ni utilidad humana sin outcomes independientes.
-- v18 conserva ownership lógico explícito, interacciones SQL/SQLite ligadas a
+- v19 conserva ownership lógico explícito, interacciones SQL/SQLite ligadas a
   los 13 stores declarados, fronteras transaccionales/workflow, reachability de
   las nueve rutas built-in, cuatro invariantes, calibración anti-Goodhart y un
   planificador de experimentos sin comandos libres. SQL dinámico, parser no
@@ -339,13 +339,15 @@ existe cuando se cumplen juntos los criterios dinámicos de la última sección.
   sin alterar strings ni el digest observado; dejaron de contarse como error
   los dos sitios productivos Text/Archive que usaban esa sintaxis.
 - `--code-experiment-run PROPOSAL_ID` reconstruye el plan vigente y sólo admite
-  cinco templates ejecutables: contratos de imports declarados (tres nodeids y
+  seis templates ejecutables: contratos de imports declarados (tres nodeids y
   cuatro gates), acceptance pública Text (un nodeid), trace/fault
   boundaries del workflow Text (cuatro nodeids), recuperación Semantic ante
-  muerte del proceso durante staging (un nodeid con tres gates) y una matriz
+  muerte del proceso durante staging (un nodeid con tres gates), una matriz
   Code-owner de migración poblada/rollback/schema futuro (cinco nodeids y cuatro
-  gates). La aceptación arquitectónica preserva como límites el dispatch dinámico
-  y la intención no declarada. Los escenarios
+  gates) y Retention durable en dry-run (nueve nodeids y cuatro gates). Retention
+  comprueba holds declarados, fallos cerrados y lectura concurrente sobre
+  fixtures; no autoriza ni valida borrado. La aceptación arquitectónica preserva
+  como límites el dispatch dinámico y la intención no declarada. Los escenarios
   restantes del assurance de invariantes y los controles de calibración
   permanecen en el registry, pero no se convierten automáticamente en runners. Pytest corre
   directamente sobre el checkout canónico confiable; el temporal externo aloja
@@ -358,7 +360,7 @@ existe cuando se cumplen juntos los criterios dinámicos de la última sección.
 - Code schema v6 persiste después cada terminal
   `neocortex.code-experiment-receipt/v3` en una tabla append-only y devuelve
   `neocortex.code-experiment-store/v1`. Por eso `code_database_unchanged=true`
-  no vuelve read-only a la invocación completa. El review v18 evalúa el terminal
+  no vuelve read-only a la invocación completa. El review v19 evalúa el terminal
   más nuevo del proposal/signature actual y bindings de gates explícitos; puede
   reutilizar un `passed` de un run completado anterior ante replay exacto con la
   misma firma, mientras un terminal posterior `failed`/`abstained` lo invalida.
@@ -437,11 +439,11 @@ existe cuando se cumplen juntos los criterios dinámicos de la última sección.
 ## Próximos pasos, en orden
 
 1. Ampliar el registry de experimentos una familia verificable por vez. Las
-   verticales de recuperación Semantic, migración Code-owner y contratos de
-   imports declarados ya tienen runner, receipt enlazable, controles negativos
-   y verificador técnico acotado. La siguiente debe elegirse entre Framework
-   ReviewTask y Retention por impacto durable, manteniendo una política técnica
-   exacta. Todo cambio semántico debe invalidar el receipt y
+   verticales de recuperación Semantic, migración Code-owner, contratos de
+   imports declarados y Retention durable ya tienen runner, receipt enlazable,
+   controles negativos y verificador técnico acotado. La siguiente prioridad es
+   Framework ReviewTask, manteniendo una política técnica exacta. Todo cambio
+   semántico debe invalidar el receipt y
    `mutation_authority` permanece falso.
 2. Mantener junto con cada nueva familia el binding de aceptación
    ruta/test→pregunta/sujeto. Una pregunta relevante sin runner o disposición

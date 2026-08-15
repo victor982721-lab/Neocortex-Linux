@@ -4,6 +4,7 @@ import json
 import sqlite3
 from dataclasses import asdict, replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -17,7 +18,9 @@ from _04_Nucleo_Operativo.code_experiment_planner import CodeExperimentProposal
 from _04_Nucleo_Operativo.code_invariant_contracts import RUNTIME_SCENARIOS, runtime_scenario
 from _04_Nucleo_Operativo.external_evidence_models import (
     ExternalProviderMetric,
+    ExternalProviderRelation,
     external_metric_identity,
+    external_relation_identity,
 )
 
 
@@ -381,6 +384,54 @@ def test_complete_aggregate_counts_are_recovered_when_relation_payload_is_bounde
     )()
     with pytest.raises(ValueError, match="not canonical"):
         executor._provider_test_counts(forged)
+
+
+def test_retention_parameter_variants_have_exact_terminal_gate_evidence() -> None:
+    import _04_Nucleo_Operativo.code_experiment_executor as executor
+
+    scenario = runtime_scenario("retention.durable_hold_safety")
+    relations = tuple(
+        ExternalProviderRelation(
+            external_relation_identity(
+                "pytest-coverage-trusted-deep",
+                relation_kind="declared_test_outcome",
+                source_kind="contract",
+                source_key=f"pytest-nodeid:{nodeid}",
+                target_kind="run",
+                target_key="coverage-run:retention-fixture",
+            ),
+            "declared_test_outcome",
+            "contract",
+            f"pytest-nodeid:{nodeid}",
+            "run",
+            "coverage-run:retention-fixture",
+            confidence=1.0,
+            metadata={
+                "nodeid": nodeid,
+                "outcome": "passed",
+                "claim_scope": "exact_selected_test_execution_outcome",
+                "assertion_or_invariant_proof": False,
+                "measurement_scope_signature": "retention-fixture",
+            },
+        )
+        for nodeid in scenario.test_nodeids
+    )
+    publication = SimpleNamespace(relations=relations)
+
+    outcomes = executor._outcomes(publication, (scenario.scenario_id,))
+    gates = executor._gate_outcomes(publication, (scenario.scenario_id,))
+
+    assert len(outcomes) == 1
+    assert outcomes[0].outcome == "passed"
+    assert all(item.status == "passed" for item in gates)
+    incomplete = next(
+        item
+        for item in gates
+        if item.gate_id
+        == "incomplete_review_receipt_or_schema_drift_fails_closed_without_mutation"
+    )
+    assert len(incomplete.test_nodeids) == 7
+    assert all("[" in nodeid for nodeid in incomplete.test_nodeids[:6])
 
 
 @pytest.mark.parametrize(

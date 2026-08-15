@@ -62,6 +62,10 @@ from .code_route_capability_analysis import (
     parse_code_route_capability_payload,
     route_capability_questions,
 )
+from .code_retention_analysis import (
+    parse_code_retention_analysis_payload,
+    retention_questions,
+)
 from .code_state_projection_analysis import (
     parse_code_state_projection_payload,
     state_projection_questions,
@@ -121,6 +125,7 @@ _CODE_REVIEW_V15 = "neocortex.code-review/v15"
 _CODE_REVIEW_V16 = "neocortex.code-review/v16"
 _CODE_REVIEW_V17 = "neocortex.code-review/v17"
 _CODE_REVIEW_V18 = "neocortex.code-review/v18"
+_CODE_REVIEW_V19 = "neocortex.code-review/v19"
 _CODE_ANALYSIS_EPISTEMICS_V1 = "neocortex.code-analysis-epistemics/v1"
 _UNUSED_V11_STEP_REQUIREMENTS = (
     "verify_import_reexport_callback_registry_protocol_and_entry_point_usage",
@@ -931,7 +936,12 @@ def _question_fact_projection(
 
 
 def _experiment_plan(payload: Mapping[str, object]) -> Mapping[str, object] | None:
-    if payload.get("schema") not in {_CODE_REVIEW_V16, _CODE_REVIEW_V17, _CODE_REVIEW_V18}:
+    if payload.get("schema") not in {
+        _CODE_REVIEW_V16,
+        _CODE_REVIEW_V17,
+        _CODE_REVIEW_V18,
+        _CODE_REVIEW_V19,
+    }:
         return None
     return _mapping(payload.get("experiment_plan"))
 
@@ -947,7 +957,7 @@ def _experiment_receipt_payloads(
 ) -> tuple[Mapping[str, object], ...]:
     """Return only the mandatory, bounded v17+ receipt envelope sequence."""
 
-    if payload.get("schema") not in {_CODE_REVIEW_V17, _CODE_REVIEW_V18}:
+    if payload.get("schema") not in {_CODE_REVIEW_V17, _CODE_REVIEW_V18, _CODE_REVIEW_V19}:
         return ()
     raw = payload.get("experiment_receipts")
     if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes, bytearray)):
@@ -1076,12 +1086,12 @@ def _append_technical_verification(
     records: list[dict[str, object]],
     payload: Mapping[str, object],
 ) -> None:
-    if payload.get("schema") != _CODE_REVIEW_V18:
+    if payload.get("schema") not in {_CODE_REVIEW_V18, _CODE_REVIEW_V19}:
         return
     raw = _mapping(payload.get("technical_verification"))
     if raw is None:
         if payload.get("status") == "ready":
-            raise ValueError("ready code-review/v18 lacks technical verification")
+            raise ValueError("ready code-review/v18+ lacks technical verification")
         return
     verification = parse_code_technical_verification_payload(raw)
     records.append(
@@ -2514,14 +2524,20 @@ def _validate_review_v15_payload(payload: Mapping[str, object]) -> None:
 
 
 def _validate_review_v16_payload(payload: Mapping[str, object]) -> None:
-    """Validate v16-v18 verticals and their durable evidence projections."""
+    """Validate v16-v19 verticals and their durable evidence projections."""
 
     review_schema = payload.get("schema")
-    if review_schema not in {_CODE_REVIEW_V16, _CODE_REVIEW_V17, _CODE_REVIEW_V18}:
-        raise ValueError("code-review/v16-v18 validator received an unsupported schema")
+    if review_schema not in {
+        _CODE_REVIEW_V16,
+        _CODE_REVIEW_V17,
+        _CODE_REVIEW_V18,
+        _CODE_REVIEW_V19,
+    }:
+        raise ValueError("code-review/v16-v19 validator received an unsupported schema")
     contract_label = str(review_schema).replace("neocortex.", "")
-    has_receipts = review_schema in {_CODE_REVIEW_V17, _CODE_REVIEW_V18}
-    has_technical_verification = review_schema == _CODE_REVIEW_V18
+    has_receipts = review_schema in {_CODE_REVIEW_V17, _CODE_REVIEW_V18, _CODE_REVIEW_V19}
+    has_technical_verification = review_schema in {_CODE_REVIEW_V18, _CODE_REVIEW_V19}
+    has_retention = review_schema == _CODE_REVIEW_V19
 
     added = (
         "state_interactions",
@@ -2529,7 +2545,7 @@ def _validate_review_v16_payload(payload: Mapping[str, object]) -> None:
         "route_capabilities",
         "analyzer_calibration",
         "experiment_plan",
-    )
+    ) + (("retention_analysis",) if has_retention else ())
     epistemics = _mapping(payload.get("epistemics"))
     if epistemics is None:
         raise ValueError(f"{contract_label} payload lacks its epistemic contract")
@@ -2566,6 +2582,7 @@ def _validate_review_v16_payload(payload: Mapping[str, object]) -> None:
         projected["schema"] = _CODE_REVIEW_V14
         for key in (
             "state_topology",
+            "retention_analysis",
             "change_evolution",
             "assurance",
             "capability_reachability",
@@ -2597,11 +2614,16 @@ def _validate_review_v16_payload(payload: Mapping[str, object]) -> None:
             "experiment_plan",
             "supply_chain",
             "interface_surface",
-        )
+        ) + (("retention_analysis",) if has_retention else ())
         nested = {key: _mapping(payload.get(key)) for key in nested_keys}
         if any(value is None for value in nested.values()):
             raise ValueError(f"ready {contract_label} payload lacks integrated evidence")
         state_topology = parse_code_state_topology_payload(cast(Any, nested["state_topology"]))
+        retention_analysis = (
+            parse_code_retention_analysis_payload(cast(Any, nested["retention_analysis"]))
+            if has_retention
+            else None
+        )
         state_projection = parse_code_state_projection_payload(
             cast(Any, nested["state_projection"])
         )
@@ -2650,6 +2672,7 @@ def _validate_review_v16_payload(payload: Mapping[str, object]) -> None:
         )
         if (
             state_topology.source_version != review_schema
+            or (retention_analysis is not None and retention_analysis.source_version != review_schema)
             or capability.source_version != review_schema
             or route_capabilities.source_version != review_schema
             or analyzer_calibration.source_version != review_schema
@@ -2747,6 +2770,8 @@ def _validate_review_v16_payload(payload: Mapping[str, object]) -> None:
         )
         append_questions(state_projection_questions(state_projection, rank=offset + 1))
         append_questions(state_topology_questions(state_topology, rank=offset + 1))
+        if retention_analysis is not None:
+            append_questions(retention_questions(retention_analysis, rank=offset + 1))
         append_questions(
             state_interaction_questions(
                 state_interactions,
@@ -2867,7 +2892,12 @@ def query_code_analysis(
         )
     if query.surface == "review":
         review_schema = payload.get("schema")
-        if review_schema in {_CODE_REVIEW_V16, _CODE_REVIEW_V17, _CODE_REVIEW_V18}:
+        if review_schema in {
+            _CODE_REVIEW_V16,
+            _CODE_REVIEW_V17,
+            _CODE_REVIEW_V18,
+            _CODE_REVIEW_V19,
+        }:
             _validate_review_v16_payload(payload)
         elif review_schema == _CODE_REVIEW_V15:
             _validate_review_v15_payload(payload)

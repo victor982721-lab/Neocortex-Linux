@@ -12,6 +12,7 @@ import json
 import sqlite3
 from contextlib import closing
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -558,7 +559,17 @@ def test_foreign_key_activation_failure_blocks_and_closes_connection(
             self.wrapped.close()
 
     proxy = ForeignKeysDisabledConnection(connection)
-    monkeypatch.setattr(retention_module.sqlite3, "connect", lambda *args, **kwargs: proxy)
+    original_connect = sqlite3.connect
+    monkeypatch.setattr(
+        retention_module,
+        "sqlite3",
+        SimpleNamespace(
+            connect=lambda *args, **kwargs: proxy,
+            OperationalError=sqlite3.OperationalError,
+            Row=sqlite3.Row,
+        ),
+    )
+    assert sqlite3.connect is original_connect
 
     plan = plan_retention(
         tmp_path,
@@ -579,11 +590,17 @@ def test_snapshot_closes_connection_when_observer_raises_base_exception(
     database = tmp_path / "semantic.sqlite3"
     initialize_semantic_state(database)
     connection = sqlite3.connect(database)
+    original_connect = sqlite3.connect
     monkeypatch.setattr(
-        retention_module.sqlite3,
-        "connect",
-        lambda *args, **kwargs: connection,
+        retention_module,
+        "sqlite3",
+        SimpleNamespace(
+            connect=lambda *args, **kwargs: connection,
+            OperationalError=sqlite3.OperationalError,
+            Row=sqlite3.Row,
+        ),
     )
+    assert sqlite3.connect is original_connect
 
     class InjectedAbort(BaseException):
         pass

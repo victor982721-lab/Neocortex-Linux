@@ -191,7 +191,7 @@ def test_class_surface_question_preserves_protocol_counterexample_and_abstains_f
     result = review_code_state(state_directory, limit=10)
     payload = result.as_payload()
 
-    assert payload["schema"] == "neocortex.code-review/v18"
+    assert payload["schema"] == "neocortex.code-review/v19"
     assert result.findings == ()
     assert result.structural_analysis is not None
     assert result.structural_analysis.selected_classes == 3

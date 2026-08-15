@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,6 +14,7 @@ import pytest
 from _04_Nucleo_Operativo.code_change_validation import (
     AffectedTestSelection,
     GitChangeSnapshot,
+    _default_runner,
     _experiment_gate,
     _fresh_review_gate,
     _provider_failure,
@@ -40,6 +42,7 @@ from _04_Nucleo_Operativo.external_evidence_providers import (
     PIP_AUDIT_PROVIDER_ID,
 )
 from _04_Nucleo_Operativo.code_route_capability_analysis import ROUTE_CAPABILITY_QUESTION
+from _04_Nucleo_Operativo.code_retention_analysis import RETENTION_HOLD_QUESTION
 from _04_Nucleo_Operativo.code_state_interaction_analysis import WORKFLOW_SQL_QUESTION
 from _04_Nucleo_Operativo.code_state_projection_analysis import (
     TEXT_SEMANTIC_PROJECTION_QUESTION,
@@ -55,6 +58,26 @@ def test_optional_mutation_abstention_is_not_a_failed_machine_gate() -> None:
     )
 
     assert _provider_failure(provider) is False
+
+
+def test_default_runner_interrupts_and_reaps_a_timed_out_process(tmp_path: Path) -> None:
+    marker = tmp_path / "interrupted"
+    script = (
+        "import signal,sys,time; from pathlib import Path; "
+        "marker=Path(sys.argv[1]); "
+        "signal.signal(signal.SIGINT, lambda *_: "
+        "(marker.write_text('interrupted', encoding='utf-8'), sys.exit(130))); "
+        "time.sleep(60)"
+    )
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        _default_runner(
+            (sys.executable, "-c", script, marker),
+            cwd=tmp_path,
+            timeout=1.0,
+        )
+
+    assert marker.read_text(encoding="utf-8") == "interrupted"
 
 
 def test_ready_provider_delta_is_advisory_after_static_no_regression() -> None:
@@ -104,7 +127,7 @@ def test_linux_publication_only_snapshot_is_an_eligible_review_fence(
         supply_chain=None,
         recommendations=(),
         digest=None,
-        as_payload=lambda: {"schema": "neocortex.code-review/v18"},
+        as_payload=lambda: {"schema": "neocortex.code-review/v19"},
     )
     monkeypatch.setattr(
         code_change_validation,
@@ -152,7 +175,7 @@ def _review_with_providers(
         supply_chain=None,
         recommendations=(),
         digest=None,
-        as_payload=lambda: {"schema": "neocortex.code-review/v18"},
+        as_payload=lambda: {"schema": "neocortex.code-review/v19"},
     )
 
 
@@ -623,6 +646,11 @@ def test_experiment_control_plane_change_binds_all_executable_question_scopes() 
             evaluation_id="evaluation:schema",
             subject_key="code-owner-schema-subject-v1:fixture",
         ),
+        _question_evaluation(
+            RETENTION_HOLD_QUESTION,
+            evaluation_id="evaluation:retention",
+            subject_key="retention:canonical-durable-holds",
+        ),
     )
     review = SimpleNamespace(question_evaluations=evaluations)
 
@@ -637,6 +665,7 @@ def test_experiment_control_plane_change_binds_all_executable_question_scopes() 
         "code_schema_migration",
         "declared_import_architecture_contracts",
         "public_text_route",
+        "durable_retention_holds",
         "text_publication_sql",
         "text_semantic_projection_recovery",
     }
@@ -648,10 +677,42 @@ def test_experiment_control_plane_change_binds_all_executable_question_scopes() 
             "code_schema_migration",
             "declared_import_architecture_contracts",
             "public_text_route",
+            "durable_retention_holds",
             "text_publication_sql",
             "text_semantic_projection_recovery",
         }
     )
+
+
+def test_retention_planner_change_makes_durable_hold_evidence_acceptance_critical() -> None:
+    evaluation = _question_evaluation(
+        RETENTION_HOLD_QUESTION,
+        evaluation_id="evaluation:retention",
+        subject_key="retention:canonical-durable-holds",
+    )
+    architecture = _question_evaluation(
+        ARCHITECTURE_CONTRACT_QUESTION,
+        evaluation_id="evaluation:architecture-contract",
+        subject_key="architecture:contract:fixture",
+    )
+    review = SimpleNamespace(question_evaluations=(architecture, evaluation))
+
+    bindings, relevant, errors = _relevant_question_state(
+        review,
+        change=_change_for("_04_Nucleo_Operativo/retention_planner.py"),
+        selection=_selection("tests/test_retention_planner.py"),
+    )
+
+    assert errors == ()
+    assert {scope.scope_id for scope, _evaluation in relevant} == {
+        "declared_import_architecture_contracts",
+        "durable_retention_holds",
+    }
+    binding = next(item for item in bindings if item["scope_id"] == "durable_retention_holds")
+    assert binding["relevance"] == "affected"
+    assert binding["matched_changed_paths"] == [
+        "_04_Nucleo_Operativo/retention_planner.py"
+    ]
 
 
 def test_production_python_change_makes_declared_architecture_contracts_acceptance_critical() -> (

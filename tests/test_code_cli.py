@@ -249,7 +249,7 @@ def test_code_review_abstains_without_initializing_absent_state(
     payload = json.loads(capsys.readouterr().out)
 
     assert payload["kind"] == "code-review"
-    assert payload["schema"] == "neocortex.code-review/v18"
+    assert payload["schema"] == "neocortex.code-review/v19"
     assert payload["compatible_schemas"] == []
     assert payload["status"] == "abstained"
     assert payload["reason"] == "code_state_missing"
@@ -655,6 +655,43 @@ def test_run_code_review_rejects_incomplete_human_ready_results(
     output = capsys.readouterr()
     assert output.out == ""
     assert output.err == "ERROR code-review RuntimeError: ready result is incomplete\n"
+
+
+def test_code_review_human_surfaces_retention_without_deletion_authority(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    retention = SimpleNamespace(
+        status="ready",
+        reason=None,
+        policy_id="canonical-four-store-dry-run-hold-projection-v1",
+        observation="declared_holds_resolved",
+        stores=(
+            SimpleNamespace(status="ready", truncated=False),
+            SimpleNamespace(status="ready", truncated=False),
+            SimpleNamespace(status="ready", truncated=True),
+            SimpleNamespace(status="ready", truncated=False),
+        ),
+        missing_hold_ids=(),
+        authority="advisory",
+        mutation_authority=False,
+    )
+
+    cli_code._emit_code_review_ranked_evidence(
+        SimpleNamespace(
+            retention_analysis=retention,
+            recommendations=(),
+            findings=(),
+            limitations=(),
+        )
+    )
+
+    assert capsys.readouterr().out == (
+        "CODE_RETENTION_ANALYSIS status=ready reason=null "
+        "policy=canonical-four-store-dry-run-hold-projection-v1 "
+        "observation=declared_holds_resolved stores=4 ready_stores=4 "
+        "missing_holds=0 truncated_stores=1 authority=advisory "
+        "mutation_authority=0\n"
+    )
 
 
 def test_code_review_human_surfaces_architecture_and_work_package_context(

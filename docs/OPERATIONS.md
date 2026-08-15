@@ -214,7 +214,7 @@ Neocortex --state-directory $MiniState --code-review --code-review-limit 10 --co
 ```
 
 La segunda invocación es el resultado consumible del auditor. Debe emitir
-`neocortex.code-review/v18`, enlazar cada evaluación a evidencia publicada,
+`neocortex.code-review/v19`, enlazar cada evaluación a evidencia publicada,
 mantener `recommendations=[]`, `decision=null` y `mutation_authority=false`, y
 explicar por pregunta qué provider, contraevidencia o experimento falta. Un run
 de proveedores por sí solo no constituye el cierre del autoanálisis.
@@ -227,8 +227,9 @@ validar el plan, la raíz canónica y el manifest actual. Actualmente ejecuta s�
 `architecture.declared_import_contract_acceptance` (tres nodeids y cuatro
 gates), `capability.public_route_acceptance` (un nodeid),
 `state.runtime_sql_trace` (cuatro nodeids),
-`state.semantic_process_death_recovery` (un nodeid y tres gates) o
-`evolution.code_schema_upgrade_matrix` (cinco nodeids y cuatro gates). El
+`state.semantic_process_death_recovery` (un nodeid y tres gates),
+`evolution.code_schema_upgrade_matrix` (cinco nodeids y cuatro gates) y
+`retention.durable_hold_safety` (catorce nodeids exactos y cuatro gates). El
 template arquitectónico liga el diff Python productivo a la pregunta exacta de
 contratos de imports y abstiene si no puede cerrar el receipt o su disposición
 técnica; sus controles no prueban dispatch dinámico ni intención arquitectónica
@@ -251,14 +252,14 @@ sobre una publicación stale: regenere antes el autoanálisis. No la ejecute sob
 código que no confíe; la allowlist limita el selector, no los efectos del código
 de tests.
 
-El siguiente review v18 enlaza sólo el terminal más nuevo del proposal y la
+El siguiente review v19 enlaza sólo el terminal más nuevo del proposal y la
 processing signature exactos, con bindings de gates registrados. El terminal
 puede pertenecer a un run Code completado anterior cuando el run vigente es un
 replay exacto con la misma firma. El envelope digest liga y verifica run,
 evaluación, pregunta, sujeto, review, timestamp y payload. Un terminal posterior
 fallido o abstenido, o uno stale, corrupto o sin binding, no satisface evidencia.
 Incluso con evidencia completa, el receipt no suplanta a un actor humano. El
-verificador técnico allow-listed de v18 puede publicar
+verificador técnico allow-listed de v19 puede publicar
 `no_change_required_within_verified_scope` sólo tras volver a comprobar el
 contrato exacto, sus gates y controles negativos. Esa disposición es advisory,
 expone riesgos residuales, no genera recomendación y no concede autoridad de
@@ -438,21 +439,21 @@ bytes/analyze/persist/graph y 14 replays; `installed-package-inventory` se
 recalculó. Las consultas read-only status, review y diff tardaron 38.982,
 47.675 y 57.856 s. Esos artefactos históricos usaron architecture v2,
 engineering v1, review v10 y publication diff v8. El contrato vigente de review
-es `neocortex.code-review/v18`, no declara schemas compatibles, publica
+es `neocortex.code-review/v19`, no declara schemas compatibles, publica
 observaciones estructurales con inferencia abstained y evidencia enlazada a IDs
 Code después de resolución read-only; incluye clases seleccionadas por superficie
 AST directa, con umbrales provisionales explícitos, y no genera recomendaciones
 ni paquetes de cambio. Sólo puede publicar paquetes
 `unused_characterization`, advisory y sin autoridad de mutación.
 
-En el estado canónico, v18 consulta además Text/Semantic mediante conexiones
+En el estado canónico, v19 consulta además Text/Semantic mediante conexiones
 `immutable=1` y fences de main/WAL/SHM; nunca checkpointa ni elimina sidecars.
 Un WAL no vacío, layout no demostrado o cambio de fence produce abstención de
 esa dimensión. `aligned` significa exclusivamente igualdad de sets en el head
 publicado y contratos owner/materialization correctos; no demuestra crash
 recovery ni atomicidad cross-owner.
 
-v18 emite también topología Text, interacciones SQL/transaccionales,
+v19 emite también topología Text, interacciones SQL/transaccionales,
 cambio/schema evolution, assurance, invariantes, seguridad/dependencias,
 reachability de `text.extract`, las nueve rutas built-in, superficies de
 módulo/configuración/CLI, calibración y autoeficacia. Ninguna dimensión ejecuta
@@ -461,6 +462,13 @@ código del repositorio durante la consulta; sólo el comando separado y explíc
 digests de contenido; distingue `content_stale` de `scope_incomplete` y de su
 combinación. Los proveedores faltantes permanecen explícitos y los indicadores de
 precision/recall/decision rate no existen sin outcomes independientes.
+
+La proyección Retention v1 usa el mismo planner productivo exclusivamente en
+dry-run. Lee Semantic, Catalog, Inventory y Framework con un lote de 100,
+conserva holds y cursores exactos, y repite la observación antes de cerrar el
+review. Un owner bloqueado, schema incompatible o hold declarado ausente queda
+como gap. El escenario allow-listed asociado sólo verifica fixtures y controles
+negativos; no habilita `DELETE`, `VACUUM` ni una futura ruta apply.
 
 El registro general también proyecta el grafo Ruff/Grimp y los contratos de
 imports. `path_namespace_id` no es ownership: el contrato v1 módulo→logical-owner
@@ -840,7 +848,7 @@ Es un orquestador del autoanalizador, no otro linter: captura el diff; seleccion
 pruebas afectadas, completa huecos con fronteras públicas/escenarios registrados
 y escala a la suite Linux sólo ante cambios de packaging, schema o gates; ejecuta las barreras
 estática y arquitectónica existentes; publica `trusted-deep`; consume el review
-v18; ejecuta experimentos registrados; instala y prueba el wheel candidato fuera
+v19; ejecuta experimentos registrados; instala y prueba el wheel candidato fuera
 del checkout; y repite la misma publicación para demostrar replay. Un gate
 fallido produce `failed`, evidencia insuficiente produce `abstained`, y ambos
 devuelven código 2. La salida JSON canónica se obtiene con `--json`.
@@ -856,7 +864,10 @@ presupuesto, `MemoryMax` adaptado (máximo 4 GiB), `MemorySwapMax` (máximo
 host cada 500 ms y detiene cooperativamente el grupo con SIGINT si desaparece
 la reserva del escritorio o si la presión cruza el umbral mientras también
 falta el headroom físico reservado. El reclaim aislado por `MemoryHigh` con
-memoria abundante no se interpreta como riesgo global. Un fallo de D-Bus, cgroup, preflight o
+memoria abundante no se interpreta como riesgo global.
+Cada comando acotado usa además su propio grupo de proceso: al vencer el timeout
+recibe SIGINT y dispone de una gracia para publicar su terminalización durable
+antes de que el runner escale a SIGKILL. Un fallo de D-Bus, cgroup, preflight o
 watchdog es abstención operativa; nunca habilita un fallback sin contención.
 El servicio declara además `PrivateNetwork=yes`: el árbol no tiene ruta al host
 ni a Internet durante la validación. La admisión

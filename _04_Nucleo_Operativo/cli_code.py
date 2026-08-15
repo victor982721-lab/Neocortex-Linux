@@ -1358,6 +1358,23 @@ def _emit_code_review_ranked_evidence(result: CodeReviewResult) -> None:
             f"authority={state_topology.authority} "
             f"mutation_authority={int(state_topology.mutation_authority)}"
         )
+    retention = getattr(result, "retention_analysis", None)
+    if retention is not None:
+        ready_stores = sum(item.status == "ready" for item in retention.stores)
+        truncated_stores = sum(item.truncated for item in retention.stores)
+        _print_console_line(
+            "CODE_RETENTION_ANALYSIS "
+            f"status={retention.status} "
+            f"reason={json.dumps(retention.reason, ensure_ascii=True)} "
+            f"policy={retention.policy_id} "
+            f"observation={retention.observation} "
+            f"stores={len(retention.stores)} "
+            f"ready_stores={ready_stores} "
+            f"missing_holds={len(retention.missing_hold_ids)} "
+            f"truncated_stores={truncated_stores} "
+            f"authority={retention.authority} "
+            f"mutation_authority={int(retention.mutation_authority)}"
+        )
     state_interactions = getattr(result, "state_interactions", None)
     if state_interactions is not None:
         _print_console_line(

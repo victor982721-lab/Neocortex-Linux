@@ -8,6 +8,15 @@ no se copian aquí para evitar que se conviertan en datos históricos sin contex
 
 ### Añadido
 
+- Review `neocortex.code-review/v19` con una vertical Retention durable y
+  estrictamente read-only. Proyecta el plan dry-run de Semantic, Catalog,
+  Inventory y Framework, vuelve a resolver sus schemas, holds, conteos y
+  cursores, y conserva cualquier gap sin autorizar borrado. Un sexto template
+  ejecutable mide catorce nodeids exactos y cuatro gates de heads/builders/leases,
+  evidencia humana, fallo cerrado y lectura concurrente; el receipt sólo puede
+  cerrar `no_change_required_within_verified_scope` para esa matriz exacta y
+  mantiene `mutation_authority=false`. El binding diff→pregunta vuelve
+  obligatoria esta evidencia al cambiar Retention o sus contratos propietarios.
 - Acceptance experimental de contratos arquitectónicos declarados: cualquier
   cambio Python productivo queda ligado a
   `architecture.declared_import_contracts_are_evaluated`. Tres nodeids y cuatro
@@ -18,7 +27,8 @@ no se copian aquí para evitar que se conviertan en datos históricos sin contex
   full/replay: esas coordenadas no invalidan un receipt si proveedor, schema y
   proyección de contratos son exactamente iguales; cualquier delta contractual
   sí genera una identidad nueva.
-- Validación canónica `neocortex.code-change-validation/v3` ligada al diff:
+- Validación canónica `neocortex.code-change-validation/v3`, política
+  `local-linux-diff-aware-validation-v4`, ligada al diff:
   rutas y tests afectados se proyectan a
   preguntas/sujetos de aceptación versionados. Una pregunta relevante sin
   runner o sin disposición técnica exacta después del replay ahora abstiene;
@@ -28,6 +38,8 @@ no se copian aquí para evitar que se conviertan en datos históricos sin contex
   prueba que la restricción `AF_UNIX` deniega realmente AF_INET/AF_INET6. El
   watchdog diferencia reclaim aislado con headroom de presión que amenaza al
   escritorio y detiene con SIGINT para permitir terminalización durable.
+  Los comandos acotados también se ejecutan en grupos propios y reciben SIGINT
+  con gracia antes de SIGKILL, evitando dejar runs `running` tras un timeout.
   Los cambios al ejecutor `tools/quality_gate.py` usan una matriz acotada de sus
   cinco contratos consumidores; los baselines de Coverage, packaging y policy
   continúan siendo fronteras de suite Linux completa.
@@ -125,7 +137,7 @@ no se copian aquí para evitar que se conviertan en datos históricos sin contex
 - Code pasa de schema 5 a 6 mediante una migración aditiva que crea
   `code_experiment_receipts`, tabla append-only con triggers que impiden update y
   delete. El wire de receipts se introdujo en `neocortex.code-review/v17` y el
-  vigente es `neocortex.code-review/v18`, sin
+  vigente es `neocortex.code-review/v19`, sin
   declarar compatibilidad estructural con versiones anteriores, e incluye la
   proyección acotada de receipts exactos. El ejecutor verifica la firma de
   inputs Python/soporte Git antes y después, y un fence Linux de identidad,

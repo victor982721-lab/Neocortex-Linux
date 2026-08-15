@@ -13,7 +13,7 @@ from .code_analysis_epistemics import (
 from .code_external_evidence import external_status_digest_payload
 from .semantic_models import canonical_json, fingerprint_text
 
-CODE_REVIEW_SCHEMA = "neocortex.code-review/v18"
+CODE_REVIEW_SCHEMA = "neocortex.code-review/v19"
 CODE_REVIEW_COMPATIBLE_SCHEMAS: tuple[str, ...] = ()
 RecommendationStatus = Literal["ready", "abstained", "not_evaluated"]
 
@@ -49,6 +49,7 @@ def build_code_review_digest(
     structural_analysis: Any,
     state_projection: Any,
     state_topology: Any,
+    retention_analysis: Any,
     state_interactions: Any,
     change_evolution: Any,
     assurance: Any,
@@ -105,6 +106,7 @@ def build_code_review_digest(
             "structural_analysis": structural_analysis.as_payload(),
             "state_projection": state_projection.as_payload(),
             "state_topology": state_topology.as_payload(),
+            "retention_analysis": retention_analysis.as_payload(),
             "state_interactions": state_interactions.as_payload(),
             "change_evolution": change_evolution.as_payload(),
             "assurance": assurance.as_payload(),
@@ -153,6 +155,7 @@ def rebuild_code_review_result_digest(result: Any) -> CodeReviewDigest:
         result.structural_analysis,
         result.state_projection,
         result.state_topology,
+        result.retention_analysis,
         result.state_interactions,
         result.change_evolution,
         result.assurance,
@@ -190,6 +193,7 @@ def rebuild_code_review_result_digest(result: Any) -> CodeReviewDigest:
         structural_analysis=result.structural_analysis,
         state_projection=result.state_projection,
         state_topology=result.state_topology,
+        retention_analysis=result.retention_analysis,
         state_interactions=result.state_interactions,
         change_evolution=result.change_evolution,
         assurance=result.assurance,

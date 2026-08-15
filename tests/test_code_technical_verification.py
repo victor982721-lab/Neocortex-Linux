@@ -21,6 +21,10 @@ from _04_Nucleo_Operativo.code_state_projection_analysis import (
     analyze_text_semantic_projection,
     state_projection_questions,
 )
+from _04_Nucleo_Operativo.code_retention_analysis import (
+    analyze_code_retention,
+    retention_questions,
+)
 from _04_Nucleo_Operativo.code_technical_verification import (
     build_code_technical_verification,
     parse_code_technical_verification_payload,
@@ -29,6 +33,7 @@ from tests.test_code_change_evolution_analysis import _build_transition
 from tests.test_code_architecture_questions import _ready_architecture
 from tests.test_code_experiment_store import _database, _receipt
 from tests.test_code_state_projection_analysis import _build_state
+from tests.test_code_retention_analysis import REFERENCE_NS, SOURCE_VERSION, _initialized_state
 
 
 def _closed_semantic_projection(
@@ -139,6 +144,37 @@ def _closed_architecture_contract(tmp_path: Path):
         if item.question_id == "architecture.declared_import_contracts_are_evaluated"
     )
     experiment_root = tmp_path / "architecture-experiment"
+    experiment_root.mkdir()
+    database = _database(experiment_root)
+    stored = record_code_experiment_receipt(
+        database,
+        _receipt(proposal),
+        proposal,
+        analysis_run_id=1,
+        processing_signature="snapshot:fixture",
+        review_digest="review:fixture",
+    )
+    receipts = read_code_experiment_receipts(
+        database,
+        analysis_run_id=1,
+        processing_signature="snapshot:fixture",
+        plan=plan,
+    )
+    assert receipts == (stored,)
+    projected = apply_code_experiment_receipts(specs, evaluations, plan, receipts)
+    return specs, evaluations, plan, receipts, projected
+
+
+def _closed_retention_hold_projection(tmp_path: Path):
+    analysis = analyze_code_retention(
+        _initialized_state(tmp_path / "retention-state"),
+        source_version=SOURCE_VERSION,
+        reference_time_ns=REFERENCE_NS,
+    )
+    specs, evaluations = retention_questions(analysis, rank=1)
+    plan = plan_code_experiments(specs, evaluations)
+    proposal = plan.proposals[0]
+    experiment_root = tmp_path / "retention-experiment"
     experiment_root.mkdir()
     database = _database(experiment_root)
     stored = record_code_experiment_receipt(
@@ -314,6 +350,60 @@ def test_declared_architecture_contract_receipt_closes_bounded_boundary_evidence
     assert verification.reviews[0].reason_code == (
         "declared_import_contract_matrix_passed_without_a_change_signal"
     )
+
+
+def test_retention_receipt_closes_exact_hold_and_negative_control_evidence(
+    tmp_path: Path,
+) -> None:
+    specs, _evaluations, plan, receipts, projected = _closed_retention_hold_projection(tmp_path)
+
+    assert plan.proposals[0].template_id == "retention.durable_hold_safety"
+    assert plan.proposals[0].scenario_ids == ("retention.durable_hold_safety",)
+    evaluation = projected[0]
+    assert evaluation.decision_readiness == "human_review_required"
+    assert all(item.status == "satisfied" for item in evaluation.requirements)
+
+    verification = build_code_technical_verification(specs, projected, receipts)
+
+    assert verification.status == "ready"
+    assert verification.no_change_required_count == 1
+    assert verification.unresolved_count == 0
+    assert verification.reviews[0].question_id == (
+        "retention.dry_run_preserves_declared_durable_holds"
+    )
+    assert verification.reviews[0].reason_code == (
+        "retention_durable_hold_matrix_passed_without_a_change_signal"
+    )
+
+
+def test_passed_retention_scenario_cannot_hide_a_missing_live_hold(tmp_path: Path) -> None:
+    specs, _evaluations, _plan, receipts, projected = _closed_retention_hold_projection(tmp_path)
+    evaluation = projected[0]
+    hold_evidence = next(
+        item
+        for item in evaluation.evidence
+        if item.source_record_kind == "retention_declared_hold_projection"
+    )
+    forged_hold_evidence = replace(
+        hold_evidence,
+        facts=tuple(
+            replace(fact, value=1) if fact.name == "missing_holds" else fact
+            for fact in hold_evidence.facts
+        ),
+    )
+    forged_evaluation = replace(
+        evaluation,
+        evidence=tuple(
+            forged_hold_evidence if item.evidence_id == hold_evidence.evidence_id else item
+            for item in evaluation.evidence
+        ),
+    )
+
+    verification = build_code_technical_verification(specs, (forged_evaluation,), receipts)
+
+    assert verification.status == "partial"
+    assert verification.reviews == ()
+    assert verification.gaps[0].reason == "technical_policy_negative_control_not_satisfied"
 
 
 @pytest.mark.parametrize("failed_contracts", [1, True])

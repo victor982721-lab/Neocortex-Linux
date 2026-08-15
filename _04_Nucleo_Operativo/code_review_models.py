@@ -43,6 +43,7 @@ from .code_experiment_store import (
 )
 from .code_invariant_assurance_analysis import CodeInvariantAssuranceAnalysis
 from .code_route_capability_analysis import CodeRouteCapabilityAnalysis
+from .code_retention_analysis import CodeRetentionAnalysis
 from .code_state_interaction_analysis import CodeStateInteractionAnalysis
 from .code_supply_chain_analysis import (
     CodeSupplyChainAnalysis,
@@ -72,7 +73,10 @@ from .code_technical_verification import (
 from .external_evidence_models import ExternalEvidenceSuiteStatus
 from .semantic_models import canonical_json, fingerprint_text
 
-# v18 links immutable, passed experiment receipts back into the
+# v19 adds a reproducible, read-only four-owner Retention projection and an
+# allow-listed negative-control experiment.  Passed receipts remain linked to
+# exact evidence requirements; the projection never authorizes deletion.
+# v18 linked immutable, passed experiment receipts back into the
 # exact evidence requirements they measured.  Receipts remain advisory and a
 # separate allow-listed verifier can publish a scoped no-change technical
 # disposition without impersonating a human actor or authorizing mutation.
@@ -622,6 +626,7 @@ class CodeReviewResult:
     structural_analysis: CodeClassSurfaceAnalysis | None = None
     state_projection: CodeStateProjectionAnalysis | None = None
     state_topology: CodeStateTopologyAnalysis | None = None
+    retention_analysis: CodeRetentionAnalysis | None = None
     state_interactions: CodeStateInteractionAnalysis | None = None
     change_evolution: CodeChangeEvolutionAnalysis | None = None
     assurance: CodeAssuranceAnalysis | None = None
@@ -654,15 +659,15 @@ class CodeReviewResult:
         if self.work_package_status not in {"ready", "abstained", "not_evaluated"}:
             raise ValueError("invalid code-review work-package status")
         if self.recommendations:
-            raise ValueError("code-review/v18 cannot publish semantic change recommendations")
+            raise ValueError("code-review/v19 cannot publish semantic change recommendations")
         if self.recommendation_status == "ready":
-            raise ValueError("code-review/v18 recommendation status must abstain")
+            raise ValueError("code-review/v19 recommendation status must abstain")
         if self.recommendation_status == "abstained" and not self.recommendation_reason:
             raise ValueError("abstained recommendation status requires a reason")
         if self.recommendation_status == "not_evaluated" and not self.recommendation_reason:
             raise ValueError("not-evaluated recommendation status requires a reason")
         if any(package.package_kind != "unused_characterization" for package in self.work_packages):
-            raise ValueError("code-review/v18 cannot publish hotspot change packages")
+            raise ValueError("code-review/v19 cannot publish hotspot change packages")
         if (self.work_package_status == "ready") != bool(self.work_packages):
             raise ValueError("work-package readiness must match published packages")
         if self.work_package_status == "ready" and self.work_package_reason is not None:
@@ -686,6 +691,7 @@ class CodeReviewResult:
                         self.supply_chain,
                         self.engineering_analytics,
                         self.state_topology,
+                        self.retention_analysis,
                         self.state_interactions,
                         self.change_evolution,
                         self.assurance,
@@ -724,6 +730,8 @@ class CodeReviewResult:
             raise ValueError("ready code-review result requires a state projection result")
         if self.state_topology is None:
             raise ValueError("ready code-review result requires state topology evidence")
+        if self.retention_analysis is None:
+            raise ValueError("ready code-review result requires retention evidence")
         if self.state_interactions is None:
             raise ValueError("ready code-review result requires state interaction evidence")
         if self.change_evolution is None:
@@ -770,6 +778,7 @@ class CodeReviewResult:
             raise ValueError("code-review structural evidence disagrees with its snapshot")
         if (
             self.state_topology.source_version != CODE_REVIEW_SCHEMA
+            or self.retention_analysis.source_version != CODE_REVIEW_SCHEMA
             or self.capability_reachability.source_version != CODE_REVIEW_SCHEMA
             or self.route_capabilities.source_version != CODE_REVIEW_SCHEMA
             or self.analyzer_calibration.source_version != CODE_REVIEW_SCHEMA
@@ -824,6 +833,7 @@ class CodeReviewResult:
             self.structural_analysis,
             state_projection=self.state_projection,
             state_topology=self.state_topology,
+            retention_analysis=self.retention_analysis,
             change_evolution=self.change_evolution,
             architecture=self.architecture,
             assurance=self.assurance,
@@ -928,6 +938,11 @@ class CodeReviewResult:
             ),
             "state_topology": (
                 None if self.state_topology is None else self.state_topology.as_payload()
+            ),
+            "retention_analysis": (
+                None
+                if self.retention_analysis is None
+                else self.retention_analysis.as_payload()
             ),
             "state_interactions": (
                 None if self.state_interactions is None else self.state_interactions.as_payload()

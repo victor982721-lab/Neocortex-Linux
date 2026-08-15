@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -43,6 +44,12 @@ from .code_invariant_assurance_analysis import analyze_code_invariant_assurance
 from .code_route_capability_analysis import (
     abstained_route_capability_analysis,
     analyze_route_capabilities,
+)
+from .code_retention_analysis import (
+    CodeRetentionResolutionError,
+    abstained_code_retention,
+    analyze_code_retention,
+    resolve_code_retention,
 )
 from .external_deep_coverage import PYTEST_COVERAGE_PROVIDER_ID
 from .external_mutation_cosmic_ray import COSMIC_RAY_MUTATION_PROVIDER_ID
@@ -1088,6 +1095,7 @@ def review_code_state(
             materialization_limit=limit,
         )
     document_state: Path | None = None
+    retention_reference_time_ns = time.time_ns()
     try:
         from .app_paths import self_analysis_data_directory
 
@@ -1100,6 +1108,11 @@ def review_code_state(
             state_topology = analyze_text_terminal_publication(
                 document_state,
                 source_version=CODE_REVIEW_SCHEMA,
+            )
+            retention_analysis = analyze_code_retention(
+                document_state,
+                source_version=CODE_REVIEW_SCHEMA,
+                reference_time_ns=retention_reference_time_ns,
             )
             capability_reachability = analyze_capability_reachability(
                 document_state,
@@ -1117,6 +1130,10 @@ def review_code_state(
                 "document_state_not_configured_for_noncanonical_code_review",
                 source_version=CODE_REVIEW_SCHEMA,
             )
+            retention_analysis = abstained_code_retention(
+                "document_state_not_configured_for_noncanonical_code_review",
+                source_version=CODE_REVIEW_SCHEMA,
+            )
             capability_reachability = abstained_capability_reachability(
                 "document_state_not_configured_for_noncanonical_code_review",
                 source_version=CODE_REVIEW_SCHEMA,
@@ -1128,6 +1145,10 @@ def review_code_state(
     except (OSError, RuntimeError, ValueError):
         state_projection = abstained_code_state_projection("document_state_boundary_unresolvable")
         state_topology = abstained_code_state_topology(
+            "document_state_boundary_unresolvable",
+            source_version=CODE_REVIEW_SCHEMA,
+        )
+        retention_analysis = abstained_code_retention(
             "document_state_boundary_unresolvable",
             source_version=CODE_REVIEW_SCHEMA,
         )
@@ -1145,6 +1166,18 @@ def review_code_state(
         except CodeStateTopologyResolutionError:
             state_topology = abstained_code_state_topology(
                 "state_topology_changed_during_review",
+                source_version=CODE_REVIEW_SCHEMA,
+            )
+    if document_state is not None and retention_analysis.status == "ready":
+        try:
+            resolve_code_retention(
+                document_state,
+                retention_analysis,
+                reference_time_ns=retention_reference_time_ns,
+            )
+        except CodeRetentionResolutionError:
+            retention_analysis = abstained_code_retention(
+                "retention_projection_changed_during_review",
                 source_version=CODE_REVIEW_SCHEMA,
             )
     assurance = analyze_code_assurance(
@@ -1181,6 +1214,7 @@ def review_code_state(
         structural_analysis,
         state_projection=state_projection,
         state_topology=state_topology,
+        retention_analysis=retention_analysis,
         change_evolution=read.change_evolution,
         architecture=read.architecture,
         assurance=assurance,
@@ -1278,6 +1312,7 @@ def review_code_state(
         structural_analysis=structural_analysis,
         state_projection=state_projection,
         state_topology=state_topology,
+        retention_analysis=retention_analysis,
         state_interactions=state_interactions,
         change_evolution=read.change_evolution,
         assurance=assurance,
@@ -1315,6 +1350,7 @@ def review_code_state(
             structural_analysis=structural_analysis,
             state_projection=state_projection,
             state_topology=state_topology,
+            retention_analysis=retention_analysis,
             state_interactions=state_interactions,
             change_evolution=read.change_evolution,
             assurance=assurance,

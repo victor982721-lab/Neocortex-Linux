@@ -30,13 +30,14 @@ from .code_architecture_questions import ARCHITECTURE_CONTRACT_QUESTION
 from .code_experiment_store import ResolvedCodeExperimentReceipt
 from .code_change_evolution_analysis import CODE_SCHEMA_EVOLUTION_QUESTION
 from .code_route_capability_analysis import ROUTE_CAPABILITY_QUESTION
+from .code_retention_analysis import RETENTION_EXPECTED_HOLDS, RETENTION_HOLD_QUESTION
 from .code_schema import CODE_SCHEMA_VERSION
 from .code_state_interaction_analysis import WORKFLOW_SQL_QUESTION
 from .code_state_projection_analysis import TEXT_SEMANTIC_PROJECTION_QUESTION
 
 CODE_TECHNICAL_VERIFICATION_SCHEMA = "neocortex.code-technical-verification/v1"
 CODE_TECHNICAL_VERIFICATION_POLICY = (
-    "allowlisted-independent-evidence-complete-no-change-verifier-v1"
+    "allowlisted-independent-evidence-complete-no-change-verifier-v2"
 )
 CODE_TECHNICAL_VERIFICATION_MAX_REVIEWS = 256
 
@@ -138,6 +139,26 @@ _TECHNICAL_POLICIES = (
         ),
     ),
     _TechnicalPolicy(
+        RETENTION_HOLD_QUESTION.question_id,
+        RETENTION_HOLD_QUESTION.version,
+        analysis_question_spec_fingerprint(RETENTION_HOLD_QUESTION),
+        "retention:canonical-durable-holds",
+        "retention.durable_hold_safety",
+        (
+            "current_previous_builders_leases_and_human_evidence_are_protected",
+            "dry_run_never_supports_deletion_and_preserves_phase_order",
+            "incomplete_review_receipt_or_schema_drift_fails_closed_without_mutation",
+            "reader_snapshot_does_not_mix_concurrent_owner_commit",
+        ),
+        "the_four_retention_owners_expose_all_declared_holds_and_the_bounded_dry_run_negative_controls_pass_without_deletion_authority",
+        "retention_durable_hold_matrix_passed_without_a_change_signal",
+        (
+            "bounded_fixtures_do_not_prove_power_loss_behavior",
+            "the_disposition_does_not_authorize_or_validate_a_future_delete_executor",
+            "the_four_owner_snapshots_are_not_cross_database_atomic",
+        ),
+    ),
+    _TechnicalPolicy(
         WORKFLOW_SQL_QUESTION.question_id,
         WORKFLOW_SQL_QUESTION.version,
         analysis_question_spec_fingerprint(WORKFLOW_SQL_QUESTION),
@@ -179,7 +200,7 @@ _TECHNICAL_POLICIES = (
 
 def _technical_policy_registry_fingerprint() -> str:
     return analysis_identity(
-        "code-technical-verification-policy-v1",
+        "code-technical-verification-policy-v2",
         tuple(asdict(item) for item in _TECHNICAL_POLICIES),
     )
 
@@ -488,6 +509,56 @@ def _architecture_contract_predicate(evaluation: AnalysisQuestionEvaluation) -> 
     )
 
 
+def _retention_predicate(evaluation: AnalysisQuestionEvaluation) -> bool:
+    contracts = _record_facts(evaluation, "retention_plan_contract")
+    owners = _record_facts(evaluation, "retention_store_projection")
+    holds = _record_facts(evaluation, "retention_declared_hold_projection")
+    pagination = _record_facts(evaluation, "retention_pagination_projection")
+    gaps = _record_facts(evaluation, "retention_gap_counterevidence")
+    if not all(len(items) == 1 for items in (contracts, owners, holds, pagination, gaps)):
+        return False
+    encoded = owners[0].get("stores_json")
+    if not isinstance(encoded, str):
+        return False
+    try:
+        stores = json.loads(encoded)
+    except (TypeError, ValueError):
+        return False
+    expected_names = tuple(RETENTION_EXPECTED_HOLDS)
+    if not isinstance(stores, list) or tuple(
+        item.get("store") if isinstance(item, Mapping) else None for item in stores
+    ) != expected_names:
+        return False
+    for item in stores:
+        if not isinstance(item, Mapping) or item.get("status") != "ready":
+            return False
+        schema_version = item.get("schema_version")
+        hold_names = item.get("hold_names")
+        if (
+            isinstance(schema_version, bool)
+            or not isinstance(schema_version, int)
+            or schema_version < 1
+            or not isinstance(hold_names, list)
+            or set(hold_names) != set(RETENTION_EXPECTED_HOLDS[str(item["store"])])
+            or bool(item.get("truncated")) != (item.get("next_after") is not None)
+        ):
+            return False
+    return (
+        contracts[0].get("dry_run") is True
+        and contracts[0].get("deletion_supported") is False
+        and contracts[0].get("keep_published") == 2
+        and owners[0].get("stores") == 4
+        and owners[0].get("ready_stores") == 4
+        and holds[0].get("expected_holds")
+        == sum(len(items) for items in RETENTION_EXPECTED_HOLDS.values())
+        and holds[0].get("missing_holds") == 0
+        and pagination[0].get("pagination_valid") is True
+        and gaps[0].get("non_ready_stores") == 0
+        and gaps[0].get("missing_holds") == 0
+        and gaps[0].get("invalid_pagination") == 0
+    )
+
+
 def _policy_predicate(
     policy: _TechnicalPolicy,
     evaluation: AnalysisQuestionEvaluation,
@@ -498,6 +569,8 @@ def _policy_predicate(
         return _capability_predicate(evaluation)
     if policy.question_id == CODE_SCHEMA_EVOLUTION_QUESTION.question_id:
         return _schema_predicate(evaluation)
+    if policy.question_id == RETENTION_HOLD_QUESTION.question_id:
+        return _retention_predicate(evaluation)
     if policy.question_id == WORKFLOW_SQL_QUESTION.question_id:
         return _workflow_predicate(evaluation)
     if policy.question_id == TEXT_SEMANTIC_PROJECTION_QUESTION.question_id:

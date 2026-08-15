@@ -214,7 +214,7 @@ def _receipt(
             scenario.test_nodeids,
             outcome,
             tuple(
-                f"relation:{scenario.scenario_id}:{index}"
+                f"relation:{scenario.scenario_id}:{index:04d}"
                 for index, _ in enumerate(scenario.test_nodeids)
             ),
         )
@@ -227,7 +227,8 @@ def _receipt(
             gate.test_nodeids,
             outcome,
             tuple(
-                f"gate-relation:{gate.gate_id}:{index}" for index, _ in enumerate(gate.test_nodeids)
+                f"gate-relation:{gate.gate_id}:{index:04d}"
+                for index, _ in enumerate(gate.test_nodeids)
             ),
             (
                 "all_bound_test_contracts_passed"
@@ -1356,5 +1357,5 @@ def test_review_consumes_a_persisted_receipt_and_does_not_propose_it_again(
     assert after.experiment_plan.executable_count == 0
     assert after.digest != before.digest
     payload = after.as_payload()
-    assert payload["schema"] == "neocortex.code-review/v18"
+    assert payload["schema"] == "neocortex.code-review/v19"
     assert len(payload["experiment_receipts"]) == 1

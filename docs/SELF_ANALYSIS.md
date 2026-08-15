@@ -408,7 +408,7 @@ explícitamente como **convención de ruta**, no como ownership ni reachability 
 runtime. `hotspot_id` identifica establemente la evidencia física y el símbolo;
 `finding_id` identifica la interpretación versionada.
 
-El envelope vigente es `neocortex.code-review/v18` y no declara compatibilidad
+El envelope vigente es `neocortex.code-review/v19` y no declara compatibilidad
 con schemas anteriores: conserva el corte de autoridad y usa el contrato general
 `neocortex.code-analysis-epistemics/v1`. Cada finding separa
 observación, hipótesis, readiness
@@ -447,7 +447,7 @@ nunca valores. Para CLI selecciona archivos por calls
 construcción dinámica. No ejecuta builders ni afirma que esos parsers lleguen
 al comando público.
 
-La arquitectura publicada deja de ser sólo una sección paralela: v18 deriva
+La arquitectura publicada deja de ser sólo una sección paralela: v19 deriva
 preguntas generales para el grafo estático comparable y para las evaluaciones de
 los contratos de imports. Sus evidence refs conservan snapshot, digest, gates,
 conteos, discrepancias y violaciones; incluso un contrato fallido permanece
@@ -485,7 +485,8 @@ publica atómicamente 260 miembros. Esto demuestra supervivencia y reanudación
 para ese crash point de proceso sobre SQLite; no simula power loss, corrupción
 de almacenamiento, todas las fronteras ni recuperación cross-owner.
 
-v18 integra además `code-state-topology`, `code-state-interactions`,
+v19 integra además `code-state-topology`, `code-retention-analysis`,
+`code-state-interactions`,
 `code-change-evolution`, `code-assurance`, `code-invariant-assurance`,
 `code-capability-reachability`, `code-route-capabilities`,
 `code-analyzer-calibration` y `code-analyzer-effectiveness`. Topología verifica
@@ -496,6 +497,14 @@ workflow declaradas. Los parámetros numerados `?NNN` se adaptan mediante tokens
 al placeholder anónimo que entiende SQLGlot; no se modifica texto entre comillas
 ni la evidencia/digest original. No infiere store por `connect`, `execute`, nombre de módulo
 o suffix `repository`.
+
+`code-retention-analysis/v1` consume el planner productivo en dry-run sobre
+Semantic, Catalog, Inventory y Framework. Conserva schemas, holds declarados,
+conteos, paginación y gaps sin crear, migrar ni borrar estado; una segunda
+lectura debe reproducir la proyección exacta. El experimento ejecutable asociado
+abarca catorce nodeids exactos y cuatro gates de heads/builders/leases/evidencia humana,
+fallo cerrado y lectura concurrente. Ni el análisis ni un receipt aprobado
+autorizan un futuro ejecutor de eliminación.
 
 Evolución separa contenido/API, relocations, historia Git y el schema Code;
 assurance distingue ejecución de tests, mutación, ASSERTS y escenarios; el
@@ -519,12 +528,13 @@ facts, completitud y requirements, pero excluye IDs locales de captura. Por
 ello un replay exacto conserva receipts y un cambio real de evidencia los
 invalida aunque el subject lógico conserve su nombre.
 Templates sin runner siguen como planes de caracterización. La CLI sólo ejecuta
-cinco templates source-versioned con gates medidos: los contratos de imports
+seis templates source-versioned con gates medidos: los contratos de imports
 declarados, con tres nodeids y cuatro gates; la ruta pública Text, con un
 nodeid; el workflow SQL/transaccional Text, con cuatro; la recuperación
-Semantic ante muerte del proceso durante staging, con un nodeid y tres gates; y
+Semantic ante muerte del proceso durante staging, con un nodeid y tres gates;
 la matriz Code-owner de migración poblada, rollback y rechazo de schema futuro,
-con cinco nodeids y cuatro gates.
+con cinco nodeids y cuatro gates; y Retention durable en dry-run, con nueve
+nodeids y cuatro gates.
 Los escenarios restantes del assurance registry no son automáticamente
 propuestas ejecutables. La vertical arquitectónica acepta únicamente la matriz
 versionada de contratos de imports cuando el grafo vivo no tiene violaciones y
@@ -559,7 +569,7 @@ proposal y el review resuelve como máximo 256 proposals ejecutables. Repetir el
 mismo `receipt_id` y contexto es idempotente; una colisión o un bound excedido
 falla cerrado.
 
-v18 conserva un linker fail-closed y de alcance explícito. Para cada proposal
+v19 conserva un linker fail-closed y de alcance explícito. Para cada proposal
 y processing signature vigentes, el review evalúa el terminal más nuevo y sólo
 proyecta `passed`; un `failed` o `abstained` posterior invalida un pass anterior.
 El receipt puede venir de un owner Code completado previo si la publicación
@@ -581,7 +591,7 @@ abstiene el review.
 
 Cuando todos los requisitos de decisión quedan satisfechos, la evaluación
 conserva `human_review_required`: el receipt no se convierte en actor humano. En
-v18, un verificador técnico independiente y allow-listed vuelve a comprobar el
+v19, un verificador técnico independiente y allow-listed vuelve a comprobar el
 fingerprint exacto de la pregunta, requisitos, contraevidencia, receipt, gates y
 predicados negativos de la vertical. Sólo entonces publica la disposición
 advisory `no_change_required_within_verified_scope`, con alcance y riesgos
