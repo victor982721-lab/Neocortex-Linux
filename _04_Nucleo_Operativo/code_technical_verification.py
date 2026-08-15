@@ -32,12 +32,16 @@ from .code_change_evolution_analysis import CODE_SCHEMA_EVOLUTION_QUESTION
 from .code_route_capability_analysis import ROUTE_CAPABILITY_QUESTION
 from .code_retention_analysis import RETENTION_EXPECTED_HOLDS, RETENTION_HOLD_QUESTION
 from .code_schema import CODE_SCHEMA_VERSION
+from .code_security_dependency_questions import (
+    DEPENDENCY_EVIDENCE_QUESTION,
+    SECURITY_EVIDENCE_QUESTION,
+)
 from .code_state_interaction_analysis import WORKFLOW_SQL_QUESTION
 from .code_state_projection_analysis import TEXT_SEMANTIC_PROJECTION_QUESTION
 
 CODE_TECHNICAL_VERIFICATION_SCHEMA = "neocortex.code-technical-verification/v1"
 CODE_TECHNICAL_VERIFICATION_POLICY = (
-    "allowlisted-independent-evidence-complete-no-change-verifier-v2"
+    "allowlisted-independent-evidence-complete-no-change-verifier-v3"
 )
 CODE_TECHNICAL_VERIFICATION_MAX_REVIEWS = 256
 
@@ -139,6 +143,26 @@ _TECHNICAL_POLICIES = (
         ),
     ),
     _TechnicalPolicy(
+        DEPENDENCY_EVIDENCE_QUESTION.question_id,
+        DEPENDENCY_EVIDENCE_QUESTION.version,
+        analysis_question_spec_fingerprint(DEPENDENCY_EVIDENCE_QUESTION),
+        "dependency:neocortex-environment",
+        "security.bounded_boundary_scenarios",
+        (
+            "dependency_declaration_inventory_record_and_license_evidence_are_correlated",
+            "missing_provider_cannot_pass_and_clean_complete_fixture_passes_absolute_gates",
+            "provider_replay_is_bound_to_exact_domains_versions_and_result_digests",
+            "source_only_dependency_is_hash_pinned_and_built_without_installing",
+        ),
+        "the_current_dependency_declaration_and_installed_record_license_gates_pass_and_the_bounded_dependency_negative_controls_are_satisfied",
+        "dependency_and_installed_artifact_gates_passed_without_a_change_signal",
+        (
+            "development_environment_evidence_does_not_replace_candidate_wheel_install_and_replay",
+            "license_metadata_presence_does_not_establish_legal_compatibility",
+            "manifest_and_import_agreement_does_not_prove_runtime_reachability",
+        ),
+    ),
+    _TechnicalPolicy(
         RETENTION_HOLD_QUESTION.question_id,
         RETENTION_HOLD_QUESTION.version,
         analysis_question_spec_fingerprint(RETENTION_HOLD_QUESTION),
@@ -156,6 +180,27 @@ _TECHNICAL_POLICIES = (
             "bounded_fixtures_do_not_prove_power_loss_behavior",
             "the_disposition_does_not_authorize_or_validate_a_future_delete_executor",
             "the_four_owner_snapshots_are_not_cross_database_atomic",
+        ),
+    ),
+    _TechnicalPolicy(
+        SECURITY_EVIDENCE_QUESTION.question_id,
+        SECURITY_EVIDENCE_QUESTION.version,
+        analysis_question_spec_fingerprint(SECURITY_EVIDENCE_QUESTION),
+        "project:neocortex-security-evidence",
+        "security.bounded_boundary_scenarios",
+        (
+            "bounded_local_staging_rejects_unowned_inputs",
+            "missing_provider_cannot_pass_and_clean_complete_fixture_passes_absolute_gates",
+            "pip_audit_contract_records_bounded_phase_complete_result",
+            "provider_environment_strips_credentials_and_disables_networked_modes",
+            "provider_replay_is_bound_to_exact_domains_versions_and_result_digests",
+        ),
+        "the_current_static_invariant_and_vulnerability_gates_pass_and_the_bounded_hostile_input_provider_environment_and_missing_provider_controls_are_satisfied",
+        "security_provider_gates_passed_without_a_change_signal",
+        (
+            "a_current_advisory_feed_does_not_cover_unknown_or_uninstalled_dependencies",
+            "selected_static_and_fixture_controls_do_not_prove_absence_of_runtime_vulnerabilities",
+            "vulnerability_feed_results_are_time_bound",
         ),
     ),
     _TechnicalPolicy(
@@ -200,7 +245,7 @@ _TECHNICAL_POLICIES = (
 
 def _technical_policy_registry_fingerprint() -> str:
     return analysis_identity(
-        "code-technical-verification-policy-v2",
+        "code-technical-verification-policy-v3",
         tuple(asdict(item) for item in _TECHNICAL_POLICIES),
     )
 
@@ -559,6 +604,86 @@ def _retention_predicate(evaluation: AnalysisQuestionEvaluation) -> bool:
     )
 
 
+def _nonnegative_integer(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _supply_chain_predicate(
+    evaluation: AnalysisQuestionEvaluation,
+    *,
+    domain: Literal["security", "dependency"],
+) -> bool:
+    coverage_kind = f"{domain}_provider_coverage_projection"
+    coverage_records = _record_facts(evaluation, coverage_kind)
+    provider_records = _record_facts(evaluation, "provider_and_gate_projection")
+    if len(coverage_records) != 1 or len(provider_records) != 2:
+        return False
+    coverage = coverage_records[0]
+    digest = coverage.get("supply_chain_digest")
+    if not (
+        coverage.get("supply_chain_status") == "ready"
+        and coverage.get("supply_chain_reason") is None
+        and _nonnegative_integer(coverage.get("analysis_run_id"))
+        and coverage.get("required_provider_count") == 2
+        and coverage.get("ready_provider_count") == 2
+        and coverage.get("evaluated_gate_count") == 3
+        and coverage.get("failed_gate_count") == 0
+        and isinstance(coverage.get("observation_projection_truncated"), bool)
+        and isinstance(digest, str)
+        and len(digest) == 32
+        and all(character in "0123456789abcdef" for character in digest)
+    ):
+        return False
+    expected = (
+        {
+            "semgrep-neocortex-invariants": (
+                "not_applicable",
+                1,
+                "semgrep_invariants:passed",
+            ),
+            "pip-audit-known-vulnerabilities": (
+                "current",
+                2,
+                "vulnerability_snapshot_current:passed,no_known_vulnerabilities:passed",
+            ),
+        }
+        if domain == "security"
+        else {
+            "deptry-project-dependencies": (
+                "not_applicable",
+                1,
+                "dependency_declaration_integrity:passed",
+            ),
+            "installed-package-inventory": (
+                "unknown",
+                2,
+                "installed_package_integrity:passed,license_inventory_available:passed",
+            ),
+        }
+    )
+    by_provider = {item.get("provider_id"): item for item in provider_records}
+    if set(by_provider) != set(expected):
+        return False
+    for provider_id, (freshness, gate_count, gate_statuses) in expected.items():
+        facts = by_provider[provider_id]
+        if not (
+            facts.get("provider_status") == "ready"
+            and isinstance(facts.get("provider_tool"), str)
+            and bool(facts.get("provider_tool"))
+            and isinstance(facts.get("provider_tool_version"), str)
+            and bool(facts.get("provider_tool_version"))
+            and facts.get("provider_freshness") == freshness
+            and facts.get("provider_findings") == 0
+            and _nonnegative_integer(facts.get("provider_metrics"))
+            and _nonnegative_integer(facts.get("provider_relations"))
+            and facts.get("evaluated_gate_count") == gate_count
+            and facts.get("failed_gate_count") == 0
+            and facts.get("gate_statuses") == gate_statuses
+        ):
+            return False
+    return True
+
+
 def _policy_predicate(
     policy: _TechnicalPolicy,
     evaluation: AnalysisQuestionEvaluation,
@@ -569,8 +694,12 @@ def _policy_predicate(
         return _capability_predicate(evaluation)
     if policy.question_id == CODE_SCHEMA_EVOLUTION_QUESTION.question_id:
         return _schema_predicate(evaluation)
+    if policy.question_id == DEPENDENCY_EVIDENCE_QUESTION.question_id:
+        return _supply_chain_predicate(evaluation, domain="dependency")
     if policy.question_id == RETENTION_HOLD_QUESTION.question_id:
         return _retention_predicate(evaluation)
+    if policy.question_id == SECURITY_EVIDENCE_QUESTION.question_id:
+        return _supply_chain_predicate(evaluation, domain="security")
     if policy.question_id == WORKFLOW_SQL_QUESTION.question_id:
         return _workflow_predicate(evaluation)
     if policy.question_id == TEXT_SEMANTIC_PROJECTION_QUESTION.question_id:

@@ -26,8 +26,8 @@ from .code_analysis_epistemics import (
 from .code_invariant_contracts import INVARIANT_RUNTIME_SCENARIOS, RUNTIME_SCENARIOS
 
 CODE_EXPERIMENT_PLAN_SCHEMA = "neocortex.code-experiment-plan/v2"
-CODE_EXPERIMENT_TEMPLATE_REGISTRY_SCHEMA = "neocortex.code-experiment-template-registry/v6"
-CODE_EXPERIMENT_PLANNING_POLICY = "registered-applicable-cheapest-discriminating-experiment-v7"
+CODE_EXPERIMENT_TEMPLATE_REGISTRY_SCHEMA = "neocortex.code-experiment-template-registry/v7"
+CODE_EXPERIMENT_PLANNING_POLICY = "registered-applicable-cheapest-discriminating-experiment-v8"
 CODE_EXPERIMENT_MAX_PROPOSALS = 256
 
 ExperimentKind = Literal[
@@ -210,6 +210,7 @@ def _template(
         "capability.public_route_acceptance": "v2",
         "evolution.code_schema_upgrade_matrix": "v1",
         "retention.durable_hold_safety": "v2",
+        "security.bounded_boundary_scenarios": "v2",
         "state.semantic_process_death_recovery": "v1",
         "state.runtime_sql_trace": "v2",
     }
@@ -528,19 +529,34 @@ CODE_EXPERIMENT_TEMPLATES: tuple[CodeExperimentTemplate, ...] = (
             "run_missing_dependency_and_inventory_providers",
         ),
         "isolated_pytest",
-        "disposable_worktree_and_state",
+        "pytest_tmp_path",
         "deep",
         timeout=600,
-        max_items=50,
+        max_items=10,
         attention=15,
+        scenarios=("security.supply_chain_gate_controls",),
+        runner="trusted_deep_declared_scenarios",
+        questions=(
+            "dependency.declaration_installation_and_license_evidence_is_resolved",
+            "security.static_invariants_and_vulnerability_evidence_is_resolved",
+        ),
+        subject_prefixes=(
+            "dependency:neocortex-environment",
+            "project:neocortex-security-evidence",
+        ),
         gates=(
-            "untrusted_inputs_are_bounded_and_local",
-            "provider_versions_and_result_digests_are_recorded",
-            "no_credentials_or_network_are_available_by_default",
+            "bounded_local_staging_rejects_unowned_inputs",
+            "dependency_declaration_inventory_record_and_license_evidence_are_correlated",
+            "missing_provider_cannot_pass_and_clean_complete_fixture_passes_absolute_gates",
+            "pip_audit_contract_records_bounded_phase_complete_result",
+            "provider_environment_strips_credentials_and_disables_networked_modes",
+            "provider_replay_is_bound_to_exact_domains_versions_and_result_digests",
+            "source_only_dependency_is_hash_pinned_and_built_without_installing",
         ),
         limitations=(
             "selected_security_scenarios_do_not_prove_absence_of_vulnerabilities",
             "known_vulnerability_feeds_are_time_bound",
+            "bounded_dependency_fixtures_do_not_replace_candidate_wheel_install_and_replay",
         ),
     ),
     _template(
@@ -593,7 +609,7 @@ def experiment_template_registry_payload() -> dict[str, object]:
 
 def experiment_template_registry_fingerprint() -> str:
     return analysis_identity(
-        "code-experiment-template-registry-v6",
+        "code-experiment-template-registry-v7",
         experiment_template_registry_payload(),
     )
 

@@ -13,7 +13,7 @@ from typing import Literal
 from .code_analysis_epistemics import analysis_identity
 
 CODE_INVARIANT_REGISTRY_SCHEMA = "neocortex.code-invariant-registry/v3"
-CODE_RUNTIME_SCENARIO_REGISTRY_SCHEMA = "neocortex.code-runtime-scenario-registry/v6"
+CODE_RUNTIME_SCENARIO_REGISTRY_SCHEMA = "neocortex.code-runtime-scenario-registry/v7"
 
 
 def _required(label: str, value: object, maximum: int = 512) -> str:
@@ -501,8 +501,12 @@ RUNTIME_SCENARIOS = (
     ),
     RuntimeScenarioSpec(
         scenario_id="security.supply_chain_gate_controls",
-        version="v1",
+        version="v2",
         test_nodeids=(
+            (
+                "tests/test_build_binary_inputs.py::"
+                "test_source_only_dependency_is_hash_pinned_and_built_without_installing"
+            ),
             (
                 "tests/test_code_supply_chain_analysis.py::"
                 "test_missing_provider_never_passes_its_gates"
@@ -512,13 +516,118 @@ RUNTIME_SCENARIOS = (
                 "test_zero_findings_is_valid_and_all_absolute_gates_pass"
             ),
             (
+                "tests/test_external_dependency_hygiene.py::"
+                "test_real_deptry_accepts_exact_stage_without_exclusion_panic"
+            ),
+            (
+                "tests/test_external_semgrep_invariants.py::"
+                "test_command_and_environment_disable_network_registry_and_autofix"
+            ),
+            (
+                "tests/test_external_semgrep_invariants.py::"
+                "test_staging_rejects_empty_extra_unowned_and_mismatched_paths"
+            ),
+            (
+                "tests/test_external_supply_chain_audit.py::"
+                "test_base_dependency_gates_exclude_false_markers_and_optional_extras"
+            ),
+            (
+                "tests/test_external_supply_chain_audit.py::"
+                "test_installed_inventory_correlates_pyproject_licenses_requirements_and_record"
+            ),
+            (
                 "tests/test_external_supply_chain_audit.py::"
                 "test_pip_audit_public_contract_phase_order_and_complete_result"
+            ),
+            (
+                "tests/test_external_supply_chain_provider_registry.py::"
+                "test_semgrep_and_deptry_use_their_exact_python_domains_and_replay"
             ),
         ),
         scenario_kind="state_fixture",
         isolation="pytest_tmp_path",
-        limitation="local_fixture_receipts_do_not_prove_future_advisory_feeds_are_complete",
+        limitation=(
+            "bounded_local_provider_and_artifact_fixtures_do_not_prove_future_feeds_"
+            "complete_or_candidate_artifacts_correct"
+        ),
+        gate_specs=(
+            RuntimeScenarioGateSpec(
+                "bounded_local_staging_rejects_unowned_inputs",
+                (
+                    (
+                        "tests/test_external_semgrep_invariants.py::"
+                        "test_staging_rejects_empty_extra_unowned_and_mismatched_paths"
+                    ),
+                ),
+            ),
+            RuntimeScenarioGateSpec(
+                "dependency_declaration_inventory_record_and_license_evidence_are_correlated",
+                (
+                    (
+                        "tests/test_external_dependency_hygiene.py::"
+                        "test_real_deptry_accepts_exact_stage_without_exclusion_panic"
+                    ),
+                    (
+                        "tests/test_external_supply_chain_audit.py::"
+                        "test_base_dependency_gates_exclude_false_markers_and_optional_extras"
+                    ),
+                    (
+                        "tests/test_external_supply_chain_audit.py::"
+                        "test_installed_inventory_correlates_pyproject_licenses_requirements_"
+                        "and_record"
+                    ),
+                ),
+            ),
+            RuntimeScenarioGateSpec(
+                "missing_provider_cannot_pass_and_clean_complete_fixture_passes_absolute_gates",
+                (
+                    (
+                        "tests/test_code_supply_chain_analysis.py::"
+                        "test_missing_provider_never_passes_its_gates"
+                    ),
+                    (
+                        "tests/test_code_supply_chain_analysis.py::"
+                        "test_zero_findings_is_valid_and_all_absolute_gates_pass"
+                    ),
+                ),
+            ),
+            RuntimeScenarioGateSpec(
+                "pip_audit_contract_records_bounded_phase_complete_result",
+                (
+                    (
+                        "tests/test_external_supply_chain_audit.py::"
+                        "test_pip_audit_public_contract_phase_order_and_complete_result"
+                    ),
+                ),
+            ),
+            RuntimeScenarioGateSpec(
+                "provider_environment_strips_credentials_and_disables_networked_modes",
+                (
+                    (
+                        "tests/test_external_semgrep_invariants.py::"
+                        "test_command_and_environment_disable_network_registry_and_autofix"
+                    ),
+                ),
+            ),
+            RuntimeScenarioGateSpec(
+                "provider_replay_is_bound_to_exact_domains_versions_and_result_digests",
+                (
+                    (
+                        "tests/test_external_supply_chain_provider_registry.py::"
+                        "test_semgrep_and_deptry_use_their_exact_python_domains_and_replay"
+                    ),
+                ),
+            ),
+            RuntimeScenarioGateSpec(
+                "source_only_dependency_is_hash_pinned_and_built_without_installing",
+                (
+                    (
+                        "tests/test_build_binary_inputs.py::"
+                        "test_source_only_dependency_is_hash_pinned_and_built_without_installing"
+                    ),
+                ),
+            ),
+        ),
     ),
     RuntimeScenarioSpec(
         scenario_id="semantic.staging_process_death_resume",
@@ -654,6 +763,7 @@ EXPERIMENT_SCENARIO_IDS = (
     "capability.public_text_route_to_search",
     "evolution.code_schema_upgrade_matrix",
     "retention.durable_hold_safety",
+    "security.supply_chain_gate_controls",
     "semantic.staging_process_death_resume",
     "state.text_sql_runtime_trace",
 )
@@ -663,7 +773,6 @@ CALIBRATION_SCENARIO_IDS = (
     "architecture.declared_boundary_and_owner_mapping",
     "evolution.change_surface_antigoodhart_controls",
     "interfaces.public_cli_and_static_surface",
-    "security.supply_chain_gate_controls",
 )
 
 INVARIANT_RUNTIME_SCENARIOS = tuple(
@@ -770,7 +879,7 @@ def runtime_scenario_registry_payload() -> dict[str, object]:
 
 def runtime_scenario_registry_fingerprint() -> str:
     return analysis_identity(
-        "code-runtime-scenario-registry-v6", runtime_scenario_registry_payload()
+        "code-runtime-scenario-registry-v7", runtime_scenario_registry_payload()
     )
 
 

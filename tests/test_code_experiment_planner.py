@@ -89,7 +89,7 @@ def test_registry_is_canonical_non_mutating_and_bounded() -> None:
     assert all(1 <= item.timeout_seconds <= 900 for item in CODE_EXPERIMENT_TEMPLATES)
     assert experiment_template("structure.static_characterization").cost_tier == "metadata"
     assert experiment_template_registry_fingerprint().startswith(
-        "code-experiment-template-registry-v6:xxh3_128:"
+        "code-experiment-template-registry-v7:xxh3_128:"
     )
     executable = tuple(item for item in CODE_EXPERIMENT_TEMPLATES if item.executable)
     assert {scenario for item in executable for scenario in item.scenario_ids} == set(
@@ -154,6 +154,29 @@ def test_registry_is_canonical_non_mutating_and_bounded() -> None:
     assert retention.applies_to(
         question_id="retention.dry_run_preserves_declared_durable_holds",
         subject_key="retention:canonical-durable-holds",
+    )
+    security = experiment_template("security.bounded_boundary_scenarios")
+    assert security.executable is True
+    assert security.version == "v2"
+    assert security.max_items == 10
+    assert security.scenario_ids == ("security.supply_chain_gate_controls",)
+    assert security.applies_to(
+        question_id="security.static_invariants_and_vulnerability_evidence_is_resolved",
+        subject_key="project:neocortex-security-evidence",
+    )
+    assert security.applies_to(
+        question_id="dependency.declaration_installation_and_license_evidence_is_resolved",
+        subject_key="dependency:neocortex-environment",
+    )
+    assert not security.applies_to(
+        question_id="dependency.declaration_installation_and_license_evidence_is_resolved",
+        subject_key="dependency:unrelated-environment",
+    )
+    supply_scenario = runtime_scenario("security.supply_chain_gate_controls")
+    assert supply_scenario.version == "v2"
+    assert len(supply_scenario.test_nodeids) == security.max_items
+    assert tuple(item.gate_id for item in supply_scenario.gate_specs) == (
+        security.acceptance_gates
     )
     assert not retention.applies_to(
         question_id="retention.dry_run_preserves_declared_durable_holds",

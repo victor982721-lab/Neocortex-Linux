@@ -510,9 +510,17 @@ def _database(
         source_ids = tuple(
             publish_external_provider(connection, 1, publication) for publication in publications
         )
+        connection.execute(
+            "UPDATE analysis_runs SET status='completed',completed_ns=9 "
+            "WHERE analysis_run_id=1"
+        )
+        connection.commit()
         for publication, source_id in zip(publications, source_ids, strict=True):
             publish_external_provider(connection, 2, _replay(publication, source_id))
-        connection.execute("UPDATE analysis_runs SET status='completed',completed_ns=10")
+        connection.execute(
+            "UPDATE analysis_runs SET status='completed',completed_ns=10 "
+            "WHERE analysis_run_id=2"
+        )
         connection.commit()
     finally:
         connection.close()

@@ -711,6 +711,26 @@ _REQUIREMENT_BINDINGS: tuple[_RequirementBinding, ...] = (
         ),
     ),
     _RequirementBinding(
+        "dependency.declaration_installation_and_license_evidence_is_resolved",
+        "security.bounded_boundary_scenarios",
+        "dependency_counterevidence_evaluated",
+        (
+            "dependency_declaration_inventory_record_and_license_evidence_are_correlated",
+            "missing_provider_cannot_pass_and_clean_complete_fixture_passes_absolute_gates",
+            "provider_replay_is_bound_to_exact_domains_versions_and_result_digests",
+        ),
+    ),
+    _RequirementBinding(
+        "dependency.declaration_installation_and_license_evidence_is_resolved",
+        "security.bounded_boundary_scenarios",
+        "release_artifact_dependency_experiment_result",
+        (
+            "dependency_declaration_inventory_record_and_license_evidence_are_correlated",
+            "provider_replay_is_bound_to_exact_domains_versions_and_result_digests",
+            "source_only_dependency_is_hash_pinned_and_built_without_installing",
+        ),
+    ),
+    _RequirementBinding(
         "evolution.code_owner_schema_requires_migration_review",
         "evolution.code_schema_upgrade_matrix",
         "populated_upgrade_and_recovery_evidence",
@@ -749,6 +769,28 @@ _REQUIREMENT_BINDINGS: tuple[_RequirementBinding, ...] = (
             "dry_run_never_supports_deletion_and_preserves_phase_order",
             "incomplete_review_receipt_or_schema_drift_fails_closed_without_mutation",
             "reader_snapshot_does_not_mix_concurrent_owner_commit",
+        ),
+    ),
+    _RequirementBinding(
+        "security.static_invariants_and_vulnerability_evidence_is_resolved",
+        "security.bounded_boundary_scenarios",
+        "security_counterevidence_evaluated",
+        (
+            "bounded_local_staging_rejects_unowned_inputs",
+            "missing_provider_cannot_pass_and_clean_complete_fixture_passes_absolute_gates",
+            "provider_environment_strips_credentials_and_disables_networked_modes",
+        ),
+    ),
+    _RequirementBinding(
+        "security.static_invariants_and_vulnerability_evidence_is_resolved",
+        "security.bounded_boundary_scenarios",
+        "security_verification_experiment_result",
+        (
+            "bounded_local_staging_rejects_unowned_inputs",
+            "missing_provider_cannot_pass_and_clean_complete_fixture_passes_absolute_gates",
+            "pip_audit_contract_records_bounded_phase_complete_result",
+            "provider_environment_strips_credentials_and_disables_networked_modes",
+            "provider_replay_is_bound_to_exact_domains_versions_and_result_digests",
         ),
     ),
     _RequirementBinding(

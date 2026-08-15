@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from dataclasses import replace
 from pathlib import Path
 
@@ -25,6 +26,12 @@ from _04_Nucleo_Operativo.code_retention_analysis import (
     analyze_code_retention,
     retention_questions,
 )
+from _04_Nucleo_Operativo.code_security_dependency_questions import (
+    DEPENDENCY_EVIDENCE_QUESTION,
+    SECURITY_EVIDENCE_QUESTION,
+    security_dependency_questions,
+)
+from _04_Nucleo_Operativo.code_supply_chain_analysis import read_code_supply_chain_analysis
 from _04_Nucleo_Operativo.code_technical_verification import (
     build_code_technical_verification,
     parse_code_technical_verification_payload,
@@ -34,6 +41,10 @@ from tests.test_code_architecture_questions import _ready_architecture
 from tests.test_code_experiment_store import _database, _receipt
 from tests.test_code_state_projection_analysis import _build_state
 from tests.test_code_retention_analysis import REFERENCE_NS, SOURCE_VERSION, _initialized_state
+from tests.test_code_supply_chain_analysis import (
+    _NOW_UTC as SUPPLY_NOW_UTC,
+    _database as _supply_chain_database,
+)
 
 
 def _closed_semantic_projection(
@@ -194,6 +205,137 @@ def _closed_retention_hold_projection(tmp_path: Path):
     assert receipts == (stored,)
     projected = apply_code_experiment_receipts(specs, evaluations, plan, receipts)
     return specs, evaluations, plan, receipts, projected
+
+
+def _closed_supply_chain_projection(tmp_path: Path):
+    supply_root = tmp_path / "supply"
+    supply_root.mkdir()
+    supply_database = _supply_chain_database(supply_root, findings=False)
+    with sqlite3.connect(supply_database) as connection:
+        connection.row_factory = sqlite3.Row
+        analysis = read_code_supply_chain_analysis(
+            connection,
+            2,
+            database=str(supply_database),
+            now_utc=SUPPLY_NOW_UTC,
+        )
+    assert analysis.status == "ready"
+    specs, evaluations = security_dependency_questions(
+        analysis,
+        snapshot_id="snapshot:fixture",
+        snapshot_freshness="current",
+        rank_offset=0,
+    )
+    plan = plan_code_experiments(specs, evaluations)
+    assert plan.executable_count == 2
+    experiment_root = tmp_path / "supply-experiment"
+    experiment_root.mkdir()
+    database = _database(experiment_root)
+    for proposal in plan.proposals:
+        record_code_experiment_receipt(
+            database,
+            _receipt(proposal),
+            proposal,
+            analysis_run_id=1,
+            processing_signature="snapshot:fixture",
+            review_digest="review:fixture",
+        )
+    receipts = read_code_experiment_receipts(
+        database,
+        analysis_run_id=1,
+        processing_signature="snapshot:fixture",
+        plan=plan,
+    )
+    assert len(receipts) == 2
+    projected = apply_code_experiment_receipts(specs, evaluations, plan, receipts)
+    return specs, evaluations, plan, receipts, projected
+
+
+def test_supply_chain_receipts_close_security_and_dependency_evidence(
+    tmp_path: Path,
+) -> None:
+    specs, _evaluations, plan, receipts, projected = _closed_supply_chain_projection(tmp_path)
+
+    assert {item.question_id for item in plan.proposals} == {
+        SECURITY_EVIDENCE_QUESTION.question_id,
+        DEPENDENCY_EVIDENCE_QUESTION.question_id,
+    }
+    assert all(
+        item.template_id == "security.bounded_boundary_scenarios"
+        and item.runner_kind == "trusted_deep_declared_scenarios"
+        and item.scenario_ids == ("security.supply_chain_gate_controls",)
+        for item in plan.proposals
+    )
+    assert all(item.decision_readiness == "human_review_required" for item in projected)
+    assert all(item.counterevidence_status == "evaluated" for item in projected)
+    assert all(
+        requirement.status == "satisfied"
+        for evaluation in projected
+        for requirement in evaluation.requirements
+    )
+
+    verification = build_code_technical_verification(specs, projected, receipts)
+
+    assert verification.status == "ready"
+    assert verification.evidence_complete_evaluations == 2
+    assert verification.no_change_required_count == 2
+    assert verification.unresolved_count == 0
+    assert {item.question_id for item in verification.reviews} == {
+        SECURITY_EVIDENCE_QUESTION.question_id,
+        DEPENDENCY_EVIDENCE_QUESTION.question_id,
+    }
+    assert {item.reason_code for item in verification.reviews} == {
+        "security_provider_gates_passed_without_a_change_signal",
+        "dependency_and_installed_artifact_gates_passed_without_a_change_signal",
+    }
+
+
+@pytest.mark.parametrize(
+    ("question_id", "provider_id"),
+    (
+        (SECURITY_EVIDENCE_QUESTION.question_id, "pip-audit-known-vulnerabilities"),
+        (DEPENDENCY_EVIDENCE_QUESTION.question_id, "installed-package-inventory"),
+    ),
+)
+def test_passed_supply_fixture_cannot_hide_a_failed_live_provider_gate(
+    tmp_path: Path,
+    question_id: str,
+    provider_id: str,
+) -> None:
+    specs, _evaluations, _plan, receipts, projected = _closed_supply_chain_projection(tmp_path)
+    selected = next(item for item in projected if item.question_id == question_id)
+    provider = next(
+        item
+        for item in selected.evidence
+        if item.source_record_kind == "provider_and_gate_projection"
+        and any(fact.name == "provider_id" and fact.value == provider_id for fact in item.facts)
+    )
+    tampered_provider = replace(
+        provider,
+        facts=tuple(
+            replace(fact, value=1) if fact.name == "failed_gate_count" else fact
+            for fact in provider.facts
+        ),
+    )
+    tampered_evaluation = replace(
+        selected,
+        evidence=tuple(
+            tampered_provider if item.evidence_id == provider.evidence_id else item
+            for item in selected.evidence
+        ),
+    )
+    tampered_projection = tuple(
+        tampered_evaluation if item.evaluation_id == selected.evaluation_id else item
+        for item in projected
+    )
+
+    verification = build_code_technical_verification(specs, tampered_projection, receipts)
+
+    assert verification.status == "partial"
+    assert verification.no_change_required_count == 1
+    assert verification.unresolved_count == 1
+    assert verification.gaps[0].question_id == question_id
+    assert verification.gaps[0].reason == "technical_policy_negative_control_not_satisfied"
 
 
 def test_semantic_process_death_receipt_closes_evidence_and_technical_review(
