@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import asdict, dataclass, replace
-from typing import Literal
+from typing import Literal, cast
 
 from .code_analysis_epistemics import (
     AnalysisQuestionEvaluation,
@@ -595,6 +595,345 @@ class CodeReviewCoverage:
     resolved_call_edges: int
 
 
+def _validate_code_review_materialization_limit(result: CodeReviewResult) -> None:
+    if (
+        isinstance(result.materialization_limit, bool)
+        or not isinstance(result.materialization_limit, int)
+        or not 1 <= result.materialization_limit <= CODE_REVIEW_PUBLIC_MATERIALIZATION_MAX
+    ):
+        raise ValueError("code-review materialization limit must be between 1 and 50")
+
+
+def _validate_code_review_status_values(result: CodeReviewResult) -> None:
+    statuses = (
+        (result.status, {"ready", "abstained"}, "invalid code-review result status"),
+        (
+            result.recommendation_status,
+            {"ready", "abstained", "not_evaluated"},
+            "invalid code-review recommendation status",
+        ),
+        (
+            result.work_package_status,
+            {"ready", "abstained", "not_evaluated"},
+            "invalid code-review work-package status",
+        ),
+    )
+    for value, allowed, message in statuses:
+        if value not in allowed:
+            raise ValueError(message)
+
+
+def _validate_code_review_recommendation_contract(result: CodeReviewResult) -> None:
+    if result.recommendations:
+        raise ValueError("code-review/v19 cannot publish semantic change recommendations")
+    if result.recommendation_status == "ready":
+        raise ValueError("code-review/v19 recommendation status must abstain")
+    if result.recommendation_status == "abstained" and not result.recommendation_reason:
+        raise ValueError("abstained recommendation status requires a reason")
+    if result.recommendation_status == "not_evaluated" and not result.recommendation_reason:
+        raise ValueError("not-evaluated recommendation status requires a reason")
+
+
+def _validate_code_review_work_package_contract(result: CodeReviewResult) -> None:
+    if any(package.package_kind != "unused_characterization" for package in result.work_packages):
+        raise ValueError("code-review/v19 cannot publish hotspot change packages")
+    if (result.work_package_status == "ready") != bool(result.work_packages):
+        raise ValueError("work-package readiness must match published packages")
+    if result.work_package_status == "ready" and result.work_package_reason is not None:
+        raise ValueError("ready work-package status cannot carry an abstention reason")
+    if result.work_package_status != "ready" and not result.work_package_reason:
+        raise ValueError("non-ready work-package status requires a reason")
+
+
+def _validate_code_review_status_contracts(result: CodeReviewResult) -> None:
+    """Validate status fields that apply to every Code review result."""
+
+    _validate_code_review_materialization_limit(result)
+    _validate_code_review_status_values(result)
+    _validate_code_review_recommendation_contract(result)
+    _validate_code_review_work_package_contract(result)
+
+
+def _validate_abstained_code_review_result(result: CodeReviewResult) -> None:
+    """Ensure abstention never carries evidence that was not verified."""
+
+    if not result.reason:
+        raise ValueError("abstained code-review result requires a reason")
+    if (
+        any(
+            item is not None
+            for item in (
+                result.snapshot,
+                result.coverage,
+                result.external_evidence,
+                result.external_evidence_suite,
+                result.architecture,
+                result.test_coverage,
+                result.unused_analysis,
+                result.supply_chain,
+                result.engineering_analytics,
+                result.state_topology,
+                result.retention_analysis,
+                result.state_interactions,
+                result.change_evolution,
+                result.assurance,
+                result.invariant_assurance,
+                result.capability_reachability,
+                result.route_capabilities,
+                result.analyzer_effectiveness,
+                result.analyzer_calibration,
+                result.experiment_plan,
+                result.interface_surface,
+                result.digest,
+            )
+        )
+        or result.findings
+        or result.work_packages
+        or result.structural_analysis is not None
+        or result.state_projection is not None
+        or result.question_specs
+        or result.question_evaluations
+        or result.experiment_receipts
+        or result.technical_verification is not None
+    ):
+        raise ValueError("abstained code-review result cannot publish unverified evidence")
+
+
+def _validate_ready_code_review_presence(result: CodeReviewResult) -> None:
+    """Require the evidence dimensions bound by one ready v19 result."""
+
+    if result.reason is not None:
+        raise ValueError("ready code-review result cannot carry an abstention reason")
+    required = (
+        (result.digest, "ready code-review result requires an evidence digest"),
+        (
+            None if result.snapshot is None or result.coverage is None else result.snapshot,
+            "ready code-review result lacks evidence required by its digest",
+        ),
+        (
+            result.structural_analysis,
+            "ready code-review result requires resolved structural analysis",
+        ),
+        (result.architecture, "ready code-review result requires resolved architecture analysis"),
+        (result.state_projection, "ready code-review result requires a state projection result"),
+        (result.state_topology, "ready code-review result requires state topology evidence"),
+        (result.retention_analysis, "ready code-review result requires retention evidence"),
+        (
+            result.state_interactions,
+            "ready code-review result requires state interaction evidence",
+        ),
+        (result.change_evolution, "ready code-review result requires change evolution evidence"),
+        (result.assurance, "ready code-review result requires assurance evidence"),
+        (
+            result.invariant_assurance,
+            "ready code-review result requires invariant assurance evidence",
+        ),
+        (
+            result.capability_reachability,
+            "ready code-review result requires capability reachability evidence",
+        ),
+        (result.route_capabilities, "ready code-review result requires route capability evidence"),
+        (
+            result.analyzer_effectiveness,
+            "ready code-review result requires analyzer effectiveness evidence",
+        ),
+        (
+            result.analyzer_calibration,
+            "ready code-review result requires analyzer calibration evidence",
+        ),
+        (result.experiment_plan, "ready code-review result requires an experiment plan"),
+        (result.interface_surface, "ready code-review result requires interface surface evidence"),
+        (
+            result.technical_verification,
+            "ready code-review result requires technical verification",
+        ),
+        (result.supply_chain, "ready code-review result requires supply-chain evidence"),
+    )
+    for evidence, message in required:
+        if evidence is None:
+            raise ValueError(message)
+
+
+def _validate_code_review_experiment_receipts(result: CodeReviewResult) -> None:
+    """Validate bounded receipts against the exact review snapshot."""
+
+    if (
+        not isinstance(result.experiment_receipts, tuple)
+        or len(result.experiment_receipts) > CODE_EXPERIMENT_STORE_MAX_RESOLVED
+        or any(
+            not isinstance(item, ResolvedCodeExperimentReceipt)
+            for item in result.experiment_receipts
+        )
+    ):
+        raise ValueError("code-review experiment receipts are invalid or out of bounds")
+    snapshot = cast(CodeReviewSnapshot, result.snapshot)
+    if any(
+        item.analysis_run_id > snapshot.analysis_run_id
+        or item.receipt.source_version != snapshot.processing_signature
+        for item in result.experiment_receipts
+    ):
+        raise ValueError("code-review experiment receipts disagree with their snapshot")
+
+
+def _validate_code_review_snapshot_contracts(result: CodeReviewResult) -> None:
+    """Cross-check each ready projection against its declared snapshot."""
+
+    snapshot = cast(CodeReviewSnapshot, result.snapshot)
+    structural = cast(CodeClassSurfaceAnalysis, result.structural_analysis)
+    state_topology = cast(CodeStateTopologyAnalysis, result.state_topology)
+    retention = cast(CodeRetentionAnalysis, result.retention_analysis)
+    assurance = cast(CodeAssuranceAnalysis, result.assurance)
+    invariant_assurance = cast(CodeInvariantAssuranceAnalysis, result.invariant_assurance)
+    capability = cast(CodeCapabilityReachabilityAnalysis, result.capability_reachability)
+    route_capabilities = cast(CodeRouteCapabilityAnalysis, result.route_capabilities)
+    effectiveness = cast(CodeAnalyzerEffectivenessAnalysis, result.analyzer_effectiveness)
+    calibration = cast(CodeAnalyzerCalibrationAnalysis, result.analyzer_calibration)
+    state_interactions = cast(CodeStateInteractionAnalysis, result.state_interactions)
+    supply_chain = cast(CodeSupplyChainAnalysis, result.supply_chain)
+    interface_surface = cast(CodeInterfaceSurfaceAnalysis, result.interface_surface)
+    change_evolution = cast(CodeChangeEvolutionAnalysis, result.change_evolution)
+    contracts = (
+        (
+            (structural.snapshot_id, structural.snapshot_freshness),
+            (snapshot.processing_signature, snapshot.freshness),
+            "code-review structural evidence disagrees with its snapshot",
+        ),
+        (
+            (
+                state_topology.source_version,
+                retention.source_version,
+                capability.source_version,
+                route_capabilities.source_version,
+                calibration.source_version,
+            ),
+            (CODE_REVIEW_SCHEMA,) * 5,
+            "code-review integrated projection version is inconsistent",
+        ),
+        (
+            (assurance.snapshot_id, assurance.snapshot_freshness),
+            (snapshot.processing_signature, snapshot.freshness),
+            "code-review assurance evidence disagrees with its snapshot",
+        ),
+    )
+    for observed, expected, message in contracts:
+        if observed != expected:
+            raise ValueError(message)
+    if effectiveness.status == "ready":
+        observed = (
+            effectiveness.analysis_run_id,
+            effectiveness.framework_run_id,
+            effectiveness.processing_signature,
+            effectiveness.snapshot_freshness,
+            effectiveness.source_version,
+        )
+        expected = (
+            snapshot.analysis_run_id,
+            snapshot.framework_run_id,
+            snapshot.processing_signature,
+            snapshot.freshness,
+            CODE_REVIEW_SCHEMA,
+        )
+        if observed != expected:
+            raise ValueError("code-review analyzer effectiveness disagrees with its snapshot")
+    if state_interactions.status != "abstained":
+        observed = (
+            state_interactions.analysis_run_id,
+            state_interactions.source_processing_signature,
+        )
+        expected = (snapshot.analysis_run_id, snapshot.processing_signature)
+        if observed != expected:
+            raise ValueError("code-review state interactions disagree with its snapshot")
+    contracts = (
+        (
+            (invariant_assurance.snapshot_id, invariant_assurance.snapshot_freshness),
+            (snapshot.processing_signature, snapshot.freshness),
+            "code-review invariant assurance disagrees with its snapshot",
+        ),
+        (
+            (supply_chain.analysis_run_id,),
+            (snapshot.analysis_run_id,),
+            "code-review supply-chain evidence disagrees with its snapshot",
+        ),
+    )
+    for observed, expected, message in contracts:
+        if observed != expected:
+            raise ValueError(message)
+    if interface_surface.status == "ready":
+        observed = (
+            interface_surface.analysis_run_id,
+            interface_surface.processing_signature,
+        )
+        expected = (snapshot.analysis_run_id, snapshot.processing_signature)
+        if observed != expected:
+            raise ValueError("code-review interface surface disagrees with its snapshot")
+    surface = change_evolution.change_surface
+    if surface.status == "ready":
+        observed = (surface.current_analysis_run_id, surface.processing_signature)
+        expected = (snapshot.analysis_run_id, snapshot.processing_signature)
+        if observed != expected:
+            raise ValueError("code-review change surface disagrees with its snapshot")
+
+
+def _validate_code_review_reproducibility(result: CodeReviewResult) -> None:
+    """Rebuild every derived question, experiment, and verification projection."""
+
+    if rebuild_code_review_result_digest(result) != result.digest:
+        raise ValueError("code-review result digest disagrees with published evidence")
+    validate_analysis_question_set(result.question_specs, result.question_evaluations)
+    from .code_review_epistemics import expected_integrated_code_review_questions
+
+    snapshot = cast(CodeReviewSnapshot, result.snapshot)
+    expected_specs, expected_evaluations = expected_integrated_code_review_questions(
+        result.findings,
+        snapshot,
+        cast(CodeClassSurfaceAnalysis, result.structural_analysis),
+        state_projection=cast(CodeStateProjectionAnalysis, result.state_projection),
+        state_topology=cast(CodeStateTopologyAnalysis, result.state_topology),
+        retention_analysis=cast(CodeRetentionAnalysis, result.retention_analysis),
+        change_evolution=cast(CodeChangeEvolutionAnalysis, result.change_evolution),
+        architecture=cast(CodeArchitectureAnalysis, result.architecture),
+        assurance=cast(CodeAssuranceAnalysis, result.assurance),
+        supply_chain=cast(CodeSupplyChainAnalysis, result.supply_chain),
+        interface_surface=cast(CodeInterfaceSurfaceAnalysis, result.interface_surface),
+        capability_reachability=cast(
+            CodeCapabilityReachabilityAnalysis,
+            result.capability_reachability,
+        ),
+        analyzer_effectiveness=cast(
+            CodeAnalyzerEffectivenessAnalysis,
+            result.analyzer_effectiveness,
+        ),
+        state_interactions=cast(CodeStateInteractionAnalysis, result.state_interactions),
+        invariant_assurance=cast(
+            CodeInvariantAssuranceAnalysis,
+            result.invariant_assurance,
+        ),
+        route_capabilities=cast(CodeRouteCapabilityAnalysis, result.route_capabilities),
+        analyzer_calibration=cast(CodeAnalyzerCalibrationAnalysis, result.analyzer_calibration),
+    )
+    if result.question_specs != expected_specs:
+        raise ValueError("code-review question specs are not reproducible from evidence")
+    base_plan = plan_code_experiments(expected_specs, expected_evaluations)
+    expected_evaluations = apply_code_experiment_receipts(
+        expected_specs,
+        expected_evaluations,
+        base_plan,
+        result.experiment_receipts,
+    )
+    if result.question_evaluations != expected_evaluations:
+        raise ValueError("code-review questions are not reproducible from published evidence")
+    if result.experiment_plan != plan_code_experiments(
+        result.question_specs, result.question_evaluations
+    ):
+        raise ValueError("code-review experiment plan is not reproducible from questions")
+    if result.technical_verification != build_code_technical_verification(
+        result.question_specs,
+        result.question_evaluations,
+        result.experiment_receipts,
+    ):
+        raise ValueError("code-review technical verification is not reproducible")
+
+
 @dataclass(frozen=True, slots=True)
 class CodeReviewResult:
     """One JSON-ready review result with a deterministic content digest."""
@@ -646,227 +985,14 @@ class CodeReviewResult:
     materialization_limit: int = CODE_REVIEW_COVERAGE_EXAMPLE_LIMIT
 
     def __post_init__(self) -> None:
-        if (
-            isinstance(self.materialization_limit, bool)
-            or not isinstance(self.materialization_limit, int)
-            or not 1 <= self.materialization_limit <= CODE_REVIEW_PUBLIC_MATERIALIZATION_MAX
-        ):
-            raise ValueError("code-review materialization limit must be between 1 and 50")
-        if self.status not in {"ready", "abstained"}:
-            raise ValueError("invalid code-review result status")
-        if self.recommendation_status not in {"ready", "abstained", "not_evaluated"}:
-            raise ValueError("invalid code-review recommendation status")
-        if self.work_package_status not in {"ready", "abstained", "not_evaluated"}:
-            raise ValueError("invalid code-review work-package status")
-        if self.recommendations:
-            raise ValueError("code-review/v19 cannot publish semantic change recommendations")
-        if self.recommendation_status == "ready":
-            raise ValueError("code-review/v19 recommendation status must abstain")
-        if self.recommendation_status == "abstained" and not self.recommendation_reason:
-            raise ValueError("abstained recommendation status requires a reason")
-        if self.recommendation_status == "not_evaluated" and not self.recommendation_reason:
-            raise ValueError("not-evaluated recommendation status requires a reason")
-        if any(package.package_kind != "unused_characterization" for package in self.work_packages):
-            raise ValueError("code-review/v19 cannot publish hotspot change packages")
-        if (self.work_package_status == "ready") != bool(self.work_packages):
-            raise ValueError("work-package readiness must match published packages")
-        if self.work_package_status == "ready" and self.work_package_reason is not None:
-            raise ValueError("ready work-package status cannot carry an abstention reason")
-        if self.work_package_status != "ready" and not self.work_package_reason:
-            raise ValueError("non-ready work-package status requires a reason")
+        _validate_code_review_status_contracts(self)
         if self.status == "abstained":
-            if not self.reason:
-                raise ValueError("abstained code-review result requires a reason")
-            if (
-                any(
-                    item is not None
-                    for item in (
-                        self.snapshot,
-                        self.coverage,
-                        self.external_evidence,
-                        self.external_evidence_suite,
-                        self.architecture,
-                        self.test_coverage,
-                        self.unused_analysis,
-                        self.supply_chain,
-                        self.engineering_analytics,
-                        self.state_topology,
-                        self.retention_analysis,
-                        self.state_interactions,
-                        self.change_evolution,
-                        self.assurance,
-                        self.invariant_assurance,
-                        self.capability_reachability,
-                        self.route_capabilities,
-                        self.analyzer_effectiveness,
-                        self.analyzer_calibration,
-                        self.experiment_plan,
-                        self.interface_surface,
-                        self.digest,
-                    )
-                )
-                or self.findings
-                or self.work_packages
-                or self.structural_analysis is not None
-                or self.state_projection is not None
-                or self.question_specs
-                or self.question_evaluations
-                or self.experiment_receipts
-                or self.technical_verification is not None
-            ):
-                raise ValueError("abstained code-review result cannot publish unverified evidence")
+            _validate_abstained_code_review_result(self)
             return
-        if self.reason is not None:
-            raise ValueError("ready code-review result cannot carry an abstention reason")
-        if self.digest is None:
-            raise ValueError("ready code-review result requires an evidence digest")
-        if self.snapshot is None or self.coverage is None:
-            raise ValueError("ready code-review result lacks evidence required by its digest")
-        if self.structural_analysis is None:
-            raise ValueError("ready code-review result requires resolved structural analysis")
-        if self.architecture is None:
-            raise ValueError("ready code-review result requires resolved architecture analysis")
-        if self.state_projection is None:
-            raise ValueError("ready code-review result requires a state projection result")
-        if self.state_topology is None:
-            raise ValueError("ready code-review result requires state topology evidence")
-        if self.retention_analysis is None:
-            raise ValueError("ready code-review result requires retention evidence")
-        if self.state_interactions is None:
-            raise ValueError("ready code-review result requires state interaction evidence")
-        if self.change_evolution is None:
-            raise ValueError("ready code-review result requires change evolution evidence")
-        if self.assurance is None:
-            raise ValueError("ready code-review result requires assurance evidence")
-        if self.invariant_assurance is None:
-            raise ValueError("ready code-review result requires invariant assurance evidence")
-        if self.capability_reachability is None:
-            raise ValueError("ready code-review result requires capability reachability evidence")
-        if self.route_capabilities is None:
-            raise ValueError("ready code-review result requires route capability evidence")
-        if self.analyzer_effectiveness is None:
-            raise ValueError("ready code-review result requires analyzer effectiveness evidence")
-        if self.analyzer_calibration is None:
-            raise ValueError("ready code-review result requires analyzer calibration evidence")
-        if self.experiment_plan is None:
-            raise ValueError("ready code-review result requires an experiment plan")
-        if self.interface_surface is None:
-            raise ValueError("ready code-review result requires interface surface evidence")
-        if self.technical_verification is None:
-            raise ValueError("ready code-review result requires technical verification")
-        if self.supply_chain is None:
-            raise ValueError("ready code-review result requires supply-chain evidence")
-        if (
-            not isinstance(self.experiment_receipts, tuple)
-            or len(self.experiment_receipts) > CODE_EXPERIMENT_STORE_MAX_RESOLVED
-            or any(
-                not isinstance(item, ResolvedCodeExperimentReceipt)
-                for item in self.experiment_receipts
-            )
-        ):
-            raise ValueError("code-review experiment receipts are invalid or out of bounds")
-        if any(
-            item.analysis_run_id > self.snapshot.analysis_run_id
-            or item.receipt.source_version != self.snapshot.processing_signature
-            for item in self.experiment_receipts
-        ):
-            raise ValueError("code-review experiment receipts disagree with their snapshot")
-        if (
-            self.structural_analysis.snapshot_id != self.snapshot.processing_signature
-            or self.structural_analysis.snapshot_freshness != self.snapshot.freshness
-        ):
-            raise ValueError("code-review structural evidence disagrees with its snapshot")
-        if (
-            self.state_topology.source_version != CODE_REVIEW_SCHEMA
-            or self.retention_analysis.source_version != CODE_REVIEW_SCHEMA
-            or self.capability_reachability.source_version != CODE_REVIEW_SCHEMA
-            or self.route_capabilities.source_version != CODE_REVIEW_SCHEMA
-            or self.analyzer_calibration.source_version != CODE_REVIEW_SCHEMA
-        ):
-            raise ValueError("code-review integrated projection version is inconsistent")
-        if (
-            self.assurance.snapshot_id != self.snapshot.processing_signature
-            or self.assurance.snapshot_freshness != self.snapshot.freshness
-        ):
-            raise ValueError("code-review assurance evidence disagrees with its snapshot")
-        if self.analyzer_effectiveness.status == "ready" and (
-            self.analyzer_effectiveness.analysis_run_id != self.snapshot.analysis_run_id
-            or self.analyzer_effectiveness.framework_run_id != self.snapshot.framework_run_id
-            or self.analyzer_effectiveness.processing_signature
-            != self.snapshot.processing_signature
-            or self.analyzer_effectiveness.snapshot_freshness != self.snapshot.freshness
-            or self.analyzer_effectiveness.source_version != CODE_REVIEW_SCHEMA
-        ):
-            raise ValueError("code-review analyzer effectiveness disagrees with its snapshot")
-        if self.state_interactions.status != "abstained" and (
-            self.state_interactions.analysis_run_id != self.snapshot.analysis_run_id
-            or self.state_interactions.source_processing_signature
-            != self.snapshot.processing_signature
-        ):
-            raise ValueError("code-review state interactions disagree with its snapshot")
-        if (
-            self.invariant_assurance.snapshot_id != self.snapshot.processing_signature
-            or self.invariant_assurance.snapshot_freshness != self.snapshot.freshness
-        ):
-            raise ValueError("code-review invariant assurance disagrees with its snapshot")
-        if self.supply_chain.analysis_run_id != self.snapshot.analysis_run_id:
-            raise ValueError("code-review supply-chain evidence disagrees with its snapshot")
-        if self.interface_surface.status == "ready" and (
-            self.interface_surface.analysis_run_id != self.snapshot.analysis_run_id
-            or self.interface_surface.processing_signature != self.snapshot.processing_signature
-        ):
-            raise ValueError("code-review interface surface disagrees with its snapshot")
-        surface = self.change_evolution.change_surface
-        if surface.status == "ready" and (
-            surface.current_analysis_run_id != self.snapshot.analysis_run_id
-            or surface.processing_signature != self.snapshot.processing_signature
-        ):
-            raise ValueError("code-review change surface disagrees with its snapshot")
-        if rebuild_code_review_result_digest(self) != self.digest:
-            raise ValueError("code-review result digest disagrees with published evidence")
-        validate_analysis_question_set(self.question_specs, self.question_evaluations)
-        from .code_review_epistemics import expected_integrated_code_review_questions
-
-        expected_specs, expected_evaluations = expected_integrated_code_review_questions(
-            self.findings,
-            self.snapshot,
-            self.structural_analysis,
-            state_projection=self.state_projection,
-            state_topology=self.state_topology,
-            retention_analysis=self.retention_analysis,
-            change_evolution=self.change_evolution,
-            architecture=self.architecture,
-            assurance=self.assurance,
-            supply_chain=self.supply_chain,
-            interface_surface=self.interface_surface,
-            capability_reachability=self.capability_reachability,
-            analyzer_effectiveness=self.analyzer_effectiveness,
-            state_interactions=self.state_interactions,
-            invariant_assurance=self.invariant_assurance,
-            route_capabilities=self.route_capabilities,
-            analyzer_calibration=self.analyzer_calibration,
-        )
-        if self.question_specs != expected_specs:
-            raise ValueError("code-review question specs are not reproducible from evidence")
-        base_plan = plan_code_experiments(expected_specs, expected_evaluations)
-        expected_evaluations = apply_code_experiment_receipts(
-            expected_specs,
-            expected_evaluations,
-            base_plan,
-            self.experiment_receipts,
-        )
-        if self.question_evaluations != expected_evaluations:
-            raise ValueError("code-review questions are not reproducible from published evidence")
-        if self.experiment_plan != plan_code_experiments(
-            self.question_specs, self.question_evaluations
-        ):
-            raise ValueError("code-review experiment plan is not reproducible from questions")
-        if self.technical_verification != build_code_technical_verification(
-            self.question_specs,
-            self.question_evaluations,
-            self.experiment_receipts,
-        ):
-            raise ValueError("code-review technical verification is not reproducible")
+        _validate_ready_code_review_presence(self)
+        _validate_code_review_experiment_receipts(self)
+        _validate_code_review_snapshot_contracts(self)
+        _validate_code_review_reproducibility(self)
 
     def as_payload(self) -> dict[str, object]:
         if self.status == "ready":
@@ -940,9 +1066,7 @@ class CodeReviewResult:
                 None if self.state_topology is None else self.state_topology.as_payload()
             ),
             "retention_analysis": (
-                None
-                if self.retention_analysis is None
-                else self.retention_analysis.as_payload()
+                None if self.retention_analysis is None else self.retention_analysis.as_payload()
             ),
             "state_interactions": (
                 None if self.state_interactions is None else self.state_interactions.as_payload()

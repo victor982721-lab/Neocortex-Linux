@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 import _04_Nucleo_Operativo.code_review as code_review_module
+import _04_Nucleo_Operativo.code_review_models as code_review_models_module
 from _04_Nucleo_Operativo.code_review import review_code_state
 from _04_Nucleo_Operativo.code_review_actionability import (
     CodeReviewActionabilityInput,
@@ -530,6 +531,20 @@ def test_result_readiness_cannot_claim_absent_recommendations_or_packages() -> N
         )
 
 
+def test_abstained_result_rejects_missing_reason_evidence_and_invalid_bounds() -> None:
+    result = code_review_module._abstained(Path("fixture.sqlite3"), "fixture_reason")
+
+    assert result.status == "abstained"
+    assert result.digest is None
+    with pytest.raises(ValueError, match="requires a reason"):
+        replace(result, reason=None)
+    with pytest.raises(ValueError, match="cannot publish unverified evidence"):
+        replace(result, digest=object())  # type: ignore[arg-type]
+    for invalid in (True, 0, 51):
+        with pytest.raises(ValueError, match="materialization limit must be between 1 and 50"):
+            replace(result, materialization_limit=invalid)  # type: ignore[arg-type]
+
+
 def test_missing_structural_signal_abstains_without_a_question_or_decision() -> None:
     assessment = assess_code_review_actionability(
         CodeReviewActionabilityInput(
@@ -658,5 +673,21 @@ def test_ready_review_rejects_unlinked_observations_and_stale_digest(
         replace(result, snapshot=None)
     with pytest.raises(ValueError, match="requires resolved architecture analysis"):
         replace(result, architecture=None)
+    with pytest.raises(ValueError, match="requires a state projection result"):
+        replace(result, state_projection=None)
+    with pytest.raises(ValueError, match="requires technical verification"):
+        replace(result, technical_verification=None)
+    with pytest.raises(ValueError, match="experiment receipts are invalid or out of bounds"):
+        replace(result, experiment_receipts=[])  # type: ignore[arg-type]
+    assert result.snapshot is not None
+    with pytest.raises(ValueError, match="structural evidence disagrees with its snapshot"):
+        replace(
+            result,
+            snapshot=replace(result.snapshot, processing_signature="forged"),
+        )
+    with monkeypatch.context() as context:
+        context.setattr(code_review_models_module, "CODE_REVIEW_SCHEMA", "forged")
+        with pytest.raises(ValueError, match="integrated projection version is inconsistent"):
+            replace(result)
     with pytest.raises(ValueError, match="invalid code-review result status"):
         replace(result, status="invented")  # type: ignore[arg-type]
