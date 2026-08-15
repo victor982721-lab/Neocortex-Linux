@@ -194,20 +194,24 @@ def test_helper_closes_connection_when_configuration_raises_base_exception(
             self.closed = True
 
     connection = _FailingConnection()
-    monkeypatch.setattr(
-        sqlite_connection.sqlite3,
-        "connect",
-        lambda *_args, **_kwargs: connection,
-    )
-
-    with pytest.raises(_InjectedAbort):
-        connect_sqlite(
-            tmp_path / "state.sqlite3",
-            mode=READWRITE_CREATE,
-            policy=_policy(),
+    sqlite3_module = sqlite_connection.sqlite3
+    real_connect = sqlite3_module.connect
+    with monkeypatch.context() as scoped_patch:
+        scoped_patch.setattr(
+            sqlite3_module,
+            "connect",
+            lambda *_args, **_kwargs: connection,
         )
 
+        with pytest.raises(_InjectedAbort):
+            connect_sqlite(
+                tmp_path / "state.sqlite3",
+                mode=READWRITE_CREATE,
+                policy=_policy(),
+            )
+
     assert connection.closed is True
+    assert sqlite3_module.connect is real_connect
 
 
 # endregion [01]
@@ -344,17 +348,20 @@ def test_equivalent_factories_preserve_errors_close_and_monkeypatch_seam(
         query_only=query_only,
     )
     sqlite3_module = case.module.sqlite3
-    monkeypatch.setattr(
-        sqlite3_module,
-        "connect",
-        lambda *_args, **_kwargs: connection,
-    )
+    real_connect = sqlite3_module.connect
+    with monkeypatch.context() as scoped_patch:
+        scoped_patch.setattr(
+            sqlite3_module,
+            "connect",
+            lambda *_args, **_kwargs: connection,
+        )
 
-    expected = re.escape(f"{case.label} {message}")
-    with pytest.raises(RuntimeError, match=expected):
-        case.connect(tmp_path / "state.sqlite3", readonly=readonly)
+        expected = re.escape(f"{case.label} {message}")
+        with pytest.raises(RuntimeError, match=expected):
+            case.connect(tmp_path / "state.sqlite3", readonly=readonly)
 
     assert connection.closed is True
+    assert sqlite3_module.connect is real_connect
 
 
 # endregion [02]
@@ -447,27 +454,21 @@ def test_route_owner_factories_preserve_modes_pragmas_and_transaction_ownership(
         assert writer.execute("PRAGMA query_only").fetchone()[0] == 0
         assert writer.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
         assert writer.execute("PRAGMA synchronous").fetchone()[0] == 1
-        assert writer.execute("PRAGMA cache_size").fetchone()[0] == (
-            -case.cache_size_kib
-        )
+        assert writer.execute("PRAGMA cache_size").fetchone()[0] == (-case.cache_size_kib)
         assert writer.execute("PRAGMA wal_autocheckpoint").fetchone()[0] == (
             case.wal_autocheckpoint_pages
         )
         assert writer.execute("PRAGMA journal_size_limit").fetchone()[0] == (
             case.journal_size_limit_bytes
         )
-        writer.execute(
-            "INSERT INTO metadata(key,value) VALUES('transaction_probe','pending')"
-        )
+        writer.execute("INSERT INTO metadata(key,value) VALUES('transaction_probe','pending')")
 
     with pytest.raises(sqlite3.ProgrammingError, match="closed"):
         writer.execute("SELECT 1")
 
     with case.open_database(database, readonly=True) as reader:
         assert (
-            reader.execute(
-                "SELECT value FROM metadata WHERE key='transaction_probe'"
-            ).fetchone()
+            reader.execute("SELECT value FROM metadata WHERE key='transaction_probe'").fetchone()
             is None
         )
 
@@ -499,21 +500,24 @@ def test_route_owner_factories_preserve_errors_close_and_monkeypatch_seam(
         query_only=query_only,
     )
     sqlite3_module = case.module.sqlite3
-    monkeypatch.setattr(
-        sqlite3_module,
-        "connect",
-        lambda *_args, **_kwargs: connection,
-    )
+    real_connect = sqlite3_module.connect
+    with monkeypatch.context() as scoped_patch:
+        scoped_patch.setattr(
+            sqlite3_module,
+            "connect",
+            lambda *_args, **_kwargs: connection,
+        )
 
-    expected = re.escape(f"{case.label} {message}")
-    with pytest.raises(RuntimeError, match=expected):
-        with case.open_database(
-            tmp_path / "state.sqlite3",
-            readonly=readonly,
-        ):
-            pytest.fail("disabled SQLite safeguards opened an owner database")
+        expected = re.escape(f"{case.label} {message}")
+        with pytest.raises(RuntimeError, match=expected):
+            with case.open_database(
+                tmp_path / "state.sqlite3",
+                readonly=readonly,
+            ):
+                pytest.fail("disabled SQLite safeguards opened an owner database")
 
     assert connection.closed is True
+    assert sqlite3_module.connect is real_connect
 
 
 @pytest.mark.parametrize(
@@ -528,6 +532,12 @@ def test_route_owner_readers_do_not_recreate_state_deleted_before_open(
 ) -> None:
     database = tmp_path / f"raced-{case.name}.sqlite3"
     case.initialize(database)
+    if case.name == "code":
+        with case.open_database(database, readonly=False) as writer:
+            code_schema.checkpoint_code_wal(writer)
+        code_schema.remove_checkpointed_code_sidecars(database)
+        assert not Path(f"{database}-wal").exists()
+        assert not Path(f"{database}-shm").exists()
 
     real_connect = sqlite_connection.sqlite3.connect
     removed = False
@@ -545,14 +555,16 @@ def test_route_owner_readers_do_not_recreate_state_deleted_before_open(
         return real_connect(database_arg, uri=uri, timeout=timeout)
 
     sqlite3_module = case.module.sqlite3
-    monkeypatch.setattr(sqlite3_module, "connect", remove_before_open)
+    with monkeypatch.context() as scoped_patch:
+        scoped_patch.setattr(sqlite3_module, "connect", remove_before_open)
 
-    with pytest.raises(sqlite3.OperationalError, match="open database"):
-        with case.open_database(database, readonly=True):
-            pytest.fail("raced read-only state was recreated")
+        with pytest.raises(sqlite3.OperationalError, match="open database"):
+            with case.open_database(database, readonly=True):
+                pytest.fail("raced read-only state was recreated")
 
     assert removed is True
     assert not database.exists()
+    assert sqlite3_module.connect is real_connect
 
 
 # endregion [03]

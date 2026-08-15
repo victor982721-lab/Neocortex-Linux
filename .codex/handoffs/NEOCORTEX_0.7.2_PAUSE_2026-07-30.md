@@ -1,6 +1,6 @@
 # NeoCortex — handoff operativo actual
 
-> Actualizado: 2026-08-14. El nombre del archivo es histórico y se conserva
+> Actualizado: 2026-08-15. El nombre del archivo es histórico y se conserva
 > como ruta estable. Este documento es la fuente única de la frontera vigente;
 > no guarda un SHA de cierre porque Git y la release instalada deben
 > demostrarlo dinámicamente.
@@ -31,6 +31,116 @@ modelos.
 
 La versión fuente es `0.9.0`. Su cierre no se infiere de este documento: sólo
 existe cuando se cumplen juntos los criterios dinámicos de la última sección.
+La ola del autoanalizador v22 descrita abajo está integrada en un commit local
+aún no aceptado ni publicado; no se considera terminada hasta aprobar el gate
+canónico, release Linux instalada, replay, push y coincidencia de SHA.
+
+## Pausa operativa exacta — 2026-08-15 17:36 CST
+
+### Estado vivo que debe reconciliar la siguiente sesión
+
+- Checkout canónico: `/home/winterboss/Neocortex/Repository`, rama `main`.
+- Commit local al pausar: `bf4b07ad149194780b1a965e4f865bff932b6da3`;
+  `main` está un commit por delante de `origin/main` y el árbol estaba limpio
+  antes de actualizar este handoff documental. La siguiente sesión debe volver
+  a consultar Git; nunca asumir este SHA por memoria.
+- `origin/main` y la release instalada `current` siguen en
+  `d1adefc4cdafbd16a97e0f40bd349827fc74f98e`. No hubo push, instalación ni
+  promoción de v22.
+- No existen workflows de GitHub Actions y está prohibido crearlos, ejecutarlos
+  o consultarlos. Windows no forma parte del alcance.
+- La configuración viva de Codex declara
+  `features.multi_agent_v2.max_concurrent_threads_per_session = 8`: un
+  coordinador más siete workers. La siguiente sesión debe verificar de nuevo
+  ese valor antes de repartir ownership.
+- El commit local contiene review v22, Knowledge Asset Health Text/PDF,
+  runners/receipts/verificadores, las lecturas focales `code question` y
+  `code storage`, superficie pública, documentación y las correcciones reales
+  encontradas por el gate. La matriz focal previa cerró 369 pruebas, pero eso
+  no sustituye la aceptación canónica.
+- Las correcciones posteriores conservaron el baseline: tipado focal, frontera
+  `neocortex.read_api`→`read_api_port` y snapshot CLI de
+  `--knowledge-health`. Estática y arquitectura ya fueron observadas verdes.
+
+### Último gate y único bloqueo comprobado
+
+La última ejecución de `Neocortex code validate --baseline HEAD^` aprobó:
+
+1. `static_no_regression`;
+2. arquitectura declarada;
+3. publicación `trusted-deep`;
+4. review fresco;
+5. Coverage afectada.
+
+Se abstuvo antes de ejecutar experimentos:
+
+```text
+allowlisted_experiments = abstained
+reason = affected_question_requires_unresolved_evidence
+receipts = 0
+```
+
+La causa exacta ya fue reconstruida read-only, no debe diagnosticarse de nuevo:
+
+- run Code vigente al corte: 149, review `neocortex.code-review/v22` ready;
+- 12 scopes de aceptación quedaron afectados y existían 11 proposals
+  potenciales;
+- el único blocker era `security_supply_boundary`;
+- `pip-audit` no pudo producir evidencia actual dentro del worker porque el gate
+  prueba y exige `PrivateNetwork=yes`;
+- la firma de entorno se cambió deliberadamente de v1 a v2 para dejar de ligar
+  providers a la ruta física temporal/final de `sys.executable`; por ello el
+  snapshot v1 no puede ser replay exacto bajo v2;
+- el audit histórico run 139/tool run 1294 sigue fresco hasta
+  `1786902337`, corresponde a las mismas 128 distribuciones instaladas y
+  reporta cero vulnerabilidades. Esto permite al gate aceptar freshness, pero
+  no crea el receipt tipado v2 que necesita la evaluación security;
+- `_fresh_review_gate` conoce ese fallback; `_experiment_gate` ve correctamente
+  la evaluación security cruda como `abstained` y cancela todos los proposals.
+
+No se debe resolver rebajando seguridad, ignorando la pregunta, ampliando un
+baseline o fabricando un receipt. El desbloqueo correcto es un único seed
+networked bajo la firma v2; después el gate privado debe usar `cache_replay`
+sin egress.
+
+### Autorización externa pendiente
+
+Antes de ejecutar el seed, la siguiente sesión debe pedir a Víctor una
+autorización **explícita y concreta** después de informar que:
+
+- `pip-audit` usará el servicio de vulnerabilidades `pypi`;
+- transmitirá los nombres y versiones de las 128 distribuciones Python
+  instaladas;
+- no transmitirá fuentes, corpus, documentos, estado SQLite ni secretos;
+- el productor completo se ejecutará localmente, acotado por cgroup, y sólo
+  ese provider necesita red.
+
+Una solicitud escalada ya fue rechazada antes de crear el unit porque la
+autorización general de trabajo local no cubre ese egress concreto. No hubo
+tráfico de red ni publicación parcial. No intentar rodear esa decisión.
+
+### Comprobación esperada tras el seed
+
+La publicación one-shot debe ejecutarse desde el source actual con el Python de
+la release, `--analysis-profile trusted-static`, root y state directory
+explícitos, dentro de un transient unit con memoria/CPU/tareas acotadas, **sin**
+`PrivateNetwork=yes` y sin
+`NEOCORTEX_PIP_AUDIT_NETWORK_POLICY=disabled-by-code-validation`.
+
+Tras terminar, verificar por la superficie pública/source, no por inferencia:
+
+1. run nuevo `completed`;
+2. provider `pip-audit-known-vulnerabilities`: `status=ready`,
+   `execution=full`, cero vulnerabilidades o fallo explícito;
+3. evaluación security deja `abstained` y pasa a `experiment_required` con
+   template `security.bounded_boundary_scenarios`;
+4. el siguiente gate privado publica ese mismo provider como `cache_replay`,
+   `process_invocations=0`, sin red;
+5. los experimentos producen receipts y el replay final conserva las
+   disposiciones técnicas reproducibles.
+
+Si cualquiera difiere, detener el gate y corregir esa causa; no ejecutar una
+segunda corrida integral como diagnóstico ciego.
 
 ## Cinco fases completadas
 
@@ -245,28 +355,32 @@ existe cuando se cumplen juntos los criterios dinámicos de la última sección.
   permite successor receipt-backed. Retry exacto es idempotente y las
   decisiones legacy permanecen terminales. `SUPERSEDED` sigue reservado a
   receipts sistémicos.
-- El snapshot Knowledge de Framework v21 valida y expone heads ReviewTask y
+- El snapshot Knowledge de Framework v22 valida y expone heads ReviewTask y
   watermarks de batches, eventos y publicaciones fuente; conserva lectura
-  legacy validada para v19/v20. Retention protege tareas y eventos humanos como
+  legacy validada para v19/v20/v21. Retention protege tareas y eventos humanos como
   holds y, por separado, el head vigente con toda la cadena alcanzable de
   batches, memberships y progreso exactos. La auditoría está acotada y falla
   cerrado ante receipts o vínculos históricos corruptos.
 - Video OCR ya participa en la búsqueda Knowledge canónica con locator temporal
-  y estado owner fail-closed; no se añadieron embeddings Video. **PARTIAL /
-  PLANNED:** esto no completa `Knowledge Asset Health`; ReviewTask para OCR,
-  entities/claims, contradicciones, links, recovery y promociones shadow, así
-  como una GUI para decidir tareas, siguen pendientes.
+  y estado owner fail-closed; no se añadieron embeddings Video. `Knowledge
+  Asset Health` incorpora trazas causales separadas para Text y PDF; no convierte
+  el estado Value en un score ni cubre contenido/OCR, fidelidad visual o
+  semántica, entities/claims, contradicciones, links o promociones shadow. Esos
+  ReviewTask y una GUI para decidir tareas siguen pendientes.
 - Este handoff documenta el árbol sin sustituir tests focales, gates, commit ni
   release Linux instalada del SHA final.
 
-## Contrato operativo — Autoanalizador v20
+## Contrato operativo — Autoanalizador v22 (en integración)
 
 - La siguiente frontera operativa es `Neocortex code validate`: una sola entrada
   Linux para validar implementaciones. Captura el diff, selecciona pruebas con
   evidencia publicada, ejecuta estática/arquitectura, publica `trusted-deep`,
-  consume review v20, ejecuta experimentos allow-listed, instala el wheel
+  consume review v22, ejecuta experimentos allow-listed, instala el wheel
   candidato fuera del checkout y exige replay. Las herramientas individuales
-  quedan como diagnóstico interno; no constituyen una aceptación paralela.
+  quedan como diagnóstico interno; no constituyen una aceptación paralela. La
+  política `local-linux-diff-aware-validation-v6` liga cambios de CLI y de
+  Knowledge Asset Health Text/PDF con sus preguntas, subjects, templates y
+  disposiciones técnicas v6 exactas; si falta cualquiera, se abstiene.
 - Los deltas portables `added/resolved` siguen siendo evidencia histórica
   advisory: pueden usar una publicación comparable anterior a `HEAD^` y variar
   al mover coordenadas. La barrera estática bloqueante es el baseline
@@ -291,7 +405,7 @@ existe cuando se cumplen juntos los criterios dinámicos de la última sección.
 
 - `Neocortex --state-directory ESTADO --code-review` ya no es una vista que
   convierte nombres, rutas o tamaño en recomendaciones. El envelope
-  `neocortex.code-review/v20` publica un registro general de preguntas y
+  `neocortex.code-review/v22` publica un registro general de preguntas y
   evaluaciones enlazadas a registros fuente; separa observación, inferencia,
   hipótesis, contraevidencia, evidencia faltante, experimento, decisión y
   autoridad. Toda evaluación es advisory y `mutation_authority=false`.
@@ -303,6 +417,28 @@ existe cuando se cumplen juntos los criterios dinámicos de la última sección.
   CLI estática; los artefactos no parseados y la ausencia de contratos runtime
   quedan explícitos. Los nombres de las preguntas describen la evidencia
   pendiente, no afirman que la superficie ya sea completa.
+- La pregunta CLI dispone de un scenario v3 de veintiún nodeids/cinco gates:
+  ayuda y traducción, precedencia de dispatch, rechazos sin estado y lecturas
+  focales de pregunta/storage. No ejecuta cada handler, GUI, MCP, worker o
+  efecto externo. Su template v2 y disposición técnica sólo aceptan esa matriz.
+- `Knowledge Asset Health` aporta verticales causales Text/PDF bajo la misma
+  superficie. El resource ID `resource:file` liga Inventory, owner fuente,
+  Catalog y la selección Knowledge; el dispatch usa identidad física, probes
+  packed/legacy, snapshot y hint Catalog, nunca path/extensión. Dos observaciones
+  completas y un retry acotado impiden publicar como estable una vista
+  cambiante. Text usa doce nodeids/cuatro gates. PDF schema 13 usa otros doce y
+  cuatro gates 5/3/3/1; conserva estados
+  `done|partial|protected|error|processing`, páginas/staging/errores/FTS,
+  Catalog/Search y recovery tipado. El binding counter exige nueve relaciones y
+  el resultado completo doce. `healthy` no significa contenido/OCR, verdad
+  semántica, calidad visual, salud de otros owners ni resistencia a power loss;
+  la lectura es content-blind, advisory y jamás autoriza mutación.
+- `Neocortex code question QUESTION_ID --limit N --json` evita el review global
+  sólo para la pregunta CLI registrada. Una pregunta distinta devuelve
+  `unsupported` con fallback `automatic=false`. `Neocortex code storage
+  --run-limit N --row-scan-limit N --retain-runs N --json` observa forma,
+  crecimiento y ventana temporal mediante SQLite immutable; `retain-runs` es
+  `preview_only` y no ejecuta delete, prune, vacuum, checkpoint o sidecars.
 - Arquitectura conserva el consenso Ruff Analyze/Grimp, seis contratos y el
   grafo físico. Un registro versionado y explícitamente parcial declara seis
   logical owners sin owner predeterminado; módulos sin mapping y cruces entre
@@ -330,7 +466,7 @@ existe cuando se cumplen juntos los criterios dinámicos de la última sección.
   receipts y heads publicados. El autoanálisis compara su publicación con el
   checkout Git por contenido y expone coste/cobertura, pero no publica
   precision, recall ni utilidad humana sin outcomes independientes.
-- v20 conserva ownership lógico explícito, interacciones SQL/SQLite ligadas a
+- v22 conserva ownership lógico explícito, interacciones SQL/SQLite ligadas a
   los 13 stores declarados, fronteras transaccionales/workflow, reachability de
   las nueve rutas built-in, cuatro invariantes, calibración anti-Goodhart y un
   planificador de experimentos sin comandos libres. SQL dinámico, parser no
@@ -339,14 +475,18 @@ existe cuando se cumplen juntos los criterios dinámicos de la última sección.
   sin alterar strings ni el digest observado; dejaron de contarse como error
   los dos sitios productivos Text/Archive que usaban esa sintaxis.
 - `--code-experiment-run PROPOSAL_ID` reconstruye el plan vigente y sólo admite
-  ocho templates ejecutables: contratos de imports declarados (tres nodeids y
+  once templates ejecutables en los registries runtime/template v10: contratos
+  de imports declarados (tres nodeids y
   cuatro gates), acceptance pública Text (un nodeid), trace/fault
   boundaries del workflow Text (cuatro nodeids), recuperación Semantic ante
   muerte del proceso durante staging (un nodeid con tres gates), una matriz
   Code-owner de migración poblada/rollback/schema futuro (cinco nodeids y cuatro
   gates), Retention durable en dry-run (catorce nodeids y cuatro gates),
-  supply-chain local (diez nodeids y siete gates) y Framework ReviewTask (ocho
-  nodeids y cinco gates). ReviewTask vuelve a resolver owner/store/schema y
+  supply-chain local (diez nodeids y siete gates), Framework ReviewTask (ocho
+  nodeids y cinco gates), CLI pública (veintiún nodeids y cinco gates),
+  Knowledge Asset Health Text (doce nodeids y cuatro gates) y PDF (doce/cuatro,
+  5/3/3/1). ReviewTask vuelve
+  a resolver owner/store/schema y
   adapter/port, ejecuta publicación/CAS/replay/rollback y el journey CLI sobre
   SQLite/XDG temporal; el actor es sintético/no autenticado y los fallos
   inyectados no prueban power loss. Retention
@@ -365,7 +505,7 @@ existe cuando se cumplen juntos los criterios dinámicos de la última sección.
 - Code schema v6 persiste después cada terminal
   `neocortex.code-experiment-receipt/v3` en una tabla append-only y devuelve
   `neocortex.code-experiment-store/v1`. Por eso `code_database_unchanged=true`
-  no vuelve read-only a la invocación completa. El review v20 evalúa el terminal
+  no vuelve read-only a la invocación completa. El review v22 evalúa el terminal
   más nuevo del proposal/signature actual y bindings de gates explícitos; puede
   reutilizar un `passed` de un run completado anterior ante replay exacto con la
   misma firma, mientras un terminal posterior `failed`/`abstained` lo invalida.
@@ -389,11 +529,11 @@ existe cuando se cumplen juntos los criterios dinámicos de la última sección.
   `human_review_required`, sin volver a proponer experimentos ya ejecutados.
   La vista pública conserva cero recomendaciones, cero work packages y
   `mutation_authority=false`.
-- Esta mejora no equivale a cobertura experimental total: permanecen 38
-  preguntas `experiment_required`, 11 huecos explícitos del registry y cero
-  propuestas ejecutables pendientes. Supply/coverage/mutation pueden abstenerse
-  por frescura, red deshabilitada o backend no disponible; esas ausencias no se
-  reinterpretan como resultado verde.
+- Las cifras de 38 preguntas `experiment_required`, 11 huecos y cero proposals
+  pendientes pertenecen al corte v17 y no describen por sí solas v22. El conteo
+  vigente se obtiene únicamente de la publicación final v22. Supply,
+  coverage/mutation pueden abstenerse por frescura, red deshabilitada o backend
+  no disponible; esas ausencias no se reinterpretan como resultado verde.
 
 ## Capacidades que permanecen fail-closed
 
@@ -443,29 +583,150 @@ existe cuando se cumplen juntos los criterios dinámicos de la última sección.
 
 ## Próximos pasos, en orden
 
-1. Ampliar el registry de experimentos una familia verificable por vez. Las
-   verticales de recuperación Semantic, migración Code-owner, contratos de
-   imports declarados, Retention durable y Framework ReviewTask ya tienen
-   runner, receipt enlazable, controles negativos y verificador técnico
-   acotado. La siguiente candidata es la superficie pública de interfaz/CLI,
-   condicionada a que una publicación v20 vigente conserve la pregunta runtime
-   sin resolver. Todo cambio semántico debe invalidar el receipt y
-   `mutation_authority` permanece falso.
-2. Mantener junto con cada nueva familia el binding de aceptación
-   ruta/test→pregunta/sujeto. Una pregunta relevante sin runner o disposición
-   técnica exacta debe abstener; sólo una relación disjunta demostrada puede
-   quedar `not_required`.
-3. Etiquetar con Víctor 20–50 consultas reales ES/EN/DE/ZH. La infraestructura
-   golden ya existe, pero no debe inventar juicios humanos ni promover modelos
-   por una métrica sintética.
-4. Completar `Knowledge Asset Health` mediante una sola vertical causal sobre
-   facts/receipts/snapshots reales —sin score agregado— y exponerla primero en
-   API/CLI/doctor/status; no fingir salud de dominios aún no instrumentados.
-5. Extender manifests y contrato causal a PDF, luego DOCX y finalmente Office,
-   una ruta por vez; conservar legado no atribuible y no reescribir extractores.
-6. Mantener `normalize`/`chunk` como deuda explícita hasta identificar fronteras
-   ejecutables reales. Diseñar mutación Linux identity-bound sólo si la
-   organización física en Kubuntu se vuelve prioridad.
+### A. Reanudación y cierre de v22 — antes de abrir otra vertical
+
+1. Leer CTBI/AGENTS, `PENDIENTES.md` y este handoff; verificar en vivo rama,
+   `HEAD`, `origin/main`, release `current`, worktree, procesos y ausencia de
+   workflows. Usar shells no-login.
+2. Si el worktree contiene únicamente este handoff documental actualizado,
+   comprobar el diff y amend del commit local; registrar el SHA resultante en
+   `PENDIENTES.md`. No ejecutar un gate integral sólo por el cambio documental:
+   el gate ya es obligatorio por el código v22 pendiente.
+3. Pedir la autorización networked concreta descrita en la sección de pausa.
+   Sin ella, no ejecutar `pip-audit`, no rodear la red privada y mantener
+   `NEO-AUTO-003` en `ESPERA_VICTOR`.
+4. Con autorización, ejecutar exactamente un seed `trusted-static` desde el
+   source actual, bajo un transient unit resource-bound y acceso de red sólo
+   para el servicio `pypi`. Verificar run/provider/evaluación conforme a los
+   cinco puntos anteriores. No repetir si falla: diagnosticar el receipt.
+5. Ejecutar una sola vez
+   `Neocortex code validate --baseline HEAD^`. El resultado aceptable es
+   `passed`; `failed` o `abstained` abren diagnóstico focal desde la evidencia
+   del gate, nunca una batería manual paralela. Comprobar especialmente:
+   - pip-audit `cache_replay`, cero procesos/red dentro del worker;
+   - experiments con receipts terminales;
+   - wheel candidato instalado fuera del checkout;
+   - replay y disposiciones técnicas diff-bound;
+   - fuente sin cambios y cgroup/headroom conservados.
+6. Con gate verde, instalar la release Linux desde ese SHA exacto mediante
+   `python3.14 tools/release_linux.py install --corpus-root
+   "$HOME/Documentos/NeoCortex/Corpus" --prepare-models --desktop` y ejecutar
+   `python3.14 tools/release_linux.py verify`. El manifest, receipt, launcher y
+   `current/neocortex-release.json` deben declarar el mismo SHA.
+7. Probar dos veces desde `~/.local/bin/Neocortex`, sin `PYTHONPATH` ni
+   dependencia del checkout: status, review v22, `code question`, `code
+   storage` y `knowledge health` con un `resource:file` real obtenido de estado
+   publicado. La segunda lectura debe probar replay/estabilidad; conservar
+   exits, schemas, digests, cotas y `mutation_authority=false`.
+8. Ejecutar los smokes/replay de producto requeridos por el criterio dinámico
+   de cierre, con backup consistente previo cuando toque estado real. No usar
+   `--apply`, no borrar sidecars y no abrir corridas duplicadas.
+9. Hacer un solo `git push origin main`, verificar
+   `HEAD=origin/main=current.source_sha`, release verify y worktree limpio.
+   GitHub Actions permanece ausente y no se consulta.
+
+### B. Campaña multiagente v23 — siete workers más coordinador
+
+Comenzar sólo después del cierre observable de v22. La siguiente sesión debe
+verificar la capacidad viva de concurrencia; si confirma siete workers, usarlos
+con ownership disjunto. El coordinador no compite por archivos: congela APIs,
+integra, resuelve conflictos, ejecuta el gate y actualiza el estado durable.
+
+1. **Worker DOCX core (writer):** crear
+   `knowledge_asset_health_docx.py`; integrar exclusivamente
+   `knowledge_asset_health_repository.py` y `knowledge_asset_health.py`; añadir
+   `tests/test_knowledge_asset_health_docx.py` y regresiones Text/PDF mínimas.
+2. **Worker QuestionSpec (writer):** crear
+   `code_knowledge_docx_asset_health_analysis.py` y su test. No tocar los
+   registries compartidos hasta congelar IDs, facts y requirements.
+3. **Worker runtime/receipt (writer exclusivo):** después de congelar la API,
+   poseer `code_invariant_contracts.py`, `code_experiment_planner.py`,
+   `code_experiment_store.py` y sus tests. Nadie más edita esos registries.
+4. **Worker verificador/gate (writer exclusivo):** poseer
+   `code_technical_verification.py`, `code_change_validation.py` y sus tests;
+   mantener diff→pregunta→template exacto y abstención ante runner/evidencia
+   ausente.
+5. **Worker review/query (writer exclusivo):** bump v23 y compatibilidad
+   explícita en `code_review_models.py`, `code_review_serialization.py`,
+   `code_review.py`, `code_analysis_query.py` y tests; v16–v22 no deben adquirir
+   vocabulario v23 retroactivamente.
+6. **Worker superficie/adversarial (writer acotado):** demostrar que la misma
+   API/CLI Health despacha DOCX por identidad/snapshot, nunca extensión o path;
+   editar sólo ports/superficie y sus tests si aparece una brecha real. Debe
+   probar recursos, WAL, ambigüedad, future/corrupt y cero lectura de contenido.
+7. **Worker documentación y auditoría independiente:** actualizar README/docs
+   sólo tras congelar contratos y, en paralelo, auditar read-only la siguiente
+   candidata Office v24. No implementar v24 ni tocar registries v23.
+
+El coordinador debe lanzar primero los workers 1, 2, 6 y 7; los workers 3–5
+pueden auditar en paralelo, pero sólo editan después de recibir el contrato
+congelado. Un archivo compartido tiene un único writer. Cada entrega incluye
+diff, pruebas focales con timeout, Ruff/format focal, límites y riesgos; ningún
+worker hace commit, push, release, providers ni gate integral.
+
+### C. Contrato DOCX v23 ya auditado; no volver a inventarlo
+
+- Question: `knowledge.docx_asset_health_preserves_terminal_partial_protected_failure_and_recovery_causality`
+  v1.
+- Subject: `capability:knowledge-asset-health:docx`.
+- Action/template/scenario:
+  `run_knowledge_docx_asset_health_causal_experiment` /
+  `knowledge.docx_asset_health_causal_acceptance` v1.
+- Bumps: review v23, runtime/template/planning v11, technical/validation v7; no
+  schema SQLite nuevo.
+- DOCX owner/store/schema: `docx` / `sqlite:docx.sqlite3` / 6; estados reales
+  `complete|partial|error`. `protected` Health sólo se deriva de la tupla
+  cifrada exacta persistida, sin inventar un status DOCX.
+- `document_fts.file_key/path` no está indexado: la lectura se limita mediante
+  `sqlite3.set_progress_handler` con presupuesto fijo y abstiene
+  `docx_owner_read_budget_exhausted`; `LIMIT` no se presenta como cota de
+  trabajo. Nunca leer body/blobs, mensajes de error, texto de partes,
+  diagnósticos crudos ni metadatos privados.
+- Dispatch por identidad física/snapshot y candidatos packed/legacy; dos owners
+  actuales producen `source_owner_identity_ambiguous`. Nunca usar extensión,
+  MIME o path para elegir modalidad.
+- Complete/partial coherentes pueden llegar a Catalog/Search; error/encrypted
+  no. El fact conserva partes, diagnósticos, FTS, integrity, retry,
+  disposition/recovery y digests tipados, no contenido.
+- Scenario: 12 nodeids disjuntos; gates 4/3/4/1. Counterevidence usa gates
+  mismatch + recovery + WAL/ambiguity = 8 relaciones; el resultado completo
+  usa 12. Nodeids contractuales exactos:
+  1. `tests/test_code_knowledge_docx_asset_health_analysis.py::test_docx_asset_health_question_requires_terminal_partial_protected_failure_and_recovery_experiment`;
+  2. `tests/test_knowledge_asset_health_docx.py::test_docx_aligned_projection_is_healthy_read_only_and_content_blind`;
+  3. `tests/test_knowledge_asset_health_docx.py::test_docx_complete_partial_encrypted_and_other_error_states_are_typed_without_inventing_catalog`;
+  4. `tests/test_knowledge_asset_health_docx.py::test_docx_projection_recovery_and_terminal_inconsistencies_fail_closed`;
+  5. `tests/test_knowledge_asset_health_docx.py::test_docx_dispatch_ambiguity_and_owner_fences_abstain_without_mutation`;
+  6. `tests/test_docx_route.py::DocxRouteTests::test_extracts_searches_classifies_pairs_and_reuses_cache`;
+  7. `tests/test_docx_route.py::DocxRouteTests::test_records_corrupt_compressed_member_without_aborting_route`;
+  8. `tests/test_docx_route.py::DocxRouteTests::test_indexes_body_when_an_optional_header_is_corrupt`;
+  9. `tests/test_docx_route.py::DocxRouteTests::test_recovers_well_formed_required_xml_with_bad_central_crc`;
+  10. `tests/test_docx_route.py::DocxRouteTests::test_marks_required_deflate_corruption_as_deletion_candidate`;
+  11. `tests/test_docx_route.py::DocxRouteTests::test_retries_transient_errors_without_the_manual_retry_flag`;
+  12. `tests/test_docx_route.py::DocxRouteTests::test_commits_bounded_batches_before_an_interruption`.
+- Gates exactos: `diagnostic_parts_fts_and_catalog_mismatch_fail_closed`
+  = nodeids 4/7/8/10; `recovery_retry_and_interruption_contracts_remain_typed_and_bounded`
+  = 9/11/12; `typed_docx_states_preserve_complete_partial_protected_and_error_semantics`
+  = 1/2/3/6; `wal_snapshot_and_owner_ambiguity_remain_read_only` = 5.
+- Fuera de alcance: power loss, verdad semántica, fidelidad visual y recuperar
+  una historia que el estado actual no conserva.
+
+### D. Horizontales posteriores al cierre v23
+
+1. Corregir el diagnóstico del seed supply sin debilitar el gate: transportar
+   evidencia histórica tipada entre `_fresh_review_gate` y la epistemología, o
+   emitir explícitamente `fresh_pip_audit_seed_required`. Nunca convertir una
+   evaluación abstained en passed ni reutilizar un comparable como exact replay.
+2. Añadir otro lector focal sólo si una medición viva supera claramente el
+   review global y conserva paridad exacta de IDs/digests. No crear un segundo
+   motor de review.
+3. Mantener cada binding ruta/test→pregunta/sujeto. Relevante sin runner o
+   disposición exacta abstiene; sólo irrelevancia demostrada es
+   `not_required`.
+4. Implementar Office v24 sólo después de que DOCX v23 pase su gate, release y
+   replay. La auditoría puede adelantarse read-only, la edición no.
+5. La calibración humana 20–50 consultas ES/EN/DE/ZH sigue separada: no inventar
+   outcomes ni pedir a Víctor que juzgue código. Los verificadores técnicos
+   deterministas cargan esa parte; Víctor sólo aporta valor/uso cuando pueda.
 
 ## Criterio dinámico de cierre de 0.9.0
 

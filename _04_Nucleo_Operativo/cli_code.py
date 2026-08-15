@@ -1204,6 +1204,125 @@ def run_code_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def _emit_code_question_human(payload: dict[str, object], *, limit: int) -> None:
+    evaluations_value = payload.get("evaluations")
+    evaluations = evaluations_value if isinstance(evaluations_value, list) else []
+    _print_console_line(
+        f"CODE_QUESTION id={json.dumps(payload.get('question_id'), ensure_ascii=True)} "
+        f"version={payload.get('question_version')} status={payload.get('status')} "
+        f"reader={payload.get('reader_id')} source={payload.get('source_surface')} "
+        f"matched={payload.get('total_matches', 0)} returned={len(evaluations[:limit])} "
+        f"truncated={int(bool(payload.get('truncated')))} "
+        f"reason={json.dumps(payload.get('reason'), ensure_ascii=True)}"
+    )
+    fallback = payload.get("fallback")
+    if isinstance(fallback, dict):
+        _print_console_line(
+            "CODE_QUESTION_FALLBACK "
+            + json.dumps(fallback, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+        )
+    for evaluation in evaluations[:limit]:
+        _print_console_line(
+            "CODE_QUESTION_EVALUATION "
+            + json.dumps(evaluation, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+        )
+    limitations = payload.get("limitations")
+    if isinstance(limitations, list):
+        for limitation in limitations[:limit]:
+            _print_console_line(f"CODE_QUESTION_LIMITATION {limitation}")
+
+
+def run_code_question(args: argparse.Namespace) -> int:
+    """Resolve one registered question through its bounded focal reader only."""
+
+    try:
+        from .code_question_resolver import resolve_code_question
+
+        result = resolve_code_question(
+            args.state_directory,
+            args.code_question,
+            limit=args.code_question_limit,
+        )
+        payload = result.as_payload()
+    except (ImportError, OSError, sqlite3.Error, RuntimeError, TypeError, ValueError) as exc:
+        return _error("code-question", exc)
+    if args.code_json:
+        _emit(payload, json_output=True)
+    else:
+        _emit_code_question_human(payload, limit=args.code_question_limit)
+    return 0 if result.status == "ready" else 2
+
+
+def _emit_code_storage_human(payload: dict[str, object], *, limit: int) -> None:
+    tables_value = payload.get("tables")
+    providers_value = payload.get("providers")
+    runs_value = payload.get("runs")
+    tables = tables_value if isinstance(tables_value, list) else []
+    providers = providers_value if isinstance(providers_value, list) else []
+    runs = runs_value if isinstance(runs_value, list) else []
+    _print_console_line(
+        f"CODE_STORAGE status={payload.get('status')} database="
+        f"{json.dumps(payload.get('database'), ensure_ascii=True)} "
+        f"bytes={payload.get('database_file_bytes', 0)} "
+        f"pages={payload.get('page_count', 0)} free_pages={payload.get('freelist_pages', 0)} "
+        f"tables={len(tables)} providers={len(providers)} runs={len(runs)} "
+        f"runs_truncated={int(bool(payload.get('runs_truncated')))} "
+        f"reason={json.dumps(payload.get('reason'), ensure_ascii=True)}"
+    )
+    for table in tables[:limit]:
+        _print_console_line(
+            "CODE_STORAGE_TABLE "
+            + json.dumps(table, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+        )
+    for provider in providers[:limit]:
+        _print_console_line(
+            "CODE_STORAGE_PROVIDER "
+            + json.dumps(provider, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+        )
+    for run in runs[:limit]:
+        _print_console_line(
+            "CODE_STORAGE_RUN "
+            + json.dumps(run, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+        )
+    for label in ("growth", "retention"):
+        detail = payload.get(label)
+        if isinstance(detail, dict):
+            _print_console_line(
+                f"CODE_STORAGE_{label.upper()} "
+                + json.dumps(detail, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+            )
+    limitations = payload.get("limitations")
+    if isinstance(limitations, list):
+        for limitation in limitations[:limit]:
+            _print_console_line(f"CODE_STORAGE_LIMITATION {limitation}")
+
+
+def run_code_storage(args: argparse.Namespace) -> int:
+    """Inspect immutable bounded storage evidence without owner mutation."""
+
+    run_limit = args.code_storage_run_limit
+    retain_runs = args.code_storage_retain_runs
+    if retain_runs is None:
+        retain_runs = min(5, run_limit)
+    try:
+        from .code_storage_analysis import analyze_code_storage
+
+        result = analyze_code_storage(
+            _state_path(args),
+            run_limit=run_limit,
+            row_scan_limit=args.code_storage_row_scan_limit,
+            retain_latest_completed_runs=retain_runs,
+        )
+        payload = result.as_payload()
+    except (ImportError, OSError, sqlite3.Error, RuntimeError, TypeError, ValueError) as exc:
+        return _error("code-storage", exc)
+    if args.code_json:
+        _emit(payload, json_output=True)
+    else:
+        _emit_code_storage_human(payload, limit=run_limit)
+    return 0 if result.status == "ready" else 2
+
+
 def _read_code_query_source(args: argparse.Namespace) -> dict[str, object]:
     surface = args.code_query
     if surface == "status":
@@ -2012,13 +2131,9 @@ def run_code_validate_change(args: argparse.Namespace) -> int:
             baseline=args.code_validation_baseline,
             max_tests=args.code_validation_max_tests,
             time_budget_seconds=args.code_validation_time_budget_seconds,
-            progress=(
-                None
-                if args.code_json
-                else lambda message: _print_console_line(
-                    f"CODE_CHANGE_VALIDATION_PROGRESS {message}",
-                    file=sys.stderr,
-                )
+            progress=lambda message: _print_console_line(
+                f"CODE_CHANGE_VALIDATION_PROGRESS {message}",
+                file=sys.stderr,
             ),
         )
     except (OSError, RuntimeError, TypeError, ValueError) as exc:

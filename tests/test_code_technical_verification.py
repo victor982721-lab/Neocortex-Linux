@@ -19,6 +19,18 @@ from _04_Nucleo_Operativo.code_change_evolution_analysis import (
     analyze_code_change_evolution,
     expected_code_change_evolution_questions,
 )
+from _04_Nucleo_Operativo.code_interface_surface_analysis import (
+    CLI_SURFACE_QUESTION,
+    interface_surface_questions,
+)
+from _04_Nucleo_Operativo.code_knowledge_asset_health_analysis import (
+    KNOWLEDGE_ASSET_HEALTH_QUESTION,
+    knowledge_asset_health_questions,
+)
+from _04_Nucleo_Operativo.code_knowledge_pdf_asset_health_analysis import (
+    KNOWLEDGE_PDF_ASSET_HEALTH_QUESTION,
+    knowledge_pdf_asset_health_questions,
+)
 from _04_Nucleo_Operativo.code_state_projection_analysis import (
     analyze_text_semantic_projection,
     state_projection_questions,
@@ -44,6 +56,7 @@ from _04_Nucleo_Operativo.code_technical_verification import (
 from tests.test_code_change_evolution_analysis import _build_transition
 from tests.test_code_architecture_questions import _ready_architecture
 from tests.test_code_experiment_store import _database, _receipt
+from tests.test_code_interface_surface_analysis import _analysis as _interface_analysis
 from tests.test_code_state_projection_analysis import _build_state
 from tests.test_code_retention_analysis import REFERENCE_NS, SOURCE_VERSION, _initialized_state
 from tests.test_code_supply_chain_analysis import (
@@ -112,6 +125,108 @@ def _closed_framework_review_task_protocol(tmp_path: Path):
         processing_signature="snapshot:fixture",
         review_digest="review:framework-review-task-fixture",
         recorded_ns=10,
+    )
+    receipts = read_code_experiment_receipts(
+        database,
+        analysis_run_id=1,
+        processing_signature="snapshot:fixture",
+        plan=plan,
+    )
+    assert receipts == (stored,)
+    projected = apply_code_experiment_receipts(specs, evaluations, plan, receipts)
+    return specs, evaluations, plan, receipts, projected
+
+
+def _closed_public_cli_contract(tmp_path: Path):
+    interface_root = tmp_path / "interface-surface"
+    interface_root.mkdir()
+    analysis = _interface_analysis(interface_root)
+    all_specs, all_evaluations = interface_surface_questions(
+        analysis,
+        snapshot_freshness="current",
+        rank_offset=0,
+    )
+    cli_spec = next(item for item in all_specs if item == CLI_SURFACE_QUESTION)
+    cli_evaluation = next(
+        item for item in all_evaluations if item.question_id == CLI_SURFACE_QUESTION.question_id
+    )
+    specs = (cli_spec,)
+    evaluations = (replace(cli_evaluation, rank=1),)
+    plan = plan_code_experiments(specs, evaluations)
+    proposal = plan.proposals[0]
+    experiment_root = tmp_path / "public-cli-experiment"
+    experiment_root.mkdir()
+    database = _database(experiment_root)
+    stored = record_code_experiment_receipt(
+        database,
+        _receipt(proposal),
+        proposal,
+        analysis_run_id=1,
+        processing_signature="snapshot:fixture",
+        review_digest="review:public-cli-fixture",
+        recorded_ns=11,
+    )
+    receipts = read_code_experiment_receipts(
+        database,
+        analysis_run_id=1,
+        processing_signature="snapshot:fixture",
+        plan=plan,
+    )
+    assert receipts == (stored,)
+    projected = apply_code_experiment_receipts(specs, evaluations, plan, receipts)
+    return specs, evaluations, plan, receipts, projected
+
+
+def _closed_knowledge_asset_health_contract(tmp_path: Path):
+    specs, evaluations = knowledge_asset_health_questions(
+        snapshot_id="snapshot:fixture",
+        snapshot_freshness="current",
+        rank=1,
+    )
+    plan = plan_code_experiments(specs, evaluations)
+    proposal = plan.proposals[0]
+    experiment_root = tmp_path / "knowledge-asset-health-experiment"
+    experiment_root.mkdir()
+    database = _database(experiment_root)
+    stored = record_code_experiment_receipt(
+        database,
+        _receipt(proposal),
+        proposal,
+        analysis_run_id=1,
+        processing_signature="snapshot:fixture",
+        review_digest="review:knowledge-asset-health-fixture",
+        recorded_ns=12,
+    )
+    receipts = read_code_experiment_receipts(
+        database,
+        analysis_run_id=1,
+        processing_signature="snapshot:fixture",
+        plan=plan,
+    )
+    assert receipts == (stored,)
+    projected = apply_code_experiment_receipts(specs, evaluations, plan, receipts)
+    return specs, evaluations, plan, receipts, projected
+
+
+def _closed_knowledge_pdf_asset_health_contract(tmp_path: Path):
+    specs, evaluations = knowledge_pdf_asset_health_questions(
+        snapshot_id="snapshot:fixture",
+        snapshot_freshness="current",
+        rank=1,
+    )
+    plan = plan_code_experiments(specs, evaluations)
+    proposal = plan.proposals[0]
+    experiment_root = tmp_path / "knowledge-pdf-asset-health-experiment"
+    experiment_root.mkdir()
+    database = _database(experiment_root)
+    stored = record_code_experiment_receipt(
+        database,
+        _receipt(proposal),
+        proposal,
+        analysis_run_id=1,
+        processing_signature="snapshot:fixture",
+        review_digest="review:knowledge-pdf-asset-health-fixture",
+        recorded_ns=13,
     )
     receipts = read_code_experiment_receipts(
         database,
@@ -667,6 +782,292 @@ def test_framework_review_task_receipt_closes_exact_contract_and_outcome_evidenc
         parse_code_technical_verification_payload(json.loads(json.dumps(verification.as_payload())))
         == verification
     )
+
+
+def test_public_cli_receipt_closes_runtime_counterevidence_and_exact_disposition(
+    tmp_path: Path,
+) -> None:
+    specs, _evaluations, plan, receipts, projected = _closed_public_cli_contract(tmp_path)
+    proposal = plan.proposals[0]
+    assert proposal.template_id == "interfaces.public_cli_contract_acceptance"
+    assert proposal.scenario_ids == ("interfaces.public_cli_and_static_surface",)
+    evaluation = projected[0]
+    assert evaluation.decision_readiness == "human_review_required"
+    requirements = {item.requirement_id: item for item in evaluation.requirements}
+    runtime_evidence = next(
+        item
+        for item in evaluation.evidence
+        if item.evidence_id
+        in requirements["effective_runtime_parser_contract_observed"].evidence_ids
+    )
+    counterevidence = next(
+        item
+        for item in evaluation.evidence
+        if item.evidence_id
+        in requirements["dynamic_cli_construction_counterevidence_evaluated"].evidence_ids
+    )
+    assert runtime_evidence.evidence_kind == "runtime_observation"
+    assert runtime_evidence.role == "supporting"
+    assert counterevidence.evidence_kind == "runtime_observation"
+    assert counterevidence.role == "counterevidence"
+
+    verification = build_code_technical_verification(specs, projected, receipts)
+
+    assert verification.status == "ready"
+    assert verification.reviewed_count == 1
+    assert verification.reviews[0].question_id == CLI_SURFACE_QUESTION.question_id
+    assert verification.reviews[0].reason_code == (
+        "public_cli_parser_help_dispatch_and_focal_observability_matrix_passed_without_a_"
+        "change_signal"
+    )
+    assert verification.reviews[0].receipt_ids == (receipts[0].receipt.receipt_id,)
+
+
+def test_public_cli_policy_rejects_incomplete_static_projection(tmp_path: Path) -> None:
+    specs, _evaluations, _plan, receipts, projected = _closed_public_cli_contract(tmp_path)
+    evaluation = projected[0]
+    static = next(
+        item
+        for item in evaluation.evidence
+        if item.source_record_kind == "entrypoint_surface_projection"
+    )
+    forged = replace(
+        static,
+        facts=tuple(
+            replace(item, value=1) if item.name == "incomplete_cli_files" else item
+            for item in static.facts
+        ),
+    )
+    forged_evaluation = replace(
+        evaluation,
+        evidence=tuple(
+            forged if item.evidence_id == static.evidence_id else item
+            for item in evaluation.evidence
+        ),
+    )
+
+    verification = build_code_technical_verification(specs, (forged_evaluation,), receipts)
+
+    assert verification.status == "partial"
+    assert verification.reviews == ()
+    assert verification.gaps[0].reason == "technical_policy_negative_control_not_satisfied"
+
+
+def test_knowledge_asset_health_receipt_closes_exact_causal_disposition(
+    tmp_path: Path,
+) -> None:
+    specs, _evaluations, plan, receipts, projected = (
+        _closed_knowledge_asset_health_contract(tmp_path)
+    )
+    proposal = plan.proposals[0]
+    assert proposal.template_id == "knowledge.asset_health_causal_acceptance"
+    assert proposal.scenario_ids == ("knowledge.asset_health_causal_acceptance",)
+    evaluation = projected[0]
+    assert evaluation.decision_readiness == "human_review_required"
+    assert evaluation.counterevidence_status == "evaluated"
+    assert all(item.status == "satisfied" for item in evaluation.requirements)
+
+    verification = build_code_technical_verification(specs, projected, receipts)
+
+    assert verification.status == "ready"
+    assert verification.reviewed_count == 1
+    assert verification.reviews[0].question_id == KNOWLEDGE_ASSET_HEALTH_QUESTION.question_id
+    assert verification.reviews[0].reason_code == (
+        "knowledge_asset_health_causal_matrix_passed_without_a_change_signal"
+    )
+    assert verification.reviews[0].disposition == "no_change_required_within_verified_scope"
+    assert verification.reviews[0].receipt_ids == (receipts[0].receipt.receipt_id,)
+
+
+@pytest.mark.parametrize(
+    ("record_kind", "fact_name", "forged_value"),
+    (
+        ("knowledge_asset_health_owner_store_contract", "text_schema_version", 3),
+        ("knowledge_asset_health_causal_identity_contract", "text_route_version", "v0"),
+        ("knowledge_asset_health_public_read_contract", "read_only", False),
+        ("knowledge_asset_health_public_read_contract", "mutation_authority", True),
+    ),
+)
+def test_knowledge_asset_health_policy_rejects_contract_or_authority_drift(
+    tmp_path: Path,
+    record_kind: str,
+    fact_name: str,
+    forged_value: object,
+) -> None:
+    specs, _evaluations, _plan, receipts, projected = (
+        _closed_knowledge_asset_health_contract(tmp_path)
+    )
+    evaluation = projected[0]
+    evidence = next(
+        item for item in evaluation.evidence if item.source_record_kind == record_kind
+    )
+    forged = replace(
+        evidence,
+        facts=tuple(
+            replace(fact, value=forged_value) if fact.name == fact_name else fact
+            for fact in evidence.facts
+        ),
+    )
+    forged_evaluation = replace(
+        evaluation,
+        evidence=tuple(
+            forged if item.evidence_id == evidence.evidence_id else item
+            for item in evaluation.evidence
+        ),
+    )
+
+    verification = build_code_technical_verification(
+        specs,
+        (forged_evaluation,),
+        receipts,
+    )
+
+    assert verification.status == "partial"
+    assert verification.reviews == ()
+    assert verification.gaps[0].reason == "technical_policy_negative_control_not_satisfied"
+
+
+def test_knowledge_pdf_asset_health_receipt_closes_exact_causal_disposition(
+    tmp_path: Path,
+) -> None:
+    specs, _evaluations, plan, receipts, projected = (
+        _closed_knowledge_pdf_asset_health_contract(tmp_path)
+    )
+    proposal = plan.proposals[0]
+    assert proposal.template_id == "knowledge.pdf_asset_health_causal_acceptance"
+    assert proposal.scenario_ids == ("knowledge.pdf_asset_health_causal_acceptance",)
+    evaluation = projected[0]
+    assert evaluation.decision_readiness == "human_review_required"
+    assert evaluation.counterevidence_status == "evaluated"
+    assert all(item.status == "satisfied" for item in evaluation.requirements)
+
+    verification = build_code_technical_verification(specs, projected, receipts)
+
+    assert verification.status == "ready"
+    assert verification.reviewed_count == 1
+    assert verification.reviews[0].question_id == KNOWLEDGE_PDF_ASSET_HEALTH_QUESTION.question_id
+    assert verification.reviews[0].reason_code == (
+        "knowledge_pdf_asset_health_causal_matrix_passed_without_a_change_signal"
+    )
+    assert verification.reviews[0].disposition == "no_change_required_within_verified_scope"
+    assert verification.reviews[0].receipt_ids == (receipts[0].receipt.receipt_id,)
+    assert verification.authority == "advisory"
+    assert verification.mutation_authority is False
+
+
+@pytest.mark.parametrize(
+    ("record_kind", "fact_name", "forged_value"),
+    (
+        ("knowledge_pdf_asset_health_owner_store_contract", "pdf_schema_version", 12),
+        (
+            "knowledge_pdf_asset_health_page_state_and_recovery_contract",
+            "pdf_structural_recovery_version",
+            "pdf-structural-recovery-v1",
+        ),
+        ("knowledge_pdf_asset_health_public_read_contract", "read_only", False),
+        ("knowledge_pdf_asset_health_public_read_contract", "advisory_only", False),
+        ("knowledge_pdf_asset_health_public_read_contract", "mutation_authority", True),
+    ),
+)
+def test_knowledge_pdf_asset_health_policy_rejects_contract_or_authority_drift(
+    tmp_path: Path,
+    record_kind: str,
+    fact_name: str,
+    forged_value: object,
+) -> None:
+    specs, _evaluations, _plan, receipts, projected = (
+        _closed_knowledge_pdf_asset_health_contract(tmp_path)
+    )
+    evaluation = projected[0]
+    evidence = next(
+        item for item in evaluation.evidence if item.source_record_kind == record_kind
+    )
+    forged = replace(
+        evidence,
+        facts=tuple(
+            replace(fact, value=forged_value) if fact.name == fact_name else fact
+            for fact in evidence.facts
+        ),
+    )
+    forged_evaluation = replace(
+        evaluation,
+        evidence=tuple(
+            forged if item.evidence_id == evidence.evidence_id else item
+            for item in evaluation.evidence
+        ),
+    )
+
+    verification = build_code_technical_verification(
+        specs,
+        (forged_evaluation,),
+        receipts,
+    )
+
+    assert verification.status == "partial"
+    assert verification.reviews == ()
+    assert verification.gaps[0].reason == "technical_policy_negative_control_not_satisfied"
+
+
+@pytest.mark.parametrize(
+    ("requirement_id", "fact_name", "forged_value"),
+    (
+        (
+            "knowledge_pdf_asset_health_partial_protected_recovery_counterevidence_evaluated",
+            "relation_count",
+            8,
+        ),
+        (
+            "isolated_knowledge_pdf_asset_health_causal_experiment_result",
+            "gate_count",
+            3,
+        ),
+        (
+            "isolated_knowledge_pdf_asset_health_causal_experiment_result",
+            "source_evaluation_replayed",
+            1,
+        ),
+    ),
+)
+def test_knowledge_pdf_asset_health_policy_rejects_receipt_projection_tamper(
+    tmp_path: Path,
+    requirement_id: str,
+    fact_name: str,
+    forged_value: object,
+) -> None:
+    specs, _evaluations, _plan, receipts, projected = (
+        _closed_knowledge_pdf_asset_health_contract(tmp_path)
+    )
+    evaluation = projected[0]
+    requirement = next(
+        item for item in evaluation.requirements if item.requirement_id == requirement_id
+    )
+    evidence = next(
+        item for item in evaluation.evidence if item.evidence_id == requirement.evidence_ids[0]
+    )
+    forged = replace(
+        evidence,
+        facts=tuple(
+            replace(fact, value=forged_value) if fact.name == fact_name else fact
+            for fact in evidence.facts
+        ),
+    )
+    forged_evaluation = replace(
+        evaluation,
+        evidence=tuple(
+            forged if item.evidence_id == evidence.evidence_id else item
+            for item in evaluation.evidence
+        ),
+    )
+
+    verification = build_code_technical_verification(
+        specs,
+        (forged_evaluation,),
+        receipts,
+    )
+
+    assert verification.status == "partial"
+    assert verification.reviews == ()
+    assert verification.gaps[0].reason == "technical_policy_negative_control_not_satisfied"
 
 
 def test_framework_review_task_policy_revalidates_declared_experiment_outcomes(

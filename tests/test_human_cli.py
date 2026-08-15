@@ -317,6 +317,47 @@ def test_human_lineage_json_is_one_machine_readable_document(
     assert json.loads(capsys.readouterr().out) == payload
 
 
+def test_human_knowledge_health_uses_the_public_read_api(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    resource_id = "resource:file:1:2:-1"
+    payload = {
+        "kind": "neocortex_scoped_asset_health",
+        "resource_id": resource_id,
+        "exit_code": 0,
+        "scopes": [
+            {
+                "scope": "personal",
+                "asset_health": {
+                    "health": "healthy",
+                    "completeness": "complete",
+                    "reason_code": "causal_trace_aligned",
+                    "read_only": True,
+                    "advisory_only": True,
+                    "mutation_authorized": False,
+                },
+            }
+        ],
+    }
+    seen: list[tuple[str, str]] = []
+
+    def fake_health(selected: str, scope: str) -> dict[str, object]:
+        seen.append((selected, scope))
+        return payload
+
+    monkeypatch.setattr(human_cli, "asset_health_payload", fake_health)
+
+    assert (
+        human_cli.run_human_command(
+            ("knowledge", "health", resource_id, "--scope", "personal", "--json")
+        )
+        == 0
+    )
+    assert seen == [(resource_id, "personal")]
+    assert json.loads(capsys.readouterr().out) == payload
+
+
 def test_human_lineage_distinguishes_not_found_from_scope_error(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -424,7 +465,10 @@ if code != 0 or loaded:
     assert completed.returncode == 0, completed.stderr
 
 
-@pytest.mark.parametrize("arguments", [("inspect",), ("review",), ("agent",)])
+@pytest.mark.parametrize(
+    "arguments",
+    [("inspect",), ("review",), ("knowledge",), ("agent",)],
+)
 def test_nested_commands_require_a_concrete_read_only_action(arguments) -> None:
     with pytest.raises(SystemExit) as raised:
         human_cli.run_human_command(arguments)

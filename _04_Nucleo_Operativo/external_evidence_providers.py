@@ -22,6 +22,8 @@ from pathlib import Path, PurePosixPath
 from packaging.utils import canonicalize_name
 from neocortex.semgrep_tool_contract import managed_semgrep_version
 
+from _03_Progreso import ProgressCallback, ProgressEvent, ProgressMetric, emit_progress
+
 from .bounded_subprocess import SubprocessOutputLimitError, run_bounded_capture
 from .code_architecture_contracts import (
     ARCHITECTURE_BASELINE_ID,
@@ -55,6 +57,7 @@ from .external_deep_coverage import (
     DeepCoverageConfig,
     DeepCoverageExecution,
     DeepCoveragePreparedInput,
+    DeepCoverageProgress,
     execute_pytest_coverage,
     prepare_deep_coverage_input,
     trusted_deep_home_directory,
@@ -155,8 +158,8 @@ _STDOUT_LIMIT_BYTES = 8 * 1024 * 1024
 _STDERR_LIMIT_BYTES = 128 * 1024
 _TOOL_TIMEOUT_SECONDS = 180.0
 _MYPY_MEMORY_BYTES = 2 * 1024 * 1024 * 1024
-_PYRIGHT_MEMORY_BYTES = 2 * 1024 * 1024 * 1024
-_PYRIGHT_NODE_OLD_SPACE_MIB = 1792
+_PYRIGHT_MEMORY_BYTES = 3 * 1024 * 1024 * 1024
+_PYRIGHT_NODE_OLD_SPACE_MIB = 2304
 _RUFF_MEMORY_BYTES = 512 * 1024 * 1024
 _GRIMP_MEMORY_BYTES = 2 * 1024 * 1024 * 1024
 _COMPLEXIPY_MEMORY_BYTES = 2 * 1024 * 1024 * 1024
@@ -374,10 +377,18 @@ def _environment_signature(
     path_value: str | None = None,
     pathext_value: str | None = None,
 ) -> str:
+    # A release install changes ``sys.executable`` from the candidate-wheel
+    # staging path to the final immutable release path without changing the
+    # interpreter ABI or any provider semantics.  Binding the signature to
+    # that physical path made every freshly published provider stale as soon
+    # as the verified wheel was promoted.  Keep the semantic runtime identity
+    # here; providers whose executable discovery is behaviorally relevant
+    # continue to pass PATH/node/home explicitly below.
     payload: dict[str, object] = {
-        "python_executable": os.path.normcase(os.path.abspath(sys.executable)),
         "python_version": platform.python_version(),
         "implementation": platform.python_implementation(),
+        "implementation_cache_tag": getattr(sys.implementation, "cache_tag", None),
+        "abi_flags": getattr(sys, "abiflags", ""),
         "platform": platform.platform(),
         "tool_name": tool_name,
         "tool_version": tool_version,
@@ -389,7 +400,7 @@ def _environment_signature(
         payload["path"] = path_value
     if pathext_value is not None:
         payload["pathext"] = pathext_value
-    return external_signature("external-environment-v1", payload)
+    return external_signature("external-environment-v2", payload)
 
 
 def _python_provider_files(
@@ -710,9 +721,7 @@ def _failure(
         "bytes_read": 0,
         "bytes_staged": 0,
         "process_invocations": (
-            int(status != "unavailable")
-            if process_invocations is None
-            else process_invocations
+            int(status != "unavailable") if process_invocations is None else process_invocations
         ),
         "stdout_bytes": 0,
         "stderr_bytes": 0,
@@ -1728,7 +1737,7 @@ class PyrightTrustedProjectProvider(_TrustedStaticProvider):
     tool_name = "pyright"
     source = "external:pyright"
     memory_bound = _PYRIGHT_MEMORY_BYTES
-    execution_strategy = "trusted-config-staged-project-runtime-search-node-memory-v3"
+    execution_strategy = "trusted-config-staged-project-runtime-search-node-memory-v4"
 
     def __init__(self, root: Path):
         self._node, self._index, self._pyright_version = _pyright_locations()
@@ -2530,20 +2539,14 @@ class PipAuditKnownVulnerabilitiesProvider:
                     "fix": False,
                 },
             )
-        if (
-            os.environ.get("NEOCORTEX_PIP_AUDIT_NETWORK_POLICY")
-            == "disabled-by-code-validation"
-        ):
+        if os.environ.get("NEOCORTEX_PIP_AUDIT_NETWORK_POLICY") == "disabled-by-code-validation":
             return _failure(
                 self.descriptor,
                 root,
                 (),
                 tool_version=self._version,
                 status="failed",
-                reason=(
-                    "pip_audit_network_unavailable:"
-                    "disabled_by_local_code_validation_policy"
-                ),
+                reason=("pip_audit_network_unavailable:disabled_by_local_code_validation_policy"),
                 started_ns=started_ns,
                 process_invocations=0,
             )
@@ -3684,6 +3687,7 @@ class PytestCoverageTrustedDeepProvider:
         root: Path,
         deep_configuration: Mapping[str, object] | None,
         deep_configuration_signature: str | None,
+        progress: ProgressCallback | None = None,
     ) -> None:
         payload, config = _validated_deep_configuration(
             deep_configuration,
@@ -3692,6 +3696,7 @@ class PytestCoverageTrustedDeepProvider:
         self.root = root
         self.deep_configuration = payload
         self.config = config
+        self.progress = progress
         self._version = _deep_tool_version()
         version = self._version or "unavailable"
         self._root_identity = external_root_identity(root)
@@ -3746,6 +3751,37 @@ class PytestCoverageTrustedDeepProvider:
 
     def tool_version(self) -> str | None:
         return self._version
+
+    def _emit_progress(self, progress: DeepCoverageProgress) -> None:
+        current = progress.current_shard
+        shard_label = "-" if current is None else f"{current + 1}/{progress.total_shards}"
+        emit_progress(
+            self.progress,
+            ProgressEvent(
+                operation="code",
+                phase="trusted-deep-coverage",
+                description=f"Coverage trusted-deep · shard {shard_label}",
+                completed=progress.completed_shards,
+                total=progress.total_shards,
+                unit="shards",
+                finished=(
+                    progress.phase in {"shard_completed", "shard_reused"}
+                    and progress.completed_shards == progress.total_shards
+                ),
+                metrics=(
+                    ProgressMetric("status", progress.phase),
+                    ProgressMetric("tests", progress.selected_tests),
+                    ProgressMetric("reused", progress.reused_shards),
+                    ProgressMetric("elapsed_seconds", progress.elapsed_seconds),
+                    ProgressMetric(
+                        "shard_seconds",
+                        "-"
+                        if progress.shard_duration_seconds is None
+                        else progress.shard_duration_seconds,
+                    ),
+                ),
+            ),
+        )
 
     def _prepare(
         self,
@@ -3965,6 +4001,7 @@ class PytestCoverageTrustedDeepProvider:
                     scratch_root=durable_scratch,
                     config=self.config,
                     prepared_input=prepared,
+                    progress=self._emit_progress,
                 )
         except subprocess.TimeoutExpired:
             return self._attach_deep_contract(
@@ -4028,6 +4065,7 @@ def providers_for_profile(
     *,
     deep_configuration: Mapping[str, object] | None = None,
     deep_configuration_signature: str | None = None,
+    progress: ProgressCallback | None = None,
 ) -> tuple[ExternalEvidenceProvider, ...]:
     if profile != "trusted-deep" and (
         deep_configuration is not None or deep_configuration_signature is not None
@@ -4059,6 +4097,7 @@ def providers_for_profile(
                 root,
                 deep_configuration,
                 deep_configuration_signature,
+                progress,
             ),
             CosmicRayFocalMutationProvider(
                 root,

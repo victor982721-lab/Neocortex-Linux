@@ -32,7 +32,7 @@ def _surface(name: str) -> dict[str, object]:
     return value
 
 
-def _closed_v20_experiment_payload(
+def _closed_v22_experiment_payload(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> dict[str, object]:
@@ -78,6 +78,8 @@ def _closed_v20_experiment_payload(
         "assurance_questions",
         "invariant_assurance_questions",
         "framework_review_task_questions",
+        "knowledge_asset_health_questions",
+        "knowledge_pdf_asset_health_questions",
         "security_dependency_questions",
         "route_capability_questions",
         "analyzer_effectiveness_questions",
@@ -97,6 +99,92 @@ def _closed_v20_experiment_payload(
     )
     assert len(executable) == 1
     proposal = executable[0]
+    record_code_experiment_receipt(
+        database,
+        _receipt(proposal, source_version=PROCESSING_SIGNATURE),
+        proposal,
+        analysis_run_id=before.snapshot.analysis_run_id,
+        processing_signature=PROCESSING_SIGNATURE,
+        review_digest=code_review_digest_identity(before.digest),
+        recorded_ns=123,
+    )
+    after = review_module.review_code_state(state_directory, limit=1)
+    return json.loads(json.dumps(after.as_payload()))
+
+
+def _closed_v22_knowledge_health_payload(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> dict[str, object]:
+    import _04_Nucleo_Operativo.code_review as review_module
+    from _04_Nucleo_Operativo.code_experiment_store import (
+        code_review_digest_identity,
+        record_code_experiment_receipt,
+    )
+    from tests.test_code_experiment_store import _receipt
+    from tests.test_code_review import PROCESSING_SIGNATURE, _build_state, _status
+
+    state_directory = tmp_path / "state"
+    database = _build_state(state_directory, hotspots=False)
+    monkeypatch.setattr(review_module, "read_self_analysis_status", lambda *_: _status(tmp_path))
+    before = review_module.review_code_state(state_directory, limit=1)
+    assert before.snapshot is not None
+    assert before.digest is not None
+    assert before.experiment_plan is not None
+    question_id = "knowledge.asset_health_trace_is_snapshot_bound_and_causally_explainable"
+    proposals = tuple(
+        proposal
+        for proposal in before.experiment_plan.proposals
+        if proposal.question_id == question_id
+    )
+    assert len(proposals) == 1
+    proposal = proposals[0]
+    assert proposal.planning_status == "planned"
+    assert proposal.runner_kind != "none"
+    record_code_experiment_receipt(
+        database,
+        _receipt(proposal, source_version=PROCESSING_SIGNATURE),
+        proposal,
+        analysis_run_id=before.snapshot.analysis_run_id,
+        processing_signature=PROCESSING_SIGNATURE,
+        review_digest=code_review_digest_identity(before.digest),
+        recorded_ns=123,
+    )
+    after = review_module.review_code_state(state_directory, limit=1)
+    return json.loads(json.dumps(after.as_payload()))
+
+
+def _closed_v22_pdf_health_payload(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> dict[str, object]:
+    import _04_Nucleo_Operativo.code_review as review_module
+    from _04_Nucleo_Operativo.code_experiment_store import (
+        code_review_digest_identity,
+        record_code_experiment_receipt,
+    )
+    from tests.test_code_experiment_store import _receipt
+    from tests.test_code_review import PROCESSING_SIGNATURE, _build_state, _status
+
+    state_directory = tmp_path / "state"
+    database = _build_state(state_directory, hotspots=False)
+    monkeypatch.setattr(review_module, "read_self_analysis_status", lambda *_: _status(tmp_path))
+    before = review_module.review_code_state(state_directory, limit=1)
+    assert before.snapshot is not None
+    assert before.digest is not None
+    assert before.experiment_plan is not None
+    question_id = (
+        "knowledge.pdf_asset_health_preserves_page_partial_protected_and_recovery_causality"
+    )
+    proposals = tuple(
+        proposal
+        for proposal in before.experiment_plan.proposals
+        if proposal.question_id == question_id
+    )
+    assert len(proposals) == 1
+    proposal = proposals[0]
+    assert proposal.planning_status == "planned"
+    assert proposal.runner_kind != "none"
     record_code_experiment_receipt(
         database,
         _receipt(proposal, source_version=PROCESSING_SIGNATURE),
@@ -359,7 +447,7 @@ def test_review_query_accepts_and_indexes_source_linked_v13_questions(
     ]
 
 
-def test_review_query_rejects_forged_v20_evidence_linkage(
+def test_review_query_rejects_forged_v22_evidence_linkage(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -380,11 +468,11 @@ def test_review_query_rejects_forged_v20_evidence_linkage(
     evidence = cast("list[dict[str, object]]", evaluations[0]["evidence"])
     evidence[0]["source_record_id"] = "forged"
 
-    with pytest.raises(ValueError, match="code-review/v20"):
+    with pytest.raises(ValueError, match="code-review/v22"):
         query_code_analysis(payload, CodeAnalysisQuery(surface="review"))
 
 
-def test_review_query_rejects_forged_v20_question_semantics(
+def test_review_query_rejects_forged_v22_question_semantics(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -405,7 +493,7 @@ def test_review_query_rejects_forged_v20_question_semantics(
     actions = cast("list[dict[str, object]]", specs[0]["next_actions"])
     actions[0]["description"] = "Delete the production symbol now."
 
-    with pytest.raises(ValueError, match="v20 integrated projection is malformed"):
+    with pytest.raises(ValueError, match="v22 integrated projection is malformed"):
         query_code_analysis(payload, CodeAnalysisQuery(surface="review"))
 
 
@@ -418,7 +506,7 @@ def test_review_query_rejects_forged_v20_question_semantics(
         ("analyzer_calibration", "labels_total"),
     ),
 )
-def test_review_query_rejects_tampered_v20_integrated_projection(
+def test_review_query_rejects_tampered_v22_integrated_projection(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     projection: str,
@@ -441,11 +529,11 @@ def test_review_query_rejects_tampered_v20_integrated_projection(
     assert isinstance(current, int) and not isinstance(current, bool)
     receipt[field] = current + 1
 
-    with pytest.raises(ValueError, match="code-review/v20"):
+    with pytest.raises(ValueError, match="code-review/v22"):
         query_code_analysis(payload, CodeAnalysisQuery(surface="review"))
 
 
-def test_review_query_rejects_a_tampered_v20_retention_projection(
+def test_review_query_rejects_a_tampered_v22_retention_projection(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -464,11 +552,11 @@ def test_review_query_rejects_a_tampered_v20_retention_projection(
     retention = cast("dict[str, object]", payload["retention_analysis"])
     retention["analysis_id"] = "code-retention-analysis-v1:forged"
 
-    with pytest.raises(ValueError, match="code-review/v20"):
+    with pytest.raises(ValueError, match="code-review/v22"):
         query_code_analysis(payload, CodeAnalysisQuery(surface="review"))
 
 
-def test_review_query_rejects_a_tampered_v20_experiment_plan(
+def test_review_query_rejects_a_tampered_v22_experiment_plan(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -487,8 +575,216 @@ def test_review_query_rejects_a_tampered_v20_experiment_plan(
     plan = cast("dict[str, object]", payload["experiment_plan"])
     plan["executable_count"] = 999
 
-    with pytest.raises(ValueError, match="code-review/v20"):
+    with pytest.raises(ValueError, match="code-review/v22"):
         query_code_analysis(payload, CodeAnalysisQuery(surface="review"))
+
+
+def test_review_query_requires_the_exact_ordered_v22_knowledge_health_question(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import _04_Nucleo_Operativo.code_analysis_query as query_module
+    import _04_Nucleo_Operativo.code_review as review_module
+    from _04_Nucleo_Operativo.code_review import review_code_state
+    from tests.test_code_review import _build_state, _status
+
+    state_directory = tmp_path / "state"
+    _build_state(state_directory)
+    monkeypatch.setattr(
+        review_module,
+        "read_self_analysis_status",
+        lambda _state, _run: _status(tmp_path),
+    )
+    payload = json.loads(json.dumps(review_code_state(state_directory, limit=1).as_payload()))
+    epistemics = cast("dict[str, object]", payload["epistemics"])
+    evaluations = cast("list[dict[str, object]]", epistemics["evaluations"])
+    health_question_id = "knowledge.asset_health_trace_is_snapshot_bound_and_causally_explainable"
+    review_task_question_id = (
+        "framework.review_task_lifecycle_preserves_atomicity_and_human_authority"
+    )
+    health_index = next(
+        index for index, item in enumerate(evaluations) if item["question_id"] == health_question_id
+    )
+    review_task_index = next(
+        index
+        for index, item in enumerate(evaluations)
+        if item["question_id"] == review_task_question_id
+    )
+    assert health_index == review_task_index + 1
+
+    projected = query_code_analysis(
+        payload,
+        CodeAnalysisQuery(surface="review", categories=(health_question_id,)),
+    )
+    assert projected["counts"]["matched"] == 1
+    health_record = projected["matches"][0]
+    assert health_record["record_type"] == "analysis_question"
+    assert health_record["facts"]["subject_key"] == "capability:knowledge-asset-health"
+    assert health_record["facts"]["decision_readiness"] == "experiment_required"
+    assert health_record["facts"]["satisfied_requirement_ids"] == [
+        "knowledge_asset_health_owner_store_contract",
+        "knowledge_asset_health_causal_identity_contract",
+        "knowledge_asset_health_public_read_contract",
+    ]
+
+    tampered = deepcopy(payload)
+    tampered_epistemics = cast("dict[str, object]", tampered["epistemics"])
+    tampered_evaluations = cast(
+        "list[dict[str, object]]",
+        tampered_epistemics["evaluations"],
+    )
+    tampered_health = next(
+        item for item in tampered_evaluations if item["question_id"] == health_question_id
+    )
+    health_evidence = cast("list[dict[str, object]]", tampered_health["evidence"])
+    health_evidence[0]["source_projection_digest"] = "forged"
+    with pytest.raises(ValueError, match="code-review/v22"):
+        query_code_analysis(tampered, CodeAnalysisQuery(surface="review"))
+
+    missing = deepcopy(payload)
+    missing_epistemics = cast("dict[str, object]", missing["epistemics"])
+    missing_specs = cast("list[dict[str, object]]", missing_epistemics["specs"])
+    missing_evaluations = cast(
+        "list[dict[str, object]]",
+        missing_epistemics["evaluations"],
+    )
+    missing_specs[:] = [item for item in missing_specs if item["question_id"] != health_question_id]
+    missing_evaluations[:] = [
+        item for item in missing_evaluations if item["question_id"] != health_question_id
+    ]
+    with pytest.raises(ValueError, match="code-review/v22"):
+        query_code_analysis(missing, CodeAnalysisQuery(surface="review"))
+
+    reordered = deepcopy(payload)
+    reordered_epistemics = cast("dict[str, object]", reordered["epistemics"])
+    reordered_specs = cast("list[dict[str, object]]", reordered_epistemics["specs"])
+    reordered_evaluations = cast(
+        "list[dict[str, object]]",
+        reordered_epistemics["evaluations"],
+    )
+    reordered_specs[review_task_index], reordered_specs[health_index] = (
+        reordered_specs[health_index],
+        reordered_specs[review_task_index],
+    )
+    reordered_evaluations[review_task_index], reordered_evaluations[health_index] = (
+        reordered_evaluations[health_index],
+        reordered_evaluations[review_task_index],
+    )
+    with pytest.raises(ValueError, match="code-review/v22"):
+        query_code_analysis(reordered, CodeAnalysisQuery(surface="review"))
+
+    historical_claim = deepcopy(payload)
+    historical_claim["schema"] = "neocortex.code-review/v20"
+    monkeypatch.setattr(query_module, "_validate_review_v16_source_versions", lambda *_: None)
+    monkeypatch.setattr(query_module, "_validate_review_v16_effectiveness_link", lambda *_: None)
+    with pytest.raises(
+        ValueError,
+        match="code-review/v20 question registry is not canonical",
+    ):
+        query_code_analysis(historical_claim, CodeAnalysisQuery(surface="review"))
+
+
+def test_review_query_requires_the_exact_ordered_v22_pdf_health_question(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import _04_Nucleo_Operativo.code_analysis_query as query_module
+    import _04_Nucleo_Operativo.code_review as review_module
+    from _04_Nucleo_Operativo.code_review import review_code_state
+    from tests.test_code_review import _build_state, _status
+
+    state_directory = tmp_path / "state"
+    _build_state(state_directory)
+    monkeypatch.setattr(
+        review_module,
+        "read_self_analysis_status",
+        lambda _state, _run: _status(tmp_path),
+    )
+    payload = json.loads(json.dumps(review_code_state(state_directory, limit=1).as_payload()))
+    epistemics = cast("dict[str, object]", payload["epistemics"])
+    evaluations = cast("list[dict[str, object]]", epistemics["evaluations"])
+    pdf_question_id = (
+        "knowledge.pdf_asset_health_preserves_page_partial_protected_and_recovery_causality"
+    )
+    text_question_id = "knowledge.asset_health_trace_is_snapshot_bound_and_causally_explainable"
+    pdf_index = next(
+        index for index, item in enumerate(evaluations) if item["question_id"] == pdf_question_id
+    )
+    text_index = next(
+        index for index, item in enumerate(evaluations) if item["question_id"] == text_question_id
+    )
+    assert pdf_index == text_index + 1
+
+    projected = query_code_analysis(
+        payload,
+        CodeAnalysisQuery(surface="review", categories=(pdf_question_id,)),
+    )
+    assert projected["counts"]["matched"] == 1
+    pdf_record = projected["matches"][0]
+    assert pdf_record["record_type"] == "analysis_question"
+    assert pdf_record["facts"]["subject_key"] == "capability:knowledge-asset-health:pdf"
+    assert pdf_record["facts"]["decision_readiness"] == "experiment_required"
+    assert pdf_record["facts"]["satisfied_requirement_ids"] == [
+        "knowledge_pdf_asset_health_owner_store_contract",
+        "knowledge_pdf_asset_health_page_state_and_recovery_contract",
+        "knowledge_pdf_asset_health_public_read_contract",
+    ]
+
+    tampered = deepcopy(payload)
+    tampered_epistemics = cast("dict[str, object]", tampered["epistemics"])
+    tampered_evaluations = cast(
+        "list[dict[str, object]]",
+        tampered_epistemics["evaluations"],
+    )
+    tampered_pdf = next(
+        item for item in tampered_evaluations if item["question_id"] == pdf_question_id
+    )
+    pdf_evidence = cast("list[dict[str, object]]", tampered_pdf["evidence"])
+    pdf_evidence[0]["source_projection_digest"] = "forged"
+    with pytest.raises(ValueError, match="code-review/v22"):
+        query_code_analysis(tampered, CodeAnalysisQuery(surface="review"))
+
+    missing = deepcopy(payload)
+    missing_epistemics = cast("dict[str, object]", missing["epistemics"])
+    missing_specs = cast("list[dict[str, object]]", missing_epistemics["specs"])
+    missing_evaluations = cast(
+        "list[dict[str, object]]",
+        missing_epistemics["evaluations"],
+    )
+    missing_specs[:] = [item for item in missing_specs if item["question_id"] != pdf_question_id]
+    missing_evaluations[:] = [
+        item for item in missing_evaluations if item["question_id"] != pdf_question_id
+    ]
+    with pytest.raises(ValueError, match="code-review/v22"):
+        query_code_analysis(missing, CodeAnalysisQuery(surface="review"))
+
+    reordered = deepcopy(payload)
+    reordered_epistemics = cast("dict[str, object]", reordered["epistemics"])
+    reordered_specs = cast("list[dict[str, object]]", reordered_epistemics["specs"])
+    reordered_evaluations = cast(
+        "list[dict[str, object]]",
+        reordered_epistemics["evaluations"],
+    )
+    reordered_specs[text_index], reordered_specs[pdf_index] = (
+        reordered_specs[pdf_index],
+        reordered_specs[text_index],
+    )
+    reordered_evaluations[text_index], reordered_evaluations[pdf_index] = (
+        reordered_evaluations[pdf_index],
+        reordered_evaluations[text_index],
+    )
+    with pytest.raises(ValueError, match="code-review/v22"):
+        query_code_analysis(reordered, CodeAnalysisQuery(surface="review"))
+
+    historical_claim = deepcopy(payload)
+    historical_claim["schema"] = "neocortex.code-review/v21"
+    monkeypatch.setattr(query_module, "_validate_review_v16_source_versions", lambda *_: None)
+    monkeypatch.setattr(query_module, "_validate_review_v16_effectiveness_link", lambda *_: None)
+    with pytest.raises(
+        ValueError,
+        match="code-review/v21 question registry is not canonical",
+    ):
+        query_code_analysis(historical_claim, CodeAnalysisQuery(surface="review"))
 
 
 @pytest.mark.parametrize(
@@ -499,9 +795,11 @@ def test_review_query_rejects_a_tampered_v20_experiment_plan(
         "neocortex.code-review/v18",
         "neocortex.code-review/v19",
         "neocortex.code-review/v20",
+        "neocortex.code-review/v21",
+        "neocortex.code-review/v22",
     ),
 )
-def test_review_query_preserves_abstained_v16_v20_compatibility(
+def test_review_query_preserves_abstained_v16_v22_compatibility(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     schema: str,
@@ -535,7 +833,50 @@ def test_review_query_preserves_abstained_v16_v20_compatibility(
     assert result["matches"] == []
 
 
-def test_review_query_preserves_ready_v20_fail_closed_validation_order_and_bound(
+@pytest.mark.parametrize(
+    ("schema", "field", "value"),
+    (
+        ("neocortex.code-review/v16", "experiment_receipts", [{"forged": True}]),
+        ("neocortex.code-review/v17", "technical_verification", {"forged": True}),
+        ("neocortex.code-review/v18", "retention_analysis", {"forged": True}),
+    ),
+)
+def test_review_query_rejects_future_evidence_under_historical_review_schemas(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    schema: str,
+    field: str,
+    value: object,
+) -> None:
+    import _04_Nucleo_Operativo.code_review as review_module
+    from _04_Nucleo_Operativo.code_review import review_code_state
+    from _04_Nucleo_Operativo.code_review_epistemics import CodeReviewEvidenceResolutionError
+    from tests.test_code_review import _build_state, _status
+
+    state_directory = tmp_path / "state"
+    _build_state(state_directory)
+    monkeypatch.setattr(
+        review_module,
+        "read_self_analysis_status",
+        lambda _state, _run: _status(tmp_path),
+    )
+    monkeypatch.setattr(
+        review_module,
+        "resolve_code_review_questions",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            CodeReviewEvidenceResolutionError("source record changed")
+        ),
+    )
+    payload = review_code_state(state_directory).as_payload()
+    assert payload["status"] == "abstained"
+    payload["schema"] = schema
+    payload[field] = value
+
+    with pytest.raises(ValueError, match=f"{schema.removeprefix('neocortex.')} does not define"):
+        query_code_analysis(payload, CodeAnalysisQuery(surface="review"))
+
+
+def test_review_query_preserves_ready_v22_fail_closed_validation_order_and_bound(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -555,7 +896,7 @@ def test_review_query_preserves_ready_v20_fail_closed_validation_order_and_bound
     oversized = deepcopy(payload)
     oversized["findings"] = [{}] * (CODE_ANALYSIS_QUERY_MAX_SOURCE_SEQUENCE_ITEMS + 1)
     oversized["structural_analysis"] = None
-    with pytest.raises(ValueError, match="v20 integrated projection is malformed") as bounded:
+    with pytest.raises(ValueError, match="v22 integrated projection is malformed") as bounded:
         query_code_analysis(oversized, CodeAnalysisQuery(surface="review"))
     assert bounded.value.__cause__ is not None
     assert str(bounded.value.__cause__) == "query source sequence exceeds its item bound"
@@ -564,19 +905,19 @@ def test_review_query_preserves_ready_v20_fail_closed_validation_order_and_bound
     missing_integrated["state_topology"] = None
     snapshot = cast("dict[str, object]", missing_integrated["snapshot"])
     snapshot["analysis_run_id"] = False
-    with pytest.raises(ValueError, match="v20 integrated projection is malformed") as staged:
+    with pytest.raises(ValueError, match="v22 integrated projection is malformed") as staged:
         query_code_analysis(missing_integrated, CodeAnalysisQuery(surface="review"))
     assert staged.value.__cause__ is not None
     assert str(staged.value.__cause__) == (
-        "ready code-review/v20 payload lacks integrated evidence"
+        "ready code-review/v22 payload lacks integrated evidence"
     )
 
 
-def test_review_query_projects_a_valid_v20_receipt_and_closes_the_experiment_loop(
+def test_review_query_projects_a_valid_v22_receipt_and_closes_the_experiment_loop(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    payload = _closed_v20_experiment_payload(tmp_path, monkeypatch)
+    payload = _closed_v22_experiment_payload(tmp_path, monkeypatch)
 
     closed_question = query_code_analysis(
         payload,
@@ -631,9 +972,7 @@ def test_review_query_projects_a_valid_v20_receipt_and_closes_the_experiment_loo
         payload,
         CodeAnalysisQuery(surface="review", categories=("technical_verification",), limit=20),
     )
-    technical_by_type = {
-        item["record_type"]: item for item in technical_records["matches"]
-    }
+    technical_by_type = {item["record_type"]: item for item in technical_records["matches"]}
     assert set(technical_by_type) == {
         "technical_verification_summary",
         "technical_verification_gap",
@@ -648,16 +987,132 @@ def test_review_query_projects_a_valid_v20_receipt_and_closes_the_experiment_loo
     )
 
 
-def test_review_query_rejects_a_tampered_v20_receipt_envelope(
+def test_review_query_projects_and_rebuilds_v22_knowledge_health_verification(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    payload = _closed_v20_experiment_payload(tmp_path, monkeypatch)
+    payload = _closed_v22_knowledge_health_payload(tmp_path, monkeypatch)
+    question_id = "knowledge.asset_health_trace_is_snapshot_bound_and_causally_explainable"
+
+    closed_question = query_code_analysis(
+        payload,
+        CodeAnalysisQuery(
+            surface="review",
+            categories=(question_id,),
+            statuses=("decision:human_review_required",),
+        ),
+    )
+    assert closed_question["counts"]["matched"] == 1
+    assert closed_question["matches"][0]["record_type"] == "analysis_question"
+    assert closed_question["matches"][0]["facts"]["next_action_ids"] == []
+
+    receipts = query_code_analysis(
+        payload,
+        CodeAnalysisQuery(
+            surface="review",
+            categories=(f"experiment-question:{question_id}",),
+        ),
+    )
+    assert receipts["counts"]["matched"] == 1
+    receipt = receipts["matches"][0]
+    assert receipt["record_type"] == "experiment_receipt"
+    assert receipt["facts"]["template_id"] == "knowledge.asset_health_causal_acceptance"
+    assert receipt["facts"]["gate_outcomes_count"] == 4
+    assert receipt["facts"]["code_database_unchanged"] is True
+
+    technical = query_code_analysis(
+        payload,
+        CodeAnalysisQuery(
+            surface="review",
+            categories=(question_id,),
+            statuses=("technical:no_change_required_within_verified_scope",),
+        ),
+    )
+    assert technical["counts"]["matched"] == 1
+    disposition = technical["matches"][0]
+    assert disposition["record_type"] == "technical_disposition"
+    assert disposition["facts"]["question_id"] == question_id
+    assert disposition["facts"]["receipt_count"] == 1
+
+    forged = deepcopy(payload)
+    verification = cast("dict[str, object]", forged["technical_verification"])
+    reviews = cast("list[dict[str, object]]", verification["reviews"])
+    health_review = next(item for item in reviews if item["question_id"] == question_id)
+    health_review["evidence_ids"] = []
+    with pytest.raises(ValueError, match="code-review/v22"):
+        query_code_analysis(forged, CodeAnalysisQuery(surface="review"))
+
+
+def test_review_query_projects_and_rebuilds_v22_pdf_health_verification(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = _closed_v22_pdf_health_payload(tmp_path, monkeypatch)
+    question_id = (
+        "knowledge.pdf_asset_health_preserves_page_partial_protected_and_recovery_causality"
+    )
+
+    closed_question = query_code_analysis(
+        payload,
+        CodeAnalysisQuery(
+            surface="review",
+            categories=(question_id,),
+            statuses=("decision:human_review_required",),
+        ),
+    )
+    assert closed_question["counts"]["matched"] == 1
+    question = closed_question["matches"][0]
+    assert question["record_type"] == "analysis_question"
+    assert question["facts"]["next_action_ids"] == []
+    assert question["facts"]["counterevidence_status"] == "evaluated"
+
+    receipts = query_code_analysis(
+        payload,
+        CodeAnalysisQuery(
+            surface="review",
+            categories=(f"experiment-question:{question_id}",),
+        ),
+    )
+    assert receipts["counts"]["matched"] == 1
+    receipt = receipts["matches"][0]
+    assert receipt["record_type"] == "experiment_receipt"
+    assert receipt["facts"]["template_id"] == "knowledge.pdf_asset_health_causal_acceptance"
+    assert receipt["facts"]["gate_outcomes_count"] == 4
+    assert receipt["facts"]["code_database_unchanged"] is True
+
+    technical = query_code_analysis(
+        payload,
+        CodeAnalysisQuery(
+            surface="review",
+            categories=(question_id,),
+            statuses=("technical:no_change_required_within_verified_scope",),
+        ),
+    )
+    assert technical["counts"]["matched"] == 1
+    disposition = technical["matches"][0]
+    assert disposition["record_type"] == "technical_disposition"
+    assert disposition["facts"]["question_id"] == question_id
+    assert disposition["facts"]["receipt_count"] == 1
+
+    forged = deepcopy(payload)
+    verification = cast("dict[str, object]", forged["technical_verification"])
+    reviews = cast("list[dict[str, object]]", verification["reviews"])
+    pdf_review = next(item for item in reviews if item["question_id"] == question_id)
+    pdf_review["evidence_ids"] = []
+    with pytest.raises(ValueError, match="code-review/v22"):
+        query_code_analysis(forged, CodeAnalysisQuery(surface="review"))
+
+
+def test_review_query_rejects_a_tampered_v22_receipt_envelope(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = _closed_v22_experiment_payload(tmp_path, monkeypatch)
     tampered = deepcopy(payload)
     receipts = cast("list[dict[str, object]]", tampered["experiment_receipts"])
     receipts[0]["payload_xxh3_128"] = "forged"
 
-    with pytest.raises(ValueError, match="code-review/v20"):
+    with pytest.raises(ValueError, match="code-review/v22"):
         query_code_analysis(tampered, CodeAnalysisQuery(surface="review"))
 
     future_owner = deepcopy(payload)
@@ -680,13 +1135,13 @@ def test_review_query_rejects_a_tampered_v20_receipt_envelope(
 
     missing_sequence = deepcopy(payload)
     missing_sequence.pop("experiment_receipts")
-    with pytest.raises(ValueError, match="code-review/v20"):
+    with pytest.raises(ValueError, match="code-review/v22"):
         query_code_analysis(missing_sequence, CodeAnalysisQuery(surface="review"))
 
     forged_technical = deepcopy(payload)
     technical = cast("dict[str, object]", forged_technical["technical_verification"])
     technical["reviewed_count"] = 1
-    with pytest.raises(ValueError, match="code-review/v20"):
+    with pytest.raises(ValueError, match="code-review/v22"):
         query_code_analysis(forged_technical, CodeAnalysisQuery(surface="review"))
 
 

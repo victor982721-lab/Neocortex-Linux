@@ -13,10 +13,14 @@ import _04_Nucleo_Operativo.code_route as code_route_module
 import _04_Nucleo_Operativo.external_deep_coverage as deep_module
 import _04_Nucleo_Operativo.external_evidence_providers as providers_module
 import _04_Nucleo_Operativo.external_evidence_store as store_module
+from _03_Progreso import RecordingProgress
 from _04_Nucleo_Operativo.code_contracts import CodeRouteConfig
 from _04_Nucleo_Operativo.code_external_evidence import ExternalEvidenceFile
 from _04_Nucleo_Operativo.code_route import CodeRoute
-from _04_Nucleo_Operativo.external_deep_coverage import DeepCoverageExecution
+from _04_Nucleo_Operativo.external_deep_coverage import (
+    DeepCoverageExecution,
+    DeepCoverageProgress,
+)
 from _04_Nucleo_Operativo.external_evidence_models import (
     ExternalProviderBaseline,
     ExternalProviderStatus,
@@ -103,11 +107,13 @@ def test_trusted_deep_registry_extends_static_matrix_with_declared_execution(
         lambda **_kwargs: "installed-environment:fixture",
     )
 
+    progress = RecordingProgress()
     providers = providers_for_profile(
         "trusted-deep",
         root,
         deep_configuration=config.deep_configuration_payload,
         deep_configuration_signature=config.deep_configuration_signature,
+        progress=progress,
     )
 
     assert tuple(item.descriptor.provider_id for item in providers) == (
@@ -142,6 +148,22 @@ def test_trusted_deep_registry_extends_static_matrix_with_declared_execution(
     assert descriptor.uses_network is True
     assert descriptor.mutation_authority is False
     assert descriptor.limits.timeout_seconds == 90.0
+    coverage_provider = next(
+        item for item in providers if item.descriptor.provider_id == PYTEST_COVERAGE_PROVIDER_ID
+    )
+    assert isinstance(coverage_provider, PytestCoverageTrustedDeepProvider)
+    coverage_provider._emit_progress(
+        DeepCoverageProgress("shard_completed", 2, 3, 1, 120, 1, 45, 12)
+    )
+    assert progress.events[-1].phase == "trusted-deep-coverage"
+    assert progress.events[-1].completed == 2
+    assert {metric.name: metric.value for metric in progress.events[-1].metrics} == {
+        "status": "shard_completed",
+        "tests": 120,
+        "reused": 1,
+        "elapsed_seconds": 45,
+        "shard_seconds": 12,
+    }
     vulture_descriptor = next(
         item.descriptor
         for item in providers
@@ -300,6 +322,7 @@ def test_code_route_passes_exact_deep_payload_to_registry(
         "root": root,
         "deep_configuration": config.deep_configuration_payload,
         "deep_configuration_signature": config.deep_configuration_signature,
+        "progress": None,
     }
 
 

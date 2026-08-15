@@ -53,6 +53,8 @@ from .code_invariant_assurance_analysis import (
     CodeInvariantAssuranceAnalysis,
     invariant_assurance_questions,
 )
+from .code_knowledge_asset_health_analysis import knowledge_asset_health_questions
+from .code_knowledge_pdf_asset_health_analysis import knowledge_pdf_asset_health_questions
 from .code_route_capability_analysis import (
     CodeRouteCapabilityAnalysis,
     route_capability_questions,
@@ -517,7 +519,7 @@ def expected_integrated_code_review_questions(
     route_capabilities: CodeRouteCapabilityAnalysis,
     analyzer_calibration: CodeAnalyzerCalibrationAnalysis,
 ) -> tuple[tuple[AnalysisQuestionSpec, ...], tuple[AnalysisQuestionEvaluation, ...]]:
-    """Rebuild every v20 question from its already-resolved owner projection."""
+    """Rebuild every v22 question from its already-resolved owner projection."""
 
     base_specs, base_evaluations = expected_code_review_questions(
         findings,
@@ -602,6 +604,22 @@ def expected_integrated_code_review_questions(
     )
     specs.extend(review_task_specs)
     evaluations.extend(review_task_evaluations)
+
+    health_specs, health_evaluations = knowledge_asset_health_questions(
+        snapshot_id=snapshot.processing_signature,
+        snapshot_freshness=snapshot.freshness,
+        rank=len(evaluations) + 1,
+    )
+    specs.extend(health_specs)
+    evaluations.extend(health_evaluations)
+
+    pdf_health_specs, pdf_health_evaluations = knowledge_pdf_asset_health_questions(
+        snapshot_id=snapshot.processing_signature,
+        snapshot_freshness=snapshot.freshness,
+        rank=len(evaluations) + 1,
+    )
+    specs.extend(pdf_health_specs)
+    evaluations.extend(pdf_health_evaluations)
 
     security_specs, security_evaluations = security_dependency_questions(
         supply_chain,

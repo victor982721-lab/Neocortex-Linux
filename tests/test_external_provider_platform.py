@@ -475,9 +475,13 @@ def test_pyright_parser_preserves_structured_range_and_rule(
         lambda: (Path("C:/fixture/node.exe"), Path("C:/fixture/pyright/index.js"), "1.1.411"),
     )
     provider = PyrightTrustedProjectProvider(root)
+    assert provider.descriptor.execution_strategy.endswith("node-memory-v4")
+    assert provider.descriptor.limits.memory_bound_bytes == 3 * 1024 * 1024 * 1024
 
     def fake_run(arguments, **kwargs):
-        assert arguments[1] == "--max-old-space-size=1792"
+        assert arguments[1] == "--max-old-space-size=2304"
+        expected_process_limit = 3 * 1024 * 1024 * 1024 if os.name == "nt" else None
+        assert kwargs["memory_limit_bytes"] == expected_process_limit
         config_path = Path(arguments[arguments.index("--project") + 1])
         config = json.loads(config_path.read_text(encoding="utf-8"))
         assert config["executionEnvironments"][0]["root"] == "source"
@@ -560,9 +564,7 @@ def test_malformed_provider_output_abstains_without_partial_findings(
     assert publication.findings == ()
     assert publication.counters["errors"] == 1
     error = cast(dict[str, object], publication.publication.provenance["error"])
-    assert error["reason"] == (
-        "provider_failure:ValueError:mypy JSON Lines output is malformed"
-    )
+    assert error["reason"] == ("provider_failure:ValueError:mypy JSON Lines output is malformed")
     assert publication.limitations[0].startswith("provider_failure:ValueError:")
 
 
@@ -621,6 +623,29 @@ def test_runtime_staleness_and_projection_corruption_fail_closed_per_provider(
     assert corrupted.providers[0].reason == "external_provider_projection_invalid"
 
 
+def test_provider_environment_identity_ignores_only_equivalent_release_paths(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(providers_module.sys, "executable", "/release-a/bin/python3.14")
+    first = providers_module._environment_signature(
+        tool_name="fixture-tool",
+        tool_version="1.2.3",
+    )
+
+    monkeypatch.setattr(providers_module.sys, "executable", "/release-b/bin/python3.14")
+    relocated = providers_module._environment_signature(
+        tool_name="fixture-tool",
+        tool_version="1.2.3",
+    )
+    changed_tool = providers_module._environment_signature(
+        tool_name="fixture-tool",
+        tool_version="1.2.4",
+    )
+
+    assert relocated == first
+    assert changed_tool != first
+
+
 def test_status_review_and_diff_consume_the_normalized_provider_contract(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -658,9 +683,7 @@ def test_status_review_and_diff_consume_the_normalized_provider_contract(
     assert review.external_evidence_suite.profile == "protected"
     assert review.external_evidence_suite.providers[0].provider_id == ("ruff-protected-basic")
     review_suite = cast(dict[str, object], review.as_payload()["external_evidence_suite"])
-    assert review_suite["schema"] == (
-        "neocortex.external-evidence-suite/v1"
-    )
+    assert review_suite["schema"] == ("neocortex.external-evidence-suite/v1")
 
     first_diff = compare_code_publications(baseline_state, current_state)
     second_diff = compare_code_publications(baseline_state, current_state)

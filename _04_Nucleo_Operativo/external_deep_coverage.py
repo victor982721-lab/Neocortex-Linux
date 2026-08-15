@@ -17,7 +17,7 @@ import subprocess
 import sys
 import time
 from collections import defaultdict
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Literal
@@ -61,6 +61,7 @@ _MEMORY_LIMIT_BYTES = 4 * 1024 * 1024 * 1024
 _MAX_SUPPORT_FILES = 20_000
 _MAX_SUPPORT_BYTES = 1024 * 1024 * 1024
 _MAX_SUPPORT_FILE_BYTES = 64 * 1024 * 1024
+_PROGRESS_EXTENSION_MULTIPLIER = 2.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,6 +124,23 @@ class DeepCoverageExecution:
     measurement_scope_signature: str
     counters: Mapping[str, int]
     limitations: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class DeepCoverageProgress:
+    """One live, bounded observation of collect/shard progress."""
+
+    phase: Literal["collected", "shard_started", "shard_reused", "shard_completed"]
+    completed_shards: int
+    total_shards: int
+    current_shard: int | None
+    selected_tests: int
+    reused_shards: int
+    elapsed_seconds: int
+    shard_duration_seconds: int | None = None
+
+
+DeepCoverageProgressCallback = Callable[[DeepCoverageProgress], None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -207,6 +225,7 @@ class _DeepCoverageContext:
     config: DeepCoverageConfig
     prepared: DeepCoveragePreparedInput
     preparation_elapsed: float
+    progress: DeepCoverageProgressCallback | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1810,6 +1829,7 @@ def _execution_context(
     scratch_root: Path,
     config: DeepCoverageConfig,
     prepared_input: DeepCoveragePreparedInput | None,
+    progress: DeepCoverageProgressCallback | None,
     started: float,
 ) -> _DeepCoverageContext:
     project_root = _validate_trusted_root(trusted_root)
@@ -1847,18 +1867,70 @@ def _execution_context(
         config,
         prepared,
         preparation_elapsed,
+        progress,
     )
 
 
 def _remaining_execution_seconds(
     context: _DeepCoverageContext,
     command: tuple[str, ...],
+    *,
+    progress_made: bool = False,
 ) -> float:
     elapsed = time.monotonic() - context.started + context.preparation_elapsed
-    remaining = context.config.time_budget_seconds - elapsed
+    multiplier = _PROGRESS_EXTENSION_MULTIPLIER if progress_made else 1.0
+    budget = context.config.time_budget_seconds * multiplier
+    remaining = budget - elapsed
     if remaining <= 0:
-        raise subprocess.TimeoutExpired(command, context.config.time_budget_seconds)
+        raise subprocess.TimeoutExpired(command, budget)
     return max(0.001, remaining)
+
+
+def _enforce_execution_deadline(
+    context: _DeepCoverageContext,
+    phase: str,
+    *,
+    progress_made: bool,
+) -> None:
+    _remaining_execution_seconds(
+        context,
+        ("pytest-coverage-trusted-deep", phase),
+        progress_made=progress_made,
+    )
+
+
+def _emit_coverage_progress(
+    context: _DeepCoverageContext,
+    suite: _CollectedSuite,
+    *,
+    phase: Literal["collected", "shard_started", "shard_reused", "shard_completed"],
+    completed_shards: int,
+    current_shard: int | None,
+    reused_shards: int,
+    shard_duration_seconds: int | None = None,
+) -> None:
+    if context.progress is None:
+        return
+    elapsed = max(
+        0,
+        round(time.monotonic() - context.started + context.preparation_elapsed),
+    )
+    try:
+        context.progress(
+            DeepCoverageProgress(
+                phase,
+                completed_shards,
+                len(suite.shards),
+                current_shard,
+                len(suite.selected_nodeids),
+                reused_shards,
+                elapsed,
+                shard_duration_seconds,
+            )
+        )
+    except Exception:
+        # Progress is advisory; a broken frontend cannot invalidate measured evidence.
+        return
 
 
 def _context_request(
@@ -2018,8 +2090,14 @@ def _run_shard(
     plan: _ShardPlan,
     context: _DeepCoverageContext,
     suite: _CollectedSuite,
+    *,
+    progress_made: bool,
 ) -> tuple[Mapping[str, object], int, int]:
-    remaining = _remaining_execution_seconds(context, ("pytest",))
+    remaining = _remaining_execution_seconds(
+        context,
+        ("pytest",),
+        progress_made=progress_made,
+    )
     request = _shard_request(context, suite, plan)
     payload, stdout_bytes, stderr_bytes = _run_worker(
         request,
@@ -2049,6 +2127,11 @@ def _execute_shards(
     stderr_bytes = context.prepared.stderr_bytes + suite.stderr_bytes
     process_invocations = context.prepared.process_invocations + 1
     for index, nodeids in enumerate(suite.shards):
+        _enforce_execution_deadline(
+            context,
+            "plan-shard",
+            progress_made=bool(results),
+        )
         plan = _plan_shard(
             context,
             suite,
@@ -2057,11 +2140,48 @@ def _execute_shards(
             nodeids=nodeids,
         )
         cached = _validated_checkpoint(plan, context, suite)
+        _enforce_execution_deadline(
+            context,
+            "validate-checkpoint",
+            progress_made=bool(results),
+        )
         if cached is not None:
             results.append(cached)
             shards_reused += 1
+            _emit_coverage_progress(
+                context,
+                suite,
+                phase="shard_reused",
+                completed_shards=len(results),
+                current_shard=index,
+                reused_shards=shards_reused,
+            )
+            _enforce_execution_deadline(
+                context,
+                "report-reused-shard",
+                progress_made=True,
+            )
             continue
-        validated, out_bytes, err_bytes = _run_shard(plan, context, suite)
+        _emit_coverage_progress(
+            context,
+            suite,
+            phase="shard_started",
+            completed_shards=len(results),
+            current_shard=index,
+            reused_shards=shards_reused,
+        )
+        shard_started = time.monotonic()
+        validated, out_bytes, err_bytes = _run_shard(
+            plan,
+            context,
+            suite,
+            progress_made=bool(results),
+        )
+        _enforce_execution_deadline(
+            context,
+            "validate-shard-result",
+            progress_made=bool(results),
+        )
         results.append(validated)
         stdout_bytes += out_bytes
         stderr_bytes += err_bytes
@@ -2072,6 +2192,30 @@ def _execute_shards(
                 shard_signature=plan.shard_signature,
                 result=validated,
             )
+        _enforce_execution_deadline(
+            context,
+            "save-shard-checkpoint",
+            progress_made=True,
+        )
+        _emit_coverage_progress(
+            context,
+            suite,
+            phase="shard_completed",
+            completed_shards=len(results),
+            current_shard=index,
+            reused_shards=shards_reused,
+            shard_duration_seconds=max(0, round(time.monotonic() - shard_started)),
+        )
+        _enforce_execution_deadline(
+            context,
+            "report-completed-shard",
+            progress_made=True,
+        )
+    _enforce_execution_deadline(
+        context,
+        "complete-shards",
+        progress_made=bool(results),
+    )
     return _ShardExecution(
         tuple(results),
         shards_reused,
@@ -2087,6 +2231,12 @@ def _finalize_execution(
     shards: _ShardExecution,
 ) -> DeepCoverageExecution:
     prepared = context.prepared
+    progress_made = bool(shards.results)
+    _enforce_execution_deadline(
+        context,
+        "normalize-results",
+        progress_made=progress_made,
+    )
     findings, metrics, relations, normalized_counts = _normalize(
         shards.results,
         raw_symbols=suite.raw_symbols,
@@ -2102,6 +2252,11 @@ def _finalize_execution(
         collected_count=len(suite.collected_nodeids),
         selected_nodeids=suite.selected_nodeids,
         shards_reused=shards.shards_reused,
+    )
+    _enforce_execution_deadline(
+        context,
+        "finalize-results",
+        progress_made=progress_made,
     )
     limitations = [
         "coverage_main_process_only",
@@ -2120,6 +2275,10 @@ def _finalize_execution(
         "support_files_verified": prepared.support_files_verified,
         "support_bytes_verified": prepared.support_bytes_verified,
         "preparation_milliseconds": prepared.preparation_milliseconds,
+        "nominal_time_budget_seconds": round(context.config.time_budget_seconds),
+        "progress_time_limit_seconds": round(
+            context.config.time_budget_seconds * _PROGRESS_EXTENSION_MULTIPLIER
+        ),
     }
     return DeepCoverageExecution(
         findings,
@@ -2146,6 +2305,7 @@ def execute_pytest_coverage(
     scratch_root: Path,
     config: DeepCoverageConfig,
     prepared_input: DeepCoveragePreparedInput | None = None,
+    progress: DeepCoverageProgressCallback | None = None,
 ) -> DeepCoverageExecution:
     """Execute and normalize one exact trusted-deep suite selection.
 
@@ -2164,9 +2324,28 @@ def execute_pytest_coverage(
         scratch_root=scratch_root,
         config=config,
         prepared_input=prepared_input,
+        progress=progress,
         started=time.monotonic(),
     )
     suite = _collect_suite(context)
+    _enforce_execution_deadline(
+        context,
+        "complete-collection",
+        progress_made=False,
+    )
+    _emit_coverage_progress(
+        context,
+        suite,
+        phase="collected",
+        completed_shards=0,
+        current_shard=None,
+        reused_shards=0,
+    )
+    _enforce_execution_deadline(
+        context,
+        "report-collection",
+        progress_made=False,
+    )
     shards = _execute_shards(context, suite)
     return _finalize_execution(context, suite, shards)
 
@@ -2181,6 +2360,8 @@ __all__ = [
     "DeepCoverageConfig",
     "DeepCoverageExecution",
     "DeepCoveragePreparedInput",
+    "DeepCoverageProgress",
+    "DeepCoverageProgressCallback",
     "deep_coverage_input_signature",
     "execute_pytest_coverage",
     "prepare_deep_coverage_input",

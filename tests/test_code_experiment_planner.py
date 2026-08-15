@@ -89,7 +89,7 @@ def test_registry_is_canonical_non_mutating_and_bounded() -> None:
     assert all(1 <= item.timeout_seconds <= 900 for item in CODE_EXPERIMENT_TEMPLATES)
     assert experiment_template("structure.static_characterization").cost_tier == "metadata"
     assert experiment_template_registry_fingerprint().startswith(
-        "code-experiment-template-registry-v8:xxh3_128:"
+        "code-experiment-template-registry-v11:xxh3_128:"
     )
     executable = tuple(item for item in CODE_EXPERIMENT_TEMPLATES if item.executable)
     assert {scenario for item in executable for scenario in item.scenario_ids} == set(
@@ -131,13 +131,9 @@ def test_registry_is_canonical_non_mutating_and_bounded() -> None:
     assert framework_review_task.executable is True
     assert framework_review_task.version == "v1"
     assert framework_review_task.max_items == 8
-    assert framework_review_task.scenario_ids == (
-        "framework.review_task_protocol_acceptance",
-    )
+    assert framework_review_task.scenario_ids == ("framework.review_task_protocol_acceptance",)
     assert framework_review_task.applies_to(
-        question_id=(
-            "framework.review_task_lifecycle_preserves_atomicity_and_human_authority"
-        ),
+        question_id=("framework.review_task_lifecycle_preserves_atomicity_and_human_authority"),
         subject_key="contract:framework-review-task-protocol",
     )
     assert not framework_review_task.applies_to(
@@ -145,9 +141,7 @@ def test_registry_is_canonical_non_mutating_and_bounded() -> None:
         subject_key="contract:framework-review-task-protocol",
     )
     assert not framework_review_task.applies_to(
-        question_id=(
-            "framework.review_task_lifecycle_preserves_atomicity_and_human_authority"
-        ),
+        question_id=("framework.review_task_lifecycle_preserves_atomicity_and_human_authority"),
         subject_key="contract:some-other-framework-protocol",
     )
     framework_scenario = runtime_scenario("framework.review_task_protocol_acceptance")
@@ -157,6 +151,77 @@ def test_registry_is_canonical_non_mutating_and_bounded() -> None:
     assert len(framework_scenario.test_nodeids) == framework_review_task.max_items
     assert tuple(item.gate_id for item in framework_scenario.gate_specs) == (
         framework_review_task.acceptance_gates
+    )
+    public_cli = experiment_template("interfaces.public_cli_contract_acceptance")
+    assert public_cli.executable is True
+    assert public_cli.version == "v3"
+    assert public_cli.max_items == 26
+    assert public_cli.scenario_ids == ("interfaces.public_cli_and_static_surface",)
+    assert public_cli.applies_to(
+        question_id="structure.static_cli_calls_require_runtime_contract_evidence",
+        subject_key="entrypoint:neocortex-interface-surface",
+    )
+    assert not public_cli.applies_to(
+        question_id="structure.static_cli_calls_require_runtime_contract_evidence",
+        subject_key="entrypoint:unrelated-interface-surface",
+    )
+    assert not public_cli.applies_to(
+        question_id="structure.configuration_inventory_requires_complete_parsing",
+        subject_key="entrypoint:neocortex-interface-surface",
+    )
+    public_cli_scenario = runtime_scenario("interfaces.public_cli_and_static_surface")
+    assert public_cli_scenario.version == "v4"
+    assert len(public_cli_scenario.test_nodeids) == public_cli.max_items
+    assert tuple(item.gate_id for item in public_cli_scenario.gate_specs) == (
+        public_cli.acceptance_gates
+    )
+    generic_interface = experiment_template("interfaces.public_contract_acceptance")
+    assert generic_interface.version == "v2"
+    assert generic_interface.executable is False
+    assert "execute_public_help_and_dispatch_acceptance_scenarios" not in (
+        generic_interface.action_ids
+    )
+    knowledge_health = experiment_template("knowledge.asset_health_causal_acceptance")
+    assert knowledge_health.executable is True
+    assert knowledge_health.version == "v1"
+    assert knowledge_health.max_items == 12
+    assert knowledge_health.scenario_ids == ("knowledge.asset_health_causal_acceptance",)
+    assert knowledge_health.applies_to(
+        question_id=("knowledge.asset_health_trace_is_snapshot_bound_and_causally_explainable"),
+        subject_key="capability:knowledge-asset-health",
+    )
+    assert not knowledge_health.applies_to(
+        question_id=("knowledge.asset_health_trace_is_snapshot_bound_and_causally_explainable"),
+        subject_key="capability:knowledge-search",
+    )
+    knowledge_scenario = runtime_scenario("knowledge.asset_health_causal_acceptance")
+    assert knowledge_scenario.version == "v1"
+    assert len(knowledge_scenario.test_nodeids) == knowledge_health.max_items
+    assert tuple(item.gate_id for item in knowledge_scenario.gate_specs) == (
+        knowledge_health.acceptance_gates
+    )
+    pdf_health = experiment_template("knowledge.pdf_asset_health_causal_acceptance")
+    assert pdf_health.executable is True
+    assert pdf_health.version == "v1"
+    assert pdf_health.max_items == 12
+    assert pdf_health.scenario_ids == ("knowledge.pdf_asset_health_causal_acceptance",)
+    assert pdf_health.applies_to(
+        question_id=(
+            "knowledge.pdf_asset_health_preserves_page_partial_protected_and_recovery_causality"
+        ),
+        subject_key="capability:knowledge-asset-health:pdf",
+    )
+    assert not pdf_health.applies_to(
+        question_id=(
+            "knowledge.pdf_asset_health_preserves_page_partial_protected_and_recovery_causality"
+        ),
+        subject_key="capability:knowledge-asset-health:text",
+    )
+    pdf_scenario = runtime_scenario("knowledge.pdf_asset_health_causal_acceptance")
+    assert pdf_scenario.version == "v1"
+    assert len(pdf_scenario.test_nodeids) == pdf_health.max_items
+    assert tuple(item.gate_id for item in pdf_scenario.gate_specs) == (
+        pdf_health.acceptance_gates
     )
     architecture = experiment_template("architecture.declared_import_contract_acceptance")
     assert architecture.executable is True
@@ -178,8 +243,7 @@ def test_registry_is_canonical_non_mutating_and_bounded() -> None:
     assert retention_scenario.version == "v2"
     assert len(retention_scenario.test_nodeids) == 14
     assert all(
-        "test_framework_retention_fails_closed_on_incomplete_review_source_receipt["
-        in nodeid
+        "test_framework_retention_fails_closed_on_incomplete_review_source_receipt[" in nodeid
         for nodeid in retention_scenario.test_nodeids[2:8]
     )
     assert retention.applies_to(
@@ -206,9 +270,7 @@ def test_registry_is_canonical_non_mutating_and_bounded() -> None:
     supply_scenario = runtime_scenario("security.supply_chain_gate_controls")
     assert supply_scenario.version == "v2"
     assert len(supply_scenario.test_nodeids) == security.max_items
-    assert tuple(item.gate_id for item in supply_scenario.gate_specs) == (
-        security.acceptance_gates
-    )
+    assert tuple(item.gate_id for item in supply_scenario.gate_specs) == (security.acceptance_gates)
     assert not retention.applies_to(
         question_id="retention.dry_run_preserves_declared_durable_holds",
         subject_key="retention:some-other-policy",
@@ -377,8 +439,6 @@ def test_ready_plan_rejects_stale_policy_and_registry_fingerprint_fail_closed() 
         parse_code_experiment_plan_payload(stale_policy)
 
     stale_registry = json.loads(json.dumps(result.as_payload()))
-    stale_registry["registry_fingerprint"] = (
-        "code-experiment-template-registry-v7:xxh3_128:stale"
-    )
+    stale_registry["registry_fingerprint"] = "code-experiment-template-registry-v7:xxh3_128:stale"
     with pytest.raises(ValueError, match="registry fingerprint is invalid"):
         parse_code_experiment_plan_payload(stale_registry)

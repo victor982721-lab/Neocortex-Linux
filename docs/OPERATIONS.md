@@ -191,6 +191,25 @@ aparecer como título/nombre sugerido cuando sea más útil que el basename. Un
 Office heredado sin LibreOffice ni fallback local queda como error explícito;
 no se intenta interpretar el CFB como texto plano.
 
+Para explicar causalmente un resultado Text ya publicado, use la identidad
+exacta que devolvió Knowledge o search; no derive un ID desde la ruta:
+
+```bash
+Neocortex knowledge health 'resource:file:1:2:-1' \
+  --scope personal --json
+```
+
+La consulta selecciona Text o PDF por identidad y evidencia publicada, nunca
+por ruta/extensión; lee Inventory, owner fuente, Catalog y Knowledge dos veces y
+reintenta una sola vez si cambia el snapshot. `healthy` exige los facts
+aplicables completos, publicados y causalmente alineados. Para PDF schema 13
+verifica además estado tipado, páginas, staging, errores, FTS y recovery
+estructural reconocido. Un mismatch, owner ausente, schema futuro/corrupto,
+publicación incompleta, WAL activo o segundo cambio produce un estado acotado o
+abstención; nunca repara el estado. Esta vertical cubre sólo Text/PDF y no
+demuestra contenido/OCR, verdad semántica, calidad visual, otros owners ni
+pérdida de energía.
+
 ## Autoanálisis de código en laboratorio
 
 Use un mini-root sintético y un estado hermano, nunca contenido dentro de la
@@ -214,14 +233,14 @@ Neocortex --state-directory $MiniState --code-review --code-review-limit 10 --co
 ```
 
 La segunda invocación es el resultado consumible del auditor. Debe emitir
-`neocortex.code-review/v20`, enlazar cada evaluación a evidencia publicada,
+`neocortex.code-review/v22`, enlazar cada evaluación a evidencia publicada,
 mantener `recommendations=[]`, `decision=null` y `mutation_authority=false`, y
 explicar por pregunta qué provider, contraevidencia o experimento falta. Un run
 de proveedores por sí solo no constituye el cierre del autoanálisis.
 
 Si el review publica `CODE_EXPERIMENT_PROPOSAL`, el operador puede copiar su ID
 exacto y ejecutar sólo ese experimento con `--code-experiment-run`. No se admite
-selector pytest ni comando arbitrario: el registry fija escenarios, sus nodeids
+selector pytest ni comando arbitrario: los registries runtime/template v11 fijan escenarios, sus nodeids
 parametrizados ya expandidos, timeout y gates tipados. El comando vuelve a
 validar el plan, la raíz canónica y el manifest actual. Actualmente ejecuta sólo
 `architecture.declared_import_contract_acceptance` (tres nodeids y cuatro
@@ -230,8 +249,12 @@ gates), `capability.public_route_acceptance` (un nodeid),
 `state.semantic_process_death_recovery` (un nodeid y tres gates),
 `evolution.code_schema_upgrade_matrix` (cinco nodeids y cuatro gates),
 `retention.durable_hold_safety` (catorce nodeids exactos y cuatro gates),
-`security.bounded_boundary_scenarios` (diez nodeids y siete gates) y
-`framework.review_task_protocol_acceptance` (ocho nodeids y cinco gates). El
+`security.bounded_boundary_scenarios` (diez nodeids y siete gates),
+`framework.review_task_protocol_acceptance` (ocho nodeids y cinco gates),
+`interfaces.public_cli_contract_acceptance` v3 (veintiséis nodeids y cinco gates) y
+`knowledge.asset_health_causal_acceptance` (doce nodeids y cuatro gates), y
+`knowledge.pdf_asset_health_causal_acceptance` (doce nodeids y cuatro gates,
+5/3/3/1). El
 template arquitectónico liga el diff Python productivo a la pregunta exacta de
 contratos de imports y abstiene si no puede cerrar el receipt o su disposición
 técnica; sus controles no prueban dispatch dinámico ni intención arquitectónica
@@ -240,6 +263,11 @@ completa. ReviewTask usa estado XDG/SQLite temporal y la ruta pública
 actor sintético declarado no equivale a identidad humana autenticada. Pytest corre sobre el checkout
 canónico confiable; el temporal externo aloja runtime/checkpoints, no una copia
 ni un sandbox. Trusted-deep puede usar red y conserva `HOME`.
+La matriz CLI v3 cubre ayuda/traducción, dispatch, rechazo acotado y lectores
+focales; no cada handler, GUI/MCP/worker o efecto externo. Las matrices Health
+usan fixtures Text/PDF bajo `pytest_tmp_path`; la PDF liga nueve relaciones de
+contraevidencia y doce para el resultado completo. No generalizan a todos los
+owners, contenido/OCR, fidelidad visual/semántica ni power loss.
 
 Antes y después de Pytest, el provider vuelve a calcular la firma exacta de los
 inputs Python publicados y del soporte Git observado; una diferencia rechaza el
@@ -256,18 +284,50 @@ sobre una publicación stale: regenere antes el autoanálisis. No la ejecute sob
 código que no confíe; la allowlist limita el selector, no los efectos del código
 de tests.
 
-El siguiente review v20 enlaza sólo el terminal más nuevo del proposal y la
+El siguiente review v22 enlaza sólo el terminal más nuevo del proposal y la
 processing signature exactos, con bindings de gates registrados. El terminal
 puede pertenecer a un run Code completado anterior cuando el run vigente es un
 replay exacto con la misma firma. El envelope digest liga y verifica run,
 evaluación, pregunta, sujeto, review, timestamp y payload. Un terminal posterior
 fallido o abstenido, o uno stale, corrupto o sin binding, no satisface evidencia.
 Incluso con evidencia completa, el receipt no suplanta a un actor humano. El
-verificador técnico allow-listed de v20 puede publicar
+verificador técnico allow-listed v6 de v22 puede publicar
 `no_change_required_within_verified_scope` sólo tras volver a comprobar el
 contrato exacto, sus gates y controles negativos. Esa disposición es advisory,
 expone riesgos residuales, no genera recomendación y no concede autoridad de
 mutación; preguntas sin política exacta quedan `unresolved`.
+
+### Pregunta focal y observabilidad de almacenamiento Code
+
+Para consultar la única pregunta que hoy tiene lector focal, sin construir el
+review global:
+
+```bash
+Neocortex code question \
+  structure.static_cli_calls_require_runtime_contract_evidence \
+  --limit 10 --json
+```
+
+La salida debe indicar `source_surface=interface_surface`, preservar evidencia
+advisory y no crear estado. El lector exige un último run Code completado,
+publicación elegible y cercas estables. Una pregunta distinta devuelve
+`unsupported` con fallback `automatic=false`; el operador decide si después
+ejecuta una consulta global. No interprete ese fallback como resultado de
+review ni como cobertura de otra familia.
+
+Para medir forma y crecimiento del owner sin escribirlo:
+
+```bash
+Neocortex code storage --run-limit 20 --row-scan-limit 250000 \
+  --retain-runs 5 --json
+```
+
+Detenga primero los writers. El reader immutable abstiene ante base ausente,
+schema no vigente, sidecars incompatibles o cambio de fence. Los conteos que
+alcanzan el límite son cotas inferiores y el delta compara filas externas de
+dos runs completados, no bytes históricos de toda la base. `--retain-runs` es
+una simulación `preview_only`; no ejecute `DELETE`, prune, `VACUUM`, checkpoint
+ni eliminación de WAL/SHM a partir de esa vista.
 
 `trusted-static` ejecuta 13 proveedores independientes: Ruff basic, Ruff
 con la política acotada `E4,E7,E9,F,B,C4,PIE,RUF`, Mypy, Pyright, Ruff Analyze,
@@ -404,8 +464,11 @@ Neocortex --self-analysis --analysis-profile trusted-deep --root $Root --state-d
   --deep-mutation-time-budget-seconds 600
 ```
 
-Los límites admitidos son 30–900 segundos, 1–5000 tests y shards de 1–50;
-600/3000/20 son los valores predeterminados. Sin selector, la publicación
+Los límites admitidos son 30–900 segundos nominales, 1–5000 tests y shards de
+1–50; 600/3000/20 son los valores predeterminados. Después de comprobar un
+shard terminado o reutilizado, Coverage puede consumir una única extensión
+acotada a 2x. Publica progreso al recolectar y al iniciar, reutilizar o terminar
+cada shard. Sin selector, la publicación
 declara `suite_selection=full`; con uno o más, `selected`. Si `max_tests` trunca
 lo recolectado, `measurement_complete=false` y los gates que necesitan cobertura
 completa se abstienen.
@@ -422,7 +485,9 @@ ejecutar código sin quedar atribuido y la publicación lo declara mediante
 `coverage_main_process_only` y `subprocess_coverage_not_collected`. Los shards se
 firman con inputs, suite, configuración y versiones. Sólo un shard con todas sus
 pruebas aprobadas produce checkpoint reanudable; uno fallido, incompleto o
-incompatible se vuelve a ejecutar.
+incompatible se vuelve a ejecutar. En la validación canónica esos eventos y la
+salida del hijo se retransmiten inmediatamente por `stderr`; un heartbeat cada
+30 segundos permite distinguir actividad prolongada de una pérdida de señal.
 
 Después de cerrar writers, consulte el mismo `$State` con `--code-status
 --code-json` y `--code-review --code-json`. `test_coverage` debe explicar
@@ -443,21 +508,21 @@ bytes/analyze/persist/graph y 14 replays; `installed-package-inventory` se
 recalculó. Las consultas read-only status, review y diff tardaron 38.982,
 47.675 y 57.856 s. Esos artefactos históricos usaron architecture v2,
 engineering v1, review v10 y publication diff v8. El contrato vigente de review
-es `neocortex.code-review/v20`, no declara schemas compatibles, publica
+es `neocortex.code-review/v22`, no declara schemas compatibles, publica
 observaciones estructurales con inferencia abstained y evidencia enlazada a IDs
 Code después de resolución read-only; incluye clases seleccionadas por superficie
 AST directa, con umbrales provisionales explícitos, y no genera recomendaciones
 ni paquetes de cambio. Sólo puede publicar paquetes
 `unused_characterization`, advisory y sin autoridad de mutación.
 
-En el estado canónico, v20 consulta además Text/Semantic mediante conexiones
+En el estado canónico, v22 consulta además Text/Semantic mediante conexiones
 `immutable=1` y fences de main/WAL/SHM; nunca checkpointa ni elimina sidecars.
 Un WAL no vacío, layout no demostrado o cambio de fence produce abstención de
 esa dimensión. `aligned` significa exclusivamente igualdad de sets en el head
 publicado y contratos owner/materialization correctos; no demuestra crash
 recovery ni atomicidad cross-owner.
 
-v20 emite también topología Text, interacciones SQL/transaccionales,
+v22 emite también topología Text, interacciones SQL/transaccionales,
 cambio/schema evolution, assurance, invariantes, seguridad/dependencias,
 reachability de `text.extract`, las nueve rutas built-in, superficies de
 módulo/configuración/CLI, calibración y autoeficacia. Ninguna dimensión ejecuta
@@ -485,17 +550,18 @@ de promover el launcher estable, use la ruta exacta del runtime versionado para
 validar `--version`, `--help` y este preset.
 
 La corrida escribe bases en `$MiniState`, pero omite acciones, candidatos MIME,
-catálogo y organización. El status es read-only: cualquier `-wal`, `-shm` o
-`-journal`, incluso vacío o desacoplado, junto a `code.sqlite3`,
-`framework.sqlite3` o `dedup.sqlite3`, o una cerca inestable en cualquiera de
-ellas, causa abstención total con código `2` sin tocar el estado. Consulte
+catálogo y organización. El status es read-only: exige ausencia de sidecars o
+la disposición inactiva exacta de WAL vacío más SHM de 32 KiB. Un rollback
+journal, WAL no vacío, SHM inválido o una cerca inestable junto a
+`code.sqlite3`, `framework.sqlite3` o `dedup.sqlite3` causa abstención total con
+código `2` sin tocar el estado. Consulte
 [SELF_ANALYSIS.md](SELF_ANALYSIS.md) para preflight, policy/firma, puerta
 incremental, manifest y conteos cero.
 
-La ruta Code hace checkpoint al publicar y retira sidecars vacíos de forma
-segura. Si un lector externo conserva handles sobre ellos, el run completado
-permanece válido, pero el status seguirá absteniéndose hasta que el lector
-cierre y una corrida posterior pueda limpiar los auxiliares.
+La ruta Code hace checkpoint al publicar e intenta retirar sidecars vacíos de
+forma segura. Si permanece exactamente un WAL vacío con SHM de 32 KiB, el
+status puede demostrar que está inactivo; cualquier otro layout abstiene hasta
+que los writers cierren y una corrida posterior pueda limpiar los auxiliares.
 Una búsqueda o listado sobre una base quiescente usa `immutable=1` con cercas y
 no crea sidecars; si ya hay un writer activo usa read-only convencional y nunca
 borra ni hace checkpoint de auxiliares ajenos.
@@ -852,7 +918,7 @@ Es un orquestador del autoanalizador, no otro linter: captura el diff; seleccion
 pruebas afectadas, completa huecos con fronteras públicas/escenarios registrados
 y escala a la suite Linux sólo ante cambios de packaging, schema o gates; ejecuta las barreras
 estática y arquitectónica existentes; publica `trusted-deep`; consume el review
-v20; ejecuta experimentos registrados; instala y prueba el wheel candidato fuera
+v22; ejecuta experimentos registrados; instala y prueba el wheel candidato fuera
 del checkout; y repite la misma publicación para demostrar replay. Un gate
 fallido produce `failed`, evidencia insuficiente produce `abstained`, y ambos
 devuelven código 2. La salida JSON canónica se obtiene con `--json`.
@@ -864,13 +930,18 @@ La entrada hace preflight read-only de `MemAvailable`, swap y PSI y mantiene un
 lock exclusivo. El árbol completo se ejecuta en un servicio de usuario
 systemd/cgroup v2 con reserva adaptativa para KDE/Chrome, `MemoryHigh=75%` del
 presupuesto, `MemoryMax` adaptado (máximo 4 GiB), `MemorySwapMax` (máximo
-512 MiB), hasta cuatro CPUs, 512 tareas y 45 minutos. El watchdog observa el
+512 MiB), hasta cuatro CPUs, 512 tareas y una cota de seguridad de 75 minutos.
+El watchdog observa el
 host cada 500 ms y detiene cooperativamente el grupo con SIGINT si desaparece
 la reserva del escritorio o si la presión cruza el umbral mientras también
 falta el headroom físico reservado. El reclaim aislado por `MemoryHigh` con
 memoria abundante no se interpreta como riesgo global.
-Cada comando acotado usa además su propio grupo de proceso: al vencer el timeout
-recibe SIGINT y dispone de una gracia para publicar su terminalización durable
+Cada comando acotado usa además su propio grupo de proceso. Trusted-deep parte
+del presupuesto nominal solicitado y sólo habilita su cota 2x después de avance
+validado; el proceso padre expone salida, eventos y heartbeats en tiempo real.
+Un subreaper Linux adopta y termina mediante `pidfd` los descendientes que
+creen otra sesión con `setsid()`. Al vencer la cota correspondiente, el árbol recibe
+SIGINT y dispone de una gracia para publicar su terminalización durable
 antes de que el runner escale a SIGKILL. Un fallo de D-Bus, cgroup, preflight o
 watchdog es abstención operativa; nunca habilita un fallback sin contención.
 El servicio declara además `PrivateNetwork=yes`: el árbol no tiene ruta al host
@@ -886,7 +957,10 @@ La selección experimental también está ligada al diff mediante un registro
 versionado de rutas/tests→preguntas/sujetos. Un registry gap relevante o una
 pregunta sin disposición técnica exacta después del replay produce
 `abstained`; `not_required` sólo aparece cuando ese binding demuestra que la
-pregunta es disjunta al cambio.
+pregunta es disjunta al cambio. La política v6 incorpora bindings exactos para
+la CLI pública y para Knowledge Asset Health Text/PDF; cambiar sus contratos o
+tests de control exige los templates de veintiún/cinco, doce/cuatro y
+doce/cuatro respectivamente.
 
 El delta `added/resolved` publicado por cada provider sigue visible para
 investigación histórica, pero no sustituye al baseline Git: puede comparar con

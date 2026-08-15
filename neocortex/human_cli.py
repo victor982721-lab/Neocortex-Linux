@@ -12,6 +12,7 @@ from typing import TextIO
 
 from .read_api import (
     ReadScope,
+    asset_health_payload,
     code_search_payload,
     context_payload,
     lineage_payload,
@@ -20,7 +21,9 @@ from .read_api import (
 )
 
 
-HUMAN_COMMANDS = frozenset({"help", "status", "search", "ask", "inspect", "review", "agent"})
+HUMAN_COMMANDS = frozenset(
+    {"help", "status", "search", "ask", "inspect", "review", "knowledge", "agent"}
+)
 
 
 def handles_human_command(arguments: Sequence[str]) -> bool:
@@ -217,6 +220,24 @@ def build_human_parser() -> argparse.ArgumentParser:
     review_task_decide.add_argument("--actor", required=True, metavar="ACTOR")
     review_task_decide.add_argument("--note", metavar="NOTA")
     review_task_decide.add_argument("--json", action="store_true")
+
+    knowledge = commands.add_parser(
+        "knowledge",
+        help="explica la salud causal de un activo publicado",
+        allow_abbrev=False,
+    )
+    knowledge_commands = knowledge.add_subparsers(
+        dest="knowledge_command",
+        metavar="ACCIÓN",
+    )
+    knowledge_health = knowledge_commands.add_parser(
+        "health",
+        help="traza una identidad estable entre owners sin leer el corpus",
+        allow_abbrev=False,
+    )
+    knowledge_health.add_argument("resource_id", metavar="RESOURCE_ID")
+    _add_scope(knowledge_health, default=ReadScope.ALL)
+    knowledge_health.add_argument("--json", action="store_true")
 
     agent = commands.add_parser(
         "agent",
@@ -632,6 +653,33 @@ def _run_review_task(args: argparse.Namespace) -> int:
     raise ValueError("review task requires show or decide")
 
 
+def _run_knowledge_health(args: argparse.Namespace) -> int:
+    try:
+        payload = asset_health_payload(args.resource_id, args.scope)
+    except ValueError as exc:
+        _print(f"knowledge health: {exc}", file=sys.stderr)
+        return 2
+    if args.json:
+        _json(payload)
+        return _exit_code(payload)
+    _print(f"Salud causal del activo: {payload.get('resource_id', args.resource_id)}")
+    for entry in _entries(payload):
+        report = _mapping(entry.get("asset_health"))
+        if report is None:
+            _render_scope_error(entry)
+            continue
+        _print(
+            f"{_scope_label(entry.get('scope'))}: {report.get('health', 'unknown')} · "
+            f"evidencia {report.get('completeness', 'abstained')} · "
+            f"razón {report.get('reason_code') or '-'}"
+        )
+        gaps = report.get("gaps")
+        if isinstance(gaps, list) and gaps:
+            _print("  Brechas: " + "; ".join(str(item) for item in gaps))
+    _print("No se creó, migró ni modificó estado.")
+    return _exit_code(payload)
+
+
 def _run_agent_serve() -> int:
     from .agent_server import run_stdio_server
 
@@ -658,6 +706,8 @@ def run_human_command(arguments: Sequence[str]) -> int:
         return _run_review_value(args)
     if args.command == "review" and args.review_command == "task":
         return _run_review_task(args)
+    if args.command == "knowledge" and args.knowledge_command == "health":
+        return _run_knowledge_health(args)
     if args.command == "agent" and args.agent_command == "serve":
         return _run_agent_serve()
     parser.error("falta una acción concreta")

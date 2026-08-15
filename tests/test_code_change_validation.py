@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import _thread
+import os
 import subprocess
 import sys
+import threading
+import time
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -36,6 +40,13 @@ from _04_Nucleo_Operativo.code_analysis_epistemics import (
 from _04_Nucleo_Operativo.code_architecture_questions import ARCHITECTURE_CONTRACT_QUESTION
 from _04_Nucleo_Operativo.code_change_evolution_analysis import (
     CODE_SCHEMA_EVOLUTION_QUESTION,
+)
+from _04_Nucleo_Operativo.code_interface_surface_analysis import CLI_SURFACE_QUESTION
+from _04_Nucleo_Operativo.code_knowledge_asset_health_analysis import (
+    KNOWLEDGE_ASSET_HEALTH_QUESTION,
+)
+from _04_Nucleo_Operativo.code_knowledge_pdf_asset_health_analysis import (
+    KNOWLEDGE_PDF_ASSET_HEALTH_QUESTION,
 )
 from _04_Nucleo_Operativo.external_evidence_providers import (
     INSTALLED_PACKAGE_PROVIDER_ID,
@@ -87,6 +98,174 @@ def test_default_runner_interrupts_and_reaps_a_timed_out_process(tmp_path: Path)
     assert marker.read_text(encoding="utf-8") == "interrupted"
 
 
+def test_default_runner_streams_both_channels_while_preserving_capture(
+    tmp_path: Path,
+) -> None:
+    progress: list[tuple[str, str]] = []
+
+    completed = _default_runner(
+        (
+            sys.executable,
+            "-c",
+            "import sys; print('visible-out', flush=True); "
+            "print('visible-err', file=sys.stderr, flush=True)",
+        ),
+        cwd=tmp_path,
+        timeout=30.0,
+        progress=lambda stream, line: progress.append((stream, line)),
+    )
+
+    assert completed.returncode == 0
+    assert completed.stdout == "visible-out\n"
+    assert completed.stderr == "visible-err\n"
+    assert sorted(progress) == [
+        ("stderr", "visible-err"),
+        ("stdout", "visible-out"),
+    ]
+
+
+def test_default_runner_reaps_a_finished_adopted_child_without_false_timeout(
+    tmp_path: Path,
+) -> None:
+    child_code = "import os, time; os.setsid(); time.sleep(0.05)"
+    middle_code = (
+        "import subprocess, sys; "
+        f"subprocess.Popen([sys.executable, '-c', {child_code!r}], "
+        "stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)"
+    )
+    leader_code = (
+        "import subprocess, sys, time; "
+        f"subprocess.run([sys.executable, '-c', {middle_code!r}], check=True); "
+        "time.sleep(0.3); print('leader-complete', flush=True)"
+    )
+
+    completed = _default_runner(
+        (sys.executable, "-c", leader_code),
+        cwd=tmp_path,
+        timeout=10.0,
+    )
+
+    assert completed.returncode == 0
+    assert completed.stdout == "leader-complete\n"
+
+
+def test_default_runner_drains_volume_when_progress_callback_fails(tmp_path: Path) -> None:
+    callback_calls = 0
+
+    def broken_progress(_stream: str, _line: str) -> None:
+        nonlocal callback_calls
+        callback_calls += 1
+        raise RuntimeError("reporter unavailable")
+
+    completed = _default_runner(
+        (
+            sys.executable,
+            "-c",
+            "import sys; "
+            "[(print(f'out-{i}'), print(f'err-{i}', file=sys.stderr)) for i in range(250)]",
+        ),
+        cwd=tmp_path,
+        timeout=30.0,
+        progress=broken_progress,
+    )
+
+    assert completed.returncode == 0
+    assert len(completed.stdout.splitlines()) == 250
+    assert len(completed.stderr.splitlines()) == 250
+    assert callback_calls == 500
+
+
+def test_default_runner_kills_a_descendant_that_keeps_pipes_after_interrupt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from _04_Nucleo_Operativo import code_change_validation
+
+    monkeypatch.setattr(code_change_validation, "_COMMAND_INTERRUPT_GRACE_SECONDS", 0.25)
+    subreaper_before = code_change_validation._subreaper_state()
+    file_descriptors_before = len(tuple(Path("/proc/self/fd").iterdir()))
+    pid_path = tmp_path / "descendant.pid"
+    child_code = (
+        "import os, signal, time; from pathlib import Path; "
+        "os.setsid(); "
+        "signal.signal(signal.SIGINT, signal.SIG_IGN); "
+        f"Path({str(pid_path)!r}).write_text(str(os.getpid()), encoding='ascii'); "
+        "print('descendant-ready', flush=True); time.sleep(60)"
+    )
+    middle_code = (
+        "import subprocess, sys, threading; "
+        f"thread=threading.Thread(target=lambda: subprocess.Popen([sys.executable, '-c', {child_code!r}])); "
+        "thread.start(); thread.join()"
+    )
+    leader_code = (
+        "import subprocess, sys, time; "
+        f"subprocess.run([sys.executable, '-c', {middle_code!r}], check=True); "
+        "print('leader-ready', flush=True); time.sleep(60)"
+    )
+
+    with pytest.raises(subprocess.TimeoutExpired) as captured:
+        _default_runner(
+            (sys.executable, "-c", leader_code),
+            cwd=tmp_path,
+            timeout=0.5,
+        )
+
+    assert "leader-ready" in str(captured.value.output)
+    assert "descendant-ready" in str(captured.value.output)
+    descendant_pid = int(pid_path.read_text(encoding="ascii"))
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        stat = Path(f"/proc/{descendant_pid}/stat")
+        if not stat.exists() or stat.read_text(encoding="ascii").split()[2] == "Z":
+            break
+        time.sleep(0.02)
+    else:
+        os.kill(descendant_pid, 0)
+        pytest.fail("validation descendant survived process-group termination")
+    assert code_change_validation._subreaper_state() is subreaper_before
+    assert len(tuple(Path("/proc/self/fd").iterdir())) == file_descriptors_before
+    assert not any(
+        thread.name.startswith("neocortex-validation-") for thread in threading.enumerate()
+    )
+
+
+def test_default_runner_restores_subreaper_after_keyboard_interrupt(
+    tmp_path: Path,
+) -> None:
+    from _04_Nucleo_Operativo import code_change_validation
+
+    subreaper_before = code_change_validation._subreaper_state()
+    file_descriptors_before = len(tuple(Path("/proc/self/fd").iterdir()))
+    pid_path = tmp_path / "interrupted.pid"
+    timer = threading.Timer(0.2, _thread.interrupt_main)
+    timer.start()
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            _default_runner(
+                (
+                    sys.executable,
+                    "-c",
+                    "import os, time; from pathlib import Path; "
+                    f"Path({str(pid_path)!r}).write_text(str(os.getpid()), encoding='ascii'); "
+                    "time.sleep(60)",
+                ),
+                cwd=tmp_path,
+                timeout=30.0,
+            )
+    finally:
+        timer.cancel()
+        timer.join()
+
+    interrupted_pid = int(pid_path.read_text(encoding="ascii"))
+    with pytest.raises(ProcessLookupError):
+        os.kill(interrupted_pid, 0)
+    assert code_change_validation._subreaper_state() is subreaper_before
+    assert len(tuple(Path("/proc/self/fd").iterdir())) == file_descriptors_before
+    assert not any(
+        thread.name.startswith("neocortex-validation-") for thread in threading.enumerate()
+    )
+
+
 def test_ready_provider_delta_is_advisory_after_static_no_regression() -> None:
     provider = SimpleNamespace(
         provider_id="mypy-trusted-project",
@@ -134,7 +313,7 @@ def test_linux_publication_only_snapshot_is_an_eligible_review_fence(
         supply_chain=None,
         recommendations=(),
         digest=None,
-        as_payload=lambda: {"schema": "neocortex.code-review/v20"},
+        as_payload=lambda: {"schema": "neocortex.code-review/v22"},
     )
     monkeypatch.setattr(
         code_change_validation,
@@ -182,7 +361,7 @@ def _review_with_providers(
         supply_chain=None,
         recommendations=(),
         digest=None,
-        as_payload=lambda: {"schema": "neocortex.code-review/v20"},
+        as_payload=lambda: {"schema": "neocortex.code-review/v22"},
     )
 
 
@@ -791,6 +970,21 @@ def test_experiment_control_plane_change_binds_all_executable_question_scopes() 
             evaluation_id="evaluation:framework-review-task",
             subject_key="contract:framework-review-task-protocol",
         ),
+        _question_evaluation(
+            CLI_SURFACE_QUESTION,
+            evaluation_id="evaluation:public-cli",
+            subject_key="entrypoint:neocortex-interface-surface",
+        ),
+        _question_evaluation(
+            KNOWLEDGE_ASSET_HEALTH_QUESTION,
+            evaluation_id="evaluation:knowledge-asset-health",
+            subject_key="capability:knowledge-asset-health",
+        ),
+        _question_evaluation(
+            KNOWLEDGE_PDF_ASSET_HEALTH_QUESTION,
+            evaluation_id="evaluation:knowledge-pdf-asset-health",
+            subject_key="capability:knowledge-asset-health:pdf",
+        ),
     )
     review = SimpleNamespace(question_evaluations=evaluations)
 
@@ -805,8 +999,11 @@ def test_experiment_control_plane_change_binds_all_executable_question_scopes() 
         "code_schema_migration",
         "declared_import_architecture_contracts",
         "public_text_route",
+        "public_cli_contract",
         "durable_retention_holds",
         "framework_review_task_protocol",
+        "knowledge_asset_health",
+        "knowledge_pdf_asset_health",
         "text_publication_sql",
         "text_semantic_projection_recovery",
     }
@@ -818,8 +1015,11 @@ def test_experiment_control_plane_change_binds_all_executable_question_scopes() 
             "code_schema_migration",
             "declared_import_architecture_contracts",
             "public_text_route",
+            "public_cli_contract",
             "durable_retention_holds",
             "framework_review_task_protocol",
+            "knowledge_asset_health",
+            "knowledge_pdf_asset_health",
             "text_publication_sql",
             "text_semantic_projection_recovery",
         }
@@ -859,10 +1059,76 @@ def test_review_task_protocol_change_binds_architecture_retention_and_its_exact_
     binding = next(
         item for item in bindings if item["scope_id"] == "framework_review_task_protocol"
     )
-    assert binding["matched_changed_paths"] == [
-        "_04_Nucleo_Operativo/review_task_repository.py"
-    ]
+    assert binding["matched_changed_paths"] == ["_04_Nucleo_Operativo/review_task_repository.py"]
     assert binding["matched_test_selectors"] == ["tests/test_review_tasks.py"]
+
+
+def test_knowledge_asset_health_change_binds_its_exact_causal_question() -> None:
+    health = _question_evaluation(
+        KNOWLEDGE_ASSET_HEALTH_QUESTION,
+        evaluation_id="evaluation:knowledge-asset-health",
+        subject_key="capability:knowledge-asset-health",
+    )
+    architecture = _question_evaluation(
+        ARCHITECTURE_CONTRACT_QUESTION,
+        evaluation_id="evaluation:architecture-contract",
+        subject_key="architecture:contract:fixture",
+    )
+    pdf_health = _question_evaluation(
+        KNOWLEDGE_PDF_ASSET_HEALTH_QUESTION,
+        evaluation_id="evaluation:knowledge-pdf-asset-health",
+        subject_key="capability:knowledge-asset-health:pdf",
+    )
+    review = SimpleNamespace(question_evaluations=(architecture, health, pdf_health))
+
+    bindings, relevant, errors = _relevant_question_state(
+        review,
+        change=_change_for("_04_Nucleo_Operativo/knowledge_asset_health.py"),
+        selection=_selection("tests/test_knowledge_asset_health.py"),
+    )
+
+    assert errors == ()
+    assert {scope.scope_id for scope, _evaluation in relevant} == {
+        "declared_import_architecture_contracts",
+        "knowledge_asset_health",
+        "knowledge_pdf_asset_health",
+    }
+    binding = next(item for item in bindings if item["scope_id"] == "knowledge_asset_health")
+    assert binding["relevance"] == "affected"
+    assert binding["matched_changed_paths"] == ["_04_Nucleo_Operativo/knowledge_asset_health.py"]
+    assert binding["matched_test_selectors"] == ["tests/test_knowledge_asset_health.py"]
+
+
+def test_pdf_asset_health_change_binds_only_its_exact_pdf_causal_question() -> None:
+    pdf_health = _question_evaluation(
+        KNOWLEDGE_PDF_ASSET_HEALTH_QUESTION,
+        evaluation_id="evaluation:knowledge-pdf-asset-health",
+        subject_key="capability:knowledge-asset-health:pdf",
+    )
+    architecture = _question_evaluation(
+        ARCHITECTURE_CONTRACT_QUESTION,
+        evaluation_id="evaluation:architecture-contract",
+        subject_key="architecture:contract:fixture",
+    )
+    review = SimpleNamespace(question_evaluations=(architecture, pdf_health))
+
+    bindings, relevant, errors = _relevant_question_state(
+        review,
+        change=_change_for("_04_Nucleo_Operativo/knowledge_asset_health_pdf.py"),
+        selection=_selection("tests/test_knowledge_asset_health_pdf.py"),
+    )
+
+    assert errors == ()
+    assert {scope.scope_id for scope, _evaluation in relevant} == {
+        "declared_import_architecture_contracts",
+        "knowledge_pdf_asset_health",
+    }
+    binding = next(item for item in bindings if item["scope_id"] == "knowledge_pdf_asset_health")
+    assert binding["relevance"] == "affected"
+    assert binding["matched_changed_paths"] == [
+        "_04_Nucleo_Operativo/knowledge_asset_health_pdf.py"
+    ]
+    assert binding["matched_test_selectors"] == ["tests/test_knowledge_asset_health_pdf.py"]
 
 
 def test_retention_planner_change_makes_durable_hold_evidence_acceptance_critical() -> None:
@@ -891,9 +1157,7 @@ def test_retention_planner_change_makes_durable_hold_evidence_acceptance_critica
     }
     binding = next(item for item in bindings if item["scope_id"] == "durable_retention_holds")
     assert binding["relevance"] == "affected"
-    assert binding["matched_changed_paths"] == [
-        "_04_Nucleo_Operativo/retention_planner.py"
-    ]
+    assert binding["matched_changed_paths"] == ["_04_Nucleo_Operativo/retention_planner.py"]
 
 
 def test_production_python_change_makes_declared_architecture_contracts_acceptance_critical() -> (
@@ -1519,6 +1783,100 @@ def test_validation_fallback_stays_bounded_and_runs_public_boundaries(
     producer = next(command for command in observed_commands if "--analysis-profile" in command)
     assert producer.count("--deep-test-selector") == 3
     assert producer[producer.index("--deep-shard-size") + 1] == "50"
+
+
+def test_primary_and_replay_share_the_exact_streaming_timeout_contract(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from _04_Nucleo_Operativo import code_change_validation
+
+    root = _repository(tmp_path)
+    change = _change_for("neocortex/logic.py")
+    selection = _selection("tests/test_logic.py")
+
+    def passed(gate_id: str) -> object:
+        return code_change_validation.ValidationGate(
+            gate_id,
+            "passed",
+            "fixture_passed",
+            0,
+            (),
+            {},
+        )
+
+    review = SimpleNamespace(experiment_plan=SimpleNamespace(proposals=()))
+    monkeypatch.setattr(
+        code_change_validation,
+        "capture_git_change",
+        lambda *_args, **_kwargs: change,
+    )
+    monkeypatch.setattr(
+        code_change_validation,
+        "select_affected_tests",
+        lambda *_args, **_kwargs: selection,
+    )
+    monkeypatch.setattr(
+        code_change_validation,
+        "_unpublished_source_paths",
+        lambda *_args, **_kwargs: (),
+    )
+    monkeypatch.setattr(
+        code_change_validation,
+        "_fresh_review_gate",
+        lambda *_args, **_kwargs: (passed("autoanalysis_verdict"), review),
+    )
+    monkeypatch.setattr(
+        code_change_validation,
+        "_coverage_gate",
+        lambda *_args, **_kwargs: passed("affected_coverage"),
+    )
+    monkeypatch.setattr(
+        code_change_validation,
+        "_experiment_gate",
+        lambda *_args, **_kwargs: (passed("allowlisted_experiments"), ()),
+    )
+    monkeypatch.setattr(
+        code_change_validation,
+        "_candidate_wheel_gate",
+        lambda *_args, **_kwargs: passed("candidate_wheel_smoke"),
+    )
+    monkeypatch.setattr(
+        code_change_validation,
+        "_replay_gate",
+        lambda *_args, **_kwargs: passed("trusted_deep_replay"),
+    )
+    monkeypatch.setattr(
+        code_change_validation,
+        "_replay_technical_disposition_gate",
+        lambda *_args, **_kwargs: passed("replay_technical_disposition"),
+    )
+    monkeypatch.setattr(
+        code_change_validation,
+        "_capture_unchanged",
+        lambda *_args, **_kwargs: True,
+    )
+    observed: list[tuple[tuple[str, ...], float, dict[str, str]]] = []
+
+    def runner(arguments, *, cwd, timeout, environment=None):
+        command = tuple(str(item) for item in arguments)
+        observed.append((command, timeout, dict(environment or {})))
+        return subprocess.CompletedProcess(command, 0, "fixture passed", "")
+
+    result = validate_code_change(
+        root=root,
+        state_directory=tmp_path / "state",
+        time_budget_seconds=30,
+        runner=runner,
+    )
+
+    assert result.status == "passed"
+    trusted_deep = tuple(item for item in observed if "--analysis-profile" in item[0])
+    assert len(trusted_deep) == 2
+    assert {item[1] for item in trusted_deep} == {960}
+    assert trusted_deep[0][2] == trusted_deep[1][2]
+    assert all(item[2]["NEOCORTEX_PROGRESS_STREAM"] == "1" for item in trusted_deep)
+    assert all(item[2]["PYTHONDONTWRITEBYTECODE"] == "1" for item in trusted_deep)
 
 
 def test_failed_static_gate_stops_before_trusted_execution(

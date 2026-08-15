@@ -34,6 +34,9 @@ from .memory_runtime import MemoryBudgetExceeded, MemoryHeadroomTimeout
 
 
 CODE_VALIDATION_RESOURCE_SCHEMA = "neocortex.code-validation-resources/v3"
+# The installed parent creates this boundary before the candidate source worker
+# starts.  Keep the protocol identity stable when tuning values inside the typed
+# payload so an older installed launcher can validate the next source revision.
 CODE_VALIDATION_RESOURCE_POLICY = "linux-desktop-preserving-cgroup-v2"
 _BOUNDARY_ENV = "NEOCORTEX_CODE_VALIDATION_RESOURCE_BOUNDARY"
 _ADMISSION_ENV = "NEOCORTEX_CODE_VALIDATION_RESOURCE_ADMISSION"
@@ -49,7 +52,7 @@ _MIB = 1024 * 1024
 _GIB = 1024 * _MIB
 _MONITOR_INTERVAL_SECONDS = 0.5
 _STOP_TIMEOUT_SECONDS = 10.0
-_OVERALL_RUNTIME_SECONDS = 45 * 60
+_OVERALL_RUNTIME_SECONDS = 75 * 60
 _SAFE_ENVIRONMENT_KEYS = frozenset(
     {
         "HOME",
@@ -820,8 +823,7 @@ def run_code_validation_in_resource_boundary(
         raise CodeValidationResourceError(
             f"code_validation_resource_admission_failed:{type(exc).__name__}:{exc}"
         ) from exc
-    if not json_output:
-        print(_resource_summary(admission, state), file=sys.stderr, flush=True)
+    print(_resource_summary(admission, state), file=sys.stderr, flush=True)
     if state.abort_reason is not None:
         raise CodeValidationResourceError(
             f"code_validation_resource_watchdog_aborted:{state.abort_reason}:"

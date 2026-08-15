@@ -26,8 +26,8 @@ from .code_analysis_epistemics import (
 from .code_invariant_contracts import INVARIANT_RUNTIME_SCENARIOS, RUNTIME_SCENARIOS
 
 CODE_EXPERIMENT_PLAN_SCHEMA = "neocortex.code-experiment-plan/v2"
-CODE_EXPERIMENT_TEMPLATE_REGISTRY_SCHEMA = "neocortex.code-experiment-template-registry/v8"
-CODE_EXPERIMENT_PLANNING_POLICY = "registered-applicable-cheapest-discriminating-experiment-v9"
+CODE_EXPERIMENT_TEMPLATE_REGISTRY_SCHEMA = "neocortex.code-experiment-template-registry/v11"
+CODE_EXPERIMENT_PLANNING_POLICY = "registered-applicable-cheapest-discriminating-experiment-v11"
 CODE_EXPERIMENT_MAX_PROPOSALS = 256
 
 ExperimentKind = Literal[
@@ -210,6 +210,10 @@ def _template(
         "capability.public_route_acceptance": "v2",
         "evolution.code_schema_upgrade_matrix": "v1",
         "framework.review_task_protocol_acceptance": "v1",
+        "interfaces.public_cli_contract_acceptance": "v3",
+        "interfaces.public_contract_acceptance": "v2",
+        "knowledge.asset_health_causal_acceptance": "v1",
+        "knowledge.pdf_asset_health_causal_acceptance": "v1",
         "retention.durable_hold_safety": "v2",
         "security.bounded_boundary_scenarios": "v2",
         "state.semantic_process_death_recovery": "v1",
@@ -438,9 +442,7 @@ CODE_EXPERIMENT_TEMPLATES: tuple[CodeExperimentTemplate, ...] = (
         attention=10,
         scenarios=("framework.review_task_protocol_acceptance",),
         runner="trusted_deep_declared_scenarios",
-        questions=(
-            "framework.review_task_lifecycle_preserves_atomicity_and_human_authority",
-        ),
+        questions=("framework.review_task_lifecycle_preserves_atomicity_and_human_authority",),
         subject_prefixes=("contract:framework-review-task-protocol",),
         gates=(
             "exact_human_claim_and_terminal_decision_retries_are_idempotent",
@@ -506,7 +508,6 @@ CODE_EXPERIMENT_TEMPLATES: tuple[CodeExperimentTemplate, ...] = (
         "interfaces.public_contract_acceptance",
         (
             "exercise_configuration_override_and_default_scenarios",
-            "execute_public_help_and_dispatch_acceptance_scenarios",
             "rerun_interface_surface_projection",
         ),
         "isolated_pytest",
@@ -523,6 +524,85 @@ CODE_EXPERIMENT_TEMPLATES: tuple[CodeExperimentTemplate, ...] = (
         limitations=(
             "selected_entrypoints_do_not_cover_every_dynamic_interface",
             "help_output_does_not_prove_product_value",
+        ),
+    ),
+    _template(
+        "interfaces.public_cli_contract_acceptance",
+        ("execute_public_help_and_dispatch_acceptance_scenarios",),
+        "isolated_pytest",
+        "pytest_tmp_path",
+        "bounded",
+        timeout=300,
+        max_items=26,
+        attention=10,
+        scenarios=("interfaces.public_cli_and_static_surface",),
+        runner="trusted_deep_declared_scenarios",
+        questions=("structure.static_cli_calls_require_runtime_contract_evidence",),
+        subject_prefixes=("entrypoint:neocortex-interface-surface",),
+        gates=(
+            "declared_entrypoint_and_effective_help_contract_are_observed",
+            "dynamic_hidden_and_static_surfaces_remain_explicitly_non_equivalent",
+            "focal_question_and_storage_reads_are_bounded_and_immutable",
+            "invalid_abbreviated_and_incomplete_commands_fail_closed_without_state",
+            "special_human_canonical_and_flat_dispatch_precedence_is_exact",
+        ),
+        limitations=(
+            "selected_parser_help_and_dispatch_controls_do_not_execute_every_command_handler",
+            "stubbed_dispatch_edges_do_not_prove_gui_mcp_worker_or_external_effect_behavior",
+            "candidate_wheel_installation_remains_a_separate_code_validation_gate",
+            "focal_readers_cover_only_registered_questions_and_bounded_storage_observability",
+        ),
+    ),
+    _template(
+        "knowledge.asset_health_causal_acceptance",
+        ("run_knowledge_asset_health_causal_experiment",),
+        "isolated_pytest",
+        "pytest_tmp_path",
+        "bounded",
+        timeout=300,
+        max_items=12,
+        attention=10,
+        scenarios=("knowledge.asset_health_causal_acceptance",),
+        runner="trusted_deep_declared_scenarios",
+        questions=("knowledge.asset_health_trace_is_snapshot_bound_and_causally_explainable",),
+        subject_prefixes=("capability:knowledge-asset-health",),
+        gates=(
+            "aligned_four_stage_causal_trace_is_healthy",
+            "mismatch_absence_future_corruption_and_unpublished_fail_closed",
+            "public_read_is_read_only_and_resource_identity_is_strict",
+            "snapshot_change_abstains_and_search_health_identity_is_stable",
+        ),
+        limitations=(
+            "isolated_text_owner_fixtures_do_not_prove_every_knowledge_route_owner",
+            "sqlite_snapshot_and_wal_controls_do_not_prove_distributed_power_loss_safety",
+            "a_passed_receipt_remains_advisory_and_cannot_authorize_corpus_or_state_mutation",
+        ),
+    ),
+    _template(
+        "knowledge.pdf_asset_health_causal_acceptance",
+        ("run_knowledge_pdf_asset_health_causal_experiment",),
+        "isolated_pytest",
+        "pytest_tmp_path",
+        "bounded",
+        timeout=300,
+        max_items=12,
+        attention=10,
+        scenarios=("knowledge.pdf_asset_health_causal_acceptance",),
+        runner="trusted_deep_declared_scenarios",
+        questions=(
+            "knowledge.pdf_asset_health_preserves_page_partial_protected_and_recovery_causality",
+        ),
+        subject_prefixes=("capability:knowledge-asset-health:pdf",),
+        gates=(
+            "page_staging_fts_and_catalog_mismatch_fail_closed",
+            "recovery_is_version_and_message_independent",
+            "typed_pdf_states_preserve_partial_and_protected_semantics",
+            "wal_snapshot_and_owner_ambiguity_remain_read_only",
+        ),
+        limitations=(
+            "bounded_pdf_fixtures_do_not_prove_ocr_visual_or_semantic_content_fidelity",
+            "process_recovery_controls_do_not_prove_power_loss_or_filesystem_failure_safety",
+            "a_passed_receipt_remains_advisory_and_cannot_authorize_corpus_or_state_mutation",
         ),
     ),
     _template(
@@ -639,7 +719,7 @@ def experiment_template_registry_payload() -> dict[str, object]:
 
 def experiment_template_registry_fingerprint() -> str:
     return analysis_identity(
-        "code-experiment-template-registry-v8",
+        "code-experiment-template-registry-v11",
         experiment_template_registry_payload(),
     )
 

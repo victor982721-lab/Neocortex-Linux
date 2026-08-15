@@ -37,6 +37,17 @@ from _04_Nucleo_Operativo.code_experiment_store import (
     record_code_experiment_receipt,
 )
 from _04_Nucleo_Operativo.code_invariant_contracts import runtime_scenario
+from _04_Nucleo_Operativo.code_interface_surface_analysis import (
+    CLI_SURFACE_QUESTION,
+    interface_surface_questions,
+    read_code_interface_surface_analysis,
+)
+from _04_Nucleo_Operativo.code_knowledge_asset_health_analysis import (
+    knowledge_asset_health_questions,
+)
+from _04_Nucleo_Operativo.code_knowledge_pdf_asset_health_analysis import (
+    knowledge_pdf_asset_health_questions,
+)
 from _04_Nucleo_Operativo.code_route_capability_analysis import ROUTE_CAPABILITY_QUESTION
 from _04_Nucleo_Operativo.code_state_interaction_analysis import (
     analyze_code_state_interactions,
@@ -45,6 +56,10 @@ from _04_Nucleo_Operativo.code_state_interaction_analysis import (
 from _04_Nucleo_Operativo.code_schema import (
     connect_code_state,
     initialize_code_state,
+    readonly_code_database,
+)
+from _04_Nucleo_Operativo.code_technical_verification import (
+    build_code_technical_verification,
 )
 from _04_Nucleo_Operativo.semantic_models import fingerprint_text
 
@@ -205,9 +220,7 @@ def _framework_review_task_question(
 ) -> tuple[AnalysisQuestionSpec, AnalysisQuestionEvaluation]:
     subject_key = "contract:framework-review-task-protocol"
     spec = AnalysisQuestionSpec(
-        question_id=(
-            "framework.review_task_lifecycle_preserves_atomicity_and_human_authority"
-        ),
+        question_id=("framework.review_task_lifecycle_preserves_atomicity_and_human_authority"),
         version="v1",
         subject_kinds=("contract",),
         requirements=(
@@ -240,9 +253,7 @@ def _framework_review_task_question(
             "review_task_protocol_preserves_atomicity_and_human_authority",
             "review_task_protocol_can_publish_partial_or_non_human_terminal_state",
         ),
-        counterevidence_rules=(
-            "stale_heads_faults_and_changed_retries_must_fail_closed",
-        ),
+        counterevidence_rules=("stale_heads_faults_and_changed_retries_must_fail_closed",),
         next_actions=(
             AnalysisNextActionSpec(
                 "run_framework_review_task_protocol_experiment",
@@ -440,11 +451,15 @@ def _database(tmp_path: Path, *, status: str = "completed") -> Path:
     return database
 
 
-def _add_python_source(database: Path) -> None:
-    text = "def noop():\n    return None\n"
+def _add_python_source(
+    database: Path,
+    *,
+    text: str = "def noop():\n    return None\n",
+    relative_path: str = "_04_Nucleo_Operativo/noop.py",
+) -> None:
     raw = text.encode("utf-8")
     digest = fingerprint_text(text)
-    path = "/fixture/Repository/_04_Nucleo_Operativo/noop.py"
+    path = f"/fixture/Repository/{relative_path}"
     connection = sqlite3.connect(database)
     try:
         connection.execute(
@@ -682,9 +697,7 @@ def test_framework_review_task_receipt_projects_only_its_two_bound_requirements(
         for item in set(requirements) - experiment_requirements
     )
     linked = tuple(
-        evidence
-        for evidence in projected.evidence
-        if evidence.evidence_kind == "experiment_result"
+        evidence for evidence in projected.evidence if evidence.evidence_kind == "experiment_result"
     )
     assert len(linked) == 2
     assert {item.role for item in linked} == {"counterevidence", "experiment_result"}
@@ -1134,6 +1147,117 @@ def test_exact_signature_replay_reuses_prior_completed_receipt_but_new_signature
     )
 
 
+def test_public_cli_receipt_rebinds_across_interface_capture_runs_and_is_verified(
+    tmp_path: Path,
+) -> None:
+    database = _database(tmp_path)
+    _add_python_source(
+        database,
+        text=(
+            'import argparse\nparser = argparse.ArgumentParser()\nparser.add_argument("--alpha")\n'
+        ),
+        relative_path="neocortex/cli_fixture.py",
+    )
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            """INSERT INTO code_references(
+            reference_id,version_id,source_symbol_id,target_symbol_id,target_version_id,
+            kind,name,target_hint,confirmed,confidence,evidence,start_line,start_column,
+            end_line,end_column,start_byte,end_byte)
+            VALUES(1,1,NULL,NULL,NULL,'call','parser.add_argument',NULL,1,1.0,
+            'fixture-static-call',3,0,3,30,0,1)"""
+        )
+    with readonly_code_database(database) as connection:
+        primary_analysis = read_code_interface_surface_analysis(
+            connection,
+            analysis_run_id=1,
+            processing_signature="snapshot:fixture",
+            database=str(database),
+        )
+    primary_specs, primary_evaluations = interface_surface_questions(
+        primary_analysis,
+        snapshot_freshness="current",
+        rank_offset=0,
+    )
+    primary_plan = plan_code_experiments(primary_specs, primary_evaluations)
+    primary_cli = next(
+        item for item in primary_evaluations if item.question_id == CLI_SURFACE_QUESTION.question_id
+    )
+    primary_proposal = next(
+        item
+        for item in primary_plan.proposals
+        if item.question_id == CLI_SURFACE_QUESTION.question_id
+    )
+    stored = record_code_experiment_receipt(
+        database,
+        _receipt(primary_proposal),
+        primary_proposal,
+        analysis_run_id=1,
+        processing_signature="snapshot:fixture",
+        review_digest="review:public-cli-primary",
+    )
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            """INSERT INTO analysis_runs(
+            analysis_run_id,framework_run_id,scan_id,processing_signature,status,
+            started_ns,completed_ns,candidates,processed,cache_hits,errors)
+            VALUES(2,2,2,'snapshot:fixture','completed',3,4,0,0,0,0)"""
+        )
+
+    with readonly_code_database(database) as connection:
+        replay_analysis = read_code_interface_surface_analysis(
+            connection,
+            analysis_run_id=2,
+            processing_signature="snapshot:fixture",
+            database=str(database),
+        )
+    replay_specs, replay_evaluations = interface_surface_questions(
+        replay_analysis,
+        snapshot_freshness="current",
+        rank_offset=0,
+    )
+    replay_plan = plan_code_experiments(replay_specs, replay_evaluations)
+    replay_cli = next(
+        item for item in replay_evaluations if item.question_id == CLI_SURFACE_QUESTION.question_id
+    )
+    replay_proposal = next(
+        item
+        for item in replay_plan.proposals
+        if item.question_id == CLI_SURFACE_QUESTION.question_id
+    )
+    assert replay_cli.evaluation_id != primary_cli.evaluation_id
+    assert replay_proposal.proposal_id == primary_proposal.proposal_id
+
+    resolved = read_code_experiment_receipts(
+        database,
+        analysis_run_id=2,
+        processing_signature="snapshot:fixture",
+        plan=replay_plan,
+    )
+    assert resolved == (stored,)
+    projected = apply_code_experiment_receipts(
+        replay_specs,
+        replay_evaluations,
+        replay_plan,
+        resolved,
+    )
+    projected_cli = next(
+        item for item in projected if item.question_id == CLI_SURFACE_QUESTION.question_id
+    )
+    assert projected_cli.decision_readiness == "human_review_required"
+    assert any(
+        fact.name == "source_evaluation_replayed" and fact.value is True
+        for evidence in projected_cli.evidence
+        for fact in evidence.facts
+    )
+    technical = build_code_technical_verification(replay_specs, projected, resolved)
+    assert technical.status == "ready"
+    assert technical.reviewed_count == 1
+    assert technical.unresolved_count == 0
+    assert technical.reviews[0].evaluation_id == projected_cli.evaluation_id
+    assert technical.reviews[0].disposition == "no_change_required_within_verified_scope"
+
+
 def test_two_receipts_link_to_their_own_current_evaluations(tmp_path: Path) -> None:
     route_spec, route_evaluation = _question()
     database = _database(tmp_path)
@@ -1322,6 +1446,260 @@ def test_public_route_receipt_satisfies_the_real_question_contract(tmp_path: Pat
         for requirement in projected[0].requirements
         for evidence_id in requirement.evidence_ids
     }
+
+
+def test_public_cli_receipt_projects_typed_runtime_counter_and_result_evidence(
+    tmp_path: Path,
+) -> None:
+    spec = CLI_SURFACE_QUESTION
+    subject_key = "entrypoint:neocortex-interface-surface"
+    snapshot_id = "snapshot:fixture"
+    static_projection = replace(
+        _source_evidence(subject_key, snapshot_id),
+        evidence_id="metric:public-cli-static-projection",
+        evidence_kind="internal_metric",
+        producer_id="fixture-interface-surface-resolver",
+        source_schema="fixture-interface-surface/v1",
+        source_record_kind="entrypoint_surface_projection",
+        source_record_id=subject_key,
+        source_projection_digest="projection:public-cli-static",
+        facts=(AnalysisFact("static_argument_calls", 17, "count"),),
+    )
+    requirements = tuple(
+        AnalysisRequirementEvaluation(
+            requirement.requirement_id,
+            (
+                "satisfied"
+                if requirement.requirement_id == "published_static_argparse_call_projection"
+                else "missing"
+            ),
+            (
+                (static_projection.evidence_id,)
+                if requirement.requirement_id == "published_static_argparse_call_projection"
+                else ()
+            ),
+            (
+                "static_projection_resolved"
+                if requirement.requirement_id == "published_static_argparse_call_projection"
+                else "registered_experiment_not_recorded"
+            ),
+        )
+        for requirement in spec.requirements
+    )
+    evaluation = AnalysisQuestionEvaluation(
+        evaluation_id="evaluation:public-cli-contract",
+        question_id=spec.question_id,
+        question_version=spec.version,
+        question_spec_fingerprint=analysis_question_spec_fingerprint(spec),
+        rank=1,
+        subject=AnalysisSubjectRef(
+            "entrypoint",
+            subject_key,
+            "NeoCortex public CLI surface",
+            "code",
+            snapshot_id,
+            "current",
+        ),
+        evidence=(static_projection,),
+        requirements=requirements,
+        observation_status="confirmed",
+        inference_status="abstained",
+        inferences=(),
+        hypotheses=spec.hypotheses,
+        question_readiness="ready",
+        decision_readiness="experiment_required",
+        decision=None,
+        decision_reason="decision_evidence_incomplete",
+        counterevidence_status="not_evaluated",
+        next_action_ids=tuple(item.action_id for item in spec.next_actions),
+        limitations=("fixture_requires_registered_public_cli_runtime_evidence",),
+    )
+    validate_analysis_question_evaluation(spec, evaluation)
+    plan = plan_code_experiments((spec,), (evaluation,))
+    proposal = plan.proposals[0]
+    assert proposal.template_id == "interfaces.public_cli_contract_acceptance"
+    assert proposal.mutation_authority is False
+
+    database = _database(tmp_path)
+    stored = record_code_experiment_receipt(
+        database,
+        _receipt(proposal),
+        proposal,
+        analysis_run_id=1,
+        processing_signature=snapshot_id,
+        review_digest="review:public-cli-fixture",
+    )
+    projected = apply_code_experiment_receipts((spec,), (evaluation,), plan, (stored,))[0]
+
+    assert projected.decision_readiness == "human_review_required"
+    assert projected.counterevidence_status == "evaluated"
+    assert projected.next_action_ids == ()
+    evidence_by_id = {item.evidence_id: item for item in projected.evidence}
+    requirement_evidence = {
+        item.requirement_id: tuple(evidence_by_id[evidence_id] for evidence_id in item.evidence_ids)
+        for item in projected.requirements
+    }
+    expected = {
+        "effective_runtime_parser_contract_observed": (
+            "supporting",
+            "runtime_observation",
+            3,
+            13,
+        ),
+        "dynamic_cli_construction_counterevidence_evaluated": (
+            "counterevidence",
+            "runtime_observation",
+            2,
+            13,
+        ),
+        "public_cli_acceptance_scenario_result": (
+            "experiment_result",
+            "experiment_result",
+            5,
+            26,
+        ),
+    }
+    for requirement_id, (role, kind, gate_count, relation_count) in expected.items():
+        linked = requirement_evidence[requirement_id]
+        assert len(linked) == 1
+        evidence = linked[0]
+        assert (evidence.role, evidence.evidence_kind) == (role, kind)
+        assert evidence.source_record_id == stored.receipt.receipt_id
+        facts = {item.name: item.value for item in evidence.facts}
+        assert facts["gate_count"] == gate_count
+        assert facts["relation_count"] == relation_count
+    assert requirement_evidence["published_static_argparse_call_projection"] == (static_projection,)
+    replay_plan = plan_code_experiments((spec,), (projected,))
+    assert replay_plan.status == "not_required"
+    assert replay_plan.proposals == ()
+
+
+def test_knowledge_health_receipt_projects_counterevidence_and_exact_causal_result(
+    tmp_path: Path,
+) -> None:
+    specs, evaluations = knowledge_asset_health_questions(
+        snapshot_id="snapshot:fixture",
+        snapshot_freshness="current",
+        rank=1,
+    )
+    spec = specs[0]
+    evaluation = evaluations[0]
+    base_evidence = evaluation.evidence
+    plan = plan_code_experiments(specs, evaluations)
+    proposal = plan.proposals[0]
+    assert proposal.template_id == "knowledge.asset_health_causal_acceptance"
+    assert proposal.mutation_authority is False
+
+    database = _database(tmp_path)
+    stored = record_code_experiment_receipt(
+        database,
+        _receipt(proposal),
+        proposal,
+        analysis_run_id=1,
+        processing_signature="snapshot:fixture",
+        review_digest="review:knowledge-health-fixture",
+    )
+    projected = apply_code_experiment_receipts(specs, evaluations, plan, (stored,))[0]
+
+    assert projected.decision_readiness == "human_review_required"
+    assert projected.counterevidence_status == "evaluated"
+    assert projected.next_action_ids == ()
+    assert all(item in projected.evidence for item in base_evidence)
+    evidence_by_id = {item.evidence_id: item for item in projected.evidence}
+    requirement_evidence = {
+        item.requirement_id: tuple(evidence_by_id[evidence_id] for evidence_id in item.evidence_ids)
+        for item in projected.requirements
+    }
+    expected = {
+        ("knowledge_asset_health_stale_mismatch_and_absence_counterevidence_evaluated"): (
+            "counterevidence",
+            "runtime_observation",
+            2,
+            9,
+        ),
+        "isolated_knowledge_asset_health_causal_experiment_result": (
+            "experiment_result",
+            "experiment_result",
+            4,
+            12,
+        ),
+    }
+    for requirement_id, (role, kind, gate_count, relation_count) in expected.items():
+        linked = requirement_evidence[requirement_id]
+        assert len(linked) == 1
+        evidence = linked[0]
+        assert (evidence.role, evidence.evidence_kind) == (role, kind)
+        assert evidence.source_record_id == stored.receipt.receipt_id
+        facts = {item.name: item.value for item in evidence.facts}
+        assert facts["gate_count"] == gate_count
+        assert facts["relation_count"] == relation_count
+    replay_plan = plan_code_experiments((spec,), (projected,))
+    assert replay_plan.status == "not_required"
+    assert replay_plan.proposals == ()
+
+
+def test_pdf_health_receipt_projects_negative_controls_and_exact_causal_result(
+    tmp_path: Path,
+) -> None:
+    specs, evaluations = knowledge_pdf_asset_health_questions(
+        snapshot_id="snapshot:fixture",
+        snapshot_freshness="current",
+        rank=1,
+    )
+    spec = specs[0]
+    evaluation = evaluations[0]
+    base_evidence = evaluation.evidence
+    plan = plan_code_experiments(specs, evaluations)
+    proposal = plan.proposals[0]
+    assert proposal.template_id == "knowledge.pdf_asset_health_causal_acceptance"
+    assert proposal.mutation_authority is False
+
+    database = _database(tmp_path)
+    stored = record_code_experiment_receipt(
+        database,
+        _receipt(proposal),
+        proposal,
+        analysis_run_id=1,
+        processing_signature="snapshot:fixture",
+        review_digest="review:knowledge-pdf-health-fixture",
+    )
+    projected = apply_code_experiment_receipts(specs, evaluations, plan, (stored,))[0]
+
+    assert projected.decision_readiness == "human_review_required"
+    assert projected.counterevidence_status == "evaluated"
+    assert projected.next_action_ids == ()
+    assert all(item in projected.evidence for item in base_evidence)
+    evidence_by_id = {item.evidence_id: item for item in projected.evidence}
+    requirement_evidence = {
+        item.requirement_id: tuple(evidence_by_id[evidence_id] for evidence_id in item.evidence_ids)
+        for item in projected.requirements
+    }
+    expected = {
+        "knowledge_pdf_asset_health_partial_protected_recovery_counterevidence_evaluated": (
+            "counterevidence",
+            "runtime_observation",
+            3,
+            9,
+        ),
+        "isolated_knowledge_pdf_asset_health_causal_experiment_result": (
+            "experiment_result",
+            "experiment_result",
+            4,
+            12,
+        ),
+    }
+    for requirement_id, (role, kind, gate_count, relation_count) in expected.items():
+        linked = requirement_evidence[requirement_id]
+        assert len(linked) == 1
+        evidence = linked[0]
+        assert (evidence.role, evidence.evidence_kind) == (role, kind)
+        assert evidence.source_record_id == stored.receipt.receipt_id
+        facts = {item.name: item.value for item in evidence.facts}
+        assert facts["gate_count"] == gate_count
+        assert facts["relation_count"] == relation_count
+    replay_plan = plan_code_experiments((spec,), (projected,))
+    assert replay_plan.status == "not_required"
+    assert replay_plan.proposals == ()
 
 
 @pytest.mark.parametrize("second_recorded_ns", [10, 9])
@@ -1542,5 +1920,5 @@ def test_review_consumes_a_persisted_receipt_and_does_not_propose_it_again(
     assert after.experiment_plan.executable_count == 0
     assert after.digest != before.digest
     payload = after.as_payload()
-    assert payload["schema"] == "neocortex.code-review/v20"
+    assert payload["schema"] == "neocortex.code-review/v22"
     assert len(payload["experiment_receipts"]) == 1

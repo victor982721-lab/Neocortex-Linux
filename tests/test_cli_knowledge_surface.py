@@ -36,6 +36,19 @@ EXPECTED_KNOWLEDGE_ACTIONS = (
         "show a bounded cross-owner logical snapshot without creating state",
     ),
     (
+        ("--knowledge-health",),
+        "knowledge_health",
+        "_StoreAction",
+        None,
+        None,
+        None,
+        None,
+        None,
+        "RESOURCE_ID",
+        False,
+        "explain one stable asset identity across its published owner facts",
+    ),
+    (
         ("--knowledge-search",),
         "knowledge_search",
         "_StoreAction",
@@ -135,6 +148,9 @@ EXPECTED_KNOWLEDGE_HELP = (
     "Read-only Knowledge Plane:\n"
     "  --knowledge-status    show a bounded cross-owner logical snapshot without\n"
     "                        creating state\n"
+    "  --knowledge-health RESOURCE_ID\n"
+    "                        explain one stable asset identity across its published\n"
+    "                        owner facts\n"
     "  --knowledge-search QUERY\n"
     "                        search available lexical, semantic, structural and\n"
     "                        catalog evidence\n"

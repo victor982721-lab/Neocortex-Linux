@@ -427,11 +427,160 @@ def test_retention_parameter_variants_have_exact_terminal_gate_evidence() -> Non
     incomplete = next(
         item
         for item in gates
-        if item.gate_id
-        == "incomplete_review_receipt_or_schema_drift_fails_closed_without_mutation"
+        if item.gate_id == "incomplete_review_receipt_or_schema_drift_fails_closed_without_mutation"
     )
     assert len(incomplete.test_nodeids) == 7
     assert all("[" in nodeid for nodeid in incomplete.test_nodeids[:6])
+
+
+def test_public_cli_scenario_has_exact_measured_gates_and_fails_closed_if_incomplete() -> None:
+    import _04_Nucleo_Operativo.code_experiment_executor as executor
+    from _04_Nucleo_Operativo.code_experiment_planner import experiment_template
+
+    scenario = runtime_scenario("interfaces.public_cli_and_static_surface")
+    template = experiment_template("interfaces.public_cli_contract_acceptance")
+    relations = tuple(
+        ExternalProviderRelation(
+            external_relation_identity(
+                "pytest-coverage-trusted-deep",
+                relation_kind="declared_test_outcome",
+                source_kind="contract",
+                source_key=f"pytest-nodeid:{nodeid}",
+                target_kind="run",
+                target_key="coverage-run:public-cli-fixture",
+            ),
+            "declared_test_outcome",
+            "contract",
+            f"pytest-nodeid:{nodeid}",
+            "run",
+            "coverage-run:public-cli-fixture",
+            confidence=1.0,
+            metadata={
+                "nodeid": nodeid,
+                "outcome": "passed",
+                "claim_scope": "exact_selected_test_execution_outcome",
+                "assertion_or_invariant_proof": False,
+                "measurement_scope_signature": "public-cli-fixture",
+            },
+        )
+        for nodeid in scenario.test_nodeids
+    )
+
+    publication = SimpleNamespace(relations=relations)
+    outcomes = executor._outcomes(publication, (scenario.scenario_id,))
+    gates = executor._gate_outcomes(publication, (scenario.scenario_id,))
+
+    assert template.authority == "advisory"
+    assert template.mutation_authority is False
+    assert outcomes[0].outcome == "passed"
+    assert tuple(item.gate_id for item in gates) == template.acceptance_gates
+    assert tuple(len(item.relation_ids) for item in gates) == (5, 3, 4, 10, 4)
+    assert all(item.status == "passed" for item in gates)
+
+    incomplete = SimpleNamespace(relations=relations[:-1])
+    assert executor._outcomes(incomplete, (scenario.scenario_id,)) == ()
+    incomplete_gates = executor._gate_outcomes(incomplete, (scenario.scenario_id,))
+    assert any(item.status == "not_evaluated" for item in incomplete_gates)
+
+
+def test_knowledge_health_scenario_has_exact_gates_and_fails_closed_if_incomplete() -> None:
+    import _04_Nucleo_Operativo.code_experiment_executor as executor
+    from _04_Nucleo_Operativo.code_experiment_planner import experiment_template
+
+    scenario = runtime_scenario("knowledge.asset_health_causal_acceptance")
+    template = experiment_template("knowledge.asset_health_causal_acceptance")
+    relations = tuple(
+        ExternalProviderRelation(
+            external_relation_identity(
+                "pytest-coverage-trusted-deep",
+                relation_kind="declared_test_outcome",
+                source_kind="contract",
+                source_key=f"pytest-nodeid:{nodeid}",
+                target_kind="run",
+                target_key="coverage-run:knowledge-health-fixture",
+            ),
+            "declared_test_outcome",
+            "contract",
+            f"pytest-nodeid:{nodeid}",
+            "run",
+            "coverage-run:knowledge-health-fixture",
+            confidence=1.0,
+            metadata={
+                "nodeid": nodeid,
+                "outcome": "passed",
+                "claim_scope": "exact_selected_test_execution_outcome",
+                "assertion_or_invariant_proof": False,
+                "measurement_scope_signature": "knowledge-health-fixture",
+            },
+        )
+        for nodeid in scenario.test_nodeids
+    )
+
+    publication = SimpleNamespace(relations=relations)
+    outcomes = executor._outcomes(publication, (scenario.scenario_id,))
+    gates = executor._gate_outcomes(publication, (scenario.scenario_id,))
+
+    assert template.authority == "advisory"
+    assert template.mutation_authority is False
+    assert outcomes[0].outcome == "passed"
+    assert tuple(item.gate_id for item in gates) == template.acceptance_gates
+    assert tuple(len(item.relation_ids) for item in gates) == (1, 7, 2, 2)
+    assert all(item.status == "passed" for item in gates)
+
+    incomplete = SimpleNamespace(relations=relations[:-1])
+    assert executor._outcomes(incomplete, (scenario.scenario_id,)) == ()
+    incomplete_gates = executor._gate_outcomes(incomplete, (scenario.scenario_id,))
+    assert any(item.status == "not_evaluated" for item in incomplete_gates)
+
+
+def test_pdf_health_scenario_has_exact_gates_and_fails_closed_if_incomplete() -> None:
+    import _04_Nucleo_Operativo.code_experiment_executor as executor
+    from _04_Nucleo_Operativo.code_experiment_planner import experiment_template
+
+    scenario = runtime_scenario("knowledge.pdf_asset_health_causal_acceptance")
+    template = experiment_template("knowledge.pdf_asset_health_causal_acceptance")
+    relations = tuple(
+        ExternalProviderRelation(
+            external_relation_identity(
+                "pytest-coverage-trusted-deep",
+                relation_kind="declared_test_outcome",
+                source_kind="contract",
+                source_key=f"pytest-nodeid:{nodeid}",
+                target_kind="run",
+                target_key="coverage-run:knowledge-pdf-health-fixture",
+            ),
+            "declared_test_outcome",
+            "contract",
+            f"pytest-nodeid:{nodeid}",
+            "run",
+            "coverage-run:knowledge-pdf-health-fixture",
+            confidence=1.0,
+            metadata={
+                "nodeid": nodeid,
+                "outcome": "passed",
+                "claim_scope": "exact_selected_test_execution_outcome",
+                "assertion_or_invariant_proof": False,
+                "measurement_scope_signature": "knowledge-pdf-health-fixture",
+            },
+        )
+        for nodeid in scenario.test_nodeids
+    )
+
+    publication = SimpleNamespace(relations=relations)
+    outcomes = executor._outcomes(publication, (scenario.scenario_id,))
+    gates = executor._gate_outcomes(publication, (scenario.scenario_id,))
+
+    assert template.authority == "advisory"
+    assert template.mutation_authority is False
+    assert outcomes[0].outcome == "passed"
+    assert tuple(item.gate_id for item in gates) == template.acceptance_gates
+    assert tuple(len(item.relation_ids) for item in gates) == (5, 3, 3, 1)
+    assert all(item.status == "passed" for item in gates)
+
+    incomplete = SimpleNamespace(relations=relations[:-1])
+    assert executor._outcomes(incomplete, (scenario.scenario_id,)) == ()
+    incomplete_gates = executor._gate_outcomes(incomplete, (scenario.scenario_id,))
+    assert any(item.status == "not_evaluated" for item in incomplete_gates)
 
 
 @pytest.mark.parametrize(

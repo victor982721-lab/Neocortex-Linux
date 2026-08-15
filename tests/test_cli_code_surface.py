@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 
 import pytest
 
@@ -188,6 +189,50 @@ EXPECTED_CODE_ACTIONS = (
             "and the underlying hotspot ranking"
         ),
     ),
+    _expected_store(
+        "--code-question",
+        "code_question",
+        metavar="QUESTION_ID",
+        help_text=(
+            "resolve one exact registered Code question from its focal published evidence reader"
+        ),
+    ),
+    _expected_store(
+        "--code-question-limit",
+        "code_question_limit",
+        default=10,
+        type_name="int",
+        metavar="N",
+        help_text="return between 1 and 50 focal evaluations (default 10)",
+    ),
+    _expected_flag(
+        "--code-storage",
+        "code_storage",
+        "inspect bounded immutable storage, growth and retention evidence",
+    ),
+    _expected_store(
+        "--code-storage-run-limit",
+        "code_storage_run_limit",
+        default=20,
+        type_name="int",
+        metavar="N",
+        help_text="inspect between 1 and 50 newest Code runs (default 20)",
+    ),
+    _expected_store(
+        "--code-storage-row-scan-limit",
+        "code_storage_row_scan_limit",
+        default=250_000,
+        type_name="int",
+        metavar="N",
+        help_text="bound each storage row observation to 1..1000000 rows",
+    ),
+    _expected_store(
+        "--code-storage-retain-runs",
+        "code_storage_retain_runs",
+        type_name="int",
+        metavar="N",
+        help_text=("preview retaining N completed runs (default min(5, run limit)); never deletes"),
+    ),
     _expected_flag(
         "--code-validate-change",
         "code_validate_change",
@@ -218,7 +263,10 @@ EXPECTED_CODE_ACTIONS = (
         default=900,
         type_name="int",
         metavar="SECONDS",
-        help_text="hard affected-test coverage budget (30..900 seconds; default 900)",
+        help_text=(
+            "nominal affected-test coverage budget (30..900 seconds; default 900); "
+            "validated shard progress permits one bounded extension"
+        ),
     ),
     _expected_store(
         "--code-review-limit",
@@ -380,6 +428,20 @@ EXPECTED_CODE_HELP = (
     "  --code-status         show bounded code database, analyzer and index status\n"
     "  --code-review         show deterministic read-only structural observations,\n"
     "                        open questions and the underlying hotspot ranking\n"
+    "  --code-question QUESTION_ID\n"
+    "                        resolve one exact registered Code question from its\n"
+    "                        focal published evidence reader\n"
+    "  --code-question-limit N\n"
+    "                        return between 1 and 50 focal evaluations (default 10)\n"
+    "  --code-storage        inspect bounded immutable storage, growth and\n"
+    "                        retention evidence\n"
+    "  --code-storage-run-limit N\n"
+    "                        inspect between 1 and 50 newest Code runs (default 20)\n"
+    "  --code-storage-row-scan-limit N\n"
+    "                        bound each storage row observation to 1..1000000 rows\n"
+    "  --code-storage-retain-runs N\n"
+    "                        preview retaining N completed runs (default min(5, run\n"
+    "                        limit)); never deletes\n"
     "  --code-validate-change\n"
     "                        run the canonical local Linux validation: Git change,\n"
     "                        affected tests, static and architecture gates,\n"
@@ -392,8 +454,9 @@ EXPECTED_CODE_HELP = (
     "                        maximum tests admitted by diff-aware trusted-deep\n"
     "                        coverage (1..5000)\n"
     "  --code-validation-time-budget-seconds SECONDS\n"
-    "                        hard affected-test coverage budget (30..900 seconds;\n"
-    "                        default 900)\n"
+    "                        nominal affected-test coverage budget (30..900\n"
+    "                        seconds; default 900); validated shard progress\n"
+    "                        permits one bounded extension\n"
     "  --code-review-limit N\n"
     "                        bound each review surface to 1 to 50 observations;\n"
     "                        values above 10 require --code-json\n"
@@ -482,6 +545,49 @@ def test_code_actions_aliases_and_help_preserve_the_normalized_contract() -> Non
     help_start = help_text.index(f"{CODE_GROUP_TITLE}:\n")
     help_end = help_text.index(f"{SEMANTIC_GROUP_TITLE}:\n", help_start)
     assert help_text[help_start:help_end] == EXPECTED_CODE_HELP
+
+
+def test_code_validate_json_keeps_live_progress_on_stderr(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from _04_Nucleo_Operativo import cli_code
+    from _04_Nucleo_Operativo import code_change_validation
+    from _04_Nucleo_Operativo import code_validation_resources
+
+    monkeypatch.setattr(
+        code_validation_resources,
+        "inside_code_validation_resource_boundary",
+        lambda: True,
+    )
+    payload = {
+        "schema": "neocortex.code-change-validation/v3",
+        "status": "passed",
+    }
+
+    def validate(**kwargs):
+        kwargs["progress"](
+            'gate trusted_deep_publication stderr: NEOCORTEX_PROGRESS {"completed":1}'
+        )
+        return type(
+            "ValidationResult",
+            (),
+            {"status": "passed", "as_payload": lambda self: payload},
+        )()
+
+    monkeypatch.setattr(code_change_validation, "validate_code_change", validate)
+    args = argparse.Namespace(
+        code_validation_baseline="HEAD^",
+        code_validation_max_tests=5000,
+        code_validation_time_budget_seconds=900,
+        code_json=True,
+    )
+
+    assert cli_code.run_code_validate_change(args) == 0
+    captured = capsys.readouterr()
+    assert json.loads(captured.out) == payload
+    assert captured.err.startswith("CODE_CHANGE_VALIDATION_PROGRESS ")
+    assert "NEOCORTEX_PROGRESS" in captured.err
 
 
 def test_code_explicit_aliases_and_abbreviation_policy_remain_stable() -> None:

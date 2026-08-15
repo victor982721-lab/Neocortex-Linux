@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict, dataclass, fields
-from typing import Any, Literal, Mapping, Sequence, cast
+from typing import Any, Literal, Mapping, Sequence, TypeGuard, cast
 
 from .code_analysis_epistemics import (
     AnalysisEvidenceRef,
@@ -29,6 +29,9 @@ from .code_analysis_epistemics import (
 from .code_architecture_questions import ARCHITECTURE_CONTRACT_QUESTION
 from .code_experiment_store import ResolvedCodeExperimentReceipt
 from .code_change_evolution_analysis import CODE_SCHEMA_EVOLUTION_QUESTION
+from .code_interface_surface_analysis import CLI_SURFACE_QUESTION
+from .code_knowledge_asset_health_analysis import KNOWLEDGE_ASSET_HEALTH_QUESTION
+from .code_knowledge_pdf_asset_health_analysis import KNOWLEDGE_PDF_ASSET_HEALTH_QUESTION
 from .code_route_capability_analysis import ROUTE_CAPABILITY_QUESTION
 from .code_retention_analysis import RETENTION_EXPECTED_HOLDS, RETENTION_HOLD_QUESTION
 from .code_review_task_analysis import FRAMEWORK_REVIEW_TASK_PROTOCOL_QUESTION
@@ -42,7 +45,7 @@ from .code_state_projection_analysis import TEXT_SEMANTIC_PROJECTION_QUESTION
 
 CODE_TECHNICAL_VERIFICATION_SCHEMA = "neocortex.code-technical-verification/v1"
 CODE_TECHNICAL_VERIFICATION_POLICY = (
-    "allowlisted-independent-evidence-complete-no-change-verifier-v4"
+    "allowlisted-independent-evidence-complete-no-change-verifier-v7"
 )
 CODE_TECHNICAL_VERIFICATION_MAX_REVIEWS = 256
 
@@ -97,6 +100,43 @@ _FRAMEWORK_REVIEW_TASK_ALL_GATES = (
     "page_publication_is_atomic_resumable_and_idempotent",
     "progress_and_event_heads_reject_stale_compare_and_swap",
     "semantically_changed_retry_is_rejected_as_snapshot_changed",
+)
+_PUBLIC_CLI_RUNTIME_GATES = (
+    "declared_entrypoint_and_effective_help_contract_are_observed",
+    "focal_question_and_storage_reads_are_bounded_and_immutable",
+    "special_human_canonical_and_flat_dispatch_precedence_is_exact",
+)
+_PUBLIC_CLI_COUNTER_GATES = (
+    "dynamic_hidden_and_static_surfaces_remain_explicitly_non_equivalent",
+    "invalid_abbreviated_and_incomplete_commands_fail_closed_without_state",
+)
+_PUBLIC_CLI_ALL_GATES = (
+    "declared_entrypoint_and_effective_help_contract_are_observed",
+    "dynamic_hidden_and_static_surfaces_remain_explicitly_non_equivalent",
+    "focal_question_and_storage_reads_are_bounded_and_immutable",
+    "invalid_abbreviated_and_incomplete_commands_fail_closed_without_state",
+    "special_human_canonical_and_flat_dispatch_precedence_is_exact",
+)
+_KNOWLEDGE_ASSET_HEALTH_COUNTER_GATES = (
+    "mismatch_absence_future_corruption_and_unpublished_fail_closed",
+    "snapshot_change_abstains_and_search_health_identity_is_stable",
+)
+_KNOWLEDGE_ASSET_HEALTH_ALL_GATES = (
+    "aligned_four_stage_causal_trace_is_healthy",
+    "mismatch_absence_future_corruption_and_unpublished_fail_closed",
+    "public_read_is_read_only_and_resource_identity_is_strict",
+    "snapshot_change_abstains_and_search_health_identity_is_stable",
+)
+_KNOWLEDGE_PDF_ASSET_HEALTH_COUNTER_GATES = (
+    "page_staging_fts_and_catalog_mismatch_fail_closed",
+    "recovery_is_version_and_message_independent",
+    "wal_snapshot_and_owner_ambiguity_remain_read_only",
+)
+_KNOWLEDGE_PDF_ASSET_HEALTH_ALL_GATES = (
+    "page_staging_fts_and_catalog_mismatch_fail_closed",
+    "recovery_is_version_and_message_independent",
+    "typed_pdf_states_preserve_partial_and_protected_semantics",
+    "wal_snapshot_and_owner_ambiguity_remain_read_only",
 )
 
 
@@ -193,6 +233,51 @@ _TECHNICAL_POLICIES = (
         ),
     ),
     _TechnicalPolicy(
+        CLI_SURFACE_QUESTION.question_id,
+        CLI_SURFACE_QUESTION.version,
+        analysis_question_spec_fingerprint(CLI_SURFACE_QUESTION),
+        "entrypoint:neocortex-interface-surface",
+        "interfaces.public_cli_contract_acceptance",
+        _PUBLIC_CLI_ALL_GATES,
+        "the_published_static_cli_projection_is_complete_and_the_selected_public_parser_help_invalid_input_dispatch_focal_question_and_storage_controls_pass",
+        "public_cli_parser_help_dispatch_and_focal_observability_matrix_passed_without_a_change_signal",
+        (
+            "selected_parser_controls_do_not_execute_every_command_handler_or_resolve_every_question",
+            "the_disposition_does_not_cover_gui_mcp_workers_or_external_effects",
+            "candidate_wheel_installation_remains_a_separate_validation_gate",
+        ),
+    ),
+    _TechnicalPolicy(
+        KNOWLEDGE_ASSET_HEALTH_QUESTION.question_id,
+        KNOWLEDGE_ASSET_HEALTH_QUESTION.version,
+        analysis_question_spec_fingerprint(KNOWLEDGE_ASSET_HEALTH_QUESTION),
+        "capability:knowledge-asset-health",
+        "knowledge.asset_health_causal_acceptance",
+        _KNOWLEDGE_ASSET_HEALTH_ALL_GATES,
+        "the_versioned_inventory_text_catalog_and_search_identity_contracts_match_and_the_bounded_read_only_causal_health_negative_controls_pass",
+        "knowledge_asset_health_causal_matrix_passed_without_a_change_signal",
+        (
+            "the_text_fixture_does_not_prove_pdf_docx_office_or_every_future_source_owner",
+            "identity_and_publication_integrity_do_not_establish_semantic_truth_of_content",
+            "sqlite_snapshot_controls_do_not_prove_distributed_power_loss_safety",
+        ),
+    ),
+    _TechnicalPolicy(
+        KNOWLEDGE_PDF_ASSET_HEALTH_QUESTION.question_id,
+        KNOWLEDGE_PDF_ASSET_HEALTH_QUESTION.version,
+        analysis_question_spec_fingerprint(KNOWLEDGE_PDF_ASSET_HEALTH_QUESTION),
+        "capability:knowledge-asset-health:pdf",
+        "knowledge.pdf_asset_health_causal_acceptance",
+        _KNOWLEDGE_PDF_ASSET_HEALTH_ALL_GATES,
+        "the_versioned_pdf_owner_page_state_recovery_and_public_read_contracts_match_and_the_bounded_read_only_partial_protected_mismatch_recovery_and_snapshot_controls_pass",
+        "knowledge_pdf_asset_health_causal_matrix_passed_without_a_change_signal",
+        (
+            "bounded_pdf_fixtures_do_not_establish_ocr_visual_or_semantic_content_fidelity",
+            "process_recovery_controls_do_not_prove_power_loss_or_filesystem_failure_safety",
+            "the_disposition_does_not_authorize_corpus_or_product_state_mutation",
+        ),
+    ),
+    _TechnicalPolicy(
         RETENTION_HOLD_QUESTION.question_id,
         RETENTION_HOLD_QUESTION.version,
         analysis_question_spec_fingerprint(RETENTION_HOLD_QUESTION),
@@ -275,7 +360,7 @@ _TECHNICAL_POLICIES = (
 
 def _technical_policy_registry_fingerprint() -> str:
     return analysis_identity(
-        "code-technical-verification-policy-v4",
+        "code-technical-verification-policy-v7",
         tuple(asdict(item) for item in _TECHNICAL_POLICIES),
     )
 
@@ -749,7 +834,279 @@ def _framework_review_task_protocol_predicate(
     )
 
 
-def _nonnegative_integer(value: object) -> bool:
+def _receipt_requirement_evidence(
+    evaluation: AnalysisQuestionEvaluation,
+    requirement_id: str,
+    *,
+    template_id: str,
+    role: Literal["supporting", "counterevidence", "experiment_result"],
+    evidence_kind: Literal["runtime_observation", "experiment_result"],
+    gate_ids: tuple[str, ...],
+    relation_count: int,
+) -> AnalysisEvidenceRef | None:
+    requirements = tuple(
+        item for item in evaluation.requirements if item.requirement_id == requirement_id
+    )
+    if len(requirements) != 1 or len(requirements[0].evidence_ids) != 1:
+        return None
+    evidence = {item.evidence_id: item for item in evaluation.evidence}.get(
+        requirements[0].evidence_ids[0]
+    )
+    if evidence is None:
+        return None
+    facts = _fact_map(evidence)
+    replayed = facts.get("source_evaluation_replayed")
+    recorded_ns = facts.get("recorded_ns")
+    if not (
+        evidence.role == role
+        and evidence.evidence_kind == evidence_kind
+        and evidence.source_record_kind == "code_experiment_receipt"
+        and evidence.completeness == "complete"
+        and evidence.bounded
+        and not evidence.truncated
+        and evidence.authority == "advisory"
+        and not evidence.mutation_authority
+        and set(facts)
+        == {
+            "receipt_status",
+            "template_id",
+            "source_evaluation_replayed",
+            "gate_ids",
+            "gate_count",
+            "relation_count",
+            "recorded_ns",
+        }
+        and facts.get("receipt_status") == "passed"
+        and facts.get("template_id") == template_id
+        and isinstance(replayed, bool)
+        and facts.get("gate_ids") == ",".join(gate_ids)
+        and facts.get("gate_count") == len(gate_ids)
+        and facts.get("relation_count") == relation_count
+        and isinstance(recorded_ns, int)
+        and not isinstance(recorded_ns, bool)
+        and recorded_ns > 0
+    ):
+        return None
+    return evidence
+
+
+def _public_cli_contract_predicate(evaluation: AnalysisQuestionEvaluation) -> bool:
+    projections = _record_facts(evaluation, "entrypoint_surface_projection")
+    if len(projections) != 1:
+        return False
+    facts = projections[0]
+    expected_names = {
+        "cli_candidate_files",
+        "exact_cli_files",
+        "incomplete_cli_files",
+        "errored_cli_files",
+        "recorded_argparse_call_sites",
+        "ast_argparse_call_sites",
+    }
+    if set(facts) != expected_names:
+        return False
+    candidate_files = facts.get("cli_candidate_files")
+    exact_files = facts.get("exact_cli_files")
+    recorded_calls = facts.get("recorded_argparse_call_sites")
+    ast_calls = facts.get("ast_argparse_call_sites")
+    if not (
+        _nonnegative_integer(candidate_files)
+        and candidate_files > 0
+        and exact_files == candidate_files
+        and facts.get("incomplete_cli_files") == 0
+        and facts.get("errored_cli_files") == 0
+        and _nonnegative_integer(recorded_calls)
+        and recorded_calls > 0
+        and ast_calls == recorded_calls
+    ):
+        return False
+    runtime = _receipt_requirement_evidence(
+        evaluation,
+        "effective_runtime_parser_contract_observed",
+        template_id="interfaces.public_cli_contract_acceptance",
+        role="supporting",
+        evidence_kind="runtime_observation",
+        gate_ids=_PUBLIC_CLI_RUNTIME_GATES,
+        relation_count=13,
+    )
+    counter = _receipt_requirement_evidence(
+        evaluation,
+        "dynamic_cli_construction_counterevidence_evaluated",
+        template_id="interfaces.public_cli_contract_acceptance",
+        role="counterevidence",
+        evidence_kind="runtime_observation",
+        gate_ids=_PUBLIC_CLI_COUNTER_GATES,
+        relation_count=13,
+    )
+    experiment = _receipt_requirement_evidence(
+        evaluation,
+        "public_cli_acceptance_scenario_result",
+        template_id="interfaces.public_cli_contract_acceptance",
+        role="experiment_result",
+        evidence_kind="experiment_result",
+        gate_ids=_PUBLIC_CLI_ALL_GATES,
+        relation_count=26,
+    )
+    return (
+        runtime is not None
+        and counter is not None
+        and experiment is not None
+        and len(
+            {
+                runtime.source_record_id,
+                counter.source_record_id,
+                experiment.source_record_id,
+            }
+        )
+        == 1
+    )
+
+
+def _knowledge_asset_health_predicate(evaluation: AnalysisQuestionEvaluation) -> bool:
+    if not _exact_record_facts(
+        evaluation,
+        "knowledge_asset_health_owner_store_contract",
+        {
+            "state_store_registry_schema": "neocortex.state-store-registry/v1",
+            "causal_stage_owners": "inventory,text,catalog,knowledge",
+            "state_owner_ids": "inventory,text,catalog",
+            "state_store_ids": (
+                "sqlite:dedup.sqlite3,sqlite:text.sqlite3,"
+                "sqlite:document_catalog.sqlite3"
+            ),
+            "inventory_schema_version": 10,
+            "text_schema_version": 2,
+            "catalog_schema_version": 7,
+            "knowledge_contract_version": 1,
+        },
+    ) or not _exact_record_facts(
+        evaluation,
+        "knowledge_asset_health_causal_identity_contract",
+        {
+            "resource_id_scheme": "resource:file:{volume_id}:{file_id}:{birthtime_ns}",
+            "identity_components": "volume_id,file_id,birthtime_ns",
+            "text_route_version": "text-route-v2",
+            "health_contract_version": 1,
+        },
+    ) or not _exact_record_facts(
+        evaluation,
+        "knowledge_asset_health_public_read_contract",
+        {
+            "health_schema": "neocortex.knowledge-asset-health/v1",
+            "health_source_version": "knowledge-asset-health-v1",
+            "public_read": "neocortex.read_api.asset_health_payload",
+            "service": (
+                "_04_Nucleo_Operativo.knowledge_asset_health."
+                "inspect_knowledge_asset_health"
+            ),
+            "operation": "knowledge-health",
+            "read_only": True,
+            "advisory_only": True,
+            "mutation_authority": False,
+        },
+    ):
+        return False
+    counter = _receipt_requirement_evidence(
+        evaluation,
+        "knowledge_asset_health_stale_mismatch_and_absence_counterevidence_evaluated",
+        template_id="knowledge.asset_health_causal_acceptance",
+        role="counterevidence",
+        evidence_kind="runtime_observation",
+        gate_ids=_KNOWLEDGE_ASSET_HEALTH_COUNTER_GATES,
+        relation_count=9,
+    )
+    experiment = _receipt_requirement_evidence(
+        evaluation,
+        "isolated_knowledge_asset_health_causal_experiment_result",
+        template_id="knowledge.asset_health_causal_acceptance",
+        role="experiment_result",
+        evidence_kind="experiment_result",
+        gate_ids=_KNOWLEDGE_ASSET_HEALTH_ALL_GATES,
+        relation_count=12,
+    )
+    return (
+        counter is not None
+        and experiment is not None
+        and counter.source_record_id == experiment.source_record_id
+    )
+
+
+def _knowledge_pdf_asset_health_predicate(
+    evaluation: AnalysisQuestionEvaluation,
+) -> bool:
+    if not _exact_record_facts(
+        evaluation,
+        "knowledge_pdf_asset_health_owner_store_contract",
+        {
+            "state_store_registry_schema": "neocortex.state-store-registry/v1",
+            "logical_owner_id": "pdf",
+            "state_owner_id": "pdf",
+            "state_store_id": "sqlite:pdf.sqlite3",
+            "database_name": "pdf.sqlite3",
+            "pdf_schema_version": 13,
+            "inventory_schema_version": 10,
+            "catalog_schema_version": 7,
+            "knowledge_contract_version": 1,
+        },
+    ) or not _exact_record_facts(
+        evaluation,
+        "knowledge_pdf_asset_health_page_state_and_recovery_contract",
+        {
+            "pdf_route_version": "pdf-route-v3",
+            "pdf_failure_version": "pdf-failure-v3",
+            "pdf_structural_recovery_version": "pdf-structural-recovery-v2",
+            "integrated_phases": "extraction,text_dedup,derived,catalog",
+            "nonterminal_document_statuses": "processing",
+            "terminal_document_statuses": "done,partial,protected,error",
+            "catalog_accepted_document_statuses": "done,partial",
+        },
+    ) or not _exact_record_facts(
+        evaluation,
+        "knowledge_pdf_asset_health_public_read_contract",
+        {
+            "health_contract_version": 1,
+            "health_schema": "neocortex.knowledge-asset-health/v1",
+            "health_source_version": "knowledge-asset-health-v1",
+            "resource_id_scheme": "resource:file:{volume_id}:{file_id}:{birthtime_ns}",
+            "identity_components": "volume_id,file_id,birthtime_ns",
+            "public_read": "neocortex.read_api.asset_health_payload",
+            "service": (
+                "_04_Nucleo_Operativo.knowledge_asset_health."
+                "inspect_knowledge_asset_health"
+            ),
+            "operation": "knowledge-health",
+            "read_only": True,
+            "advisory_only": True,
+            "mutation_authority": False,
+        },
+    ):
+        return False
+    counter = _receipt_requirement_evidence(
+        evaluation,
+        "knowledge_pdf_asset_health_partial_protected_recovery_counterevidence_evaluated",
+        template_id="knowledge.pdf_asset_health_causal_acceptance",
+        role="counterevidence",
+        evidence_kind="runtime_observation",
+        gate_ids=_KNOWLEDGE_PDF_ASSET_HEALTH_COUNTER_GATES,
+        relation_count=9,
+    )
+    experiment = _receipt_requirement_evidence(
+        evaluation,
+        "isolated_knowledge_pdf_asset_health_causal_experiment_result",
+        template_id="knowledge.pdf_asset_health_causal_acceptance",
+        role="experiment_result",
+        evidence_kind="experiment_result",
+        gate_ids=_KNOWLEDGE_PDF_ASSET_HEALTH_ALL_GATES,
+        relation_count=12,
+    )
+    return (
+        counter is not None
+        and experiment is not None
+        and counter.source_record_id == experiment.source_record_id
+    )
+
+
+def _nonnegative_integer(value: object) -> TypeGuard[int]:
     return isinstance(value, int) and not isinstance(value, bool) and value >= 0
 
 
@@ -847,6 +1204,12 @@ def _policy_predicate(
         return _supply_chain_predicate(evaluation, domain="dependency")
     if policy.question_id == FRAMEWORK_REVIEW_TASK_PROTOCOL_QUESTION.question_id:
         return _framework_review_task_protocol_predicate(evaluation)
+    if policy.question_id == CLI_SURFACE_QUESTION.question_id:
+        return _public_cli_contract_predicate(evaluation)
+    if policy.question_id == KNOWLEDGE_ASSET_HEALTH_QUESTION.question_id:
+        return _knowledge_asset_health_predicate(evaluation)
+    if policy.question_id == KNOWLEDGE_PDF_ASSET_HEALTH_QUESTION.question_id:
+        return _knowledge_pdf_asset_health_predicate(evaluation)
     if policy.question_id == RETENTION_HOLD_QUESTION.question_id:
         return _retention_predicate(evaluation)
     if policy.question_id == SECURITY_EVIDENCE_QUESTION.question_id:

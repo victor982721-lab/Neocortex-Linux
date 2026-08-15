@@ -103,6 +103,46 @@ def register_code_arguments(
         ),
     )
     code.add_argument(
+        "--code-question",
+        metavar="QUESTION_ID",
+        help=(
+            "resolve one exact registered Code question from its focal published evidence reader"
+        ),
+    )
+    code.add_argument(
+        "--code-question-limit",
+        type=int,
+        default=10,
+        metavar="N",
+        help="return between 1 and 50 focal evaluations (default 10)",
+    )
+    code.add_argument(
+        "--code-storage",
+        action="store_true",
+        help="inspect bounded immutable storage, growth and retention evidence",
+    )
+    code.add_argument(
+        "--code-storage-run-limit",
+        type=int,
+        default=20,
+        metavar="N",
+        help="inspect between 1 and 50 newest Code runs (default 20)",
+    )
+    code.add_argument(
+        "--code-storage-row-scan-limit",
+        type=int,
+        default=250_000,
+        metavar="N",
+        help="bound each storage row observation to 1..1000000 rows",
+    )
+    code.add_argument(
+        "--code-storage-retain-runs",
+        type=int,
+        default=None,
+        metavar="N",
+        help="preview retaining N completed runs (default min(5, run limit)); never deletes",
+    )
+    code.add_argument(
         "--code-validate-change",
         action="store_true",
         help=(
@@ -129,7 +169,10 @@ def register_code_arguments(
         type=int,
         default=900,
         metavar="SECONDS",
-        help="hard affected-test coverage budget (30..900 seconds; default 900)",
+        help=(
+            "nominal affected-test coverage budget (30..900 seconds; default 900); "
+            "validated shard progress permits one bounded extension"
+        ),
     )
     code.add_argument(
         "--code-review-limit",
@@ -313,6 +356,41 @@ def _validate_code_query_selection(
         raise SystemExit("--code-query-baseline is only valid with --code-query diff")
 
 
+def _validate_code_observability_selection(
+    args: argparse.Namespace,
+    explicit: set[str],
+) -> None:
+    question_options = {"code_question_limit"}
+    if question_options.intersection(explicit) and args.code_question is None:
+        raise SystemExit("--code-question-limit requires --code-question")
+    if args.code_question is not None and (
+        not args.code_question
+        or args.code_question.strip() != args.code_question
+        or len(args.code_question) > 256
+    ):
+        raise SystemExit("--code-question must be non-empty trimmed text up to 256 characters")
+    if not 1 <= args.code_question_limit <= 50:
+        raise SystemExit("--code-question-limit must be between 1 and 50")
+
+    storage_options = {
+        "code_storage_run_limit",
+        "code_storage_row_scan_limit",
+        "code_storage_retain_runs",
+    }
+    if storage_options.intersection(explicit) and not args.code_storage:
+        raise SystemExit("code storage limits require --code-storage")
+    if not 1 <= args.code_storage_run_limit <= 50:
+        raise SystemExit("--code-storage-run-limit must be between 1 and 50")
+    if not 1 <= args.code_storage_row_scan_limit <= 1_000_000:
+        raise SystemExit("--code-storage-row-scan-limit must be between 1 and 1000000")
+    if args.code_storage_retain_runs is not None and not (
+        1 <= args.code_storage_retain_runs <= args.code_storage_run_limit
+    ):
+        raise SystemExit(
+            "--code-storage-retain-runs must be between 1 and --code-storage-run-limit"
+        )
+
+
 def validate_code_arguments(args: argparse.Namespace) -> None:
     """Validate Code route and direct selections in the established order."""
 
@@ -343,6 +421,7 @@ def validate_code_arguments(args: argparse.Namespace) -> None:
     _validate_code_review_selection(args, explicit)
     _validate_change_validation(args, explicit)
     _validate_code_query_selection(args, explicit)
+    _validate_code_observability_selection(args, explicit)
     search_options = {
         "code_search_mode",
         "code_search_limit",

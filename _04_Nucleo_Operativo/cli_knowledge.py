@@ -236,6 +236,60 @@ def run_knowledge_status(args: argparse.Namespace) -> int:
     return int(_snapshot_exit_code(snapshot))
 
 
+def _knowledge_health_exit_code(report: object) -> KnowledgeExitCode:
+    completeness = getattr(getattr(report, "completeness", None), "value", None)
+    reason = getattr(report, "reason_code", None)
+    gaps = tuple(
+        item for item in getattr(report, "gaps", ()) if isinstance(item, str)
+    )
+    if completeness == "complete":
+        return KnowledgeExitCode.SUCCESS
+    if completeness == "no_evidence":
+        return KnowledgeExitCode.NO_RESULTS
+    if reason == "snapshot_changed":
+        return KnowledgeExitCode.SNAPSHOT_CHANGED
+    if (isinstance(reason, str) and "corrupt" in reason) or any(
+        "corrupt" in item for item in gaps
+    ):
+        return KnowledgeExitCode.CORRUPT
+    if (isinstance(reason, str) and ("schema" in reason or "incompatible" in reason)) or any(
+        "schema" in item or "future" in item or "incompatible" in item
+        for item in gaps
+    ):
+        return KnowledgeExitCode.SCHEMA_INCOMPATIBLE
+    return KnowledgeExitCode.PARTIAL
+
+
+def run_knowledge_health(args: argparse.Namespace) -> int:
+    try:
+        from .knowledge_asset_health import inspect_knowledge_asset_health
+        from .knowledge_asset_health_contracts import KnowledgeAssetHealthQuery
+        from .knowledge_snapshot import KnowledgeStatePaths
+
+        query = KnowledgeAssetHealthQuery(args.knowledge_health)
+        report = inspect_knowledge_asset_health(
+            KnowledgeStatePaths.from_directory(args.state_directory),
+            query,
+        )
+    except ValueError as exc:
+        _print_console_line(f"ERROR knowledge-health ValueError: {exc}", file=sys.stderr)
+        return int(KnowledgeExitCode.USAGE)
+    except (OSError, RuntimeError, sqlite3.Error, TypeError) as exc:
+        return _failure("knowledge-health", exc)
+    if args.knowledge_json:
+        _print_console_line(report.to_json())
+    else:
+        _print_console_line(
+            f"KNOWLEDGE_HEALTH resource={report.resource_id} "
+            f"health={report.health.value} completeness={report.completeness.value} "
+            f"reason={report.reason_code or '-'} snapshot={report.knowledge_snapshot_id or '-'}"
+        )
+        for gap in report.gaps:
+            _print_console_line(f"KNOWLEDGE_HEALTH_GAP {gap}")
+        _print_console_line("No se creó, migró ni modificó estado.")
+    return int(_knowledge_health_exit_code(report))
+
+
 def run_knowledge_search(args: argparse.Namespace) -> int:
     try:
         query = _query(args, args.knowledge_search)
@@ -287,6 +341,7 @@ __all__ = (
     "knowledge_context_exit_code",
     "knowledge_search_exit_code",
     "run_knowledge_context",
+    "run_knowledge_health",
     "run_knowledge_search",
     "run_knowledge_status",
 )

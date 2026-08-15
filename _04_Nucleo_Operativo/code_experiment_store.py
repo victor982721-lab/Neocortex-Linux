@@ -656,6 +656,15 @@ class _RequirementBinding:
     template_id: str
     requirement_id: str
     gate_ids: tuple[str, ...]
+    evidence_kind: Literal["experiment_result", "runtime_observation"] = "experiment_result"
+
+    def __post_init__(self) -> None:
+        if not self.question_id or not self.template_id or not self.requirement_id:
+            raise ValueError("experiment requirement binding identity is invalid")
+        if not self.gate_ids or len(set(self.gate_ids)) != len(self.gate_ids):
+            raise ValueError("experiment requirement binding gates are invalid")
+        if self.evidence_kind not in {"experiment_result", "runtime_observation"}:
+            raise ValueError("experiment requirement binding evidence kind is invalid")
 
 
 _REQUIREMENT_BINDINGS: tuple[_RequirementBinding, ...] = (
@@ -783,6 +792,49 @@ _REQUIREMENT_BINDINGS: tuple[_RequirementBinding, ...] = (
         ),
     ),
     _RequirementBinding(
+        "knowledge.asset_health_trace_is_snapshot_bound_and_causally_explainable",
+        "knowledge.asset_health_causal_acceptance",
+        "knowledge_asset_health_stale_mismatch_and_absence_counterevidence_evaluated",
+        (
+            "mismatch_absence_future_corruption_and_unpublished_fail_closed",
+            "snapshot_change_abstains_and_search_health_identity_is_stable",
+        ),
+        "runtime_observation",
+    ),
+    _RequirementBinding(
+        "knowledge.asset_health_trace_is_snapshot_bound_and_causally_explainable",
+        "knowledge.asset_health_causal_acceptance",
+        "isolated_knowledge_asset_health_causal_experiment_result",
+        (
+            "aligned_four_stage_causal_trace_is_healthy",
+            "mismatch_absence_future_corruption_and_unpublished_fail_closed",
+            "public_read_is_read_only_and_resource_identity_is_strict",
+            "snapshot_change_abstains_and_search_health_identity_is_stable",
+        ),
+    ),
+    _RequirementBinding(
+        "knowledge.pdf_asset_health_preserves_page_partial_protected_and_recovery_causality",
+        "knowledge.pdf_asset_health_causal_acceptance",
+        "knowledge_pdf_asset_health_partial_protected_recovery_counterevidence_evaluated",
+        (
+            "page_staging_fts_and_catalog_mismatch_fail_closed",
+            "recovery_is_version_and_message_independent",
+            "wal_snapshot_and_owner_ambiguity_remain_read_only",
+        ),
+        "runtime_observation",
+    ),
+    _RequirementBinding(
+        "knowledge.pdf_asset_health_preserves_page_partial_protected_and_recovery_causality",
+        "knowledge.pdf_asset_health_causal_acceptance",
+        "isolated_knowledge_pdf_asset_health_causal_experiment_result",
+        (
+            "page_staging_fts_and_catalog_mismatch_fail_closed",
+            "recovery_is_version_and_message_independent",
+            "typed_pdf_states_preserve_partial_and_protected_semantics",
+            "wal_snapshot_and_owner_ambiguity_remain_read_only",
+        ),
+    ),
+    _RequirementBinding(
         "retention.dry_run_preserves_declared_durable_holds",
         "retention.durable_hold_safety",
         "isolated_retention_safety_experiment_result",
@@ -813,6 +865,39 @@ _REQUIREMENT_BINDINGS: tuple[_RequirementBinding, ...] = (
             "pip_audit_contract_records_bounded_phase_complete_result",
             "provider_environment_strips_credentials_and_disables_networked_modes",
             "provider_replay_is_bound_to_exact_domains_versions_and_result_digests",
+        ),
+    ),
+    _RequirementBinding(
+        "structure.static_cli_calls_require_runtime_contract_evidence",
+        "interfaces.public_cli_contract_acceptance",
+        "effective_runtime_parser_contract_observed",
+        (
+            "declared_entrypoint_and_effective_help_contract_are_observed",
+            "focal_question_and_storage_reads_are_bounded_and_immutable",
+            "special_human_canonical_and_flat_dispatch_precedence_is_exact",
+        ),
+        "runtime_observation",
+    ),
+    _RequirementBinding(
+        "structure.static_cli_calls_require_runtime_contract_evidence",
+        "interfaces.public_cli_contract_acceptance",
+        "dynamic_cli_construction_counterevidence_evaluated",
+        (
+            "dynamic_hidden_and_static_surfaces_remain_explicitly_non_equivalent",
+            "invalid_abbreviated_and_incomplete_commands_fail_closed_without_state",
+        ),
+        "runtime_observation",
+    ),
+    _RequirementBinding(
+        "structure.static_cli_calls_require_runtime_contract_evidence",
+        "interfaces.public_cli_contract_acceptance",
+        "public_cli_acceptance_scenario_result",
+        (
+            "declared_entrypoint_and_effective_help_contract_are_observed",
+            "dynamic_hidden_and_static_surfaces_remain_explicitly_non_equivalent",
+            "focal_question_and_storage_reads_are_bounded_and_immutable",
+            "invalid_abbreviated_and_incomplete_commands_fail_closed_without_state",
+            "special_human_canonical_and_flat_dispatch_precedence_is_exact",
         ),
     ),
     _RequirementBinding(
@@ -865,6 +950,7 @@ def _experiment_evidence(
     resolved: ResolvedCodeExperimentReceipt,
     *,
     role: Literal["supporting", "counterevidence", "experiment_result"],
+    evidence_kind: Literal["experiment_result", "runtime_observation"] = "experiment_result",
 ) -> AnalysisEvidenceRef:
     receipt = resolved.receipt
     gates = {item.gate_id: item for item in receipt.gate_outcomes}
@@ -895,7 +981,7 @@ def _experiment_evidence(
         evidence_id=evidence_id,
         subject_key=evaluation.subject.subject_key,
         role=role,
-        evidence_kind="experiment_result",
+        evidence_kind=evidence_kind,
         source_owner_id="code",
         producer_id="code-experiment-executor",
         producer_version=receipt.policy_id,
@@ -997,7 +1083,7 @@ def apply_code_experiment_receipts(
             requirement = requirement_specs.get(binding.requirement_id)
             if (
                 requirement is None
-                or "experiment_result" not in requirement.accepted_evidence_kinds
+                or binding.evidence_kind not in requirement.accepted_evidence_kinds
             ):
                 raise CodeExperimentStoreError("experiment_evidence_binding_contract_changed")
             evidence = _experiment_evidence(
@@ -1006,6 +1092,7 @@ def apply_code_experiment_receipts(
                 binding.gate_ids,
                 linked_receipt,
                 role=requirement.role,  # type: ignore[arg-type]
+                evidence_kind=binding.evidence_kind,
             )
             new_evidence.append(evidence)
             current_requirement = next(

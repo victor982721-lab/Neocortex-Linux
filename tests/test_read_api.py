@@ -13,6 +13,10 @@ from _04_Nucleo_Operativo.knowledge_contracts import (
     OwnerAvailability,
     SnapshotConsistency,
 )
+from _04_Nucleo_Operativo.knowledge_asset_health_contracts import (
+    KnowledgeAssetHealthCompleteness,
+    KnowledgeAssetHealthState,
+)
 from neocortex import read_api
 
 
@@ -233,6 +237,51 @@ def test_lineage_uses_only_fixed_scope_roots_and_keeps_results_independent(
     assert payload["exit_code"] == int(KnowledgeExitCode.SUCCESS)
 
 
+def test_asset_health_uses_stable_identity_and_fixed_scopes_without_creating_state(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from _04_Nucleo_Operativo import knowledge_asset_health
+
+    bindings = _bindings(tmp_path)
+    observed: list[tuple[Path, str]] = []
+    resource_id = "resource:file:1:2:-1"
+    monkeypatch.setattr(read_api, "scope_bindings", lambda _scope: bindings)
+
+    def inspect(paths, query):
+        observed.append((paths.inventory.parent, query.resource_id))
+        return SimpleNamespace(
+            resource_id=query.resource_id,
+            health=KnowledgeAssetHealthState.HEALTHY,
+            completeness=KnowledgeAssetHealthCompleteness.COMPLETE,
+            reason_code="causal_trace_aligned",
+            to_dict=lambda: {
+                "schema": "neocortex.knowledge-asset-health/v1",
+                "resource_id": query.resource_id,
+                "health": "healthy",
+                "completeness": "complete",
+                "reason_code": "causal_trace_aligned",
+                "read_only": True,
+                "advisory_only": True,
+                "mutation_authorized": False,
+            },
+        )
+
+    monkeypatch.setattr(knowledge_asset_health, "inspect_knowledge_asset_health", inspect)
+
+    payload = read_api.asset_health_payload(resource_id, "all")
+
+    assert payload["read_only"] is True
+    assert payload["resource_id"] == resource_id
+    assert observed == [
+        (tmp_path / "personal", resource_id),
+        (tmp_path / "framework", resource_id),
+    ]
+    assert [item["status"] for item in payload["scopes"]] == ["healthy", "healthy"]
+    assert not (tmp_path / "personal").exists()
+    assert not (tmp_path / "framework").exists()
+
+
 @pytest.mark.parametrize(
     ("call", "match"),
     [
@@ -247,6 +296,10 @@ def test_lineage_uses_only_fixed_scope_roots_and_keeps_results_independent(
             "unsupported",
         ),
         (lambda: read_api.lineage_payload(" "), "identifier cannot be blank"),
+        (
+            lambda: read_api.asset_health_payload("/arbitrary/path"),
+            "resource:file identity scheme",
+        ),
     ],
 )
 def test_public_read_api_rejects_unbounded_or_ambiguous_inputs(call, match: str) -> None:

@@ -153,9 +153,14 @@ def immutable_sqlite_database(
     finally:
         if connection is not None:
             connection.close()
-        after = capture_sqlite_immutable_fence(selected)
-        if before != after:
-            raise ImmutableSQLiteUnavailable("SQLite owner changed during immutable read")
+            try:
+                after = capture_sqlite_immutable_fence(selected)
+            except FileNotFoundError as exc:
+                raise ImmutableSQLiteUnavailable(
+                    "SQLite owner changed during immutable read"
+                ) from exc
+            if before != after:
+                raise ImmutableSQLiteUnavailable("SQLite owner changed during immutable read")
 
 
 __all__ = [

@@ -14,7 +14,10 @@ que conviene conocer antes de usar `--help`.
 | Buscar evidencia | `Neocortex search "consulta" --scope personal --limit 20` |
 | Preparar contexto citado | `Neocortex ask "consulta" --scope personal --limit 12` |
 | Inspeccionar Code | `Neocortex inspect code "consulta" --scope framework` |
+| Resolver una pregunta Code focal | `Neocortex code question QUESTION_ID --limit 10 --json` |
+| Observar almacenamiento Code | `Neocortex code storage --run-limit 20 --json` |
 | Explicar una derivación | `Neocortex inspect lineage IDENTIFICADOR --scope personal` |
+| Explicar salud causal Text/PDF | `Neocortex knowledge health RESOURCE_ID --scope all --json` |
 | Revisar valor sin cambios | `Neocortex review value --scope personal` |
 | Avanzar una página durable de revisión | `Neocortex review value --refresh --scope personal` |
 | Diagnóstico de una corrida | `Neocortex --status --status-json` |
@@ -217,7 +220,11 @@ Neocortex --self-analysis --analysis-profile trusted-deep --root $Root --state-d
 
 `--deep-test-selector` acepta sólo una ruta relativa bajo `tests/` o un node id
 de Pytest y puede repetirse. `--deep-max-tests` admite 1–5000 (3000 por defecto),
-`--deep-time-budget-seconds` 30–900 (600) y `--deep-shard-size` 1–50 (20). La
+`--deep-time-budget-seconds` 30–900 (600) y `--deep-shard-size` 1–50 (20). El
+presupuesto temporal es nominal: tras comprobar al menos un shard terminado o
+reutilizado, el proveedor puede continuar hasta una única cota de 2x. Emite en
+`stderr` eventos `NEOCORTEX_PROGRESS` al recolectar y al iniciar, reutilizar o
+terminar cada shard, con avance, duración y tiempo transcurrido. La
 selección vacía se publica como `full`; una o más selecciones, como `selected`.
 El manifest declara `content_executed=true`, la selección y la firma de estos
 controles.
@@ -236,10 +243,11 @@ un checkpoint portable de Dedup sin cursor y reporta
 `journal_usn_span=unavailable`; USN sólo acelera la enumeración incremental.
 
 `--code-status --code-json` consulta ese manifest sin crear ni migrar estado.
-Cada propietario exige un snapshot SQLite immutable y sidecar-free. Cualquier
-`-wal`, `-shm` o `-journal` —incluso vacío o desacoplado— junto a
-`code.sqlite3`, `framework.sqlite3` o `dedup.sqlite3`, o una cerca inestable en
-cualquiera de ellas, causa abstención total con código `2` sin tocar el estado.
+Cada propietario exige un snapshot SQLite immutable y una disposición inactiva
+demostrable: sin sidecars, o WAL vacío más SHM exacto de 32 KiB. Un rollback
+journal, WAL no vacío, SHM ausente/malformado o una cerca inestable junto a
+`code.sqlite3`, `framework.sqlite3` o `dedup.sqlite3` causa abstención total con
+código `2` sin tocar el estado.
 La salida añade `analysis_profile` y `external_evidence_suite`: lista cada
 proveedor, versión, ejecución, cobertura, findings, comparabilidad, gate y
 counters; `type_consensus` conserva por separado coincidencias y discrepancias
@@ -276,7 +284,7 @@ review y work packages consumen la misma evidencia; la ausencia o caducidad de
 un proveedor obliga a abstener sólo la dimensión afectada.
 
 `--code-review` consume esa publicación sin volver a analizar la raíz. El
-envelope `neocortex.code-review/v20` no declara compatibilidad con schemas
+envelope `neocortex.code-review/v22` no declara compatibilidad con schemas
 anteriores. Usa `neocortex.code-analysis-epistemics/v1`, una proyección general
 de preguntas con fingerprint de spec y evidencia resuelta contra IDs de
 registros Code. Publica observaciones estructurales confirmadas y separa hipótesis,
@@ -294,7 +302,7 @@ ruta; una clase de pruebas, un `Protocol` o un composition root siguen visibles
 como controles negativos y quedan `experiment_required`. El límite solicitado
 se aplica por familia de pregunta.
 
-v20 conserva `neocortex.code-interface-surface/v1`: observa módulos seleccionados
+v22 conserva `neocortex.code-interface-surface/v1`: observa módulos seleccionados
 por span/superficie directa, estructura de configuraciones JSON/TOML y llamadas
 estáticas `argparse`. No expone valores de configuración, no ejecuta módulos y
 no presenta option strings sintácticos como reachability o comportamiento del
@@ -310,7 +318,7 @@ logical owners declara selectores exactos para `text`, `semantic`, `knowledge`,
 asigna un owner por defecto. Su pregunta queda lista para caracterización, no
 para una decisión de cambio.
 
-Cuando `--code-review` consume el estado canónico protegido, v20 también publica
+Cuando `--code-review` consume el estado canónico protegido, v22 también publica
 `neocortex.code-state-projection/v1`. La observación compara revisiones Text
 elegibles (`complete`, revisión presente, blob presente y `text_chars > 0`) con
 miembros del head Semantic de texto publicado. Las lecturas usan `immutable=1`,
@@ -334,7 +342,7 @@ registrado o stale permanece faltante. La proyección de autoeficacia compara el
 snapshot publicado contra archivos Git visibles por digest y no publica
 precision/recall ni decision rate sin etiquetas independientes.
 
-v20 conserva `CODE_STATE_INTERACTIONS`, `CODE_INVARIANT_ASSURANCE`,
+v22 conserva `CODE_STATE_INTERACTIONS`, `CODE_INVARIANT_ASSURANCE`,
 `CODE_ROUTE_CAPABILITIES`, `CODE_ANALYZER_CALIBRATION` y
 `CODE_EXPERIMENT_PLAN`. SQL literal se parsea con el dialecto SQLite y se liga a
 store/workflow sólo por contratos explícitos. Los placeholders SQLite `?NNN`
@@ -361,8 +369,12 @@ gates), `capability.public_route_acceptance` (un nodeid),
 `state.semantic_process_death_recovery` (un nodeid con tres gates),
 `evolution.code_schema_upgrade_matrix` (cinco nodeids con cuatro gates),
 `retention.durable_hold_safety` (catorce nodeids exactos y cuatro gates),
-`security.bounded_boundary_scenarios` (diez nodeids y siete gates) y
-`framework.review_task_protocol_acceptance` (ocho nodeids y cinco gates). El registry
+`security.bounded_boundary_scenarios` (diez nodeids y siete gates),
+`framework.review_task_protocol_acceptance` (ocho nodeids y cinco gates),
+`interfaces.public_cli_contract_acceptance` v3 (veintiséis nodeids y cinco gates) y
+`knowledge.asset_health_causal_acceptance` (doce nodeids y cuatro gates) y
+`knowledge.pdf_asset_health_causal_acceptance` (doce nodeids y cuatro gates,
+distribuidos 5/3/3/1). Los registries runtime/template son v11. El registry
 general contiene otros
 escenarios de assurance/calibración, pero no por ello son ejecutables desde esta
 opción. El escenario arquitectónico verifica sólo los contratos de imports
@@ -372,6 +384,14 @@ El escenario ReviewTask usa un Framework SQLite temporal y recorre
 `show → claim → retry → decide → retry → history` por la CLI pública. Comprueba
 CAS, replay y rollback acotados, pero el actor es sintético/no autenticado y las
 excepciones inyectadas no demuestran muerte de proceso ni pérdida de energía.
+El escenario CLI v3 comprueba ayuda/traducción, precedencia de dispatch,
+rechazos acotados y las lecturas focales de pregunta/storage; no ejecuta cada
+handler, GUI, servidor MCP, worker ni efecto externo. Knowledge Asset Health usa
+fixtures Text y PDF en `tmp_path` y verifica alineación, mismatch, ausencia,
+publicación, identidad, páginas/staging/errores/FTS, recovery estructural y
+cambio de snapshot. El binding PDF exige nueve relaciones de contraevidencia y
+doce para el resultado completo; no inspecciona contenido/OCR, no prueba
+fidelidad visual o semántica, otros owners ni power loss.
 
 Pytest corre directamente sobre la raíz canónica confiable. El temporal fuera
 del repo aloja runtime y checkpoints: no es una copia de la fuente ni un sandbox;
@@ -387,13 +407,13 @@ Al terminar, el comando **sí escribe** una evidencia acotada: inserta el receip
 en la tabla append-only de Code schema v6 y, con `--code-json`, devuelve el
 envelope `neocortex.code-experiment-store/v1` que contiene ese receipt. Por eso
 `code_database_unchanged=true` no significa que la invocación completa sea
-read-only. El review v20 posterior evalúa el terminal más nuevo del proposal y
+read-only. El review v22 posterior evalúa el terminal más nuevo del proposal y
 la processing signature vigentes; puede reutilizar un `passed` de un run Code
 completado previo cuando el vigente es un replay exacto con la misma firma. Un
 terminal posterior `failed` o `abstained`, o uno stale, corrupto o sin binding,
 permanece auditable pero no satisface evidencia. El envelope digest liga todo el
 contexto durable. El enlace no suplanta a un actor humano. El verificador
-técnico allow-listed de v20 puede publicar
+técnico allow-listed v6 de v22 puede publicar
 `no_change_required_within_verified_scope` tras volver a comprobar contrato,
 gates y controles negativos exactos; la disposición es advisory, conserva
 riesgos residuales y no autoriza un patch. Preguntas completas sin una política
@@ -410,9 +430,49 @@ observadas; no demuestra que un test proteja un invariante. `--code-review-limit
 admite `--apply`,
 `--route` ni otra operación directa.
 
+#### Lectura focal de una pregunta y almacenamiento Code
+
+La consulta focal vigente evita construir el review completo para una sola
+pregunta registrada:
+
+```bash
+Neocortex code question \
+  structure.static_cli_calls_require_runtime_contract_evidence \
+  --limit 10 --json
+```
+
+`--limit` admite `1..50`. v22 registra únicamente esa pregunta CLI y la resuelve
+desde `neocortex.code-interface-surface/v1`, con último run completado, frescura
+y cercas antes/después. La respuesta usa
+`neocortex.code-question-resolution/v1`; `ready` devuelve `0`. Una identidad no
+registrada devuelve `unsupported`, código `2` y un fallback declarativo con
+`automatic=false`: no ejecuta por su cuenta `code query review`, no materializa
+el review global y no adivina lectores por prefijo o lenguaje natural. Ambos
+comandos Code usan por defecto el estado de autoanálisis personal; la opción
+explícita `--state-directory DIRECTORY` sólo debe apuntar a otra publicación
+Code ya existente.
+
+La observabilidad física del owner Code se consulta por separado:
+
+```bash
+Neocortex code storage --run-limit 20 --row-scan-limit 250000 \
+  --retain-runs 5 --json
+```
+
+Los límites son `run-limit=1..50`, `row-scan-limit=1..1000000` y
+`retain-runs=1..run-limit`; si se omite el último, usa
+`min(5, run-limit)`. El envelope `neocortex.code-storage-analysis/v1` abre sólo
+el `code.sqlite3` publicado mediante el lector immutable, cerca el archivo y
+expone páginas, freelist, tablas, providers, una ventana de runs, conteos
+acotados y un delta de filas externas sólo cuando es comparable. Alcanzar el
+límite convierte el conteo en cota inferior. La retención es siempre
+`preview_only`: no borra, poda, hace `VACUUM`/checkpoint ni elimina sidecars, y
+no afirma qué filas serían seguras de retirar.
+
 `--code-publication-diff BASELINE_STATE` compara ese baseline con el owner Code
 de `--state-directory`. Es estrictamente read-only y falla cerrado si falta un
-run completado, el schema no coincide o existe cualquier sidecar SQLite. El
+run completado, el schema no coincide o los sidecars no demuestran la disposición
+inactiva admitida (ninguno, o WAL vacío más SHM de 32 KiB). El
 envelope `neocortex.code-publication-diff/v10`, sin declarar compatibilidad
 estructural con wires anteriores, informa
 calls comunes y exclusivas, resoluciones nuevas/corregidas/perdidas, cambios de hotspots y el
@@ -538,6 +598,7 @@ Neocortex search "protección diferencial" --scope all --limit 10
 Neocortex ask "¿qué evidencia existe de la prueba FAT?" --scope personal
 Neocortex inspect code "validación de schema" --scope framework --mode hybrid
 Neocortex inspect lineage IDENTIFICADOR --scope personal
+Neocortex knowledge health resource:file:1:2:-1 --scope all --json
 Neocortex review value --scope personal --limit 50
 Neocortex review value --refresh --scope personal --limit 50
 Neocortex review task show TASK_ID --scope personal
@@ -575,6 +636,23 @@ actor explícitos. `decide` exige `resolved|dismissed` y un scope durable:
 idéntico es idempotente; una tarea/evento distinto falla como snapshot cambiado.
 No se modifica el corpus y `all` se rechaza. La GUI consumidora sigue
 **PLANNED**.
+
+`knowledge health` admite sólo el ID físico canónico
+`resource:file:<volume_id>:<file_id>:<birthtime_ns>`, donde volumen y archivo
+son enteros unsigned de 128 bits y `birthtime_ns` es `-1` o un entero no
+negativo de 64 bits. Consulta `personal`, `framework` o ambos de forma
+independiente; no acepta una ruta de estado arbitraria. Despacha Text o PDF por
+identidad física y evidencia publicada, nunca por path o extensión. Text exige
+Inventory→Text→Catalog→Knowledge. PDF exige schema 13 y conserva
+Inventory→PDF→Catalog→Knowledge con estados
+`done|partial|protected|error|processing`, páginas, staging, errores, FTS y
+recovery estructural reconocido; `protected`/`error` no inventan
+Catalog/Search, `processing` queda degradado/parcial y un PDF vacío coherente es
+válido. `healthy` significa exclusivamente que los facts exigidos quedaron
+completos y estables en dos observaciones; no certifica contenido/OCR, verdad
+semántica, calidad visual, otros owners ni recuperación ante power loss. La
+respuesta `neocortex.knowledge-asset-health/v1` permanece content-blind,
+read-only, advisory y `mutation_authorized=false`.
 
 En JSON, `queue.scan_complete` indica fin del cursor y
 `queue.evidence_complete` indica que todas las páginas tuvieron evidencia
@@ -646,6 +724,9 @@ Neocortex --video-doctor
 Neocortex --video-status
 Neocortex --code-status
 Neocortex --code-review
+Neocortex code question structure.static_cli_calls_require_runtime_contract_evidence --json
+Neocortex code storage --run-limit 20 --json
+Neocortex knowledge health resource:file:1:2:-1 --scope framework --json
 Neocortex --code-doctor
 Neocortex --semantic-status
 Neocortex --action-recovery-status --action-recovery-limit 100
@@ -669,13 +750,16 @@ Esta es la única entrada de aceptación local para una implementación nueva. E
 primer comando valida el árbol de trabajo contra `HEAD`; el segundo valida un
 commit ya creado contra su padre. Las opciones acotadas son `--max-tests N`
 (1–5000; 5000 por defecto) y `--time-budget-seconds N` (30–900; 900 por
-defecto). El presupuesto predeterminado cubre la medición real observada de la
-selección afectada; no amplía el límite global del cgroup.
+defecto). El presupuesto es nominal; el proveedor profundo puede usar una sola
+extensión acotada a 2x únicamente después de progreso de shard validado. La
+validación retransmite en `stderr` la salida y los eventos del proceso hijo,
+además de un heartbeat cada 30 segundos; `--json` conserva exclusivamente el
+recibo final en `stdout`.
 
 El proceso padre no ejecuta los gates directamente: hace preflight de memoria,
 swap y PSI, conserva una reserva adaptativa para el escritorio y reejecuta la
 validación completa en un servicio de usuario systemd/cgroup v2. El grupo tiene
-límites de memoria, swap, CPU, tareas y 45 minutos; un watchdog lo detiene si
+límites de memoria, swap, CPU, tareas y una cota de seguridad de 75 minutos; un watchdog lo detiene si
 `MemAvailable` cae por debajo de la reserva. La falta de headroom o contención
 produce código 2, nunca una corrida sin límites. Sólo puede existir una
 validación canónica a la vez. `PrivateNetwork=yes` aísla por kernel el árbol
@@ -694,6 +778,8 @@ pregunta relevante sin runner o disposición técnica produce `abstained`, y
 `not_required` exige evidencia explícita de que el diff no la afecta. `passed`
 devuelve 0; `failed` o `abstained` devuelven 2.
 El recibo nunca concede autoridad de mutación, push o release.
+La política diff-aware vigente es v6 y exige las disposiciones técnicas v6 de
+Text/PDF Health cuando el cambio cruza sus contratos, readers o controles.
 
 Los conteos históricos `added/resolved` de cada provider se publican como
 observaciones advisory. No son una comparación contra `--baseline`: sus
@@ -988,13 +1074,14 @@ traineddata quedan ligados a la procedencia y a la caché.
 
 ### Knowledge Plane de sólo lectura (`0.9.0`)
 
-Knowledge ofrece tres acciones planas y mutuamente excluyentes. Todas leen el
+Knowledge ofrece cuatro acciones planas y mutuamente excluyentes. Todas leen el
 estado ya publicado; no recorren el corpus, crean directorios o bases, migran
 esquemas, reparan estado ni descargan modelos:
 
 ```powershell
 Neocortex --knowledge-status
 Neocortex --knowledge-status --knowledge-json
+Neocortex --knowledge-health 'resource:file:1:2:-1' --knowledge-json
 Neocortex --knowledge-search 'protección de transformador' --knowledge-limit 50
 Neocortex --knowledge-context 'protección de transformador' --knowledge-limit 20 --knowledge-context-characters 24000
 ```
@@ -1021,6 +1108,7 @@ Las opciones de consulta son:
 | Opción | Contrato |
 |---|---|
 | `--knowledge-limit N` | Predeterminado `20`. Search acepta `1..1000`; context, `1..100`. |
+| `--knowledge-health RESOURCE_ID` | Traza causal Text/PDF para una identidad física canónica; no acepta paths ni búsquedas. |
 | `--knowledge-context-characters N` | Presupuesto máximo de ContextBundle. Predeterminado `12000`; context acepta `1..1000000`. |
 | `--knowledge-mode evidence` | Predeterminado. En el canal semántico conserva la mejor coincidencia por `(item, entidad)` para no perder chunks o evidencias distintas. |
 | `--knowledge-mode discovery` | En el canal semántico conserva la mejor coincidencia por item para una vista más colapsada. |
@@ -1199,11 +1287,12 @@ por familia:
 |---|---|
 | `--status-json` | `--status`; exige `--status`. |
 | `--review-json` | Candidatos, decisiones y evidencia de revisión; emite JSON Lines determinista. |
-| `--code-json` | Estado, manifest/frescura de autoanálisis, revisión top-10, búsquedas, proyectos o reconstrucción conceptual de código. |
+| `--code-json` | Estado, manifest/frescura, review, pregunta focal, storage, búsquedas, proyectos o reconstrucción conceptual de código. |
 | `--action-recovery-json` | JSON determinista por acción o evento; exige `--action-recovery-status` o `--action-recovery-record`. |
 | `--retention-json` | Un documento JSON del plan dry-run; exige `--retention-status`. |
 | `--archive-json` | Estado o resultados ZIP; exige exactamente una acción `--archive-*`. |
-| `--knowledge-json` | Snapshot, resultado de búsqueda o contexto Knowledge; exige exactamente una acción `--knowledge-*`. |
+| `--knowledge-json` | Snapshot, salud causal, búsqueda o contexto Knowledge; exige exactamente una acción `--knowledge-*`. |
+| `knowledge health --json` | Salud causal Text/PDF por identidad y scope fijo; no crea estado ni autoriza mutación. |
 | `inspect lineage --json` | Linaje owner-local y proyección causal acotada para el identificador; no migra estado. |
 | `review value --json` | Consulta advisory schema `neocortex.value-review/v1`; con `--refresh`, avance de una página Framework schema `neocortex.value-review-refresh/v1`, sin mutación del corpus. |
 | `doctor capabilities --json` | Reporte agregado schema 1; con `--select text.extract --mime-type MIME --input-bytes BYTES`, selección explicable schema `neocortex.capability-selection/v1`. |

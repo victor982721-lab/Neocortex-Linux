@@ -13,7 +13,20 @@ from typing import Literal
 from .code_analysis_epistemics import analysis_identity
 
 CODE_INVARIANT_REGISTRY_SCHEMA = "neocortex.code-invariant-registry/v3"
-CODE_RUNTIME_SCENARIO_REGISTRY_SCHEMA = "neocortex.code-runtime-scenario-registry/v8"
+CODE_RUNTIME_SCENARIO_REGISTRY_SCHEMA = "neocortex.code-runtime-scenario-registry/v11"
+
+_PUBLIC_CLI_FLAT_INVALID_NODEIDS = tuple(
+    "tests/test_code_observability_cli.py::"
+    f"test_flat_observability_arguments_fail_closed[{parameter_id}]"
+    for parameter_id in (
+        "arguments0-requires --code-question",
+        "arguments1-non-empty trimmed text",
+        "arguments2-between 1 and 50",
+        "arguments3-require --code-storage",
+        "arguments4-between 1 and 1000000",
+        "arguments5-between 1 and --code-storage-run-limit",
+    )
+)
 
 
 def _required(label: str, value: object, maximum: int = 512) -> str:
@@ -399,22 +412,13 @@ RUNTIME_SCENARIOS = (
                 "tests/test_review_tasks.py::"
                 "test_event_crash_rolls_back_without_changing_current_head"
             ),
-            (
-                "tests/test_review_tasks.py::"
-                "test_event_transition_is_cas_append_only_and_idempotent"
-            ),
+            ("tests/test_review_tasks.py::test_event_transition_is_cas_append_only_and_idempotent"),
             (
                 "tests/test_review_tasks.py::"
                 "test_final_page_crash_cannot_publish_source_head_or_partial_supersession"
             ),
-            (
-                "tests/test_review_tasks.py::"
-                "test_progress_cursor_and_revision_are_exact_cas"
-            ),
-            (
-                "tests/test_review_tasks.py::"
-                "test_publish_page_is_atomic_resumable_and_idempotent"
-            ),
+            ("tests/test_review_tasks.py::test_progress_cursor_and_revision_are_exact_cas"),
+            ("tests/test_review_tasks.py::test_publish_page_is_atomic_resumable_and_idempotent"),
         ),
         scenario_kind="state_fixture",
         isolation="pytest_tmp_path",
@@ -467,10 +471,7 @@ RUNTIME_SCENARIOS = (
                         "tests/test_review_tasks.py::"
                         "test_event_transition_is_cas_append_only_and_idempotent"
                     ),
-                    (
-                        "tests/test_review_tasks.py::"
-                        "test_progress_cursor_and_revision_are_exact_cas"
-                    ),
+                    ("tests/test_review_tasks.py::test_progress_cursor_and_revision_are_exact_cas"),
                 ),
             ),
             RuntimeScenarioGateSpec(
@@ -486,11 +487,31 @@ RUNTIME_SCENARIOS = (
     ),
     RuntimeScenarioSpec(
         scenario_id="interfaces.public_cli_and_static_surface",
-        version="v1",
+        version="v4",
         test_nodeids=(
             (
                 "tests/test_cli_capabilities.py::"
                 "test_canonical_argv_translates_to_hidden_flat_compatibility_flags"
+            ),
+            (
+                "tests/test_cli_capabilities.py::"
+                "test_canonical_help_is_specific_without_changing_global_parser_help"
+            ),
+            (
+                "tests/test_cli_capabilities.py::"
+                "test_flat_alias_is_explicit_but_hidden_from_global_help"
+            ),
+            (
+                "tests/test_cli_code_surface.py::"
+                "test_code_actions_aliases_and_help_preserve_the_normalized_contract"
+            ),
+            (
+                "tests/test_cli_code_surface.py::"
+                "test_code_explicit_aliases_and_abbreviation_policy_remain_stable"
+            ),
+            (
+                "tests/test_cli_modularization.py::ModularParserTests::"
+                "test_long_option_abbreviations_are_rejected"
             ),
             (
                 "tests/test_code_interface_surface_analysis.py::"
@@ -500,10 +521,456 @@ RUNTIME_SCENARIOS = (
                 "tests/test_code_interface_surface_analysis.py::"
                 "test_interface_surface_observes_modules_configuration_and_static_cli"
             ),
+            (
+                "tests/test_code_observability_cli.py::"
+                "test_canonical_help_and_translation_accept_question_options_before_or_"
+                "after_positional"
+            ),
+            (
+                "tests/test_code_observability_cli.py::"
+                "test_direct_handlers_map_only_ready_to_zero"
+            ),
+            *_PUBLIC_CLI_FLAT_INVALID_NODEIDS,
+            (
+                "tests/test_code_observability_cli.py::"
+                "test_public_question_command_is_focal_and_preserves_owner_bytes_and_"
+                "sidecars"
+            ),
+            (
+                "tests/test_code_observability_cli.py::"
+                "test_public_question_unsupported_and_missing_storage_exit_two_without_"
+                "creating_state"
+            ),
+            (
+                "tests/test_code_observability_cli.py::"
+                "test_public_storage_command_is_bounded_and_immutable"
+            ),
+            (
+                "tests/test_code_observability_cli.py::"
+                "test_read_api_code_question_uses_only_fixed_scopes_and_exact_focal_reader"
+            ),
+            (
+                "tests/test_code_public_cli_interface_experiments.py::"
+                "test_public_entrypoint_dispatch_precedence_covers_special_human_"
+                "canonical_and_flat"
+            ),
+            (
+                "tests/test_code_public_cli_interface_experiments.py::"
+                "test_public_entrypoint_invalid_help_and_incomplete_commands_are_bounded_"
+                "and_state_free"
+            ),
+            ("tests/test_human_cli.py::test_help_lists_useful_facade_and_legacy_compatibility"),
+            (
+                "tests/test_human_cli.py::"
+                "test_installed_entrypoint_dispatches_human_commands_before_flat_cli"
+            ),
+            (
+                "tests/test_packaging_entrypoint.py::"
+                "test_installed_entrypoint_forwards_arguments_to_integrated_cli"
+            ),
+            (
+                "tests/test_packaging_entrypoint.py::"
+                "test_project_metadata_uses_package_version_and_installed_command"
+            ),
         ),
         scenario_kind="state_fixture",
         isolation="pytest_tmp_path",
-        limitation="selected_cli_dispatch_and_static_inventory_do_not_cover_every_dynamic_interface",
+        limitation=(
+            "selected_help_parser_dispatch_and_static_projection_controls_do_not_execute_"
+            "every_command_handler_gui_mcp_worker_or_external_effect"
+        ),
+        gate_specs=(
+            RuntimeScenarioGateSpec(
+                "declared_entrypoint_and_effective_help_contract_are_observed",
+                (
+                    (
+                        "tests/test_cli_capabilities.py::"
+                        "test_canonical_help_is_specific_without_changing_global_parser_help"
+                    ),
+                    (
+                        "tests/test_cli_code_surface.py::"
+                        "test_code_actions_aliases_and_help_preserve_the_normalized_contract"
+                    ),
+                    (
+                        "tests/test_code_observability_cli.py::"
+                        "test_canonical_help_and_translation_accept_question_options_before_"
+                        "or_after_positional"
+                    ),
+                    (
+                        "tests/test_human_cli.py::"
+                        "test_help_lists_useful_facade_and_legacy_compatibility"
+                    ),
+                    (
+                        "tests/test_packaging_entrypoint.py::"
+                        "test_project_metadata_uses_package_version_and_installed_command"
+                    ),
+                ),
+            ),
+            RuntimeScenarioGateSpec(
+                "dynamic_hidden_and_static_surfaces_remain_explicitly_non_equivalent",
+                (
+                    (
+                        "tests/test_cli_capabilities.py::"
+                        "test_flat_alias_is_explicit_but_hidden_from_global_help"
+                    ),
+                    (
+                        "tests/test_code_interface_surface_analysis.py::"
+                        "test_cli_static_view_does_not_claim_effective_parser_behavior"
+                    ),
+                    (
+                        "tests/test_code_interface_surface_analysis.py::"
+                        "test_interface_surface_observes_modules_configuration_and_static_cli"
+                    ),
+                ),
+            ),
+            RuntimeScenarioGateSpec(
+                "focal_question_and_storage_reads_are_bounded_and_immutable",
+                (
+                    (
+                        "tests/test_code_observability_cli.py::"
+                        "test_direct_handlers_map_only_ready_to_zero"
+                    ),
+                    (
+                        "tests/test_code_observability_cli.py::"
+                        "test_public_question_command_is_focal_and_preserves_owner_bytes_and_"
+                        "sidecars"
+                    ),
+                    (
+                        "tests/test_code_observability_cli.py::"
+                        "test_public_storage_command_is_bounded_and_immutable"
+                    ),
+                    (
+                        "tests/test_code_observability_cli.py::"
+                        "test_read_api_code_question_uses_only_fixed_scopes_and_exact_focal_"
+                        "reader"
+                    ),
+                ),
+            ),
+            RuntimeScenarioGateSpec(
+                "invalid_abbreviated_and_incomplete_commands_fail_closed_without_state",
+                (
+                    (
+                        "tests/test_cli_code_surface.py::"
+                        "test_code_explicit_aliases_and_abbreviation_policy_remain_stable"
+                    ),
+                    (
+                        "tests/test_cli_modularization.py::ModularParserTests::"
+                        "test_long_option_abbreviations_are_rejected"
+                    ),
+                    *_PUBLIC_CLI_FLAT_INVALID_NODEIDS,
+                    (
+                        "tests/test_code_observability_cli.py::"
+                        "test_public_question_unsupported_and_missing_storage_exit_two_without_"
+                        "creating_state"
+                    ),
+                    (
+                        "tests/test_code_public_cli_interface_experiments.py::"
+                        "test_public_entrypoint_invalid_help_and_incomplete_commands_are_"
+                        "bounded_and_state_free"
+                    ),
+                ),
+            ),
+            RuntimeScenarioGateSpec(
+                "special_human_canonical_and_flat_dispatch_precedence_is_exact",
+                (
+                    (
+                        "tests/test_cli_capabilities.py::"
+                        "test_canonical_argv_translates_to_hidden_flat_compatibility_flags"
+                    ),
+                    (
+                        "tests/test_code_public_cli_interface_experiments.py::"
+                        "test_public_entrypoint_dispatch_precedence_covers_special_human_"
+                        "canonical_and_flat"
+                    ),
+                    (
+                        "tests/test_human_cli.py::"
+                        "test_installed_entrypoint_dispatches_human_commands_before_flat_cli"
+                    ),
+                    (
+                        "tests/test_packaging_entrypoint.py::"
+                        "test_installed_entrypoint_forwards_arguments_to_integrated_cli"
+                    ),
+                ),
+            ),
+        ),
+    ),
+    RuntimeScenarioSpec(
+        scenario_id="knowledge.asset_health_causal_acceptance",
+        version="v1",
+        test_nodeids=(
+            (
+                "tests/test_code_knowledge_asset_health_analysis.py::"
+                "test_public_read_is_read_only_and_resource_identity_is_strict"
+            ),
+            (
+                "tests/test_code_knowledge_asset_health_analysis.py::"
+                "test_search_and_health_share_identity_and_missing_state_never_becomes_healthy"
+            ),
+            (
+                "tests/test_knowledge_asset_health.py::"
+                "test_active_wal_abstains_without_touching_owner_sidecars"
+            ),
+            (
+                "tests/test_knowledge_asset_health.py::"
+                "test_aligned_published_text_trace_is_healthy_and_replay_deterministic"
+            ),
+            (
+                "tests/test_knowledge_asset_health.py::"
+                "test_identity_or_processing_signature_mismatch_never_cross_joins[identity]"
+            ),
+            (
+                "tests/test_knowledge_asset_health.py::"
+                "test_identity_or_processing_signature_mismatch_never_cross_joins"
+                "[processing_signature]"
+            ),
+            (
+                "tests/test_knowledge_asset_health.py::"
+                "test_missing_future_corrupt_and_unpublished_evidence_never_reports_healthy"
+                "[corrupt]"
+            ),
+            (
+                "tests/test_knowledge_asset_health.py::"
+                "test_missing_future_corrupt_and_unpublished_evidence_never_reports_healthy"
+                "[future]"
+            ),
+            (
+                "tests/test_knowledge_asset_health.py::"
+                "test_missing_future_corrupt_and_unpublished_evidence_never_reports_healthy"
+                "[missing]"
+            ),
+            (
+                "tests/test_knowledge_asset_health.py::"
+                "test_missing_future_corrupt_and_unpublished_evidence_never_reports_healthy"
+                "[unpublished_catalog]"
+            ),
+            (
+                "tests/test_knowledge_asset_health.py::"
+                "test_missing_future_corrupt_and_unpublished_evidence_never_reports_healthy"
+                "[unpublished_inventory]"
+            ),
+            (
+                "tests/test_knowledge_asset_health.py::"
+                "test_second_fact_snapshot_change_abstains_after_one_bounded_retry"
+            ),
+        ),
+        scenario_kind="state_fixture",
+        isolation="pytest_tmp_path",
+        limitation=(
+            "isolated_text_owner_fixtures_do_not_prove_every_knowledge_route_owner_or_"
+            "distributed_power_loss_boundary"
+        ),
+        gate_specs=(
+            RuntimeScenarioGateSpec(
+                "aligned_four_stage_causal_trace_is_healthy",
+                (
+                    (
+                        "tests/test_knowledge_asset_health.py::"
+                        "test_aligned_published_text_trace_is_healthy_and_replay_deterministic"
+                    ),
+                ),
+            ),
+            RuntimeScenarioGateSpec(
+                "mismatch_absence_future_corruption_and_unpublished_fail_closed",
+                (
+                    (
+                        "tests/test_knowledge_asset_health.py::"
+                        "test_identity_or_processing_signature_mismatch_never_cross_joins"
+                        "[identity]"
+                    ),
+                    (
+                        "tests/test_knowledge_asset_health.py::"
+                        "test_identity_or_processing_signature_mismatch_never_cross_joins"
+                        "[processing_signature]"
+                    ),
+                    (
+                        "tests/test_knowledge_asset_health.py::"
+                        "test_missing_future_corrupt_and_unpublished_evidence_never_reports_"
+                        "healthy[corrupt]"
+                    ),
+                    (
+                        "tests/test_knowledge_asset_health.py::"
+                        "test_missing_future_corrupt_and_unpublished_evidence_never_reports_"
+                        "healthy[future]"
+                    ),
+                    (
+                        "tests/test_knowledge_asset_health.py::"
+                        "test_missing_future_corrupt_and_unpublished_evidence_never_reports_"
+                        "healthy[missing]"
+                    ),
+                    (
+                        "tests/test_knowledge_asset_health.py::"
+                        "test_missing_future_corrupt_and_unpublished_evidence_never_reports_"
+                        "healthy[unpublished_catalog]"
+                    ),
+                    (
+                        "tests/test_knowledge_asset_health.py::"
+                        "test_missing_future_corrupt_and_unpublished_evidence_never_reports_"
+                        "healthy[unpublished_inventory]"
+                    ),
+                ),
+            ),
+            RuntimeScenarioGateSpec(
+                "public_read_is_read_only_and_resource_identity_is_strict",
+                (
+                    (
+                        "tests/test_code_knowledge_asset_health_analysis.py::"
+                        "test_public_read_is_read_only_and_resource_identity_is_strict"
+                    ),
+                    (
+                        "tests/test_knowledge_asset_health.py::"
+                        "test_active_wal_abstains_without_touching_owner_sidecars"
+                    ),
+                ),
+            ),
+            RuntimeScenarioGateSpec(
+                "snapshot_change_abstains_and_search_health_identity_is_stable",
+                (
+                    (
+                        "tests/test_code_knowledge_asset_health_analysis.py::"
+                        "test_search_and_health_share_identity_and_missing_state_never_becomes_"
+                        "healthy"
+                    ),
+                    (
+                        "tests/test_knowledge_asset_health.py::"
+                        "test_second_fact_snapshot_change_abstains_after_one_bounded_retry"
+                    ),
+                ),
+            ),
+        ),
+    ),
+    RuntimeScenarioSpec(
+        scenario_id="knowledge.pdf_asset_health_causal_acceptance",
+        version="v1",
+        test_nodeids=(
+            (
+                "tests/test_code_knowledge_pdf_asset_health_analysis.py::"
+                "test_pdf_asset_health_question_requires_partial_protected_and_recovery_"
+                "experiment"
+            ),
+            (
+                "tests/test_knowledge_asset_health_pdf.py::"
+                "test_pdf_aligned_full_projection_is_healthy_read_only_and_content_blind"
+            ),
+            (
+                "tests/test_knowledge_asset_health_pdf.py::"
+                "test_pdf_dispatch_ambiguity_and_owner_fences_abstain_without_mutation"
+            ),
+            (
+                "tests/test_knowledge_asset_health_pdf.py::"
+                "test_pdf_empty_bounded_and_partial_projections_have_typed_health"
+            ),
+            (
+                "tests/test_knowledge_asset_health_pdf.py::"
+                "test_pdf_projection_recovery_and_terminal_inconsistencies_fail_closed"
+            ),
+            (
+                "tests/test_knowledge_asset_health_pdf.py::"
+                "test_pdf_protected_error_processing_and_unknown_states_do_not_invent_catalog"
+            ),
+            (
+                "tests/test_pdf_birthtime.py::PdfBirthtimeInvariantTests::"
+                "test_reconciles_abandoned_processing_without_discarding_staging"
+            ),
+            (
+                "tests/test_pdf_route.py::PdfRouteTests::"
+                "test_extracts_incrementally_and_reuses_cache"
+            ),
+            (
+                "tests/test_pdf_route.py::PdfRouteTests::"
+                "test_page_error_preserves_other_pages_as_partial_document"
+            ),
+            (
+                "tests/test_pdf_route.py::PdfRouteTests::"
+                "test_pdf_route_republishes_incomplete_cache_hits"
+            ),
+            (
+                "tests/test_pdf_route.py::PdfRouteTests::"
+                "test_recovery_restart_clears_failed_qpdf_pages_and_promotes_done"
+            ),
+            (
+                "tests/test_pdf_route.py::PdfRouteTests::"
+                "test_timeout_flushes_sub_batch_progress_for_next_resume"
+            ),
+        ),
+        scenario_kind="state_fixture",
+        isolation="pytest_tmp_path",
+        limitation=(
+            "bounded_pdf_owner_route_and_health_fixtures_do_not_prove_ocr_visual_"
+            "semantic_fidelity_power_loss_or_every_future_recovery_engine"
+        ),
+        gate_specs=(
+            RuntimeScenarioGateSpec(
+                "page_staging_fts_and_catalog_mismatch_fail_closed",
+                (
+                    (
+                        "tests/test_knowledge_asset_health_pdf.py::"
+                        "test_pdf_empty_bounded_and_partial_projections_have_typed_health"
+                    ),
+                    (
+                        "tests/test_knowledge_asset_health_pdf.py::"
+                        "test_pdf_protected_error_processing_and_unknown_states_do_not_"
+                        "invent_catalog"
+                    ),
+                    (
+                        "tests/test_pdf_route.py::PdfRouteTests::"
+                        "test_page_error_preserves_other_pages_as_partial_document"
+                    ),
+                    (
+                        "tests/test_pdf_route.py::PdfRouteTests::"
+                        "test_pdf_route_republishes_incomplete_cache_hits"
+                    ),
+                    (
+                        "tests/test_pdf_route.py::PdfRouteTests::"
+                        "test_timeout_flushes_sub_batch_progress_for_next_resume"
+                    ),
+                ),
+            ),
+            RuntimeScenarioGateSpec(
+                "recovery_is_version_and_message_independent",
+                (
+                    (
+                        "tests/test_knowledge_asset_health_pdf.py::"
+                        "test_pdf_projection_recovery_and_terminal_inconsistencies_fail_closed"
+                    ),
+                    (
+                        "tests/test_pdf_birthtime.py::PdfBirthtimeInvariantTests::"
+                        "test_reconciles_abandoned_processing_without_discarding_staging"
+                    ),
+                    (
+                        "tests/test_pdf_route.py::PdfRouteTests::"
+                        "test_recovery_restart_clears_failed_qpdf_pages_and_promotes_done"
+                    ),
+                ),
+            ),
+            RuntimeScenarioGateSpec(
+                "typed_pdf_states_preserve_partial_and_protected_semantics",
+                (
+                    (
+                        "tests/test_code_knowledge_pdf_asset_health_analysis.py::"
+                        "test_pdf_asset_health_question_requires_partial_protected_and_"
+                        "recovery_experiment"
+                    ),
+                    (
+                        "tests/test_knowledge_asset_health_pdf.py::"
+                        "test_pdf_aligned_full_projection_is_healthy_read_only_and_content_"
+                        "blind"
+                    ),
+                    (
+                        "tests/test_pdf_route.py::PdfRouteTests::"
+                        "test_extracts_incrementally_and_reuses_cache"
+                    ),
+                ),
+            ),
+            RuntimeScenarioGateSpec(
+                "wal_snapshot_and_owner_ambiguity_remain_read_only",
+                (
+                    (
+                        "tests/test_knowledge_asset_health_pdf.py::"
+                        "test_pdf_dispatch_ambiguity_and_owner_fences_abstain_without_mutation"
+                    ),
+                ),
+            ),
+        ),
     ),
     RuntimeScenarioSpec(
         scenario_id="retention.durable_hold_safety",
@@ -869,6 +1336,9 @@ EXPERIMENT_SCENARIO_IDS = (
     "capability.public_text_route_to_search",
     "evolution.code_schema_upgrade_matrix",
     "framework.review_task_protocol_acceptance",
+    "interfaces.public_cli_and_static_surface",
+    "knowledge.asset_health_causal_acceptance",
+    "knowledge.pdf_asset_health_causal_acceptance",
     "retention.durable_hold_safety",
     "security.supply_chain_gate_controls",
     "semantic.staging_process_death_resume",
@@ -879,7 +1349,6 @@ CALIBRATION_SCENARIO_IDS = (
     "analyzer.calibration_and_worktree_controls",
     "architecture.declared_boundary_and_owner_mapping",
     "evolution.change_surface_antigoodhart_controls",
-    "interfaces.public_cli_and_static_surface",
 )
 
 INVARIANT_RUNTIME_SCENARIOS = tuple(
@@ -986,7 +1455,7 @@ def runtime_scenario_registry_payload() -> dict[str, object]:
 
 def runtime_scenario_registry_fingerprint() -> str:
     return analysis_identity(
-        "code-runtime-scenario-registry-v8", runtime_scenario_registry_payload()
+        "code-runtime-scenario-registry-v11", runtime_scenario_registry_payload()
     )
 
 

@@ -566,7 +566,10 @@ Neocortex --self-analysis --analysis-profile trusted-deep --root $Root --state-d
 Sin `--deep-test-selector`, ejecuta la suite declarada completa. El selector se
 puede repetir con una ruta relativa bajo `tests/` o un node id de Pytest. Los
 límites predeterminados son 3000 tests, 600 segundos y shards de 20; sus rangos
-son 1–5000, 30–900 y 1–50, respectivamente. Sólo los shards que terminaron con
+son 1–5000, 30–900 y 1–50, respectivamente. El tiempo es nominal: después de al
+menos un shard terminado o reutilizado, el proveedor puede usar una sola
+extensión acotada a 2x. La recolección y cada transición de shard se publican
+como progreso estructurado. Sólo los shards que terminaron con
 todas sus pruebas aprobadas producen checkpoints reanudables ligados a las
 firmas exactas de inputs, herramientas y configuración. Coverage mide sólo el
 proceso principal: la cobertura de subprocesses no se atribuye y se declara
@@ -576,12 +579,12 @@ La mutación focal exige al menos un selector explícito. Admite 1–100 mutante
 segundos (600). Cosmic Ray sólo modifica la copia staged, pero ejecuta las
 pruebas seleccionadas y éstas pueden usar red; no tiene autoridad alguna sobre
 el repositorio original.
-El status sí es estrictamente read-only:
-cualquier `-wal`, `-shm`
-o `-journal` junto a `code.sqlite3`, `framework.sqlite3` o `dedup.sqlite3`,
-incluso vacío o desacoplado, causa abstención total con código `2` sin tocar el
-estado. Consulte [Autoanálisis de código](docs/SELF_ANALYSIS.md) antes de usar
-el preset.
+El status sí es estrictamente read-only: acepta únicamente la disposición
+SQLite inactiva demostrable (sin sidecars, o WAL vacío más SHM de 32 KiB) y usa
+lecturas `immutable=1`. Un WAL no vacío, rollback journal, SHM malformado,
+symlink o cambio de identidad durante la lectura causa abstención con código `2`
+sin checkpoint, borrado ni escritura. Consulte
+[Autoanálisis de código](docs/SELF_ANALYSIS.md) antes de usar el preset.
 
 Si el proceso no puede abrir el journal USN, el autoanálisis degrada a un
 recorrido completo portable. No publica checkpoint ni inventa cursor: el
@@ -590,7 +593,7 @@ manifest registra `journal.status=unavailable`, el status nunca afirma
 cambios.
 
 `--code-review` convierte la publicación en observaciones y preguntas
-explicables. El envelope `neocortex.code-review/v20` no declara schemas
+explicables. El envelope `neocortex.code-review/v22` no declara schemas
 compatibles: conserva el corte fail-closed y usa la proyección general
 `neocortex.code-analysis-epistemics/v1`. Cada finding separa observación,
 hipótesis, readiness de pregunta, evidencia faltante, contraevidencia por
@@ -598,16 +601,18 @@ buscar, siguiente acción y readiness de decisión. Un hotspot queda
 `experiment_required`; no infiere construcción ni riesgo por nombres y nunca
 autoriza mutación.
 
-v20 conserva el resolver trazable introducido en v17, deliberadamente acotado:
+v22 conserva el resolver trazable introducido en v17, deliberadamente acotado:
 sólo enlaza
 receipts `passed` del run, processing signature, evaluación, proposal, template y
-gates registrados exactos. Hoy puede satisfacer requisitos de ocho familias:
+gates registrados exactos. Hoy puede satisfacer requisitos de once familias:
 ruta pública Text, workflow SQL/transaccional Text, recuperación Semantic,
 migración Code-owner, contratos de imports, Retention durable, seguridad/supply
-chain y el protocolo durable Framework ReviewTask; el resto conserva su evidencia
-faltante. Aun cuando una evaluación avanza a
+chain, protocolo durable Framework ReviewTask, contrato runtime de la CLI y
+Knowledge Asset Health para Text y PDF; el resto conserva su evidencia faltante.
+Aun cuando
+una evaluación avanza a
 `human_review_required`, no crea una decisión humana, recomendación o package de
-cambio. v20 conserva el verificador técnico determinista y allow-listed que puede
+cambio. v22 conserva el verificador técnico determinista y allow-listed que puede
 publicar únicamente `no_change_required_within_verified_scope` cuando vuelve a
 comprobar la partición de evidencia, el receipt, sus gates y los controles
 negativos específicos. La disposición es advisory, conserva riesgos residuales,
@@ -623,7 +628,7 @@ superficie usa `executing_tests` y
 --code-json` amplía de 1 a 50 la vista
 auditable. La consulta es estrictamente read-only; un snapshot full sin USN se
 etiqueta `publication_only` y un journal avanzado/discontinuo causa abstención.
-Cada evaluación v20 fija el fingerprint de la pregunta, el snapshot y la
+Cada evaluación v22 fija el fingerprint de la pregunta, el snapshot y la
 revisión. Los hotspots enlazan los IDs de diagnóstico exactos; la nueva familia
 `class_surface` vuelve a resolver el símbolo de clase y todos sus miembros AST
 directos confirmados. Sus umbrales provisionales de 500 líneas o 20 métodos son
@@ -632,7 +637,7 @@ filtros de atención, no riesgo calibrado ni evidencia de una *god class*.
 concordancia con los registros; no convierte tamaño, nombres o rutas en daño ni
 en una decisión humana.
 
-Además de funciones y clases, v20 publica una proyección acotada de módulos,
+Además de funciones y clases, v22 publica una proyección acotada de módulos,
 configuraciones y construcción CLI. Los módulos se seleccionan por conteos
 estructurales explícitos; JSON/TOML se parsean desde el snapshot sin exponer
 valores; YAML/text-only permanece `unsupported` o `incomplete`; y las llamadas
@@ -642,13 +647,13 @@ señales prueba cohesión, reachability o necesidad de refactor.
 El grafo Ruff/Grimp y los contratos de imports existentes también se proyectan
 como preguntas generales. Consenso estático y contratos evaluados son evidencia
 consultable, no ownership ni una orden de cambio. Como NeoCortex todavía no
-tenía un ownership explícito, v20 conserva un registry versionado y
+tenía un ownership explícito, v22 conserva un registry versionado y
 deliberadamente parcial para `text`, `semantic`, `knowledge`, `review`,
 `retention` y `framework`. La pregunta publica cobertura, módulos sin mapear,
 solapamientos y edges cross-owner; nunca rellena un owner por defecto ni a partir
 del primer segmento del módulo.
 
-En la ubicación canónica de autoanálisis, v20 publica observaciones cross-owner:
+En la ubicación canónica de autoanálisis, v22 publica observaciones cross-owner:
 `neocortex.code-state-projection/v1`: abre Text y Semantic mediante lecturas
 SQLite `immutable=1` con fences de archivo y sidecars inactivos, y compara el
 conjunto exacto de revisiones Text elegibles con cada head Semantic publicado de
@@ -658,7 +663,22 @@ transacción distribuida, recuperación ante muerte de proceso ni un defecto.
 `neocortex.code-state-topology/v1` verifica por separado el cierre relacional de
 la publicación terminal Text contra receipts y outbox owner-local.
 
-v20 añade `neocortex.code-retention-analysis/v1`: vuelve a ejecutar el planner
+La vertical `neocortex.knowledge-asset-health/v1` explica además, para un
+`resource:file` exacto, el encadenamiento Inventory → owner fuente → Catalog →
+búsqueda Knowledge. Selecciona Text o PDF por identidad física, evidencia del
+snapshot y, cuando hace falta, el hint publicado de Catalog; nunca por path o
+extensión. Doble-observa el snapshot general y las filas causales, reintenta una
+sola vez y nunca cruza identidades, revisiones o processing signatures
+incompatibles. Para PDF schema 13 conserva los estados tipados
+`done|partial|protected|error|processing`, páginas, staging, errores, FTS,
+Catalog/Search y recovery estructural reconocido. Sólo una proyección `done`
+completa y coherente puede quedar `healthy`; `partial`, `protected`, `error`,
+`processing`, evidencia faltante o incoherente conservan su estado acotado o
+abstienen. Es una consulta content-blind, advisory y read-only: no devuelve
+texto/OCR, metadata o mensajes de error, no certifica fidelidad visual o
+semántica y nunca autoriza mutación.
+
+v22 conserva `neocortex.code-retention-analysis/v1`: vuelve a ejecutar el planner
 dry-run sobre Semantic, Catalog, Inventory y Framework, publica schemas, holds,
 conteos y cursores acotados, y conserva como contraevidencia cualquier owner
 bloqueado o hold declarado ausente. Una segunda lectura debe reproducir la misma
@@ -673,7 +693,7 @@ la última publicación Code con el inventario Git visible y deja precision,
 recall y finding→decision sin calcular mientras no existan outcomes humanos o
 defectos escapados enlazados independientemente.
 
-v20 conserva varias verticales productivas sobre ese mismo registro. La primera
+v22 conserva varias verticales productivas sobre ese mismo registro. La primera
 analiza SQL literal Python con SQLGlot en dialecto SQLite y publica por separado
 READ, WRITE, DDL, SQL dinámico/no parseable y eventos transaccionales; un store o
 workflow sólo se asigna mediante el registry explícito, nunca por el nombre de la
@@ -692,15 +712,21 @@ autoriza cambios. Las propuestas allow-listed con runner real aparecen como
 `CODE_EXPERIMENT_PROPOSAL`; una de ellas puede ejecutarse explícitamente con
 `--code-experiment-run PROPOSAL_ID [--code-json]`. El ejecutor vuelve a construir
 el review vigente, exige el mismo proposal ID, raíz física y manifest Code, y
-sólo admite ocho templates ejecutables registrados: acceptance de la ruta
+sólo admite once templates ejecutables registrados: acceptance de la ruta
 pública Text (un nodeid), trace/fault boundaries del workflow Text (cuatro
 nodeids), recuperación Semantic ante muerte del proceso durante staging (un
 nodeid con tres gates medidos), una matriz Code-owner de migración poblada,
 rollback y rechazo de schema futuro (cinco nodeids con cuatro gates), y la
 aceptación acotada de los contratos de imports declarados (tres nodeids y cuatro
 gates), la seguridad durable de Retention en dry-run sobre los cuatro owners
-(catorce nodeids exactos y cuatro gates), siete controles supply-chain locales y
-el protocolo Framework ReviewTask (ocho nodeids y cinco gates). ReviewTask prueba
+(catorce nodeids exactos y cuatro gates), siete controles supply-chain locales,
+el protocolo Framework ReviewTask (ocho nodeids y cinco gates), el contrato
+público de parser/help/dispatch y observabilidad focal de la CLI (veintiún
+nodeids y cinco gates), la traza causal Health Text (doce nodeids y cuatro
+gates) y la traza PDF schema 13 (doce nodeids y cuatro gates distribuidos
+5/3/3/1). El template PDF exige su contraevidencia de nueve relaciones y el
+resultado completo de doce; no demuestra contenido/OCR, fidelidad visual o
+semántica, todas las recuperaciones futuras ni power loss. ReviewTask prueba
 publicación, CAS, replay y rollback en SQLite temporal y recorre la CLI pública;
 el actor usado es sintético y su identidad no se autentica, y las excepciones
 inyectadas no demuestran muerte de proceso ni pérdida de energía. Retention
@@ -723,7 +749,7 @@ terminar, la CLI lo agrega como `neocortex.code-experiment-store/v1` a la tabla
 inmutable y append-only `code_experiment_receipts` de Code schema v6. Por ello
 `code_database_unchanged=true` describe esa barrera acotada durante la fase
 ejecutora antes de persistir, no una equivalencia byte a byte del store ni que el
-comando completo no escriba su receipt. El siguiente review v20
+comando completo no escriba su receipt. El siguiente review v22
 sólo proyecta el receipt terminal `passed` más nuevo ligado al proposal y a
 la processing signature actuales. Puede provenir de una publicación Code
 completada anterior cuando la publicación vigente es un replay exacto con la
@@ -779,6 +805,44 @@ descendientes. `--code-query-limit` acepta 1–500 (50 por defecto) y
 conservan dimensiones, evidencia y limitaciones por separado: no calculan un
 score agregado ni una probabilidad de defecto, y nunca autorizan una mutación.
 
+Para una pregunta exacta registrada no es necesario materializar el review
+global. La ruta focal conserva los mismos contratos y ofrece un fallback
+explícito —nunca automático— para preguntas sin reader dedicado:
+
+```bash
+Neocortex code question structure.static_cli_calls_require_runtime_contract_evidence --limit 10 --json
+```
+
+El reader inicial resuelve únicamente la pregunta de superficie CLI, cerca el
+último run/freshness antes y después y vuelve a construir su evaluación desde la
+proyección publicada. La API read-only expone el mismo contrato mediante
+`code_question_payload`; cualquier otra pregunta retorna `unsupported` con el
+fallback a `code query review`, sin ejecutarlo silenciosamente.
+
+La forma física del owner Code se inspecciona aparte, también sin modificarlo:
+
+```bash
+Neocortex code storage --run-limit 20 --row-scan-limit 250000 --retain-runs 5 --json
+```
+
+Publica páginas/freelist, conteos acotados por tabla/provider/run, crecimiento
+comparable y un preview de retención. `preview_only` no soporta borrar, podar,
+checkpoint, `VACUUM` ni retirar sidecars; los conteos que alcanzan el límite son
+lower bounds explícitos.
+
+La consulta causal de un asset usa únicamente un `resource:file` estable:
+
+```bash
+Neocortex knowledge health resource:file:VOLUME_ID:FILE_ID:BIRTHTIME_NS --scope all --json
+```
+
+No acepta paths ni lee el corpus. Cada scope conserva su propio snapshot,
+health, gaps y exit code; los resultados no se fusionan como un score global.
+El mismo comando despacha Text o PDF por la evidencia de identidad publicada.
+Para PDF puede devolver salud tipada completa, parcial, protegida, fallida,
+procesando, desconocida o abstención; `healthy` nunca se infiere sólo por
+encontrar un documento.
+
 NeoCortex no usa GitHub Actions. La entrada cotidiana única para validar una
 implementación nueva es local y Linux-only:
 
@@ -790,11 +854,16 @@ Antes de ejecutar herramientas, el comando toma un lock exclusivo, observa
 `MemAvailable`, swap y PSI, y reserva dinámicamente memoria para KDE/Chrome.
 Toda la validación y sus descendientes se reejecutan en un único cgroup de
 usuario con `MemoryHigh`, `MemoryMax`, `MemorySwapMax`, cuota de CPU y límite
-global de 45 minutos. Un watchdog detiene cooperativamente el grupo con SIGINT
+global de seguridad de 75 minutos. El runner retransmite en `stderr` la salida
+del hijo, eventos por shard y heartbeats cada 30 segundos —también con
+`--json`, cuyo `stdout` queda reservado al recibo final—. Un watchdog detiene
+cooperativamente el grupo con SIGINT
 si se pierde la reserva del escritorio; el reclaim aislado por `MemoryHigh` no
 se confunde con riesgo para KDE/Chrome mientras exista headroom físico. El
 runner crea además un grupo de proceso por comando y, ante su timeout, envía
-SIGINT y espera una terminalización durable antes de escalar a SIGKILL. El
+SIGINT y espera una terminalización durable antes de escalar a SIGKILL; un
+subreaper Linux adopta y termina mediante `pidfd` descendientes que hayan
+creado otra sesión. El
 recibo enlaza la admisión `neocortex.code-validation-resources/v3`; el worker
 la autentica contra su membresía exacta en `/proc/self/cgroup`, consulta en
 systemd el `PrivateNetwork=yes` del unit y prueba ante el kernel que AF_INET y
@@ -810,13 +879,18 @@ declarada cuando cambia packaging, schema o la política de gates.
 La suite declarada omite únicamente las pruebas del runtime Windows/NTFS
 retirado; conserva fixtures portables aunque modelen metadatos históricos.
 Después ejecuta los gates estáticos y arquitectónicos existentes, publica el
-perfil `trusted-deep`, consume `neocortex.code-review/v20`, ejecuta una vez cada
+perfil `trusted-deep`, consume `neocortex.code-review/v22`, ejecuta una vez cada
 plantilla de experimento allow-listed relevante, construye e instala el wheel
 candidato en un entorno efímero fuera del checkout, y repite la publicación
 idéntica para exigir replay de los proveedores. Devuelve un único recibo
 `neocortex.code-change-validation/v3` con salida `0` sólo si no hubo fallo ni
 abstención y si fuente/estado canónico permanecieron intactos. No autoriza
 patches, push, release ni mutación del corpus.
+
+Esta frontera usa los registries runtime/template v11, el verificador técnico
+v7 y la política diff-aware `local-linux-diff-aware-validation-v6`. La matriz
+CLI permanece en scenario v4/template v3 con veintiséis nodeids y cinco gates; la ampliación
+v22 agrega PDF sin rebajar esa cobertura.
 
 La relevancia experimental no se deduce de que exista o no un runner. Un
 registro versionado liga rutas y tests del diff con sujetos/preguntas concretos:

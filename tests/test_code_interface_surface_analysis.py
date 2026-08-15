@@ -18,6 +18,7 @@ from _04_Nucleo_Operativo.code_contracts import (
     CodeFileInput,
     CodeRouteConfig,
 )
+from _04_Nucleo_Operativo.code_experiment_planner import plan_code_experiments
 from _04_Nucleo_Operativo.code_interface_surface_analysis import (
     CLI_SURFACE_QUESTION,
     CONFIGURATION_SURFACE_QUESTION,
@@ -239,6 +240,75 @@ def test_interface_questions_never_convert_width_into_a_change_decision(tmp_path
         specs,
         tuple(replace(item, rank=index) for index, item in enumerate(evaluations, start=1)),
     )
+
+
+def test_interface_question_revision_and_proposal_ignore_only_capture_run_identity(
+    tmp_path: Path,
+) -> None:
+    database = _database(tmp_path)
+    with readonly_code_database(database) as connection:
+        primary = read_code_interface_surface_analysis(
+            connection,
+            analysis_run_id=1,
+            processing_signature=_SIGNATURE,
+            database=str(database),
+        )
+        replay = read_code_interface_surface_analysis(
+            connection,
+            analysis_run_id=2,
+            processing_signature=_SIGNATURE,
+            database=str(database),
+        )
+        changed = read_code_interface_surface_analysis(
+            connection,
+            analysis_run_id=2,
+            processing_signature=f"{_SIGNATURE}-changed",
+            database=str(database),
+        )
+
+    assert primary.analysis_id != replay.analysis_id
+    primary_specs, primary_evaluations = interface_surface_questions(
+        primary,
+        snapshot_freshness="current",
+        rank_offset=0,
+    )
+    replay_specs, replay_evaluations = interface_surface_questions(
+        replay,
+        snapshot_freshness="current",
+        rank_offset=0,
+    )
+    changed_specs, changed_evaluations = interface_surface_questions(
+        changed,
+        snapshot_freshness="current",
+        rank_offset=0,
+    )
+    primary_cli = primary_evaluations[-1]
+    replay_cli = replay_evaluations[-1]
+    changed_cli = changed_evaluations[-1]
+    assert primary_cli.evaluation_id != replay_cli.evaluation_id
+    assert primary_cli.subject.revision_id == replay_cli.subject.revision_id
+    assert primary_cli.evidence[0].evidence_id == replay_cli.evidence[0].evidence_id
+    primary_proposal = next(
+        item
+        for item in plan_code_experiments(primary_specs, primary_evaluations).proposals
+        if item.question_id == CLI_SURFACE_QUESTION.question_id
+    )
+    replay_proposal = next(
+        item
+        for item in plan_code_experiments(replay_specs, replay_evaluations).proposals
+        if item.question_id == CLI_SURFACE_QUESTION.question_id
+    )
+    changed_proposal = next(
+        item
+        for item in plan_code_experiments(changed_specs, changed_evaluations).proposals
+        if item.question_id == CLI_SURFACE_QUESTION.question_id
+    )
+    assert primary_proposal.proposal_id == replay_proposal.proposal_id
+    assert primary_proposal.evaluation_binding_fingerprint == (
+        replay_proposal.evaluation_binding_fingerprint
+    )
+    assert changed_cli.subject.revision_id != replay_cli.subject.revision_id
+    assert changed_proposal.proposal_id != replay_proposal.proposal_id
 
 
 def test_interface_surface_wire_is_strict_and_identity_bound(tmp_path: Path) -> None:

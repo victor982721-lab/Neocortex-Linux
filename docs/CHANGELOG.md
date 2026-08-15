@@ -8,6 +8,46 @@ no se copian aquí para evitar que se conviertan en datos históricos sin contex
 
 ### Añadido
 
+- La validación canónica expone en `stderr` salida y progreso estructurado en
+  tiempo real, con heartbeats cada 30 segundos y eventos de recolección, inicio,
+  reutilización y terminación por shard. Trusted-deep trata el presupuesto como
+  nominal y sólo habilita una extensión total acotada a 2x tras progreso de
+  shard validado; el cgroup Linux conserva una cota final de 75 minutos y
+  `--json` mantiene el recibo final aislado en `stdout`. Un subreaper Linux
+  adopta y termina mediante `pidfd` descendientes que cambien de sesión.
+- Review `neocortex.code-review/v22`: conserva las dos verticales v21 y añade
+  la pregunta/vertical experimental PDF. La superficie CLI pública usa el scenario
+  `interfaces.public_cli_and_static_surface` v4 de veintiséis nodeids/cinco gates
+  que contrasta evidencia estática con ayuda, traducción,
+  dispatch, rechazos y lectores focales. `Knowledge Asset Health` incorpora la
+  pregunta causal Text, doce nodeids/cuatro gates y verificación técnica exacta
+  de Inventory→Text→Catalog→Knowledge. PDF usa schema 13 y otro scenario de
+  doce nodeids/cuatro gates 5/3/3/1; exige nueve relaciones de
+  contraevidencia y doce para el resultado completo. Los tres corren sobre
+  `pytest_tmp_path`, conservan `mutation_authority=false` y no demuestran todos
+  los handlers/owners, contenido/OCR, fidelidad visual/semántica ni power loss.
+- `Neocortex knowledge health RESOURCE_ID --scope personal|framework|all
+  [--json]` y el alias plano `--knowledge-health`. El contrato
+  `neocortex.knowledge-asset-health/v1` acepta sólo identidades
+  `resource:file`, despacha Text/PDF por identidad física y snapshot —nunca por
+  path/extensión—, captura los facts publicados, observa dos veces Knowledge y
+  sus facts y reintenta una vez ante cambio. PDF conserva estados
+  `done|partial|protected|error|processing`, páginas, staging, errores, FTS,
+  Catalog/Search y recovery estructural tipado sin exponer contenido. Mismatch, ausencia, schema
+  futuro/corrupto, publicación incompleta o sidecars activos fallan cerrado; la
+  lectura nunca crea, migra o muta estado y no evalúa calidad semántica.
+- `Neocortex code question QUESTION_ID --limit N [--json]` mediante el router
+  `neocortex.code-question-resolution/v1`. La primera versión registra sólo la
+  pregunta de superficie CLI y reconstruye su evidencia focal sin materializar
+  el review global. Preguntas no registradas devuelven un fallback explícito
+  `automatic=false`; no se adivinan ni ejecutan automáticamente. La API
+  `neocortex.read_api.code_question_payload()` ofrece el mismo lector sólo sobre
+  scopes Personal/Framework fijos.
+- `Neocortex code storage --run-limit N --row-scan-limit N --retain-runs N
+  [--json]` con `neocortex.code-storage-analysis/v1`: observación immutable y
+  acotada de tamaño/páginas, tablas, providers, runs y crecimiento de filas
+  externas. La retención es sólo `preview_only`; no ejecuta `DELETE`, prune,
+  `VACUUM`, checkpoint ni manipulación de sidecars.
 - Review `neocortex.code-review/v20` con la vertical experimental del protocolo
   durable Framework ReviewTask. Una pregunta versionada vuelve a resolver owner
   lógico `review`, state owner/store Framework, schemas y frontera pública antes
@@ -39,7 +79,7 @@ no se copian aquí para evitar que se conviertan en datos históricos sin contex
   proyección de contratos son exactamente iguales; cualquier delta contractual
   sí genera una identidad nueva.
 - Validación canónica `neocortex.code-change-validation/v3`, política
-  `local-linux-diff-aware-validation-v4`, ligada al diff:
+  `local-linux-diff-aware-validation-v6`, ligada al diff:
   rutas y tests afectados se proyectan a
   preguntas/sujetos de aceptación versionados. Una pregunta relevante sin
   runner o sin disposición técnica exacta después del replay ahora abstiene;
@@ -54,6 +94,9 @@ no se copian aquí para evitar que se conviertan en datos históricos sin contex
   Los cambios al ejecutor `tools/quality_gate.py` usan una matriz acotada de sus
   cinco contratos consumidores; los baselines de Coverage, packaging y policy
   continúan siendo fronteras de suite Linux completa.
+  v6 conserva los bindings ruta/test→pregunta para la CLI pública y Health Text
+  y añade PDF; modificar esas fronteras exige sus receipts y disposiciones
+  técnicas v6 exactos. Los registries runtime/template pasan a v10.
 
 - Review `neocortex.code-review/v18` con verificación técnica independiente y
   allow-listed. Sólo puede publicar
@@ -148,7 +191,7 @@ no se copian aquí para evitar que se conviertan en datos históricos sin contex
 - Code pasa de schema 5 a 6 mediante una migración aditiva que crea
   `code_experiment_receipts`, tabla append-only con triggers que impiden update y
   delete. El wire de receipts se introdujo en `neocortex.code-review/v17` y el
-  vigente es `neocortex.code-review/v19`, sin
+  vigente es `neocortex.code-review/v22`, sin
   declarar compatibilidad estructural con versiones anteriores, e incluye la
   proyección acotada de receipts exactos. El ejecutor verifica la firma de
   inputs Python/soporte Git antes y después, y un fence Linux de identidad,
@@ -219,11 +262,15 @@ no se copian aquí para evitar que se conviertan en datos históricos sin contex
 
 ### Límites conocidos
 
-- `Knowledge Asset Health` general permanece parcial/planificado: los estados
-  causales implementados sólo cubren la cola Value. ReviewTask para OCR,
-  entities/claims, contradicciones, links, recovery y promoción shadow, además
-  de una GUI para refrescar/decidir tareas, todavía no está implementado; la CLI
-  sí cubre ya el lifecycle humano.
+- `Knowledge Asset Health` permanece parcial: la consulta causal cubre Text y
+  PDF, y no se fusiona con el estado local de la cola Value. Semantic,
+  DOCX/Office, entities/claims, contradicciones, links y
+  promoción shadow siguen sin esta traza general. Tampoco existe una GUI para
+  refrescar/decidir tareas; la CLI sí cubre el lifecycle humano.
+- El resolver focal Code sólo registra la pregunta CLI. Las demás preguntas
+  requieren una consulta global solicitada explícitamente. Storage sólo observa
+  y simula una ventana de retención; no es un compactador ni una política de
+  borrado demostrada.
 - CapabilityBroker v1 sólo está conectado a la ruta Text. PDF, DOCX, la ruta
   Office, Semantic y plugins/providers externos permanecen planificados; no hay
   autodescubrimiento de plugins ni providers pesados obligatorios.

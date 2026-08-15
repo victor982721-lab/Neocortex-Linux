@@ -51,6 +51,19 @@ archivos del corpus. Un propietario con esquema futuro, incompatible o corrupto
 produce abstención explícita; no se migra, repara ni reconstruye durante la
 consulta.
 
+`Neocortex knowledge health` conserva esa misma frontera. Sólo acepta una
+identidad física canónica `resource:file`, consulta los scopes fijos y captura
+el snapshot lógico Knowledge más los facts Inventory/owner/Catalog mediante
+readers immutable. Selecciona Text o PDF por identidad física y evidencia del
+snapshot, nunca por path o extensión. No recibe paths, no lee el
+archivo original y no cruza registros con identidad o processing signature
+distintos. Dos observaciones y un único retry evitan publicar como estable una
+vista cambiante. El lector PDF schema 13 es content-blind: observa estados,
+páginas, staging, errores, warnings, FTS y recovery tipado sin devolver texto,
+metadata ni mensajes de error. El resultado es advisory, no certifica
+contenido/OCR, fidelidad visual ni verdad semántica y
+mantiene `mutation_authorized=false` incluso cuando declara `healthy`.
+
 ### Rutas internas protegidas
 
 La topología reservada es
@@ -148,13 +161,31 @@ restricción a `AF_UNIX` deniega AF_INET y AF_INET6. Una propiedad systemd o un
 receipt de entorno sin esa prueba no pueden declarar ausencia de egress. La ausencia de runner tampoco
 degrada una pregunta afectada a `not_required`; el binding diff→pregunta debe
 demostrar irrelevancia o el gate se abstiene.
-El review v20 verifica además el envelope digest y sólo enlaza el terminal
+El review v22 verifica además el envelope digest y sólo enlaza el terminal
 `passed` más nuevo por proposal/firma a gates registrados; un terminal posterior
 fallido o abstenido lo invalida. Los trata como evidencia del contrato de tests
 y nunca como autorización, verdad formal o decisión humana. La disposición
-técnica allow-listed de v20 tampoco concede autoridad: está limitada a la
+técnica allow-listed v6 de v22 tampoco concede autoridad: está limitada a la
 pregunta y gates exactos, publica riesgos residuales y mantiene
 `mutation_authority=false`.
+
+Los templates incorporados en v22 no amplían la frontera de confianza. El
+scenario CLI v4/template v3 (veintiséis nodeids/cinco gates), Knowledge Asset Health Text (doce
+nodeids/cuatro gates) y PDF (doce/cuatro, distribución 5/3/3/1) ejecutan
+únicamente tests allow-listed con estado bajo `pytest_tmp_path`. PDF exige nueve
+relaciones de contraevidencia y doce para el resultado completo. No prueban cada
+handler, GUI/MCP/worker, otros owners de Knowledge, contenido/OCR, fidelidad
+visual/semántica ni pérdida de energía. Un receipt aprobado sólo satisface los
+facts y controles negativos exactos de su pregunta. Los registries
+runtime/template son v11 y la política diff-aware es v6.
+
+`Neocortex code question` abre el estado publicado únicamente para el lector
+focal registrado de CLI; las preguntas desconocidas producen un fallback
+declarativo `automatic=false`, no ejecución implícita del review global.
+`Neocortex code storage` usa una conexión immutable y una cerca before/after;
+sus previews de retención nunca ejecutan `DELETE`, prune, `VACUUM`, checkpoint
+ni manipulación de WAL/SHM. Ambas superficies conservan autoridad advisory y
+cero autoridad de mutación.
 
 La finalización no confía únicamente en la CLI: Framework v22 conserva la
 protección de v20 que impide enlazar
@@ -166,9 +197,10 @@ indemostrable propaga `ProtectedAnalysisRootError`; no activa un fallback.
 
 El diagnóstico asociado, `--code-status --code-json`, sí es consulta read-only
 estricta. A diferencia de lectores que pueden participar en WAL, exige
-instantáneas SQLite immutable sin `-wal`, `-shm` ni `-journal` y fences
-estables antes/después. Cualquier sidecar —incluso vacío o desacoplado— o cerca
-inestable en code, framework o Dedup provoca abstención total con código `2`.
+instantáneas SQLite immutable con sidecars inactivos demostrables y fences
+estables antes/después. Acepta ausencia de sidecars o WAL vacío más SHM exacto
+de 32 KiB; un journal, WAL con contenido, SHM inválido o cerca inestable en
+Code, Framework o Dedup provoca abstención total con código `2`.
 No se emite evidencia parcial ni se crean sidecars, migraciones o reparaciones. Consulte
 [SELF_ANALYSIS.md](SELF_ANALYSIS.md).
 

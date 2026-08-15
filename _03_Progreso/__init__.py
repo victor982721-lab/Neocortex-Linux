@@ -4,15 +4,15 @@
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
-
 # region [01] Dependencias del módulo
 from .models import ProgressCallback, ProgressEvent, ProgressMetric, emit_progress
-from .reporters import NullProgress, RecordingProgress, RichProgress
+from .reporters import LineProgress, NullProgress, RecordingProgress, RichProgress
 # endregion [01]
 
 # region [02] Implementación
 
 __all__ = [
+    "LineProgress",
     "NullProgress",
     "ProgressCallback",
     "ProgressEvent",

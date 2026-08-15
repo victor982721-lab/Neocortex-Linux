@@ -7,6 +7,7 @@ does not own Git mutation, a push, release promotion or corpus mutation.
 
 from __future__ import annotations
 
+import ctypes
 import hashlib
 import json
 import os
@@ -22,6 +23,7 @@ import venv
 import xxhash
 from collections import defaultdict, deque
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal, Protocol, cast
@@ -36,6 +38,9 @@ from .code_analysis_epistemics import (
 )
 from .code_architecture_questions import ARCHITECTURE_CONTRACT_QUESTION
 from .code_change_evolution_analysis import CODE_SCHEMA_EVOLUTION_QUESTION
+from .code_interface_surface_analysis import CLI_SURFACE_QUESTION
+from .code_knowledge_asset_health_analysis import KNOWLEDGE_ASSET_HEALTH_QUESTION
+from .code_knowledge_pdf_asset_health_analysis import KNOWLEDGE_PDF_ASSET_HEALTH_QUESTION
 from .code_route_capability_analysis import ROUTE_CAPABILITY_QUESTION
 from .code_retention_analysis import RETENTION_HOLD_QUESTION
 from .code_review_task_analysis import FRAMEWORK_REVIEW_TASK_PROTOCOL_QUESTION
@@ -73,13 +78,20 @@ from .semantic_models import canonical_json
 
 
 CODE_CHANGE_VALIDATION_SCHEMA = "neocortex.code-change-validation/v3"
-CODE_CHANGE_VALIDATION_POLICY = "local-linux-diff-aware-validation-v4"
+CODE_CHANGE_VALIDATION_POLICY = "local-linux-diff-aware-validation-v6"
 MAX_CHANGED_PATHS = 2_000
 MAX_SELECTED_TEST_FILES = 2_000
 MAX_DEPENDENCY_DEPTH = 8
 MAX_COMMAND_OUTPUT_BYTES = 32 * 1024
 _COMMAND_HEARTBEAT_SECONDS = 30.0
 _COMMAND_INTERRUPT_GRACE_SECONDS = 15.0
+_COMMAND_PROGRESS_EXCERPT_CHARACTERS = 1024
+_COMMAND_CHILDREN_TEXT_BYTES = 64 * 1024
+_COMMAND_CHILD_POLL_SECONDS = 0.01
+_PR_SET_CHILD_SUBREAPER = 36
+_PR_GET_CHILD_SUBREAPER = 37
+_COMMAND_SUBREAPER_LOCK = threading.Lock()
+_ANSI_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 _TEST_PATH = re.compile(r"^tests/(?:.*/)?test_[^/]+\.py$")
 _PYTHON_SOURCE_ROOTS = frozenset(
     {
@@ -162,7 +174,7 @@ _SOURCE_BOUNDARY_TESTS = {
             "tests/test_external_provider_schema_v4.py",
             "tests/test_framework_code_path_collation.py",
         }
-    )
+    ),
 }
 _SUPPLY_CHAIN_BOUNDARIES = frozenset(
     {
@@ -176,6 +188,10 @@ _SUPPLY_CHAIN_BOUNDARIES = frozenset(
 _REGISTERED_SCENARIO_TESTS = frozenset(
     {
         "tests/test_code_framework_review_task_experiments.py",
+        "tests/test_code_knowledge_asset_health_analysis.py",
+        "tests/test_code_knowledge_pdf_asset_health_analysis.py",
+        "tests/test_code_observability_cli.py",
+        "tests/test_code_public_cli_interface_experiments.py",
         "tests/test_code_public_route_experiments.py",
         "tests/test_code_review_epistemics.py",
         "tests/test_code_retention_analysis.py",
@@ -186,6 +202,8 @@ _REGISTERED_SCENARIO_TESTS = frozenset(
         "tests/test_retention_planner.py",
         "tests/test_review_task_cli_adapter.py",
         "tests/test_review_tasks.py",
+        "tests/test_knowledge_asset_health.py",
+        "tests/test_knowledge_asset_health_pdf.py",
         "tests/test_text_derivation_route.py",
     }
 )
@@ -476,12 +494,125 @@ def _result_digest(result: CodeChangeValidationResult) -> str:
     return "sha256:" + hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
 
 
-def _default_runner(
+def _subreaper_state() -> bool:
+    state = ctypes.c_int()
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.prctl(_PR_GET_CHILD_SUBREAPER, ctypes.byref(state), 0, 0, 0) != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error))
+    return bool(state.value)
+
+
+def _set_subreaper(enabled: bool) -> None:
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.prctl(_PR_SET_CHILD_SUBREAPER, int(enabled), 0, 0, 0) != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error))
+
+
+@contextmanager
+def _command_subreaper():
+    with _COMMAND_SUBREAPER_LOCK:
+        previous = _subreaper_state()
+        _set_subreaper(True)
+        try:
+            yield
+        finally:
+            _set_subreaper(previous)
+
+
+def _direct_child_pids() -> frozenset[int]:
+    children: set[int] = set()
+    try:
+        tasks = tuple(Path("/proc/self/task").iterdir())
+    except OSError:
+        return frozenset()
+    for task in tasks:
+        if not task.name.isdecimal():
+            continue
+        try:
+            with (task / "children").open("r", encoding="ascii") as stream:
+                raw = stream.read(_COMMAND_CHILDREN_TEXT_BYTES + 1)
+        except (OSError, UnicodeError):
+            continue
+        if len(raw) > _COMMAND_CHILDREN_TEXT_BYTES:
+            raise RuntimeError("validation child process inventory exceeded its bound")
+        try:
+            children.update(int(item) for item in raw.split())
+        except ValueError as exc:
+            raise RuntimeError("validation child process inventory is malformed") from exc
+    return frozenset(children)
+
+
+def _signal_pid(pid: int, sig: signal.Signals) -> None:
+    try:
+        pidfd = os.pidfd_open(pid, 0)
+    except (OSError, ProcessLookupError):
+        return
+    try:
+        signal.pidfd_send_signal(pidfd, sig, None, 0)
+    except (OSError, ProcessLookupError):
+        pass
+    finally:
+        os.close(pidfd)
+
+
+def _reap_pid(pid: int) -> bool:
+    try:
+        reaped, _status = os.waitpid(pid, os.WNOHANG)
+    except ChildProcessError:
+        return True
+    except OSError:
+        return False
+    return reaped == pid
+
+
+def _live_adopted_children(
+    baseline: frozenset[int],
+    *,
+    excluded: frozenset[int],
+) -> frozenset[int]:
+    """Reap terminal adoptees and return only children that remain observable."""
+
+    candidates = _direct_child_pids() - baseline - excluded
+    for pid in candidates:
+        _reap_pid(pid)
+    return _direct_child_pids() - baseline - excluded
+
+
+def _terminate_adopted_children(
+    baseline: frozenset[int],
+    *,
+    timeout_seconds: float,
+    excluded: frozenset[int] = frozenset(),
+) -> tuple[bool, bool]:
+    """Kill and reap every child adopted through Linux subreaper semantics."""
+
+    observed = False
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        children = _live_adopted_children(baseline, excluded=excluded)
+        if not children:
+            return observed, True
+        observed = True
+        for pid in children:
+            _signal_pid(pid, signal.SIGKILL)
+        for pid in children:
+            _reap_pid(pid)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return observed, False
+        time.sleep(min(_COMMAND_CHILD_POLL_SECONDS, remaining))
+
+
+def _streaming_runner(
     arguments: Sequence[str | os.PathLike[str]],
     *,
     cwd: Path,
     timeout: float,
     environment: Mapping[str, str] | None = None,
+    progress: Callable[[Literal["stdout", "stderr"], str], None] | None = None,
+    baseline_children: frozenset[int],
 ) -> subprocess.CompletedProcess[str]:
     command = tuple(os.fspath(item) for item in arguments)
     process = subprocess.Popen(
@@ -492,31 +623,176 @@ def _default_runner(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         start_new_session=True,
+        bufsize=1,
     )
-    try:
-        stdout, stderr = process.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired as exc:
+    assert process.stdout is not None and process.stderr is not None
+    stdout_chunks: list[str] = []
+    stderr_chunks: list[str] = []
+
+    def drain(
+        stream: Any,
+        chunks: list[str],
+        label: Literal["stdout", "stderr"],
+    ) -> None:
         try:
-            os.killpg(process.pid, signal.SIGINT)
+            for line in stream:
+                chunks.append(line)
+                if progress is None:
+                    continue
+                excerpt = _ANSI_ESCAPE.sub("", line).strip()
+                if not excerpt:
+                    continue
+                excerpt = " ".join(excerpt.split())
+                try:
+                    progress(label, excerpt[:_COMMAND_PROGRESS_EXCERPT_CHARACTERS])
+                except BaseException:
+                    # Reporting is advisory and must never stop draining a child pipe.
+                    continue
+        except (OSError, ValueError):
+            # A forced close is only used after the complete process group has
+            # ignored both termination stages.  Preserve everything drained so far.
+            pass
+        finally:
+            stream.close()
+
+    readers = (
+        threading.Thread(
+            target=drain,
+            args=(process.stdout, stdout_chunks, "stdout"),
+            name="neocortex-validation-stdout",
+            daemon=True,
+        ),
+        threading.Thread(
+            target=drain,
+            args=(process.stderr, stderr_chunks, "stderr"),
+            name="neocortex-validation-stderr",
+            daemon=True,
+        ),
+    )
+    for reader in readers:
+        reader.start()
+
+    def signal_group(sig: signal.Signals) -> None:
+        try:
+            os.killpg(process.pid, sig)
         except ProcessLookupError:
             pass
+
+    def join_readers(timeout_seconds: float) -> bool:
+        deadline = time.monotonic() + timeout_seconds
+        for reader in readers:
+            reader.join(timeout=max(0.0, deadline - time.monotonic()))
+        return all(not reader.is_alive() for reader in readers)
+
+    def captured() -> tuple[str, str]:
+        return "".join(stdout_chunks), "".join(stderr_chunks)
+
+    result: subprocess.CompletedProcess[str] | None = None
+    error: BaseException | None = None
+    timed_out: subprocess.TimeoutExpired | None = None
+    forced_tree_cleanup = False
+    try:
         try:
-            stdout, stderr = process.communicate(timeout=_COMMAND_INTERRUPT_GRACE_SECONDS)
+            process.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
+            timed_out = subprocess.TimeoutExpired(command, timeout)
+            signal_group(signal.SIGINT)
             try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
+                process.wait(timeout=_COMMAND_INTERRUPT_GRACE_SECONDS)
+            except subprocess.TimeoutExpired:
                 pass
-            stdout, stderr = process.communicate()
-        raise subprocess.TimeoutExpired(
-            command,
-            timeout,
-            output=stdout,
-            stderr=stderr,
-        ) from exc
-    if process.returncode is None:
-        raise RuntimeError("validation subprocess has no terminal return code")
-    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+
+        pipes_closed = join_readers(_COMMAND_INTERRUPT_GRACE_SECONDS)
+        adopted = _live_adopted_children(
+            baseline_children,
+            excluded=frozenset({process.pid}),
+        )
+        descendants_exited = not adopted
+        if process.poll() is None or not pipes_closed or not descendants_exited:
+            if timed_out is None:
+                forced_tree_cleanup = True
+            # Linux subreaper semantics make session-changing descendants direct
+            # children after their intermediate parents exit.  Kill the original
+            # group first, then repeatedly kill and reap every adopted generation.
+            signal_group(signal.SIGKILL)
+            try:
+                process.wait(timeout=_COMMAND_INTERRUPT_GRACE_SECONDS)
+            except subprocess.TimeoutExpired:
+                pass
+            _observed, descendants_exited = _terminate_adopted_children(
+                baseline_children,
+                timeout_seconds=_COMMAND_INTERRUPT_GRACE_SECONDS,
+                excluded=(frozenset({process.pid}) if process.poll() is None else frozenset()),
+            )
+            pipes_closed = join_readers(_COMMAND_INTERRUPT_GRACE_SECONDS)
+        if not pipes_closed:
+            process.stdout.close()
+            process.stderr.close()
+            pipes_closed = join_readers(1.0)
+        stdout, stderr = captured()
+        if process.poll() is None or not pipes_closed or not descendants_exited:
+            raise RuntimeError("validation subprocess tree did not terminate cleanly")
+        if timed_out is not None:
+            raise subprocess.TimeoutExpired(
+                command,
+                timeout,
+                output=stdout,
+                stderr=stderr,
+            ) from timed_out
+        if forced_tree_cleanup:
+            raise RuntimeError("validation subprocess required forced tree cleanup")
+        if process.returncode is None:
+            raise RuntimeError("validation subprocess has no terminal return code")
+        result = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+    except BaseException as exc:
+        error = exc
+    finally:
+        if process.poll() is None:
+            signal_group(signal.SIGKILL)
+            try:
+                process.wait(timeout=_COMMAND_INTERRUPT_GRACE_SECONDS)
+            except subprocess.TimeoutExpired:
+                pass
+        cleanup_observed, cleanup_complete = _terminate_adopted_children(
+            baseline_children,
+            timeout_seconds=_COMMAND_INTERRUPT_GRACE_SECONDS,
+            excluded=(frozenset({process.pid}) if process.poll() is None else frozenset()),
+        )
+        if any(reader.is_alive() for reader in readers):
+            process.stdout.close()
+            process.stderr.close()
+        readers_complete = join_readers(_COMMAND_INTERRUPT_GRACE_SECONDS)
+
+    stdout, stderr = captured()
+    if process.poll() is None or not cleanup_complete or not readers_complete:
+        raise RuntimeError("validation subprocess tree cleanup failed") from error
+    if cleanup_observed and error is None:
+        error = RuntimeError("validation subprocess left adopted children after exit")
+    if error is not None:
+        raise error
+    if result is None:
+        raise RuntimeError("validation subprocess produced no terminal result")
+    return result
+
+
+def _default_runner(
+    arguments: Sequence[str | os.PathLike[str]],
+    *,
+    cwd: Path,
+    timeout: float,
+    environment: Mapping[str, str] | None = None,
+    progress: Callable[[Literal["stdout", "stderr"], str], None] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    with _command_subreaper():
+        baseline_children = _direct_child_pids()
+        return _streaming_runner(
+            arguments,
+            cwd=cwd,
+            timeout=timeout,
+            environment=environment,
+            progress=progress,
+            baseline_children=baseline_children,
+        )
 
 
 def _bounded_output(completed: subprocess.CompletedProcess[str]) -> str:
@@ -996,19 +1272,40 @@ def _run_gate_command(
 ) -> ValidationGate:
     started = time.monotonic_ns()
     stopped = threading.Event()
+    progress_lock = threading.Lock()
+
+    def report_progress(message: str) -> None:
+        if progress is None:
+            return
+        with progress_lock:
+            progress(message)
 
     def heartbeat() -> None:
         if progress is None:
             return
         while not stopped.wait(_COMMAND_HEARTBEAT_SECONDS):
             elapsed = max(0, (time.monotonic_ns() - started) // 1_000_000_000)
-            progress(f"gate {gate_id} still running: elapsed_seconds={elapsed}")
+            report_progress(f"gate {gate_id} still running: elapsed_seconds={elapsed}")
 
     thread = threading.Thread(target=heartbeat, daemon=True)
     thread.start()
+    report_progress(f"gate {gate_id} started: timeout_seconds={round(timeout)}")
     try:
-        completed = runner(command, cwd=root, timeout=timeout, environment=environment)
+        if runner is _default_runner:
+            completed = _default_runner(
+                command,
+                cwd=root,
+                timeout=timeout,
+                environment=environment,
+                progress=lambda stream, line: report_progress(f"gate {gate_id} {stream}: {line}"),
+            )
+        else:
+            completed = runner(command, cwd=root, timeout=timeout, environment=environment)
     except (OSError, subprocess.TimeoutExpired) as exc:
+        report_progress(
+            f"gate {gate_id} stopped: error={type(exc).__name__} "
+            f"elapsed_seconds={max(0, (time.monotonic_ns() - started) // 1_000_000_000)}"
+        )
         return _gate(
             gate_id,
             "abstained",
@@ -1020,6 +1317,10 @@ def _run_gate_command(
     finally:
         stopped.set()
         thread.join(timeout=1)
+    report_progress(
+        f"gate {gate_id} finished: exit_code={completed.returncode} "
+        f"elapsed_seconds={max(0, (time.monotonic_ns() - started) // 1_000_000_000)}"
+    )
     output = _bounded_output(completed)
     return _gate(
         gate_id,
@@ -1882,8 +2183,7 @@ def _replay_gate(
         sorted(
             provider_id
             for provider_id in identity_provider_ids
-            if provider_id in replay_providers
-            and replay_providers[provider_id].execution == "full"
+            if provider_id in replay_providers and replay_providers[provider_id].execution == "full"
         )
     )
     unresolved_execution_ids = tuple(
@@ -1895,11 +2195,7 @@ def _replay_gate(
         )
     )
     status: Literal["passed", "failed", "abstained"] = (
-        "failed"
-        if not identities_match
-        else "abstained"
-        if unresolved_execution_ids
-        else "passed"
+        "failed" if not identities_match else "abstained" if unresolved_execution_ids else "passed"
     )
     reason = (
         "provider_results_changed_on_replay"
@@ -1935,7 +2231,7 @@ def _replay_gate(
 
 
 def _known_question_specs() -> tuple[AnalysisQuestionSpec, ...]:
-    """Return the complete v20 question vocabulary accepted by this validator.
+    """Return the complete v22 question vocabulary accepted by this validator.
 
     Adding a new question to Code review without classifying it here makes the
     canonical gate abstain.  This is intentional: an unknown question must not
@@ -1992,6 +2288,8 @@ def _known_question_specs() -> tuple[AnalysisQuestionSpec, ...]:
         FRAMEWORK_REVIEW_TASK_PROTOCOL_QUESTION,
         INTERFACE_SURFACE_AVAILABILITY_QUESTION,
         INVARIANT_ASSURANCE_QUESTION,
+        KNOWLEDGE_ASSET_HEALTH_QUESTION,
+        KNOWLEDGE_PDF_ASSET_HEALTH_QUESTION,
         MODULE_SURFACE_QUESTION,
         ROUTE_CAPABILITY_AVAILABILITY_QUESTION,
         ROUTE_CAPABILITY_QUESTION,
@@ -2054,6 +2352,48 @@ def _validation_question_scopes() -> tuple[_ValidationQuestionScope, ...]:
                 "_04_Nucleo_Operativo/text_route",
             ),
             frozenset({"tests/test_code_public_route_experiments.py"}),
+            True,
+        ),
+        _ValidationQuestionScope(
+            "public_cli_contract",
+            CLI_SURFACE_QUESTION,
+            "entrypoint:neocortex-interface-surface",
+            "interfaces.public_cli_contract_acceptance",
+            frozenset(
+                {
+                    "_04_Nucleo_Operativo/cli_app.py",
+                    "_04_Nucleo_Operativo/cli_code.py",
+                    "_04_Nucleo_Operativo/cli_code_surface.py",
+                    "_04_Nucleo_Operativo/cli_knowledge.py",
+                    "_04_Nucleo_Operativo/cli_knowledge_surface.py",
+                    "_04_Nucleo_Operativo/cli_operations.py",
+                    "_04_Nucleo_Operativo/code_interface_surface_analysis.py",
+                    "_04_Nucleo_Operativo/code_question_resolver.py",
+                    "_04_Nucleo_Operativo/code_storage_analysis.py",
+                    "neocortex/cli.py",
+                    "neocortex/human_cli.py",
+                    "neocortex/read_api.py",
+                    "tests/test_code_observability_cli.py",
+                    "tests/test_code_public_cli_interface_experiments.py",
+                }
+            ),
+            (
+                "_04_Nucleo_Operativo/cli_",
+                "_04_Nucleo_Operativo/code_question_resolver",
+                "_04_Nucleo_Operativo/code_storage_analysis",
+                "neocortex/cli",
+                "neocortex/human_cli",
+                "neocortex/read_api",
+                "tests/test_cli_",
+                "tests/test_code_cli",
+                "tests/test_code_observability_cli",
+            ),
+            frozenset(
+                {
+                    "tests/test_code_observability_cli.py",
+                    "tests/test_code_public_cli_interface_experiments.py",
+                }
+            ),
             True,
         ),
         _ValidationQuestionScope(
@@ -2202,6 +2542,85 @@ def _validation_question_scopes() -> tuple[_ValidationQuestionScope, ...]:
                     "tests/test_review_tasks.py",
                 }
             ),
+            True,
+        ),
+        _ValidationQuestionScope(
+            "knowledge_asset_health",
+            KNOWLEDGE_ASSET_HEALTH_QUESTION,
+            "capability:knowledge-asset-health",
+            "knowledge.asset_health_causal_acceptance",
+            frozenset(
+                {
+                    "_02_Deduplicacion/inventory_schema.py",
+                    "_04_Nucleo_Operativo/cli_knowledge.py",
+                    "_04_Nucleo_Operativo/cli_knowledge_surface.py",
+                    "_04_Nucleo_Operativo/code_knowledge_asset_health_analysis.py",
+                    "_04_Nucleo_Operativo/document_catalog.py",
+                    "_04_Nucleo_Operativo/document_catalog_schema.py",
+                    "_04_Nucleo_Operativo/knowledge_asset_health.py",
+                    "_04_Nucleo_Operativo/knowledge_asset_health_contracts.py",
+                    "_04_Nucleo_Operativo/knowledge_asset_health_repository.py",
+                    "_04_Nucleo_Operativo/knowledge_snapshot.py",
+                    "_04_Nucleo_Operativo/read_api_port.py",
+                    "_04_Nucleo_Operativo/text_state.py",
+                    "neocortex/cli.py",
+                    "neocortex/human_cli.py",
+                    "neocortex/read_api.py",
+                    "tests/test_human_cli.py",
+                    "tests/test_knowledge_asset_health.py",
+                    "tests/test_read_api.py",
+                }
+            ),
+            (
+                "_04_Nucleo_Operativo/code_knowledge_asset_health_",
+                "tests/test_knowledge_asset_health.py",
+            ),
+            frozenset({"tests/test_knowledge_asset_health.py"}),
+            True,
+        ),
+        _ValidationQuestionScope(
+            "knowledge_pdf_asset_health",
+            KNOWLEDGE_PDF_ASSET_HEALTH_QUESTION,
+            "capability:knowledge-asset-health:pdf",
+            "knowledge.pdf_asset_health_causal_acceptance",
+            frozenset(
+                {
+                    "_02_Deduplicacion/inventory_schema.py",
+                    "_04_Nucleo_Operativo/cli_knowledge.py",
+                    "_04_Nucleo_Operativo/cli_knowledge_surface.py",
+                    "_04_Nucleo_Operativo/code_knowledge_pdf_asset_health_analysis.py",
+                    "_04_Nucleo_Operativo/document_catalog.py",
+                    "_04_Nucleo_Operativo/document_catalog_schema.py",
+                    "_04_Nucleo_Operativo/knowledge_asset_health.py",
+                    "_04_Nucleo_Operativo/knowledge_asset_health_contracts.py",
+                    "_04_Nucleo_Operativo/knowledge_asset_health_pdf.py",
+                    "_04_Nucleo_Operativo/knowledge_asset_health_repository.py",
+                    "_04_Nucleo_Operativo/knowledge_snapshot.py",
+                    "_04_Nucleo_Operativo/pdf_route.py",
+                    "_04_Nucleo_Operativo/pdf_route_cache.py",
+                    "_04_Nucleo_Operativo/pdf_route_models.py",
+                    "_04_Nucleo_Operativo/pdf_route_storage.py",
+                    "_04_Nucleo_Operativo/pdf_schema.py",
+                    "_04_Nucleo_Operativo/read_api_port.py",
+                    "_04_Nucleo_Operativo/route_registry.py",
+                    "neocortex/cli.py",
+                    "neocortex/human_cli.py",
+                    "neocortex/read_api.py",
+                    "tests/test_code_knowledge_pdf_asset_health_analysis.py",
+                    "tests/test_human_cli.py",
+                    "tests/test_knowledge_asset_health_pdf.py",
+                    "tests/test_pdf_birthtime.py",
+                    "tests/test_pdf_route.py",
+                    "tests/test_read_api.py",
+                }
+            ),
+            (
+                "_04_Nucleo_Operativo/code_knowledge_pdf_asset_health_",
+                "_04_Nucleo_Operativo/pdf_",
+                "tests/test_code_knowledge_pdf_asset_health_",
+                "tests/test_knowledge_asset_health_pdf",
+            ),
+            frozenset({"tests/test_knowledge_asset_health_pdf.py"}),
             True,
         ),
         _ValidationQuestionScope(
@@ -2964,14 +3383,20 @@ def validate_code_change(
         max_tests=max_tests,
         time_budget_seconds=time_budget_seconds,
     )
+    trusted_deep_timeout = (2 * time_budget_seconds) + 15 * 60
+    trusted_deep_environment = {
+        **os.environ,
+        "NEOCORTEX_PROGRESS_STREAM": "1",
+        "PYTHONDONTWRITEBYTECODE": "1",
+    }
     report("publishing trusted-deep evidence and selected branch coverage")
     publication_gate = _run_gate_command(
         "trusted_deep_publication",
         analyze_command,
         root=source,
-        timeout=time_budget_seconds + 15 * 60,
+        timeout=trusted_deep_timeout,
         runner=runner,
-        environment={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+        environment=trusted_deep_environment,
         progress=report,
     )
     gates.append(publication_gate)
@@ -3051,9 +3476,9 @@ def validate_code_change(
             "trusted_deep_replay_publication",
             analyze_command,
             root=source,
-            timeout=time_budget_seconds + 15 * 60,
+            timeout=trusted_deep_timeout,
             runner=runner,
-            environment={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+            environment=trusted_deep_environment,
             progress=report,
         )
     )

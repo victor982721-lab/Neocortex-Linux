@@ -176,7 +176,7 @@ selección explícita se publica como `selected`; la ausencia de selectores, com
 | Opción | Predeterminado | Rango | Función |
 |---|---:|---:|---|
 | `--deep-max-tests` | 3000 | 1–5000 | Máximo de tests admitidos; una recolección mayor queda parcial. |
-| `--deep-time-budget-seconds` | 600 | 30–900 | Presupuesto duro total de recolección y ejecución. |
+| `--deep-time-budget-seconds` | 600 | 30–900 | Presupuesto nominal de recolección y ejecución; progreso validado permite una única cota 2x. |
 | `--deep-shard-size` | 20 | 1–50 | Node ids exactos por shard reanudable. |
 
 El proveedor inicia Coverage con branch coverage antes de cargar Pytest y
@@ -200,7 +200,10 @@ selección, configuración y versiones de Python/Pytest/Coverage. Sólo se conse
 un checkpoint si todas sus pruebas terminaron aprobadas. Una reanudación puede
 reutilizar esos shards; los fallidos, incompletos, corruptos o incompatibles se
 ejecutan de nuevo. Un replay exacto de toda la publicación conserva además el
-contrato genérico de caché del proveedor.
+contrato genérico de caché del proveedor. La recolección y cada inicio,
+reutilización o terminación de shard emiten un evento estructurado con avance,
+duración y tiempo transcurrido. El progreso sólo amplía el presupuesto después
+de un resultado de shard validado; nunca elimina la cota total.
 
 ## Preflight y disjunción obligatoria
 
@@ -408,7 +411,7 @@ explícitamente como **convención de ruta**, no como ownership ni reachability 
 runtime. `hotspot_id` identifica establemente la evidencia física y el símbolo;
 `finding_id` identifica la interpretación versionada.
 
-El envelope vigente es `neocortex.code-review/v20` y no declara compatibilidad
+El envelope vigente es `neocortex.code-review/v22` y no declara compatibilidad
 con schemas anteriores: conserva el corte de autoridad y usa el contrato general
 `neocortex.code-analysis-epistemics/v1`. Cada finding separa
 observación, hipótesis, readiness
@@ -447,7 +450,7 @@ nunca valores. Para CLI selecciona archivos por calls
 construcción dinámica. No ejecuta builders ni afirma que esos parsers lleguen
 al comando público.
 
-La arquitectura publicada deja de ser sólo una sección paralela: v20 deriva
+La arquitectura publicada deja de ser sólo una sección paralela: v22 deriva
 preguntas generales para el grafo estático comparable y para las evaluaciones de
 los contratos de imports. Sus evidence refs conservan snapshot, digest, gates,
 conteos, discrepancias y violaciones; incluso un contrato fallido permanece
@@ -485,7 +488,7 @@ publica atómicamente 260 miembros. Esto demuestra supervivencia y reanudación
 para ese crash point de proceso sobre SQLite; no simula power loss, corrupción
 de almacenamiento, todas las fronteras ni recuperación cross-owner.
 
-v20 integra además `code-state-topology`, `code-retention-analysis`,
+v22 integra además `code-state-topology`, `code-retention-analysis`,
 `code-state-interactions`,
 `code-change-evolution`, `code-assurance`, `code-invariant-assurance`,
 `code-capability-reachability`, `code-route-capabilities`,
@@ -498,13 +501,43 @@ al placeholder anónimo que entiende SQLGlot; no se modifica texto entre comilla
 ni la evidencia/digest original. No infiere store por `connect`, `execute`, nombre de módulo
 o suffix `repository`.
 
-v20 añade además la pregunta contractual
+v22 conserva además la pregunta contractual
 `framework.review_task_lifecycle_preserves_atomicity_and_human_authority`. No
 materializa otra proyección durable: reabre owner/store/schema y el adapter/port
 de ReviewTask desde sus contratos versionados, y mantiene la decisión en
 `experiment_required` hasta enlazar el receipt de ocho nodeids y cinco gates. El
 verificador técnico no autentica al actor sintético ni presenta fallos inyectados
 como process death o power loss.
+
+v22 conserva la vertical causal Text de `Knowledge Asset Health`. La pregunta
+`knowledge.asset_health_trace_is_snapshot_bound_and_causally_explainable`
+vuelve a resolver los contratos exactos de Inventory, Text, Catalog y la lectura
+Knowledge, junto con el esquema estricto
+`resource:file:<volume_id>:<file_id>:<birthtime_ns>`. La consulta pública hace
+dos observaciones completas de Knowledge y de los cuatro facts; si alguna cerca
+cambia, reintenta una sola vez y después se abstiene. Sólo una traza completa,
+estable, publicada y causalmente alineada puede quedar `healthy`; ausencia,
+mismatch de identidad o processing signature, schema futuro/corrupto,
+publicación incompleta o sidecars activos fallan cerrado. El reporte
+`neocortex.knowledge-asset-health/v1` es read-only, advisory y conserva
+`mutation_authorized=false`: no mide verdad semántica, calidad del texto ni
+salud de otras rutas.
+
+v22 agrega una segunda pregunta independiente para PDF:
+`knowledge.pdf_asset_health_preserves_page_partial_protected_and_recovery_causality`.
+La misma superficie `Neocortex knowledge health` selecciona Text o PDF por la
+identidad física y la evidencia del snapshot —incluidos probes de file key
+packed/legacy y, si hace falta, el source kind publicado por Catalog—, nunca por
+ruta o extensión. Para PDF schema 13 proyecta únicamente estructura: estados
+`done|partial|protected|error|processing`, rango y conteos de páginas, staging,
+errores de página, warnings, FTS, Catalog/Search y recovery tipado
+`neocortex_recovery` para `pdfminer` o `qpdf+pymupdf` versión
+`pdf-structural-recovery-v2`. Un recovery top-level o desconocido no se presenta
+como reconocido. El lector no descomprime texto, no devuelve metadata o mensajes
+de error y no abre el corpus. PDF vacío es válido; `protected`/`error` pueden
+cerrar con Inventory+PDF sin inventar Catalog/Search; `processing` permanece
+`degraded/partial`; sólo `done` completo, estable y coherente puede quedar
+`healthy`.
 
 `code-retention-analysis/v1` consume el planner productivo en dry-run sobre
 Semantic, Catalog, Inventory y Framework. Conserva schemas, holds declarados,
@@ -535,17 +568,27 @@ La identidad portable de cada propuesta incluye una proyección de contratos,
 facts, completitud y requirements, pero excluye IDs locales de captura. Por
 ello un replay exacto conserva receipts y un cambio real de evidencia los
 invalida aunque el subject lógico conserve su nombre.
-Templates sin runner siguen como planes de caracterización. La CLI sólo ejecuta
-ocho templates source-versioned con gates medidos: los contratos de imports
+Templates sin runner siguen como planes de caracterización. Los registries
+runtime/template v11 permiten a la CLI ejecutar sólo once templates
+source-versioned con gates medidos: los contratos de imports
 declarados, con tres nodeids y cuatro gates; la ruta pública Text, con un
 nodeid; el workflow SQL/transaccional Text, con cuatro; la recuperación
 Semantic ante muerte del proceso durante staging, con un nodeid y tres gates;
 la matriz Code-owner de migración poblada, rollback y rechazo de schema futuro,
 con cinco nodeids y cuatro gates; Retention durable en dry-run, con catorce
 nodeids y cuatro gates; supply-chain local, con diez nodeids y siete gates; y el
-protocolo durable Framework ReviewTask, con ocho nodeids y cinco gates. Este
-último usa SQLite/XDG temporales y la CLI pública; no autentica la identidad del
-actor sintético ni presenta excepciones inyectadas como pérdida de energía.
+protocolo durable Framework ReviewTask, con ocho nodeids y cinco gates. A éstos
+se añaden el contrato efectivo de CLI pública, scenario
+`interfaces.public_cli_and_static_surface` v4/template v3 con veintiséis nodeids
+y cinco gates, la salud causal Text, con doce nodeids y cuatro gates, y la salud
+PDF schema 13, también con doce nodeids y cuatro gates distribuidos 5/3/3/1.
+Esta última exige nueve relaciones de contraevidencia y doce para el resultado
+completo. Los tres usan `pytest_tmp_path`; prueban únicamente las superficies y
+fixtures allow-listed, no cada handler, GUI/MCP/worker, contenido u OCR, fidelidad
+visual/semántica, todos los owners de Knowledge ni pérdida de energía. ReviewTask
+usa además SQLite/XDG temporales y la CLI pública; no
+autentica la identidad del actor sintético ni presenta excepciones inyectadas
+como pérdida de energía.
 Los escenarios restantes del assurance registry no son automáticamente
 propuestas ejecutables. La vertical arquitectónica acepta únicamente la matriz
 versionada de contratos de imports cuando el grafo vivo no tiene violaciones y
@@ -566,6 +609,12 @@ anclas acotadas de `code.sqlite3` sin releer toda la historia durante cada
 experimento. Ninguna de las dos barreras es un lock continuo ni prueba
 inmutabilidad del corpus u otros stores.
 
+La validación canónica retransmite por `stderr` los eventos estructurados y la
+salida del hijo mientras conserva el recibo JSON final aislado en `stdout`.
+También emite un heartbeat cada 30 segundos y mantiene como última barrera el
+cgroup Linux de 75 minutos; por ello un consumidor puede observar el avance sin
+convertir un timeout ciego en ausencia de evidencia.
+
 Code schema v6 agrega el resultado terminal a
 `code_experiment_receipts`, tabla append-only protegida contra update/delete. La
 salida JSON del comando es `neocortex.code-experiment-store/v1` y contiene el
@@ -580,7 +629,7 @@ proposal y el review resuelve como máximo 256 proposals ejecutables. Repetir el
 mismo `receipt_id` y contexto es idempotente; una colisión o un bound excedido
 falla cerrado.
 
-v20 conserva un linker fail-closed y de alcance explícito. Para cada proposal
+v22 conserva un linker fail-closed y de alcance explícito. Para cada proposal
 y processing signature vigentes, el review evalúa el terminal más nuevo y sólo
 proyecta `passed`; un `failed` o `abstained` posterior invalida un pass anterior.
 El receipt puede venir de un owner Code completado previo si la publicación
@@ -596,13 +645,19 @@ cubren
 `state.declared_workflow_sql_matches_implementation` con
 `state.runtime_sql_trace`, y
 `state.text_semantic_published_projection_is_aligned/v2` con
-`state.semantic_process_death_recovery`. Un receipt fallido, abstenido, stale,
+`state.semantic_process_death_recovery`. La superficie CLI está ligada a
+`interfaces.public_cli_contract_acceptance`, Health Text a
+`knowledge.asset_health_causal_acceptance` y Health PDF a
+`knowledge.pdf_asset_health_causal_acceptance`; el primero requiere sus cinco
+gates exactos y cada vertical Health sus cuatro, siempre con la misma identidad
+de receipt. Un
+receipt fallido, abstenido, stale,
 corrupto o sin binding no puede avanzar readiness; una contradicción del store
 abstiene el review.
 
 Cuando todos los requisitos de decisión quedan satisfechos, la evaluación
 conserva `human_review_required`: el receipt no se convierte en actor humano. En
-v20, un verificador técnico independiente y allow-listed vuelve a comprobar el
+v22, el verificador técnico v7 independiente y allow-listed vuelve a comprobar el
 fingerprint exacto de la pregunta, requisitos, contraevidencia, receipt, gates y
 predicados negativos de la vertical. Sólo entonces publica la disposición
 advisory `no_change_required_within_verified_scope`, con alcance y riesgos
@@ -613,6 +668,32 @@ como gap `unresolved`, nunca como aceptación genérica. Nombres como `repositor
 `commit`, `build`, `read` o `run`, mover el archivo o añadir un wrapper tampoco
 pueden producir una recomendación. Los constructors y factories públicos fallan
 cerrado ante `act_now`, una decisión autodeclarada o un package de cambio.
+
+### Lectores focales y observabilidad del owner Code
+
+`Neocortex code question QUESTION_ID --limit N --json` evita materializar el
+review global sólo cuando existe un lector focal registrado para la identidad
+exacta de la pregunta. v22 registra únicamente
+`structure.static_cli_calls_require_runtime_contract_evidence`: reabre la
+proyección `interface_surface`, exige un último run completado y fresco y cerca
+la lectura antes/después. El resultado
+`neocortex.code-question-resolution/v1` contiene como máximo 50 evaluaciones.
+Una pregunta desconocida devuelve `unsupported` y un fallback explícito
+`automatic=false`; nunca dispara silenciosamente `Neocortex code query review`
+ni el review global. La función de paridad permite contrastar IDs y digests contra el
+review canónico, pero la consulta focal por sí sola no demuestra equivalencia
+de todas las preguntas.
+
+`Neocortex code storage --run-limit N --row-scan-limit N --retain-runs N
+--json` abre exclusivamente el `code.sqlite3` ya publicado mediante el lector
+immutable y devuelve `neocortex.code-storage-analysis/v1`. Informa tamaño,
+páginas/freelist, tablas, providers, una ventana de runs, conteos acotados y un
+delta de filas de evidencia externa sólo cuando los dos runs más nuevos son
+comparables y no fueron truncados. `--retain-runs` produce únicamente una vista
+`preview_only`: no identifica filas seguras para borrar y nunca ejecuta
+`DELETE`, prune, `VACUUM`, checkpoint ni eliminación de sidecars. Los conteos
+que alcanzan `row_scan_limit` son cotas inferiores y el uso de páginas no se
+atribuye a tablas individuales.
 
 `python-maintenance-work-packages-v5` publica únicamente paquetes
 `unused_characterization`, y sólo cuando los dos gates de precisión del
@@ -730,9 +811,10 @@ Neocortex --state-directory $CurrentState --code-publication-diff $BaselineState
 ```
 
 Ambos estados deben contener un último run completado, schema compatible y
-`code.sqlite3` quiescente sin `-wal`, `-shm` ni `-journal`. La consulta abre las
-bases como snapshots immutable, no migra, no hace checkpoint y no escribe
-ningún owner. Compara como máximo 250 000 calls y 20 000 hotspots; conserva
+`code.sqlite3` quiescente con sidecars inactivos demostrables: ninguno, o WAL
+vacío más SHM exacto de 32 KiB. La consulta abre las bases como snapshots
+immutable, no migra, no hace checkpoint y no escribe ningún owner. Compara como
+máximo 250 000 calls y 20 000 hotspots; conserva
 conteos totales y hasta 20 ejemplos por clase.
 
 Una call común exige la misma ruta relativa, rango de bytes y nombre. Sobre
@@ -849,6 +931,9 @@ run con replay exacto. Si el grafo no permite elegir pruebas, un proveedor no
 queda listo, la medición es incompleta o el snapshot cambia durante la corrida,
 se abstiene o falla: nunca traduce ausencia de evidencia en verde. Use
 `--baseline HEAD^` para verificar un commit ya integrado localmente.
+La política `local-linux-diff-aware-validation-v6` incluye los bindings PDF;
+el verificador técnico v7 sólo acepta su pregunta con los cuatro gates y los
+conteos 9/12 exactos del receipt.
 
 La observación empieza antes del primer provider: el padre captura memoria,
 swap y PSI, reserva headroom para el escritorio y crea un único cgroup de

@@ -131,6 +131,12 @@ DIRECT_ARGUMENT_CASES = (
     ("code_status", "run_code_status", ("--code-status",)),
     ("code_review", "run_code_review", ("--code-review",)),
     (
+        "code_question",
+        "run_code_question",
+        ("--code-question", "structure.static_cli_calls_require_runtime_contract_evidence"),
+    ),
+    ("code_storage", "run_code_storage", ("--code-storage",)),
+    (
         "code_validate_change",
         "run_code_validate_change",
         ("--code-validate-change",),
@@ -155,6 +161,11 @@ DIRECT_ARGUMENT_CASES = (
     ("code_doctor", "run_code_doctor", ("--code-doctor",)),
     ("code_query", "run_code_query", ("--code-query", "status")),
     ("knowledge_status", "run_knowledge_status", ("--knowledge-status",)),
+    (
+        "knowledge_health",
+        "run_knowledge_health",
+        ("--knowledge-health", "resource:file:1:2:-1"),
+    ),
     (
         "knowledge_search",
         "run_knowledge_search",

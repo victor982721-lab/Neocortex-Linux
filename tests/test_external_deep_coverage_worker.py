@@ -35,6 +35,16 @@ def test_bounded_diagnostic_preserves_the_root_cause_tail(tmp_path: Path) -> Non
     assert bounded.endswith("$SCRATCH: filename too long")
 
 
+def test_bounded_diagnostic_enforces_its_utf8_byte_limit(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    scratch = tmp_path / "scratch"
+
+    bounded = worker._bounded_diagnostic("causa → " * 1000, project, scratch, 256)
+
+    assert len(bounded.encode("utf-8")) <= 256
+    assert "...[truncated]..." in bounded
+
+
 @pytest.mark.parametrize(
     ("nodeid", "expected"),
     [

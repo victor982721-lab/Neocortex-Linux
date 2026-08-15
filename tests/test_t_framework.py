@@ -49,13 +49,17 @@ from _04_Nucleo_Operativo.state import (
     FrameworkState,
 )
 from _03_Progreso import (
+    LineProgress,
     ProgressEvent,
     ProgressMetric,
     RecordingProgress,
     RichProgress,
 )
 from Orquestador import _has_strict_route_errors, _parser, _validate_arguments
-from tests.internal_paths_test_support import begin_signed_normal_run
+from tests.internal_paths_test_support import (
+    begin_signed_normal_run,
+    disjoint_internal_paths_policy,
+)
 from tests.synthetic_usn import SyntheticUsnJournal
 # endregion [01]
 
@@ -281,6 +285,48 @@ class CommandLineTests(unittest.TestCase):
 
 
 class ProgressTests(unittest.TestCase):
+    def test_framework_stream_environment_selects_line_reporter(self) -> None:
+        from _04_Nucleo_Operativo.cli_app import run_framework
+
+        observed: list[object] = []
+
+        def record(_args, progress):
+            observed.append(progress)
+            return "ok"
+
+        with (
+            patch.dict(os.environ, {"NEOCORTEX_PROGRESS_STREAM": "1"}),
+            patch(
+                "_04_Nucleo_Operativo.cli_app._run_framework_with_progress",
+                side_effect=record,
+            ),
+        ):
+            self.assertEqual(run_framework(object()), "ok")
+
+        self.assertEqual(len(observed), 1)
+        self.assertIsInstance(observed[0], LineProgress)
+
+    def test_line_reporter_flushes_machine_readable_progress_to_stderr(self) -> None:
+        output = io.StringIO()
+        with patch("sys.stderr", output), LineProgress() as progress:
+            progress(
+                ProgressEvent(
+                    "code",
+                    "trusted-deep-coverage",
+                    "Coverage trusted-deep",
+                    3,
+                    5,
+                    "shards",
+                    metrics=(ProgressMetric("status", "shard_completed"),),
+                )
+            )
+
+        rendered = output.getvalue()
+        self.assertTrue(rendered.startswith("NEOCORTEX_PROGRESS "))
+        self.assertIn('"completed":3', rendered)
+        self.assertIn('"phase":"trusted-deep-coverage"', rendered)
+        self.assertIn('"status":"shard_completed"', rendered)
+
     def test_rich_reporter_renders_normalized_event(self) -> None:
         output = io.StringIO()
         console = Console(file=output, force_terminal=False, width=120)
@@ -361,6 +407,20 @@ class ProgressTests(unittest.TestCase):
 
 
 class OrchestratorTests(unittest.TestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        policy_root = tempfile.TemporaryDirectory()
+        self.addCleanup(policy_root.cleanup)
+        policy = disjoint_internal_paths_policy(Path(policy_root.name))
+        self._internal_paths_policy = policy
+        for target in (
+            "_04_Nucleo_Operativo.inventory_boundary.canonical_internal_paths_policy",
+            "_04_Nucleo_Operativo.framework_state_common.canonical_internal_paths_policy",
+        ):
+            policy_patch = patch(target, return_value=policy)
+            policy_patch.start()
+            self.addCleanup(policy_patch.stop)
+
     def test_locked_initial_run_signature_is_frozen(self) -> None:
         self.assertEqual(
             str(inspect.signature(FrameworkOrchestrator._run_initial_locked)),
@@ -740,7 +800,11 @@ class OrchestratorTests(unittest.TestCase):
             state_directory.mkdir()
             database = state_directory / "framework.sqlite3"
             with FrameworkState(database) as state:
-                run_id = begin_signed_normal_run(state, root)
+                run_id = begin_signed_normal_run(
+                    state,
+                    root,
+                    internal_paths_policy=self._internal_paths_policy,
+                )
                 action_id = state.begin_file_action(
                     run_id,
                     "trash_duplicate",
@@ -832,7 +896,11 @@ class OrchestratorTests(unittest.TestCase):
             state_directory.mkdir()
             database = state_directory / "framework.sqlite3"
             with FrameworkState(database) as state:
-                run_id = begin_signed_normal_run(state, root)
+                run_id = begin_signed_normal_run(
+                    state,
+                    root,
+                    internal_paths_policy=self._internal_paths_policy,
+                )
             route_state = FrameworkRouteState(database)
 
             action_ids = route_state.begin_file_actions(

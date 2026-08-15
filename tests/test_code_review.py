@@ -612,7 +612,7 @@ def test_review_ranks_confirmed_hotspots_deterministically_with_diversity(
 
     assert first.status == "ready"
     assert first_json == second_json
-    assert first.as_payload()["schema"] == "neocortex.code-review/v20"
+    assert first.as_payload()["schema"] == "neocortex.code-review/v22"
     assert first.as_payload()["compatible_schemas"] == []
     assert first.supply_chain is not None
     assert first.supply_chain.status == "abstained"
@@ -669,6 +669,8 @@ def test_review_ranks_confirmed_hotspots_deterministically_with_diversity(
         "evolution.change_history_requires_companion_review",
         "evolution.code_owner_schema_requires_migration_review",
         "framework.review_task_lifecycle_preserves_atomicity_and_human_authority",
+        "knowledge.asset_health_trace_is_snapshot_bound_and_causally_explainable",
+        "knowledge.pdf_asset_health_preserves_page_partial_protected_and_recovery_causality",
         "analyzer.latest_publication_is_compared_to_git_visible_worktree",
         "analyzer.effectiveness_requires_independent_outcome_calibration",
         "security.static_invariants_and_vulnerability_evidence_is_resolved",
@@ -687,7 +689,7 @@ def test_review_ranks_confirmed_hotspots_deterministically_with_diversity(
         "capability.route_portfolio_evidence_is_resolved",
         "analyzer.calibration_evidence_is_independent_and_antigoodhart_resistant",
     }
-    assert len(epistemics["evaluations"]) == len(first.findings) + 27
+    assert len(epistemics["evaluations"]) == len(first.findings) + 29
     first_evaluation = epistemics["evaluations"][0]
     assert first_evaluation["observation_status"] == "confirmed"
     assert first_evaluation["inference_status"] == "abstained"

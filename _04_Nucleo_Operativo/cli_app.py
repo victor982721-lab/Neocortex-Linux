@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -49,11 +50,14 @@ def _run_framework_with_progress(args: argparse.Namespace, progress):
 def run_framework(args: argparse.Namespace, *, progress=None):
     """Build the validated configuration and run the integrated framework."""
 
-    from _03_Progreso import RichProgress
+    from _03_Progreso import LineProgress, RichProgress
 
     if progress is not None:
         return _run_framework_with_progress(args, progress)
-    with RichProgress() as progress:
+    reporter = (
+        LineProgress() if os.environ.get("NEOCORTEX_PROGRESS_STREAM") == "1" else RichProgress()
+    )
+    with reporter as progress:
         return _run_framework_with_progress(args, progress)
 
 
@@ -259,7 +263,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
     if args.all:
         self_analysis_exit_code = _run_integrated_self_analysis()
 
-    from _03_Progreso import RichProgress
+    from _03_Progreso import LineProgress, RichProgress
     from rich.console import Console
     from _02_Deduplicacion import InventoryError
 
@@ -275,7 +279,10 @@ def main(arguments: Sequence[str] | None = None) -> int:
     semantic_exit_code = 0
     semantic_attempted = False
     try:
-        with RichProgress() as progress:
+        reporter = (
+            LineProgress() if os.environ.get("NEOCORTEX_PROGRESS_STREAM") == "1" else RichProgress()
+        )
+        with reporter as progress:
             result = run_framework(args, progress=progress)
             actions = getattr(result, "actions", None)
             framework_failed = bool(

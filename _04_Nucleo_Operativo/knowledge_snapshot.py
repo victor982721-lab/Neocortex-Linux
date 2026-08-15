@@ -54,6 +54,11 @@ from .knowledge_contracts import (
 from .pdf_schema import validate_pdf_schema
 from .semantic_models import canonical_json
 from .sqlite_cancellation import SQLiteCancellationBridge, sqlite_cancellation_scope
+from .sqlite_immutable import (
+    ImmutableSQLiteUnavailable,
+    SQLiteImmutableFence,
+    capture_sqlite_immutable_fence,
+)
 from .sqlite_paths import readonly_sqlite_uri
 from .state_topology_contracts import STATE_STORE_REGISTRY
 
@@ -366,9 +371,12 @@ def _owner_specs(paths: KnowledgeStatePaths) -> tuple[_OwnerSpec, ...]:
 # region [02] Read-only connection and version boundary
 
 
-def _connect_readonly(path: Path) -> sqlite3.Connection:
+def _connect_readonly(path: Path, *, immutable: bool = False) -> sqlite3.Connection:
+    uri = readonly_sqlite_uri(path)
+    if immutable:
+        uri = f"{uri}&immutable=1"
     connection = sqlite3.connect(
-        readonly_sqlite_uri(path),
+        uri,
         uri=True,
         timeout=60,
     )
@@ -752,8 +760,14 @@ def _capture_available_owner(
     attempt: int,
     between_observations: Callable[[str, int], None] | None,
     cancellation: _CancellationController,
+    immutable: bool,
 ) -> tuple[OwnerSnapshot, tuple[ActiveModel, ...]]:
-    connection = _connect_readonly(path)
+    immutable_fence: SQLiteImmutableFence | None = None
+    if immutable:
+        immutable_fence = capture_sqlite_immutable_fence(path)
+        if immutable_fence != capture_sqlite_immutable_fence(path):
+            raise ImmutableSQLiteUnavailable("SQLite owner changed before immutable read")
+    connection = _connect_readonly(path, immutable=immutable)
     sqlite_cancellation = SQLiteCancellationBridge(
         cancellation.checkpoint if cancellation.callback is not None else None
     )
@@ -862,6 +876,9 @@ def _capture_available_owner(
         )
     finally:
         connection.close()
+        if immutable_fence is not None:
+            if immutable_fence != capture_sqlite_immutable_fence(path):
+                raise ImmutableSQLiteUnavailable("SQLite owner changed during immutable read")
 
 
 def _owner_state_exists(path: Path) -> bool:
@@ -902,6 +919,7 @@ def _capture_owner(
     attempt: int,
     between_observations: Callable[[str, int], None] | None,
     cancellation: _CancellationController,
+    immutable: bool,
 ) -> tuple[OwnerSnapshot, tuple[ActiveModel, ...]]:
     if not _owner_state_exists(path):
         return (
@@ -919,6 +937,7 @@ def _capture_owner(
             attempt=attempt,
             between_observations=between_observations,
             cancellation=cancellation,
+            immutable=immutable,
         )
     except (sqlite3.Error, RuntimeError, ValueError) as exc:
         if cancellation.raised_here(exc):
@@ -948,6 +967,7 @@ def _capture_vector(
     attempt: int,
     between_observations: Callable[[str, int], None] | None,
     cancellation: _CancellationController,
+    immutable: bool,
 ) -> tuple[tuple[OwnerSnapshot, ...], tuple[ActiveModel, ...]]:
     owners: list[OwnerSnapshot] = []
     models: list[ActiveModel] = []
@@ -959,6 +979,7 @@ def _capture_vector(
             attempt=attempt,
             between_observations=between_observations,
             cancellation=cancellation,
+            immutable=immutable,
         )
         owners.append(owner)
         models.extend(active_models)
@@ -1057,6 +1078,7 @@ def collect_knowledge_snapshot(
     source_version: str,
     cancellation_check: CancellationCheck | None = None,
     _between_observations: Callable[[str, int], None] | None = None,
+    _immutable_owners: bool = False,
 ) -> KnowledgeSnapshot:
     """Capture all registered owners, retrying the global view exactly once."""
 
@@ -1071,6 +1093,7 @@ def collect_knowledge_snapshot(
             attempt=attempt,
             between_observations=_between_observations,
             cancellation=cancellation,
+            immutable=_immutable_owners,
         )
         cancellation.checkpoint()
         roots_between = paths.validate_roots()
@@ -1081,6 +1104,7 @@ def collect_knowledge_snapshot(
             attempt=attempt,
             between_observations=None,
             cancellation=cancellation,
+            immutable=_immutable_owners,
         )
         cancellation.checkpoint()
         roots_after = paths.validate_roots()

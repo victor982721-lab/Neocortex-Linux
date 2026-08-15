@@ -357,13 +357,37 @@ owner-local está acotada a 1,024 heads, 10,000 batches, 1,000,000 memberships y
 conocimiento humano. Esto permite detectar cambios y proteger decisiones sin
 convertir ReviewTask en autoridad sobre otros owners.
 
-**PARTIAL / PLANNED.** La cola Value expone estado causal local
-`ready`/`partial`/`stale`/`absent`/`unavailable`, pero no constituye todavía el
-árbol general `Knowledge Asset Health` para Semantic, extracción y demás
-materializaciones. Tareas de OCR, entity resolution, claims, links, recovery y
-shadow promotion siguen planificadas; también falta una GUI consumidora. No hay
-un score mágico de salud ni revisión durable general para dominios que aún no
-tienen productor.
+**IMPLEMENTED / PARTIAL — verticales Text y PDF.** `Knowledge Asset Health`
+acepta una identidad estricta `resource:file:<volume>:<file>:<birthtime>` y
+reconstruye facts acotados desde Inventory, el owner fuente, Catalog y la
+selección de Knowledge search. El dispatch elige Text o PDF únicamente mediante
+la identidad física, probes packed/legacy, el snapshot y, como desempate,
+evidencia Catalog publicada; nunca usa el path o la extensión.
+Cada owner SQLite se abre de forma immutable, con schema exacto y sin
+checkpoint. La captura completa de Knowledge y la captura de facts se repiten;
+ante cambio se reintenta una sola vez y después se abstiene. Sólo cuatro facts
+completos, publicados, estables y causalmente alineados producen `healthy`. El
+reporte es advisory, read-only y no autoriza mutación.
+
+La proyección PDF lee schema 13 y conserva los estados
+`done|partial|protected|error|processing`, rango y conteos de páginas,
+page-staging, page-errors, warnings, FTS y las relaciones Catalog/Search. La
+recuperación sólo cuenta como reconocida cuando metadata contiene
+`neocortex_recovery.engine` (`pdfminer` o `qpdf+pymupdf`) y
+`recovery_version=pdf-structural-recovery-v2`; campos top-level o versiones
+desconocidas no se reinterpretan. PDF vacío coherente es válido;
+`protected`/`error` pueden cerrar sin Catalog/Search, `processing` queda
+degradado/parcial y únicamente un `done` completo y coherente puede ser
+`healthy`. El reader es content-blind: no descomprime páginas ni devuelve texto,
+metadata o mensajes de error.
+
+Esto no constituye todavía un árbol general para Semantic, DOCX/Office,
+entidades, claims, links o shadow promotion. Tampoco mide contenido/OCR,
+fidelidad visual, verdad semántica o calidad del texto ni demuestra power loss.
+Framework `route_runs` es evidencia opcional y no autoridad de salud. La cola Value conserva
+su propio estado `ready`/`partial`/`stale`/`absent`/`unavailable`; no se fusiona
+en un score de salud. Las tareas ReviewTask para esos dominios y una GUI
+consumidora siguen planificadas.
 
 ## Planificador semántico read-only
 
@@ -520,7 +544,7 @@ Neocortex --help
 
 `neocortex.cli` selecciona perezosamente cuatro modos:
 
-1. subcomandos humanos `help/status/search/ask/inspect/review/agent`;
+1. subcomandos humanos `help/status/search/ask/inspect/review/knowledge/agent`;
 2. CLI normal: delega en `_04_Nucleo_Operativo.cli_app`;
 3. `--ui`: inicia la aplicación de escritorio;
 4. `--gui-worker`: protocolo interno del frontend, no comando de usuario.
@@ -547,6 +571,7 @@ excluyentes y no destructivas:
 
 ```powershell
 Neocortex --knowledge-status
+Neocortex --knowledge-health "resource:file:1:2:-1" --knowledge-json
 Neocortex --knowledge-search "protección diferencial" --knowledge-mode evidence
 Neocortex --knowledge-context "protección diferencial" --knowledge-limit 12
 ```
@@ -555,6 +580,12 @@ Estas operaciones sólo abren estado existente y pueden informar owners
 ausentes, incompatibles, futuros o corruptos sin crearlos ni migrarlos. Sus
 formatos, opciones auxiliares y códigos de salida se detallan en
 [KNOWLEDGE.md](KNOWLEDGE.md).
+
+Las fachadas canónicas `Neocortex code question QUESTION_ID` y
+`Neocortex code storage` se traducen a operaciones planas ocultas del mismo
+parser. La primera usa sólo un lector focal registrado y nunca cae
+automáticamente al review global; la segunda observa el owner Code mediante un
+snapshot immutable y su retención es exclusivamente `preview_only`.
 
 `Neocortex agent serve` adapta la misma API a MCP por stdio. El transporte
 CPython 3.14 usa pipes asyncio nativos para evitar delegar stdin/stdout a
@@ -584,6 +615,13 @@ La superficie diferida también exporta `ResourceRef`, `RevisionRef`,
 `KnowledgeSearchResult`, `KnowledgeSearchService` y
 `plan_knowledge_query`. Estas APIs consultan estado persistente; no sustituyen
 la corrida que lo produce.
+
+`neocortex.read_api.asset_health_payload()` expone las mismas verticales Text/PDF sobre
+los scopes fijos Personal/Framework. No acepta rutas de estado arbitrarias y
+mantiene los resultados de cada scope separados.
+`neocortex.read_api.code_question_payload()` hace lo mismo para el lector focal
+Code; su valor predeterminado es Framework y nunca convierte una pregunta no
+registrada en una consulta global automática.
 
 Los exports diferidos de `route_registry` existen para compatibilidad y emiten
 `DeprecationWarning`; los nuevos consumidores deben importar desde el módulo de
@@ -687,14 +725,14 @@ no como una segunda base de hechos. Cada fila queda ligada al run Code
 completado, processing signature, evaluación/pregunta/sujeto, proposal/template,
 digest del review y payload `neocortex.code-experiment-receipt/v3`; los triggers
 rechazan update y delete. El writer admite estados `passed`, `failed` y
-`abstained`, pero el review `neocortex.code-review/v20` sólo proyecta el `passed`
+`abstained`, pero el review `neocortex.code-review/v22` sólo proyecta el `passed`
 más nuevo que siga coincidiendo con el proposal actual y con bindings tipados de
 gate a requisito. El enlace produce evidencia de tests exactos, no verdad formal
 ni decisión humana. Un verificador técnico separado puede derivar únicamente una
 disposición allow-listed y acotada de no-cambio tras recomprobar controles
 negativos; conserva `authority=advisory` y `mutation_authority=false`.
 
-Review v20 incorpora además una proyección Retention owner-local sobre los
+Review v22 conserva además una proyección Retention owner-local sobre los
 cuatro stores productivos. Reutiliza el planner dry-run y sus holds declarados,
 publica paginación y gaps, y exige una segunda lectura idéntica. El template
 ejecutable sólo cubre una matriz aislada de catorce nodeids exactos; aun con receipt
@@ -710,6 +748,34 @@ temporales, cinco gates de publicación, CAS, replay, rollback y journey CLI. El
 verificador técnico vuelve a comprobar los dos records estructurales y el
 receipt exacto. Esto demuestra únicamente el protocolo acotado; el actor del
 fixture no está autenticado y las excepciones inyectadas no prueban power loss.
+
+Review v22 conserva la superficie CLI y Text Health y añade un tercer binding
+experimental exacto para PDF. La superficie CLI pública
+usa el scenario v4/template v3 de veintiséis nodeids y cinco gates para contrastar la
+proyección estática con ayuda/traducción, dispatch, rechazos y lectores focales.
+Knowledge Asset Health usa doce nodeids y cuatro gates para la traza Text
+Inventory→Text→Catalog→Knowledge, incluidos controles negativos de identidad,
+publicación, schema, corrupción, WAL y snapshot. La traza PDF schema 13 usa doce
+nodeids y cuatro gates 5/3/3/1 para estados, páginas/staging/errores/FTS,
+Catalog/Search, recovery y fences; el binding counter exige nueve relaciones y
+el resultado completo doce. Los tres corren en `pytest_tmp_path`; no prueban
+todos los handlers/owners, contenido/OCR, fidelidad visual/semántica ni power
+loss. Sólo el
+receipt y los facts que coinciden con su template pueden producir la disposición
+técnica acotada; nunca una decisión humana o autoridad de mutación.
+
+Los registries runtime/template son v11. La aceptación diff-aware es v6 y el
+verificador técnico es v7: un cambio PDF relevante sin el receipt de sus gates
+exactos se abstiene y nunca se degrada a `not_required` por falta de runner.
+
+La lectura focal `code-question-resolution/v1` es un router sobre QuestionSpec,
+no un segundo motor de review. v22 registra sólo la pregunta de superficie CLI,
+reconstruye `code-interface-surface/v1` y cerca el último run Code completado.
+Una pregunta no registrada emite un fallback explícito no automático. En
+paralelo, `code-storage-analysis/v1` observa con una conexión immutable el
+tamaño, páginas, tablas, providers y ventana temporal del mismo owner. Sus
+conteos son acotados y la política de retención es `preview_only`; no existe un
+writer, prune, `VACUUM`, checkpoint o eliminación de sidecars en esa capa.
 
 La capa arquitectónica divide fuente, política y consumo:
 
@@ -827,8 +893,9 @@ v20 conserva modo, identidad, estado y firma; sus triggers y
 
 `--code-status --code-json` proyecta el manifest y su frescura sin crear o
 migrar estado. Sus lectores usan SQLite `immutable`, `query_only` y fences
-pre/post. Cualquier sidecar, incluso vacío o desacoplado, o una cerca inestable
-en code, framework o Dedup causa abstención total con código `2`. El diseño
+pre/post. Sólo aceptan ausencia de sidecars o WAL vacío más SHM exacto de 32 KiB;
+un journal, WAL con contenido, SHM inválido o una cerca inestable en Code,
+Framework o Dedup causa abstención total con código `2`. El diseño
 completo, argv reproducible y límites de validación están en
 [SELF_ANALYSIS.md](SELF_ANALYSIS.md).
 

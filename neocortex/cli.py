@@ -28,6 +28,11 @@ _CANONICAL_COMMANDS = {
         "--code-json",
         "Query published analyzer evidence, evidence gaps and experiment proposals.",
     ),
+    ("code", "question"): (
+        "--code-question",
+        "--code-json",
+        "Resolve one exact registered Code question from bounded focal evidence.",
+    ),
     ("code", "review"): (
         "--code-review",
         "--code-json",
@@ -37,6 +42,11 @@ _CANONICAL_COMMANDS = {
         "--code-status",
         "--code-json",
         "Inspect the current protected self-analysis publication and provider readiness.",
+    ),
+    ("code", "storage"): (
+        "--code-storage",
+        "--code-json",
+        "Inspect immutable bounded Code storage, growth and retention evidence.",
     ),
     ("code", "validate"): (
         "--code-validate-change",
@@ -91,12 +101,24 @@ _CODE_QUERY_CANONICAL_OPTIONS = {
     "--baseline-state": "--code-query-baseline",
 }
 
+_CODE_QUESTION_CANONICAL_OPTIONS = {
+    "--limit": "--code-question-limit",
+}
+
+_CODE_STORAGE_CANONICAL_OPTIONS = {
+    "--run-limit": "--code-storage-run-limit",
+    "--row-scan-limit": "--code-storage-row-scan-limit",
+    "--retain-runs": "--code-storage-retain-runs",
+}
+
 _CODE_ANALYSIS_CANONICAL_COMMANDS = frozenset(
     {
         ("code", "experiment"),
         ("code", "query"),
+        ("code", "question"),
         ("code", "review"),
         ("code", "status"),
+        ("code", "storage"),
     }
 )
 
@@ -105,7 +127,9 @@ _CODE_ANALYSIS_CANONICAL_COMMANDS = frozenset(
 # belongs to that facade also imports its operational read adapters.  Leaf
 # commands that cannot be human commands must stay on the lightweight parser
 # path instead.
-_HUMAN_COMMANDS = frozenset({"help", "status", "search", "ask", "inspect", "review", "agent"})
+_HUMAN_COMMANDS = frozenset(
+    {"help", "status", "search", "ask", "inspect", "review", "knowledge", "agent"}
+)
 
 
 def _prepend_owned_executable_directories() -> None:
@@ -175,6 +199,14 @@ def _print_canonical_help(command: tuple[str, str]) -> None:
             default=10,
             help="bounded observations per review surface (1..50)",
         )
+    if command == ("code", "question"):
+        parser.add_argument("question_id", metavar="QUESTION_ID")
+        parser.add_argument(
+            "--limit",
+            type=int,
+            default=10,
+            help="bounded focal evaluations (1..50; default 10)",
+        )
     if command == ("code", "query"):
         parser.add_argument("surface", choices=("status", "review", "diff"))
         parser.add_argument("--provider", action="append", metavar="ID")
@@ -198,6 +230,15 @@ def _print_canonical_help(command: tuple[str, str]) -> None:
         parser.add_argument("--baseline-state", metavar="DIRECTORY")
     if command == ("code", "experiment"):
         parser.add_argument("proposal_id", metavar="PROPOSAL_ID")
+    if command == ("code", "storage"):
+        parser.add_argument("--run-limit", type=int, default=20, metavar="N")
+        parser.add_argument("--row-scan-limit", type=int, default=250_000, metavar="N")
+        parser.add_argument(
+            "--retain-runs",
+            type=int,
+            metavar="N",
+            help="preview only; never deletes",
+        )
     if command == ("doctor", "capabilities"):
         parser.add_argument(
             "--select",
@@ -232,7 +273,7 @@ def _translate_canonical_arguments(arguments: Sequence[str]) -> list[str]:
     flat_flag, json_flat_flag, _description = _CANONICAL_COMMANDS[command]
     remaining = list(forwarded[2:])
     translated = [flat_flag]
-    if command in {("code", "query"), ("code", "experiment")}:
+    if command in {("code", "query"), ("code", "question"), ("code", "experiment")}:
         value_options = (
             {
                 "--state-directory",
@@ -247,6 +288,8 @@ def _translate_canonical_arguments(arguments: Sequence[str]) -> list[str]:
                 "--baseline-state",
             }
             if command == ("code", "query")
+            else {"--state-directory", "--limit"}
+            if command == ("code", "question")
             else {"--state-directory"}
         )
         expects_value = False
@@ -299,6 +342,10 @@ def _translate_canonical_arguments(arguments: Sequence[str]) -> list[str]:
             translated.append("--code-review-limit" + separator + value)
         elif command == ("code", "query") and option in _CODE_QUERY_CANONICAL_OPTIONS:
             translated.append(_CODE_QUERY_CANONICAL_OPTIONS[option] + separator + value)
+        elif command == ("code", "question") and option in _CODE_QUESTION_CANONICAL_OPTIONS:
+            translated.append(_CODE_QUESTION_CANONICAL_OPTIONS[option] + separator + value)
+        elif command == ("code", "storage") and option in _CODE_STORAGE_CANONICAL_OPTIONS:
+            translated.append(_CODE_STORAGE_CANONICAL_OPTIONS[option] + separator + value)
         elif command == ("code", "query") and option == "--executable-only":
             if separator:
                 translated.append(token)

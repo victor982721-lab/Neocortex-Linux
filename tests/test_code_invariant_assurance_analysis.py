@@ -20,6 +20,7 @@ from _04_Nucleo_Operativo.code_invariant_contracts import (
     invariant_registry_fingerprint,
     invariant_registry_payload,
     runtime_scenario,
+    runtime_scenario_registry_fingerprint,
 )
 from _04_Nucleo_Operativo.external_deep_coverage import PYTEST_COVERAGE_PROVIDER_ID
 from _04_Nucleo_Operativo.external_evidence_models import (
@@ -91,6 +92,9 @@ def test_registry_is_canonical_versioned_and_scenarios_have_explicit_roles() -> 
         set(INVARIANT_SCENARIO_IDS) | set(EXPERIMENT_SCENARIO_IDS) | set(CALIBRATION_SCENARIO_IDS)
     ) == {item.scenario_id for item in RUNTIME_SCENARIOS}
     assert invariant_registry_fingerprint().startswith("code-invariant-registry-v3:xxh3_128:")
+    assert runtime_scenario_registry_fingerprint().startswith(
+        "code-runtime-scenario-registry-v11:xxh3_128:"
+    )
     invariant_payload = invariant_registry_payload()
     assert "runtime_scenario_registry_fingerprint" not in invariant_payload
     assert {item["scenario_id"] for item in invariant_payload["scenarios"]} == set(
@@ -100,6 +104,40 @@ def test_registry_is_canonical_versioned_and_scenarios_have_explicit_roles() -> 
     assert len(all_nodeids) == len(set(all_nodeids))
     assert runtime_scenario("semantic.staging_process_death_resume").scenario_kind == (
         "process_death"
+    )
+    public_cli = runtime_scenario("interfaces.public_cli_and_static_surface")
+    assert public_cli.version == "v4"
+    assert public_cli.scenario_id in EXPERIMENT_SCENARIO_IDS
+    assert public_cli.scenario_id not in CALIBRATION_SCENARIO_IDS
+    assert len(public_cli.test_nodeids) == 26
+    assert tuple(item.gate_id for item in public_cli.gate_specs) == (
+        "declared_entrypoint_and_effective_help_contract_are_observed",
+        "dynamic_hidden_and_static_surfaces_remain_explicitly_non_equivalent",
+        "focal_question_and_storage_reads_are_bounded_and_immutable",
+        "invalid_abbreviated_and_incomplete_commands_fail_closed_without_state",
+        "special_human_canonical_and_flat_dispatch_precedence_is_exact",
+    )
+    knowledge_health = runtime_scenario("knowledge.asset_health_causal_acceptance")
+    assert knowledge_health.version == "v1"
+    assert knowledge_health.scenario_id in EXPERIMENT_SCENARIO_IDS
+    assert knowledge_health.scenario_id not in CALIBRATION_SCENARIO_IDS
+    assert len(knowledge_health.test_nodeids) == 12
+    assert tuple(item.gate_id for item in knowledge_health.gate_specs) == (
+        "aligned_four_stage_causal_trace_is_healthy",
+        "mismatch_absence_future_corruption_and_unpublished_fail_closed",
+        "public_read_is_read_only_and_resource_identity_is_strict",
+        "snapshot_change_abstains_and_search_health_identity_is_stable",
+    )
+    pdf_health = runtime_scenario("knowledge.pdf_asset_health_causal_acceptance")
+    assert pdf_health.version == "v1"
+    assert pdf_health.scenario_id in EXPERIMENT_SCENARIO_IDS
+    assert pdf_health.scenario_id not in CALIBRATION_SCENARIO_IDS
+    assert len(pdf_health.test_nodeids) == 12
+    assert tuple(item.gate_id for item in pdf_health.gate_specs) == (
+        "page_staging_fts_and_catalog_mismatch_fail_closed",
+        "recovery_is_version_and_message_independent",
+        "typed_pdf_states_preserve_partial_and_protected_semantics",
+        "wal_snapshot_and_owner_ambiguity_remain_read_only",
     )
     with pytest.raises(ValueError, match="unknown runtime scenario"):
         runtime_scenario("delete.production.now")

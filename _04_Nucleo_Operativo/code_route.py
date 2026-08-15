@@ -429,6 +429,7 @@ class CodeRoute:
                     root,
                     deep_configuration=deep_configuration,
                     deep_configuration_signature=deep_configuration_signature,
+                    progress=self.progress,
                 )
                 normalized: list[ExternalProviderPublication] = []
                 protected_provider = next(

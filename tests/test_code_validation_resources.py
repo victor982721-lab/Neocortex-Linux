@@ -8,6 +8,7 @@ import json
 import socket
 import subprocess
 from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -106,7 +107,7 @@ def test_resource_policy_preserves_desktop_and_caps_the_complete_tree() -> None:
     assert policy.memory_high_bytes < policy.memory_max_bytes
     assert policy.memory_swap_max_bytes == 512 * 1024**2
     assert 100 <= policy.cpu_quota_percent <= 400
-    assert policy.overall_runtime_seconds == 45 * 60
+    assert policy.overall_runtime_seconds == 75 * 60
 
 
 @pytest.mark.parametrize(
@@ -153,6 +154,32 @@ def test_admission_roundtrip_is_typed_and_tamper_evident(
         match="code_validation_admission_receipt_invalid",
     ):
         resources.current_code_validation_resource_admission()
+
+
+def test_installed_parent_runtime_tuning_remains_bootstrap_compatible(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    admission = _admission()
+    legacy_parent = replace(
+        admission,
+        policy=replace(admission.policy, overall_runtime_seconds=45 * 60),
+    )
+    _bind_kernel_boundary(tmp_path, monkeypatch, legacy_parent)
+    monkeypatch.setenv(
+        "NEOCORTEX_CODE_VALIDATION_RESOURCE_BOUNDARY",
+        "linux-desktop-preserving-cgroup-v2",
+    )
+    monkeypatch.setenv(
+        "NEOCORTEX_CODE_VALIDATION_RESOURCE_ADMISSION",
+        resources._encode_admission(legacy_parent),  # type: ignore[attr-defined]
+    )
+
+    observed = resources.current_code_validation_resource_admission()
+
+    assert resources.CODE_VALIDATION_RESOURCE_POLICY == "linux-desktop-preserving-cgroup-v2"
+    assert observed == legacy_parent
+    assert observed.policy.overall_runtime_seconds == 45 * 60
 
 
 def test_structurally_valid_admission_outside_claimed_cgroup_is_rejected(
@@ -291,7 +318,7 @@ def test_systemd_command_contains_hard_tree_limits_without_secret_environment(
     assert "--property=OOMPolicy=stop" in command
     assert "--property=PrivateNetwork=yes" in command
     assert "--property=RestrictAddressFamilies=AF_UNIX" in command
-    assert "--property=RuntimeMaxSec=2700s" in command
+    assert "--property=RuntimeMaxSec=4500s" in command
     assert "--quiet" in command
     assert "NEOCORTEX_CODE_VALIDATION_RESOURCE_BOUNDARY=" in joined
     assert "NEOCORTEX_PIP_AUDIT_NETWORK_POLICY=disabled-by-code-validation" in joined
@@ -405,6 +432,7 @@ def test_boundary_does_not_launch_when_live_headroom_is_insufficient(
 def test_boundary_runs_one_cgroup_worker_and_returns_its_status(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     snapshots = iter((_snapshot(), _snapshot()))
     monkeypatch.setattr(
@@ -457,3 +485,6 @@ def test_boundary_runs_one_cgroup_worker_and_returns_its_status(
     assert len(observed) == 1
     assert observed[0][0] == "/usr/bin/systemd-run"
     assert observed[0][-2:] == ("--", "/bin/false")
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.startswith("CODE_CHANGE_VALIDATION_RESOURCES ")

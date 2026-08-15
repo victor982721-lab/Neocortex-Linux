@@ -776,12 +776,19 @@ def _bounded_diagnostic(text: str, project_root: Path, scratch_root: Path, maxim
     normalized = normalized.replace("\\", "/").replace("\r\n", "\n").strip()
     if not normalized:
         normalized = "pytest did not provide a diagnostic"
-    if len(normalized) <= maximum:
+    encoded = normalized.encode("utf-8")
+    if len(encoded) <= maximum:
         return normalized
     marker = "\n...[truncated]...\n"
-    available = maximum - len(marker)
+    marker_bytes = marker.encode("utf-8")
+    available = maximum - len(marker_bytes)
     head = available // 2
-    return normalized[:head] + marker + normalized[-(available - head) :]
+    tail = available - head
+    return (
+        encoded[:head].decode("utf-8", errors="ignore")
+        + marker
+        + encoded[-tail:].decode("utf-8", errors="ignore")
+    )
 
 
 def _test_evidence(

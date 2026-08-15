@@ -7,6 +7,8 @@
 # region [01] Dependencias del módulo
 from __future__ import annotations
 
+import json
+import sys
 from threading import RLock
 
 from rich.console import Console
@@ -114,6 +116,43 @@ class NullProgress:
         return None
 
     def __enter__(self) -> "NullProgress":
+        return self
+
+    def __exit__(self, exc_type, exc, traceback) -> None:
+        return None
+
+
+class LineProgress:
+    """Emit one flushed, machine-readable stderr line per progress event."""
+
+    def __init__(self) -> None:
+        self._lock = RLock()
+
+    def __call__(self, event: ProgressEvent) -> None:
+        payload = {
+            "completed": event.completed,
+            "description": event.description,
+            "finished": event.finished,
+            "metrics": {metric.name: metric.value for metric in event.metrics},
+            "operation": event.operation,
+            "phase": event.phase,
+            "total": event.total,
+            "unit": event.unit,
+        }
+        with self._lock:
+            print(
+                "NEOCORTEX_PROGRESS "
+                + json.dumps(
+                    payload,
+                    ensure_ascii=True,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+                file=sys.stderr,
+                flush=True,
+            )
+
+    def __enter__(self) -> "LineProgress":
         return self
 
     def __exit__(self, exc_type, exc, traceback) -> None:

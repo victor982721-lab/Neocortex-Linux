@@ -73,9 +73,8 @@ from .code_technical_verification import (
 from .external_evidence_models import ExternalEvidenceSuiteStatus
 from .semantic_models import canonical_json, fingerprint_text
 
-# v20 adds a source-versioned Framework ReviewTask protocol question whose
-# bounded isolated experiment can close an exact technical disposition without
-# impersonating a human actor or authorizing mutation.
+# v22 adds the PDF page/partial/protected/recovery Knowledge Health question;
+# v21 added the Text causal Health contract while preserving non-mutating authority.
 # v19 added a reproducible, read-only four-owner Retention projection and an
 # allow-listed negative-control experiment.  Passed receipts remain linked to
 # exact evidence requirements; the projection never authorizes deletion.
@@ -628,9 +627,9 @@ def _validate_code_review_status_values(result: CodeReviewResult) -> None:
 
 def _validate_code_review_recommendation_contract(result: CodeReviewResult) -> None:
     if result.recommendations:
-        raise ValueError("code-review/v20 cannot publish semantic change recommendations")
+        raise ValueError("code-review/v22 cannot publish semantic change recommendations")
     if result.recommendation_status == "ready":
-        raise ValueError("code-review/v20 recommendation status must abstain")
+        raise ValueError("code-review/v22 recommendation status must abstain")
     if result.recommendation_status == "abstained" and not result.recommendation_reason:
         raise ValueError("abstained recommendation status requires a reason")
     if result.recommendation_status == "not_evaluated" and not result.recommendation_reason:
@@ -639,7 +638,7 @@ def _validate_code_review_recommendation_contract(result: CodeReviewResult) -> N
 
 def _validate_code_review_work_package_contract(result: CodeReviewResult) -> None:
     if any(package.package_kind != "unused_characterization" for package in result.work_packages):
-        raise ValueError("code-review/v20 cannot publish hotspot change packages")
+        raise ValueError("code-review/v22 cannot publish hotspot change packages")
     if (result.work_package_status == "ready") != bool(result.work_packages):
         raise ValueError("work-package readiness must match published packages")
     if result.work_package_status == "ready" and result.work_package_reason is not None:
@@ -703,7 +702,7 @@ def _validate_abstained_code_review_result(result: CodeReviewResult) -> None:
 
 
 def _validate_ready_code_review_presence(result: CodeReviewResult) -> None:
-    """Require the evidence dimensions bound by one ready v20 result."""
+    """Require the evidence dimensions bound by one ready v22 result."""
 
     if result.reason is not None:
         raise ValueError("ready code-review result cannot carry an abstention reason")

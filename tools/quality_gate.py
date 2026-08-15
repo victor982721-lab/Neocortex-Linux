@@ -77,9 +77,10 @@ WHEEL_PACKAGE_ROOTS = (
 STATIC_TIMEOUT_SECONDS = 15 * 60
 ARCHITECTURE_TIMEOUT_SECONDS = 5 * 60
 AUDIT_TIMEOUT_SECONDS = 10 * 60
-# Keep the standalone static gate within the same bounded V8 heap used by the
-# trusted Pyright provider.  The outer cgroup remains authoritative, but an
-# explicit heap prevents Node from driving that whole group into reclaim before
+# Keep the standalone static gate within its own bounded V8 heap.  The trusted
+# staged provider has a separate, descriptor-bound budget for its larger input
+# projection.  The outer cgroup remains authoritative, while this explicit heap
+# prevents the standalone process from driving the group into reclaim before
 # it reaches its own adaptive default.
 PYRIGHT_NODE_OLD_SPACE_MIB = 1792
 

@@ -27,11 +27,14 @@ from _04_Nucleo_Operativo.read_api_port import (
     SnapshotConsistency,
     available_search_modes,
     default_state_directory,
+    inspect_knowledge_asset_health,
     inspect_derivation_lineage,
     knowledge_context_exit_code,
     knowledge_search_exit_code,
+    resolve_code_question,
     search_code,
     self_analysis_data_directory,
+    validate_knowledge_asset_resource_id,
 )
 
 
@@ -203,6 +206,64 @@ def status_payload(
         "read_only": True,
         "scope_requested": selected.value,
         "federation_policy": FEDERATION_POLICY,
+        "exit_code": federated_exit_code(entries),
+        "scopes": entries,
+    }
+
+
+def _asset_health_exit_code(report: object) -> KnowledgeExitCode:
+    completeness = getattr(getattr(report, "completeness", None), "value", None)
+    reason = getattr(report, "reason_code", None)
+    gaps = tuple(item for item in getattr(report, "gaps", ()) if isinstance(item, str))
+    if completeness == "complete":
+        return KnowledgeExitCode.SUCCESS
+    if completeness == "no_evidence":
+        return KnowledgeExitCode.NO_RESULTS
+    if reason == "snapshot_changed":
+        return KnowledgeExitCode.SNAPSHOT_CHANGED
+    if (isinstance(reason, str) and "corrupt" in reason) or any("corrupt" in item for item in gaps):
+        return KnowledgeExitCode.CORRUPT
+    if (isinstance(reason, str) and ("schema" in reason or "incompatible" in reason)) or any(
+        "schema" in item or "future" in item or "incompatible" in item for item in gaps
+    ):
+        return KnowledgeExitCode.SCHEMA_INCOMPATIBLE
+    return KnowledgeExitCode.PARTIAL
+
+
+def asset_health_payload(
+    resource_id: str,
+    scope: str | ReadScope = ReadScope.ALL,
+) -> dict[str, object]:
+    """Explain one stable asset independently in each fixed local scope."""
+
+    normalized_resource_id = validate_knowledge_asset_resource_id(resource_id)
+    selected = _scope(scope)
+    entries: list[dict[str, object]] = []
+    for binding in scope_bindings(selected):
+        try:
+            report = inspect_knowledge_asset_health(
+                binding.state_directory,
+                normalized_resource_id,
+            )
+            code = _asset_health_exit_code(report)
+            entries.append(
+                {
+                    "scope": binding.scope.value,
+                    "state_directory": str(binding.state_directory),
+                    "status": report.health.value,
+                    "exit_code": int(code),
+                    "asset_health": report.to_dict(),
+                }
+            )
+        except (OSError, RuntimeError, sqlite3.Error, TypeError, ValueError) as exc:
+            entries.append(_error_entry(binding, exc))
+    return {
+        "schema": READ_API_SCHEMA,
+        "kind": "neocortex_scoped_asset_health",
+        "read_only": True,
+        "scope_requested": selected.value,
+        "federation_policy": FEDERATION_POLICY,
+        "resource_id": normalized_resource_id,
         "exit_code": federated_exit_code(entries),
         "scopes": entries,
     }
@@ -440,6 +501,76 @@ def code_search_payload(
     }
 
 
+def code_question_payload(
+    question_id: str,
+    scope: str | ReadScope = ReadScope.FRAMEWORK,
+    *,
+    limit: int = 10,
+) -> dict[str, object]:
+    """Resolve one exact Code question independently under fixed state roots."""
+
+    if (
+        not isinstance(question_id, str)
+        or not question_id
+        or question_id.strip() != question_id
+        or len(question_id) > 256
+    ):
+        raise ValueError("question_id must be non-empty trimmed text up to 256 characters")
+    normalized = question_id
+    selected = _scope(scope)
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 50:
+        raise ValueError("Code question limit must be between 1 and 50 per scope")
+    bounded_limit = limit
+    entries: list[dict[str, object]] = []
+    for binding in scope_bindings(selected):
+        try:
+            resolution = resolve_code_question(
+                binding.state_directory,
+                normalized,
+                limit=bounded_limit,
+            )
+            entries.append(
+                {
+                    "scope": binding.scope.value,
+                    "state_directory": str(binding.state_directory),
+                    "status": resolution.status,
+                    "exit_code": 0 if resolution.status == "ready" else 2,
+                    "question": resolution.as_payload(),
+                }
+            )
+        except (OSError, RuntimeError, sqlite3.Error, TypeError, ValueError) as exc:
+            entries.append(
+                {
+                    "scope": binding.scope.value,
+                    "state_directory": str(binding.state_directory),
+                    "status": "abstained",
+                    "exit_code": 2,
+                    "error_type": type(exc).__name__,
+                    "reason": str(exc),
+                }
+            )
+    statuses = tuple(entry["status"] for entry in entries)
+    status = (
+        "ready"
+        if statuses and all(item == "ready" for item in statuses)
+        else "unsupported"
+        if statuses and all(item == "unsupported" for item in statuses)
+        else "abstained"
+    )
+    return {
+        "schema": READ_API_SCHEMA,
+        "kind": "neocortex_scoped_code_question",
+        "read_only": True,
+        "scope_requested": selected.value,
+        "federation_policy": FEDERATION_POLICY,
+        "question_id": normalized,
+        "limit_per_scope": bounded_limit,
+        "status": status,
+        "exit_code": 0 if status == "ready" else 2,
+        "scopes": entries,
+    }
+
+
 def lineage_payload(
     identifier: str,
     scope: str | ReadScope = ReadScope.ALL,
@@ -486,6 +617,8 @@ __all__ = (
     "READ_API_SCHEMA",
     "ReadScope",
     "ScopeBinding",
+    "asset_health_payload",
+    "code_question_payload",
     "code_search_payload",
     "context_payload",
     "evidence_payload",

@@ -1195,8 +1195,10 @@ def _surface_subject(
     *,
     kind: Literal["module", "configuration", "entrypoint"],
     snapshot_freshness: Literal["current", "publication_only", "unknown"],
+    semantic_revision_id: str,
 ) -> AnalysisSubjectRef:
     assert analysis.processing_signature is not None
+    _required_text("semantic interface revision", semantic_revision_id)
     display = {
         "module": "Python module surface selection",
         "configuration": "Configuration artifact surface",
@@ -1209,8 +1211,30 @@ def _surface_subject(
         source_owner_id="code",
         snapshot_id=analysis.processing_signature,
         snapshot_freshness=snapshot_freshness,
-        revision_id=analysis.analysis_id,
+        revision_id=semantic_revision_id,
     )
+
+
+def _surface_semantic_revision_id(analysis: CodeInterfaceSurfaceAnalysis) -> str:
+    """Bind replayable surface evidence without capture-local provenance.
+
+    ``analysis_id`` remains the strict identity of the complete analysis wire,
+    including its database and owner run.  Question evidence needs a different
+    revision boundary: an exact publication replay must not manufacture a new
+    experiment merely because it received a new ``analysis_run_id``.  All
+    measured surface values, observations, policy, processing signature and
+    limitations remain bound here; only capture-local envelope provenance is
+    excluded.
+    """
+
+    if analysis.status != "ready" or analysis.processing_signature is None:
+        raise ValueError("semantic interface revision requires a ready analysis")
+    values = {
+        key: value
+        for key, value in asdict(analysis).items()
+        if key not in {"analysis_id", "database", "analysis_run_id"}
+    }
+    return analysis_identity("code-interface-surface-semantic-revision-v1", values)
 
 
 def _surface_evidence(
@@ -1218,6 +1242,7 @@ def _surface_evidence(
     subject: AnalysisSubjectRef,
     *,
     domain: Literal["module", "configuration", "entrypoint"],
+    semantic_revision_id: str,
 ) -> AnalysisEvidenceRef:
     facts: tuple[AnalysisFact, ...]
     if domain == "module":
@@ -1256,9 +1281,14 @@ def _surface_evidence(
             AnalysisFact("ast_argparse_call_sites", analysis.ast_argparse_call_sites, "count"),
         )
         truncated = False
+    if subject.revision_id != semantic_revision_id:
+        raise ValueError("interface surface subject revision is not semantic")
     projection_digest = analysis_identity(
         f"code-{domain}-surface-projection-v1",
-        {"analysis": analysis.analysis_id, "facts": tuple(asdict(item) for item in facts)},
+        {
+            "semantic_revision_id": semantic_revision_id,
+            "facts": tuple(asdict(item) for item in facts),
+        },
     )
     return AnalysisEvidenceRef(
         evidence_id=analysis_identity(
@@ -1270,7 +1300,7 @@ def _surface_evidence(
         evidence_kind="internal_metric",
         source_owner_id="code",
         producer_id="code-interface-surface-resolver",
-        producer_version="v1",
+        producer_version="v2",
         source_schema=f"neocortex.code-state/sqlite-v{CODE_SCHEMA_VERSION}",
         source_record_kind=f"{domain}_surface_projection",
         source_record_id=str(analysis.analysis_run_id),
@@ -1282,7 +1312,7 @@ def _surface_evidence(
         bounded=True,
         truncated=truncated,
         resolver_id="code-interface-surface-resolver",
-        resolver_version="v1",
+        resolver_version="v2",
         limitations=("surface_projection_does_not_establish_runtime_behavior_or_maintenance_harm",),
     )
 
@@ -1294,13 +1324,20 @@ def _surface_evaluation(
     domain: Literal["module", "configuration", "entrypoint"],
     rank: int,
     snapshot_freshness: Literal["current", "publication_only", "unknown"],
+    semantic_revision_id: str,
 ) -> AnalysisQuestionEvaluation:
     subject = _surface_subject(
         analysis,
         kind=domain,
         snapshot_freshness=snapshot_freshness,
+        semantic_revision_id=semantic_revision_id,
     )
-    evidence = _surface_evidence(analysis, subject, domain=domain)
+    evidence = _surface_evidence(
+        analysis,
+        subject,
+        domain=domain,
+        semantic_revision_id=semantic_revision_id,
+    )
     first = spec.requirements[0]
     decision_support = spec.requirements[1]
     counter = spec.requirements[2]
@@ -1448,6 +1485,7 @@ def interface_surface_questions(
         "configuration",
         "entrypoint",
     )
+    semantic_revision_id = _surface_semantic_revision_id(analysis)
     evaluations = tuple(
         _surface_evaluation(
             analysis,
@@ -1455,6 +1493,7 @@ def interface_surface_questions(
             domain=domain,
             rank=rank_offset + index,
             snapshot_freshness=snapshot_freshness,
+            semantic_revision_id=semantic_revision_id,
         )
         for index, (spec, domain) in enumerate(
             zip(specs, domains, strict=True),

@@ -28,6 +28,11 @@ def register_knowledge_arguments(parser: argparse.ArgumentParser) -> None:
         help="show a bounded cross-owner logical snapshot without creating state",
     )
     knowledge.add_argument(
+        "--knowledge-health",
+        metavar="RESOURCE_ID",
+        help="explain one stable asset identity across its published owner facts",
+    )
+    knowledge.add_argument(
         "--knowledge-search",
         metavar="QUERY",
         help="search available lexical, semantic, structural and catalog evidence",
@@ -73,6 +78,11 @@ def validate_knowledge_arguments(args: argparse.Namespace) -> None:
     )
     if len(operations) > 1:
         raise SystemExit("Knowledge direct actions are mutually exclusive")
+    if args.knowledge_health is not None:
+        if not args.knowledge_health.strip():
+            raise SystemExit("--knowledge-health must be non-empty")
+        if len(args.knowledge_health) > 512:
+            raise SystemExit("--knowledge-health cannot exceed 512 characters")
     for name in ("knowledge_search", "knowledge_context"):
         value = getattr(args, name)
         if value is not None and not value.strip():

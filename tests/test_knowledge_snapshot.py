@@ -440,8 +440,12 @@ def test_snapshot_cancellation_rolls_back_and_closes_readonly_connection(
     real_connect_readonly = knowledge_snapshot._connect_readonly
     armed = False
 
-    def track_readonly_connection(path: Path) -> sqlite3.Connection:
-        connection = real_connect_readonly(path)
+    def track_readonly_connection(
+        path: Path,
+        *,
+        immutable: bool = False,
+    ) -> sqlite3.Connection:
+        connection = real_connect_readonly(path, immutable=immutable)
         assert int(connection.execute("PRAGMA query_only").fetchone()[0]) == 1
         opened.append(connection)
         return connection
@@ -503,8 +507,12 @@ def test_snapshot_sqlite_progress_interrupts_long_owner_query(
     progress_calls = 0
     cancellation = QueryCancelled("cancel inside snapshot SQLite query")
 
-    def track_readonly_connection(path: Path) -> sqlite3.Connection:
-        connection = real_connect_readonly(path)
+    def track_readonly_connection(
+        path: Path,
+        *,
+        immutable: bool = False,
+    ) -> sqlite3.Connection:
+        connection = real_connect_readonly(path, immutable=immutable)
         opened.append(connection)
         return connection
 

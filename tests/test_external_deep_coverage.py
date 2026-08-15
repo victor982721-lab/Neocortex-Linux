@@ -189,6 +189,8 @@ def _execute(
     scratch: Path,
     staged: dict[str, ExternalEvidenceFile],
     config: deep.DeepCoverageConfig,
+    *,
+    progress=None,
 ) -> deep.DeepCoverageExecution:
     return deep.execute_pytest_coverage(
         stage,
@@ -197,6 +199,7 @@ def _execute(
         trusted_root=trusted,
         scratch_root=scratch,
         config=config,
+        progress=progress,
     )
 
 
@@ -212,8 +215,16 @@ def test_normalizes_canonical_metrics_context_relations_and_missing_ranges(
     )
     calls, run = _worker(nodeids)
     monkeypatch.setattr(deep, "_run_worker", run)
+    progress: list[deep.DeepCoverageProgress] = []
 
-    result = _execute(trusted, stage, scratch, staged, _config())
+    result = _execute(
+        trusted,
+        stage,
+        scratch,
+        staged,
+        _config(),
+        progress=progress.append,
+    )
 
     assert result.measurement_complete is True
     assert result.suite_selection == "full"
@@ -221,6 +232,17 @@ def test_normalizes_canonical_metrics_context_relations_and_missing_ranges(
     assert result.counters["tests_passed"] == 3
     assert result.counters["support_files_verified"] == 4
     assert [item[0] for item in calls] == ["collect", "shard", "shard"]
+    assert [item.phase for item in progress] == [
+        "collected",
+        "shard_started",
+        "shard_completed",
+        "shard_started",
+        "shard_completed",
+    ]
+    assert progress[-1].completed_shards == progress[-1].total_shards == 2
+    assert progress[-1].selected_tests == 3
+    assert result.counters["nominal_time_budget_seconds"] == 30
+    assert result.counters["progress_time_limit_seconds"] == 60
     canonical = {
         "executable_lines",
         "covered_lines",
@@ -312,6 +334,132 @@ def test_normalizes_canonical_metrics_context_relations_and_missing_ranges(
     assert all(item.target_kind == "run" for item in outcome_relations)
     assert all(item.metadata["assertion_or_invariant_proof"] is False for item in outcome_relations)
     assert result.findings == ()
+
+
+def test_completed_shard_progress_unlocks_one_bounded_time_extension(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = type(
+        "Context",
+        (),
+        {
+            "started": 0.0,
+            "preparation_elapsed": 0.0,
+            "config": _config(budget=30.0),
+        },
+    )()
+    monkeypatch.setattr(deep.time, "monotonic", lambda: 31.0)
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        deep._remaining_execution_seconds(context, ("pytest",))
+
+    assert (
+        deep._remaining_execution_seconds(
+            context,
+            ("pytest",),
+            progress_made=True,
+        )
+        == 29.0
+    )
+
+
+def test_reused_shards_cannot_publish_after_the_progress_deadline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    trusted, stage, scratch, staged = _fixture(tmp_path, monkeypatch)
+    nodeids = ("tests/test_logic.py::test_true",)
+    _calls, run = _worker(nodeids)
+    monkeypatch.setattr(deep, "_run_worker", run)
+    config = _config(shard_size=1)
+    _execute(trusted, stage, scratch, staged, config)
+    clock = [0.0]
+    monkeypatch.setattr(deep.time, "monotonic", lambda: clock[0])
+
+    def expire_after_reuse(event: deep.DeepCoverageProgress) -> None:
+        if event.phase == "shard_reused":
+            clock[0] = 61.0
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        _execute(
+            trusted,
+            stage,
+            scratch,
+            staged,
+            config,
+            progress=expire_after_reuse,
+        )
+
+
+def test_result_normalization_cannot_publish_after_the_progress_deadline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    trusted, stage, scratch, staged = _fixture(tmp_path, monkeypatch)
+    nodeids = ("tests/test_logic.py::test_true",)
+    _calls, run = _worker(nodeids)
+    monkeypatch.setattr(deep, "_run_worker", run)
+    clock = [0.0]
+    monkeypatch.setattr(deep.time, "monotonic", lambda: clock[0])
+    normalize = deep._normalize
+
+    def overrun_normalization(*args, **kwargs):
+        result = normalize(*args, **kwargs)
+        clock[0] = 61.0
+        return result
+
+    monkeypatch.setattr(deep, "_normalize", overrun_normalization)
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        _execute(trusted, stage, scratch, staged, _config(shard_size=1))
+
+
+def test_progress_callback_failure_is_advisory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    trusted, stage, scratch, staged = _fixture(tmp_path, monkeypatch)
+    nodeids = ("tests/test_logic.py::test_true",)
+    _calls, run = _worker(nodeids)
+    monkeypatch.setattr(deep, "_run_worker", run)
+
+    def broken_progress(_event: deep.DeepCoverageProgress) -> None:
+        raise RuntimeError("frontend unavailable")
+
+    result = _execute(
+        trusted,
+        stage,
+        scratch,
+        staged,
+        _config(shard_size=1),
+        progress=broken_progress,
+    )
+
+    assert result.measurement_complete is True
+    assert result.counters["tests_passed"] == 1
+
+
+def test_progress_callback_does_not_swallow_keyboard_interrupt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    trusted, stage, scratch, staged = _fixture(tmp_path, monkeypatch)
+    nodeids = ("tests/test_logic.py::test_true",)
+    _calls, run = _worker(nodeids)
+    monkeypatch.setattr(deep, "_run_worker", run)
+
+    def interrupt(_event: deep.DeepCoverageProgress) -> None:
+        raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        _execute(
+            trusted,
+            stage,
+            scratch,
+            staged,
+            _config(shard_size=1),
+            progress=interrupt,
+        )
 
 
 def test_reuses_only_validated_passing_shards_and_reruns_malformed_checkpoint(
