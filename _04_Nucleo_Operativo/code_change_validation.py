@@ -2151,7 +2151,7 @@ def _validation_question_scopes() -> tuple[_ValidationQuestionScope, ...]:
             "security_supply_boundary",
             SECURITY_EVIDENCE_QUESTION,
             "project:neocortex-security-evidence",
-            None,
+            "security.bounded_boundary_scenarios",
             frozenset(
                 {
                     "MANIFEST.in",
@@ -2173,7 +2173,7 @@ def _validation_question_scopes() -> tuple[_ValidationQuestionScope, ...]:
             "dependency_artifact_boundary",
             DEPENDENCY_EVIDENCE_QUESTION,
             "dependency:neocortex-environment",
-            None,
+            "security.bounded_boundary_scenarios",
             frozenset(
                 {
                     "MANIFEST.in",

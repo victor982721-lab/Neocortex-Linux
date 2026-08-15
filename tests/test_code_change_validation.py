@@ -43,6 +43,10 @@ from _04_Nucleo_Operativo.external_evidence_providers import (
 )
 from _04_Nucleo_Operativo.code_route_capability_analysis import ROUTE_CAPABILITY_QUESTION
 from _04_Nucleo_Operativo.code_retention_analysis import RETENTION_HOLD_QUESTION
+from _04_Nucleo_Operativo.code_security_dependency_questions import (
+    DEPENDENCY_EVIDENCE_QUESTION,
+    SECURITY_EVIDENCE_QUESTION,
+)
 from _04_Nucleo_Operativo.code_state_interaction_analysis import WORKFLOW_SQL_QUESTION
 from _04_Nucleo_Operativo.code_state_projection_analysis import (
     TEXT_SEMANTIC_PROJECTION_QUESTION,
@@ -450,6 +454,98 @@ def test_canonical_experiment_gate_persists_each_exact_receipt(
         "analysis_run_id": 17,
         "processing_signature": "snapshot:exact",
         "review_digest": "review:exact",
+    }
+
+
+def test_supply_questions_use_their_measured_allowlisted_runner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import _04_Nucleo_Operativo.code_experiment_executor as executor
+    import _04_Nucleo_Operativo.code_experiment_store as store
+
+    evaluations = tuple(
+        _question_evaluation(
+            spec,
+            evaluation_id=f"evaluation:{scope_id}",
+            subject_key=subject_key,
+        )
+        for scope_id, spec, subject_key in (
+            (
+                "security",
+                SECURITY_EVIDENCE_QUESTION,
+                "project:neocortex-security-evidence",
+            ),
+            (
+                "dependency",
+                DEPENDENCY_EVIDENCE_QUESTION,
+                "dependency:neocortex-environment",
+            ),
+        )
+    )
+    proposals = tuple(
+        SimpleNamespace(
+            proposal_id=f"proposal:{evaluation.evaluation_id}",
+            evaluation_id=evaluation.evaluation_id,
+            question_id=evaluation.question_id,
+            subject_key=evaluation.subject.subject_key,
+            template_id="security.bounded_boundary_scenarios",
+            template_version="v2",
+            planning_status="planned",
+            runner_kind="trusted_deep_declared_scenarios",
+        )
+        for evaluation in evaluations
+    )
+    review = SimpleNamespace(
+        experiment_plan=SimpleNamespace(
+            proposals=proposals,
+            planned_count=2,
+            registry_gap_count=0,
+        ),
+        question_evaluations=evaluations,
+        technical_verification=SimpleNamespace(reviews=()),
+        snapshot=SimpleNamespace(
+            analysis_run_id=18,
+            processing_signature="snapshot:supply",
+        ),
+        digest=SimpleNamespace(),
+    )
+
+    def execute(proposal, **_kwargs):
+        receipt_id = f"receipt:{proposal.evaluation_id}"
+        return SimpleNamespace(
+            receipt_id=receipt_id,
+            status="passed",
+            as_payload=lambda: {"receipt_id": receipt_id, "status": "passed"},
+        )
+
+    monkeypatch.setattr(executor, "execute_code_experiment", execute)
+    monkeypatch.setattr(store, "code_review_digest_identity", lambda _digest: "review:supply")
+    monkeypatch.setattr(
+        store,
+        "record_code_experiment_receipt",
+        lambda _database, receipt, *_args, **_kwargs: SimpleNamespace(receipt=receipt),
+    )
+
+    gate, receipts = _experiment_gate(
+        review,
+        root=tmp_path,
+        state_directory=tmp_path,
+        change=_change_for("pyproject.toml"),
+        selection=_selection(),
+    )
+
+    assert gate.status == "passed"
+    assert gate.reason == "unique_allowlisted_experiments_passed"
+    assert gate.evidence["proposal_count"] == 2
+    assert gate.evidence["unique_template_count"] == 1
+    assert {
+        item["expected_template_id"]
+        for item in cast(list[dict[str, object]], gate.evidence["relevant_questions"])
+    } == {"security.bounded_boundary_scenarios"}
+    assert {item["receipt_id"] for item in receipts} == {
+        "receipt:evaluation:security",
+        "receipt:evaluation:dependency",
     }
 
 
