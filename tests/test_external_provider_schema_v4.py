@@ -112,6 +112,36 @@ def _complete_owner(connection: sqlite3.Connection, analysis_run_id: int) -> Non
     assert updated.rowcount == 1
 
 
+def _supersede_fixture_version(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        """UPDATE file_versions SET invalidated_ns=2,
+        invalidation_reason='superseded' WHERE version_id=1"""
+    )
+    connection.execute(
+        """INSERT INTO file_versions(
+        version_id,file_id,path_observed,size,mtime_ns,birthtime_ns,
+        raw_xxh3_128,raw_xxh3_64_guard,text_xxh3_128,text_xxh3_64_guard,
+        normalized_xxh3_128,token_xxh3_128,structure_xxh3_128,encoding,
+        language,artifact_kind,generated,vendored,classification_confidence,
+        classification_evidence_json,analysis_status,processing_signature,
+        analyzer_id,analyzer_version,parser_kind,text_zlib,text_chars,
+        text_truncated,provenance_json,first_observed_run_id,
+        last_observed_run_id,valid_from_ns,invalidated_ns,invalidation_reason)
+        SELECT 2,file_id,path_observed,size,2,birthtime_ns,
+        raw_xxh3_128,raw_xxh3_64_guard,text_xxh3_128,text_xxh3_64_guard,
+        normalized_xxh3_128,token_xxh3_128,structure_xxh3_128,encoding,
+        language,artifact_kind,generated,vendored,classification_confidence,
+        classification_evidence_json,analysis_status,processing_signature,
+        analyzer_id,analyzer_version,parser_kind,text_zlib,text_chars,
+        text_truncated,provenance_json,first_observed_run_id,
+        2,2,NULL,NULL FROM file_versions WHERE version_id=1"""
+    )
+    connection.execute(
+        """UPDATE files SET current_version_id=2,status='current',
+        last_seen_run_id=2 WHERE file_id=1"""
+    )
+
+
 def _descriptor(provider_id: str) -> ProviderDescriptor:
     return ProviderDescriptor(
         provider_id,
@@ -227,6 +257,21 @@ def _full_publication(provider_id: str) -> ExternalProviderPublication:
         f"publication:{provider_id}:full",
         metrics=(metric,),
         relations=(relation,),
+    )
+
+
+def _input_only_publication(provider_id: str) -> ExternalProviderPublication:
+    base = _full_publication(provider_id)
+    return replace(
+        base,
+        counters={
+            **base.counters,
+            "metrics": 0,
+            "relations": 0,
+        },
+        result_digest=external_provider_result_digest((), (), ()),
+        metrics=(),
+        relations=(),
     )
 
 
@@ -410,8 +455,8 @@ def _replay_publication(
             "files_verified": 1,
             "bytes_verified": 4,
             "findings": len(source.findings),
-            "metrics": 1,
-            "relations": 1,
+            "metrics": len(source.metrics),
+            "relations": len(source.relations),
             "comparable": 1,
             "added": 0,
             "resolved": 0,
@@ -877,6 +922,82 @@ def test_stale_version_projection_is_comparable_but_not_exactly_replayable(
     assert comparable.portable_finding_ids == (source.findings[0].portable_finding_id,)
     assert comparable.portable_metric_ids == (source.metrics[0].portable_metric_id,)
     assert comparable.portable_relation_ids == (source.relations[0].portable_relation_id,)
+
+
+def test_stale_input_without_version_bound_facts_is_comparison_only(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "stale-input-baseline.sqlite3"
+    _create_current_owner(database, 1)
+    connection = code_schema.connect_code_state(database, create=False)
+    try:
+        source = _input_only_publication("architecture-provider")
+        publish_external_provider(connection, 1, source)
+        _complete_owner(connection, 1)
+        _supersede_fixture_version(connection)
+
+        exact, comparable = read_external_provider_baselines(
+            connection,
+            provider_id="architecture-provider",
+            profile="protected",
+            tool_version="1.0",
+            configuration_signature="fixture-configuration",
+            environment_signature="fixture-environment",
+            root_identity="fixture-root",
+            input_signature="fixture-input",
+            comparability_signature="fixture-comparability:architecture-provider",
+        )
+    finally:
+        connection.close()
+
+    assert exact is None
+    assert comparable is not None
+    assert comparable.reuse_mode == "comparison_only"
+    assert comparable.portable_finding_ids == ()
+    assert comparable.portable_metric_ids == ()
+    assert comparable.portable_relation_ids == ()
+
+
+def test_exact_replay_rechecks_source_inputs_before_rematerializing(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "replay-input-race.sqlite3"
+    _create_current_owner(database, 1, 2)
+    connection = code_schema.connect_code_state(database, create=False)
+    try:
+        source = _input_only_publication("architecture-provider")
+        source_run_id = publish_external_provider(connection, 1, source)
+        _complete_owner(connection, 1)
+        exact, _comparable = read_external_provider_baselines(
+            connection,
+            provider_id="architecture-provider",
+            profile="protected",
+            tool_version="1.0",
+            configuration_signature="fixture-configuration",
+            environment_signature="fixture-environment",
+            root_identity="fixture-root",
+            input_signature="fixture-input",
+            comparability_signature="fixture-comparability:architecture-provider",
+        )
+        assert exact is not None and exact.reuse_mode == "exact_replay"
+
+        _supersede_fixture_version(connection)
+        replay = replace(
+            _replay_publication(source, source_run_id),
+            inputs=(replace(source.inputs[0], version_id=2),),
+        )
+        with pytest.raises(
+            RuntimeError,
+            match="external replay source projection is no longer current",
+        ):
+            publish_external_provider(connection, 2, replay)
+        replay_rows = connection.execute(
+            "SELECT COUNT(*) FROM external_tool_runs WHERE analysis_run_id=2"
+        ).fetchone()[0]
+    finally:
+        connection.close()
+
+    assert replay_rows == 0
 
 
 @pytest.mark.parametrize(

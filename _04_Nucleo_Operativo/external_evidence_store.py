@@ -322,6 +322,8 @@ def _rematerialize_replay_projection(
         for version_id in (relation.source_version_id, relation.target_version_id):
             if version_id is not None and not _current_version_exists(connection, version_id):
                 raise RuntimeError("external replay relation version is no longer current")
+    if not _provider_projection_versions_are_current(connection, source_tool_run_id):
+        raise RuntimeError("external replay source projection is no longer current")
 
     _delete_provider_projection(connection, source=descriptor.source)
     for finding in findings:
@@ -692,17 +694,20 @@ def _provider_projection_versions_are_current(
     connection: sqlite3.Connection,
     tool_run_id: int,
 ) -> bool:
-    """Return whether every version-bound fact can be replayed into the live graph.
+    """Return whether every version-bound input and fact still belongs to the live graph.
 
     Portable identities from an older publication remain useful as a comparable
     baseline after Code creates new file versions.  Its physical projection does
-    not: replaying those rows would attach current diagnostics/metrics/relations
-    to superseded versions.  Reject only exact replay here so providers can run
-    again while still calculating added/resolved deltas from portable IDs.
+    not: replaying those rows would reuse superseded inputs or attach current
+    diagnostics/metrics/relations to superseded versions.  Reject only exact
+    replay here so providers can run again while still calculating
+    added/resolved deltas from portable IDs.
     """
 
     stale = connection.execute(
         """SELECT 1 FROM (
+        SELECT version_id FROM external_run_inputs WHERE tool_run_id=?
+        UNION
         SELECT version_id FROM external_findings WHERE tool_run_id=?
         UNION
         SELECT version_id FROM external_metrics
@@ -720,7 +725,7 @@ def _provider_projection_versions_are_current(
             WHERE v.version_id=refs.version_id
             AND f.status='current' AND v.invalidated_ns IS NULL
         ) LIMIT 1""",
-        (tool_run_id, tool_run_id, tool_run_id, tool_run_id),
+        (tool_run_id, tool_run_id, tool_run_id, tool_run_id, tool_run_id),
     ).fetchone()
     return stale is None
 
