@@ -1126,18 +1126,45 @@ class RuffEvidenceProvider:
         )
 
 
-def _decode_external_record(
-    tool_run_id: int,
-    analysis_run_id: int,
-    tool_version: str,
-    configuration_signature: str,
-    raw_provenance: str,
-) -> tuple[dict[str, object], ExternalEvidenceBaseline | None] | None:
+@dataclass(frozen=True, slots=True)
+class _DecodedExternalInput:
+    root: str
+    signature: str
+    version_ids: tuple[int, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _DecodedExternalResult:
+    digest: str
+    diagnostic_ids: tuple[str, ...]
+    raw_records: object
+    comparable: bool
+    baseline_tool_run_id: int | None
+    added: int | None
+    resolved: int | None
+    execution: Literal["full", "cache_replay"]
+
+
+def _external_utf8_within_bound(value: object, maximum: int) -> bool:
+    if not isinstance(value, str):
+        return False
     try:
-        provenance_bytes = len(raw_provenance.encode("utf-8"))
+        return len(value.encode("utf-8")) <= maximum
     except UnicodeError:
+        return False
+
+
+def _bounded_external_count(value: object, maximum: int) -> int | None:
+    if not isinstance(value, int) or isinstance(value, bool) or not 0 <= value <= maximum:
         return None
-    if provenance_bytes > RUFF_MAX_PROVENANCE_BYTES:
+    return value
+
+
+def _decode_external_envelope(
+    raw_provenance: str,
+    configuration_signature: str,
+) -> dict[str, object] | None:
+    if not _external_utf8_within_bound(raw_provenance, RUFF_MAX_PROVENANCE_BYTES):
         return None
     try:
         provenance = json.loads(raw_provenance)
@@ -1146,8 +1173,6 @@ def _decode_external_record(
     if not isinstance(provenance, dict) or provenance.get("schema") != EXTERNAL_EVIDENCE_SCHEMA:
         return None
     input_payload = provenance.get("input")
-    result = provenance.get("result")
-    root = provenance.get("root")
     configuration = provenance.get("configuration")
     if not isinstance(input_payload, dict) or not isinstance(configuration, dict):
         return None
@@ -1157,105 +1182,188 @@ def _decode_external_record(
         return None
     if observed_configuration_signature != configuration_signature:
         return None
-    input_signature = input_payload.get("signature")
-    eligible_files = input_payload.get("eligible_files")
-    total_bytes = input_payload.get("total_bytes")
-    version_ids = input_payload.get("version_ids")
+    return provenance
+
+
+def _decode_external_input(provenance: Mapping[str, object]) -> _DecodedExternalInput | None:
+    input_payload = provenance.get("input")
+    root = provenance.get("root")
+    if not isinstance(input_payload, Mapping):
+        return None
     if (
         not isinstance(root, str)
         or not root
-        or len(root.encode("utf-8")) > 32_768
+        or not _external_utf8_within_bound(root, 32_768)
         or _normalized_absolute_path(root) is None
-        or not isinstance(input_signature, str)
-        or not input_signature.startswith("external-input-v1:xxh3_128:")
-        or len(input_signature.encode("utf-8")) > 256
-        or not isinstance(eligible_files, int)
-        or isinstance(eligible_files, bool)
-        or not 0 <= eligible_files <= RUFF_MAX_FILES
-        or not isinstance(total_bytes, int)
-        or isinstance(total_bytes, bool)
-        or not 0 <= total_bytes <= RUFF_MAX_TOTAL_BYTES
-        or not isinstance(version_ids, list)
-        or len(version_ids) != eligible_files
-        or any(
-            not isinstance(item, int) or isinstance(item, bool) or item <= 0 for item in version_ids
-        )
-        or len(set(version_ids)) != len(version_ids)
     ):
         return None
-    if result is None:
-        return provenance, None
-    if not isinstance(result, dict):
+    input_signature = input_payload.get("signature")
+    if (
+        not isinstance(input_signature, str)
+        or not input_signature.startswith("external-input-v1:xxh3_128:")
+        or not _external_utf8_within_bound(input_signature, 256)
+    ):
         return None
-    result_digest = result.get("digest")
-    diagnostic_count = result.get("diagnostics")
-    diagnostic_ids = result.get("diagnostic_ids")
-    raw_records = result.get("records")
-    comparable = result.get("comparable")
+    eligible_files = _bounded_external_count(input_payload.get("eligible_files"), RUFF_MAX_FILES)
+    total_bytes = _bounded_external_count(input_payload.get("total_bytes"), RUFF_MAX_TOTAL_BYTES)
+    version_ids = input_payload.get("version_ids")
+    if eligible_files is None or total_bytes is None or not isinstance(version_ids, list):
+        return None
+    if len(version_ids) != eligible_files or any(
+        not isinstance(item, int) or isinstance(item, bool) or item <= 0 for item in version_ids
+    ):
+        return None
+    if len(set(version_ids)) != len(version_ids):
+        return None
+    return _DecodedExternalInput(root, input_signature, tuple(version_ids))
+
+
+def _decode_external_comparison(
+    result: Mapping[str, object],
+    *,
+    comparable: bool,
+) -> tuple[int | None, int | None, int | None] | None:
     baseline_tool_run_id = result.get("baseline_tool_run_id")
     added = result.get("added")
     resolved = result.get("resolved")
-    execution = provenance.get("execution")
+    if not comparable:
+        if baseline_tool_run_id is not None or added is not None or resolved is not None:
+            return None
+        return None, None, None
+    if (
+        not isinstance(baseline_tool_run_id, int)
+        or isinstance(baseline_tool_run_id, bool)
+        or baseline_tool_run_id <= 0
+    ):
+        return None
+    decoded_added = _bounded_external_count(added, RUFF_MAX_DIAGNOSTICS)
+    decoded_resolved = _bounded_external_count(resolved, RUFF_MAX_DIAGNOSTICS)
+    if decoded_added is None or decoded_resolved is None:
+        return None
+    return baseline_tool_run_id, decoded_added, decoded_resolved
+
+
+def _decode_external_result(
+    provenance: Mapping[str, object],
+) -> _DecodedExternalResult | None:
+    result = provenance.get("result")
+    if not isinstance(result, Mapping):
+        return None
+    result_digest = result.get("digest")
     if (
         not isinstance(result_digest, str)
         or not result_digest.startswith("external-result-v1:xxh3_128:")
-        or len(result_digest.encode("utf-8")) > 256
-        or not isinstance(diagnostic_count, int)
-        or isinstance(diagnostic_count, bool)
-        or not 0 <= diagnostic_count <= RUFF_MAX_DIAGNOSTICS
-        or not isinstance(diagnostic_ids, list)
-        or len(diagnostic_ids) != diagnostic_count
-        or any(not isinstance(item, str) or len(item) > 256 for item in diagnostic_ids)
-        or len(set(diagnostic_ids)) != len(diagnostic_ids)
-        or not isinstance(comparable, bool)
-        or execution not in {"full", "cache_replay"}
+        or not _external_utf8_within_bound(result_digest, 256)
     ):
         return None
-    if comparable:
-        if (
-            not isinstance(baseline_tool_run_id, int)
-            or isinstance(baseline_tool_run_id, bool)
-            or baseline_tool_run_id <= 0
-            or not isinstance(added, int)
-            or isinstance(added, bool)
-            or not 0 <= added <= RUFF_MAX_DIAGNOSTICS
-            or not isinstance(resolved, int)
-            or isinstance(resolved, bool)
-            or not 0 <= resolved <= RUFF_MAX_DIAGNOSTICS
-        ):
-            return None
-    elif baseline_tool_run_id is not None or added is not None or resolved is not None:
+    diagnostic_count = _bounded_external_count(
+        result.get("diagnostics"),
+        RUFF_MAX_DIAGNOSTICS,
+    )
+    diagnostic_ids = result.get("diagnostic_ids")
+    if diagnostic_count is None or not isinstance(diagnostic_ids, list):
+        return None
+    if len(diagnostic_ids) != diagnostic_count or any(
+        not isinstance(item, str) or len(item) > 256 for item in diagnostic_ids
+    ):
+        return None
+    if len(set(diagnostic_ids)) != len(diagnostic_ids):
+        return None
+    comparable = result.get("comparable")
+    if not isinstance(comparable, bool):
+        return None
+    execution_value = provenance.get("execution")
+    if execution_value == "full":
+        execution: Literal["full", "cache_replay"] = "full"
+    elif execution_value == "cache_replay":
+        execution = "cache_replay"
+    else:
+        return None
+    comparison = _decode_external_comparison(result, comparable=comparable)
+    if comparison is None:
+        return None
+    baseline_tool_run_id, added, resolved = comparison
+    return _DecodedExternalResult(
+        result_digest,
+        tuple(diagnostic_ids),
+        result.get("records"),
+        comparable,
+        baseline_tool_run_id,
+        added,
+        resolved,
+        execution,
+    )
+
+
+def _decode_full_external_records(
+    result: _DecodedExternalResult,
+) -> tuple[ExternalDiagnostic, ...] | None:
+    if not isinstance(result.raw_records, list):
+        return None
+    if len(result.raw_records) != len(result.diagnostic_ids):
+        return None
+    try:
+        decoded_records = tuple(_decode_result_record(item) for item in result.raw_records)
+    except (TypeError, ValueError):
+        return None
+    if any(item is None for item in decoded_records):
+        return None
+    records = tuple(item for item in decoded_records if item is not None)
+    if records != tuple(sorted(records, key=_diagnostic_sort_key)):
+        return None
+    if tuple(item.identity for item in records) != result.diagnostic_ids:
+        return None
+    try:
+        observed_digest = _external_result_digest(records)
+    except (TypeError, ValueError):
+        return None
+    if observed_digest != result.digest:
+        return None
+    return records
+
+
+def _external_replay_result_is_valid(
+    provenance: Mapping[str, object],
+    result: _DecodedExternalResult,
+) -> bool:
+    reused_tool_run_id = provenance.get("reused_tool_run_id")
+    return (
+        result.raw_records is None
+        and result.comparable
+        and result.added == 0
+        and result.resolved == 0
+        and isinstance(reused_tool_run_id, int)
+        and not isinstance(reused_tool_run_id, bool)
+        and reused_tool_run_id > 0
+        and reused_tool_run_id == result.baseline_tool_run_id
+    )
+
+
+def _decode_external_record(
+    tool_run_id: int,
+    analysis_run_id: int,
+    tool_version: str,
+    configuration_signature: str,
+    raw_provenance: str,
+) -> tuple[dict[str, object], ExternalEvidenceBaseline | None] | None:
+    provenance = _decode_external_envelope(raw_provenance, configuration_signature)
+    if provenance is None:
+        return None
+    decoded_input = _decode_external_input(provenance)
+    if decoded_input is None:
+        return None
+    if provenance.get("result") is None:
+        return provenance, None
+    decoded_result = _decode_external_result(provenance)
+    if decoded_result is None:
         return None
     records: tuple[ExternalDiagnostic, ...] | None
-    if execution == "full":
-        if not isinstance(raw_records, list) or len(raw_records) != diagnostic_count:
-            return None
-        decoded_records = tuple(_decode_result_record(item) for item in raw_records)
-        if any(item is None for item in decoded_records):
-            return None
-        records = tuple(item for item in decoded_records if item is not None)
-        if records != tuple(sorted(records, key=_diagnostic_sort_key)):
-            return None
-        if tuple(item.identity for item in records) != tuple(diagnostic_ids):
-            return None
-        try:
-            observed_digest = _external_result_digest(records)
-        except (TypeError, ValueError):
-            return None
-        if observed_digest != result_digest:
+    if decoded_result.execution == "full":
+        records = _decode_full_external_records(decoded_result)
+        if records is None:
             return None
     else:
-        reused_tool_run_id = provenance.get("reused_tool_run_id")
-        if (
-            raw_records is not None
-            or not comparable
-            or added != 0
-            or resolved != 0
-            or not isinstance(reused_tool_run_id, int)
-            or isinstance(reused_tool_run_id, bool)
-            or reused_tool_run_id <= 0
-            or reused_tool_run_id != baseline_tool_run_id
-        ):
+        if not _external_replay_result_is_valid(provenance, decoded_result):
             return None
         records = None
     return (
@@ -1265,11 +1373,11 @@ def _decode_external_record(
             analysis_run_id,
             tool_version,
             configuration_signature,
-            root,
-            input_signature,
-            tuple(version_ids),
-            result_digest,
-            tuple(diagnostic_ids),
+            decoded_input.root,
+            decoded_input.signature,
+            decoded_input.version_ids,
+            decoded_result.digest,
+            decoded_result.diagnostic_ids,
             records,
         ),
     )

@@ -360,6 +360,134 @@ def test_status_rejects_tampered_external_provenance(
     assert status.reason == "external_evidence_provenance_invalid"
 
 
+@pytest.mark.parametrize(
+    "tamper",
+    [
+        "eligible_bool",
+        "total_bytes_bool",
+        "version_count",
+        "version_bool",
+        "diagnostic_count_bool",
+        "unexpected_baseline",
+    ],
+)
+def test_status_rejects_invalid_external_record_bounds(
+    tmp_path: Path,
+    tamper: str,
+) -> None:
+    root = tmp_path / "root"
+    state = tmp_path / "state"
+    _route(root, state, _source_tree(root), run_id=1)
+    row = _latest_external_row(state / "code.sqlite3")
+    provenance = json.loads(str(row["provenance_json"]))
+    if tamper == "eligible_bool":
+        provenance["input"]["eligible_files"] = True
+    elif tamper == "total_bytes_bool":
+        provenance["input"]["total_bytes"] = False
+    elif tamper == "version_count":
+        provenance["input"]["version_ids"].pop()
+    elif tamper == "version_bool":
+        provenance["input"]["version_ids"][0] = True
+    elif tamper == "diagnostic_count_bool":
+        provenance["result"]["diagnostics"] = True
+    else:
+        assert provenance["result"]["comparable"] is False
+        provenance["result"]["baseline_tool_run_id"] = 1
+    tampered_row = {
+        **row,
+        "provenance_json": json.dumps(
+            provenance,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+    }
+
+    status = external_status_from_row(tampered_row)
+
+    assert status.status == "abstained"
+    assert status.reason == "external_evidence_provenance_invalid"
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    ["records", "comparable", "added", "resolved", "reused_tool_run_id"],
+)
+def test_status_rejects_invalid_external_replay_contract(
+    tmp_path: Path,
+    tamper: str,
+) -> None:
+    root = tmp_path / "root"
+    state = tmp_path / "state"
+    paths = _source_tree(root)
+    _route(root, state, paths, run_id=1)
+    _route(root, state, paths, run_id=2)
+    row = _latest_external_row(state / "code.sqlite3")
+    provenance = json.loads(str(row["provenance_json"]))
+    assert provenance["execution"] == "cache_replay"
+    if tamper == "records":
+        provenance["result"]["records"] = []
+    elif tamper == "comparable":
+        provenance["result"]["comparable"] = False
+    elif tamper == "added":
+        provenance["result"]["added"] = 1
+    elif tamper == "resolved":
+        provenance["result"]["resolved"] = 1
+    else:
+        provenance["reused_tool_run_id"] += 1
+    tampered_row = {
+        **row,
+        "provenance_json": json.dumps(
+            provenance,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+    }
+
+    status = external_status_from_row(tampered_row)
+
+    assert status.status == "abstained"
+    assert status.reason == "external_evidence_provenance_invalid"
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    ["root", "input_signature", "result_digest", "record_message"],
+)
+def test_status_rejects_unencodable_external_fields_fail_closed(
+    tmp_path: Path,
+    tamper: str,
+) -> None:
+    root = tmp_path / "root"
+    state = tmp_path / "state"
+    _route(root, state, _source_tree(root), run_id=1)
+    row = _latest_external_row(state / "code.sqlite3")
+    provenance = json.loads(str(row["provenance_json"]))
+    if tamper == "root":
+        provenance["root"] = "\ud800"
+    elif tamper == "input_signature":
+        provenance["input"]["signature"] = "external-input-v1:xxh3_128:\ud800"
+    elif tamper == "result_digest":
+        provenance["result"]["digest"] = "external-result-v1:xxh3_128:\ud800"
+    else:
+        provenance["result"]["records"][0]["message"] = "\ud800"
+    tampered_row = {
+        **row,
+        "provenance_json": json.dumps(
+            provenance,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+    }
+
+    status = external_status_from_row(tampered_row)
+
+    assert status.status == "abstained"
+    assert status.reason == "external_evidence_provenance_invalid"
+
+
 def test_status_abstains_when_the_current_projection_is_missing(tmp_path: Path) -> None:
     root = tmp_path / "root"
     state = tmp_path / "state"
