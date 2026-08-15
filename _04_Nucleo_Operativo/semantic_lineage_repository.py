@@ -3888,6 +3888,206 @@ def _read_text_chunk_embedding_derivations(
     )
 
 
+def _query_text_chunk_origin_rows(
+    connection: sqlite3.Connection,
+    *,
+    chunk_revision_id: int,
+    refresh_token: str,
+    limit: int,
+) -> tuple[sqlite3.Row, ...]:
+    """Read the bounded normalized origin rows for one chunk revision."""
+
+    return tuple(
+        connection.execute(
+            """SELECT d.materialization_receipt_id,d.publication_receipt_id,
+                d.refresh_token,
+                i.item_revision_id,i.source_kind,i.source_identity,
+                i.identity_version,i.source_revision_json,
+                COUNT(*) OVER() AS total_count
+            FROM semantic_chunk_derivations d
+            JOIN semantic_item_revisions i
+              ON i.item_revision_id=d.item_revision_id
+            WHERE d.chunk_revision_id=?
+            ORDER BY CASE WHEN d.refresh_token=? THEN 0 ELSE 1 END,
+                d.derivation_id DESC LIMIT ?""",
+            (chunk_revision_id, refresh_token, limit),
+        ).fetchall()
+    )
+
+
+def _materialize_text_chunk_origin(
+    connection: sqlite3.Connection,
+    *,
+    chunk: sqlite3.Row,
+    chunk_revision_id: int,
+    row: sqlite3.Row,
+    origin_receipts: dict[int, tuple[WorkReceipt, sqlite3.Row]],
+) -> SemanticChunkOrigin:
+    """Verify one normalized chunk origin and expose its attribution."""
+
+    published = row["publication_receipt_id"] is not None
+    materialization_id = int(row["materialization_receipt_id"])
+    materialization_receipt, materialization_row = origin_receipts[materialization_id]
+    item_revision_id = int(row["item_revision_id"])
+    try:
+        item_binding = _item_revision_binding(connection, item_revision_id)
+        native_binding = _native_source_revision_binding(connection, item_revision_id)
+        expected_item = _input_contracts(
+            (item_binding,),
+            stage_id=SEMANTIC_CHUNK_STAGE,
+            processing_signature=str(materialization_row["processing_signature"]),
+            observed_ns=int(materialization_row["started_ns"]),
+        )[0]
+        expected_chunk = _output_contracts(
+            (_chunk_revision_binding(connection, chunk_revision_id),),
+            generation_id=None,
+        )[0]
+    except SemanticStateError as exc:
+        raise ValueError(
+            "semantic chunk origin contradicts its immutable receipt"
+        ) from exc
+    expected_origin_inputs = (
+        (expected_item,)
+        if native_binding is None
+        else _input_contracts(
+            (native_binding, item_binding),
+            stage_id=SEMANTIC_CHUNK_STAGE,
+            processing_signature=str(materialization_row["processing_signature"]),
+            observed_ns=int(materialization_row["started_ns"]),
+        )
+    )
+    normalized_origin = (
+        materialization_receipt.stage.stage_id == SEMANTIC_CHUNK_STAGE
+        and materialization_receipt.stage.stage_version
+        == str(chunk["chunking_signature"]).partition("|")[0]
+        and materialization_receipt.stage.processing_signature
+        == str(chunk["chunking_signature"])
+        and materialization_receipt.stage.provider == "neocortex"
+        and materialization_receipt.stage.model is None
+        and materialization_receipt.outcome is WorkOutcome.SUCCEEDED
+        and materialization_receipt.execution_mode is WorkExecutionMode.EXECUTED
+        and str(materialization_row["processing_signature"])
+        == str(chunk["chunking_signature"])
+        and str(materialization_row["entity_kind"]) == "text_chunk"
+        and int(materialization_row["item_revision_id"]) == item_revision_id
+        and int(materialization_row["chunk_revision_id"]) == chunk_revision_id
+        and str(materialization_row["entity_id"]) == str(chunk["chunk_id"])
+        and materialization_receipt.inputs == expected_origin_inputs
+        and materialization_receipt.outputs == (expected_chunk,)
+        and dict(materialization_receipt.effective_configuration)
+        == {"chunking_signature": str(materialization_row["processing_signature"])}
+        and materialization_receipt.causation_id is None
+    )
+    source_attributed = native_binding is not None
+    if native_binding is not None:
+        expected_native = expected_origin_inputs[0]
+        if (
+            str(row["source_kind"]) == "text"
+            and expected_native.materialization is None
+        ):
+            source_attributed = False
+    if published:
+        publication_receipt, publication_row = origin_receipts[
+            int(row["publication_receipt_id"])
+        ]
+        try:
+            publication_verified = _validate_chunk_publication_receipt(
+                connection,
+                receipt=publication_receipt,
+                receipt_row=publication_row,
+                item_id=str(chunk["item_id"]),
+                item_revision_id=item_revision_id,
+                chunking_signature=str(chunk["chunking_signature"]),
+                refresh_token=str(row["refresh_token"]),
+            )
+        except SemanticStateError as exc:
+            raise ValueError(
+                "semantic chunk publication physical facts are corrupt"
+            ) from exc
+        source_attributed = source_attributed and publication_verified
+        normalized_origin = (
+            normalized_origin
+            and publication_receipt.stage.stage_id == SEMANTIC_CHUNK_PUBLICATION_STAGE
+            and publication_receipt.outcome is WorkOutcome.SUCCEEDED
+            and int(publication_row["item_revision_id"]) == item_revision_id
+        )
+    if not normalized_origin:
+        raise ValueError("semantic chunk origin receipt contradicts normalized facts")
+    return SemanticChunkOrigin(
+        item_revision_id=item_revision_id,
+        source_kind=str(row["source_kind"]),
+        source_identity=str(row["source_identity"]),
+        identity_version=str(row["identity_version"]),
+        source_revision=_json_object(
+            row["source_revision_json"],
+            label="semantic item source revision",
+        ),
+        materialization_receipt_id=materialization_id,
+        publication_receipt_id=(
+            None
+            if row["publication_receipt_id"] is None
+            else int(row["publication_receipt_id"])
+        ),
+        refresh_token=str(row["refresh_token"]),
+        published=published,
+        lineage_status=(
+            ("published" if source_attributed else "published_partially_unattributed")
+            if published
+            else "materialized_unpublished"
+        ),
+    )
+
+
+def _read_text_chunk_origins(
+    connection: sqlite3.Connection,
+    *,
+    version: int,
+    chunk: sqlite3.Row,
+    chunk_revision_id: int | None,
+    limit: int,
+) -> tuple[tuple[SemanticChunkOrigin, ...], int]:
+    """Read and verify the bounded owner-native origins of one chunk."""
+
+    if version != 7 or chunk_revision_id is None:
+        return (), 0
+    origin_rows = _query_text_chunk_origin_rows(
+        connection,
+        chunk_revision_id=chunk_revision_id,
+        refresh_token=str(chunk["refresh_token"]),
+        limit=limit,
+    )
+    origin_receipts = _validated_semantic_receipts(
+        connection,
+        (
+            receipt_id
+            for row in origin_rows
+            for receipt_id in (
+                int(row["materialization_receipt_id"]),
+                (
+                    None
+                    if row["publication_receipt_id"] is None
+                    else int(row["publication_receipt_id"])
+                ),
+            )
+            if receipt_id is not None
+        ),
+    )
+    origin_count = 0 if not origin_rows else int(origin_rows[0]["total_count"])
+    return (
+        tuple(
+            _materialize_text_chunk_origin(
+                connection,
+                chunk=chunk,
+                chunk_revision_id=chunk_revision_id,
+                row=row,
+                origin_receipts=origin_receipts,
+            )
+            for row in origin_rows
+        ),
+        origin_count,
+    )
+
+
 def explain_text_chunk_lineage(
     path: Path,
     *,
@@ -3925,169 +4125,13 @@ def explain_text_chunk_lineage(
         chunk_revision_id = (
             None if chunk["chunk_revision_id"] is None else int(chunk["chunk_revision_id"])
         )
-        origins: list[SemanticChunkOrigin] = []
-        origin_count = 0
-        if version == 7 and chunk_revision_id is not None:
-            origin_rows = connection.execute(
-                """SELECT d.materialization_receipt_id,d.publication_receipt_id,
-                    d.refresh_token,
-                    i.item_revision_id,i.source_kind,i.source_identity,
-                    i.identity_version,i.source_revision_json,
-                    COUNT(*) OVER() AS total_count
-                FROM semantic_chunk_derivations d
-                JOIN semantic_item_revisions i
-                  ON i.item_revision_id=d.item_revision_id
-                WHERE d.chunk_revision_id=?
-                ORDER BY CASE WHEN d.refresh_token=? THEN 0 ELSE 1 END,
-                    d.derivation_id DESC LIMIT ?""",
-                (
-                    chunk_revision_id,
-                    str(chunk["refresh_token"]),
-                    origin_limit,
-                ),
-            ).fetchall()
-            if origin_rows:
-                origin_count = int(origin_rows[0]["total_count"])
-            origin_receipts = _validated_semantic_receipts(
-                connection,
-                (
-                    receipt_id
-                    for row in origin_rows
-                    for receipt_id in (
-                        int(row["materialization_receipt_id"]),
-                        (
-                            None
-                            if row["publication_receipt_id"] is None
-                            else int(row["publication_receipt_id"])
-                        ),
-                    )
-                    if receipt_id is not None
-                ),
-            )
-            for row in origin_rows:
-                published = row["publication_receipt_id"] is not None
-                materialization_id = int(row["materialization_receipt_id"])
-                materialization_receipt, materialization_row = origin_receipts[materialization_id]
-                item_revision_id = int(row["item_revision_id"])
-                try:
-                    item_binding = _item_revision_binding(
-                        connection,
-                        item_revision_id,
-                    )
-                    native_binding = _native_source_revision_binding(
-                        connection,
-                        item_revision_id,
-                    )
-                    expected_item = _input_contracts(
-                        (item_binding,),
-                        stage_id=SEMANTIC_CHUNK_STAGE,
-                        processing_signature=str(materialization_row["processing_signature"]),
-                        observed_ns=int(materialization_row["started_ns"]),
-                    )[0]
-                    expected_chunk = _output_contracts(
-                        (_chunk_revision_binding(connection, chunk_revision_id),),
-                        generation_id=None,
-                    )[0]
-                except SemanticStateError as exc:
-                    raise ValueError(
-                        "semantic chunk origin contradicts its immutable receipt"
-                    ) from exc
-                expected_origin_inputs = (
-                    (expected_item,)
-                    if native_binding is None
-                    else _input_contracts(
-                        (native_binding, item_binding),
-                        stage_id=SEMANTIC_CHUNK_STAGE,
-                        processing_signature=str(materialization_row["processing_signature"]),
-                        observed_ns=int(materialization_row["started_ns"]),
-                    )
-                )
-                normalized_origin = (
-                    materialization_receipt.stage.stage_id == SEMANTIC_CHUNK_STAGE
-                    and materialization_receipt.stage.stage_version
-                    == str(chunk["chunking_signature"]).partition("|")[0]
-                    and materialization_receipt.stage.processing_signature
-                    == str(chunk["chunking_signature"])
-                    and materialization_receipt.stage.provider == "neocortex"
-                    and materialization_receipt.stage.model is None
-                    and materialization_receipt.outcome is WorkOutcome.SUCCEEDED
-                    and materialization_receipt.execution_mode is WorkExecutionMode.EXECUTED
-                    and str(materialization_row["processing_signature"])
-                    == str(chunk["chunking_signature"])
-                    and str(materialization_row["entity_kind"]) == "text_chunk"
-                    and int(materialization_row["item_revision_id"]) == item_revision_id
-                    and int(materialization_row["chunk_revision_id"]) == chunk_revision_id
-                    and str(materialization_row["entity_id"]) == chunk_id
-                    and materialization_receipt.inputs == expected_origin_inputs
-                    and materialization_receipt.outputs == (expected_chunk,)
-                    and dict(materialization_receipt.effective_configuration)
-                    == {"chunking_signature": str(materialization_row["processing_signature"])}
-                    and materialization_receipt.causation_id is None
-                )
-                source_attributed = native_binding is not None
-                if native_binding is not None:
-                    expected_native = expected_origin_inputs[0]
-                    if (
-                        str(row["source_kind"]) == "text"
-                        and expected_native.materialization is None
-                    ):
-                        source_attributed = False
-                if published:
-                    publication_receipt, publication_row = origin_receipts[
-                        int(row["publication_receipt_id"])
-                    ]
-                    try:
-                        publication_verified = _validate_chunk_publication_receipt(
-                            connection,
-                            receipt=publication_receipt,
-                            receipt_row=publication_row,
-                            item_id=str(chunk["item_id"]),
-                            item_revision_id=item_revision_id,
-                            chunking_signature=str(chunk["chunking_signature"]),
-                            refresh_token=str(row["refresh_token"]),
-                        )
-                    except SemanticStateError as exc:
-                        raise ValueError(
-                            "semantic chunk publication physical facts are corrupt"
-                        ) from exc
-                    source_attributed = source_attributed and publication_verified
-                    normalized_origin = (
-                        normalized_origin
-                        and publication_receipt.stage.stage_id == SEMANTIC_CHUNK_PUBLICATION_STAGE
-                        and publication_receipt.outcome is WorkOutcome.SUCCEEDED
-                        and int(publication_row["item_revision_id"]) == item_revision_id
-                    )
-                if not normalized_origin:
-                    raise ValueError("semantic chunk origin receipt contradicts normalized facts")
-                origins.append(
-                    SemanticChunkOrigin(
-                        item_revision_id=item_revision_id,
-                        source_kind=str(row["source_kind"]),
-                        source_identity=str(row["source_identity"]),
-                        identity_version=str(row["identity_version"]),
-                        source_revision=_json_object(
-                            row["source_revision_json"],
-                            label="semantic item source revision",
-                        ),
-                        materialization_receipt_id=materialization_id,
-                        publication_receipt_id=(
-                            None
-                            if row["publication_receipt_id"] is None
-                            else int(row["publication_receipt_id"])
-                        ),
-                        refresh_token=str(row["refresh_token"]),
-                        published=published,
-                        lineage_status=(
-                            (
-                                "published"
-                                if source_attributed
-                                else "published_partially_unattributed"
-                            )
-                            if published
-                            else "materialized_unpublished"
-                        ),
-                    )
-                )
+        origins, origin_count = _read_text_chunk_origins(
+            connection,
+            version=version,
+            chunk=chunk,
+            chunk_revision_id=chunk_revision_id,
+            limit=origin_limit,
+        )
         embeddings, embedding_count = _read_text_chunk_embedding_derivations(
             connection,
             version=version,
