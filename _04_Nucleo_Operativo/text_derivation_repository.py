@@ -923,6 +923,194 @@ def _load_inputs(connection: sqlite3.Connection, attempt_id: str) -> tuple[Input
     )
 
 
+def _validated_terminal_input_bindings(
+    rows: tuple[sqlite3.Row, ...],
+) -> tuple[InputBinding, ...]:
+    inputs = tuple(
+        InputBinding(
+            name=str(row["binding_name"]),
+            revision=_revision_from_row(row),
+            fingerprint=str(row["binding_fingerprint"]),
+            fingerprint_algorithm=str(row["binding_fingerprint_algorithm"]),
+            materialization=(
+                None
+                if row["materialization_json"] is None
+                else _materialization_from_json(str(row["materialization_json"]))
+            ),
+        )
+        for row in rows
+    )
+    for row, binding in zip(rows, inputs, strict=True):
+        if str(row["binding_fingerprint_algorithm"]) != str(
+            row["revision_fingerprint_algorithm"]
+        ) or str(row["binding_fingerprint"]) != str(row["revision_fingerprint"]):
+            raise ValueError("input revision fingerprint columns disagree")
+        materialization = binding.materialization
+        if materialization is not None and (
+            str(row["materialization_owner"]) != materialization.owner
+            or str(row["materialization_kind"]) != materialization.kind
+            or str(row["materialization_id"]) != materialization.materialization_id
+            or int(row["materialization_schema_version"]) != materialization.schema_version
+            or row["materialization_generation"] != materialization.generation
+        ):
+            raise ValueError("input materialization columns disagree")
+    return inputs
+
+
+def _terminal_output_materialization_matches(
+    row: sqlite3.Row,
+    materialization: MaterializationRef,
+) -> bool:
+    return (
+        str(row["materialization_owner"]) == materialization.owner
+        and str(row["materialization_id"]) == materialization.materialization_id
+        and str(row["materialization_kind"]) == materialization.kind
+        and int(row["materialization_schema_version"]) == materialization.schema_version
+        and row["materialization_generation"] == materialization.generation
+        and row["materialization_resource_id"]
+        == (None if materialization.resource is None else materialization.resource.resource_id)
+        and row["materialization_revision_id"]
+        == (None if materialization.revision is None else materialization.revision.revision_id)
+        and str(row["binding_fingerprint_algorithm"])
+        == str(row["materialization_fingerprint_algorithm"])
+        and str(row["binding_fingerprint"]) == str(row["materialization_fingerprint"])
+    )
+
+
+def _terminal_output_head_matches(row: sqlite3.Row) -> bool:
+    return (
+        row["head_resource_id"] is None
+        or (
+            str(row["head_resource_id"]) == str(row["materialization_resource_id"])
+            and str(row["head_materialization_kind"]) == str(row["materialization_kind"])
+            and str(row["head_materialization_owner"]) == str(row["materialization_owner"])
+            and str(row["head_materialization_id"]) == str(row["materialization_id"])
+            and str(row["head_revision_id"]) == str(row["materialization_revision_id"])
+            and str(row["head_producer_receipt_id"]) == str(row["producer_receipt_id"])
+        )
+    )
+
+
+def _validated_terminal_output_bindings(
+    rows: tuple[sqlite3.Row, ...],
+) -> tuple[tuple[OutputBinding, ...], tuple[str, ...]]:
+    outputs = tuple(
+        OutputBinding(
+            name=str(row["binding_name"]),
+            materialization=_materialization_from_json(str(row["materialization_json"])),
+            fingerprint=str(row["binding_fingerprint"]),
+            fingerprint_algorithm=str(row["binding_fingerprint_algorithm"]),
+        )
+        for row in rows
+    )
+    for row, output in zip(rows, outputs, strict=True):
+        if not _terminal_output_materialization_matches(row, output.materialization):
+            raise ValueError("output materialization columns disagree")
+        if not _terminal_output_head_matches(row):
+            raise ValueError("materialization head columns disagree")
+    return outputs, tuple(str(row["producer_receipt_id"]) for row in rows)
+
+
+def _validate_terminal_outbox_row(
+    rows: tuple[sqlite3.Row, ...],
+    *,
+    receipt: WorkReceipt,
+    receipt_row: sqlite3.Row,
+    attempt_row: sqlite3.Row,
+    payload_json: str,
+) -> None:
+    if len(rows) != 1:
+        raise ValueError("terminal receipt must have exactly one outbox event")
+    outbox = rows[0]
+    receipt_id = str(receipt_row["receipt_id"])
+    if (
+        str(outbox["event_id"]) != f"text-outbox:{receipt_id}"
+        or str(outbox["event_type"]) != f"text.work_{receipt.outcome.value}.v1"
+        or str(outbox["attempt_id"]) != str(receipt_row["attempt_id"])
+        or str(outbox["receipt_id"]) != receipt_id
+        or int(outbox["occurred_ns"]) != int(attempt_row["terminal_ns"])
+        or int(receipt_row["recorded_ns"]) != int(attempt_row["terminal_ns"])
+        or str(outbox["payload_json"]) != payload_json
+    ):
+        raise ValueError("outbox/terminal timestamp columns disagree")
+
+
+def _terminal_receipt_header_matches(
+    receipt: WorkReceipt,
+    receipt_row: sqlite3.Row,
+    attempt_row: sqlite3.Row,
+) -> bool:
+    return (
+        receipt.receipt_id == str(receipt_row["receipt_id"])
+        and receipt.owner == _TEXT_OWNER
+        and receipt.contract_fingerprint == str(receipt_row["receipt_fingerprint"])
+        and receipt.outcome.value == str(receipt_row["outcome"])
+        and receipt.stage == _stage_from_row(attempt_row)
+    )
+
+
+def _terminal_receipt_bindings_match(
+    receipt: WorkReceipt,
+    inputs: tuple[InputBinding, ...],
+    outputs: tuple[OutputBinding, ...],
+) -> bool:
+    return (
+        len(receipt.inputs) == len(inputs)
+        and {item.name: item for item in receipt.inputs} == {item.name: item for item in inputs}
+        and len(receipt.outputs) == len(outputs)
+        and {item.name: item for item in receipt.outputs}
+        == {item.name: item for item in outputs}
+    )
+
+
+def _terminal_receipt_attempt_contract_matches(
+    receipt: WorkReceipt,
+    attempt_row: sqlite3.Row,
+    configuration: Mapping[str, object],
+    runtime: Mapping[str, object],
+) -> bool:
+    return (
+        receipt.effective_configuration == tuple(configuration.items())
+        and receipt.runtime == tuple((str(key), str(value)) for key, value in runtime.items())
+        and receipt.run_id == str(attempt_row["run_id"])
+        and receipt.correlation_id == str(attempt_row["correlation_id"])
+        and receipt.causation_id == _optional_string(attempt_row["causation_id"])
+    )
+
+
+def _terminal_receipt_lifecycle_matches(
+    receipt: WorkReceipt,
+    receipt_id: str,
+    attempt_row: sqlite3.Row,
+) -> bool:
+    failure_json = None if receipt.failure is None else receipt.failure.to_json()
+    return (
+        receipt.started_at_utc == str(attempt_row["started_at_utc"])
+        and receipt.finished_at_utc == str(attempt_row["finished_at_utc"])
+        and receipt.duration_ns == int(attempt_row["duration_ns"])
+        and receipt.attempt == int(attempt_row["attempt_number"])
+        and receipt.outcome.value == str(attempt_row["status"])
+        and receipt.execution_mode.value == str(attempt_row["execution_mode"])
+        and receipt.reproducibility.value == str(attempt_row["reproducibility_class"])
+        and failure_json == _optional_string(attempt_row["failure_json"])
+        and str(attempt_row["receipt_id"]) == receipt_id
+    )
+
+
+def _terminal_receipt_producers_match(
+    receipt: WorkReceipt,
+    receipt_id: str,
+    producer_receipt_ids: tuple[str, ...],
+) -> bool:
+    if receipt.execution_mode is WorkExecutionMode.EXECUTED:
+        return all(producer == receipt_id for producer in producer_receipt_ids)
+    if receipt.outcome is WorkOutcome.SUCCEEDED:
+        return receipt.causation_id is not None and all(
+            producer == receipt.causation_id for producer in producer_receipt_ids
+        )
+    return True
+
+
 def _validate_terminal_receipt_rows(
     receipt_row: sqlite3.Row,
     attempt_row: sqlite3.Row,
@@ -931,136 +1119,34 @@ def _validate_terminal_receipt_rows(
     outbox_rows: tuple[sqlite3.Row, ...],
 ) -> WorkReceipt:
     receipt_id = str(receipt_row["receipt_id"])
-    attempt_id = str(receipt_row["attempt_id"])
     payload_json = str(receipt_row["receipt_json"])
     try:
         receipt = WorkReceipt.from_json(payload_json)
-        inputs = tuple(
-            InputBinding(
-                name=str(row["binding_name"]),
-                revision=_revision_from_row(row),
-                fingerprint=str(row["binding_fingerprint"]),
-                fingerprint_algorithm=str(row["binding_fingerprint_algorithm"]),
-                materialization=(
-                    None
-                    if row["materialization_json"] is None
-                    else _materialization_from_json(str(row["materialization_json"]))
-                ),
-            )
-            for row in input_rows
-        )
-        outputs = tuple(
-            OutputBinding(
-                name=str(row["binding_name"]),
-                materialization=_materialization_from_json(str(row["materialization_json"])),
-                fingerprint=str(row["binding_fingerprint"]),
-                fingerprint_algorithm=str(row["binding_fingerprint_algorithm"]),
-            )
-            for row in output_rows
-        )
-        producer_receipt_ids = tuple(str(row["producer_receipt_id"]) for row in output_rows)
+        inputs = _validated_terminal_input_bindings(input_rows)
+        outputs, producer_receipt_ids = _validated_terminal_output_bindings(output_rows)
         configuration = json.loads(str(attempt_row["effective_configuration_json"]))
         runtime = json.loads(str(attempt_row["runtime_json"]))
         if not isinstance(configuration, dict) or not isinstance(runtime, dict):
             raise ValueError("configuration/runtime must be JSON objects")
-        for row, binding in zip(input_rows, inputs, strict=True):
-            if str(row["binding_fingerprint_algorithm"]) != str(
-                row["revision_fingerprint_algorithm"]
-            ) or str(row["binding_fingerprint"]) != str(row["revision_fingerprint"]):
-                raise ValueError("input revision fingerprint columns disagree")
-            materialization = binding.materialization
-            if materialization is not None and (
-                str(row["materialization_owner"]) != materialization.owner
-                or str(row["materialization_kind"]) != materialization.kind
-                or str(row["materialization_id"]) != materialization.materialization_id
-                or int(row["materialization_schema_version"]) != materialization.schema_version
-                or row["materialization_generation"] != materialization.generation
-            ):
-                raise ValueError("input materialization columns disagree")
-        for row, output in zip(output_rows, outputs, strict=True):
-            materialization = output.materialization
-            if (
-                str(row["materialization_owner"]) != materialization.owner
-                or str(row["materialization_id"]) != materialization.materialization_id
-                or str(row["materialization_kind"]) != materialization.kind
-                or int(row["materialization_schema_version"]) != materialization.schema_version
-                or row["materialization_generation"] != materialization.generation
-                or row["materialization_resource_id"]
-                != (
-                    None
-                    if materialization.resource is None
-                    else materialization.resource.resource_id
-                )
-                or row["materialization_revision_id"]
-                != (
-                    None
-                    if materialization.revision is None
-                    else materialization.revision.revision_id
-                )
-                or str(row["binding_fingerprint_algorithm"])
-                != str(row["materialization_fingerprint_algorithm"])
-                or str(row["binding_fingerprint"]) != str(row["materialization_fingerprint"])
-            ):
-                raise ValueError("output materialization columns disagree")
-            if row["head_resource_id"] is not None and (
-                str(row["head_resource_id"]) != str(row["materialization_resource_id"])
-                or str(row["head_materialization_kind"]) != str(row["materialization_kind"])
-                or str(row["head_materialization_owner"]) != str(row["materialization_owner"])
-                or str(row["head_materialization_id"]) != str(row["materialization_id"])
-                or str(row["head_revision_id"]) != str(row["materialization_revision_id"])
-                or str(row["head_producer_receipt_id"]) != str(row["producer_receipt_id"])
-            ):
-                raise ValueError("materialization head columns disagree")
-        if len(outbox_rows) != 1:
-            raise ValueError("terminal receipt must have exactly one outbox event")
-        outbox = outbox_rows[0]
-        if (
-            str(outbox["event_id"]) != f"text-outbox:{receipt_id}"
-            or str(outbox["event_type"]) != f"text.work_{receipt.outcome.value}.v1"
-            or str(outbox["attempt_id"]) != attempt_id
-            or str(outbox["receipt_id"]) != receipt_id
-            or int(outbox["occurred_ns"]) != int(attempt_row["terminal_ns"])
-            or int(receipt_row["recorded_ns"]) != int(attempt_row["terminal_ns"])
-            or str(outbox["payload_json"]) != payload_json
-        ):
-            raise ValueError("outbox/terminal timestamp columns disagree")
-        failure_json = None if receipt.failure is None else receipt.failure.to_json()
-        normalized_match = (
-            receipt.receipt_id == receipt_id
-            and receipt.owner == _TEXT_OWNER
-            and receipt.contract_fingerprint == str(receipt_row["receipt_fingerprint"])
-            and receipt.outcome.value == str(receipt_row["outcome"])
-            and receipt.stage == _stage_from_row(attempt_row)
-            and len(receipt.inputs) == len(inputs)
-            and {item.name: item for item in receipt.inputs} == {item.name: item for item in inputs}
-            and len(receipt.outputs) == len(outputs)
-            and {item.name: item for item in receipt.outputs}
-            == {item.name: item for item in outputs}
-            and receipt.effective_configuration == tuple(configuration.items())
-            and receipt.runtime == tuple((str(key), str(value)) for key, value in runtime.items())
-            and receipt.started_at_utc == str(attempt_row["started_at_utc"])
-            and receipt.finished_at_utc == str(attempt_row["finished_at_utc"])
-            and receipt.duration_ns == int(attempt_row["duration_ns"])
-            and receipt.attempt == int(attempt_row["attempt_number"])
-            and receipt.outcome.value == str(attempt_row["status"])
-            and receipt.execution_mode.value == str(attempt_row["execution_mode"])
-            and receipt.reproducibility.value == str(attempt_row["reproducibility_class"])
-            and receipt.run_id == str(attempt_row["run_id"])
-            and receipt.correlation_id == str(attempt_row["correlation_id"])
-            and receipt.causation_id == _optional_string(attempt_row["causation_id"])
-            and failure_json == _optional_string(attempt_row["failure_json"])
-            and str(attempt_row["receipt_id"]) == receipt_id
+        _validate_terminal_outbox_row(
+            outbox_rows,
+            receipt=receipt,
+            receipt_row=receipt_row,
+            attempt_row=attempt_row,
+            payload_json=payload_json,
         )
-        if receipt.execution_mode is WorkExecutionMode.EXECUTED:
-            normalized_match = normalized_match and all(
-                producer == receipt_id for producer in producer_receipt_ids
+        normalized_match = (
+            _terminal_receipt_header_matches(receipt, receipt_row, attempt_row)
+            and _terminal_receipt_bindings_match(receipt, inputs, outputs)
+            and _terminal_receipt_attempt_contract_matches(
+                receipt,
+                attempt_row,
+                configuration,
+                runtime,
             )
-        elif receipt.outcome is WorkOutcome.SUCCEEDED:
-            normalized_match = (
-                normalized_match
-                and receipt.causation_id is not None
-                and all(producer == receipt.causation_id for producer in producer_receipt_ids)
-            )
+            and _terminal_receipt_lifecycle_matches(receipt, receipt_id, attempt_row)
+            and _terminal_receipt_producers_match(receipt, receipt_id, producer_receipt_ids)
+        )
     except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
         raise TextDerivationIntegrityError(
             f"Text WorkReceipt normalized facts are invalid: {receipt_id}"
