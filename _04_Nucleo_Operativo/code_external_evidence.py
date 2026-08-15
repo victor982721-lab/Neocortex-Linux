@@ -1531,14 +1531,10 @@ def _abstain_external_status(
     )
 
 
-def read_external_evidence(
+def _external_evidence_row(
     connection: sqlite3.Connection,
     analysis_run_id: int,
-    *,
-    enforce_current_runtime: bool,
-) -> tuple[ExternalEvidenceStatus, frozenset[str], dict[str, object] | None]:
-    """Read one external owner and verify its current diagnostic projection."""
-
+) -> dict[str, object] | None:
     raw_row = connection.execute(
         """SELECT r.tool_run_id,r.analysis_run_id,r.tool_version,
         r.configuration_signature,r.status,r.provenance_json,a.status AS owner_status
@@ -1548,7 +1544,336 @@ def read_external_evidence(
         ORDER BY r.tool_run_id DESC LIMIT 1""",
         (analysis_run_id,),
     ).fetchone()
-    row = None if raw_row is None else dict(raw_row)
+    return None if raw_row is None else dict(raw_row)
+
+
+def _abstained_external_read(
+    status: ExternalEvidenceStatus,
+    reason: str,
+    row: dict[str, object],
+) -> tuple[ExternalEvidenceStatus, frozenset[str], dict[str, object]]:
+    return _abstain_external_status(status, reason), frozenset(), row
+
+
+def _external_inputs_match_baseline(
+    connection: sqlite3.Connection,
+    baseline: ExternalEvidenceBaseline,
+    *,
+    eligible_files: int,
+) -> bool:
+    try:
+        current_inputs = read_external_evidence_files(connection, baseline.root)
+        current_input_signature = external_input_signature(current_inputs)
+    except (OSError, sqlite3.DatabaseError, TypeError, ValueError):
+        return False
+    return (
+        current_input_signature == baseline.input_signature
+        and tuple(item.version_id for item in current_inputs) == baseline.version_ids
+        and len(current_inputs) == eligible_files
+    )
+
+
+def _external_replay_source_baseline(
+    connection: sqlite3.Connection,
+    effective_tool_run_id: int,
+) -> ExternalEvidenceBaseline | None:
+    source_row = connection.execute(
+        """SELECT r.tool_run_id,r.analysis_run_id,r.tool_version,
+        r.configuration_signature,r.status,r.provenance_json
+        FROM external_tool_runs r JOIN analysis_runs a
+        ON a.analysis_run_id=r.analysis_run_id
+        WHERE r.tool_run_id=? AND r.tool_name='ruff'
+        AND r.status='completed' AND a.status='completed'""",
+        (effective_tool_run_id,),
+    ).fetchone()
+    if source_row is None:
+        return None
+    source = dict(source_row)
+    decoded = _decode_external_record(
+        int(source["tool_run_id"]),
+        int(source["analysis_run_id"]),
+        str(source["tool_version"]),
+        str(source["configuration_signature"]),
+        str(source["provenance_json"]),
+    )
+    return None if decoded is None else decoded[1]
+
+
+def _external_replay_source_matches(
+    source: ExternalEvidenceBaseline,
+    replay: ExternalEvidenceBaseline,
+) -> bool:
+    source_root = _normalized_absolute_path(source.root)
+    replay_root = _normalized_absolute_path(replay.root)
+    return (
+        source.records is not None
+        and source.tool_version == replay.tool_version
+        and source.configuration_signature == replay.configuration_signature
+        and source_root is not None
+        and replay_root is not None
+        and source_root == replay_root
+        and source.input_signature == replay.input_signature
+        and source.result_digest == replay.result_digest
+        and source.diagnostic_ids == replay.diagnostic_ids
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _ExternalEvidenceExpectation:
+    effective_tool_run_id: int
+    records: tuple[ExternalDiagnostic, ...]
+
+
+def _external_evidence_expectation(
+    connection: sqlite3.Connection,
+    status: ExternalEvidenceStatus,
+    baseline: ExternalEvidenceBaseline,
+) -> tuple[_ExternalEvidenceExpectation | None, str | None]:
+    effective_tool_run_id = status.effective_tool_run_id
+    if effective_tool_run_id is None:
+        return None, "external_replay_source_invalid"
+    expected_records = baseline.records
+    if status.execution == "cache_replay":
+        source = _external_replay_source_baseline(connection, effective_tool_run_id)
+        if (
+            source is None
+            or source.records is None
+            or not _external_replay_source_matches(source, baseline)
+        ):
+            return None, "external_replay_source_invalid"
+        expected_records = source.records
+    if expected_records is None:
+        return None, "external_evidence_provenance_invalid"
+    return _ExternalEvidenceExpectation(effective_tool_run_id, expected_records), None
+
+
+def _external_projection_rows(
+    connection: sqlite3.Connection,
+) -> tuple[sqlite3.Row, ...] | None:
+    rows = connection.execute(
+        """SELECT d.version_id,d.code,d.message,d.start_line,d.start_column,
+        d.end_line,d.end_column,d.metadata_json,d.tool_name,d.tool_version,
+        d.severity,d.confirmed,d.confidence,f.current_path
+        FROM diagnostics d JOIN file_versions v ON v.version_id=d.version_id
+        JOIN files f ON f.current_version_id=v.version_id
+        WHERE d.source=? AND f.status='current' AND v.invalidated_ns IS NULL
+        ORDER BY d.diagnostic_id LIMIT ?""",
+        (RUFF_SOURCE, RUFF_MAX_DIAGNOSTICS + 1),
+    ).fetchall()
+    if len(rows) > RUFF_MAX_DIAGNOSTICS:
+        return None
+    return tuple(rows)
+
+
+def _external_projection_metadata(value: object) -> dict[str, object] | None:
+    raw_metadata = str(value)
+    if len(raw_metadata.encode("utf-8")) > 64 * 1024:
+        return None
+    try:
+        metadata = json.loads(raw_metadata)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    return metadata if isinstance(metadata, dict) else None
+
+
+def _external_projection_relative_path(
+    *,
+    root: str,
+    normalized_root: str,
+    current_path_value: object,
+) -> str | None:
+    try:
+        current_path = os.path.abspath(str(current_path_value))
+        normalized_current_path = _normalized_absolute_path(current_path)
+        if normalized_current_path is None:
+            return None
+        common = os.path.commonpath((normalized_root, normalized_current_path))
+        relative_path = os.path.relpath(current_path, root).replace("\\", "/")
+    except (OSError, TypeError, ValueError):
+        return None
+    if common != normalized_root or relative_path == ".." or relative_path.startswith("../"):
+        return None
+    return relative_path
+
+
+def _external_projection_metadata_contract(
+    metadata: Mapping[str, object],
+    *,
+    relative_path: str,
+    effective_tool_run_id: int,
+) -> tuple[str, str | None, bool] | None:
+    identity = metadata.get("external_diagnostic_identity")
+    owner = metadata.get("external_tool_run_id")
+    url = metadata.get("url")
+    fix_available = metadata.get("fix_available")
+    if not isinstance(identity, str):
+        return None
+    if not isinstance(owner, int) or isinstance(owner, bool) or owner != effective_tool_run_id:
+        return None
+    if (
+        metadata.get("schema") != "neocortex.external-diagnostic/v1"
+        or metadata.get("relative_path") != relative_path
+        or metadata.get("claim_scope") != "tool_reported"
+        or metadata.get("authority") != "advisory"
+        or metadata.get("mutation_authority") is not False
+    ):
+        return None
+    if url is not None and not isinstance(url, str):
+        return None
+    if isinstance(url, str) and len(url.encode("utf-8")) > 2_048:
+        return None
+    if not isinstance(fix_available, bool):
+        return None
+    return identity, url, fix_available
+
+
+def _external_plain_int(value: object) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _external_projection_fields(
+    projection: sqlite3.Row,
+    baseline: ExternalEvidenceBaseline,
+) -> tuple[int, str, str, int, int, int, int] | None:
+    if (
+        projection["tool_name"] != RUFF_TOOL_NAME
+        or projection["tool_version"] != baseline.tool_version
+        or projection["severity"] != "warning"
+        or projection["confirmed"] != 1
+        or projection["confidence"] != 1.0
+    ):
+        return None
+    version_id = _external_plain_int(projection["version_id"])
+    start_line = _external_plain_int(projection["start_line"])
+    start_column = _external_plain_int(projection["start_column"])
+    end_line = _external_plain_int(projection["end_line"])
+    end_column = _external_plain_int(projection["end_column"])
+    code = projection["code"]
+    message = projection["message"]
+    if version_id is None or version_id <= 0:
+        return None
+    if not isinstance(code, str) or not isinstance(message, str):
+        return None
+    if None in (start_line, start_column, end_line, end_column):
+        return None
+    assert start_line is not None
+    assert start_column is not None
+    assert end_line is not None
+    assert end_column is not None
+    if (
+        start_line < 1
+        or start_column < 0
+        or end_line < start_line
+        or end_column < 0
+        or (end_line == start_line and end_column < start_column)
+    ):
+        return None
+    return version_id, code, message, start_line, start_column, end_line, end_column
+
+
+def _external_projection_record(
+    projection: sqlite3.Row,
+    baseline: ExternalEvidenceBaseline,
+    expectation: _ExternalEvidenceExpectation,
+    *,
+    normalized_root: str,
+) -> tuple[str, ExternalDiagnostic] | None:
+    metadata = _external_projection_metadata(projection["metadata_json"])
+    if metadata is None:
+        return None
+    relative_path = _external_projection_relative_path(
+        root=baseline.root,
+        normalized_root=normalized_root,
+        current_path_value=projection["current_path"],
+    )
+    if relative_path is None:
+        return None
+    metadata_contract = _external_projection_metadata_contract(
+        metadata,
+        relative_path=relative_path,
+        effective_tool_run_id=expectation.effective_tool_run_id,
+    )
+    fields = _external_projection_fields(projection, baseline)
+    if metadata_contract is None or fields is None:
+        return None
+    identity, url, fix_available = metadata_contract
+    version_id, code, message, start_line, start_column, end_line, end_column = fields
+    observed_identity = _external_diagnostic_identity(
+        relative_path,
+        code,
+        message,
+        start_line,
+        start_column,
+        end_line,
+        end_column,
+    )
+    if observed_identity != identity:
+        return None
+    return identity, ExternalDiagnostic(
+        version_id,
+        relative_path,
+        code,
+        message,
+        start_line,
+        start_column,
+        end_line,
+        end_column,
+        url,
+        fix_available,
+        identity,
+    )
+
+
+def _verified_external_projection(
+    connection: sqlite3.Connection,
+    baseline: ExternalEvidenceBaseline,
+    expectation: _ExternalEvidenceExpectation,
+) -> tuple[frozenset[str] | None, str | None]:
+    projection_rows = _external_projection_rows(connection)
+    if projection_rows is None:
+        return None, "external_projection_mismatch"
+    normalized_root = _normalized_absolute_path(baseline.root)
+    if normalized_root is None:
+        return None, "external_evidence_provenance_invalid"
+    identities: list[str] = []
+    observed_records: list[ExternalDiagnostic] = []
+    for projection in projection_rows:
+        record = _external_projection_record(
+            projection,
+            baseline,
+            expectation,
+            normalized_root=normalized_root,
+        )
+        if record is None:
+            return None, "external_projection_mismatch"
+        identity, diagnostic = record
+        identities.append(identity)
+        observed_records.append(diagnostic)
+    observed_records.sort(key=_diagnostic_sort_key)
+    if (
+        len(set(identities)) != len(identities)
+        or tuple(sorted(identities)) != tuple(sorted(baseline.diagnostic_ids))
+        or tuple(observed_records) != expectation.records
+    ):
+        return None, "external_projection_mismatch"
+    try:
+        projection_digest = _external_result_digest(observed_records)
+    except (TypeError, ValueError):
+        return None, "external_projection_mismatch"
+    if projection_digest != baseline.result_digest:
+        return None, "external_projection_mismatch"
+    return frozenset(identities), None
+
+
+def read_external_evidence(
+    connection: sqlite3.Connection,
+    analysis_run_id: int,
+    *,
+    enforce_current_runtime: bool,
+) -> tuple[ExternalEvidenceStatus, frozenset[str], dict[str, object] | None]:
+    """Read one external owner and verify its current diagnostic projection."""
+
+    row = _external_evidence_row(connection, analysis_run_id)
     status = (
         current_external_status_from_row(row)
         if enforce_current_runtime
@@ -1557,9 +1882,9 @@ def read_external_evidence(
     if row is None or status.status != "ready":
         return status, frozenset(), row
     if row.get("owner_status") != "completed":
-        return (
-            _abstain_external_status(status, "external_provider_owner_not_completed"),
-            frozenset(),
+        return _abstained_external_read(
+            status,
+            "external_provider_owner_not_completed",
             row,
         )
     decoded = _decode_external_record(
@@ -1570,259 +1895,39 @@ def read_external_evidence(
         str(row["provenance_json"]),
     )
     if decoded is None:
-        return (
-            _abstain_external_status(status, "external_evidence_provenance_invalid"),
-            frozenset(),
-            row,
-        )
+        return _abstained_external_read(status, "external_evidence_provenance_invalid", row)
     _, baseline = decoded
     if baseline is None:
-        return (
-            _abstain_external_status(status, "external_evidence_provenance_invalid"),
-            frozenset(),
-            row,
-        )
-    try:
-        current_inputs = read_external_evidence_files(connection, baseline.root)
-        current_input_signature = external_input_signature(current_inputs)
-    except (OSError, sqlite3.DatabaseError, TypeError, ValueError):
-        current_inputs = ()
-        current_input_signature = None
-    if (
-        current_input_signature != baseline.input_signature
-        or tuple(item.version_id for item in current_inputs) != baseline.version_ids
-        or len(current_inputs) != status.eligible_files
+        return _abstained_external_read(status, "external_evidence_provenance_invalid", row)
+    if not _external_inputs_match_baseline(
+        connection,
+        baseline,
+        eligible_files=status.eligible_files,
     ):
-        return (
-            _abstain_external_status(status, "external_input_projection_mismatch"),
-            frozenset(),
+        return _abstained_external_read(
+            status,
+            "external_input_projection_mismatch",
             row,
         )
-    expected_records = baseline.records
-    effective_tool_run_id = status.effective_tool_run_id
-    if effective_tool_run_id is None:
-        return (
-            _abstain_external_status(status, "external_replay_source_invalid"),
-            frozenset(),
+    expectation, reason = _external_evidence_expectation(connection, status, baseline)
+    if expectation is None:
+        return _abstained_external_read(
+            status,
+            reason or "external_evidence_provenance_invalid",
             row,
         )
-    if status.execution == "cache_replay":
-        source_row = connection.execute(
-            """SELECT r.tool_run_id,r.analysis_run_id,r.tool_version,
-            r.configuration_signature,r.status,r.provenance_json
-            FROM external_tool_runs r JOIN analysis_runs a
-            ON a.analysis_run_id=r.analysis_run_id
-            WHERE r.tool_run_id=? AND r.tool_name='ruff'
-            AND r.status='completed' AND a.status='completed'""",
-            (effective_tool_run_id,),
-        ).fetchone()
-        if source_row is None:
-            return (
-                _abstain_external_status(status, "external_replay_source_invalid"),
-                frozenset(),
-                row,
-            )
-        source = dict(source_row)
-        source_decoded = _decode_external_record(
-            int(source["tool_run_id"]),
-            int(source["analysis_run_id"]),
-            str(source["tool_version"]),
-            str(source["configuration_signature"]),
-            str(source["provenance_json"]),
-        )
-        source_baseline = None if source_decoded is None else source_decoded[1]
-        if source_baseline is None or source_baseline.records is None:
-            return (
-                _abstain_external_status(status, "external_replay_source_invalid"),
-                frozenset(),
-                row,
-            )
-        source_root = _normalized_absolute_path(source_baseline.root)
-        replay_root = _normalized_absolute_path(baseline.root)
-        if (
-            source_baseline.tool_version != baseline.tool_version
-            or source_baseline.configuration_signature != baseline.configuration_signature
-            or source_root is None
-            or replay_root is None
-            or source_root != replay_root
-            or source_baseline.input_signature != baseline.input_signature
-            or source_baseline.result_digest != baseline.result_digest
-            or source_baseline.diagnostic_ids != baseline.diagnostic_ids
-        ):
-            return (
-                _abstain_external_status(status, "external_replay_source_invalid"),
-                frozenset(),
-                row,
-            )
-        expected_records = source_baseline.records
-    if expected_records is None:
-        return (
-            _abstain_external_status(status, "external_evidence_provenance_invalid"),
-            frozenset(),
+    identities, projection_reason = _verified_external_projection(
+        connection,
+        baseline,
+        expectation,
+    )
+    if identities is None:
+        return _abstained_external_read(
+            status,
+            projection_reason or "external_projection_mismatch",
             row,
         )
-    projection_rows = connection.execute(
-        """SELECT d.version_id,d.code,d.message,d.start_line,d.start_column,
-        d.end_line,d.end_column,d.metadata_json,d.tool_name,d.tool_version,
-        d.severity,d.confirmed,d.confidence,f.current_path
-        FROM diagnostics d JOIN file_versions v ON v.version_id=d.version_id
-        JOIN files f ON f.current_version_id=v.version_id
-        WHERE d.source=? AND f.status='current' AND v.invalidated_ns IS NULL
-        ORDER BY d.diagnostic_id LIMIT ?""",
-        (RUFF_SOURCE, RUFF_MAX_DIAGNOSTICS + 1),
-    ).fetchall()
-    if len(projection_rows) > RUFF_MAX_DIAGNOSTICS:
-        return (
-            _abstain_external_status(status, "external_projection_mismatch"),
-            frozenset(),
-            row,
-        )
-    identities: list[str] = []
-    observed_records: list[ExternalDiagnostic] = []
-    normalized_root = _normalized_absolute_path(baseline.root)
-    if normalized_root is None:
-        return (
-            _abstain_external_status(status, "external_evidence_provenance_invalid"),
-            frozenset(),
-            row,
-        )
-    for projection in projection_rows:
-        raw_metadata = str(projection["metadata_json"])
-        if len(raw_metadata.encode("utf-8")) > 64 * 1024:
-            return (
-                _abstain_external_status(status, "external_projection_mismatch"),
-                frozenset(),
-                row,
-            )
-        try:
-            metadata = json.loads(raw_metadata)
-        except (TypeError, ValueError, json.JSONDecodeError):
-            return (
-                _abstain_external_status(status, "external_projection_mismatch"),
-                frozenset(),
-                row,
-            )
-        identity = (
-            metadata.get("external_diagnostic_identity") if isinstance(metadata, dict) else None
-        )
-        owner = metadata.get("external_tool_run_id") if isinstance(metadata, dict) else None
-        try:
-            current_path = os.path.abspath(str(projection["current_path"]))
-            normalized_current_path = _normalized_absolute_path(current_path)
-            if normalized_current_path is None:
-                raise ValueError("external projection path is invalid")
-            common = os.path.commonpath((normalized_root, normalized_current_path))
-            relative_path = os.path.relpath(current_path, baseline.root).replace("\\", "/")
-        except (OSError, TypeError, ValueError):
-            common = ""
-            relative_path = ".."
-        code = projection["code"]
-        message = projection["message"]
-        start_line = projection["start_line"]
-        start_column = projection["start_column"]
-        end_line = projection["end_line"]
-        end_column = projection["end_column"]
-        url = metadata.get("url") if isinstance(metadata, dict) else None
-        fix_available = metadata.get("fix_available") if isinstance(metadata, dict) else None
-        if (
-            common != normalized_root
-            or relative_path == ".."
-            or relative_path.startswith("../")
-            or not isinstance(identity, str)
-            or not isinstance(owner, int)
-            or isinstance(owner, bool)
-            or owner != effective_tool_run_id
-            or not isinstance(metadata, dict)
-            or metadata.get("schema") != "neocortex.external-diagnostic/v1"
-            or metadata.get("relative_path") != relative_path
-            or metadata.get("claim_scope") != "tool_reported"
-            or metadata.get("authority") != "advisory"
-            or metadata.get("mutation_authority") is not False
-            or (url is not None and not isinstance(url, str))
-            or (isinstance(url, str) and len(url.encode("utf-8")) > 2_048)
-            or not isinstance(fix_available, bool)
-            or projection["tool_name"] != RUFF_TOOL_NAME
-            or projection["tool_version"] != baseline.tool_version
-            or projection["severity"] != "warning"
-            or projection["confirmed"] != 1
-            or projection["confidence"] != 1.0
-            or not isinstance(projection["version_id"], int)
-            or isinstance(projection["version_id"], bool)
-            or projection["version_id"] <= 0
-            or not isinstance(code, str)
-            or not isinstance(message, str)
-            or not isinstance(start_line, int)
-            or isinstance(start_line, bool)
-            or not isinstance(start_column, int)
-            or isinstance(start_column, bool)
-            or not isinstance(end_line, int)
-            or isinstance(end_line, bool)
-            or not isinstance(end_column, int)
-            or isinstance(end_column, bool)
-            or start_line < 1
-            or start_column < 0
-            or end_line < start_line
-            or end_column < 0
-            or (end_line == start_line and end_column < start_column)
-        ):
-            return (
-                _abstain_external_status(status, "external_projection_mismatch"),
-                frozenset(),
-                row,
-            )
-        observed_identity = _external_diagnostic_identity(
-            relative_path,
-            code,
-            message,
-            start_line,
-            start_column,
-            end_line,
-            end_column,
-        )
-        if observed_identity != identity:
-            return (
-                _abstain_external_status(status, "external_projection_mismatch"),
-                frozenset(),
-                row,
-            )
-        identities.append(identity)
-        observed_records.append(
-            ExternalDiagnostic(
-                projection["version_id"],
-                relative_path,
-                code,
-                message,
-                start_line,
-                start_column,
-                end_line,
-                end_column,
-                url,
-                fix_available,
-                identity,
-            )
-        )
-    observed_records.sort(key=_diagnostic_sort_key)
-    if (
-        len(set(identities)) != len(identities)
-        or tuple(sorted(identities)) != tuple(sorted(baseline.diagnostic_ids))
-        or tuple(observed_records) != expected_records
-    ):
-        return (
-            _abstain_external_status(status, "external_projection_mismatch"),
-            frozenset(),
-            row,
-        )
-    try:
-        projection_digest = _external_result_digest(observed_records)
-    except (TypeError, ValueError):
-        projection_digest = None
-    if projection_digest != baseline.result_digest:
-        return (
-            _abstain_external_status(status, "external_projection_mismatch"),
-            frozenset(),
-            row,
-        )
-    return status, frozenset(identities), row
+    return status, identities, row
 
 
 def external_status_digest_payload(

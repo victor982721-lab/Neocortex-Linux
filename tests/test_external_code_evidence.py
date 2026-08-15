@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import subprocess
 from dataclasses import replace
 from pathlib import Path
@@ -497,6 +498,159 @@ def test_external_input_query_fails_before_unbounded_materialization(
         monkeypatch.setattr(evidence_module, "RUFF_MAX_FILES", 1)
         with pytest.raises(ValueError, match="external evidence exceeds 1 files"):
             owner.external_evidence_files(root)
+
+
+def test_external_input_baseline_match_requires_signature_versions_and_count(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "root"
+    current = _file_record(_source_tree(root, count=1)[0], root)
+    inputs = (current,)
+    baseline = evidence_module.ExternalEvidenceBaseline(
+        tool_run_id=1,
+        analysis_run_id=1,
+        tool_version="fixture",
+        configuration_signature=RUFF_CONFIGURATION_SIGNATURE,
+        root=str(root),
+        input_signature=evidence_module.external_input_signature(inputs),
+        version_ids=(current.version_id,),
+        result_digest=evidence_module._external_result_digest(()),
+        diagnostic_ids=(),
+        records=(),
+    )
+    monkeypatch.setattr(
+        evidence_module,
+        "read_external_evidence_files",
+        lambda _connection, _root: inputs,
+    )
+
+    with sqlite3.connect(":memory:") as connection:
+        assert evidence_module._external_inputs_match_baseline(
+            connection,
+            baseline,
+            eligible_files=1,
+        )
+        assert not evidence_module._external_inputs_match_baseline(
+            connection,
+            baseline,
+            eligible_files=2,
+        )
+
+        stale_inputs = (replace(current, version_id=current.version_id + 1),)
+        monkeypatch.setattr(
+            evidence_module,
+            "read_external_evidence_files",
+            lambda _connection, _root: stale_inputs,
+        )
+        assert not evidence_module._external_inputs_match_baseline(
+            connection,
+            baseline,
+            eligible_files=1,
+        )
+
+        def unavailable_inputs(
+            _connection: sqlite3.Connection,
+            _root: Path,
+        ) -> tuple[ExternalEvidenceFile, ...]:
+            raise ValueError("injected input projection failure")
+
+        monkeypatch.setattr(
+            evidence_module,
+            "read_external_evidence_files",
+            unavailable_inputs,
+        )
+        assert not evidence_module._external_inputs_match_baseline(
+            connection,
+            baseline,
+            eligible_files=1,
+        )
+
+
+def test_external_projection_record_requires_exact_owner_and_identity(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    source = _source_tree(root, count=1)[0]
+    relative_path = source.relative_to(root).as_posix()
+    identity = evidence_module._external_diagnostic_identity(
+        relative_path,
+        "F401",
+        "unused import",
+        1,
+        0,
+        1,
+        4,
+    )
+    diagnostic = evidence_module.ExternalDiagnostic(
+        1,
+        relative_path,
+        "F401",
+        "unused import",
+        1,
+        0,
+        1,
+        4,
+        None,
+        False,
+        identity,
+    )
+    baseline = evidence_module.ExternalEvidenceBaseline(
+        7,
+        1,
+        "fixture",
+        RUFF_CONFIGURATION_SIGNATURE,
+        str(root),
+        "fixture-input",
+        (1,),
+        evidence_module._external_result_digest((diagnostic,)),
+        (identity,),
+        (diagnostic,),
+    )
+    expectation = evidence_module._ExternalEvidenceExpectation(7, (diagnostic,))
+    metadata = {
+        "schema": "neocortex.external-diagnostic/v1",
+        "external_tool_run_id": 7,
+        "external_diagnostic_identity": identity,
+        "relative_path": relative_path,
+        "claim_scope": "tool_reported",
+        "authority": "advisory",
+        "mutation_authority": False,
+        "fix_available": False,
+        "url": None,
+    }
+    normalized_root = evidence_module._normalized_absolute_path(str(root))
+    assert normalized_root is not None
+
+    with sqlite3.connect(":memory:") as connection:
+        connection.row_factory = sqlite3.Row
+
+        def projection_row(owner: int | bool) -> sqlite3.Row:
+            observed_metadata = {**metadata, "external_tool_run_id": owner}
+            row = connection.execute(
+                """SELECT 1 AS version_id,'F401' AS code,'unused import' AS message,
+                1 AS start_line,0 AS start_column,1 AS end_line,4 AS end_column,
+                ? AS metadata_json,'ruff' AS tool_name,'fixture' AS tool_version,
+                'warning' AS severity,1 AS confirmed,1.0 AS confidence,
+                ? AS current_path""",
+                (json.dumps(observed_metadata), str(source)),
+            ).fetchone()
+            assert row is not None
+            return row
+
+        assert evidence_module._external_projection_record(
+            projection_row(7),
+            baseline,
+            expectation,
+            normalized_root=normalized_root,
+        ) == (identity, diagnostic)
+        assert (
+            evidence_module._external_projection_record(
+                projection_row(True),
+                baseline,
+                expectation,
+                normalized_root=normalized_root,
+            )
+            is None
+        )
 
 
 def test_input_projection_limit_abstains_without_hiding_completed_code(
