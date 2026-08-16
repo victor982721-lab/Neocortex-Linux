@@ -39,7 +39,7 @@ from .action_policy import (
     same_snapshot as _same_snapshot,
     validate_mutation_path as _validate_mutation_path,
 )
-from .content_types import DETECTOR_VERSION, DetectedType, detect_content_type
+from .platform.shared.content_types import DETECTOR_VERSION, DetectedType, detect_content_type
 from .corpus_access import CorpusMutationGuard, ProtectedAnalysisRootError
 from .file_action_recovery import (
     effect_receipt_json,

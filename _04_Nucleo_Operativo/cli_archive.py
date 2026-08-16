@@ -6,7 +6,7 @@ import argparse
 import json
 import sqlite3
 
-from .archive_state import (
+from .capabilities.formats.archive.state import (
     ArchiveSearchHit,
     list_archive_members,
     read_archive_status,

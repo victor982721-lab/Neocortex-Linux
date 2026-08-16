@@ -13,11 +13,11 @@ from typing import Literal, Mapping, Sequence
 
 from _02_Deduplicacion.inventory_schema import SCHEMA_VERSION as INVENTORY_SCHEMA_VERSION
 
-from .archive_state import ARCHIVE_SCHEMA_VERSION
+from .capabilities.formats.archive.state import ARCHIVE_SCHEMA_VERSION
 from .audio_state import AUDIO_SCHEMA_VERSION
 from .code_schema import CODE_SCHEMA_VERSION
 from .document_catalog_schema import CATALOG_SCHEMA_VERSION
-from .docx_schema import DOCX_SCHEMA_VERSION
+from .capabilities.formats.docx.schema import DOCX_SCHEMA_VERSION
 from .framework_schema import SCHEMA_VERSION as FRAMEWORK_SCHEMA_VERSION
 from .office_state import OFFICE_SCHEMA_VERSION
 from .pdf_schema import PDF_SCHEMA_VERSION

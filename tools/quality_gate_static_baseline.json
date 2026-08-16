@@ -512,18 +512,6 @@
         },
         {
           "count": 1,
-          "path": "_04_Nucleo_Operativo/image_analysis.py",
-          "rule": "RUF022",
-          "severity": "error"
-        },
-        {
-          "count": 1,
-          "path": "_04_Nucleo_Operativo/image_decision.py",
-          "rule": "C420",
-          "severity": "error"
-        },
-        {
-          "count": 1,
           "path": "_04_Nucleo_Operativo/knowledge_contracts.py",
           "rule": "RUF022",
           "severity": "error"
@@ -685,7 +673,7 @@
           "severity": "error"
         }
       ],
-      "total": 67,
+      "total": 65,
       "version": "0.15.17"
     }
   }

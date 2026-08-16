@@ -938,7 +938,9 @@ run con replay exacto. Si el grafo no permite elegir pruebas, un proveedor no
 queda listo, la medición es incompleta o el snapshot cambia durante la corrida,
 se abstiene o falla: nunca traduce ausencia de evidencia en verde. Use
 `--baseline HEAD^` para verificar un commit ya integrado localmente.
-La política `local-linux-diff-aware-validation-v7` incluye los bindings PDF;
+La política `local-linux-diff-aware-validation-v8` incluye los bindings PDF y
+las matrices completas Archive/DOCX/Image para los namespaces canónico y de
+compatibilidad;
 el verificador técnico v7 sólo acepta su pregunta con los cuatro gates y los
 conteos 9/12 exactos del receipt.
 

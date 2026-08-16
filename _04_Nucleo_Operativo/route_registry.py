@@ -14,19 +14,19 @@ from .route_selection import normalize_route_selection as normalize_route_select
 if TYPE_CHECKING:
     from _03_Progreso import ProgressCallback
 
-    from .archive_route import ArchiveRoute as ArchiveRoute
-    from .archive_route import ArchiveRouteConfig as ArchiveRouteConfig
+    from .capabilities.formats.archive.route import ArchiveRoute as ArchiveRoute
+    from .capabilities.formats.archive.route import ArchiveRouteConfig as ArchiveRouteConfig
     from .audio_models import AudioRouteConfig as AudioRouteConfig
     from .audio_route import AudioRoute as AudioRoute
     from .code_contracts import CodeRouteConfig as CodeRouteConfig
     from .code_route import CodeRoute as CodeRoute
     from .cancellation import CancellationToken
-    from .docx_route import DocxRoute as DocxRoute
-    from .docx_route import DocxRouteConfig as DocxRouteConfig
+    from .capabilities.formats.docx.route import DocxRoute as DocxRoute
+    from .capabilities.formats.docx.route import DocxRouteConfig as DocxRouteConfig
     from .document_catalog import CatalogUpdateSummary, SourceKind
     from .global_resources import GlobalResourceCoordinator
-    from .image_route import ImageRoute as ImageRoute
-    from .image_route import ImageRouteConfig as ImageRouteConfig
+    from .capabilities.formats.image.route import ImageRoute as ImageRoute
+    from .capabilities.formats.image.route import ImageRouteConfig as ImageRouteConfig
     from .models import FrameworkConfig
     from .office_route import OfficeRoute as OfficeRoute
     from .office_route import OfficeRouteConfig as OfficeRouteConfig
@@ -79,16 +79,16 @@ class RouteAdapter:
 _DEFERRED_ROUTE_EXPORTS = {
     "AudioRoute": (".audio_route", "AudioRoute"),
     "AudioRouteConfig": (".audio_models", "AudioRouteConfig"),
-    "ArchiveRoute": (".archive_route", "ArchiveRoute"),
-    "ArchiveRouteConfig": (".archive_route", "ArchiveRouteConfig"),
+    "ArchiveRoute": (".capabilities.formats.archive.route", "ArchiveRoute"),
+    "ArchiveRouteConfig": (".capabilities.formats.archive.route", "ArchiveRouteConfig"),
     "CodeRoute": (".code_route", "CodeRoute"),
     "CodeRouteConfig": (".code_contracts", "CodeRouteConfig"),
     "PdfRoute": (".pdf_route", "PdfRoute"),
     "PdfRouteConfig": (".pdf_route", "PdfRouteConfig"),
-    "DocxRoute": (".docx_route", "DocxRoute"),
-    "DocxRouteConfig": (".docx_route", "DocxRouteConfig"),
-    "ImageRoute": (".image_route", "ImageRoute"),
-    "ImageRouteConfig": (".image_route", "ImageRouteConfig"),
+    "DocxRoute": (".capabilities.formats.docx.route", "DocxRoute"),
+    "DocxRouteConfig": (".capabilities.formats.docx.route", "DocxRouteConfig"),
+    "ImageRoute": (".capabilities.formats.image.route", "ImageRoute"),
+    "ImageRouteConfig": (".capabilities.formats.image.route", "ImageRouteConfig"),
     "OfficeRoute": (".office_route", "OfficeRoute"),
     "OfficeRouteConfig": (".office_route", "OfficeRouteConfig"),
     "TextRoute": (".text_route", "TextRoute"),
@@ -174,7 +174,7 @@ def _run_image(context: RouteExecutionContext) -> object:
     from _02_Deduplicacion import DedupIndex
 
     from .global_resources import CoordinatedMemoryGate
-    from .image_route import ImageRoute
+    from .capabilities.formats.image.route import ImageRoute
 
     config = context.config
     gate = (
@@ -203,7 +203,7 @@ def docx_route_config_from_framework(config: "FrameworkConfig") -> "DocxRouteCon
 
 
 def _run_docx(context: RouteExecutionContext) -> object:
-    from .docx_route import DocxRoute
+    from .capabilities.formats.docx.route import DocxRoute
     from .global_resources import CoordinatedMemoryGate
 
     config = context.config
@@ -271,7 +271,7 @@ def archive_route_config_from_framework(
 
 
 def _run_archive(context: RouteExecutionContext) -> object:
-    from .archive_route import ArchiveRoute
+    from .capabilities.formats.archive.route import ArchiveRoute
 
     gate = None
     if context.resource_coordinator is not None:

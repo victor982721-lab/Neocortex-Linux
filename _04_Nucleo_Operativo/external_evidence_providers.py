@@ -15,7 +15,8 @@ import sysconfig
 import tempfile
 import time
 import tomllib
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import asdict, replace
 from pathlib import Path, PurePosixPath
 
@@ -58,6 +59,7 @@ from .external_deep_coverage import (
     DeepCoverageExecution,
     DeepCoveragePreparedInput,
     DeepCoverageProgress,
+    _owned_plain_directory,
     execute_pytest_coverage,
     prepare_deep_coverage_input,
     trusted_deep_home_directory,
@@ -209,6 +211,177 @@ def _deep_tool_version() -> str | None:
         return None
     value = f"pytest={pytest_version};coverage={coverage_version}"
     return value if len(value.encode("utf-8")) <= 256 else None
+
+
+def _runtime_parent_candidate(
+    candidate: Path,
+    *,
+    trusted: str,
+    audit_lab: str,
+    require_private: bool,
+) -> Path | None:
+    """Resolve one real runtime parent and reject aliases or unsafe permissions."""
+
+    if not candidate.is_absolute():
+        return None
+    try:
+        configured = Path(os.path.abspath(candidate))
+        metadata = os.lstat(configured)
+        resolved = configured.resolve(strict=True)
+        canonical_metadata = os.stat(resolved, follow_symlinks=False)
+    except (OSError, RuntimeError, ValueError):
+        return None
+    if (
+        configured != resolved
+        or not stat.S_ISDIR(metadata.st_mode)
+        or not stat.S_ISDIR(canonical_metadata.st_mode)
+        or (int(metadata.st_dev), int(metadata.st_ino))
+        != (int(canonical_metadata.st_dev), int(canonical_metadata.st_ino))
+        or not os.access(resolved, os.W_OK | os.X_OK)
+    ):
+        return None
+    mode = stat.S_IMODE(metadata.st_mode)
+    effective_uid = getattr(os, "geteuid", lambda: int(metadata.st_uid))()
+    normalized = os.path.normcase(os.path.abspath(resolved))
+    if require_private:
+        if (
+            int(metadata.st_uid) != int(effective_uid)
+            or mode & 0o077
+            or (mode & 0o700) != 0o700
+        ):
+            return None
+    else:
+        # The canonical host tmp.mount is deliberately owned by the unprivileged
+        # overflow/nobody UID.  It remains a valid mkdtemp parent because the
+        # sticky world-writable directory is a real, non-aliased `/tmp` or
+        # `/var/tmp`; no process running as that locked UID can replace entries.
+        canonical_sticky_roots = {
+            os.path.normcase(os.path.abspath(Path("/tmp").resolve(strict=True))),
+            os.path.normcase(os.path.abspath(Path("/var/tmp").resolve(strict=True))),
+        }
+        allowed_owner = int(metadata.st_uid) in {0, int(effective_uid)} or (
+            int(metadata.st_uid) == 65_534 and normalized in canonical_sticky_roots
+        )
+        if not allowed_owner or not mode & stat.S_ISVTX or not mode & 0o002:
+            return None
+    try:
+        if (
+            os.path.commonpath((audit_lab, normalized)) == audit_lab
+            or os.path.commonpath((trusted, normalized)) == trusted
+        ):
+            return None
+    except ValueError:
+        pass
+    return resolved
+
+
+def _deep_coverage_runtime_parent(*, root: Path, audit_lab_root: Path) -> Path:
+    """Select a private runtime parent, falling back to a sticky OS temp root."""
+
+    trusted = os.path.normcase(os.path.abspath(root.resolve(strict=True)))
+    audit_lab = os.path.normcase(os.path.abspath(audit_lab_root.resolve(strict=True)))
+    private_candidates: list[Path] = []
+    for name in ("RUNTIME_DIRECTORY", "XDG_RUNTIME_DIR", "RUNNER_TEMP"):
+        value = os.environ.get(name)
+        if value:
+            private_candidates.extend(Path(item) for item in value.split(os.pathsep) if item)
+    for candidate in private_candidates:
+        selected = _runtime_parent_candidate(
+            candidate,
+            trusted=trusted,
+            audit_lab=audit_lab,
+            require_private=True,
+        )
+        if selected is not None:
+            return selected
+
+    fallback_candidates = (Path(tempfile.gettempdir()), Path("/tmp"), Path("/var/tmp"))
+    for candidate in fallback_candidates:
+        private = _runtime_parent_candidate(
+            candidate,
+            trusted=trusted,
+            audit_lab=audit_lab,
+            require_private=True,
+        )
+        sticky = private or _runtime_parent_candidate(
+            candidate,
+            trusted=trusted,
+            audit_lab=audit_lab,
+            require_private=False,
+        )
+        if sticky is not None:
+            return sticky
+    raise ValueError("trusted-deep has no safe ephemeral runtime parent")
+
+
+def _runtime_directory_identity(path: Path) -> tuple[int, int]:
+    metadata = os.lstat(path)
+    resolved = path.resolve(strict=True)
+    canonical_metadata = os.stat(resolved, follow_symlinks=False)
+    mode = stat.S_IMODE(metadata.st_mode)
+    effective_uid = getattr(os, "geteuid", lambda: int(metadata.st_uid))()
+    if (
+        not stat.S_ISDIR(metadata.st_mode)
+        or path.is_symlink()
+        or resolved != Path(os.path.abspath(path))
+        or not stat.S_ISDIR(canonical_metadata.st_mode)
+        or (int(metadata.st_dev), int(metadata.st_ino))
+        != (int(canonical_metadata.st_dev), int(canonical_metadata.st_ino))
+        or int(metadata.st_uid) != int(effective_uid)
+        or mode & 0o077
+        or (mode & 0o700) != 0o700
+    ):
+        raise RuntimeError("trusted-deep runtime directory is not private and identity-bound")
+    return int(metadata.st_dev), int(metadata.st_ino)
+
+
+def _cleanup_deep_coverage_runtime(path: Path, identity: tuple[int, int]) -> None:
+    try:
+        metadata = os.lstat(path)
+    except OSError as exc:
+        raise RuntimeError("trusted-deep runtime disappeared before cleanup") from exc
+    mode = stat.S_IMODE(metadata.st_mode)
+    effective_uid = getattr(os, "geteuid", lambda: int(metadata.st_uid))()
+    if (
+        not stat.S_ISDIR(metadata.st_mode)
+        or path.is_symlink()
+        or (int(metadata.st_dev), int(metadata.st_ino)) != identity
+        or path.resolve(strict=True) != Path(os.path.abspath(path))
+        or int(metadata.st_uid) != int(effective_uid)
+        or mode & 0o077
+        or (mode & 0o700) != 0o700
+    ):
+        raise RuntimeError("trusted-deep runtime identity changed before cleanup")
+    if not getattr(shutil.rmtree, "avoids_symlink_attacks", False):
+        raise RuntimeError("trusted-deep runtime cleanup lacks symlink-safe traversal")
+    shutil.rmtree(path)
+    if os.path.lexists(path):
+        raise RuntimeError("trusted-deep runtime cleanup was incomplete")
+
+
+@contextmanager
+def _deep_coverage_runtime(*, root: Path, audit_lab_root: Path) -> Iterator[Path]:
+    """Own one unpredictable private runtime without masking execution failures."""
+
+    parent = _deep_coverage_runtime_parent(root=root, audit_lab_root=audit_lab_root)
+    runtime = Path(tempfile.mkdtemp(prefix="neocortex-pytest-coverage-", dir=parent))
+    identity = _runtime_directory_identity(runtime)
+    try:
+        yield runtime
+    except BaseException as primary:
+        try:
+            _cleanup_deep_coverage_runtime(runtime, identity)
+        except BaseException as cleanup:
+            primary.add_note(
+                "trusted-deep runtime cleanup also failed: "
+                f"{type(cleanup).__name__}: {str(cleanup)[:512]}"
+            )
+        raise
+    else:
+        try:
+            _cleanup_deep_coverage_runtime(runtime, identity)
+        except Exception as cleanup:
+            raise RuntimeError("trusted-deep runtime cleanup failed") from cleanup
 
 
 def _git_tool_probe() -> tuple[Path | None, str | None]:
@@ -3287,7 +3460,7 @@ class GrimpArchitectureProvider(_TrustedArchitectureProvider):
     distribution = "grimp"
     source = "external:grimp-architecture"
     memory_bound = _GRIMP_MEMORY_BYTES
-    execution_strategy = "isolated-python-worker-grimp-v1"
+    execution_strategy = "isolated-python-worker-grimp-v2"
     executor = staticmethod(execute_grimp_architecture)
 
 
@@ -3975,7 +4148,7 @@ class PytestCoverageTrustedDeepProvider:
         try:
             staging_parent = _validated_staging_parent(root, scratch_root)
             durable_identity = external_signature(
-                "deep-coverage-scratch-v1",
+                "deep-coverage-scratch-v2",
                 {
                     "root_identity": external_root_identity(root),
                     "configuration_signature": self.config.configuration_signature,
@@ -3984,17 +4157,27 @@ class PytestCoverageTrustedDeepProvider:
             # Keep the unpublished internal scratch layout deliberately short.  Pytest
             # adds node-id-derived directories below its basetemp and nested Git
             # fixtures must still fit the traditional Windows path budget.
-            durable_scratch = staging_parent / "d" / durable_identity
-            durable_scratch.mkdir(parents=True, exist_ok=True)
+            durable_namespace = _owned_plain_directory(
+                staging_parent / "d",
+                allow_existing=True,
+                label="trusted-deep durable namespace",
+                require_private=False,
+            )
+            durable_scratch = _owned_plain_directory(
+                durable_namespace / durable_identity,
+                allow_existing=True,
+                label="trusted-deep durable scratch",
+                require_private=False,
+            )
             staged = {os.path.normcase(os.path.abspath(item.path)): item for item in files}
             if len(staged) != len(files):
                 raise ValueError("trusted-deep input paths are duplicated")
-            with tempfile.TemporaryDirectory(
-                prefix="neocortex-pytest-coverage-",
-                dir=staging_parent,
-            ) as temporary:
+            with _deep_coverage_runtime(
+                root=root,
+                audit_lab_root=staging_parent,
+            ) as runtime_container:
                 execution = execute_pytest_coverage(
-                    Path(temporary),
+                    runtime_container,
                     staged,
                     _controlled_environment(),
                     trusted_root=root,

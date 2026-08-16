@@ -71,11 +71,11 @@ from .state import FrameworkRouteState, FrameworkState
 # region [02] Implementación
 
 if TYPE_CHECKING:
-    from .archive_models import ArchiveRouteSummary
+    from .capabilities.formats.archive.models import ArchiveRouteSummary
     from .audio_models import AudioRouteSummary
     from .code_contracts import CodeRouteSummary
-    from .docx_route import DocxRouteSummary
-    from .image_route import ImageRouteSummary
+    from .capabilities.formats.docx.route import DocxRouteSummary
+    from .capabilities.formats.image.route import ImageRouteSummary
     from .office_route import OfficeRouteSummary
     from .pdf_route import PdfRouteSummary
     from .text_route import TextRouteSummary
@@ -478,7 +478,7 @@ class FrameworkOrchestrator:
 
         if image_summary is None:
             return None
-        from .image_state import iter_explicit_adult_candidates
+        from .capabilities.formats.image.state import iter_explicit_adult_candidates
 
         if image_summary.processing_signature is None:
             return image_summary

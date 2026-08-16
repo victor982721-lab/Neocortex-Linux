@@ -26,7 +26,6 @@ from neocortex.sqlite_schema_contract import (
 from neocortex.platform_policy import sqlite_path_collation
 
 from . import (
-    archive_state,
     audio_state,
     document_catalog_schema,
     office_state,
@@ -35,7 +34,8 @@ from . import (
 )
 from . import semantic_schema as semantic_schema_module
 from .code_schema import validate_code_schema
-from .docx_schema import validate_docx_schema
+from .capabilities.formats.archive import state as archive_state
+from .capabilities.formats.docx.schema import validate_docx_schema
 from .framework_schema import (
     validate_framework_schema_v19,
     validate_framework_schema_v20,
@@ -282,7 +282,7 @@ def _validate_text(connection: sqlite3.Connection) -> None:
 
 
 def _validate_image(connection: sqlite3.Connection) -> None:
-    from . import image_state
+    from .capabilities.formats.image import state as image_state
 
     image_state._validate_current_image_schema(connection)
 

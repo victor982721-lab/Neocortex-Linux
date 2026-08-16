@@ -18,8 +18,26 @@ import xxhash
 
 import _04_Nucleo_Operativo.external_deep_coverage_worker as worker
 import _04_Nucleo_Operativo.external_deep_coverage as deep
+import _04_Nucleo_Operativo.external_evidence_providers as providers
 from _04_Nucleo_Operativo.code_external_evidence import ExternalEvidenceFile
 from _04_Nucleo_Operativo.semantic_models import fingerprint_bytes
+
+
+def test_worker_cleanup_failure_does_not_replace_the_primary_contract_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    primary = worker.WorkerContractError("primary_failure", "primary failure")
+
+    def fail_cleanup() -> None:
+        raise worker.WorkerContractError("cleanup_failure", "cleanup failure")
+
+    monkeypatch.setattr(worker, "_cleanup_runtime_roots", fail_cleanup)
+
+    observed = worker._cleanup_error_or(primary)
+
+    assert observed is primary
+    assert observed.code == "primary_failure"
+    assert any("cleanup_failure" in note for note in getattr(observed, "__notes__", ()))
 
 
 def test_bounded_diagnostic_preserves_the_root_cause_tail(tmp_path: Path) -> None:
@@ -515,6 +533,7 @@ def test_real_adapter_runs_collect_shards_and_checkpoint_replay(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     project = tmp_path / "trusted"
+    scratch = tmp_path / "s"
     package = project / "_04_Nucleo_Operativo"
     tests = project / "tests"
     package.mkdir(parents=True)
@@ -534,9 +553,17 @@ def test_real_adapter_runs_collect_shards_and_checkpoint_replay(
         "import sqlite3\n"
         "import shutil\n"
         "import subprocess\n\n"
+        "import os\n"
+        "from pathlib import Path\n\n"
         "from _04_Nucleo_Operativo.logic import choose\n\n"
         "def test_true(tmp_path):\n"
         "    assert choose(True) == 1\n"
+        "    runtime = Path(os.environ['NEOCORTEX_AUDIT_LAB_ROOT']).resolve()\n"
+        f"    durable = Path({os.fspath(scratch)!r}).resolve()\n"
+        f"    outer = Path({os.fspath(tmp_path)!r}).resolve()\n"
+        "    assert tmp_path.resolve().is_relative_to(runtime)\n"
+        "    assert not tmp_path.resolve().is_relative_to(durable)\n"
+        "    assert not tmp_path.resolve().is_relative_to(outer)\n"
         "    git = shutil.which('git')\n"
         "    assert git is not None\n"
         "    completed = subprocess.run(\n"
@@ -607,46 +634,66 @@ def test_real_adapter_runs_collect_shards_and_checkpoint_replay(
             digest.xxh3_64_guard,
         )
         owners[os.path.normcase(os.path.abspath(path))] = owner
-    stage = tmp_path / "g"
-    scratch = tmp_path / "s"
-    stage.mkdir()
     scratch.mkdir()
     monkeypatch.setattr(deep, "_canonical_repository_root", lambda: project)
     config = deep.DeepCoverageConfig((), 3, 60.0, 1, "real-worker-fixture-v1")
+    for name in ("RUNTIME_DIRECTORY", "RUNNER_TEMP", "XDG_RUNTIME_DIR"):
+        monkeypatch.setenv(name, os.fspath(tmp_path))
 
-    first = deep.execute_pytest_coverage(
-        stage,
-        owners,
-        {},
-        trusted_root=project,
-        scratch_root=scratch,
-        config=config,
-    )
-    replay = deep.execute_pytest_coverage(
-        stage,
-        owners,
-        {},
-        trusted_root=project,
-        scratch_root=scratch,
-        config=config,
-    )
+    with providers._deep_coverage_runtime(
+        root=project,
+        audit_lab_root=tmp_path,
+    ) as first_stage:
+        first = deep.execute_pytest_coverage(
+            first_stage,
+            owners,
+            {},
+            trusted_root=project,
+            scratch_root=scratch,
+            config=config,
+        )
 
-    assert first.measurement_complete is True
-    assert first.counters["tests_passed"] == 3, tuple(finding.message for finding in first.findings)
-    assert first.counters["shards_reused"] == 0
-    assert any(
-        endpoint < 0
-        for metric in first.metrics
-        for arc in cast(list[list[int]], metric.metadata.get("missing_branch_arcs", []))
-        for endpoint in arc
-    )
-    assert any(
-        metric.subject_kind == "symbol"
-        and cast(str, metric.metadata["qualified_name"]).endswith(".choose")
-        for metric in first.metrics
-    )
-    assert replay.counters["shards_reused"] == 3
-    assert replay.process_invocations == 2
-    worker_runs = scratch / "r" / "w"
-    assert worker_runs.is_dir()
-    assert not tuple(worker_runs.iterdir())
+        assert first.measurement_complete is True
+        assert first.counters["tests_passed"] == 3, tuple(
+            finding.message for finding in first.findings
+        )
+        assert first.counters["shards_reused"] == 0
+        assert any(
+            endpoint < 0
+            for metric in first.metrics
+            for arc in cast(list[list[int]], metric.metadata.get("missing_branch_arcs", []))
+            for endpoint in arc
+        )
+        assert any(
+            metric.subject_kind == "symbol"
+            and cast(str, metric.metadata["qualified_name"]).endswith(".choose")
+            for metric in first.metrics
+        )
+        first_worker_runs = first_stage / "r" / "w"
+        assert not first_worker_runs.resolve().is_relative_to(scratch.resolve())
+        assert first_worker_runs.is_dir()
+        assert not tuple(first_worker_runs.iterdir())
+    assert not first_stage.exists()
+
+    with providers._deep_coverage_runtime(
+        root=project,
+        audit_lab_root=tmp_path,
+    ) as replay_stage:
+        assert replay_stage != first_stage
+        replay = deep.execute_pytest_coverage(
+            replay_stage,
+            owners,
+            {},
+            trusted_root=project,
+            scratch_root=scratch,
+            config=config,
+        )
+
+        assert replay.counters["shards_reused"] == 3
+        assert replay.process_invocations == 2
+        replay_worker_runs = replay_stage / "r" / "w"
+        assert not replay_worker_runs.resolve().is_relative_to(scratch.resolve())
+        assert replay_worker_runs.is_dir()
+        assert not tuple(replay_worker_runs.iterdir())
+    assert not replay_stage.exists()
+    assert {path.name for path in scratch.iterdir()} == {"checkpoints"}

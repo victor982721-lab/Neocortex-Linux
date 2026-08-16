@@ -56,9 +56,12 @@ class RouteRegistryIsolationTests(unittest.TestCase):
                 "_04_Nucleo_Operativo.global_resources",
                 "_04_Nucleo_Operativo.pdf_route",
                 "_04_Nucleo_Operativo.docx_route",
+                "_04_Nucleo_Operativo.capabilities.formats.docx.route",
                 "_04_Nucleo_Operativo.image_route",
+                "_04_Nucleo_Operativo.capabilities.formats.image.route",
                 "_04_Nucleo_Operativo.office_route",
                 "_04_Nucleo_Operativo.archive_route",
+                "_04_Nucleo_Operativo.capabilities.formats.archive.route",
                 "_04_Nucleo_Operativo.text_route",
                 "_04_Nucleo_Operativo.audio_route",
                 "_04_Nucleo_Operativo.video_route",
@@ -85,8 +88,12 @@ class RouteRegistryIsolationTests(unittest.TestCase):
             engines = {
                 "_04_Nucleo_Operativo.pdf_route",
                 "_04_Nucleo_Operativo.docx_route",
+                "_04_Nucleo_Operativo.capabilities.formats.docx.route",
                 "_04_Nucleo_Operativo.image_route",
+                "_04_Nucleo_Operativo.capabilities.formats.image.route",
                 "_04_Nucleo_Operativo.office_route",
+                "_04_Nucleo_Operativo.archive_route",
+                "_04_Nucleo_Operativo.capabilities.formats.archive.route",
                 "_04_Nucleo_Operativo.audio_route",
                 "_04_Nucleo_Operativo.video_route",
             }
@@ -126,7 +133,11 @@ class RouteRegistryIsolationTests(unittest.TestCase):
             forbidden = {
                 "_04_Nucleo_Operativo.pdf_route",
                 "_04_Nucleo_Operativo.docx_route",
+                "_04_Nucleo_Operativo.capabilities.formats.docx.route",
                 "_04_Nucleo_Operativo.image_route",
+                "_04_Nucleo_Operativo.capabilities.formats.image.route",
+                "_04_Nucleo_Operativo.archive_route",
+                "_04_Nucleo_Operativo.capabilities.formats.archive.route",
                 "_04_Nucleo_Operativo.audio_route",
                 "_04_Nucleo_Operativo.video_route",
             }
@@ -162,7 +173,11 @@ class RouteRegistryIsolationTests(unittest.TestCase):
             forbidden = {
                 "_04_Nucleo_Operativo.pdf_route",
                 "_04_Nucleo_Operativo.docx_route",
+                "_04_Nucleo_Operativo.capabilities.formats.docx.route",
                 "_04_Nucleo_Operativo.image_route",
+                "_04_Nucleo_Operativo.capabilities.formats.image.route",
+                "_04_Nucleo_Operativo.archive_route",
+                "_04_Nucleo_Operativo.capabilities.formats.archive.route",
                 "_04_Nucleo_Operativo.audio_route",
             }
             loaded = forbidden.intersection(sys.modules)
@@ -173,7 +188,7 @@ class RouteRegistryIsolationTests(unittest.TestCase):
             print("SELECTION_ISOLATED:" + expression)
         """
 
-        for expression in ("pdf", "docx,office,audio,video,image"):
+        for expression in ("pdf", "docx,office,archive,audio,video,image"):
             with self.subTest(selection=expression):
                 completed = _run_isolated(script, NEOCORTEX_TEST_SELECTION=expression)
                 self.assertEqual(completed.returncode, 0, completed.stderr)
@@ -193,15 +208,22 @@ class RouteRegistryIsolationTests(unittest.TestCase):
                 "pdf": "_04_Nucleo_Operativo.pdf_route",
                 "docx": "_04_Nucleo_Operativo.docx_route",
                 "image": "_04_Nucleo_Operativo.image_route",
+                "archive": "_04_Nucleo_Operativo.archive_route",
                 "office": "_04_Nucleo_Operativo.office_route",
                 "audio": "_04_Nucleo_Operativo.audio_route",
                 "video": "_04_Nucleo_Operativo.video_route",
                 "text": "_04_Nucleo_Operativo.text_route",
             }
+            canonical_module_names = {
+                "docx": "_04_Nucleo_Operativo.capabilities.formats.docx.route",
+                "image": "_04_Nucleo_Operativo.capabilities.formats.image.route",
+                "archive": "_04_Nucleo_Operativo.capabilities.formats.archive.route",
+            }
             class_names = {
                 "pdf": ("PdfRoute", "PdfRouteConfig"),
                 "docx": ("DocxRoute", "DocxRouteConfig"),
                 "image": ("ImageRoute", "ImageRouteConfig"),
+                "archive": ("ArchiveRoute", "ArchiveRouteConfig"),
                 "office": ("OfficeRoute", "OfficeRouteConfig"),
                 "audio": ("AudioRoute", "AudioRouteConfig"),
                 "video": ("VideoRoute", "VideoRouteConfig"),
@@ -243,6 +265,9 @@ class RouteRegistryIsolationTests(unittest.TestCase):
             setattr(selected_module, route_class_name, FakeRoute)
             setattr(selected_module, config_class_name, FakeRouteConfig)
             sys.modules[module_names[route_name]] = selected_module
+            canonical_name = canonical_module_names.get(route_name)
+            if canonical_name is not None:
+                sys.modules[canonical_name] = selected_module
             if route_name in {"pdf", "image"}:
                 dedup_module = types.ModuleType("_02_Deduplicacion")
                 dedup_module.DedupIndex = FakeDedupIndex
@@ -272,7 +297,12 @@ class RouteRegistryIsolationTests(unittest.TestCase):
             if result != route_name or not any(call[0] == "run" for call in calls):
                 raise SystemExit(f"adapter did not execute its double: {calls!r}")
 
-            other_modules = set(module_names.values()) - {module_names[route_name]}
+            selected_names = {module_names[route_name]}
+            if canonical_name is not None:
+                selected_names.add(canonical_name)
+            other_modules = (
+                set(module_names.values()) | set(canonical_module_names.values())
+            ) - selected_names
             loaded = other_modules.intersection(sys.modules)
             if loaded:
                 raise SystemExit(
@@ -293,7 +323,16 @@ class RouteRegistryIsolationTests(unittest.TestCase):
             print("ADAPTER_ISOLATED:" + route_name)
         """
 
-        for route_name in ("pdf", "docx", "office", "text", "audio", "video", "image"):
+        for route_name in (
+            "pdf",
+            "docx",
+            "office",
+            "archive",
+            "text",
+            "audio",
+            "video",
+            "image",
+        ):
             with self.subTest(route=route_name):
                 completed = _run_isolated(script, NEOCORTEX_TEST_ROUTE=route_name)
                 self.assertEqual(completed.returncode, 0, completed.stderr)

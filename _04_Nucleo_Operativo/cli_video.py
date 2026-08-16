@@ -62,7 +62,10 @@ def run_video_doctor(args: argparse.Namespace) -> int:
         failures.append(f"ffprobe:{type(exc).__name__}")
         report["ffprobe"] = None
     try:
-        from .image_document import DocumentVerifierConfig, resolve_document_verifier
+        from .capabilities.formats.image.document import (
+            DocumentVerifierConfig,
+            resolve_document_verifier,
+        )
 
         runtime = resolve_document_verifier(
             DocumentVerifierConfig(

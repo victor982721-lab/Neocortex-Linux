@@ -17,6 +17,7 @@ import pytest
 
 from _04_Nucleo_Operativo.code_change_validation import (
     AffectedTestSelection,
+    ChangeValidationError,
     GitChangeSnapshot,
     _default_runner,
     _experiment_gate,
@@ -50,10 +51,6 @@ from _04_Nucleo_Operativo.code_knowledge_asset_health_analysis import (
 from _04_Nucleo_Operativo.code_knowledge_pdf_asset_health_analysis import (
     KNOWLEDGE_PDF_ASSET_HEALTH_QUESTION,
 )
-from _04_Nucleo_Operativo.external_evidence_providers import (
-    INSTALLED_PACKAGE_PROVIDER_ID,
-    PIP_AUDIT_PROVIDER_ID,
-)
 from _04_Nucleo_Operativo.code_route_capability_analysis import ROUTE_CAPABILITY_QUESTION
 from _04_Nucleo_Operativo.code_retention_analysis import RETENTION_HOLD_QUESTION
 from _04_Nucleo_Operativo.code_review_task_analysis import (
@@ -67,6 +64,11 @@ from _04_Nucleo_Operativo.code_state_interaction_analysis import WORKFLOW_SQL_QU
 from _04_Nucleo_Operativo.code_state_projection_analysis import (
     TEXT_SEMANTIC_PROJECTION_QUESTION,
 )
+from _04_Nucleo_Operativo.external_evidence_providers import (
+    INSTALLED_PACKAGE_PROVIDER_ID,
+    PIP_AUDIT_PROVIDER_ID,
+)
+from _04_Nucleo_Operativo.platform.shared.capability_registry import CAPABILITY_REGISTRY
 
 
 def test_optional_mutation_abstention_is_not_a_failed_machine_gate() -> None:
@@ -1551,6 +1553,137 @@ def test_quality_gate_source_selects_its_bounded_compatibility_matrix(
     assert selection.convention_tests == expected
     assert selection.uncovered_sources == ()
     assert "change_crosses_full_suite_boundary" not in selection.reasons
+
+
+@pytest.mark.parametrize(
+    ("relative", "capability_id", "shared_expected"),
+    (
+        ("_04_Nucleo_Operativo/docx_route.py", "docx", None),
+        (
+            "_04_Nucleo_Operativo/capabilities/formats/docx/route.py",
+            "docx",
+            None,
+        ),
+        (
+            "_04_Nucleo_Operativo/platform/shared/zip_safety.py",
+            None,
+            (
+                "tests/test_bounded_io_refactors.py",
+                "tests/test_format_module_move_compatibility.py",
+                "tests/test_zip_safety.py",
+            ),
+        ),
+        (
+            "_04_Nucleo_Operativo/zip_safety.py",
+            None,
+            (
+                "tests/test_bounded_io_refactors.py",
+                "tests/test_format_module_move_compatibility.py",
+                "tests/test_zip_safety.py",
+            ),
+        ),
+        (
+            "_04_Nucleo_Operativo/content_types.py",
+            None,
+            (
+                "tests/test_bounded_io_refactors.py",
+                "tests/test_format_module_move_compatibility.py",
+                "tests/test_framework_actions.py",
+                "tests/test_video_content_types.py",
+            ),
+        ),
+        (
+            "_04_Nucleo_Operativo/platform/shared/content_types.py",
+            None,
+            (
+                "tests/test_bounded_io_refactors.py",
+                "tests/test_format_module_move_compatibility.py",
+                "tests/test_framework_actions.py",
+                "tests/test_video_content_types.py",
+            ),
+        ),
+        ("_04_Nucleo_Operativo/archive_route.py", "archive", None),
+        (
+            "_04_Nucleo_Operativo/capabilities/formats/archive/route.py",
+            "archive",
+            None,
+        ),
+        ("_04_Nucleo_Operativo/image_route.py", "image", None),
+        (
+            "_04_Nucleo_Operativo/capabilities/formats/image/route.py",
+            "image",
+            None,
+        ),
+    ),
+)
+def test_format_boundaries_select_registry_matrices_without_a_published_graph(
+    tmp_path: Path,
+    relative: str,
+    capability_id: str | None,
+    shared_expected: tuple[str, ...] | None,
+) -> None:
+    root = _repository(tmp_path)
+    expected = (
+        CAPABILITY_REGISTRY.by_id(capability_id).test_roots
+        if capability_id is not None
+        else shared_expected
+    )
+    assert expected is not None
+    source = root / relative
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text("CONTRACT = 'fixture'\n", encoding="utf-8")
+    for test_path in expected:
+        target = root / test_path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("def test_contract(): pass\n", encoding="utf-8")
+    change = GitChangeSnapshot(
+        "a" * 40,
+        "a" * 40,
+        (relative,),
+        (),
+        (),
+        (),
+        "b" * 64,
+    )
+
+    selection = select_affected_tests(root, tmp_path / "missing-state", change)
+
+    assert selection.strategy == "affected"
+    assert selection.selectors == expected
+    assert selection.convention_tests == expected
+    assert selection.uncovered_sources == ()
+    assert "published_import_graph_unavailable" in selection.reasons
+
+
+def test_format_boundary_rejects_a_partial_registry_test_matrix(tmp_path: Path) -> None:
+    root = _repository(tmp_path)
+    relative = "_04_Nucleo_Operativo/capabilities/formats/docx/route.py"
+    source = root / relative
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text("CONTRACT = 'fixture'\n", encoding="utf-8")
+    expected = CAPABILITY_REGISTRY.by_id("docx").test_roots
+    for test_path in expected[:-1]:
+        target = root / test_path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("def test_contract(): pass\n", encoding="utf-8")
+    change = GitChangeSnapshot(
+        "a" * 40,
+        "a" * 40,
+        (relative,),
+        (),
+        (),
+        (),
+        "b" * 64,
+    )
+
+    with pytest.raises(
+        ChangeValidationError,
+        match=(
+            r"source_boundary_test_evidence_unavailable:"
+            r"tests/test_pdf_docx_schema_contracts\.py"
+        ),
+    ):
+        select_affected_tests(root, tmp_path / "missing-state", change)
 
 
 def test_full_suite_excludes_retired_windows_runtime_but_keeps_portable_usn(

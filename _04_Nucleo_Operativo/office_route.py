@@ -44,7 +44,7 @@ from .processing_provenance import (
 from .review import ReviewCandidate, ReviewRecommendation
 from .route_filters import CandidateSelection
 from .state import FrameworkRouteState, ReviewCandidateReconciliation
-from .zip_safety import ZipStructureError, inspect_zip_structure
+from .platform.shared.zip_safety import ZipStructureError, inspect_zip_structure
 
 
 # region [01] Stable route contracts and explicit safety bounds

@@ -112,6 +112,9 @@ EXPECTED_FIELDS = {
         "chunks_staged",
         "generations",
         "new_jobs_staged",
+        "execution_mode",
+        "sources_reused",
+        "sources_enumerated",
         "truncated",
         "truncation_reason",
     ),
@@ -275,7 +278,10 @@ EXPECTED_SIGNATURES = {
         "(semantic_database: 'Path', sources: 'tuple[str, ...]', "
         "items_staged: 'int', chunks_staged: 'int', "
         "generations: 'tuple[GenerationWorkResult, ...]', "
-        "new_jobs_staged: 'int' = 0, truncated: 'bool' = False, "
+        "new_jobs_staged: 'int' = 0, "
+        "execution_mode: \"_Literal['enumerated', 'exact_replay']\" = 'enumerated', "
+        "sources_reused: 'int' = 0, sources_enumerated: 'int' = 0, "
+        "truncated: 'bool' = False, "
         "truncation_reason: 'str | None' = None) -> None"
     ),
     "SemanticCostCalibration": (

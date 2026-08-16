@@ -25,7 +25,7 @@ import xxhash
 
 from .bounded_subprocess import SubprocessOutputLimitError, run_bounded_capture
 from .cancellation import CancellationToken
-from .image_png import probe_png_structure
+from .capabilities.formats.image.png import probe_png_structure
 from .video_models import VideoProcessingError
 
 

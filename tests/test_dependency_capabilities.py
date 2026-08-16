@@ -323,7 +323,9 @@ def test_semantic_facades_cold_import_no_owner_or_image_runtime() -> None:
             "_04_Nucleo_Operativo.audio_state",
             "_04_Nucleo_Operativo.code_schema",
             "_04_Nucleo_Operativo.docx_schema",
+            "_04_Nucleo_Operativo.capabilities.formats.docx.schema",
             "_04_Nucleo_Operativo.image_state",
+            "_04_Nucleo_Operativo.capabilities.formats.image.state",
             "_04_Nucleo_Operativo.office_state",
             "_04_Nucleo_Operativo.pdf_schema",
         }
@@ -568,7 +570,10 @@ def test_base_knowledge_reads_existing_image_state_without_pillow(
             raise SystemExit(
                 "existing image state loaded engines: " + ",".join(loaded_optional)
             )
-        if "_04_Nucleo_Operativo.image_document" in sys.modules:
+        if (
+            "_04_Nucleo_Operativo.image_document" in sys.modules
+            or "_04_Nucleo_Operativo.capabilities.formats.image.document" in sys.modules
+        ):
             raise SystemExit("image state loaded the Pillow-backed OCR module")
         print("BASE_EXISTING_IMAGE_STATE_OK")
         """,

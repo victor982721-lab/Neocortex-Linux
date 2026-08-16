@@ -74,11 +74,15 @@ from .external_evidence_providers import (
     SEMGREP_INVARIANTS_PROVIDER_ID,
     VULTURE_UNUSED_PROVIDER_ID,
 )
+from .platform.shared.capability_registry import (
+    resolve_canonical_capabilities,
+    resolve_source_capabilities,
+)
 from .semantic_models import canonical_json
 
 
 CODE_CHANGE_VALIDATION_SCHEMA = "neocortex.code-change-validation/v3"
-CODE_CHANGE_VALIDATION_POLICY = "local-linux-diff-aware-validation-v7"
+CODE_CHANGE_VALIDATION_POLICY = "local-linux-diff-aware-validation-v8"
 MAX_CHANGED_PATHS = 2_000
 MAX_SELECTED_TEST_FILES = 2_000
 MAX_DEPENDENCY_DEPTH = 8
@@ -167,6 +171,31 @@ _FULL_SUITE_PREFIXES = (
     "_04_Nucleo_Operativo/semantic_",
 )
 _SOURCE_BOUNDARY_TESTS = {
+    "_04_Nucleo_Operativo/capabilities/__init__.py": frozenset(
+        {
+            "tests/test_capability_registry.py",
+            "tests/test_format_module_move_compatibility.py",
+        }
+    ),
+    "_04_Nucleo_Operativo/capabilities/formats/__init__.py": frozenset(
+        {
+            "tests/test_capability_registry.py",
+            "tests/test_format_module_move_compatibility.py",
+        }
+    ),
+    "_04_Nucleo_Operativo/platform/__init__.py": frozenset(
+        {
+            "tests/test_capability_registry.py",
+            "tests/test_format_module_move_compatibility.py",
+        }
+    ),
+    "_04_Nucleo_Operativo/platform/shared/__init__.py": frozenset(
+        {
+            "tests/test_architecture_projection.py",
+            "tests/test_capability_registry.py",
+            "tests/test_format_module_move_compatibility.py",
+        }
+    ),
     "tools/quality_gate.py": frozenset(
         {
             "tests/test_code_change_validation.py",
@@ -185,6 +214,51 @@ _SOURCE_BOUNDARY_TESTS = {
             "tests/test_code_schema_migration_v1_v2.py",
             "tests/test_external_provider_schema_v4.py",
             "tests/test_framework_code_path_collation.py",
+        }
+    ),
+    "_04_Nucleo_Operativo/platform/shared/architecture_projection.py": frozenset(
+        {
+            "tests/test_architecture_projection.py",
+            "tests/test_code_architecture_contracts.py",
+            "tests/test_quality_gate.py",
+        }
+    ),
+    "_04_Nucleo_Operativo/platform/shared/capability_registry.py": frozenset(
+        {
+            "tests/test_capability_registry.py",
+            "tests/test_code_change_validation.py",
+            "tests/test_format_module_move_compatibility.py",
+            "tests/test_logical_owner_contracts.py",
+        }
+    ),
+    "_04_Nucleo_Operativo/content_types.py": frozenset(
+        {
+            "tests/test_bounded_io_refactors.py",
+            "tests/test_format_module_move_compatibility.py",
+            "tests/test_framework_actions.py",
+            "tests/test_video_content_types.py",
+        }
+    ),
+    "_04_Nucleo_Operativo/platform/shared/content_types.py": frozenset(
+        {
+            "tests/test_bounded_io_refactors.py",
+            "tests/test_format_module_move_compatibility.py",
+            "tests/test_framework_actions.py",
+            "tests/test_video_content_types.py",
+        }
+    ),
+    "_04_Nucleo_Operativo/zip_safety.py": frozenset(
+        {
+            "tests/test_bounded_io_refactors.py",
+            "tests/test_format_module_move_compatibility.py",
+            "tests/test_zip_safety.py",
+        }
+    ),
+    "_04_Nucleo_Operativo/platform/shared/zip_safety.py": frozenset(
+        {
+            "tests/test_bounded_io_refactors.py",
+            "tests/test_format_module_move_compatibility.py",
+            "tests/test_zip_safety.py",
         }
     ),
 }
@@ -1000,16 +1074,29 @@ def _convention_candidates(root: Path, relative: str) -> tuple[str, ...]:
 def _source_boundary_tests(root: Path, relative: str) -> tuple[str, ...]:
     """Return the bounded compatibility matrix declared for a source boundary."""
 
-    return tuple(
-        sorted(
-            (
-                test
-                for test in _SOURCE_BOUNDARY_TESTS.get(relative, ())
-                if (root / test).is_file() and not (root / test).is_symlink()
-            ),
-            key=lambda item: (item.casefold(), item),
-        )
+    declared = set(_SOURCE_BOUNDARY_TESTS.get(relative, ()))
+    module_id = _module_for_source(relative)
+    if module_id is not None:
+        capabilities = {
+            item.capability_id: item
+            for item in (
+                *resolve_source_capabilities(module_id),
+                *resolve_canonical_capabilities(module_id),
+            )
+        }
+        for capability in capabilities.values():
+            declared.update(capability.test_roots)
+    ordered = tuple(sorted(declared, key=lambda item: (item.casefold(), item)))
+    unavailable = tuple(
+        test
+        for test in ordered
+        if not (root / test).is_file() or (root / test).is_symlink()
     )
+    if unavailable:
+        raise ChangeValidationError(
+            "source_boundary_test_evidence_unavailable:" + ",".join(unavailable)
+        )
+    return ordered
 
 
 def _linux_test_files(root: Path) -> tuple[str, ...]:

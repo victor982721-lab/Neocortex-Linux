@@ -20,7 +20,7 @@ from _01_Enumeracion import JournalCursor
 from _02_Deduplicacion import FileSnapshot, InventoryExclusionPolicy
 from neocortex.platform_policy import sqlite_path_collation
 
-from .content_types import DetectedType
+from .platform.shared.content_types import DetectedType
 from .corpus_access import (
     CorpusAccessPolicy,
     CorpusMutationGuard,

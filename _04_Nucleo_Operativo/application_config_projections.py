@@ -33,24 +33,24 @@ class _DeferredTypeModule:
 
 
 if TYPE_CHECKING:
-    from . import archive_route as _archive_contracts
     from . import audio_models as _audio_contracts
     from . import code_contracts as _code_contracts
-    from . import docx_models as _docx_contracts
     from . import global_resources as _resource_contracts
-    from . import image_route as _image_contracts
     from . import models as _application_contracts
     from . import office_route as _office_contracts
     from . import pdf_route_models as _pdf_contracts
     from . import text_route as _text_contracts
     from . import video_route as _video_contracts
+    from .capabilities.formats.archive import route as _archive_contracts
+    from .capabilities.formats.docx import models as _docx_contracts
+    from .capabilities.formats.image import route as _image_contracts
 else:
     _application_contracts = _DeferredTypeModule(".models")
-    _archive_contracts = _DeferredTypeModule(".archive_route")
+    _archive_contracts = _DeferredTypeModule(".capabilities.formats.archive.route")
     _audio_contracts = _DeferredTypeModule(".audio_models")
     _code_contracts = _DeferredTypeModule(".code_contracts")
-    _docx_contracts = _DeferredTypeModule(".docx_models")
-    _image_contracts = _DeferredTypeModule(".image_route")
+    _docx_contracts = _DeferredTypeModule(".capabilities.formats.docx.models")
+    _image_contracts = _DeferredTypeModule(".capabilities.formats.image.route")
     _office_contracts = _DeferredTypeModule(".office_route")
     _pdf_contracts = _DeferredTypeModule(".pdf_route_models")
     _text_contracts = _DeferredTypeModule(".text_route")
@@ -81,7 +81,7 @@ def archive_route_config_from_application(
 ) -> _archive_contracts.ArchiveRouteConfig:
     """Project current application values into recursive ZIP indexing."""
 
-    from .archive_route import ArchiveRouteConfig
+    from .capabilities.formats.archive.route import ArchiveRouteConfig
 
     return ArchiveRouteConfig(
         state_path=config.archive_database,
@@ -252,7 +252,7 @@ def docx_route_config_from_application(
 ) -> _docx_contracts.DocxRouteConfig:
     """Project current application values into the DOCX owner's contract."""
 
-    from .docx_models import DocxRouteConfig
+    from .capabilities.formats.docx.models import DocxRouteConfig
 
     return DocxRouteConfig(
         state_path=config.docx_database,
@@ -275,7 +275,7 @@ def image_route_config_from_application(
 ) -> _image_contracts.ImageRouteConfig:
     """Project current values and the effective root into the image contract."""
 
-    from .image_route import ImageRouteConfig
+    from .capabilities.formats.image.route import ImageRouteConfig
 
     return ImageRouteConfig(
         state_path=config.image_database,

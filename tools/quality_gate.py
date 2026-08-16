@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 import platform
@@ -41,7 +42,32 @@ DEFAULT_BASELINE = Path(__file__).with_name("quality_gate_static_baseline.json")
 DEFAULT_COVERAGE_BASELINE = Path(__file__).with_name("quality_gate_coverage_baseline.json")
 DEFAULT_SUPPLY_POLICY = Path(__file__).with_name("quality_gate_supply_policy.json")
 PRODUCTION_ARCHITECTURE_WORKER = Path("_04_Nucleo_Operativo/external_architecture_worker.py")
+CAPABILITY_REGISTRY_MODULE = Path(
+    "_04_Nucleo_Operativo/platform/shared/capability_registry.py"
+)
+EXPECTED_ARCHITECTURE_WORKER_SCHEMA = "neocortex.external-architecture-worker/grimp-v2"
 EXPECTED_ARCHITECTURE_BASELINE_ID = "neocortex-production-imports-2026-08-10/v2"
+EXPECTED_ARCHITECTURE_PROJECTION_SCHEMA = "neocortex.architecture-projection/v1"
+EXPECTED_CAPABILITY_REGISTRY_SCHEMA = "neocortex.capability-registry/v1"
+EXPECTED_CAPABILITY_PROJECTION_POLICY_ID = (
+    "neocortex.capability-architecture-projection/transitional-v1"
+)
+EXPECTED_CAPABILITY_PROJECTION_SCOPE_POLICY = (
+    "exact-capability-registry-modules-canonical-and-legacy-v1"
+)
+EXPECTED_CAPABILITY_OWNER_RESOLUTION_POLICY = "capability-logical-owner-exact-v1"
+EXPECTED_CAPABILITY_FAMILY_RESOLUTION_POLICY = (
+    "canonical-target-or-exact-source-compatibility-v1"
+)
+EXPECTED_CAPABILITY_FAMILY_DAG_SCHEMA = "neocortex.architecture-family-dag/v1"
+EXPECTED_CAPABILITY_FAMILY_DAG_POLICY_ID = (
+    "neocortex.formats-family-dependencies/transitional-v1"
+)
+EXPECTED_CAPABILITY_CANONICAL_FAMILY = "_04.capabilities.formats"
+EXPECTED_CAPABILITY_COMPATIBILITY_FAMILY = "_04.compat.formats"
+EXPECTED_CAPABILITY_FAMILY_DAG_FINGERPRINT_PREFIX = (
+    "architecture-family-dag-v1:sha256:"
+)
 EXPECTED_ARCHITECTURE_CONTRACTS = frozenset(
     {
         "core-does-not-depend-on-ui-v1",
@@ -484,47 +510,573 @@ def run_installed_wheel_gate(root: Path, probe_directory: Path) -> dict[str, obj
     return dict(summary)
 
 
-def evaluate_architecture_payload(payload: Mapping[str, object]) -> dict[str, object]:
-    if payload.get("schema") != "neocortex.external-architecture-worker/grimp-v1":
+def _architecture_sequence(value: object, label: str) -> list[object]:
+    if not isinstance(value, list):
+        _fail(f"Grimp worker {label} is not an array")
+    return value
+
+
+def _architecture_mapping(value: object, label: str) -> Mapping[str, object]:
+    if not isinstance(value, Mapping):
+        _fail(f"Grimp worker {label} is not an object")
+    return value
+
+
+def _architecture_text(value: object, label: str) -> str:
+    if not isinstance(value, str) or not value or value != value.strip():
+        _fail(f"Grimp worker {label} is invalid")
+    return value
+
+
+def _architecture_count(value: object, label: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        _fail(f"Grimp worker {label} counter is malformed")
+    return value
+
+
+def _architecture_text_list(value: object, label: str) -> list[str]:
+    raw = _architecture_sequence(value, label)
+    if any(not isinstance(item, str) or not item for item in raw):
+        _fail(f"Grimp worker {label} contains an invalid identity")
+    result = cast(list[str], raw)
+    if result != sorted(set(result)):
+        _fail(f"Grimp worker {label} is not unique and canonically ordered")
+    return result
+
+
+def _architecture_unique_text_sequence(value: object, label: str) -> list[str]:
+    raw = _architecture_sequence(value, label)
+    if any(not isinstance(item, str) or not item for item in raw):
+        _fail(f"Grimp worker {label} contains an invalid identity")
+    result = cast(list[str], raw)
+    if len(result) != len(set(result)):
+        _fail(f"Grimp worker {label} contains duplicate identities")
+    return result
+
+
+def _load_architecture_capability_registry(root: Path) -> object:
+    path = root / CAPABILITY_REGISTRY_MODULE
+    if not path.is_file():
+        _fail(f"capability registry is missing: {path}")
+    try:
+        content_digest = hashlib.sha256(path.read_bytes()).hexdigest()[:16]
+        alias = f"_neocortex_quality_gate_capability_registry_{content_digest}"
+        existing = sys.modules.get(alias)
+        if existing is not None:
+            return existing
+        spec = importlib.util.spec_from_file_location(alias, path)
+        if spec is None or spec.loader is None:
+            _fail("capability registry cannot be loaded by file identity")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        try:
+            spec.loader.exec_module(module)
+        except Exception:
+            sys.modules.pop(spec.name, None)
+            raise
+    except GateError:
+        raise
+    except Exception as error:
+        _fail(f"capability registry cannot be evaluated: {error}")
+    return module
+
+
+def _expected_capability_projection(root: Path) -> dict[str, object]:
+    registry_module = _load_architecture_capability_registry(root)
+    registry_namespace = vars(registry_module)
+    schema = registry_namespace.get("CAPABILITY_REGISTRY_SCHEMA")
+    registry = registry_namespace.get("CAPABILITY_REGISTRY")
+    fingerprint_function = registry_namespace.get("capability_registry_fingerprint")
+    if (
+        schema != EXPECTED_CAPABILITY_REGISTRY_SCHEMA
+        or registry is None
+        or not callable(fingerprint_function)
+    ):
+        _fail("capability registry contract is unavailable or stale")
+    canonical_modules: set[str] = set()
+    legacy_modules: set[str] = set()
+    owner_labels: dict[str, set[str]] = {}
+    family_labels: dict[str, set[str]] = {}
+    canonical_families: set[str] = set()
+    compatibility_families: set[str] = set()
+    for capability in registry.capabilities:
+        canonical_families.add(capability.architecture_family_id)
+        compatibility_families.add(capability.compatibility_family_id)
+        for binding in capability.modules:
+            canonical_modules.add(binding.canonical_module_id)
+            owner_labels.setdefault(binding.canonical_module_id, set()).add(
+                capability.logical_owner_id
+            )
+            family_labels.setdefault(binding.canonical_module_id, set()).add(
+                capability.architecture_family_id
+            )
+            if binding.legacy_module_id is None:
+                continue
+            legacy_modules.add(binding.legacy_module_id)
+            owner_labels.setdefault(binding.legacy_module_id, set()).add(
+                capability.logical_owner_id
+            )
+            family_labels.setdefault(binding.legacy_module_id, set()).add(
+                capability.compatibility_family_id
+            )
+    if canonical_modules & legacy_modules:
+        _fail("capability registry canonical and legacy module scopes overlap")
+    if canonical_families != {EXPECTED_CAPABILITY_CANONICAL_FAMILY}:
+        _fail("capability registry canonical family inventory drifted")
+    if compatibility_families != {EXPECTED_CAPABILITY_COMPATIBILITY_FAMILY}:
+        _fail("capability registry compatibility family inventory drifted")
+    canonical = sorted(canonical_modules)
+    legacy = sorted(legacy_modules)
+    return {
+        "schema": schema,
+        "fingerprint": fingerprint_function(),
+        "canonical_modules": canonical,
+        "legacy_modules": legacy,
+        "registered_modules": sorted((*canonical, *legacy)),
+        "owner_labels": {
+            module: tuple(sorted(labels)) for module, labels in owner_labels.items()
+        },
+        "family_labels": {
+            module: tuple(sorted(labels)) for module, labels in family_labels.items()
+        },
+    }
+
+
+def _expected_capability_family_dag() -> dict[str, object]:
+    contract: dict[str, object] = {
+        "schema": EXPECTED_CAPABILITY_FAMILY_DAG_SCHEMA,
+        "policy_id": EXPECTED_CAPABILITY_FAMILY_DAG_POLICY_ID,
+        "edge_semantics": "importer-may-depend-on-reachable-dependency-v1",
+        "families": [
+            EXPECTED_CAPABILITY_CANONICAL_FAMILY,
+            EXPECTED_CAPABILITY_COMPATIBILITY_FAMILY,
+        ],
+        "direct_dependencies": [
+            {
+                "source_family": EXPECTED_CAPABILITY_COMPATIBILITY_FAMILY,
+                "target_family": EXPECTED_CAPABILITY_CANONICAL_FAMILY,
+            }
+        ],
+        "compat_families": [EXPECTED_CAPABILITY_COMPATIBILITY_FAMILY],
+    }
+    encoded = json.dumps(
+        contract,
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return {
+        **contract,
+        "fingerprint": (
+            EXPECTED_CAPABILITY_FAMILY_DAG_FINGERPRINT_PREFIX
+            + hashlib.sha256(encoded).hexdigest()
+        ),
+    }
+
+
+def _architecture_stable_id(namespace: str, *parts: object) -> str:
+    material = "\x1f".join(str(part) for part in parts).encode("utf-8")
+    return f"{namespace}:sha256:{hashlib.sha256(material).hexdigest()}"
+
+
+def _architecture_module_inventory(
+    payload: Mapping[str, object], *, modules_count: int, relations_count: int
+) -> tuple[list[str], dict[str, tuple[str, str]]]:
+    metrics = _architecture_sequence(payload.get("module_metrics"), "module metrics")
+    modules: list[str] = []
+    for metric in metrics:
+        raw_metric = _architecture_mapping(metric, "module metric")
+        modules.append(_architecture_text(raw_metric.get("module"), "module identity"))
+    if modules != sorted(set(modules)) or len(modules) != modules_count:
+        _fail("Grimp worker module inventory disagrees with its counter")
+
+    relations = _architecture_sequence(payload.get("relations"), "relations")
+    relation_index: dict[str, tuple[str, str]] = {}
+    relation_order: list[tuple[str, str]] = []
+    for relation in relations:
+        raw_relation = _architecture_mapping(relation, "module relation")
+        relation_id = _architecture_text(raw_relation.get("relation_id"), "relation identity")
+        importer = _architecture_text(raw_relation.get("importer"), "relation importer")
+        imported = _architecture_text(raw_relation.get("imported"), "relation imported module")
+        if importer not in modules or imported not in modules:
+            _fail("Grimp worker relation escapes its module inventory")
+        expected_id = _architecture_stable_id("module-import-v1", importer, imported)
+        if relation_id != expected_id or relation_id in relation_index:
+            _fail("Grimp worker relation identity is stale or duplicated")
+        relation_index[relation_id] = (importer, imported)
+        relation_order.append((importer, imported))
+    if relation_order != sorted(relation_order) or len(relations) != relations_count:
+        _fail("Grimp worker relation inventory disagrees with its counter")
+    return modules, relation_index
+
+
+def _validate_projection_relation(
+    value: object,
+    *,
+    label: str,
+    relation_index: Mapping[str, tuple[str, str]],
+) -> tuple[str, str, tuple[str, ...]]:
+    relation = _architecture_mapping(value, label)
+    source = _architecture_text(relation.get("source_module"), f"{label} source")
+    target = _architecture_text(relation.get("target_module"), f"{label} target")
+    witnesses = tuple(
+        _architecture_text_list(relation.get("witness_ids"), f"{label} witnesses")
+    )
+    if not witnesses:
+        _fail(f"Grimp worker {label} omitted its witnesses")
+    for witness in witnesses:
+        if relation_index.get(witness) != (source, target):
+            _fail(f"Grimp worker {label} has a stale witness")
+    return source, target, witnesses
+
+
+def _validate_projection_payload(
+    value: object,
+    *,
+    label: str,
+    label_kind: str,
+    resolution_policy: str,
+    modules: Sequence[str],
+    registered_modules: set[str],
+    expected_labels: Mapping[str, tuple[str, ...]],
+    relation_index: Mapping[str, tuple[str, str]],
+) -> dict[str, object]:
+    projection = _architecture_mapping(value, f"{label} projection")
+    if projection.get("label_kind") != label_kind:
+        _fail(f"Grimp worker {label} projection label kind drifted")
+    if projection.get("resolution_policy") != resolution_policy:
+        _fail(f"Grimp worker {label} resolution policy drifted")
+
+    resolutions = _architecture_sequence(
+        projection.get("mapping_resolutions"), f"{label} mapping resolutions"
+    )
+    resolution_by_module: dict[str, tuple[str, tuple[str, ...]]] = {}
+    resolution_order: list[str] = []
+    status_counts = Counter[str]()
+    for item in resolutions:
+        raw = _architecture_mapping(item, f"{label} mapping resolution")
+        module = _architecture_text(raw.get("module_id"), f"{label} mapped module")
+        status = _architecture_text(raw.get("status"), f"{label} mapping status")
+        labels = tuple(
+            _architecture_text_list(raw.get("labels"), f"{label} mapping labels")
+        )
+        if status not in {"resolved", "unmapped", "overlap", "out_of_scope"}:
+            _fail(f"Grimp worker {label} mapping status is unknown")
+        if module in resolution_by_module:
+            _fail(f"Grimp worker {label} mapping repeats a module")
+        if module in registered_modules:
+            if status != "resolved" or labels != expected_labels.get(module):
+                _fail(f"Grimp worker {label} registered module mapping is incomplete")
+        elif status != "out_of_scope" or labels:
+            _fail(f"Grimp worker {label} mapped a module outside the transitional scope")
+        resolution_by_module[module] = (status, labels)
+        resolution_order.append(module)
+        status_counts[status] += 1
+    if resolution_order != list(modules):
+        _fail(f"Grimp worker {label} mapping does not cover the module graph exactly")
+
+    counters = _architecture_mapping(projection.get("counters"), f"{label} counters")
+    expected_status_counters = {
+        "resolved_modules": status_counts["resolved"],
+        "unmapped_modules": status_counts["unmapped"],
+        "overlapping_modules": status_counts["overlap"],
+        "out_of_scope_modules": status_counts["out_of_scope"],
+    }
+    for counter_name, expected in expected_status_counters.items():
+        if _architecture_count(counters.get(counter_name), f"{label} {counter_name}") != expected:
+            _fail(f"Grimp worker {label} mapping counter drifted: {counter_name}")
+    if status_counts["unmapped"] or status_counts["overlap"]:
+        _fail(f"live {label} registered mapping is incomplete or overlapping")
+
+    projected_edges = _architecture_sequence(
+        projection.get("projected_edges"), f"{label} projected edges"
+    )
+    projected_edge_by_id: dict[str, Mapping[str, object]] = {}
+    projected_order: list[tuple[str, str]] = []
+    covered_relations: Counter[str] = Counter()
+    for edge in projected_edges:
+        raw_edge = _architecture_mapping(edge, f"{label} projected edge")
+        edge_id = _architecture_text(raw_edge.get("edge_id"), f"{label} projected edge id")
+        source_label = _architecture_text(
+            raw_edge.get("source_label"), f"{label} projected source"
+        )
+        target_label = _architecture_text(
+            raw_edge.get("target_label"), f"{label} projected target"
+        )
+        expected_edge_id = _architecture_stable_id(
+            f"{label_kind}-projected-edge-v1", source_label, target_label
+        )
+        if edge_id != expected_edge_id or edge_id in projected_edge_by_id:
+            _fail(f"Grimp worker {label} projected edge identity is stale or duplicated")
+        module_relations = _architecture_sequence(
+            raw_edge.get("module_relations"), f"{label} projected module relations"
+        )
+        if not module_relations:
+            _fail(f"Grimp worker {label} projected edge omitted module witnesses")
+        edge_witnesses: set[str] = set()
+        for relation in module_relations:
+            source, target, witnesses = _validate_projection_relation(
+                relation,
+                label=f"{label} projected relation",
+                relation_index=relation_index,
+            )
+            source_resolution = resolution_by_module.get(source)
+            target_resolution = resolution_by_module.get(target)
+            if (
+                source_resolution != ("resolved", (source_label,))
+                or target_resolution != ("resolved", (target_label,))
+            ):
+                _fail(f"Grimp worker {label} projected relation contradicts its mapping")
+            edge_witnesses.update(witnesses)
+            covered_relations.update(witnesses)
+        declared_witnesses = _architecture_text_list(
+            raw_edge.get("witness_ids"), f"{label} projected edge witnesses"
+        )
+        if declared_witnesses != sorted(edge_witnesses):
+            _fail(f"Grimp worker {label} projected edge witness union drifted")
+        projected_edge_by_id[edge_id] = raw_edge
+        projected_order.append((source_label, target_label))
+    if projected_order != sorted(projected_order):
+        _fail(f"Grimp worker {label} projected edges are not canonical")
+
+    unresolved = _architecture_sequence(
+        projection.get("unresolved_relations"), f"{label} unresolved relations"
+    )
+    for item in unresolved:
+        raw = _architecture_mapping(item, f"{label} unresolved relation")
+        source, target, witnesses = _validate_projection_relation(
+            raw.get("relation"),
+            label=f"{label} unresolved module relation",
+            relation_index=relation_index,
+        )
+        source_status = _architecture_text(
+            raw.get("source_status"), f"{label} unresolved source status"
+        )
+        target_status = _architecture_text(
+            raw.get("target_status"), f"{label} unresolved target status"
+        )
+        source_resolution = resolution_by_module.get(source)
+        target_resolution = resolution_by_module.get(target)
+        if (
+            source_resolution is None
+            or target_resolution is None
+            or source_resolution[0] != source_status
+            or target_resolution[0] != target_status
+            or source_status == target_status == "resolved"
+        ):
+            _fail(f"Grimp worker {label} unresolved relation contradicts its mapping")
+        covered_relations.update(witnesses)
+    if set(covered_relations) != set(relation_index) or any(
+        count != 1 for count in covered_relations.values()
+    ):
+        _fail(f"Grimp worker {label} projection does not partition module relations")
+
+    realizable = _architecture_sequence(
+        projection.get("realizable_sccs"), f"{label} realizable SCCs"
+    )
+    unresolved_sccs = _architecture_sequence(
+        projection.get("unresolved_sccs"), f"{label} unresolved SCCs"
+    )
+    if realizable or unresolved_sccs:
+        _fail(f"live {label} projection contains a realizable module cycle")
+
+    aggregate = _architecture_sequence(
+        projection.get("aggregate_quotient_sccs"), f"{label} aggregate quotient SCCs"
+    )
+    aggregate_ids: set[str] = set()
+    for item in aggregate:
+        raw = _architecture_mapping(item, f"{label} aggregate quotient SCC")
+        aggregate_labels = _architecture_text_list(
+            raw.get("labels"), f"{label} aggregate quotient labels"
+        )
+        if len(aggregate_labels) < 2:
+            _fail(f"Grimp worker {label} aggregate quotient SCC is trivial")
+        aggregate_id = _architecture_text(
+            raw.get("aggregate_scc_id"), f"{label} aggregate quotient identity"
+        )
+        expected_id = _architecture_stable_id(
+            f"{label_kind}-aggregate-quotient-scc-v1", *aggregate_labels
+        )
+        if aggregate_id != expected_id or aggregate_id in aggregate_ids:
+            _fail(f"Grimp worker {label} aggregate quotient identity drifted")
+        aggregate_ids.add(aggregate_id)
+        shortest = _architecture_sequence(
+            raw.get("shortest_cycle"), f"{label} aggregate shortest cycle"
+        )
+        if (
+            len(shortest) < 3
+            or shortest[0] != shortest[-1]
+            or any(
+                not isinstance(node, str) or node not in aggregate_labels
+                for node in shortest
+            )
+        ):
+            _fail(f"Grimp worker {label} aggregate shortest cycle is malformed")
+        internal_edge_ids = _architecture_unique_text_sequence(
+            raw.get("internal_edge_ids"), f"{label} aggregate internal edges"
+        )
+        shortest_edge_ids = _architecture_unique_text_sequence(
+            raw.get("shortest_cycle_edge_ids"), f"{label} aggregate shortest edges"
+        )
+        internal_edges_match_labels = all(
+            projected_edge_by_id[edge_id].get("source_label") in aggregate_labels
+            and projected_edge_by_id[edge_id].get("target_label") in aggregate_labels
+            for edge_id in internal_edge_ids
+            if edge_id in projected_edge_by_id
+        )
+        shortest_edges_match_cycle = len(shortest_edge_ids) == len(shortest) - 1 and all(
+            projected_edge_by_id[edge_id].get("source_label") == source
+            and projected_edge_by_id[edge_id].get("target_label") == target
+            for source, target, edge_id in zip(
+                shortest[:-1], shortest[1:], shortest_edge_ids, strict=True
+            )
+            if edge_id in projected_edge_by_id
+        )
+        if (
+            not set(internal_edge_ids) <= set(projected_edge_by_id)
+            or not set(shortest_edge_ids) <= set(internal_edge_ids)
+            or len(shortest_edge_ids) != len(shortest) - 1
+            or not internal_edges_match_labels
+            or not shortest_edges_match_cycle
+            or raw.get("semantics")
+            != "aggregate_quotient_dependency_cycle_noncomposable-v1"
+            or raw.get("authority") != "diagnostic"
+            or raw.get("realizable_module_components") != []
+        ):
+            _fail(f"Grimp worker {label} aggregate quotient evidence is inconsistent")
+
+    expected_lengths = {
+        "projected_edges": len(projected_edges),
+        "unresolved_relations": len(unresolved),
+        "realizable_sccs": len(realizable),
+        "unresolved_sccs": len(unresolved_sccs),
+        "aggregate_quotient_sccs": len(aggregate),
+    }
+    for counter_name, expected in expected_lengths.items():
+        if _architecture_count(counters.get(counter_name), f"{label} {counter_name}") != expected:
+            _fail(f"Grimp worker {label} projection counter drifted: {counter_name}")
+    return {
+        "projection": projection,
+        "counters": counters,
+        "projected_edges": projected_edge_by_id,
+        "aggregate_quotient_sccs": len(aggregate),
+    }
+
+
+def _validate_family_decisions(validation: Mapping[str, object]) -> None:
+    projection = _architecture_mapping(validation.get("projection"), "target family projection")
+    counters = _architecture_mapping(validation.get("counters"), "target family counters")
+    projected_edges = cast(
+        Mapping[str, Mapping[str, object]],
+        _architecture_mapping(
+            validation.get("projected_edges"), "target family projected edge index"
+        ),
+    )
+    if projection.get("dag") != _expected_capability_family_dag():
+        _fail("Grimp worker target family DAG policy drifted")
+    decisions = _architecture_sequence(
+        projection.get("edge_decisions"), "target family edge decisions"
+    )
+    decision_by_id: dict[str, Mapping[str, object]] = {}
+    forbidden_ids: list[str] = []
+    canonical_to_compat_ids: list[str] = []
+    for item in decisions:
+        decision = _architecture_mapping(item, "target family edge decision")
+        edge_id = _architecture_text(decision.get("edge_id"), "target family decision edge")
+        edge = projected_edges.get(edge_id)
+        if edge is None or edge_id in decision_by_id:
+            _fail("Grimp worker target family decision references an unknown edge")
+        source = edge["source_label"]
+        target = edge["target_label"]
+        if source == target:
+            expected_allowed, expected_reason = True, "allowed_same_family"
+        elif (
+            source == EXPECTED_CAPABILITY_CANONICAL_FAMILY
+            and target == EXPECTED_CAPABILITY_COMPATIBILITY_FAMILY
+        ):
+            expected_allowed, expected_reason = False, "canonical_to_compat"
+        elif (
+            source == EXPECTED_CAPABILITY_COMPATIBILITY_FAMILY
+            and target == EXPECTED_CAPABILITY_CANONICAL_FAMILY
+        ):
+            expected_allowed, expected_reason = True, "allowed_by_dag"
+        else:
+            expected_allowed, expected_reason = False, "forbidden_dependency"
+        if (
+            decision.get("source_family") != source
+            or decision.get("target_family") != target
+            or decision.get("allowed") is not expected_allowed
+            or decision.get("reason") != expected_reason
+            or decision.get("witness_ids") != edge.get("witness_ids")
+        ):
+            _fail("Grimp worker target family edge decision is inconsistent")
+        decision_by_id[edge_id] = decision
+        if not expected_allowed:
+            forbidden_ids.append(edge_id)
+        if expected_reason == "canonical_to_compat":
+            canonical_to_compat_ids.append(edge_id)
+    if set(decision_by_id) != set(projected_edges):
+        _fail("Grimp worker target family decisions do not cover every projected edge")
+    if projection.get("forbidden_edge_ids") != forbidden_ids:
+        _fail("Grimp worker target family forbidden edge inventory drifted")
+    if projection.get("canonical_to_compat_edge_ids") != canonical_to_compat_ids:
+        _fail("Grimp worker canonical-to-compat edge inventory drifted")
+    decision_counts = {
+        "edge_decisions": len(decisions),
+        "forbidden_edges": len(forbidden_ids),
+        "canonical_to_compat_edges": len(canonical_to_compat_ids),
+    }
+    for counter_name, expected in decision_counts.items():
+        if _architecture_count(counters.get(counter_name), counter_name) != expected:
+            _fail(f"Grimp worker target family decision counter drifted: {counter_name}")
+    if forbidden_ids or canonical_to_compat_ids:
+        _fail("live target family dependencies violate the allowed DAG")
+
+
+def evaluate_architecture_payload(
+    payload: Mapping[str, object], *, root: Path = DEFAULT_ROOT
+) -> dict[str, object]:
+    if payload.get("schema") != EXPECTED_ARCHITECTURE_WORKER_SCHEMA:
         _fail("Grimp worker returned an unsupported schema")
     if payload.get("status") != "ready":
         _fail("Grimp worker did not return ready evidence")
-    raw_counters = payload.get("counters")
-    if not isinstance(raw_counters, Mapping):
-        _fail("Grimp worker counters are missing")
-    raw_violations = raw_counters.get("contract_violations")
-    raw_cyclic = raw_counters.get("cyclic_components")
-    raw_modules = raw_counters.get("modules")
-    raw_relations = raw_counters.get("production_relations")
-    if any(
-        isinstance(value, bool) or not isinstance(value, int)
-        for value in (raw_violations, raw_cyclic, raw_modules, raw_relations)
-    ):
-        _fail("Grimp worker counters are malformed")
-    if cast(int, raw_modules) <= 0 or cast(int, raw_relations) < 0:
+    raw_counters = _architecture_mapping(payload.get("counters"), "counters")
+    raw_violations = _architecture_count(
+        raw_counters.get("contract_violations"), "contract violations"
+    )
+    raw_cyclic = _architecture_count(
+        raw_counters.get("cyclic_components"), "cyclic components"
+    )
+    raw_modules = _architecture_count(raw_counters.get("modules"), "modules")
+    raw_relations = _architecture_count(
+        raw_counters.get("production_relations"), "production relations"
+    )
+    if raw_modules <= 0:
         _fail("Grimp worker module or relation counters are invalid")
-    evaluations = payload.get("contract_evaluations")
-    cycles = payload.get("cycles")
-    if not isinstance(evaluations, list) or not isinstance(cycles, list):
-        _fail("Grimp worker omitted contracts or cycles")
-    raw_tool = payload.get("tool")
+    modules, relation_index = _architecture_module_inventory(
+        payload,
+        modules_count=raw_modules,
+        relations_count=raw_relations,
+    )
+    evaluations = _architecture_sequence(
+        payload.get("contract_evaluations"), "contract evaluations"
+    )
+    cycles = _architecture_sequence(payload.get("cycles"), "module cycles")
+    raw_tool = _architecture_mapping(payload.get("tool"), "tool identity")
     if (
-        not isinstance(raw_tool, Mapping)
-        or raw_tool.get("name") != "grimp"
+        raw_tool.get("name") != "grimp"
         or not isinstance(raw_tool.get("version"), str)
         or not raw_tool.get("version")
     ):
         _fail("Grimp worker omitted its tool version")
-    raw_architecture = payload.get("architecture")
-    if (
-        not isinstance(raw_architecture, Mapping)
-        or raw_architecture.get("baseline_id") != EXPECTED_ARCHITECTURE_BASELINE_ID
-    ):
+    raw_architecture = _architecture_mapping(payload.get("architecture"), "architecture")
+    if raw_architecture.get("baseline_id") != EXPECTED_ARCHITECTURE_BASELINE_ID:
         _fail("Grimp worker omitted its architecture baseline identity")
-    raw_inputs = payload.get("inputs")
+    raw_inputs = _architecture_mapping(payload.get("inputs"), "input manifest")
     if (
-        not isinstance(raw_inputs, Mapping)
-        or re.fullmatch(r"[0-9a-f]{64}", str(raw_inputs.get("content_manifest_sha256", ""))) is None
+        re.fullmatch(r"[0-9a-f]{64}", str(raw_inputs.get("content_manifest_sha256", "")))
+        is None
     ):
         _fail("Grimp worker omitted its input manifest")
     observed_contracts: set[str] = set()
@@ -542,21 +1094,127 @@ def evaluate_architecture_payload(payload: Mapping[str, object]) -> dict[str, ob
     failed_contracts.sort()
     if observed_contracts != EXPECTED_ARCHITECTURE_CONTRACTS:
         _fail(f"Grimp worker contract inventory drifted: observed={sorted(observed_contracts)!r}")
-    if raw_violations or raw_cyclic or failed_contracts or cycles:
+
+    expected_projection = _expected_capability_projection(root)
+    projections = _architecture_mapping(payload.get("projections"), "projections")
+    if projections.get("schema") != EXPECTED_ARCHITECTURE_PROJECTION_SCHEMA:
+        _fail("Grimp worker architecture projection schema drifted")
+    if projections.get("policy_id") != EXPECTED_CAPABILITY_PROJECTION_POLICY_ID:
+        _fail("Grimp worker architecture projection policy drifted")
+    registry_identity = _architecture_mapping(
+        projections.get("capability_registry"), "projection capability registry"
+    )
+    if (
+        registry_identity.get("schema") != expected_projection["schema"]
+        or registry_identity.get("fingerprint") != expected_projection["fingerprint"]
+    ):
+        _fail("Grimp worker capability registry fingerprint drifted")
+    scope = _architecture_mapping(projections.get("scope"), "projection scope")
+    if scope.get("policy") != EXPECTED_CAPABILITY_PROJECTION_SCOPE_POLICY:
+        _fail("Grimp worker capability projection scope policy drifted")
+    canonical_modules = _architecture_text_list(
+        scope.get("canonical_modules"), "projection canonical modules"
+    )
+    legacy_modules = _architecture_text_list(
+        scope.get("legacy_modules"), "projection legacy modules"
+    )
+    registered_modules = _architecture_text_list(
+        scope.get("registered_modules"), "projection registered modules"
+    )
+    present_modules = _architecture_text_list(
+        scope.get("present_registered_modules"), "projection present registered modules"
+    )
+    missing_modules = _architecture_text_list(
+        scope.get("missing_registered_modules"), "projection missing registered modules"
+    )
+    if (
+        canonical_modules != expected_projection["canonical_modules"]
+        or legacy_modules != expected_projection["legacy_modules"]
+        or registered_modules != expected_projection["registered_modules"]
+        or present_modules != sorted(set(registered_modules) & set(modules))
+        or missing_modules != sorted(set(registered_modules) - set(modules))
+    ):
+        _fail("Grimp worker capability projection scope drifted")
+    if missing_modules:
+        _fail("live architecture is missing registered capability modules")
+
+    module_graph = _architecture_mapping(
+        projections.get("module_graph"), "projection module graph"
+    )
+    if module_graph.get("semantics") != "directed-production-module-import-scc-v1":
+        _fail("Grimp worker module SCC semantics drifted")
+    projected_module_sccs = _architecture_sequence(
+        module_graph.get("cyclic_sccs"), "projected module SCCs"
+    )
+    if len(projected_module_sccs) != raw_cyclic or len(cycles) != raw_cyclic:
+        _fail("Grimp worker module SCC inventories disagree")
+
+    registered_set = set(registered_modules)
+    owner_validation = _validate_projection_payload(
+        projections.get("logical_owner"),
+        label="logical owner",
+        label_kind="logical_owner",
+        resolution_policy=EXPECTED_CAPABILITY_OWNER_RESOLUTION_POLICY,
+        modules=modules,
+        registered_modules=registered_set,
+        expected_labels=cast(
+            Mapping[str, tuple[str, ...]], expected_projection["owner_labels"]
+        ),
+        relation_index=relation_index,
+    )
+    family_validation = _validate_projection_payload(
+        projections.get("target_family"),
+        label="target family",
+        label_kind="target_family",
+        resolution_policy=EXPECTED_CAPABILITY_FAMILY_RESOLUTION_POLICY,
+        modules=modules,
+        registered_modules=registered_set,
+        expected_labels=cast(
+            Mapping[str, tuple[str, ...]], expected_projection["family_labels"]
+        ),
+        relation_index=relation_index,
+    )
+    _validate_family_decisions(family_validation)
+    owner_counters = _architecture_mapping(
+        owner_validation.get("counters"), "validated logical owner counters"
+    )
+    family_counters = _architecture_mapping(
+        family_validation.get("counters"), "validated target family counters"
+    )
+
+    if raw_violations or raw_cyclic or failed_contracts or cycles or projected_module_sccs:
         _fail(
             "live architecture contracts failed: "
             f"violations={raw_violations}, contracts={failed_contracts}, "
             f"cyclic_components={raw_cyclic}, cycles={len(cycles)}"
         )
     return {
-        "modules": cast(int, raw_modules),
-        "production_relations": cast(int, raw_relations),
-        "contract_violations": cast(int, raw_violations),
-        "cyclic_components": cast(int, raw_cyclic),
+        "modules": raw_modules,
+        "production_relations": raw_relations,
+        "contract_violations": raw_violations,
+        "cyclic_components": raw_cyclic,
         "contract_ids": sorted(observed_contracts),
         "grimp_version": raw_tool["version"],
         "architecture_baseline_id": raw_architecture["baseline_id"],
         "input_manifest_sha256": raw_inputs["content_manifest_sha256"],
+        "projection_policy_id": projections["policy_id"],
+        "capability_registry_fingerprint": registry_identity["fingerprint"],
+        "registered_capability_modules": len(registered_modules),
+        "missing_registered_capability_modules": len(missing_modules),
+        "owner_unmapped_modules": owner_counters["unmapped_modules"],
+        "owner_overlapping_modules": owner_counters["overlapping_modules"],
+        "family_unmapped_modules": family_counters["unmapped_modules"],
+        "family_overlapping_modules": family_counters["overlapping_modules"],
+        "family_forbidden_edges": family_counters["forbidden_edges"],
+        "family_canonical_to_compat_edges": family_counters[
+            "canonical_to_compat_edges"
+        ],
+        "owner_aggregate_quotient_sccs": owner_validation[
+            "aggregate_quotient_sccs"
+        ],
+        "family_aggregate_quotient_sccs": family_validation[
+            "aggregate_quotient_sccs"
+        ],
     }
 
 
@@ -583,7 +1241,7 @@ def run_architecture_gate(root: Path) -> dict[str, object]:
         _fail(f"Grimp worker returned invalid JSON: {error}")
     if not isinstance(payload, Mapping):
         _fail("Grimp worker returned a non-object payload")
-    return evaluate_architecture_payload(payload)
+    return evaluate_architecture_payload(payload, root=root)
 
 
 def _semantic_version(output: str, tool: str) -> str:

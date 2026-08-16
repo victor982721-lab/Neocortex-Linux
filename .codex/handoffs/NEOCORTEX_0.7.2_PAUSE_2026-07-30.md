@@ -378,7 +378,7 @@ segunda corrida integral como diagnóstico ciego.
   consume review v22, ejecuta experimentos allow-listed, instala el wheel
   candidato fuera del checkout y exige replay. Las herramientas individuales
   quedan como diagnóstico interno; no constituyen una aceptación paralela. La
-  política `local-linux-diff-aware-validation-v7` liga cambios de CLI y de
+  política `local-linux-diff-aware-validation-v8` liga cambios de CLI y de
   Knowledge Asset Health Text/PDF con sus preguntas, subjects, templates y
   disposiciones técnicas v6 exactas; si falta cualquiera, se abstiene.
   Una selección afectada conserva como máximo 5000 tests y shards de 50; al
@@ -393,6 +393,23 @@ segunda corrida integral como diagnóstico ciego.
   terminales `passed|skipped`. Ruff, Mypy focal, la reproducción real y la
   matriz consolidada de 399 tests más 2 subtests quedaron verdes; no existe aún
   receipt canónico aprobado para este corte.
+- La aceptación más reciente sobre `b1979f1ab8f04a798846591e7e6654dfa2034581`
+  aprobó static, arquitectura, `trusted-deep` y review v22, pero Coverage cerró
+  con 126 fallos: 124 nacían de colocar `TMPDIR` dentro del owner durable de
+  self-analysis y 2 de expectativas Semantic anteriores al replay medible. No
+  publicó receipt. El lote material posterior corrige ambas causas: runtime
+  pytest atómico fuera del owner durable, checkpoints v2 independientes sólo
+  de la ruta efímera, y contratos `execution_mode`/contadores Semantic.
+- El mismo lote inicia la reorganización capability-first sin crear nuevos
+  roots: mueve 27 implementaciones Archive/DOCX/Image/shared a
+  `capabilities.formats` y `platform.shared`, mantiene aliases históricos
+  exactos y conserva schemas/stores. Un registry versionado declara 25 pares
+  canonical/legacy, owner, estado, superficie y tests; la proyección
+  arquitectónica distingue SCC de módulo realizables de SCC agregados sólo
+  diagnósticos y aplica el DAG `compat.formats → capabilities.formats`.
+  Antes de la aceptación aprobaron Ruff en 111 archivos y cuatro matrices
+  focales disjuntas: 811 tests, 21 skips y 102 subtests. El recibo canónico,
+  release instalada, E2E/replay y push siguen pendientes.
 - La corrida full medida necesita reservar el costo de providers no-Coverage y
   finalización además del presupuesto 2x de shards. El timeout interno full es
   ahora 60 minutos (1800 s de Coverage más 1800 s de overhead), todavía dentro
@@ -604,16 +621,15 @@ segunda corrida integral como diagnóstico ciego.
 1. Leer CTBI/AGENTS, `PENDIENTES.md` y este handoff; verificar en vivo rama,
    `HEAD`, `origin/main`, release `current`, worktree, procesos y ausencia de
    workflows. Usar shells no-login.
-2. Conservar congelada la corrección proporcional ya implementada: `--all`
-   consumidor del receipt, caché Code independiente del perfil y con commits
-   por lote, replay Semantic exacto sin enumeración, validación v7 consolidada,
-   Coverage aislada de monkeypatches SQLite y checkpoints `passed|skipped`.
-   Registrar el SHA limpio en `PENDIENTES.md`.
+2. Mantener el lote material como un único candidato limpio: `--all` consumidor
+   del receipt, caché Code por lotes, replay Semantic exacto, runtime Coverage
+   efímero, checkpoints v2 y primera cohorte capability-first. Registrar su SHA
+   exacto en `PENDIENTES.md`; no abrir v23 ni otra cohorte antes del cierre.
 3. Ejecutar una sola vez
    `Neocortex code validate --baseline HEAD^`. El resultado aceptable es
    `passed`; `failed` o `abstained` abren diagnóstico focal desde la evidencia
    del gate, nunca una batería manual paralela. Comprobar especialmente:
-   - receipt exacto v1 ligado al commit limpio y policy v7;
+   - receipt exacto v1 ligado al commit limpio y policy v8;
    - suite Linux y Coverage sin regresión dentro del mismo receipt;
    - pip-audit `cache_replay`, cero procesos/red dentro del worker;
    - experiments con receipts terminales;
@@ -688,7 +704,7 @@ worker hace commit, push, release, providers ni gate integral.
 - Action/template/scenario:
   `run_knowledge_docx_asset_health_causal_experiment` /
   `knowledge.docx_asset_health_causal_acceptance` v1.
-- Bumps: review v23, runtime/template/planning v11, technical/validation v7; no
+- Bumps: review v23, runtime/template/planning v11, technical v7/validation v8; no
   schema SQLite nuevo.
 - DOCX owner/store/schema: `docx` / `sqlite:docx.sqlite3` / 6; estados reales
   `complete|partial|error`. `protected` Health sólo se deriva de la tupla

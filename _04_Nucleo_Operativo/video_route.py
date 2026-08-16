@@ -159,7 +159,10 @@ class _UnavailableOcrRuntime:
 
 def _default_ocr_runtime(config: "VideoRouteConfig") -> _OcrRuntime:
     try:
-        from .image_document import DocumentVerifierConfig, resolve_document_verifier
+        from .capabilities.formats.image.document import (
+            DocumentVerifierConfig,
+            resolve_document_verifier,
+        )
     except (ImportError, ModuleNotFoundError):
         return _UnavailableOcrRuntime()
     return resolve_document_verifier(
@@ -175,7 +178,7 @@ def _default_ocr_runtime(config: "VideoRouteConfig") -> _OcrRuntime:
 
 
 def _default_frame_ocr(path: Path, runtime: _OcrRuntime, memory_gate=None) -> _OcrEvidence:
-    from .image_document import verify_document_text
+    from .capabilities.formats.image.document import verify_document_text
 
     return verify_document_text(path, runtime, memory_gate)  # type: ignore[arg-type]
 

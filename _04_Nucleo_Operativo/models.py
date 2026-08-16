@@ -30,16 +30,16 @@ from .route_filters import CandidateSelection
 # region [02] Implementación
 
 if TYPE_CHECKING:
-    from .archive_models import ArchiveRouteSummary
+    from .capabilities.formats.archive.models import ArchiveRouteSummary
     from .audio_models import AudioRouteSummary
     from .code_contracts import CodeRouteSummary
     from .document_organization import (
         OrganizationApplySummary,
         OrganizationPlanSummary,
     )
-    from .docx_route import DocxRouteSummary
+    from .capabilities.formats.docx.route import DocxRouteSummary
     from .global_resources import GlobalResourceSummary
-    from .image_route import ImageRouteSummary
+    from .capabilities.formats.image.route import ImageRouteSummary
     from .office_route import OfficeRouteSummary
     from .pdf_route_models import PdfRouteSummary
     from .text_route import TextRouteSummary

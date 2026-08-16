@@ -1,89 +1,24 @@
-"""Persistent, incrementally migratable state for the DOCX route."""
+"""Compatibility alias for the canonical DOCX state module."""
 
 from __future__ import annotations
 
-import sqlite3
-from contextlib import contextmanager
-from pathlib import Path
+import sys
+from importlib import import_module
+from typing import TYPE_CHECKING
 
-from neocortex.sqlite_connection import (
-    READONLY_EXISTING,
-    READWRITE_CREATE,
-    SQLiteConnectionPolicy,
-    SQLiteWriterPragmas,
-    connect_sqlite,
-)
-
-from .docx_schema import (
-    DOCX_SCHEMA_VERSION,
-    UNKNOWN_BIRTHTIME_NS as DOCX_UNKNOWN_BIRTHTIME_NS,
-    create_fresh_docx_schema,
-    migrate_docx_schema,
-    validate_docx_metadata,
-    validate_docx_schema,
-)
-from .sqlite_schema_lifecycle import initialize_versioned_sqlite_schema
-
-
-# region [01] Schema and connections
-
-SCHEMA_VERSION = DOCX_SCHEMA_VERSION
-UNKNOWN_BIRTHTIME_NS = DOCX_UNKNOWN_BIRTHTIME_NS
-
-_DOCX_SQLITE_POLICY = SQLiteConnectionPolicy(
-    label="DOCX state",
-    timeout_seconds=60.0,
-    row_factory=sqlite3.Row,
-    writer_pragmas=SQLiteWriterPragmas(
-        journal_mode="WAL",
-        synchronous="NORMAL",
-        cache_size_kib=32768,
-        wal_autocheckpoint_pages=4096,
-        journal_size_limit_bytes=268435456,
-    ),
-)
-
-
-def connect_docx_state(path: Path, *, readonly: bool = False) -> sqlite3.Connection:
-    return connect_sqlite(
-        path,
-        mode=READONLY_EXISTING if readonly else READWRITE_CREATE,
-        policy=_DOCX_SQLITE_POLICY,
+if TYPE_CHECKING:
+    from .capabilities.formats.docx.state import SCHEMA_VERSION as SCHEMA_VERSION
+    from .capabilities.formats.docx.state import (
+        UNKNOWN_BIRTHTIME_NS as UNKNOWN_BIRTHTIME_NS,
     )
-
-
-@contextmanager
-def docx_database(path: Path, *, readonly: bool = False):
-    connection = connect_docx_state(path, readonly=readonly)
-    try:
-        if readonly:
-            yield connection
-        else:
-            with connection:
-                yield connection
-    finally:
-        connection.close()
-
-
-# endregion [01]
-
-
-# region [02] Initialization
-
-
-def initialize_docx_state(path: Path) -> None:
-    """Create or migrate DOCX state after a read-only structural probe."""
-
-    initialize_versioned_sqlite_schema(
-        path,
-        label="DOCX",
-        current_version=SCHEMA_VERSION,
-        connect=connect_docx_state,
-        validate_metadata=validate_docx_metadata,
-        validate_current=validate_docx_schema,
-        create_fresh=create_fresh_docx_schema,
-        migrate=migrate_docx_schema,
+    from .capabilities.formats.docx.state import (
+        connect_docx_state as connect_docx_state,
     )
-
-
-# endregion [02]
+    from .capabilities.formats.docx.state import docx_database as docx_database
+    from .capabilities.formats.docx.state import (
+        initialize_docx_state as initialize_docx_state,
+    )
+else:
+    sys.modules[__name__] = import_module(
+        "_04_Nucleo_Operativo.capabilities.formats.docx.state"
+    )

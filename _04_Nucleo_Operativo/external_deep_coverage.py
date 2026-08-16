@@ -15,6 +15,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 from collections import defaultdict
 from collections.abc import Callable, Mapping, Sequence
@@ -40,7 +41,7 @@ DEEP_COVERAGE_PROVIDER_SCHEMA = "neocortex.pytest-coverage-trusted-deep/v1"
 DEEP_COVERAGE_REQUEST_SCHEMA = "neocortex.external-deep-coverage-request/v1"
 DEEP_COVERAGE_COLLECT_SCHEMA = "neocortex.external-deep-coverage-worker/collect-v1"
 DEEP_COVERAGE_SHARD_SCHEMA = "neocortex.external-deep-coverage-worker/shard-v1"
-DEEP_COVERAGE_CHECKPOINT_SCHEMA = "neocortex.deep-coverage-checkpoint/v1"
+DEEP_COVERAGE_CHECKPOINT_SCHEMA = "neocortex.deep-coverage-checkpoint/v2"
 
 _PRODUCTION_ROOTS = frozenset(PRODUCTION_ROOT_PACKAGES)
 _MAX_TIME_BUDGET_SECONDS = 900.0
@@ -374,19 +375,30 @@ def _validate_scratch(
     stage_root: Path,
     scratch_root: Path,
     trusted_root: Path,
-) -> Path:
+) -> tuple[Path, Path]:
     stage = stage_root.resolve(strict=True)
     scratch = scratch_root.resolve(strict=True)
     if not stage.is_dir() or not scratch.is_dir():
         raise ValueError("deep coverage roots must be directories")
     stage_normalized = os.path.normcase(os.path.abspath(stage))
     scratch_normalized = os.path.normcase(os.path.abspath(scratch))
-    if os.path.commonpath((stage_normalized, scratch_normalized)) == stage_normalized:
-        raise ValueError("deep coverage durable scratch cannot be inside the staged project")
     trusted_normalized = os.path.normcase(os.path.abspath(trusted_root))
-    if os.path.commonpath((trusted_normalized, scratch_normalized)) == trusted_normalized:
+    if os.path.commonpath((stage_normalized, scratch_normalized)) in {
+        stage_normalized,
+        scratch_normalized,
+    }:
+        raise ValueError("deep coverage runtime and durable scratch cannot overlap")
+    if os.path.commonpath((stage_normalized, trusted_normalized)) in {
+        stage_normalized,
+        trusted_normalized,
+    }:
+        raise ValueError("deep coverage runtime and trusted project cannot overlap")
+    if os.path.commonpath((trusted_normalized, scratch_normalized)) in {
+        trusted_normalized,
+        scratch_normalized,
+    }:
         raise ValueError("deep coverage scratch cannot be inside the trusted project")
-    return scratch
+    return stage, scratch
 
 
 def _canonical_repository_root() -> Path:
@@ -679,6 +691,176 @@ def _request_digest(request: Mapping[str, object]) -> str:
     return external_signature("deep-coverage-request-v1", payload)
 
 
+def _checkpoint_request_digest(request: Mapping[str, object]) -> str:
+    """Bind replay to the exact request except its per-attempt runtime path."""
+
+    _required_text(
+        request.get("scratch_root"),
+        label="deep coverage request scratch root",
+        maximum=32_768,
+    )
+    payload = {
+        key: value
+        for key, value in request.items()
+        if key not in {"request_signature", "scratch_root"}
+    }
+    return external_signature("deep-coverage-checkpoint-request-v1", payload)
+
+
+def _owned_plain_directory(
+    path: Path,
+    *,
+    allow_existing: bool,
+    label: str,
+    require_private: bool,
+) -> Path:
+    """Create or revalidate one owner-controlled, non-aliased directory."""
+
+    configured = Path(os.path.abspath(path))
+    try:
+        configured.mkdir(mode=0o700)
+    except FileExistsError as exc:
+        if not allow_existing:
+            raise ValueError(f"{label} was precreated") from exc
+    except OSError as exc:
+        raise ValueError(f"{label} cannot be created") from exc
+    try:
+        metadata = os.lstat(configured)
+        resolved = configured.resolve(strict=True)
+        canonical_metadata = os.stat(resolved, follow_symlinks=False)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise ValueError(f"{label} cannot be identity-verified") from exc
+    mode = stat.S_IMODE(metadata.st_mode)
+    effective_uid = getattr(os, "geteuid", lambda: int(metadata.st_uid))()
+    unsafe_permissions = mode & (0o077 if require_private else 0o022)
+    if (
+        configured != resolved
+        or not stat.S_ISDIR(metadata.st_mode)
+        or not stat.S_ISDIR(canonical_metadata.st_mode)
+        or (int(metadata.st_dev), int(metadata.st_ino))
+        != (int(canonical_metadata.st_dev), int(canonical_metadata.st_ino))
+        or int(metadata.st_uid) != int(effective_uid)
+        or unsafe_permissions
+        or (mode & 0o700) != 0o700
+    ):
+        raise ValueError(f"{label} is not an owner-controlled plain directory")
+    return resolved
+
+
+def _private_runtime_directory(
+    path: Path,
+    *,
+    allow_existing: bool,
+    label: str,
+) -> Path:
+    return _owned_plain_directory(
+        path,
+        allow_existing=allow_existing,
+        label=label,
+        require_private=True,
+    )
+
+
+def _replace_bytes_atomically(path: Path, payload: bytes, *, label: str) -> None:
+    """Publish bytes through an unpredictable, descriptor-bound regular file."""
+
+    descriptor, raw_temporary = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=path.parent,
+    )
+    temporary = Path(raw_temporary)
+    open_descriptor = descriptor
+    identity: tuple[int, int] | None = None
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            open_descriptor = -1
+            metadata = os.fstat(stream.fileno())
+            identity = int(metadata.st_dev), int(metadata.st_ino)
+            written = stream.write(payload)
+            if written != len(payload):
+                raise OSError(f"{label} write was incomplete")
+            stream.flush()
+            os.fsync(stream.fileno())
+        assert identity is not None
+        metadata = os.lstat(temporary)
+        mode = stat.S_IMODE(metadata.st_mode)
+        effective_uid = getattr(os, "geteuid", lambda: int(metadata.st_uid))()
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or (int(metadata.st_dev), int(metadata.st_ino)) != identity
+            or metadata.st_nlink != 1
+            or int(metadata.st_uid) != int(effective_uid)
+            or mode & 0o077
+            or (mode & 0o600) != 0o600
+        ):
+            raise ValueError(f"{label} temporary file changed identity")
+        os.replace(temporary, path)
+        published = os.lstat(path)
+        published_mode = stat.S_IMODE(published.st_mode)
+        if (
+            not stat.S_ISREG(published.st_mode)
+            or (int(published.st_dev), int(published.st_ino)) != identity
+            or published.st_nlink != 1
+            or int(published.st_uid) != int(effective_uid)
+            or published_mode & 0o077
+            or (published_mode & 0o600) != 0o600
+        ):
+            raise ValueError(f"{label} publication changed identity")
+    except BaseException as primary:
+        if open_descriptor >= 0:
+            try:
+                os.close(open_descriptor)
+            except OSError as cleanup:
+                primary.add_note(f"{label} descriptor cleanup also failed: {cleanup}")
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError as cleanup:
+            primary.add_note(f"{label} temporary cleanup also failed: {cleanup}")
+        raise
+
+
+def _read_regular_file_without_links(path: Path, *, maximum: int) -> bytes | None:
+    no_follow = getattr(os, "O_NOFOLLOW", None)
+    if no_follow is None:
+        return None
+    flags = os.O_RDONLY | int(no_follow) | int(getattr(os, "O_CLOEXEC", 0))
+    try:
+        descriptor = os.open(path, flags)
+    except OSError:
+        return None
+    try:
+        with os.fdopen(descriptor, "rb") as stream:
+            before = os.fstat(stream.fileno())
+            mode = stat.S_IMODE(before.st_mode)
+            effective_uid = getattr(os, "geteuid", lambda: int(before.st_uid))()
+            if (
+                not stat.S_ISREG(before.st_mode)
+                or before.st_nlink != 1
+                or int(before.st_uid) != int(effective_uid)
+                or mode & 0o022
+                or not 0 <= before.st_size <= maximum
+            ):
+                return None
+            payload = stream.read(maximum + 1)
+            after = os.fstat(stream.fileno())
+    except OSError:
+        return None
+    if (
+        len(payload) != before.st_size
+        or len(payload) > maximum
+        or (int(before.st_dev), int(before.st_ino))
+        != (int(after.st_dev), int(after.st_ino))
+        or before.st_size != after.st_size
+        or before.st_mtime_ns != after.st_mtime_ns
+        or before.st_mode != after.st_mode
+        or before.st_uid != after.st_uid
+        or before.st_nlink != after.st_nlink
+    ):
+        return None
+    return payload
+
+
 def _run_worker(
     request: Mapping[str, object],
     *,
@@ -689,8 +871,11 @@ def _run_worker(
     signature = _request_digest(request)
     materialized = dict(request)
     materialized["request_signature"] = signature
-    request_root = scratch_root / "requests"
-    request_root.mkdir(parents=True, exist_ok=True)
+    request_root = _private_runtime_directory(
+        scratch_root / "requests",
+        allow_existing=True,
+        label="deep coverage worker request directory",
+    )
     request_path = request_root / f"{signature.rsplit(':', 1)[-1]}.json"
     encoded = json.dumps(
         materialized,
@@ -700,9 +885,11 @@ def _run_worker(
     ).encode("utf-8")
     if len(encoded) > 16 * 1024 * 1024:
         raise ValueError("deep coverage worker request exceeds its bound")
-    temporary = request_path.with_suffix(".tmp")
-    temporary.write_bytes(encoded)
-    os.replace(temporary, request_path)
+    _replace_bytes_atomically(
+        request_path,
+        encoded,
+        label="deep coverage worker request",
+    )
     worker = Path(__file__).with_name("external_deep_coverage_worker.py")
     command = (sys.executable, "-I", str(worker), "--request", str(request_path))
     completed = run_bounded_capture(
@@ -815,23 +1002,34 @@ def _load_checkpoint(
     path: Path,
     *,
     shard_signature: str,
-) -> Mapping[str, object] | None:
+    checkpoint_request_signature: str,
+) -> tuple[Mapping[str, object], str] | None:
     try:
-        metadata = path.stat()
-        if not path.is_file() or metadata.st_size > _MAX_CHECKPOINT_BYTES:
+        raw = _read_regular_file_without_links(path, maximum=_MAX_CHECKPOINT_BYTES)
+        if raw is None:
             return None
-        decoded = json.loads(path.read_text(encoding="utf-8"))
+        decoded = json.loads(raw.decode("utf-8"))
         record = _required_mapping(decoded, label="deep coverage checkpoint")
         if (
             record.get("schema") != DEEP_COVERAGE_CHECKPOINT_SCHEMA
             or record.get("status") != "passed"
             or record.get("shard_signature") != shard_signature
+            or record.get("checkpoint_request_signature")
+            != checkpoint_request_signature
         ):
             return None
         result = _required_mapping(record.get("result"), label="checkpoint result")
-        if record.get("result_digest") != _checkpoint_digest(result):
+        execution_request_signature = _required_text(
+            record.get("execution_request_signature"),
+            label="checkpoint execution request signature",
+            maximum=512,
+        )
+        if (
+            result.get("request_signature") != execution_request_signature
+            or record.get("result_digest") != _checkpoint_digest(result)
+        ):
             return None
-        return result
+        return result, execution_request_signature
     except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError):
         return None
 
@@ -840,12 +1038,25 @@ def _save_checkpoint(
     path: Path,
     *,
     shard_signature: str,
+    checkpoint_request_signature: str,
     result: Mapping[str, object],
 ) -> None:
+    validated_checkpoint_signature = _required_text(
+        checkpoint_request_signature,
+        label="checkpoint request signature",
+        maximum=512,
+    )
+    execution_request_signature = _required_text(
+        result.get("request_signature"),
+        label="checkpoint execution request signature",
+        maximum=512,
+    )
     record = {
         "schema": DEEP_COVERAGE_CHECKPOINT_SCHEMA,
         "status": "passed",
         "shard_signature": shard_signature,
+        "checkpoint_request_signature": validated_checkpoint_signature,
+        "execution_request_signature": execution_request_signature,
         "result_digest": _checkpoint_digest(result),
         "result": dict(result),
     }
@@ -854,10 +1065,11 @@ def _save_checkpoint(
     )
     if len(encoded) > _MAX_CHECKPOINT_BYTES:
         raise ValueError("deep coverage checkpoint exceeds its bound")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(".tmp")
-    temporary.write_bytes(encoded)
-    os.replace(temporary, path)
+    _replace_bytes_atomically(
+        path,
+        encoded,
+        label="deep coverage checkpoint",
+    )
 
 
 def _validate_arc(value: object, *, label: str) -> tuple[int, int]:
@@ -1765,10 +1977,9 @@ def _normalize(
 def _controlled_execution_environment(
     environment: Mapping[str, str],
     durable_scratch: Path,
+    runtime_root: Path,
 ) -> tuple[dict[str, str], Path]:
     controlled = dict(environment)
-    runtime_root = durable_scratch / "r"
-    runtime_root.mkdir(parents=True, exist_ok=True)
     home_directory = trusted_deep_home_directory()
     controlled["HOME"] = home_directory
     if os.name == "nt":
@@ -1837,11 +2048,21 @@ def _execution_context(
     started: float,
 ) -> _DeepCoverageContext:
     project_root = _validate_trusted_root(trusted_root)
-    durable_scratch = _validate_scratch(stage_root, scratch_root, project_root)
+    runtime_container, durable_scratch = _validate_scratch(
+        stage_root,
+        scratch_root,
+        project_root,
+    )
+    runtime_root = _private_runtime_directory(
+        runtime_container / "r",
+        allow_existing=False,
+        label="deep coverage runtime directory",
+    )
     owners = _owners_by_relative(staged)
     controlled_environment, runtime_root = _controlled_execution_environment(
         environment,
         durable_scratch,
+        runtime_root,
     )
     if prepared_input is None:
         prepared = _prepare_deep_coverage_input(
@@ -1963,7 +2184,7 @@ def _collect_suite(context: _DeepCoverageContext) -> _CollectedSuite:
     request_signature = _request_digest(request)
     payload, stdout_bytes, stderr_bytes = _run_worker(
         request,
-        scratch_root=context.durable_scratch,
+        scratch_root=context.runtime_root,
         environment=context.environment,
         timeout_seconds=remaining,
     )
@@ -2073,14 +2294,19 @@ def _validated_checkpoint(
     context: _DeepCoverageContext,
     suite: _CollectedSuite,
 ) -> Mapping[str, object] | None:
-    cached = _load_checkpoint(plan.checkpoint, shard_signature=plan.shard_signature)
-    if cached is None:
-        return None
     request = _shard_request(context, suite, plan)
+    loaded = _load_checkpoint(
+        plan.checkpoint,
+        shard_signature=plan.shard_signature,
+        checkpoint_request_signature=_checkpoint_request_digest(request),
+    )
+    if loaded is None:
+        return None
+    cached, execution_request_signature = loaded
     try:
         validated = _validate_shard(
             cached,
-            request_signature=_request_digest(request),
+            request_signature=execution_request_signature,
             shard_nodeids=plan.nodeids,
             tool_versions=context.prepared.tool_versions,
             owners=context.owners,
@@ -2096,7 +2322,7 @@ def _run_shard(
     suite: _CollectedSuite,
     *,
     progress_made: bool,
-) -> tuple[Mapping[str, object], int, int]:
+) -> tuple[Mapping[str, object], int, int, str]:
     remaining = _remaining_execution_seconds(
         context,
         ("pytest",),
@@ -2105,7 +2331,7 @@ def _run_shard(
     request = _shard_request(context, suite, plan)
     payload, stdout_bytes, stderr_bytes = _run_worker(
         request,
-        scratch_root=context.durable_scratch,
+        scratch_root=context.runtime_root,
         environment=context.environment,
         timeout_seconds=remaining,
     )
@@ -2116,15 +2342,19 @@ def _run_shard(
         tool_versions=context.prepared.tool_versions,
         owners=context.owners,
     )
-    return validated, stdout_bytes, stderr_bytes
+    return validated, stdout_bytes, stderr_bytes, _checkpoint_request_digest(request)
 
 
 def _execute_shards(
     context: _DeepCoverageContext,
     suite: _CollectedSuite,
 ) -> _ShardExecution:
-    checkpoint_root = context.durable_scratch / "checkpoints"
-    checkpoint_root.mkdir(parents=True, exist_ok=True)
+    checkpoint_root = _owned_plain_directory(
+        context.durable_scratch / "checkpoints",
+        allow_existing=True,
+        label="deep coverage checkpoint directory",
+        require_private=False,
+    )
     results: list[Mapping[str, object]] = []
     shards_reused = 0
     stdout_bytes = context.prepared.stdout_bytes + suite.stdout_bytes
@@ -2175,7 +2405,7 @@ def _execute_shards(
             reused_shards=shards_reused,
         )
         shard_started = time.monotonic()
-        validated, out_bytes, err_bytes = _run_shard(
+        validated, out_bytes, err_bytes, checkpoint_request_signature = _run_shard(
             plan,
             context,
             suite,
@@ -2194,6 +2424,7 @@ def _execute_shards(
             _save_checkpoint(
                 plan.checkpoint,
                 shard_signature=plan.shard_signature,
+                checkpoint_request_signature=checkpoint_request_signature,
                 result=validated,
             )
         _enforce_execution_deadline(

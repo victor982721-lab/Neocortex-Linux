@@ -136,6 +136,14 @@ def test_live_repository_graph_satisfies_published_architecture_contracts() -> N
     payload = json.loads(completed.stdout)
     failures = [item for item in payload["contract_evaluations"] if item["status"] == "failed"]
     assert failures == []
+    projections = payload["projections"]
+    assert projections["scope"]["missing_registered_modules"] == []
+    assert projections["logical_owner"]["counters"]["unmapped_modules"] == 0
+    assert projections["logical_owner"]["counters"]["overlapping_modules"] == 0
+    assert projections["target_family"]["counters"]["unmapped_modules"] == 0
+    assert projections["target_family"]["counters"]["overlapping_modules"] == 0
+    assert projections["target_family"]["counters"]["forbidden_edges"] == 0
+    assert projections["target_family"]["counters"]["canonical_to_compat_edges"] == 0
 
     public_facades = {
         "neocortex.read_api",
@@ -169,4 +177,84 @@ def test_live_repository_graph_satisfies_published_architecture_contracts() -> N
         (),
     )
     assert "_04_Nucleo_Operativo.archive_route" not in central_component
+    assert (
+        "_04_Nucleo_Operativo.capabilities.formats.archive.route"
+        not in central_component
+    )
     assert "_04_Nucleo_Operativo.video_route" not in central_component
+
+
+def test_transitional_capability_projection_is_exact_and_preserves_witnesses() -> None:
+    canonical, legacy, _, _ = architecture_worker._registered_capability_labels()
+    modules = tuple(sorted((*canonical, *legacy)))
+    relation = ModuleImport(legacy[0], canonical[0])
+
+    payload = architecture_worker._capability_projection_payload(modules, (relation,))
+
+    assert payload["schema"] == "neocortex.architecture-projection/v1"
+    scope = payload["scope"]
+    assert isinstance(scope, dict)
+    assert scope["registered_modules"] == list(modules)
+    assert scope["present_registered_modules"] == list(modules)
+    assert scope["missing_registered_modules"] == []
+    owner = payload["logical_owner"]
+    family = payload["target_family"]
+    assert isinstance(owner, dict)
+    assert isinstance(family, dict)
+    assert isinstance(owner["counters"], dict)
+    assert isinstance(family["counters"], dict)
+    assert isinstance(family["projected_edges"], list)
+    assert owner["counters"]["resolved_modules"] == len(modules)
+    assert family["counters"]["resolved_modules"] == len(modules)
+    assert family["counters"]["unmapped_modules"] == 0
+    assert family["counters"]["overlapping_modules"] == 0
+    assert family["counters"]["forbidden_edges"] == 0
+    assert family["counters"]["canonical_to_compat_edges"] == 0
+    assert family["edge_decisions"] == [
+        {
+            "edge_id": family["projected_edges"][0]["edge_id"],
+            "source_family": architecture_worker.CAPABILITY_COMPATIBILITY_FAMILY,
+            "target_family": architecture_worker.CAPABILITY_CANONICAL_FAMILY,
+            "allowed": True,
+            "reason": "allowed_by_dag",
+            "witness_ids": [relation.relation_id],
+        }
+    ]
+    assert family["projected_edges"][0]["module_relations"] == [
+        {
+            "source_module": relation.importer,
+            "target_module": relation.imported,
+            "witness_ids": [relation.relation_id],
+        }
+    ]
+
+
+def test_disconnected_owner_quotient_cycle_remains_typed_diagnostic_evidence() -> None:
+    canonical, legacy, owners, _ = architecture_worker._registered_capability_labels()
+    modules = tuple(sorted((*canonical, *legacy)))
+    archive = [module for module, labels in owners.items() if labels == ("archive",)]
+    docx = [module for module, labels in owners.items() if labels == ("docx",)]
+    imports = (
+        ModuleImport(archive[0], docx[0]),
+        ModuleImport(docx[1], archive[1]),
+    )
+
+    payload = architecture_worker._capability_projection_payload(modules, imports)
+
+    module_graph = payload["module_graph"]
+    assert isinstance(module_graph, dict)
+    assert module_graph["cyclic_sccs"] == []
+    owner = payload["logical_owner"]
+    assert isinstance(owner, dict)
+    assert isinstance(owner["counters"], dict)
+    assert isinstance(owner["aggregate_quotient_sccs"], list)
+    assert owner["realizable_sccs"] == []
+    assert owner["unresolved_sccs"] == []
+    assert owner["counters"]["aggregate_quotient_sccs"] == 1
+    aggregate = owner["aggregate_quotient_sccs"][0]
+    assert aggregate["labels"] == ["archive", "docx"]
+    assert aggregate["authority"] == "diagnostic"
+    assert aggregate["semantics"] == (
+        "aggregate_quotient_dependency_cycle_noncomposable-v1"
+    )
+    assert aggregate["realizable_module_components"] == []

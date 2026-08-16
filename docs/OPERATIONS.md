@@ -968,7 +968,7 @@ La selección experimental también está ligada al diff mediante un registro
 versionado de rutas/tests→preguntas/sujetos. Un registry gap relevante o una
 pregunta sin disposición técnica exacta después del replay produce
 `abstained`; `not_required` sólo aparece cuando ese binding demuestra que la
-pregunta es disjunta al cambio. La política v7 incorpora bindings exactos para
+pregunta es disjunta al cambio. La política v8 incorpora bindings exactos para
 la CLI pública y para Knowledge Asset Health Text/PDF; cambiar sus contratos o
 tests de control exige los templates de veintiún/cinco, doce/cuatro y
 doce/cuatro respectivamente.

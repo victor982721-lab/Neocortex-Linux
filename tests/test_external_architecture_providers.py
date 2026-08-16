@@ -221,7 +221,7 @@ def test_worker_command_is_direct_isolated_and_bounded(
         observed.append(tuple(arguments))
         assert kwargs["timeout_seconds"] == 180.0
         payload = {
-            "schema": "neocortex.external-architecture-worker/grimp-v1",
+            "schema": "neocortex.external-architecture-worker/grimp-v2",
             "status": "ready",
             "inputs": {"file_count": 1},
         }

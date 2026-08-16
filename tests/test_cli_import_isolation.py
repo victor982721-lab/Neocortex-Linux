@@ -52,9 +52,13 @@ class CliImportIsolationTests(unittest.TestCase):
             validate_arguments(args)
             forbidden = {
                 "_04_Nucleo_Operativo.route_registry",
+                "_04_Nucleo_Operativo.archive_route",
+                "_04_Nucleo_Operativo.capabilities.formats.archive.route",
                 "_04_Nucleo_Operativo.pdf_route",
                 "_04_Nucleo_Operativo.docx_route",
+                "_04_Nucleo_Operativo.capabilities.formats.docx.route",
                 "_04_Nucleo_Operativo.image_route",
+                "_04_Nucleo_Operativo.capabilities.formats.image.route",
             }
             loaded = forbidden.intersection(sys.modules)
             if loaded:
@@ -75,11 +79,15 @@ class CliImportIsolationTests(unittest.TestCase):
 
             forbidden = {
                 "_04_Nucleo_Operativo.route_registry",
+                "_04_Nucleo_Operativo.archive_route",
+                "_04_Nucleo_Operativo.capabilities.formats.archive.route",
                 "_04_Nucleo_Operativo.pdf_route",
                 "_04_Nucleo_Operativo.pdf_admin",
                 "_04_Nucleo_Operativo.pdf_derived_queries",
                 "_04_Nucleo_Operativo.docx_route",
+                "_04_Nucleo_Operativo.capabilities.formats.docx.route",
                 "_04_Nucleo_Operativo.image_route",
+                "_04_Nucleo_Operativo.capabilities.formats.image.route",
             }
             loaded = forbidden.intersection(sys.modules)
             if loaded:
@@ -170,10 +178,14 @@ class CliImportIsolationTests(unittest.TestCase):
                     raise SystemExit("unexpected PDF search status")
                 forbidden = {
                     "_04_Nucleo_Operativo.route_registry",
+                    "_04_Nucleo_Operativo.archive_route",
+                    "_04_Nucleo_Operativo.capabilities.formats.archive.route",
                     "_04_Nucleo_Operativo.pdf_route",
                     "_04_Nucleo_Operativo.pdf_admin",
                     "_04_Nucleo_Operativo.docx_route",
+                    "_04_Nucleo_Operativo.capabilities.formats.docx.route",
                     "_04_Nucleo_Operativo.image_route",
+                    "_04_Nucleo_Operativo.capabilities.formats.image.route",
                 }
                 loaded = forbidden.intersection(sys.modules)
                 if loaded:
@@ -211,10 +223,13 @@ class CliImportIsolationTests(unittest.TestCase):
                     raise SystemExit("unexpected DOCX search status")
                 forbidden = {
                     "_04_Nucleo_Operativo.route_registry",
+                    "_04_Nucleo_Operativo.archive_route",
+                    "_04_Nucleo_Operativo.capabilities.formats.archive.route",
                     "_04_Nucleo_Operativo.pdf_route",
                     "_04_Nucleo_Operativo.pdf_admin",
                     "_04_Nucleo_Operativo.pdf_derived_queries",
                     "_04_Nucleo_Operativo.image_route",
+                    "_04_Nucleo_Operativo.capabilities.formats.image.route",
                 }
                 loaded = forbidden.intersection(sys.modules)
                 if loaded:

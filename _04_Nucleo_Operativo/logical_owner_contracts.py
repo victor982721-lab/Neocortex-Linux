@@ -12,6 +12,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 
 from .code_architecture_contracts import stable_architecture_id
+from .platform.shared.capability_registry import capability_logical_owner_bindings
 from .semantic_models import canonical_json
 
 LOGICAL_OWNER_CONTRACT_SCHEMA = "neocortex.logical-owner-contract/v2"
@@ -81,15 +82,31 @@ def _selector(selector_id: str, match_kind: str, value: str) -> LogicalOwnerSele
     return LogicalOwnerSelector(selector_id, match_kind, value)
 
 
+def _registered_capability_owner_spec(owner_id: str) -> LogicalOwnerSpec:
+    """Compose canonical and compatibility selectors from the capability SSOT."""
+
+    bindings = tuple(
+        item for item in capability_logical_owner_bindings() if item.owner_id == owner_id
+    )
+    if not bindings:
+        raise ValueError(f"registered capability owner is unavailable: {owner_id}")
+    state_owner_ids = {item.state_owner_ids for item in bindings}
+    if len(state_owner_ids) != 1:
+        raise ValueError(f"registered capability state ownership disagrees: {owner_id}")
+    return LogicalOwnerSpec(
+        owner_id,
+        tuple(
+            _selector(item.selector_id, item.match_kind, item.value) for item in bindings
+        ),
+        next(iter(state_owner_ids)),
+    )
+
+
 # Canonical order is owner_id order.  Prefixes below are explicit source
 # declarations, not a runtime inference policy.  Broad utility/orchestration
 # modules deliberately remain unmapped unless their ownership is contractual.
 LOGICAL_OWNER_SPECS = (
-    LogicalOwnerSpec(
-        "archive",
-        (_selector("archive-core-modules", "module_prefix", "_04_Nucleo_Operativo.archive_"),),
-        ("archive",),
-    ),
+    _registered_capability_owner_spec("archive"),
     LogicalOwnerSpec(
         "audio",
         (_selector("audio-core-modules", "module_prefix", "_04_Nucleo_Operativo.audio_"),),
@@ -141,11 +158,7 @@ LOGICAL_OWNER_SPECS = (
         ),
         ("code",),
     ),
-    LogicalOwnerSpec(
-        "docx",
-        (_selector("docx-core-modules", "module_prefix", "_04_Nucleo_Operativo.docx_"),),
-        ("docx",),
-    ),
+    _registered_capability_owner_spec("docx"),
     LogicalOwnerSpec(
         "framework",
         (
@@ -157,11 +170,7 @@ LOGICAL_OWNER_SPECS = (
         ),
         ("framework",),
     ),
-    LogicalOwnerSpec(
-        "image",
-        (_selector("image-core-modules", "module_prefix", "_04_Nucleo_Operativo.image_"),),
-        ("image",),
-    ),
+    _registered_capability_owner_spec("image"),
     LogicalOwnerSpec(
         "interface",
         (

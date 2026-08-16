@@ -6,7 +6,8 @@ import json
 import math
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal, Mapping
+from typing import Literal as _Literal
+from typing import Mapping
 
 from .semantic_lexical import LexicalAvailability, LexicalRanking
 from .semantic_models import (
@@ -69,7 +70,7 @@ class SemanticIndexResult:
     chunks_staged: int
     generations: tuple[GenerationWorkResult, ...]
     new_jobs_staged: int = 0
-    execution_mode: Literal["enumerated", "exact_replay"] = "enumerated"
+    execution_mode: _Literal["enumerated", "exact_replay"] = "enumerated"
     sources_reused: int = 0
     sources_enumerated: int = 0
     truncated: bool = False

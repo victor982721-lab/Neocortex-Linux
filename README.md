@@ -901,8 +901,11 @@ abstención y si fuente/estado canónico permanecieron intactos. No autoriza
 patches, push, release ni mutación del corpus.
 
 Esta frontera usa los registries runtime/template v11, el verificador técnico
-v7 y la política diff-aware `local-linux-diff-aware-validation-v7`. La matriz
-CLI permanece en scenario v4/template v3 con veintiséis nodeids y cinco gates; la ampliación
+v7 y la política diff-aware `local-linux-diff-aware-validation-v8`. La policy
+v8 resuelve las cohortes Archive, DOCX e Image mediante el registry versionado,
+exige sus matrices acotadas completas en los namespaces canónico y compatible,
+y rechaza evidencia faltante en vez de reducir silenciosamente la selección.
+La matriz CLI permanece en scenario v4/template v3 con veintiséis nodeids y cinco gates; la ampliación
 v22 agrega PDF sin rebajar esa cobertura.
 
 La relevancia experimental no se deduce de que exista o no un runner. Un

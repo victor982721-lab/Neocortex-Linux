@@ -214,7 +214,7 @@ def _validate_pdf_source(connection: sqlite3.Connection) -> None:
 
 
 def _validate_docx_source(connection: sqlite3.Connection) -> None:
-    from . import docx_schema
+    from .capabilities.formats.docx import schema as docx_schema
 
     docx_schema.validate_docx_metadata(connection)
     docx_schema.validate_docx_schema(connection)
@@ -234,7 +234,7 @@ def _validate_source_schema(
             validator=_validate_pdf_source,
         )
     if source_kind == "docx":
-        from . import docx_schema
+        from .capabilities.formats.docx import schema as docx_schema
 
         return _require_current_schema(
             connection,
@@ -271,7 +271,7 @@ def _validate_source_schema(
             ),
         )
     if source_kind == "archive":
-        from . import archive_state
+        from .capabilities.formats.archive import state as archive_state
 
         return _require_current_schema(
             connection,
@@ -314,7 +314,7 @@ def _validate_source_schema(
             validator=validate_code,
         )
     if source_kind == IMAGE_SOURCE_KIND:
-        from . import image_state
+        from .capabilities.formats.image import state as image_state
 
         return _require_current_schema(
             connection,

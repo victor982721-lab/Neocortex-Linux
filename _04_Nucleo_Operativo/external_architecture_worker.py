@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import importlib.util
 import importlib.metadata
+import importlib.util
 import json
 import os
 import stat
@@ -24,22 +24,59 @@ from typing import TYPE_CHECKING, Any, NoReturn
 
 if TYPE_CHECKING:
     from . import code_architecture_contracts as _contracts
+    from .platform.shared import architecture_projection as _projection
+    from .platform.shared import capability_registry as _capability_registry
 elif __package__:
     from . import code_architecture_contracts as _contracts
+    from .platform.shared import architecture_projection as _projection
+    from .platform.shared import capability_registry as _capability_registry
 else:  # Direct isolated worker execution; do not import the staged package.
-    _contract_path = Path(__file__).with_name("code_architecture_contracts.py")
-    _contract_spec = importlib.util.spec_from_file_location(
-        "_neocortex_code_architecture_contracts", _contract_path
-    )
-    if _contract_spec is None or _contract_spec.loader is None:
-        raise RuntimeError("architecture contract module is unavailable")
-    _contracts = importlib.util.module_from_spec(_contract_spec)
-    sys.modules[_contract_spec.name] = _contracts
-    _contract_spec.loader.exec_module(_contracts)
+    def _load_control_plane_module(alias: str, path: Path) -> Any:
+        spec = importlib.util.spec_from_file_location(alias, path)
+        if spec is None or spec.loader is None:
+            raise RuntimeError(f"architecture control-plane module is unavailable: {path.name}")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        try:
+            spec.loader.exec_module(module)
+        except Exception:
+            sys.modules.pop(spec.name, None)
+            raise
+        return module
 
-GRIMP_WORKER_SCHEMA = "neocortex.external-architecture-worker/grimp-v1"
+    _control_plane_root = Path(__file__).parent
+    _contracts = _load_control_plane_module(
+        "_neocortex_code_architecture_contracts",
+        _control_plane_root / "code_architecture_contracts.py",
+    )
+    _projection = _load_control_plane_module(
+        "_neocortex_architecture_projection",
+        _control_plane_root / "platform" / "shared" / "architecture_projection.py",
+    )
+    _capability_registry = _load_control_plane_module(
+        "_neocortex_capability_registry",
+        _control_plane_root / "platform" / "shared" / "capability_registry.py",
+    )
+
+GRIMP_WORKER_SCHEMA = "neocortex.external-architecture-worker/grimp-v2"
 COMPLEXIPY_WORKER_SCHEMA = "neocortex.external-architecture-worker/complexipy-v1"
 WORKER_ERROR_SCHEMA = "neocortex.external-architecture-worker/error-v1"
+
+CAPABILITY_PROJECTION_POLICY_ID = (
+    "neocortex.capability-architecture-projection/transitional-v1"
+)
+CAPABILITY_PROJECTION_SCOPE_POLICY = (
+    "exact-capability-registry-modules-canonical-and-legacy-v1"
+)
+CAPABILITY_OWNER_RESOLUTION_POLICY = "capability-logical-owner-exact-v1"
+CAPABILITY_FAMILY_RESOLUTION_POLICY = (
+    "canonical-target-or-exact-source-compatibility-v1"
+)
+CAPABILITY_FAMILY_DAG_SCHEMA = "neocortex.architecture-family-dag/v1"
+CAPABILITY_FAMILY_DAG_POLICY_ID = "neocortex.formats-family-dependencies/transitional-v1"
+CAPABILITY_FAMILY_DAG_FINGERPRINT_PREFIX = "architecture-family-dag-v1:sha256:"
+CAPABILITY_CANONICAL_FAMILY = "_04.capabilities.formats"
+CAPABILITY_COMPATIBILITY_FAMILY = "_04.compat.formats"
 
 DEFAULT_MAX_FILES = 4096
 DEFAULT_MAX_INPUT_BYTES = 64 * 1024 * 1024
@@ -313,11 +350,350 @@ def _cycle_payloads(
     return tuple(payloads)
 
 
+def _capability_family_dag() -> Any:
+    canonical_families = {
+        item.architecture_family_id
+        for item in _capability_registry.CAPABILITY_REGISTRY.capabilities
+    }
+    compatibility_families = {
+        item.compatibility_family_id
+        for item in _capability_registry.CAPABILITY_REGISTRY.capabilities
+    }
+    if canonical_families != {CAPABILITY_CANONICAL_FAMILY} or compatibility_families != {
+        CAPABILITY_COMPATIBILITY_FAMILY
+    }:
+        raise WorkerContractError(
+            "projection_policy_drift",
+            "capability families drifted from the transitional dependency policy",
+        )
+    return _projection.FamilyDag(
+        families=(CAPABILITY_CANONICAL_FAMILY, CAPABILITY_COMPATIBILITY_FAMILY),
+        direct_dependencies=(
+            _projection.FamilyDependency(
+                CAPABILITY_COMPATIBILITY_FAMILY,
+                CAPABILITY_CANONICAL_FAMILY,
+            ),
+        ),
+        compat_families=(CAPABILITY_COMPATIBILITY_FAMILY,),
+    )
+
+
+def capability_family_dag_manifest() -> dict[str, object]:
+    """Return the independently versioned transitional family policy."""
+
+    dag = _capability_family_dag()
+    contract: dict[str, object] = {
+        "schema": CAPABILITY_FAMILY_DAG_SCHEMA,
+        "policy_id": CAPABILITY_FAMILY_DAG_POLICY_ID,
+        "edge_semantics": "importer-may-depend-on-reachable-dependency-v1",
+        "families": list(dag.families),
+        "direct_dependencies": [
+            {
+                "source_family": item.source_family,
+                "target_family": item.target_family,
+            }
+            for item in dag.direct_dependencies
+        ],
+        "compat_families": list(dag.compat_families),
+    }
+    canonical = json.dumps(
+        contract,
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return {
+        **contract,
+        "fingerprint": (
+            CAPABILITY_FAMILY_DAG_FINGERPRINT_PREFIX
+            + hashlib.sha256(canonical).hexdigest()
+        ),
+    }
+
+
+def _registered_capability_labels() -> tuple[
+    tuple[str, ...],
+    tuple[str, ...],
+    dict[str, tuple[str, ...]],
+    dict[str, tuple[str, ...]],
+]:
+    canonical_modules: set[str] = set()
+    legacy_modules: set[str] = set()
+    owner_matches: dict[str, set[str]] = {}
+    family_matches: dict[str, set[str]] = {}
+    for capability in _capability_registry.CAPABILITY_REGISTRY.capabilities:
+        for binding in capability.modules:
+            canonical_modules.add(binding.canonical_module_id)
+            owner_matches.setdefault(binding.canonical_module_id, set()).add(
+                capability.logical_owner_id
+            )
+            family_matches.setdefault(binding.canonical_module_id, set()).add(
+                capability.architecture_family_id
+            )
+            if binding.legacy_module_id is None:
+                continue
+            legacy_modules.add(binding.legacy_module_id)
+            owner_matches.setdefault(binding.legacy_module_id, set()).add(
+                capability.logical_owner_id
+            )
+            family_matches.setdefault(binding.legacy_module_id, set()).add(
+                capability.compatibility_family_id
+            )
+    if canonical_modules & legacy_modules:
+        raise WorkerContractError(
+            "projection_registry_overlap",
+            "canonical and legacy capability module scopes overlap",
+        )
+    return (
+        tuple(sorted(canonical_modules)),
+        tuple(sorted(legacy_modules)),
+        {module: tuple(sorted(labels)) for module, labels in sorted(owner_matches.items())},
+        {module: tuple(sorted(labels)) for module, labels in sorted(family_matches.items())},
+    )
+
+
+def _module_relation_payload(relation: Any) -> dict[str, object]:
+    return {
+        "source_module": relation.source_module,
+        "target_module": relation.target_module,
+        "witness_ids": list(relation.witness_ids),
+    }
+
+
+def _module_cycle_id(component: Any) -> str:
+    return _contracts.stable_architecture_id("import-cycle-v1", *component.modules)
+
+
+def _module_scc_payload(component: Any) -> dict[str, object]:
+    return {
+        "cycle_id": _module_cycle_id(component),
+        "modules": list(component.modules),
+        "module_count": len(component.modules),
+        "shortest_cycle_chain": list(component.shortest_cycle),
+        "internal_relations": [
+            _module_relation_payload(item) for item in component.internal_relations
+        ],
+        "shortest_cycle_relations": [
+            _module_relation_payload(item) for item in component.shortest_cycle_relations
+        ],
+    }
+
+
+def _projected_edge_id(label_kind: str, edge: Any) -> str:
+    return _contracts.stable_architecture_id(
+        f"{label_kind}-projected-edge-v1",
+        edge.source_label,
+        edge.target_label,
+    )
+
+
+def _projected_edge_payload(label_kind: str, edge: Any) -> dict[str, object]:
+    return {
+        "edge_id": _projected_edge_id(label_kind, edge),
+        "source_label": edge.source_label,
+        "target_label": edge.target_label,
+        "module_relations": [
+            _module_relation_payload(item) for item in edge.module_relations
+        ],
+        "witness_ids": list(edge.witness_ids),
+    }
+
+
+def _projection_payload(projection: Any, *, label_kind: str) -> dict[str, object]:
+    mapping_resolutions = [
+        {
+            "module_id": item.module_id,
+            "status": item.status,
+            "labels": list(item.labels),
+        }
+        for item in projection.mapping.resolutions
+    ]
+    projected_edges = [
+        _projected_edge_payload(label_kind, item) for item in projection.projected_edges
+    ]
+    unresolved_relations = [
+        {
+            "relation": _module_relation_payload(item.relation),
+            "source_status": item.source_status,
+            "target_status": item.target_status,
+        }
+        for item in projection.unresolved_relations
+    ]
+    realizable_sccs = [
+        {
+            "module_cycle_id": _module_cycle_id(item.module_scc),
+            "modules": list(item.module_scc.modules),
+            "labels": list(item.labels),
+            "semantics": item.semantics,
+            "authority": "gate",
+        }
+        for item in projection.realizable_sccs
+    ]
+    unresolved_sccs = [
+        {
+            "module_cycle_id": _module_cycle_id(item.module_scc),
+            "modules": list(item.module_scc.modules),
+            "unmapped_modules": list(item.unmapped_modules),
+            "overlapping_modules": list(item.overlapping_modules),
+            "out_of_scope_modules": list(item.out_of_scope_modules),
+            "authority": "module-cycle-gate",
+        }
+        for item in projection.unresolved_sccs
+    ]
+    aggregate_sccs = [
+        {
+            "aggregate_scc_id": _contracts.stable_architecture_id(
+                f"{label_kind}-aggregate-quotient-scc-v1", *item.labels
+            ),
+            "labels": list(item.labels),
+            "shortest_cycle": list(item.shortest_cycle),
+            "internal_edge_ids": [
+                _projected_edge_id(label_kind, edge) for edge in item.internal_edges
+            ],
+            "shortest_cycle_edge_ids": [
+                _projected_edge_id(label_kind, edge)
+                for edge in item.shortest_cycle_edges
+            ],
+            "realizable_module_components": [
+                list(component) for component in item.realizable_module_components
+            ],
+            "semantics": item.semantics,
+            "authority": "diagnostic",
+        }
+        for item in projection.aggregate_quotient_sccs
+    ]
+    status_counts = {
+        status: sum(item["status"] == status for item in mapping_resolutions)
+        for status in ("resolved", "unmapped", "overlap", "out_of_scope")
+    }
+    return {
+        "label_kind": label_kind,
+        "mapping_resolutions": mapping_resolutions,
+        "projected_edges": projected_edges,
+        "unresolved_relations": unresolved_relations,
+        "realizable_sccs": realizable_sccs,
+        "unresolved_sccs": unresolved_sccs,
+        "aggregate_quotient_sccs": aggregate_sccs,
+        "counters": {
+            "resolved_modules": status_counts["resolved"],
+            "unmapped_modules": status_counts["unmapped"],
+            "overlapping_modules": status_counts["overlap"],
+            "out_of_scope_modules": status_counts["out_of_scope"],
+            "projected_edges": len(projected_edges),
+            "unresolved_relations": len(unresolved_relations),
+            "realizable_sccs": len(realizable_sccs),
+            "unresolved_sccs": len(unresolved_sccs),
+            "aggregate_quotient_sccs": len(aggregate_sccs),
+        },
+    }
+
+
+def _capability_projection_payload(
+    modules: Sequence[str], production_imports: Sequence[_contracts.ModuleImport]
+) -> dict[str, object]:
+    canonical_modules, legacy_modules, owner_matches, family_matches = (
+        _registered_capability_labels()
+    )
+    registered_modules = tuple(sorted((*canonical_modules, *legacy_modules)))
+    registered_set = set(registered_modules)
+    present_modules = tuple(sorted(registered_set & set(modules)))
+    missing_modules = tuple(sorted(registered_set - set(modules)))
+    graph = _projection.analyze_module_graph(
+        modules,
+        (
+            _projection.ModuleEdge(item.importer, item.imported, item.relation_id)
+            for item in production_imports
+        ),
+    )
+    owner_mapping = _projection.resolve_exact_mapping(
+        graph.modules,
+        owner_matches,
+        in_scope_modules=present_modules,
+    )
+    family_mapping = _projection.resolve_exact_mapping(
+        graph.modules,
+        family_matches,
+        in_scope_modules=present_modules,
+    )
+    owner_projection = _projection.project_module_graph(graph, owner_mapping)
+    family_projection = _projection.project_module_graph(graph, family_mapping)
+    family_evaluation = _projection.evaluate_family_dag(
+        family_projection,
+        _capability_family_dag(),
+    )
+    owner_payload = _projection_payload(owner_projection, label_kind="logical_owner")
+    owner_payload["resolution_policy"] = CAPABILITY_OWNER_RESOLUTION_POLICY
+    family_payload = _projection_payload(family_projection, label_kind="target_family")
+    decisions = [
+        {
+            "edge_id": _projected_edge_id("target_family", item.edge),
+            "source_family": item.edge.source_label,
+            "target_family": item.edge.target_label,
+            "allowed": item.allowed,
+            "reason": item.reason,
+            "witness_ids": list(item.edge.witness_ids),
+        }
+        for item in family_evaluation.decisions
+    ]
+    forbidden_ids = [str(item["edge_id"]) for item in decisions if item["allowed"] is False]
+    canonical_to_compat_ids = [
+        str(item["edge_id"])
+        for item in decisions
+        if item["reason"] == "canonical_to_compat"
+    ]
+    family_payload.update(
+        {
+            "resolution_policy": CAPABILITY_FAMILY_RESOLUTION_POLICY,
+            "dag": capability_family_dag_manifest(),
+            "edge_decisions": decisions,
+            "forbidden_edge_ids": forbidden_ids,
+            "canonical_to_compat_edge_ids": canonical_to_compat_ids,
+        }
+    )
+    family_counters = family_payload["counters"]
+    if not isinstance(family_counters, dict):
+        raise WorkerContractError(
+            "internal_contract_error", "family projection counters are invalid"
+        )
+    family_counters.update(
+        {
+            "edge_decisions": len(decisions),
+            "forbidden_edges": len(forbidden_ids),
+            "canonical_to_compat_edges": len(canonical_to_compat_ids),
+        }
+    )
+    return {
+        "schema": _projection.ARCHITECTURE_PROJECTION_SCHEMA,
+        "policy_id": CAPABILITY_PROJECTION_POLICY_ID,
+        "capability_registry": {
+            "schema": _capability_registry.CAPABILITY_REGISTRY_SCHEMA,
+            "fingerprint": _capability_registry.capability_registry_fingerprint(),
+        },
+        "scope": {
+            "policy": CAPABILITY_PROJECTION_SCOPE_POLICY,
+            "canonical_modules": list(canonical_modules),
+            "legacy_modules": list(legacy_modules),
+            "registered_modules": list(registered_modules),
+            "present_registered_modules": list(present_modules),
+            "missing_registered_modules": list(missing_modules),
+        },
+        "module_graph": {
+            "semantics": "directed-production-module-import-scc-v1",
+            "cyclic_sccs": [
+                _module_scc_payload(item) for item in graph.cyclic_sccs
+            ],
+        },
+        "logical_owner": owner_payload,
+        "target_family": family_payload,
+    }
+
+
 def analyze_grimp(root: Path, limits: WorkerLimits) -> dict[str, object]:
     inputs = _collect_inputs(root, limits)
     version = _tool_version("grimp")
     try:
-        import grimp  # type: ignore[import-not-found]
+        import grimp
     except ImportError as error:
         raise WorkerContractError("tool_unavailable", "Grimp cannot be imported") from error
 
@@ -374,6 +750,7 @@ def analyze_grimp(root: Path, limits: WorkerLimits) -> dict[str, object]:
         for module in modules
     ]
     evaluations = _contracts.evaluate_architecture_contracts(modules, imports)
+    projections = _capability_projection_payload(modules, production_imports)
     _validate_inputs_unchanged(inputs)
     return {
         "schema": GRIMP_WORKER_SCHEMA,
@@ -403,6 +780,7 @@ def analyze_grimp(root: Path, limits: WorkerLimits) -> dict[str, object]:
         "module_metrics": module_metrics,
         "relations": [item.as_payload() for item in production_imports],
         "cycles": list(cycles),
+        "projections": projections,
         "contract_evaluations": [item.as_payload() for item in evaluations],
     }
 
@@ -436,7 +814,7 @@ def analyze_complexipy(root: Path, limits: WorkerLimits) -> dict[str, object]:
     inputs = _collect_inputs(root, limits)
     version = _tool_version("complexipy")
     try:
-        import complexipy  # type: ignore[import-not-found]
+        import complexipy
     except ImportError as error:
         raise WorkerContractError("tool_unavailable", "complexipy cannot be imported") from error
 

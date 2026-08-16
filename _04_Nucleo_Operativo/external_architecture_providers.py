@@ -32,7 +32,7 @@ GRIMP_ARCHITECTURE_PROVIDER_ID = "grimp-architecture"
 COMPLEXIPY_COGNITIVE_PROVIDER_ID = "complexipy-cognitive"
 
 _RUFF_SCHEMA = "neocortex.ruff-analyze-imports/v1"
-_GRIMP_WORKER_SCHEMA = "neocortex.external-architecture-worker/grimp-v1"
+_GRIMP_WORKER_SCHEMA = "neocortex.external-architecture-worker/grimp-v2"
 _COMPLEXIPY_WORKER_SCHEMA = "neocortex.external-architecture-worker/complexipy-v1"
 _TIMEOUT_SECONDS = 180.0
 _STDOUT_LIMIT_BYTES = 8 * 1024 * 1024

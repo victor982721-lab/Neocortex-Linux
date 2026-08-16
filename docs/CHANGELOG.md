@@ -20,7 +20,7 @@ no se copian aquí para evitar que se conviertan en datos históricos sin contex
   compactos de sus owners y, cuando coinciden exactamente, reutiliza la
   generación sin enumerar fuentes, descomprimir texto, preparar chunks, cargar
   modelos ni crear jobs; la CLI expone modo y contadores de trabajo omitido.
-- La política de validación v7 exige un commit limpio antes de iniciar barreras,
+- La política de validación v8 exige un commit limpio antes de iniciar barreras,
   ejecuta la suite Linux completa sin convertirla en miles de selectores y
   consume en el mismo receipt el baseline versionado de Coverage, inventarios,
   providers, wheel candidato y replay. El `pre-push` histórico deja de repetirse
@@ -29,6 +29,17 @@ no se copian aquí para evitar que se conviertan en datos históricos sin contex
   conserva su conector SQLite privado ante monkeypatches de los tests y el
   replay reutiliza shards aprobados cuyos resultados terminales sean
   `passed` o `skipped`, nunca shards fallidos o incompletos.
+  El runtime temporal de pytest se crea atómicamente fuera del owner durable,
+  bajo un runtime privado o un temporal sticky validado; el scratch durable
+  conserva sólo checkpoints v2. Su replay excluye únicamente la ruta efímera
+  y sigue ligado a suite, shard, inputs, herramientas y configuración exactos.
+- Archive, DOCX e Image viven ahora como cohortes completas bajo
+  `_04_Nucleo_Operativo.capabilities.formats`; 27 módulos planos permanecen
+  como aliases compatibles y silenciosos. Un registry versionado declara
+  módulos canónicos/legacy, owner lógico, estado, rutas públicas y matrices de
+  tests. El gate arquitectónico proyecta el grafo exacto a owner/familia,
+  distingue SCC realizables de ciclos agregados no componibles y aplica el DAG
+  `compat.formats → capabilities.formats` sin permitir dependencias inversas.
 - La validación canónica expone en `stderr` salida y progreso estructurado en
   tiempo real, con heartbeats cada 30 segundos y eventos de recolección, inicio,
   reutilización y terminación por shard. Trusted-deep trata el presupuesto como
@@ -103,7 +114,7 @@ no se copian aquí para evitar que se conviertan en datos históricos sin contex
   proyección de contratos son exactamente iguales; cualquier delta contractual
   sí genera una identidad nueva.
 - Validación canónica `neocortex.code-change-validation/v3`, política
-  `local-linux-diff-aware-validation-v7`, ligada al diff:
+  `local-linux-diff-aware-validation-v8`, ligada al diff:
   rutas y tests afectados se proyectan a
   preguntas/sujetos de aceptación versionados. Una pregunta relevante sin
   runner o sin disposición técnica exacta después del replay ahora abstiene;

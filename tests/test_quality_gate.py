@@ -11,6 +11,8 @@ from pathlib import Path
 
 import pytest
 
+import _04_Nucleo_Operativo.external_architecture_worker as architecture_worker
+from _04_Nucleo_Operativo.code_architecture_contracts import ModuleImport
 from neocortex import semgrep_tool_contract
 from tools import quality_gate
 from tools.quality_gate import (
@@ -18,6 +20,8 @@ from tools.quality_gate import (
     COVERAGE_BASELINE_SCHEMA,
     EXPECTED_ARCHITECTURE_BASELINE_ID,
     EXPECTED_ARCHITECTURE_CONTRACTS,
+    EXPECTED_CAPABILITY_CANONICAL_FAMILY,
+    EXPECTED_CAPABILITY_COMPATIBILITY_FAMILY,
     PRODUCTION_COVERAGE_SOURCES,
     WHEEL_PACKAGE_ROOTS,
     GateError,
@@ -106,21 +110,29 @@ def _coverage_inventory(*paths: str) -> dict[str, object]:
     }
 
 
-def _architecture_payload() -> dict[str, object]:
+def _architecture_payload(
+    imports: tuple[ModuleImport, ...] = (),
+) -> dict[str, object]:
+    canonical, legacy, _, _ = architecture_worker._registered_capability_labels()
+    modules = tuple(sorted((*canonical, *legacy)))
+    cycles = architecture_worker._cycle_payloads(modules, imports)
     return {
-        "schema": "neocortex.external-architecture-worker/grimp-v1",
+        "schema": architecture_worker.GRIMP_WORKER_SCHEMA,
         "status": "ready",
         "counters": {
-            "modules": 10,
-            "production_relations": 20,
+            "modules": len(modules),
+            "production_relations": len(imports),
             "contract_violations": 0,
-            "cyclic_components": 0,
+            "cyclic_components": len(cycles),
         },
         "contract_evaluations": [
             {"contract": {"contract_id": contract_id}, "status": "passed"}
             for contract_id in sorted(EXPECTED_ARCHITECTURE_CONTRACTS)
         ],
-        "cycles": [],
+        "module_metrics": [{"module": module} for module in modules],
+        "relations": [item.as_payload() for item in imports],
+        "cycles": list(cycles),
+        "projections": architecture_worker._capability_projection_payload(modules, imports),
         "tool": {"name": "grimp", "version": "3.15"},
         "architecture": {"baseline_id": EXPECTED_ARCHITECTURE_BASELINE_ID},
         "inputs": {"content_manifest_sha256": hashlib.sha256(b"[]").hexdigest()},
@@ -609,16 +621,34 @@ def test_coverage_runner_uses_branch_mode_exact_scope_and_dynamic_total_inventor
 
 def test_live_architecture_gate_requires_the_exact_acyclic_v2_contract() -> None:
     payload = _architecture_payload()
+    projections = payload["projections"]
+    assert isinstance(projections, dict)
+    registry = projections["capability_registry"]
+    scope = projections["scope"]
+    assert isinstance(registry, dict)
+    assert isinstance(scope, dict)
 
     assert evaluate_architecture_payload(payload) == {
-        "modules": 10,
-        "production_relations": 20,
+        "modules": len(scope["registered_modules"]),
+        "production_relations": 0,
         "contract_violations": 0,
         "cyclic_components": 0,
         "contract_ids": sorted(EXPECTED_ARCHITECTURE_CONTRACTS),
         "grimp_version": "3.15",
         "architecture_baseline_id": EXPECTED_ARCHITECTURE_BASELINE_ID,
         "input_manifest_sha256": hashlib.sha256(b"[]").hexdigest(),
+        "projection_policy_id": architecture_worker.CAPABILITY_PROJECTION_POLICY_ID,
+        "capability_registry_fingerprint": registry["fingerprint"],
+        "registered_capability_modules": len(scope["registered_modules"]),
+        "missing_registered_capability_modules": 0,
+        "owner_unmapped_modules": 0,
+        "owner_overlapping_modules": 0,
+        "family_unmapped_modules": 0,
+        "family_overlapping_modules": 0,
+        "family_forbidden_edges": 0,
+        "family_canonical_to_compat_edges": 0,
+        "owner_aggregate_quotient_sccs": 0,
+        "family_aggregate_quotient_sccs": 0,
     }
 
 
@@ -626,10 +656,10 @@ def test_live_architecture_gate_requires_the_exact_acyclic_v2_contract() -> None
     ("mutation", "message"),
     (
         ("empty", "contract inventory drifted"),
-        ("negative", "module or relation counters are invalid"),
+        ("negative", "counter is malformed"),
         ("stale", "architecture baseline identity"),
         ("baseline_status", "live architecture contracts failed"),
-        ("cycle", "live architecture contracts failed"),
+        ("cycle", "module SCC inventories disagree"),
     ),
 )
 def test_live_architecture_gate_rejects_empty_negative_stale_or_cyclic_payloads(
@@ -658,6 +688,140 @@ def test_live_architecture_gate_rejects_empty_negative_stale_or_cyclic_payloads(
 
     with pytest.raises(GateError, match=message):
         evaluate_architecture_payload(payload)
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    (
+        ("projection_schema", "projection schema drifted"),
+        ("projection_policy", "projection policy drifted"),
+        ("registry_fingerprint", "registry fingerprint drifted"),
+        ("dag_fingerprint", "DAG policy drifted"),
+        ("family_resolution_policy", "resolution policy drifted"),
+        ("missing", "projection scope drifted"),
+        ("owner_unmapped", "registered module mapping is incomplete"),
+        ("family_overlap", "registered module mapping is incomplete"),
+    ),
+)
+def test_live_architecture_gate_rejects_stale_or_incomplete_projection_evidence(
+    mutation: str, message: str
+) -> None:
+    payload = _architecture_payload()
+    projections = payload["projections"]
+    assert isinstance(projections, dict)
+    if mutation == "projection_schema":
+        projections["schema"] = "neocortex.architecture-projection/v0"
+    elif mutation == "projection_policy":
+        projections["policy_id"] = "stale"
+    elif mutation == "registry_fingerprint":
+        registry = projections["capability_registry"]
+        assert isinstance(registry, dict)
+        registry["fingerprint"] = "capability-registry-v1:sha256:" + "0" * 64
+    elif mutation == "dag_fingerprint":
+        family = projections["target_family"]
+        assert isinstance(family, dict)
+        dag = family["dag"]
+        assert isinstance(dag, dict)
+        dag["fingerprint"] = "architecture-family-dag-v1:sha256:" + "0" * 64
+    elif mutation == "family_resolution_policy":
+        family = projections["target_family"]
+        assert isinstance(family, dict)
+        family["resolution_policy"] = "stale"
+    elif mutation == "missing":
+        scope = projections["scope"]
+        assert isinstance(scope, dict)
+        registered = scope["registered_modules"]
+        assert isinstance(registered, list)
+        scope["missing_registered_modules"] = [registered[0]]
+    else:
+        projection_name = "logical_owner" if mutation == "owner_unmapped" else "target_family"
+        projection = projections[projection_name]
+        assert isinstance(projection, dict)
+        resolutions = projection["mapping_resolutions"]
+        assert isinstance(resolutions, list)
+        resolution = resolutions[0]
+        assert isinstance(resolution, dict)
+        if mutation == "owner_unmapped":
+            resolution.update({"status": "unmapped", "labels": []})
+        else:
+            resolution.update(
+                {
+                    "status": "overlap",
+                    "labels": [
+                        EXPECTED_CAPABILITY_CANONICAL_FAMILY,
+                        EXPECTED_CAPABILITY_COMPATIBILITY_FAMILY,
+                    ],
+                }
+            )
+
+    with pytest.raises(GateError, match=message):
+        evaluate_architecture_payload(payload)
+
+
+def test_live_architecture_gate_allows_compat_to_canonical_family_dependency() -> None:
+    _, _, _, families = architecture_worker._registered_capability_labels()
+    canonical = next(
+        module
+        for module, labels in families.items()
+        if labels == (architecture_worker.CAPABILITY_CANONICAL_FAMILY,)
+    )
+    compatibility = next(
+        module
+        for module, labels in families.items()
+        if labels == (architecture_worker.CAPABILITY_COMPATIBILITY_FAMILY,)
+    )
+
+    summary = evaluate_architecture_payload(
+        _architecture_payload((ModuleImport(compatibility, canonical),))
+    )
+
+    assert summary["family_aggregate_quotient_sccs"] == 0
+
+
+def test_live_architecture_gate_rejects_canonical_to_compat_family_dependency() -> None:
+    _, _, _, families = architecture_worker._registered_capability_labels()
+    canonical = next(
+        module
+        for module, labels in families.items()
+        if labels == (architecture_worker.CAPABILITY_CANONICAL_FAMILY,)
+    )
+    compatibility = next(
+        module
+        for module, labels in families.items()
+        if labels == (architecture_worker.CAPABILITY_COMPATIBILITY_FAMILY,)
+    )
+
+    with pytest.raises(GateError, match="allowed DAG"):
+        evaluate_architecture_payload(
+            _architecture_payload((ModuleImport(canonical, compatibility),))
+        )
+
+
+def test_aggregate_owner_quotient_scc_is_diagnostic_not_a_gate() -> None:
+    _, _, owners, families = architecture_worker._registered_capability_labels()
+    archive = [
+        module
+        for module, labels in owners.items()
+        if labels == ("archive",)
+        and families[module] == (architecture_worker.CAPABILITY_CANONICAL_FAMILY,)
+    ]
+    docx = [
+        module
+        for module, labels in owners.items()
+        if labels == ("docx",)
+        and families[module] == (architecture_worker.CAPABILITY_CANONICAL_FAMILY,)
+    ]
+    payload = _architecture_payload(
+        (
+            ModuleImport(archive[0], docx[0]),
+            ModuleImport(docx[1], archive[1]),
+        )
+    )
+
+    summary = evaluate_architecture_payload(payload)
+
+    assert summary["cyclic_components"] == 0
+    assert summary["owner_aggregate_quotient_sccs"] == 1
 
 
 def test_live_architecture_gate_rejects_an_empty_payload() -> None:

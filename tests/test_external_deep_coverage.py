@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 import _04_Nucleo_Operativo.external_deep_coverage as deep
+import _04_Nucleo_Operativo.external_evidence_providers as providers
 from _04_Nucleo_Operativo.code_external_evidence import ExternalEvidenceFile
 from _04_Nucleo_Operativo.semantic_models import fingerprint_bytes
 
@@ -43,6 +44,11 @@ def _fixture(
     (trusted / "tests").mkdir()
     stage.mkdir()
     scratch.mkdir()
+    runtime_parent = tmp_path / "xdg-runtime"
+    runtime_parent.mkdir(mode=0o700)
+    runtime_parent.chmod(0o700)
+    monkeypatch.delenv("RUNTIME_DIRECTORY", raising=False)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", os.fspath(runtime_parent))
     (trusted / "_04_Nucleo_Operativo" / "logic.py").write_text(
         "def choose(value: bool) -> int:\n    if value:\n        return 1\n    return 2\n",
         encoding="utf-8",
@@ -199,15 +205,211 @@ def _execute(
     *,
     progress=None,
 ) -> deep.DeepCoverageExecution:
-    return deep.execute_pytest_coverage(
-        stage,
-        staged,
-        {},
-        trusted_root=trusted,
-        scratch_root=scratch,
-        config=config,
-        progress=progress,
+    del stage
+    with providers._deep_coverage_runtime(
+        root=trusted,
+        audit_lab_root=scratch,
+    ) as runtime:
+        return deep.execute_pytest_coverage(
+            runtime,
+            staged,
+            {},
+            trusted_root=trusted,
+            scratch_root=scratch,
+            config=config,
+            progress=progress,
+        )
+
+
+def test_provider_runtime_parent_escapes_poisoned_audit_lab_temp(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    trusted = tmp_path / "trusted-runtime-parent"
+    audit_lab = tmp_path / "self-analysis-owner"
+    trusted.mkdir()
+    audit_lab.mkdir()
+    for name in (
+        "RUNTIME_DIRECTORY",
+        "RUNNER_TEMP",
+        "XDG_RUNTIME_DIR",
+        "TEMP",
+        "TMP",
+        "TMPDIR",
+    ):
+        monkeypatch.setenv(name, os.fspath(audit_lab))
+
+    with providers._deep_coverage_runtime(
+        root=trusted,
+        audit_lab_root=audit_lab,
+    ) as runtime:
+        assert runtime.name.startswith("neocortex-pytest-coverage-")
+        assert not runtime.is_relative_to(audit_lab.resolve())
+        assert not runtime.is_relative_to(trusted.resolve())
+        assert runtime.stat().st_mode & 0o777 == 0o700
+    assert not runtime.exists()
+
+
+def test_provider_runtime_is_atomic_unpredictable_and_lifecycle_owned(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    trusted = tmp_path / "trusted-runtime-lifecycle"
+    audit_lab = tmp_path / "self-analysis-owner"
+    runtime_parent = tmp_path / "xdg-runtime"
+    trusted.mkdir()
+    audit_lab.mkdir()
+    runtime_parent.mkdir(mode=0o700)
+    runtime_parent.chmod(0o700)
+    monkeypatch.delenv("RUNTIME_DIRECTORY", raising=False)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", os.fspath(runtime_parent))
+    precreated = runtime_parent / "neocortex-pytest-coverage-predictable"
+    precreated.mkdir(mode=0o700)
+
+    with providers._deep_coverage_runtime(
+        root=trusted,
+        audit_lab_root=audit_lab,
+    ) as first_runtime:
+        assert first_runtime.parent == runtime_parent.resolve()
+        assert first_runtime != precreated
+        assert first_runtime.is_dir()
+    assert not first_runtime.exists()
+    assert precreated.is_dir()
+
+    with providers._deep_coverage_runtime(
+        root=trusted,
+        audit_lab_root=audit_lab,
+    ) as second_runtime:
+        assert second_runtime != first_runtime
+        assert second_runtime != precreated
+    assert not second_runtime.exists()
+    assert precreated.is_dir()
+
+
+def test_provider_runtime_cleanup_failure_preserves_primary_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    trusted = tmp_path / "trusted-runtime-cleanup"
+    audit_lab = tmp_path / "self-analysis-owner"
+    runtime_parent = tmp_path / "xdg-runtime"
+    trusted.mkdir()
+    audit_lab.mkdir()
+    runtime_parent.mkdir(mode=0o700)
+    runtime_parent.chmod(0o700)
+    monkeypatch.delenv("RUNTIME_DIRECTORY", raising=False)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", os.fspath(runtime_parent))
+    original_cleanup = providers._cleanup_deep_coverage_runtime
+    runtime: Path | None = None
+
+    def failed_cleanup(_path: Path, _identity: tuple[int, int]) -> None:
+        raise OSError("cleanup fixture failure")
+
+    monkeypatch.setattr(providers, "_cleanup_deep_coverage_runtime", failed_cleanup)
+    with pytest.raises(RuntimeError, match="primary fixture failure") as caught:
+        with providers._deep_coverage_runtime(
+            root=trusted,
+            audit_lab_root=audit_lab,
+        ) as created:
+            runtime = created
+            raise RuntimeError("primary fixture failure")
+
+    assert any(
+        "cleanup fixture failure" in note
+        for note in getattr(caught.value, "__notes__", ())
     )
+    assert runtime is not None
+    assert runtime.is_dir()
+    original_cleanup(runtime, providers._runtime_directory_identity(runtime))
+    assert not runtime.exists()
+
+
+@pytest.mark.parametrize("precreation", ("directory", "symlink"))
+def test_core_runtime_directory_rejects_precreation_without_following_links(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    precreation: str,
+) -> None:
+    trusted, stage, scratch, staged = _fixture(tmp_path, monkeypatch)
+    outside = tmp_path / "outside-runtime"
+    outside.mkdir()
+    runtime_root = stage / "r"
+    if precreation == "directory":
+        runtime_root.mkdir()
+    else:
+        runtime_root.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="runtime directory was precreated"):
+        deep.execute_pytest_coverage(
+            stage,
+            staged,
+            {},
+            trusted_root=trusted,
+            scratch_root=scratch,
+            config=_config(),
+        )
+
+    assert outside.is_dir()
+    if precreation == "symlink":
+        assert runtime_root.is_symlink()
+    else:
+        assert runtime_root.is_dir()
+
+
+def test_reusable_internal_directory_rejects_a_precreated_symlink(tmp_path: Path) -> None:
+    internal_parent = tmp_path / "private-parent"
+    outside = tmp_path / "outside-internal"
+    internal_parent.mkdir(mode=0o700)
+    internal_parent.chmod(0o700)
+    outside.mkdir()
+    candidate = internal_parent / "requests"
+    candidate.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="owner-controlled plain directory"):
+        deep._owned_plain_directory(
+            candidate,
+            allow_existing=True,
+            label="fixture internal directory",
+            require_private=True,
+        )
+
+    assert candidate.is_symlink()
+    assert outside.is_dir()
+
+
+def test_checkpoint_reads_and_atomic_request_writes_never_follow_symlinks(
+    tmp_path: Path,
+) -> None:
+    internal = tmp_path / "private-files"
+    internal.mkdir(mode=0o700)
+    internal.chmod(0o700)
+    checkpoint_target = tmp_path / "checkpoint-target.json"
+    checkpoint_target.write_text("{}", encoding="utf-8")
+    checkpoint = internal / "checkpoint.json"
+    checkpoint.symlink_to(checkpoint_target)
+
+    assert (
+        deep._load_checkpoint(
+            checkpoint,
+            shard_signature="fixture-shard",
+            checkpoint_request_signature="fixture-request",
+        )
+        is None
+    )
+
+    request_target = tmp_path / "request-target.json"
+    request_target.write_bytes(b"outside sentinel")
+    request = internal / "request.json"
+    request.symlink_to(request_target)
+    deep._replace_bytes_atomically(request, b"trusted request", label="fixture request")
+
+    assert request_target.read_bytes() == b"outside sentinel"
+    assert not request.is_symlink()
+    assert request.read_bytes() == b"trusted request"
+    assert {path.name for path in internal.iterdir()} == {
+        "checkpoint.json",
+        "request.json",
+    }
 
 
 def test_normalizes_canonical_metrics_context_relations_and_missing_ranges(

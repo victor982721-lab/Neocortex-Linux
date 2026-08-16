@@ -511,7 +511,10 @@ def _cleanup_error_or(primary: WorkerContractError) -> WorkerContractError:
     try:
         _cleanup_runtime_roots()
     except WorkerContractError as cleanup_error:
-        return cleanup_error
+        primary.add_note(
+            "worker runtime cleanup also failed: "
+            f"{cleanup_error.code}: {str(cleanup_error)[:512]}"
+        )
     return primary
 
 
@@ -1269,15 +1272,8 @@ def main(arguments: Sequence[str] | None = None) -> int:
     except WorkerContractError as error:
         _fail(_cleanup_error_or(error), max_output_bytes)
     except Exception:
-        try:
-            _cleanup_runtime_roots()
-        except WorkerContractError as cleanup_error:
-            _fail(cleanup_error, max_output_bytes)
-        else:
-            _fail(
-                WorkerContractError("internal_error", "deep coverage worker failed closed"),
-                max_output_bytes,
-            )
+        primary = WorkerContractError("internal_error", "deep coverage worker failed closed")
+        _fail(_cleanup_error_or(primary), max_output_bytes)
     return 0
 
 
