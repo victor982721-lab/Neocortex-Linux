@@ -484,7 +484,9 @@ def _cyclic_components(
                     assigned.add(source)
                     reverse_stack.append(source)
         component = tuple(sorted(members))
-        if len(component) > 1 or component[0] in self_edges:
+        if not component:
+            raise RuntimeError("SCC traversal produced an empty component")
+        if len(component) > 1 or any(member in self_edges for member in component):
             components.append(component)
     return tuple(sorted(components))
 

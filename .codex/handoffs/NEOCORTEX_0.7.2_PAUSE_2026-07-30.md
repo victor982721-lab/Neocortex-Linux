@@ -410,6 +410,15 @@ segunda corrida integral como diagnóstico ciego.
   Antes de la aceptación aprobaron Ruff en 111 archivos y cuatro matrices
   focales disjuntas: 811 tests, 21 skips y 102 subtests. El recibo canónico,
   release instalada, E2E/replay y push siguen pendientes.
+- La aceptación de `b1e777e6dd3041a0e4f9dc4475ac5d464f451556` se detuvo
+  correctamente en static no-regression, antes de providers, autoanálisis,
+  Coverage o experimentos, por dos diagnósticos Pyright. El helper Image quedó
+  expresado como API interna usada por sus 15 módulos y la proyección SCC evita
+  indexar una tupla que el analizador no podía demostrar no vacía. Los dos
+  diagnósticos focales desaparecieron, 94 pruebas de compatibilidad/proyección
+  aprobaron y la etapa static no-regression completa volvió a quedar verde. No
+  se relanzó el gate sobre ese SHA; corresponde congelar el candidato corregido
+  antes de una nueva aceptación.
 - La corrida full medida necesita reservar el costo de providers no-Coverage y
   finalización además del presupuesto 2x de shards. El timeout interno full es
   ahora 60 minutos (1800 s de Coverage más 1800 s de overhead), todavía dentro

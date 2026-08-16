@@ -6,7 +6,7 @@ evidence and decision policy evolve independently.
 
 from __future__ import annotations
 
-from . import _preserve_legacy_module
+from . import preserve_legacy_module as _preserve_legacy_module
 
 from dataclasses import replace
 from pathlib import Path

@@ -6,7 +6,7 @@ uncertainty of labels inferred only from file and directory names.
 
 from __future__ import annotations
 
-from . import _preserve_legacy_module
+from . import preserve_legacy_module as _preserve_legacy_module
 
 import unicodedata
 from pathlib import Path

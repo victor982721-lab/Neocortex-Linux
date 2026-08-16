@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from . import _preserve_legacy_module
+from . import preserve_legacy_module as _preserve_legacy_module
 
 import re
 

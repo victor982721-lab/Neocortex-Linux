@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 
-def _preserve_legacy_module(
+def preserve_legacy_module(
     namespace: dict[str, object],
     legacy_module: str,
 ) -> None:
