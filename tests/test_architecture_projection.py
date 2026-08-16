@@ -7,10 +7,19 @@ import pytest
 from _04_Nucleo_Operativo.platform.shared.architecture_projection import (
     AGGREGATE_QUOTIENT_SCC_SEMANTICS,
     REALIZABLE_SCC_SEMANTICS,
+    AggregateQuotientScc,
     ArchitectureProjection,
+    CyclicModuleScc,
+    ExactMapping,
     FamilyDag,
     FamilyDependency,
+    MappingResolution,
     ModuleEdge,
+    ModuleGraph,
+    ModuleRelation,
+    ProjectedEdge,
+    RealizableSccProjection,
+    UnresolvedSccProjection,
     analyze_module_graph,
     evaluate_family_dag,
     project_module_graph,
@@ -53,11 +62,10 @@ def test_disconnected_bidirectional_edges_are_only_an_aggregate_quotient_scc() -
     assert quotient.shortest_cycle == ("owner-a", "owner-b", "owner-a")
     assert quotient.semantics == AGGREGATE_QUOTIENT_SCC_SEMANTICS
     assert quotient.realizable_module_components == ()
-    assert {
-        witness
-        for edge in quotient.internal_edges
-        for witness in edge.witness_ids
-    } == {"edge-a1-b1", "edge-b2-a2"}
+    assert {witness for edge in quotient.internal_edges for witness in edge.witness_ids} == {
+        "edge-a1-b1",
+        "edge-b2-a2",
+    }
 
 
 def test_real_module_cycle_projects_to_a_realizable_owner_scc_and_links_quotient() -> None:
@@ -188,9 +196,7 @@ def test_family_dag_distinguishes_reachable_forbidden_and_canonical_compat_edges
         ("top", "top"): (True, "allowed_same_family"),
     }
     assert evaluation.dag_forbidden_edges[0].edge.witness_ids == ("reverse-forbidden",)
-    assert evaluation.canonical_to_compat_edges[0].edge.witness_ids == (
-        "canonical-compat",
-    )
+    assert evaluation.canonical_to_compat_edges[0].edge.witness_ids == ("canonical-compat",)
     assert evaluation.is_accepted is False
 
 
@@ -247,3 +253,144 @@ def test_projection_is_deterministic_for_reordered_inputs_and_mapping_candidates
         if (item.source_label, item.target_label) == ("a", "b")
     )
     assert edge.witness_ids == ("witness-1", "witness-2")
+
+
+@pytest.mark.parametrize("invalid", [None, "", " spaced", "line\nfeed", "carriage\rreturn"])
+def test_graph_identifiers_reject_noncanonical_values(invalid: object) -> None:
+    with pytest.raises(ValueError, match="single-line identifier"):
+        ModuleEdge(invalid, "target", "witness")  # type: ignore[arg-type]
+
+
+def test_relation_and_scc_value_objects_reject_incomplete_evidence() -> None:
+    relation = ModuleRelation("a", "b", ("witness",))
+    with pytest.raises(ValueError, match="at least one witness"):
+        ModuleRelation("a", "b", ())
+    with pytest.raises(ValueError, match="unique and canonical"):
+        ModuleRelation("a", "b", ("z", "a"))
+    with pytest.raises(ValueError, match="single-line identifier"):
+        ModuleRelation("a", "b", ("bad\nvalue",))
+    with pytest.raises(ValueError, match="members"):
+        CyclicModuleScc((), ("a", "a"), (relation,), (relation,))
+    with pytest.raises(ValueError, match="closed chain"):
+        CyclicModuleScc(("a",), ("a", "b"), (relation,), (relation,))
+    with pytest.raises(ValueError, match="witnesses are incomplete"):
+        CyclicModuleScc(("a",), ("a", "a"), (relation,), ())
+
+
+@pytest.mark.parametrize(
+    ("status", "labels", "message"),
+    [
+        ("invalid", (), "status is invalid"),
+        ("resolved", (), "incompatible labels"),
+        ("resolved", ("a", "b"), "incompatible labels"),
+        ("unmapped", ("a",), "incompatible labels"),
+        ("out_of_scope", ("a",), "incompatible labels"),
+        ("overlap", ("a",), "at least two"),
+        ("resolved", ("bad\nlabel",), "single-line identifier"),
+        ("overlap", ("b", "a"), "unique and canonical"),
+    ],
+)
+def test_mapping_resolution_rejects_inconsistent_statuses(
+    status: str,
+    labels: tuple[str, ...],
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        MappingResolution("module", status, labels)  # type: ignore[arg-type]
+
+
+def test_mapping_and_projection_value_objects_reject_noncanonical_members() -> None:
+    resolved = MappingResolution("a", "resolved", ("family",))
+    relation = ModuleRelation("a", "a", ("witness",))
+    scc = CyclicModuleScc(("a",), ("a", "a"), (relation,), (relation,))
+    edge = ProjectedEdge("family", "family", (relation,))
+
+    with pytest.raises(ValueError, match="unique modules"):
+        ExactMapping((resolved, resolved))
+    with pytest.raises(KeyError, match="missing"):
+        ExactMapping((resolved,)).for_module("missing")
+    with pytest.raises(ValueError, match="module witnesses"):
+        ProjectedEdge("family", "family", ())
+    with pytest.raises(ValueError, match="must be canonical"):
+        ProjectedEdge("family", "family", (relation, relation))
+    with pytest.raises(ValueError, match="non-empty and canonical"):
+        RealizableSccProjection(scc, ())
+    with pytest.raises(ValueError, match="requires an unresolved module"):
+        UnresolvedSccProjection(scc, (), (), ())
+    with pytest.raises(ValueError, match="lists must be canonical"):
+        UnresolvedSccProjection(scc, ("z", "a"), (), ())
+    with pytest.raises(ValueError, match="cross-label members"):
+        AggregateQuotientScc(("family",), ("family", "family"), (edge,), (edge,), ())
+    with pytest.raises(ValueError, match="shortest cycle must be closed"):
+        AggregateQuotientScc(
+            ("family", "other"),
+            ("family", "other", "third"),
+            (edge,),
+            (edge, edge),
+            (),
+        )
+    with pytest.raises(ValueError, match="witnesses are incomplete"):
+        AggregateQuotientScc(
+            ("family", "other"),
+            ("family", "other", "family"),
+            (edge,),
+            (edge,),
+            (),
+        )
+
+
+def test_family_dag_rejects_duplicate_and_self_referential_policy_entries() -> None:
+    dependency = FamilyDependency("a", "b")
+    with pytest.raises(ValueError, match="non-empty and unique"):
+        FamilyDag((), ())
+    with pytest.raises(ValueError, match="non-empty and unique"):
+        FamilyDag(("a", "a"), ())
+    with pytest.raises(ValueError, match="cannot repeat"):
+        FamilyDag(("a", "b"), (dependency, dependency))
+    with pytest.raises(ValueError, match="cannot repeat"):
+        FamilyDag(("a", "b"), (), ("a", "a"))
+    with pytest.raises(ValueError, match="absent"):
+        FamilyDag(("a",), (), ("missing",))
+    with pytest.raises(ValueError, match="self dependencies"):
+        FamilyDag(("a",), (FamilyDependency("a", "a"),))
+
+    dag = FamilyDag(("a", "b"), (dependency,))
+    assert dag.reachable_dependencies("a") == ("b",)
+    assert dag.allows("a", "a") is True
+    with pytest.raises(KeyError, match="missing"):
+        dag.reachable_dependencies("missing")
+    with pytest.raises(KeyError, match="missing"):
+        dag.allows("a", "missing")
+
+
+def test_public_graph_operations_fail_closed_on_incomplete_domains() -> None:
+    with pytest.raises(ValueError, match="declared graph domain"):
+        analyze_module_graph(("a",), (ModuleEdge("a", "outside", "witness"),))
+    with pytest.raises(ValueError, match="outside the graph"):
+        resolve_exact_mapping(("a",), {"a": ("family",)}, in_scope_modules=("outside",))
+    with pytest.raises(TypeError, match="sequence of labels"):
+        resolve_exact_mapping(("a",), {"a": "family"})
+
+    graph = ModuleGraph(("a",), (), ())
+    with pytest.raises(ValueError, match="resolve every module"):
+        project_module_graph(graph, ExactMapping(()))
+
+    projection = _projection(("a",), (), {"a": ("unknown",)})
+    with pytest.raises(ValueError, match="absent from DAG"):
+        evaluate_family_dag(projection, FamilyDag(("known",), ()))
+
+
+def test_complete_acyclic_projection_is_accepted_and_exposes_cross_family_edge() -> None:
+    projection = _projection(
+        ("high", "low"),
+        (ModuleEdge("high", "low", "high-low"),),
+        {"high": ("high",), "low": ("low",)},
+    )
+    evaluation = evaluate_family_dag(
+        projection,
+        FamilyDag(("high", "low"), (FamilyDependency("high", "low"),)),
+    )
+
+    assert projection.cross_label_edges == projection.projected_edges
+    assert evaluation.forbidden_edges == ()
+    assert evaluation.is_accepted is True

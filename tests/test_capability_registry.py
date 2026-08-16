@@ -76,8 +76,7 @@ def _ids(values: tuple[CapabilitySpec, ...]) -> tuple[str, ...]:
 def _module_map(capability_id: str) -> dict[str, tuple[str | None, str]]:
     capability = CAPABILITY_REGISTRY.by_id(capability_id)
     return {
-        item.role: (item.legacy_module_id, item.canonical_module_id)
-        for item in capability.modules
+        item.role: (item.legacy_module_id, item.canonical_module_id) for item in capability.modules
     }
 
 
@@ -169,12 +168,8 @@ def test_routes_preserve_exact_subjects_and_public_fqns() -> None:
         f"{_FORMATS_ROOT}.archive.route.ArchiveRoute"
     )
     assert archive.route.config_class.qualified_name.endswith(".archive.route.ArchiveRouteConfig")
-    assert archive.route.summary_class.qualified_name.endswith(
-        ".archive.route.ArchiveRouteSummary"
-    )
-    assert archive.executable_module_ids == (
-        f"{_FORMATS_ROOT}.archive.text_worker",
-    )
+    assert archive.route.summary_class.qualified_name.endswith(".archive.route.ArchiveRouteSummary")
+    assert archive.executable_module_ids == (f"{_FORMATS_ROOT}.archive.text_worker",)
 
     assert docx.route is not None
     assert (docx.route.subject_match_kind, docx.route.subject_value) == (
@@ -253,14 +248,10 @@ def test_source_and_canonical_resolvers_are_disjoint_and_never_fallback() -> Non
     assert resolve_canonical_capabilities(source) == ()
 
     assert source_target_architecture_families(source) == ("_04.capabilities.formats",)
-    assert source_compatibility_architecture_families(source) == (
-        "_04.compat.formats",
-    )
+    assert source_compatibility_architecture_families(source) == ("_04.compat.formats",)
     assert source_compatibility_architecture_families(canonical) == ()
     assert source_target_architecture_families(canonical) == ()
-    assert canonical_target_architecture_families(canonical) == (
-        "_04.capabilities.formats",
-    )
+    assert canonical_target_architecture_families(canonical) == ("_04.capabilities.formats",)
     assert canonical_target_architecture_families(source) == ()
 
     for capability in CAPABILITY_REGISTRY.capabilities:
@@ -329,9 +320,7 @@ def test_payload_round_trip_is_strict_canonical_and_fingerprinted() -> None:
     assert encoded == json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     assert capability_registry_fingerprint() == capability_registry_fingerprint()
     assert capability_registry_fingerprint().startswith("capability-registry-v1:sha256:")
-    digest = capability_registry_fingerprint().removeprefix(
-        "capability-registry-v1:sha256:"
-    )
+    digest = capability_registry_fingerprint().removeprefix("capability-registry-v1:sha256:")
     assert len(digest) == 64
 
     with pytest.raises(ValueError, match="fields are invalid"):
@@ -414,6 +403,105 @@ def test_registry_contract_types_are_frozen_and_slotted() -> None:
     archive = CAPABILITY_REGISTRY.by_id("archive")
     with pytest.raises(FrozenInstanceError):
         archive.capability_id = "changed"  # type: ignore[misc]
+
+
+def test_registry_value_contracts_fail_closed_for_invalid_runtime_values() -> None:
+    archive = CAPABILITY_REGISTRY.by_id("archive")
+    archive_route = archive.route
+    archive_state = archive.state
+    assert archive_route is not None
+    assert archive_state is not None
+
+    with pytest.raises(ValueError, match="non-empty trimmed text"):
+        PythonSymbolRef("", "Symbol")
+    with pytest.raises(ValueError, match="exceeds its bound"):
+        PythonSymbolRef("a" * 513, "Symbol")
+    with pytest.raises(ValueError, match="is invalid"):
+        PythonSymbolRef("valid.module", "not-a-symbol")
+    with pytest.raises(ValueError, match="immutable tuple"):
+        replace(archive.modules[0], public_symbols=["Symbol"])  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="must differ"):
+        replace(
+            archive.modules[0],
+            legacy_module_id=archive.modules[0].canonical_module_id,
+        )
+    with pytest.raises(ValueError, match="must remain silent"):
+        replace(archive.modules[0], warning_policy="warn")  # type: ignore[arg-type]
+
+    with pytest.raises(ValueError, match="input source is invalid"):
+        replace(archive_route, input_source="unknown")  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="match kind is invalid"):
+        replace(archive_route, subject_match_kind="unknown")  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="lowercase MIME"):
+        replace(archive_route, subject_value="Application/ZIP")
+    with pytest.raises(ValueError, match="cannot end with a slash"):
+        replace(archive_route, subject_value="application/")
+
+    with pytest.raises(ValueError, match="identify a SQLite file"):
+        replace(archive_state, state_store_id="sqlite:archive.db", database_name="archive.db")
+    with pytest.raises(ValueError, match="positive integer"):
+        replace(archive_state, expected_schema_version=True)
+    with pytest.raises(ValueError, match="capture mode is invalid"):
+        replace(archive_state, knowledge_capture_mode="always")  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="belong to its schema module"):
+        replace(
+            archive_state,
+            schema_version_symbol=PythonSymbolRef("different.module", "SCHEMA_VERSION"),
+        )
+    with pytest.raises(ValueError, match="must remain SQLite"):
+        replace(archive_state, storage_engine="other")  # type: ignore[arg-type]
+
+    canonical_binding = archive.canonical_logical_owner_binding()
+    with pytest.raises(ValueError, match="match kind is invalid"):
+        replace(canonical_binding, match_kind="prefix")  # type: ignore[arg-type]
+
+
+def test_capability_and_registry_reject_incomplete_cross_references() -> None:
+    archive = CAPABILITY_REGISTRY.by_id("archive")
+    route = archive.route
+    assert route is not None
+
+    with pytest.raises(ValueError, match="typed module bindings"):
+        replace(archive, modules=())
+    with pytest.raises(ValueError, match="inside the canonical tree"):
+        replace(
+            archive,
+            modules=(
+                replace(
+                    archive.modules[0],
+                    legacy_module_id=f"{archive.canonical_module_tree}.legacy",
+                ),
+                *archive.modules[1:],
+            ),
+        )
+    with pytest.raises(ValueError, match="route FQNs"):
+        replace(
+            archive,
+            route=replace(
+                route,
+                route_class=PythonSymbolRef("outside.module", "ArchiveRoute"),
+            ),
+        )
+    with pytest.raises(ValueError, match=r"normalized tests/\*\.py path"):
+        replace(archive, test_roots=("../test_archive.py",))
+    with pytest.raises(ValueError, match="executable modules"):
+        replace(archive, executable_module_ids=("outside.worker",))
+    with pytest.raises(ValueError, match="unknown module role"):
+        archive.module("missing")
+
+    with pytest.raises(ValueError, match="schema is invalid"):
+        CapabilityRegistry("future", (archive,))  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="requires typed capabilities"):
+        CapabilityRegistry(CAPABILITY_REGISTRY_SCHEMA, ())
+    with pytest.raises(ValueError, match="unknown capability"):
+        CAPABILITY_REGISTRY.by_id("missing")
+    with pytest.raises(ValueError, match="unknown capability route"):
+        CAPABILITY_REGISTRY.by_route("missing")
+    with pytest.raises(ValueError, match="resolver mode is invalid"):
+        CAPABILITY_REGISTRY.target_families(
+            "_04_Nucleo_Operativo.archive_route",
+            resolver_mode="invalid",  # type: ignore[arg-type]
+        )
 
 
 def test_registry_cold_import_does_not_load_implementations_or_sqlite() -> None:
