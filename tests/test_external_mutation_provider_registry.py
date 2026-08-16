@@ -118,6 +118,11 @@ def test_full_stages_exact_copy_and_replay_preserves_adapter_costs(
     root, target, files = _project(tmp_path)
     scratch = tmp_path / "scratch"
     scratch.mkdir()
+    legacy_namespace = scratch / "m"
+    legacy_namespace.mkdir(mode=0o775)
+    legacy_namespace.chmod(0o775)
+    legacy_sentinel = legacy_namespace / "legacy-state"
+    legacy_sentinel.write_text("untrusted legacy data", encoding="utf-8")
     payload, signature = _deep_payload()
     monkeypatch.setattr(providers_module, "cosmic_ray_tool_version", lambda: "8.4.6")
     executable_path = str(tmp_path / "trusted-tools")
@@ -132,9 +137,11 @@ def test_full_stages_exact_copy_and_replay_preserves_adapter_costs(
     monkeypatch.setenv("PATH", executable_path)
     monkeypatch.setenv("PATHEXT", executable_extensions)
     observed_stage_roots: list[Path] = []
+    observed_scratch_roots: list[Path] = []
 
     def execute(stage_root, staged, environment, *, trusted_root, scratch_root, config):
         observed_stage_roots.append(stage_root)
+        observed_scratch_roots.append(scratch_root)
         assert trusted_root == root
         assert scratch_root.is_dir()
         assert environment["PATH"] == executable_path
@@ -193,6 +200,12 @@ def test_full_stages_exact_copy_and_replay_preserves_adapter_costs(
     assert first.publication.provenance["mutation_execution"]["uses_network"] is True
     assert target.read_bytes() == original
     assert observed_stage_roots and not observed_stage_roots[0].exists()
+    assert len(observed_scratch_roots) == 1
+    assert observed_scratch_roots[0].parent == scratch / "m2"
+    assert observed_scratch_roots[0].stat().st_mode & 0o777 == 0o700
+    assert (scratch / "m2").stat().st_mode & 0o777 == 0o700
+    assert legacy_namespace.stat().st_mode & 0o777 == 0o775
+    assert legacy_sentinel.read_text(encoding="utf-8") == "untrusted legacy data"
 
     provider.executor = lambda *_args, **_kwargs: pytest.fail("exact replay executed mutation")
     replay = provider.run(root, files, baseline=_baseline(first), scratch_root=scratch)

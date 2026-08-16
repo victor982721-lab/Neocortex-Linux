@@ -228,7 +228,18 @@ def test_exact_replay_observes_support_and_never_executes_pytest(
         },
         ("coverage_main_process_only",),
     )
-    monkeypatch.setattr(providers_module, "execute_pytest_coverage", lambda *_a, **_k: execution)
+    legacy_namespace = scratch / "d"
+    legacy_namespace.mkdir(mode=0o775)
+    legacy_namespace.chmod(0o775)
+    legacy_sentinel = legacy_namespace / "legacy-checkpoint"
+    legacy_sentinel.write_text("untrusted legacy data", encoding="utf-8")
+    durable_scratch_roots: list[Path] = []
+
+    def execute(*_args, scratch_root, **_kwargs):
+        durable_scratch_roots.append(scratch_root)
+        return execution
+
+    monkeypatch.setattr(providers_module, "execute_pytest_coverage", execute)
     first_provider = PytestCoverageTrustedDeepProvider(
         root,
         config.deep_configuration_payload,
@@ -242,6 +253,12 @@ def test_exact_replay_observes_support_and_never_executes_pytest(
     assert first.counters["support_files_verified"] == 3
     assert first.counters["process_invocations"] == 2
     assert first.result_digest is not None
+    assert len(durable_scratch_roots) == 1
+    assert durable_scratch_roots[0].parent == scratch / "d2"
+    assert durable_scratch_roots[0].stat().st_mode & 0o777 == 0o700
+    assert (scratch / "d2").stat().st_mode & 0o777 == 0o700
+    assert legacy_namespace.stat().st_mode & 0o777 == 0o775
+    assert legacy_sentinel.read_text(encoding="utf-8") == "untrusted legacy data"
     baseline = ExternalProviderBaseline(
         17,
         PYTEST_COVERAGE_PROVIDER_ID,
@@ -280,6 +297,69 @@ def test_exact_replay_observes_support_and_never_executes_pytest(
         "signature": config.deep_configuration_signature,
     }
     assert replay.publication.provenance["deep_execution"]["whole_publication_replay"] is True
+
+
+@pytest.mark.parametrize(
+    "precreation",
+    ("group_writable", "owner_mismatch", "symlink"),
+)
+def test_current_coverage_namespace_rejects_unsafe_precreation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    precreation: str,
+) -> None:
+    root = tmp_path / "root"
+    scratch = tmp_path / "scratch"
+    root.mkdir()
+    scratch.mkdir()
+    source, test = _project(root)
+    subprocess.run(("git", "init", "--quiet"), cwd=root, check=True)
+    subprocess.run(("git", "add", "."), cwd=root, check=True)
+    monkeypatch.setattr(deep_module, "_canonical_repository_root", lambda: root)
+    monkeypatch.setattr(providers_module, "_deep_tool_version", lambda: "pytest=9;coverage=7")
+    files = (
+        _external_file(source, root, 1),
+        _external_file(test, root, 2),
+    )
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    namespace = scratch / "d2"
+    if precreation == "group_writable":
+        namespace.mkdir(mode=0o775)
+        namespace.chmod(0o775)
+    elif precreation == "owner_mismatch":
+        namespace.mkdir(mode=0o700)
+        namespace.chmod(0o700)
+        monkeypatch.setattr(
+            deep_module.os,
+            "geteuid",
+            lambda: int(namespace.stat().st_uid) + 1,
+        )
+    else:
+        namespace.symlink_to(outside, target_is_directory=True)
+    monkeypatch.setattr(
+        providers_module,
+        "execute_pytest_coverage",
+        lambda *_args, **_kwargs: pytest.fail("unsafe namespace executed pytest"),
+    )
+    config = _config(root, scratch)
+    publication = PytestCoverageTrustedDeepProvider(
+        root,
+        config.deep_configuration_payload,
+        config.deep_configuration_signature,
+    ).run(root, files, baseline=None, scratch_root=scratch)
+
+    assert publication.status == "failed"
+    assert "durable namespace is not an owner-controlled plain directory" in str(
+        publication.publication.provenance["error"]
+    )
+    assert outside.is_dir()
+    if precreation == "symlink":
+        assert namespace.is_symlink()
+    elif precreation == "owner_mismatch":
+        assert namespace.stat().st_mode & 0o777 == 0o700
+    else:
+        assert namespace.stat().st_mode & 0o777 == 0o775
 
 
 def test_code_route_passes_exact_deep_payload_to_registry(

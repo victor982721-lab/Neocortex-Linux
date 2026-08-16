@@ -176,6 +176,8 @@ _FOCAL_MUTATION_OUTPUT_BYTES = 8 * 1024 * 1024 + 256 * 1024
 _DEEP_COVERAGE_MEMORY_BYTES = 4 * 1024 * 1024 * 1024
 _DEEP_COVERAGE_OUTPUT_BYTES = 32 * 1024 * 1024
 _DEEP_COVERAGE_FINDING_BOUND = 2_000
+_FOCAL_MUTATION_DURABLE_NAMESPACE = "m2"
+_DEEP_COVERAGE_DURABLE_NAMESPACE = "d2"
 _VULTURE_LIMITATIONS = (
     "vulture_confidence_below_100_is_heuristic",
     "static_name_analysis_cannot_prove_runtime_unused",
@@ -244,11 +246,7 @@ def _runtime_parent_candidate(
     effective_uid = getattr(os, "geteuid", lambda: int(metadata.st_uid))()
     normalized = os.path.normcase(os.path.abspath(resolved))
     if require_private:
-        if (
-            int(metadata.st_uid) != int(effective_uid)
-            or mode & 0o077
-            or (mode & 0o700) != 0o700
-        ):
+        if int(metadata.st_uid) != int(effective_uid) or mode & 0o077 or (mode & 0o700) != 0o700:
             return None
     else:
         # The canonical host tmp.mount is deliberately owned by the unprivileged
@@ -312,6 +310,29 @@ def _deep_coverage_runtime_parent(*, root: Path, audit_lab_root: Path) -> Path:
         if sticky is not None:
             return sticky
     raise ValueError("trusted-deep has no safe ephemeral runtime parent")
+
+
+def _durable_provider_scratch(
+    staging_parent: Path,
+    *,
+    namespace: str,
+    identity: str,
+    label: str,
+) -> Path:
+    """Create one versioned private namespace without trusting legacy scratch."""
+
+    namespace_root = _owned_plain_directory(
+        staging_parent / namespace,
+        allow_existing=True,
+        label=f"{label} namespace",
+        require_private=True,
+    )
+    return _owned_plain_directory(
+        namespace_root / identity,
+        allow_existing=True,
+        label=f"{label} scratch",
+        require_private=True,
+    )
 
 
 def _runtime_directory_identity(path: Path) -> tuple[int, int]:
@@ -3749,8 +3770,12 @@ class CosmicRayFocalMutationProvider:
                     "configuration_signature": self.config.configuration_signature,
                 },
             ).rsplit(":", 1)[-1]
-            durable_scratch = staging_parent / "m" / durable_identity
-            durable_scratch.mkdir(parents=True, exist_ok=True)
+            durable_scratch = _durable_provider_scratch(
+                staging_parent,
+                namespace=_FOCAL_MUTATION_DURABLE_NAMESPACE,
+                identity=durable_identity,
+                label="focal mutation durable",
+            )
             with tempfile.TemporaryDirectory(
                 prefix="neocortex-cosmic-ray-focal-",
                 dir=staging_parent,
@@ -4157,17 +4182,11 @@ class PytestCoverageTrustedDeepProvider:
             # Keep the unpublished internal scratch layout deliberately short.  Pytest
             # adds node-id-derived directories below its basetemp and nested Git
             # fixtures must still fit the traditional Windows path budget.
-            durable_namespace = _owned_plain_directory(
-                staging_parent / "d",
-                allow_existing=True,
-                label="trusted-deep durable namespace",
-                require_private=False,
-            )
-            durable_scratch = _owned_plain_directory(
-                durable_namespace / durable_identity,
-                allow_existing=True,
-                label="trusted-deep durable scratch",
-                require_private=False,
+            durable_scratch = _durable_provider_scratch(
+                staging_parent,
+                namespace=_DEEP_COVERAGE_DURABLE_NAMESPACE,
+                identity=durable_identity,
+                label="trusted-deep durable",
             )
             staged = {os.path.normcase(os.path.abspath(item.path)): item for item in files}
             if len(staged) != len(files):
