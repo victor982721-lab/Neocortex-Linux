@@ -8,12 +8,36 @@ no se copian aquí para evitar que se conviertan en datos históricos sin contex
 
 ### Añadido
 
+- `Neocortex --all` deja de producir autoanálisis implícito: consume un receipt
+  `neocortex.code-validation-receipt/v1` exacto para SHA, baseline, digest,
+  política, árbol limpio y review publicado. La operación cotidiana informa un
+  receipt ausente/obsoleto y continúa; `--require-fresh-self-analysis` falla
+  cerrado y `--refresh-self-analysis` conserva la producción como decisión
+  explícita.
+- Replay medible de Code y Semantic. Code separa su identidad AST del perfil
+  profundo, conserva cache hits y agrupa sus actualizaciones de observación en
+  lotes de 128 con tiempos de lookup/update/commit. Semantic publica heads
+  compactos de sus owners y, cuando coinciden exactamente, reutiliza la
+  generación sin enumerar fuentes, descomprimir texto, preparar chunks, cargar
+  modelos ni crear jobs; la CLI expone modo y contadores de trabajo omitido.
+- La política de validación v7 exige un commit limpio antes de iniciar barreras,
+  ejecuta la suite Linux completa sin convertirla en miles de selectores y
+  consume en el mismo receipt el baseline versionado de Coverage, inventarios,
+  providers, wheel candidato y replay. El `pre-push` histórico deja de repetirse
+  como barrera solapada. La suite full admite hasta 10000 nodeids y usa shards
+  de 250 para evitar truncamiento en 5000 y cien arranques de worker. Coverage
+  conserva su conector SQLite privado ante monkeypatches de los tests y el
+  replay reutiliza shards aprobados cuyos resultados terminales sean
+  `passed` o `skipped`, nunca shards fallidos o incompletos.
 - La validación canónica expone en `stderr` salida y progreso estructurado en
   tiempo real, con heartbeats cada 30 segundos y eventos de recolección, inicio,
   reutilización y terminación por shard. Trusted-deep trata el presupuesto como
   nominal y sólo habilita una extensión total acotada a 2x tras progreso de
-  shard validado; el cgroup Linux conserva una cota final de 75 minutos y
-  `--json` mantiene el recibo final aislado en `stdout`. Un subreaper Linux
+  shard validado. Una selección afectada reserva además 15 minutos para los
+  demás providers/cierre; una suite full reserva 30 minutos y queda acotada a
+  60 minutos dentro de la cota global Linux de 75 minutos. Así la finalización
+  no se interrumpe después de completar el último shard. `--json` mantiene el
+  recibo final aislado en `stdout`. Un subreaper Linux
   adopta y termina mediante `pidfd` descendientes que cambien de sesión.
 - Review `neocortex.code-review/v22`: conserva las dos verticales v21 y añade
   la pregunta/vertical experimental PDF. La superficie CLI pública usa el scenario
@@ -79,7 +103,7 @@ no se copian aquí para evitar que se conviertan en datos históricos sin contex
   proyección de contratos son exactamente iguales; cualquier delta contractual
   sí genera una identidad nueva.
 - Validación canónica `neocortex.code-change-validation/v3`, política
-  `local-linux-diff-aware-validation-v6`, ligada al diff:
+  `local-linux-diff-aware-validation-v7`, ligada al diff:
   rutas y tests afectados se proyectan a
   preguntas/sujetos de aceptación versionados. Una pregunta relevante sin
   runner o sin disposición técnica exacta después del replay ahora abstiene;

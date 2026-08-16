@@ -17,6 +17,7 @@ import json
 import os
 import re
 import shutil
+import sqlite3
 import stat
 import sys
 import tempfile
@@ -34,8 +35,8 @@ ERROR_SCHEMA = "neocortex.external-deep-coverage-worker/error-v1"
 DEFAULT_MAX_TESTS = 256
 DEFAULT_MAX_OUTPUT_BYTES = 16 * 1024 * 1024
 DEFAULT_MAX_FAILURE_CHARS = 8_000
-HARD_MAX_TESTS = 5_000
-HARD_MAX_SHARD_TESTS = 50
+HARD_MAX_TESTS = 10_000
+HARD_MAX_SHARD_TESTS = 250
 HARD_MAX_COLLECTED_TESTS = 50_000
 HARD_MAX_SELECTORS = 2_000
 HARD_MAX_SOURCE_FILES = 20_000
@@ -50,6 +51,8 @@ HARD_MAX_PATH_CHARS = 4_096
 HARD_MAX_LINE_MAGNITUDE = 10_000_000
 _FINGERPRINT_GUARD_SEED = 0x4E454F43
 _WORKER_RUNS_DIRECTORY = "w"
+
+_ORIGINAL_SQLITE_CONNECT = sqlite3.connect
 
 _COMMON_REQUEST_KEYS = frozenset(
     {
@@ -66,6 +69,21 @@ _COMMON_REQUEST_KEYS = frozenset(
         "request_signature",
     }
 )
+
+
+class _CoverageSQLiteFacade:
+    """Keep Coverage persistence independent from project sqlite monkeypatches."""
+
+    __slots__ = ("_module", "connect")
+
+    def __init__(self, module: Any, connect: Any) -> None:
+        self._module = module
+        self.connect = connect
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._module, name)
+
+
 _LIMIT_KEYS = frozenset(
     {
         "max_tests",
@@ -508,6 +526,7 @@ def _load_tools() -> tuple[Any, Any, dict[str, str]]:
     try:
         import coverage
         import pytest
+        from coverage import sqlitedb as coverage_sqlitedb
     except ImportError as error:
         raise WorkerContractError(
             "tool_unavailable", "Coverage.py and pytest are required"
@@ -521,6 +540,12 @@ def _load_tools() -> tuple[Any, Any, dict[str, str]]:
             "tool_version_incompatible",
             "worker requires Coverage.py >=7.14,<8 and pytest >=9,<10",
         )
+    # Project tests are allowed to monkeypatch the public stdlib sqlite3 module.
+    # Coverage must retain its own real connection factory through setup/call/
+    # teardown context switches or a test double can corrupt its private store.
+    coverage_namespace: Any = vars(coverage_sqlitedb)
+    if not isinstance(coverage_namespace.get("sqlite3"), _CoverageSQLiteFacade):
+        coverage_namespace["sqlite3"] = _CoverageSQLiteFacade(sqlite3, _ORIGINAL_SQLITE_CONNECT)
     return (
         coverage,
         pytest,

@@ -44,8 +44,8 @@ DEEP_COVERAGE_CHECKPOINT_SCHEMA = "neocortex.deep-coverage-checkpoint/v1"
 
 _PRODUCTION_ROOTS = frozenset(PRODUCTION_ROOT_PACKAGES)
 _MAX_TIME_BUDGET_SECONDS = 900.0
-_MAX_TESTS = 5_000
-_MAX_SHARD_SIZE = 50
+_MAX_TESTS = 10_000
+_MAX_SHARD_SIZE = 250
 _MAX_SELECTORS = 2_000
 _MAX_OUTPUT_BYTES = 32 * 1024 * 1024
 _MAX_STDERR_BYTES = 512 * 1024
@@ -979,9 +979,13 @@ def _ranges(lines: Sequence[int]) -> tuple[tuple[int, int], ...]:
     return tuple(result)
 
 
-def _shard_all_passed(payload: Mapping[str, object]) -> bool:
+def _shard_is_cacheable(payload: Mapping[str, object]) -> bool:
+    if payload.get("suite_status") != "passed" or _required_list(
+        payload.get("failures"), label="pytest failures"
+    ):
+        return False
     return all(
-        _required_mapping(item, label="shard test").get("outcome") == "passed"
+        _required_mapping(item, label="shard test").get("outcome") in {"passed", "skipped"}
         for item in _required_list(payload.get("tests"), label="shard tests")
     )
 
@@ -2083,7 +2087,7 @@ def _validated_checkpoint(
         )
     except (TypeError, ValueError):
         return None
-    return validated if _shard_all_passed(validated) else None
+    return validated if _shard_is_cacheable(validated) else None
 
 
 def _run_shard(
@@ -2186,7 +2190,7 @@ def _execute_shards(
         stdout_bytes += out_bytes
         stderr_bytes += err_bytes
         process_invocations += 1
-        if _shard_all_passed(validated):
+        if _shard_is_cacheable(validated):
             _save_checkpoint(
                 plan.checkpoint,
                 shard_signature=plan.shard_signature,

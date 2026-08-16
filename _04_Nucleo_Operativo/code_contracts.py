@@ -140,12 +140,12 @@ def deep_configuration_payload(
     normalized_mutation_symbol = normalize_deep_mutation_symbol(mutation_symbol)
     if analysis_profile not in {"protected", "trusted-static", "trusted-deep"}:
         raise ValueError("code analysis_profile is unsupported")
-    if not 1 <= max_tests <= 5000:
-        raise ValueError("deep max_tests must be between 1 and 5000")
+    if not 1 <= max_tests <= 10_000:
+        raise ValueError("deep max_tests must be between 1 and 10000")
     if not 30 <= time_budget_seconds <= 900:
         raise ValueError("deep time_budget_seconds must be between 30 and 900")
-    if not 1 <= shard_size <= 50:
-        raise ValueError("deep shard_size must be between 1 and 50")
+    if not 1 <= shard_size <= 250:
+        raise ValueError("deep shard_size must be between 1 and 250")
     if isinstance(mutation_max_mutants, bool) or not 1 <= mutation_max_mutants <= 100:
         raise ValueError("deep mutation_max_mutants must be between 1 and 100")
     if isinstance(mutation_timeout_seconds, bool) or not 1 <= mutation_timeout_seconds <= 120:
@@ -576,7 +576,7 @@ class CodeRouteConfig:
     def processing_signature(self) -> str:
         payload = canonical_json(
             {
-                "route": "code-route-v2",
+                "route": "code-route-v3",
                 "max_file_bytes": self.max_file_bytes,
                 "max_text_chars": self.max_text_chars,
                 "chunk_chars": self.chunk_chars,
@@ -584,10 +584,9 @@ class CodeRouteConfig:
                 "include_vendored": self.include_vendored,
                 "complexity_warning": self.complexity_warning,
                 "function_lines_warning": self.function_lines_warning,
-                "analysis_profile": self.analysis_profile,
             }
         )
-        return "code-v2:" + fingerprint_text(payload).xxh3_128
+        return "code-v3:" + fingerprint_text(payload).xxh3_128
 
     @property
     def deep_configuration_payload(self) -> dict[str, object]:
@@ -627,6 +626,7 @@ class CodeRouteSummary:
     cache_skips: int = 0
     processed: int = 0
     cache_hits: int = 0
+    cache_batches: int = 0
     text_only: int = 0
     partial: int = 0
     skipped_limit: int = 0
@@ -645,6 +645,9 @@ class CodeRouteSummary:
     read_milliseconds: int = 0
     analyze_milliseconds: int = 0
     persist_milliseconds: int = 0
+    cache_lookup_milliseconds: int = 0
+    cache_update_milliseconds: int = 0
+    cache_commit_milliseconds: int = 0
     graph_milliseconds: int = 0
     external_tool_runs: int = 0
     external_diagnostics: int = 0

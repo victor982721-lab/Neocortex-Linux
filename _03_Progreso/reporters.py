@@ -9,6 +9,9 @@ from __future__ import annotations
 
 import json
 import sys
+import time
+from collections.abc import Callable
+from dataclasses import dataclass
 from threading import RLock
 
 from rich.console import Console
@@ -122,20 +125,112 @@ class NullProgress:
         return None
 
 
-class LineProgress:
-    """Emit one flushed, machine-readable stderr line per progress event."""
+@dataclass(slots=True)
+class _LineProgressState:
+    started: float
+    started_completed: int
+    emitted_at: float
+    completed: int
+    description: str
+    status: object
+    errors: object
+    fraction: float | None
 
-    def __init__(self) -> None:
+
+class LineProgress:
+    """Emit coalesced, machine-readable progress without hiding terminals."""
+
+    def __init__(
+        self,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+        item_interval: int = 25,
+        fraction_interval: float = 0.05,
+        time_interval_seconds: float = 5.0,
+    ) -> None:
         self._lock = RLock()
+        self._clock = clock
+        self._item_interval = item_interval
+        self._fraction_interval = fraction_interval
+        self._time_interval_seconds = time_interval_seconds
+        self._states: dict[tuple[str, str], _LineProgressState] = {}
 
     def __call__(self, event: ProgressEvent) -> None:
+        now = self._clock()
+        metrics = {metric.name: metric.value for metric in event.metrics}
+        status = metrics.get("status")
+        errors = metrics.get("errors")
+        with self._lock:
+            state = self._states.get(event.key)
+            if state is None:
+                fraction = (
+                    None
+                    if event.total is None or event.total == 0
+                    else event.completed / event.total
+                )
+                state = _LineProgressState(
+                    now,
+                    event.completed,
+                    now,
+                    event.completed,
+                    event.description,
+                    status,
+                    errors,
+                    fraction,
+                )
+                self._states[event.key] = state
+                emit = True
+            else:
+                previous_fraction = state.fraction
+                fraction = (
+                    None
+                    if event.total is None or event.total == 0
+                    else event.completed / event.total
+                )
+                emit = bool(
+                    event.finished
+                    or event.description != state.description
+                    or status != state.status
+                    or errors != state.errors
+                    or event.completed - state.completed >= self._item_interval
+                    or (
+                        fraction is not None
+                        and isinstance(previous_fraction, float)
+                        and fraction - previous_fraction >= self._fraction_interval
+                    )
+                    or now - state.emitted_at >= self._time_interval_seconds
+                )
+                if not emit:
+                    return
+                state.emitted_at = now
+                state.completed = event.completed
+                state.description = event.description
+                state.status = status
+                state.errors = errors
+                state.fraction = fraction
+            elapsed = max(0.0, now - state.started)
+            completed_delta = event.completed - state.started_completed
+            rate = completed_delta / elapsed if elapsed > 0 and completed_delta > 0 else None
+            eta = (
+                (event.total - event.completed) / rate
+                if rate is not None and event.total is not None and event.total >= event.completed
+                else None
+            )
+            if event.finished:
+                # A later operation may legitimately reuse the same
+                # operation/phase key.  Its first event must not inherit the
+                # terminal coalescing state from this run.
+                self._states.pop(event.key, None)
         payload = {
             "completed": event.completed,
             "description": event.description,
+            "elapsed_seconds": round(elapsed, 3),
+            "eta_seconds": None if eta is None else round(eta, 3),
             "finished": event.finished,
-            "metrics": {metric.name: metric.value for metric in event.metrics},
+            "metrics": metrics,
             "operation": event.operation,
             "phase": event.phase,
+            "rate_per_second": None if rate is None else round(rate, 3),
             "total": event.total,
             "unit": event.unit,
         }

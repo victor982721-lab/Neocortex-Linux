@@ -25,6 +25,7 @@ from _04_Nucleo_Operativo.semantic_lexical import (
     LexicalRanking,
     LexicalStatePaths,
 )
+from _04_Nucleo_Operativo.semantic_generation_repository import merge_source_head_ledger
 from _04_Nucleo_Operativo.semantic_models import (
     BackendEmbedding,
     EmbeddingJobLease,
@@ -46,6 +47,7 @@ from _04_Nucleo_Operativo.semantic_sources import (
     SEMANTIC_TITLE_POLICY,
     SEMANTIC_TITLE_SECTION_KIND,
     ImageSourceRecord,
+    SemanticSourceHead,
     TextSourceRecord,
 )
 from _04_Nucleo_Operativo.semantic_state import (
@@ -314,6 +316,133 @@ def test_text_index_reuses_cached_vector_on_second_generation(
     assert second.generations[0].queued == 0
     assert second.new_jobs_staged == 0
     assert second.errors == 0
+
+
+def test_exact_text_replay_skips_backend_source_enumeration_and_chunking(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_backend(monkeypatch)
+    _declare_source_state(tmp_path, "pdf")
+    head = SemanticSourceHead(
+        "pdf",
+        "pdf.sqlite3",
+        "fixture-adapter-v1",
+        1,
+        1,
+        "sha256:" + "a" * 64,
+        True,
+    )
+    monkeypatch.setattr(service._text_index, "semantic_source_heads", lambda *_args: (head,))
+    monkeypatch.setattr(
+        service,
+        "iter_text_source_records",
+        lambda _state, source: iter((_text_record(),)) if source == "pdf" else iter(()),
+    )
+    baseline = service.index_text_embeddings(tmp_path, source_kinds=("pdf",))
+
+    def unexpected(*_args, **_kwargs):
+        raise AssertionError("exact replay must not enumerate sources or load a backend")
+
+    monkeypatch.setattr(service, "iter_text_source_records", unexpected)
+    monkeypatch.setattr(service, "_backend", unexpected)
+    replay = service.index_text_embeddings(tmp_path, source_kinds=("pdf",))
+
+    assert baseline.execution_mode == "enumerated"
+    assert replay.execution_mode == "exact_replay"
+    assert replay.sources_reused == 1
+    assert replay.sources_enumerated == 0
+    assert replay.items_staged == replay.chunks_staged == replay.new_jobs_staged == 0
+    assert (
+        replay.generations[0].summary.generation_id == baseline.generations[0].summary.generation_id
+    )
+
+
+def test_changed_source_head_falls_back_to_enumeration(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_backend(monkeypatch)
+    _declare_source_state(tmp_path, "pdf")
+    heads = [
+        SemanticSourceHead(
+            "pdf",
+            "pdf.sqlite3",
+            "fixture-adapter-v1",
+            1,
+            1,
+            "sha256:" + "a" * 64,
+            True,
+        )
+    ]
+    monkeypatch.setattr(
+        service._text_index,
+        "semantic_source_heads",
+        lambda *_args: tuple(heads),
+    )
+    enumerations = [0]
+
+    def records(_state, source):
+        enumerations[0] += 1
+        return iter((_text_record(),)) if source == "pdf" else iter(())
+
+    monkeypatch.setattr(service, "iter_text_source_records", records)
+    service.index_text_embeddings(tmp_path, source_kinds=("pdf",))
+    heads[0] = replace(heads[0], digest="sha256:" + "b" * 64)
+    refreshed = service.index_text_embeddings(tmp_path, source_kinds=("pdf",))
+
+    assert refreshed.execution_mode == "enumerated"
+    assert refreshed.sources_enumerated == 1
+    assert enumerations[0] == 2
+
+
+def test_source_head_ledger_replaces_only_overlapping_channel_scopes() -> None:
+    ledger = {
+        "text:pdf,docx": {
+            "channel": "text",
+            "source_kinds": ["pdf", "docx"],
+            "source_heads": ["old"],
+        },
+        "text:audio": {
+            "channel": "text",
+            "source_kinds": ["audio"],
+        },
+        "image:vectors": {
+            "channel": "image-vector",
+            "source_kinds": ["image"],
+        },
+        7: "malformed",
+    }
+    entry = {
+        "channel": "text",
+        "source_kinds": ["pdf"],
+        "source_heads": ["new"],
+    }
+
+    merged = merge_source_head_ledger(ledger, scope_key="text:pdf", entry=entry)
+
+    assert "text:pdf,docx" not in merged
+    assert merged["text:audio"] == ledger["text:audio"]
+    assert merged["image:vectors"] == ledger["image:vectors"]
+    assert merged["text:pdf"] == entry
+    with pytest.raises(ValueError, match="entry is invalid"):
+        merge_source_head_ledger({}, scope_key="scope", entry={})
+    with pytest.raises(ValueError, match="scope is invalid"):
+        merge_source_head_ledger(
+            {},
+            scope_key="",
+            entry={"channel": "text", "source_kinds": ["pdf"]},
+        )
+    oversized = {
+        f"scope:{index}": {"channel": "image-vector", "source_kinds": [f"kind:{index}"]}
+        for index in range(64)
+    }
+    with pytest.raises(ValueError, match="exceeds its bound"):
+        merge_source_head_ledger(
+            oversized,
+            scope_key="text:pdf",
+            entry={"channel": "text", "source_kinds": ["pdf"]},
+        )
 
 
 def test_exact_published_replay_is_free_across_item_and_job_budgets(
@@ -896,6 +1025,40 @@ def test_image_and_ocr_use_separate_embedding_generations(
     )
     state.finalize_embedding_generation(database, compact_cleanup)
     assert not has_active_embeddings(database, compact_model.model_signature)
+
+
+def test_exact_image_replay_skips_stat_enumeration_chunking_and_backends(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_backend(monkeypatch)
+    _declare_source_state(tmp_path, "image")
+    head = SemanticSourceHead(
+        "image",
+        "image.sqlite3",
+        "fixture-adapter-v1",
+        1,
+        1,
+        "sha256:" + "b" * 64,
+        True,
+    )
+    monkeypatch.setattr(service._image_index, "semantic_source_heads", lambda *_args: (head,))
+    record = _image_record(tmp_path, "exact-replay")
+    monkeypatch.setattr(service, "iter_image_source_records", lambda _state: iter((record,)))
+    baseline = service.index_image_embeddings(tmp_path, embed_ocr_text=True)
+
+    def unexpected(*_args, **_kwargs):
+        raise AssertionError("exact image replay must not enumerate or load backends")
+
+    monkeypatch.setattr(service, "iter_image_source_records", unexpected)
+    monkeypatch.setattr(service, "_backend", unexpected)
+    replay = service.index_image_embeddings(tmp_path, embed_ocr_text=True)
+
+    assert baseline.execution_mode == "enumerated"
+    assert replay.execution_mode == "exact_replay"
+    assert replay.sources_reused == 2
+    assert replay.sources_enumerated == 0
+    assert replay.items_staged == replay.chunks_staged == replay.new_jobs_staged == 0
 
 
 def test_image_and_ocr_share_new_job_budget_and_resume_same_generations(

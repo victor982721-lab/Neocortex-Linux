@@ -168,7 +168,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=3000,
         metavar="N",
-        help="maximum tests admitted by trusted-deep (1..5000; default 3000)",
+        help="maximum tests admitted by trusted-deep (1..10000; default 3000)",
     )
     parser.add_argument(
         "--deep-time-budget-seconds",
@@ -182,7 +182,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=20,
         metavar="N",
-        help="trusted-deep tests per resumable shard (1..50; default 20)",
+        help="trusted-deep tests per resumable shard (1..250; default 20)",
     )
     parser.add_argument(
         "--deep-mutation-target",
@@ -242,14 +242,30 @@ def build_parser() -> argparse.ArgumentParser:
         "--all",
         action="store_true",
         help=(
-            "run protected self-analysis of the canonical source repository, then "
-            "every PDF, DOCX, Office, ZIP (including nested ZIP), audio, video, image and "
+            "reuse the exact canonical source-validation receipt when available, then "
+            "run every PDF, DOCX, Office, ZIP (including nested ZIP), audio, video, image and "
             "code route using the existing "
             "cache, update the technical catalog and prune stale cache state; with "
             "--apply, also organize every safely classified technical document; "
             "cached errors are "
             "retried only when their explicit --retry-*-errors flag is supplied; "
             "compatible options supplied explicitly override preset defaults"
+        ),
+    )
+    parser.add_argument(
+        "--refresh-self-analysis",
+        action="store_true",
+        help=(
+            "explicitly refresh protected Code self-analysis before --all; this is a "
+            "producer operation and is never implied by --all"
+        ),
+    )
+    parser.add_argument(
+        "--require-fresh-self-analysis",
+        action="store_true",
+        help=(
+            "require --all to find an exact passed validation receipt for the current "
+            "clean SHA and published Code review, otherwise fail before corpus work"
         ),
     )
     parser.add_argument(

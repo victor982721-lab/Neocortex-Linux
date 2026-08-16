@@ -242,11 +242,11 @@ def test_trusted_deep_normalizes_bounded_selection(
         "--deep-test-selector",
         "tests/test_a.py",
         "--deep-max-tests",
-        "5000",
+        "10000",
         "--deep-time-budget-seconds",
         "900",
         "--deep-shard-size",
-        "50",
+        "250",
         "--deep-mutation-target",
         r"_04_Nucleo_Operativo\external_deep_coverage.py",
         "--deep-mutation-symbol",
@@ -265,9 +265,9 @@ def test_trusted_deep_normalizes_bounded_selection(
         "tests/test_a.py",
         "tests/test_z.py::test_last",
     )
-    assert config.deep_max_tests == 5000
+    assert config.deep_max_tests == 10000
     assert config.deep_time_budget_seconds == 900
-    assert config.deep_shard_size == 50
+    assert config.deep_shard_size == 250
     assert config.deep_mutation_target == "_04_Nucleo_Operativo/external_deep_coverage.py"
     assert config.deep_mutation_symbol == "external_deep_coverage._normalize"
     assert config.deep_mutation_max_mutants == 100
@@ -278,12 +278,12 @@ def test_trusted_deep_normalizes_bounded_selection(
 @pytest.mark.parametrize(
     ("option", "value", "message"),
     (
-        ("--deep-max-tests", "0", "between 1 and 5000"),
-        ("--deep-max-tests", "5001", "between 1 and 5000"),
+        ("--deep-max-tests", "0", "between 1 and 10000"),
+        ("--deep-max-tests", "10001", "between 1 and 10000"),
         ("--deep-time-budget-seconds", "29", "between 30 and 900"),
         ("--deep-time-budget-seconds", "901", "between 30 and 900"),
-        ("--deep-shard-size", "0", "between 1 and 50"),
-        ("--deep-shard-size", "51", "between 1 and 50"),
+        ("--deep-shard-size", "0", "between 1 and 250"),
+        ("--deep-shard-size", "251", "between 1 and 250"),
         ("--deep-mutation-max-mutants", "0", "between 1 and 100"),
         ("--deep-mutation-max-mutants", "101", "between 1 and 100"),
         ("--deep-mutation-timeout-seconds", "0", "between 1 and 120"),

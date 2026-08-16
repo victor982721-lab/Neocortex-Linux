@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -554,6 +555,7 @@ def test_code_validate_json_keeps_live_progress_on_stderr(
     from _04_Nucleo_Operativo import cli_code
     from _04_Nucleo_Operativo import code_change_validation
     from _04_Nucleo_Operativo import code_validation_resources
+    from _04_Nucleo_Operativo import code_validation_receipts
 
     monkeypatch.setattr(
         code_validation_resources,
@@ -572,10 +574,23 @@ def test_code_validate_json_keeps_live_progress_on_stderr(
         return type(
             "ValidationResult",
             (),
-            {"status": "passed", "as_payload": lambda self: payload},
+            {
+                "status": "passed",
+                "gates": (SimpleNamespace(gate_id="trusted_deep_replay", status="passed"),),
+                "as_payload": lambda self: payload,
+            },
         )()
 
     monkeypatch.setattr(code_change_validation, "validate_code_change", validate)
+    monkeypatch.setattr(
+        code_validation_receipts,
+        "publish_code_validation_receipt",
+        lambda _payload: SimpleNamespace(
+            receipt_path="/state/validation-receipts/result.json",
+            receipt_digest="sha256:" + "c" * 64,
+            head_sha="d" * 40,
+        ),
+    )
     args = argparse.Namespace(
         code_validation_baseline="HEAD^",
         code_validation_max_tests=5000,
@@ -588,6 +603,51 @@ def test_code_validate_json_keeps_live_progress_on_stderr(
     assert json.loads(captured.out) == payload
     assert captured.err.startswith("CODE_CHANGE_VALIDATION_PROGRESS ")
     assert "NEOCORTEX_PROGRESS" in captured.err
+    assert "CODE_CHANGE_VALIDATION_RECEIPT" in captured.err
+
+
+def test_code_validate_noop_passes_without_fabricating_runtime_receipt(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from _04_Nucleo_Operativo import cli_code
+    from _04_Nucleo_Operativo import code_change_validation
+    from _04_Nucleo_Operativo import code_validation_resources
+    from _04_Nucleo_Operativo import code_validation_receipts
+
+    monkeypatch.setattr(
+        code_validation_resources,
+        "inside_code_validation_resource_boundary",
+        lambda: True,
+    )
+    payload = {
+        "schema": "neocortex.code-change-validation/v3",
+        "status": "passed",
+    }
+    result = SimpleNamespace(
+        status="passed",
+        gates=(SimpleNamespace(gate_id="source_change_present", status="not_required"),),
+        as_payload=lambda: payload,
+    )
+    monkeypatch.setattr(code_change_validation, "validate_code_change", lambda **_kwargs: result)
+    receipt_calls: list[object] = []
+    monkeypatch.setattr(
+        code_validation_receipts,
+        "publish_code_validation_receipt",
+        lambda value: receipt_calls.append(value),
+    )
+    args = argparse.Namespace(
+        code_validation_baseline="HEAD^",
+        code_validation_max_tests=5000,
+        code_validation_time_budget_seconds=900,
+        code_json=True,
+    )
+
+    assert cli_code.run_code_validate_change(args) == 0
+    captured = capsys.readouterr()
+    assert json.loads(captured.out) == payload
+    assert "CODE_CHANGE_VALIDATION_RECEIPT" not in captured.err
+    assert receipt_calls == []
 
 
 def test_code_explicit_aliases_and_abbreviation_policy_remain_stable() -> None:

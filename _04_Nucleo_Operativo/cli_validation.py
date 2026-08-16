@@ -180,12 +180,12 @@ def _normalize_self_analysis_deep_controls(args: argparse.Namespace) -> None:
         args.deep_test_selectors = normalize_deep_test_selectors(args.deep_test_selectors)
     except ValueError as exc:
         raise SystemExit(f"invalid --deep-test-selector: {exc}") from exc
-    if not 1 <= args.deep_max_tests <= 5000:
-        raise SystemExit("--deep-max-tests must be between 1 and 5000")
+    if not 1 <= args.deep_max_tests <= 10_000:
+        raise SystemExit("--deep-max-tests must be between 1 and 10000")
     if not 30 <= args.deep_time_budget_seconds <= 900:
         raise SystemExit("--deep-time-budget-seconds must be between 30 and 900")
-    if not 1 <= args.deep_shard_size <= 50:
-        raise SystemExit("--deep-shard-size must be between 1 and 50")
+    if not 1 <= args.deep_shard_size <= 250:
+        raise SystemExit("--deep-shard-size must be between 1 and 250")
     try:
         args.deep_mutation_target = normalize_deep_mutation_target(args.deep_mutation_target)
     except ValueError as exc:
@@ -231,12 +231,12 @@ def _validate_self_analysis_deep_controls(
 ) -> None:
     _reject_duplicate_self_analysis_mutations(args)
     _normalize_self_analysis_deep_controls(args)
-    if not 1 <= args.deep_max_tests <= 5000:
-        raise SystemExit("--deep-max-tests must be between 1 and 5000")
+    if not 1 <= args.deep_max_tests <= 10_000:
+        raise SystemExit("--deep-max-tests must be between 1 and 10000")
     if not 30 <= args.deep_time_budget_seconds <= 900:
         raise SystemExit("--deep-time-budget-seconds must be between 30 and 900")
-    if not 1 <= args.deep_shard_size <= 50:
-        raise SystemExit("--deep-shard-size must be between 1 and 50")
+    if not 1 <= args.deep_shard_size <= 250:
+        raise SystemExit("--deep-shard-size must be between 1 and 250")
     _validate_self_analysis_deep_limits(args)
     _validate_self_analysis_mutation_dependencies(args, explicit)
 
@@ -356,6 +356,11 @@ def apply_all_preset(args: argparse.Namespace) -> None:
     for name, value in ALL_PRESET.items():
         if name not in explicit:
             setattr(args, name, value)
+
+
+def _validate_all_self_analysis_controls(args: argparse.Namespace) -> None:
+    if (args.refresh_self_analysis or args.require_fresh_self_analysis) and not args.all:
+        raise SystemExit("--refresh-self-analysis and --require-fresh-self-analysis require --all")
 
 
 # endregion [01]
@@ -911,6 +916,7 @@ def _validate_route_only(args: argparse.Namespace) -> None:
 def validate_arguments(args: argparse.Namespace) -> None:
     apply_self_analysis_preset(args)
     apply_all_preset(args)
+    _validate_all_self_analysis_controls(args)
     if args.show_groups < 0:
         raise SystemExit("--show-groups cannot be negative")
     try:

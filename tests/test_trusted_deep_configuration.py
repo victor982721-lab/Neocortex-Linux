@@ -93,6 +93,21 @@ def test_suite_controls_do_not_invalidate_ordinary_code_ast_signature(tmp_path: 
     assert full_suite.deep_configuration_signature != selected_suite.deep_configuration_signature
 
 
+def test_analysis_profile_does_not_invalidate_ordinary_code_ast_signature(
+    tmp_path: Path,
+) -> None:
+    protected = CodeRouteConfig(
+        state_path=tmp_path / "code.sqlite3",
+        dedup_path=tmp_path / "dedup.sqlite3",
+        analysis_profile="protected",
+    )
+    trusted = replace(protected, analysis_profile="trusted-deep")
+
+    assert protected.processing_signature.startswith("code-v3:")
+    assert protected.processing_signature == trusted.processing_signature
+    assert protected.deep_configuration_signature != trusted.deep_configuration_signature
+
+
 def test_non_deep_code_config_rejects_hidden_execution_controls(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="requires trusted-deep"):
         CodeRouteConfig(

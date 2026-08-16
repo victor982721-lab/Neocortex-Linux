@@ -378,9 +378,25 @@ segunda corrida integral como diagnóstico ciego.
   consume review v22, ejecuta experimentos allow-listed, instala el wheel
   candidato fuera del checkout y exige replay. Las herramientas individuales
   quedan como diagnóstico interno; no constituyen una aceptación paralela. La
-  política `local-linux-diff-aware-validation-v6` liga cambios de CLI y de
+  política `local-linux-diff-aware-validation-v7` liga cambios de CLI y de
   Knowledge Asset Health Text/PDF con sus preguntas, subjects, templates y
   disposiciones técnicas v6 exactas; si falta cualquiera, se abstiene.
+  Una selección afectada conserva como máximo 5000 tests y shards de 50; al
+  cruzar una frontera full, la policy fija 10000/250 para cubrir el inventario
+  Linux sin truncarlo ni multiplicar el costo de arranque del worker.
+- La primera ejecución full del corte proporcional confirmó 5330 tests y 22
+  shards, pero falló focalmente cuando un test parcheó el singleton público
+  `sqlite3.connect` y Coverage heredó ese doble durante teardown. También reveló
+  que un shard aprobado con tests `skipped` no producía checkpoint. El worker
+  conserva ahora su conector SQLite real sin alterar el módulo visto por los
+  tests, y sólo reutiliza shards con suite aprobada, cero fallos y resultados
+  terminales `passed|skipped`. Ruff, Mypy focal, la reproducción real y la
+  matriz consolidada de 399 tests más 2 subtests quedaron verdes; no existe aún
+  receipt canónico aprobado para este corte.
+- La corrida full medida necesita reservar el costo de providers no-Coverage y
+  finalización además del presupuesto 2x de shards. El timeout interno full es
+  ahora 60 minutos (1800 s de Coverage más 1800 s de overhead), todavía dentro
+  de la cota global de 75; la ruta afectada conserva 15 minutos de overhead.
 - Los deltas portables `added/resolved` siguen siendo evidencia histórica
   advisory: pueden usar una publicación comparable anterior a `HEAD^` y variar
   al mover coordenadas. La barrera estática bloqueante es el baseline
@@ -398,8 +414,8 @@ segunda corrida integral como diagnóstico ciego.
   receipt de entorno ni una propiedad declarativa pueden fingir contención. No
   existe fallback sin contención. La denegación comprobada elimina el egress IP;
   `code validate` resuelve sólo evidencia supply ya publicada y fresca.
-- La promoción de cualquier corte requiere el comando verde sobre el diff,
-  commit directo a `main`, repetición con `--baseline HEAD^`, release Linux del
+- La promoción de cualquier corte requiere pruebas focales, commit directo a
+  `main`, una sola validación verde con `--baseline HEAD^`, release Linux del
   SHA exacto, launcher público verificado, push único y coincidencia
   `HEAD=main=origin/main=current`. Ninguno se infiere de este handoff.
 
@@ -588,40 +604,40 @@ segunda corrida integral como diagnóstico ciego.
 1. Leer CTBI/AGENTS, `PENDIENTES.md` y este handoff; verificar en vivo rama,
    `HEAD`, `origin/main`, release `current`, worktree, procesos y ausencia de
    workflows. Usar shells no-login.
-2. Si el worktree contiene únicamente este handoff documental actualizado,
-   comprobar el diff y amend del commit local; registrar el SHA resultante en
-   `PENDIENTES.md`. No ejecutar un gate integral sólo por el cambio documental:
-   el gate ya es obligatorio por el código v22 pendiente.
-3. Pedir la autorización networked concreta descrita en la sección de pausa.
-   Sin ella, no ejecutar `pip-audit`, no rodear la red privada y mantener
-   `NEO-AUTO-003` en `ESPERA_VICTOR`.
-4. Con autorización, ejecutar exactamente un seed `trusted-static` desde el
-   source actual, bajo un transient unit resource-bound y acceso de red sólo
-   para el servicio `pypi`. Verificar run/provider/evaluación conforme a los
-   cinco puntos anteriores. No repetir si falla: diagnosticar el receipt.
-5. Ejecutar una sola vez
+2. Conservar congelada la corrección proporcional ya implementada: `--all`
+   consumidor del receipt, caché Code independiente del perfil y con commits
+   por lote, replay Semantic exacto sin enumeración, validación v7 consolidada,
+   Coverage aislada de monkeypatches SQLite y checkpoints `passed|skipped`.
+   Registrar el SHA limpio en `PENDIENTES.md`.
+3. Ejecutar una sola vez
    `Neocortex code validate --baseline HEAD^`. El resultado aceptable es
    `passed`; `failed` o `abstained` abren diagnóstico focal desde la evidencia
    del gate, nunca una batería manual paralela. Comprobar especialmente:
+   - receipt exacto v1 ligado al commit limpio y policy v7;
+   - suite Linux y Coverage sin regresión dentro del mismo receipt;
    - pip-audit `cache_replay`, cero procesos/red dentro del worker;
    - experiments con receipts terminales;
    - wheel candidato instalado fuera del checkout;
    - replay y disposiciones técnicas diff-bound;
    - fuente sin cambios y cgroup/headroom conservados.
-6. Con gate verde, instalar la release Linux desde ese SHA exacto mediante
+4. Con gate verde, instalar la release Linux desde ese SHA exacto mediante
    `python3.14 tools/release_linux.py install --corpus-root
    "$HOME/Documentos/NeoCortex/Corpus" --prepare-models --desktop` y ejecutar
    `python3.14 tools/release_linux.py verify`. El manifest, receipt, launcher y
    `current/neocortex-release.json` deben declarar el mismo SHA.
-7. Probar dos veces desde `~/.local/bin/Neocortex`, sin `PYTHONPATH` ni
-   dependencia del checkout: status, review v22, `code question`, `code
-   storage` y `knowledge health` con un `resource:file` real obtenido de estado
-   publicado. La segunda lectura debe probar replay/estabilidad; conservar
-   exits, schemas, digests, cotas y `mutation_authority=false`.
-8. Ejecutar los smokes/replay de producto requeridos por el criterio dinámico
-   de cierre, con backup consistente previo cuando toque estado real. No usar
-   `--apply`, no borrar sidecars y no abrir corridas duplicadas.
-9. Hacer un solo `git push origin main`, verificar
+5. Probar desde `~/.local/bin/Neocortex`, sin `PYTHONPATH` ni dependencia del
+   checkout: status, review v22, `code question`, `code storage` y `knowledge
+   health` con un `resource:file` real obtenido de estado publicado. Repetir
+   una lectura sólo cuando demuestre estabilidad/replay y conservar exits,
+   schemas, digests, cotas y `mutation_authority=false`.
+6. Sin writers vivos, crear un backup online nuevo de las 13 SQLite con la API
+   instalada y verificar quick-check/FK del manifest antes del E2E.
+7. Ejecutar una corrida E2E instalada con el receipt estricto. Como este diff
+   cruza caché y pipeline, ejecutar una segunda; debe demostrar
+   `code_processed=0`, todos los candidatos Code reutilizados y Semantic con
+   cero fuentes enumeradas, elementos/fragmentos preparados y jobs nuevos. No
+   usar `--apply`, no borrar sidecars y no abrir corridas duplicadas.
+8. Hacer un solo `git push origin main`, verificar
    `HEAD=origin/main=current.source_sha`, release verify y worktree limpio.
    GitHub Actions permanece ausente y no se consulta.
 
@@ -737,12 +753,16 @@ el mismo SHA comprometido y un worktree limpio:
 2. `current/neocortex-release.json:source_sha` = ese mismo SHA;
 3. `python3.14 tools/release_linux.py verify` y `Neocortex --version` informan
    una release válida `0.9.0`;
-4. el pre-push canónico aprueba arquitectura, estática, supply, Coverage y SHA;
+4. un único receipt `Neocortex code validate --baseline HEAD^` aprueba
+   arquitectura, estática, supply, Coverage sin regresión, wheel/replay y SHA
+   limpio; no se ejecuta además el `pre-push` histórico cuando esas mismas
+   barreras constan en el receipt;
 5. antes de la primera corrida 0.9 se respalda cada SQLite con la API de backup
    online y se verifica integridad/FK de las copias;
-6. dos corridas `Neocortex --all` desde el launcher final terminan en dry-run,
-   migran Dedup a v10, conservan originales y demuestran replay incremental en
-   providers replayables; Office heredado debe mostrar su reejecución
+6. una corrida `Neocortex --all` desde el launcher final termina en dry-run,
+   conserva originales y completa el producto; como este cambio cruza caché y
+   pipeline, una segunda corrida demuestra replay real mediante contadores de
+   trabajo nulo en Code y Semantic. Office heredado debe mostrar su reejecución
    `non_replayable` en vez de fingir cache hit;
 7. las trece bases, corpus before/after, status/search/ask/review, MCP stdio y GUI
    instalados aprueban;

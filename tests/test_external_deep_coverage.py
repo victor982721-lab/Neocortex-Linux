@@ -96,6 +96,7 @@ def _worker(
     nodeids: tuple[str, ...],
     *,
     failed: frozenset[str] = frozenset(),
+    skipped: frozenset[str] = frozenset(),
 ):
     calls: list[tuple[str, tuple[str, ...], float]] = []
 
@@ -129,7 +130,12 @@ def _worker(
                 0,
             )
         tests = [
-            {"nodeid": nodeid, "outcome": "failed" if nodeid in failed else "passed"}
+            {
+                "nodeid": nodeid,
+                "outcome": (
+                    "failed" if nodeid in failed else "skipped" if nodeid in skipped else "passed"
+                ),
+            }
             for nodeid in selected
         ]
         failures = [
@@ -154,6 +160,7 @@ def _worker(
                 "status": "ready",
                 "mode": "shard",
                 "request_signature": signature,
+                "suite_status": "failed" if failures else "passed",
                 "tool_versions": dict(_VERSIONS),
                 "nodeids": list(selected),
                 "tests": tests,
@@ -555,6 +562,26 @@ def test_failed_shard_is_advisory_and_never_reused(
     assert not tuple((scratch / "checkpoints").glob("*.json"))
 
 
+def test_skipped_shard_is_terminal_and_reused(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    trusted, stage, scratch, staged = _fixture(tmp_path, monkeypatch)
+    nodeids = ("tests/test_logic.py::test_true",)
+    calls, run = _worker(nodeids, skipped=frozenset(nodeids))
+    monkeypatch.setattr(deep, "_run_worker", run)
+
+    first = _execute(trusted, stage, scratch, staged, _config(shard_size=1))
+    replay = _execute(trusted, stage, scratch, staged, _config(shard_size=1))
+
+    assert first.counters["tests_skipped"] == 1
+    assert not first.findings
+    assert replay.counters["shards_reused"] == 1
+    assert replay.process_invocations == 2  # git and collect only
+    assert [item[0] for item in calls].count("shard") == 1
+    assert len(tuple((scratch / "checkpoints").glob("*.json"))) == 1
+
+
 def test_support_change_invalidates_checkpoint_but_preserves_comparability_signatures(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -644,10 +671,10 @@ def test_trusted_root_and_public_bounds_fail_closed(
     with pytest.raises(ValueError, match="canonical Neocortex"):
         _execute(other, stage, scratch, staged, _config())
     with pytest.raises(ValueError, match="shard_size"):
-        _config(max_tests=100, shard_size=51)
-    assert _config(max_tests=100, shard_size=50).shard_size == 50
+        _config(max_tests=300, shard_size=251)
+    assert _config(max_tests=300, shard_size=250).shard_size == 250
     with pytest.raises(ValueError, match="max_tests"):
-        _config(max_tests=5_001, shard_size=50)
+        _config(max_tests=10_001, shard_size=250)
     with pytest.raises(ValueError, match=r"0\.\.900"):
         _config(budget=901.0)
     with pytest.raises(ValueError, match="deterministically sorted"):

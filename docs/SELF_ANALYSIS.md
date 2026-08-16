@@ -175,12 +175,18 @@ selección explícita se publica como `selected`; la ausencia de selectores, com
 
 | Opción | Predeterminado | Rango | Función |
 |---|---:|---:|---|
-| `--deep-max-tests` | 3000 | 1–5000 | Máximo de tests admitidos; una recolección mayor queda parcial. |
+| `--deep-max-tests` | 3000 | 1–10000 | Máximo de tests admitidos; una recolección mayor queda parcial. |
 | `--deep-time-budget-seconds` | 600 | 30–900 | Presupuesto nominal de recolección y ejecución; progreso validado permite una única cota 2x. |
-| `--deep-shard-size` | 20 | 1–50 | Node ids exactos por shard reanudable. |
+| `--deep-shard-size` | 20 | 1–250 | Node ids exactos por shard reanudable. |
+
+El receipt canónico de una frontera full usa 10000/250 para cubrir el inventario
+actual sin el truncamiento y el overhead de 100 shards observado con 5000/50.
 
 El proveedor inicia Coverage con branch coverage antes de cargar Pytest y
 cambia el contexto dinámico por node id y fase (`setup`, `call`, `teardown`).
+Su persistencia conserva una referencia privada al `sqlite3.connect` real: un
+test puede parchear el módulo público `sqlite3` sin contaminar la SQLite interna
+de Coverage durante el cambio de contexto o el teardown.
 Normaliza resultados test→líneas→símbolos→módulos como métricas y relaciones
 portables consumidas por status, review, diff y work packages. Coverage mide
 sólo el proceso principal: no recoge subprocesses y publica explícitamente
@@ -197,9 +203,10 @@ ocultar el error operativo que cerró una prueba.
 
 Cada shard queda ligado a fingerprints de código, soporte de pruebas, suite,
 selección, configuración y versiones de Python/Pytest/Coverage. Sólo se conserva
-un checkpoint si todas sus pruebas terminaron aprobadas. Una reanudación puede
-reutilizar esos shards; los fallidos, incompletos, corruptos o incompatibles se
-ejecutan de nuevo. Un replay exacto de toda la publicación conserva además el
+un checkpoint si su suite terminó aprobada y cada prueba quedó en estado
+terminal `passed` o `skipped`. Una reanudación puede reutilizar esos shards; los
+fallidos, incompletos, corruptos o incompatibles se ejecutan de nuevo. Un replay
+exacto de toda la publicación conserva además el
 contrato genérico de caché del proveedor. La recolección y cada inicio,
 reutilización o terminación de shard emiten un evento estructurado con avance,
 duración y tiempo transcurrido. El progreso sólo amplía el presupuesto después
@@ -931,7 +938,7 @@ run con replay exacto. Si el grafo no permite elegir pruebas, un proveedor no
 queda listo, la medición es incompleta o el snapshot cambia durante la corrida,
 se abstiene o falla: nunca traduce ausencia de evidencia en verde. Use
 `--baseline HEAD^` para verificar un commit ya integrado localmente.
-La política `local-linux-diff-aware-validation-v6` incluye los bindings PDF;
+La política `local-linux-diff-aware-validation-v7` incluye los bindings PDF;
 el verificador técnico v7 sólo acepta su pregunta con los cuatro gates y los
 conteos 9/12 exactos del receipt.
 
@@ -947,6 +954,12 @@ de reserva o presión con headroom insuficiente. Esta frontera
 evita que Pyright, Coverage u otro hijo satisfaga sus métricas a costa de OOM
 global. La denegación comprobada de AF_INET/AF_INET6 impide además cualquier
 egress IP de providers en esta ruta canónica.
+
+El productor `trusted-deep` conserva 15 minutos de overhead para una selección
+afectada y 30 para una suite full, además de la cota 2x de Coverage. Con el
+presupuesto full de 900 s su timeout interno es 60 minutos y todavía queda bajo
+la barrera global de 75; completar el último shard no autoriza cortar la
+finalización ni la publicación del receipt.
 
 El gate no equipara «sin runner» con «no requerido». Un binding versionado
 relaciona rutas/tests modificados con preguntas y sujetos de aceptación. Si una

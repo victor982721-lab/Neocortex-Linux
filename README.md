@@ -33,13 +33,15 @@ inventario, procesamiento y búsqueda están disponibles, pero `--apply` y
 `--organization-apply` se abstienen deliberadamente hasta que exista un backend
 ext4 con garantías equivalentes.
 
-`--all` inicia primero el autoanálisis protegido del checkout
-canónico y guarda esa evidencia en el estado separado de autoanálisis. Después
-continúa con el corpus documental. Si la raíz documental fue eliminada o no es
-utilizable, el autoanálisis todavía se ejecuta y la etapa de corpus termina con
-un error controlado `corpus_unavailable`, nunca con un traceback.
+`--all` consulta primero el receipt exacto de la última validación canónica del
+checkout, pero no vuelve a ejecutar el autoanalizador. Un receipt ausente u
+obsoleto se informa y la corrida cotidiana continúa; para un cierre estricto se
+usa `--all --require-fresh-self-analysis`, que falla antes de tocar el corpus.
+`--refresh-self-analysis` es la única opción integrada que produce
+autoanálisis de forma explícita. Si la raíz documental no es utilizable, la
+etapa de corpus termina con `corpus_unavailable`, nunca con un traceback.
 
-Después de esa validación, `Neocortex --all` también avanza Semantic sobre las
+Después de esa consulta, `Neocortex --all` también avanza Semantic sobre las
 cachés durables disponibles. El canal textual incluye PDF, DOCX, XLSX, PPTX,
 ODT, audio, miembros de ZIP y la ruta de texto/correo; si existe la caché de
 imágenes, el mismo presupuesto publica además CLIP visión y el OCR retenido.
@@ -49,6 +51,13 @@ presupuesto documental. Para incluirlo deliberadamente se usa
 `--all --semantic-source code`. No se presupone ningún conteo histórico de
 vectores o chunks: `--semantic-status` es la lectura del estado realmente
 publicado.
+
+Cuando las fuentes durables no cambiaron, Semantic reutiliza el head publicado
+mediante una proyección compacta y no vuelve a enumerar, descomprimir, fragmentar
+ni cargar modelos. La salida distingue `mode=exact_replay` y exige
+`sources_enumerated=0`, `items=0`, `chunks=0` y `new_jobs=0` para demostrar ese
+replay. Code conserva su caché entre perfiles de análisis y agrupa en lotes las
+actualizaciones de observación.
 
 La ruta Code usa `--code-scope projects` de forma predeterminada: descubre
 raíces por manifiestos de proyecto (`pyproject.toml`, `package.json`,
@@ -566,8 +575,10 @@ Neocortex --self-analysis --analysis-profile trusted-deep --root $Root --state-d
 Sin `--deep-test-selector`, ejecuta la suite declarada completa. El selector se
 puede repetir con una ruta relativa bajo `tests/` o un node id de Pytest. Los
 límites predeterminados son 3000 tests, 600 segundos y shards de 20; sus rangos
-son 1–5000, 30–900 y 1–50, respectivamente. El tiempo es nominal: después de al
-menos un shard terminado o reutilizado, el proveedor puede usar una sola
+son 1–10000, 30–900 y 1–250, respectivamente. La validación canónica usa
+automáticamente la cota completa 10000/250 para evitar truncar la suite y el
+overhead observado de cien procesos de 50 tests. El tiempo es nominal: después
+de al menos un shard terminado o reutilizado, el proveedor puede usar una sola
 extensión acotada a 2x. La recolección y cada transición de shard se publican
 como progreso estructurado. Sólo los shards que terminaron con
 todas sus pruebas aprobadas producen checkpoints reanudables ligados a las
@@ -876,6 +887,8 @@ El comando captura el diff y su digest, selecciona pruebas afectadas por cambio
 directo, convención y grafo de imports publicado, añade las fronteras públicas y
 escenarios registrados si el grafo queda incompleto, y sólo escala a la suite
 declarada cuando cambia packaging, schema o la política de gates.
+La selección afectada conserva un máximo de 5000 y shards de 50; la frontera
+full usa 10000/250 para no truncar la suite ni repetir cien arranques de worker.
 La suite declarada omite únicamente las pruebas del runtime Windows/NTFS
 retirado; conserva fixtures portables aunque modelen metadatos históricos.
 Después ejecuta los gates estáticos y arquitectónicos existentes, publica el
@@ -888,7 +901,7 @@ abstención y si fuente/estado canónico permanecieron intactos. No autoriza
 patches, push, release ni mutación del corpus.
 
 Esta frontera usa los registries runtime/template v11, el verificador técnico
-v7 y la política diff-aware `local-linux-diff-aware-validation-v6`. La matriz
+v7 y la política diff-aware `local-linux-diff-aware-validation-v7`. La matriz
 CLI permanece en scenario v4/template v3 con veintiséis nodeids y cinco gates; la ampliación
 v22 agrega PDF sin rebajar esa cobertura.
 

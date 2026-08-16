@@ -2703,6 +2703,121 @@ def generation_summary(path: Path, generation_id: int) -> GenerationSummary:
         return _generation_summary_row(connection, generation_id)
 
 
+def find_exact_published_generation(
+    path: Path,
+    *,
+    model_signature: str,
+    required_provenance: Mapping[str, object] | None = None,
+    required_source_head_ledger: Mapping[str, object] | None = None,
+) -> GenerationSummary | None:
+    """Read an already-published exact head without creating a generation."""
+
+    if not path.is_file():
+        return None
+    try:
+        with semantic_database(path, readonly=True) as connection:
+            row = connection.execute(
+                """SELECT g.generation_id,g.status,g.provenance_json
+                FROM published_embedding_heads h
+                JOIN embedding_generations g ON g.generation_id=h.generation_id
+                WHERE h.model_signature=? AND g.model_signature=?""",
+                (model_signature, model_signature),
+            ).fetchone()
+            if row is None or str(row["status"]) != "ready":
+                return None
+            provenance = json.loads(str(row["provenance_json"]))
+            required = required_provenance or {}
+            ledger_required = required_source_head_ledger or {}
+            ledger = provenance.get("source_head_ledger") if isinstance(provenance, dict) else None
+            if (
+                not isinstance(provenance, dict)
+                or any(provenance.get(key) != value for key, value in required.items())
+                or (
+                    ledger_required
+                    and (
+                        not isinstance(ledger, dict)
+                        or any(ledger.get(key) != value for key, value in ledger_required.items())
+                    )
+                )
+            ):
+                return None
+            summary = _generation_summary_row(connection, int(row["generation_id"]))
+    except (OSError, sqlite3.DatabaseError, TypeError, ValueError):
+        return None
+    if (
+        summary.status != "ready"
+        or summary.unfinished
+        or summary.errors
+        or summary.stale
+        or summary.cursor.get("enumeration_complete") is not True
+    ):
+        return None
+    return summary
+
+
+def published_source_head_ledger(
+    path: Path,
+    *,
+    model_signature: str,
+) -> dict[str, object]:
+    """Read the bounded source ledger carried by one current published head."""
+
+    if not path.is_file():
+        return {}
+    try:
+        with semantic_database(path, readonly=True) as connection:
+            row = connection.execute(
+                """SELECT g.provenance_json FROM published_embedding_heads h
+                JOIN embedding_generations g ON g.generation_id=h.generation_id
+                WHERE h.model_signature=? AND g.model_signature=? AND g.status='ready'""",
+                (model_signature, model_signature),
+            ).fetchone()
+        if row is None:
+            return {}
+        provenance = json.loads(str(row["provenance_json"]))
+        ledger = provenance.get("source_head_ledger") if isinstance(provenance, dict) else None
+        if not isinstance(ledger, dict) or len(ledger) > 64:
+            return {}
+        return {str(key): value for key, value in ledger.items()}
+    except (OSError, sqlite3.DatabaseError, TypeError, ValueError):
+        return {}
+
+
+def merge_source_head_ledger(
+    ledger: Mapping[str, object],
+    *,
+    scope_key: str,
+    entry: Mapping[str, object],
+) -> dict[str, object]:
+    """Replace overlapping scope claims while retaining disjoint source heads."""
+
+    channel = entry.get("channel")
+    source_kinds = entry.get("source_kinds")
+    if not isinstance(channel, str) or not channel.strip() or not isinstance(source_kinds, list):
+        raise ValueError("source head ledger entry is invalid")
+    selected = {value for value in source_kinds if isinstance(value, str) and value.strip()}
+    if len(selected) != len(source_kinds) or not selected or not scope_key.strip():
+        raise ValueError("source head ledger scope is invalid")
+    merged: dict[str, object] = {}
+    for key, value in ledger.items():
+        if not isinstance(key, str) or not isinstance(value, Mapping):
+            continue
+        existing_sources = value.get("source_kinds")
+        overlaps = (
+            value.get("channel") == channel
+            and isinstance(existing_sources, list)
+            and bool(
+                selected.intersection(item for item in existing_sources if isinstance(item, str))
+            )
+        )
+        if not overlaps:
+            merged[key] = dict(value)
+    merged[scope_key] = dict(entry)
+    if len(merged) > 64:
+        raise ValueError("source head ledger exceeds its bound")
+    return merged
+
+
 def _generation_cleanup_profile(
     connection: sqlite3.Connection,
     generation_id: int,

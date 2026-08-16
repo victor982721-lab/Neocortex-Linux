@@ -2126,6 +2126,7 @@ def run_code_validate_change(args: argparse.Namespace) -> int:
             )
 
         from .code_change_validation import validate_code_change
+        from .code_validation_receipts import publish_code_validation_receipt
 
         result = validate_code_change(
             baseline=args.code_validation_baseline,
@@ -2135,6 +2136,15 @@ def run_code_validate_change(args: argparse.Namespace) -> int:
                 f"CODE_CHANGE_VALIDATION_PROGRESS {message}",
                 file=sys.stderr,
             ),
+        )
+        runtime_replay_passed = any(
+            gate.gate_id == "trusted_deep_replay" and gate.status == "passed"
+            for gate in result.gates
+        )
+        receipt = (
+            publish_code_validation_receipt(result.as_payload())
+            if result.status == "passed" and runtime_replay_passed
+            else None
         )
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         return _error("code-validate-change", exc)
@@ -2161,6 +2171,13 @@ def run_code_validate_change(args: argparse.Namespace) -> int:
                 "CODE_CHANGE_VALIDATION_EXPERIMENTS "
                 + json.dumps(result.executable_experiments, ensure_ascii=True)
             )
+    if receipt is not None:
+        _print_console_line(
+            "CODE_CHANGE_VALIDATION_RECEIPT "
+            f"path={receipt.receipt_path} digest={receipt.receipt_digest} "
+            f"head={receipt.head_sha}",
+            file=sys.stderr if args.code_json else sys.stdout,
+        )
     return 0 if result.status == "passed" else 2
 
 

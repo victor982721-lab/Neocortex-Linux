@@ -149,7 +149,14 @@ class _CodeRouteRun:
                 for field in CodeRouteSummary.__dataclass_fields__
                 if field != "processing_signature"
             },
-            elapsed_nanoseconds={"read": 0, "analyze": 0, "persist": 0},
+            elapsed_nanoseconds={
+                "read": 0,
+                "analyze": 0,
+                "persist": 0,
+                "cache_lookup": 0,
+                "cache_update": 0,
+                "cache_commit": 0,
+            },
         )
 
     def require_analysis_run_id(self) -> int:
@@ -785,6 +792,8 @@ class CodeRoute:
                 self.framework_run_id,
                 retry_errors=self.config.retry_errors,
                 resolve_analyzer_identity=self._resolve_analyzer_identity,
+                commit=False,
+                elapsed_nanoseconds=elapsed_nanoseconds,
             )
             if cached is not None:
                 self._record_cache_hit(cached, counters)
@@ -839,6 +848,8 @@ class CodeRoute:
                         raw_xxh3_128=raw_fingerprint.xxh3_128,
                         raw_xxh3_64_guard=raw_fingerprint.xxh3_64_guard,
                         resolve_analyzer_identity=self._resolve_analyzer_identity,
+                        commit=False,
+                        elapsed_nanoseconds=elapsed_nanoseconds,
                     )
                     if cached is not None:
                         self._record_cache_hit(cached, counters)
@@ -946,28 +957,55 @@ class CodeRoute:
         if project_scope is not None:
             run.counters["project_scope_enabled"] = 1
             run.counters["project_roots"] = project_scope.root_count
-        for snapshot in self.dedup_index.snapshots(self.scan_id):
-            self.cancellation.checkpoint()
-            if not self._candidate_selected(
-                state,
-                snapshot,
-                project_scope,
-                run.counters,
-            ):
-                continue
-            if (
-                self.config.max_documents is not None
-                and run.counters["candidates"] >= self.config.max_documents
-            ):
-                break
-            run.counters["candidates"] += 1
-            candidate_changed = self._process_candidate(
-                state,
-                snapshot,
-                run.counters,
-                run.elapsed_nanoseconds,
-            )
-            run.graph_inputs_changed = run.graph_inputs_changed or candidate_changed
+        pending_cache_updates = 0
+
+        def commit_cache_batch() -> None:
+            nonlocal pending_cache_updates
+            if not state.connection.in_transaction:
+                pending_cache_updates = 0
+                return
+            started = time.perf_counter_ns()
+            state.connection.commit()
+            run.elapsed_nanoseconds["cache_commit"] += time.perf_counter_ns() - started
+            run.counters["cache_batches"] += 1
+            pending_cache_updates = 0
+
+        try:
+            for snapshot in self.dedup_index.snapshots(self.scan_id):
+                self.cancellation.checkpoint()
+                if not self._candidate_selected(
+                    state,
+                    snapshot,
+                    project_scope,
+                    run.counters,
+                ):
+                    continue
+                if (
+                    self.config.max_documents is not None
+                    and run.counters["candidates"] >= self.config.max_documents
+                ):
+                    break
+                run.counters["candidates"] += 1
+                cache_hits_before = run.counters["cache_hits"]
+                candidate_changed = self._process_candidate(
+                    state,
+                    snapshot,
+                    run.counters,
+                    run.elapsed_nanoseconds,
+                )
+                run.graph_inputs_changed = run.graph_inputs_changed or candidate_changed
+                if run.counters["cache_hits"] > cache_hits_before:
+                    pending_cache_updates += 1
+                    if pending_cache_updates >= 128:
+                        commit_cache_batch()
+                elif not state.connection.in_transaction:
+                    pending_cache_updates = 0
+        except BaseException:
+            if state.connection.in_transaction:
+                state.connection.rollback()
+            raise
+        else:
+            commit_cache_batch()
 
     def _run_analysis_phase(self, state: CodeState, run: _CodeRouteRun) -> None:
         run.analysis_run_id = state.begin_run(

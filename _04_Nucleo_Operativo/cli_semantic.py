@@ -122,6 +122,8 @@ def _selected_semantic_text_sources(args: argparse.Namespace) -> tuple[str, ...]
 def _print_semantic_index_result(scope: str, result) -> None:
     print(
         f"SEMANTIC_INDEX scope={scope} sources={','.join(result.sources)} "
+        f"mode={result.execution_mode} sources_reused={result.sources_reused} "
+        f"sources_enumerated={result.sources_enumerated} "
         f"items={result.items_staged} chunks={result.chunks_staged} "
         f"new_jobs={result.new_jobs_staged} "
         f"errors={result.errors} stale={result.stale} "

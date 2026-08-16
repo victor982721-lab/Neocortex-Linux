@@ -137,9 +137,11 @@ imagen y código, actualiza el catálogo técnico y se reserva para cuando exist
 proyección aceptada. Al final avanza Semantic sobre las cachés documentales y,
 si existe la caché de imagen, también sobre CLIP visión/OCR; Code requiere
 `--semantic-source code` explícito.
-Antes de esa etapa, reutiliza el servicio de autoanálisis protegido sobre el
-checkout canónico y su estado separado. Si el corpus no está disponible, ese
-autoanálisis se conserva y el comando devuelve `2` con
+Antes de esa etapa, consulta el receipt exacto de la validación canónica sin
+ejecutar el autoanalizador. `--require-fresh-self-analysis` convierte esa
+consulta en barrera estricta; `--refresh-self-analysis` es la operación
+productora explícita. Si el corpus no está disponible, la consulta se conserva
+y el comando devuelve `2` con
 `corpus_unavailable`, sin traceback:
 
 ```powershell
@@ -464,8 +466,10 @@ Neocortex --self-analysis --analysis-profile trusted-deep --root $Root --state-d
   --deep-mutation-time-budget-seconds 600
 ```
 
-Los límites admitidos son 30–900 segundos nominales, 1–5000 tests y shards de
-1–50; 600/3000/20 son los valores predeterminados. Después de comprobar un
+Los límites admitidos son 30–900 segundos nominales, 1–10000 tests y shards de
+1–250; 600/3000/20 son los valores predeterminados. La validación canónica full
+usa 900/10000/250 para cubrir la suite sin truncarla ni multiplicar overhead.
+Después de comprobar un
 shard terminado o reutilizado, Coverage puede consumir una única extensión
 acotada a 2x. Publica progreso al recolectar y al iniciar, reutilizar o terminar
 cada shard. Sin selector, la publicación
@@ -483,9 +487,11 @@ Coverage usa branch coverage y contextos dinámicos por test/fase de Pytest, per
 mide sólo el proceso principal. Un subprocess creado por las pruebas puede
 ejecutar código sin quedar atribuido y la publicación lo declara mediante
 `coverage_main_process_only` y `subprocess_coverage_not_collected`. Los shards se
-firman con inputs, suite, configuración y versiones. Sólo un shard con todas sus
-pruebas aprobadas produce checkpoint reanudable; uno fallido, incompleto o
-incompatible se vuelve a ejecutar. En la validación canónica esos eventos y la
+firman con inputs, suite, configuración y versiones. Coverage conserva su
+conector SQLite real aunque una prueba parchee el módulo público `sqlite3`.
+Sólo un shard con suite aprobada y resultados terminales `passed`/`skipped`
+produce checkpoint reanudable; uno fallido, incompleto o incompatible se vuelve
+a ejecutar. En la validación canónica esos eventos y la
 salida del hijo se retransmiten inmediatamente por `stderr`; un heartbeat cada
 30 segundos permite distinguir actividad prolongada de una pérdida de señal.
 
@@ -916,8 +922,10 @@ Neocortex code validate
 
 Es un orquestador del autoanalizador, no otro linter: captura el diff; selecciona
 pruebas afectadas, completa huecos con fronteras públicas/escenarios registrados
-y escala a la suite Linux sólo ante cambios de packaging, schema o gates; ejecuta las barreras
-estática y arquitectónica existentes; publica `trusted-deep`; consume el review
+y escala a la suite Linux sólo ante cambios de packaging, schema o gates. La
+selección afectada conserva 5000/50; la frontera full usa 10000/250 para evitar
+truncamiento y cien arranques de worker. Después ejecuta las barreras estática y
+arquitectónica existentes; publica `trusted-deep`; consume el review
 v22; ejecuta experimentos registrados; instala y prueba el wheel candidato fuera
 del checkout; y repite la misma publicación para demostrar replay. Un gate
 fallido produce `failed`, evidencia insuficiente produce `abstained`, y ambos
@@ -938,7 +946,10 @@ falta el headroom físico reservado. El reclaim aislado por `MemoryHigh` con
 memoria abundante no se interpreta como riesgo global.
 Cada comando acotado usa además su propio grupo de proceso. Trusted-deep parte
 del presupuesto nominal solicitado y sólo habilita su cota 2x después de avance
-validado; el proceso padre expone salida, eventos y heartbeats en tiempo real.
+validado. La ruta afectada añade 15 minutos para providers no-Coverage y cierre;
+la ruta full añade 30 minutos, por lo que con el presupuesto canónico de 900 s
+su límite interno es 60 minutos dentro de la cota global de 75. El proceso padre
+expone salida, eventos y heartbeats en tiempo real.
 Un subreaper Linux adopta y termina mediante `pidfd` los descendientes que
 creen otra sesión con `setsid()`. Al vencer la cota correspondiente, el árbol recibe
 SIGINT y dispone de una gracia para publicar su terminalización durable
@@ -957,7 +968,7 @@ La selección experimental también está ligada al diff mediante un registro
 versionado de rutas/tests→preguntas/sujetos. Un registry gap relevante o una
 pregunta sin disposición técnica exacta después del replay produce
 `abstained`; `not_required` sólo aparece cuando ese binding demuestra que la
-pregunta es disjunta al cambio. La política v6 incorpora bindings exactos para
+pregunta es disjunta al cambio. La política v7 incorpora bindings exactos para
 la CLI pública y para Knowledge Asset Health Text/PDF; cambiar sus contratos o
 tests de control exige los templates de veintiún/cinco, doce/cuatro y
 doce/cuatro respectivamente.
@@ -1010,7 +1021,16 @@ python tools/quality_gate.py coverage \
 
 El gate histórico `pre-push` continúa disponible internamente para una campaña
 integral explícita, pero ya no es la interfaz ordinaria ni reemplaza el recibo
-diff-aware del autoanalizador.
+diff-aware del autoanalizador. Cuando sus comprobaciones únicas de Coverage,
+supply y SHA limpio formen parte del recibo canónico, no se ejecuta además como
+barrera de cierre. Durante una transición sólo se ejecuta la comprobación única
+que todavía falte, antes de instalar la release.
+
+`Neocortex --all` es consumidor, no productor, del autoanálisis. Reutiliza un
+receipt `passed` ligado al SHA, baseline, digest del cambio y política vigentes;
+la actualización explícita conserva su propia interfaz. Una segunda corrida
+integral se reserva para cambios de caché/replay/reanudación/schema/pipeline y
+debe terminar con contadores de trabajo nulo en las superficies replayables.
 
 Los gates no descargan pesos de modelos reales; los contratos usan dobles y la
 conformidad de los pesos se comprueba durante la instalación local. Ninguna

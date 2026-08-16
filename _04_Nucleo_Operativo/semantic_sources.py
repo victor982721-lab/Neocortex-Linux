@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import json
 import re
@@ -13,6 +14,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from pathlib import PureWindowsPath
+from typing import Protocol
 
 from _02_Deduplicacion import FileSnapshot
 from _02_Deduplicacion.hashing import FULL_ALGORITHM, stat_matches_snapshot
@@ -73,6 +75,7 @@ CODE_SOURCE_ADAPTER_VERSION = "semantic-code-source-v1"
 SEMANTIC_TITLE_SECTION_KIND = "semantic_metadata_title"
 SEMANTIC_TITLE_POLICY = "semantic-content-aware-title-v3"
 SEMANTIC_TEXT_ENUMERATION_PROTOCOL = "bounded-v1"
+SEMANTIC_SOURCE_HEAD_PROTOCOL = "semantic-source-head-v1"
 MAX_SEMANTIC_TITLE_CHARS = 512
 MAX_SECTION_TEXT_BYTES = 32 * 1024 * 1024
 MAX_SECTION_TEXT_CHARS = 20_000_000
@@ -97,8 +100,39 @@ class ImageSourceRecord:
     ocr_section: TextSection | None
 
 
+@dataclass(frozen=True, slots=True)
+class SemanticSourceHead:
+    """Compact exact projection of one durable source cache."""
+
+    source_kind: str
+    database_name: str
+    adapter_version: str
+    schema_version: int
+    row_count: int
+    digest: str
+    complete: bool
+    reason: str | None = None
+
+    def as_payload(self) -> dict[str, object]:
+        return {
+            "schema": SEMANTIC_SOURCE_HEAD_PROTOCOL,
+            "source_kind": self.source_kind,
+            "database_name": self.database_name,
+            "adapter_version": self.adapter_version,
+            "schema_version": self.schema_version,
+            "row_count": self.row_count,
+            "digest": self.digest,
+            "complete": self.complete,
+            "reason": self.reason,
+        }
+
+
 class SemanticSourceError(RuntimeError):
     """A durable route cache contains invalid or unsafe source evidence."""
+
+
+class _DigestWriter(Protocol):
+    def update(self, value: bytes, /) -> object: ...
 
 
 _GENERIC_BASENAME = re.compile(
@@ -211,7 +245,8 @@ def semantic_text_processing_signature(
         f"{pipeline_version}|{SOURCE_ADAPTER_VERSION}|{chunking_signature}|"
         f"sources={','.join(selected_sources)}|title-policy={SEMANTIC_TITLE_POLICY}|"
         f"quality-policy={SEMANTIC_TEXT_QUALITY_POLICY}|"
-        f"enumeration={SEMANTIC_TEXT_ENUMERATION_PROTOCOL}"
+        f"enumeration={SEMANTIC_TEXT_ENUMERATION_PROTOCOL}|"
+        f"source-head={SEMANTIC_SOURCE_HEAD_PROTOCOL}"
     )
 
 
@@ -917,6 +952,194 @@ def _iter_code(
             )
 
 
+def _source_head_query(
+    connection: sqlite3.Connection,
+    source_kind: str,
+) -> tuple[str, tuple[object, ...]]:
+    """Return the compact ordered projection that controls Semantic output."""
+
+    if source_kind == "pdf":
+        return (
+            """SELECT d.file_key,d.path,d.processing_signature,d.status,d.size,
+            d.mtime_ns,d.birthtime_ns,d.is_partial,d.normalized_text_xxh3_128,
+            d.normalized_text_chars,p.page_number,p.source,p.text_chars
+            FROM documents d JOIN pages p ON p.file_key=d.file_key
+            WHERE d.status IN ('done','partial') ORDER BY d.file_key,p.page_number""",
+            (),
+        )
+    if source_kind == "docx":
+        return (
+            """SELECT d.file_key,d.path,d.processing_signature,d.status,d.size,
+            d.mtime_ns,d.birthtime_ns,d.text_xxh3_128,d.text_chars,
+            p.part_name,p.part_kind,p.ordinal,p.text_chars
+            FROM documents d LEFT JOIN document_parts p ON p.file_key=d.file_key
+            WHERE d.status IN ('complete','partial') AND
+            (p.part_name IS NOT NULL OR (d.text_zlib IS NOT NULL AND d.text_chars>0))
+            ORDER BY d.file_key,p.ordinal,p.part_name""",
+            (),
+        )
+    if source_kind in {"xlsx", "pptx", "odt"}:
+        return (
+            """SELECT file_key,path,size,mtime_ns,birthtime_ns,
+            processing_signature,status,text_xxh3_128,text_chars
+            FROM documents WHERE format=? AND status='complete'
+            AND text_zlib IS NOT NULL AND text_chars>0 ORDER BY file_key""",
+            (source_kind,),
+        )
+    if source_kind == "audio":
+        return (
+            """SELECT d.file_key,d.path,d.processing_signature,d.status,d.size,
+            d.mtime_ns,d.birthtime_ns,d.text_xxh3_128,d.text_chars,
+            s.segment_index,s.start_ms,s.end_ms,length(s.text)
+            FROM documents d JOIN segments s ON s.file_key=d.file_key
+            WHERE d.status='complete' AND trim(s.text)<>''
+            ORDER BY d.file_key,s.segment_index""",
+            (),
+        )
+    if source_kind == "archive":
+        return (
+            """SELECT d.file_key,d.path,d.processing_signature,d.status,d.size,
+            d.mtime_ns,d.birthtime_ns,d.text_xxh3_128,d.text_chars,
+            d.container_path,d.container_key,d.member_chain,d.member_path,
+            d.archive_depth,d.content_kind,d.media_type,c.status
+            FROM documents d JOIN containers c ON c.container_key=d.container_key
+            WHERE d.status='indexed' AND d.text_zlib IS NOT NULL AND d.text_chars>0
+            AND c.status IN ('complete','partial') ORDER BY d.file_key""",
+            (),
+        )
+    if source_kind == "text":
+        columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(documents)")}
+        revision_projection = (
+            "d.revision_id,r.resource_id,r.producer,r.processing_signature,r.generation,"
+            "r.revision_state,r.fingerprint_algorithm,r.fingerprint,"
+            "materialization.materialization_id,materialization.fingerprint_algorithm,"
+            "materialization.fingerprint"
+            if "revision_id" in columns
+            and connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='text_input_revisions'"
+            ).fetchone()
+            is not None
+            else "NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL"
+        )
+        joins = (
+            """LEFT JOIN text_input_revisions r ON r.revision_id=d.revision_id
+            LEFT JOIN text_materialization_heads head ON head.resource_id=r.resource_id
+              AND head.materialization_kind='text_representation'
+              AND head.revision_id=r.revision_id
+            LEFT JOIN text_materializations materialization
+              ON materialization.owner=head.materialization_owner
+             AND materialization.materialization_id=head.materialization_id"""
+            if "revision_id" in columns
+            and connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='text_input_revisions'"
+            ).fetchone()
+            is not None
+            else ""
+        )
+        return (
+            f"""SELECT d.file_key,d.path,d.processing_signature,d.status,d.size,
+            d.mtime_ns,d.birthtime_ns,d.text_xxh3_128,d.text_chars,d.content_kind,
+            d.media_type,d.title,d.author,d.metadata_json,d.text_truncated,d.detail,
+            {revision_projection} FROM documents d {joins}
+            WHERE d.status='complete' AND d.text_zlib IS NOT NULL AND d.text_chars>0
+            ORDER BY d.file_key""",
+            (),
+        )
+    if source_kind == "code":
+        return (
+            """SELECT f.volume_id,f.physical_file_id,f.current_path,
+            v.version_id,v.size,v.mtime_ns,v.birthtime_ns,v.raw_xxh3_128,
+            v.text_xxh3_128,v.text_chars,v.processing_signature,v.analysis_status,
+            v.language,v.artifact_kind,v.analyzer_id,v.analyzer_version,v.parser_kind,
+            c.chunk_index,c.kind,c.start_line,c.end_line,length(c.text),s.qualified_name
+            FROM files f JOIN file_versions v ON v.version_id=f.current_version_id
+            JOIN code_chunks c ON c.version_id=v.version_id
+            LEFT JOIN symbols s ON s.symbol_id=c.symbol_id
+            WHERE f.status='current' AND v.invalidated_ns IS NULL
+            AND v.analysis_status IN ('complete','partial','text_only')
+            ORDER BY v.version_id,c.chunk_index""",
+            (),
+        )
+    raise ValueError(f"unsupported semantic text source: {source_kind}")
+
+
+def _update_head_digest(hasher: _DigestWriter, value: object) -> None:
+    if value is None:
+        payload = b"n"
+    elif isinstance(value, bytes):
+        payload = b"b" + value
+    elif isinstance(value, memoryview):
+        payload = b"b" + bytes(value)
+    elif isinstance(value, int):
+        payload = b"i" + str(value).encode("ascii")
+    elif isinstance(value, float):
+        payload = b"f" + value.hex().encode("ascii")
+    else:
+        payload = b"s" + str(value).encode("utf-8", "surrogatepass")
+    hasher.update(len(payload).to_bytes(8, "big"))
+    hasher.update(payload)
+
+
+def _owner_stamp(path: Path) -> tuple[tuple[str, int, int, int], ...]:
+    values: list[tuple[str, int, int, int]] = []
+    for suffix in ("", "-wal", "-shm"):
+        candidate = Path(str(path) + suffix)
+        try:
+            metadata = candidate.stat()
+        except FileNotFoundError:
+            continue
+        values.append((suffix, metadata.st_ino, metadata.st_size, metadata.st_mtime_ns))
+    return tuple(values)
+
+
+def _text_source_head(state_directory: Path, source_kind: str) -> SemanticSourceHead:
+    database = semantic_source_database(state_directory, source_kind)
+    hasher = hashlib.sha256()
+    row_count = schema_version = 0
+    try:
+        with _readonly_database(database) as connection:
+            before_version = int(connection.execute("PRAGMA data_version").fetchone()[0])
+            schema_version = int(connection.execute("PRAGMA schema_version").fetchone()[0])
+            before_stamp = _owner_stamp(database)
+            query, parameters = _source_head_query(connection, source_kind)
+            connection.execute("BEGIN")
+            try:
+                rows = connection.execute(query, parameters)
+                for row in rows:
+                    for value in row:
+                        _update_head_digest(hasher, value)
+                    hasher.update(b"\n")
+                    row_count += 1
+            finally:
+                connection.execute("COMMIT")
+            after_version = int(connection.execute("PRAGMA data_version").fetchone()[0])
+        if before_version != after_version or before_stamp != _owner_stamp(database):
+            raise SemanticSourceError("source_changed_during_head_projection")
+    except (OSError, sqlite3.DatabaseError, SemanticSourceError, ValueError) as exc:
+        return SemanticSourceHead(
+            source_kind,
+            database.name,
+            SOURCE_ADAPTER_VERSION,
+            schema_version,
+            row_count,
+            "sha256:" + hasher.hexdigest(),
+            False,
+            type(exc).__name__,
+        )
+    hasher.update(SEMANTIC_SOURCE_HEAD_PROTOCOL.encode("ascii"))
+    hasher.update(source_kind.encode("ascii"))
+    hasher.update(str(schema_version).encode("ascii"))
+    return SemanticSourceHead(
+        source_kind,
+        database.name,
+        SOURCE_ADAPTER_VERSION,
+        schema_version,
+        row_count,
+        "sha256:" + hasher.hexdigest(),
+        True,
+    )
+
+
 def iter_text_source_records(
     state_directory: Path,
     source_kind: str,
@@ -1019,6 +1242,7 @@ def _image_rows(
     connection: sqlite3.Connection | None = None,
     *,
     dedup_attached: bool = False,
+    include_ocr_payload: bool = True,
 ) -> Iterator[sqlite3.Row]:
     with _borrow_or_open_database(image_database, connection) as connection:
         image_columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(images)")}
@@ -1031,7 +1255,8 @@ def _image_rows(
             i.processing_signature,i.category,i.document_candidate,
             i.adult_classification{run_projection}"""
         if "ocr_text_zlib" in image_columns:
-            ocr_projection = """,i.ocr_text_zlib,i.ocr_text_chars,
+            ocr_payload = "i.ocr_text_zlib" if include_ocr_payload else "NULL"
+            ocr_projection = f""",{ocr_payload} AS ocr_text_zlib,i.ocr_text_chars,
             i.ocr_text_xxh3_128,i.ocr_text_truncated"""
         else:
             ocr_projection = """,NULL AS ocr_text_zlib,NULL AS ocr_text_chars,
@@ -1095,6 +1320,111 @@ def _image_rows(
             except sqlite3.ProgrammingError:
                 # A caller may abort after closing its borrowed owner snapshot.
                 pass
+
+
+def _image_source_head(state_directory: Path) -> SemanticSourceHead:
+    image_database = semantic_source_database(state_directory, IMAGE_SOURCE_KIND)
+    dedup_database = state_directory / "dedup.sqlite3"
+    hasher = hashlib.sha256()
+    row_count = schema_version = 0
+    complete = True
+    try:
+        with _readonly_database(image_database) as connection:
+            dedup_attached = dedup_database.is_file()
+            if dedup_attached:
+                connection.execute(
+                    "ATTACH DATABASE ? AS dedup",
+                    (readonly_sqlite_uri(dedup_database),),
+                )
+            before_version = int(connection.execute("PRAGMA data_version").fetchone()[0])
+            before_dedup_version = (
+                int(connection.execute("PRAGMA dedup.data_version").fetchone()[0])
+                if dedup_attached
+                else 0
+            )
+            schema_version = int(connection.execute("PRAGMA schema_version").fetchone()[0])
+            before_stamp = (_owner_stamp(image_database), _owner_stamp(dedup_database))
+            rows = _image_rows(
+                image_database,
+                dedup_database,
+                connection,
+                dedup_attached=dedup_attached,
+                include_ocr_payload=False,
+            )
+            for row in rows:
+                if row["full_digest"] is None:
+                    complete = False
+                for name in (
+                    "file_key",
+                    "path",
+                    "size",
+                    "mtime_ns",
+                    "birthtime_ns",
+                    "processing_signature",
+                    "category",
+                    "document_candidate",
+                    "adult_classification",
+                    "ocr_text_chars",
+                    "ocr_text_xxh3_128",
+                    "ocr_text_truncated",
+                    "full_digest",
+                ):
+                    _update_head_digest(hasher, row[name])
+                hasher.update(b"\n")
+                row_count += 1
+            after_version = int(connection.execute("PRAGMA data_version").fetchone()[0])
+            after_dedup_version = (
+                int(connection.execute("PRAGMA dedup.data_version").fetchone()[0])
+                if dedup_attached
+                else 0
+            )
+        if (
+            before_version != after_version
+            or before_dedup_version != after_dedup_version
+            or before_stamp != (_owner_stamp(image_database), _owner_stamp(dedup_database))
+        ):
+            raise SemanticSourceError("source_changed_during_head_projection")
+    except (OSError, sqlite3.DatabaseError, SemanticSourceError, ValueError) as exc:
+        return SemanticSourceHead(
+            IMAGE_SOURCE_KIND,
+            image_database.name,
+            SOURCE_ADAPTER_VERSION,
+            schema_version,
+            row_count,
+            "sha256:" + hasher.hexdigest(),
+            False,
+            type(exc).__name__,
+        )
+    hasher.update(SEMANTIC_SOURCE_HEAD_PROTOCOL.encode("ascii"))
+    hasher.update(IMAGE_SOURCE_KIND.encode("ascii"))
+    hasher.update(str(schema_version).encode("ascii"))
+    return SemanticSourceHead(
+        IMAGE_SOURCE_KIND,
+        image_database.name,
+        SOURCE_ADAPTER_VERSION,
+        schema_version,
+        row_count,
+        "sha256:" + hasher.hexdigest(),
+        complete,
+        None if complete else "dedup_full_fingerprint_missing",
+    )
+
+
+def semantic_source_heads(
+    state_directory: Path,
+    source_kinds: Sequence[str],
+) -> tuple[SemanticSourceHead, ...]:
+    """Project compact source identities without decoding or reading source files."""
+
+    selected = tuple(dict.fromkeys(source_kinds))
+    if not selected or any(kind not in SOURCE_DATABASE_NAMES for kind in selected):
+        raise ValueError("semantic source head kinds are invalid")
+    return tuple(
+        _image_source_head(state_directory)
+        if source_kind == IMAGE_SOURCE_KIND
+        else _text_source_head(state_directory, source_kind)
+        for source_kind in selected
+    )
 
 
 def iter_image_source_records(

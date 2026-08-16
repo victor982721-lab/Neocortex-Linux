@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -18,6 +18,11 @@ from .semantic_config import (
     text_chunking_for_model,
 )
 from .semantic_generation_worker import GenerationRunner
+from .semantic_generation_repository import (
+    find_exact_published_generation,
+    merge_source_head_ledger,
+    published_source_head_ledger,
+)
 from .semantic_models import (
     EmbeddingModality,
     EmbeddingModelSpec,
@@ -43,8 +48,10 @@ from .semantic_service_contracts import (
 )
 from .semantic_sources import (
     IMAGE_SOURCE_KIND,
+    SEMANTIC_SOURCE_HEAD_PROTOCOL,
     SOURCE_ADAPTER_VERSION,
     ImageSourceRecord,
+    semantic_source_heads,
 )
 from .semantic_state import (
     deactivate_text_chunks_for_item,
@@ -212,14 +219,17 @@ def _start_image_generations(
     text_model: EmbeddingModelSpec,
     embed_ocr_text: bool,
     chunking: TextChunkingConfig,
+    image_provenance: Mapping[str, object],
+    ocr_provenance: Mapping[str, object],
 ) -> tuple[int, int | None]:
     image_generation_id = start_embedding_generation(
         database,
         model_signature=image_model.model_signature,
         processing_signature=(
-            f"{SEMANTIC_PIPELINE_VERSION}|{SOURCE_ADAPTER_VERSION}|images|enumeration=bounded-v1"
+            f"{SEMANTIC_PIPELINE_VERSION}|{SOURCE_ADAPTER_VERSION}|images|"
+            f"enumeration=bounded-v1|source-head={SEMANTIC_SOURCE_HEAD_PROTOCOL}"
         ),
-        provenance={"pipeline": SEMANTIC_PIPELINE_VERSION, "source": "image"},
+        provenance=image_provenance,
         materialize_base=False,
     )
     if not embed_ocr_text:
@@ -230,11 +240,10 @@ def _start_image_generations(
         processing_signature=(
             f"{SEMANTIC_PIPELINE_VERSION}|{SOURCE_ADAPTER_VERSION}|image-ocr|"
             f"{chunking.signature}|quality-policy={SEMANTIC_TEXT_QUALITY_POLICY}|"
-            "enumeration=bounded-v1"
+            f"enumeration=bounded-v1|source-head={SEMANTIC_SOURCE_HEAD_PROTOCOL}"
         ),
         provenance={
-            "pipeline": SEMANTIC_PIPELINE_VERSION,
-            "source": "image-ocr",
+            **ocr_provenance,
             "chunking_signature": chunking.signature,
             "tokenizer_signature": chunking.tokenizer_signature,
             "model_token_limit": chunking.model_token_limit,
@@ -255,6 +264,8 @@ def _prepare_image_index(
     ocr_model: EmbeddingModelSpec | None,
     chunking: TextChunkingConfig | None,
     backend_factory: BackendFactory,
+    image_provenance: Mapping[str, object],
+    ocr_provenance: Mapping[str, object],
 ) -> _ImageIndexSetup:
     require_source_databases(state_directory, (IMAGE_SOURCE_KIND,))
     image_model = clip_image_model()
@@ -301,6 +312,8 @@ def _prepare_image_index(
         text_model=text_model,
         embed_ocr_text=embed_ocr_text,
         chunking=active_chunking,
+        image_provenance=image_provenance,
+        ocr_provenance=ocr_provenance,
     )
     initial_cursor = {
         "protocol": "bounded-v1",
@@ -632,6 +645,114 @@ def index_image_embeddings(
 
     budget = work_budget or unlimited_semantic_work_budget()
     new_jobs_before = budget.new_jobs_admitted
+    require_source_databases(state_directory, (IMAGE_SOURCE_KIND,))
+    database = state_directory / SEMANTIC_DATABASE_NAME
+    image_model = clip_image_model()
+    text_model = ocr_model or multilingual_text_model()
+    if text_model.modality is not EmbeddingModality.TEXT:
+        raise ValueError("image OCR indexing requires a text model")
+    base_chunking = chunking or text_chunking_for_model(text_model)
+    source_heads = semantic_source_heads(state_directory, (IMAGE_SOURCE_KIND,))
+    source_head_payload = [head.as_payload() for head in source_heads]
+    image_scope = "image:vectors"
+    image_entry: dict[str, object] = {
+        "channel": "image-vector",
+        "source_kinds": ["image"],
+        "pipeline": SEMANTIC_PIPELINE_VERSION,
+        "source_heads": source_head_payload,
+    }
+    ocr_scope = "text:image-ocr"
+    ocr_entry: dict[str, object] = {
+        "channel": "text",
+        "source_kinds": ["image-ocr"],
+        "pipeline": SEMANTIC_PIPELINE_VERSION,
+        "base_chunking_signature": base_chunking.signature,
+        "text_quality_policy": SEMANTIC_TEXT_QUALITY_POLICY,
+        "source_heads": source_head_payload,
+    }
+    if all(head.complete for head in source_heads):
+        image_published = find_exact_published_generation(
+            database,
+            model_signature=image_model.model_signature,
+            required_source_head_ledger={image_scope: image_entry},
+        )
+        ocr_published = (
+            find_exact_published_generation(
+                database,
+                model_signature=text_model.model_signature,
+                required_source_head_ledger={ocr_scope: ocr_entry},
+            )
+            if embed_ocr_text
+            else None
+        )
+        if image_published is not None and (not embed_ocr_text or ocr_published is not None):
+            confirmed_heads = semantic_source_heads(state_directory, (IMAGE_SOURCE_KIND,))
+            if confirmed_heads == source_heads:
+                selected_sources = ("image", "image-ocr") if embed_ocr_text else ("image",)
+                summaries = [GenerationWorkResult(image_published, 0, 0, 0, 0)]
+                if ocr_published is not None:
+                    summaries.append(GenerationWorkResult(ocr_published, 0, 0, 0, 0))
+                emit_progress(
+                    progress,
+                    ProgressEvent(
+                        "semantic",
+                        "exact-replay:image",
+                        "Semantic imagen reutilizado sin enumeración",
+                        len(selected_sources),
+                        len(selected_sources),
+                        "fuentes",
+                        True,
+                        (
+                            ProgressMetric("sources", len(selected_sources)),
+                            ProgressMetric("reused", len(selected_sources)),
+                            ProgressMetric("new_jobs", 0),
+                        ),
+                    ),
+                )
+                return SemanticIndexResult(
+                    database,
+                    selected_sources,
+                    0,
+                    0,
+                    tuple(summaries),
+                    new_jobs_staged=0,
+                    execution_mode="exact_replay",
+                    sources_reused=len(selected_sources),
+                    sources_enumerated=0,
+                )
+            source_heads = confirmed_heads
+            source_head_payload = [head.as_payload() for head in source_heads]
+            image_entry["source_heads"] = source_head_payload
+            ocr_entry["source_heads"] = source_head_payload
+    image_ledger = merge_source_head_ledger(
+        published_source_head_ledger(
+            database,
+            model_signature=image_model.model_signature,
+        ),
+        scope_key=image_scope,
+        entry=image_entry,
+    )
+    ocr_ledger = merge_source_head_ledger(
+        published_source_head_ledger(
+            database,
+            model_signature=text_model.model_signature,
+        ),
+        scope_key=ocr_scope,
+        entry=ocr_entry,
+    )
+    image_provenance: dict[str, object] = {
+        "pipeline": SEMANTIC_PIPELINE_VERSION,
+        "source": "image",
+        "source_heads": source_head_payload,
+        "source_head_ledger": image_ledger,
+    }
+    ocr_provenance: dict[str, object] = {
+        "pipeline": SEMANTIC_PIPELINE_VERSION,
+        "source": "image-ocr",
+        "base_chunking_signature": base_chunking.signature,
+        "source_heads": source_head_payload,
+        "source_head_ledger": ocr_ledger,
+    }
     setup = _prepare_image_index(
         state_directory,
         model_cache_override=model_cache_override,
@@ -641,6 +762,8 @@ def index_image_embeddings(
         ocr_model=ocr_model,
         chunking=chunking,
         backend_factory=backend_factory,
+        image_provenance=image_provenance,
+        ocr_provenance=ocr_provenance,
     )
     stage = _stage_image_sources(
         state_directory,
@@ -651,6 +774,9 @@ def index_image_embeddings(
         new_jobs_before=new_jobs_before,
         progress=progress,
     )
+    confirmed_heads = semantic_source_heads(state_directory, (IMAGE_SOURCE_KIND,))
+    if all(head.complete for head in source_heads) and confirmed_heads != source_heads:
+        raise RuntimeError("semantic source heads changed during image enumeration")
     generation_results = _run_image_generations(
         setup,
         stage,
@@ -665,6 +791,9 @@ def index_image_embeddings(
         stage.chunks_staged,
         generation_results,
         new_jobs_staged=budget.new_jobs_admitted - new_jobs_before,
+        execution_mode="enumerated",
+        sources_reused=0,
+        sources_enumerated=1 if stage.enumeration_complete else 0,
         truncated=budget.truncated,
         truncation_reason=budget.truncation_reason,
     )

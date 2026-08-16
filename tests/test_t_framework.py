@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import io
 import inspect
+import json
 import os
 import shutil
 import sqlite3
@@ -326,6 +327,59 @@ class ProgressTests(unittest.TestCase):
         self.assertIn('"completed":3', rendered)
         self.assertIn('"phase":"trusted-deep-coverage"', rendered)
         self.assertIn('"status":"shard_completed"', rendered)
+
+    def test_line_reporter_coalesces_noise_but_never_hides_terminal_progress(self) -> None:
+        output = io.StringIO()
+        now = [0.0]
+        progress = LineProgress(clock=lambda: now[0])
+
+        with patch("sys.stderr", output), progress:
+            for completed in range(24):
+                now[0] = float(completed)
+                progress(
+                    ProgressEvent(
+                        "code",
+                        "analysis",
+                        "Incremental",
+                        completed,
+                        1000,
+                        "files",
+                    )
+                )
+            now[0] = 24.0
+            progress(
+                ProgressEvent(
+                    "code",
+                    "analysis",
+                    "Incremental",
+                    24,
+                    1000,
+                    "files",
+                    finished=True,
+                )
+            )
+            now[0] = 25.0
+            progress(
+                ProgressEvent(
+                    "code",
+                    "analysis",
+                    "Incremental",
+                    0,
+                    1000,
+                    "files",
+                )
+            )
+
+        lines = output.getvalue().splitlines()
+        assert len(lines) == 7  # first, four five-second heartbeats, terminal, next run
+        terminal = json.loads(lines[-2].removeprefix("NEOCORTEX_PROGRESS "))
+        assert terminal["finished"] is True
+        assert terminal["elapsed_seconds"] == 24.0
+        assert terminal["rate_per_second"] == 1.0
+        assert terminal["eta_seconds"] == 976.0
+        restarted = json.loads(lines[-1].removeprefix("NEOCORTEX_PROGRESS "))
+        assert restarted["finished"] is False
+        assert restarted["elapsed_seconds"] == 0.0
 
     def test_rich_reporter_renders_normalized_event(self) -> None:
         output = io.StringIO()

@@ -531,6 +531,7 @@ def test_real_adapter_runs_collect_shards_and_checkpoint_replay(
         encoding="utf-8",
     )
     (tests / "test_logic.py").write_text(
+        "import sqlite3\n"
         "import shutil\n"
         "import subprocess\n\n"
         "from _04_Nucleo_Operativo.logic import choose\n\n"
@@ -544,7 +545,12 @@ def test_real_adapter_runs_collect_shards_and_checkpoint_replay(
         "    )\n"
         "    assert completed.returncode == 0, completed.stderr\n\n"
         "def test_false():\n"
-        "    assert choose(False) == 2\n",
+        "    assert choose(False) == 2\n\n"
+        "def test_coverage_sqlite_is_isolated(monkeypatch):\n"
+        "    class Connection:\n"
+        "        pass\n\n"
+        "    monkeypatch.setattr(sqlite3, 'connect', lambda *_a, **_kw: Connection())\n"
+        "    assert isinstance(sqlite3.connect('fixture'), Connection)\n",
         encoding="utf-8",
     )
     (tests / "conftest.py").write_text(
@@ -606,7 +612,7 @@ def test_real_adapter_runs_collect_shards_and_checkpoint_replay(
     stage.mkdir()
     scratch.mkdir()
     monkeypatch.setattr(deep, "_canonical_repository_root", lambda: project)
-    config = deep.DeepCoverageConfig((), 2, 60.0, 1, "real-worker-fixture-v1")
+    config = deep.DeepCoverageConfig((), 3, 60.0, 1, "real-worker-fixture-v1")
 
     first = deep.execute_pytest_coverage(
         stage,
@@ -626,7 +632,7 @@ def test_real_adapter_runs_collect_shards_and_checkpoint_replay(
     )
 
     assert first.measurement_complete is True
-    assert first.counters["tests_passed"] == 2, tuple(finding.message for finding in first.findings)
+    assert first.counters["tests_passed"] == 3, tuple(finding.message for finding in first.findings)
     assert first.counters["shards_reused"] == 0
     assert any(
         endpoint < 0
@@ -639,7 +645,7 @@ def test_real_adapter_runs_collect_shards_and_checkpoint_replay(
         and cast(str, metric.metadata["qualified_name"]).endswith(".choose")
         for metric in first.metrics
     )
-    assert replay.counters["shards_reused"] == 2
+    assert replay.counters["shards_reused"] == 3
     assert replay.process_invocations == 2
     worker_runs = scratch / "r" / "w"
     assert worker_runs.is_dir()

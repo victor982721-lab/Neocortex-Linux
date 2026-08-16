@@ -109,10 +109,13 @@ Después de aprobar cada ruta y su proyección se acepta una lista separada por
 comas o `--all`. `--all` no se combina con `--route` ni con operaciones
 directas de consulta o diagnóstico.
 
-La corrida `--all` ejecuta primero el autoanálisis protegido de
-`~/Neocortex/Repository` —o su equivalente canónico Windows— usando el estado
-separado `self-analysis`. Después ejecuta las nueve rutas del corpus y, si no
-hubo errores de acciones u organización, avanza Semantic sobre las cachés
+La corrida `--all` lee primero el receipt exacto de la validación canónica de
+`~/Neocortex/Repository`; nunca produce autoanálisis implícitamente. Un receipt
+ausente u obsoleto se informa y la corrida cotidiana continúa. Para exigirlo en
+un cierre se añade `--require-fresh-self-analysis`; para producir una
+actualización deliberada se añade `--refresh-self-analysis`. Después ejecuta
+las nueve rutas del corpus y, si no hubo errores de acciones u organización,
+avanza Semantic sobre las cachés
 disponibles de PDF, DOCX, XLSX, PPTX, ODT, audio, Archive, texto/correo e
 imágenes. El canal visual sólo se ejecuta cuando existe `image.sqlite3`. Sus
 límites integrados son 100 000 items, 1 000 000 de jobs y 172 800 segundos.
@@ -123,10 +126,10 @@ análisis distinta y no debe consumir implícitamente el presupuesto documental.
 El conteo real se consulta con `--semantic-status`; la guía no fija cifras
 históricas de vectores o chunks como si fueran estado vigente.
 
-El autoanálisis y la etapa documental son fronteras independientes. Si la raíz
-del corpus no existe, `--all` conserva el autoanálisis ya ejecutado, informa
-`ERROR corpus_unavailable: ...` y sale con código `2` sin traceback ni creación
-parcial del estado documental.
+El receipt de autoanálisis y la etapa documental son fronteras independientes.
+Si la raíz del corpus no existe, `--all` conserva la consulta ya realizada,
+informa `ERROR corpus_unavailable: ...` y sale con código `2` sin traceback ni
+creación parcial del estado documental.
 
 ## Modos de ejecución
 
@@ -152,9 +155,9 @@ internas.
 El preset `--self-analysis` exige raíz y estado explícitos, fuerza exactamente
 la ruta `code` en modo `analyze_only` y rechaza `--all`, `--apply`,
 route-only/resume, selección, catálogo, organización y opciones que no consume.
-Ese rechazo protege la invocación manual combinada; `--all` reutiliza el mismo
-servicio mediante una invocación interna separada y canónica, sin mezclar sus
-raíces ni sus bases.
+Ese rechazo protege la invocación manual combinada. `--all` sólo consume el
+receipt vigente; una actualización exige `--refresh-self-analysis` y conserva
+separadas las raíces y bases.
 Los árboles de raíz y estado deben ser completamente disjuntos:
 
 ```powershell
@@ -219,13 +222,16 @@ Neocortex --self-analysis --analysis-profile trusted-deep --root $Root --state-d
 ```
 
 `--deep-test-selector` acepta sólo una ruta relativa bajo `tests/` o un node id
-de Pytest y puede repetirse. `--deep-max-tests` admite 1–5000 (3000 por defecto),
-`--deep-time-budget-seconds` 30–900 (600) y `--deep-shard-size` 1–50 (20). El
+de Pytest y puede repetirse. `--deep-max-tests` admite 1–10000 (3000 por defecto),
+`--deep-time-budget-seconds` 30–900 (600) y `--deep-shard-size` 1–250 (20). El
 presupuesto temporal es nominal: tras comprobar al menos un shard terminado o
 reutilizado, el proveedor puede continuar hasta una única cota de 2x. Emite en
 `stderr` eventos `NEOCORTEX_PROGRESS` al recolectar y al iniciar, reutilizar o
 terminar cada shard, con avance, duración y tiempo transcurrido. La
 selección vacía se publica como `full`; una o más selecciones, como `selected`.
+La validación canónica full fija 10000 tests y shards de 250; así falla cerrado
+si la suite excede la cota, pero no la trunca en 5000 ni crea cien shards por
+overhead de arranque.
 El manifest declara `content_executed=true`, la selección y la firma de estos
 controles.
 `--deep-mutation-target` acepta un `.py` relativo a la raíz y exige al menos un
@@ -750,7 +756,9 @@ Esta es la única entrada de aceptación local para una implementación nueva. E
 primer comando valida el árbol de trabajo contra `HEAD`; el segundo valida un
 commit ya creado contra su padre. Las opciones acotadas son `--max-tests N`
 (1–5000; 5000 por defecto) y `--time-budget-seconds N` (30–900; 900 por
-defecto). El presupuesto es nominal; el proveedor profundo puede usar una sola
+defecto). El máximo configurable gobierna la selección afectada; una frontera
+full fija 10000 tests y shards de 250 para cubrir la suite sin cien arranques.
+El presupuesto es nominal; el proveedor profundo puede usar una sola
 extensión acotada a 2x únicamente después de progreso de shard validado. La
 validación retransmite en `stderr` la salida y los eventos del proceso hijo,
 además de un heartbeat cada 30 segundos; `--json` conserva exclusivamente el

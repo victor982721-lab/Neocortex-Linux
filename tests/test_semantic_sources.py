@@ -28,6 +28,7 @@ from _04_Nucleo_Operativo.semantic_sources import (
     iter_text_sections_with_metadata,
     iter_text_source_records,
     semantic_item_title_section,
+    semantic_source_heads,
 )
 from _04_Nucleo_Operativo.text_route import TextRoute, TextRouteConfig
 from _04_Nucleo_Operativo.text_state import initialize_text_state, text_database
@@ -280,6 +281,39 @@ def _create_image_state_v5(
             ),
         )
     return file_key
+
+
+def test_image_source_head_uses_dedup_content_and_ignores_observation_clock(
+    tmp_path: Path,
+) -> None:
+    image_path = tmp_path / "head.png"
+    image_path.write_bytes(b"stable-image-content")
+    _create_image_state_v5(tmp_path, image_path, ocr_text="texto retenido")
+    _create_dedup_state(tmp_path, image_path, full_fingerprint(snapshot_path(image_path)))
+
+    first = semantic_source_heads(tmp_path, ("image",))[0]
+    with sqlite3.connect(tmp_path / "image.sqlite3") as connection:
+        connection.execute("UPDATE images SET last_seen_run_id=606")
+    observation_only = semantic_source_heads(tmp_path, ("image",))[0]
+    with sqlite3.connect(tmp_path / "image.sqlite3") as connection:
+        connection.execute("UPDATE images SET category='captura'")
+    changed = semantic_source_heads(tmp_path, ("image",))[0]
+
+    assert first.complete
+    assert first.row_count == 1
+    assert observation_only.digest == first.digest
+    assert changed.digest != first.digest
+
+
+def test_image_source_head_abstains_without_a_dedup_full_fingerprint(tmp_path: Path) -> None:
+    image_path = tmp_path / "head-without-dedup.png"
+    image_path.write_bytes(b"image-without-dedup")
+    _create_image_state_v5(tmp_path, image_path, ocr_text="texto")
+
+    head = semantic_source_heads(tmp_path, ("image",))[0]
+
+    assert head.complete is False
+    assert head.reason == "dedup_full_fingerprint_missing"
 
 
 def _create_multi_section_text_state(

@@ -64,10 +64,10 @@ class ModularParserTests(unittest.TestCase):
         self.assertEqual(config.image_document_ocr_lang, "spa")
         self.assertEqual(config.pdf_max_file_bytes, 1_500_000)
 
-    def test_all_help_exposes_integrated_protected_self_analysis(self) -> None:
+    def test_all_help_exposes_exact_validation_receipt_reuse(self) -> None:
         action = build_parser()._option_string_actions["--all"]
 
-        self.assertIn("protected self-analysis", action.help or "")
+        self.assertIn("validation receipt", action.help or "")
 
 
 # endregion [02]
@@ -106,9 +106,15 @@ class OrchestratorShimTests(unittest.TestCase):
         result = SimpleNamespace(actions=None)
         with (
             patch(
-                "_04_Nucleo_Operativo.cli_app._run_integrated_self_analysis",
-                return_value=0,
-            ) as self_analysis,
+                "_04_Nucleo_Operativo.code_validation_receipts."
+                "load_current_code_validation_receipt",
+                return_value=SimpleNamespace(
+                    status="reused",
+                    reason="exact_validation_receipt_reused",
+                    validation_digest="sha256:" + "a" * 64,
+                    head_sha="b" * 40,
+                ),
+            ) as receipt,
             patch("_04_Nucleo_Operativo.cli_app.run_framework", return_value=result),
             patch("_04_Nucleo_Operativo.cli_reporting.print_reports"),
             patch(
@@ -128,9 +134,9 @@ class OrchestratorShimTests(unittest.TestCase):
 
         semantic.assert_called_once()
         self.assertTrue(semantic.call_args.args[0].all)
-        self_analysis.assert_called_once_with()
+        receipt.assert_called_once_with()
 
-    def test_all_reuses_the_canonical_self_analysis_service(self) -> None:
+    def test_all_does_not_start_the_canonical_self_analysis_service(self) -> None:
         result = SimpleNamespace(actions=None)
         observed_modes: list[bool] = []
 
@@ -146,12 +152,14 @@ class OrchestratorShimTests(unittest.TestCase):
             corpus.mkdir()
             with (
                 patch(
-                    "_04_Nucleo_Operativo.app_paths.source_repository_directory",
-                    return_value=repository,
-                ),
-                patch(
-                    "_04_Nucleo_Operativo.app_paths.self_analysis_data_directory",
-                    return_value=temporary / "self-analysis-state",
+                    "_04_Nucleo_Operativo.code_validation_receipts."
+                    "load_current_code_validation_receipt",
+                    return_value=SimpleNamespace(
+                        status="missing",
+                        reason="receipt_missing",
+                        validation_digest=None,
+                        head_sha=None,
+                    ),
                 ),
                 patch(
                     "_04_Nucleo_Operativo.cli_app.run_framework",
@@ -173,15 +181,20 @@ class OrchestratorShimTests(unittest.TestCase):
             ):
                 self.assertEqual(main(["--all", "--root", str(corpus)]), 0)
 
-        self.assertEqual(observed_modes, [True, False])
+        self.assertEqual(observed_modes, [False])
 
-    def test_all_runs_self_analysis_before_a_missing_corpus_is_reported(self) -> None:
+    def test_all_checks_receipt_before_a_missing_corpus_is_reported(self) -> None:
         events: list[str] = []
         stderr = io.StringIO()
 
-        def run_self_analysis() -> int:
-            events.append("self-analysis")
-            return 0
+        def load_receipt():
+            events.append("receipt")
+            return SimpleNamespace(
+                status="missing",
+                reason="receipt_missing",
+                validation_digest=None,
+                head_sha=None,
+            )
 
         def fail_corpus(*_args, **_kwargs):
             events.append("corpus")
@@ -189,8 +202,9 @@ class OrchestratorShimTests(unittest.TestCase):
 
         with (
             patch(
-                "_04_Nucleo_Operativo.cli_app._run_integrated_self_analysis",
-                side_effect=run_self_analysis,
+                "_04_Nucleo_Operativo.code_validation_receipts."
+                "load_current_code_validation_receipt",
+                side_effect=load_receipt,
             ),
             patch(
                 "_04_Nucleo_Operativo.cli_app.run_framework",
@@ -200,17 +214,35 @@ class OrchestratorShimTests(unittest.TestCase):
         ):
             self.assertEqual(main(["--all"]), 2)
 
-        self.assertEqual(events, ["self-analysis", "corpus"])
+        self.assertEqual(events, ["receipt", "corpus"])
         self.assertIn("ERROR corpus_unavailable:", stderr.getvalue())
         self.assertNotIn("Traceback", stderr.getvalue())
 
-    def test_all_propagates_integrated_self_analysis_failure(self) -> None:
+    def test_all_strict_receipt_failure_stops_before_corpus(self) -> None:
+        with (
+            patch(
+                "_04_Nucleo_Operativo.code_validation_receipts."
+                "load_current_code_validation_receipt",
+                return_value=SimpleNamespace(
+                    status="stale",
+                    reason="receipt_head_changed",
+                    validation_digest=None,
+                    head_sha=None,
+                ),
+            ),
+            patch("_04_Nucleo_Operativo.cli_app.run_framework") as framework,
+        ):
+            self.assertEqual(main(["--all", "--require-fresh-self-analysis"]), 2)
+
+        framework.assert_not_called()
+
+    def test_all_refreshes_self_analysis_only_when_explicit(self) -> None:
         result = SimpleNamespace(actions=None)
         with (
             patch(
                 "_04_Nucleo_Operativo.cli_app._run_integrated_self_analysis",
-                return_value=2,
-            ),
+                return_value=0,
+            ) as self_analysis,
             patch("_04_Nucleo_Operativo.cli_app.run_framework", return_value=result),
             patch("_04_Nucleo_Operativo.cli_reporting.print_reports"),
             patch(
@@ -226,7 +258,9 @@ class OrchestratorShimTests(unittest.TestCase):
                 return_value=0,
             ),
         ):
-            self.assertEqual(main(["--all"]), 2)
+            self.assertEqual(main(["--all", "--refresh-self-analysis"]), 0)
+
+        self_analysis.assert_called_once_with()
 
 
 # endregion [03]

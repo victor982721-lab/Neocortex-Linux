@@ -1586,6 +1586,10 @@ def test_excluded_generated_and_vendored_files_remain_full_reconciliation(
     assert first.text_only == 2
     assert first.generated == first.vendored == 1
     assert second.cache_hits == 2
+    assert second.cache_batches == 1
+    assert second.cache_lookup_milliseconds >= 0
+    assert second.cache_update_milliseconds >= 0
+    assert second.cache_commit_milliseconds >= 0
     assert second.text_only == 2
     assert second.generated == second.vendored == 1
     assert calls == [3]
@@ -1595,6 +1599,24 @@ def test_excluded_generated_and_vendored_files_remain_full_reconciliation(
             "SELECT status,COUNT(*) FROM files GROUP BY status"
         ).fetchall()
     assert statuses == [("missing", 2)]
+
+
+def test_cache_observation_updates_commit_in_bounded_batches(tmp_path: Path) -> None:
+    sources = []
+    for index in range(257):
+        source = tmp_path / f"cached_{index:03d}.py"
+        source.write_text(f"VALUE = {index}\n", encoding="utf-8")
+        sources.append(source)
+    config = _config(tmp_path)
+    inventory = _Inventory(tuple(sources))
+
+    first = CodeRoute(config, inventory, _FrameworkState(), 1, 1).run()
+    replay = CodeRoute(config, inventory, _FrameworkState(), 2, 2).run()
+
+    assert first.processed == 257
+    assert replay.processed == 0
+    assert replay.cache_hits == 257
+    assert replay.cache_batches == 3
 
 
 def test_binary_and_oversized_candidates_are_bounded_and_versioned(

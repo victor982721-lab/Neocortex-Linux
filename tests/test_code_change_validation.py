@@ -26,6 +26,8 @@ from _04_Nucleo_Operativo.code_change_validation import (
     _replay_gate,
     _replay_technical_disposition_gate,
     _scope_relevance,
+    _trusted_deep_command,
+    _trusted_deep_timeout_seconds,
     _validation_question_scopes,
     capture_git_change,
     select_affected_tests,
@@ -76,6 +78,93 @@ def test_optional_mutation_abstention_is_not_a_failed_machine_gate() -> None:
     )
 
     assert _provider_failure(provider) is False
+
+
+def test_full_suite_coverage_consumes_the_canonical_no_regression_baseline() -> None:
+    from _04_Nucleo_Operativo import code_change_validation
+
+    root = Path(__file__).resolve().parents[1]
+    totals = SimpleNamespace(
+        executable_lines=71_019,
+        covered_lines=59_779,
+        branch_exits=22_270,
+        covered_branch_exits=15_410,
+    )
+    analysis = SimpleNamespace(
+        status="ready",
+        reason=None,
+        outcomes=SimpleNamespace(collected=100, selected=100, failed=0),
+        provider_id="pytest-coverage",
+        tool_run_id=1,
+        effective_tool_run_id=1,
+        suite_selection="full",
+        measurement_complete=True,
+        content_executed=True,
+        suite_signature="suite",
+        measurement_scope_signature="scope",
+        limitations=(),
+        totals=totals,
+        tool_versions=(SimpleNamespace(name="coverage", version="7.14.1"),),
+        gates=(),
+    )
+    selection = AffectedTestSelection(
+        strategy="full",
+        selectors=("tests/test_logic.py",),
+        direct_tests=(),
+        dependency_tests=(),
+        convention_tests=(),
+        uncovered_sources=(),
+        reasons=("change_crosses_full_suite_boundary",),
+    )
+
+    passed = code_change_validation._coverage_gate(
+        SimpleNamespace(test_coverage=analysis),
+        root=root,
+        selection=selection,
+    )
+    regressed = code_change_validation._coverage_gate(
+        SimpleNamespace(
+            test_coverage=SimpleNamespace(
+                **{
+                    **analysis.__dict__,
+                    "totals": SimpleNamespace(**{**totals.__dict__, "covered_lines": 1}),
+                }
+            )
+        ),
+        root=root,
+        selection=selection,
+    )
+
+    assert passed.status == "passed"
+    assert passed.evidence["coverage_baseline_status"] == "passed"
+    assert regressed.status == "failed"
+    assert "lines_coverage_regressed" in regressed.evidence["coverage_regressions"]
+
+
+def test_full_suite_producer_omits_every_test_selector(tmp_path: Path) -> None:
+    command = tuple(
+        str(item)
+        for item in _trusted_deep_command(
+            tmp_path / "Repository",
+            tmp_path / "state",
+            ("tests/test_one.py", "tests/test_two.py"),
+            max_tests=5_000,
+            time_budget_seconds=900,
+            full_suite=True,
+        )
+    )
+
+    assert "--analysis-profile" in command
+    assert "trusted-deep" in command
+    assert "--deep-test-selector" not in command
+    assert command[command.index("--deep-max-tests") + 1] == "10000"
+    assert command[command.index("--deep-shard-size") + 1] == "250"
+
+
+def test_full_suite_timeout_reserves_noncoverage_providers_and_finalization() -> None:
+    assert _trusted_deep_timeout_seconds(900, full_suite=True) == 60 * 60
+    assert _trusted_deep_timeout_seconds(900, full_suite=False) == 45 * 60
+    assert _trusted_deep_timeout_seconds(30, full_suite=False) == 16 * 60
 
 
 def test_default_runner_interrupts_and_reaps_a_timed_out_process(tmp_path: Path) -> None:
@@ -1347,11 +1436,13 @@ def test_validation_preserves_full_suite_strategy_without_a_false_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     root = _repository(tmp_path)
-    (root / "pyproject.toml").write_text("[project]\nname='fixture'\n", encoding="utf-8")
+    boundary = root / "_04_Nucleo_Operativo" / "semantic_text_index.py"
+    boundary.parent.mkdir()
+    boundary.write_text("PIPELINE = 'fixture'\n", encoding="utf-8")
     change = GitChangeSnapshot(
         "a" * 40,
         "a" * 40,
-        ("pyproject.toml",),
+        ("_04_Nucleo_Operativo/semantic_text_index.py",),
         (),
         (),
         (),
@@ -1380,8 +1471,9 @@ def test_validation_preserves_full_suite_strategy_without_a_false_fallback(
     assert result.selection.selectors == ("tests/test_logic.py",)
     assert result.selection.dependency_tests == ()
     assert result.selection.convention_tests == ()
-    assert result.selection.uncovered_sources == ()
-    assert result.selection.reasons == ("change_crosses_full_suite_boundary",)
+    assert result.selection.uncovered_sources == ("_04_Nucleo_Operativo/semantic_text_index.py",)
+    assert "change_crosses_full_suite_boundary" in result.selection.reasons
+    assert "published_import_graph_stale_for_changed_source" in result.selection.reasons
 
 
 def test_code_schema_boundary_selects_its_bounded_compatibility_matrix(
@@ -1531,6 +1623,46 @@ def test_clean_tree_is_a_verified_noop_without_running_external_gates(tmp_path: 
     assert result.experiment_receipts == ()
     assert result.mutation_authority is False
     assert result.digest.startswith("sha256:")
+
+
+def test_dirty_tree_fails_before_any_external_gate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _repository(tmp_path)
+    from _04_Nucleo_Operativo import code_change_validation
+
+    change = GitChangeSnapshot(
+        "b" * 40,
+        "a" * 40,
+        ("neocortex/logic.py",),
+        (),
+        (),
+        ("neocortex/logic.py",),
+        "c" * 64,
+    )
+    monkeypatch.setattr(
+        code_change_validation,
+        "capture_git_change",
+        lambda *_args, **_kwargs: change,
+    )
+    commands: list[tuple[str, ...]] = []
+
+    def runner(arguments, *, cwd, timeout, environment=None):
+        commands.append(tuple(str(item) for item in arguments))
+        raise AssertionError("dirty validation must not start an external gate")
+
+    result = validate_code_change(
+        root=root,
+        state_directory=tmp_path / "state",
+        runner=runner,
+    )
+
+    assert result.status == "failed"
+    assert result.reason == "failed_gate:clean_source_sha"
+    assert result.gates[0].reason == "worktree_contains_uncommitted_changes"
+    assert result.gates[0].evidence["dirty_paths"] == ["neocortex/logic.py"]
+    assert commands == []
 
 
 def test_non_executable_change_never_expands_empty_selection_to_full_suite(

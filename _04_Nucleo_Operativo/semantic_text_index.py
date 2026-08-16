@@ -17,7 +17,12 @@ from .semantic_config import (
     multilingual_text_model,
     text_chunking_for_model,
 )
-from .semantic_generation_repository import _enqueue_text_chunk_batch_bounded
+from .semantic_generation_repository import (
+    _enqueue_text_chunk_batch_bounded,
+    find_exact_published_generation,
+    merge_source_head_ledger,
+    published_source_head_ledger,
+)
 from .semantic_generation_worker import GenerationRunner
 from .semantic_item_repository import (
     _finalize_semantic_item_refresh,
@@ -52,6 +57,7 @@ from .semantic_sources import (
     TEXT_SOURCE_KINDS,
     TextSourceRecord,
     iter_text_sections_with_metadata,
+    semantic_source_heads,
     semantic_text_processing_signature,
 )
 from .semantic_schema import semantic_database
@@ -377,6 +383,67 @@ def index_text_embeddings(
         raise ValueError("text indexing requires a text model")
     require_source_databases(state_directory, selected_sources)
     base_chunking = chunking or text_chunking_for_model(selected_model)
+    database = state_directory / SEMANTIC_DATABASE_NAME
+    source_heads = semantic_source_heads(state_directory, selected_sources)
+    source_head_payload = [head.as_payload() for head in source_heads]
+    replay_entry: dict[str, object] = {
+        "channel": "text",
+        "source_kinds": list(selected_sources),
+        "pipeline": SEMANTIC_PIPELINE_VERSION,
+        "base_chunking_signature": base_chunking.signature,
+        "title_policy": SEMANTIC_TITLE_POLICY,
+        "text_quality_policy": SEMANTIC_TEXT_QUALITY_POLICY,
+        "source_heads": source_head_payload,
+    }
+    replay_scope = "text:" + ",".join(selected_sources)
+    if all(head.complete for head in source_heads):
+        published = find_exact_published_generation(
+            database,
+            model_signature=selected_model.model_signature,
+            required_source_head_ledger={replay_scope: replay_entry},
+        )
+        if published is not None:
+            confirmed_heads = semantic_source_heads(state_directory, selected_sources)
+            if confirmed_heads == source_heads:
+                emit_progress(
+                    progress,
+                    ProgressEvent(
+                        "semantic",
+                        "exact-replay:text",
+                        "Semantic texto reutilizado sin enumeración",
+                        len(selected_sources),
+                        len(selected_sources),
+                        "fuentes",
+                        True,
+                        (
+                            ProgressMetric("sources", len(selected_sources)),
+                            ProgressMetric("reused", len(selected_sources)),
+                            ProgressMetric("new_jobs", 0),
+                        ),
+                    ),
+                )
+                return SemanticIndexResult(
+                    database,
+                    selected_sources,
+                    0,
+                    0,
+                    (GenerationWorkResult(published, 0, 0, 0, 0),),
+                    new_jobs_staged=0,
+                    execution_mode="exact_replay",
+                    sources_reused=len(selected_sources),
+                    sources_enumerated=0,
+                )
+            source_heads = confirmed_heads
+            source_head_payload = [head.as_payload() for head in source_heads]
+            replay_entry["source_heads"] = source_head_payload
+    source_head_ledger = merge_source_head_ledger(
+        published_source_head_ledger(
+            database,
+            model_signature=selected_model.model_signature,
+        ),
+        scope_key=replay_scope,
+        entry=replay_entry,
+    )
     cache = model_cache(state_directory, model_cache_override)
     embedding_backend = backend_factory(
         selected_model,
@@ -392,7 +459,6 @@ def index_text_embeddings(
         tokenizer_signature=token_guard.tokenizer_signature,
     )
 
-    database = state_directory / SEMANTIC_DATABASE_NAME
     initialize_models(database, (selected_model,))
     processing_signature = semantic_text_processing_signature(
         pipeline_version=SEMANTIC_PIPELINE_VERSION,
@@ -406,9 +472,12 @@ def index_text_embeddings(
         provenance={
             "pipeline": SEMANTIC_PIPELINE_VERSION,
             "sources": list(selected_sources),
-            "chunking_signature": active_chunking.signature,
+            "base_chunking_signature": base_chunking.signature,
             "title_policy": SEMANTIC_TITLE_POLICY,
             "text_quality_policy": SEMANTIC_TEXT_QUALITY_POLICY,
+            "source_heads": source_head_payload,
+            "source_head_ledger": source_head_ledger,
+            "chunking_signature": active_chunking.signature,
             "tokenizer_signature": token_guard.tokenizer_signature,
             "model_token_limit": token_guard.token_limit,
         },
@@ -474,6 +543,9 @@ def index_text_embeddings(
         )
 
     if enumeration_complete:
+        confirmed_heads = semantic_source_heads(state_directory, selected_sources)
+        if all(head.complete for head in source_heads) and confirmed_heads != source_heads:
+            raise RuntimeError("semantic source heads changed during text enumeration")
         update_embedding_generation_cursor(
             database,
             generation_id,
@@ -519,6 +591,9 @@ def index_text_embeddings(
         chunks_staged,
         (result,),
         new_jobs_staged=budget.new_jobs_admitted - new_jobs_before,
+        execution_mode="enumerated",
+        sources_reused=0,
+        sources_enumerated=len(completed_sources),
         truncated=budget.truncated,
         truncation_reason=budget.truncation_reason,
     )

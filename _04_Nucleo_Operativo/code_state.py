@@ -670,6 +670,8 @@ class CodeState:
         raw_xxh3_128: str | None = None,
         raw_xxh3_64_guard: str | None = None,
         resolve_analyzer_identity: (Callable[[str | None, bool], tuple[str, str]] | None) = None,
+        commit: bool = True,
+        elapsed_nanoseconds: dict[str, int] | None = None,
     ) -> CachedCodeVersion | None:
         """Reuse one current observation under metadata or explicit full validation.
 
@@ -682,6 +684,7 @@ class CodeState:
         # ProviderDescriptor reserves ``external:`` for evidence projected only
         # after the route's analyzer-owned counters have been calculated.
         derived_placeholders = ",".join("?" for _ in _DERIVED_DIAGNOSTIC_SOURCES)
+        lookup_started = time.perf_counter_ns()
         row = self.connection.execute(
             f"""SELECT f.file_id,f.current_path,v.version_id,v.analysis_status,
             v.generated,v.vendored,v.size,v.mtime_ns,v.birthtime_ns,v.language,
@@ -700,6 +703,10 @@ class CodeState:
             AND v.invalidated_ns IS NULL""",
             (*_DERIVED_DIAGNOSTIC_SOURCES, volume_id, physical_file_id),
         ).fetchone()
+        if elapsed_nanoseconds is not None:
+            elapsed_nanoseconds["cache_lookup"] = elapsed_nanoseconds.get("cache_lookup", 0) + (
+                time.perf_counter_ns() - lookup_started
+            )
         if row is None:
             return None
         if str(row["current_path"]) != snapshot.path:
@@ -742,7 +749,9 @@ class CodeState:
         if retry_errors and status in {AnalysisStatus.ERROR, AnalysisStatus.PARTIAL}:
             return None
         version_id = int(row["version_id"])
-        with self.connection:
+        update_started = time.perf_counter_ns()
+
+        def update_observation() -> None:
             self._release_path_owner(
                 snapshot.path,
                 volume_id,
@@ -758,6 +767,16 @@ class CodeState:
                 """UPDATE file_versions SET last_observed_run_id=?
                 WHERE version_id=?""",
                 (framework_run_id, version_id),
+            )
+
+        if commit:
+            with self.connection:
+                update_observation()
+        else:
+            update_observation()
+        if elapsed_nanoseconds is not None:
+            elapsed_nanoseconds["cache_update"] = elapsed_nanoseconds.get("cache_update", 0) + (
+                time.perf_counter_ns() - update_started
             )
         return CachedCodeVersion(
             version_id,

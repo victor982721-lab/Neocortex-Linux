@@ -78,7 +78,7 @@ from .semantic_models import canonical_json
 
 
 CODE_CHANGE_VALIDATION_SCHEMA = "neocortex.code-change-validation/v3"
-CODE_CHANGE_VALIDATION_POLICY = "local-linux-diff-aware-validation-v6"
+CODE_CHANGE_VALIDATION_POLICY = "local-linux-diff-aware-validation-v7"
 MAX_CHANGED_PATHS = 2_000
 MAX_SELECTED_TEST_FILES = 2_000
 MAX_DEPENDENCY_DEPTH = 8
@@ -154,6 +154,18 @@ _FULL_SUITE_BOUNDARIES = frozenset(
         "tools/quality_gate_supply_policy.json",
     }
 )
+_FULL_SUITE_PREFIXES = (
+    "_03_Progreso/",
+    "_04_Nucleo_Operativo/cli_app.py",
+    "_04_Nucleo_Operativo/cli_parser.py",
+    "_04_Nucleo_Operativo/cli_validation.py",
+    "_04_Nucleo_Operativo/code_change_validation.py",
+    "_04_Nucleo_Operativo/code_contracts.py",
+    "_04_Nucleo_Operativo/code_route.py",
+    "_04_Nucleo_Operativo/code_state.py",
+    "_04_Nucleo_Operativo/code_validation_receipts.py",
+    "_04_Nucleo_Operativo/semantic_",
+)
 _SOURCE_BOUNDARY_TESTS = {
     "tools/quality_gate.py": frozenset(
         {
@@ -208,6 +220,13 @@ _REGISTERED_SCENARIO_TESTS = frozenset(
     }
 )
 _CANONICAL_DEEP_SHARD_SIZE = 50
+# A full boundary must cover the current Linux inventory without truncation and
+# amortize the measured per-worker startup cost. Selected validation retains the
+# smaller shard because its objective is a bounded affected-test proof.
+_FULL_SUITE_MAX_TESTS = 10_000
+_FULL_SUITE_SHARD_SIZE = 250
+_TRUSTED_DEEP_SELECTED_OVERHEAD_SECONDS = 15 * 60
+_TRUSTED_DEEP_FULL_OVERHEAD_SECONDS = 30 * 60
 
 _EXPERIMENT_CONTROL_PLANE_PATHS = frozenset(
     {
@@ -1143,6 +1162,7 @@ def select_affected_tests(
     )
     boundary = any(
         path in _FULL_SUITE_BOUNDARIES
+        or path.startswith(_FULL_SUITE_PREFIXES)
         or path.startswith(
             (
                 "tools/release_",
@@ -1679,7 +1699,12 @@ def _installed_inventory_replay_receipt(
         return None
 
 
-def _coverage_gate(review: object | None) -> ValidationGate:
+def _coverage_gate(
+    review: object | None,
+    *,
+    root: Path,
+    selection: AffectedTestSelection,
+) -> ValidationGate:
     started = time.monotonic_ns()
     command = ("Neocortex", "--self-analysis", "--analysis-profile", "trusted-deep")
     analysis = getattr(review, "test_coverage", None)
@@ -1697,6 +1722,114 @@ def _coverage_gate(review: object | None) -> ValidationGate:
     outcomes = analysis.outcomes
     failed = 0 if outcomes is None else outcomes.failed
     selected = 0 if outcomes is None else outcomes.selected
+    evidence: dict[str, object] = {
+        "provider_id": analysis.provider_id,
+        "tool_run_id": analysis.tool_run_id,
+        "effective_tool_run_id": analysis.effective_tool_run_id,
+        "suite_selection": analysis.suite_selection,
+        "measurement_complete": analysis.measurement_complete,
+        "tests_collected": outcomes.collected if outcomes is not None else 0,
+        "tests_selected": selected,
+        "tests_failed": failed,
+        "suite_signature": analysis.suite_signature,
+        "measurement_scope_signature": analysis.measurement_scope_signature,
+        "limitations": list(analysis.limitations),
+    }
+    if selection.strategy == "full":
+        totals = analysis.totals
+        regressions: list[str] = []
+        baseline_path = root / "tools" / "quality_gate_coverage_baseline.json"
+        try:
+            baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
+            approved = baseline["approved"]
+            approved_inventory = baseline["approved_inventory"]
+            tool = baseline["tool"]
+            if not all(
+                isinstance(value, Mapping)
+                for value in (baseline, approved, approved_inventory, tool)
+            ):
+                raise TypeError("coverage baseline mappings are invalid")
+            versions = {item.name: item.version for item in analysis.tool_versions}
+            if tool.get("name") != "coverage" or versions.get("coverage") != tool.get("version"):
+                regressions.append("coverage_tool_version_changed")
+            for label, baseline_key in (
+                ("test", "test_inventory"),
+                ("production_source", "production_source_inventory"),
+            ):
+                inventory = approved_inventory.get(baseline_key)
+                files = inventory.get("files") if isinstance(inventory, Mapping) else None
+                if not isinstance(files, list) or any(not isinstance(item, str) for item in files):
+                    regressions.append(f"{label}_inventory_invalid")
+                    continue
+                removed = [item for item in files if not (root / item).is_file()]
+                if removed:
+                    regressions.append(f"{label}_paths_removed:{','.join(removed[:20])}")
+            if totals is None:
+                regressions.append("coverage_totals_missing")
+            else:
+                current_metrics = {
+                    "lines": (totals.covered_lines, totals.executable_lines),
+                    "branches": (totals.covered_branch_exits, totals.branch_exits),
+                }
+                for label, (covered, total) in current_metrics.items():
+                    approved_metric = approved.get(label)
+                    approved_covered = (
+                        approved_metric.get("covered")
+                        if isinstance(approved_metric, Mapping)
+                        else None
+                    )
+                    approved_total = (
+                        approved_metric.get("total")
+                        if isinstance(approved_metric, Mapping)
+                        else None
+                    )
+                    if (
+                        isinstance(approved_covered, bool)
+                        or not isinstance(approved_covered, int)
+                        or isinstance(approved_total, bool)
+                        or not isinstance(approved_total, int)
+                        or total <= 0
+                        or covered * approved_total < approved_covered * total
+                    ):
+                        regressions.append(f"{label}_coverage_regressed")
+                evidence["coverage_totals"] = {
+                    "lines": {
+                        "covered": totals.covered_lines,
+                        "total": totals.executable_lines,
+                    },
+                    "branches": {
+                        "covered": totals.covered_branch_exits,
+                        "total": totals.branch_exits,
+                    },
+                }
+            evidence["coverage_baseline_sha256"] = hashlib.sha256(
+                baseline_path.read_bytes()
+            ).hexdigest()
+        except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            regressions.append(f"coverage_baseline_unavailable:{type(exc).__name__}")
+        failed_analysis_gates = [gate.gate for gate in analysis.gates if gate.status == "failed"]
+        if failed_analysis_gates:
+            regressions.append("coverage_analysis_gates_failed:" + ",".join(failed_analysis_gates))
+        if analysis.suite_selection != "full":
+            regressions.append("coverage_suite_not_full")
+        if not analysis.measurement_complete or not analysis.content_executed:
+            regressions.append("coverage_measurement_incomplete")
+        if outcomes is None or selected <= 0:
+            regressions.append("coverage_test_outcomes_missing")
+        if failed:
+            regressions.append("full_suite_tests_failed")
+        evidence["coverage_baseline_status"] = "failed" if regressions else "passed"
+        evidence["coverage_regressions"] = regressions
+        return _gate(
+            "affected_coverage",
+            "failed" if regressions else "passed",
+            "full_suite_coverage_no_regression_failed"
+            if regressions
+            else "full_suite_passed_with_coverage_no_regression",
+            started,
+            command,
+            evidence,
+        )
     if not analysis.measurement_complete or outcomes is None or selected <= 0:
         status: Literal["failed", "abstained", "passed"] = "abstained"
         reason = "coverage_measurement_incomplete"
@@ -1712,19 +1845,7 @@ def _coverage_gate(review: object | None) -> ValidationGate:
         reason,
         started,
         command,
-        {
-            "provider_id": analysis.provider_id,
-            "tool_run_id": analysis.tool_run_id,
-            "effective_tool_run_id": analysis.effective_tool_run_id,
-            "suite_selection": analysis.suite_selection,
-            "measurement_complete": analysis.measurement_complete,
-            "tests_collected": outcomes.collected if outcomes is not None else 0,
-            "tests_selected": selected,
-            "tests_failed": failed,
-            "suite_signature": analysis.suite_signature,
-            "measurement_scope_signature": analysis.measurement_scope_signature,
-            "limitations": list(analysis.limitations),
-        },
+        evidence,
     )
 
 
@@ -2029,9 +2150,19 @@ def _trusted_deep_command(
     *,
     max_tests: int,
     time_budget_seconds: int,
+    full_suite: bool = False,
 ) -> tuple[str | os.PathLike[str], ...]:
-    if not selectors:
+    if not selectors and not full_suite:
         raise ChangeValidationError("trusted_deep_requires_selected_tests")
+    effective_max_tests = _FULL_SUITE_MAX_TESTS if full_suite else max_tests
+    effective_shard_size = (
+        _FULL_SUITE_SHARD_SIZE
+        if full_suite
+        else min(
+            _CANONICAL_DEEP_SHARD_SIZE,
+            max_tests,
+        )
+    )
     command: list[str | os.PathLike[str]] = [
         sys.executable,
         "-m",
@@ -2044,19 +2175,35 @@ def _trusted_deep_command(
         "--state-directory",
         state_directory,
     ]
-    for selector in selectors:
-        command.extend(("--deep-test-selector", selector))
+    if not full_suite:
+        for selector in selectors:
+            command.extend(("--deep-test-selector", selector))
     command.extend(
         (
             "--deep-max-tests",
-            str(max_tests),
+            str(effective_max_tests),
             "--deep-time-budget-seconds",
             str(time_budget_seconds),
             "--deep-shard-size",
-            str(min(_CANONICAL_DEEP_SHARD_SIZE, max_tests)),
+            str(effective_shard_size),
         )
     )
     return tuple(command)
+
+
+def _trusted_deep_timeout_seconds(
+    time_budget_seconds: int,
+    *,
+    full_suite: bool,
+) -> int:
+    """Reserve non-Coverage providers and finalization inside the 75-minute gate."""
+
+    overhead = (
+        _TRUSTED_DEEP_FULL_OVERHEAD_SECONDS
+        if full_suite
+        else _TRUSTED_DEEP_SELECTED_OVERHEAD_SECONDS
+    )
+    return (2 * time_budget_seconds) + overhead
 
 
 def _documentation_only_change(change: GitChangeSnapshot) -> bool:
@@ -3206,6 +3353,47 @@ def validate_code_change(
     report = progress if progress is not None else lambda _message: None
     report(f"snapshot captured: changed_paths={len(change.changed_paths)}")
 
+    dirty_paths = tuple(
+        sorted(
+            {*change.staged_paths, *change.unstaged_paths, *change.untracked_paths},
+            key=lambda item: (item.casefold(), item),
+        )
+    )
+    if dirty_paths:
+        gates.append(
+            ValidationGate(
+                "clean_source_sha",
+                "failed",
+                "worktree_contains_uncommitted_changes",
+                0,
+                ("git", "status", "--porcelain"),
+                {"dirty_paths": list(dirty_paths)},
+            )
+        )
+        report("source SHA is not clean; stopping before external gates")
+        return _finalize_validation(
+            source=source,
+            state=state,
+            change=change,
+            selection=selection,
+            gates=gates,
+        )
+    if change.head_sha != change.baseline:
+        gates.append(
+            ValidationGate(
+                "clean_source_sha",
+                "passed",
+                "committed_change_range_and_clean_worktree",
+                0,
+                ("git", "status", "--porcelain"),
+                {
+                    "head_sha": change.head_sha,
+                    "baseline_sha": change.baseline,
+                    "changed_paths": list(change.changed_paths),
+                },
+            )
+        )
+
     if not change.changed_paths:
         clean_values: dict[str, object] = {
             "status": "passed",
@@ -3248,7 +3436,9 @@ def validate_code_change(
     if fallback_sources:
         fallback = _global_change_fallback_tests(source)
         selection = AffectedTestSelection(
-            strategy="affected",
+            # A stale published import graph may expand an affected selection,
+            # but it must never downgrade an already-declared full Linux suite.
+            strategy="full" if selection.strategy == "full" else "affected",
             selectors=tuple(
                 sorted(
                     {*selection.selectors, *fallback},
@@ -3277,8 +3467,8 @@ def validate_code_change(
             ),
         )
         report(
-            "affected evidence incomplete; added public-boundary and registered-scenario tests: "
-            f"tests={len(selection.selectors)}"
+            f"{selection.strategy} evidence incomplete; added public-boundary and "
+            f"registered-scenario tests: tests={len(selection.selectors)}"
         )
     else:
         report(
@@ -3382,8 +3572,12 @@ def validate_code_change(
         selectors,
         max_tests=max_tests,
         time_budget_seconds=time_budget_seconds,
+        full_suite=selection.strategy == "full",
     )
-    trusted_deep_timeout = (2 * time_budget_seconds) + 15 * 60
+    trusted_deep_timeout = _trusted_deep_timeout_seconds(
+        time_budget_seconds,
+        full_suite=selection.strategy == "full",
+    )
     trusted_deep_environment = {
         **os.environ,
         "NEOCORTEX_PROGRESS_STREAM": "1",
@@ -3422,7 +3616,11 @@ def validate_code_change(
             gates=gates,
         )
     if selectors:
-        coverage_gate = _coverage_gate(review)
+        coverage_gate = _coverage_gate(
+            review,
+            root=source,
+            selection=selection,
+        )
         gates.append(coverage_gate)
         if coverage_gate.status != "passed":
             report("affected coverage did not pass; stopping before experiments and artifact work")
