@@ -11,7 +11,7 @@ import hashlib
 import json
 import os
 import stat
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Mapping, cast
 
@@ -21,7 +21,7 @@ from .semantic_models import canonical_json
 
 CODE_VALIDATION_RECEIPT_SCHEMA = "neocortex.code-validation-receipt/v1"
 _CODE_CHANGE_VALIDATION_SCHEMA = "neocortex.code-change-validation/v3"
-_CODE_CHANGE_VALIDATION_POLICY = "local-linux-diff-aware-validation-v11"
+_CODE_CHANGE_VALIDATION_POLICY = "local-linux-diff-aware-validation-v12"
 _MAX_RECEIPT_BYTES = 8 * 1024 * 1024
 _REQUIRED_GATE_STATUSES = {
     "clean_source_sha": frozenset({"passed"}),
@@ -37,6 +37,7 @@ _REQUIRED_GATE_STATUSES = {
     "autoanalysis_replay_verdict": frozenset({"passed"}),
     "trusted_deep_replay": frozenset({"passed"}),
     "diff_bound_technical_dispositions": frozenset({"passed", "not_required"}),
+    "public_review_stability": frozenset({"passed"}),
     "source_snapshot_unchanged": frozenset({"passed"}),
 }
 
@@ -229,20 +230,19 @@ def publish_code_validation_receipt(
 
 def _current_review_matches(result: Mapping[str, object], state: Path) -> bool:
     gates = cast(list[Mapping[str, object]], result["gates"])
-    replay_gate = next(
-        (gate for gate in gates if gate.get("gate_id") == "autoanalysis_replay_verdict"),
+    public_gate = next(
+        (gate for gate in gates if gate.get("gate_id") == "public_review_stability"),
         None,
     )
-    evidence = None if replay_gate is None else replay_gate.get("evidence")
-    expected = evidence.get("digest") if isinstance(evidence, Mapping) else None
+    evidence = None if public_gate is None else public_gate.get("evidence")
+    expected = evidence.get("public_identity") if isinstance(evidence, Mapping) else None
     if not isinstance(expected, Mapping):
         return False
+    from .code_validation_public_review import code_review_identity
     from .code_review import review_code_state
 
     review = review_code_state(state, limit=50)
-    if review.status != "ready" or review.digest is None:
-        return False
-    return asdict(review.digest) == dict(expected)
+    return code_review_identity(review) == dict(expected)
 
 
 def load_current_code_validation_receipt(

@@ -131,7 +131,7 @@ no se copian aquí para evitar que se conviertan en datos históricos sin contex
   proyección de contratos son exactamente iguales; cualquier delta contractual
   sí genera una identidad nueva.
 - Validación canónica `neocortex.code-change-validation/v3`, política
-  `local-linux-diff-aware-validation-v11`, ligada al diff:
+  `local-linux-diff-aware-validation-v12`, ligada al diff:
   rutas y tests afectados se proyectan a
   preguntas/sujetos de aceptación versionados. Una pregunta relevante sin
   runner o sin disposición técnica exacta después del replay ahora abstiene;
@@ -147,6 +147,9 @@ no se copian aquí para evitar que se conviertan en datos históricos sin contex
   Los módulos pytest necesarios para escenarios allow-listed se derivan del
   registry, evitando que una lista fallback divergente produzca receipts sin
   outcomes terminales para sus nodeids.
+  La identidad de review que consume el receipt se reconstruye dos veces desde
+  procesos nuevos después del replay; ambas lecturas deben coincidir y conservar
+  snapshot, providers y receipts antes de aceptar el digest público.
   Los comandos acotados también se ejecutan en grupos propios y reciben SIGINT
   con gracia antes de SIGKILL, evitando dejar runs `running` tras un timeout.
   Los cambios al ejecutor `tools/quality_gate.py` usan una matriz acotada de sus

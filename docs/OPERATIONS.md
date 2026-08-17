@@ -1009,7 +1009,7 @@ puede resolver el snapshot publicado previo mientras siga vigente, tenga cero
 vulnerabilidades y su inventario exacto de distribuciones/versiones coincida con
 el actual; cambios en packaging o política supply invalidan esa resolución. No
 se usa un resultado stale ni se interpreta la falta de red como ausencia de
-vulnerabilidades. La policy v11 comprueba esa precondición antes de static,
+vulnerabilidades. La policy v12 comprueba esa precondición antes de static,
 arquitectura o trusted-deep y exige que la vigencia cubra el deadline completo
 del transient unit; una semilla ausente o próxima a vencer abstiene en segundos,
 no después de ejecutar Coverage.
@@ -1017,6 +1017,10 @@ Cuando el diff toca el control-plane de experimentos, la misma policy deriva del
 registry los módulos pytest de todos los escenarios allow-listed. Cada proposal
 posterior queda así contenida en la publicación Coverage primaria y no puede
 atestarse contra una selección que omitió sus nodeids.
+Tras el replay, dos procesos Python nuevos reconstruyen la misma identidad
+pública de review —snapshot, providers, receipts y digest—. El consumidor del
+receipt exige esa identidad fresca exacta y no reutiliza una vista SQLite
+in-process anterior al último cierre del owner.
 El inventario local es `environment_bound` y se reobserva en el replay. Sus dos
 proyecciones deben ser idénticas en métricas, relaciones, findings y versiones;
 sólo el timestamp/ID del snapshot se excluye del digest comparado.

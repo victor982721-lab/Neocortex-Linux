@@ -58,6 +58,10 @@ from .code_validation_resources import (
     current_code_validation_resource_admission,
     parse_code_validation_resource_admission,
 )
+from .code_validation_public_review import (
+    PUBLIC_REVIEW_IDENTITY_SCHEMA,
+    code_review_identity,
+)
 from .code_review import review_code_state
 from .code_schema import readonly_code_database, validate_code_schema
 from .external_evidence_models import external_root_identity
@@ -88,7 +92,7 @@ from .semantic_models import canonical_json
 
 
 CODE_CHANGE_VALIDATION_SCHEMA = "neocortex.code-change-validation/v3"
-CODE_CHANGE_VALIDATION_POLICY = "local-linux-diff-aware-validation-v11"
+CODE_CHANGE_VALIDATION_POLICY = "local-linux-diff-aware-validation-v12"
 MAX_CHANGED_PATHS = 2_000
 MAX_SELECTED_TEST_FILES = 2_000
 MAX_DEPENDENCY_DEPTH = 8
@@ -318,6 +322,7 @@ _TRUSTED_DEEP_SELECTED_OVERHEAD_SECONDS = 15 * 60
 _TRUSTED_DEEP_FULL_OVERHEAD_SECONDS = 30 * 60
 _TRUSTED_DEEP_REPLAY_TIMEOUT_SECONDS = 20 * 60
 _POST_REPLAY_CLOSURE_RESERVE_SECONDS = 3 * 60
+_PUBLIC_REVIEW_IDENTITY_TIMEOUT_SECONDS = 75
 
 _EXPERIMENT_CONTROL_PLANE_PATHS = frozenset(
     {
@@ -2201,6 +2206,94 @@ def _fresh_review_gate(
             },
         ),
         result,
+    )
+
+
+def _public_review_stability_gate(
+    root: Path,
+    state_directory: Path,
+    replay_review: object,
+    *,
+    runner: _CommandRunner,
+) -> ValidationGate:
+    """Bind the receipt to two identical reads from fresh Python processes."""
+
+    started = time.monotonic_ns()
+    command = (
+        sys.executable,
+        "-m",
+        "_04_Nucleo_Operativo.code_validation_public_review",
+        "--state-directory",
+        str(state_directory),
+    )
+    try:
+        observed = tuple(
+            json.loads(
+                _run_text(
+                    runner,
+                    root,
+                    command,
+                    timeout=_PUBLIC_REVIEW_IDENTITY_TIMEOUT_SECONDS,
+                )
+            )
+            for _index in range(2)
+        )
+        if any(not isinstance(item, dict) for item in observed):
+            raise ValueError("public review identity is not an object")
+        first, second = cast(tuple[dict[str, object], dict[str, object]], observed)
+        if first.get("schema") != PUBLIC_REVIEW_IDENTITY_SCHEMA:
+            raise ValueError("public review identity schema is invalid")
+        expected = code_review_identity(cast(Any, replay_review))
+    except (
+        OSError,
+        RuntimeError,
+        TypeError,
+        ValueError,
+        json.JSONDecodeError,
+        subprocess.TimeoutExpired,
+    ) as exc:
+        return _gate(
+            "public_review_stability",
+            "abstained",
+            f"public_review_identity_unavailable:{type(exc).__name__}",
+            started,
+            command,
+            {"error": str(exc)[:4096]},
+        )
+    stable_keys = tuple(
+        sorted(key for key in first if key not in {"digest", "question_evaluations"})
+    )
+    stable_projection = {key: first[key] for key in stable_keys}
+    expected_projection = {key: expected.get(key) for key in stable_keys}
+    blockers: list[str] = []
+    if first != second:
+        blockers.append("fresh_process_public_review_not_repeatable")
+    if first.get("status") != "ready" or first.get("reason") is not None:
+        blockers.append("fresh_process_public_review_not_ready")
+    if first.get("digest") is None:
+        blockers.append("fresh_process_public_review_digest_missing")
+    if set(first) != set(expected):
+        blockers.append("fresh_process_public_review_fields_disagree_with_replay")
+    if stable_projection != expected_projection:
+        blockers.append("fresh_process_public_review_core_disagrees_with_replay")
+    evidence = {
+        "public_identity": first,
+        "fresh_process_reads": 2,
+        "in_process_digest": expected.get("digest"),
+        "in_process_question_evaluations": expected.get("question_evaluations"),
+        "fresh_process_digest_differs_from_in_process": first.get("digest")
+        != expected.get("digest"),
+        "blockers": blockers,
+    }
+    return _gate(
+        "public_review_stability",
+        "abstained" if blockers else "passed",
+        "public_review_identity_not_stable"
+        if blockers
+        else "two_fresh_process_public_reviews_are_stable_and_current",
+        started,
+        command,
+        evidence,
     )
 
 
@@ -4098,31 +4191,58 @@ def validate_code_change(
             experiment_receipts=experiment_receipts,
         )
     replay_review_gate, replay_review = _fresh_review_gate(state, change=change)
-    gates.append(
-        ValidationGate(
-            "autoanalysis_replay_verdict",
-            replay_review_gate.status,
-            replay_review_gate.reason,
-            replay_review_gate.duration_ms,
-            replay_review_gate.command,
-            replay_review_gate.evidence,
-        )
+    replay_verdict_gate = ValidationGate(
+        "autoanalysis_replay_verdict",
+        replay_review_gate.status,
+        replay_review_gate.reason,
+        replay_review_gate.duration_ms,
+        replay_review_gate.command,
+        replay_review_gate.evidence,
     )
-    gates.append(
-        _replay_gate(
-            review,
-            replay_review,
-            state_directory=state,
-            change=change,
-        )
+    provider_replay_gate = _replay_gate(
+        review,
+        replay_review,
+        state_directory=state,
+        change=change,
     )
-    gates.append(
-        _replay_technical_disposition_gate(
-            replay_review,
+    technical_replay_gate = _replay_technical_disposition_gate(
+        replay_review,
+        change=change,
+        selection=selection,
+    )
+    gates.extend((replay_verdict_gate, provider_replay_gate, technical_replay_gate))
+    if (
+        replay_verdict_gate.status != "passed"
+        or provider_replay_gate.status != "passed"
+        or technical_replay_gate.status not in {"passed", "not_required"}
+    ):
+        report("replay consumers did not pass; stopping before public review stability")
+        return _finalize_validation(
+            source=source,
+            state=state,
             change=change,
             selection=selection,
+            gates=gates,
+            experiment_receipts=experiment_receipts,
         )
+    report("verifying the public review identity in two fresh processes")
+    public_review_gate = _public_review_stability_gate(
+        source,
+        state,
+        replay_review,
+        runner=runner,
     )
+    gates.append(public_review_gate)
+    if public_review_gate.status != "passed":
+        report("public review identity did not remain stable across fresh processes")
+        return _finalize_validation(
+            source=source,
+            state=state,
+            change=change,
+            selection=selection,
+            gates=gates,
+            experiment_receipts=experiment_receipts,
+        )
     report("verifying source snapshot remained unchanged")
 
     experiments: tuple[str, ...] = ()

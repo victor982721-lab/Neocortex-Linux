@@ -24,6 +24,7 @@ from _04_Nucleo_Operativo.code_validation_receipts import (
     load_current_code_validation_receipt,
     publish_code_validation_receipt,
 )
+from _04_Nucleo_Operativo.code_validation_public_review import code_review_identity
 from _04_Nucleo_Operativo.semantic_models import canonical_json
 
 
@@ -40,6 +41,7 @@ _REQUIRED_GATES = (
     "autoanalysis_replay_verdict",
     "trusted_deep_replay",
     "diff_bound_technical_dispositions",
+    "public_review_stability",
     "source_snapshot_unchanged",
 )
 
@@ -47,6 +49,24 @@ _REQUIRED_GATES = (
 @dataclass(frozen=True)
 class _ReviewDigest:
     value: str
+
+
+def _review_result(value: str) -> SimpleNamespace:
+    return SimpleNamespace(
+        status="ready",
+        reason=None,
+        snapshot=SimpleNamespace(
+            analysis_run_id=17,
+            processing_signature="snapshot:fixture",
+            freshness="publication_only",
+        ),
+        digest=_ReviewDigest(value),
+        external_evidence_suite=SimpleNamespace(profile="trusted-deep", providers=()),
+        experiment_receipts=(),
+        question_evaluations=(),
+        materialization_limit=50,
+        mutation_authority=False,
+    )
 
 
 def _result(root: Path, state: Path) -> dict[str, object]:
@@ -59,7 +79,9 @@ def _result(root: Path, state: Path) -> dict[str, object]:
             "duration_ms": 1,
             "command": [],
             "evidence": (
-                {"digest": review_digest}
+                {"public_identity": code_review_identity(_review_result("published-review"))}
+                if gate_id == "public_review_stability"
+                else {"digest": review_digest}
                 if gate_id == "autoanalysis_replay_verdict"
                 else {
                     "external_profile": "trusted-deep",
@@ -89,7 +111,7 @@ def _result(root: Path, state: Path) -> dict[str, object]:
         "schema": "neocortex.code-change-validation/v3",
         "status": "passed",
         "reason": None,
-        "policy_id": "local-linux-diff-aware-validation-v11",
+        "policy_id": "local-linux-diff-aware-validation-v12",
         "source_root": str(root),
         "state_directory": str(state),
         "git": {
@@ -151,7 +173,9 @@ def _object_result(root: Path, state: Path) -> CodeChangeValidationResult:
             1,
             (),
             (
-                {"digest": review_digest}
+                {"public_identity": code_review_identity(_review_result("published-review"))}
+                if gate_id == "public_review_stability"
+                else {"digest": review_digest}
                 if gate_id == "autoanalysis_replay_verdict"
                 else {
                     "external_profile": "trusted-deep",
@@ -248,10 +272,7 @@ def test_published_receipt_reuses_only_the_exact_clean_state(
     )
     monkeypatch.setattr(
         "_04_Nucleo_Operativo.code_review.review_code_state",
-        lambda *_args, **_kwargs: SimpleNamespace(
-            status="ready",
-            digest=_ReviewDigest("published-review"),
-        ),
+        lambda *_args, **_kwargs: _review_result("published-review"),
     )
 
     publication = publish_code_validation_receipt(payload)
@@ -318,10 +339,7 @@ def test_receipt_becomes_stale_when_review_publication_is_displaced(
     )
     monkeypatch.setattr(
         "_04_Nucleo_Operativo.code_review.review_code_state",
-        lambda *_args, **_kwargs: SimpleNamespace(
-            status="ready",
-            digest=_ReviewDigest("different-publication"),
-        ),
+        lambda *_args, **_kwargs: _review_result("different-publication"),
     )
 
     status = load_current_code_validation_receipt(

@@ -30,6 +30,7 @@ from _04_Nucleo_Operativo.code_change_validation import (
     _global_change_fallback_tests,
     _pip_audit_snapshot_preflight,
     _provider_failure,
+    _public_review_stability_gate,
     _relevant_question_state,
     _replay_gate,
     _replay_technical_disposition_gate,
@@ -64,6 +65,7 @@ from _04_Nucleo_Operativo.code_knowledge_pdf_asset_health_analysis import (
 )
 from _04_Nucleo_Operativo.code_route_capability_analysis import ROUTE_CAPABILITY_QUESTION
 from _04_Nucleo_Operativo.code_retention_analysis import RETENTION_HOLD_QUESTION
+from _04_Nucleo_Operativo.code_review_serialization import CodeReviewDigest
 from _04_Nucleo_Operativo.code_review_task_analysis import (
     FRAMEWORK_REVIEW_TASK_PROTOCOL_QUESTION,
 )
@@ -80,6 +82,7 @@ from _04_Nucleo_Operativo.external_evidence_providers import (
     PIP_AUDIT_PROVIDER_ID,
 )
 from _04_Nucleo_Operativo.platform.shared.capability_registry import CAPABILITY_REGISTRY
+from _04_Nucleo_Operativo.semantic_models import canonical_json
 
 
 def test_optional_mutation_abstention_is_not_a_failed_machine_gate() -> None:
@@ -582,6 +585,92 @@ def test_change_validation_payload_is_json_native_for_the_receipt_boundary() -> 
     assert isinstance(git, dict) and isinstance(git["changed_paths"], list)
     assert isinstance(selection, dict) and isinstance(selection["selectors"], list)
     assert json.loads(json.dumps(payload, sort_keys=True)) == payload
+
+
+def _public_review_fixture() -> SimpleNamespace:
+    provider = SimpleNamespace(
+        provider_id="provider:fixture",
+        as_payload=lambda: {
+            "schema": "neocortex.external-provider-status/v4",
+            "provider_id": "provider:fixture",
+            "status": "ready",
+        },
+    )
+    return SimpleNamespace(
+        status="ready",
+        reason=None,
+        snapshot=SimpleNamespace(
+            analysis_run_id=17,
+            processing_signature="snapshot:fixture",
+            freshness="publication_only",
+        ),
+        digest=CodeReviewDigest("a" * 32, "b" * 16, 100),
+        external_evidence_suite=SimpleNamespace(
+            profile="trusted-deep",
+            providers=(provider,),
+        ),
+        experiment_receipts=(
+            SimpleNamespace(receipt=SimpleNamespace(receipt_id="receipt:fixture")),
+        ),
+        question_evaluations=(object(), object()),
+        materialization_limit=50,
+        mutation_authority=False,
+    )
+
+
+def test_public_review_stability_uses_two_repeatable_fresh_process_reads(
+    tmp_path: Path,
+) -> None:
+    from _04_Nucleo_Operativo.code_validation_public_review import code_review_identity
+
+    review = _public_review_fixture()
+    public_identity = code_review_identity(review)
+    public_identity["digest"] = {
+        "xxh3_128": "c" * 32,
+        "xxh3_64_guard": "d" * 16,
+        "byte_count": 200,
+    }
+    public_identity["question_evaluations"] = 1
+    commands: list[tuple[str, ...]] = []
+
+    def runner(arguments, *, cwd, timeout, environment=None):
+        command = tuple(str(item) for item in arguments)
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0, canonical_json(public_identity), "")
+
+    gate = _public_review_stability_gate(
+        tmp_path,
+        tmp_path,
+        review,
+        runner=runner,
+    )
+
+    assert gate.status == "passed"
+    assert gate.evidence["fresh_process_reads"] == 2
+    assert gate.evidence["fresh_process_digest_differs_from_in_process"] is True
+    assert len(commands) == 2
+
+
+def test_public_review_stability_abstains_when_fresh_reads_disagree(tmp_path: Path) -> None:
+    from _04_Nucleo_Operativo.code_validation_public_review import code_review_identity
+
+    review = _public_review_fixture()
+    identities = [code_review_identity(review), code_review_identity(review)]
+    identities[1]["question_evaluations"] = 99
+
+    def runner(arguments, *, cwd, timeout, environment=None):
+        command = tuple(str(item) for item in arguments)
+        return subprocess.CompletedProcess(command, 0, canonical_json(identities.pop(0)), "")
+
+    gate = _public_review_stability_gate(
+        tmp_path,
+        tmp_path,
+        review,
+        runner=runner,
+    )
+
+    assert gate.status == "abstained"
+    assert "fresh_process_public_review_not_repeatable" in gate.evidence["blockers"]
 
 
 def _pip_audit_preflight_fixture(

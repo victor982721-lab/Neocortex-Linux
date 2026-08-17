@@ -946,7 +946,7 @@ run con replay exacto. Si el grafo no permite elegir pruebas, un proveedor no
 queda listo, la medición es incompleta o el snapshot cambia durante la corrida,
 se abstiene o falla: nunca traduce ausencia de evidencia en verde. Use
 `--baseline HEAD^` para verificar un commit ya integrado localmente.
-La política `local-linux-diff-aware-validation-v11` incluye los bindings PDF y
+La política `local-linux-diff-aware-validation-v12` incluye los bindings PDF y
 las matrices completas Archive/DOCX/Image para los namespaces canónico y de
 compatibilidad;
 el verificador técnico v7 sólo acepta su pregunta con los cuatro gates y los
@@ -958,6 +958,10 @@ Cuando cambia el control-plane experimental, la selección Coverage incorpora
 los módulos pytest derivados de todos los escenarios allow-listed registrados;
 una proposal no puede aparecer después para nodeids que la publicación primaria
 no ejecutó.
+Después del replay, dos procesos nuevos reconstruyen una identidad pública
+acotada del review. El receipt conserva esa identidad sólo si ambas lecturas son
+idénticas y coinciden con el snapshot, providers y receipts del replay; su lector
+la vuelve a calcular antes de declarar reutilización.
 
 La observación empieza antes del primer provider: el padre captura memoria,
 swap y PSI, reserva headroom para el escritorio y crea un único cgroup de
