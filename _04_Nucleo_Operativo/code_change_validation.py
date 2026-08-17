@@ -598,7 +598,12 @@ class CodeChangeValidationResult:
             raise ValueError("change validation digest is invalid")
 
     def as_payload(self) -> dict[str, object]:
-        return {"schema": CODE_CHANGE_VALIDATION_SCHEMA, **asdict(self)}
+        payload = json.loads(
+            canonical_json({"schema": CODE_CHANGE_VALIDATION_SCHEMA, **asdict(self)})
+        )
+        if not isinstance(payload, dict):  # pragma: no cover - canonical object is fixed above
+            raise ValueError("change validation payload is not an object")
+        return cast(dict[str, object], payload)
 
 
 def _result_digest(result: CodeChangeValidationResult) -> str:

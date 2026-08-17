@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import _thread
+import json
 import os
 import subprocess
 import sys
@@ -18,8 +19,11 @@ import pytest
 
 from _04_Nucleo_Operativo.code_change_validation import (
     AffectedTestSelection,
+    CODE_CHANGE_VALIDATION_POLICY,
     ChangeValidationError,
     GitChangeSnapshot,
+    ValidationGate,
+    _build_result,
     _default_runner,
     _experiment_gate,
     _fresh_review_gate,
@@ -538,6 +542,46 @@ def _selection(*selectors: str) -> AffectedTestSelection:
         uncovered_sources=(),
         reasons=("fixture_selection",),
     )
+
+
+def test_change_validation_payload_is_json_native_for_the_receipt_boundary() -> None:
+    result = _build_result(
+        {
+            "status": "passed",
+            "reason": None,
+            "policy_id": CODE_CHANGE_VALIDATION_POLICY,
+            "source_root": "/fixture/source",
+            "state_directory": "/fixture/state",
+            "git": _change_for("neocortex/logic.py"),
+            "selection": _selection("tests/test_fixture.py"),
+            "gates": (
+                ValidationGate(
+                    "source_snapshot_unchanged",
+                    "passed",
+                    "source_unchanged",
+                    0,
+                    ("git", "diff"),
+                    {"content_digest": "b" * 64},
+                ),
+            ),
+            "experiment_proposals": (),
+            "executable_experiments": (),
+            "experiment_receipts": (),
+            "resource_boundary": None,
+            "source_unchanged": True,
+            "authority": "validation",
+            "mutation_authority": False,
+        }
+    )
+
+    payload = result.as_payload()
+    git = payload["git"]
+    selection = payload["selection"]
+
+    assert isinstance(payload["gates"], list)
+    assert isinstance(git, dict) and isinstance(git["changed_paths"], list)
+    assert isinstance(selection, dict) and isinstance(selection["selectors"], list)
+    assert json.loads(json.dumps(payload, sort_keys=True)) == payload
 
 
 def _pip_audit_preflight_fixture(

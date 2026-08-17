@@ -11,6 +11,14 @@ from types import SimpleNamespace
 import pytest
 
 from _04_Nucleo_Operativo import code_change_validation, code_validation_receipts
+from _04_Nucleo_Operativo.code_change_validation import (
+    AffectedTestSelection,
+    CODE_CHANGE_VALIDATION_POLICY,
+    CodeChangeValidationResult,
+    GitChangeSnapshot,
+    ValidationGate,
+    _build_result,
+)
 from _04_Nucleo_Operativo.code_validation_receipts import (
     CodeValidationReceiptError,
     load_current_code_validation_receipt,
@@ -131,6 +139,91 @@ def _prepare(
         lambda: state,
     )
     return root, state, payload
+
+
+def _object_result(root: Path, state: Path) -> CodeChangeValidationResult:
+    review_digest = {"value": "published-review"}
+    gates = [
+        ValidationGate(
+            gate_id,
+            "passed",
+            "source_unchanged" if gate_id == "source_snapshot_unchanged" else "passed",
+            1,
+            (),
+            (
+                {"digest": review_digest}
+                if gate_id == "autoanalysis_replay_verdict"
+                else {
+                    "external_profile": "trusted-deep",
+                    "missing_providers": [],
+                    "provider_failures": [],
+                    "failed_supply_gates": [],
+                }
+                if gate_id == "autoanalysis_verdict"
+                else {}
+            ),
+        )
+        for gate_id in _REQUIRED_GATES
+    ]
+    gates.insert(
+        -1,
+        ValidationGate(
+            "allowlisted_experiments",
+            "not_required",
+            "none_affected",
+            0,
+            (),
+            {},
+        ),
+    )
+    return _build_result(
+        {
+            "status": "passed",
+            "reason": None,
+            "policy_id": CODE_CHANGE_VALIDATION_POLICY,
+            "source_root": str(root),
+            "state_directory": str(state),
+            "git": GitChangeSnapshot(
+                "b" * 40,
+                "a" * 40,
+                ("module.py",),
+                (),
+                (),
+                (),
+                "c" * 64,
+            ),
+            "selection": AffectedTestSelection(
+                strategy="affected",
+                selectors=("tests/test_fixture.py",),
+                direct_tests=("tests/test_fixture.py",),
+                dependency_tests=(),
+                convention_tests=(),
+                uncovered_sources=(),
+                reasons=("fixture_selection",),
+            ),
+            "gates": tuple(gates),
+            "experiment_proposals": (),
+            "executable_experiments": (),
+            "experiment_receipts": (),
+            "resource_boundary": None,
+            "source_unchanged": True,
+            "authority": "validation",
+            "mutation_authority": False,
+        }
+    )
+
+
+def test_real_validation_payload_crosses_the_receipt_publication_boundary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, state, _payload = _prepare(tmp_path, monkeypatch)
+    result = _object_result(root, state)
+
+    publication = publish_code_validation_receipt(result.as_payload())
+    stored = json.loads(Path(publication.receipt_path).read_text(encoding="utf-8"))
+
+    assert stored["result"] == result.as_payload()
 
 
 def test_published_receipt_reuses_only_the_exact_clean_state(
