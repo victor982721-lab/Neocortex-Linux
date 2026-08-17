@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import ast
 import json
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -28,6 +30,24 @@ from _04_Nucleo_Operativo.external_evidence_models import (
     ExternalProviderRelation,
     external_relation_identity,
 )
+
+
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _declared_test_targets(path: Path) -> set[tuple[str, ...]]:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    targets: set[tuple[str, ...]] = set()
+    for item in tree.body:
+        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            targets.add((item.name,))
+        elif isinstance(item, ast.ClassDef):
+            targets.update(
+                (item.name, member.name)
+                for member in item.body
+                if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef))
+            )
+    return targets
 
 
 def _relation(nodeid: str, outcome: str, index: int) -> ExternalProviderRelation:
@@ -141,6 +161,24 @@ def test_registry_is_canonical_versioned_and_scenarios_have_explicit_roles() -> 
     )
     with pytest.raises(ValueError, match="unknown runtime scenario"):
         runtime_scenario("delete.production.now")
+
+
+def test_every_runtime_scenario_nodeid_names_a_declared_test_function() -> None:
+    targets_by_path: dict[str, set[tuple[str, ...]]] = {}
+    missing: list[str] = []
+    for scenario in RUNTIME_SCENARIOS:
+        for nodeid in scenario.test_nodeids:
+            relative_path, *target = nodeid.split("::")
+            target[-1] = target[-1].split("[", 1)[0]
+            if relative_path not in targets_by_path:
+                targets_by_path[relative_path] = _declared_test_targets(
+                    _PROJECT_ROOT / relative_path
+                )
+            targets = targets_by_path[relative_path]
+            if tuple(target) not in targets:
+                missing.append(nodeid)
+
+    assert missing == []
 
 
 def test_exact_passing_scenario_receipts_are_observed_but_never_become_a_decision() -> None:

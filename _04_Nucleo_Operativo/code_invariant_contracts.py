@@ -333,7 +333,7 @@ RUNTIME_SCENARIOS = (
         test_nodeids=(
             (
                 "tests/test_code_experiment_store.py::"
-                "test_populated_code_v5_migrates_to_append_only_receipts_without_fact_drift"
+                "test_populated_code_v5_migrates_to_versioned_receipts_without_fact_drift"
             ),
             (
                 "tests/test_code_experiment_store.py::"
@@ -386,7 +386,7 @@ RUNTIME_SCENARIOS = (
                 "receipt_schema_upgrade_preserves_existing_code_facts",
                 (
                     "tests/test_code_experiment_store.py::"
-                    "test_populated_code_v5_migrates_to_append_only_receipts_without_fact_drift",
+                    "test_populated_code_v5_migrates_to_versioned_receipts_without_fact_drift",
                 ),
             ),
         ),
