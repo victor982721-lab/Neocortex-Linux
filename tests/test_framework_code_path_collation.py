@@ -450,6 +450,28 @@ def test_current_owner_validation_is_read_only_and_sidecar_free(tmp_path: Path) 
     assert not Path(f"{framework_path}-shm").exists()
 
 
+def test_current_code_open_skips_full_store_scan_but_explicit_audit_retains_it(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    code_path = tmp_path / "code.sqlite3"
+    code_schema.initialize_code_state(code_path)
+    observed: list[str] = []
+
+    def record_integrity(_connection, *, label: str) -> None:
+        observed.append(label)
+
+    monkeypatch.setattr(code_schema, "_validate_code_storage_integrity", record_integrity)
+
+    code_schema.initialize_code_state(code_path)
+    assert observed == []
+
+    code_schema.verify_code_storage_integrity(code_path)
+    assert observed == ["code current state"]
+    assert not Path(f"{code_path}-wal").exists()
+    assert not Path(f"{code_path}-shm").exists()
+
+
 def test_legacy_integrity_violation_fails_closed_before_migration(tmp_path: Path) -> None:
     database = tmp_path / "invalid-code.sqlite3"
     _create_code_v4(database)

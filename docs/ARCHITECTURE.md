@@ -710,7 +710,7 @@ descriptor, firma de entorno/configuración/comparabilidad, inputs, findings y
 counters normalizados. La suite y el fence de Code se confirman atómicamente;
 los proveedores no participan en el processing signature AST.
 
-Code schema v6 conserva las dos proyecciones portables introducidas en v4 y la
+Code schema v7 conserva las dos proyecciones portables introducidas en v4 y la
 identidad de rutas introducida en v5 (`BINARY` en Linux y `NOCASE` en Windows).
 `external_metrics` vincula un nombre/valor/unidad con un sujeto
 tipado (`file`, `symbol`, `module`, `project`, `run`, `contract` o `scc`);
@@ -731,6 +731,15 @@ gate a requisito. El enlace produce evidencia de tests exactos, no verdad formal
 ni decisión humana. Un verificador técnico separado puede derivar únicamente una
 disposición allow-listed y acotada de no-cambio tras recomprobar controles
 negativos; conserva `authority=advisory` y `mutation_authority=false`.
+
+V7 preserva sin reinterpretar todas las columnas y el payload de las filas v3,
+y admite receipts v4 para la ruta canónica. Estos últimos no relanzan una
+plantilla por proposal: atestiguan un subconjunto de las relaciones Coverage
+primarias y ligan analysis/tool-run,
+publicación portable, firmas de entorno/configuración/suite/scope y digest de
+relaciones. El batch durable revalida esa fuente exacta dentro de la misma
+transacción y exige cero procesos propios; no convierte un resultado de tests en
+prueba formal ni en autoridad humana.
 
 Review v22 conserva además una proyección Retention owner-local sobre los
 cuatro stores productivos. Reutiliza el planner dry-run y sus holds declarados,

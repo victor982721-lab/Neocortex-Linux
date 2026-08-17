@@ -52,6 +52,8 @@ from .code_state_interaction_analysis import WORKFLOW_SQL_QUESTION
 from .code_state_projection_analysis import TEXT_SEMANTIC_PROJECTION_QUESTION
 from .code_validation_resources import (
     CODE_VALIDATION_RESOURCE_SCHEMA,
+    CodeValidationRuntimeWindow,
+    code_validation_runtime_window,
     current_code_validation_resource_admission,
     parse_code_validation_resource_admission,
 )
@@ -82,7 +84,7 @@ from .semantic_models import canonical_json
 
 
 CODE_CHANGE_VALIDATION_SCHEMA = "neocortex.code-change-validation/v3"
-CODE_CHANGE_VALIDATION_POLICY = "local-linux-diff-aware-validation-v8"
+CODE_CHANGE_VALIDATION_POLICY = "local-linux-diff-aware-validation-v9"
 MAX_CHANGED_PATHS = 2_000
 MAX_SELECTED_TEST_FILES = 2_000
 MAX_DEPENDENCY_DEPTH = 8
@@ -212,6 +214,7 @@ _SOURCE_BOUNDARY_TESTS = {
             "tests/test_code_intelligence.py",
             "tests/test_code_publication_diff.py",
             "tests/test_code_schema_migration_v1_v2.py",
+            "tests/test_code_schema_migration_v6_v7.py",
             "tests/test_external_provider_schema_v4.py",
             "tests/test_framework_code_path_collation.py",
         }
@@ -301,6 +304,8 @@ _FULL_SUITE_MAX_TESTS = 10_000
 _FULL_SUITE_SHARD_SIZE = 250
 _TRUSTED_DEEP_SELECTED_OVERHEAD_SECONDS = 15 * 60
 _TRUSTED_DEEP_FULL_OVERHEAD_SECONDS = 30 * 60
+_TRUSTED_DEEP_REPLAY_TIMEOUT_SECONDS = 20 * 60
+_POST_REPLAY_CLOSURE_RESERVE_SECONDS = 3 * 60
 
 _EXPERIMENT_CONTROL_PLANE_PATHS = frozenset(
     {
@@ -316,12 +321,15 @@ _EXPERIMENT_CONTROL_PLANE_PATHS = frozenset(
         "_04_Nucleo_Operativo/code_review_serialization.py",
         "_04_Nucleo_Operativo/code_technical_verification.py",
         "_04_Nucleo_Operativo/code_validation_resources.py",
+        "_04_Nucleo_Operativo/external_evidence_models.py",
+        "_04_Nucleo_Operativo/external_evidence_store.py",
         "tests/test_code_change_validation.py",
         "tests/test_code_experiment_executor.py",
         "tests/test_code_experiment_planner.py",
         "tests/test_code_experiment_store.py",
         "tests/test_code_technical_verification.py",
         "tests/test_code_validation_resources.py",
+        "tests/test_external_provider_schema_v4.py",
     }
 )
 
@@ -1088,9 +1096,7 @@ def _source_boundary_tests(root: Path, relative: str) -> tuple[str, ...]:
             declared.update(capability.test_roots)
     ordered = tuple(sorted(declared, key=lambda item: (item.casefold(), item)))
     unavailable = tuple(
-        test
-        for test in ordered
-        if not (root / test).is_file() or (root / test).is_symlink()
+        test for test in ordered if not (root / test).is_file() or (root / test).is_symlink()
     )
     if unavailable:
         raise ChangeValidationError(
@@ -2057,15 +2063,46 @@ def _fresh_review_gate(
     )
 
 
+def _bounded_runtime_timeout(
+    runtime_window: CodeValidationRuntimeWindow | None,
+    *,
+    maximum_seconds: int,
+    reserve_seconds: int,
+) -> int:
+    """Bound one subprocess while preserving later phases inside RuntimeMaxSec."""
+
+    if maximum_seconds < 1 or reserve_seconds < 0:
+        raise ValueError("code-validation phase timeout policy is invalid")
+    if runtime_window is None:
+        return maximum_seconds
+    remaining_ns = runtime_window.hard_deadline_monotonic_ns - time.monotonic_ns()
+    usable_seconds = (remaining_ns // 1_000_000_000) - reserve_seconds
+    if usable_seconds < 1:
+        raise ChangeValidationError("code_validation_global_runtime_reserve_unavailable")
+    return min(maximum_seconds, usable_seconds)
+
+
 def _candidate_wheel_gate(
     root: Path,
     *,
     runner: _CommandRunner,
+    runtime_window: CodeValidationRuntimeWindow | None = None,
 ) -> ValidationGate:
     """Build the exact dirty-tree candidate and smoke it outside the checkout."""
 
     started = time.monotonic_ns()
     command = (sys.executable, "-m", "build", "--wheel", "--no-isolation")
+    replay_reserve_seconds = (
+        _TRUSTED_DEEP_REPLAY_TIMEOUT_SECONDS + _POST_REPLAY_CLOSURE_RESERVE_SECONDS
+    )
+
+    def phase_timeout(maximum_seconds: int) -> int:
+        return _bounded_runtime_timeout(
+            runtime_window,
+            maximum_seconds=maximum_seconds,
+            reserve_seconds=replay_reserve_seconds,
+        )
+
     try:
         with tempfile.TemporaryDirectory(prefix="neocortex-candidate-wheel-") as temporary:
             workspace = Path(temporary)
@@ -2085,7 +2122,7 @@ def _candidate_wheel_gate(
             completed = runner(
                 build_command,
                 cwd=root,
-                timeout=10 * 60,
+                timeout=phase_timeout(10 * 60),
                 environment=None,
             )
             if completed.returncode != 0:
@@ -2127,7 +2164,7 @@ def _candidate_wheel_gate(
                     wheel,
                 ),
                 cwd=workspace,
-                timeout=5 * 60,
+                timeout=phase_timeout(5 * 60),
                 environment=None,
             )
             if install_result.returncode != 0:
@@ -2164,7 +2201,7 @@ def _candidate_wheel_gate(
             probe_result = runner(
                 (candidate_python, "-I", "-c", probe_script),
                 cwd=probe,
-                timeout=60,
+                timeout=phase_timeout(60),
                 environment=None,
             )
             if probe_result.returncode != 0:
@@ -2180,13 +2217,13 @@ def _candidate_wheel_gate(
             version_result = runner(
                 (entrypoint, "--version"),
                 cwd=probe,
-                timeout=60,
+                timeout=phase_timeout(60),
                 environment=None,
             )
             help_result = runner(
                 (entrypoint, "code", "validate", "--help"),
                 cwd=probe,
-                timeout=60,
+                timeout=phase_timeout(60),
                 environment=None,
             )
             if (
@@ -2291,6 +2328,45 @@ def _trusted_deep_timeout_seconds(
         else _TRUSTED_DEEP_SELECTED_OVERHEAD_SECONDS
     )
     return (2 * time_budget_seconds) + overhead
+
+
+def _runtime_budget_gate(
+    gate_id: str,
+    runtime_window: CodeValidationRuntimeWindow,
+    *,
+    required_seconds: int,
+    command: Sequence[str | os.PathLike[str]],
+) -> ValidationGate:
+    """Admit a bounded remaining phase without extending the cgroup lifetime."""
+
+    started = time.monotonic_ns()
+    hard_remaining_ns = max(0, runtime_window.hard_deadline_monotonic_ns - started)
+    hard_remaining_seconds = hard_remaining_ns // 1_000_000_000
+    elapsed_seconds = max(
+        0,
+        (started - runtime_window.active_enter_monotonic_ns) // 1_000_000_000,
+    )
+    sufficient = hard_remaining_seconds >= required_seconds
+    return _gate(
+        gate_id,
+        "passed" if sufficient else "abstained",
+        (
+            "global_runtime_reserved_for_remaining_phases"
+            if sufficient
+            else "insufficient_global_runtime_for_remaining_phases"
+        ),
+        started,
+        command,
+        {
+            "overall_runtime_seconds": runtime_window.overall_runtime_seconds,
+            "elapsed_seconds": elapsed_seconds,
+            "hard_remaining_seconds": hard_remaining_seconds,
+            "required_seconds": required_seconds,
+            "shortfall_seconds": max(0, required_seconds - hard_remaining_seconds),
+            "replay_timeout_seconds": _TRUSTED_DEEP_REPLAY_TIMEOUT_SECONDS,
+            "post_replay_closure_reserve_seconds": (_POST_REPLAY_CLOSURE_RESERVE_SECONDS),
+        },
+    )
 
 
 def _documentation_only_change(change: GitChangeSnapshot) -> bool:
@@ -2699,6 +2775,7 @@ def _validation_question_scopes() -> tuple[_ValidationQuestionScope, ...]:
                     "_04_Nucleo_Operativo/code_schema.py",
                     "tests/test_code_experiment_store.py",
                     "tests/test_code_schema_migration_v1_v2.py",
+                    "tests/test_code_schema_migration_v6_v7.py",
                     "tests/test_framework_code_path_collation.py",
                 }
             ),
@@ -2706,6 +2783,7 @@ def _validation_question_scopes() -> tuple[_ValidationQuestionScope, ...]:
             frozenset(
                 {
                     "tests/test_code_schema_migration_v1_v2.py",
+                    "tests/test_code_schema_migration_v6_v7.py",
                     "tests/test_framework_code_path_collation.py",
                 }
             ),
@@ -3016,7 +3094,12 @@ def _experiment_gate(
     selection: AffectedTestSelection,
 ) -> tuple[ValidationGate, tuple[Mapping[str, object], ...]]:
     started = time.monotonic_ns()
-    command = ("Neocortex", "--code-experiment-run", "<registered-proposal>")
+    command = (
+        "Neocortex",
+        "code",
+        "validate",
+        "<attest-current-trusted-deep-publication>",
+    )
     plan = None if review is None else getattr(review, "experiment_plan", None)
     if plan is None:
         return (
@@ -3156,35 +3239,52 @@ def _experiment_gate(
     receipts: list[Mapping[str, object]] = []
     stored_receipt_ids: list[str] = []
     try:
-        from .code_experiment_executor import execute_code_experiment
+        from .code_experiment_executor import attest_code_experiments
         from .code_experiment_store import (
             code_review_digest_identity,
-            record_code_experiment_receipt,
+            record_code_experiment_receipts,
         )
 
         database = Path(state_directory) / "code.sqlite3"
         review_digest = code_review_digest_identity(getattr(review, "digest", None))
-        with tempfile.TemporaryDirectory(prefix="neocortex-change-experiment-") as temporary:
-            scratch = Path(temporary)
-            for proposal in ordered_proposals:
-                receipt = execute_code_experiment(
-                    cast(Any, proposal),
-                    source_root=root,
-                    code_database_path=database,
-                    scratch_root=scratch,
-                    source_version=snapshot.processing_signature,
-                    expected_source_root=root,
-                )
-                receipts.append(receipt.as_payload())
-                stored = record_code_experiment_receipt(
-                    database,
-                    receipt,
-                    cast(Any, proposal),
-                    analysis_run_id=snapshot.analysis_run_id,
-                    processing_signature=snapshot.processing_signature,
-                    review_digest=review_digest,
-                )
-                stored_receipt_ids.append(stored.receipt.receipt_id)
+        coverage = getattr(review, "test_coverage", None)
+        coverage_values = (
+            None if coverage is None else getattr(coverage, "tool_run_id", None),
+            None if coverage is None else getattr(coverage, "effective_tool_run_id", None),
+            None if coverage is None else getattr(coverage, "suite_selection", None),
+            None if coverage is None else getattr(coverage, "configuration_signature", None),
+            None if coverage is None else getattr(coverage, "suite_signature", None),
+            None if coverage is None else getattr(coverage, "measurement_scope_signature", None),
+        )
+        if any(value is None for value in coverage_values):
+            raise ValueError("experiment attestation requires complete Coverage provenance")
+        attested = attest_code_experiments(
+            cast(Any, ordered_proposals),
+            source_root=root,
+            code_database_path=database,
+            source_version=snapshot.processing_signature,
+            analysis_run_id=snapshot.analysis_run_id,
+            provider_tool_run_id=cast(int, coverage_values[0]),
+            provider_effective_tool_run_id=cast(int, coverage_values[1]),
+            provider_suite_selection=cast(Any, coverage_values[2]),
+            provider_configuration_signature=cast(str, coverage_values[3]),
+            provider_suite_signature=cast(str, coverage_values[4]),
+            provider_measurement_scope_signature=cast(str, coverage_values[5]),
+        )
+        if len(attested) != len(ordered_proposals):
+            raise ValueError("experiment attestation count does not match the proposal set")
+        receipts.extend(receipt.as_payload() for receipt in attested)
+        stored_batch = record_code_experiment_receipts(
+            database,
+            tuple(
+                (receipt, cast(Any, proposal))
+                for proposal, receipt in zip(ordered_proposals, attested, strict=True)
+            ),
+            snapshot.analysis_run_id,
+            snapshot.processing_signature,
+            review_digest,
+        )
+        stored_receipt_ids.extend(item.receipt.receipt_id for item in stored_batch)
     except (
         OSError,
         RuntimeError,
@@ -3197,7 +3297,7 @@ def _experiment_gate(
             _gate(
                 "allowlisted_experiments",
                 "abstained",
-                f"experiment_execution_unavailable:{type(exc).__name__}",
+                f"experiment_attestation_unavailable:{type(exc).__name__}",
                 started,
                 command,
                 {
@@ -3218,7 +3318,7 @@ def _experiment_gate(
         if failures
         else "allowlisted_experiment_abstained"
         if abstentions
-        else "unique_allowlisted_experiments_passed"
+        else "unique_allowlisted_experiments_attested"
     )
     return (
         _gate(
@@ -3232,6 +3332,8 @@ def _experiment_gate(
                 "unique_template_count": unique_template_count,
                 "receipt_ids": [item.get("receipt_id") for item in receipts],
                 "stored_receipt_ids": stored_receipt_ids,
+                "evidence_reuse": "current_trusted_deep_declared_test_outcomes",
+                "provider_process_invocations": 0,
                 **evidence,
             },
         ),
@@ -3412,6 +3514,7 @@ def validate_code_change(
     time_budget_seconds: int = 900,
     runner: _CommandRunner = _default_runner,
     progress: Callable[[str], None] | None = None,
+    runtime_window: CodeValidationRuntimeWindow | None = None,
 ) -> CodeChangeValidationResult:
     """Run the canonical local Linux validation and return one bounded receipt."""
 
@@ -3428,6 +3531,18 @@ def validate_code_change(
         raise ChangeValidationError(
             "canonical_resource_boundary_required:use `Neocortex code validate`"
         )
+    if runtime_window is None and resource_admission is not None:
+        runtime_window = code_validation_runtime_window(resource_admission)
+    if (
+        runtime_window is not None
+        and resource_admission is not None
+        and (
+            runtime_window.cgroup_unit != resource_admission.cgroup_unit
+            or runtime_window.overall_runtime_seconds
+            != resource_admission.policy.overall_runtime_seconds
+        )
+    ):
+        raise ChangeValidationError("code_validation_runtime_window_disagrees_with_admission")
     state = (
         self_analysis_data_directory()
         if state_directory is None
@@ -3718,6 +3833,25 @@ def validate_code_change(
                 selection=selection,
                 gates=gates,
             )
+    if runtime_window is not None:
+        post_primary_budget = _runtime_budget_gate(
+            "post_primary_runtime_budget",
+            runtime_window,
+            required_seconds=(
+                _TRUSTED_DEEP_REPLAY_TIMEOUT_SECONDS + _POST_REPLAY_CLOSURE_RESERVE_SECONDS
+            ),
+            command=analyze_command,
+        )
+        gates.append(post_primary_budget)
+        if post_primary_budget.status != "passed":
+            report("global runtime cannot safely admit artifact and replay phases")
+            return _finalize_validation(
+                source=source,
+                state=state,
+                change=change,
+                selection=selection,
+                gates=gates,
+            )
     experiment_gate, experiment_receipts = _experiment_gate(
         review,
         root=source,
@@ -3725,7 +3859,10 @@ def validate_code_change(
         change=change,
         selection=selection,
     )
-    report(f"executed allow-listed experiment templates: receipts={len(experiment_receipts)}")
+    report(
+        "attested allow-listed experiment templates from primary Coverage: "
+        f"receipts={len(experiment_receipts)}"
+    )
     gates.append(experiment_gate)
     if experiment_gate.status not in {"passed", "not_required"}:
         report("allow-listed experiments did not pass; stopping before artifact and replay")
@@ -3738,7 +3875,11 @@ def validate_code_change(
             experiment_receipts=experiment_receipts,
         )
     report("building, installing and executing candidate wheel outside checkout")
-    candidate_gate = _candidate_wheel_gate(source, runner=runner)
+    candidate_gate = _candidate_wheel_gate(
+        source,
+        runner=runner,
+        runtime_window=runtime_window,
+    )
     gates.append(candidate_gate)
     if candidate_gate.status != "passed":
         report("candidate wheel did not pass; stopping before replay")
@@ -3755,18 +3896,47 @@ def validate_code_change(
     # publications or reobserve an identical semantic result when version-bound
     # evidence makes physical replay unsafe.  Both paths prove resumability
     # without granting a comparable baseline replay authority.
-    report("replaying identical trusted-deep publication")
-    gates.append(
-        _run_gate_command(
-            "trusted_deep_replay_publication",
-            analyze_command,
-            root=source,
-            timeout=trusted_deep_timeout,
-            runner=runner,
-            environment=trusted_deep_environment,
-            progress=report,
+    if runtime_window is not None:
+        replay_budget = _runtime_budget_gate(
+            "trusted_deep_replay_budget",
+            runtime_window,
+            required_seconds=(
+                _TRUSTED_DEEP_REPLAY_TIMEOUT_SECONDS + _POST_REPLAY_CLOSURE_RESERVE_SECONDS
+            ),
+            command=analyze_command,
         )
+        gates.append(replay_budget)
+        if replay_budget.status != "passed":
+            report("global runtime cannot safely admit trusted-deep replay")
+            return _finalize_validation(
+                source=source,
+                state=state,
+                change=change,
+                selection=selection,
+                gates=gates,
+                experiment_receipts=experiment_receipts,
+            )
+    report("replaying identical trusted-deep publication")
+    replay_publication_gate = _run_gate_command(
+        "trusted_deep_replay_publication",
+        analyze_command,
+        root=source,
+        timeout=_TRUSTED_DEEP_REPLAY_TIMEOUT_SECONDS,
+        runner=runner,
+        environment=trusted_deep_environment,
+        progress=report,
     )
+    gates.append(replay_publication_gate)
+    if replay_publication_gate.status != "passed":
+        report("trusted-deep replay publication did not pass; stopping before replay consumers")
+        return _finalize_validation(
+            source=source,
+            state=state,
+            change=change,
+            selection=selection,
+            gates=gates,
+            experiment_receipts=experiment_receipts,
+        )
     replay_review_gate, replay_review = _fresh_review_gate(state, change=change)
     gates.append(
         ValidationGate(

@@ -405,12 +405,15 @@ el provider declara `uses_network=true` y conserva el `HOME` canónico. Antes y
 después se recalcula la firma de los inputs Python publicados y del soporte Git
 observado; una diferencia falla cerrado. El digest before/after cerca además
 `code.sqlite3` durante la ejecución. No hay lock continuo del checkout y el
-corpus y otros owners quedan fuera. El receipt medido
-`neocortex.code-experiment-receipt/v3` agrega por escenario únicamente después
-de outcomes terminales y gates tipados para todos sus nodeids.
+corpus y otros owners quedan fuera. La ejecución explícita agrega por escenario
+el receipt medido `neocortex.code-experiment-receipt/v3` únicamente después de
+outcomes terminales y gates tipados para todos sus nodeids. La validación
+canónica no reejecuta esos nodeids: deriva receipts v4 de las relaciones
+Coverage exactas y los liga a la publicación, suite, scope y digest del
+subconjunto con cero procesos propios.
 
 Al terminar, el comando **sí escribe** una evidencia acotada: inserta el receipt
-en la tabla append-only de Code schema v6 y, con `--code-json`, devuelve el
+en la tabla append-only de Code schema v7 y, con `--code-json`, devuelve el
 envelope `neocortex.code-experiment-store/v1` que contiene ese receipt. Por eso
 `code_database_unchanged=true` no significa que la invocación completa sea
 read-only. El review v22 posterior evalúa el terminal más nuevo del proposal y

@@ -197,6 +197,35 @@ class CodeValidationResourceAdmission:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class CodeValidationRuntimeWindow:
+    """Live monotonic deadline of one admitted transient service."""
+
+    cgroup_unit: str
+    active_enter_monotonic_ns: int
+    hard_deadline_monotonic_ns: int
+    overall_runtime_seconds: int
+
+    def __post_init__(self) -> None:
+        if not re.fullmatch(r"neocortex-code-validate-[0-9]+-[0-9a-f]{12}", self.cgroup_unit):
+            raise ValueError("code-validation runtime-window unit is invalid")
+        for value in (
+            self.active_enter_monotonic_ns,
+            self.hard_deadline_monotonic_ns,
+            self.overall_runtime_seconds,
+        ):
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                raise ValueError("code-validation runtime-window counters are invalid")
+        expected_deadline = (
+            self.active_enter_monotonic_ns + self.overall_runtime_seconds * 1_000_000_000
+        )
+        if self.hard_deadline_monotonic_ns != expected_deadline:
+            raise ValueError("code-validation runtime-window deadline is inconsistent")
+
+    def as_payload(self) -> dict[str, object]:
+        return asdict(self)
+
+
 def _meminfo_bytes(text: str) -> tuple[int, int, int, int]:
     expected = {"MemTotal", "MemAvailable", "SwapTotal", "SwapFree"}
     values: dict[str, int] = {}
@@ -530,6 +559,48 @@ def _verify_private_network_boundary(admission: CodeValidationResourceAdmission)
         raise CodeValidationResourceError("code_validation_private_network_not_active")
 
 
+def code_validation_runtime_window(
+    admission: CodeValidationResourceAdmission,
+) -> CodeValidationRuntimeWindow:
+    """Resolve the exact systemd runtime window without extending admission v3."""
+
+    try:
+        completed = subprocess.run(
+            (
+                str(_SYSTEMCTL),
+                "--user",
+                "show",
+                f"{admission.cgroup_unit}.service",
+                "--property=ActiveEnterTimestampMonotonic",
+                "--value",
+            ),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=_SYSTEMCTL_PROPERTY_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise CodeValidationResourceError(
+            "code_validation_active_enter_timestamp_unavailable"
+        ) from exc
+    if completed.returncode != 0:
+        raise CodeValidationResourceError("code_validation_active_enter_timestamp_unavailable")
+    raw = completed.stdout
+    if not isinstance(raw, bytes) or re.fullmatch(rb"[1-9][0-9]{0,19}\n?", raw) is None:
+        raise CodeValidationResourceError("code_validation_active_enter_timestamp_invalid")
+    active_enter_monotonic_ns = int(raw) * 1_000
+    if active_enter_monotonic_ns > time.monotonic_ns():
+        raise CodeValidationResourceError("code_validation_active_enter_timestamp_invalid")
+    overall_runtime_seconds = admission.policy.overall_runtime_seconds
+    return CodeValidationRuntimeWindow(
+        admission.cgroup_unit,
+        active_enter_monotonic_ns,
+        active_enter_monotonic_ns + overall_runtime_seconds * 1_000_000_000,
+        overall_runtime_seconds,
+    )
+
+
 def _verify_inet_socket_boundary() -> None:
     """Prove the kernel denies both IP socket families inside the worker."""
 
@@ -838,8 +909,10 @@ __all__ = [
     "CodeValidationResourceAdmission",
     "CodeValidationResourceError",
     "CodeValidationResourcePolicy",
+    "CodeValidationRuntimeWindow",
     "LinuxResourceSnapshot",
     "code_validation_resource_policy",
+    "code_validation_runtime_window",
     "current_code_validation_resource_admission",
     "inside_code_validation_resource_boundary",
     "parse_code_validation_resource_admission",

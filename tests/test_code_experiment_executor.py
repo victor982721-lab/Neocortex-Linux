@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import nullcontext
 from dataclasses import asdict, replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -166,6 +167,7 @@ def _receipt(
 
 def test_receipt_round_trip_preserves_exact_scenario_outcomes() -> None:
     receipt = _receipt()
+    payload = receipt.as_payload()
 
     assert receipt.status == "passed"
     assert receipt.passed == len(receipt.selected_scenarios)
@@ -174,10 +176,9 @@ def test_receipt_round_trip_preserves_exact_scenario_outcomes() -> None:
     assert receipt.gate_outcomes
     assert all(item.status == "passed" for item in receipt.gate_outcomes)
     assert receipt.mutation_authority is False
-    assert (
-        parse_code_experiment_receipt_payload(json.loads(json.dumps(receipt.as_payload())))
-        == receipt
-    )
+    assert parse_code_experiment_receipt_payload(json.loads(json.dumps(payload))) == receipt
+    assert payload["schema"] == "neocortex.code-experiment-receipt/v3"
+    assert "evidence_mode" not in payload
 
 
 def test_failure_and_provider_abstention_remain_distinct() -> None:
@@ -601,3 +602,250 @@ def test_experiment_rejects_outcomes_if_the_exact_source_input_changes(
         "source:exact",
         "source:exact",
     )
+
+
+def _attestation_relations(
+    proposal: CodeExperimentProposal,
+) -> tuple[ExternalProviderRelation, ...]:
+    return tuple(
+        ExternalProviderRelation(
+            external_relation_identity(
+                "pytest-coverage-trusted-deep",
+                relation_kind="declared_test_outcome",
+                source_kind="contract",
+                source_key=f"pytest-nodeid:{nodeid}",
+                target_kind="run",
+                target_key="coverage-run:attestation-fixture",
+            ),
+            "declared_test_outcome",
+            "contract",
+            f"pytest-nodeid:{nodeid}",
+            "run",
+            "coverage-run:attestation-fixture",
+            confidence=1.0,
+            metadata={
+                "nodeid": nodeid,
+                "outcome": "passed",
+                "suite_selection": "full",
+                "measurement_complete": True,
+                "content_executed": True,
+                "tool_versions": {"coverage": "7.14.1", "pytest": "9.0.2"},
+                "suite_signature": "coverage-suite:fixture",
+                "code_input_signature": "coverage-code-input:fixture",
+                "support_signature": "coverage-support:fixture",
+                "configuration_signature": "coverage-configuration:fixture",
+                "publication_input_signature": "coverage-input:fixture",
+                "subprocess_coverage": False,
+                "coverage_scope": "main_process_only",
+                "claim_scope": "exact_selected_test_execution_outcome",
+                "assertion_or_invariant_proof": False,
+                "measurement_scope_signature": "attestation-fixture",
+            },
+        )
+        for scenario_id in proposal.scenario_ids
+        for nodeid in runtime_scenario(scenario_id).test_nodeids
+    )
+
+
+@pytest.mark.parametrize(
+    ("omit_last_relation", "expected_status"), ((False, "passed"), (True, "abstained"))
+)
+def test_attestation_reuses_exact_current_coverage_without_relaunching_pytest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    omit_last_relation: bool,
+    expected_status: str,
+) -> None:
+    import _04_Nucleo_Operativo.code_experiment_executor as executor
+    import _04_Nucleo_Operativo.external_evidence_store as evidence_store
+    from _04_Nucleo_Operativo.code_external_evidence import ExternalEvidenceFile
+    from _04_Nucleo_Operativo.external_deep_coverage import (
+        DEEP_COVERAGE_PROVIDER_SCHEMA,
+        PYTEST_COVERAGE_PROVIDER_ID,
+    )
+    from _04_Nucleo_Operativo.external_evidence_models import (
+        ExternalProviderAttestation,
+        ExternalRunInput,
+        external_provider_result_digest,
+        external_root_identity,
+    )
+
+    source = tmp_path / "source"
+    source.mkdir()
+    observed = source / "module.py"
+    observed.write_text("VALUE = 1\n", encoding="utf-8")
+    database = tmp_path / "code.sqlite3"
+    database.write_bytes(b"SQLite format 3\x00attestation-fixture")
+    proposal = _proposal()
+    all_relations = _attestation_relations(proposal)
+    relations = all_relations[:-1] if omit_last_relation else all_relations
+    selected_count = len(relations)
+    metrics = tuple(
+        ExternalProviderMetric(
+            external_metric_identity(
+                PYTEST_COVERAGE_PROVIDER_ID,
+                subject_kind="run",
+                subject_key="coverage-run:attestation-fixture",
+                category="coverage",
+                metric_name=name,
+                unit="count",
+            ),
+            "run",
+            "coverage-run:attestation-fixture",
+            "coverage",
+            name,
+            float(value),
+            "count",
+        )
+        for name, value in (
+            ("tests_selected", selected_count),
+            ("tests_passed", selected_count),
+            ("tests_failed", 0),
+            ("tests_skipped", 0),
+        )
+    )
+    files = (
+        ExternalEvidenceFile(
+            1,
+            str(observed),
+            "module.py",
+            observed.stat().st_size,
+            observed.stat().st_mtime_ns,
+            "raw-xxh3-128",
+            "raw-xxh3-64",
+        ),
+    )
+    attestation = ExternalProviderAttestation(
+        analysis_run_id=41,
+        processing_signature="processing-signature:fixture",
+        provider_id=PYTEST_COVERAGE_PROVIDER_ID,
+        provider_schema=DEEP_COVERAGE_PROVIDER_SCHEMA,
+        profile="trusted-deep",
+        tool_run_id=73,
+        effective_tool_run_id=72,
+        tool_name="pytest+coverage",
+        tool_version="pytest 9+coverage 7",
+        tool_status="skipped",
+        execution="cache_replay",
+        observed_root=str(source.resolve()),
+        root_identity=external_root_identity(source),
+        input_signature="coverage-input:fixture",
+        descriptor_configuration_signature="coverage-descriptor:fixture",
+        environment_signature="coverage-environment:fixture",
+        comparability_signature="coverage-comparability:fixture",
+        result_digest=external_provider_result_digest((), metrics, relations),
+        portable_publication_id="coverage-publication:fixture",
+        coverage_complete=True,
+        content_executed=True,
+        eligible_files=1,
+        covered_files=1,
+        counters={"process_invocations": 23},
+        inputs=(ExternalRunInput.from_file(files[0], covered=True),),
+        metrics=metrics,
+        relations=relations,
+    )
+
+    monkeypatch.setattr(
+        executor,
+        "readonly_code_database",
+        lambda _path: nullcontext(SimpleNamespace()),
+    )
+    monkeypatch.setattr(executor, "_require_current_analysis_run", lambda *_a, **_k: None)
+    monkeypatch.setattr(executor, "read_external_evidence_files", lambda *_a: files)
+    monkeypatch.setattr(
+        evidence_store,
+        "read_external_provider_attestation",
+        lambda *_a, **_k: attestation,
+    )
+    monkeypatch.setattr(
+        executor,
+        "PytestCoverageTrustedDeepProvider",
+        lambda *_a, **_k: pytest.fail("attestation must not launch a provider"),
+    )
+
+    (receipt,) = executor.attest_code_experiments(
+        (proposal,),
+        source_root=source,
+        code_database_path=database,
+        source_version="processing-signature:fixture",
+        analysis_run_id=41,
+        provider_tool_run_id=73,
+        provider_effective_tool_run_id=72,
+        provider_suite_selection="full",
+        provider_configuration_signature="coverage-configuration:fixture",
+        provider_suite_signature="coverage-suite:fixture",
+        provider_measurement_scope_signature="attestation-fixture",
+    )
+
+    assert receipt.status == expected_status
+    assert receipt.process_invocations == 0
+    assert receipt.stdout_bytes == receipt.stderr_bytes == 0
+    assert receipt.provider_execution == "cache_replay"
+    assert receipt.analysis_run_id == 41
+    assert receipt.provider_tool_run_id == 73
+    assert receipt.provider_effective_tool_run_id == 72
+    assert receipt.provider_tool_status == "skipped"
+    assert receipt.as_payload()["schema"] == "neocortex.code-experiment-receipt/v4"
+    assert parse_code_experiment_receipt_payload(receipt.as_payload()) == receipt
+    assert "exact_current_trusted_deep_test_relations_reused_without_test_reexecution" in (
+        receipt.limitations
+    )
+    if omit_last_relation:
+        assert receipt.reason == "published_coverage_outcomes_incomplete"
+    else:
+        assert receipt.reason is None
+        assert receipt.passed == len(proposal.scenario_ids)
+
+
+def test_attestation_rejects_forged_declared_test_relation_contracts() -> None:
+    import _04_Nucleo_Operativo.code_experiment_executor as executor
+
+    relations = _attestation_relations(_proposal())
+
+    def metric(name: str, value: int) -> ExternalProviderMetric:
+        return ExternalProviderMetric(
+            external_metric_identity(
+                "pytest-coverage-trusted-deep",
+                subject_kind="run",
+                subject_key="coverage-run:attestation-fixture",
+                category="coverage",
+                metric_name=name,
+                unit="count",
+            ),
+            "run",
+            "coverage-run:attestation-fixture",
+            "coverage",
+            name,
+            float(value),
+            "count",
+        )
+
+    metrics = (
+        metric("tests_selected", len(relations)),
+        metric("tests_passed", len(relations)),
+        metric("tests_failed", 0),
+        metric("tests_skipped", 0),
+    )
+    first, *remaining = relations
+    forged = (
+        replace(first, portable_relation_id="forged-relation-id"),
+        replace(first, target_key="coverage-run:wrong-scope"),
+        replace(first, confidence=0.5),
+        replace(first, metadata={**first.metadata, "claim_scope": "formal-proof"}),
+        replace(first, metadata={**first.metadata, "unbound_claim": True}),
+    )
+    for candidate in forged:
+        publication = SimpleNamespace(
+            provider_id="pytest-coverage-trusted-deep",
+            input_signature="coverage-input:fixture",
+            metrics=metrics,
+            relations=(candidate, *remaining),
+        )
+        with pytest.raises(ValueError, match="declared test outcome contract changed"):
+            executor.validate_code_experiment_declared_test_relations(
+                publication,
+                suite_selection="full",
+                configuration_signature="coverage-configuration:fixture",
+                suite_signature="coverage-suite:fixture",
+                measurement_scope_signature="attestation-fixture",
+            )

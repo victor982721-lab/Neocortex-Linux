@@ -572,6 +572,111 @@ class ExternalProviderEvidence:
 
 
 @dataclass(frozen=True, slots=True)
+class ExternalProviderAttestation:
+    """One ready provider publication with its exact persisted contract.
+
+    Unlike :class:`ExternalProviderEvidence`, this model retains the run and
+    configuration fields needed to attest a bounded subset of already
+    published evidence without executing the provider again.
+    """
+
+    analysis_run_id: int
+    processing_signature: str
+    provider_id: str
+    provider_schema: str
+    profile: AnalysisProfile
+    tool_run_id: int
+    effective_tool_run_id: int
+    tool_name: str
+    tool_version: str
+    tool_status: Literal["completed", "skipped"]
+    execution: Literal["full", "cache_replay"]
+    observed_root: str
+    root_identity: str
+    input_signature: str
+    descriptor_configuration_signature: str
+    environment_signature: str
+    comparability_signature: str
+    result_digest: str
+    portable_publication_id: str
+    coverage_complete: bool
+    content_executed: bool
+    eligible_files: int
+    covered_files: int
+    counters: Mapping[str, int]
+    inputs: tuple[ExternalRunInput, ...] = ()
+    limitations: tuple[str, ...] = ()
+    findings: tuple[ExternalProviderFinding, ...] = ()
+    metrics: tuple[ExternalProviderMetric, ...] = ()
+    relations: tuple[ExternalProviderRelation, ...] = ()
+
+    def __post_init__(self) -> None:
+        if any(
+            isinstance(value, bool) or not isinstance(value, int) or value < 1
+            for value in (
+                self.analysis_run_id,
+                self.tool_run_id,
+                self.effective_tool_run_id,
+            )
+        ):
+            raise ValueError("external provider attestation run identity is invalid")
+        if any(
+            not isinstance(value, str) or not value or value.strip() != value
+            for value in (
+                self.provider_id,
+                self.provider_schema,
+                self.processing_signature,
+                self.tool_name,
+                self.tool_version,
+                self.observed_root,
+                self.root_identity,
+                self.input_signature,
+                self.descriptor_configuration_signature,
+                self.environment_signature,
+                self.comparability_signature,
+                self.result_digest,
+                self.portable_publication_id,
+            )
+        ):
+            raise ValueError("external provider attestation contract is incomplete")
+        if self.profile not in {"protected", "trusted-static", "trusted-deep"}:
+            raise ValueError("external provider attestation profile is invalid")
+        if self.tool_status not in {"completed", "skipped"}:
+            raise ValueError("external provider attestation tool status is invalid")
+        if self.execution not in {"full", "cache_replay"}:
+            raise ValueError("external provider attestation execution is invalid")
+        if self.tool_status == "skipped" and self.execution != "cache_replay":
+            raise ValueError("external provider attestation skipped a non-replay run")
+        if not isinstance(self.coverage_complete, bool) or not isinstance(
+            self.content_executed, bool
+        ):
+            raise ValueError("external provider attestation booleans are invalid")
+        if (
+            any(
+                isinstance(value, bool) or not isinstance(value, int) or value < 0
+                for value in (self.eligible_files, self.covered_files)
+            )
+            or self.covered_files > self.eligible_files
+        ):
+            raise ValueError("external provider attestation coverage is invalid")
+        if any(
+            not isinstance(key, str)
+            or not key
+            or isinstance(value, bool)
+            or not isinstance(value, int)
+            or value < 0
+            for key, value in self.counters.items()
+        ):
+            raise ValueError("external provider attestation counters are invalid")
+        if len(self.inputs) != self.eligible_files or any(
+            not isinstance(item, ExternalRunInput) or not item.eligible for item in self.inputs
+        ):
+            raise ValueError("external provider attestation inputs are invalid")
+        if sum(item.covered for item in self.inputs) != self.covered_files:
+            raise ValueError("external provider attestation input coverage is invalid")
+
+
+@dataclass(frozen=True, slots=True)
 class ExternalProviderStatus:
     provider_id: str
     provider_schema: str
@@ -707,6 +812,7 @@ __all__ = [
     "ExternalEvidenceBundle",
     "ExternalEvidenceProvider",
     "ExternalEvidenceSuiteStatus",
+    "ExternalProviderAttestation",
     "ExternalProviderBaseline",
     "ExternalProviderEvidence",
     "ExternalProviderFinding",

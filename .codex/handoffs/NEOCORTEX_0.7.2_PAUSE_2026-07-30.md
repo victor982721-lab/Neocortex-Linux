@@ -378,7 +378,7 @@ segunda corrida integral como diagnóstico ciego.
   consume review v22, ejecuta experimentos allow-listed, instala el wheel
   candidato fuera del checkout y exige replay. Las herramientas individuales
   quedan como diagnóstico interno; no constituyen una aceptación paralela. La
-  política `local-linux-diff-aware-validation-v8` liga cambios de CLI y de
+  política `local-linux-diff-aware-validation-v9` liga cambios de CLI y de
   Knowledge Asset Health Text/PDF con sus preguntas, subjects, templates y
   disposiciones técnicas v6 exactas; si falta cualquiera, se abstiene.
   Una selección afectada conserva como máximo 5000 tests y shards de 50; al
@@ -544,9 +544,11 @@ segunda corrida integral como diagnóstico ciego.
   identidad, sidecars y anclas acotadas cerca `code.sqlite3` durante la fase
   ejecutora sin releer todo el store. No hay lock continuo
   del checkout y corpus/otros stores quedan fuera.
-- Code schema v6 persiste después cada terminal
-  `neocortex.code-experiment-receipt/v3` en una tabla append-only y devuelve
-  `neocortex.code-experiment-store/v1`. Por eso `code_database_unchanged=true`
+- Code schema v7 persiste los terminales explícitos v3 y las atestaciones
+  canónicas `neocortex.code-experiment-receipt/v4` en una tabla append-only y
+  devuelve `neocortex.code-experiment-store/v1`. La ruta v4 reutiliza las
+  relaciones Coverage primarias, liga toda su procedencia y ejecuta cero
+  procesos propios. Por eso `code_database_unchanged=true`
   no vuelve read-only a la invocación completa. El review v22 evalúa el terminal
   más nuevo del proposal/signature actual y bindings de gates explícitos; puede
   reutilizar un `passed` de un run completado anterior ante replay exacto con la
@@ -559,6 +561,13 @@ segunda corrida integral como diagnóstico ciego.
   disposición es advisory, conserva riesgos residuales y no crea decisión
   humana, recomendación, patch ni autoridad de mutación. Preguntas completas sin
   política exacta quedan `unresolved`.
+- La política v9 corrige el agotamiento observado del cgroup sin ampliar sus 75
+  minutos: obtiene el deadline monotónico real, limita replay a 20 minutos y
+  reserva tres para review/finalización/receipt. La apertura Code vigente deja
+  el `integrity_check` completo en una frontera explícita, agrega una vez los
+  contadores usados por cache replay y alinea Ruff/Grimp/Complexipy con su
+  dominio real. Los experimentos canónicos reutilizan en batch la publicación
+  Coverage primaria; no relanzan pytest por proposal.
 - El reader rechaza o abstiene ante publicaciones Code mezcladas, vuelve a
   resolver evidencias, verifica digests y conserva queries dimensionadas
   (`observation:*`, `question:*`, `decision:*`). La salida humana resume
@@ -638,7 +647,7 @@ segunda corrida integral como diagnóstico ciego.
    `Neocortex code validate --baseline HEAD^`. El resultado aceptable es
    `passed`; `failed` o `abstained` abren diagnóstico focal desde la evidencia
    del gate, nunca una batería manual paralela. Comprobar especialmente:
-   - receipt exacto v1 ligado al commit limpio y policy v8;
+   - receipt exacto v1 ligado al commit limpio y policy v9;
    - suite Linux y Coverage sin regresión dentro del mismo receipt;
    - pip-audit `cache_replay`, cero procesos/red dentro del worker;
    - experiments con receipts terminales;

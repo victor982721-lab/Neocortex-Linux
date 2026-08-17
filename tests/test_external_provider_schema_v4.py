@@ -45,6 +45,7 @@ from _04_Nucleo_Operativo.external_evidence_models import (
 from _04_Nucleo_Operativo.external_evidence_store import (
     publish_external_provider,
     read_external_evidence_suite,
+    read_external_provider_attestation,
     read_external_provider_baselines,
     read_external_provider_evidence,
     read_external_provider_findings,
@@ -287,6 +288,74 @@ def _full_publication_with_finding(provider_id: str) -> ExternalProviderPublicat
             base.metrics,
             base.relations,
         ),
+    )
+
+
+def _portable_publication_identity(
+    publication: ExternalProviderPublication,
+) -> str:
+    descriptor = publication.descriptor
+    return external_signature(
+        "external-publication-v1",
+        {
+            "provider_id": descriptor.provider_id,
+            "provider_schema": descriptor.provider_schema,
+            "profile": descriptor.profile,
+            "configuration_signature": descriptor.configuration_signature,
+            "environment_signature": descriptor.environment_signature,
+            "input_signature": publication.input_signature,
+            "result_digest": publication.result_digest,
+        },
+    )
+
+
+def _attestable_publication(
+    provider_id: str,
+    *,
+    include_finding: bool = False,
+    metric_value: float = 3.0,
+) -> ExternalProviderPublication:
+    base = (
+        _full_publication_with_finding(provider_id)
+        if include_finding
+        else _full_publication(provider_id)
+    )
+    metric = _metric(provider_id, value=metric_value)
+    publication = replace(
+        base,
+        metrics=(metric,),
+        limitations=("fixture limitation",),
+        result_digest=external_provider_result_digest(
+            base.findings,
+            (metric,),
+            base.relations,
+        ),
+    )
+    return replace(
+        publication,
+        portable_publication_id=_portable_publication_identity(publication),
+    )
+
+
+def _read_fixture_attestation(
+    connection: sqlite3.Connection,
+    *,
+    analysis_run_id: int,
+    tool_run_id: int,
+    provider_id: str,
+    processing_signature: str = "fixture",
+    provider_schema: str | None = None,
+):
+    return read_external_provider_attestation(
+        connection,
+        analysis_run_id=analysis_run_id,
+        tool_run_id=tool_run_id,
+        expected_processing_signature=processing_signature,
+        expected_provider_id=provider_id,
+        expected_provider_schema=(
+            f"neocortex.{provider_id}/v1" if provider_schema is None else provider_schema
+        ),
+        enforce_current_runtime=False,
     )
 
 
@@ -824,6 +893,207 @@ def test_v3_to_v4_migration_failure_rolls_back_every_new_object(
             )
             == before
         )
+
+
+def test_provider_attestation_selects_exact_full_run_and_exposes_contract(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "provider-attestation-full.sqlite3"
+    provider_id = "attested-provider"
+    _create_current_owner(database, 1)
+    connection = code_schema.connect_code_state(database, create=False)
+    try:
+        selected_publication = _attestable_publication(provider_id)
+        selected_run_id = publish_external_provider(connection, 1, selected_publication)
+        latest_publication = _input_only_publication(provider_id)
+        latest_publication = replace(
+            latest_publication,
+            portable_publication_id=_portable_publication_identity(latest_publication),
+        )
+        latest_run_id = publish_external_provider(connection, 1, latest_publication)
+        _complete_owner(connection, 1)
+        connection.commit()
+
+        attestation = _read_fixture_attestation(
+            connection,
+            analysis_run_id=1,
+            tool_run_id=selected_run_id,
+            provider_id=provider_id,
+        )
+    finally:
+        connection.close()
+
+    descriptor = selected_publication.descriptor
+    assert selected_run_id < latest_run_id
+    assert attestation.analysis_run_id == 1
+    assert attestation.processing_signature == "fixture"
+    assert attestation.provider_id == provider_id
+    assert attestation.provider_schema == descriptor.provider_schema
+    assert attestation.profile == "protected"
+    assert attestation.tool_run_id == attestation.effective_tool_run_id == selected_run_id
+    assert attestation.tool_name == descriptor.tool_name
+    assert attestation.tool_version == "1.0"
+    assert attestation.tool_status == "completed"
+    assert attestation.execution == "full"
+    assert attestation.observed_root == selected_publication.observed_root
+    assert attestation.root_identity == selected_publication.root_identity
+    assert attestation.input_signature == selected_publication.input_signature
+    assert attestation.descriptor_configuration_signature == descriptor.configuration_signature
+    assert attestation.environment_signature == descriptor.environment_signature
+    assert attestation.comparability_signature == descriptor.comparability_signature
+    assert attestation.result_digest == selected_publication.result_digest
+    assert attestation.portable_publication_id == _portable_publication_identity(
+        selected_publication
+    )
+    assert attestation.coverage_complete is True
+    assert attestation.content_executed is False
+    assert (attestation.eligible_files, attestation.covered_files) == (1, 1)
+    assert dict(attestation.counters) == dict(selected_publication.counters)
+    assert attestation.inputs == selected_publication.inputs
+    assert attestation.limitations == ("fixture limitation",)
+    assert attestation.findings == selected_publication.findings
+    assert attestation.metrics == selected_publication.metrics
+    assert attestation.metrics[0].value == 3.0
+    assert attestation.relations == selected_publication.relations
+
+
+def test_provider_attestation_validates_owner_provider_schema_and_exact_run(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "provider-attestation-contract.sqlite3"
+    provider_id = "contract-provider"
+    _create_current_owner(database, 1, 2)
+    connection = code_schema.connect_code_state(database, create=False)
+    try:
+        publication = _attestable_publication(provider_id)
+        first_run_id = publish_external_provider(connection, 1, publication)
+        other_owner_run_id = publish_external_provider(connection, 2, publication)
+        _complete_owner(connection, 1)
+        _complete_owner(connection, 2)
+        connection.commit()
+        with pytest.raises(ValueError, match="attestation_owner_mismatch"):
+            _read_fixture_attestation(
+                connection,
+                analysis_run_id=1,
+                tool_run_id=first_run_id,
+                provider_id=provider_id,
+                processing_signature="wrong-processing",
+            )
+        with pytest.raises(ValueError, match="attestation_exact_run_not_recorded"):
+            _read_fixture_attestation(
+                connection,
+                analysis_run_id=1,
+                tool_run_id=other_owner_run_id,
+                provider_id=provider_id,
+            )
+        with pytest.raises(ValueError, match="attestation_exact_run_not_recorded"):
+            _read_fixture_attestation(
+                connection,
+                analysis_run_id=1,
+                tool_run_id=first_run_id,
+                provider_id="wrong-provider",
+            )
+        with pytest.raises(ValueError, match="attestation_provider_mismatch"):
+            _read_fixture_attestation(
+                connection,
+                analysis_run_id=1,
+                tool_run_id=first_run_id,
+                provider_id=provider_id,
+                provider_schema="neocortex.wrong/v1",
+            )
+    finally:
+        connection.close()
+
+
+def test_provider_attestation_resolves_exact_cache_replay(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "provider-attestation-replay.sqlite3"
+    provider_id = "replayed-provider"
+    _create_current_owner(database, 1, 2)
+    connection = code_schema.connect_code_state(database, create=False)
+    try:
+        source = _attestable_publication(provider_id, include_finding=True)
+        source_run_id = publish_external_provider(connection, 1, source)
+        _complete_owner(connection, 1)
+        replay = _replay_publication(source, source_run_id)
+        replay = replace(
+            replay,
+            limitations=source.limitations,
+            portable_publication_id=_portable_publication_identity(replay),
+        )
+        replay_run_id = publish_external_provider(connection, 2, replay)
+        _complete_owner(connection, 2)
+        connection.commit()
+
+        attestation = _read_fixture_attestation(
+            connection,
+            analysis_run_id=2,
+            tool_run_id=replay_run_id,
+            provider_id=provider_id,
+        )
+    finally:
+        connection.close()
+
+    assert attestation.tool_run_id == replay_run_id
+    assert attestation.effective_tool_run_id == source_run_id
+    assert attestation.tool_status == "skipped"
+    assert attestation.execution == "cache_replay"
+    assert attestation.result_digest == source.result_digest
+    assert attestation.portable_publication_id == _portable_publication_identity(replay)
+    assert attestation.inputs == replay.inputs == source.inputs
+    assert attestation.limitations == source.limitations
+    assert attestation.findings == source.findings
+    assert attestation.metrics == source.metrics
+    assert attestation.relations == source.relations
+    assert attestation.counters["files_verified"] == 1
+    assert attestation.counters["bytes_verified"] == 4
+
+
+def test_provider_attestation_fails_closed_on_publication_and_projection_corruption(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "provider-attestation-corrupt.sqlite3"
+    provider_id = "corrupt-provider"
+    _create_current_owner(database, 1)
+    connection = code_schema.connect_code_state(database, create=False)
+    try:
+        publication = _attestable_publication(provider_id)
+        tool_run_id = publish_external_provider(connection, 1, publication)
+        _complete_owner(connection, 1)
+        connection.execute(
+            "UPDATE external_run_contracts SET portable_publication_id='forged' "
+            "WHERE tool_run_id=?",
+            (tool_run_id,),
+        )
+        connection.commit()
+        with pytest.raises(ValueError, match="attestation_publication_identity_invalid"):
+            _read_fixture_attestation(
+                connection,
+                analysis_run_id=1,
+                tool_run_id=tool_run_id,
+                provider_id=provider_id,
+            )
+
+        connection.execute(
+            "UPDATE external_run_contracts SET portable_publication_id=? WHERE tool_run_id=?",
+            (_portable_publication_identity(publication), tool_run_id),
+        )
+        connection.execute(
+            "UPDATE external_metrics SET metadata_json='not-json' WHERE tool_run_id=?",
+            (tool_run_id,),
+        )
+        connection.commit()
+
+        with pytest.raises(ValueError, match="external_provider_projection_invalid"):
+            _read_fixture_attestation(
+                connection,
+                analysis_run_id=1,
+                tool_run_id=tool_run_id,
+                provider_id=provider_id,
+            )
+    finally:
+        connection.close()
 
 
 def test_publication_replay_and_baseline_resolve_all_evidence(tmp_path: Path) -> None:

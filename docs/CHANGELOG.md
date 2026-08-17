@@ -20,7 +20,7 @@ no se copian aquí para evitar que se conviertan en datos históricos sin contex
   compactos de sus owners y, cuando coinciden exactamente, reutiliza la
   generación sin enumerar fuentes, descomprimir texto, preparar chunks, cargar
   modelos ni crear jobs; la CLI expone modo y contadores de trabajo omitido.
-- La política de validación v8 exige un commit limpio antes de iniciar barreras,
+- La política de validación v9 exige un commit limpio antes de iniciar barreras,
   ejecuta la suite Linux completa sin convertirla en miles de selectores y
   consume en el mismo receipt el baseline versionado de Coverage, inventarios,
   providers, wheel candidato y replay. El `pre-push` histórico deja de repetirse
@@ -33,6 +33,23 @@ no se copian aquí para evitar que se conviertan en datos históricos sin contex
   bajo un runtime privado o un temporal sticky validado; el scratch durable
   conserva sólo checkpoints v2. Su replay excluye únicamente la ruta efímera
   y sigue ligado a suite, shard, inputs, herramientas y configuración exactos.
+- El replay Code deja de ejecutar una auditoría física completa del owner de
+  varios gigabytes en cada apertura: schema e historial siguen comprobándose en
+  la ruta ordinaria, mientras `verify_code_storage_integrity` conserva el
+  `integrity_check` explícito para migración, backup y mantenimiento. Los
+  contadores de símbolos, referencias y diagnósticos se agregan una vez por
+  apertura en vez de hacer tres scans correlacionados por cada cache hit.
+- Los experimentos de la validación canónica ya no relanzan pytest por cada
+  proposal. Una sola lectura de la publicación Coverage exacta produce receipts
+  v4 de cero procesos, ligados a analysis/tool-run/publicación, configuración,
+  entorno, suite, scope y digest del subconjunto de relaciones; el batch se
+  revalida y persiste atómicamente. Code schema 7 migra desde v6 preservando
+  cada fila v3 y admite estrictamente sólo receipts v3/v4.
+- Ruff Analyze, Grimp y Complexipy calculan su baseline sobre el mismo dominio
+  de archivos arquitectónicos que publican, por lo que un replay exacto reutiliza
+  evidencia sin procesos. La validación obtiene el deadline monotónico real del
+  transient unit, acota replay a 20 minutos, reserva tres minutos para cierre y
+  clasifica el límite de recursos sin fingir una cancelación humana.
 - Archive, DOCX e Image viven ahora como cohortes completas bajo
   `_04_Nucleo_Operativo.capabilities.formats`; 27 módulos planos permanecen
   como aliases compatibles y silenciosos. Un registry versionado declara
@@ -114,7 +131,7 @@ no se copian aquí para evitar que se conviertan en datos históricos sin contex
   proyección de contratos son exactamente iguales; cualquier delta contractual
   sí genera una identidad nueva.
 - Validación canónica `neocortex.code-change-validation/v3`, política
-  `local-linux-diff-aware-validation-v8`, ligada al diff:
+  `local-linux-diff-aware-validation-v9`, ligada al diff:
   rutas y tests afectados se proyectan a
   preguntas/sujetos de aceptación versionados. Una pregunta relevante sin
   runner o sin disposición técnica exacta después del replay ahora abstiene;
@@ -147,9 +164,10 @@ no se copian aquí para evitar que se conviertan en datos históricos sin contex
   schemas futuros. Sus cuatro gates satisfacen únicamente la pregunta exacta de
   evolución de schema y permiten una disposición técnica acotada, nunca una
   autorización para migrar estado vivo.
-- Receipt loop acotado del autoanalizador: `--code-experiment-run` persiste el
-  resultado terminal `neocortex.code-experiment-receipt/v3` en un envelope
-  `neocortex.code-experiment-store/v1`; el review posterior enlaza únicamente
+- Receipt loop acotado del autoanalizador: `--code-experiment-run` conserva el
+  resultado terminal explícito `neocortex.code-experiment-receipt/v3`, mientras
+  `code validate` atestigua outcomes primarios como v4; ambos se persisten en un
+  envelope `neocortex.code-experiment-store/v1`. El review posterior enlaza únicamente
   terminales `passed` más nuevos del proposal/signature vigentes y gates
   registrados; un replay Code exacto puede reutilizar el receipt de un run
   completado anterior, mientras un terminal posterior fallido o abstenido lo

@@ -9,6 +9,7 @@ import shutil
 import sqlite3
 import sys
 import tempfile
+import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, TextIO
@@ -2095,9 +2096,12 @@ def run_code_review(args: argparse.Namespace) -> int:
 def run_code_validate_change(args: argparse.Namespace) -> int:
     """Run the sole local Linux validation path for source changes."""
 
+    runtime_window = None
     try:
         from .app_paths import source_repository_directory
         from .code_validation_resources import (
+            code_validation_runtime_window,
+            current_code_validation_resource_admission,
             inside_code_validation_resource_boundary,
             run_code_validation_in_resource_boundary,
         )
@@ -2128,6 +2132,10 @@ def run_code_validate_change(args: argparse.Namespace) -> int:
         from .code_change_validation import validate_code_change
         from .code_validation_receipts import publish_code_validation_receipt
 
+        admission = current_code_validation_resource_admission()
+        if admission is None:
+            raise RuntimeError("code_validation_resource_admission_disappeared")
+        runtime_window = code_validation_runtime_window(admission)
         result = validate_code_change(
             baseline=args.code_validation_baseline,
             max_tests=args.code_validation_max_tests,
@@ -2136,6 +2144,7 @@ def run_code_validate_change(args: argparse.Namespace) -> int:
                 f"CODE_CHANGE_VALIDATION_PROGRESS {message}",
                 file=sys.stderr,
             ),
+            runtime_window=runtime_window,
         )
         runtime_replay_passed = any(
             gate.gate_id == "trusted_deep_replay" and gate.status == "passed"
@@ -2146,6 +2155,15 @@ def run_code_validate_change(args: argparse.Namespace) -> int:
             if result.status == "passed" and runtime_replay_passed
             else None
         )
+    except KeyboardInterrupt:
+        if runtime_window is None:
+            raise
+        reason = (
+            "code_validation_overall_runtime_expired"
+            if time.monotonic_ns() >= runtime_window.hard_deadline_monotonic_ns
+            else "code_validation_resource_boundary_interrupted"
+        )
+        return _error("code-validate-change", RuntimeError(reason))
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         return _error("code-validate-change", exc)
     if args.code_json:

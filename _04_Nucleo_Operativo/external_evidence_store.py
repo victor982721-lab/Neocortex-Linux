@@ -16,6 +16,7 @@ from .code_external_evidence import (
 from .external_evidence_models import (
     AnalysisProfile,
     ExternalEvidenceSuiteStatus,
+    ExternalProviderAttestation,
     ExternalProviderBaseline,
     ExternalProviderEvidence,
     ExternalProviderFinding,
@@ -23,11 +24,13 @@ from .external_evidence_models import (
     ExternalProviderPublication,
     ExternalProviderRelation,
     ExternalProviderStatus,
+    ExternalRunInput,
     ExternalSubjectKind,
     ProviderGateEvaluation,
     TypeConsensusSummary,
     external_finding_identity,
     external_provider_result_digest,
+    external_signature,
     normalize_external_finding_message,
 )
 from .semantic_models import canonical_json
@@ -1665,6 +1668,135 @@ def read_external_provider_evidence(
     return result
 
 
+def read_external_provider_attestation(
+    connection: sqlite3.Connection,
+    *,
+    analysis_run_id: int,
+    tool_run_id: int,
+    expected_processing_signature: str,
+    expected_provider_id: str,
+    expected_provider_schema: str,
+    enforce_current_runtime: bool = True,
+) -> ExternalProviderAttestation:
+    """Read one ready publication and its exact persisted provider contract.
+
+    The projection resolves an exact cache replay to its immutable source
+    evidence, verifies the current runtime contract when requested and rejects
+    partial, stale or unrecorded publications.  It is the canonical boundary
+    for consumers that need to attest existing evidence instead of relaunching
+    a provider.
+    """
+
+    if (
+        isinstance(analysis_run_id, bool)
+        or not isinstance(analysis_run_id, int)
+        or analysis_run_id < 1
+    ):
+        raise ValueError("external provider attestation analysis run is invalid")
+    if isinstance(tool_run_id, bool) or not isinstance(tool_run_id, int) or tool_run_id < 1:
+        raise ValueError("external provider attestation tool run is invalid")
+    for label, value in (
+        ("processing signature", expected_processing_signature),
+        ("provider identity", expected_provider_id),
+        ("provider schema", expected_provider_schema),
+    ):
+        if not isinstance(value, str) or not value or value.strip() != value:
+            raise ValueError(f"external provider attestation {label} is invalid")
+    owner = connection.execute(
+        "SELECT status,processing_signature FROM analysis_runs WHERE analysis_run_id=?",
+        (analysis_run_id,),
+    ).fetchone()
+    if (
+        owner is None
+        or str(owner["status"]) != "completed"
+        or str(owner["processing_signature"]) != expected_processing_signature
+    ):
+        raise ValueError("external_provider_attestation_owner_mismatch")
+    requested = _normalized_provider_filter((expected_provider_id,))
+    assert requested is not None
+    rows = _provider_run_rows(connection, analysis_run_id, requested)
+    if len(rows) > _PROVIDER_STATUS_LIMIT:
+        raise ValueError("external provider attestation exceeds its provider bound")
+    matches = tuple(row for row in rows if int(row["tool_run_id"]) == tool_run_id)
+    if len(matches) != 1:
+        raise ValueError("external_provider_attestation_exact_run_not_recorded")
+    row = matches[0]
+    if (
+        str(row["provider_id"]) != expected_provider_id
+        or str(row["provider_schema"]) != expected_provider_schema
+    ):
+        raise ValueError("external_provider_attestation_provider_mismatch")
+    if enforce_current_runtime and (runtime_reason := _current_runtime_reason(row)) is not None:
+        raise ValueError(runtime_reason)
+    status, findings, effective_run_id, metrics, relations = _provider_status(connection, row)
+    if status.status != "ready" or effective_run_id is None:
+        raise ValueError(status.reason or "external_provider_attestation_not_ready")
+    if status.result_digest is None or status.execution not in {"full", "cache_replay"}:
+        raise ValueError("external_provider_attestation_contract_incomplete")
+    tool_status = str(row["status"])
+    if tool_status not in {"completed", "skipped"}:
+        raise ValueError("external_provider_attestation_tool_not_terminal")
+    context = _provider_read_context(connection, row)
+    inputs = tuple(
+        ExternalRunInput(
+            int(item["version_id"]),
+            str(item["portable_input_id"]),
+            str(item["relative_path"]),
+            bool(item["eligible"]),
+            bool(item["covered"]),
+            None if item["coverage_reason"] is None else str(item["coverage_reason"]),
+            int(item["size"]),
+            str(item["content_digest"]),
+        )
+        for item in context.inputs
+    )
+    expected_publication_id = external_signature(
+        "external-publication-v1",
+        {
+            "provider_id": status.provider_id,
+            "provider_schema": status.provider_schema,
+            "profile": status.profile,
+            "configuration_signature": str(row["configuration_signature"]),
+            "environment_signature": str(row["environment_signature"]),
+            "input_signature": str(row["input_signature"]),
+            "result_digest": status.result_digest,
+        },
+    )
+    if str(row["portable_publication_id"]) != expected_publication_id:
+        raise ValueError("external_provider_attestation_publication_identity_invalid")
+    return ExternalProviderAttestation(
+        analysis_run_id=analysis_run_id,
+        processing_signature=expected_processing_signature,
+        provider_id=status.provider_id,
+        provider_schema=status.provider_schema,
+        profile=status.profile,
+        tool_run_id=tool_run_id,
+        effective_tool_run_id=effective_run_id,
+        tool_name=str(row["tool_name"]),
+        tool_version=str(row["tool_version"]),
+        tool_status=cast(Literal["completed", "skipped"], tool_status),
+        execution=cast(Literal["full", "cache_replay"], status.execution),
+        observed_root=str(row["observed_root"]),
+        root_identity=str(row["root_identity"]),
+        input_signature=str(row["input_signature"]),
+        descriptor_configuration_signature=str(row["configuration_signature"]),
+        environment_signature=str(row["environment_signature"]),
+        comparability_signature=str(row["comparability_signature"]),
+        result_digest=status.result_digest,
+        portable_publication_id=expected_publication_id,
+        coverage_complete=bool(row["coverage_complete"]),
+        content_executed=status.content_executed,
+        eligible_files=status.eligible_files,
+        covered_files=status.covered_files,
+        counters=dict(status.counters),
+        inputs=inputs,
+        limitations=status.limitations,
+        findings=findings,
+        metrics=metrics,
+        relations=relations,
+    )
+
+
 def read_external_provider_finding_ids(
     connection: sqlite3.Connection,
     analysis_run_id: int,
@@ -1720,6 +1852,7 @@ def read_external_provider_findings(
 __all__ = [
     "publish_external_provider",
     "read_external_evidence_suite",
+    "read_external_provider_attestation",
     "read_external_provider_baselines",
     "read_external_provider_evidence",
     "read_external_provider_finding_ids",

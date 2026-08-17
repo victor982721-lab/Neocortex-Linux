@@ -152,8 +152,12 @@ publicados y del soporte Git observado, y compara un fence Linux de identidad,
 sidecars y anclas acotadas de `code.sqlite3` durante la fase de tests. No
 mantiene un lock continuo del checkout ni cerca el
 corpus u otros owners. Tras medir, la CLI escribe deliberadamente el receipt
-terminal en la tabla inmutable append-only de Code schema v6;
+terminal v3 en la tabla inmutable append-only de Code schema v7;
 `code_database_unchanged=true` no significa que todo el comando sea read-only.
+La validación canónica reutiliza en cambio la publicación Coverage primaria:
+emite receipts v4 de cero procesos, ligados al run/tool/publicación y al digest
+del subconjunto exacto de relaciones, y vuelve a validar esos bindings dentro de
+la transacción que los persiste.
 La frontera canónica publica `neocortex.code-validation-resources/v3`: el
 worker exige que `/proc/self/cgroup` termine en el transient unit exacto,
 consulta en systemd su `PrivateNetwork=yes` y prueba ante el kernel que la

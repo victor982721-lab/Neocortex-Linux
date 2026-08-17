@@ -11,8 +11,12 @@ import _04_Nucleo_Operativo.external_evidence_providers as providers_module
 from _04_Nucleo_Operativo.code_external_evidence import ExternalEvidenceFile
 from _04_Nucleo_Operativo.external_evidence_models import ExternalProviderBaseline
 from _04_Nucleo_Operativo.external_evidence_providers import (
+    COMPLEXIPY_COGNITIVE_PROVIDER_ID,
+    GRIMP_ARCHITECTURE_PROVIDER_ID,
     RUFF_ANALYZE_PROVIDER_ID,
     VULTURE_UNUSED_PROVIDER_ID,
+    ComplexipyCognitiveProvider,
+    GrimpArchitectureProvider,
     RuffAnalyzeImportsProvider,
     VultureUnusedStaticProvider,
     providers_for_profile,
@@ -34,9 +38,19 @@ def _external_file(path: Path, root: Path, version_id: int) -> ExternalEvidenceF
     )
 
 
-def test_architecture_provider_executes_comparison_only_and_replays_exact_without_process(
+@pytest.mark.parametrize(
+    ("provider_class", "provider_id"),
+    (
+        (RuffAnalyzeImportsProvider, RUFF_ANALYZE_PROVIDER_ID),
+        (GrimpArchitectureProvider, GRIMP_ARCHITECTURE_PROVIDER_ID),
+        (ComplexipyCognitiveProvider, COMPLEXIPY_COGNITIVE_PROVIDER_ID),
+    ),
+)
+def test_architecture_providers_replay_exact_selected_inputs_without_process(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    provider_class: type,
+    provider_id: str,
 ) -> None:
     root = tmp_path / "root"
     scratch = tmp_path / "scratch"
@@ -52,7 +66,7 @@ def test_architecture_provider_executes_comparison_only_and_replays_exact_withou
         _external_file(excluded, root, 2),
     )
     monkeypatch.setattr(providers_module, "_package_version", lambda _name: "test-1")
-    provider = RuffAnalyzeImportsProvider(root)
+    provider = provider_class(root)
     observed_paths: list[tuple[str, ...]] = []
 
     def execute(_stage_root, staged, _environment):
@@ -67,11 +81,12 @@ def test_architecture_provider_executes_comparison_only_and_replays_exact_withou
         )
 
     provider.executor = execute
+    selected_signature = provider.baseline_input_signature(files)
     publication = provider.run(root, files, baseline=None, scratch_root=scratch)
 
     assert observed_paths == [("_04_Nucleo_Operativo/sample.py",)]
     assert publication.status == "completed"
-    assert publication.descriptor.provider_id == RUFF_ANALYZE_PROVIDER_ID
+    assert publication.descriptor.provider_id == provider_id
     assert publication.descriptor.scope == "production-packages-python-v1"
     assert publication.descriptor.project_configuration_digest is None
     assert publication.descriptor.loads_project_configuration is False
@@ -79,6 +94,14 @@ def test_architecture_provider_executes_comparison_only_and_replays_exact_withou
         "_04_Nucleo_Operativo/sample.py",
     )
     assert publication.counters["process_invocations"] == 1
+    assert publication.input_signature == selected_signature
+
+    excluded.write_text("VALUE = 3\n", encoding="utf-8")
+    changed_excluded_files = (
+        files[0],
+        _external_file(excluded, root, 3),
+    )
+    assert provider.baseline_input_signature(changed_excluded_files) == selected_signature
 
     assert publication.result_digest is not None
     comparison_only = ExternalProviderBaseline(

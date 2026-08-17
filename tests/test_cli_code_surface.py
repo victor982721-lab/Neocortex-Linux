@@ -562,6 +562,17 @@ def test_code_validate_json_keeps_live_progress_on_stderr(
         "inside_code_validation_resource_boundary",
         lambda: True,
     )
+    runtime_window = SimpleNamespace(hard_deadline_monotonic_ns=10**30)
+    monkeypatch.setattr(
+        code_validation_resources,
+        "current_code_validation_resource_admission",
+        lambda: SimpleNamespace(),
+    )
+    monkeypatch.setattr(
+        code_validation_resources,
+        "code_validation_runtime_window",
+        lambda _admission: runtime_window,
+    )
     payload = {
         "schema": "neocortex.code-change-validation/v3",
         "status": "passed",
@@ -620,6 +631,17 @@ def test_code_validate_noop_passes_without_fabricating_runtime_receipt(
         "inside_code_validation_resource_boundary",
         lambda: True,
     )
+    runtime_window = SimpleNamespace(hard_deadline_monotonic_ns=10**30)
+    monkeypatch.setattr(
+        code_validation_resources,
+        "current_code_validation_resource_admission",
+        lambda: SimpleNamespace(),
+    )
+    monkeypatch.setattr(
+        code_validation_resources,
+        "code_validation_runtime_window",
+        lambda _admission: runtime_window,
+    )
     payload = {
         "schema": "neocortex.code-change-validation/v3",
         "status": "passed",
@@ -648,6 +670,57 @@ def test_code_validate_noop_passes_without_fabricating_runtime_receipt(
     assert json.loads(captured.out) == payload
     assert "CODE_CHANGE_VALIDATION_RECEIPT" not in captured.err
     assert receipt_calls == []
+
+
+@pytest.mark.parametrize(
+    ("now", "reason"),
+    (
+        (101, "code_validation_overall_runtime_expired"),
+        (99, "code_validation_resource_boundary_interrupted"),
+    ),
+)
+def test_code_validate_classifies_resource_boundary_interrupts_without_blame(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    now: int,
+    reason: str,
+) -> None:
+    from _04_Nucleo_Operativo import cli_code
+    from _04_Nucleo_Operativo import code_change_validation
+    from _04_Nucleo_Operativo import code_validation_resources
+
+    monkeypatch.setattr(
+        code_validation_resources,
+        "inside_code_validation_resource_boundary",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        code_validation_resources,
+        "current_code_validation_resource_admission",
+        lambda: SimpleNamespace(),
+    )
+    monkeypatch.setattr(
+        code_validation_resources,
+        "code_validation_runtime_window",
+        lambda _admission: SimpleNamespace(hard_deadline_monotonic_ns=100),
+    )
+    monkeypatch.setattr(
+        code_change_validation,
+        "validate_code_change",
+        lambda **_kwargs: (_ for _ in ()).throw(KeyboardInterrupt),
+    )
+    monkeypatch.setattr(cli_code.time, "monotonic_ns", lambda: now)
+    args = argparse.Namespace(
+        code_validation_baseline="HEAD^",
+        code_validation_max_tests=5000,
+        code_validation_time_budget_seconds=900,
+        code_json=False,
+    )
+
+    assert cli_code.run_code_validate_change(args) == 2
+    captured = capsys.readouterr()
+    assert reason in captured.err
+    assert "cancelada por el usuario" not in captured.err
 
 
 def test_code_explicit_aliases_and_abbreviation_policy_remain_stable() -> None:

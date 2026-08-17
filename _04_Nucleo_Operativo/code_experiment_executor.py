@@ -1,19 +1,22 @@
-"""Isolated execution and receipts for allow-listed Code experiments.
+"""Execution and evidence reuse for allow-listed Code experiments.
 
 The executor deliberately supports one runner in v2: exact, source-versioned
 runtime scenarios declared in :mod:`code_invariant_contracts`.  It delegates to the
 existing trusted-deep provider, which owns canonical-root validation, bounded
 pytest execution, coverage collection, output limits, process containment and
-durable shard checkpoints.  This adapter adds an experiment-level receipt and
-refuses free-form commands, repository-provided selector text, or product-state
-mutation.
+durable shard checkpoints.  Canonical change validation attests its registered
+scenario subset from that same run's exact per-test relations instead of
+launching pytest again for every proposal.  The explicit experiment surface can
+still execute one isolated proposal.  Both paths refuse free-form commands,
+repository-provided selector text, or product-state mutation.
 """
 
 from __future__ import annotations
 
 import os
+import sqlite3
 import time
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, fields, replace
 from pathlib import Path
 from typing import Any, Literal, Mapping, Sequence, cast
 
@@ -29,7 +32,14 @@ from .code_invariant_contracts import (
     runtime_scenario_registry_fingerprint,
 )
 from .code_schema import readonly_code_database
-from .external_evidence_models import external_provider_result_digest
+from .external_evidence_models import (
+    ExternalProviderAttestation,
+    ExternalProviderRelation,
+    ExternalRunInput,
+    external_provider_result_digest,
+    external_relation_identity,
+    external_signature,
+)
 from .external_evidence_providers import PytestCoverageTrustedDeepProvider
 from .semantic_models import canonical_json, fingerprint_chunks
 from .sqlite_immutable import (
@@ -38,9 +48,30 @@ from .sqlite_immutable import (
     capture_sqlite_immutable_fence,
 )
 
-CODE_EXPERIMENT_RECEIPT_SCHEMA = "neocortex.code-experiment-receipt/v3"
-CODE_EXPERIMENT_EXECUTION_POLICY = "allowlisted-measured-gates-trusted-deep-v4"
+CODE_EXPERIMENT_RECEIPT_V3_SCHEMA = "neocortex.code-experiment-receipt/v3"
+CODE_EXPERIMENT_RECEIPT_SCHEMA = "neocortex.code-experiment-receipt/v4"
+CODE_EXPERIMENT_EXECUTION_POLICY = "allowlisted-measured-gates-trusted-deep-v5"
+CODE_EXPERIMENT_DIRECT_EXECUTION_POLICY = "allowlisted-measured-gates-trusted-deep-v4"
 CODE_EXPERIMENT_RECEIPT_MAX_OUTCOMES = 128
+_V4_RECEIPT_FIELDS = frozenset(
+    {
+        "evidence_mode",
+        "analysis_run_id",
+        "provider_tool_run_id",
+        "provider_effective_tool_run_id",
+        "provider_tool_status",
+        "provider_tool_name",
+        "provider_tool_version",
+        "provider_portable_publication_id",
+        "provider_descriptor_configuration_signature",
+        "provider_environment_signature",
+        "provider_comparability_signature",
+        "provider_suite_selection",
+        "provider_suite_signature",
+        "provider_measurement_scope_signature",
+        "selected_relation_digest",
+    }
+)
 _CODE_DATABASE_MAX_FENCE_BYTES = 64 * 1024 * 1024 * 1024
 _CODE_DATABASE_ANCHOR_BYTES = 64 * 1024
 
@@ -178,6 +209,21 @@ class CodeExperimentReceipt:
     limitations: tuple[str, ...]
     authority: Literal["advisory"] = "advisory"
     mutation_authority: Literal[False] = False
+    evidence_mode: Literal["primary_trusted_deep_projection"] | None = None
+    analysis_run_id: int | None = None
+    provider_tool_run_id: int | None = None
+    provider_effective_tool_run_id: int | None = None
+    provider_tool_status: Literal["completed", "skipped"] | None = None
+    provider_tool_name: str | None = None
+    provider_tool_version: str | None = None
+    provider_portable_publication_id: str | None = None
+    provider_descriptor_configuration_signature: str | None = None
+    provider_environment_signature: str | None = None
+    provider_comparability_signature: str | None = None
+    provider_suite_selection: Literal["full", "selected"] | None = None
+    provider_suite_signature: str | None = None
+    provider_measurement_scope_signature: str | None = None
+    selected_relation_digest: str | None = None
 
     def __post_init__(self) -> None:
         for label, value in (
@@ -204,8 +250,69 @@ class CodeExperimentReceipt:
             _required("experiment provider result digest", self.provider_result_digest)
         if self.status not in {"passed", "failed", "abstained"}:
             raise ValueError("experiment receipt status is invalid")
-        if self.policy_id != CODE_EXPERIMENT_EXECUTION_POLICY:
+        if self.policy_id not in {
+            CODE_EXPERIMENT_EXECUTION_POLICY,
+            CODE_EXPERIMENT_DIRECT_EXECUTION_POLICY,
+        }:
             raise ValueError("experiment execution policy is invalid")
+        provenance_values = (
+            self.evidence_mode,
+            self.analysis_run_id,
+            self.provider_tool_run_id,
+            self.provider_effective_tool_run_id,
+            self.provider_tool_status,
+            self.provider_tool_name,
+            self.provider_tool_version,
+            self.provider_portable_publication_id,
+            self.provider_descriptor_configuration_signature,
+            self.provider_environment_signature,
+            self.provider_comparability_signature,
+            self.provider_suite_selection,
+            self.provider_suite_signature,
+            self.provider_measurement_scope_signature,
+            self.selected_relation_digest,
+        )
+        if self.policy_id == CODE_EXPERIMENT_DIRECT_EXECUTION_POLICY:
+            if any(value is not None for value in provenance_values):
+                raise ValueError("v3 experiment receipt cannot carry v4 provenance")
+        else:
+            if self.evidence_mode != "primary_trusted_deep_projection":
+                raise ValueError("attested experiment evidence mode is invalid")
+            if any(
+                isinstance(value, bool) or not isinstance(value, int) or value < 1
+                for value in (
+                    self.analysis_run_id,
+                    self.provider_tool_run_id,
+                    self.provider_effective_tool_run_id,
+                )
+            ):
+                raise ValueError("attested experiment run identity is invalid")
+            for label, optional_value in (
+                ("provider tool name", self.provider_tool_name),
+                ("provider tool version", self.provider_tool_version),
+                ("provider publication", self.provider_portable_publication_id),
+                (
+                    "provider descriptor configuration",
+                    self.provider_descriptor_configuration_signature,
+                ),
+                ("provider environment", self.provider_environment_signature),
+                ("provider comparability", self.provider_comparability_signature),
+                ("provider suite", self.provider_suite_signature),
+                ("provider measurement scope", self.provider_measurement_scope_signature),
+                ("selected relation digest", self.selected_relation_digest),
+            ):
+                _required(f"experiment {label}", optional_value)
+            if self.provider_tool_status not in {"completed", "skipped"}:
+                raise ValueError("attested experiment provider tool status is invalid")
+            if self.provider_suite_selection not in {"full", "selected"}:
+                raise ValueError("attested experiment suite selection is invalid")
+            if (
+                self.provider_status != "completed"
+                or self.process_invocations != 0
+                or self.stdout_bytes != 0
+                or self.stderr_bytes != 0
+            ):
+                raise ValueError("attested experiment must reuse one completed zero-process result")
         if self.runner_kind != "trusted_deep_declared_scenarios":
             raise ValueError("experiment receipt runner is invalid")
         if not isinstance(self.code_database_unchanged, bool):
@@ -326,16 +433,29 @@ class CodeExperimentReceipt:
             raise ValueError("experiment receipt identity is invalid")
 
     def as_payload(self) -> dict[str, object]:
-        return {"schema": CODE_EXPERIMENT_RECEIPT_SCHEMA, **asdict(self)}
+        values = asdict(self)
+        if self.policy_id == CODE_EXPERIMENT_DIRECT_EXECUTION_POLICY:
+            for field_name in _V4_RECEIPT_FIELDS:
+                values.pop(field_name)
+            schema = CODE_EXPERIMENT_RECEIPT_V3_SCHEMA
+        else:
+            schema = CODE_EXPERIMENT_RECEIPT_SCHEMA
+        return {"schema": schema, **values}
 
 
 def _receipt_identity(receipt: CodeExperimentReceipt) -> str:
     from .code_analysis_epistemics import analysis_identity
 
-    values = {key: value for key, value in asdict(receipt).items() if key != "receipt_id"}
+    values = dict(receipt.as_payload())
+    values.pop("schema")
+    values.pop("receipt_id")
     values["duration_ms"] = 0
     return analysis_identity(
-        "code-experiment-receipt-v3",
+        (
+            "code-experiment-receipt-v3"
+            if receipt.policy_id == CODE_EXPERIMENT_DIRECT_EXECUTION_POLICY
+            else "code-experiment-receipt-v4"
+        ),
         values,
     )
 
@@ -462,7 +582,7 @@ def _outcomes(
         )
     result: list[CodeExperimentOutcome] = []
     scenarios = {item.scenario_id: item for item in RUNTIME_SCENARIOS}
-    for scenario_id in sorted(selected):
+    for scenario_id in selected_scenarios:
         scenario = scenarios[scenario_id]
         receipts = tuple(
             sorted(relations_by_scenario.get(scenario_id, ()), key=lambda item: item[0])
@@ -586,6 +706,404 @@ def _require_stable_source_input(
 
     if not before or published != before or after != before:
         raise ValueError("experiment source input changed during execution")
+
+
+def _validated_attestation_roots(
+    source_root: Path,
+    code_database_path: Path,
+) -> tuple[Path, Path]:
+    source = Path(source_root).resolve(strict=True)
+    database = Path(code_database_path).resolve(strict=True)
+    if not source.is_dir() or not database.is_file():
+        raise ValueError("experiment attestation roots are invalid")
+    return source, database
+
+
+def _require_current_analysis_run(
+    connection: sqlite3.Connection,
+    *,
+    analysis_run_id: int,
+    source_version: str,
+) -> None:
+    if (
+        isinstance(analysis_run_id, bool)
+        or not isinstance(analysis_run_id, int)
+        or analysis_run_id < 1
+    ):
+        raise ValueError("experiment attestation analysis run is invalid")
+    run = connection.execute(
+        "SELECT status,processing_signature FROM analysis_runs WHERE analysis_run_id=?",
+        (analysis_run_id,),
+    ).fetchone()
+    latest = connection.execute("SELECT MAX(analysis_run_id) FROM analysis_runs").fetchone()
+    if run is None or str(run["status"]) != "completed":
+        raise ValueError("experiment attestation source run is not completed")
+    if str(run["processing_signature"]) != source_version:
+        raise ValueError("experiment attestation source signature changed")
+    if latest is None or int(latest[0]) != analysis_run_id:
+        raise ValueError("experiment attestation source run is not latest")
+
+
+def _validate_attestation_inputs(
+    files: tuple[ExternalEvidenceFile, ...],
+    attestation: ExternalProviderAttestation,
+) -> None:
+    expected = {
+        item.portable_input_id: item
+        for item in (ExternalRunInput.from_file(file, covered=True) for file in files)
+    }
+    observed = {item.portable_input_id: item for item in attestation.inputs}
+    if len(expected) != len(files) or len(observed) != len(attestation.inputs):
+        raise ValueError("experiment trusted-deep input identities are not unique")
+    if expected.keys() != observed.keys():
+        raise ValueError("experiment trusted-deep inputs do not match the current manifest")
+    for portable_id, expected_item in expected.items():
+        observed_item = observed[portable_id]
+        if (
+            observed_item.version_id,
+            observed_item.relative_path,
+            observed_item.eligible,
+            observed_item.covered,
+            observed_item.size,
+            observed_item.content_digest,
+        ) != (
+            expected_item.version_id,
+            expected_item.relative_path,
+            True,
+            True,
+            expected_item.size,
+            expected_item.content_digest,
+        ):
+            raise ValueError("experiment trusted-deep input contract changed")
+
+
+def validate_code_experiment_declared_test_relations(
+    attestation: ExternalProviderAttestation,
+    *,
+    suite_selection: Literal["full", "selected"],
+    configuration_signature: str,
+    suite_signature: str,
+    measurement_scope_signature: str,
+) -> tuple[ExternalProviderRelation, ...]:
+    expected_context: dict[str, object] = {
+        "suite_selection": suite_selection,
+        "measurement_complete": True,
+        "content_executed": True,
+        "suite_signature": suite_signature,
+        "configuration_signature": configuration_signature,
+        "publication_input_signature": attestation.input_signature,
+        "measurement_scope_signature": measurement_scope_signature,
+        "claim_scope": "exact_selected_test_execution_outcome",
+        "assertion_or_invariant_proof": False,
+    }
+    expected_metadata_fields = frozenset(
+        {
+            *expected_context,
+            "tool_versions",
+            "code_input_signature",
+            "support_signature",
+            "subprocess_coverage",
+            "coverage_scope",
+            "nodeid",
+            "outcome",
+        }
+    )
+    declared: list[ExternalProviderRelation] = []
+    nodeids: set[str] = set()
+    outcomes: dict[str, int] = {"passed": 0, "failed": 0, "skipped": 0}
+    run_key = f"coverage-run:{measurement_scope_signature}"
+    common_contract: tuple[tuple[tuple[str, str], ...], str, str] | None = None
+    for relation in attestation.relations:
+        if relation.relation_kind != "declared_test_outcome":
+            continue
+        nodeid = relation.metadata.get("nodeid")
+        outcome = relation.metadata.get("outcome")
+        if not isinstance(nodeid, str) or not nodeid or nodeid in nodeids:
+            raise ValueError("experiment declared test outcome identity is invalid")
+        if not isinstance(outcome, str) or outcome not in outcomes:
+            raise ValueError("experiment declared test outcome is invalid")
+        expected_id = external_relation_identity(
+            attestation.provider_id,
+            relation_kind="declared_test_outcome",
+            source_kind="contract",
+            source_key=f"pytest-nodeid:{nodeid}",
+            target_kind="run",
+            target_key=run_key,
+        )
+        local_ids = (
+            relation.source_version_id,
+            relation.source_symbol_id,
+            relation.source_project_id,
+            relation.target_version_id,
+            relation.target_symbol_id,
+            relation.target_project_id,
+        )
+        tool_versions = relation.metadata.get("tool_versions")
+        if not isinstance(tool_versions, Mapping) or any(
+            not isinstance(key, str) or not key or not isinstance(value, str) or not value
+            for key, value in tool_versions.items()
+        ):
+            raise ValueError("experiment declared test outcome contract changed")
+        relation_common = (
+            tuple(sorted(cast(Mapping[str, str], tool_versions).items())),
+            _required(
+                "coverage code input signature", relation.metadata.get("code_input_signature")
+            ),
+            _required("coverage support signature", relation.metadata.get("support_signature")),
+        )
+        if common_contract is None:
+            common_contract = relation_common
+        if (
+            relation.portable_relation_id != expected_id
+            or relation.source_kind != "contract"
+            or relation.source_key != f"pytest-nodeid:{nodeid}"
+            or relation.target_kind != "run"
+            or relation.target_key != run_key
+            or not relation.directed
+            or relation.confidence != 1.0
+            or any(value is not None for value in local_ids)
+            or set(relation.metadata) != expected_metadata_fields
+            or any(relation.metadata.get(key) != value for key, value in expected_context.items())
+            or relation.metadata.get("subprocess_coverage") is not False
+            or relation.metadata.get("coverage_scope") != "main_process_only"
+            or relation_common != common_contract
+        ):
+            raise ValueError("experiment declared test outcome contract changed")
+        nodeids.add(nodeid)
+        outcomes[outcome] += 1
+        declared.append(relation)
+    selected, passed, failed, skipped = _provider_test_counts(attestation)
+    if (selected, passed, failed, skipped) != (
+        len(declared),
+        outcomes["passed"],
+        outcomes["failed"],
+        outcomes["skipped"],
+    ):
+        raise ValueError("experiment declared outcomes disagree with provider counts")
+    return tuple(sorted(declared, key=lambda item: item.portable_relation_id))
+
+
+def code_experiment_selected_relation_digest(
+    relations: Sequence[ExternalProviderRelation],
+    selected_nodeids: Sequence[str],
+) -> str:
+    selected = set(selected_nodeids)
+    matching = tuple(
+        relation for relation in relations if relation.metadata.get("nodeid") in selected
+    )
+    return external_signature(
+        "code-experiment-selected-relations-v1",
+        {
+            "selected_nodeids": list(selected_nodeids),
+            "complete": len(matching) == len(selected),
+            "relations": [item.digest_payload() for item in matching],
+        },
+    )
+
+
+def attest_code_experiments(
+    proposals: Sequence[CodeExperimentProposal],
+    *,
+    source_root: Path,
+    code_database_path: Path,
+    source_version: str,
+    analysis_run_id: int,
+    provider_tool_run_id: int,
+    provider_effective_tool_run_id: int,
+    provider_suite_selection: Literal["full", "selected"],
+    provider_configuration_signature: str,
+    provider_suite_signature: str,
+    provider_measurement_scope_signature: str,
+) -> tuple[CodeExperimentReceipt, ...]:
+    """Attest registered scenarios from one exact current full-suite publication.
+
+    The trusted-deep producer has already executed the canonical selected suite
+    before this boundary.  Re-running overlapping nodeids per proposal adds no
+    independent evidence, so this function reads the normalized
+    ``declared_test_outcome`` relations once, binds each requested subset to its
+    proposal and emits zero-process receipts.  Missing, duplicate, stale or
+    non-current evidence fails closed.
+    """
+
+    selected_proposals = tuple(proposals)
+    if not selected_proposals or len(selected_proposals) > CODE_EXPERIMENT_RECEIPT_MAX_OUTCOMES:
+        raise ValueError("experiment attestation proposal selection is empty or out of bounds")
+    if len({item.proposal_id for item in selected_proposals}) != len(selected_proposals):
+        raise ValueError("experiment attestation proposals cannot repeat")
+    templates = []
+    for proposal in selected_proposals:
+        if (
+            not isinstance(proposal, CodeExperimentProposal)
+            or proposal.planning_status != "planned"
+        ):
+            raise ValueError("experiment attestation requires planned proposals")
+        template = experiment_template(_required("proposal template id", proposal.template_id))
+        if proposal.runner_kind != "trusted_deep_declared_scenarios" or not template.executable:
+            raise ValueError("experiment proposal has no attestable allow-listed runner")
+        templates.append(template)
+
+    source, database = _validated_attestation_roots(source_root, code_database_path)
+    selected_source_version = _required("experiment source version", source_version)
+    before = _file_digest(database)
+    from .external_evidence_models import external_root_identity
+    from .external_evidence_store import read_external_provider_attestation
+
+    with readonly_code_database(database) as connection:
+        _require_current_analysis_run(
+            connection,
+            analysis_run_id=analysis_run_id,
+            source_version=selected_source_version,
+        )
+        files = read_external_evidence_files(connection, source)
+        attestation = read_external_provider_attestation(
+            connection,
+            analysis_run_id=analysis_run_id,
+            tool_run_id=provider_tool_run_id,
+            expected_processing_signature=selected_source_version,
+            expected_provider_id=PYTEST_COVERAGE_PROVIDER_ID,
+            expected_provider_schema=DEEP_COVERAGE_PROVIDER_SCHEMA,
+            enforce_current_runtime=True,
+        )
+    after = _file_digest(database)
+    if not files:
+        raise ValueError("experiment source manifest contains no current Python inputs")
+    if (
+        Path(attestation.observed_root).resolve(strict=True) != source
+        or attestation.root_identity != external_root_identity(source)
+        or attestation.provider_id != PYTEST_COVERAGE_PROVIDER_ID
+        or attestation.provider_schema != DEEP_COVERAGE_PROVIDER_SCHEMA
+        or attestation.profile != "trusted-deep"
+        or attestation.analysis_run_id != analysis_run_id
+        or attestation.processing_signature != selected_source_version
+        or attestation.tool_run_id != provider_tool_run_id
+        or attestation.effective_tool_run_id != provider_effective_tool_run_id
+        or not attestation.coverage_complete
+        or not attestation.content_executed
+        or attestation.covered_files != attestation.eligible_files
+    ):
+        raise ValueError("experiment trusted-deep attestation contract is incomplete")
+    _validate_attestation_inputs(files, attestation)
+    provider_result = external_provider_result_digest(
+        attestation.findings,
+        attestation.metrics,
+        attestation.relations,
+    )
+    if provider_result != attestation.result_digest:
+        raise ValueError("experiment trusted-deep attestation digest changed")
+    declared_relations = validate_code_experiment_declared_test_relations(
+        attestation,
+        suite_selection=provider_suite_selection,
+        configuration_signature=_required(
+            "provider deep configuration signature",
+            provider_configuration_signature,
+        ),
+        suite_signature=_required("provider suite signature", provider_suite_signature),
+        measurement_scope_signature=_required(
+            "provider measurement scope signature",
+            provider_measurement_scope_signature,
+        ),
+    )
+    validated_attestation = replace(attestation, relations=declared_relations)
+
+    manifest_digest = _manifest_digest(files)
+    scenario_map = {item.scenario_id: item for item in RUNTIME_SCENARIOS}
+    started = time.monotonic_ns()
+    receipts: list[CodeExperimentReceipt] = []
+    from .code_analysis_epistemics import analysis_identity
+
+    for proposal, template in zip(selected_proposals, templates, strict=True):
+        selected_scenarios = template.scenario_ids
+        selected_nodeids = tuple(
+            nodeid
+            for scenario_id in selected_scenarios
+            for nodeid in scenario_map[scenario_id].test_nodeids
+        )
+        outcomes = _outcomes(validated_attestation, selected_scenarios)
+        gate_outcomes = _gate_outcomes(validated_attestation, selected_scenarios)
+        status: Literal["passed", "failed", "abstained"] = (
+            "abstained"
+            if len(outcomes) != len(selected_scenarios)
+            or any(item.status == "not_evaluated" for item in gate_outcomes)
+            else "failed"
+            if any(item.outcome != "passed" for item in outcomes)
+            or any(item.status == "failed" for item in gate_outcomes)
+            or before != after
+            else "passed"
+        )
+        values: dict[str, object] = {
+            "status": status,
+            "reason": ("published_coverage_outcomes_incomplete" if status == "abstained" else None),
+            "policy_id": CODE_EXPERIMENT_EXECUTION_POLICY,
+            "proposal_id": proposal.proposal_id,
+            "template_id": template.template_id,
+            "template_version": template.version,
+            "runner_kind": "trusted_deep_declared_scenarios",
+            "source_root": os.fspath(source),
+            "source_version": selected_source_version,
+            "source_manifest_digest": manifest_digest,
+            "code_database_digest_before": before,
+            "code_database_digest_after": after,
+            "code_database_unchanged": before == after,
+            "configuration_signature": provider_configuration_signature,
+            "scenario_registry_fingerprint": runtime_scenario_registry_fingerprint(),
+            "provider_id": attestation.provider_id,
+            "provider_schema": attestation.provider_schema,
+            "provider_status": "completed",
+            "provider_execution": attestation.execution,
+            "provider_input_signature": attestation.input_signature,
+            "provider_result_digest": attestation.result_digest,
+            "selected_scenarios": selected_scenarios,
+            "selected_nodeids": selected_nodeids,
+            "outcomes": outcomes,
+            "gate_outcomes": gate_outcomes,
+            "passed": sum(item.outcome == "passed" for item in outcomes),
+            "failed": sum(item.outcome == "failed" for item in outcomes),
+            "skipped": sum(item.outcome == "skipped" for item in outcomes),
+            "duration_ms": max(0, (time.monotonic_ns() - started) // 1_000_000),
+            "process_invocations": 0,
+            "stdout_bytes": 0,
+            "stderr_bytes": 0,
+            "limitations": (
+                "receipt_proves_selected_test_outcomes_not_a_question_conclusion_or_formal_proof",
+                "exact_current_trusted_deep_test_relations_reused_without_test_reexecution",
+                "provider_result_covers_the_validation_suite_not_only_this_scenario_subset",
+                "coverage_is_main_process_only",
+                "code_database_unchanged_uses_identity_sidecar_fence_and_bounded_content_anchors",
+                "source_input_is_verified_by_the_current_published_manifest_and_final_git_fence",
+                "process_death_scenario_is_not_power_loss",
+                "no_product_mutation_authority",
+            ),
+            "authority": "advisory",
+            "mutation_authority": False,
+            "evidence_mode": "primary_trusted_deep_projection",
+            "analysis_run_id": analysis_run_id,
+            "provider_tool_run_id": attestation.tool_run_id,
+            "provider_effective_tool_run_id": attestation.effective_tool_run_id,
+            "provider_tool_status": attestation.tool_status,
+            "provider_tool_name": attestation.tool_name,
+            "provider_tool_version": attestation.tool_version,
+            "provider_portable_publication_id": attestation.portable_publication_id,
+            "provider_descriptor_configuration_signature": (
+                attestation.descriptor_configuration_signature
+            ),
+            "provider_environment_signature": attestation.environment_signature,
+            "provider_comparability_signature": attestation.comparability_signature,
+            "provider_suite_selection": provider_suite_selection,
+            "provider_suite_signature": provider_suite_signature,
+            "provider_measurement_scope_signature": provider_measurement_scope_signature,
+            "selected_relation_digest": code_experiment_selected_relation_digest(
+                declared_relations,
+                selected_nodeids,
+            ),
+        }
+        identity_values = _receipt_identity_values(values)
+        receipts.append(
+            CodeExperimentReceipt(
+                receipt_id=analysis_identity("code-experiment-receipt-v4", identity_values),
+                **values,  # type: ignore[arg-type]
+            )
+        )
+    return tuple(receipts)
 
 
 def execute_code_experiment(
@@ -725,7 +1243,7 @@ def execute_code_experiment(
     values: dict[str, object] = {
         "status": status,
         "reason": reason,
-        "policy_id": CODE_EXPERIMENT_EXECUTION_POLICY,
+        "policy_id": CODE_EXPERIMENT_DIRECT_EXECUTION_POLICY,
         "proposal_id": proposal.proposal_id,
         "template_id": template.template_id,
         "template_version": template.version,
@@ -783,9 +1301,15 @@ def execute_code_experiment(
 def parse_code_experiment_receipt_payload(
     payload: Mapping[str, object],
 ) -> CodeExperimentReceipt:
-    if not isinstance(payload, Mapping) or payload.get("schema") != CODE_EXPERIMENT_RECEIPT_SCHEMA:
+    if not isinstance(payload, Mapping) or payload.get("schema") not in {
+        CODE_EXPERIMENT_RECEIPT_V3_SCHEMA,
+        CODE_EXPERIMENT_RECEIPT_SCHEMA,
+    }:
         raise ValueError("experiment receipt payload schema is invalid")
+    schema = cast(str, payload["schema"])
     expected = {field.name for field in fields(CodeExperimentReceipt)} | {"schema"}
+    if schema == CODE_EXPERIMENT_RECEIPT_V3_SCHEMA:
+        expected -= _V4_RECEIPT_FIELDS
     if set(payload) != expected:
         raise ValueError("experiment receipt payload fields are invalid")
     raw_outcomes = payload.get("outcomes")
@@ -829,16 +1353,28 @@ def parse_code_experiment_receipt_payload(
     )
     values["selected_nodeids"] = _texts("selected experiment nodeid", values["selected_nodeids"])
     values["limitations"] = _texts("experiment receipt limitation", values["limitations"])
+    expected_policy = (
+        CODE_EXPERIMENT_DIRECT_EXECUTION_POLICY
+        if schema == CODE_EXPERIMENT_RECEIPT_V3_SCHEMA
+        else CODE_EXPERIMENT_EXECUTION_POLICY
+    )
+    if values.get("policy_id") != expected_policy:
+        raise ValueError("experiment receipt schema and policy disagree")
     return CodeExperimentReceipt(**cast(Any, values))
 
 
 __all__ = [
+    "CODE_EXPERIMENT_DIRECT_EXECUTION_POLICY",
     "CODE_EXPERIMENT_EXECUTION_POLICY",
     "CODE_EXPERIMENT_RECEIPT_MAX_OUTCOMES",
     "CODE_EXPERIMENT_RECEIPT_SCHEMA",
+    "CODE_EXPERIMENT_RECEIPT_V3_SCHEMA",
     "CodeExperimentGateOutcome",
     "CodeExperimentOutcome",
     "CodeExperimentReceipt",
+    "attest_code_experiments",
+    "code_experiment_selected_relation_digest",
     "execute_code_experiment",
     "parse_code_experiment_receipt_payload",
+    "validate_code_experiment_declared_test_relations",
 ]

@@ -3382,6 +3382,9 @@ class _TrustedArchitectureProvider:
     def tool_version(self) -> str | None:
         return self._version
 
+    def baseline_input_signature(self, files: Sequence[ExternalEvidenceFile]) -> str:
+        return external_input_signature(_architecture_files(files))
+
     def run(
         self,
         root: Path,

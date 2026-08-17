@@ -263,6 +263,161 @@ def test_private_network_verification_queries_the_exact_live_unit(
         resources._verify_private_network_boundary(admission)  # type: ignore[attr-defined]
 
 
+@pytest.mark.parametrize("overall_runtime_seconds", (45 * 60, 75 * 60))
+def test_runtime_window_uses_the_admitted_unit_and_policy_without_schema_drift(
+    monkeypatch: pytest.MonkeyPatch,
+    overall_runtime_seconds: int,
+) -> None:
+    admission = _admission()
+    admission = replace(
+        admission,
+        policy=replace(
+            admission.policy,
+            overall_runtime_seconds=overall_runtime_seconds,
+        ),
+    )
+    active_enter_microseconds = 15_143_296_465
+    monkeypatch.setattr(
+        resources.time,
+        "monotonic_ns",
+        lambda: (active_enter_microseconds + 1_000_000) * 1_000,
+    )
+    observed: list[tuple[tuple[str, ...], dict[str, object]]] = []
+
+    def completed(arguments, **kwargs):
+        observed.append((tuple(str(item) for item in arguments), kwargs))
+        return subprocess.CompletedProcess(
+            arguments,
+            0,
+            f"{active_enter_microseconds}\n".encode("ascii"),
+            b"",
+        )
+
+    monkeypatch.setattr(resources.subprocess, "run", completed)
+
+    window = resources.code_validation_runtime_window(admission)
+
+    active_enter_nanoseconds = active_enter_microseconds * 1_000
+    assert window == resources.CodeValidationRuntimeWindow(
+        admission.cgroup_unit,
+        active_enter_nanoseconds,
+        active_enter_nanoseconds + overall_runtime_seconds * 1_000_000_000,
+        overall_runtime_seconds,
+    )
+    assert window.as_payload() == {
+        "cgroup_unit": admission.cgroup_unit,
+        "active_enter_monotonic_ns": active_enter_nanoseconds,
+        "hard_deadline_monotonic_ns": (
+            active_enter_nanoseconds + overall_runtime_seconds * 1_000_000_000
+        ),
+        "overall_runtime_seconds": overall_runtime_seconds,
+    }
+    assert observed == [
+        (
+            (
+                "/usr/bin/systemctl",
+                "--user",
+                "show",
+                f"{admission.cgroup_unit}.service",
+                "--property=ActiveEnterTimestampMonotonic",
+                "--value",
+            ),
+            {
+                "stdin": subprocess.DEVNULL,
+                "stdout": subprocess.PIPE,
+                "stderr": subprocess.PIPE,
+                "timeout": 5.0,
+                "check": False,
+            },
+        )
+    ]
+    assert "active_enter_monotonic_ns" not in admission.as_payload()
+    assert admission.schema == "neocortex.code-validation-resources/v3"
+
+
+@pytest.mark.parametrize(
+    "output",
+    (
+        b"",
+        b"0\n",
+        b"-1\n",
+        b"+1\n",
+        b" 1\n",
+        b"1 \n",
+        b"1\n2\n",
+        b"1" * 21 + b"\n",
+        b"\xff\n",
+        "1\n",
+    ),
+)
+def test_runtime_window_rejects_noncanonical_systemd_timestamps(
+    monkeypatch: pytest.MonkeyPatch,
+    output: object,
+) -> None:
+    monkeypatch.setattr(resources.time, "monotonic_ns", lambda: 10**30)
+    monkeypatch.setattr(
+        resources.subprocess,
+        "run",
+        lambda arguments, **_kwargs: subprocess.CompletedProcess(arguments, 0, output, b""),
+    )
+
+    with pytest.raises(
+        resources.CodeValidationResourceError,
+        match="code_validation_active_enter_timestamp_invalid",
+    ):
+        resources.code_validation_runtime_window(_admission())
+
+
+def test_runtime_window_rejects_a_future_monotonic_timestamp(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(resources.time, "monotonic_ns", lambda: 1_999_999_999)
+    monkeypatch.setattr(
+        resources.subprocess,
+        "run",
+        lambda arguments, **_kwargs: subprocess.CompletedProcess(arguments, 0, b"2000000\n", b""),
+    )
+
+    with pytest.raises(
+        resources.CodeValidationResourceError,
+        match="code_validation_active_enter_timestamp_invalid",
+    ):
+        resources.code_validation_runtime_window(_admission())
+
+
+@pytest.mark.parametrize("failure", ("exit", "oserror", "timeout"))
+def test_runtime_window_fails_closed_when_the_live_property_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    def unavailable(arguments, **_kwargs):
+        if failure == "oserror":
+            raise OSError("systemctl unavailable")
+        if failure == "timeout":
+            raise subprocess.TimeoutExpired(arguments, 5.0)
+        return subprocess.CompletedProcess(arguments, 1, b"", b"not found")
+
+    monkeypatch.setattr(resources.subprocess, "run", unavailable)
+
+    with pytest.raises(
+        resources.CodeValidationResourceError,
+        match="code_validation_active_enter_timestamp_unavailable",
+    ):
+        resources.code_validation_runtime_window(_admission())
+
+
+def test_runtime_window_dataclass_rejects_an_inconsistent_deadline() -> None:
+    admission = _admission()
+
+    with pytest.raises(ValueError, match="runtime-window deadline is inconsistent"):
+        resources.CodeValidationRuntimeWindow(
+            admission.cgroup_unit,
+            1_000,
+            2_000,
+            admission.policy.overall_runtime_seconds,
+        )
+
+
 def test_inet_socket_boundary_requires_kernel_denial_for_both_families(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

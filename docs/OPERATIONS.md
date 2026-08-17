@@ -278,13 +278,18 @@ acotadas de `code.sqlite3` durante la ejecución sin releer todo su historial.
 Estas barreras no son un lock continuo de la fuente y no incluyen el
 corpus ni otros stores. Si los nodeids y gates terminan `passed`, retorna `0`;
 `failed` o `abstained` retornan `2`. Después, aun en esos estados terminales, la
-CLI inserta un receipt append-only en Code schema v6 y devuelve
-`neocortex.code-experiment-store/v1` con
-`neocortex.code-experiment-receipt/v3` anidado. Por eso esta operación no es
+CLI inserta un receipt append-only v3 en Code schema v7 y devuelve
+`neocortex.code-experiment-store/v1`. Por eso esta operación no es
 read-only y el digest unchanged no incluye la escritura posterior. No la use
 sobre una publicación stale: regenere antes el autoanálisis. No la ejecute sobre
 código que no confíe; la allowlist limita el selector, no los efectos del código
 de tests.
+
+Dentro de `Neocortex code validate`, los templates relevantes no vuelven a
+ejecutar pytest. Se atestiguan en un batch atómico desde las relaciones exactas
+del Coverage primario y se persisten como receipts v4 ligados a run, tool-run,
+publicación, configuración, entorno, suite, scope y digest del subconjunto; esta
+ruta exige cero procesos y cero bytes de salida propios.
 
 El siguiente review v22 enlaza sólo el terminal más nuevo del proposal y la
 processing signature exactos, con bindings de gates registrados. El terminal
@@ -926,7 +931,8 @@ y escala a la suite Linux sólo ante cambios de packaging, schema o gates. La
 selección afectada conserva 5000/50; la frontera full usa 10000/250 para evitar
 truncamiento y cien arranques de worker. Después ejecuta las barreras estática y
 arquitectónica existentes; publica `trusted-deep`; consume el review
-v22; ejecuta experimentos registrados; instala y prueba el wheel candidato fuera
+v22; atestigua experimentos registrados desde los outcomes Coverage ya
+publicados; instala y prueba el wheel candidato fuera
 del checkout; y repite la misma publicación para demostrar replay. Un gate
 fallido produce `failed`, evidencia insuficiente produce `abstained`, y ambos
 devuelven código 2. La salida JSON canónica se obtiene con `--json`.
@@ -949,7 +955,11 @@ del presupuesto nominal solicitado y sólo habilita su cota 2x después de avanc
 validado. La ruta afectada añade 15 minutos para providers no-Coverage y cierre;
 la ruta full añade 30 minutos, por lo que con el presupuesto canónico de 900 s
 su límite interno es 60 minutos dentro de la cota global de 75. El proceso padre
-expone salida, eventos y heartbeats en tiempo real.
+lee el inicio monotónico del transient unit, reserva 20 minutos para replay y
+tres para el cierre, y limita cada paso del wheel al excedente disponible. Una
+interrupción de esa frontera se reporta como expiración/interrupción de recursos,
+no como cancelación humana. El proceso expone salida, eventos y heartbeats en
+tiempo real.
 Un subreaper Linux adopta y termina mediante `pidfd` los descendientes que
 creen otra sesión con `setsid()`. Al vencer la cota correspondiente, el árbol recibe
 SIGINT y dispone de una gracia para publicar su terminalización durable
@@ -968,7 +978,7 @@ La selección experimental también está ligada al diff mediante un registro
 versionado de rutas/tests→preguntas/sujetos. Un registry gap relevante o una
 pregunta sin disposición técnica exacta después del replay produce
 `abstained`; `not_required` sólo aparece cuando ese binding demuestra que la
-pregunta es disjunta al cambio. La política v8 incorpora bindings exactos para
+pregunta es disjunta al cambio. La política v9 incorpora bindings exactos para
 la CLI pública y para Knowledge Asset Health Text/PDF; cambiar sus contratos o
 tests de control exige los templates de veintiún/cinco, doce/cuatro y
 doce/cuatro respectivamente.

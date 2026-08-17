@@ -21,7 +21,7 @@ from .semantic_models import canonical_json
 
 CODE_VALIDATION_RECEIPT_SCHEMA = "neocortex.code-validation-receipt/v1"
 _CODE_CHANGE_VALIDATION_SCHEMA = "neocortex.code-change-validation/v3"
-_CODE_CHANGE_VALIDATION_POLICY = "local-linux-diff-aware-validation-v8"
+_CODE_CHANGE_VALIDATION_POLICY = "local-linux-diff-aware-validation-v9"
 _MAX_RECEIPT_BYTES = 8 * 1024 * 1024
 _REQUIRED_GATE_STATUSES = {
     "clean_source_sha": frozenset({"passed"}),

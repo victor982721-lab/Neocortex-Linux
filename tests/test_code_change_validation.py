@@ -727,6 +727,14 @@ def test_canonical_experiment_gate_persists_each_exact_receipt(
             analysis_run_id=17,
             processing_signature="snapshot:exact",
         ),
+        test_coverage=SimpleNamespace(
+            tool_run_id=71,
+            effective_tool_run_id=70,
+            suite_selection="full",
+            configuration_signature="coverage-config:exact",
+            suite_signature="coverage-suite:exact",
+            measurement_scope_signature="coverage-scope:exact",
+        ),
         digest=SimpleNamespace(),
     )
     receipt = SimpleNamespace(
@@ -737,14 +745,18 @@ def test_canonical_experiment_gate_persists_each_exact_receipt(
     stored = SimpleNamespace(receipt=receipt)
     observed: list[tuple[object, ...]] = []
 
-    monkeypatch.setattr(executor, "execute_code_experiment", lambda *args, **kwargs: receipt)
+    monkeypatch.setattr(
+        executor,
+        "attest_code_experiments",
+        lambda *args, **kwargs: (receipt,),
+    )
     monkeypatch.setattr(store, "code_review_digest_identity", lambda _digest: "review:exact")
 
     def record(*args, **kwargs):
         observed.append((*args, kwargs))
-        return stored
+        return (stored,)
 
-    monkeypatch.setattr(store, "record_code_experiment_receipt", record)
+    monkeypatch.setattr(store, "record_code_experiment_receipts", record)
 
     gate, receipts = _experiment_gate(
         review,
@@ -759,11 +771,9 @@ def test_canonical_experiment_gate_persists_each_exact_receipt(
     assert receipts == ({"receipt_id": "receipt:exact", "status": "passed"},)
     assert len(observed) == 1
     assert observed[0][0] == tmp_path / "code.sqlite3"
-    assert observed[0][-1] == {
-        "analysis_run_id": 17,
-        "processing_signature": "snapshot:exact",
-        "review_digest": "review:exact",
-    }
+    assert observed[0][1] == ((receipt, proposal),)
+    assert observed[0][2:5] == (17, "snapshot:exact", "review:exact")
+    assert observed[0][-1] == {}
 
 
 def test_supply_questions_use_their_measured_allowlisted_runner(
@@ -817,23 +827,43 @@ def test_supply_questions_use_their_measured_allowlisted_runner(
             analysis_run_id=18,
             processing_signature="snapshot:supply",
         ),
+        test_coverage=SimpleNamespace(
+            tool_run_id=81,
+            effective_tool_run_id=80,
+            suite_selection="full",
+            configuration_signature="coverage-config:supply",
+            suite_signature="coverage-suite:supply",
+            measurement_scope_signature="coverage-scope:supply",
+        ),
         digest=SimpleNamespace(),
     )
 
-    def execute(proposal, **_kwargs):
-        receipt_id = f"receipt:{proposal.evaluation_id}"
-        return SimpleNamespace(
-            receipt_id=receipt_id,
-            status="passed",
-            as_payload=lambda: {"receipt_id": receipt_id, "status": "passed"},
+    observed_attestations: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    def attest(selected_proposals, **kwargs):
+        selected = tuple(selected_proposals)
+        observed_attestations.append((selected, kwargs))
+        return tuple(
+            SimpleNamespace(
+                receipt_id=f"receipt:{proposal.evaluation_id}",
+                status="passed",
+                as_payload=lambda proposal=proposal: {
+                    "receipt_id": f"receipt:{proposal.evaluation_id}",
+                    "status": "passed",
+                    "process_invocations": 0,
+                },
+            )
+            for proposal in selected
         )
 
-    monkeypatch.setattr(executor, "execute_code_experiment", execute)
+    monkeypatch.setattr(executor, "attest_code_experiments", attest)
     monkeypatch.setattr(store, "code_review_digest_identity", lambda _digest: "review:supply")
     monkeypatch.setattr(
         store,
-        "record_code_experiment_receipt",
-        lambda _database, receipt, *_args, **_kwargs: SimpleNamespace(receipt=receipt),
+        "record_code_experiment_receipts",
+        lambda _database, pairs, *_args, **_kwargs: tuple(
+            SimpleNamespace(receipt=receipt) for receipt, _proposal in pairs
+        ),
     )
 
     gate, receipts = _experiment_gate(
@@ -845,7 +875,9 @@ def test_supply_questions_use_their_measured_allowlisted_runner(
     )
 
     assert gate.status == "passed"
-    assert gate.reason == "unique_allowlisted_experiments_passed"
+    assert gate.reason == "unique_allowlisted_experiments_attested"
+    assert gate.evidence["evidence_reuse"] == "current_trusted_deep_declared_test_outcomes"
+    assert gate.evidence["provider_process_invocations"] == 0
     assert gate.evidence["proposal_count"] == 2
     assert gate.evidence["unique_template_count"] == 1
     assert {
@@ -855,6 +887,22 @@ def test_supply_questions_use_their_measured_allowlisted_runner(
     assert {item["receipt_id"] for item in receipts} == {
         "receipt:evaluation:security",
         "receipt:evaluation:dependency",
+    }
+    assert len(observed_attestations) == 1
+    assert observed_attestations[0][0] == tuple(
+        sorted(proposals, key=lambda proposal: proposal.proposal_id)
+    )
+    assert observed_attestations[0][1] == {
+        "source_root": tmp_path,
+        "code_database_path": tmp_path / "code.sqlite3",
+        "source_version": "snapshot:supply",
+        "analysis_run_id": 18,
+        "provider_tool_run_id": 81,
+        "provider_effective_tool_run_id": 80,
+        "provider_suite_selection": "full",
+        "provider_configuration_signature": "coverage-config:supply",
+        "provider_suite_signature": "coverage-suite:supply",
+        "provider_measurement_scope_signature": "coverage-scope:supply",
     }
 
 
@@ -1491,6 +1539,7 @@ def test_code_schema_boundary_selects_its_bounded_compatibility_matrix(
         "tests/test_code_intelligence.py",
         "tests/test_code_publication_diff.py",
         "tests/test_code_schema_migration_v1_v2.py",
+        "tests/test_code_schema_migration_v6_v7.py",
         "tests/test_external_provider_schema_v4.py",
         "tests/test_framework_code_path_collation.py",
     )
@@ -2050,7 +2099,7 @@ def test_validation_fallback_stays_bounded_and_runs_public_boundaries(
     assert producer[producer.index("--deep-shard-size") + 1] == "50"
 
 
-def test_primary_and_replay_share_the_exact_streaming_timeout_contract(
+def test_primary_keeps_its_budget_and_replay_has_a_bounded_closure_timeout(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2138,10 +2187,207 @@ def test_primary_and_replay_share_the_exact_streaming_timeout_contract(
     assert result.status == "passed"
     trusted_deep = tuple(item for item in observed if "--analysis-profile" in item[0])
     assert len(trusted_deep) == 2
-    assert {item[1] for item in trusted_deep} == {960}
+    assert trusted_deep[0][1] == 960
+    assert trusted_deep[1][1] == 1_200
     assert trusted_deep[0][2] == trusted_deep[1][2]
     assert all(item[2]["NEOCORTEX_PROGRESS_STREAM"] == "1" for item in trusted_deep)
     assert all(item[2]["PYTHONDONTWRITEBYTECODE"] == "1" for item in trusted_deep)
+
+
+def test_replay_budget_reserves_finalization_inside_the_global_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from _04_Nucleo_Operativo import code_change_validation
+    from _04_Nucleo_Operativo.code_validation_resources import (
+        CodeValidationRuntimeWindow,
+    )
+
+    active = 10_000_000_000
+    hard = active + 4_500 * 1_000_000_000
+    window = CodeValidationRuntimeWindow(
+        "neocortex-code-validate-123-aaaaaaaaaaaa",
+        active,
+        hard,
+        4_500,
+    )
+    required = 1_200 + 180
+
+    monkeypatch.setattr(
+        code_change_validation.time,
+        "monotonic_ns",
+        lambda: hard - (required + 1) * 1_000_000_000,
+    )
+    admitted = code_change_validation._runtime_budget_gate(
+        "trusted_deep_replay_budget",
+        window,
+        required_seconds=required,
+        command=("Neocortex", "--self-analysis"),
+    )
+    assert admitted.status == "passed"
+    assert admitted.evidence["hard_remaining_seconds"] == required + 1
+
+    monkeypatch.setattr(
+        code_change_validation.time,
+        "monotonic_ns",
+        lambda: hard - (required - 1) * 1_000_000_000,
+    )
+    rejected = code_change_validation._runtime_budget_gate(
+        "trusted_deep_replay_budget",
+        window,
+        required_seconds=required,
+        command=("Neocortex", "--self-analysis"),
+    )
+    assert rejected.status == "abstained"
+    assert rejected.reason == "insufficient_global_runtime_for_remaining_phases"
+    assert rejected.evidence["shortfall_seconds"] == 1
+
+
+def test_candidate_subprocess_timeout_consumes_only_surplus_before_replay(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from _04_Nucleo_Operativo import code_change_validation
+    from _04_Nucleo_Operativo.code_validation_resources import (
+        CodeValidationRuntimeWindow,
+    )
+
+    active = 10_000_000_000
+    hard = active + 4_500 * 1_000_000_000
+    window = CodeValidationRuntimeWindow(
+        "neocortex-code-validate-123-aaaaaaaaaaaa",
+        active,
+        hard,
+        4_500,
+    )
+    reserve = 1_200 + 180
+    monkeypatch.setattr(
+        code_change_validation.time,
+        "monotonic_ns",
+        lambda: hard - (reserve + 95) * 1_000_000_000,
+    )
+
+    assert (
+        code_change_validation._bounded_runtime_timeout(
+            window,
+            maximum_seconds=600,
+            reserve_seconds=reserve,
+        )
+        == 95
+    )
+    assert (
+        code_change_validation._bounded_runtime_timeout(
+            None,
+            maximum_seconds=600,
+            reserve_seconds=reserve,
+        )
+        == 600
+    )
+
+    monkeypatch.setattr(
+        code_change_validation.time,
+        "monotonic_ns",
+        lambda: hard - reserve * 1_000_000_000,
+    )
+    with pytest.raises(
+        code_change_validation.ChangeValidationError,
+        match="code_validation_global_runtime_reserve_unavailable",
+    ):
+        code_change_validation._bounded_runtime_timeout(
+            window,
+            maximum_seconds=600,
+            reserve_seconds=reserve,
+        )
+
+
+def test_failed_replay_publication_stops_before_replay_review_consumers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from _04_Nucleo_Operativo import code_change_validation
+
+    root = _repository(tmp_path)
+    change = _change_for("neocortex/logic.py")
+    selection = _selection("tests/test_logic.py")
+
+    def passed(gate_id: str) -> object:
+        return code_change_validation.ValidationGate(
+            gate_id,
+            "passed",
+            "fixture_passed",
+            0,
+            (),
+            {},
+        )
+
+    review = SimpleNamespace(experiment_plan=SimpleNamespace(proposals=()))
+    review_reads: list[int] = []
+
+    def review_gate(*_args, **_kwargs):
+        review_reads.append(1)
+        return passed("autoanalysis_verdict"), review
+
+    monkeypatch.setattr(
+        code_change_validation,
+        "capture_git_change",
+        lambda *_args, **_kwargs: change,
+    )
+    monkeypatch.setattr(
+        code_change_validation,
+        "select_affected_tests",
+        lambda *_args, **_kwargs: selection,
+    )
+    monkeypatch.setattr(
+        code_change_validation,
+        "_unpublished_source_paths",
+        lambda *_args, **_kwargs: (),
+    )
+    monkeypatch.setattr(code_change_validation, "_fresh_review_gate", review_gate)
+    monkeypatch.setattr(
+        code_change_validation,
+        "_coverage_gate",
+        lambda *_args, **_kwargs: passed("affected_coverage"),
+    )
+    monkeypatch.setattr(
+        code_change_validation,
+        "_experiment_gate",
+        lambda *_args, **_kwargs: (passed("allowlisted_experiments"), ()),
+    )
+    monkeypatch.setattr(
+        code_change_validation,
+        "_candidate_wheel_gate",
+        lambda *_args, **_kwargs: passed("candidate_wheel_smoke"),
+    )
+    monkeypatch.setattr(
+        code_change_validation,
+        "_capture_unchanged",
+        lambda *_args, **_kwargs: True,
+    )
+    trusted_runs = 0
+
+    def runner(arguments, *, cwd, timeout, environment=None):
+        nonlocal trusted_runs
+        command = tuple(str(item) for item in arguments)
+        if "--analysis-profile" in command:
+            trusted_runs += 1
+            return subprocess.CompletedProcess(
+                command,
+                0 if trusted_runs == 1 else 2,
+                "fixture",
+                "replay failed",
+            )
+        return subprocess.CompletedProcess(command, 0, "fixture", "")
+
+    result = validate_code_change(
+        root=root,
+        state_directory=tmp_path / "state",
+        time_budget_seconds=30,
+        runner=runner,
+    )
+
+    assert result.status == "failed"
+    assert result.reason == "failed_gate:trusted_deep_replay_publication"
+    assert review_reads == [1]
+    assert trusted_runs == 2
+    assert "autoanalysis_replay_verdict" not in {gate.gate_id for gate in result.gates}
 
 
 def test_failed_static_gate_stops_before_trusted_execution(

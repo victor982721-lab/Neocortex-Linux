@@ -238,6 +238,7 @@ class CodeState:
         self.path = Path(path)
         initialize_code_state(self.path)
         self.connection = connect_code_state(self.path, create=False)
+        self._version_count_cache: dict[int, tuple[int, int, int]] | None = None
 
     def close(self) -> None:
         self.connection.close()
@@ -660,6 +661,75 @@ class CodeState:
                 return False
         return True
 
+    def _load_version_count_cache(self) -> dict[int, tuple[int, int, int]]:
+        """Aggregate immutable analyzer-owned child counts once per state open.
+
+        Cache replay previously embedded three correlated ``COUNT`` subqueries
+        in every physical-file lookup.  The reference and diagnostic indexes do
+        not lead with ``version_id``, so SQLite scanned their complete retained
+        history once for every candidate.  Each child row belongs to one
+        immutable file version; one grouped pass therefore provides the exact
+        same counters without weakening the metadata, analyzer or fingerprint
+        checks performed by :meth:`reuse_cached`.
+        """
+
+        counts: dict[int, list[int]] = {}
+
+        def merge(rows: Iterable[sqlite3.Row], position: int) -> None:
+            for row in rows:
+                version_id = int(row[0])
+                count = int(row[1])
+                if version_id <= 0 or count < 0:
+                    raise RuntimeError("cached Code child count is invalid")
+                values = counts.setdefault(version_id, [0, 0, 0])
+                values[position] = count
+
+        merge(
+            self.connection.execute("SELECT version_id,COUNT(*) FROM symbols GROUP BY version_id"),
+            0,
+        )
+        merge(
+            self.connection.execute(
+                "SELECT version_id,COUNT(*) FROM code_references GROUP BY version_id"
+            ),
+            1,
+        )
+        derived_placeholders = ",".join("?" for _ in _DERIVED_DIAGNOSTIC_SOURCES)
+        merge(
+            self.connection.execute(
+                f"""SELECT version_id,COUNT(*) FROM diagnostics
+                WHERE source NOT LIKE 'external:%'
+                AND source NOT IN ({derived_placeholders}) GROUP BY version_id""",
+                _DERIVED_DIAGNOSTIC_SOURCES,
+            ),
+            2,
+        )
+        return {
+            version_id: (values[0], values[1], values[2]) for version_id, values in counts.items()
+        }
+
+    def _version_counts(self, version_id: int) -> tuple[int, int, int]:
+        if self._version_count_cache is None:
+            self._version_count_cache = self._load_version_count_cache()
+        return self._version_count_cache.get(version_id, (0, 0, 0))
+
+    def _cache_version_counts(
+        self,
+        version_id: int,
+        *,
+        symbols: int,
+        references: int,
+        diagnostics: int,
+    ) -> None:
+        """Keep an already-materialized cache coherent after a local publish."""
+
+        if self._version_count_cache is not None:
+            self._version_count_cache[version_id] = (
+                symbols,
+                references,
+                diagnostics,
+            )
+
     def reuse_cached(
         self,
         snapshot: FileSnapshot,
@@ -681,27 +751,16 @@ class CodeState:
 
         _validate_optional_raw_fingerprint(raw_xxh3_128, raw_xxh3_64_guard)
         volume_id, physical_file_id = _identity(snapshot)
-        # ProviderDescriptor reserves ``external:`` for evidence projected only
-        # after the route's analyzer-owned counters have been calculated.
-        derived_placeholders = ",".join("?" for _ in _DERIVED_DIAGNOSTIC_SOURCES)
         lookup_started = time.perf_counter_ns()
         row = self.connection.execute(
-            f"""SELECT f.file_id,f.current_path,v.version_id,v.analysis_status,
+            """SELECT f.file_id,f.current_path,v.version_id,v.analysis_status,
             v.generated,v.vendored,v.size,v.mtime_ns,v.birthtime_ns,v.language,
             v.analyzer_id,v.analyzer_version,v.text_truncated,
-            v.processing_signature,v.raw_xxh3_128,v.raw_xxh3_64_guard,
-            (SELECT COUNT(*) FROM symbols s WHERE s.version_id=v.version_id)
-                AS symbol_count,
-            (SELECT COUNT(*) FROM code_references r WHERE r.version_id=v.version_id)
-                AS reference_count,
-            (SELECT COUNT(*) FROM diagnostics d WHERE d.version_id=v.version_id
-                AND d.source NOT LIKE 'external:%'
-                AND d.source NOT IN ({derived_placeholders}))
-                AS diagnostic_count
+            v.processing_signature,v.raw_xxh3_128,v.raw_xxh3_64_guard
             FROM files f JOIN file_versions v ON v.version_id=f.current_version_id
             WHERE f.volume_id=? AND f.physical_file_id=? AND f.status='current'
             AND v.invalidated_ns IS NULL""",
-            (*_DERIVED_DIAGNOSTIC_SOURCES, volume_id, physical_file_id),
+            (volume_id, physical_file_id),
         ).fetchone()
         if elapsed_nanoseconds is not None:
             elapsed_nanoseconds["cache_lookup"] = elapsed_nanoseconds.get("cache_lookup", 0) + (
@@ -749,6 +808,10 @@ class CodeState:
         if retry_errors and status in {AnalysisStatus.ERROR, AnalysisStatus.PARTIAL}:
             return None
         version_id = int(row["version_id"])
+        counts_started = time.perf_counter_ns()
+        symbol_count, reference_count, diagnostic_count = self._version_counts(version_id)
+        if elapsed_nanoseconds is not None:
+            elapsed_nanoseconds["cache_lookup"] += time.perf_counter_ns() - counts_started
         update_started = time.perf_counter_ns()
 
         def update_observation() -> None:
@@ -783,9 +846,9 @@ class CodeState:
             status,
             bool(row["generated"]),
             bool(row["vendored"]),
-            int(row["symbol_count"]),
-            int(row["reference_count"]),
-            int(row["diagnostic_count"]),
+            symbol_count,
+            reference_count,
+            diagnostic_count,
         )
 
     # endregion [02]
@@ -953,6 +1016,12 @@ class CodeState:
             self._insert_metrics(version_id, analysis, symbol_ids)
             self._insert_chunks(version_id, analysis, symbol_ids)
             self._insert_project_hints(version_id, analysis, framework_run_id)
+        self._cache_version_counts(
+            version_id,
+            symbols=len(analysis.symbols),
+            references=len(analysis.references),
+            diagnostics=len(analysis.diagnostics),
+        )
         return version_id, previous is not None
 
     def store_skipped(
@@ -1038,6 +1107,12 @@ class CodeState:
                         observation.text_excerpt,
                     ),
                 )
+        self._cache_version_counts(
+            version_id,
+            symbols=0,
+            references=0,
+            diagnostics=1,
+        )
         return version_id, previous is not None
 
     def _insert_version(

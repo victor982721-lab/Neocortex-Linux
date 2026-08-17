@@ -17,6 +17,7 @@ question decision-ready.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 import json
 import sqlite3
 import time
@@ -36,8 +37,11 @@ from .code_analysis_epistemics import (
 )
 from .code_experiment_executor import (
     CODE_EXPERIMENT_RECEIPT_SCHEMA,
+    CODE_EXPERIMENT_RECEIPT_V3_SCHEMA,
     CodeExperimentReceipt,
+    code_experiment_selected_relation_digest,
     parse_code_experiment_receipt_payload,
+    validate_code_experiment_declared_test_relations,
 )
 from .code_experiment_planner import (
     CodeExperimentPlan,
@@ -52,12 +56,17 @@ from .code_schema import (
     remove_checkpointed_code_sidecars,
     validate_code_schema,
 )
+from .external_evidence_models import ExternalProviderRelation
+from .external_evidence_store import read_external_provider_attestation
 from .semantic_models import canonical_json, fingerprint_text
 
 CODE_EXPERIMENT_STORE_SCHEMA = "neocortex.code-experiment-store/v1"
 CODE_EXPERIMENT_STORE_MAX_PAYLOAD_BYTES = 1_048_576
 CODE_EXPERIMENT_STORE_MAX_RECEIPTS_PER_PROPOSAL = 32
 CODE_EXPERIMENT_STORE_MAX_RESOLVED = 256
+_CODE_EXPERIMENT_RECEIPT_SCHEMAS = frozenset(
+    {CODE_EXPERIMENT_RECEIPT_V3_SCHEMA, CODE_EXPERIMENT_RECEIPT_SCHEMA}
+)
 
 
 class CodeExperimentStoreError(RuntimeError):
@@ -79,6 +88,16 @@ def code_review_digest_identity(digest: object) -> str:
     if isinstance(byte_count, bool) or not isinstance(byte_count, int) or byte_count < 1:
         raise ValueError("Code-review digest byte count is invalid")
     return f"xxh3_128:{xxh3_128}:xxh3_64:{guard}:bytes:{byte_count}"
+
+
+def _validated_receipt_payload(
+    receipt: CodeExperimentReceipt,
+) -> tuple[dict[str, object], str]:
+    payload = receipt.as_payload()
+    schema = payload["schema"]
+    if not isinstance(schema, str) or schema not in _CODE_EXPERIMENT_RECEIPT_SCHEMAS:
+        raise ValueError("experiment receipt payload schema is invalid")
+    return payload, schema
 
 
 def _experiment_envelope_digest(
@@ -168,7 +187,8 @@ class ResolvedCodeExperimentReceipt:
             raise ValueError("experiment receipt storage metadata is invalid")
         if not isinstance(self.receipt, CodeExperimentReceipt):
             raise ValueError("experiment receipt payload is invalid")
-        payload = canonical_json(self.receipt.as_payload())
+        receipt_payload, _receipt_schema = _validated_receipt_payload(self.receipt)
+        payload = canonical_json(receipt_payload)
         fingerprint = fingerprint_text(payload)
         if (
             self.payload_xxh3_128,
@@ -182,6 +202,7 @@ class ResolvedCodeExperimentReceipt:
         """Bind the receipt payload digests to its complete storage context."""
 
         receipt = self.receipt
+        _receipt_payload, receipt_schema = _validated_receipt_payload(receipt)
         return _experiment_envelope_digest(
             receipt_id=receipt.receipt_id,
             analysis_run_id=self.analysis_run_id,
@@ -193,7 +214,7 @@ class ResolvedCodeExperimentReceipt:
             template_version=receipt.template_version,
             source_processing_signature=receipt.source_version,
             review_digest=self.review_digest,
-            receipt_schema=CODE_EXPERIMENT_RECEIPT_SCHEMA,
+            receipt_schema=receipt_schema,
             receipt_status=receipt.status,
             payload_xxh3_128=self.payload_xxh3_128,
             payload_xxh3_64_guard=self.payload_xxh3_64_guard,
@@ -204,6 +225,7 @@ class ResolvedCodeExperimentReceipt:
         )
 
     def as_payload(self) -> dict[str, object]:
+        receipt_payload, _receipt_schema = _validated_receipt_payload(self.receipt)
         return {
             "schema": CODE_EXPERIMENT_STORE_SCHEMA,
             "analysis_run_id": self.analysis_run_id,
@@ -216,7 +238,7 @@ class ResolvedCodeExperimentReceipt:
             "payload_xxh3_64_guard": self.payload_xxh3_64_guard,
             "payload_bytes": self.payload_bytes,
             "envelope_digest": self.envelope_digest,
-            "receipt": self.receipt.as_payload(),
+            "receipt": receipt_payload,
         }
 
 
@@ -332,7 +354,7 @@ def _resolved_from_row(
         receipt.template_id,
         receipt.template_version,
         receipt.source_version,
-        CODE_EXPERIMENT_RECEIPT_SCHEMA,
+        _validated_receipt_payload(receipt)[1],
         receipt.status,
         "advisory",
         0,
@@ -342,30 +364,27 @@ def _resolved_from_row(
     return resolved
 
 
-def record_code_experiment_receipt(
-    database: Path,
+@dataclass(frozen=True, slots=True)
+class _PreparedCodeExperimentReceipt:
+    receipt: CodeExperimentReceipt
+    proposal: CodeExperimentProposal
+    receipt_schema: str
+    payload: str
+    payload_xxh3_128: str
+    payload_xxh3_64_guard: str
+    payload_bytes: int
+
+
+def _prepare_code_experiment_receipt(
     receipt: CodeExperimentReceipt,
     proposal: CodeExperimentProposal,
     *,
-    analysis_run_id: int,
     processing_signature: str,
-    review_digest: str,
-    recorded_ns: int | None = None,
-) -> ResolvedCodeExperimentReceipt:
-    """Append one receipt after verifying its completed Code publication context."""
-
+) -> _PreparedCodeExperimentReceipt:
     if not isinstance(receipt, CodeExperimentReceipt):
         raise TypeError("Code experiment receipt must be typed")
     if not isinstance(proposal, CodeExperimentProposal):
         raise TypeError("Code experiment proposal must be typed")
-    if (
-        isinstance(analysis_run_id, bool)
-        or not isinstance(analysis_run_id, int)
-        or analysis_run_id < 1
-    ):
-        raise ValueError("experiment receipt analysis run is invalid")
-    _required("experiment processing signature", processing_signature, 2_048)
-    _required("experiment review digest", review_digest, 256)
     if (
         receipt.proposal_id != proposal.proposal_id
         or receipt.template_id != proposal.template_id
@@ -378,14 +397,143 @@ def record_code_experiment_receipt(
         raise ValueError("experiment receipt requires an executable registered proposal")
     if receipt.status not in {"passed", "failed", "abstained"}:
         raise ValueError("experiment receipt has an invalid terminal status")
+    receipt_payload, receipt_schema = _validated_receipt_payload(receipt)
+    payload = canonical_json(receipt_payload)
+    fingerprint = fingerprint_text(payload)
+    if not 1 <= fingerprint.byte_count <= CODE_EXPERIMENT_STORE_MAX_PAYLOAD_BYTES:
+        raise ValueError("experiment receipt payload exceeds its durable bound")
+    return _PreparedCodeExperimentReceipt(
+        receipt,
+        proposal,
+        receipt_schema,
+        payload,
+        fingerprint.xxh3_128,
+        fingerprint.xxh3_64_guard,
+        fingerprint.byte_count,
+    )
+
+
+def _validate_attested_receipt_sources(
+    connection: sqlite3.Connection,
+    prepared: tuple[_PreparedCodeExperimentReceipt, ...],
+    *,
+    analysis_run_id: int,
+    processing_signature: str,
+) -> None:
+    attested = tuple(
+        item.receipt for item in prepared if item.receipt_schema == CODE_EXPERIMENT_RECEIPT_SCHEMA
+    )
+    if not attested:
+        return
+    first = attested[0]
+    attestation = read_external_provider_attestation(
+        connection,
+        analysis_run_id=analysis_run_id,
+        tool_run_id=cast(int, first.provider_tool_run_id),
+        expected_processing_signature=processing_signature,
+        expected_provider_id=first.provider_id,
+        expected_provider_schema=first.provider_schema,
+        enforce_current_runtime=True,
+    )
+    expected_binding = (
+        analysis_run_id,
+        processing_signature,
+        attestation.tool_run_id,
+        attestation.effective_tool_run_id,
+        attestation.tool_status,
+        attestation.tool_name,
+        attestation.tool_version,
+        attestation.execution,
+        attestation.input_signature,
+        attestation.result_digest,
+        attestation.portable_publication_id,
+        attestation.descriptor_configuration_signature,
+        attestation.environment_signature,
+        attestation.comparability_signature,
+    )
+    declared_by_context: dict[
+        tuple[Literal["full", "selected"], str, str, str],
+        tuple[ExternalProviderRelation, ...],
+    ] = {}
+    for receipt in attested:
+        observed_binding = (
+            receipt.analysis_run_id,
+            receipt.source_version,
+            receipt.provider_tool_run_id,
+            receipt.provider_effective_tool_run_id,
+            receipt.provider_tool_status,
+            receipt.provider_tool_name,
+            receipt.provider_tool_version,
+            receipt.provider_execution,
+            receipt.provider_input_signature,
+            receipt.provider_result_digest,
+            receipt.provider_portable_publication_id,
+            receipt.provider_descriptor_configuration_signature,
+            receipt.provider_environment_signature,
+            receipt.provider_comparability_signature,
+        )
+        if observed_binding != expected_binding:
+            raise CodeExperimentStoreError("experiment_receipt_provider_binding_changed")
+        context = (
+            cast(Literal["full", "selected"], receipt.provider_suite_selection),
+            receipt.configuration_signature,
+            cast(str, receipt.provider_suite_signature),
+            cast(str, receipt.provider_measurement_scope_signature),
+        )
+        declared = declared_by_context.get(context)
+        if declared is None:
+            declared = validate_code_experiment_declared_test_relations(
+                attestation,
+                suite_selection=context[0],
+                configuration_signature=context[1],
+                suite_signature=context[2],
+                measurement_scope_signature=context[3],
+            )
+            declared_by_context[context] = declared
+        selected_digest = code_experiment_selected_relation_digest(
+            declared,
+            receipt.selected_nodeids,
+        )
+        if selected_digest != receipt.selected_relation_digest:
+            raise CodeExperimentStoreError("experiment_receipt_relation_binding_changed")
+
+
+def _record_code_experiment_receipts(
+    database: Path,
+    pairs: Iterable[tuple[CodeExperimentReceipt, CodeExperimentProposal]],
+    *,
+    analysis_run_id: int,
+    processing_signature: str,
+    review_digest: str,
+    recorded_ns: int | None,
+) -> tuple[ResolvedCodeExperimentReceipt, ...]:
+    if (
+        isinstance(analysis_run_id, bool)
+        or not isinstance(analysis_run_id, int)
+        or analysis_run_id < 1
+    ):
+        raise ValueError("experiment receipt analysis run is invalid")
+    _required("experiment processing signature", processing_signature, 2_048)
+    _required("experiment review digest", review_digest, 256)
     if recorded_ns is not None and (
         isinstance(recorded_ns, bool) or not isinstance(recorded_ns, int) or recorded_ns < 1
     ):
         raise ValueError("experiment receipt timestamp is invalid")
-    payload = canonical_json(receipt.as_payload())
-    fingerprint = fingerprint_text(payload)
-    if not 1 <= fingerprint.byte_count <= CODE_EXPERIMENT_STORE_MAX_PAYLOAD_BYTES:
-        raise ValueError("experiment receipt payload exceeds its durable bound")
+    selected_pairs = tuple(pairs)
+    if len(selected_pairs) > CODE_EXPERIMENT_STORE_MAX_RESOLVED:
+        raise CodeExperimentStoreError("experiment_receipt_batch_bound_exceeded")
+    if recorded_ns is not None and len(selected_pairs) != 1:
+        raise ValueError("explicit experiment receipt timestamp requires one receipt")
+    prepared = tuple(
+        _prepare_code_experiment_receipt(
+            receipt,
+            proposal,
+            processing_signature=processing_signature,
+        )
+        for receipt, proposal in selected_pairs
+    )
+    if not prepared:
+        return ()
 
     selected = Path(database)
     connection = connect_code_state(selected, create=False)
@@ -404,87 +552,107 @@ def record_code_experiment_receipt(
         latest = connection.execute("SELECT MAX(analysis_run_id) FROM analysis_runs").fetchone()
         if latest is None or int(latest[0]) != analysis_run_id:
             raise CodeExperimentStoreError("experiment_source_analysis_run_not_latest")
-        prior = connection.execute(
-            """SELECT * FROM code_experiment_receipts WHERE receipt_id=?""",
-            (receipt.receipt_id,),
-        ).fetchone()
-        if prior is None:
-            ordering = connection.execute(
-                """SELECT COUNT(*),MAX(recorded_ns) FROM code_experiment_receipts
-                WHERE proposal_id=?""",
-                (proposal.proposal_id,),
+        _validate_attested_receipt_sources(
+            connection,
+            prepared,
+            analysis_run_id=analysis_run_id,
+            processing_signature=processing_signature,
+        )
+        resolved_batch: list[ResolvedCodeExperimentReceipt] = []
+        inserted = False
+        automatic_recorded_ns = time.time_ns()
+        automatic_offset = 0
+        for item in prepared:
+            receipt = item.receipt
+            proposal = item.proposal
+            prior = connection.execute(
+                """SELECT * FROM code_experiment_receipts WHERE receipt_id=?""",
+                (receipt.receipt_id,),
             ).fetchone()
-            if ordering is None:
-                raise CodeExperimentStoreError("experiment_receipt_order_unresolvable")
-            count = int(ordering[0])
-            if count >= CODE_EXPERIMENT_STORE_MAX_RECEIPTS_PER_PROPOSAL:
-                raise CodeExperimentStoreError("experiment_receipt_proposal_bound_exceeded")
-            observed_ns = time.time_ns() if recorded_ns is None else recorded_ns
-            prior_recorded_ns = None if ordering[1] is None else int(ordering[1])
-            if prior_recorded_ns is not None and observed_ns <= prior_recorded_ns:
-                raise CodeExperimentStoreError("experiment_receipt_order_not_monotonic")
-            resolved = ResolvedCodeExperimentReceipt(
-                analysis_run_id,
-                proposal.evaluation_id,
-                proposal.question_id,
-                proposal.subject_key,
-                review_digest,
-                observed_ns,
-                fingerprint.xxh3_128,
-                fingerprint.xxh3_64_guard,
-                fingerprint.byte_count,
-                receipt,
-            )
-            connection.execute(
-                """INSERT INTO code_experiment_receipts(
-                receipt_id,analysis_run_id,source_evaluation_id,question_id,subject_key,
-                proposal_id,template_id,template_version,source_processing_signature,
-                review_digest,envelope_digest,receipt_schema,receipt_status,payload_json,
-                payload_xxh3_128,payload_xxh3_64_guard,payload_bytes,recorded_ns,
-                authority,mutation_authority)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'advisory',0)""",
-                (
-                    receipt.receipt_id,
+            if prior is None:
+                ordering = connection.execute(
+                    """SELECT COUNT(*),MAX(recorded_ns) FROM code_experiment_receipts
+                    WHERE proposal_id=?""",
+                    (proposal.proposal_id,),
+                ).fetchone()
+                if ordering is None:
+                    raise CodeExperimentStoreError("experiment_receipt_order_unresolvable")
+                count = int(ordering[0])
+                if count >= CODE_EXPERIMENT_STORE_MAX_RECEIPTS_PER_PROPOSAL:
+                    raise CodeExperimentStoreError("experiment_receipt_proposal_bound_exceeded")
+                observed_ns = (
+                    automatic_recorded_ns + automatic_offset if recorded_ns is None else recorded_ns
+                )
+                automatic_offset += 1
+                prior_recorded_ns = None if ordering[1] is None else int(ordering[1])
+                if prior_recorded_ns is not None and observed_ns <= prior_recorded_ns:
+                    raise CodeExperimentStoreError("experiment_receipt_order_not_monotonic")
+                resolved = ResolvedCodeExperimentReceipt(
                     analysis_run_id,
                     proposal.evaluation_id,
                     proposal.question_id,
                     proposal.subject_key,
-                    proposal.proposal_id,
-                    receipt.template_id,
-                    receipt.template_version,
-                    processing_signature,
                     review_digest,
-                    resolved.envelope_digest,
-                    CODE_EXPERIMENT_RECEIPT_SCHEMA,
-                    receipt.status,
-                    payload,
-                    fingerprint.xxh3_128,
-                    fingerprint.xxh3_64_guard,
-                    fingerprint.byte_count,
                     observed_ns,
-                ),
-            )
+                    item.payload_xxh3_128,
+                    item.payload_xxh3_64_guard,
+                    item.payload_bytes,
+                    receipt,
+                )
+                connection.execute(
+                    """INSERT INTO code_experiment_receipts(
+                    receipt_id,analysis_run_id,source_evaluation_id,question_id,subject_key,
+                    proposal_id,template_id,template_version,source_processing_signature,
+                    review_digest,envelope_digest,receipt_schema,receipt_status,payload_json,
+                    payload_xxh3_128,payload_xxh3_64_guard,payload_bytes,recorded_ns,
+                    authority,mutation_authority)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'advisory',0)""",
+                    (
+                        receipt.receipt_id,
+                        analysis_run_id,
+                        proposal.evaluation_id,
+                        proposal.question_id,
+                        proposal.subject_key,
+                        proposal.proposal_id,
+                        receipt.template_id,
+                        receipt.template_version,
+                        processing_signature,
+                        review_digest,
+                        resolved.envelope_digest,
+                        item.receipt_schema,
+                        receipt.status,
+                        item.payload,
+                        item.payload_xxh3_128,
+                        item.payload_xxh3_64_guard,
+                        item.payload_bytes,
+                        observed_ns,
+                    ),
+                )
+                inserted = True
+            else:
+                resolved = _resolved_from_row(prior)
+                expected = (
+                    analysis_run_id,
+                    proposal.evaluation_id,
+                    proposal.question_id,
+                    proposal.subject_key,
+                    review_digest,
+                    receipt,
+                )
+                observed = (
+                    resolved.analysis_run_id,
+                    resolved.source_evaluation_id,
+                    resolved.question_id,
+                    resolved.subject_key,
+                    resolved.review_digest,
+                    resolved.receipt,
+                )
+                if observed != expected:
+                    raise CodeExperimentStoreError("experiment_receipt_identity_collision")
+            resolved_batch.append(resolved)
+        if inserted:
             connection.commit()
         else:
-            resolved = _resolved_from_row(prior)
-            expected = (
-                analysis_run_id,
-                proposal.evaluation_id,
-                proposal.question_id,
-                proposal.subject_key,
-                review_digest,
-                receipt,
-            )
-            observed = (
-                resolved.analysis_run_id,
-                resolved.source_evaluation_id,
-                resolved.question_id,
-                resolved.subject_key,
-                resolved.review_digest,
-                resolved.receipt,
-            )
-            if observed != expected:
-                raise CodeExperimentStoreError("experiment_receipt_identity_collision")
             connection.rollback()
         # The row commit is the publication boundary.  A checkpoint failure is
         # recoverable by retrying the same immutable receipt, which must also
@@ -501,7 +669,48 @@ def record_code_experiment_receipt(
         error_type=CodeExperimentStoreError,
         require_removal=False,
     )
-    return resolved
+    return tuple(resolved_batch)
+
+
+def record_code_experiment_receipts(
+    database: Path,
+    pairs: Iterable[tuple[CodeExperimentReceipt, CodeExperimentProposal]],
+    analysis_run_id: int,
+    processing_signature: str,
+    review_digest: str,
+) -> tuple[ResolvedCodeExperimentReceipt, ...]:
+    """Append one validated receipt batch in a single atomic transaction."""
+
+    return _record_code_experiment_receipts(
+        database,
+        pairs,
+        analysis_run_id=analysis_run_id,
+        processing_signature=processing_signature,
+        review_digest=review_digest,
+        recorded_ns=None,
+    )
+
+
+def record_code_experiment_receipt(
+    database: Path,
+    receipt: CodeExperimentReceipt,
+    proposal: CodeExperimentProposal,
+    *,
+    analysis_run_id: int,
+    processing_signature: str,
+    review_digest: str,
+    recorded_ns: int | None = None,
+) -> ResolvedCodeExperimentReceipt:
+    """Append one receipt through the atomic batch storage boundary."""
+
+    return _record_code_experiment_receipts(
+        database,
+        ((receipt, proposal),),
+        analysis_run_id=analysis_run_id,
+        processing_signature=processing_signature,
+        review_digest=review_digest,
+        recorded_ns=recorded_ns,
+    )[0]
 
 
 def read_code_experiment_receipts(
@@ -985,7 +1194,7 @@ def _experiment_evidence(
         source_owner_id="code",
         producer_id="code-experiment-executor",
         producer_version=receipt.policy_id,
-        source_schema=CODE_EXPERIMENT_RECEIPT_SCHEMA,
+        source_schema=_validated_receipt_payload(receipt)[1],
         source_record_kind="code_experiment_receipt",
         source_record_id=receipt.receipt_id,
         source_projection_digest=projection_digest,
@@ -1179,4 +1388,5 @@ __all__ = [
     "parse_resolved_code_experiment_receipt_payload",
     "read_code_experiment_receipts",
     "record_code_experiment_receipt",
+    "record_code_experiment_receipts",
 ]

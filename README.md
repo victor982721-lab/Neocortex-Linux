@@ -755,9 +755,14 @@ acotadas de `code.sqlite3` se compara antes/después sin volver a leer todo su
 historial durante cada experimento. No existe un lock continuo del checkout y ni el
 corpus ni otros stores quedan dentro de esa barrera.
 
-El resultado medido es `neocortex.code-experiment-receipt/v3`. Después de
-terminar, la CLI lo agrega como `neocortex.code-experiment-store/v1` a la tabla
-inmutable y append-only `code_experiment_receipts` de Code schema v6. Por ello
+La ejecución explícita produce `neocortex.code-experiment-receipt/v3`. La
+validación canónica no vuelve a lanzar los mismos nodeids por proposal: liga las
+relaciones exactas de la publicación Coverage vigente y produce receipts v4 con
+IDs de run/tool/publicación, firmas de configuración, entorno, suite y scope, y
+un digest del subconjunto de relaciones; este camino declara cero procesos y
+cero bytes de salida propios. Ambos se agregan como
+`neocortex.code-experiment-store/v1` a la tabla inmutable y append-only
+`code_experiment_receipts` de Code schema v7. Por ello
 `code_database_unchanged=true` describe esa barrera acotada durante la fase
 ejecutora antes de persistir, no una equivalencia byte a byte del store ni que el
 comando completo no escriba su receipt. El siguiente review v22
@@ -892,17 +897,24 @@ full usa 10000/250 para no truncar la suite ni repetir cien arranques de worker.
 La suite declarada omite únicamente las pruebas del runtime Windows/NTFS
 retirado; conserva fixtures portables aunque modelen metadatos históricos.
 Después ejecuta los gates estáticos y arquitectónicos existentes, publica el
-perfil `trusted-deep`, consume `neocortex.code-review/v22`, ejecuta una vez cada
-plantilla de experimento allow-listed relevante, construye e instala el wheel
+perfil `trusted-deep`, consume `neocortex.code-review/v22`, atestigua cada
+plantilla allow-listed relevante desde los outcomes exactos ya publicados,
+construye e instala el wheel
 candidato en un entorno efímero fuera del checkout, y repite la publicación
 idéntica para exigir replay de los proveedores. Devuelve un único recibo
 `neocortex.code-change-validation/v3` con salida `0` sólo si no hubo fallo ni
 abstención y si fuente/estado canónico permanecieron intactos. No autoriza
 patches, push, release ni mutación del corpus.
 
+El coordinador consulta el inicio monotónico del transient unit y conserva el
+límite global de 75 minutos. El wheel sólo puede consumir el excedente que
+queda después de reservar 20 minutos para replay y tres para cierre/receipt;
+un replay que excede esa cota termina dentro del proceso como evidencia
+`abstained`, no como una falsa «cancelación del usuario» emitida por systemd.
+
 Esta frontera usa los registries runtime/template v11, el verificador técnico
-v7 y la política diff-aware `local-linux-diff-aware-validation-v8`. La policy
-v8 resuelve las cohortes Archive, DOCX e Image mediante el registry versionado,
+v7 y la política diff-aware `local-linux-diff-aware-validation-v9`. La policy
+v9 resuelve las cohortes Archive, DOCX e Image mediante el registry versionado,
 exige sus matrices acotadas completas en los namespaces canónico y compatible,
 y rechaza evidencia faltante en vez de reducir silenciosamente la selección.
 La matriz CLI permanece en scenario v4/template v3 con veintiséis nodeids y cinco gates; la ampliación

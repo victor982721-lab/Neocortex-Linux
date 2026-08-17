@@ -39,6 +39,7 @@ _EXPECTED_TEST_ROOTS = {
         "tests/test_archive_cli.py",
         "tests/test_archive_namespace_migration.py",
         "tests/test_archive_route.py",
+        "tests/test_archive_text_worker_unit.py",
         "tests/test_capability_registry.py",
         "tests/test_format_module_move_compatibility.py",
         "tests/test_route_schema_contracts.py",
@@ -83,7 +84,7 @@ def _module_map(capability_id: str) -> dict[str, tuple[str | None, str]]:
 def test_registry_test_root_matrix_is_independent_complete_and_live() -> None:
     repository = Path(__file__).resolve().parents[1]
 
-    assert sum(len(roots) for roots in _EXPECTED_TEST_ROOTS.values()) == 25
+    assert sum(len(roots) for roots in _EXPECTED_TEST_ROOTS.values()) == 26
     assert {
         capability.capability_id: capability.test_roots
         for capability in CAPABILITY_REGISTRY.capabilities

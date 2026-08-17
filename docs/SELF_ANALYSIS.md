@@ -607,9 +607,13 @@ arquitectónica completa.
 pytest/coverage con timeout sobre el checkout canónico confiable. El temporal
 externo aloja runtime/checkpoints; no copia la fuente ni crea un sandbox de
 seguridad. Trusted-deep conserva el `HOME` canónico y declara
-`uses_network=true`. El receipt `neocortex.code-experiment-receipt/v3` conserva
-identidad del provider, manifest, outcomes y gates de los nodeids seleccionados,
-además del fence Code before/after. El provider recalcula antes y después la
+`uses_network=true`. Esta interfaz explícita conserva el receipt
+`neocortex.code-experiment-receipt/v3`, con identidad del provider, manifest,
+outcomes y gates de los nodeids seleccionados, además del fence Code
+before/after. La validación canónica, en cambio, no reejecuta esos mismos tests:
+emite `neocortex.code-experiment-receipt/v4` desde las relaciones Coverage
+exactas del run vigente, con procedencia de run/tool/publicación y digest del
+subconjunto seleccionado. El provider recalcula antes y después la
 firma de los inputs Python publicados y del soporte Git observado; una
 diferencia rechaza el resultado. El fence compara identidad Linux, sidecars y
 anclas acotadas de `code.sqlite3` sin releer toda la historia durante cada
@@ -619,11 +623,15 @@ inmutabilidad del corpus u otros stores.
 La validación canónica retransmite por `stderr` los eventos estructurados y la
 salida del hijo mientras conserva el recibo JSON final aislado en `stdout`.
 También emite un heartbeat cada 30 segundos y mantiene como última barrera el
-cgroup Linux de 75 minutos; por ello un consumidor puede observar el avance sin
-convertir un timeout ciego en ausencia de evidencia.
+cgroup Linux de 75 minutos. El worker deriva su deadline del timestamp
+monotónico de systemd, acota replay a 20 minutos y reserva tres minutos para
+review/finalización/receipt. Un SIGINT del límite global se clasifica como
+expiración o interrupción de la frontera de recursos, no como cancelación
+humana.
 
-Code schema v6 agrega el resultado terminal a
-`code_experiment_receipts`, tabla append-only protegida contra update/delete. La
+Code schema v7 agrega receipts v3 y v4 a `code_experiment_receipts`, tabla
+append-only protegida contra update/delete. La migración 6→7 conserva cada
+campo y byte del payload v3 y amplía únicamente el contrato de schema. La
 salida JSON del comando es `neocortex.code-experiment-store/v1` y contiene el
 receipt medido. La escritura ocurre **después** del digest after: por tanto
 `code_database_unchanged=true` no describe la invocación completa como read-only.
@@ -938,7 +946,7 @@ run con replay exacto. Si el grafo no permite elegir pruebas, un proveedor no
 queda listo, la medición es incompleta o el snapshot cambia durante la corrida,
 se abstiene o falla: nunca traduce ausencia de evidencia en verde. Use
 `--baseline HEAD^` para verificar un commit ya integrado localmente.
-La política `local-linux-diff-aware-validation-v8` incluye los bindings PDF y
+La política `local-linux-diff-aware-validation-v9` incluye los bindings PDF y
 las matrices completas Archive/DOCX/Image para los namespaces canónico y de
 compatibilidad;
 el verificador técnico v7 sólo acepta su pregunta con los cuatro gates y los

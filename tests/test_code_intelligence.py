@@ -71,9 +71,7 @@ def test_quiescent_code_reads_do_not_recreate_sqlite_sidecars(
 
     with code_database(database, readonly=True) as connection:
         assert int(connection.execute("PRAGMA query_only").fetchone()[0]) == 1
-        assert int(connection.execute("PRAGMA user_version").fetchone()[0]) == (
-            CODE_SCHEMA_VERSION
-        )
+        assert int(connection.execute("PRAGMA user_version").fetchone()[0]) == (CODE_SCHEMA_VERSION)
     assert (
         search_code(
             database,
@@ -345,14 +343,10 @@ def test_route_is_incremental_searchable_and_does_not_modify_sources(
     )
     diagnostics = search_code(
         config.state_path,
-        CodeSearchQuery(
-            diagnostic="python_parse_error", modes=("diagnostic",), limit=5
-        ),
+        CodeSearchQuery(diagnostic="python_parse_error", modes=("diagnostic",), limit=5),
     )
 
-    assert any(
-        "fts" in hit.match_types and hit.path.endswith("db.py") for hit in hybrid
-    )
+    assert any("fts" in hit.match_types and hit.path.endswith("db.py") for hit in hybrid)
     assert definitions[0].symbol == "db.validate_sqlite_access"
     assert diagnostics[0].path.endswith("invalid.py")
     assert diagnostics[0].analysis_status == "partial"
@@ -535,9 +529,7 @@ def test_relative_imports_resolve_by_package_path_without_basename_guessing(
 
     by_source_and_name = {
         (Path(str(source)).relative_to(tmp_path).as_posix(), str(name)): (
-            None
-            if target is None
-            else Path(str(target)).relative_to(tmp_path).as_posix()
+            None if target is None else Path(str(target)).relative_to(tmp_path).as_posix()
         )
         for source, name, target in rows
     }
@@ -549,9 +541,9 @@ def test_relative_imports_resolve_by_package_path_without_basename_guessing(
         ("nested/pkg/consumer.py", "..shared"): "nested/shared.py",
         ("nested/pkg/consumer.py", ".absent"): None,
     }
-    assert [
-        Path(str(row[0])).relative_to(tmp_path).as_posix() for row in unresolved
-    ] == ["nested/pkg/consumer.py"]
+    assert [Path(str(row[0])).relative_to(tmp_path).as_posix() for row in unresolved] == [
+        "nested/pkg/consumer.py"
+    ]
 
 
 def test_scoped_private_calls_resolve_before_global_name_union(tmp_path: Path) -> None:
@@ -904,9 +896,7 @@ def test_graph_fast_path_rejects_prior_incomplete_run(
     CodeRoute(config, inventory, _FrameworkState(), 1, 1).run()
     with CodeState(config.state_path) as state:
         signature = str(
-            state.connection.execute(
-                "SELECT processing_signature FROM analysis_runs"
-            ).fetchone()[0]
+            state.connection.execute("SELECT processing_signature FROM analysis_runs").fetchone()[0]
         )
         incomplete_run = state.begin_run(2, 2, signature)
         state.fail_run(incomplete_run, RuntimeError("injected incomplete graph"))
@@ -1247,9 +1237,7 @@ def test_python_assignments_emit_only_names_bound_by_the_target(
 ) -> None:
     source = tmp_path / "bindings.py"
     source.write_text(
-        "mapping[keyword[keyword.find('_')]] = 1\n"
-        "head, *tail = values\n"
-        "left, left = values\n",
+        "mapping[keyword[keyword.find('_')]] = 1\nhead, *tail = values\nleft, left = values\n",
         encoding="utf-8",
     )
     config = _config(tmp_path)
@@ -1601,7 +1589,10 @@ def test_excluded_generated_and_vendored_files_remain_full_reconciliation(
     assert statuses == [("missing", 2)]
 
 
-def test_cache_observation_updates_commit_in_bounded_batches(tmp_path: Path) -> None:
+def test_cache_observation_updates_commit_in_bounded_batches(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     sources = []
     for index in range(257):
         source = tmp_path / f"cached_{index:03d}.py"
@@ -1611,12 +1602,25 @@ def test_cache_observation_updates_commit_in_bounded_batches(tmp_path: Path) -> 
     inventory = _Inventory(tuple(sources))
 
     first = CodeRoute(config, inventory, _FrameworkState(), 1, 1).run()
+    count_cache_loads: list[Path] = []
+    original_load = CodeState._load_version_count_cache
+
+    @wraps(original_load)
+    def observed_load(state: CodeState) -> dict[int, tuple[int, int, int]]:
+        count_cache_loads.append(state.path)
+        return original_load(state)
+
+    monkeypatch.setattr(CodeState, "_load_version_count_cache", observed_load)
     replay = CodeRoute(config, inventory, _FrameworkState(), 2, 2).run()
 
     assert first.processed == 257
     assert replay.processed == 0
     assert replay.cache_hits == 257
     assert replay.cache_batches == 3
+    assert replay.symbols == first.symbols
+    assert replay.references == first.references
+    assert replay.diagnostics == first.diagnostics
+    assert count_cache_loads == [config.state_path]
 
 
 def test_binary_and_oversized_candidates_are_bounded_and_versioned(
@@ -1824,9 +1828,7 @@ def test_removed_manifest_rebuilds_retained_source_membership(tmp_path: Path) ->
     ).run()
 
     with sqlite3.connect(config.state_path) as connection:
-        projects = connection.execute(
-            "SELECT name,status FROM projects ORDER BY name"
-        ).fetchall()
+        projects = connection.execute("SELECT name,status FROM projects ORDER BY name").fetchall()
         membership = connection.execute(
             """SELECT p.name,p.status,m.relation
             FROM project_memberships m
@@ -1867,9 +1869,7 @@ def test_manifest_name_change_relabels_cached_sources(tmp_path: Path) -> None:
     second = CodeRoute(config, inventory, _FrameworkState(), 2, 2).run()
 
     with sqlite3.connect(config.state_path) as connection:
-        projects = connection.execute(
-            "SELECT name,status FROM projects ORDER BY name"
-        ).fetchall()
+        projects = connection.execute("SELECT name,status FROM projects ORDER BY name").fetchall()
         source_membership = connection.execute(
             """SELECT p.name,p.status,m.relation
             FROM project_memberships m
@@ -1899,18 +1899,13 @@ def test_code_schema_is_versioned_and_exactly_initialized(tmp_path: Path) -> Non
     initialize_code_state(state_path)
 
     with sqlite3.connect(state_path) as connection:
-        assert (
-            connection.execute("PRAGMA user_version").fetchone()[0]
-            == CODE_SCHEMA_VERSION
-        )
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == CODE_SCHEMA_VERSION
         assert connection.execute(
             "SELECT value FROM metadata WHERE key='schema_version'"
         ).fetchone()[0] == str(CODE_SCHEMA_VERSION)
         assert tuple(
             row[0]
-            for row in connection.execute(
-                "SELECT version FROM schema_migrations ORDER BY version"
-            )
+            for row in connection.execute("SELECT version FROM schema_migrations ORDER BY version")
         ) == tuple(range(1, CODE_SCHEMA_VERSION + 1))
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
 

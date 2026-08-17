@@ -369,9 +369,7 @@ class CapabilitySpec:
         return tuple(
             CapabilityLogicalOwnerBinding(
                 owner_id=self.logical_owner_id,
-                selector_id=(
-                    f"{self.capability_id}-legacy-{binding.role.replace('_', '-')}"
-                ),
+                selector_id=(f"{self.capability_id}-legacy-{binding.role.replace('_', '-')}"),
                 match_kind="exact_module",
                 value=binding.legacy_module_id,
                 state_owner_ids=state_owner_ids,
@@ -459,9 +457,7 @@ class CapabilityRegistry:
             if _module_in_tree(legacy_module, canonical_tree)
         )
         if cross_namespace_matches:
-            raise ValueError(
-                "legacy capability modules cannot match any canonical capability tree"
-            )
+            raise ValueError("legacy capability modules cannot match any canonical capability tree")
 
         owner_bindings = tuple(
             binding
@@ -647,6 +643,7 @@ CAPABILITY_REGISTRY = CapabilityRegistry(
                 "tests/test_archive_cli.py",
                 "tests/test_archive_namespace_migration.py",
                 "tests/test_archive_route.py",
+                "tests/test_archive_text_worker_unit.py",
                 "tests/test_capability_registry.py",
                 "tests/test_format_module_move_compatibility.py",
                 "tests/test_route_schema_contracts.py",
@@ -709,8 +706,7 @@ CAPABILITY_REGISTRY = CapabilityRegistry(
                 input_source="route_candidates",
                 subject_match_kind="exact_mime",
                 subject_value=(
-                    "application/vnd.openxmlformats-officedocument."
-                    "wordprocessingml.document"
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
                 ),
                 route_class=_symbol(_DOCX_ROUTE, "DocxRoute"),
                 config_class=_symbol(_DOCX_ROUTE, "DocxRouteConfig"),
@@ -848,26 +844,20 @@ def source_compatibility_architecture_families(module_id: str) -> tuple[str, ...
 
     return tuple(
         dict.fromkeys(
-            item.compatibility_family_id
-            for item in CAPABILITY_REGISTRY.resolve_source(module_id)
+            item.compatibility_family_id for item in CAPABILITY_REGISTRY.resolve_source(module_id)
         )
     )
 
 
-def capability_canonical_logical_owner_bindings() -> tuple[
-    CapabilityLogicalOwnerBinding, ...
-]:
+def capability_canonical_logical_owner_bindings() -> tuple[CapabilityLogicalOwnerBinding, ...]:
     """Return one canonical module-tree selector per capability."""
 
     return tuple(
-        item.canonical_logical_owner_binding()
-        for item in CAPABILITY_REGISTRY.capabilities
+        item.canonical_logical_owner_binding() for item in CAPABILITY_REGISTRY.capabilities
     )
 
 
-def capability_source_logical_owner_bindings() -> tuple[
-    CapabilityLogicalOwnerBinding, ...
-]:
+def capability_source_logical_owner_bindings() -> tuple[CapabilityLogicalOwnerBinding, ...]:
     """Return exact selectors for source compatibility modules."""
 
     return tuple(
@@ -980,9 +970,7 @@ def _parse_route(value: object) -> CapabilityRouteContract:
         ),
         subject_match_kind=cast(
             RouteSubjectMatchKind,
-            _required_text(
-                "capability route subject match kind", raw["subject_match_kind"]
-            ),
+            _required_text("capability route subject match kind", raw["subject_match_kind"]),
         ),
         subject_value=_required_text("capability route subject", raw["subject_value"]),
         route_class=_parse_symbol(raw["route_class"]),
@@ -1026,14 +1014,10 @@ def _parse_state(value: object) -> CapabilityStateContract:
         ),
         knowledge_capture_mode=cast(
             KnowledgeCaptureMode,
-            _required_text(
-                "capability Knowledge capture mode", raw["knowledge_capture_mode"]
-            ),
+            _required_text("capability Knowledge capture mode", raw["knowledge_capture_mode"]),
         ),
         state_module_id=_required_text("capability state module id", raw["state_module_id"]),
-        schema_module_id=_required_text(
-            "capability schema module id", raw["schema_module_id"]
-        ),
+        schema_module_id=_required_text("capability schema module id", raw["schema_module_id"]),
         schema_version_symbol=_parse_symbol(raw["schema_version_symbol"]),
         storage_engine=cast(
             Literal["sqlite"],
@@ -1069,15 +1053,12 @@ def _parse_capability(value: object) -> CapabilitySpec:
         compatibility_family_id=_required_text(
             "capability compatibility family id", raw["compatibility_family_id"]
         ),
-        logical_owner_id=_required_text(
-            "capability logical owner id", raw["logical_owner_id"]
-        ),
+        logical_owner_id=_required_text("capability logical owner id", raw["logical_owner_id"]),
         canonical_module_tree=_required_text(
             "canonical capability module tree", raw["canonical_module_tree"]
         ),
         modules=tuple(
-            _parse_module(item)
-            for item in _sequence(raw["modules"], "capability module bindings")
+            _parse_module(item) for item in _sequence(raw["modules"], "capability module bindings")
         ),
         route=route,
         state=state,
@@ -1087,9 +1068,7 @@ def _parse_capability(value: object) -> CapabilitySpec:
         ),
         executable_module_ids=tuple(
             _required_text("capability executable module", item)
-            for item in _sequence(
-                raw["executable_module_ids"], "capability executable modules"
-            )
+            for item in _sequence(raw["executable_module_ids"], "capability executable modules")
         ),
     )
 

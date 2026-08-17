@@ -4,6 +4,7 @@ import sqlite3
 import zlib
 from dataclasses import asdict, replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -24,6 +25,8 @@ from _04_Nucleo_Operativo.code_analysis_epistemics import (
     validate_analysis_question_evaluation,
 )
 from _04_Nucleo_Operativo.code_experiment_executor import (
+    CODE_EXPERIMENT_RECEIPT_SCHEMA,
+    CODE_EXPERIMENT_RECEIPT_V3_SCHEMA,
     CodeExperimentGateOutcome,
     CodeExperimentOutcome,
     CodeExperimentReceipt,
@@ -35,6 +38,7 @@ from _04_Nucleo_Operativo.code_experiment_store import (
     parse_resolved_code_experiment_receipt_payload,
     read_code_experiment_receipts,
     record_code_experiment_receipt,
+    record_code_experiment_receipts,
 )
 from _04_Nucleo_Operativo.code_invariant_contracts import runtime_scenario
 from _04_Nucleo_Operativo.code_interface_surface_analysis import (
@@ -347,7 +351,14 @@ def _receipt(
     *,
     status: str = "passed",
     source_version: str = "snapshot:fixture",
+    receipt_schema: str = CODE_EXPERIMENT_RECEIPT_V3_SCHEMA,
 ) -> CodeExperimentReceipt:
+    if receipt_schema not in {
+        CODE_EXPERIMENT_RECEIPT_V3_SCHEMA,
+        CODE_EXPERIMENT_RECEIPT_SCHEMA,
+    }:
+        raise ValueError("unsupported fixture receipt schema")
+    attested = receipt_schema == CODE_EXPERIMENT_RECEIPT_SCHEMA
     scenario_specs = tuple(runtime_scenario(item) for item in proposal.scenario_ids)
     outcome = "passed" if status == "passed" else "failed"
     outcomes = tuple(
@@ -384,7 +395,11 @@ def _receipt(
     values = {
         "status": status,
         "reason": None,
-        "policy_id": "allowlisted-measured-gates-trusted-deep-v4",
+        "policy_id": (
+            "allowlisted-measured-gates-trusted-deep-v5"
+            if attested
+            else "allowlisted-measured-gates-trusted-deep-v4"
+        ),
         "proposal_id": proposal.proposal_id,
         "template_id": proposal.template_id,
         "template_version": proposal.template_version,
@@ -413,8 +428,8 @@ def _receipt(
         "failed": sum(item.outcome == "failed" for item in outcomes),
         "skipped": 0,
         "duration_ms": 20,
-        "process_invocations": 1,
-        "stdout_bytes": 10,
+        "process_invocations": 0 if attested else 1,
+        "stdout_bytes": 0 if attested else 10,
         "stderr_bytes": 0,
         "limitations": (
             "receipt_proves_selected_test_outcomes_not_a_question_conclusion_or_formal_proof",
@@ -423,12 +438,35 @@ def _receipt(
         "authority": "advisory",
         "mutation_authority": False,
     }
+    if attested:
+        values.update(
+            {
+                "evidence_mode": "primary_trusted_deep_projection",
+                "analysis_run_id": 1,
+                "provider_tool_run_id": 11,
+                "provider_effective_tool_run_id": 11,
+                "provider_tool_status": "completed",
+                "provider_tool_name": "pytest",
+                "provider_tool_version": "9.1.0",
+                "provider_portable_publication_id": "publication:fixture",
+                "provider_descriptor_configuration_signature": "descriptor:fixture",
+                "provider_environment_signature": "environment:fixture",
+                "provider_comparability_signature": "comparability:fixture",
+                "provider_suite_selection": "full",
+                "provider_suite_signature": "suite:fixture",
+                "provider_measurement_scope_signature": "scope:fixture",
+                "selected_relation_digest": "relations:fixture",
+            }
+        )
     identity_values = dict(values)
     identity_values["duration_ms"] = 0
     identity_values["outcomes"] = tuple(asdict(item) for item in outcomes)
     identity_values["gate_outcomes"] = tuple(asdict(item) for item in gate_outcomes)
     return CodeExperimentReceipt(
-        receipt_id=analysis_identity("code-experiment-receipt-v3", identity_values),
+        receipt_id=analysis_identity(
+            "code-experiment-receipt-v4" if attested else "code-experiment-receipt-v3",
+            identity_values,
+        ),
         **values,  # type: ignore[arg-type]
     )
 
@@ -516,7 +554,7 @@ def _code_v5_database(database: Path) -> None:
         connection.close()
 
 
-def test_populated_code_v5_migrates_to_append_only_receipts_without_fact_drift(
+def test_populated_code_v5_migrates_to_versioned_receipts_without_fact_drift(
     tmp_path: Path,
 ) -> None:
     database = tmp_path / "code-v5.sqlite3"
@@ -525,7 +563,7 @@ def test_populated_code_v5_migrates_to_append_only_receipts_without_fact_drift(
     initialize_code_state(database)
 
     with sqlite3.connect(database) as migrated:
-        assert migrated.execute("PRAGMA user_version").fetchone() == (6,)
+        assert migrated.execute("PRAGMA user_version").fetchone() == (7,)
         assert migrated.execute("SELECT file_id,current_path,status FROM files").fetchone() == (
             7,
             "/fixture/Case.py",
@@ -533,7 +571,7 @@ def test_populated_code_v5_migrates_to_append_only_receipts_without_fact_drift(
         )
         assert migrated.execute(
             "SELECT version FROM schema_migrations ORDER BY version"
-        ).fetchall() == [(1,), (2,), (3,), (4,), (5,), (6,)]
+        ).fetchall() == [(1,), (2,), (3,), (4,), (5,), (6,), (7,)]
         assert migrated.execute("SELECT COUNT(*) FROM code_experiment_receipts").fetchone() == (0,)
         assert migrated.execute("PRAGMA foreign_key_check").fetchall() == []
 
@@ -651,6 +689,278 @@ def test_passed_receipt_is_persisted_idempotently_and_closes_only_human_readines
             connection.execute("DELETE FROM code_experiment_receipts")
     finally:
         connection.close()
+
+
+def test_v3_and_v4_receipts_coexist_with_schema_bound_identity_and_envelope(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec, evaluation = _question()
+    plan = plan_code_experiments((spec,), (evaluation,))
+    proposal = plan.proposals[0]
+    receipt_v3 = _receipt(proposal, receipt_schema=CODE_EXPERIMENT_RECEIPT_V3_SCHEMA)
+    receipt_v4 = _receipt(proposal, receipt_schema=CODE_EXPERIMENT_RECEIPT_SCHEMA)
+    database = _database(tmp_path)
+    monkeypatch.setattr(
+        experiment_store,
+        "_validate_attested_receipt_sources",
+        lambda *_args, **_kwargs: None,
+    )
+
+    stored = record_code_experiment_receipts(
+        database,
+        ((receipt_v3, proposal), (receipt_v4, proposal)),
+        1,
+        "snapshot:fixture",
+        "review:fixture",
+    )
+
+    assert receipt_v3.receipt_id != receipt_v4.receipt_id
+    assert tuple(item.receipt.as_payload()["schema"] for item in stored) == (
+        CODE_EXPERIMENT_RECEIPT_V3_SCHEMA,
+        CODE_EXPERIMENT_RECEIPT_SCHEMA,
+    )
+    assert stored[0].envelope_digest != stored[1].envelope_digest
+    assert stored[0].recorded_ns < stored[1].recorded_ns
+    assert (
+        tuple(parse_resolved_code_experiment_receipt_payload(item.as_payload()) for item in stored)
+        == stored
+    )
+    for item, expected_schema in zip(
+        stored,
+        (CODE_EXPERIMENT_RECEIPT_V3_SCHEMA, CODE_EXPERIMENT_RECEIPT_SCHEMA),
+        strict=True,
+    ):
+        projected = apply_code_experiment_receipts(
+            (spec,),
+            (evaluation,),
+            plan,
+            (item,),
+        )[0]
+        linked = tuple(
+            evidence
+            for evidence in projected.evidence
+            if evidence.source_record_id == item.receipt.receipt_id
+        )
+        assert linked
+        assert {evidence.source_schema for evidence in linked} == {expected_schema}
+    with sqlite3.connect(database) as connection:
+        assert connection.execute(
+            """SELECT receipt_id,receipt_schema FROM code_experiment_receipts
+            ORDER BY recorded_ns"""
+        ).fetchall() == [
+            (receipt_v3.receipt_id, CODE_EXPERIMENT_RECEIPT_V3_SCHEMA),
+            (receipt_v4.receipt_id, CODE_EXPERIMENT_RECEIPT_SCHEMA),
+        ]
+
+    resolved = read_code_experiment_receipts(
+        database,
+        analysis_run_id=1,
+        processing_signature="snapshot:fixture",
+        plan=plan,
+    )
+    assert resolved == (stored[1],)
+
+
+def test_v4_receipt_revalidates_exact_provider_binding_before_insert(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec, evaluation = _question()
+    proposal = plan_code_experiments((spec,), (evaluation,)).proposals[0]
+    receipt = _receipt(proposal, receipt_schema=CODE_EXPERIMENT_RECEIPT_SCHEMA)
+    database = _database(tmp_path)
+    observed: list[dict[str, object]] = []
+    attestation = SimpleNamespace(
+        tool_run_id=receipt.provider_tool_run_id,
+        effective_tool_run_id=receipt.provider_effective_tool_run_id,
+        tool_status=receipt.provider_tool_status,
+        tool_name=receipt.provider_tool_name,
+        tool_version=receipt.provider_tool_version,
+        execution=receipt.provider_execution,
+        input_signature=receipt.provider_input_signature,
+        result_digest=receipt.provider_result_digest,
+        portable_publication_id=receipt.provider_portable_publication_id,
+        descriptor_configuration_signature=(receipt.provider_descriptor_configuration_signature),
+        environment_signature=receipt.provider_environment_signature,
+        comparability_signature=receipt.provider_comparability_signature,
+    )
+
+    def read_attestation(_connection, **kwargs):
+        observed.append(kwargs)
+        return attestation
+
+    monkeypatch.setattr(experiment_store, "read_external_provider_attestation", read_attestation)
+    monkeypatch.setattr(
+        experiment_store,
+        "validate_code_experiment_declared_test_relations",
+        lambda *_args, **_kwargs: (),
+    )
+    monkeypatch.setattr(
+        experiment_store,
+        "code_experiment_selected_relation_digest",
+        lambda _relations, _nodeids: receipt.selected_relation_digest,
+    )
+
+    stored = record_code_experiment_receipts(
+        database,
+        ((receipt, proposal),),
+        1,
+        "snapshot:fixture",
+        "review:fixture",
+    )
+
+    assert tuple(item.receipt for item in stored) == (receipt,)
+    assert observed == [
+        {
+            "analysis_run_id": 1,
+            "tool_run_id": receipt.provider_tool_run_id,
+            "expected_processing_signature": "snapshot:fixture",
+            "expected_provider_id": receipt.provider_id,
+            "expected_provider_schema": receipt.provider_schema,
+            "enforce_current_runtime": True,
+        }
+    ]
+
+
+def test_v4_receipt_provider_binding_change_rolls_back_without_insert(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec, evaluation = _question()
+    proposal = plan_code_experiments((spec,), (evaluation,)).proposals[0]
+    receipt = _receipt(proposal, receipt_schema=CODE_EXPERIMENT_RECEIPT_SCHEMA)
+    database = _database(tmp_path)
+    monkeypatch.setattr(
+        experiment_store,
+        "read_external_provider_attestation",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            tool_run_id=receipt.provider_tool_run_id,
+            effective_tool_run_id=receipt.provider_effective_tool_run_id,
+            tool_status=receipt.provider_tool_status,
+            tool_name=receipt.provider_tool_name,
+            tool_version=receipt.provider_tool_version,
+            execution=receipt.provider_execution,
+            input_signature=receipt.provider_input_signature,
+            result_digest="result:changed-after-attestation",
+            portable_publication_id=receipt.provider_portable_publication_id,
+            descriptor_configuration_signature=(
+                receipt.provider_descriptor_configuration_signature
+            ),
+            environment_signature=receipt.provider_environment_signature,
+            comparability_signature=receipt.provider_comparability_signature,
+        ),
+    )
+
+    with pytest.raises(
+        CodeExperimentStoreError,
+        match="experiment_receipt_provider_binding_changed",
+    ):
+        record_code_experiment_receipts(
+            database,
+            ((receipt, proposal),),
+            1,
+            "snapshot:fixture",
+            "review:fixture",
+        )
+
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM code_experiment_receipts").fetchone() == (
+            0,
+        )
+
+
+def test_store_rejects_receipt_schema_beyond_strict_v3_v4_set(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec, evaluation = _question()
+    proposal = plan_code_experiments((spec,), (evaluation,)).proposals[0]
+    receipt = _receipt(proposal)
+    database = _database(tmp_path)
+    original_payload = CodeExperimentReceipt.as_payload
+
+    def future_payload(self: CodeExperimentReceipt) -> dict[str, object]:
+        payload = original_payload(self)
+        payload["schema"] = "neocortex.code-experiment-receipt/v5"
+        return payload
+
+    monkeypatch.setattr(CodeExperimentReceipt, "as_payload", future_payload)
+    with pytest.raises(ValueError, match="payload schema"):
+        record_code_experiment_receipt(
+            database,
+            receipt,
+            proposal,
+            analysis_run_id=1,
+            processing_signature="snapshot:fixture",
+            review_digest="review:fixture",
+        )
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM code_experiment_receipts").fetchone() == (
+            0,
+        )
+
+
+def test_receipt_batch_rolls_back_atomically_when_a_later_insert_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec, evaluation = _question()
+    proposal = plan_code_experiments((spec,), (evaluation,)).proposals[0]
+    pairs = (
+        (_receipt(proposal), proposal),
+        (_receipt(proposal, receipt_schema=CODE_EXPERIMENT_RECEIPT_SCHEMA), proposal),
+    )
+    database = _database(tmp_path)
+    original_connect = experiment_store.connect_code_state
+    opened = 0
+
+    class RejectingSecondReceiptInsert:
+        def __init__(self, connection: sqlite3.Connection) -> None:
+            self._connection = connection
+            self._receipt_inserts = 0
+
+        @property
+        def in_transaction(self) -> bool:
+            return self._connection.in_transaction
+
+        def execute(self, statement: str, parameters=()):
+            if statement.lstrip().startswith("INSERT INTO code_experiment_receipts"):
+                self._receipt_inserts += 1
+                if self._receipt_inserts == 2:
+                    raise sqlite3.IntegrityError("fixture rejects second receipt")
+            return self._connection.execute(statement, parameters)
+
+        def __getattr__(self, name: str):
+            return getattr(self._connection, name)
+
+    def rejecting_connect(path: Path, *, readonly: bool = False, create: bool = True):
+        nonlocal opened
+        opened += 1
+        return RejectingSecondReceiptInsert(
+            original_connect(path, readonly=readonly, create=create)
+        )
+
+    monkeypatch.setattr(experiment_store, "connect_code_state", rejecting_connect)
+    monkeypatch.setattr(
+        experiment_store,
+        "_validate_attested_receipt_sources",
+        lambda *_args, **_kwargs: None,
+    )
+    with pytest.raises(sqlite3.IntegrityError, match="second receipt"):
+        record_code_experiment_receipts(
+            database,
+            pairs,
+            1,
+            "snapshot:fixture",
+            "review:fixture",
+        )
+
+    assert opened == 1
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM code_experiment_receipts").fetchone() == (
+            0,
+        )
 
 
 def test_framework_review_task_receipt_projects_only_its_two_bound_requirements(
