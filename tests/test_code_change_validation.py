@@ -8,6 +8,7 @@ import subprocess
 import sys
 import threading
 import time
+from contextlib import nullcontext
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -22,6 +23,7 @@ from _04_Nucleo_Operativo.code_change_validation import (
     _default_runner,
     _experiment_gate,
     _fresh_review_gate,
+    _pip_audit_snapshot_preflight,
     _provider_failure,
     _relevant_question_state,
     _replay_gate,
@@ -518,6 +520,181 @@ def _selection(*selectors: str) -> AffectedTestSelection:
         uncovered_sources=(),
         reasons=("fixture_selection",),
     )
+
+
+def _pip_audit_preflight_fixture(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    fresh_until: float | None,
+    findings: tuple[str, ...] = (),
+) -> SimpleNamespace:
+    from _04_Nucleo_Operativo import code_change_validation
+
+    state = tmp_path / "state"
+    state.mkdir(parents=True)
+    (state / "code.sqlite3").touch()
+    descriptor = SimpleNamespace(
+        provider_id=PIP_AUDIT_PROVIDER_ID,
+        profile="trusted-static",
+        configuration_signature="configuration:fixture",
+        environment_signature="environment:fixture",
+        root_identity="root:fixture",
+        comparability_signature="comparability:fixture",
+    )
+    provider = SimpleNamespace(
+        descriptor=descriptor,
+        tool_version=lambda: "2.10.1",
+        baseline_input_signature=lambda _files: "input:fixture",
+    )
+    exact = SimpleNamespace(
+        tool_run_id=71,
+        portable_finding_ids=findings,
+        fresh_until_unix_seconds=fresh_until,
+    )
+    monkeypatch.setattr(
+        code_change_validation,
+        "PipAuditKnownVulnerabilitiesProvider",
+        lambda _source: provider,
+    )
+    monkeypatch.setattr(
+        code_change_validation,
+        "readonly_code_database",
+        lambda _database: nullcontext(object()),
+    )
+    monkeypatch.setattr(code_change_validation, "validate_code_schema", lambda _connection: None)
+    monkeypatch.setattr(
+        code_change_validation,
+        "read_external_provider_baselines",
+        lambda _connection, **_kwargs: (exact, None),
+    )
+    return SimpleNamespace(state=state)
+
+
+def test_pip_audit_preflight_requires_freshness_through_the_hard_deadline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = time.time()
+    fixture = _pip_audit_preflight_fixture(
+        tmp_path,
+        monkeypatch,
+        fresh_until=now + 7200,
+    )
+    monotonic = time.monotonic_ns()
+    window = SimpleNamespace(hard_deadline_monotonic_ns=monotonic + 3600 * 1_000_000_000)
+
+    passed = _pip_audit_snapshot_preflight(
+        tmp_path,
+        fixture.state,
+        change=_change_for("neocortex/logic.py"),
+        runtime_window=window,
+    )
+
+    assert passed.status == "passed"
+    assert passed.evidence["tool_run_id"] == 71
+    assert passed.evidence["known_vulnerability_findings"] == 0
+
+    stale_fixture = _pip_audit_preflight_fixture(
+        tmp_path / "stale",
+        monkeypatch,
+        fresh_until=now + 60,
+    )
+    stale = _pip_audit_snapshot_preflight(
+        tmp_path,
+        stale_fixture.state,
+        change=_change_for("neocortex/logic.py"),
+        runtime_window=window,
+    )
+    assert stale.status == "abstained"
+    assert stale.reason == "pip_audit_snapshot_expires_before_validation_deadline"
+
+
+def test_pip_audit_preflight_fails_early_for_vulnerabilities_or_supply_changes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _pip_audit_preflight_fixture(
+        tmp_path,
+        monkeypatch,
+        fresh_until=time.time() + 7200,
+        findings=("vulnerability:fixture",),
+    )
+    monotonic = time.monotonic_ns()
+    window = SimpleNamespace(hard_deadline_monotonic_ns=monotonic + 3600 * 1_000_000_000)
+
+    vulnerable = _pip_audit_snapshot_preflight(
+        tmp_path,
+        fixture.state,
+        change=_change_for("neocortex/logic.py"),
+        runtime_window=window,
+    )
+    invalidated = _pip_audit_snapshot_preflight(
+        tmp_path,
+        fixture.state,
+        change=_change_for("pyproject.toml"),
+        runtime_window=window,
+    )
+
+    assert vulnerable.status == "failed"
+    assert vulnerable.reason == "pip_audit_snapshot_reports_known_vulnerabilities"
+    assert invalidated.status == "abstained"
+    assert invalidated.reason == "pip_audit_snapshot_invalidated_by_supply_change"
+
+
+def test_canonical_validation_stops_before_static_when_supply_preflight_abstains(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from _04_Nucleo_Operativo import code_change_validation
+
+    source = tmp_path / "source"
+    state = tmp_path / "state"
+    source.mkdir()
+    state.mkdir()
+    change = _change_for("neocortex/logic.py")
+    selection = _selection("tests/test_fixture.py")
+    commands: list[tuple[object, ...]] = []
+
+    def runner(command, **_kwargs):
+        commands.append(tuple(command))
+        raise AssertionError("an expensive command ran after a failed supply preflight")
+
+    monkeypatch.setattr(code_change_validation, "_default_runner", runner)
+    monkeypatch.setattr(code_change_validation, "capture_git_change", lambda *_a, **_k: change)
+    monkeypatch.setattr(
+        code_change_validation,
+        "select_affected_tests",
+        lambda *_a, **_k: selection,
+    )
+    monkeypatch.setattr(code_change_validation, "_unpublished_source_paths", lambda *_a: ())
+    monkeypatch.setattr(
+        code_change_validation,
+        "_pip_audit_snapshot_preflight",
+        lambda *_a, **_k: code_change_validation.ValidationGate(
+            "pip_audit_snapshot_preflight",
+            "abstained",
+            "pip_audit_snapshot_expires_before_validation_deadline",
+            1,
+            (),
+            {},
+        ),
+    )
+    window = SimpleNamespace(hard_deadline_monotonic_ns=time.monotonic_ns() + 1_000_000_000)
+
+    result = validate_code_change(
+        root=source,
+        state_directory=state,
+        runner=runner,
+        runtime_window=window,
+    )
+
+    assert commands == []
+    assert [gate.gate_id for gate in result.gates] == [
+        "pip_audit_snapshot_preflight",
+        "source_snapshot_unchanged",
+    ]
+    assert result.status == "abstained"
 
 
 def test_network_only_pip_failure_uses_only_a_resolved_fresh_exact_inventory(

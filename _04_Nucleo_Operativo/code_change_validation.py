@@ -59,6 +59,7 @@ from .code_validation_resources import (
 )
 from .code_review import review_code_state
 from .code_schema import readonly_code_database, validate_code_schema
+from .external_evidence_models import external_root_identity
 from .external_evidence_providers import (
     COMPLEXIPY_COGNITIVE_PROVIDER_ID,
     COSMIC_RAY_MUTATION_PROVIDER_ID,
@@ -68,6 +69,7 @@ from .external_evidence_providers import (
     INSTALLED_PACKAGE_PROVIDER_ID,
     MYPY_PROVIDER_ID,
     PIP_AUDIT_PROVIDER_ID,
+    PipAuditKnownVulnerabilitiesProvider,
     PYRIGHT_PROVIDER_ID,
     PYTEST_COVERAGE_PROVIDER_ID,
     RUFF_ANALYZE_PROVIDER_ID,
@@ -76,6 +78,7 @@ from .external_evidence_providers import (
     SEMGREP_INVARIANTS_PROVIDER_ID,
     VULTURE_UNUSED_PROVIDER_ID,
 )
+from .external_evidence_store import read_external_provider_baselines
 from .platform.shared.capability_registry import (
     resolve_canonical_capabilities,
     resolve_source_capabilities,
@@ -84,7 +87,7 @@ from .semantic_models import canonical_json
 
 
 CODE_CHANGE_VALIDATION_SCHEMA = "neocortex.code-change-validation/v3"
-CODE_CHANGE_VALIDATION_POLICY = "local-linux-diff-aware-validation-v9"
+CODE_CHANGE_VALIDATION_POLICY = "local-linux-diff-aware-validation-v10"
 MAX_CHANGED_PATHS = 2_000
 MAX_SELECTED_TEST_FILES = 2_000
 MAX_DEPENDENCY_DEPTH = 8
@@ -1610,6 +1613,130 @@ def _historical_pip_audit_fallback(
             }
     except (OSError, RuntimeError, sqlite3.DatabaseError, TypeError, ValueError):
         return None
+
+
+def _pip_audit_snapshot_preflight(
+    source: Path,
+    state_directory: Path,
+    *,
+    change: GitChangeSnapshot,
+    runtime_window: CodeValidationRuntimeWindow,
+) -> ValidationGate:
+    """Reject an unusable offline audit before any expensive acceptance stage.
+
+    Canonical validation deliberately runs without IP sockets.  The producer can
+    therefore consume only an exact, already-published pip-audit snapshot.  Check
+    that contract before static analysis and trusted-deep, and require the
+    freshness fence to cover the complete remaining cgroup runtime instead of
+    discovering an expired snapshot after Coverage has run.
+    """
+
+    started = time.monotonic_ns()
+    command = ("Neocortex", "code", "validate", "pip-audit-snapshot-preflight")
+    supply_paths = tuple(path for path in change.changed_paths if path in _SUPPLY_CHAIN_BOUNDARIES)
+    if supply_paths:
+        return _gate(
+            "pip_audit_snapshot_preflight",
+            "abstained",
+            "pip_audit_snapshot_invalidated_by_supply_change",
+            started,
+            command,
+            {"supply_chain_paths": list(supply_paths)},
+        )
+    database = Path(state_directory) / "code.sqlite3"
+    if not database.is_file():
+        return _gate(
+            "pip_audit_snapshot_preflight",
+            "abstained",
+            "pip_audit_snapshot_state_missing",
+            started,
+            command,
+            {"database_present": False},
+        )
+    try:
+        provider = PipAuditKnownVulnerabilitiesProvider(source)
+        tool_version = provider.tool_version()
+        if tool_version is None:
+            raise ValueError("pip-audit runtime is unavailable")
+        input_signature = provider.baseline_input_signature(())
+        descriptor = provider.descriptor
+        with readonly_code_database(database) as connection:
+            validate_code_schema(connection)
+            exact, comparable = read_external_provider_baselines(
+                connection,
+                provider_id=descriptor.provider_id,
+                profile=descriptor.profile,
+                tool_version=tool_version,
+                configuration_signature=descriptor.configuration_signature,
+                environment_signature=descriptor.environment_signature,
+                root_identity=external_root_identity(source),
+                input_signature=input_signature,
+                comparability_signature=descriptor.comparability_signature,
+            )
+    except (OSError, RuntimeError, sqlite3.DatabaseError, TypeError, ValueError) as exc:
+        return _gate(
+            "pip_audit_snapshot_preflight",
+            "abstained",
+            f"pip_audit_snapshot_preflight_unavailable:{type(exc).__name__}",
+            started,
+            command,
+            {"error": str(exc)[:4096]},
+        )
+    if exact is None:
+        return _gate(
+            "pip_audit_snapshot_preflight",
+            "abstained",
+            "pip_audit_exact_snapshot_missing",
+            started,
+            command,
+            {"comparable_snapshot_present": comparable is not None},
+        )
+    if exact.portable_finding_ids:
+        return _gate(
+            "pip_audit_snapshot_preflight",
+            "failed",
+            "pip_audit_snapshot_reports_known_vulnerabilities",
+            started,
+            command,
+            {
+                "tool_run_id": exact.tool_run_id,
+                "known_vulnerability_findings": len(exact.portable_finding_ids),
+            },
+        )
+    remaining_seconds = max(
+        0.0,
+        (runtime_window.hard_deadline_monotonic_ns - time.monotonic_ns()) / 1_000_000_000,
+    )
+    required_fresh_until = time.time() + remaining_seconds
+    fresh_until = exact.fresh_until_unix_seconds
+    if fresh_until is None or fresh_until < required_fresh_until:
+        return _gate(
+            "pip_audit_snapshot_preflight",
+            "abstained",
+            "pip_audit_snapshot_expires_before_validation_deadline",
+            started,
+            command,
+            {
+                "tool_run_id": exact.tool_run_id,
+                "fresh_until_unix_seconds": fresh_until,
+                "required_fresh_until_unix_seconds": required_fresh_until,
+                "remaining_validation_seconds": round(remaining_seconds, 3),
+            },
+        )
+    return _gate(
+        "pip_audit_snapshot_preflight",
+        "passed",
+        "exact_zero_vulnerability_snapshot_covers_validation_runtime",
+        started,
+        command,
+        {
+            "tool_run_id": exact.tool_run_id,
+            "fresh_until_unix_seconds": fresh_until,
+            "required_fresh_until_unix_seconds": required_fresh_until,
+            "remaining_validation_seconds": round(remaining_seconds, 3),
+            "known_vulnerability_findings": 0,
+        },
+    )
 
 
 def _network_only_pip_failure(provider: object) -> bool:
@@ -3677,6 +3804,25 @@ def validate_code_change(
             f"affected selection ready: strategy={selection.strategy} "
             f"tests={len(selection.selectors)}"
         )
+
+    if selection.selectors and runner is _default_runner and runtime_window is not None:
+        report("checking offline pip-audit snapshot before expensive acceptance gates")
+        pip_audit_preflight = _pip_audit_snapshot_preflight(
+            source,
+            state,
+            change=change,
+            runtime_window=runtime_window,
+        )
+        gates.append(pip_audit_preflight)
+        if pip_audit_preflight.status != "passed":
+            report("offline pip-audit snapshot is unusable; stopping before static and Coverage")
+            return _finalize_validation(
+                source=source,
+                state=state,
+                change=change,
+                selection=selection,
+                gates=gates,
+            )
 
     # Invoke the existing local tool instead of duplicating its Ruff/Mypy/
     # Pyright and architecture baseline logic inside the product module.

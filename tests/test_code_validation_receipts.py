@@ -21,6 +21,7 @@ from _04_Nucleo_Operativo.semantic_models import canonical_json
 
 _REQUIRED_GATES = (
     "clean_source_sha",
+    "pip_audit_snapshot_preflight",
     "static_no_regression",
     "architecture_contracts",
     "trusted_deep_publication",
@@ -80,7 +81,7 @@ def _result(root: Path, state: Path) -> dict[str, object]:
         "schema": "neocortex.code-change-validation/v3",
         "status": "passed",
         "reason": None,
-        "policy_id": "local-linux-diff-aware-validation-v9",
+        "policy_id": "local-linux-diff-aware-validation-v10",
         "source_root": str(root),
         "state_directory": str(state),
         "git": {

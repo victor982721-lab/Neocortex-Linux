@@ -1,6 +1,6 @@
 # NeoCortex — handoff operativo actual
 
-> Actualizado: 2026-08-15. El nombre del archivo es histórico y se conserva
+> Actualizado: 2026-08-16. El nombre del archivo es histórico y se conserva
 > como ruta estable. Este documento es la fuente única de la frontera vigente;
 > no guarda un SHA de cierre porque Git y la release instalada deben
 > demostrarlo dinámicamente.
@@ -35,112 +35,79 @@ La ola del autoanalizador v22 descrita abajo está integrada en un commit local
 aún no aceptado ni publicado; no se considera terminada hasta aprobar el gate
 canónico, release Linux instalada, replay, push y coincidencia de SHA.
 
-## Pausa operativa exacta — 2026-08-15 17:36 CST
+## Pausa operativa exacta — 2026-08-16 19:37 CST
 
-### Estado vivo que debe reconciliar la siguiente sesión
+### Estado vivo verificado al pausar
 
 - Checkout canónico: `/home/winterboss/Neocortex/Repository`, rama `main`.
-- Commit local al pausar: `bf4b07ad149194780b1a965e4f865bff932b6da3`;
-  `main` está un commit por delante de `origin/main` y el árbol estaba limpio
-  antes de actualizar este handoff documental. La siguiente sesión debe volver
-  a consultar Git; nunca asumir este SHA por memoria.
+  Consultar `git rev-parse HEAD` y `git status` al reanudar; este handoff no
+  congela una identidad Git por texto.
+- El candidato material anterior es
+  `4f9f37f4b82c2075de56ccbf41a74681134845d0` (34 archivos, +3984/-332).
+  Corrige el timeout global, schema Code 7, replay set-based, receipts v4,
+  firmas exactas de providers y reutilización de outcomes Coverage.
+- La aceptación canónica v9 de ese SHA aprobó source limpio, static,
+  arquitectura y `trusted-deep` con 23/23 shards y 5613 tests. Se detuvo antes
+  de experimentos, wheel y replay únicamente porque el snapshot
+  `pip-audit-known-vulnerabilities` había vencido a las 18:11:36 CST.
+- La unidad `neocortex-code-validate-230060-6eeb82cd57bf.service` está
+  `inactive/dead`, `MainPID=0`; no quedaron procesos NeoCortex en el host. El
+  source permaneció intacto y no existe receipt.
+- Transcript canónico:
+  `/home/winterboss/.codex/vault/evidence/neocortex-0.9-release-2026-08-16/final-4f9f37f4b82c/code-validate-v9.log`,
+  SHA-256 `afdced369c57ef4717d3f62c2b2dfc8844dfb700654a911f5cd9a317bd6a1088`.
 - `origin/main` y la release instalada `current` siguen en
-  `d1adefc4cdafbd16a97e0f40bd349827fc74f98e`. No hubo push, instalación ni
-  promoción de v22.
-- No existen workflows de GitHub Actions y está prohibido crearlos, ejecutarlos
-  o consultarlos. Windows no forma parte del alcance.
-- La configuración viva de Codex declara
-  `features.multi_agent_v2.max_concurrent_threads_per_session = 8`: un
-  coordinador más siete workers. La siguiente sesión debe verificar de nuevo
-  ese valor antes de repartir ownership.
-- El commit local contiene review v22, Knowledge Asset Health Text/PDF,
-  runners/receipts/verificadores, las lecturas focales `code question` y
-  `code storage`, superficie pública, documentación y las correcciones reales
-  encontradas por el gate. La matriz focal previa cerró 369 pruebas, pero eso
-  no sustituye la aceptación canónica.
-- Las correcciones posteriores conservaron el baseline: tipado focal, frontera
-  `neocortex.read_api`→`read_api_port` y snapshot CLI de
-  `--knowledge-health`. Estática y arquitectura ya fueron observadas verdes.
+  `d1adefc4cdafbd16a97e0f40bd349827fc74f98e`; no hubo push, instalación ni
+  promoción. El launcher instalado sigue usando el control-plane antiguo, por
+  lo que la aceptación del candidato debe entrar por el módulo source con el
+  Python de la release, sin `PYTHONPATH`.
+- GitHub Actions continúa prohibido y ausente. Windows sigue fuera del alcance.
 
-### Último gate y único bloqueo comprobado
+### Corrección focal cerrada antes de la pausa
 
-La última ejecución de `Neocortex code validate --baseline HEAD^` aprobó:
+- La policy pasó a `local-linux-diff-aware-validation-v10` y añade
+  `pip_audit_snapshot_preflight` antes de static, arquitectura o Coverage.
+- El preflight resuelve sólo un baseline exacto para la firma actual del entorno,
+  exige cero findings y comprueba que `fresh_until` cubra todo el deadline
+  monotónico restante del transient unit. Una semilla ausente, invalidada por
+  supply o próxima a vencer falla cerrado en segundos.
+- El receipt v10 exige explícitamente ese gate `passed`; no basta añadirlo a la
+  salida sin atarlo al consumidor durable.
+- La sonda viva sobre el estado actual produjo en 110 ms:
+  `pip_audit_snapshot_expires_before_validation_deadline`, con
+  `tool_run_id=1468`, `fresh_until=1786925496` y una ventana requerida de 4500 s.
+- Aprobaron 73 pruebas focales, Ruff, formato, Mypy focal con imports omitidos,
+  `py_compile` y `git diff --check`. No se ejecutó otra aceptación integral.
 
-1. `static_no_regression`;
-2. arquitectura declarada;
-3. publicación `trusted-deep`;
-4. review fresco;
-5. Coverage afectada.
+### Bloqueo externo exacto
 
-Se abstuvo antes de ejecutar experimentos:
+- La actualización explícita del feed intentó usar `pip-audit 2.10.1` con el
+  servicio `pypi`, transmitiendo únicamente nombres/versiones de distribuciones
+  instaladas; no fuentes, corpus, documentos, SQLite ni secretos.
+- El revisor de permisos rechazó la ejecución antes de crear el proceso porque
+  exige una autorización de egress explícita en la conversación actual. No hubo
+  tráfico ni publicación parcial y no debe rodearse esa decisión.
+- Esta autorización es distinta de confirmar el autoanalizador: una vez resuelta,
+  el seed y la aceptación se ejecutan sin volver a pedir permiso para el gate.
 
-```text
-allowlisted_experiments = abstained
-reason = affected_question_requires_unresolved_evidence
-receipts = 0
-```
+### Secuencia exacta de reanudación
 
-La causa exacta ya fue reconstruida read-only, no debe diagnosticarse de nuevo:
-
-- run Code vigente al corte: 149, review `neocortex.code-review/v22` ready;
-- 12 scopes de aceptación quedaron afectados y existían 11 proposals
-  potenciales;
-- el único blocker era `security_supply_boundary`;
-- `pip-audit` no pudo producir evidencia actual dentro del worker porque el gate
-  prueba y exige `PrivateNetwork=yes`;
-- la firma de entorno se cambió deliberadamente de v1 a v2 para dejar de ligar
-  providers a la ruta física temporal/final de `sys.executable`; por ello el
-  snapshot v1 no puede ser replay exacto bajo v2;
-- el audit histórico run 139/tool run 1294 sigue fresco hasta
-  `1786902337`, corresponde a las mismas 128 distribuciones instaladas y
-  reporta cero vulnerabilidades. Esto permite al gate aceptar freshness, pero
-  no crea el receipt tipado v2 que necesita la evaluación security;
-- `_fresh_review_gate` conoce ese fallback; `_experiment_gate` ve correctamente
-  la evaluación security cruda como `abstained` y cancela todos los proposals.
-
-No se debe resolver rebajando seguridad, ignorando la pregunta, ampliando un
-baseline o fabricando un receipt. El desbloqueo correcto es un único seed
-networked bajo la firma v2; después el gate privado debe usar `cache_replay`
-sin egress.
-
-### Autorización externa pendiente
-
-Antes de ejecutar el seed, la siguiente sesión debe pedir a Víctor una
-autorización **explícita y concreta** después de informar que:
-
-- `pip-audit` usará el servicio de vulnerabilidades `pypi`;
-- transmitirá los nombres y versiones de las 128 distribuciones Python
-  instaladas;
-- no transmitirá fuentes, corpus, documentos, estado SQLite ni secretos;
-- el productor completo se ejecutará localmente, acotado por cgroup, y sólo
-  ese provider necesita red.
-
-Una solicitud escalada ya fue rechazada antes de crear el unit porque la
-autorización general de trabajo local no cubre ese egress concreto. No hubo
-tráfico de red ni publicación parcial. No intentar rodear esa decisión.
-
-### Comprobación esperada tras el seed
-
-La publicación one-shot debe ejecutarse desde el source actual con el Python de
-la release, `--analysis-profile trusted-static`, root y state directory
-explícitos, dentro de un transient unit con memoria/CPU/tareas acotadas, **sin**
-`PrivateNetwork=yes` y sin
-`NEOCORTEX_PIP_AUDIT_NETWORK_POLICY=disabled-by-code-validation`.
-
-Tras terminar, verificar por la superficie pública/source, no por inferencia:
-
-1. run nuevo `completed`;
-2. provider `pip-audit-known-vulnerabilities`: `status=ready`,
-   `execution=full`, cero vulnerabilidades o fallo explícito;
-3. evaluación security deja `abstained` y pasa a `experiment_required` con
-   template `security.bounded_boundary_scenarios`;
-4. el siguiente gate privado publica ese mismo provider como `cache_replay`,
-   `process_invocations=0`, sin red;
-5. los experimentos producen receipts y el replay final conserva las
-   disposiciones técnicas reproducibles.
-
-Si cualquiera difiere, detener el gate y corregir esa causa; no ejecutar una
-segunda corrida integral como diagnóstico ciego.
+1. Verificar en vivo `HEAD`, worktree, `origin/main`, release `current` y ausencia
+   de transient units/procesos antes de abrir SQLite.
+2. Obtener la autorización explícita de Víctor para que `pip-audit` consulte
+   PyPI con los nombres/versiones instalados; no ampliar el payload.
+3. Ejecutar una sola publicación `trusted-static` desde el source actual con el
+   Python de la release, root/state explícitos y red habilitada sólo para ese
+   provider. Verificar run `completed`, provider `execution=full`, cero
+   vulnerabilidades y una vigencia nueva; no iniciar el gate si difiere.
+4. Ejecutar la sonda focal v10 y exigir `pip_audit_snapshot_preflight=passed`.
+   Si el árbol aún no está comprometido, revisar el diff y congelar el commit.
+5. Ejecutar una sola aceptación canónica `code validate --baseline HEAD^`, sin
+   confirmación adicional. Si falla, conservar evidencia y volver únicamente a
+   la etapa señalada; no relanzar a ciegas.
+6. Sólo con receipt verde: construir/instalar desde el SHA final, verificar
+   manifest/launcher, ejecutar dos E2E instalados porque el lote cruza
+   caché/schema/pipeline, comprobar replay determinista y hacer un único push.
 
 ## Cinco fases completadas
 

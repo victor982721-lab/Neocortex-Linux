@@ -21,10 +21,11 @@ from .semantic_models import canonical_json
 
 CODE_VALIDATION_RECEIPT_SCHEMA = "neocortex.code-validation-receipt/v1"
 _CODE_CHANGE_VALIDATION_SCHEMA = "neocortex.code-change-validation/v3"
-_CODE_CHANGE_VALIDATION_POLICY = "local-linux-diff-aware-validation-v9"
+_CODE_CHANGE_VALIDATION_POLICY = "local-linux-diff-aware-validation-v10"
 _MAX_RECEIPT_BYTES = 8 * 1024 * 1024
 _REQUIRED_GATE_STATUSES = {
     "clean_source_sha": frozenset({"passed"}),
+    "pip_audit_snapshot_preflight": frozenset({"passed"}),
     "static_no_regression": frozenset({"passed"}),
     "architecture_contracts": frozenset({"passed"}),
     "trusted_deep_publication": frozenset({"passed"}),

@@ -946,11 +946,14 @@ run con replay exacto. Si el grafo no permite elegir pruebas, un proveedor no
 queda listo, la medición es incompleta o el snapshot cambia durante la corrida,
 se abstiene o falla: nunca traduce ausencia de evidencia en verde. Use
 `--baseline HEAD^` para verificar un commit ya integrado localmente.
-La política `local-linux-diff-aware-validation-v9` incluye los bindings PDF y
+La política `local-linux-diff-aware-validation-v10` incluye los bindings PDF y
 las matrices completas Archive/DOCX/Image para los namespaces canónico y de
 compatibilidad;
 el verificador técnico v7 sólo acepta su pregunta con los cuatro gates y los
 conteos 9/12 exactos del receipt.
+Antes de entrar a static o trusted-deep, la misma policy exige un snapshot
+`pip-audit` exacto, sin findings y vigente hasta el deadline global; así un feed
+vencido falla cerrado antes de consumir la suite Linux.
 
 La observación empieza antes del primer provider: el padre captura memoria,
 swap y PSI, reserva headroom para el escritorio y crea un único cgroup de

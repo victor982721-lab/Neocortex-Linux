@@ -978,7 +978,7 @@ La selección experimental también está ligada al diff mediante un registro
 versionado de rutas/tests→preguntas/sujetos. Un registry gap relevante o una
 pregunta sin disposición técnica exacta después del replay produce
 `abstained`; `not_required` sólo aparece cuando ese binding demuestra que la
-pregunta es disjunta al cambio. La política v9 incorpora bindings exactos para
+pregunta es disjunta al cambio. La política v10 incorpora bindings exactos para
 la CLI pública y para Knowledge Asset Health Text/PDF; cambiar sus contratos o
 tests de control exige los templates de veintiún/cinco, doce/cuatro y
 doce/cuatro respectivamente.
@@ -1009,7 +1009,10 @@ puede resolver el snapshot publicado previo mientras siga vigente, tenga cero
 vulnerabilidades y su inventario exacto de distribuciones/versiones coincida con
 el actual; cambios en packaging o política supply invalidan esa resolución. No
 se usa un resultado stale ni se interpreta la falta de red como ausencia de
-vulnerabilidades.
+vulnerabilidades. La policy v10 comprueba esa precondición antes de static,
+arquitectura o trusted-deep y exige que la vigencia cubra el deadline completo
+del transient unit; una semilla ausente o próxima a vencer abstiene en segundos,
+no después de ejecutar Coverage.
 El inventario local es `environment_bound` y se reobserva en el replay. Sus dos
 proyecciones deben ser idénticas en métricas, relaciones, findings y versiones;
 sólo el timestamp/ID del snapshot se excluye del digest comparado.
