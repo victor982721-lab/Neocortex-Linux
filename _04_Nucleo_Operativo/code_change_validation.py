@@ -39,6 +39,7 @@ from .code_analysis_epistemics import (
 from .code_architecture_questions import ARCHITECTURE_CONTRACT_QUESTION
 from .code_change_evolution_analysis import CODE_SCHEMA_EVOLUTION_QUESTION
 from .code_interface_surface_analysis import CLI_SURFACE_QUESTION
+from .code_invariant_contracts import EXPERIMENT_SCENARIO_IDS, RUNTIME_SCENARIOS
 from .code_knowledge_asset_health_analysis import KNOWLEDGE_ASSET_HEALTH_QUESTION
 from .code_knowledge_pdf_asset_health_analysis import KNOWLEDGE_PDF_ASSET_HEALTH_QUESTION
 from .code_route_capability_analysis import ROUTE_CAPABILITY_QUESTION
@@ -87,7 +88,7 @@ from .semantic_models import canonical_json
 
 
 CODE_CHANGE_VALIDATION_SCHEMA = "neocortex.code-change-validation/v3"
-CODE_CHANGE_VALIDATION_POLICY = "local-linux-diff-aware-validation-v10"
+CODE_CHANGE_VALIDATION_POLICY = "local-linux-diff-aware-validation-v11"
 MAX_CHANGED_PATHS = 2_000
 MAX_SELECTED_TEST_FILES = 2_000
 MAX_DEPENDENCY_DEPTH = 8
@@ -277,6 +278,9 @@ _SUPPLY_CHAIN_BOUNDARIES = frozenset(
         "tools/quality_gate_supply_policy.json",
     }
 )
+# Preserve the bounded technical-disposition matrix, then derive every
+# executable experiment module from the canonical registry so Coverage cannot
+# omit nodeids that the later attestation phase is allowed to select.
 _REGISTERED_SCENARIO_TESTS = frozenset(
     {
         "tests/test_code_framework_review_task_experiments.py",
@@ -298,6 +302,11 @@ _REGISTERED_SCENARIO_TESTS = frozenset(
         "tests/test_knowledge_asset_health_pdf.py",
         "tests/test_text_derivation_route.py",
     }
+) | frozenset(
+    nodeid.split("::", 1)[0]
+    for scenario in RUNTIME_SCENARIOS
+    if scenario.scenario_id in EXPERIMENT_SCENARIO_IDS
+    for nodeid in scenario.test_nodeids
 )
 _CANONICAL_DEEP_SHARD_SIZE = 50
 # A full boundary must cover the current Linux inventory without truncation and

@@ -913,10 +913,13 @@ un replay que excede esa cota termina dentro del proceso como evidencia
 `abstained`, no como una falsa «cancelación del usuario» emitida por systemd.
 
 Esta frontera usa los registries runtime/template v11, el verificador técnico
-v7 y la política diff-aware `local-linux-diff-aware-validation-v10`. La policy
-v10 resuelve las cohortes Archive, DOCX e Image mediante el registry versionado,
+v7 y la política diff-aware `local-linux-diff-aware-validation-v11`. La policy
+v11 resuelve las cohortes Archive, DOCX e Image mediante el registry versionado,
 exige sus matrices acotadas completas en los namespaces canónico y compatible,
 y rechaza evidencia faltante en vez de reducir silenciosamente la selección.
+Si cambia el control-plane experimental, la selección deriva del registry cada
+módulo pytest necesario para atestar sus escenarios; no mantiene una segunda
+lista parcial que pueda producir receipts sin outcomes.
 Antes de static o Coverage comprueba además que el snapshot offline exacto de
 `pip-audit` permanezca vigente durante toda la ventana restante del cgroup.
 La matriz CLI permanece en scenario v4/template v3 con veintiséis nodeids y cinco gates; la ampliación

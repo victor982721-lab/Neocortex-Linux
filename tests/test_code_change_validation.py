@@ -23,6 +23,7 @@ from _04_Nucleo_Operativo.code_change_validation import (
     _default_runner,
     _experiment_gate,
     _fresh_review_gate,
+    _global_change_fallback_tests,
     _pip_audit_snapshot_preflight,
     _provider_failure,
     _relevant_question_state,
@@ -47,6 +48,10 @@ from _04_Nucleo_Operativo.code_change_evolution_analysis import (
     CODE_SCHEMA_EVOLUTION_QUESTION,
 )
 from _04_Nucleo_Operativo.code_interface_surface_analysis import CLI_SURFACE_QUESTION
+from _04_Nucleo_Operativo.code_invariant_contracts import (
+    EXPERIMENT_SCENARIO_IDS,
+    RUNTIME_SCENARIOS,
+)
 from _04_Nucleo_Operativo.code_knowledge_asset_health_analysis import (
     KNOWLEDGE_ASSET_HEALTH_QUESTION,
 )
@@ -82,6 +87,19 @@ def test_optional_mutation_abstention_is_not_a_failed_machine_gate() -> None:
     )
 
     assert _provider_failure(provider) is False
+
+
+def test_global_fallback_covers_every_allowlisted_experiment_test_module() -> None:
+    root = Path(__file__).resolve().parents[1]
+    experiment_ids = frozenset(EXPERIMENT_SCENARIO_IDS)
+    required = {
+        nodeid.split("::", 1)[0]
+        for scenario in RUNTIME_SCENARIOS
+        if scenario.scenario_id in experiment_ids
+        for nodeid in scenario.test_nodeids
+    }
+
+    assert required <= set(_global_change_fallback_tests(root))
 
 
 def test_full_suite_coverage_consumes_the_canonical_no_regression_baseline() -> None:
