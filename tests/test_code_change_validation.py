@@ -621,7 +621,10 @@ def _public_review_fixture() -> SimpleNamespace:
 def test_public_review_stability_uses_two_repeatable_fresh_process_reads(
     tmp_path: Path,
 ) -> None:
-    from _04_Nucleo_Operativo.code_validation_public_review import code_review_identity
+    from _04_Nucleo_Operativo.code_validation_public_review import (
+        code_review_identity,
+        validation_stable_public_review_identity,
+    )
 
     review = _public_review_fixture()
     public_identity = code_review_identity(review)
@@ -632,6 +635,7 @@ def test_public_review_stability_uses_two_repeatable_fresh_process_reads(
     }
     public_identity["question_evaluations"] = 1
     public_identity["experiment_receipt_ids"] = []
+    stable_identity = validation_stable_public_review_identity(public_identity)
     commands: list[tuple[str, ...]] = []
     timeouts: list[float] = []
 
@@ -639,7 +643,7 @@ def test_public_review_stability_uses_two_repeatable_fresh_process_reads(
         command = tuple(str(item) for item in arguments)
         commands.append(command)
         timeouts.append(timeout)
-        return subprocess.CompletedProcess(command, 0, canonical_json(public_identity), "")
+        return subprocess.CompletedProcess(command, 0, canonical_json(stable_identity), "")
 
     gate = _public_review_stability_gate(
         tmp_path,
@@ -650,17 +654,27 @@ def test_public_review_stability_uses_two_repeatable_fresh_process_reads(
 
     assert gate.status == "passed"
     assert gate.evidence["fresh_process_reads"] == 2
-    assert gate.evidence["fresh_process_digest_differs_from_in_process"] is True
+    assert gate.evidence["validation_stable_identity"] == stable_identity
+    assert gate.evidence["public_identity"] == code_review_identity(review)
     assert len(commands) == 2
     assert timeouts == [120, 120]
+    assert all(command[-1] == "--validation-stable" for command in commands)
 
 
 def test_public_review_stability_abstains_when_fresh_reads_disagree(tmp_path: Path) -> None:
-    from _04_Nucleo_Operativo.code_validation_public_review import code_review_identity
+    from _04_Nucleo_Operativo.code_validation_public_review import (
+        code_review_identity,
+        validation_stable_public_review_identity,
+    )
 
     review = _public_review_fixture()
-    identities = [code_review_identity(review), code_review_identity(review)]
-    identities[1]["question_evaluations"] = 99
+    identities = [
+        validation_stable_public_review_identity(code_review_identity(review)),
+        validation_stable_public_review_identity(code_review_identity(review)),
+    ]
+    snapshot = dict(identities[1]["snapshot"])
+    snapshot["processing_signature"] = "snapshot:displaced"
+    identities[1]["snapshot"] = snapshot
 
     def runner(arguments, *, cwd, timeout, environment=None):
         command = tuple(str(item) for item in arguments)

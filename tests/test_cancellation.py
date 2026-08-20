@@ -299,7 +299,7 @@ class BlockingCancellationTests(unittest.TestCase):
 
         class FakeQueue:
             def get(self, timeout):
-                time.sleep(min(timeout, 0.01))
+                token.cancel()
                 raise queue.Empty
 
             def close(self):
@@ -343,31 +343,26 @@ class BlockingCancellationTests(unittest.TestCase):
             def Queue(self, maxsize):
                 return fake_queue
 
-        timer = threading.Timer(0.05, token.cancel)
-        timer.start()
-        try:
-            with (
-                patch(
-                    "_04_Nucleo_Operativo.pdf_isolation.multiprocessing.get_context",
-                    return_value=FakeContext(),
-                ),
-                patch(
-                    "_04_Nucleo_Operativo.pdf_isolation.isolated_spawn_process",
-                    return_value=fake_process,
-                ),
-            ):
-                with self.assertRaises(CancellationRequested):
-                    list(
-                        stream_isolated_profiles(
-                            "document.pdf",
-                            "state.sqlite3",
-                            "key",
-                            timeout_seconds=10,
-                            cancellation=token,
-                        )
+        with (
+            patch(
+                "_04_Nucleo_Operativo.pdf_isolation.multiprocessing.get_context",
+                return_value=FakeContext(),
+            ),
+            patch(
+                "_04_Nucleo_Operativo.pdf_isolation.isolated_spawn_process",
+                return_value=fake_process,
+            ),
+        ):
+            with self.assertRaises(CancellationRequested):
+                list(
+                    stream_isolated_profiles(
+                        "document.pdf",
+                        "state.sqlite3",
+                        "key",
+                        timeout_seconds=10,
+                        cancellation=token,
                     )
-        finally:
-            timer.cancel()
+                )
 
         self.assertTrue(fake_process.tree_terminated)
         self.assertFalse(fake_process.killed)

@@ -50,6 +50,7 @@ from _04_Nucleo_Operativo.external_evidence_store import (
     read_external_provider_evidence,
     read_external_provider_findings,
     read_external_provider_finding_ids,
+    read_external_validation_provider_statuses,
 )
 
 
@@ -688,6 +689,59 @@ def test_suite_reader_signature_transaction_and_idempotency_are_frozen(
         connection.rollback()
     finally:
         connection.close()
+
+
+def test_validation_provider_reader_matches_suite_without_materializing_graph(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "validation-provider-reader.sqlite3"
+    _create_current_owner(database, 1)
+    connection = code_schema.connect_code_state(database, create=False)
+    try:
+        tool_run_id = publish_external_provider(
+            connection,
+            1,
+            _attestable_publication("architecture-provider", include_finding=True),
+        )
+        _complete_owner(connection, 1)
+        connection.commit()
+        expected = read_external_evidence_suite(
+            connection,
+            1,
+            enforce_current_runtime=False,
+        )
+
+        def forbidden(*_args, **_kwargs):
+            raise AssertionError("validation reader materialized a provider graph")
+
+        monkeypatch.setattr(external_evidence_store, "_provider_findings", forbidden)
+        monkeypatch.setattr(external_evidence_store, "_provider_metrics", forbidden)
+        monkeypatch.setattr(external_evidence_store, "_provider_relations", forbidden)
+        profile, statuses = read_external_validation_provider_statuses(
+            connection,
+            1,
+            enforce_current_runtime=False,
+        )
+
+        assert profile == expected.profile
+        assert statuses == expected.providers
+
+        connection.execute(
+            "UPDATE external_metrics SET metadata_json='not-json' WHERE tool_run_id=?",
+            (tool_run_id,),
+        )
+        connection.commit()
+        _profile, corrupted = read_external_validation_provider_statuses(
+            connection,
+            1,
+            enforce_current_runtime=False,
+        )
+    finally:
+        connection.close()
+
+    assert corrupted[0].status == "abstained"
+    assert corrupted[0].reason == "external_provider_projection_invalid"
 
 
 def test_legacy_pyright_stage_paths_read_as_one_portable_identity(tmp_path: Path) -> None:

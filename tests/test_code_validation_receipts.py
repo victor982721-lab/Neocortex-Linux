@@ -24,7 +24,12 @@ from _04_Nucleo_Operativo.code_validation_receipts import (
     load_current_code_validation_receipt,
     publish_code_validation_receipt,
 )
-from _04_Nucleo_Operativo.code_validation_public_review import code_review_identity
+from _04_Nucleo_Operativo.code_validation_public_review import (
+    VALIDATION_STABLE_PUBLIC_REVIEW_SCHEMA,
+    code_review_identity,
+    validation_stable_public_review_identity,
+    validation_stable_review_identity,
+)
 from _04_Nucleo_Operativo.semantic_models import canonical_json
 
 
@@ -69,6 +74,14 @@ def _review_result(value: str) -> SimpleNamespace:
     )
 
 
+def _public_review_evidence(value: str) -> dict[str, object]:
+    public = code_review_identity(_review_result(value))
+    return {
+        "public_identity": public,
+        "validation_stable_identity": validation_stable_public_review_identity(public),
+    }
+
+
 def _result(root: Path, state: Path) -> dict[str, object]:
     review_digest = {"value": "published-review"}
     gates = [
@@ -79,7 +92,7 @@ def _result(root: Path, state: Path) -> dict[str, object]:
             "duration_ms": 1,
             "command": [],
             "evidence": (
-                {"public_identity": code_review_identity(_review_result("published-review"))}
+                _public_review_evidence("published-review")
                 if gate_id == "public_review_stability"
                 else {"digest": review_digest}
                 if gate_id == "autoanalysis_replay_verdict"
@@ -173,7 +186,7 @@ def _object_result(root: Path, state: Path) -> CodeChangeValidationResult:
             1,
             (),
             (
-                {"public_identity": code_review_identity(_review_result("published-review"))}
+                _public_review_evidence("published-review")
                 if gate_id == "public_review_stability"
                 else {"digest": review_digest}
                 if gate_id == "autoanalysis_replay_verdict"
@@ -250,6 +263,14 @@ def test_real_validation_payload_crosses_the_receipt_publication_boundary(
     assert stored["result"] == result.as_payload()
 
 
+def test_validation_stable_reader_abstains_without_code_state(tmp_path: Path) -> None:
+    identity = validation_stable_review_identity(tmp_path)
+
+    assert identity["schema"] == VALIDATION_STABLE_PUBLIC_REVIEW_SCHEMA
+    assert identity["status"] == "abstained"
+    assert identity["reason"] == "code_state_missing"
+
+
 def test_published_receipt_reuses_only_the_exact_clean_state(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -271,8 +292,10 @@ def test_published_receipt_reuses_only_the_exact_clean_state(
         ),
     )
     monkeypatch.setattr(
-        "_04_Nucleo_Operativo.code_review.review_code_state",
-        lambda *_args, **_kwargs: _review_result("published-review"),
+        "_04_Nucleo_Operativo.code_validation_public_review.validation_stable_review_identity",
+        lambda *_args, **_kwargs: validation_stable_public_review_identity(
+            code_review_identity(_review_result("published-review"))
+        ),
     )
 
     publication = publish_code_validation_receipt(payload)
@@ -344,8 +367,10 @@ def test_receipt_becomes_stale_when_review_publication_is_displaced(
         freshness="publication_only",
     )
     monkeypatch.setattr(
-        "_04_Nucleo_Operativo.code_review.review_code_state",
-        lambda *_args, **_kwargs: displaced,
+        "_04_Nucleo_Operativo.code_validation_public_review.validation_stable_review_identity",
+        lambda *_args, **_kwargs: validation_stable_public_review_identity(
+            code_review_identity(displaced)
+        ),
     )
 
     status = load_current_code_validation_receipt(
@@ -384,8 +409,10 @@ def test_receipt_survives_operational_review_digest_and_experiment_visibility(
     )
     advanced.question_evaluations = (object(), object())
     monkeypatch.setattr(
-        "_04_Nucleo_Operativo.code_review.review_code_state",
-        lambda *_args, **_kwargs: advanced,
+        "_04_Nucleo_Operativo.code_validation_public_review.validation_stable_review_identity",
+        lambda *_args, **_kwargs: validation_stable_public_review_identity(
+            code_review_identity(advanced)
+        ),
     )
 
     status = load_current_code_validation_receipt(

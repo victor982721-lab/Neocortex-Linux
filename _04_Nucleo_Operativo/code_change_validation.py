@@ -59,7 +59,7 @@ from .code_validation_resources import (
     parse_code_validation_resource_admission,
 )
 from .code_validation_public_review import (
-    PUBLIC_REVIEW_IDENTITY_SCHEMA,
+    VALIDATION_STABLE_PUBLIC_REVIEW_SCHEMA,
     code_review_identity,
     validation_stable_public_review_identity,
 )
@@ -2230,6 +2230,7 @@ def _public_review_stability_gate(
         "_04_Nucleo_Operativo.code_validation_public_review",
         "--state-directory",
         str(state_directory),
+        "--validation-stable",
     )
     try:
         observed = tuple(
@@ -2246,9 +2247,10 @@ def _public_review_stability_gate(
         if any(not isinstance(item, dict) for item in observed):
             raise ValueError("public review identity is not an object")
         first, second = cast(tuple[dict[str, object], dict[str, object]], observed)
-        if first.get("schema") != PUBLIC_REVIEW_IDENTITY_SCHEMA:
-            raise ValueError("public review identity schema is invalid")
+        if first.get("schema") != VALIDATION_STABLE_PUBLIC_REVIEW_SCHEMA:
+            raise ValueError("validation-stable public review identity schema is invalid")
         expected = code_review_identity(cast(Any, replay_review))
+        expected_projection = validation_stable_public_review_identity(expected)
     except (
         OSError,
         RuntimeError,
@@ -2265,37 +2267,19 @@ def _public_review_stability_gate(
             command,
             {"error": str(exc)[:4096]},
         )
-    try:
-        stable_projection = validation_stable_public_review_identity(first)
-        expected_projection = validation_stable_public_review_identity(expected)
-    except (KeyError, TypeError, ValueError) as exc:
-        return _gate(
-            "public_review_stability",
-            "abstained",
-            f"public_review_stable_projection_unavailable:{type(exc).__name__}",
-            started,
-            command,
-            {"error": str(exc)[:4096]},
-        )
     blockers: list[str] = []
     if first != second:
         blockers.append("fresh_process_public_review_not_repeatable")
     if first.get("status") != "ready" or first.get("reason") is not None:
         blockers.append("fresh_process_public_review_not_ready")
-    if first.get("digest") is None:
-        blockers.append("fresh_process_public_review_digest_missing")
-    if set(first) != set(expected):
-        blockers.append("fresh_process_public_review_fields_disagree_with_replay")
-    if stable_projection != expected_projection:
+    if first != expected_projection:
         blockers.append("fresh_process_public_review_core_disagrees_with_replay")
     evidence = {
-        "public_identity": first,
-        "validation_stable_identity": stable_projection,
+        "public_identity": expected,
+        "validation_stable_identity": first,
         "fresh_process_reads": _PUBLIC_REVIEW_IDENTITY_READS,
         "in_process_digest": expected.get("digest"),
         "in_process_question_evaluations": expected.get("question_evaluations"),
-        "fresh_process_digest_differs_from_in_process": first.get("digest")
-        != expected.get("digest"),
         "blockers": blockers,
     }
     return _gate(
@@ -2303,7 +2287,7 @@ def _public_review_stability_gate(
         "abstained" if blockers else "passed",
         "public_review_identity_not_stable"
         if blockers
-        else "two_fresh_process_public_reviews_are_stable_and_current",
+        else "two_fresh_process_validation_identities_are_stable_and_current",
         started,
         command,
         evidence,

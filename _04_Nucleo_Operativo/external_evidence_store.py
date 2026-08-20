@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal, cast
@@ -15,6 +15,7 @@ from .code_external_evidence import (
 )
 from .external_evidence_models import (
     AnalysisProfile,
+    ExternalEvidenceProvider,
     ExternalEvidenceSuiteStatus,
     ExternalProviderAttestation,
     ExternalProviderBaseline,
@@ -33,7 +34,7 @@ from .external_evidence_models import (
     external_signature,
     normalize_external_finding_message,
 )
-from .semantic_models import canonical_json
+from .semantic_models import canonical_json, fingerprint_chunks
 
 _PROVIDER_STATUS_LIMIT = 32
 _FINDING_LIMIT = 10_000
@@ -42,6 +43,7 @@ _RELATION_LIMIT = 250_000
 _COUNTER_LIMIT = 128
 _ProviderStatusGate = Literal["passed", "failed", "baseline", "not_evaluated"]
 _SuiteStatus = Literal["ready", "partial", "abstained", "not_recorded"]
+_RuntimeGroupKey = tuple[str, str, str | None, str | None]
 _ProviderStatusProjection = tuple[
     ExternalProviderStatus,
     tuple[ExternalProviderFinding, ...],
@@ -859,34 +861,57 @@ def _provider_findings(
     ).fetchall()
     if len(rows) > _FINDING_LIMIT:
         raise ValueError("external provider findings exceed their read bound")
-    findings: list[ExternalProviderFinding] = []
-    for row in rows:
-        try:
-            diagnostic_metadata = json.loads(str(row["diagnostic_metadata"]))
-        except (TypeError, ValueError, json.JSONDecodeError) as exc:
-            raise ValueError("external diagnostic projection metadata is malformed") from exc
-        if not isinstance(diagnostic_metadata, dict):
-            raise ValueError("external diagnostic projection metadata is not an object")
-        expected_projection = (
-            row["diagnostic_source"] == row["expected_source"]
-            and row["diagnostic_tool_name"] == row["expected_tool_name"]
-            and row["diagnostic_tool_version"] == row["expected_tool_version"]
-            and row["diagnostic_code"] == row["code"]
-            and row["diagnostic_severity"] == row["severity"]
-            and row["diagnostic_message"] == row["message"]
-            and row["diagnostic_version_id"] == row["version_id"]
-            and row["diagnostic_start_line"] == row["start_line"]
-            and row["diagnostic_start_column"] == row["start_column"]
-            and row["diagnostic_end_line"] == row["end_line"]
-            and row["diagnostic_end_column"] == row["end_column"]
-            and diagnostic_metadata.get("external_provider_id") == row["expected_provider_id"]
-            and diagnostic_metadata.get("external_finding_id") == row["portable_finding_id"]
-            and diagnostic_metadata.get("mutation_authority") is False
-        )
-        if not expected_projection:
-            raise ValueError("external diagnostic projection is inconsistent")
-        findings.append(_normalized_finding_from_row(row))
-    return tuple(findings)
+    return tuple(_provider_finding_from_projection_row(row) for row in rows)
+
+
+def _provider_finding_from_projection_row(row: sqlite3.Row) -> ExternalProviderFinding:
+    try:
+        diagnostic_metadata = json.loads(str(row["diagnostic_metadata"]))
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise ValueError("external diagnostic projection metadata is malformed") from exc
+    if not isinstance(diagnostic_metadata, dict):
+        raise ValueError("external diagnostic projection metadata is not an object")
+    expected_projection = (
+        row["diagnostic_source"] == row["expected_source"]
+        and row["diagnostic_tool_name"] == row["expected_tool_name"]
+        and row["diagnostic_tool_version"] == row["expected_tool_version"]
+        and row["diagnostic_code"] == row["code"]
+        and row["diagnostic_severity"] == row["severity"]
+        and row["diagnostic_message"] == row["message"]
+        and row["diagnostic_version_id"] == row["version_id"]
+        and row["diagnostic_start_line"] == row["start_line"]
+        and row["diagnostic_start_column"] == row["start_column"]
+        and row["diagnostic_end_line"] == row["end_line"]
+        and row["diagnostic_end_column"] == row["end_column"]
+        and diagnostic_metadata.get("external_provider_id") == row["expected_provider_id"]
+        and diagnostic_metadata.get("external_finding_id") == row["portable_finding_id"]
+        and diagnostic_metadata.get("mutation_authority") is False
+    )
+    if not expected_projection:
+        raise ValueError("external diagnostic projection is inconsistent")
+    return _normalized_finding_from_row(row)
+
+
+def _metric_from_row(row: sqlite3.Row) -> ExternalProviderMetric:
+    try:
+        metadata = json.loads(str(row["metadata_json"]))
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise ValueError("external metric metadata is malformed") from exc
+    if not isinstance(metadata, dict):
+        raise ValueError("external metric metadata is not an object")
+    return ExternalProviderMetric(
+        str(row["portable_metric_id"]),
+        cast(ExternalSubjectKind, str(row["subject_kind"])),
+        str(row["subject_key"]),
+        str(row["category"]),
+        str(row["metric_name"]),
+        float(row["value"]),
+        str(row["unit"]),
+        None if row["version_id"] is None else int(row["version_id"]),
+        None if row["symbol_id"] is None else int(row["symbol_id"]),
+        None if row["project_id"] is None else int(row["project_id"]),
+        metadata,
+    )
 
 
 def _provider_metrics(
@@ -902,30 +927,33 @@ def _provider_metrics(
     ).fetchall()
     if len(rows) > _METRIC_LIMIT:
         raise ValueError("external provider metrics exceed their read bound")
-    metrics: list[ExternalProviderMetric] = []
-    for row in rows:
-        try:
-            metadata = json.loads(str(row["metadata_json"]))
-        except (TypeError, ValueError, json.JSONDecodeError) as exc:
-            raise ValueError("external metric metadata is malformed") from exc
-        if not isinstance(metadata, dict):
-            raise ValueError("external metric metadata is not an object")
-        metrics.append(
-            ExternalProviderMetric(
-                str(row["portable_metric_id"]),
-                cast(ExternalSubjectKind, str(row["subject_kind"])),
-                str(row["subject_key"]),
-                str(row["category"]),
-                str(row["metric_name"]),
-                float(row["value"]),
-                str(row["unit"]),
-                None if row["version_id"] is None else int(row["version_id"]),
-                None if row["symbol_id"] is None else int(row["symbol_id"]),
-                None if row["project_id"] is None else int(row["project_id"]),
-                metadata,
-            )
-        )
-    return tuple(metrics)
+    return tuple(_metric_from_row(row) for row in rows)
+
+
+def _relation_from_row(row: sqlite3.Row) -> ExternalProviderRelation:
+    try:
+        metadata = json.loads(str(row["metadata_json"]))
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise ValueError("external relation metadata is malformed") from exc
+    if not isinstance(metadata, dict):
+        raise ValueError("external relation metadata is not an object")
+    return ExternalProviderRelation(
+        str(row["portable_relation_id"]),
+        str(row["relation_kind"]),
+        cast(ExternalSubjectKind, str(row["source_kind"])),
+        str(row["source_key"]),
+        cast(ExternalSubjectKind, str(row["target_kind"])),
+        str(row["target_key"]),
+        bool(row["directed"]),
+        None if row["confidence"] is None else float(row["confidence"]),
+        None if row["source_version_id"] is None else int(row["source_version_id"]),
+        None if row["source_symbol_id"] is None else int(row["source_symbol_id"]),
+        None if row["source_project_id"] is None else int(row["source_project_id"]),
+        None if row["target_version_id"] is None else int(row["target_version_id"]),
+        None if row["target_symbol_id"] is None else int(row["target_symbol_id"]),
+        None if row["target_project_id"] is None else int(row["target_project_id"]),
+        metadata,
+    )
 
 
 def _provider_relations(
@@ -942,34 +970,146 @@ def _provider_relations(
     ).fetchall()
     if len(rows) > _RELATION_LIMIT:
         raise ValueError("external provider relations exceed their read bound")
-    relations: list[ExternalProviderRelation] = []
+    return tuple(_relation_from_row(row) for row in rows)
+
+
+def _provider_projection_counts(
+    connection: sqlite3.Connection,
+    tool_run_id: int,
+) -> tuple[int, int, int]:
+    row = connection.execute(
+        """SELECT
+        (SELECT COUNT(*) FROM external_findings WHERE tool_run_id=?) AS findings,
+        (SELECT COUNT(*) FROM external_metrics WHERE tool_run_id=?) AS metrics,
+        (SELECT COUNT(*) FROM external_relations WHERE tool_run_id=?) AS relations""",
+        (tool_run_id, tool_run_id, tool_run_id),
+    ).fetchone()
+    if row is None:
+        raise ValueError("external provider projection counts are unavailable")
+    counts = (int(row["findings"]), int(row["metrics"]), int(row["relations"]))
+    if counts[0] > _FINDING_LIMIT or counts[1] > _METRIC_LIMIT or counts[2] > _RELATION_LIMIT:
+        raise ValueError("external provider projection exceeds its read bound")
+    return counts
+
+
+def _provider_finding_digest_payloads(
+    connection: sqlite3.Connection,
+    tool_run_id: int,
+) -> Iterable[Mapping[str, object]]:
+    rows = connection.execute(
+        """SELECT f.*,i.relative_path,d.metadata_json AS diagnostic_metadata,
+        d.source AS diagnostic_source,d.tool_name AS diagnostic_tool_name,
+        d.tool_version AS diagnostic_tool_version,d.code AS diagnostic_code,
+        d.severity AS diagnostic_severity,d.message AS diagnostic_message,
+        d.version_id AS diagnostic_version_id,d.start_line AS diagnostic_start_line,
+        d.start_column AS diagnostic_start_column,d.end_line AS diagnostic_end_line,
+        d.end_column AS diagnostic_end_column,c.provider_id AS expected_provider_id,
+        c.source AS expected_source,
+        r.tool_name AS expected_tool_name,r.tool_version AS expected_tool_version
+        FROM external_findings f
+        JOIN external_run_contracts c ON c.tool_run_id=f.tool_run_id
+        JOIN external_tool_runs r ON r.tool_run_id=f.tool_run_id
+        LEFT JOIN external_run_inputs i ON i.tool_run_id=f.tool_run_id
+        AND i.version_id=f.version_id
+        LEFT JOIN diagnostics d ON d.diagnostic_id=f.projected_diagnostic_id
+        WHERE f.tool_run_id=? ORDER BY f.portable_finding_id""",
+        (tool_run_id,),
+    )
     for row in rows:
-        try:
-            metadata = json.loads(str(row["metadata_json"]))
-        except (TypeError, ValueError, json.JSONDecodeError) as exc:
-            raise ValueError("external relation metadata is malformed") from exc
-        if not isinstance(metadata, dict):
-            raise ValueError("external relation metadata is not an object")
-        relations.append(
-            ExternalProviderRelation(
-                str(row["portable_relation_id"]),
-                str(row["relation_kind"]),
-                cast(ExternalSubjectKind, str(row["source_kind"])),
-                str(row["source_key"]),
-                cast(ExternalSubjectKind, str(row["target_kind"])),
-                str(row["target_key"]),
-                bool(row["directed"]),
-                None if row["confidence"] is None else float(row["confidence"]),
-                (None if row["source_version_id"] is None else int(row["source_version_id"])),
-                (None if row["source_symbol_id"] is None else int(row["source_symbol_id"])),
-                (None if row["source_project_id"] is None else int(row["source_project_id"])),
-                (None if row["target_version_id"] is None else int(row["target_version_id"])),
-                (None if row["target_symbol_id"] is None else int(row["target_symbol_id"])),
-                (None if row["target_project_id"] is None else int(row["target_project_id"])),
-                metadata,
-            )
+        yield _provider_finding_from_projection_row(row).digest_payload()
+
+
+def _provider_metric_digest_payloads(
+    connection: sqlite3.Connection,
+    tool_run_id: int,
+) -> Iterable[Mapping[str, object]]:
+    rows = connection.execute(
+        """SELECT portable_metric_id,subject_kind,subject_key,category,
+        metric_name,value,unit,version_id,symbol_id,project_id,metadata_json
+        FROM external_metrics WHERE tool_run_id=? ORDER BY portable_metric_id""",
+        (tool_run_id,),
+    )
+    for row in rows:
+        yield _metric_from_row(row).digest_payload()
+
+
+def _provider_relation_digest_payloads(
+    connection: sqlite3.Connection,
+    tool_run_id: int,
+) -> Iterable[Mapping[str, object]]:
+    rows = connection.execute(
+        """SELECT portable_relation_id,relation_kind,source_kind,source_key,
+        target_kind,target_key,directed,confidence,source_version_id,
+        source_symbol_id,source_project_id,target_version_id,target_symbol_id,
+        target_project_id,metadata_json FROM external_relations
+        WHERE tool_run_id=? ORDER BY portable_relation_id""",
+        (tool_run_id,),
+    )
+    for row in rows:
+        yield _relation_from_row(row).digest_payload()
+
+
+def _canonical_array_chunks(
+    values: Iterable[Mapping[str, object]],
+) -> Iterable[bytes]:
+    first = True
+    for value in values:
+        if not first:
+            yield b","
+        yield canonical_json(value).encode("utf-8")
+        first = False
+
+
+def _streamed_provider_result_digest(
+    connection: sqlite3.Connection,
+    tool_run_id: int,
+    *,
+    counts: tuple[int, int, int],
+) -> str:
+    findings, metrics, relations = counts
+
+    def chunks() -> Iterable[bytes]:
+        yield b'{"findings":['
+        yield from _canonical_array_chunks(
+            _provider_finding_digest_payloads(connection, tool_run_id)
         )
-    return tuple(relations)
+        if metrics == 0 and relations == 0:
+            yield b"]}"
+            return
+        yield b'],"metrics":['
+        yield from _canonical_array_chunks(
+            _provider_metric_digest_payloads(connection, tool_run_id)
+        )
+        yield b'],"relations":['
+        yield from _canonical_array_chunks(
+            _provider_relation_digest_payloads(connection, tool_run_id)
+        )
+        yield b"]}"
+
+    digest = fingerprint_chunks(chunks()).xxh3_128
+    prefix = (
+        "external-findings-v1" if metrics == 0 and relations == 0 else "external-provider-result-v2"
+    )
+    if findings < 0:  # pragma: no cover - counts are constrained by SQLite
+        raise AssertionError("external provider finding count cannot be negative")
+    return f"{prefix}:xxh3_128:{digest}"
+
+
+def _provider_inputs_are_current(
+    connection: sqlite3.Connection,
+    tool_run_id: int,
+) -> bool:
+    row = connection.execute(
+        """SELECT COUNT(*) FROM external_run_inputs i
+        WHERE i.tool_run_id=? AND NOT EXISTS(
+            SELECT 1 FROM files f JOIN file_versions v
+            ON v.version_id=f.current_version_id
+            WHERE v.version_id=i.version_id AND f.status='current'
+            AND v.invalidated_ns IS NULL
+        )""",
+        (tool_run_id,),
+    ).fetchone()
+    return row is not None and int(row[0]) == 0
 
 
 def _abstained_provider(
@@ -1213,6 +1353,90 @@ def _ready_provider_projection(
     )
 
 
+def _verified_streamed_provider_projection(
+    connection: sqlite3.Connection,
+    row: sqlite3.Row | Mapping[str, object],
+    context: _ProviderReadContext,
+) -> tuple[tuple[int, int, int], str]:
+    effective_run_id = _effective_provider_run_id(connection, row)
+    counts = _provider_projection_counts(connection, effective_run_id)
+    for name, observed in zip(("findings", "metrics", "relations"), counts, strict=True):
+        if context.counters.get(name, observed) != observed:
+            raise ValueError(f"{name}_counter")
+    digest = _streamed_provider_result_digest(
+        connection,
+        effective_run_id,
+        counts=counts,
+    )
+    if row["result_digest"] != digest:
+        raise ValueError("result_digest")
+    if not _provider_inputs_are_current(connection, context.tool_run_id):
+        raise ValueError("input_not_current")
+    return counts, digest
+
+
+def _ready_validation_provider_status(
+    row: sqlite3.Row | Mapping[str, object],
+    context: _ProviderReadContext,
+    counts: tuple[int, int, int],
+    digest: str,
+) -> ExternalProviderStatus:
+    findings, metrics, relations = counts
+    comparable = context.counters.get("comparable", 0) == 1
+    added = context.counters.get("added") if comparable else None
+    resolved = context.counters.get("resolved") if comparable else None
+    return ExternalProviderStatus(
+        str(row["provider_id"]),
+        str(row["provider_schema"]),
+        cast(AnalysisProfile, str(row["profile"])),
+        str(row["tool_name"]),
+        str(row["tool_version"]),
+        "ready",
+        None,
+        str(row["execution"]),
+        context.eligible,
+        context.covered,
+        findings,
+        added,
+        resolved,
+        comparable,
+        digest,
+        str(row["comparability_signature"]),
+        _provider_gate(comparable, added),
+        context.limitations,
+        content_executed=bool(row["executes_content"]),
+        counters=context.counters,
+        metrics=metrics,
+        relations=relations,
+    )
+
+
+def _validation_provider_status(
+    connection: sqlite3.Connection,
+    row: sqlite3.Row | Mapping[str, object],
+) -> ExternalProviderStatus:
+    """Verify one immutable provider without retaining its evidence graph."""
+
+    try:
+        tool_run_id = int(str(row["tool_run_id"]))
+        owner = connection.execute(
+            """SELECT a.status FROM external_tool_runs r
+            JOIN analysis_runs a ON a.analysis_run_id=r.analysis_run_id
+            WHERE r.tool_run_id=?""",
+            (tool_run_id,),
+        ).fetchone()
+        if owner is None or str(owner["status"]) != "completed":
+            return _abstained_provider(row, "external_provider_owner_not_completed")
+        context = _provider_read_context(connection, row)
+        terminal = _terminal_provider_projection(row, context)
+        if terminal is not None:
+            return terminal[0]
+        counts, digest = _verified_streamed_provider_projection(connection, row, context)
+        return _ready_validation_provider_status(row, context, counts, digest)
+    except (KeyError, TypeError, ValueError, sqlite3.DatabaseError):
+        return _abstained_provider(row, "external_provider_projection_invalid")
+
+
 def _provider_status(
     connection: sqlite3.Connection,
     row: sqlite3.Row | Mapping[str, object],
@@ -1280,48 +1504,61 @@ def _legacy_provider_status(status: ExternalEvidenceStatus) -> ExternalProviderS
     )
 
 
-def _current_runtime_reason(
+def _runtime_group_configuration(
     row: sqlite3.Row | Mapping[str, object],
-) -> str | None:
-    """Return why one historical provider cannot represent the current runtime."""
+) -> tuple[Mapping[str, object] | None, str | None, str | None]:
+    if str(row["profile"]) != "trusted-deep":
+        return None, None, None
+    try:
+        provenance = json.loads(str(row["provenance_json"]))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None, None, "external_provider_deep_configuration_invalid"
+    recorded = provenance.get("deep_configuration") if isinstance(provenance, dict) else None
+    if not isinstance(recorded, dict) or set(recorded) != {"payload", "signature"}:
+        return None, None, "external_provider_deep_configuration_invalid"
+    payload = recorded.get("payload")
+    signature = recorded.get("signature")
+    if not isinstance(payload, dict) or not isinstance(signature, str) or not signature:
+        return None, None, "external_provider_deep_configuration_invalid"
+    return payload, signature, None
 
-    from .external_evidence_providers import providers_for_profile
 
+def _runtime_group(
+    row: sqlite3.Row | Mapping[str, object],
+) -> tuple[
+    _RuntimeGroupKey | None,
+    Mapping[str, object] | None,
+    str | None,
+    str | None,
+]:
     profile_value = str(row["profile"])
     if profile_value not in {"protected", "trusted-static", "trusted-deep"}:
-        return "external_provider_profile_unsupported"
-    deep_configuration: Mapping[str, object] | None = None
-    deep_configuration_signature: str | None = None
-    if profile_value == "trusted-deep":
-        try:
-            provenance = json.loads(str(row["provenance_json"]))
-        except (TypeError, ValueError, json.JSONDecodeError):
-            return "external_provider_deep_configuration_invalid"
-        recorded = provenance.get("deep_configuration") if isinstance(provenance, dict) else None
-        if not isinstance(recorded, dict) or set(recorded) != {"payload", "signature"}:
-            return "external_provider_deep_configuration_invalid"
-        payload = recorded.get("payload")
-        signature = recorded.get("signature")
-        if not isinstance(payload, dict) or not isinstance(signature, str) or not signature:
-            return "external_provider_deep_configuration_invalid"
-        deep_configuration = payload
-        deep_configuration_signature = signature
+        return None, None, None, "external_provider_profile_unsupported"
+    configuration, signature, reason = _runtime_group_configuration(row)
+    if reason is not None:
+        return None, None, None, reason
     try:
-        providers = providers_for_profile(
-            cast(AnalysisProfile, profile_value),
-            Path(str(row["observed_root"])),
-            deep_configuration=deep_configuration,
-            deep_configuration_signature=deep_configuration_signature,
-        )
-    except (OSError, RuntimeError, TypeError, ValueError):
-        return "external_provider_runtime_probe_failed"
-    provider = next(
-        (item for item in providers if item.descriptor.provider_id == str(row["provider_id"])),
+        configuration_json = None if configuration is None else canonical_json(configuration)
+    except (TypeError, ValueError):
+        return None, None, None, "external_provider_deep_configuration_invalid"
+    return (
+        (profile_value, str(row["observed_root"]), signature, configuration_json),
+        configuration,
+        signature,
         None,
     )
+
+
+def _runtime_provider_reason(
+    row: sqlite3.Row | Mapping[str, object],
+    provider: ExternalEvidenceProvider | None,
+) -> str | None:
     if provider is None:
         return "external_provider_not_registered"
-    version = provider.tool_version()
+    try:
+        version = provider.tool_version()
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return "external_provider_runtime_probe_failed"
     if version is None:
         return "external_provider_runtime_unavailable"
     descriptor = provider.descriptor
@@ -1334,6 +1571,65 @@ def _current_runtime_reason(
     ):
         return "external_provider_runtime_stale"
     return None
+
+
+def _current_runtime_reasons(
+    rows: Sequence[sqlite3.Row | Mapping[str, object]],
+) -> dict[int, str | None]:
+    """Probe each distinct provider runtime once for one immutable suite."""
+
+    from .external_evidence_providers import providers_for_profile
+
+    reasons: dict[int, str | None] = {}
+    groups: dict[_RuntimeGroupKey, list[sqlite3.Row | Mapping[str, object]]] = {}
+    configurations: dict[
+        _RuntimeGroupKey,
+        tuple[Mapping[str, object] | None, str | None],
+    ] = {}
+    for row in rows:
+        tool_run_id = int(str(row["tool_run_id"]))
+        key, configuration, signature, reason = _runtime_group(row)
+        if key is None:
+            reasons[tool_run_id] = reason or "external_provider_runtime_probe_failed"
+            continue
+        groups.setdefault(key, []).append(row)
+        configurations[key] = (configuration, signature)
+    for key, grouped_rows in groups.items():
+        profile_value, observed_root, _signature_key, _configuration_json = key
+        configuration, signature = configurations[key]
+        try:
+            providers = providers_for_profile(
+                cast(AnalysisProfile, profile_value),
+                Path(observed_root),
+                deep_configuration=configuration,
+                deep_configuration_signature=signature,
+            )
+            providers_by_id = {item.descriptor.provider_id: item for item in providers}
+        except (OSError, RuntimeError, TypeError, ValueError):
+            for row in grouped_rows:
+                reasons[int(str(row["tool_run_id"]))] = "external_provider_runtime_probe_failed"
+            continue
+        for row in grouped_rows:
+            tool_run_id = int(str(row["tool_run_id"]))
+            reasons[tool_run_id] = _runtime_provider_reason(
+                row,
+                providers_by_id.get(str(row["provider_id"])),
+            )
+    return reasons
+
+
+def _current_runtime_reason(
+    row: sqlite3.Row | Mapping[str, object],
+) -> str | None:
+    """Return why one historical provider cannot represent the current runtime."""
+
+    try:
+        tool_run_id = int(str(row["tool_run_id"]))
+        selected = row
+    except (KeyError, TypeError, ValueError, IndexError):
+        tool_run_id = 0
+        selected = {**dict(row), "tool_run_id": tool_run_id}
+    return _current_runtime_reasons((selected,)).get(tool_run_id)
 
 
 def _type_consensus(
@@ -1476,13 +1772,8 @@ def _read_provider_suite_status(
     connection: sqlite3.Connection,
     row: sqlite3.Row,
     *,
-    enforce_current_runtime: bool,
+    runtime_reason: str | None,
 ) -> tuple[ExternalProviderStatus, tuple[ExternalProviderFinding, ...]]:
-    runtime_reason = (
-        _current_runtime_reason(row)
-        if enforce_current_runtime and str(row["status"]) in {"completed", "skipped"}
-        else None
-    )
     status, findings, _effective_run_id, _metrics, _relations = _provider_status(
         connection,
         row,
@@ -1511,11 +1802,24 @@ def _read_provider_suite_statuses(
 ]:
     statuses: list[ExternalProviderStatus] = []
     findings: dict[str, tuple[ExternalProviderFinding, ...]] = {}
+    runtime_reasons = (
+        _current_runtime_reasons(
+            tuple(row for row in latest.values() if str(row["status"]) in {"completed", "skipped"})
+        )
+        if enforce_current_runtime
+        else {}
+    )
     for provider_id in sorted(latest):
+        row = latest[provider_id]
+        runtime_reason = (
+            runtime_reasons.get(int(row["tool_run_id"]))
+            if enforce_current_runtime and str(row["status"]) in {"completed", "skipped"}
+            else None
+        )
         status, provider_findings = _read_provider_suite_status(
             connection,
-            latest[provider_id],
-            enforce_current_runtime=enforce_current_runtime,
+            row,
+            runtime_reason=runtime_reason,
         )
         statuses.append(status)
         findings[provider_id] = provider_findings
@@ -1607,6 +1911,54 @@ def read_external_evidence_suite(
         _type_consensus(findings, status_map),
         _gate_evaluations(status_map),
     )
+
+
+def read_external_validation_provider_statuses(
+    connection: sqlite3.Connection,
+    analysis_run_id: int,
+    *,
+    enforce_current_runtime: bool,
+) -> tuple[AnalysisProfile, tuple[ExternalProviderStatus, ...]]:
+    """Verify the receipt-bound provider suite with bounded resident memory."""
+
+    rows = _provider_run_rows(connection, analysis_run_id, None)
+    if len(rows) > _PROVIDER_STATUS_LIMIT:
+        return "protected", ()
+    latest = _latest_provider_rows(rows)
+    runtime_reasons = (
+        _current_runtime_reasons(
+            tuple(row for row in latest.values() if str(row["status"]) in {"completed", "skipped"})
+        )
+        if enforce_current_runtime
+        else {}
+    )
+    statuses: list[ExternalProviderStatus] = []
+    for provider_id in sorted(latest):
+        row = latest[provider_id]
+        status = _validation_provider_status(connection, row)
+        runtime_reason = (
+            runtime_reasons.get(int(row["tool_run_id"]))
+            if str(row["status"]) in {"completed", "skipped"}
+            else None
+        )
+        if runtime_reason is not None:
+            status = replace(
+                status,
+                status="abstained",
+                reason=runtime_reason,
+                gate="not_evaluated",
+            )
+        statuses.append(status)
+    _append_legacy_provider_status(
+        connection,
+        analysis_run_id,
+        None,
+        latest,
+        statuses,
+        enforce_current_runtime=enforce_current_runtime,
+    )
+    statuses.sort(key=lambda item: item.provider_id)
+    return _suite_profile(statuses), tuple(statuses)
 
 
 def read_external_provider_evidence(
@@ -1857,4 +2209,5 @@ __all__ = [
     "read_external_provider_evidence",
     "read_external_provider_finding_ids",
     "read_external_provider_findings",
+    "read_external_validation_provider_statuses",
 ]

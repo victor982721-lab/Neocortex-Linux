@@ -235,19 +235,20 @@ def _current_review_matches(result: Mapping[str, object], state: Path) -> bool:
         None,
     )
     evidence = None if public_gate is None else public_gate.get("evidence")
-    expected = evidence.get("public_identity") if isinstance(evidence, Mapping) else None
-    if not isinstance(expected, Mapping):
-        return False
+    stable = evidence.get("validation_stable_identity") if isinstance(evidence, Mapping) else None
+    public = evidence.get("public_identity") if isinstance(evidence, Mapping) else None
     from .code_validation_public_review import (
-        code_review_identity,
         validation_stable_public_review_identity,
+        validation_stable_review_identity,
     )
-    from .code_review import review_code_state
 
-    review = review_code_state(state, limit=50)
-    return validation_stable_public_review_identity(
-        code_review_identity(review)
-    ) == validation_stable_public_review_identity(expected)
+    if isinstance(stable, Mapping):
+        expected = dict(stable)
+    elif isinstance(public, Mapping):
+        expected = validation_stable_public_review_identity(public)
+    else:
+        return False
+    return validation_stable_review_identity(state) == expected
 
 
 def load_current_code_validation_receipt(

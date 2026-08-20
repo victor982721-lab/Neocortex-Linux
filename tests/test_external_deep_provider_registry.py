@@ -444,6 +444,7 @@ def test_runtime_reconstruction_uses_persisted_deep_configuration_and_fails_clos
     captured: dict[str, object] = {}
 
     def registry(profile, observed_root, **kwargs):
+        captured["calls"] = int(captured.get("calls", 0)) + 1
         captured.update(profile=profile, root=observed_root, **kwargs)
         return (SimpleNamespace(descriptor=descriptor, tool_version=lambda: "fixture-1"),)
 
@@ -479,6 +480,11 @@ def test_runtime_reconstruction_uses_persisted_deep_configuration_and_fails_clos
         store_module._current_runtime_reason(malformed)
         == "external_provider_deep_configuration_invalid"
     )
+    batched = store_module._current_runtime_reasons(
+        ({**row, "tool_run_id": 1}, {**row, "tool_run_id": 2})
+    )
+    assert batched == {1: None, 2: None}
+    assert captured["calls"] == 3
 
 
 def test_suite_profile_priority_is_deep_over_static_and_protected(
