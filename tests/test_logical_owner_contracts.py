@@ -22,18 +22,21 @@ def test_registry_maps_only_explicit_owner_selectors_without_a_default() -> None
     assert matching_logical_owners("_04_Nucleo_Operativo.framework_state") == ("framework",)
     assert matching_logical_owners("_04_Nucleo_Operativo.actions") == ("orchestration",)
     assert matching_logical_owners("_04_Nucleo_Operativo.archive_route") == ("archive",)
-    assert matching_logical_owners(
-        "_04_Nucleo_Operativo.capabilities.formats.archive.route"
-    ) == ("archive",)
+    assert matching_logical_owners("_04_Nucleo_Operativo.capabilities.formats.archive.route") == (
+        "archive",
+    )
     assert matching_logical_owners("_04_Nucleo_Operativo.audio_route") == ("audio",)
+    assert matching_logical_owners("_04_Nucleo_Operativo.capabilities.formats.audio.route") == (
+        "audio",
+    )
     assert matching_logical_owners("_04_Nucleo_Operativo.code_review") == ("code-analysis",)
     assert matching_logical_owners("_04_Nucleo_Operativo.image_route") == ("image",)
-    assert matching_logical_owners(
-        "_04_Nucleo_Operativo.capabilities.formats.docx.route"
-    ) == ("docx",)
-    assert matching_logical_owners(
-        "_04_Nucleo_Operativo.capabilities.formats.image.route"
-    ) == ("image",)
+    assert matching_logical_owners("_04_Nucleo_Operativo.capabilities.formats.docx.route") == (
+        "docx",
+    )
+    assert matching_logical_owners("_04_Nucleo_Operativo.capabilities.formats.image.route") == (
+        "image",
+    )
     assert matching_logical_owners("_04_Nucleo_Operativo.pdf_route") == ("pdf",)
     assert matching_logical_owners("_04_Nucleo_Operativo.video_route") == ("video",)
     assert matching_logical_owners("_02_Deduplicacion.inventory") == ("inventory",)

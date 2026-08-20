@@ -63,7 +63,7 @@ class RouteRegistryIsolationTests(unittest.TestCase):
                 "_04_Nucleo_Operativo.archive_route",
                 "_04_Nucleo_Operativo.capabilities.formats.archive.route",
                 "_04_Nucleo_Operativo.text_route",
-                "_04_Nucleo_Operativo.audio_route",
+                "_04_Nucleo_Operativo.capabilities.formats.audio.route",
                 "_04_Nucleo_Operativo.video_route",
                 "_04_Nucleo_Operativo.code_route",
                 "_04_Nucleo_Operativo.code_analyzers",
@@ -94,7 +94,7 @@ class RouteRegistryIsolationTests(unittest.TestCase):
                 "_04_Nucleo_Operativo.office_route",
                 "_04_Nucleo_Operativo.archive_route",
                 "_04_Nucleo_Operativo.capabilities.formats.archive.route",
-                "_04_Nucleo_Operativo.audio_route",
+                "_04_Nucleo_Operativo.capabilities.formats.audio.route",
                 "_04_Nucleo_Operativo.video_route",
             }
             if engines.intersection(sys.modules):
@@ -138,7 +138,7 @@ class RouteRegistryIsolationTests(unittest.TestCase):
                 "_04_Nucleo_Operativo.capabilities.formats.image.route",
                 "_04_Nucleo_Operativo.archive_route",
                 "_04_Nucleo_Operativo.capabilities.formats.archive.route",
-                "_04_Nucleo_Operativo.audio_route",
+                "_04_Nucleo_Operativo.capabilities.formats.audio.route",
                 "_04_Nucleo_Operativo.video_route",
             }
             loaded = forbidden.intersection(sys.modules)
@@ -178,7 +178,7 @@ class RouteRegistryIsolationTests(unittest.TestCase):
                 "_04_Nucleo_Operativo.capabilities.formats.image.route",
                 "_04_Nucleo_Operativo.archive_route",
                 "_04_Nucleo_Operativo.capabilities.formats.archive.route",
-                "_04_Nucleo_Operativo.audio_route",
+                "_04_Nucleo_Operativo.capabilities.formats.audio.route",
             }
             loaded = forbidden.intersection(sys.modules)
             if loaded:
@@ -210,7 +210,7 @@ class RouteRegistryIsolationTests(unittest.TestCase):
                 "image": "_04_Nucleo_Operativo.image_route",
                 "archive": "_04_Nucleo_Operativo.archive_route",
                 "office": "_04_Nucleo_Operativo.office_route",
-                "audio": "_04_Nucleo_Operativo.audio_route",
+                "audio": "_04_Nucleo_Operativo.capabilities.formats.audio.route",
                 "video": "_04_Nucleo_Operativo.video_route",
                 "text": "_04_Nucleo_Operativo.text_route",
             }

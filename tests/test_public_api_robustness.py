@@ -14,7 +14,7 @@ import pytest
 
 import _04_Nucleo_Operativo.application_config_projections as projections
 from _04_Nucleo_Operativo import ApplicationConfig, FrameworkConfig
-from _04_Nucleo_Operativo.audio_models import AudioRouteConfig
+from _04_Nucleo_Operativo.capabilities.formats.audio.models import AudioRouteConfig
 from _04_Nucleo_Operativo.code_contracts import CodeRouteConfig
 from _04_Nucleo_Operativo.docx_models import DocxRouteConfig
 from _04_Nucleo_Operativo.global_resources import GlobalResourceLimits
@@ -132,7 +132,7 @@ def test_projection_module_cold_import_keeps_owner_contracts_deferred() -> None:
             "_04_Nucleo_Operativo.application_config",
             "_04_Nucleo_Operativo.archive_route",
             "_04_Nucleo_Operativo.capabilities.formats.archive.route",
-            "_04_Nucleo_Operativo.audio_models",
+            "_04_Nucleo_Operativo.capabilities.formats.audio.models",
             "_04_Nucleo_Operativo.code_contracts",
             "_04_Nucleo_Operativo.docx_models",
             "_04_Nucleo_Operativo.capabilities.formats.docx.models",

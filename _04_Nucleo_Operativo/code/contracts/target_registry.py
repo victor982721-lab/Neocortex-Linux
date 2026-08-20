@@ -182,6 +182,7 @@ RESPONSIBILITY_MODULES: Final = {
         "_04_Nucleo_Operativo.logical_owner_contracts",
         "_04_Nucleo_Operativo.platform.shared.architecture_projection",
         "_04_Nucleo_Operativo.platform.shared.capability_registry",
+        "_04_Nucleo_Operativo.platform.shared.capability_registry_specs",
         "_04_Nucleo_Operativo.state_topology_contracts",
     ),
     "code.discovery_search": (
@@ -271,11 +272,12 @@ RESPONSIBILITY_MODULES: Final = {
         "_04_Nucleo_Operativo.capabilities.formats.archive.text_worker",
     ),
     "formats.audio": (
-        "_04_Nucleo_Operativo.audio_models",
-        "_04_Nucleo_Operativo.audio_probe",
-        "_04_Nucleo_Operativo.audio_route",
-        "_04_Nucleo_Operativo.audio_state",
-        "_04_Nucleo_Operativo.audio_whisper",
+        "_04_Nucleo_Operativo.capabilities.formats.audio",
+        "_04_Nucleo_Operativo.capabilities.formats.audio.models",
+        "_04_Nucleo_Operativo.capabilities.formats.audio.probe",
+        "_04_Nucleo_Operativo.capabilities.formats.audio.route",
+        "_04_Nucleo_Operativo.capabilities.formats.audio.state",
+        "_04_Nucleo_Operativo.capabilities.formats.audio.whisper",
     ),
     "formats.docx": (
         "_04_Nucleo_Operativo.capabilities.formats.docx",
@@ -517,6 +519,11 @@ COMPATIBILITY_MODULES: Final = (
     "_04_Nucleo_Operativo.archive_route",
     "_04_Nucleo_Operativo.archive_state",
     "_04_Nucleo_Operativo.archive_text_worker",
+    "_04_Nucleo_Operativo.audio_models",
+    "_04_Nucleo_Operativo.audio_probe",
+    "_04_Nucleo_Operativo.audio_route",
+    "_04_Nucleo_Operativo.audio_state",
+    "_04_Nucleo_Operativo.audio_whisper",
     "_04_Nucleo_Operativo.content_types",
     "_04_Nucleo_Operativo.docx_integrity",
     "_04_Nucleo_Operativo.docx_layout",
@@ -571,6 +578,11 @@ COMPATIBILITY_MODULE_PAIRS: Final = tuple(
                 ("models", "route", "state", "text_worker"),
             ),
             *_format_compatibility_pairs(
+                "audio",
+                "capabilities.formats.audio",
+                ("models", "probe", "route", "state", "whisper"),
+            ),
+            *_format_compatibility_pairs(
                 "docx",
                 "capabilities.formats.docx",
                 ("integrity", "layout", "models", "route", "schema", "state"),
@@ -607,6 +619,7 @@ _PICKLE_COMPATIBILITY_MODULES: Final = frozenset(COMPATIBILITY_MODULES) - {
 _INSTANCE_PICKLE_MODULES: Final = frozenset(
     {
         "_04_Nucleo_Operativo.archive_models",
+        "_04_Nucleo_Operativo.audio_models",
         "_04_Nucleo_Operativo.content_types",
         "_04_Nucleo_Operativo.docx_models",
         "_04_Nucleo_Operativo.image_models",
@@ -616,6 +629,9 @@ _MONKEYPATCH_COMPATIBILITY_MODULES: Final = frozenset(
     {
         "_04_Nucleo_Operativo.archive_route",
         "_04_Nucleo_Operativo.archive_state",
+        "_04_Nucleo_Operativo.audio_probe",
+        "_04_Nucleo_Operativo.audio_state",
+        "_04_Nucleo_Operativo.audio_whisper",
         "_04_Nucleo_Operativo.content_types",
         "_04_Nucleo_Operativo.docx_integrity",
         "_04_Nucleo_Operativo.docx_route",
@@ -671,6 +687,8 @@ def _compatibility_test_roots(legacy_module_id: str) -> tuple[str, ...]:
     roots = {_GENERIC_COMPATIBILITY_TEST}
     if ".archive_" in legacy_module_id:
         roots.add("tests/test_archive_namespace_migration.py")
+    elif ".audio_" in legacy_module_id:
+        roots.add("tests/test_audio_namespace_migration.py")
     elif ".docx_" in legacy_module_id:
         roots.add("tests/test_docx_namespace_migration.py")
     elif ".image_" in legacy_module_id:

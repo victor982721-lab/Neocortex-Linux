@@ -95,9 +95,7 @@ def _registered_capability_owner_spec(owner_id: str) -> LogicalOwnerSpec:
         raise ValueError(f"registered capability state ownership disagrees: {owner_id}")
     return LogicalOwnerSpec(
         owner_id,
-        tuple(
-            _selector(item.selector_id, item.match_kind, item.value) for item in bindings
-        ),
+        tuple(_selector(item.selector_id, item.match_kind, item.value) for item in bindings),
         next(iter(state_owner_ids)),
     )
 
@@ -107,11 +105,7 @@ def _registered_capability_owner_spec(owner_id: str) -> LogicalOwnerSpec:
 # modules deliberately remain unmapped unless their ownership is contractual.
 LOGICAL_OWNER_SPECS = (
     _registered_capability_owner_spec("archive"),
-    LogicalOwnerSpec(
-        "audio",
-        (_selector("audio-core-modules", "module_prefix", "_04_Nucleo_Operativo.audio_"),),
-        ("audio",),
-    ),
+    _registered_capability_owner_spec("audio"),
     LogicalOwnerSpec(
         "capability",
         (

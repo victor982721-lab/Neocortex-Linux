@@ -16,8 +16,8 @@ if TYPE_CHECKING:
 
     from .capabilities.formats.archive.route import ArchiveRoute as ArchiveRoute
     from .capabilities.formats.archive.route import ArchiveRouteConfig as ArchiveRouteConfig
-    from .audio_models import AudioRouteConfig as AudioRouteConfig
-    from .audio_route import AudioRoute as AudioRoute
+    from .capabilities.formats.audio.models import AudioRouteConfig as AudioRouteConfig
+    from .capabilities.formats.audio.route import AudioRoute as AudioRoute
     from .code_contracts import CodeRouteConfig as CodeRouteConfig
     from .code_route import CodeRoute as CodeRoute
     from .cancellation import CancellationToken
@@ -77,8 +77,8 @@ class RouteAdapter:
 
 
 _DEFERRED_ROUTE_EXPORTS = {
-    "AudioRoute": (".audio_route", "AudioRoute"),
-    "AudioRouteConfig": (".audio_models", "AudioRouteConfig"),
+    "AudioRoute": (".capabilities.formats.audio.route", "AudioRoute"),
+    "AudioRouteConfig": (".capabilities.formats.audio.models", "AudioRouteConfig"),
     "ArchiveRoute": (".capabilities.formats.archive.route", "ArchiveRoute"),
     "ArchiveRouteConfig": (".capabilities.formats.archive.route", "ArchiveRouteConfig"),
     "CodeRoute": (".code_route", "CodeRoute"),
@@ -328,7 +328,7 @@ def audio_route_config_from_framework(config: "FrameworkConfig") -> "AudioRouteC
 
 
 def _run_audio(context: RouteExecutionContext) -> object:
-    from .audio_route import AudioRoute
+    from .capabilities.formats.audio.route import AudioRoute
     from .global_resources import CoordinatedMemoryGate
 
     config = context.config

@@ -320,7 +320,7 @@ def test_semantic_facades_cold_import_no_owner_or_image_runtime() -> None:
         import sys
 
         blocked_modules = {
-            "_04_Nucleo_Operativo.audio_state",
+            "_04_Nucleo_Operativo.capabilities.formats.audio.state",
             "_04_Nucleo_Operativo.code_schema",
             "_04_Nucleo_Operativo.docx_schema",
             "_04_Nucleo_Operativo.capabilities.formats.docx.schema",

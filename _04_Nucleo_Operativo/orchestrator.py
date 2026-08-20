@@ -72,7 +72,7 @@ from .state import FrameworkRouteState, FrameworkState
 
 if TYPE_CHECKING:
     from .capabilities.formats.archive.models import ArchiveRouteSummary
-    from .audio_models import AudioRouteSummary
+    from .capabilities.formats.audio.models import AudioRouteSummary
     from .code_contracts import CodeRouteSummary
     from .capabilities.formats.docx.route import DocxRouteSummary
     from .capabilities.formats.image.route import ImageRouteSummary

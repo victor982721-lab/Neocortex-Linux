@@ -15,7 +15,7 @@ __all__ = ["run_audio_doctor", "run_audio_search"]
 def run_audio_search(args: argparse.Namespace) -> int:
     """Search indexed transcript text without loading Whisper."""
 
-    from .audio_route import search_audio_state
+    from .capabilities.formats.audio.route import search_audio_state
 
     try:
         results = search_audio_state(
@@ -44,7 +44,7 @@ def run_audio_search(args: argparse.Namespace) -> int:
 def run_audio_doctor(args: argparse.Namespace) -> int:
     """Inspect dependencies only; never load or download model weights."""
 
-    from .audio_whisper import audio_runtime_doctor
+    from .capabilities.formats.audio.whisper import audio_runtime_doctor
 
     report = audio_runtime_doctor(
         device=args.whisper_device,

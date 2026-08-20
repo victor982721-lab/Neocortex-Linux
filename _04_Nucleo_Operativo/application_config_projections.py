@@ -33,7 +33,7 @@ class _DeferredTypeModule:
 
 
 if TYPE_CHECKING:
-    from . import audio_models as _audio_contracts
+    from .capabilities.formats.audio import models as _audio_contracts
     from . import code_contracts as _code_contracts
     from . import global_resources as _resource_contracts
     from . import models as _application_contracts
@@ -47,7 +47,7 @@ if TYPE_CHECKING:
 else:
     _application_contracts = _DeferredTypeModule(".models")
     _archive_contracts = _DeferredTypeModule(".capabilities.formats.archive.route")
-    _audio_contracts = _DeferredTypeModule(".audio_models")
+    _audio_contracts = _DeferredTypeModule(".capabilities.formats.audio.models")
     _code_contracts = _DeferredTypeModule(".code_contracts")
     _docx_contracts = _DeferredTypeModule(".capabilities.formats.docx.models")
     _image_contracts = _DeferredTypeModule(".capabilities.formats.image.route")
@@ -136,7 +136,7 @@ def audio_route_config_from_application(
 ) -> _audio_contracts.AudioRouteConfig:
     """Project current application values into the audio owner's contract."""
 
-    from .audio_models import AudioRouteConfig
+    from .capabilities.formats.audio.models import AudioRouteConfig
 
     return AudioRouteConfig(
         state_path=config.audio_database,

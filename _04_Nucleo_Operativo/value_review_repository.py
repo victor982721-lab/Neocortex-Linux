@@ -25,7 +25,8 @@ from _02_Deduplicacion.inventory_schema import (
 )
 from neocortex.sqlite_schema_contract import read_application_schema_version
 
-from . import audio_state, document_catalog_schema, office_state, text_state
+from . import document_catalog_schema, office_state, text_state
+from .capabilities.formats.audio import state as audio_state
 from .capabilities.formats.docx.schema import DOCX_SCHEMA_VERSION, validate_docx_schema
 from .pdf_schema import PDF_SCHEMA_VERSION, validate_pdf_schema
 from .sqlite_paths import readonly_sqlite_uri

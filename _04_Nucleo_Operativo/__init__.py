@@ -12,9 +12,9 @@ from typing import TYPE_CHECKING, Any, Final
 
 if TYPE_CHECKING:
     from .application_config import ApplicationConfig as ApplicationConfig
-    from .audio_models import AudioRouteConfig as AudioRouteConfig
-    from .audio_models import AudioRouteSummary as AudioRouteSummary
-    from .audio_route import AudioRoute as AudioRoute
+    from .capabilities.formats.audio.models import AudioRouteConfig as AudioRouteConfig
+    from .capabilities.formats.audio.models import AudioRouteSummary as AudioRouteSummary
+    from .capabilities.formats.audio.route import AudioRoute as AudioRoute
     from .code_contracts import CodeRelationEndpoint as CodeRelationEndpoint
     from .code_contracts import CodeRouteConfig as CodeRouteConfig
     from .code_contracts import CodeRouteSummary as CodeRouteSummary
@@ -195,9 +195,9 @@ __all__ = [  # noqa: RUF022
 _EXPORTS: Final[dict[str, tuple[str, str]]] = {
     "ActionSummary": (".models", "ActionSummary"),
     "ApplicationConfig": (".application_config", "ApplicationConfig"),
-    "AudioRoute": (".audio_route", "AudioRoute"),
-    "AudioRouteConfig": (".audio_models", "AudioRouteConfig"),
-    "AudioRouteSummary": (".audio_models", "AudioRouteSummary"),
+    "AudioRoute": (".capabilities.formats.audio.route", "AudioRoute"),
+    "AudioRouteConfig": (".capabilities.formats.audio.models", "AudioRouteConfig"),
+    "AudioRouteSummary": (".capabilities.formats.audio.models", "AudioRouteSummary"),
     "CapabilityFailure": (".derivation_contracts", "CapabilityFailure"),
     "CodeRelationEndpoint": (".code_contracts", "CodeRelationEndpoint"),
     "CodeRoute": (".code_route", "CodeRoute"),

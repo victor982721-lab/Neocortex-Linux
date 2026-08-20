@@ -26,16 +26,16 @@ from neocortex.sqlite_schema_contract import (
 from neocortex.platform_policy import sqlite_path_collation
 
 from . import (
-    audio_state,
     document_catalog_schema,
     office_state,
     text_state,
     video_state,
 )
 from . import semantic_schema as semantic_schema_module
-from .code_schema import validate_code_schema
+from .capabilities.formats.audio import state as audio_state
 from .capabilities.formats.archive import state as archive_state
 from .capabilities.formats.docx.schema import validate_docx_schema
+from .code_schema import validate_code_schema
 from .framework_schema import (
     validate_framework_schema_v19,
     validate_framework_schema_v20,

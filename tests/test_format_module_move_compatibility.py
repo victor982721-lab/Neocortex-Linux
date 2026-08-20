@@ -31,6 +31,7 @@ PARENT_PACKAGES = (
     "_04_Nucleo_Operativo.capabilities",
     "_04_Nucleo_Operativo.capabilities.formats",
     "_04_Nucleo_Operativo.capabilities.formats.archive",
+    "_04_Nucleo_Operativo.capabilities.formats.audio",
     "_04_Nucleo_Operativo.capabilities.formats.docx",
     "_04_Nucleo_Operativo.capabilities.formats.image",
 )
@@ -44,6 +45,11 @@ HISTORICAL_PICKLE_SYMBOLS = {
     "_04_Nucleo_Operativo.archive_route": "ArchiveRouteConfig",
     "_04_Nucleo_Operativo.archive_state": "ArchiveStatus",
     "_04_Nucleo_Operativo.archive_text_worker": "main",
+    "_04_Nucleo_Operativo.audio_models": "AudioRouteSummary",
+    "_04_Nucleo_Operativo.audio_probe": "probe_media",
+    "_04_Nucleo_Operativo.audio_route": "AudioRoute",
+    "_04_Nucleo_Operativo.audio_state": "audio_database",
+    "_04_Nucleo_Operativo.audio_whisper": "WhisperTranscriber",
     "_04_Nucleo_Operativo.docx_integrity": "recover_raw_deflate_member",
     "_04_Nucleo_Operativo.docx_layout": "TextBudget",
     "_04_Nucleo_Operativo.docx_models": "DocxDiagnostic",
@@ -86,6 +92,21 @@ MONKEYPATCH_SEAMS = (
         "_04_Nucleo_Operativo.archive_state",
         "initialize_archive_state",
         "archive_database",
+    ),
+    (
+        "_04_Nucleo_Operativo.audio_probe",
+        "_run_ffprobe",
+        "run_bounded_capture",
+    ),
+    (
+        "_04_Nucleo_Operativo.audio_state",
+        "_initialize_locked_audio_state",
+        "_migrate_audio_v1_path_collation",
+    ),
+    (
+        "_04_Nucleo_Operativo.audio_whisper",
+        "_whisper_worker",
+        "resolve_whisper_runtime",
     ),
     (
         "_04_Nucleo_Operativo.docx_integrity",
@@ -143,6 +164,12 @@ INSTANCE_PICKLE_CASES = (
         {},
     ),
     (
+        "_04_Nucleo_Operativo.audio_models",
+        "AudioRouteSummary",
+        (),
+        {},
+    ),
+    (
         "_04_Nucleo_Operativo.docx_models",
         "DocxDiagnostic",
         (),
@@ -183,9 +210,9 @@ def _recursive_code_names(code: CodeType) -> frozenset[str]:
     return frozenset(names)
 
 
-def test_module_move_manifest_contains_all_27_pairs() -> None:
-    assert len(MODULE_MOVES) == 27
-    assert len(set(MODULE_MOVES)) == 27
+def test_module_move_manifest_contains_all_32_pairs() -> None:
+    assert len(MODULE_MOVES) == 32
+    assert len(set(MODULE_MOVES)) == 32
     assert {legacy for legacy, _canonical in MODULE_MOVES} == {
         "_04_Nucleo_Operativo.content_types",
         "_04_Nucleo_Operativo.zip_safety",
@@ -193,6 +220,11 @@ def test_module_move_manifest_contains_all_27_pairs() -> None:
         "_04_Nucleo_Operativo.archive_route",
         "_04_Nucleo_Operativo.archive_state",
         "_04_Nucleo_Operativo.archive_text_worker",
+        "_04_Nucleo_Operativo.audio_models",
+        "_04_Nucleo_Operativo.audio_probe",
+        "_04_Nucleo_Operativo.audio_route",
+        "_04_Nucleo_Operativo.audio_state",
+        "_04_Nucleo_Operativo.audio_whisper",
         "_04_Nucleo_Operativo.docx_integrity",
         "_04_Nucleo_Operativo.docx_layout",
         "_04_Nucleo_Operativo.docx_models",

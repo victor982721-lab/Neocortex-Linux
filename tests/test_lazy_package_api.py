@@ -104,9 +104,9 @@ EXPECTED_EXPORTS = [
 EXPECTED_SOURCES = {
     "ActionSummary": "_04_Nucleo_Operativo.models",
     "ApplicationConfig": "_04_Nucleo_Operativo.application_config",
-    "AudioRoute": "_04_Nucleo_Operativo.audio_route",
-    "AudioRouteConfig": "_04_Nucleo_Operativo.audio_models",
-    "AudioRouteSummary": "_04_Nucleo_Operativo.audio_models",
+    "AudioRoute": "_04_Nucleo_Operativo.capabilities.formats.audio.route",
+    "AudioRouteConfig": "_04_Nucleo_Operativo.capabilities.formats.audio.models",
+    "AudioRouteSummary": "_04_Nucleo_Operativo.capabilities.formats.audio.models",
     "CapabilityFailure": "_04_Nucleo_Operativo.derivation_contracts",
     "CodeRelationEndpoint": "_04_Nucleo_Operativo.code_contracts",
     "CodeRoute": "_04_Nucleo_Operativo.code_route",
@@ -218,7 +218,7 @@ class LazyPackageApiTests(unittest.TestCase):
                 "_02_Deduplicacion",
                 "_04_Nucleo_Operativo.archive_route",
                 "_04_Nucleo_Operativo.capabilities.formats.archive.route",
-                "_04_Nucleo_Operativo.audio_models",
+                "_04_Nucleo_Operativo.capabilities.formats.audio.models",
                 "_04_Nucleo_Operativo.code_contracts",
                 "_04_Nucleo_Operativo.docx_models",
                 "_04_Nucleo_Operativo.capabilities.formats.docx.models",
@@ -279,8 +279,8 @@ class LazyPackageApiTests(unittest.TestCase):
             import sys
 
             forbidden = {
-                "_04_Nucleo_Operativo.audio_models",
-                "_04_Nucleo_Operativo.audio_route",
+                "_04_Nucleo_Operativo.capabilities.formats.audio.models",
+                "_04_Nucleo_Operativo.capabilities.formats.audio.route",
                 "_04_Nucleo_Operativo.archive_route",
                 "_04_Nucleo_Operativo.capabilities.formats.archive.route",
                 "_04_Nucleo_Operativo.code_contracts",

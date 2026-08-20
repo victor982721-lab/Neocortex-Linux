@@ -14,7 +14,7 @@ from typing import Literal, Mapping, Sequence
 from _02_Deduplicacion.inventory_schema import SCHEMA_VERSION as INVENTORY_SCHEMA_VERSION
 
 from .capabilities.formats.archive.state import ARCHIVE_SCHEMA_VERSION
-from .audio_state import AUDIO_SCHEMA_VERSION
+from .capabilities.formats.audio.state import AUDIO_SCHEMA_VERSION
 from .code_schema import CODE_SCHEMA_VERSION
 from .document_catalog_schema import CATALOG_SCHEMA_VERSION
 from .capabilities.formats.docx.schema import DOCX_SCHEMA_VERSION

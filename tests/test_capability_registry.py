@@ -44,6 +44,14 @@ _EXPECTED_TEST_ROOTS = {
         "tests/test_format_module_move_compatibility.py",
         "tests/test_route_schema_contracts.py",
     ),
+    "audio": (
+        "tests/test_audio_probe_bounded.py",
+        "tests/test_audio_route.py",
+        "tests/test_capability_registry.py",
+        "tests/test_cli_audio_surface.py",
+        "tests/test_format_module_move_compatibility.py",
+        "tests/test_route_schema_contracts.py",
+    ),
     "docx": (
         "tests/test_capability_registry.py",
         "tests/test_docx_namespace_migration.py",
@@ -84,7 +92,7 @@ def _module_map(capability_id: str) -> dict[str, tuple[str | None, str]]:
 def test_registry_test_root_matrix_is_independent_complete_and_live() -> None:
     repository = Path(__file__).resolve().parents[1]
 
-    assert sum(len(roots) for roots in _EXPECTED_TEST_ROOTS.values()) == 26
+    assert sum(len(roots) for roots in _EXPECTED_TEST_ROOTS.values()) == 32
     assert {
         capability.capability_id: capability.test_roots
         for capability in CAPABILITY_REGISTRY.capabilities
@@ -96,9 +104,14 @@ def test_registry_test_root_matrix_is_independent_complete_and_live() -> None:
             assert not target.is_symlink(), relative
 
 
-def test_registry_declares_exact_archive_docx_and_image_module_moves() -> None:
+def test_registry_declares_exact_format_module_moves() -> None:
     assert CAPABILITY_REGISTRY.schema == CAPABILITY_REGISTRY_SCHEMA
-    assert _ids(CAPABILITY_REGISTRY.capabilities) == ("archive", "docx", "image")
+    assert _ids(CAPABILITY_REGISTRY.capabilities) == (
+        "archive",
+        "audio",
+        "docx",
+        "image",
+    )
     assert {
         (item.architecture_family_id, item.compatibility_family_id)
         for item in CAPABILITY_REGISTRY.capabilities
@@ -121,6 +134,13 @@ def test_registry_declares_exact_archive_docx_and_image_module_moves() -> None:
             "_04_Nucleo_Operativo.archive_text_worker",
             f"{_FORMATS_ROOT}.archive.text_worker",
         ),
+    }
+    assert _module_map("audio") == {
+        role: (
+            f"_04_Nucleo_Operativo.audio_{role}",
+            f"{_FORMATS_ROOT}.audio.{role}",
+        )
+        for role in ("models", "probe", "route", "state", "whisper")
     }
     assert _module_map("docx") == {
         role: (f"_04_Nucleo_Operativo.docx_{role}", f"{_FORMATS_ROOT}.docx.{role}")
@@ -156,6 +176,7 @@ def test_registry_declares_exact_archive_docx_and_image_module_moves() -> None:
 
 def test_routes_preserve_exact_subjects_and_public_fqns() -> None:
     archive = CAPABILITY_REGISTRY.by_route("archive")
+    audio = CAPABILITY_REGISTRY.by_route("audio")
     docx = CAPABILITY_REGISTRY.by_route("docx")
     image = CAPABILITY_REGISTRY.by_route("image")
 
@@ -171,6 +192,16 @@ def test_routes_preserve_exact_subjects_and_public_fqns() -> None:
     assert archive.route.config_class.qualified_name.endswith(".archive.route.ArchiveRouteConfig")
     assert archive.route.summary_class.qualified_name.endswith(".archive.route.ArchiveRouteSummary")
     assert archive.executable_module_ids == (f"{_FORMATS_ROOT}.archive.text_worker",)
+
+    assert audio.route is not None
+    assert (audio.route.subject_match_kind, audio.route.subject_value) == (
+        "mime_prefix",
+        "audio/",
+    )
+    assert audio.route.route_class.qualified_name.endswith(".audio.route.AudioRoute")
+    assert audio.route.config_class.qualified_name.endswith(".audio.models.AudioRouteConfig")
+    assert audio.route.summary_class.qualified_name.endswith(".audio.models.AudioRouteSummary")
+    assert audio.route.version_symbol.qualified_name.endswith(".audio.models.AUDIO_ROUTE_VERSION")
 
     assert docx.route is not None
     assert (docx.route.subject_match_kind, docx.route.subject_value) == (
@@ -199,6 +230,14 @@ def test_state_foreign_keys_preserve_live_store_contracts() -> None:
             "documents",
             "if_present",
             "ARCHIVE_SCHEMA_VERSION",
+        ),
+        "audio": (
+            "sqlite:audio.sqlite3",
+            "audio.sqlite3",
+            2,
+            "documents",
+            "configured",
+            "AUDIO_SCHEMA_VERSION",
         ),
         "docx": (
             "sqlite:docx.sqlite3",
@@ -271,18 +310,25 @@ def test_source_and_canonical_resolvers_are_disjoint_and_never_fallback() -> Non
 
 def test_logical_owner_projection_exposes_disjoint_canonical_and_source_bindings() -> None:
     bindings = capability_canonical_logical_owner_bindings()
-    assert tuple(item.owner_id for item in bindings) == ("archive", "docx", "image")
+    assert tuple(item.owner_id for item in bindings) == (
+        "archive",
+        "audio",
+        "docx",
+        "image",
+    )
     assert tuple(item.selector_id for item in bindings) == (
         "archive-core-modules",
+        "audio-core-modules",
         "docx-core-modules",
         "image-core-modules",
     )
     assert all(item.match_kind == "module_tree" for item in bindings)
     assert tuple(item.value for item in bindings) == tuple(
-        f"{_FORMATS_ROOT}.{owner}" for owner in ("archive", "docx", "image")
+        f"{_FORMATS_ROOT}.{owner}" for owner in ("archive", "audio", "docx", "image")
     )
     assert tuple(item.state_owner_ids for item in bindings) == (
         ("archive",),
+        ("audio",),
         ("docx",),
         ("image",),
     )
@@ -290,7 +336,7 @@ def test_logical_owner_projection_exposes_disjoint_canonical_and_source_bindings
 
     source_bindings = capability_source_logical_owner_bindings()
     assert all(item.match_kind == "exact_module" for item in source_bindings)
-    assert len(source_bindings) == 25
+    assert len(source_bindings) == 30
     archive_source = tuple(item for item in source_bindings if item.owner_id == "archive")
     assert tuple(item.selector_id for item in archive_source) == (
         "archive-legacy-models",
@@ -303,6 +349,14 @@ def test_logical_owner_projection_exposes_disjoint_canonical_and_source_bindings
         "_04_Nucleo_Operativo.archive_route",
         "_04_Nucleo_Operativo.archive_state",
         "_04_Nucleo_Operativo.archive_text_worker",
+    )
+    audio_source = tuple(item for item in source_bindings if item.owner_id == "audio")
+    assert tuple(item.selector_id for item in audio_source) == (
+        "audio-legacy-models",
+        "audio-legacy-probe",
+        "audio-legacy-route",
+        "audio-legacy-state",
+        "audio-legacy-whisper",
     )
     assert capability_logical_owner_bindings() == tuple(
         binding
@@ -515,6 +569,8 @@ forbidden = (
     'neocortex.capabilities',
     '_04_Nucleo_Operativo.archive_route',
     '_04_Nucleo_Operativo.capabilities.formats.archive.route',
+    '_04_Nucleo_Operativo.audio_route',
+    '_04_Nucleo_Operativo.capabilities.formats.audio.route',
     '_04_Nucleo_Operativo.docx_route',
     '_04_Nucleo_Operativo.capabilities.formats.docx.route',
     '_04_Nucleo_Operativo.image_route',

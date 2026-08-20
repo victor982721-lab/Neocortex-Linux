@@ -420,7 +420,7 @@ def find_published_audio_link(
 
     if audio_state_path is None or not audio_state_path.is_file():
         return None
-    from .audio_state import audio_database
+    from .capabilities.formats.audio.state import audio_database
 
     try:
         with audio_database(audio_state_path, readonly=True) as connection:
@@ -777,7 +777,7 @@ def _search_linked_audio(
 ) -> list[dict[str, Any]]:
     if not audio_state_path.is_file() or limit <= 0:
         return []
-    from .audio_state import audio_database
+    from .capabilities.formats.audio.state import audio_database
     from .semantic_lexical import compile_natural_fts_query
 
     normalized_query = compile_natural_fts_query(query)

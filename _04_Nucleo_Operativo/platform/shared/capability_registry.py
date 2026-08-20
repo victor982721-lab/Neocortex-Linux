@@ -15,11 +15,30 @@ contracts explicitly instead of treating this registry as runtime dispatch.
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import re
+import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Literal, cast
+from pathlib import Path
+from typing import TYPE_CHECKING, Literal, cast
+
+if TYPE_CHECKING:
+    from .capability_registry_specs import CAPABILITY_SPEC_PAYLOADS
+else:
+    _specs_path = Path(__file__).with_name("capability_registry_specs.py")
+    _specs_digest = hashlib.sha256(_specs_path.read_bytes()).hexdigest()[:16]
+    _specs_alias = f"_neocortex_capability_registry_specs_{_specs_digest}"
+    _specs_module = sys.modules.get(_specs_alias)
+    if _specs_module is None:
+        _spec = importlib.util.spec_from_file_location(_specs_alias, _specs_path)
+        if _spec is None or _spec.loader is None:
+            raise RuntimeError("capability registry specs cannot be loaded")
+        _specs_module = importlib.util.module_from_spec(_spec)
+        sys.modules[_spec.name] = _specs_module
+        _spec.loader.exec_module(_specs_module)
+    CAPABILITY_SPEC_PAYLOADS = _specs_module.CAPABILITY_SPEC_PAYLOADS
 
 CAPABILITY_REGISTRY_SCHEMA: Literal["neocortex.capability-registry/v1"] = (
     "neocortex.capability-registry/v1"
@@ -534,295 +553,6 @@ class CapabilityRegistry:
         }
 
 
-def _symbol(module_id: str, symbol_name: str) -> PythonSymbolRef:
-    return PythonSymbolRef(module_id, symbol_name)
-
-
-def _module(
-    role: str,
-    legacy_module_id: str,
-    canonical_module_id: str,
-    *public_symbols: str,
-) -> CapabilityModuleBinding:
-    return CapabilityModuleBinding(
-        role=role,
-        canonical_module_id=canonical_module_id,
-        legacy_module_id=legacy_module_id,
-        public_symbols=tuple(sorted(public_symbols)),
-    )
-
-
-_FORMATS_FAMILY = "_04.capabilities.formats"
-_FORMATS_COMPATIBILITY_FAMILY = "_04.compat.formats"
-_FORMATS_ROOT = "_04_Nucleo_Operativo.capabilities.formats"
-
-_ARCHIVE_TREE = f"{_FORMATS_ROOT}.archive"
-_ARCHIVE_MODELS = f"{_ARCHIVE_TREE}.models"
-_ARCHIVE_ROUTE = f"{_ARCHIVE_TREE}.route"
-_ARCHIVE_STATE = f"{_ARCHIVE_TREE}.state"
-_ARCHIVE_WORKER = f"{_ARCHIVE_TREE}.text_worker"
-
-_DOCX_TREE = f"{_FORMATS_ROOT}.docx"
-_DOCX_INTEGRITY = f"{_DOCX_TREE}.integrity"
-_DOCX_LAYOUT = f"{_DOCX_TREE}.layout"
-_DOCX_MODELS = f"{_DOCX_TREE}.models"
-_DOCX_ROUTE = f"{_DOCX_TREE}.route"
-_DOCX_SCHEMA = f"{_DOCX_TREE}.schema"
-_DOCX_STATE = f"{_DOCX_TREE}.state"
-
-_IMAGE_TREE = f"{_FORMATS_ROOT}.image"
-_IMAGE_ROUTE = f"{_IMAGE_TREE}.route"
-_IMAGE_STATE = f"{_IMAGE_TREE}.state"
-
-
-CAPABILITY_REGISTRY = CapabilityRegistry(
-    schema=CAPABILITY_REGISTRY_SCHEMA,
-    capabilities=(
-        CapabilitySpec(
-            capability_id="archive",
-            architecture_family_id=_FORMATS_FAMILY,
-            compatibility_family_id=_FORMATS_COMPATIBILITY_FAMILY,
-            logical_owner_id="archive",
-            canonical_module_tree=_ARCHIVE_TREE,
-            modules=(
-                _module(
-                    "models",
-                    "_04_Nucleo_Operativo.archive_models",
-                    _ARCHIVE_MODELS,
-                    "ArchiveRouteSummary",
-                ),
-                _module(
-                    "route",
-                    "_04_Nucleo_Operativo.archive_route",
-                    _ARCHIVE_ROUTE,
-                    "ARCHIVE_MIME",
-                    "ARCHIVE_ROUTE_VERSION",
-                    "ArchiveRoute",
-                    "ArchiveRouteConfig",
-                    "ArchiveRouteSummary",
-                ),
-                _module(
-                    "state",
-                    "_04_Nucleo_Operativo.archive_state",
-                    _ARCHIVE_STATE,
-                    "ARCHIVE_SCHEMA_VERSION",
-                    "archive_database",
-                    "archive_schema_contract",
-                    "initialize_archive_state",
-                ),
-                _module(
-                    "text_worker",
-                    "_04_Nucleo_Operativo.archive_text_worker",
-                    _ARCHIVE_WORKER,
-                    "main",
-                ),
-            ),
-            route=CapabilityRouteContract(
-                route_name="archive",
-                input_source="route_candidates",
-                subject_match_kind="exact_mime",
-                subject_value="application/zip",
-                route_class=_symbol(_ARCHIVE_ROUTE, "ArchiveRoute"),
-                config_class=_symbol(_ARCHIVE_ROUTE, "ArchiveRouteConfig"),
-                summary_class=_symbol(_ARCHIVE_ROUTE, "ArchiveRouteSummary"),
-                version_symbol=_symbol(_ARCHIVE_ROUTE, "ARCHIVE_ROUTE_VERSION"),
-            ),
-            state=CapabilityStateContract(
-                state_owner_id="archive",
-                state_store_id="sqlite:archive.sqlite3",
-                database_name="archive.sqlite3",
-                knowledge_path_attribute="archive",
-                expected_schema_version=1,
-                knowledge_read_kind="documents",
-                knowledge_capture_mode="if_present",
-                state_module_id=_ARCHIVE_STATE,
-                schema_module_id=_ARCHIVE_STATE,
-                schema_version_symbol=_symbol(_ARCHIVE_STATE, "ARCHIVE_SCHEMA_VERSION"),
-            ),
-            test_roots=(
-                "tests/test_archive_cli.py",
-                "tests/test_archive_namespace_migration.py",
-                "tests/test_archive_route.py",
-                "tests/test_archive_text_worker_unit.py",
-                "tests/test_capability_registry.py",
-                "tests/test_format_module_move_compatibility.py",
-                "tests/test_route_schema_contracts.py",
-            ),
-            executable_module_ids=(_ARCHIVE_WORKER,),
-        ),
-        CapabilitySpec(
-            capability_id="docx",
-            architecture_family_id=_FORMATS_FAMILY,
-            compatibility_family_id=_FORMATS_COMPATIBILITY_FAMILY,
-            logical_owner_id="docx",
-            canonical_module_tree=_DOCX_TREE,
-            modules=(
-                _module(
-                    "integrity",
-                    "_04_Nucleo_Operativo.docx_integrity",
-                    _DOCX_INTEGRITY,
-                ),
-                _module(
-                    "layout",
-                    "_04_Nucleo_Operativo.docx_layout",
-                    _DOCX_LAYOUT,
-                ),
-                _module(
-                    "models",
-                    "_04_Nucleo_Operativo.docx_models",
-                    _DOCX_MODELS,
-                    "ALGORITHM_VERSION",
-                    "DocxRouteConfig",
-                    "DocxRouteSummary",
-                ),
-                _module(
-                    "route",
-                    "_04_Nucleo_Operativo.docx_route",
-                    _DOCX_ROUTE,
-                    "DOCX_MIME",
-                    "DocxRoute",
-                    "DocxRouteConfig",
-                    "DocxRouteSummary",
-                ),
-                _module(
-                    "schema",
-                    "_04_Nucleo_Operativo.docx_schema",
-                    _DOCX_SCHEMA,
-                    "DOCX_SCHEMA_VERSION",
-                    "validate_docx_metadata",
-                    "validate_docx_schema",
-                ),
-                _module(
-                    "state",
-                    "_04_Nucleo_Operativo.docx_state",
-                    _DOCX_STATE,
-                    "connect_docx_state",
-                    "docx_database",
-                    "initialize_docx_state",
-                ),
-            ),
-            route=CapabilityRouteContract(
-                route_name="docx",
-                input_source="route_candidates",
-                subject_match_kind="exact_mime",
-                subject_value=(
-                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                ),
-                route_class=_symbol(_DOCX_ROUTE, "DocxRoute"),
-                config_class=_symbol(_DOCX_ROUTE, "DocxRouteConfig"),
-                summary_class=_symbol(_DOCX_ROUTE, "DocxRouteSummary"),
-                version_symbol=_symbol(_DOCX_MODELS, "ALGORITHM_VERSION"),
-            ),
-            state=CapabilityStateContract(
-                state_owner_id="docx",
-                state_store_id="sqlite:docx.sqlite3",
-                database_name="docx.sqlite3",
-                knowledge_path_attribute="docx",
-                expected_schema_version=6,
-                knowledge_read_kind="documents",
-                knowledge_capture_mode="configured",
-                state_module_id=_DOCX_STATE,
-                schema_module_id=_DOCX_SCHEMA,
-                schema_version_symbol=_symbol(_DOCX_SCHEMA, "DOCX_SCHEMA_VERSION"),
-            ),
-            test_roots=(
-                "tests/test_capability_registry.py",
-                "tests/test_docx_namespace_migration.py",
-                "tests/test_docx_route.py",
-                "tests/test_format_module_move_compatibility.py",
-                "tests/test_pdf_docx_schema_contracts.py",
-            ),
-        ),
-        CapabilitySpec(
-            capability_id="image",
-            architecture_family_id=_FORMATS_FAMILY,
-            compatibility_family_id=_FORMATS_COMPATIBILITY_FAMILY,
-            logical_owner_id="image",
-            canonical_module_tree=_IMAGE_TREE,
-            modules=tuple(
-                _module(
-                    role,
-                    f"_04_Nucleo_Operativo.image_{role}",
-                    f"{_IMAGE_TREE}.{role}",
-                    *(
-                        (
-                            "IMAGE_ROUTE_VERSION",
-                            "ImageRoute",
-                            "ImageRouteConfig",
-                            "ImageRouteSummary",
-                        )
-                        if role == "route"
-                        else (
-                            "SCHEMA_VERSION",
-                            "connect_image_state",
-                            "image_database",
-                            "initialize_image_state",
-                        )
-                        if role == "state"
-                        else ()
-                    ),
-                )
-                for role in (
-                    "adult",
-                    "analysis",
-                    "decision",
-                    "decode",
-                    "document",
-                    "errors",
-                    "features",
-                    "isolation",
-                    "models",
-                    "png",
-                    "policy",
-                    "route",
-                    "semantics",
-                    "state",
-                    "visual",
-                )
-            ),
-            route=CapabilityRouteContract(
-                route_name="image",
-                input_source="route_candidates",
-                subject_match_kind="mime_prefix",
-                subject_value="image/",
-                route_class=_symbol(_IMAGE_ROUTE, "ImageRoute"),
-                config_class=_symbol(_IMAGE_ROUTE, "ImageRouteConfig"),
-                summary_class=_symbol(_IMAGE_ROUTE, "ImageRouteSummary"),
-                version_symbol=_symbol(_IMAGE_ROUTE, "IMAGE_ROUTE_VERSION"),
-            ),
-            state=CapabilityStateContract(
-                state_owner_id="image",
-                state_store_id="sqlite:image.sqlite3",
-                database_name="image.sqlite3",
-                knowledge_path_attribute="image",
-                expected_schema_version=5,
-                knowledge_read_kind="images",
-                knowledge_capture_mode="configured",
-                state_module_id=_IMAGE_STATE,
-                schema_module_id=_IMAGE_STATE,
-                schema_version_symbol=_symbol(_IMAGE_STATE, "SCHEMA_VERSION"),
-            ),
-            test_roots=(
-                "tests/test_capability_registry.py",
-                "tests/test_format_module_move_compatibility.py",
-                "tests/test_image_adult.py",
-                "tests/test_image_analysis.py",
-                "tests/test_image_classifier_memory.py",
-                "tests/test_image_document.py",
-                "tests/test_image_features.py",
-                "tests/test_image_isolation.py",
-                "tests/test_image_namespace_migration.py",
-                "tests/test_image_ocr_profiles.py",
-                "tests/test_image_png.py",
-                "tests/test_image_route.py",
-                "tests/test_image_schema_contract.py",
-                "tests/test_image_semantics.py",
-            ),
-        ),
-    ),
-)
-
-
 def resolve_source_capabilities(module_id: str) -> tuple[CapabilitySpec, ...]:
     return CAPABILITY_REGISTRY.resolve_source(module_id)
 
@@ -1085,6 +815,12 @@ def parse_capability_registry_payload(payload: Mapping[str, object]) -> Capabili
             for item in _sequence(raw["capabilities"], "capability registry entries")
         ),
     )
+
+
+CAPABILITY_REGISTRY = CapabilityRegistry(
+    schema=CAPABILITY_REGISTRY_SCHEMA,
+    capabilities=tuple(_parse_capability(item) for item in CAPABILITY_SPEC_PAYLOADS),
+)
 
 
 __all__ = [

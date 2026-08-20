@@ -46,9 +46,9 @@ def test_registry_exhaustively_assigns_every_current_core_module() -> None:
     observed = tuple(sorted(_module_id(path) for path in CORE_ROOT.rglob("*.py")))
 
     assert observed == registered_core_modules()
-    assert len(observed) == 354
-    assert len(COMPATIBILITY_MODULES) == 27
-    assert sum(len(items) for items in RESPONSIBILITY_MODULES.values()) == 327
+    assert len(observed) == 361
+    assert len(COMPATIBILITY_MODULES) == 32
+    assert sum(len(items) for items in RESPONSIBILITY_MODULES.values()) == 329
     for module in observed:
         families = matching_target_families(module)
         responsibilities = matching_target_responsibilities(module)
@@ -74,7 +74,7 @@ def test_target_vocabulary_dag_and_transition_baseline_are_frozen() -> None:
     assert payload["compatibility_matrix"]["schema"] == (CORE_COMPATIBILITY_MATRIX_SCHEMA)
     assert core_architecture_target_fingerprint() == (
         "core-architecture-target-v1:sha256:"
-        "b105a91389fca8360e9b8c083443249b07047ee093d390dd2af066ae5d55b375"
+        "5ab6023afb8a3ff75acdda0cfa5b7ee8fe947fa1ea889e22330d72f142af0410"
     )
 
 
