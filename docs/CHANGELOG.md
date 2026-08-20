@@ -24,6 +24,11 @@ no se copian aquí para evitar que se conviertan en datos históricos sin contex
   el prefijo del runtime inmutable. Promover los mismos bytes desde `current`
   a la ruta versionada del shebang ya no vuelve stale la evidencia; rutas y
   ejecutables externos al runtime continúan formando parte de la identidad.
+- La reutilización del receipt conserva la identidad de snapshot, providers y
+  perfil validados, pero no queda acoplada al digest materializado, al conteo de
+  preguntas ni a la visibilidad actual de receipts experimentales. Esas vistas
+  siguen atestadas completas por el gate y pueden avanzar legítimamente después
+  de un `--all` sin impedir el replay estricto del mismo SHA.
 - Replay medible de Code y Semantic. Code separa su identidad AST del perfil
   profundo, conserva cache hits y agrupa sus actualizaciones de observación en
   lotes de 128 con tiempos de lookup/update/commit. Semantic publica heads

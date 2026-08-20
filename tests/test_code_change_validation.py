@@ -631,6 +631,7 @@ def test_public_review_stability_uses_two_repeatable_fresh_process_reads(
         "byte_count": 200,
     }
     public_identity["question_evaluations"] = 1
+    public_identity["experiment_receipt_ids"] = []
     commands: list[tuple[str, ...]] = []
     timeouts: list[float] = []
 

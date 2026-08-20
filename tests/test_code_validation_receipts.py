@@ -337,9 +337,15 @@ def test_receipt_becomes_stale_when_review_publication_is_displaced(
             content_digest=git["content_digest"],
         ),
     )
+    displaced = _review_result("published-review")
+    displaced.snapshot = SimpleNamespace(
+        analysis_run_id=18,
+        processing_signature="snapshot:displaced",
+        freshness="publication_only",
+    )
     monkeypatch.setattr(
         "_04_Nucleo_Operativo.code_review.review_code_state",
-        lambda *_args, **_kwargs: _review_result("different-publication"),
+        lambda *_args, **_kwargs: displaced,
     )
 
     status = load_current_code_validation_receipt(
@@ -349,6 +355,46 @@ def test_receipt_becomes_stale_when_review_publication_is_displaced(
 
     assert status.status == "stale"
     assert status.reason == "receipt_publication_displaced"
+
+
+def test_receipt_survives_operational_review_digest_and_experiment_visibility(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, state, payload = _prepare(tmp_path, monkeypatch)
+    git = payload["git"]
+    assert isinstance(git, dict)
+    publish_code_validation_receipt(payload)
+    monkeypatch.setattr(
+        code_change_validation,
+        "capture_git_change",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            head_sha=git["head_sha"],
+            baseline=git["baseline"],
+            changed_paths=tuple(git["changed_paths"]),
+            staged_paths=(),
+            unstaged_paths=(),
+            untracked_paths=(),
+            content_digest=git["content_digest"],
+        ),
+    )
+    advanced = _review_result("operationally-advanced-review")
+    advanced.experiment_receipts = (
+        SimpleNamespace(receipt=SimpleNamespace(receipt_id="receipt:operational")),
+    )
+    advanced.question_evaluations = (object(), object())
+    monkeypatch.setattr(
+        "_04_Nucleo_Operativo.code_review.review_code_state",
+        lambda *_args, **_kwargs: advanced,
+    )
+
+    status = load_current_code_validation_receipt(
+        source_root=root,
+        state_directory=state,
+    )
+
+    assert status.status == "reused"
+    assert status.reason == "exact_validation_receipt_reused"
 
 
 def test_tampered_receipt_fails_closed(

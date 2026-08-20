@@ -238,11 +238,16 @@ def _current_review_matches(result: Mapping[str, object], state: Path) -> bool:
     expected = evidence.get("public_identity") if isinstance(evidence, Mapping) else None
     if not isinstance(expected, Mapping):
         return False
-    from .code_validation_public_review import code_review_identity
+    from .code_validation_public_review import (
+        code_review_identity,
+        validation_stable_public_review_identity,
+    )
     from .code_review import review_code_state
 
     review = review_code_state(state, limit=50)
-    return code_review_identity(review) == dict(expected)
+    return validation_stable_public_review_identity(
+        code_review_identity(review)
+    ) == validation_stable_public_review_identity(expected)
 
 
 def load_current_code_validation_receipt(

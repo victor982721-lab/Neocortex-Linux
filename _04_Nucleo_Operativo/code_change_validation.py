@@ -61,6 +61,7 @@ from .code_validation_resources import (
 from .code_validation_public_review import (
     PUBLIC_REVIEW_IDENTITY_SCHEMA,
     code_review_identity,
+    validation_stable_public_review_identity,
 )
 from .code_review import review_code_state
 from .code_schema import readonly_code_database, validate_code_schema
@@ -2264,11 +2265,18 @@ def _public_review_stability_gate(
             command,
             {"error": str(exc)[:4096]},
         )
-    stable_keys = tuple(
-        sorted(key for key in first if key not in {"digest", "question_evaluations"})
-    )
-    stable_projection = {key: first[key] for key in stable_keys}
-    expected_projection = {key: expected.get(key) for key in stable_keys}
+    try:
+        stable_projection = validation_stable_public_review_identity(first)
+        expected_projection = validation_stable_public_review_identity(expected)
+    except (KeyError, TypeError, ValueError) as exc:
+        return _gate(
+            "public_review_stability",
+            "abstained",
+            f"public_review_stable_projection_unavailable:{type(exc).__name__}",
+            started,
+            command,
+            {"error": str(exc)[:4096]},
+        )
     blockers: list[str] = []
     if first != second:
         blockers.append("fresh_process_public_review_not_repeatable")
@@ -2282,6 +2290,7 @@ def _public_review_stability_gate(
         blockers.append("fresh_process_public_review_core_disagrees_with_replay")
     evidence = {
         "public_identity": first,
+        "validation_stable_identity": stable_projection,
         "fresh_process_reads": _PUBLIC_REVIEW_IDENTITY_READS,
         "in_process_digest": expected.get("digest"),
         "in_process_question_evaluations": expected.get("question_evaluations"),
