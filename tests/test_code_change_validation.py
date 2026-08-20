@@ -2495,6 +2495,11 @@ def test_primary_keeps_its_budget_and_replay_has_a_bounded_closure_timeout(
     )
     monkeypatch.setattr(
         code_change_validation,
+        "_public_review_stability_gate",
+        lambda *_args, **_kwargs: passed("public_review_stability"),
+    )
+    monkeypatch.setattr(
+        code_change_validation,
         "_capture_unchanged",
         lambda *_args, **_kwargs: True,
     )
