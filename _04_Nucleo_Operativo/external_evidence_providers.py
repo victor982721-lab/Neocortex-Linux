@@ -618,15 +618,36 @@ def _environment_signature(
         "platform": platform.platform(),
         "tool_name": tool_name,
         "tool_version": tool_version,
-        "node_path": node_path,
+        "node_path": (None if node_path is None else _normalized_runtime_path_entry(node_path)),
     }
     if home_directory is not None:
         payload["home_directory"] = os.path.normcase(os.path.abspath(home_directory))
     if path_value is not None:
-        payload["path"] = path_value
+        payload["path"] = _normalized_runtime_search_path(path_value)
     if pathext_value is not None:
         payload["pathext"] = pathext_value
     return external_signature("external-environment-v2", payload)
+
+
+def _normalized_runtime_path_entry(value: str) -> str:
+    """Replace only the active immutable runtime prefix with a stable token."""
+
+    observed = os.path.normcase(os.path.abspath(value))
+    runtime = os.path.normcase(os.path.abspath(sys.prefix))
+    try:
+        within_runtime = os.path.commonpath((observed, runtime)) == runtime
+    except ValueError:
+        within_runtime = False
+    if not within_runtime:
+        return observed
+    relative = os.path.relpath(observed, runtime).replace(os.sep, "/")
+    return "$NEOCORTEX_RUNTIME" if relative == "." else f"$NEOCORTEX_RUNTIME/{relative}"
+
+
+def _normalized_runtime_search_path(value: str) -> str:
+    return os.pathsep.join(
+        _normalized_runtime_path_entry(item) for item in value.split(os.pathsep) if item
+    )
 
 
 def _python_provider_files(
@@ -3621,14 +3642,20 @@ class CosmicRayFocalMutationProvider:
         environment_signature = external_signature(
             "cosmic-ray-focal-environment-v1",
             {
-                "python_executable": os.path.normcase(os.path.abspath(sys.executable)),
+                "python_executable": _normalized_runtime_path_entry(sys.executable),
                 "python_version": platform.python_version(),
                 "implementation": platform.python_implementation(),
+                "implementation_cache_tag": getattr(sys.implementation, "cache_tag", None),
+                "abi_flags": getattr(sys, "abiflags", ""),
                 "platform": platform.platform(),
                 "cosmic_ray_version": version,
                 "pytest_version": pytest_version,
                 "home_directory": self._home_directory,
-                "path": os.environ.get("PATH"),
+                "path": (
+                    None
+                    if os.environ.get("PATH") is None
+                    else _normalized_runtime_search_path(os.environ["PATH"])
+                ),
                 "pathext": os.environ.get("PATHEXT"),
             },
         )

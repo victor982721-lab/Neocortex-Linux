@@ -626,20 +626,28 @@ def test_runtime_staleness_and_projection_corruption_fail_closed_per_provider(
 def test_provider_environment_identity_ignores_only_equivalent_release_paths(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(providers_module.sys, "prefix", "/release-a")
     monkeypatch.setattr(providers_module.sys, "executable", "/release-a/bin/python3.14")
     first = providers_module._environment_signature(
         tool_name="fixture-tool",
         tool_version="1.2.3",
+        node_path="/release-a/tools/node/bin/node",
+        path_value="/release-a/tools/bin:/usr/bin",
     )
 
+    monkeypatch.setattr(providers_module.sys, "prefix", "/release-b")
     monkeypatch.setattr(providers_module.sys, "executable", "/release-b/bin/python3.14")
     relocated = providers_module._environment_signature(
         tool_name="fixture-tool",
         tool_version="1.2.3",
+        node_path="/release-b/tools/node/bin/node",
+        path_value="/release-b/tools/bin:/usr/bin",
     )
     changed_tool = providers_module._environment_signature(
         tool_name="fixture-tool",
         tool_version="1.2.4",
+        node_path="/release-b/tools/node/bin/node",
+        path_value="/release-b/tools/bin:/usr/bin",
     )
 
     assert relocated == first

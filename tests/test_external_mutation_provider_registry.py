@@ -237,6 +237,26 @@ def test_mutation_environment_signature_covers_executable_discovery(
     assert first.descriptor.environment_signature != second.descriptor.environment_signature
 
 
+def test_mutation_environment_signature_survives_equivalent_release_promotion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, _target, _files = _project(tmp_path)
+    payload, signature = _deep_payload()
+    monkeypatch.setattr(providers_module, "cosmic_ray_tool_version", lambda: "8.4.6")
+    monkeypatch.setattr(providers_module.sys, "prefix", "/release-a")
+    monkeypatch.setattr(providers_module.sys, "executable", "/release-a/bin/python3.14")
+    monkeypatch.setenv("PATH", "/release-a/tools/bin:/usr/bin")
+    first = CosmicRayFocalMutationProvider(root, payload, signature)
+
+    monkeypatch.setattr(providers_module.sys, "prefix", "/release-b")
+    monkeypatch.setattr(providers_module.sys, "executable", "/release-b/bin/python3.14")
+    monkeypatch.setenv("PATH", "/release-b/tools/bin:/usr/bin")
+    second = CosmicRayFocalMutationProvider(root, payload, signature)
+
+    assert first.descriptor.environment_signature == second.descriptor.environment_signature
+
+
 def test_real_provider_baseline_preserves_git_executable_discovery(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

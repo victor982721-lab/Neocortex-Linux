@@ -20,6 +20,10 @@ no se copian aquí para evitar que se conviertan en datos históricos sin contex
   coinciden con el runtime instalado. El snapshot `pip-audit` liga además su
   input a los archivos locales de supply/release, por lo que un cambio de lock
   sólo se admite tras una observación nueva y exacta.
+- Las firmas de entorno de Pyright, Coverage y mutación normalizan únicamente
+  el prefijo del runtime inmutable. Promover los mismos bytes desde `current`
+  a la ruta versionada del shebang ya no vuelve stale la evidencia; rutas y
+  ejecutables externos al runtime continúan formando parte de la identidad.
 - Replay medible de Code y Semantic. Code separa su identidad AST del perfil
   profundo, conserva cache hits y agrupa sus actualizaciones de observación en
   lotes de 128 con tiempos de lookup/update/commit. Semantic publica heads
