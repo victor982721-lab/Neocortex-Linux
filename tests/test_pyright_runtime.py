@@ -344,12 +344,18 @@ def test_linux_release_manifest_requires_exact_pyright_lock_evidence(
     release_root = tmp_path / release_name
     release_root.mkdir()
     wheel = tmp_path / "neocortex_framework-0.9.0-py3-none-any.whl"
+    runtime_lock = release_root / release_linux.RUNTIME_DEPENDENCY_LOCK_NAME
+    runtime_lock.write_text(
+        f"pip=={release_linux.PIP_BOOTSTRAP_VERSION}\n",
+        encoding="utf-8",
+    )
     payload = release_linux._release_manifest(
         release_name=release_name,
         source_sha=source_sha,
         wheel=wheel,
         wheel_sha="b" * 64,
         source_only_wheels={"dependency.whl": "c" * 64},
+        runtime_dependency_lock=runtime_lock,
         node_sha="d" * 64,
         versions={
             "node": f"v{pyright_runtime.NODE_VERSION}",
