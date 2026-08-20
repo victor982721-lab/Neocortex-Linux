@@ -161,6 +161,7 @@ _OPTIONAL_PROVIDER_ABSTENTIONS = {
 _FULL_SUITE_BOUNDARIES = frozenset(
     {
         "constraints.txt",
+        "constraints-linux-cp314.lock",
         "MANIFEST.in",
         "pyproject.toml",
         "tools/quality_gate_coverage_baseline.json",
@@ -276,6 +277,7 @@ _SOURCE_BOUNDARY_TESTS = {
 _SUPPLY_CHAIN_BOUNDARIES = frozenset(
     {
         "constraints.txt",
+        "constraints-linux-cp314.lock",
         "MANIFEST.in",
         "pyproject.toml",
         "tools/release_linux.py",
@@ -3183,6 +3185,7 @@ def _validation_question_scopes() -> tuple[_ValidationQuestionScope, ...]:
                 {
                     "MANIFEST.in",
                     "constraints.txt",
+                    "constraints-linux-cp314.lock",
                     "pyproject.toml",
                     "_04_Nucleo_Operativo/code_security_dependency_questions.py",
                     "_04_Nucleo_Operativo/code_supply_chain_analysis.py",
@@ -3205,6 +3208,7 @@ def _validation_question_scopes() -> tuple[_ValidationQuestionScope, ...]:
                 {
                     "MANIFEST.in",
                     "constraints.txt",
+                    "constraints-linux-cp314.lock",
                     "pyproject.toml",
                     "_04_Nucleo_Operativo/code_security_dependency_questions.py",
                     "_04_Nucleo_Operativo/code_supply_chain_analysis.py",

@@ -789,11 +789,19 @@ def test_pip_audit_preflight_fails_early_for_vulnerabilities_or_supply_changes(
         change=_change_for("pyproject.toml"),
         runtime_window=window,
     )
+    lock_invalidated = _pip_audit_snapshot_preflight(
+        tmp_path,
+        fixture.state,
+        change=_change_for("constraints-linux-cp314.lock"),
+        runtime_window=window,
+    )
 
     assert vulnerable.status == "failed"
     assert vulnerable.reason == "pip_audit_snapshot_reports_known_vulnerabilities"
     assert invalidated.status == "abstained"
     assert invalidated.reason == "pip_audit_snapshot_invalidated_by_supply_change"
+    assert lock_invalidated.status == "abstained"
+    assert lock_invalidated.reason == "pip_audit_snapshot_invalidated_by_supply_change"
 
 
 def test_canonical_validation_stops_before_static_when_supply_preflight_abstains(
@@ -1797,6 +1805,14 @@ def test_packaging_boundary_selects_full_suite(tmp_path: Path) -> None:
     assert selection.convention_tests == ()
     assert selection.uncovered_sources == ()
     assert selection.reasons == ("change_crosses_full_suite_boundary",)
+
+    lock_selection = select_affected_tests(
+        root,
+        tmp_path / "state",
+        _change_for("constraints-linux-cp314.lock"),
+    )
+    assert lock_selection.strategy == "full"
+    assert lock_selection.reasons == ("change_crosses_full_suite_boundary",)
 
 
 def test_full_suite_selection_cannot_publish_module_prefixes_as_uncovered_sources() -> None:

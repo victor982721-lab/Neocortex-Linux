@@ -195,6 +195,12 @@ La instalación prepara `--corpus-root` como directorio real si todavía no
 existe. No copia documentos ni inicia procesamiento; sólo garantiza que el
 comando cotidiano tenga una raíz válida desde su primera ejecución.
 
+`constraints.txt` conserva los pins directos compartidos, mientras
+`constraints-linux-cp314.lock` fija el inventario transitivo completo de la
+release Linux. El instalador aplica ambos constraints, incorpora el lock y su
+SHA-256 al manifest y rechaza la promoción si una distribución instalada difiere;
+un cambio del lock invalida además la evidencia supply del gate canónico.
+
 Los modelos se comparten entre releases. `Neocortex models status --json` es
 local y de sólo lectura; `Neocortex models prepare --json` es la única fachada
 que descarga el conjunto de producción deliberadamente. La entrada KDE muestra

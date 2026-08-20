@@ -64,7 +64,10 @@ from tools.semgrep_tool_runtime import (
 RECEIPT_SCHEMA_VERSION = 1
 RELEASE_PLATFORM_TAG = "linux-x86_64"
 RELEASE_MANIFEST_NAME = "neocortex-release.json"
+RUNTIME_DEPENDENCY_LOCK_NAME = "constraints-linux-cp314.lock"
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_LOCKED_REQUIREMENT = re.compile(r"^([A-Za-z0-9][A-Za-z0-9_.-]*)==([^\s;]+)$")
+_MAX_RUNTIME_DEPENDENCIES = 512
 _IMPORT_MODULES = (
     "PIL",
     "PySide6",
@@ -159,6 +162,99 @@ def _sha256_file(path: Path) -> str:
         while chunk := stream.read(1024 * 1024):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _normalized_distribution_name(value: str) -> str:
+    return re.sub(r"[-_.]+", "-", value).casefold()
+
+
+def _runtime_dependency_lock(path: Path) -> dict[str, str]:
+    """Read one exact, bounded Linux CPython runtime lock."""
+
+    try:
+        metadata = path.lstat()
+        raw = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise LinuxReleaseError("runtime dependency lock is unavailable") from exc
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+        raise LinuxReleaseError("runtime dependency lock must be a regular file")
+    if len(raw.encode("utf-8")) > 128 * 1024:
+        raise LinuxReleaseError("runtime dependency lock exceeds its byte bound")
+    entries: dict[str, str] = {}
+    for line_number, raw_line in enumerate(raw.splitlines(), 1):
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        match = _LOCKED_REQUIREMENT.fullmatch(line)
+        if match is None:
+            raise LinuxReleaseError(
+                f"runtime dependency lock line {line_number} is not an exact pin"
+            )
+        name = _normalized_distribution_name(match.group(1))
+        version = match.group(2)
+        if name == "neocortex-framework":
+            raise LinuxReleaseError("runtime dependency lock must exclude the project wheel")
+        if name in entries:
+            raise LinuxReleaseError(f"runtime dependency lock duplicates {name}")
+        entries[name] = version
+    if not entries or len(entries) > _MAX_RUNTIME_DEPENDENCIES:
+        raise LinuxReleaseError("runtime dependency lock count is outside its bound")
+    if entries.get("pip") != PIP_BOOTSTRAP_VERSION:
+        raise LinuxReleaseError("runtime dependency lock disagrees with pinned pip")
+    return entries
+
+
+_RUNTIME_INVENTORY_SCRIPT = r"""
+import importlib.metadata as metadata
+import json
+import re
+
+rows = {}
+for distribution in metadata.distributions():
+    raw_name = distribution.metadata.get("Name")
+    if not isinstance(raw_name, str) or not raw_name.strip():
+        raise SystemExit("installed distribution name is unavailable")
+    name = re.sub(r"[-_.]+", "-", raw_name.strip()).casefold()
+    if name == "neocortex-framework":
+        continue
+    version = distribution.version
+    if not isinstance(version, str) or not version.strip():
+        raise SystemExit("installed distribution version is unavailable")
+    if name in rows and rows[name] != version.strip():
+        raise SystemExit("installed distribution identity is duplicated")
+    rows[name] = version.strip()
+print(json.dumps(rows, sort_keys=True, separators=(",", ":")))
+"""
+
+
+def _verify_runtime_dependency_lock(
+    python: Path,
+    lock: Path,
+    *,
+    runner: CommandRunner,
+    environment: dict[str, str],
+) -> None:
+    expected = _runtime_dependency_lock(lock)
+    completed = runner(
+        (python, "-I", "-c", _RUNTIME_INVENTORY_SCRIPT),
+        timeout=120,
+        environment=environment,
+    )
+    try:
+        observed = json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise LinuxReleaseError("release dependency inventory is malformed") from exc
+    if not isinstance(observed, dict) or any(
+        not isinstance(name, str) or not isinstance(version, str)
+        for name, version in observed.items()
+    ):
+        raise LinuxReleaseError("release dependency inventory is malformed")
+    if observed != expected:
+        names = sorted(set(expected) | set(observed))
+        drift = [name for name in names if expected.get(name) != observed.get(name)]
+        raise LinuxReleaseError(
+            "release dependency inventory differs from its lock: " + ",".join(drift[:20])
+        )
 
 
 def _canonical_json(payload: dict[str, object]) -> bytes:
@@ -350,10 +446,12 @@ def _install_wheel(
     release_root: Path,
     wheel: Path,
     constraints: Path,
+    runtime_lock: Path,
     *,
     pip_wheel: Path,
     runner: CommandRunner = _run,
 ) -> None:
+    _runtime_dependency_lock(runtime_lock)
     _create_pip_environment(release_root, pip_wheel, runner=runner)
     runner(
         (
@@ -367,6 +465,8 @@ def _install_wheel(
             wheel.parent,
             "--constraint",
             constraints,
+            "--constraint",
+            runtime_lock,
             f"{wheel}[full]",
         ),
         timeout=3600,
@@ -486,6 +586,7 @@ def _verify_python_release(
     layout: LinuxReleaseLayout,
     corpus_root: Path,
     *,
+    runtime_lock: Path | None = None,
     runner: CommandRunner = _run,
 ) -> dict[str, str]:
     environment = _candidate_environment(layout, corpus_root, release_root=release_root)
@@ -498,6 +599,13 @@ def _verify_python_release(
     ).stdout.strip()
     if pip_version != PIP_BOOTSTRAP_VERSION:
         raise LinuxReleaseError(f"unexpected release pip version: {pip_version}")
+    if runtime_lock is not None:
+        _verify_runtime_dependency_lock(
+            python,
+            runtime_lock,
+            runner=runner,
+            environment=environment,
+        )
     try:
         semgrep_runtime = verify_semgrep_tool_runtime(release_root, runner=runner)
     except SemgrepToolRuntimeError as exc:
@@ -770,9 +878,11 @@ def _release_manifest(
     wheel: Path,
     wheel_sha: str,
     source_only_wheels: dict[str, str],
+    runtime_dependency_lock: Path,
     node_sha: str,
     versions: dict[str, str],
 ) -> dict[str, object]:
+    locked_dependencies = _runtime_dependency_lock(runtime_dependency_lock)
     return {
         "schema_version": RECEIPT_SCHEMA_VERSION,
         "kind": "linux_release_manifest",
@@ -783,6 +893,9 @@ def _release_manifest(
         "wheel_sha256": wheel_sha,
         "pip_bootstrap_wheel_filename": PIP_BOOTSTRAP_FILENAME,
         "pip_bootstrap_wheel_sha256": PIP_BOOTSTRAP_SHA256,
+        "runtime_dependency_lock_filename": runtime_dependency_lock.name,
+        "runtime_dependency_lock_sha256": _sha256_file(runtime_dependency_lock),
+        "runtime_dependency_count": len(locked_dependencies),
         "source_only_wheels": source_only_wheels,
         "node_archive_filename": f"node-v{NODE_VERSION}-linux-x64.tar.xz",
         "node_archive_sha256": node_sha,
@@ -835,7 +948,40 @@ def _read_release_manifest(
         or not _SHA256.fullmatch(str(payload["node_archive_sha256"]))
     ):
         raise LinuxReleaseError("existing release manifest failed validation")
+    lock_fields = {
+        "runtime_dependency_lock_filename",
+        "runtime_dependency_lock_sha256",
+        "runtime_dependency_count",
+    }
+    present_lock_fields = lock_fields & set(payload)
+    if present_lock_fields and present_lock_fields != lock_fields:
+        raise LinuxReleaseError("existing release dependency lock identity is incomplete")
+    if present_lock_fields:
+        if (
+            payload.get("runtime_dependency_lock_filename") != RUNTIME_DEPENDENCY_LOCK_NAME
+            or not isinstance(payload.get("runtime_dependency_lock_sha256"), str)
+            or not _SHA256.fullmatch(str(payload["runtime_dependency_lock_sha256"]))
+            or isinstance(payload.get("runtime_dependency_count"), bool)
+            or not isinstance(payload.get("runtime_dependency_count"), int)
+        ):
+            raise LinuxReleaseError("existing release dependency lock identity is invalid")
+        lock = release_root / RUNTIME_DEPENDENCY_LOCK_NAME
+        entries = _runtime_dependency_lock(lock)
+        if (
+            _sha256_file(lock) != payload["runtime_dependency_lock_sha256"]
+            or len(entries) != payload["runtime_dependency_count"]
+        ):
+            raise LinuxReleaseError("existing release dependency lock failed validation")
     return payload
+
+
+def _manifest_runtime_dependency_lock(
+    release_root: Path,
+    manifest: dict[str, object],
+) -> Path | None:
+    if "runtime_dependency_lock_filename" not in manifest:
+        return None
+    return release_root / RUNTIME_DEPENDENCY_LOCK_NAME
 
 
 def _require_corpus_root(corpus_root: Path) -> None:
@@ -878,6 +1024,8 @@ def install_release(
         raise LinuxReleaseError("corpus root must be absolute")
     corpus_root_created = _prepare_corpus_root(corpus_root)
     source_sha = _source_sha(layout.source_root, runner)
+    source_runtime_lock = layout.source_root / RUNTIME_DEPENDENCY_LOCK_NAME
+    _runtime_dependency_lock(source_runtime_lock)
     name = release_id(source_sha)
     final_release = layout.releases / name
     layout.staging.mkdir(parents=True, exist_ok=True)
@@ -888,10 +1036,12 @@ def install_release(
             release_name=name,
             source_sha=source_sha,
         )
+        runtime_lock = _manifest_runtime_dependency_lock(final_release, release_artifacts)
         candidate_versions = _verify_python_release(
             final_release,
             layout,
             corpus_root,
+            runtime_lock=runtime_lock,
             runner=runner,
         )
         if any(release_artifacts.get(key) != value for key, value in candidate_versions.items()):
@@ -912,15 +1062,19 @@ def install_release(
                     final_release,
                     wheel,
                     layout.source_root / "constraints.txt",
+                    source_runtime_lock,
                     pip_wheel=pip_wheel,
                     runner=runner,
                 )
                 _install_semgrep_runtime(final_release, pip_wheel, runner=runner)
                 node_sha = _install_node_pyright(final_release, workspace, runner=runner)
+                runtime_lock = final_release / RUNTIME_DEPENDENCY_LOCK_NAME
+                shutil.copyfile(source_runtime_lock, runtime_lock)
                 candidate_versions = _verify_python_release(
                     final_release,
                     layout,
                     corpus_root,
+                    runtime_lock=runtime_lock,
                     runner=runner,
                 )
                 release_artifacts = _release_manifest(
@@ -932,6 +1086,7 @@ def install_release(
                         dependency.name: _sha256_file(dependency)
                         for dependency in source_only_wheels
                     },
+                    runtime_dependency_lock=runtime_lock,
                     node_sha=node_sha,
                     versions=candidate_versions,
                 )
@@ -1031,7 +1186,22 @@ def verify_release(
         raise LinuxReleaseError("no valid installation receipt")
     corpus_root = Path(str(receipt.get("corpus_root", layout.policy.corpus_root)))
     _require_corpus_root(corpus_root)
-    versions = _verify_python_release(current, layout, corpus_root, runner=runner)
+    source_sha = receipt.get("source_sha")
+    if not isinstance(source_sha, str) or not re.fullmatch(r"[0-9a-f]{40}", source_sha):
+        raise LinuxReleaseError("installation receipt source SHA is invalid")
+    manifest = _read_release_manifest(
+        current,
+        release_name=current.name,
+        source_sha=source_sha,
+    )
+    runtime_lock = _manifest_runtime_dependency_lock(current, manifest)
+    versions = _verify_python_release(
+        current,
+        layout,
+        corpus_root,
+        runtime_lock=runtime_lock,
+        runner=runner,
+    )
     environment = _candidate_environment(layout, corpus_root)
     capability = runner(
         (layout.launcher, "doctor", "capabilities", "--json"),

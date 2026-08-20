@@ -84,6 +84,11 @@ wheels binarios. La dependencia transitiva `yattag`, publicada sólo como sdist,
 se descarga con versión y SHA-256 fijados, se normaliza primero mediante
 `pip wheel` y sólo entonces entra al instalador como wheel local. Node `24.18.1`
 y Pyright `1.1.411` quedan dentro de la release.
+`constraints-linux-cp314.lock` fija todas las distribuciones del runtime Linux
+CPython 3.14; el archivo se copia a la release, su hash queda ligado al manifest
+y `verify` exige igualdad exacta del inventario instalado. `constraints.txt`
+permanece como contrato de dependencias directas compartidas, no como sustituto
+del lock Linux.
 El instalador crea `--corpus-root` y sus padres cuando faltan, exige que el
 resultado sea un directorio real y registra en el recibo si tuvo que crearlo.
 No añade archivos al corpus ni inicia una corrida.

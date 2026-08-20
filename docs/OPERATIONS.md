@@ -1202,6 +1202,11 @@ Una preparación incompleta de modelos no promueve el runtime ni publica KDE.
 Rollback cambia sólo el enlace activo; no elimina releases ni sustituye la
 recuperación de bases.
 
+La release CPython 3.14 consume conjuntamente `constraints.txt` y
+`constraints-linux-cp314.lock`. El segundo archivo fija el inventario transitivo
+Linux completo, se conserva dentro de la release y debe coincidir por nombre,
+versión, cantidad y SHA-256 antes de promover o verificar el artefacto.
+
 1. Termine sólo los procesos propios de NeoCortex y confirme que no quede un
    watcher activo.
 2. Capture `Neocortex --version` y `Neocortex --status --status-json`.

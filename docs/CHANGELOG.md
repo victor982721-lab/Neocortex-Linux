@@ -14,6 +14,10 @@ no se copian aquí para evitar que se conviertan en datos históricos sin contex
   receipt ausente/obsoleto y continúa; `--require-fresh-self-analysis` falla
   cerrado y `--refresh-self-analysis` conserva la producción como decisión
   explícita.
+- La release Linux CPython 3.14 aplica un lock transitivo completo además de
+  los constraints directos. El lock se conserva y atesta en el manifest; una
+  promoción o verificación falla si nombre, versión, cantidad o SHA-256 no
+  coinciden con el runtime instalado.
 - Replay medible de Code y Semantic. Code separa su identidad AST del perfil
   profundo, conserva cache hits y agrupa sus actualizaciones de observación en
   lotes de 128 con tiempos de lookup/update/commit. Semantic publica heads
@@ -48,7 +52,8 @@ no se copian aquí para evitar que se conviertan en datos históricos sin contex
 - Ruff Analyze, Grimp y Complexipy calculan su baseline sobre el mismo dominio
   de archivos arquitectónicos que publican, por lo que un replay exacto reutiliza
   evidencia sin procesos. La validación obtiene el deadline monotónico real del
-  transient unit, acota replay a 20 minutos, reserva tres minutos para cierre y
+  transient unit, acota replay a 20 minutos, reserva cinco minutos para las dos
+  lecturas públicas frescas y la finalización, y
   clasifica el límite de recursos sin fingir una cancelación humana.
 - Archive, DOCX e Image viven ahora como cohortes completas bajo
   `_04_Nucleo_Operativo.capabilities.formats`; 27 módulos planos permanecen

@@ -29,6 +29,11 @@ La sdist vigente declara `setuptools==83.0.0` como backend de build. Las
 referencias posteriores a `setuptools==82.0.1` pertenecen exclusivamente a la
 reproducción histórica de `0.6.0` y se conservan como evidencia fechada.
 
+La release Linux CPython 3.14 vigente añade
+`constraints-linux-cp314.lock`, que fija el inventario transitivo por versión y
+se verifica contra el runtime instalado. Este lock no sustituye un wheelhouse
+offline completo ni los hashes individuales de sus artefactos.
+
 ```powershell
 $Version = '0.9.0'
 $Wheel = "C:\Ruta\Dist\neocortex_framework-$Version-py3-none-any.whl"

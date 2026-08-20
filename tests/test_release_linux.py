@@ -61,6 +61,15 @@ def _activate(layout: LinuxReleaseLayout, release: Path) -> None:
     os.symlink(os.path.relpath(release, layout.current.parent), layout.current)
 
 
+def _write_runtime_lock(source: Path) -> Path:
+    lock = source / release_linux.RUNTIME_DEPENDENCY_LOCK_NAME
+    lock.write_text(
+        f"pip=={release_linux.PIP_BOOTSTRAP_VERSION}\n",
+        encoding="utf-8",
+    )
+    return lock
+
+
 def test_release_identifier_is_version_sha_python_and_platform_bound() -> None:
     assert release_linux.release_id("a" * 40) == (f"0.9.0-{'a' * 12}-cp314-linux-x86_64")
     with pytest.raises(ValueError):
@@ -81,6 +90,78 @@ def test_pip_bootstrap_policy_is_hash_pinned_and_matches_constraints() -> None:
     assert release_linux.PIP_BOOTSTRAP_URL.startswith("https://files.pythonhosted.org/")
     assert release_linux.PIP_BOOTSTRAP_URL.endswith(release_linux.PIP_BOOTSTRAP_FILENAME)
     assert len(release_linux.PIP_BOOTSTRAP_SHA256) == 64
+
+
+def test_linux_cp314_runtime_lock_is_exact_and_complete() -> None:
+    lock = PROJECT_ROOT / release_linux.RUNTIME_DEPENDENCY_LOCK_NAME
+    entries = release_linux._runtime_dependency_lock(lock)
+
+    assert len(entries) >= 100
+    assert entries["pip"] == release_linux.PIP_BOOTSTRAP_VERSION
+    assert "neocortex-framework" not in entries
+    assert all(name == release_linux._normalized_distribution_name(name) for name in entries)
+
+
+def test_release_install_uses_the_runtime_lock_as_a_second_constraint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release_root = tmp_path / "release"
+    wheel = tmp_path / "neocortex_framework-0.9.0-py3-none-any.whl"
+    constraints = tmp_path / "constraints.txt"
+    runtime_lock = tmp_path / release_linux.RUNTIME_DEPENDENCY_LOCK_NAME
+    pip_wheel = tmp_path / release_linux.PIP_BOOTSTRAP_FILENAME
+    wheel.write_bytes(b"wheel")
+    constraints.write_text("pip==26.1.2\n", encoding="utf-8")
+    runtime_lock.write_text("pip==26.1.2\n", encoding="utf-8")
+    observed: list[tuple[str, ...]] = []
+
+    monkeypatch.setattr(
+        release_linux,
+        "_create_pip_environment",
+        lambda root, *_args, **_kwargs: (root / "bin").mkdir(parents=True),
+    )
+
+    def runner(arguments, **_kwargs):
+        observed.append(tuple(map(str, arguments)))
+        return subprocess.CompletedProcess(arguments, 0, "", "")
+
+    release_linux._install_wheel(
+        release_root,
+        wheel,
+        constraints,
+        runtime_lock,
+        pip_wheel=pip_wheel,
+        runner=runner,
+    )
+
+    command = observed[-1]
+    positions = [index for index, item in enumerate(command) if item == "--constraint"]
+    assert [command[index + 1] for index in positions] == [
+        str(constraints),
+        str(runtime_lock),
+    ]
+
+
+def test_runtime_dependency_verifier_rejects_inventory_drift(tmp_path: Path) -> None:
+    lock = tmp_path / release_linux.RUNTIME_DEPENDENCY_LOCK_NAME
+    lock.write_text("pip==26.1.2\n", encoding="utf-8")
+
+    def runner(arguments, **_kwargs):
+        return subprocess.CompletedProcess(
+            arguments,
+            0,
+            '{"idna":"3.19","pip":"26.1.2"}',
+            "",
+        )
+
+    with pytest.raises(release_linux.LinuxReleaseError, match="differs from its lock: idna"):
+        release_linux._verify_runtime_dependency_lock(
+            tmp_path / "python",
+            lock,
+            runner=runner,
+            environment={},
+        )
 
 
 def test_linux_release_smoke_imports_sqlglot_required_by_code_analysis() -> None:
@@ -173,6 +254,7 @@ def test_new_virtual_environment_is_created_at_its_final_non_movable_path(
 ) -> None:
     source = tmp_path / "source"
     source.mkdir()
+    _write_runtime_lock(source)
     layout = LinuxReleaseLayout(source, _policy(tmp_path))
     sha = "e" * 40
     final_release = layout.releases / release_linux.release_id(sha)
@@ -240,6 +322,10 @@ def test_new_virtual_environment_is_created_at_its_final_non_movable_path(
     assert report["corpus_root_created"] is True
     assert corpus_root.is_dir()
     assert release_linux._current_target(layout) == final_release.resolve()
+    assert report["artifacts"]["runtime_dependency_lock_filename"] == (
+        release_linux.RUNTIME_DEPENDENCY_LOCK_NAME
+    )
+    assert report["artifacts"]["runtime_dependency_count"] == 1
 
 
 def test_release_script_is_directly_executable_from_the_documented_path() -> None:
@@ -339,6 +425,7 @@ def test_failed_install_receipt_restores_current_launcher_and_alias(
 ) -> None:
     source = tmp_path / "source"
     (source / "_05_Interfaz" / "assets").mkdir(parents=True)
+    _write_runtime_lock(source)
     layout = LinuxReleaseLayout(source, _policy(tmp_path))
     old = _release(layout, "old")
     sha = "b" * 40
@@ -402,6 +489,7 @@ def test_failed_model_preparation_never_promotes_or_publishes_access(
 ) -> None:
     source = tmp_path / "source"
     source.mkdir()
+    _write_runtime_lock(source)
     layout = LinuxReleaseLayout(source, _policy(tmp_path))
     old = _release(layout, "old")
     sha = "c" * 40

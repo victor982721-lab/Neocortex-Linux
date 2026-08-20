@@ -22,7 +22,9 @@ El recolector usado fue una herramienta acotada del laboratorio de auditoría y 
 
 Las **17/17 dependencias directas** instaladas satisfacen tanto su specifier de `pyproject.toml` como el pin correspondiente de `constraints.txt`. Las transitivas siguen gestionadas por el resolver y este entorno global no sustituye una instalación aislada constrained.
 
-Las versiones siguientes son las instaladas en el entorno indicado, no una promesa para resoluciones futuras sin `constraints.txt`.
+Las versiones siguientes son las instaladas en el entorno indicado. La release
+Linux CPython 3.14 las fija ahora mediante `constraints-linux-cp314.lock`; otros
+entornos y wheelhouses conservan su propia verificación.
 
 ### Addendum del runtime candidato 0.7.2 — Hito 5
 
