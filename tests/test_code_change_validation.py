@@ -632,10 +632,12 @@ def test_public_review_stability_uses_two_repeatable_fresh_process_reads(
     }
     public_identity["question_evaluations"] = 1
     commands: list[tuple[str, ...]] = []
+    timeouts: list[float] = []
 
     def runner(arguments, *, cwd, timeout, environment=None):
         command = tuple(str(item) for item in arguments)
         commands.append(command)
+        timeouts.append(timeout)
         return subprocess.CompletedProcess(command, 0, canonical_json(public_identity), "")
 
     gate = _public_review_stability_gate(
@@ -649,6 +651,7 @@ def test_public_review_stability_uses_two_repeatable_fresh_process_reads(
     assert gate.evidence["fresh_process_reads"] == 2
     assert gate.evidence["fresh_process_digest_differs_from_in_process"] is True
     assert len(commands) == 2
+    assert timeouts == [120, 120]
 
 
 def test_public_review_stability_abstains_when_fresh_reads_disagree(tmp_path: Path) -> None:
@@ -2543,7 +2546,7 @@ def test_replay_budget_reserves_finalization_inside_the_global_deadline(
         hard,
         4_500,
     )
-    required = 1_200 + 180
+    required = 1_200 + 300
 
     monkeypatch.setattr(
         code_change_validation.time,

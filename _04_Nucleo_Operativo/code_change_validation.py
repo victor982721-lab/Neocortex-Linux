@@ -321,8 +321,13 @@ _FULL_SUITE_SHARD_SIZE = 250
 _TRUSTED_DEEP_SELECTED_OVERHEAD_SECONDS = 15 * 60
 _TRUSTED_DEEP_FULL_OVERHEAD_SECONDS = 30 * 60
 _TRUSTED_DEEP_REPLAY_TIMEOUT_SECONDS = 20 * 60
-_POST_REPLAY_CLOSURE_RESERVE_SECONDS = 3 * 60
-_PUBLIC_REVIEW_IDENTITY_TIMEOUT_SECONDS = 75
+_PUBLIC_REVIEW_IDENTITY_READS = 2
+_PUBLIC_REVIEW_IDENTITY_TIMEOUT_SECONDS = 2 * 60
+_POST_REPLAY_FINALIZATION_RESERVE_SECONDS = 60
+_POST_REPLAY_CLOSURE_RESERVE_SECONDS = (
+    _PUBLIC_REVIEW_IDENTITY_READS * _PUBLIC_REVIEW_IDENTITY_TIMEOUT_SECONDS
+    + _POST_REPLAY_FINALIZATION_RESERVE_SECONDS
+)
 
 _EXPERIMENT_CONTROL_PLANE_PATHS = frozenset(
     {
@@ -2236,7 +2241,7 @@ def _public_review_stability_gate(
                     timeout=_PUBLIC_REVIEW_IDENTITY_TIMEOUT_SECONDS,
                 )
             )
-            for _index in range(2)
+            for _index in range(_PUBLIC_REVIEW_IDENTITY_READS)
         )
         if any(not isinstance(item, dict) for item in observed):
             raise ValueError("public review identity is not an object")
@@ -2278,7 +2283,7 @@ def _public_review_stability_gate(
         blockers.append("fresh_process_public_review_core_disagrees_with_replay")
     evidence = {
         "public_identity": first,
-        "fresh_process_reads": 2,
+        "fresh_process_reads": _PUBLIC_REVIEW_IDENTITY_READS,
         "in_process_digest": expected.get("digest"),
         "in_process_question_evaluations": expected.get("question_evaluations"),
         "fresh_process_digest_differs_from_in_process": first.get("digest")
