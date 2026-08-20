@@ -24,13 +24,18 @@ from typing import TYPE_CHECKING, Any, NoReturn
 
 if TYPE_CHECKING:
     from . import code_architecture_contracts as _contracts
+    from .code.contracts import target_projection as _target_projection
+    from .code.contracts import target_registry as _target_registry
     from .platform.shared import architecture_projection as _projection
     from .platform.shared import capability_registry as _capability_registry
 elif __package__:
     from . import code_architecture_contracts as _contracts
+    from .code.contracts import target_projection as _target_projection
+    from .code.contracts import target_registry as _target_registry
     from .platform.shared import architecture_projection as _projection
     from .platform.shared import capability_registry as _capability_registry
 else:  # Direct isolated worker execution; do not import the staged package.
+
     def _load_control_plane_module(alias: str, path: Path) -> Any:
         spec = importlib.util.spec_from_file_location(alias, path)
         if spec is None or spec.loader is None:
@@ -57,21 +62,23 @@ else:  # Direct isolated worker execution; do not import the staged package.
         "_neocortex_capability_registry",
         _control_plane_root / "platform" / "shared" / "capability_registry.py",
     )
+    _target_registry = _load_control_plane_module(
+        "_neocortex_core_target_registry",
+        _control_plane_root / "code" / "contracts" / "target_registry.py",
+    )
+    _target_projection = _load_control_plane_module(
+        "_neocortex_core_target_projection",
+        _control_plane_root / "code" / "contracts" / "target_projection.py",
+    )
 
-GRIMP_WORKER_SCHEMA = "neocortex.external-architecture-worker/grimp-v2"
+GRIMP_WORKER_SCHEMA = "neocortex.external-architecture-worker/grimp-v3"
 COMPLEXIPY_WORKER_SCHEMA = "neocortex.external-architecture-worker/complexipy-v1"
 WORKER_ERROR_SCHEMA = "neocortex.external-architecture-worker/error-v1"
 
-CAPABILITY_PROJECTION_POLICY_ID = (
-    "neocortex.capability-architecture-projection/transitional-v1"
-)
-CAPABILITY_PROJECTION_SCOPE_POLICY = (
-    "exact-capability-registry-modules-canonical-and-legacy-v1"
-)
+CAPABILITY_PROJECTION_POLICY_ID = "neocortex.capability-architecture-projection/transitional-v1"
+CAPABILITY_PROJECTION_SCOPE_POLICY = "exact-capability-registry-modules-canonical-and-legacy-v1"
 CAPABILITY_OWNER_RESOLUTION_POLICY = "capability-logical-owner-exact-v1"
-CAPABILITY_FAMILY_RESOLUTION_POLICY = (
-    "canonical-target-or-exact-source-compatibility-v1"
-)
+CAPABILITY_FAMILY_RESOLUTION_POLICY = "canonical-target-or-exact-source-compatibility-v1"
 CAPABILITY_FAMILY_DAG_SCHEMA = "neocortex.architecture-family-dag/v1"
 CAPABILITY_FAMILY_DAG_POLICY_ID = "neocortex.formats-family-dependencies/transitional-v1"
 CAPABILITY_FAMILY_DAG_FINGERPRINT_PREFIX = "architecture-family-dag-v1:sha256:"
@@ -406,8 +413,7 @@ def capability_family_dag_manifest() -> dict[str, object]:
     return {
         **contract,
         "fingerprint": (
-            CAPABILITY_FAMILY_DAG_FINGERPRINT_PREFIX
-            + hashlib.sha256(canonical).hexdigest()
+            CAPABILITY_FAMILY_DAG_FINGERPRINT_PREFIX + hashlib.sha256(canonical).hexdigest()
         ),
     }
 
@@ -493,9 +499,7 @@ def _projected_edge_payload(label_kind: str, edge: Any) -> dict[str, object]:
         "edge_id": _projected_edge_id(label_kind, edge),
         "source_label": edge.source_label,
         "target_label": edge.target_label,
-        "module_relations": [
-            _module_relation_payload(item) for item in edge.module_relations
-        ],
+        "module_relations": [_module_relation_payload(item) for item in edge.module_relations],
         "witness_ids": list(edge.witness_ids),
     }
 
@@ -552,8 +556,7 @@ def _projection_payload(projection: Any, *, label_kind: str) -> dict[str, object
                 _projected_edge_id(label_kind, edge) for edge in item.internal_edges
             ],
             "shortest_cycle_edge_ids": [
-                _projected_edge_id(label_kind, edge)
-                for edge in item.shortest_cycle_edges
+                _projected_edge_id(label_kind, edge) for edge in item.shortest_cycle_edges
             ],
             "realizable_module_components": [
                 list(component) for component in item.realizable_module_components
@@ -638,9 +641,7 @@ def _capability_projection_payload(
     ]
     forbidden_ids = [str(item["edge_id"]) for item in decisions if item["allowed"] is False]
     canonical_to_compat_ids = [
-        str(item["edge_id"])
-        for item in decisions
-        if item["reason"] == "canonical_to_compat"
+        str(item["edge_id"]) for item in decisions if item["reason"] == "canonical_to_compat"
     ]
     family_payload.update(
         {
@@ -680,12 +681,18 @@ def _capability_projection_payload(
         },
         "module_graph": {
             "semantics": "directed-production-module-import-scc-v1",
-            "cyclic_sccs": [
-                _module_scc_payload(item) for item in graph.cyclic_sccs
-            ],
+            "cyclic_sccs": [_module_scc_payload(item) for item in graph.cyclic_sccs],
         },
         "logical_owner": owner_payload,
         "target_family": family_payload,
+        "core_target": _target_projection.build_core_target_projection(
+            modules,
+            production_imports,
+            projection=_projection,
+            registry=_target_registry,
+            projection_payload=_projection_payload,
+            projected_edge_id=_projected_edge_id,
+        ),
     }
 
 

@@ -14,119 +14,15 @@ from typing import Any
 
 import pytest
 
+from _04_Nucleo_Operativo.code.contracts.target_registry import (
+    COMPATIBILITY_CONTRACTS,
+    COMPATIBILITY_MODULE_PAIRS,
+)
+
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
-MODULE_MOVES = (
-    (
-        "_04_Nucleo_Operativo.content_types",
-        "_04_Nucleo_Operativo.platform.shared.content_types",
-    ),
-    (
-        "_04_Nucleo_Operativo.zip_safety",
-        "_04_Nucleo_Operativo.platform.shared.zip_safety",
-    ),
-    (
-        "_04_Nucleo_Operativo.archive_models",
-        "_04_Nucleo_Operativo.capabilities.formats.archive.models",
-    ),
-    (
-        "_04_Nucleo_Operativo.archive_route",
-        "_04_Nucleo_Operativo.capabilities.formats.archive.route",
-    ),
-    (
-        "_04_Nucleo_Operativo.archive_state",
-        "_04_Nucleo_Operativo.capabilities.formats.archive.state",
-    ),
-    (
-        "_04_Nucleo_Operativo.archive_text_worker",
-        "_04_Nucleo_Operativo.capabilities.formats.archive.text_worker",
-    ),
-    (
-        "_04_Nucleo_Operativo.docx_integrity",
-        "_04_Nucleo_Operativo.capabilities.formats.docx.integrity",
-    ),
-    (
-        "_04_Nucleo_Operativo.docx_layout",
-        "_04_Nucleo_Operativo.capabilities.formats.docx.layout",
-    ),
-    (
-        "_04_Nucleo_Operativo.docx_models",
-        "_04_Nucleo_Operativo.capabilities.formats.docx.models",
-    ),
-    (
-        "_04_Nucleo_Operativo.docx_route",
-        "_04_Nucleo_Operativo.capabilities.formats.docx.route",
-    ),
-    (
-        "_04_Nucleo_Operativo.docx_schema",
-        "_04_Nucleo_Operativo.capabilities.formats.docx.schema",
-    ),
-    (
-        "_04_Nucleo_Operativo.docx_state",
-        "_04_Nucleo_Operativo.capabilities.formats.docx.state",
-    ),
-    (
-        "_04_Nucleo_Operativo.image_adult",
-        "_04_Nucleo_Operativo.capabilities.formats.image.adult",
-    ),
-    (
-        "_04_Nucleo_Operativo.image_analysis",
-        "_04_Nucleo_Operativo.capabilities.formats.image.analysis",
-    ),
-    (
-        "_04_Nucleo_Operativo.image_decision",
-        "_04_Nucleo_Operativo.capabilities.formats.image.decision",
-    ),
-    (
-        "_04_Nucleo_Operativo.image_decode",
-        "_04_Nucleo_Operativo.capabilities.formats.image.decode",
-    ),
-    (
-        "_04_Nucleo_Operativo.image_document",
-        "_04_Nucleo_Operativo.capabilities.formats.image.document",
-    ),
-    (
-        "_04_Nucleo_Operativo.image_errors",
-        "_04_Nucleo_Operativo.capabilities.formats.image.errors",
-    ),
-    (
-        "_04_Nucleo_Operativo.image_features",
-        "_04_Nucleo_Operativo.capabilities.formats.image.features",
-    ),
-    (
-        "_04_Nucleo_Operativo.image_isolation",
-        "_04_Nucleo_Operativo.capabilities.formats.image.isolation",
-    ),
-    (
-        "_04_Nucleo_Operativo.image_models",
-        "_04_Nucleo_Operativo.capabilities.formats.image.models",
-    ),
-    (
-        "_04_Nucleo_Operativo.image_png",
-        "_04_Nucleo_Operativo.capabilities.formats.image.png",
-    ),
-    (
-        "_04_Nucleo_Operativo.image_policy",
-        "_04_Nucleo_Operativo.capabilities.formats.image.policy",
-    ),
-    (
-        "_04_Nucleo_Operativo.image_route",
-        "_04_Nucleo_Operativo.capabilities.formats.image.route",
-    ),
-    (
-        "_04_Nucleo_Operativo.image_semantics",
-        "_04_Nucleo_Operativo.capabilities.formats.image.semantics",
-    ),
-    (
-        "_04_Nucleo_Operativo.image_state",
-        "_04_Nucleo_Operativo.capabilities.formats.image.state",
-    ),
-    (
-        "_04_Nucleo_Operativo.image_visual",
-        "_04_Nucleo_Operativo.capabilities.formats.image.visual",
-    ),
-)
+MODULE_MOVES = COMPATIBILITY_MODULE_PAIRS
 
 PARENT_PACKAGES = (
     "_04_Nucleo_Operativo",
@@ -326,6 +222,32 @@ def test_module_move_manifest_contains_all_27_pairs() -> None:
     }
 
 
+def test_compatibility_matrix_covers_pickle_patch_and_worker_contracts() -> None:
+    contracts = {item.legacy_module_id: item for item in COMPATIBILITY_CONTRACTS}
+
+    assert set(contracts) == {legacy for legacy, _canonical in MODULE_MOVES}
+    assert {
+        module
+        for module, contract in contracts.items()
+        if "historical_pickle_global" in contract.requirement_ids
+    } == set(HISTORICAL_PICKLE_SYMBOLS)
+    assert {
+        module
+        for module, contract in contracts.items()
+        if "pickle_instance_roundtrip" in contract.requirement_ids
+    } == {item[0] for item in INSTANCE_PICKLE_CASES}
+    assert {
+        module
+        for module, contract in contracts.items()
+        if "monkeypatch_seam" in contract.requirement_ids
+    } == {item[0] for item in MONKEYPATCH_SEAMS}
+    assert {
+        module
+        for module, contract in contracts.items()
+        if "worker_module_execution" in contract.requirement_ids
+    } == {"_04_Nucleo_Operativo.archive_text_worker"}
+
+
 @pytest.mark.parametrize(
     ("legacy_name", "canonical_name"),
     MODULE_MOVES,
@@ -343,9 +265,7 @@ def test_cold_import_orders_preserve_exact_module_and_pickle_identity(
     tmp_path: Path,
 ) -> None:
     first_name, second_name = (
-        (legacy_name, canonical_name)
-        if legacy_first
-        else (canonical_name, legacy_name)
+        (legacy_name, canonical_name) if legacy_first else (canonical_name, legacy_name)
     )
     pickle_symbol = HISTORICAL_PICKLE_SYMBOLS.get(legacy_name)
     script = textwrap.dedent(
@@ -502,8 +422,6 @@ def test_archive_text_worker_legacy_and_canonical_module_entrypoints_match(
         for module_name in modules
     ]
 
-    outcomes = [
-        (result.returncode, result.stdout, result.stderr) for result in completed
-    ]
+    outcomes = [(result.returncode, result.stdout, result.stderr) for result in completed]
     assert outcomes[0] == outcomes[1]
     assert outcomes[0] == (2, expected_stdout, b"")

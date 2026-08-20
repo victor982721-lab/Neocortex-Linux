@@ -149,6 +149,7 @@ def test_grimp_normalizes_graph_contracts_and_gates(
         "_execute_worker",
         lambda *_args, **_kwargs: (payload, 100, 0),
     )
+    monkeypatch.setattr(adapters, "_core_target_evidence", lambda *_args: ([], []))
 
     result = adapters.execute_grimp_architecture(tmp_path, staged, {})
     names = {(item.subject_kind, item.metric_name) for item in result.metrics}
@@ -166,6 +167,96 @@ def test_grimp_normalizes_graph_contracts_and_gates(
     assert result.findings[0].category == "architecture"
     assert result.findings[0].metadata["contract_id"] == "fixture-contract-v1"
     assert result.findings[0].mutation_authority is False
+
+
+def test_core_target_projection_emits_regression_and_compatibility_findings(
+    tmp_path: Path,
+) -> None:
+    module = "_04_Nucleo_Operativo.a"
+    relative = "_04_Nucleo_Operativo/a.py"
+    staged = _staged(tmp_path, relative)
+    relation = {
+        "source_module": module,
+        "target_module": "_04_Nucleo_Operativo.b",
+        "witness_ids": ["module-import-v1:fixture"],
+    }
+    payload = {
+        "projections": {
+            "core_target": {
+                "registry": {
+                    "schema": adapters.CORE_RESPONSIBILITY_REGISTRY_SCHEMA,
+                    "fingerprint": "core-architecture-target-v1:sha256:fixture",
+                },
+                "scope": {
+                    "registered_modules": [module],
+                    "missing_registered_modules": [],
+                    "unregistered_core_modules": [module],
+                    "compatibility_modules": [],
+                },
+                "target_responsibility": {
+                    "counters": {"unmapped_modules": 1, "overlapping_modules": 0},
+                    "mapping_resolutions": [
+                        {"module_id": module, "status": "unmapped", "labels": []}
+                    ],
+                },
+                "target_family": {
+                    "counters": {
+                        "unmapped_modules": 0,
+                        "overlapping_modules": 0,
+                        "forbidden_direct_module_edges": 187,
+                        "baseline_forbidden_direct_module_edges": 186,
+                        "regression_direct_module_edges": 1,
+                        "resolved_direct_module_edges": 0,
+                        "canonical_to_compat_direct_module_edges": 1,
+                    },
+                    "mapping_resolutions": [
+                        {"module_id": module, "status": "resolved", "labels": ["code"]}
+                    ],
+                    "projected_edges": [
+                        {
+                            "source_label": "code",
+                            "target_label": "knowledge",
+                            "module_relations": [relation],
+                        },
+                        {
+                            "source_label": "code",
+                            "target_label": "compat",
+                            "module_relations": [relation],
+                        },
+                    ],
+                    "transition_baseline": [
+                        {
+                            "source_family": "code",
+                            "target_family": "knowledge",
+                            "regression_direct_module_edges": 1,
+                        }
+                    ],
+                    "edge_decisions": [
+                        {
+                            "source_family": "code",
+                            "target_family": "compat",
+                            "reason": "canonical_to_compat",
+                        }
+                    ],
+                },
+            }
+        }
+    }
+
+    findings, metrics = adapters._core_target_evidence(
+        payload,
+        staged,
+        {module: relative},
+    )
+
+    assert {item.code for item in findings} == {
+        "core_target_canonical_to_compat",
+        "core_target_family_regression",
+        "core_target_responsibility_unmapped",
+    }
+    values = {item.metric_name: item.value for item in metrics}
+    assert values["family_regression_direct_edge_count"] == 1
+    assert values["canonical_to_compat_direct_edge_count"] == 1
 
 
 def test_complexipy_normalizes_module_and_symbol_metrics(
@@ -221,7 +312,7 @@ def test_worker_command_is_direct_isolated_and_bounded(
         observed.append(tuple(arguments))
         assert kwargs["timeout_seconds"] == 180.0
         payload = {
-            "schema": "neocortex.external-architecture-worker/grimp-v2",
+            "schema": "neocortex.external-architecture-worker/grimp-v3",
             "status": "ready",
             "inputs": {"file_count": 1},
         }

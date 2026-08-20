@@ -1,0 +1,1 @@
+"""Canonical Code capability namespace."""

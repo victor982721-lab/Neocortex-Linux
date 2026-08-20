@@ -114,7 +114,8 @@ def _architecture_payload(
     imports: tuple[ModuleImport, ...] = (),
 ) -> dict[str, object]:
     canonical, legacy, _, _ = architecture_worker._registered_capability_labels()
-    modules = tuple(sorted((*canonical, *legacy)))
+    target_modules = architecture_worker._target_registry.registered_core_modules()
+    modules = tuple(sorted({*canonical, *legacy, *target_modules}))
     cycles = architecture_worker._cycle_payloads(modules, imports)
     return {
         "schema": architecture_worker.GRIMP_WORKER_SCHEMA,
@@ -625,11 +626,17 @@ def test_live_architecture_gate_requires_the_exact_acyclic_v2_contract() -> None
     assert isinstance(projections, dict)
     registry = projections["capability_registry"]
     scope = projections["scope"]
+    core_target = projections["core_target"]
     assert isinstance(registry, dict)
     assert isinstance(scope, dict)
+    assert isinstance(core_target, dict)
+    core_registry = core_target["registry"]
+    core_scope = core_target["scope"]
+    assert isinstance(core_registry, dict)
+    assert isinstance(core_scope, dict)
 
     assert evaluate_architecture_payload(payload) == {
-        "modules": len(scope["registered_modules"]),
+        "modules": len(core_scope["registered_modules"]),
         "production_relations": 0,
         "contract_violations": 0,
         "cyclic_components": 0,
@@ -649,6 +656,12 @@ def test_live_architecture_gate_requires_the_exact_acyclic_v2_contract() -> None
         "family_canonical_to_compat_edges": 0,
         "owner_aggregate_quotient_sccs": 0,
         "family_aggregate_quotient_sccs": 0,
+        "core_target_registry_fingerprint": core_registry["fingerprint"],
+        "core_target_registered_modules": len(core_scope["registered_modules"]),
+        "core_target_compatibility_modules": len(core_scope["compatibility_modules"]),
+        "core_target_forbidden_direct_module_edges": 0,
+        "core_target_family_regression_direct_module_edges": 0,
+        "core_target_canonical_to_compat_direct_module_edges": 0,
     }
 
 
@@ -739,7 +752,11 @@ def test_live_architecture_gate_rejects_stale_or_incomplete_projection_evidence(
         assert isinstance(projection, dict)
         resolutions = projection["mapping_resolutions"]
         assert isinstance(resolutions, list)
-        resolution = resolutions[0]
+        resolution = next(
+            item
+            for item in resolutions
+            if isinstance(item, dict) and item.get("status") == "resolved"
+        )
         assert isinstance(resolution, dict)
         if mutation == "owner_unmapped":
             resolution.update({"status": "unmapped", "labels": []})
@@ -776,6 +793,27 @@ def test_live_architecture_gate_allows_compat_to_canonical_family_dependency() -
     )
 
     assert summary["family_aggregate_quotient_sccs"] == 0
+
+
+def test_live_architecture_gate_rejects_core_family_baseline_regression() -> None:
+    modules = architecture_worker._target_registry.registered_core_modules()
+    foundation = [
+        module
+        for module in modules
+        if architecture_worker._target_registry.matching_target_families(module) == ("foundation",)
+    ]
+    runtime = [
+        module
+        for module in modules
+        if architecture_worker._target_registry.matching_target_families(module) == ("runtime",)
+    ]
+    imports = (
+        ModuleImport(foundation[0], runtime[0]),
+        ModuleImport(foundation[1], runtime[1]),
+    )
+
+    with pytest.raises(GateError, match="dependencies regressed"):
+        evaluate_architecture_payload(_architecture_payload(imports))
 
 
 def test_live_architecture_gate_rejects_canonical_to_compat_family_dependency() -> None:

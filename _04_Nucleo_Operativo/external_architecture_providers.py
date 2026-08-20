@@ -17,6 +17,7 @@ from .code_architecture_contracts import (
     ARCHITECTURE_CONTRACT_SCHEMA,
     PRODUCTION_ROOT_PACKAGES,
 )
+from .code.contracts.target_registry import CORE_RESPONSIBILITY_REGISTRY_SCHEMA
 from .code_external_evidence import ExternalEvidenceFile
 from .external_evidence_models import (
     ExternalProviderFinding,
@@ -32,7 +33,7 @@ GRIMP_ARCHITECTURE_PROVIDER_ID = "grimp-architecture"
 COMPLEXIPY_COGNITIVE_PROVIDER_ID = "complexipy-cognitive"
 
 _RUFF_SCHEMA = "neocortex.ruff-analyze-imports/v1"
-_GRIMP_WORKER_SCHEMA = "neocortex.external-architecture-worker/grimp-v2"
+_GRIMP_WORKER_SCHEMA = "neocortex.external-architecture-worker/grimp-v3"
 _COMPLEXIPY_WORKER_SCHEMA = "neocortex.external-architecture-worker/complexipy-v1"
 _TIMEOUT_SECONDS = 180.0
 _STDOUT_LIMIT_BYTES = 8 * 1024 * 1024
@@ -405,6 +406,332 @@ def _contract_finding(
     )
 
 
+def _core_target_finding(
+    *,
+    module: str,
+    code: str,
+    message: str,
+    staged: Mapping[str, ExternalEvidenceFile],
+    module_paths: Mapping[str, str],
+    metadata: Mapping[str, object],
+) -> ExternalProviderFinding:
+    owner_path = module_paths.get(module) or module_paths.get(
+        "_04_Nucleo_Operativo.code.contracts.target_registry"
+    )
+    if owner_path is None:
+        raise ValueError("Core target finding has no owned source module")
+    owner = _owner_for_relative(owner_path, staged)
+    identity = external_signature(
+        "external-finding-v1",
+        {
+            "provider_id": GRIMP_ARCHITECTURE_PROVIDER_ID,
+            "path": owner.relative_path,
+            "category": "architecture",
+            "code": code,
+            "message": message,
+            "start_line": 1,
+            "start_column": 0,
+            "end_line": 1,
+            "end_column": 0,
+        },
+    )
+    return ExternalProviderFinding(
+        identity,
+        owner.version_id,
+        owner.relative_path,
+        "architecture",
+        code,
+        "warning",
+        message,
+        True,
+        1.0,
+        None,
+        "architecture_target_contract",
+        1,
+        0,
+        1,
+        0,
+        metadata=dict(metadata),
+    )
+
+
+def _family_edge_source_module(
+    family_payload: Mapping[str, object],
+    source_family: str,
+    target_family: str,
+) -> str:
+    for raw_edge in _required_list(
+        family_payload.get("projected_edges"), label="Core projected family edges"
+    ):
+        edge = _required_mapping(raw_edge, label="Core projected family edge")
+        if edge.get("source_label") != source_family or edge.get("target_label") != target_family:
+            continue
+        relations = _required_list(
+            edge.get("module_relations"), label="Core projected module relations"
+        )
+        if not relations:
+            break
+        relation = _required_mapping(relations[0], label="Core projected module relation")
+        return _required_text(relation.get("source_module"), label="Core projected source module")
+    return "_04_Nucleo_Operativo.code.contracts.target_registry"
+
+
+@dataclass(frozen=True, slots=True)
+class _CoreTargetProjection:
+    fingerprint: str
+    scope: Mapping[str, object]
+    responsibility: Mapping[str, object]
+    family: Mapping[str, object]
+
+
+def _read_core_target_projection(payload: Mapping[str, object]) -> _CoreTargetProjection:
+    projections = _required_mapping(payload.get("projections"), label="Grimp projections")
+    target = _required_mapping(projections.get("core_target"), label="Core target projection")
+    registry = _required_mapping(target.get("registry"), label="Core target registry")
+    if registry.get("schema") != CORE_RESPONSIBILITY_REGISTRY_SCHEMA:
+        raise ValueError("Core target registry schema is incompatible")
+    return _CoreTargetProjection(
+        _required_text(registry.get("fingerprint"), label="Core target registry fingerprint"),
+        _required_mapping(target.get("scope"), label="Core target scope"),
+        _required_mapping(
+            target.get("target_responsibility"),
+            label="Core responsibility projection",
+        ),
+        _required_mapping(target.get("target_family"), label="Core family projection"),
+    )
+
+
+def _core_target_metric_values(target: _CoreTargetProjection) -> dict[str, int]:
+    responsibility = _required_mapping(
+        target.responsibility.get("counters"), label="Core responsibility counters"
+    )
+    family = _required_mapping(target.family.get("counters"), label="Core family counters")
+    scope_lists = {
+        "registered_module_count": ("registered_modules", "registered Core modules"),
+        "missing_registered_module_count": (
+            "missing_registered_modules",
+            "missing registered Core modules",
+        ),
+        "unregistered_core_module_count": (
+            "unregistered_core_modules",
+            "unregistered Core modules",
+        ),
+        "compatibility_module_count": (
+            "compatibility_modules",
+            "Core compatibility modules",
+        ),
+    }
+    values = {
+        name: len(_required_list(target.scope.get(field), label=label))
+        for name, (field, label) in scope_lists.items()
+    }
+    counter_fields = {
+        "responsibility_unmapped_module_count": (
+            responsibility,
+            "unmapped_modules",
+            "Core responsibility unmapped modules",
+        ),
+        "responsibility_overlapping_module_count": (
+            responsibility,
+            "overlapping_modules",
+            "Core responsibility overlapping modules",
+        ),
+        "family_unmapped_module_count": (
+            family,
+            "unmapped_modules",
+            "Core family unmapped modules",
+        ),
+        "family_overlapping_module_count": (
+            family,
+            "overlapping_modules",
+            "Core family overlapping modules",
+        ),
+        "forbidden_family_direct_edge_count": (
+            family,
+            "forbidden_direct_module_edges",
+            "Core forbidden family edges",
+        ),
+        "baseline_forbidden_family_direct_edge_count": (
+            family,
+            "baseline_forbidden_direct_module_edges",
+            "Core baseline forbidden family edges",
+        ),
+        "family_regression_direct_edge_count": (
+            family,
+            "regression_direct_module_edges",
+            "Core family regression edges",
+        ),
+        "family_resolved_direct_edge_count": (
+            family,
+            "resolved_direct_module_edges",
+            "Core family resolved edges",
+        ),
+        "canonical_to_compat_direct_edge_count": (
+            family,
+            "canonical_to_compat_direct_module_edges",
+            "Core canonical-to-compat edges",
+        ),
+    }
+    values.update(
+        {
+            name: _required_int(counters.get(field), label=label)
+            for name, (counters, field, label) in counter_fields.items()
+        }
+    )
+    return values
+
+
+def _core_mapping_findings(
+    projection_name: str,
+    projection: Mapping[str, object],
+    *,
+    staged: Mapping[str, ExternalEvidenceFile],
+    module_paths: Mapping[str, str],
+) -> list[ExternalProviderFinding]:
+    findings: list[ExternalProviderFinding] = []
+    resolutions = _required_list(
+        projection.get("mapping_resolutions"),
+        label=f"Core {projection_name} mapping resolutions",
+    )
+    for raw_resolution in resolutions:
+        resolution = _required_mapping(
+            raw_resolution, label=f"Core {projection_name} mapping resolution"
+        )
+        status = resolution.get("status")
+        module = _required_text(resolution.get("module_id"), label="Core mapped module")
+        if status not in {"unmapped", "overlap"} or not module.startswith("_04_Nucleo_Operativo"):
+            continue
+        findings.append(
+            _core_target_finding(
+                module=module,
+                code=f"core_target_{projection_name}_{status}",
+                message=f"Core module {module} has {status} {projection_name} ownership",
+                staged=staged,
+                module_paths=module_paths,
+                metadata={"module": module, "projection": projection_name},
+            )
+        )
+    return findings
+
+
+def _core_family_transition_findings(
+    family: Mapping[str, object],
+    *,
+    staged: Mapping[str, ExternalEvidenceFile],
+    module_paths: Mapping[str, str],
+) -> list[ExternalProviderFinding]:
+    findings: list[ExternalProviderFinding] = []
+    comparisons = _required_list(
+        family.get("transition_baseline"), label="Core family transition baseline"
+    )
+    for raw_comparison in comparisons:
+        comparison = _required_mapping(raw_comparison, label="Core family baseline comparison")
+        regression = _required_int(
+            comparison.get("regression_direct_module_edges"),
+            label="Core family edge regression",
+        )
+        if regression == 0:
+            continue
+        source = _required_text(
+            comparison.get("source_family"), label="Core regression source family"
+        )
+        target = _required_text(
+            comparison.get("target_family"), label="Core regression target family"
+        )
+        findings.append(
+            _core_target_finding(
+                module=_family_edge_source_module(family, source, target),
+                code="core_target_family_regression",
+                message=(
+                    f"Core family dependency {source} -> {target} increased "
+                    f"by {regression} direct module edges"
+                ),
+                staged=staged,
+                module_paths=module_paths,
+                metadata=dict(comparison),
+            )
+        )
+    return findings
+
+
+def _core_canonical_to_compat_findings(
+    family: Mapping[str, object],
+    *,
+    staged: Mapping[str, ExternalEvidenceFile],
+    module_paths: Mapping[str, str],
+) -> list[ExternalProviderFinding]:
+    findings: list[ExternalProviderFinding] = []
+    decisions = _required_list(family.get("edge_decisions"), label="Core family edge decisions")
+    for raw_decision in decisions:
+        decision = _required_mapping(raw_decision, label="Core family edge decision")
+        if decision.get("reason") != "canonical_to_compat":
+            continue
+        source = _required_text(decision.get("source_family"), label="Core canonical source family")
+        target = _required_text(
+            decision.get("target_family"), label="Core compatibility target family"
+        )
+        findings.append(
+            _core_target_finding(
+                module=_family_edge_source_module(family, source, target),
+                code="core_target_canonical_to_compat",
+                message=f"Canonical Core family {source} depends on {target}",
+                staged=staged,
+                module_paths=module_paths,
+                metadata=dict(decision),
+            )
+        )
+    return findings
+
+
+def _core_target_evidence(
+    payload: Mapping[str, object],
+    staged: Mapping[str, ExternalEvidenceFile],
+    module_paths: Mapping[str, str],
+) -> tuple[list[ExternalProviderFinding], list[ExternalProviderMetric]]:
+    target = _read_core_target_projection(payload)
+    metrics = [
+        _metric(
+            GRIMP_ARCHITECTURE_PROVIDER_ID,
+            subject_kind="contract",
+            subject_key=target.fingerprint,
+            category="architecture_target",
+            name=name,
+            value=value,
+            metadata={"registry_schema": CORE_RESPONSIBILITY_REGISTRY_SCHEMA},
+        )
+        for name, value in sorted(_core_target_metric_values(target).items())
+    ]
+    findings = _core_mapping_findings(
+        "responsibility",
+        target.responsibility,
+        staged=staged,
+        module_paths=module_paths,
+    )
+    findings.extend(
+        _core_mapping_findings(
+            "family",
+            target.family,
+            staged=staged,
+            module_paths=module_paths,
+        )
+    )
+    findings.extend(
+        _core_family_transition_findings(
+            target.family,
+            staged=staged,
+            module_paths=module_paths,
+        )
+    )
+    findings.extend(
+        _core_canonical_to_compat_findings(
+            target.family,
+            staged=staged,
+            module_paths=module_paths,
+        )
+    )
+    return findings, metrics
+
+
 def execute_grimp_architecture(
     stage_root: Path,
     staged: Mapping[str, ExternalEvidenceFile],
@@ -523,6 +850,13 @@ def execute_grimp_architecture(
             )
             for item in violations
         )
+    target_findings, target_metrics = _core_target_evidence(
+        payload,
+        staged,
+        module_paths,
+    )
+    findings.extend(target_findings)
+    metrics.extend(target_metrics)
     return ArchitectureProviderExecution(
         tuple(sorted(findings, key=lambda item: item.portable_finding_id)),
         tuple(sorted(metrics, key=lambda item: item.portable_metric_id)),

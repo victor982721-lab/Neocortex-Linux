@@ -24,7 +24,7 @@ import tempfile
 import tomllib
 import unicodedata
 from collections import Counter
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path, PurePosixPath
@@ -42,10 +42,9 @@ DEFAULT_BASELINE = Path(__file__).with_name("quality_gate_static_baseline.json")
 DEFAULT_COVERAGE_BASELINE = Path(__file__).with_name("quality_gate_coverage_baseline.json")
 DEFAULT_SUPPLY_POLICY = Path(__file__).with_name("quality_gate_supply_policy.json")
 PRODUCTION_ARCHITECTURE_WORKER = Path("_04_Nucleo_Operativo/external_architecture_worker.py")
-CAPABILITY_REGISTRY_MODULE = Path(
-    "_04_Nucleo_Operativo/platform/shared/capability_registry.py"
-)
-EXPECTED_ARCHITECTURE_WORKER_SCHEMA = "neocortex.external-architecture-worker/grimp-v2"
+CAPABILITY_REGISTRY_MODULE = Path("_04_Nucleo_Operativo/platform/shared/capability_registry.py")
+CORE_TARGET_REGISTRY_MODULE = Path("_04_Nucleo_Operativo/code/contracts/target_registry.py")
+EXPECTED_ARCHITECTURE_WORKER_SCHEMA = "neocortex.external-architecture-worker/grimp-v3"
 EXPECTED_ARCHITECTURE_BASELINE_ID = "neocortex-production-imports-2026-08-10/v2"
 EXPECTED_ARCHITECTURE_PROJECTION_SCHEMA = "neocortex.architecture-projection/v1"
 EXPECTED_CAPABILITY_REGISTRY_SCHEMA = "neocortex.capability-registry/v1"
@@ -56,18 +55,15 @@ EXPECTED_CAPABILITY_PROJECTION_SCOPE_POLICY = (
     "exact-capability-registry-modules-canonical-and-legacy-v1"
 )
 EXPECTED_CAPABILITY_OWNER_RESOLUTION_POLICY = "capability-logical-owner-exact-v1"
-EXPECTED_CAPABILITY_FAMILY_RESOLUTION_POLICY = (
-    "canonical-target-or-exact-source-compatibility-v1"
-)
+EXPECTED_CAPABILITY_FAMILY_RESOLUTION_POLICY = "canonical-target-or-exact-source-compatibility-v1"
 EXPECTED_CAPABILITY_FAMILY_DAG_SCHEMA = "neocortex.architecture-family-dag/v1"
-EXPECTED_CAPABILITY_FAMILY_DAG_POLICY_ID = (
-    "neocortex.formats-family-dependencies/transitional-v1"
-)
+EXPECTED_CAPABILITY_FAMILY_DAG_POLICY_ID = "neocortex.formats-family-dependencies/transitional-v1"
 EXPECTED_CAPABILITY_CANONICAL_FAMILY = "_04.capabilities.formats"
 EXPECTED_CAPABILITY_COMPATIBILITY_FAMILY = "_04.compat.formats"
-EXPECTED_CAPABILITY_FAMILY_DAG_FINGERPRINT_PREFIX = (
-    "architecture-family-dag-v1:sha256:"
-)
+EXPECTED_CAPABILITY_FAMILY_DAG_FINGERPRINT_PREFIX = "architecture-family-dag-v1:sha256:"
+EXPECTED_CORE_RESPONSIBILITY_REGISTRY_SCHEMA = "neocortex.core-responsibility-registry/v1"
+EXPECTED_CORE_PROJECTION_POLICY_ID = "neocortex.core-target-projection/v1"
+EXPECTED_CORE_RESOLUTION_POLICY = "exhaustive-core-module-to-responsibility-v1"
 EXPECTED_ARCHITECTURE_CONTRACTS = frozenset(
     {
         "core-does-not-depend-on-ui-v1",
@@ -581,6 +577,33 @@ def _load_architecture_capability_registry(root: Path) -> object:
     return module
 
 
+def _load_architecture_target_registry(root: Path) -> object:
+    path = root / CORE_TARGET_REGISTRY_MODULE
+    if not path.is_file():
+        _fail(f"Core target registry is missing: {path}")
+    try:
+        content_digest = hashlib.sha256(path.read_bytes()).hexdigest()[:16]
+        alias = f"_neocortex_quality_gate_core_target_{content_digest}"
+        existing = sys.modules.get(alias)
+        if existing is not None:
+            return existing
+        spec = importlib.util.spec_from_file_location(alias, path)
+        if spec is None or spec.loader is None:
+            _fail("Core target registry cannot be loaded by file identity")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        try:
+            spec.loader.exec_module(module)
+        except Exception:
+            sys.modules.pop(spec.name, None)
+            raise
+    except GateError:
+        raise
+    except Exception as error:
+        _fail(f"Core target registry cannot be evaluated: {error}")
+    return module
+
+
 def _expected_capability_projection(root: Path) -> dict[str, object]:
     registry_module = _load_architecture_capability_registry(root)
     registry_namespace = vars(registry_module)
@@ -633,9 +656,7 @@ def _expected_capability_projection(root: Path) -> dict[str, object]:
         "canonical_modules": canonical,
         "legacy_modules": legacy,
         "registered_modules": sorted((*canonical, *legacy)),
-        "owner_labels": {
-            module: tuple(sorted(labels)) for module, labels in owner_labels.items()
-        },
+        "owner_labels": {module: tuple(sorted(labels)) for module, labels in owner_labels.items()},
         "family_labels": {
             module: tuple(sorted(labels)) for module, labels in family_labels.items()
         },
@@ -669,9 +690,59 @@ def _expected_capability_family_dag() -> dict[str, object]:
     return {
         **contract,
         "fingerprint": (
-            EXPECTED_CAPABILITY_FAMILY_DAG_FINGERPRINT_PREFIX
-            + hashlib.sha256(encoded).hexdigest()
+            EXPECTED_CAPABILITY_FAMILY_DAG_FINGERPRINT_PREFIX + hashlib.sha256(encoded).hexdigest()
         ),
+    }
+
+
+def _expected_core_target(root: Path) -> dict[str, object]:
+    registry_module = _load_architecture_target_registry(root)
+    namespace = vars(registry_module)
+    if namespace.get("CORE_RESPONSIBILITY_REGISTRY_SCHEMA") != (
+        EXPECTED_CORE_RESPONSIBILITY_REGISTRY_SCHEMA
+    ):
+        _fail("Core target registry schema is unavailable or stale")
+    fingerprint = namespace.get("core_architecture_target_fingerprint")
+    registered = namespace.get("registered_core_modules")
+    responsibility_matches = namespace.get("matching_target_responsibilities")
+    family_matches = namespace.get("matching_target_families")
+    payload = namespace.get("core_architecture_target_payload")
+    baseline = namespace.get("forbidden_family_edge_baseline")
+    if not all(
+        callable(item)
+        for item in (
+            fingerprint,
+            registered,
+            responsibility_matches,
+            family_matches,
+            payload,
+            baseline,
+        )
+    ):
+        _fail("Core target registry functions are unavailable")
+    fingerprint_function = cast(Callable[[], str], fingerprint)
+    registered_function = cast(Callable[[], Sequence[str]], registered)
+    responsibility_function = cast(Callable[[str], Sequence[str]], responsibility_matches)
+    family_function = cast(Callable[[str], Sequence[str]], family_matches)
+    payload_function = cast(Callable[[], Mapping[str, object]], payload)
+    baseline_function = cast(Callable[[], Mapping[tuple[str, str], int]], baseline)
+    registered_modules = tuple(registered_function())
+    compatibility_modules = tuple(namespace.get("COMPATIBILITY_MODULES", ()))
+    implementation_modules = tuple(sorted(set(registered_modules) - set(compatibility_modules)))
+    target_payload = payload_function()
+    family_dag = _architecture_mapping(target_payload.get("family_dag"), "Core family DAG")
+    return {
+        "schema": namespace["CORE_RESPONSIBILITY_REGISTRY_SCHEMA"],
+        "fingerprint": fingerprint_function(),
+        "registered_modules": list(registered_modules),
+        "implementation_modules": list(implementation_modules),
+        "compatibility_modules": list(compatibility_modules),
+        "responsibility_labels": {
+            module: tuple(responsibility_function(module)) for module in implementation_modules
+        },
+        "family_labels": {module: tuple(family_function(module)) for module in registered_modules},
+        "family_dag": dict(family_dag),
+        "forbidden_baseline": dict(baseline_function()),
     }
 
 
@@ -720,9 +791,7 @@ def _validate_projection_relation(
     relation = _architecture_mapping(value, label)
     source = _architecture_text(relation.get("source_module"), f"{label} source")
     target = _architecture_text(relation.get("target_module"), f"{label} target")
-    witnesses = tuple(
-        _architecture_text_list(relation.get("witness_ids"), f"{label} witnesses")
-    )
+    witnesses = tuple(_architecture_text_list(relation.get("witness_ids"), f"{label} witnesses"))
     if not witnesses:
         _fail(f"Grimp worker {label} omitted its witnesses")
     for witness in witnesses:
@@ -758,9 +827,7 @@ def _validate_projection_payload(
         raw = _architecture_mapping(item, f"{label} mapping resolution")
         module = _architecture_text(raw.get("module_id"), f"{label} mapped module")
         status = _architecture_text(raw.get("status"), f"{label} mapping status")
-        labels = tuple(
-            _architecture_text_list(raw.get("labels"), f"{label} mapping labels")
-        )
+        labels = tuple(_architecture_text_list(raw.get("labels"), f"{label} mapping labels"))
         if status not in {"resolved", "unmapped", "overlap", "out_of_scope"}:
             _fail(f"Grimp worker {label} mapping status is unknown")
         if module in resolution_by_module:
@@ -798,12 +865,8 @@ def _validate_projection_payload(
     for edge in projected_edges:
         raw_edge = _architecture_mapping(edge, f"{label} projected edge")
         edge_id = _architecture_text(raw_edge.get("edge_id"), f"{label} projected edge id")
-        source_label = _architecture_text(
-            raw_edge.get("source_label"), f"{label} projected source"
-        )
-        target_label = _architecture_text(
-            raw_edge.get("target_label"), f"{label} projected target"
-        )
+        source_label = _architecture_text(raw_edge.get("source_label"), f"{label} projected source")
+        target_label = _architecture_text(raw_edge.get("target_label"), f"{label} projected target")
         expected_edge_id = _architecture_stable_id(
             f"{label_kind}-projected-edge-v1", source_label, target_label
         )
@@ -823,9 +886,9 @@ def _validate_projection_payload(
             )
             source_resolution = resolution_by_module.get(source)
             target_resolution = resolution_by_module.get(target)
-            if (
-                source_resolution != ("resolved", (source_label,))
-                or target_resolution != ("resolved", (target_label,))
+            if source_resolution != ("resolved", (source_label,)) or target_resolution != (
+                "resolved",
+                (target_label,),
             ):
                 _fail(f"Grimp worker {label} projected relation contradicts its mapping")
             edge_witnesses.update(witnesses)
@@ -907,10 +970,7 @@ def _validate_projection_payload(
         if (
             len(shortest) < 3
             or shortest[0] != shortest[-1]
-            or any(
-                not isinstance(node, str) or node not in aggregate_labels
-                for node in shortest
-            )
+            or any(not isinstance(node, str) or node not in aggregate_labels for node in shortest)
         ):
             _fail(f"Grimp worker {label} aggregate shortest cycle is malformed")
         internal_edge_ids = _architecture_unique_text_sequence(
@@ -939,8 +999,7 @@ def _validate_projection_payload(
             or len(shortest_edge_ids) != len(shortest) - 1
             or not internal_edges_match_labels
             or not shortest_edges_match_cycle
-            or raw.get("semantics")
-            != "aggregate_quotient_dependency_cycle_noncomposable-v1"
+            or raw.get("semantics") != "aggregate_quotient_dependency_cycle_noncomposable-v1"
             or raw.get("authority") != "diagnostic"
             or raw.get("realizable_module_components") != []
         ):
@@ -1034,6 +1093,299 @@ def _validate_family_decisions(validation: Mapping[str, object]) -> None:
         _fail("live target family dependencies violate the allowed DAG")
 
 
+def _core_family_decision_expectation(
+    source: str,
+    target: str,
+    rank: Mapping[str, int],
+) -> tuple[bool, str]:
+    if source == target:
+        return True, "allowed_same_family"
+    if source != "compat" and target == "compat":
+        return False, "canonical_to_compat"
+    if rank[source] < rank[target]:
+        return True, "allowed_by_dag"
+    return False, "forbidden_dependency"
+
+
+def _validate_core_family_decision(
+    value: object,
+    *,
+    projected_edges: Mapping[str, Mapping[str, object]],
+    observed_ids: set[str],
+    rank: Mapping[str, int],
+) -> tuple[str, str, str, int]:
+    decision = _architecture_mapping(value, "Core target family decision")
+    edge_id = _architecture_text(decision.get("edge_id"), "Core target edge id")
+    edge = projected_edges.get(edge_id)
+    if edge is None or edge_id in observed_ids:
+        _fail("Core target family decision references an unknown edge")
+    observed_ids.add(edge_id)
+    source = _architecture_text(edge.get("source_label"), "Core edge source")
+    target = _architecture_text(edge.get("target_label"), "Core edge target")
+    module_relations = _architecture_sequence(
+        edge.get("module_relations"), "Core edge module relations"
+    )
+    allowed, reason = _core_family_decision_expectation(source, target, rank)
+    direct_edges = _architecture_count(
+        decision.get("direct_module_edges"), "Core decision module edges"
+    )
+    if (
+        decision.get("source_family") != source
+        or decision.get("target_family") != target
+        or decision.get("allowed") is not allowed
+        or decision.get("reason") != reason
+        or decision.get("witness_ids") != edge.get("witness_ids")
+        or direct_edges != len(module_relations)
+    ):
+        _fail("Core target family decision is inconsistent")
+    return source, target, reason, direct_edges
+
+
+def _collect_core_family_decisions(
+    projection: Mapping[str, object],
+    projected_edges: Mapping[str, Mapping[str, object]],
+    rank: Mapping[str, int],
+) -> tuple[Counter[tuple[str, str]], int]:
+    observed_ids: set[str] = set()
+    forbidden: Counter[tuple[str, str]] = Counter()
+    canonical_to_compat = 0
+    decisions = _architecture_sequence(
+        projection.get("edge_decisions"), "Core target family decisions"
+    )
+    for value in decisions:
+        source, target, reason, direct_edges = _validate_core_family_decision(
+            value,
+            projected_edges=projected_edges,
+            observed_ids=observed_ids,
+            rank=rank,
+        )
+        if reason == "forbidden_dependency":
+            forbidden[source, target] += direct_edges
+        elif reason == "canonical_to_compat":
+            canonical_to_compat += direct_edges
+    if observed_ids != set(projected_edges):
+        _fail("Core target family decisions do not cover every projected edge")
+    return forbidden, canonical_to_compat
+
+
+def _core_transition_comparison(
+    forbidden: Mapping[tuple[str, str], int],
+    baseline: Mapping[tuple[str, str], int],
+) -> list[dict[str, object]]:
+    return [
+        {
+            "source_family": source,
+            "target_family": target,
+            "baseline_direct_module_edges": baseline.get((source, target), 0),
+            "current_direct_module_edges": forbidden.get((source, target), 0),
+            "regression_direct_module_edges": max(
+                0,
+                forbidden.get((source, target), 0) - baseline.get((source, target), 0),
+            ),
+            "resolved_direct_module_edges": max(
+                0,
+                baseline.get((source, target), 0) - forbidden.get((source, target), 0),
+            ),
+        }
+        for source, target in sorted(set(baseline) | set(forbidden))
+    ]
+
+
+def _core_transition_counters(
+    comparison: Sequence[Mapping[str, object]],
+    *,
+    forbidden: Mapping[tuple[str, str], int],
+    baseline: Mapping[tuple[str, str], int],
+    canonical_to_compat: int,
+) -> dict[str, int]:
+    return {
+        "forbidden_direct_module_edges": sum(forbidden.values()),
+        "baseline_forbidden_direct_module_edges": sum(baseline.values()),
+        "regression_direct_module_edges": sum(
+            _architecture_count(
+                item.get("regression_direct_module_edges"),
+                "Core comparison regression edges",
+            )
+            for item in comparison
+        ),
+        "resolved_direct_module_edges": sum(
+            _architecture_count(
+                item.get("resolved_direct_module_edges"),
+                "Core comparison resolved edges",
+            )
+            for item in comparison
+        ),
+        "canonical_to_compat_direct_module_edges": canonical_to_compat,
+    }
+
+
+def _validate_core_family_decisions(
+    validation: Mapping[str, object],
+    expected: Mapping[str, object],
+) -> Mapping[str, object]:
+    projection = _architecture_mapping(
+        validation.get("projection"), "Core target family projection"
+    )
+    counters = _architecture_mapping(validation.get("counters"), "Core target family counters")
+    projected_edges = cast(
+        Mapping[str, Mapping[str, object]],
+        _architecture_mapping(
+            validation.get("projected_edges"), "Core target projected edge index"
+        ),
+    )
+    if projection.get("dag") != expected["family_dag"]:
+        _fail("Grimp worker Core target family DAG drifted")
+    family_dag = cast(Mapping[str, object], expected["family_dag"])
+    layers = _architecture_unique_text_sequence(
+        family_dag.get("layer_order"), "Core target family layers"
+    )
+    rank = {family: index for index, family in enumerate(layers)}
+    forbidden, canonical_to_compat = _collect_core_family_decisions(
+        projection,
+        projected_edges,
+        rank,
+    )
+    baseline = cast(Mapping[tuple[str, str], int], expected["forbidden_baseline"])
+    comparison = _core_transition_comparison(forbidden, baseline)
+    if projection.get("transition_baseline") != comparison:
+        _fail("Core target family transition comparison drifted")
+    expected_counters = _core_transition_counters(
+        comparison,
+        forbidden=forbidden,
+        baseline=baseline,
+        canonical_to_compat=canonical_to_compat,
+    )
+    for name, count in expected_counters.items():
+        if _architecture_count(counters.get(name), f"Core target {name}") != count:
+            _fail(f"Core target family counter drifted: {name}")
+    if (
+        expected_counters["regression_direct_module_edges"]
+        or expected_counters["canonical_to_compat_direct_module_edges"]
+    ):
+        _fail("live Core target family dependencies regressed")
+    return counters
+
+
+def _validate_core_target_scope(
+    target: Mapping[str, object],
+    expected: Mapping[str, object],
+    modules: Sequence[str],
+) -> tuple[Mapping[str, object], list[str], list[str]]:
+    registry = _architecture_mapping(target.get("registry"), "Core target identity")
+    if (
+        registry.get("schema") != expected["schema"]
+        or registry.get("fingerprint") != expected["fingerprint"]
+    ):
+        _fail("Grimp worker Core target registry fingerprint drifted")
+    scope = _architecture_mapping(target.get("scope"), "Core target scope")
+    registered = _architecture_text_list(scope.get("registered_modules"), "Core registered modules")
+    present = _architecture_text_list(
+        scope.get("present_registered_modules"), "Core present modules"
+    )
+    missing = _architecture_text_list(
+        scope.get("missing_registered_modules"), "Core missing modules"
+    )
+    unregistered = _architecture_text_list(
+        scope.get("unregistered_core_modules"), "Core unregistered modules"
+    )
+    compatibility = _architecture_text_list(
+        scope.get("compatibility_modules"), "Core compatibility modules"
+    )
+    expected_registered = cast(list[str], expected["registered_modules"])
+    expected_compatibility = cast(list[str], expected["compatibility_modules"])
+    core_modules = {
+        module
+        for module in modules
+        if module == "_04_Nucleo_Operativo" or module.startswith("_04_Nucleo_Operativo.")
+    }
+    expected_scope = (
+        expected_registered,
+        sorted(set(expected_registered) & set(modules)),
+        sorted(set(expected_registered) - set(modules)),
+        sorted(core_modules - set(expected_registered)),
+        expected_compatibility,
+    )
+    if (registered, present, missing, unregistered, compatibility) != expected_scope:
+        _fail("Grimp worker Core target scope drifted")
+    if missing or unregistered:
+        _fail("live Core target registry does not cover the source tree")
+    return registry, registered, compatibility
+
+
+def _validate_core_target_mappings(
+    target: Mapping[str, object],
+    expected: Mapping[str, object],
+    *,
+    modules: Sequence[str],
+    relation_index: Mapping[str, tuple[str, str]],
+) -> tuple[Mapping[str, object], Mapping[str, object]]:
+    responsibility = _validate_projection_payload(
+        target.get("target_responsibility"),
+        label="Core target responsibility",
+        label_kind="target_responsibility",
+        resolution_policy=EXPECTED_CORE_RESOLUTION_POLICY,
+        modules=modules,
+        registered_modules=set(cast(list[str], expected["implementation_modules"])),
+        expected_labels=cast(Mapping[str, tuple[str, ...]], expected["responsibility_labels"]),
+        relation_index=relation_index,
+    )
+    family = _validate_projection_payload(
+        target.get("target_family"),
+        label="Core target family",
+        label_kind="core_target_family",
+        resolution_policy=EXPECTED_CORE_RESOLUTION_POLICY,
+        modules=modules,
+        registered_modules=set(cast(list[str], expected["registered_modules"])),
+        expected_labels=cast(Mapping[str, tuple[str, ...]], expected["family_labels"]),
+        relation_index=relation_index,
+    )
+    return responsibility, family
+
+
+def _validate_core_target_projection(
+    value: object,
+    *,
+    root: Path,
+    modules: Sequence[str],
+    relation_index: Mapping[str, tuple[str, str]],
+) -> dict[str, object]:
+    target = _architecture_mapping(value, "Core target projection")
+    if target.get("schema") != EXPECTED_ARCHITECTURE_PROJECTION_SCHEMA:
+        _fail("Grimp worker Core target projection schema drifted")
+    if target.get("policy_id") != EXPECTED_CORE_PROJECTION_POLICY_ID:
+        _fail("Grimp worker Core target projection policy drifted")
+    expected = _expected_core_target(root)
+    registry, registered, compatibility = _validate_core_target_scope(
+        target,
+        expected,
+        modules=modules,
+    )
+    responsibility, family = _validate_core_target_mappings(
+        target,
+        expected,
+        modules=modules,
+        relation_index=relation_index,
+    )
+    family_counters = _validate_core_family_decisions(family, expected)
+    responsibility_counters = _architecture_mapping(
+        responsibility.get("counters"), "Core responsibility counters"
+    )
+    return {
+        "registry_fingerprint": registry["fingerprint"],
+        "registered_modules": len(registered),
+        "compatibility_modules": len(compatibility),
+        "responsibility_unmapped_modules": responsibility_counters["unmapped_modules"],
+        "responsibility_overlapping_modules": responsibility_counters["overlapping_modules"],
+        "family_unmapped_modules": family_counters["unmapped_modules"],
+        "family_overlapping_modules": family_counters["overlapping_modules"],
+        "forbidden_direct_module_edges": family_counters["forbidden_direct_module_edges"],
+        "family_regression_direct_module_edges": family_counters["regression_direct_module_edges"],
+        "canonical_to_compat_direct_module_edges": family_counters[
+            "canonical_to_compat_direct_module_edges"
+        ],
+    }
+
+
 def evaluate_architecture_payload(
     payload: Mapping[str, object], *, root: Path = DEFAULT_ROOT
 ) -> dict[str, object]:
@@ -1045,9 +1397,7 @@ def evaluate_architecture_payload(
     raw_violations = _architecture_count(
         raw_counters.get("contract_violations"), "contract violations"
     )
-    raw_cyclic = _architecture_count(
-        raw_counters.get("cyclic_components"), "cyclic components"
-    )
+    raw_cyclic = _architecture_count(raw_counters.get("cyclic_components"), "cyclic components")
     raw_modules = _architecture_count(raw_counters.get("modules"), "modules")
     raw_relations = _architecture_count(
         raw_counters.get("production_relations"), "production relations"
@@ -1074,10 +1424,7 @@ def evaluate_architecture_payload(
     if raw_architecture.get("baseline_id") != EXPECTED_ARCHITECTURE_BASELINE_ID:
         _fail("Grimp worker omitted its architecture baseline identity")
     raw_inputs = _architecture_mapping(payload.get("inputs"), "input manifest")
-    if (
-        re.fullmatch(r"[0-9a-f]{64}", str(raw_inputs.get("content_manifest_sha256", "")))
-        is None
-    ):
+    if re.fullmatch(r"[0-9a-f]{64}", str(raw_inputs.get("content_manifest_sha256", ""))) is None:
         _fail("Grimp worker omitted its input manifest")
     observed_contracts: set[str] = set()
     failed_contracts: list[str] = []
@@ -1138,9 +1485,7 @@ def evaluate_architecture_payload(
     if missing_modules:
         _fail("live architecture is missing registered capability modules")
 
-    module_graph = _architecture_mapping(
-        projections.get("module_graph"), "projection module graph"
-    )
+    module_graph = _architecture_mapping(projections.get("module_graph"), "projection module graph")
     if module_graph.get("semantics") != "directed-production-module-import-scc-v1":
         _fail("Grimp worker module SCC semantics drifted")
     projected_module_sccs = _architecture_sequence(
@@ -1157,9 +1502,7 @@ def evaluate_architecture_payload(
         resolution_policy=EXPECTED_CAPABILITY_OWNER_RESOLUTION_POLICY,
         modules=modules,
         registered_modules=registered_set,
-        expected_labels=cast(
-            Mapping[str, tuple[str, ...]], expected_projection["owner_labels"]
-        ),
+        expected_labels=cast(Mapping[str, tuple[str, ...]], expected_projection["owner_labels"]),
         relation_index=relation_index,
     )
     family_validation = _validate_projection_payload(
@@ -1169,12 +1512,16 @@ def evaluate_architecture_payload(
         resolution_policy=EXPECTED_CAPABILITY_FAMILY_RESOLUTION_POLICY,
         modules=modules,
         registered_modules=registered_set,
-        expected_labels=cast(
-            Mapping[str, tuple[str, ...]], expected_projection["family_labels"]
-        ),
+        expected_labels=cast(Mapping[str, tuple[str, ...]], expected_projection["family_labels"]),
         relation_index=relation_index,
     )
     _validate_family_decisions(family_validation)
+    core_validation = _validate_core_target_projection(
+        projections.get("core_target"),
+        root=root,
+        modules=modules,
+        relation_index=relation_index,
+    )
     owner_counters = _architecture_mapping(
         owner_validation.get("counters"), "validated logical owner counters"
     )
@@ -1206,14 +1553,20 @@ def evaluate_architecture_payload(
         "family_unmapped_modules": family_counters["unmapped_modules"],
         "family_overlapping_modules": family_counters["overlapping_modules"],
         "family_forbidden_edges": family_counters["forbidden_edges"],
-        "family_canonical_to_compat_edges": family_counters[
-            "canonical_to_compat_edges"
+        "family_canonical_to_compat_edges": family_counters["canonical_to_compat_edges"],
+        "owner_aggregate_quotient_sccs": owner_validation["aggregate_quotient_sccs"],
+        "family_aggregate_quotient_sccs": family_validation["aggregate_quotient_sccs"],
+        "core_target_registry_fingerprint": core_validation["registry_fingerprint"],
+        "core_target_registered_modules": core_validation["registered_modules"],
+        "core_target_compatibility_modules": core_validation["compatibility_modules"],
+        "core_target_forbidden_direct_module_edges": core_validation[
+            "forbidden_direct_module_edges"
         ],
-        "owner_aggregate_quotient_sccs": owner_validation[
-            "aggregate_quotient_sccs"
+        "core_target_family_regression_direct_module_edges": core_validation[
+            "family_regression_direct_module_edges"
         ],
-        "family_aggregate_quotient_sccs": family_validation[
-            "aggregate_quotient_sccs"
+        "core_target_canonical_to_compat_direct_module_edges": core_validation[
+            "canonical_to_compat_direct_module_edges"
         ],
     }
 

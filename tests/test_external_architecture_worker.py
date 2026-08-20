@@ -171,6 +171,8 @@ def test_direct_module_loader_isolated_success_and_fail_closed(tmp_path: Path) -
         "_neocortex_code_architecture_contracts",
         "_neocortex_architecture_projection",
         "_neocortex_capability_registry",
+        "_neocortex_core_target_projection",
+        "_neocortex_core_target_registry",
     )
     saved_modules = {name: sys.modules.get(name) for name in (module_name, *control_aliases)}
     spec = importlib.util.spec_from_file_location(module_name, worker.__file__)

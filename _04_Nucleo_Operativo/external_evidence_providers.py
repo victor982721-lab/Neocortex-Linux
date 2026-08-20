@@ -32,6 +32,10 @@ from .code_architecture_contracts import (
     ARCHITECTURE_CONTRACT_SCHEMA,
     PRODUCTION_ROOT_PACKAGES,
 )
+from .code.contracts.target_registry import (
+    CORE_RESPONSIBILITY_REGISTRY_SCHEMA,
+    core_architecture_target_fingerprint,
+)
 from .code_external_evidence import (
     RUFF_CONFIGURATION_SIGNATURE,
     RUFF_MAX_DIAGNOSTICS,
@@ -3409,6 +3413,7 @@ class _TrustedArchitectureProvider:
     source: str
     memory_bound: int
     execution_strategy: str
+    target_architecture_fingerprint: str | None = None
     executor: Callable[
         [Path, Mapping[str, ExternalEvidenceFile], Mapping[str, str]],
         ArchitectureProviderExecution,
@@ -3428,6 +3433,13 @@ class _TrustedArchitectureProvider:
             "network": False,
             "cache": False,
         }
+        if self.target_architecture_fingerprint is not None:
+            configuration.update(
+                {
+                    "core_responsibility_registry_schema": (CORE_RESPONSIBILITY_REGISTRY_SCHEMA),
+                    "core_architecture_target_fingerprint": (self.target_architecture_fingerprint),
+                }
+            )
         self.descriptor = _provider_descriptor(
             provider_id=self.provider_id,
             provider_schema=self.provider_schema,
@@ -3549,12 +3561,13 @@ class RuffAnalyzeImportsProvider(_TrustedArchitectureProvider):
 
 class GrimpArchitectureProvider(_TrustedArchitectureProvider):
     provider_id = GRIMP_ARCHITECTURE_PROVIDER_ID
-    provider_schema = "neocortex.grimp-architecture/v1"
+    provider_schema = "neocortex.grimp-architecture/v2"
     tool_name = "grimp"
     distribution = "grimp"
     source = "external:grimp-architecture"
     memory_bound = _GRIMP_MEMORY_BYTES
-    execution_strategy = "isolated-python-worker-grimp-v2"
+    execution_strategy = "isolated-python-worker-grimp-v3"
+    target_architecture_fingerprint = core_architecture_target_fingerprint()
     executor = staticmethod(execute_grimp_architecture)
 
 
