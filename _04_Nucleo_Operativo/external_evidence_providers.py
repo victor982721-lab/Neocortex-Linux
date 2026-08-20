@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import importlib.metadata
 import json
 import os
@@ -169,6 +170,14 @@ _VULTURE_MEMORY_BYTES = 512 * 1024 * 1024
 _SEMGREP_MEMORY_BYTES = 1024 * 1024 * 1024
 _DEPTRY_MEMORY_BYTES = 1024 * 1024 * 1024
 _PIP_AUDIT_MEMORY_BYTES = 512 * 1024 * 1024
+_PIP_AUDIT_SOURCE_INPUTS = (
+    "MANIFEST.in",
+    "constraints.txt",
+    "constraints-linux-cp314.lock",
+    "pyproject.toml",
+    "tools/quality_gate_supply_policy.json",
+    "tools/release_linux.py",
+)
 _PACKAGE_INVENTORY_MEMORY_BYTES = 512 * 1024 * 1024
 _GIT_HISTORY_MEMORY_BYTES = 512 * 1024 * 1024
 _FOCAL_MUTATION_MEMORY_BYTES = 4 * 1024 * 1024 * 1024
@@ -547,6 +556,29 @@ def _read_exact_config(path: Path) -> bytes:
     ):
         raise ValueError("trusted project configuration changed during read")
     return raw
+
+
+def _pip_audit_source_input_signature(root: Path) -> tuple[str, int]:
+    """Bind a network snapshot to the exact local supply/release contract."""
+
+    rows: list[dict[str, object]] = []
+    total_bytes = 0
+    for relative_path in _PIP_AUDIT_SOURCE_INPUTS:
+        path = root / relative_path
+        if not path.exists():
+            rows.append({"path": relative_path, "present": False})
+            continue
+        raw = _read_exact_config(path)
+        total_bytes += len(raw)
+        rows.append(
+            {
+                "path": relative_path,
+                "present": True,
+                "bytes": len(raw),
+                "sha256": hashlib.sha256(raw).hexdigest(),
+            }
+        )
+    return external_signature("pip-audit-source-input-v1", {"files": rows}), total_bytes
 
 
 def _project_configuration(root: Path) -> tuple[bytes, Mapping[str, object], str]:
@@ -2599,10 +2631,20 @@ class PipAuditKnownVulnerabilitiesProvider:
         self.root = root
         self.executor = executor
         self._version = _package_version("pip-audit")
-        self._environment_error: str | None = None
         self._utc_date = dt.datetime.now(tz=dt.UTC).date().isoformat()
         self._installed_signature: str | None
+        self._source_input_signature: str | None
+        self._source_input_bytes = 0
+        environment_errors: list[str] = []
         environment_started = time.perf_counter_ns()
+        try:
+            (
+                self._source_input_signature,
+                self._source_input_bytes,
+            ) = _pip_audit_source_input_signature(root)
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            self._source_input_signature = None
+            environment_errors.append(f"source:{type(exc).__name__}:{exc}")
         if self._version is None:
             self._installed_signature = None
         else:
@@ -2610,7 +2652,8 @@ class PipAuditKnownVulnerabilitiesProvider:
                 self._installed_signature = _installed_distribution_signature()
             except (OSError, RuntimeError, TypeError, ValueError) as exc:
                 self._installed_signature = None
-                self._environment_error = f"{type(exc).__name__}:{exc}"
+                environment_errors.append(f"environment:{type(exc).__name__}:{exc}")
+        self._environment_error = ";".join(environment_errors) or None
         self._environment_preparation_milliseconds = max(
             0,
             (time.perf_counter_ns() - environment_started) // 1_000_000,
@@ -2629,6 +2672,7 @@ class PipAuditKnownVulnerabilitiesProvider:
                 "input": "installed-python-environment",
                 "snapshot_freshness_seconds": 24 * 60 * 60,
                 "snapshot_replay": "published-fresh-until-fence-v1",
+                "source_input_signature": self._source_input_signature,
                 "descriptions": False,
                 "aliases": True,
                 "fix": False,
@@ -2656,12 +2700,13 @@ class PipAuditKnownVulnerabilitiesProvider:
         return self._version
 
     def baseline_input_signature(self, _files: Sequence[ExternalEvidenceFile]) -> str:
-        if self._installed_signature is None:
-            raise ValueError("installed environment signature is unavailable")
+        if self._installed_signature is None or self._source_input_signature is None:
+            raise ValueError("installed environment or source signature is unavailable")
         return external_signature(
             "pip-audit-provider-input-v1",
             {
                 "installed_signature": self._installed_signature,
+                "source_input_signature": self._source_input_signature,
                 "service": PIP_AUDIT_SERVICE,
             },
         )
@@ -2727,6 +2772,8 @@ class PipAuditKnownVulnerabilitiesProvider:
                 },
                 details={
                     "whole_publication_replay": True,
+                    "source_input_signature": self._source_input_signature,
+                    "source_input_bytes": self._source_input_bytes,
                     "fresh_until_unix_seconds": baseline.fresh_until_unix_seconds,
                     "freshness_checked_at_unix_seconds": time.time(),
                     "uses_network": False,
@@ -2792,7 +2839,7 @@ class PipAuditKnownVulnerabilitiesProvider:
             stdout_bytes=execution.stdout_bytes,
             stderr_bytes=execution.stderr_bytes,
             process_invocations=execution.process_invocations,
-            bytes_staged=0,
+            bytes_staged=self._source_input_bytes,
             limitations=execution.limitations,
             input_signature_override=signature,
         )
@@ -2816,6 +2863,8 @@ class PipAuditKnownVulnerabilitiesProvider:
                 "fresh_until_utc": execution.fresh_until_utc,
                 "freshness_status": execution.freshness_status,
                 "snapshot_id": execution.snapshot_id,
+                "source_input_signature": self._source_input_signature,
+                "source_input_bytes": self._source_input_bytes,
                 "uses_network": execution.uses_network,
                 "fix": False,
             },

@@ -321,6 +321,31 @@ def test_environment_providers_replay_declared_snapshots_with_real_inventory_cos
     assert replay.counters["bytes_read"] == 4096
 
 
+def test_pip_audit_snapshot_is_bound_to_local_supply_contracts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, _scratch = _root(tmp_path)
+    monkeypatch.setattr(providers_module, "_package_version", lambda _name: "test-1")
+    monkeypatch.setattr(
+        providers_module,
+        "_installed_distribution_signature",
+        lambda **_kwargs: "installed-environment:fixture",
+    )
+
+    before = PipAuditKnownVulnerabilitiesProvider(root)
+    before_signature = before.baseline_input_signature(())
+    (root / "constraints-linux-cp314.lock").write_text(
+        "example==1.0\n",
+        encoding="utf-8",
+    )
+    after = PipAuditKnownVulnerabilitiesProvider(root)
+
+    assert after.baseline_input_signature(()) != before_signature
+    assert after._source_input_bytes > before._source_input_bytes
+    assert after.descriptor.configuration_signature != (before.descriptor.configuration_signature)
+
+
 def test_code_validation_offline_policy_never_invokes_pip_audit_network(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

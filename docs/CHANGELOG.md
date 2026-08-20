@@ -17,7 +17,9 @@ no se copian aquí para evitar que se conviertan en datos históricos sin contex
 - La release Linux CPython 3.14 aplica un lock transitivo completo además de
   los constraints directos. El lock se conserva y atesta en el manifest; una
   promoción o verificación falla si nombre, versión, cantidad o SHA-256 no
-  coinciden con el runtime instalado.
+  coinciden con el runtime instalado. El snapshot `pip-audit` liga además su
+  input a los archivos locales de supply/release, por lo que un cambio de lock
+  sólo se admite tras una observación nueva y exacta.
 - Replay medible de Code y Semantic. Code separa su identidad AST del perfil
   profundo, conserva cache hits y agrupa sus actualizaciones de observación en
   lotes de 128 con tiempos de lookup/update/commit. Semantic publica heads

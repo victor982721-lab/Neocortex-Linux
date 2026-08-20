@@ -682,6 +682,7 @@ def _pip_audit_preflight_fixture(
     *,
     fresh_until: float | None,
     findings: tuple[str, ...] = (),
+    exact_snapshot: bool = True,
 ) -> SimpleNamespace:
     from _04_Nucleo_Operativo import code_change_validation
 
@@ -720,7 +721,7 @@ def _pip_audit_preflight_fixture(
     monkeypatch.setattr(
         code_change_validation,
         "read_external_provider_baselines",
-        lambda _connection, **_kwargs: (exact, None),
+        lambda _connection, **_kwargs: ((exact if exact_snapshot else None), None),
     )
     return SimpleNamespace(state=state)
 
@@ -764,7 +765,7 @@ def test_pip_audit_preflight_requires_freshness_through_the_hard_deadline(
     assert stale.reason == "pip_audit_snapshot_expires_before_validation_deadline"
 
 
-def test_pip_audit_preflight_fails_early_for_vulnerabilities_or_supply_changes(
+def test_pip_audit_preflight_requires_a_source_bound_snapshot_for_supply_changes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -783,25 +784,37 @@ def test_pip_audit_preflight_fails_early_for_vulnerabilities_or_supply_changes(
         change=_change_for("neocortex/logic.py"),
         runtime_window=window,
     )
-    invalidated = _pip_audit_snapshot_preflight(
+    clean_fixture = _pip_audit_preflight_fixture(
+        tmp_path / "clean",
+        monkeypatch,
+        fresh_until=time.time() + 7200,
+    )
+    source_bound = _pip_audit_snapshot_preflight(
         tmp_path,
-        fixture.state,
+        clean_fixture.state,
         change=_change_for("pyproject.toml"),
         runtime_window=window,
     )
-    lock_invalidated = _pip_audit_snapshot_preflight(
+    missing_fixture = _pip_audit_preflight_fixture(
+        tmp_path / "missing",
+        monkeypatch,
+        fresh_until=time.time() + 7200,
+        exact_snapshot=False,
+    )
+    lock_missing = _pip_audit_snapshot_preflight(
         tmp_path,
-        fixture.state,
+        missing_fixture.state,
         change=_change_for("constraints-linux-cp314.lock"),
         runtime_window=window,
     )
 
     assert vulnerable.status == "failed"
     assert vulnerable.reason == "pip_audit_snapshot_reports_known_vulnerabilities"
-    assert invalidated.status == "abstained"
-    assert invalidated.reason == "pip_audit_snapshot_invalidated_by_supply_change"
-    assert lock_invalidated.status == "abstained"
-    assert lock_invalidated.reason == "pip_audit_snapshot_invalidated_by_supply_change"
+    assert source_bound.status == "passed"
+    assert source_bound.evidence["supply_chain_paths"] == ["pyproject.toml"]
+    assert lock_missing.status == "abstained"
+    assert lock_missing.reason == "pip_audit_exact_snapshot_missing"
+    assert lock_missing.evidence["supply_chain_paths"] == ["constraints-linux-cp314.lock"]
 
 
 def test_canonical_validation_stops_before_static_when_supply_preflight_abstains(

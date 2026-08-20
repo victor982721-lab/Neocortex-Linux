@@ -1654,21 +1654,14 @@ def _pip_audit_snapshot_preflight(
     therefore consume only an exact, already-published pip-audit snapshot.  Check
     that contract before static analysis and trusted-deep, and require the
     freshness fence to cover the complete remaining cgroup runtime instead of
-    discovering an expired snapshot after Coverage has run.
+    discovering an expired snapshot after Coverage has run.  The provider input
+    signature includes the local supply/release files, so an intentional supply
+    change is admitted only after a new source-bound observation exists.
     """
 
     started = time.monotonic_ns()
     command = ("Neocortex", "code", "validate", "pip-audit-snapshot-preflight")
     supply_paths = tuple(path for path in change.changed_paths if path in _SUPPLY_CHAIN_BOUNDARIES)
-    if supply_paths:
-        return _gate(
-            "pip_audit_snapshot_preflight",
-            "abstained",
-            "pip_audit_snapshot_invalidated_by_supply_change",
-            started,
-            command,
-            {"supply_chain_paths": list(supply_paths)},
-        )
     database = Path(state_directory) / "code.sqlite3"
     if not database.is_file():
         return _gate(
@@ -1715,7 +1708,10 @@ def _pip_audit_snapshot_preflight(
             "pip_audit_exact_snapshot_missing",
             started,
             command,
-            {"comparable_snapshot_present": comparable is not None},
+            {
+                "comparable_snapshot_present": comparable is not None,
+                "supply_chain_paths": list(supply_paths),
+            },
         )
     if exact.portable_finding_ids:
         return _gate(
@@ -1761,6 +1757,7 @@ def _pip_audit_snapshot_preflight(
             "required_fresh_until_unix_seconds": required_fresh_until,
             "remaining_validation_seconds": round(remaining_seconds, 3),
             "known_vulnerability_findings": 0,
+            "supply_chain_paths": list(supply_paths),
         },
     )
 
