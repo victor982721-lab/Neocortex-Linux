@@ -8,7 +8,7 @@ from __future__ import annotations
 import time
 from unittest.mock import patch
 
-from _03_Progreso import ProgressEvent
+from neocortex.progress import ProgressEvent
 from _04_Nucleo_Operativo.pdf_derived import PdfDerivedIndexer
 # endregion [01]
 

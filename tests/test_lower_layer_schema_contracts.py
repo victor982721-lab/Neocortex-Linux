@@ -8,14 +8,14 @@ from pathlib import Path
 
 import pytest
 
-import _02_Deduplicacion.inventory_schema as inventory_schema_module
-from _01_Enumeracion.path_index import SqlitePathIndex
-from _01_Enumeracion.path_index_schema import (
+import neocortex.deduplication.schema as inventory_schema_module
+from neocortex.enumeration.path_index.repository import SqlitePathIndex
+from neocortex.enumeration.path_index.schema import (
     initialize_path_index_schema,
     validate_path_index_schema,
 )
-from _02_Deduplicacion import DedupIndex, InventoryError
-from _02_Deduplicacion.inventory_schema import (
+from neocortex.deduplication import DedupIndex, InventoryError
+from neocortex.deduplication.schema import (
     initialize_inventory_schema,
     validate_inventory_schema,
 )

@@ -16,9 +16,9 @@ from pathlib import Path
 from pathlib import PureWindowsPath
 from typing import Protocol
 
-from _02_Deduplicacion import FileSnapshot
-from _02_Deduplicacion.hashing import FULL_ALGORITHM, stat_matches_snapshot
-from _02_Deduplicacion.path_io import native_io_path
+from neocortex.deduplication import FileSnapshot
+from neocortex.deduplication.fingerprinting import FULL_ALGORITHM, stat_matches_snapshot
+from neocortex.deduplication.io import native_io_path
 from neocortex.platform_policy import sqlite_path_collation
 
 from .file_identity import FileIdentityError, decode_file_identity

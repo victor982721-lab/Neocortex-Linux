@@ -11,8 +11,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
 
-from _02_Deduplicacion import FileSnapshot, snapshot_path
-from _03_Progreso import ProgressCallback, ProgressEvent, ProgressMetric, emit_progress
+from neocortex.deduplication import FileSnapshot, snapshot_path
+from neocortex.progress import ProgressCallback, ProgressEvent, ProgressMetric, emit_progress
 
 from ....action_policy import same_snapshot
 from ....cancellation import CancellationToken

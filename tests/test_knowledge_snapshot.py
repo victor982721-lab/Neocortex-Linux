@@ -14,8 +14,8 @@ from typing import Any
 import pytest
 
 import _04_Nucleo_Operativo.knowledge_snapshot as knowledge_snapshot
-from _02_Deduplicacion import inventory_schema as inventory_schema_module
-from _02_Deduplicacion.inventory_schema import initialize_inventory_schema
+from neocortex.deduplication import schema as inventory_schema_module
+from neocortex.deduplication.schema import initialize_inventory_schema
 from _04_Nucleo_Operativo import framework_schema as framework_schema_module
 from _04_Nucleo_Operativo.archive_state import initialize_archive_state
 from _04_Nucleo_Operativo.code_schema import initialize_code_state

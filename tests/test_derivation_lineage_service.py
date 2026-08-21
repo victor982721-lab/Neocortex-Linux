@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 import _04_Nucleo_Operativo.derivation_lineage_service as lineage_service_module
-from _02_Deduplicacion import FileSnapshot, snapshot_path
+from neocortex.deduplication import FileSnapshot, snapshot_path
 from _04_Nucleo_Operativo.cancellation import CancellationToken
 from _04_Nucleo_Operativo.derivation_lineage_service import (
     inspect_derivation_lineage,

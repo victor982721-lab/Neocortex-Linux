@@ -293,8 +293,8 @@ def _validate_self_analysis_unused_options(
 
 
 def _validate_self_analysis_paths(args: argparse.Namespace) -> None:
-    from _02_Deduplicacion import InventoryError
-    from _02_Deduplicacion.inventory import validate_inventory_root
+    from neocortex.deduplication import InventoryError
+    from neocortex.deduplication.inventory.index import validate_inventory_root
 
     try:
         args.root = validate_inventory_root(args.root)

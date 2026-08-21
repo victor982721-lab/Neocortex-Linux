@@ -16,7 +16,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from _02_Deduplicacion.inventory_schema import initialize_inventory_schema
+from neocortex.deduplication.schema import initialize_inventory_schema
 from _04_Nucleo_Operativo import framework_schema
 from _04_Nucleo_Operativo import retention_planner as retention_module
 from _04_Nucleo_Operativo.cli_app import main as cli_main

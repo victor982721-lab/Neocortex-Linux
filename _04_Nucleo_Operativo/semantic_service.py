@@ -7,7 +7,7 @@ from functools import partial
 from pathlib import Path
 from typing import TypeVar
 
-from _03_Progreso import ProgressCallback
+from neocortex.progress import ProgressCallback
 
 from . import semantic_classification_service as _classification
 from . import semantic_generation_worker as _worker

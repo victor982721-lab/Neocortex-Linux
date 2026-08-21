@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from _02_Deduplicacion import snapshot_path
+from neocortex.deduplication import snapshot_path
 from _04_Nucleo_Operativo import document_organization_application as application
 from _04_Nucleo_Operativo import document_organization_planning as planning
 from _04_Nucleo_Operativo.cli_parser import build_parser
@@ -139,11 +139,7 @@ def test_internal_path_fails_before_destination_recovery(
     root.mkdir()
     ordinary_source = tmp_path / "ordinary-source.bin"
     ordinary_source.write_bytes(b"ordinary")
-    source = (
-        repository / "protected-source.bin"
-        if blocked_side == "source"
-        else ordinary_source
-    )
+    source = repository / "protected-source.bin" if blocked_side == "source" else ordinary_source
     if blocked_side == "source":
         source.write_bytes(b"protected")
     destination = (
@@ -681,18 +677,14 @@ def test_recovery_required_plan_remains_unfinished(
     initialize_document_catalog(catalog)
     with document_catalog_database(catalog) as connection:
         _insert_plan(connection, plan_id=1, status="applying", destination="target")
-        row = connection.execute(
-            "SELECT * FROM organization_plans WHERE plan_id=1"
-        ).fetchone()
+        row = connection.execute("SELECT * FROM organization_plans WHERE plan_id=1").fetchone()
         assert row is not None
         monkeypatch.setattr(
             application,
             "_disambiguate_apply_destination",
             lambda _connection, selected, _mutation_guard: selected,
         )
-        monkeypatch.setattr(
-            application, "_catalog_destination_conflict", lambda *_args: False
-        )
+        monkeypatch.setattr(application, "_catalog_destination_conflict", lambda *_args: False)
         monkeypatch.setattr(
             application,
             "_apply_one_plan",
@@ -768,9 +760,7 @@ def test_apply_disambiguation_rejects_protected_alternative_before_update(
                 "planned",
             ),
         )
-        row = connection.execute(
-            "SELECT * FROM organization_plans WHERE plan_id=1"
-        ).fetchone()
+        row = connection.execute("SELECT * FROM organization_plans WHERE plan_id=1").fetchone()
         assert row is not None
         monkeypatch.setattr(
             application,
@@ -786,8 +776,7 @@ def test_apply_disambiguation_rejects_protected_alternative_before_update(
             )
 
         stored = connection.execute(
-            "SELECT destination_path,reason,detail FROM organization_plans "
-            "WHERE plan_id=1"
+            "SELECT destination_path,reason,detail FROM organization_plans WHERE plan_id=1"
         ).fetchone()
         assert stored is not None
         assert tuple(stored) == (
@@ -875,4 +864,6 @@ def _insert_plan(
             "not_required",
         ),
     )
+
+
 # endregion [02]

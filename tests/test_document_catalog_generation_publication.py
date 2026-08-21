@@ -20,7 +20,7 @@ from _04_Nucleo_Operativo.document_catalog import (
 from _04_Nucleo_Operativo.cancellation import CancellationRequested, CancellationToken
 from _04_Nucleo_Operativo.docx_state import initialize_docx_state
 from _04_Nucleo_Operativo.document_organization_models import _begin_organization_run
-from _02_Deduplicacion import snapshot_path
+from neocortex.deduplication import snapshot_path
 # endregion [01]
 
 # region [02] Implementación
@@ -113,9 +113,7 @@ def test_failed_catalog_build_keeps_previous_projection(
             (str(tmp_path / "organized"),),
         )
         history_before = int(
-            connection.execute("SELECT COUNT(*) FROM classification_history").fetchone()[
-                0
-            ]
+            connection.execute("SELECT COUNT(*) FROM classification_history").fetchone()[0]
         )
         connection.commit()
 
@@ -158,13 +156,9 @@ def test_failed_catalog_build_keeps_previous_projection(
         status = connection.execute(
             "SELECT status FROM catalog_runs ORDER BY catalog_run_id DESC LIMIT 1"
         ).fetchone()[0]
-        plan_status = connection.execute(
-            "SELECT status FROM organization_plans"
-        ).fetchone()[0]
+        plan_status = connection.execute("SELECT status FROM organization_plans").fetchone()[0]
         history_after = int(
-            connection.execute("SELECT COUNT(*) FROM classification_history").fetchone()[
-                0
-            ]
+            connection.execute("SELECT COUNT(*) FROM classification_history").fetchone()[0]
         )
     assert status == "failed"
     assert plan_status == "planned"
@@ -252,9 +246,7 @@ def test_cancelled_catalog_build_keeps_previous_projection(
         signature="v1",
     )
     catalog = tmp_path / "document_catalog.sqlite3"
-    update_document_catalog_source(
-        catalog, source_database, "docx", verify_source_paths=False
-    )
+    update_document_catalog_source(catalog, source_database, "docx", verify_source_paths=False)
     before = _published_kinds(catalog)
     _upsert_docx_source(
         source_database,
@@ -317,9 +309,7 @@ def test_failure_inside_publication_rolls_back_projection(
         signature="v1",
     )
     catalog = tmp_path / "document_catalog.sqlite3"
-    update_document_catalog_source(
-        catalog, source_database, "docx", verify_source_paths=False
-    )
+    update_document_catalog_source(catalog, source_database, "docx", verify_source_paths=False)
     before = _published_kinds(catalog)
     _upsert_docx_source(
         source_database,
@@ -334,14 +324,10 @@ def test_failure_inside_publication_rolls_back_projection(
         original(*args, **kwargs)
         raise RuntimeError("injected publication failure")
 
-    monkeypatch.setattr(
-        catalog_module, "_replace_catalog_projection", fail_after_projection
-    )
+    monkeypatch.setattr(catalog_module, "_replace_catalog_projection", fail_after_projection)
 
     with pytest.raises(RuntimeError, match="injected publication failure"):
-        update_document_catalog_source(
-            catalog, source_database, "docx", verify_source_paths=False
-        )
+        update_document_catalog_source(catalog, source_database, "docx", verify_source_paths=False)
 
     assert _published_kinds(catalog) == before
     with document_catalog_database(catalog, readonly=True) as connection:
@@ -364,13 +350,9 @@ def test_late_builder_cannot_overwrite_newer_publication(tmp_path: Path) -> None
         signature="v1",
     )
     catalog = tmp_path / "document_catalog.sqlite3"
-    update_document_catalog_source(
-        catalog, source_database, "docx", verify_source_paths=False
-    )
+    update_document_catalog_source(catalog, source_database, "docx", verify_source_paths=False)
     with catalog_module._readonly_source(source_database) as source_connection:
-        source_document = next(
-            catalog_module._iter_source_documents(source_connection, "docx")
-        )
+        source_document = next(catalog_module._iter_source_documents(source_connection, "docx"))
     builds = []
     for _index in range(2):
         with document_catalog_database(catalog) as connection:
@@ -381,9 +363,7 @@ def test_late_builder_cannot_overwrite_newer_publication(tmp_path: Path) -> None
             connection.commit()
             builds.append(build)
     with document_catalog_database(catalog) as connection:
-        organization_run_id = _begin_organization_run(
-            connection, "plan", tmp_path / "organized"
-        )
+        organization_run_id = _begin_organization_run(connection, "plan", tmp_path / "organized")
         classification_statuses = tuple(
             str(row[0])
             for row in connection.execute(
@@ -451,9 +431,7 @@ def test_publish_handles_add_modify_delete_and_rename(tmp_path: Path) -> None:
         signature="v1",
     )
     catalog = tmp_path / "document_catalog.sqlite3"
-    update_document_catalog_source(
-        catalog, source_database, "docx", verify_source_paths=False
-    )
+    update_document_catalog_source(catalog, source_database, "docx", verify_source_paths=False)
     with document_catalog_database(catalog) as connection:
         connection.execute(
             """INSERT INTO organization_plans(
@@ -504,9 +482,9 @@ def test_publish_handles_add_modify_delete_and_rename(tmp_path: Path) -> None:
             "SELECT active FROM documents WHERE path=? COLLATE NOCASE",
             (str(removed),),
         ).fetchone()[0]
-        plan_status = connection.execute(
-            "SELECT status FROM organization_plans"
-        ).fetchone()[0]
+        plan_status = connection.execute("SELECT status FROM organization_plans").fetchone()[0]
     assert stale == 0
     assert plan_status == "superseded"
+
+
 # endregion [02]

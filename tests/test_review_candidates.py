@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 
-from _02_Deduplicacion import FileSnapshot
+from neocortex.deduplication import FileSnapshot
 from _04_Nucleo_Operativo.cli_direct import run_review_candidates
 from _04_Nucleo_Operativo.review import (
     MAX_EVIDENCE_BYTES,

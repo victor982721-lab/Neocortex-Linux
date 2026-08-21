@@ -30,7 +30,7 @@ from _04_Nucleo_Operativo.global_resources import (
 from _04_Nucleo_Operativo.memory_runtime import MemorySnapshot
 from _04_Nucleo_Operativo.isolated_process import isolated_spawn_process
 from _04_Nucleo_Operativo.pdf_isolation import stream_isolated_profiles
-from _03_Progreso import RecordingProgress
+from neocortex.progress import RecordingProgress
 from tests.synthetic_usn import SyntheticUsnJournal
 
 

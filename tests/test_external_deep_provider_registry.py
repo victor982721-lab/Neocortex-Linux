@@ -13,7 +13,7 @@ import _04_Nucleo_Operativo.code_route as code_route_module
 import _04_Nucleo_Operativo.external_deep_coverage as deep_module
 import _04_Nucleo_Operativo.external_evidence_providers as providers_module
 import _04_Nucleo_Operativo.external_evidence_store as store_module
-from _03_Progreso import RecordingProgress
+from neocortex.progress import RecordingProgress
 from _04_Nucleo_Operativo.code_contracts import CodeRouteConfig
 from _04_Nucleo_Operativo.code_external_evidence import ExternalEvidenceFile
 from _04_Nucleo_Operativo.code_route import CodeRoute

@@ -18,7 +18,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 
-from _02_Deduplicacion.inventory_schema import validate_inventory_schema
+from neocortex.deduplication.schema import validate_inventory_schema
 from neocortex.sqlite_schema_contract import (
     read_application_schema_version,
     validate_sqlite_schema_contract,

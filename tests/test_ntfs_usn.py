@@ -11,15 +11,15 @@ import unittest
 from datetime import UTC, datetime
 from pathlib import Path
 
-from _01_Enumeracion import (
+from neocortex.enumeration import (
     CorruptBufferError,
     JournalCursor,
     NtfsEntry,
     SqlitePathIndex,
     UsnChangeBatch,
 )
-from _01_Enumeracion.parser import parse_enum_buffer, parse_journal_buffer
-from _01_Enumeracion.windows import normalize_volume
+from neocortex.enumeration.ntfs.parser import parse_enum_buffer, parse_journal_buffer
+from neocortex.enumeration.ntfs.volume import normalize_volume
 # endregion [01]
 
 # region [02] Implementación
@@ -65,9 +65,7 @@ def v3_record(file_ref: int, parent_ref: int, name: str) -> bytes:
     struct.pack_into("<IHH", record, 0, aligned, 3, 0)
     record[8:24] = file_ref.to_bytes(16, "little")
     record[24:40] = parent_ref.to_bytes(16, "little")
-    struct.pack_into(
-        "<qqIIIIHH", record, 40, 321, 0, 0x200, 0, 3, 0x10, len(encoded), 76
-    )
+    struct.pack_into("<qqIIIIHH", record, 40, 321, 0, 0x200, 0, 3, 0x10, len(encoded), 76)
     record[76 : 76 + len(encoded)] = encoded
     return bytes(record)
 
@@ -154,9 +152,7 @@ class PathIndexTests(unittest.TestCase):
             with SqlitePathIndex(database) as index:
                 index.ingest([self.entry(5, 5, "."), self.entry(10, 5, "Pictures")])
                 index.bind_checkpoint(before)
-                affected = index.apply_change_batch(
-                    UsnChangeBatch(before, after, (changed,))
-                )
+                affected = index.apply_change_batch(UsnChangeBatch(before, after, (changed,)))
                 self.assertEqual(affected, 1)
                 self.assertEqual(index.journal_cursor, after)
                 self.assertEqual(str(index.relative_path(11)), r"Pictures\renamed.jpg")

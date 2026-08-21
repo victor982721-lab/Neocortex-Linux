@@ -13,15 +13,19 @@ from pathlib import Path
 import pytest
 from neocortex.platform_policy import current_platform_policy
 
-from _01_Enumeracion import JournalCursor, NtfsEntry, UsnChangeBatch
-from _02_Deduplicacion import (
+from neocortex.enumeration import JournalCursor, NtfsEntry, UsnChangeBatch
+from neocortex.deduplication import (
     DEFAULT_INVENTORY_EXCLUSION_POLICY,
     DedupIndex,
     InventoryCheckpoint,
     InventoryError,
     InventoryExclusionPolicy,
 )
-from _02_Deduplicacion.inventory_scan import DEFAULT_EXCLUDED_PATHS
+from neocortex.deduplication.inventory import policy as inventory_policy_module
+from neocortex.deduplication.inventory import scan as inventory_scan_module
+from neocortex.deduplication.inventory import scanner as inventory_scanner_module
+from neocortex.deduplication.inventory import traversal as inventory_traversal_module
+from neocortex.deduplication.inventory.scan import DEFAULT_EXCLUDED_PATHS
 from _04_Nucleo_Operativo import (
     inventory_coordinator as inventory_coordinator_module,
 )
@@ -31,6 +35,32 @@ from _04_Nucleo_Operativo.state import FrameworkState
 # endregion [01]
 
 # region [02] Implementación
+
+
+def test_scan_facade_composes_focused_inventory_modules() -> None:
+    assert (
+        inventory_scan_module.InventoryExclusionPolicy
+        is inventory_policy_module.InventoryExclusionPolicy
+    )
+    assert inventory_scan_module.InventoryScanner is inventory_scanner_module.InventoryScanner
+    assert (
+        inventory_scan_module.MAX_INVENTORY_EXCLUSION_RULES
+        == inventory_policy_module.MAX_INVENTORY_EXCLUSION_RULES
+    )
+    assert (
+        inventory_scan_module.MAX_INVENTORY_EXCLUSION_RULE_CHARS
+        == inventory_policy_module.MAX_INVENTORY_EXCLUSION_RULE_CHARS
+    )
+    assert (
+        inventory_scan_module.validate_inventory_root
+        is inventory_traversal_module.validate_inventory_root
+    )
+    assert inventory_scan_module.InventoryExclusionPolicy.__module__ == (
+        "neocortex.deduplication.inventory.policy"
+    )
+    assert inventory_scan_module.InventoryScanner.__module__ == (
+        "neocortex.deduplication.inventory.scanner"
+    )
 
 
 def _write(path: Path, payload: bytes = b"fixture") -> None:

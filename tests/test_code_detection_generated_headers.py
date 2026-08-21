@@ -9,7 +9,7 @@ import pytest
 
 import _04_Nucleo_Operativo.code_detection as code_detection
 import _04_Nucleo_Operativo.code_route as code_route_module
-from _02_Deduplicacion import FileSnapshot
+from neocortex.deduplication import FileSnapshot
 from _04_Nucleo_Operativo.code_contracts import (
     ArtifactKind,
     CodeRouteConfig,
@@ -49,8 +49,7 @@ from _04_Nucleo_Operativo.code_route import CodeRoute
         ),
         (
             Path("src/client.xml"),
-            '<?xml version="1.0"?>\n'
-            "<!-- This file was automatically generated. -->\n<client />\n",
+            '<?xml version="1.0"?>\n<!-- This file was automatically generated. -->\n<client />\n',
             "xml-block",
         ),
         (

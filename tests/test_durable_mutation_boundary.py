@@ -4,7 +4,6 @@
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
-
 # region [01] Dependencias del módulo
 from __future__ import annotations
 
@@ -17,7 +16,7 @@ import _04_Nucleo_Operativo.framework_state_common as state_common_module
 import _04_Nucleo_Operativo.inventory_boundary as boundary_module
 import _04_Nucleo_Operativo.orchestrator as orchestrator_module
 import _04_Nucleo_Operativo.watcher as watcher_module
-from _01_Enumeracion import JournalCursor
+from neocortex.enumeration import JournalCursor
 from _04_Nucleo_Operativo.corpus_access import ProtectedAnalysisRootError
 from _04_Nucleo_Operativo.internal_paths import InternalPathProtectionError
 from _04_Nucleo_Operativo.inventory_boundary import (
@@ -75,9 +74,7 @@ def test_shared_boundary_exports_have_identical_outputs(tmp_path: Path) -> None:
     assert watcher_module.build_normal_inventory_boundary is (
         boundary_module.build_normal_inventory_boundary
     )
-    assert orchestrator_module.NormalInventoryBoundary is (
-        boundary_module.NormalInventoryBoundary
-    )
+    assert orchestrator_module.NormalInventoryBoundary is (boundary_module.NormalInventoryBoundary)
     assert direct.exclusion_policy == reexported.exclusion_policy
     assert direct.effective_signature == reexported.effective_signature
 
@@ -112,9 +109,7 @@ def test_normal_durable_boundary_allows_matching_run_and_action(
             (action_id,),
         ).fetchone() == ("applying",)
 
-    assert (
-        FrameworkRouteState(database).corpus_mutation_guard(run_id).policy.root == root
-    )
+    assert FrameworkRouteState(database).corpus_mutation_guard(run_id).policy.root == root
 
 
 @pytest.mark.parametrize("signature", (None, "mismatched-policy"))
@@ -309,9 +304,7 @@ def test_file_action_snapshot_mismatch_never_crosses_frontier(
             None,
             True,
         )
-        state._connection.execute(
-            "DROP TRIGGER main.file_actions_corpus_policy_no_update"
-        )
+        state._connection.execute("DROP TRIGGER main.file_actions_corpus_policy_no_update")
         state._connection.execute(
             "UPDATE main.file_actions SET protected_root=? WHERE action_id=?",
             (str(root), action_id),
@@ -325,8 +318,7 @@ def test_file_action_snapshot_mismatch_never_crosses_frontier(
             state.mark_file_actions_applying(((action_id, "{}"),))
 
         assert state._connection.execute(
-            "SELECT status,expected_identity_json FROM main.file_actions "
-            "WHERE action_id=?",
+            "SELECT status,expected_identity_json FROM main.file_actions WHERE action_id=?",
             (action_id,),
         ).fetchone() == ("started", None)
         assert state._connection.execute(
@@ -445,9 +437,7 @@ def test_mark_applying_batch_rolls_back_if_one_action_policy_fails(
             None,
             True,
         )
-        state._connection.execute(
-            "DROP TRIGGER main.file_actions_corpus_policy_no_update"
-        )
+        state._connection.execute("DROP TRIGGER main.file_actions_corpus_policy_no_update")
         state._connection.execute(
             "UPDATE main.file_actions SET protected_root=? WHERE action_id=?",
             (str(root), second_id),
@@ -488,9 +478,7 @@ def test_relative_or_empty_persisted_paths_fail_closed(
 
     with FrameworkState(state_directory / "framework.sqlite3") as state:
         run_id, _ = _normal_run(state, root, state_directory)
-        state._connection.execute(
-            "DROP TRIGGER main.initial_runs_corpus_policy_no_update"
-        )
+        state._connection.execute("DROP TRIGGER main.initial_runs_corpus_policy_no_update")
         state._connection.execute(
             f"UPDATE main.initial_runs SET {column}=? WHERE run_id=?",
             (value, run_id),
@@ -553,4 +541,6 @@ def test_in_memory_main_database_is_never_a_durable_owner(tmp_path: Path) -> Non
             match="not a durable file",
         ):
             state.corpus_mutation_guard(run_id)
+
+
 # endregion [02]

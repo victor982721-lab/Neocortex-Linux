@@ -9,7 +9,7 @@ import sqlite3
 from pathlib import Path
 from unittest.mock import patch
 
-from _02_Deduplicacion import DedupIndex, snapshot_path
+from neocortex.deduplication import DedupIndex, snapshot_path
 from _04_Nucleo_Operativo.actions import (
     TRASH_IDENTITY_ABSTENTION,
     FrameworkActions,
@@ -99,4 +99,6 @@ def test_dry_run_retains_planned_recycle_action(tmp_path: Path) -> None:
             "SELECT status FROM file_actions WHERE action_type='trash_duplicate'"
         ).fetchone()[0]
     assert status == "planned"
+
+
 # endregion [02]

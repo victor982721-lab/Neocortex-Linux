@@ -2,21 +2,11 @@
   "schema": "neocortex.quality-gate-static-baseline/v1",
   "scope": {
     "mypy": [
-      "Orquestador.py",
-      "_01_Enumeracion",
-      "_02_Deduplicacion",
-      "_03_Progreso",
       "_04_Nucleo_Operativo",
-      "_05_Interfaz",
       "neocortex"
     ],
     "pyright": [
-      "Orquestador.py",
-      "_01_Enumeracion",
-      "_02_Deduplicacion",
-      "_03_Progreso",
       "_04_Nucleo_Operativo",
-      "_05_Interfaz",
       "neocortex"
     ],
     "ruff": "complete repository Python tree"
@@ -24,18 +14,6 @@
   "tools": {
     "mypy": {
       "by_path_rule": [
-        {
-          "count": 3,
-          "path": "_01_Enumeracion/windows.py",
-          "rule": "attr-defined",
-          "severity": "error"
-        },
-        {
-          "count": 10,
-          "path": "_01_Enumeracion/windows.py",
-          "rule": "name-defined",
-          "severity": "error"
-        },
         {
           "count": 4,
           "path": "_04_Nucleo_Operativo/console_cancellation.py",
@@ -46,12 +24,6 @@
           "count": 1,
           "path": "_04_Nucleo_Operativo/cpu_runtime.py",
           "rule": "attr-defined",
-          "severity": "error"
-        },
-        {
-          "count": 2,
-          "path": "_04_Nucleo_Operativo/external_architecture_worker.py",
-          "rule": "unused-ignore",
           "severity": "error"
         },
         {
@@ -125,72 +97,18 @@
           "path": "_04_Nucleo_Operativo/windows_handle_mutation.py",
           "rule": "attr-defined",
           "severity": "error"
-        },
-        {
-          "count": 1,
-          "path": "_05_Interfaz/app.py",
-          "rule": "attr-defined",
-          "severity": "error"
-        },
-        {
-          "count": 4,
-          "path": "_05_Interfaz/elevation.py",
-          "rule": "attr-defined",
-          "severity": "error"
         }
       ],
-      "total": 94,
+      "total": 74,
       "version": "2.1.0"
     },
     "pyright": {
       "by_path_rule": [
         {
-          "count": 1,
-          "path": "_01_Enumeracion/path_index_schema.py",
-          "rule": "reportUnusedFunction",
-          "severity": "warning"
-        },
-        {
-          "count": 3,
-          "path": "_01_Enumeracion/windows.py",
-          "rule": "reportAttributeAccessIssue",
-          "severity": "error"
-        },
-        {
-          "count": 10,
-          "path": "_01_Enumeracion/windows.py",
-          "rule": "reportUndefinedVariable",
-          "severity": "error"
-        },
-        {
-          "count": 1,
-          "path": "_02_Deduplicacion/inventory_scan.py",
-          "rule": "reportOptionalOperand",
-          "severity": "error"
-        },
-        {
-          "count": 1,
-          "path": "_02_Deduplicacion/inventory_schema.py",
-          "rule": "reportUnusedFunction",
-          "severity": "warning"
-        },
-        {
           "count": 4,
           "path": "_04_Nucleo_Operativo/__init__.py",
           "rule": "reportImportCycles",
           "severity": "warning"
-        },
-        {
-          "count": 1,
-          "path": "_04_Nucleo_Operativo/audio_route.py",
-          "rule": "reportArgumentType",
-          "severity": "error"
-        },
-        {
-          "count": 2,
-          "path": "_04_Nucleo_Operativo/cli_code_surface.py",
-          "rule": "reportArgumentType",
-          "severity": "error"
         },
         {
           "count": 5,
@@ -221,12 +139,6 @@
           "path": "_04_Nucleo_Operativo/code_contracts.py",
           "rule": "reportUnusedFunction",
           "severity": "warning"
-        },
-        {
-          "count": 1,
-          "path": "_04_Nucleo_Operativo/code_review_work_packages.py",
-          "rule": "reportReturnType",
-          "severity": "error"
         },
         {
           "count": 1,
@@ -304,12 +216,6 @@
           "count": 2,
           "path": "_04_Nucleo_Operativo/knowledge_search.py",
           "rule": "reportGeneralTypeIssues",
-          "severity": "error"
-        },
-        {
-          "count": 1,
-          "path": "_04_Nucleo_Operativo/office_route.py",
-          "rule": "reportArgumentType",
           "severity": "error"
         },
         {
@@ -403,12 +309,6 @@
           "severity": "error"
         },
         {
-          "count": 1,
-          "path": "_04_Nucleo_Operativo/video_route.py",
-          "rule": "reportArgumentType",
-          "severity": "error"
-        },
-        {
           "count": 9,
           "path": "_04_Nucleo_Operativo/windows_handle_mutation.py",
           "rule": "reportAttributeAccessIssue",
@@ -427,44 +327,14 @@
           "severity": "error"
         }
       ],
-      "total": 142,
+      "total": 120,
       "version": "1.1.411"
     },
     "ruff": {
       "by_path_rule": [
         {
           "count": 1,
-          "path": "Orquestador.py",
-          "rule": "RUF022",
-          "severity": "error"
-        },
-        {
-          "count": 1,
-          "path": "_01_Enumeracion/__init__.py",
-          "rule": "RUF022",
-          "severity": "error"
-        },
-        {
-          "count": 2,
-          "path": "_01_Enumeracion/enumeration.py",
-          "rule": "B904",
-          "severity": "error"
-        },
-        {
-          "count": 1,
-          "path": "_02_Deduplicacion/__init__.py",
-          "rule": "RUF022",
-          "severity": "error"
-        },
-        {
-          "count": 1,
           "path": "_04_Nucleo_Operativo/code_analyzers.py",
-          "rule": "RUF022",
-          "severity": "error"
-        },
-        {
-          "count": 1,
-          "path": "_04_Nucleo_Operativo/code_external_evidence.py",
           "rule": "RUF022",
           "severity": "error"
         },
@@ -496,18 +366,6 @@
           "count": 1,
           "path": "_04_Nucleo_Operativo/document_taxonomy.py",
           "rule": "RUF022",
-          "severity": "error"
-        },
-        {
-          "count": 1,
-          "path": "_04_Nucleo_Operativo/file_action_recovery.py",
-          "rule": "RUF022",
-          "severity": "error"
-        },
-        {
-          "count": 1,
-          "path": "_04_Nucleo_Operativo/framework_route_state.py",
-          "rule": "RUF015",
           "severity": "error"
         },
         {
@@ -560,12 +418,6 @@
         },
         {
           "count": 1,
-          "path": "_04_Nucleo_Operativo/watcher.py",
-          "rule": "RUF022",
-          "severity": "error"
-        },
-        {
-          "count": 1,
           "path": "neocortex/sqlite_backup.py",
           "rule": "B008",
           "severity": "error"
@@ -583,27 +435,9 @@
           "severity": "error"
         },
         {
-          "count": 3,
-          "path": "tests/test_adaptive_pdf_and_visual.py",
-          "rule": "B010",
-          "severity": "error"
-        },
-        {
-          "count": 1,
-          "path": "tests/test_document_catalog_schema_contract.py",
-          "rule": "RUF043",
-          "severity": "error"
-        },
-        {
           "count": 1,
           "path": "tests/test_framework_schema_contract.py",
           "rule": "RUF043",
-          "severity": "error"
-        },
-        {
-          "count": 4,
-          "path": "tests/test_incremental_gate.py",
-          "rule": "B008",
           "severity": "error"
         },
         {
@@ -631,12 +465,6 @@
           "severity": "error"
         },
         {
-          "count": 3,
-          "path": "tests/test_route_candidate_stream_ownership.py",
-          "rule": "B023",
-          "severity": "error"
-        },
-        {
           "count": 1,
           "path": "tests/test_semantic_backends.py",
           "rule": "RUF015",
@@ -646,12 +474,6 @@
           "count": 7,
           "path": "tests/test_semantic_config.py",
           "rule": "RUF043",
-          "severity": "error"
-        },
-        {
-          "count": 1,
-          "path": "tests/test_semantic_text_staging_session.py",
-          "rule": "RUF015",
           "severity": "error"
         },
         {
@@ -673,7 +495,7 @@
           "severity": "error"
         }
       ],
-      "total": 65,
+      "total": 44,
       "version": "0.15.17"
     }
   }

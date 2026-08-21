@@ -11,7 +11,7 @@ import pytest
 
 import _04_Nucleo_Operativo.office_route as office_route_module
 import _04_Nucleo_Operativo.office_state as office_state_module
-from _02_Deduplicacion import FileSnapshot, snapshot_path
+from neocortex.deduplication import FileSnapshot, snapshot_path
 from _04_Nucleo_Operativo.cancellation import CancellationToken
 from _04_Nucleo_Operativo.cli_config import framework_config_from_args
 from _04_Nucleo_Operativo.cli_parser import build_parser

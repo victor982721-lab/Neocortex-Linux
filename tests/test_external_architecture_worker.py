@@ -54,10 +54,12 @@ def _production_tree(root: Path, sentinel: Path) -> None:
                 f"Path({os.fspath(sentinel)!r}).write_text('executed', encoding='utf-8')\n"
             )
         (package_root / "__init__.py").write_text(source, encoding="utf-8")
+    (root / "neocortex" / "interface").mkdir()
+    (root / "neocortex" / "interface" / "__init__.py").write_text("", encoding="utf-8")
     (root / "_04_Nucleo_Operativo" / "service.py").write_text(
-        "from _05_Interfaz import view\n", encoding="utf-8"
+        "from neocortex.interface import view\n", encoding="utf-8"
     )
-    (root / "_05_Interfaz" / "view.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (root / "neocortex" / "interface" / "view.py").write_text("VALUE = 1\n", encoding="utf-8")
     (root / "_04_Nucleo_Operativo" / "logic.py").write_text(
         """# complexipy: ignore
 def tangled(values):
@@ -110,13 +112,13 @@ def test_grimp_worker_is_deterministic_static_and_cacheless(tmp_path: Path) -> N
     assert payload["analysis_contract"]["cache"] == "disabled"
     assert payload["counters"]["production_relations"] == 1
     assert payload["relations"][0]["details"] == [
-        {"line_contents": "from _05_Interfaz import view", "line_number": 1}
+        {"line_contents": "from neocortex.interface import view", "line_number": 1}
     ]
     contracts = {item["contract"]["contract_id"]: item for item in payload["contract_evaluations"]}
     assert contracts["core-does-not-depend-on-ui-v1"]["status"] == "failed"
     assert contracts["core-does-not-depend-on-ui-v1"]["violations"][0]["import_chain"] == [
         "_04_Nucleo_Operativo.service",
-        "_05_Interfaz.view",
+        "neocortex.interface.view",
     ]
 
 
@@ -157,7 +159,7 @@ def test_worker_fails_with_bounded_json_when_domain_is_incomplete(tmp_path: Path
     assert payload == {
         "error": {
             "code": "missing_production_package",
-            "message": "exact production package is unavailable: _01_Enumeracion",
+            "message": "exact production package is unavailable: _04_Nucleo_Operativo",
         },
         "schema": worker.WORKER_ERROR_SCHEMA,
         "status": "error",
@@ -347,7 +349,7 @@ def test_input_collection_enforces_file_byte_escape_and_empty_bounds(
 
     outside = tmp_path / "outside.py"
     outside.write_text("VALUE = 1\n", encoding="utf-8")
-    (root / "_01_Enumeracion" / "escape.py").symlink_to(outside)
+    (root / "neocortex" / "escape.py").symlink_to(outside)
     with pytest.raises(worker.WorkerContractError, match="escapes staged root"):
         worker._collect_inputs(root, _limits())
 
@@ -417,8 +419,8 @@ def test_tool_version_and_import_detail_normalization_fail_closed(
 
 
 def test_grimp_import_queries_filter_normalize_and_preserve_external_policy() -> None:
-    first = "_01_Enumeracion.first"
-    second = "_01_Enumeracion.second"
+    first = "neocortex.first"
+    second = "neocortex.second"
 
     class Graph:
         @staticmethod
@@ -453,24 +455,24 @@ def test_grimp_import_queries_wrap_module_and_detail_failures() -> None:
             raise RuntimeError("module query failed")
 
     with pytest.raises(worker.WorkerContractError, match="import query failed"):
-        worker._grimp_imports(ModuleFailure(), ("_01_Enumeracion.first",))
+        worker._grimp_imports(ModuleFailure(), ("neocortex.first",))
 
     class DetailFailure:
         @staticmethod
         def find_modules_directly_imported_by(_importer: str) -> set[str]:
-            return {"_01_Enumeracion.second"}
+            return {"neocortex.second"}
 
         @staticmethod
         def get_import_details(**_kwargs: object) -> list[dict[str, object]]:
             raise RuntimeError("detail query failed")
 
     with pytest.raises(worker.WorkerContractError, match="detail query failed"):
-        worker._grimp_imports(DetailFailure(), ("_01_Enumeracion.first",))
+        worker._grimp_imports(DetailFailure(), ("neocortex.first",))
 
 
 def test_cycle_payloads_distinguish_real_cycles_from_acyclic_graphs() -> None:
-    first = "_01_Enumeracion.first"
-    second = "_01_Enumeracion.second"
+    first = "neocortex.first"
+    second = "neocortex.second"
     imports = (
         worker._contracts.ModuleImport(first, second),
         worker._contracts.ModuleImport(second, first),

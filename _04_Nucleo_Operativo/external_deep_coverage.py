@@ -62,7 +62,11 @@ _MEMORY_LIMIT_BYTES = 4 * 1024 * 1024 * 1024
 _MAX_SUPPORT_FILES = 20_000
 _MAX_SUPPORT_BYTES = 1024 * 1024 * 1024
 _MAX_SUPPORT_FILE_BYTES = 64 * 1024 * 1024
-_PROGRESS_EXTENSION_MULTIPLIER = 2.0
+# A full 24-shard Linux suite can consume almost twice the nominal budget
+# before report collation starts.  Reserve another half-budget for validated
+# checkpoint publication, normalization and the final source fence; the outer
+# validation cgroup remains the harder 75-minute boundary.
+_PROGRESS_EXTENSION_MULTIPLIER = 2.5
 
 
 @dataclass(frozen=True, slots=True)

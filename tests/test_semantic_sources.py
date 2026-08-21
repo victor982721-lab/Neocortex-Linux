@@ -10,7 +10,7 @@ from typing import Iterator
 import pytest
 
 import _04_Nucleo_Operativo.text_state as text_state_module
-from _02_Deduplicacion.hashing import FULL_ALGORITHM, full_fingerprint, snapshot_path
+from neocortex.deduplication.fingerprinting import FULL_ALGORITHM, full_fingerprint, snapshot_path
 from _04_Nucleo_Operativo import semantic_sources
 from _04_Nucleo_Operativo.derivation_contracts import MaterializationRef
 from _04_Nucleo_Operativo.file_identity import file_key_from_snapshot

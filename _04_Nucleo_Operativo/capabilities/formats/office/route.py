@@ -8,8 +8,8 @@ from pathlib import Path
 from typing import Any as Any
 from typing import Literal, cast
 
-from _02_Deduplicacion import FileSnapshot, snapshot_path
-from _03_Progreso import ProgressCallback, ProgressEvent, ProgressMetric, emit_progress
+from neocortex.deduplication import FileSnapshot, snapshot_path
+from neocortex.progress import ProgressCallback, ProgressEvent, ProgressMetric, emit_progress
 
 from ....action_policy import same_snapshot
 from ....cancellation import CancellationToken

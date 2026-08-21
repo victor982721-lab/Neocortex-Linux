@@ -38,18 +38,18 @@ _WHEEL_DISTRIBUTION: Final = "neocortex_framework"
 _ENTRY_POINT: Final = ("Neocortex", "neocortex.cli:entrypoint")
 _TYPED_PACKAGES: Final = ("_04_Nucleo_Operativo", "neocortex")
 _UI_ASSETS: Final = (
-    "_05_Interfaz/assets/neocortex-app-icon.ico",
-    "_05_Interfaz/assets/neocortex-app-icon.png",
-    "_05_Interfaz/assets/neocortex-app-icon.svg",
+    "neocortex/interface/presentation/assets/neocortex-app-icon.ico",
+    "neocortex/interface/presentation/assets/neocortex-app-icon.png",
+    "neocortex/interface/presentation/assets/neocortex-app-icon.svg",
 )
 _UI_ASSET_SHA256: Final = {
-    "_05_Interfaz/assets/neocortex-app-icon.ico": (
+    "neocortex/interface/presentation/assets/neocortex-app-icon.ico": (
         "FD9520EB4D9FF6E8EDF6D9F8318E6AFE9D9162D4313317E3AC13EB3C28297A47"
     ),
-    "_05_Interfaz/assets/neocortex-app-icon.png": (
+    "neocortex/interface/presentation/assets/neocortex-app-icon.png": (
         "C8DAAEC11AAF57872B5AD010D55117919B16856721D6FD3CA1BE7D9B2EF1E94C"
     ),
-    "_05_Interfaz/assets/neocortex-app-icon.svg": (
+    "neocortex/interface/presentation/assets/neocortex-app-icon.svg": (
         "09D29874482810D65C7AA0D5B858C0660D0C2BC9E15D41BFE66C89B9F2BF440A"
     ),
 }

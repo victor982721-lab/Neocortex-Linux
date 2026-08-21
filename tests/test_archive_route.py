@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from _02_Deduplicacion import FileSnapshot, snapshot_path
+from neocortex.deduplication import FileSnapshot, snapshot_path
 from _04_Nucleo_Operativo.archive_route import (
     ARCHIVE_MIME,
     ArchiveRoute,

@@ -26,29 +26,44 @@ def _evaluations(modules: set[str], imports: tuple[ModuleImport, ...]):
     }
 
 
-def test_declared_boundary_entry_points_pass_with_acyclic_v2_baseline() -> None:
+def test_declared_boundary_entry_points_pass_with_acyclic_v5_baseline() -> None:
     modules = {
         "neocortex",
         "neocortex.cli",
         "neocortex.sdk",
-        "_01_Enumeracion",
-        "_02_Deduplicacion",
-        "_02_Deduplicacion.__main__",
-        "_03_Progreso",
+        "neocortex.enumeration",
+        "neocortex.enumeration.path_index.schema",
+        "neocortex.deduplication",
+        "neocortex.deduplication.__main__",
+        "neocortex.deduplication.inventory.scanner",
+        "neocortex.platform_policy",
+        "neocortex.sqlite_schema_contract",
         "_04_Nucleo_Operativo",
         "_04_Nucleo_Operativo.app_paths",
         "_04_Nucleo_Operativo.cli_app",
-        "_05_Interfaz",
-        "_05_Interfaz.app",
-        "_05_Interfaz.worker",
+        "_04_Nucleo_Operativo.cli_config",
+        "neocortex.interface",
+        "neocortex.interface.application.app",
+        "neocortex.interface.protocol.worker",
+        "neocortex.progress",
+        "neocortex.progress.events",
     }
     imports = (
-        ModuleImport("_02_Deduplicacion.__main__", "_04_Nucleo_Operativo.app_paths"),
-        ModuleImport("_02_Deduplicacion.__main__", "_04_Nucleo_Operativo.cli_app"),
+        ModuleImport("neocortex.deduplication.__main__", "_04_Nucleo_Operativo.app_paths"),
+        ModuleImport("neocortex.deduplication.__main__", "_04_Nucleo_Operativo.cli_app"),
+        ModuleImport("neocortex.deduplication.__main__", "neocortex.platform_policy"),
+        ModuleImport("neocortex.deduplication.inventory.scanner", "neocortex.progress"),
+        ModuleImport(
+            "neocortex.enumeration.path_index.schema",
+            "neocortex.sqlite_schema_contract",
+        ),
         ModuleImport("neocortex.cli", "_04_Nucleo_Operativo.app_paths"),
         ModuleImport("neocortex.cli", "_04_Nucleo_Operativo.cli_app"),
-        ModuleImport("neocortex.cli", "_05_Interfaz.app"),
-        ModuleImport("neocortex.cli", "_05_Interfaz.worker"),
+        ModuleImport("neocortex.cli", "neocortex.interface.application.app"),
+        ModuleImport("neocortex.cli", "neocortex.interface.protocol.worker"),
+        ModuleImport("neocortex.interface.application.app", "_04_Nucleo_Operativo.app_paths"),
+        ModuleImport("neocortex.interface.protocol.worker", "_04_Nucleo_Operativo.cli_config"),
+        ModuleImport("neocortex.interface.application.app", "neocortex.platform_policy"),
         ModuleImport("neocortex.sdk", "_04_Nucleo_Operativo"),
     )
 
@@ -65,30 +80,35 @@ def test_violations_expose_shortest_chains_lines_and_new_cycle() -> None:
     modules = {
         "neocortex",
         "neocortex.bridge",
-        "_01_Enumeracion",
-        "_01_Enumeracion.source",
-        "_02_Deduplicacion",
-        "_02_Deduplicacion.worker",
-        "_03_Progreso",
+        "neocortex.enumeration",
+        "neocortex.enumeration.source",
+        "neocortex.deduplication",
+        "neocortex.deduplication.worker",
         "_04_Nucleo_Operativo",
         "_04_Nucleo_Operativo.alpha",
         "_04_Nucleo_Operativo.beta",
         "_04_Nucleo_Operativo.target",
-        "_05_Interfaz",
-        "_05_Interfaz.view",
+        "neocortex.interface",
+        "neocortex.interface.view",
+        "neocortex.progress",
+        "neocortex.progress.events",
     }
     imports = (
-        ModuleImport("_01_Enumeracion.source", "neocortex.bridge"),
+        ModuleImport("neocortex.enumeration.source", "neocortex.bridge"),
         ModuleImport(
             "neocortex.bridge",
             "_04_Nucleo_Operativo.target",
             (ImportLineDetail(7, "from _04_Nucleo_Operativo import target"),),
         ),
-        ModuleImport("_02_Deduplicacion.worker", "_04_Nucleo_Operativo.target"),
-        ModuleImport("neocortex.bridge", "_05_Interfaz.view"),
+        ModuleImport("neocortex.deduplication.worker", "_04_Nucleo_Operativo.target"),
+        ModuleImport("neocortex.deduplication.worker", "neocortex.bridge"),
+        ModuleImport("neocortex.bridge", "neocortex.interface.view"),
+        ModuleImport("neocortex.interface.view", "_04_Nucleo_Operativo.target"),
+        ModuleImport("neocortex.interface.view", "neocortex.bridge"),
         ModuleImport("_04_Nucleo_Operativo.alpha", "_04_Nucleo_Operativo.beta"),
         ModuleImport("_04_Nucleo_Operativo.beta", "_04_Nucleo_Operativo.alpha"),
         ModuleImport("_04_Nucleo_Operativo.target", "tests.helpers"),
+        ModuleImport("neocortex.progress.events", "_04_Nucleo_Operativo.target"),
     )
 
     evaluations = _evaluations(modules, imports)
@@ -96,13 +116,18 @@ def test_violations_expose_shortest_chains_lines_and_new_cycle() -> None:
     foundation = evaluations["foundation-does-not-depend-on-core-or-ui-v1"]
     assert foundation.status == "failed"
     assert foundation.violations[0].import_chain == (
-        "_01_Enumeracion.source",
+        "neocortex.enumeration.source",
         "neocortex.bridge",
         "_04_Nucleo_Operativo.target",
     )
     assert foundation.violations[0].details[0].line_number == 7
     assert evaluations["dedup-core-boundary-v1"].status == "failed"
+    assert evaluations["dedup-product-boundary-v1"].status == "failed"
+    assert evaluations["enumeration-product-boundary-v1"].status == "failed"
+    assert evaluations["interface-core-boundary-v1"].status == "failed"
+    assert evaluations["interface-product-boundary-v1"].status == "failed"
     assert evaluations["neocortex-core-ui-boundary-v1"].status == "failed"
+    assert evaluations["progress-does-not-depend-on-other-production-v1"].status == "failed"
     assert evaluations["production-does-not-import-nonproduction-namespaces-v1"].status == "failed"
     cycles = evaluations["no-new-production-import-cycles-v1"]
     assert cycles.status == "failed"
@@ -154,7 +179,11 @@ def test_live_repository_graph_satisfies_published_architecture_contracts() -> N
         (item["importer"], item["imported"])
         for item in payload["relations"]
         if item["importer"] in public_facades
-        and item["imported"].partition(".")[0] in {"_04_Nucleo_Operativo", "_05_Interfaz"}
+        and (
+            item["imported"].partition(".")[0] == "_04_Nucleo_Operativo"
+            or item["imported"] == "neocortex.interface"
+            or item["imported"].startswith("neocortex.interface.")
+        )
     }
     assert crossings == {
         ("neocortex.read_api", "_04_Nucleo_Operativo.read_api_port"),
@@ -177,10 +206,7 @@ def test_live_repository_graph_satisfies_published_architecture_contracts() -> N
         (),
     )
     assert "_04_Nucleo_Operativo.archive_route" not in central_component
-    assert (
-        "_04_Nucleo_Operativo.capabilities.formats.archive.route"
-        not in central_component
-    )
+    assert "_04_Nucleo_Operativo.capabilities.formats.archive.route" not in central_component
     assert "_04_Nucleo_Operativo.video_route" not in central_component
 
 
@@ -254,7 +280,5 @@ def test_disconnected_owner_quotient_cycle_remains_typed_diagnostic_evidence() -
     aggregate = owner["aggregate_quotient_sccs"][0]
     assert aggregate["labels"] == ["archive", "docx"]
     assert aggregate["authority"] == "diagnostic"
-    assert aggregate["semantics"] == (
-        "aggregate_quotient_dependency_cycle_noncomposable-v1"
-    )
+    assert aggregate["semantics"] == ("aggregate_quotient_dependency_cycle_noncomposable-v1")
     assert aggregate["realizable_module_components"] == []

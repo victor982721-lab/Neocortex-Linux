@@ -14,7 +14,7 @@ from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
-from _02_Deduplicacion import (
+from neocortex.deduplication import (
     DedupIndex,
     DedupPlanner,
     InventoryCheckpoint,
@@ -347,7 +347,7 @@ class PlannerTests(unittest.TestCase):
             with DedupIndex(Path(directory) / "state.db") as index:
                 scan = index.scan(root)
                 with patch(
-                    "_02_Deduplicacion.planner.files_equal_exact",
+                    "neocortex.deduplication.planning.planner.files_equal_exact",
                     side_effect=AssertionError("byte comparison must not run"),
                 ):
                     plan = DedupPlanner(index).plan(scan.scan_id, exact_compare=False)

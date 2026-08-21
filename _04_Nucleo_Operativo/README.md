@@ -1,6 +1,6 @@
 # _04_Nucleo_Operativo
 
-Orquestador durable de los componentes compartidos, no destructivo salvo
+Coordinador durable de los componentes compartidos, no destructivo salvo
 cuando el usuario solicita explícitamente `--apply`. Actualmente:
 
 1. intenta capturar un cursor USN anterior cuando Windows/NTFS lo ofrece;
@@ -8,7 +8,7 @@ cuando el usuario solicita explícitamente `--apply`. Actualmente:
    estado y árboles internos de Neocortex, metadatos VCS, entornos virtuales,
    dependencias instaladas, laboratorios, `.CDX`, temporales reconocibles de
    pruebas, caches/bytecode generados y directorios ocultos;
-3. reduce candidatos de duplicado con `_02_Deduplicacion` y exige comparación
+3. reduce candidatos de duplicado con `neocortex.deduplication` y exige comparación
    exacta antes de cualquier acción destructiva;
 4. si USN está disponible, consume su ventana; si no, publica el recorrido
    completo con cursor nulo;
@@ -1108,14 +1108,13 @@ suspendidos y Job Objects kill-on-close asociados por handle exacto antes de
 reanudar. Timeout, overflow, cancelación o excepción terminan el árbol propio,
 esperan al hijo directo y cierran pipes y handles.
 
-`Orquestador.py` es una fachada estable y pequeña. La definición de argumentos,
-la traducción a `FrameworkConfig` y el flujo de aplicación viven respectivamente
-en `cli_parser`, `cli_config` y `cli_app`; `route_selection` mantiene el contrato
-ligero usado por la validación. Las operaciones directas importan solo su backend
-y el registro carga cada motor únicamente cuando se ejecuta su adaptador. Sus
-reexports históricos también se resuelven de forma diferida. Por ello consultar
+La definición de argumentos, la traducción a `FrameworkConfig` y el flujo de
+aplicación viven respectivamente en `cli_parser`, `cli_config` y `cli_app`;
+`route_selection` mantiene el contrato ligero usado por la validación. Las
+operaciones directas importan sólo su backend y el registro carga cada motor
+únicamente cuando se ejecuta su adaptador. Por ello consultar
 `Neocortex --help`, validar opciones o seleccionar rutas no carga por adelantado
-los motores PDF, DOCX o de imagen.
+los motores PDF, DOCX o de imagen. El shim independiente anterior fue retirado.
 
 La implementación está separada por responsabilidad: `pdf_route` coordina la
 extracción, `pdf_state` conserva y migra el esquema, `pdf_cache` comparte la
@@ -1422,6 +1421,4 @@ modelos.
 El paquete expone el entry point instalable `Neocortex` y también admite
 `python -m neocortex`. La versión se define una sola vez en
 `neocortex.__version__`; tanto los metadatos de distribución como la aplicación
-Qt consumen esa fuente. `Orquestador.py` se conserva como fachada de
-compatibilidad para lanzadores antiguos, pero no contiene implementación
-operativa.
+Qt consumen esa fuente; no existe un módulo lanzador paralelo.

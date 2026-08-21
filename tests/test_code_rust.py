@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from _02_Deduplicacion import FileSnapshot
+from neocortex.deduplication import FileSnapshot
 from _04_Nucleo_Operativo.code_contracts import (
     AnalysisStatus,
     ArtifactClassification,
@@ -185,7 +185,15 @@ def test_rust_analyzer_preserves_ordered_structural_evidence(tmp_path: Path) -> 
             0.8,
             "rust-lexical:impl-header",
         ),
-        ("import", "serde::Serialize", "engine", "serde::Serialize", False, 0.9, "rust-lexical:use"),
+        (
+            "import",
+            "serde::Serialize",
+            "engine",
+            "serde::Serialize",
+            False,
+            0.9,
+            "rust-lexical:use",
+        ),
         ("import", "std::fmt", "engine", "std::fmt", False, 0.9, "rust-lexical:use"),
         (
             "module_declaration",

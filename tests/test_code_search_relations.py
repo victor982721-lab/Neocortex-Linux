@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from _02_Deduplicacion import FileSnapshot
+from neocortex.deduplication import FileSnapshot
 from _04_Nucleo_Operativo import code_search as code_search_module
 from _04_Nucleo_Operativo.code_contracts import (
     AnalysisStatus,

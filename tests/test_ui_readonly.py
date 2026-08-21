@@ -14,9 +14,9 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtGui import QColor, QImage
 from PySide6.QtWidgets import QApplication, QLabel
 
-from _05_Interfaz.main_window import MainWindow
-from _05_Interfaz.read_client import ReadRequest
-from _05_Interfaz.theme import COLORS, STYLESHEET
+from neocortex.interface.presentation.windows.main import MainWindow
+from neocortex.interface.read import ReadRequest
+from neocortex.interface.presentation.theme import COLORS, STYLESHEET
 
 
 def _rgb_distance(first: QColor, second: QColor) -> int:

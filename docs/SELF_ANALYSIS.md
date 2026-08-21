@@ -88,13 +88,13 @@ Los proveedores arquitectónicos conservan responsabilidades separadas:
 - `complexipy-cognitive` publica complejidad cognitiva por símbolo y agregados
   total/máximo por módulo.
 
-El dominio arquitectónico exacto son `neocortex`, `_01_Enumeracion`,
-`_02_Deduplicacion`, `_03_Progreso`, `_04_Nucleo_Operativo` y
-`_05_Interfaz`. `tests`, `tools`, `benchmarks` y el módulo de compatibilidad
-independiente `Orquestador.py` quedan fuera de ese grafo de producción. Los
+El dominio arquitectónico exacto son `neocortex` —incluidos
+`neocortex.interface`, `neocortex.enumeration`, `neocortex.deduplication` y
+`neocortex.progress`— y `_04_Nucleo_Operativo`. `tests`, `tools` y `benchmarks`
+quedan fuera de ese grafo de producción. Los
 contratos `neocortex.code-architecture-contracts/v1` fijan fronteras reales y
 allowlists explícitas. Su baseline
-`neocortex-production-imports-2026-08-10/v2` es vacío: el grafo vigente tiene
+`neocortex-production-imports-2026-08-23/v5` es vacío: el grafo vigente tiene
 cero SCC y cualquier ciclo nuevo o histórico reintroducido falla cerrado.
 
 Cada adaptador usa salida estructurada, cwd/entorno controlados, caché efímera o

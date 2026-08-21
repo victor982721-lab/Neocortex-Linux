@@ -165,7 +165,7 @@ administrado, separado del runtime principal.
 
 La instalación y los gates locales autentican `pip` antes de instalar otra
 dependencia. El comando canónico no depende del `pip` ambiental: descarga el
-wheel oficial `26.1.2`, exige su nombre y SHA-256 fijados, lo instala sin índice
+wheel oficial `26.2.1`, exige su nombre y SHA-256 fijados, lo instala sin índice
 ni dependencias y verifica la versión bajo Python aislado:
 
 ```bash

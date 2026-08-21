@@ -8,6 +8,24 @@ no se copian aquí para evitar que se conviertan en datos históricos sin contex
 
 ### Añadido
 
+- Progreso, enumeración y deduplicación viven bajo el namespace canónico
+  `neocortex`; las tres raíces numeradas anteriores fueron retiradas del
+  checkout y del wheel. Los límites arquitectónicos distinguen Enumeration,
+  Deduplication y Progress, y sólo permiten sus dependencias compartidas
+  declaradas.
+- La interfaz PySide6 vive en `neocortex.interface`, separada en application,
+  presentation, protocol y read; el worker, assets y entrypoint ya no dependen
+  de una raíz numerada. El shim independiente anterior también fue retirado:
+  `Neocortex` y `python -m neocortex` son las únicas entradas generales.
+- El inventario de deduplicación dejó de concentrar conexión, scans, archivos,
+  planes, reconciliación, traversal y migraciones en tres módulos monolíticos.
+  `index.py`, `scan.py` y `schema.py` son fachadas de 148, 57 y 109 líneas,
+  respaldadas por repositorios, scanner/policy/traversal y persistence/migrations
+  con límites de complejidad cognitiva 15 y ciclomática 10.
+- El bootstrap y los locks fijan pip 26.2.1 para corregir
+  `PYSEC-2026-3721`. El preflight pip-audit comprueba también la métrica
+  agregada de vulnerabilidades, por lo que una publicación con métricas
+  adversas no puede pasar sólo porque no materializó `external_findings`.
 - `Neocortex --all` deja de producir autoanálisis implícito: consume un receipt
   `neocortex.code-validation-receipt/v1` exacto para SHA, baseline, digest,
   política, árbol limpio y review publicado. La operación cotidiana informa un
@@ -76,7 +94,7 @@ no se copian aquí para evitar que se conviertan en datos históricos sin contex
 - La validación canónica expone en `stderr` salida y progreso estructurado en
   tiempo real, con heartbeats cada 30 segundos y eventos de recolección, inicio,
   reutilización y terminación por shard. Trusted-deep trata el presupuesto como
-  nominal y sólo habilita una extensión total acotada a 2x tras progreso de
+  nominal y sólo habilita una extensión total acotada a 2.5x tras progreso de
   shard validado. Una selección afectada reserva además 15 minutos para los
   demás providers/cierre; una suite full reserva 30 minutos y queda acotada a
   60 minutos dentro de la cota global Linux de 75 minutos. Así la finalización

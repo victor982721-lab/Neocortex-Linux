@@ -11,7 +11,7 @@ from pathlib import Path
 
 import xxhash
 
-from _02_Deduplicacion import FileSnapshot
+from neocortex.deduplication import FileSnapshot
 
 from neocortex.sqlite_connection import (
     READONLY_EXISTING,

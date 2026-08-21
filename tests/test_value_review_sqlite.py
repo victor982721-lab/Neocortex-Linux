@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from _02_Deduplicacion.inventory_schema import initialize_inventory_schema
+from neocortex.deduplication.schema import initialize_inventory_schema
 from _04_Nucleo_Operativo import review_task_repository, value_review_repository
 from _04_Nucleo_Operativo.document_catalog_schema import (
     CATALOG_SCHEMA_VERSION,

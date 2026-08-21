@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import xxhash
 
-from _03_Progreso import ProgressCallback, ProgressEvent, ProgressMetric, emit_progress
+from neocortex.progress import ProgressCallback, ProgressEvent, ProgressMetric, emit_progress
 from neocortex.platform_policy import sqlite_path_collation
 
 from .cancellation import CancellationRequested, CancellationToken

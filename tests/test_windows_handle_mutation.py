@@ -4,7 +4,6 @@
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
-
 # region [01] Dependencias del módulo
 from __future__ import annotations
 
@@ -15,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from _02_Deduplicacion import snapshot_path
+from neocortex.deduplication import snapshot_path
 from _04_Nucleo_Operativo import windows_handle_mutation
 from _04_Nucleo_Operativo.windows_handle_mutation import (
     IdentityBoundMutationError,
@@ -329,8 +328,7 @@ def test_link_count_is_revalidated_after_public_boundary(
         information = original(handle)
         if (
             boundary_seen
-            and not information.attributes
-            & windows_handle_mutation.FILE_ATTRIBUTE_DIRECTORY
+            and not information.attributes & windows_handle_mutation.FILE_ATTRIBUTE_DIRECTORY
         ):
             return replace(information, link_count=2)
         return information
@@ -463,4 +461,6 @@ def test_unsupported_volume_abstains_before_native_call(
 
     assert source.exists()
     assert not destination.exists()
+
+
 # endregion [02]

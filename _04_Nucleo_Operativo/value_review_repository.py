@@ -19,7 +19,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TypeVar, cast
 
-from _02_Deduplicacion.inventory_schema import (
+from neocortex.deduplication.schema import (
     SCHEMA_VERSION as INVENTORY_SCHEMA_VERSION,
     validate_inventory_schema,
 )

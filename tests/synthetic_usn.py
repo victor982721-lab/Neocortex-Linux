@@ -11,8 +11,8 @@ from pathlib import Path
 from types import TracebackType
 from unittest.mock import patch
 
-from _01_Enumeracion import JournalCursor, NtfsEntry, UsnChangeBatch
-from _01_Enumeracion.windows import VolumeHandle
+from neocortex.enumeration import JournalCursor, NtfsEntry, UsnChangeBatch
+from neocortex.enumeration.ntfs.volume import VolumeHandle
 from _04_Nucleo_Operativo import inventory_coordinator, orchestrator, reconcile
 
 
@@ -70,6 +70,7 @@ def _birthtime_ns(metadata: os.stat_result) -> int:
 
 # region [02] Bounded reader
 
+
 class _SyntheticReader:
     def __init__(self, journal: "SyntheticUsnJournal", start: JournalCursor):
         self._journal = journal
@@ -105,22 +106,21 @@ class _SyntheticReader:
 
 # region [03] Public explicit context
 
+
 class SyntheticUsnJournal:
     """Patch only raw-USN lookup points for one dedicated temporary corpus."""
 
     def __init__(self, root: Path):
         candidate = Path(root)
         if not candidate.is_absolute() or str(candidate).startswith(("\\\\", "//")):
-            raise SyntheticUsnContainmentError(
-                "synthetic USN root must be an absolute local path"
-            )
+            raise SyntheticUsnContainmentError("synthetic USN root must be an absolute local path")
         self.root = candidate.resolve(strict=True)
         if not self.root.is_dir():
             raise SyntheticUsnContainmentError("synthetic USN root is not a directory")
         boundary_raw = os.environ.get(_AUDIT_LAB_ENVIRONMENT)
-        boundary = Path(
-            tempfile.gettempdir() if boundary_raw is None else boundary_raw
-        ).resolve(strict=True)
+        boundary = Path(tempfile.gettempdir() if boundary_raw is None else boundary_raw).resolve(
+            strict=True
+        )
         if self.root == boundary or not self.root.is_relative_to(boundary):
             raise SyntheticUsnContainmentError(
                 "synthetic USN root must be below the active temporary laboratory"
@@ -153,9 +153,7 @@ class SyntheticUsnJournal:
             if probe == self._boundary:
                 break
             if probe == probe.parent:
-                raise SyntheticUsnContainmentError(
-                    "synthetic USN boundary was not reached"
-                )
+                raise SyntheticUsnContainmentError("synthetic USN boundary was not reached")
             probe = probe.parent
 
     def _snapshot(self) -> _Snapshot:
@@ -168,9 +166,7 @@ class SyntheticUsnJournal:
             directory = pending.pop()
             directory_stat = directory.stat(follow_symlinks=False)
             if int(directory_stat.st_dev) != self._root_identity[0]:
-                raise SyntheticUsnContainmentError(
-                    "fixture directory changed volume"
-                )
+                raise SyntheticUsnContainmentError("fixture directory changed volume")
             directories[int(directory_stat.st_ino)] = directory
             with os.scandir(directory) as iterator:
                 entries = sorted(iterator, key=lambda entry: entry.name.casefold())
@@ -216,9 +212,7 @@ class SyntheticUsnJournal:
     def capture(self, volume: str | Path) -> JournalCursor:
         self._validate_root()
         if str(volume).casefold().rstrip("\\/") != self.root.drive.casefold():
-            raise SyntheticUsnContainmentError(
-                "synthetic cursor requested for a different volume"
-            )
+            raise SyntheticUsnContainmentError("synthetic cursor requested for a different volume")
         next_usn = self._next_usn
         self._next_usn += 1
         self._snapshots[next_usn] = self._snapshot()
@@ -231,9 +225,7 @@ class SyntheticUsnJournal:
         **_options: object,
     ) -> _SyntheticReader:
         if str(volume).casefold().rstrip("\\/") != self.root.drive.casefold():
-            raise SyntheticUsnContainmentError(
-                "synthetic reader requested for a different volume"
-            )
+            raise SyntheticUsnContainmentError("synthetic reader requested for a different volume")
         return _SyntheticReader(self, start)
 
     @staticmethod
@@ -262,9 +254,7 @@ class SyntheticUsnJournal:
         before = self._snapshots.get(start.next_usn)
         after = self._snapshots.get(target_usn)
         if before is None or after is None:
-            raise SyntheticUsnContainmentError(
-                "synthetic cursor snapshot is unavailable"
-            )
+            raise SyntheticUsnContainmentError("synthetic cursor snapshot is unavailable")
         paths = dict(before.directories)
         paths.update(after.directories)
         records: list[NtfsEntry] = []
@@ -303,11 +293,10 @@ class SyntheticUsnJournal:
         if self._patches is not None:
             return self
         stack = ExitStack()
+
         def forbid_raw_open(_handle: VolumeHandle) -> None:
             self.raw_volume_open_attempts += 1
-            raise AssertionError(
-                "a synthetic USN test attempted to open a raw volume"
-            )
+            raise AssertionError("a synthetic USN test attempted to open a raw volume")
 
         stack.enter_context(patch.object(orchestrator, "query_journal_cursor", self.capture))
         stack.enter_context(

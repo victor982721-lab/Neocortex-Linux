@@ -979,7 +979,7 @@ def test_all_semantic_uses_shared_progress_and_captures_structured_result(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    from _03_Progreso import RecordingProgress
+    from neocortex.progress import RecordingProgress
 
     (tmp_path / "pdf.sqlite3").touch()
     args = build_parser().parse_args(["--all", "--state-directory", str(tmp_path)])

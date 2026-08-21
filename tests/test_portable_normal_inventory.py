@@ -11,8 +11,8 @@ from unittest.mock import patch
 
 import pytest
 
-from _01_Enumeracion import UnsupportedPlatformError
-from _02_Deduplicacion import DedupIndex, DedupPlanner
+from neocortex.enumeration import UnsupportedPlatformError
+from neocortex.deduplication import DedupIndex, DedupPlanner
 from _04_Nucleo_Operativo import FrameworkConfig, FrameworkOrchestrator
 from _04_Nucleo_Operativo import inventory_coordinator as inventory_module
 from _04_Nucleo_Operativo import orchestrator as orchestrator_module

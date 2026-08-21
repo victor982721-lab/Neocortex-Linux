@@ -4,7 +4,6 @@
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
-
 # region [01] Dependencias del módulo
 from __future__ import annotations
 
@@ -13,8 +12,8 @@ from pathlib import Path
 
 import pytest
 
-from _01_Enumeracion import JournalCursor
-from _02_Deduplicacion import InventoryError
+from neocortex.enumeration import JournalCursor
+from neocortex.deduplication import InventoryError
 from _04_Nucleo_Operativo.incremental_gate import (
     IncrementalGateDecision,
     IncrementalGateRequest,
@@ -67,13 +66,19 @@ class _Summary:
     files_seen: int = 3
 
 
+_DEFAULT_POLICY = _Policy()
+_DEFAULT_OWNER = _Owner()
+_DEFAULT_CHECKPOINT = _Checkpoint()
+_DEFAULT_SUMMARY = _Summary()
+
+
 class _State:
     def __init__(
         self,
         trace: list[str],
         *,
-        owner: _Owner | None = _Owner(),
-        policy: _Policy = _Policy(),
+        owner: _Owner | None = _DEFAULT_OWNER,
+        policy: _Policy = _DEFAULT_POLICY,
         guard_error: BaseException | None = None,
     ) -> None:
         self._trace = trace
@@ -107,9 +112,9 @@ class _Inventory:
         self,
         trace: list[str],
         *,
-        checkpoint: _Checkpoint | None = _Checkpoint(),
+        checkpoint: _Checkpoint | None = _DEFAULT_CHECKPOINT,
         scan_error: bool = False,
-        summary: _Summary = _Summary(),
+        summary: _Summary = _DEFAULT_SUMMARY,
         scan_identity: tuple[int, int, int] = _IDENTITY,
         file_count: int = 3,
     ) -> None:
@@ -354,4 +359,6 @@ def test_final_boundary_failure_propagates_after_all_durable_evidence() -> None:
         )
 
     assert trace[-1] == "verify_final"
+
+
 # endregion [02]

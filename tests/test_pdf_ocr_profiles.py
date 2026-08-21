@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 import pytest
 
-from _02_Deduplicacion import snapshot_path
+from neocortex.deduplication import snapshot_path
 from _04_Nucleo_Operativo import pdf_schema
 from _04_Nucleo_Operativo.pdf_admin import doctor_pdf_runtime
 from _04_Nucleo_Operativo.pdf_isolation import (

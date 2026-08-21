@@ -13,14 +13,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Iterator, cast
 
-from _02_Deduplicacion import (
+from neocortex.deduplication import (
     FileChangedError,
     FileSnapshot,
     snapshot_path,
     stat_matches_snapshot,
 )
-from _02_Deduplicacion.path_io import native_io_path
-from _03_Progreso import (
+from neocortex.deduplication.io import native_io_path
+from neocortex.progress import (
     ProgressCallback,
     ProgressEvent,
     ProgressMetric,

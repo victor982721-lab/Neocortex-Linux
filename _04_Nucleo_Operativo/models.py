@@ -11,8 +11,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
-from _01_Enumeracion import JournalCursor
-from _02_Deduplicacion import DedupPlan, ScanSummary
+from neocortex.enumeration import JournalCursor
+from neocortex.deduplication import DedupPlan, ScanSummary
 from neocortex.platform_policy import (
     default_corpus_root,
     default_local_models_only,

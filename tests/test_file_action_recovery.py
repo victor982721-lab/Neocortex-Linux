@@ -14,7 +14,7 @@ from unittest.mock import patch
 import pytest
 
 import _04_Nucleo_Operativo.framework_schema as framework_schema
-from _02_Deduplicacion import DedupIndex, DedupPlanner, snapshot_path
+from neocortex.deduplication import DedupIndex, DedupPlanner, snapshot_path
 from _04_Nucleo_Operativo import actions as actions_module
 from _04_Nucleo_Operativo.actions import FrameworkActions
 from _04_Nucleo_Operativo.cli_app import main as cli_main

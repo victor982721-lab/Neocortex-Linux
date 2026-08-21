@@ -6,7 +6,7 @@ import argparse
 
 import pytest
 
-from _02_Deduplicacion import FileSnapshot
+from neocortex.deduplication import FileSnapshot
 from _04_Nucleo_Operativo.cli_app import dispatch_direct
 from _04_Nucleo_Operativo.cli_direct import (
     run_office_search,
@@ -260,10 +260,7 @@ def test_review_record_rejects_same_key_for_changed_candidate_snapshot(
     )
 
     assert dispatch_direct(args) == 2
-    assert (
-        "key collision identifies different candidate snapshot"
-        in capsys.readouterr().out
-    )
+    assert "key collision identifies different candidate snapshot" in capsys.readouterr().out
     decisions = list_review_decisions(
         tmp_path / "framework.sqlite3",
         limit=10,

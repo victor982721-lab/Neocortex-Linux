@@ -42,6 +42,11 @@ from neocortex.pip_bootstrap import (
     PIP_BOOTSTRAP_VERSION,
 )
 from neocortex.platform_policy import PlatformPolicy, current_platform_policy
+from neocortex.runtime.source_staging import (
+    SourceStagingError,
+    parse_git_tracked_paths,
+    stage_tracked_source,
+)
 from neocortex.semgrep_tool_contract import (
     SEMGREP_TOOL_VERSION,
 )
@@ -310,6 +315,20 @@ def _source_sha(source_root: Path, runner: CommandRunner = _run) -> str:
     return sha
 
 
+def _tracked_source_paths(
+    source_root: Path,
+    runner: CommandRunner = _run,
+) -> tuple[str, ...]:
+    result = runner(
+        ("git", "-C", source_root, "ls-files", "--cached", "-z"),
+        timeout=60,
+    )
+    try:
+        return parse_git_tracked_paths(result.stdout)
+    except SourceStagingError as error:
+        raise LinuxReleaseError(str(error)) from error
+
+
 def _require_reference_platform() -> None:
     if os.name != "posix" or sys.platform != "linux":
         raise LinuxReleaseError("Linux release tooling is available only on Linux")
@@ -395,10 +414,19 @@ def _build_wheel(
     pip_wheel: Path,
     runner: CommandRunner = _run,
 ) -> tuple[Path, tuple[Path, ...]]:
+    staged_source = workspace / "source"
+    try:
+        stage_tracked_source(
+            layout.source_root,
+            staged_source,
+            _tracked_source_paths(layout.source_root, runner),
+        )
+    except SourceStagingError as error:
+        raise LinuxReleaseError(str(error)) from error
     build_environment = workspace / "build-environment"
     _create_pip_environment(build_environment, pip_wheel, runner=runner)
     python = _venv_python(build_environment)
-    constraints = layout.source_root / "constraints.txt"
+    constraints = staged_source / "constraints.txt"
     runner(
         (
             python,
@@ -432,7 +460,7 @@ def _build_wheel(
             "--no-isolation",
             "--outdir",
             wheelhouse,
-            layout.source_root,
+            staged_source,
         ),
         timeout=900,
     )
@@ -831,7 +859,14 @@ def _publish_public_access(
         runner((layout.alias, "--version"), timeout=60)
         artifacts = {"launcher_sha256": _sha256_file(layout.launcher)}
         if desktop:
-            source_icon = layout.source_root / "_05_Interfaz" / "assets" / "neocortex-app-icon.png"
+            source_icon = (
+                layout.source_root
+                / "neocortex"
+                / "interface"
+                / "presentation"
+                / "assets"
+                / "neocortex-app-icon.png"
+            )
             _atomic_write(layout.icon, source_icon.read_bytes())
             _atomic_write(layout.desktop, _desktop_payload(layout))
             runner(("desktop-file-validate", layout.desktop), timeout=60)

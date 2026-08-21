@@ -17,7 +17,7 @@ from pathlib import Path
 
 from neocortex.platform_policy import sqlite_path_collation
 
-from _03_Progreso import (
+from neocortex.progress import (
     ProgressCallback,
     ProgressEvent,
     ProgressMetric,

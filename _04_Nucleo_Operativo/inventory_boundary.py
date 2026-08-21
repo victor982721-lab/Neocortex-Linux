@@ -17,8 +17,8 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from _02_Deduplicacion import InventoryExclusionPolicy
-from _02_Deduplicacion.inventory import (
+from neocortex.deduplication import InventoryExclusionPolicy
+from neocortex.deduplication.inventory.index import (
     DEFAULT_EXCLUDED_PATHS,
     DEFAULT_GENERATED_DIRECTORY_FRAGMENTS,
     DEFAULT_GENERATED_DIRECTORY_NAMES,

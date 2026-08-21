@@ -13,8 +13,8 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from _05_Interfaz.protocol import decode_message
-from _05_Interfaz.worker import _summary_payload
+from neocortex.interface.protocol.messages import decode_message
+from neocortex.interface.protocol.worker import _summary_payload
 # endregion [01]
 
 # region [02] Implementación
@@ -28,7 +28,7 @@ class UiWorkerShutdownTests(unittest.TestCase):
                 [
                     sys.executable,
                     "-m",
-                    "_05_Interfaz.worker",
+                    "neocortex.interface.protocol.worker",
                     "--root",
                     str(missing_root),
                     "--route",
@@ -65,7 +65,7 @@ class UiWorkerShutdownTests(unittest.TestCase):
                 [
                     sys.executable,
                     "-m",
-                    "_05_Interfaz.worker",
+                    "neocortex.interface.protocol.worker",
                     "--root",
                     directory,
                     "--route",

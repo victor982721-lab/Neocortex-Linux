@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from _05_Interfaz.elevation import elevation_launch_spec
+from neocortex.interface.application.elevation import elevation_launch_spec
 # endregion [01]
 
 # region [02] Implementación

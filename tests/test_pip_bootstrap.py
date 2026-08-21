@@ -64,8 +64,8 @@ def test_release_linux_import_does_not_require_posix_fcntl() -> None:
 
 
 def test_neutral_contract_preserves_release_and_semgrep_reexports() -> None:
-    assert pip_bootstrap.PIP_BOOTSTRAP_VERSION == "26.1.2"
-    assert pip_bootstrap.PIP_BOOTSTRAP_FILENAME == "pip-26.1.2-py3-none-any.whl"
+    assert pip_bootstrap.PIP_BOOTSTRAP_VERSION == "26.2.1"
+    assert pip_bootstrap.PIP_BOOTSTRAP_FILENAME == "pip-26.2.1-py3-none-any.whl"
     assert len(pip_bootstrap.PIP_BOOTSTRAP_SHA256) == 64
     assert pip_bootstrap.PIP_BOOTSTRAP_URL.startswith("https://files.pythonhosted.org/")
     assert semgrep_tool_contract.PIP_BOOTSTRAP_FILENAME == pip_bootstrap.PIP_BOOTSTRAP_FILENAME
@@ -244,7 +244,7 @@ def test_bootstrap_cli_seeds_an_explicit_offline_target(
     assert bootstrap_pip.main(("--python", str(target), "--wheel", str(wheel))) == 0
 
     assert observed == [(target.absolute(), wheel.absolute())]
-    assert '"pip": "26.1.2"' in capsys.readouterr().out
+    assert '"pip": "26.2.1"' in capsys.readouterr().out
 
 
 def test_bootstrap_script_is_directly_executable_from_checkout() -> None:

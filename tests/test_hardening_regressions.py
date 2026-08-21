@@ -23,7 +23,7 @@ from _04_Nucleo_Operativo.document_taxonomy import (
     load_taxonomy,
 )
 from _04_Nucleo_Operativo.pdf_isolation import _read_file_tail
-from _05_Interfaz.controller import MAX_PROCESS_LINE_BYTES, WorkerController
+from neocortex.interface.application.controller import MAX_PROCESS_LINE_BYTES, WorkerController
 from tests.internal_paths_test_support import disjoint_internal_paths_policy
 # endregion [01]
 
@@ -119,9 +119,7 @@ def test_destination_parent_creation_rejects_existing_reparse_component(
     real_check = action_policy._is_reparse_entry
 
     def simulated_reparse(path: Path, entry_stat: os.stat_result) -> bool:
-        return os.path.normcase(os.path.abspath(path)) == unsafe_key or real_check(
-            path, entry_stat
-        )
+        return os.path.normcase(os.path.abspath(path)) == unsafe_key or real_check(path, entry_stat)
 
     with patch.object(
         action_policy,
@@ -205,9 +203,7 @@ def test_custom_regex_safety_reason_precedence_is_left_to_right() -> None:
         _unsafe_custom_regex_reason,
     )
 
-    assert _unsafe_custom_regex_reason(r"(a)\1(?=b)") == (
-        "backreferences are not allowed"
-    )
+    assert _unsafe_custom_regex_reason(r"(a)\1(?=b)") == ("backreferences are not allowed")
     assert _unsafe_custom_regex_reason(r"(?=b)(a)\1") == (
         "lookarounds, named groups, and inline extensions are not allowed"
     )
@@ -220,7 +216,7 @@ def test_custom_regex_safety_signature_is_frozen() -> None:
         _unsafe_custom_regex_reason,
     )
 
-    assert str(signature(_unsafe_custom_regex_reason)) == (
-        "(pattern: 'str') -> 'str | None'"
-    )
+    assert str(signature(_unsafe_custom_regex_reason)) == ("(pattern: 'str') -> 'str | None'")
+
+
 # endregion [02]

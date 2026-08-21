@@ -17,7 +17,7 @@ import pytest
 
 import _04_Nucleo_Operativo.code_route as code_route_module
 import _04_Nucleo_Operativo.code_state as code_state_module
-from _02_Deduplicacion import FileSnapshot
+from neocortex.deduplication import FileSnapshot
 from _04_Nucleo_Operativo.cancellation import (
     CancellationRequested,
     CancellationToken,

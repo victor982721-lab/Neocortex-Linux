@@ -1263,12 +1263,7 @@ AND e.to_state IN ('open','in_review')
 AND t.source_snapshot_fingerprint<>h.source_snapshot_fingerprint
 AND t.created_ns<=h.confirmed_ns AND b.confirmed_ns<h.confirmed_ns
 AND e.observed_ns<=h.confirmed_ns AND e.recorded_ns<h.confirmed_ns
-AND NOT EXISTS(
-    SELECT 1 FROM review_tasks replacement
-    WHERE replacement.logical_key=t.logical_key
-      AND replacement.scope=t.scope AND replacement.task_type=t.task_type
-      AND replacement.source_snapshot_fingerprint=h.source_snapshot_fingerprint
-)"""
+AND replacement.logical_key IS NULL"""
 _EFFECTIVE_SOURCE_PUBLICATION_JOIN = """ LEFT JOIN
 review_task_source_publications h ON h.scope=t.scope AND h.task_type=t.task_type
 AND h.selector_signature=b.selector_signature AND NOT EXISTS(
@@ -1276,7 +1271,13 @@ AND h.selector_signature=b.selector_signature AND NOT EXISTS(
     WHERE later_head.scope=h.scope AND later_head.task_type=h.task_type
       AND later_head.selector_signature=h.selector_signature
       AND later_head.revision>h.revision
-) """
+) LEFT JOIN (
+    SELECT logical_key,scope,task_type,source_snapshot_fingerprint
+    FROM review_tasks
+    GROUP BY logical_key,scope,task_type,source_snapshot_fingerprint
+) replacement ON replacement.logical_key=t.logical_key
+AND replacement.scope=t.scope AND replacement.task_type=t.task_type
+AND replacement.source_snapshot_fingerprint=h.source_snapshot_fingerprint """
 _EFFECTIVE_SOURCE_PUBLICATION_COLUMNS = (
     "CASE WHEN "
     + _EFFECTIVE_SOURCE_PUBLICATION_PREDICATE

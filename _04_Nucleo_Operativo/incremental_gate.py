@@ -19,8 +19,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Protocol, cast
 
-from _01_Enumeracion import JournalCursor
-from _02_Deduplicacion import InventoryError
+from neocortex.enumeration import JournalCursor
+from neocortex.deduplication import InventoryError
 # endregion [01]
 
 # region [02] Implementación
@@ -242,11 +242,7 @@ def _cursor_reason(
 ) -> IncrementalGateReason | None:
     if durable_cursor is None:
         return "durable_cursor_missing"
-    if (
-        checkpoint.volume is None
-        or checkpoint.journal_id is None
-        or checkpoint.next_usn is None
-    ):
+    if checkpoint.volume is None or checkpoint.journal_id is None or checkpoint.next_usn is None:
         return "checkpoint_not_at_durable_boundary"
     if (
         checkpoint.volume != durable_cursor.volume

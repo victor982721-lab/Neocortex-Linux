@@ -403,7 +403,7 @@ def run_review_decisions(args: argparse.Namespace) -> int:
 def run_review_record(args: argparse.Namespace) -> int:
     """Append one judgment after revalidating exact identity and generation."""
 
-    from _02_Deduplicacion import FileSnapshot
+    from neocortex.deduplication import FileSnapshot
 
     from .locking import FrameworkRunLock
     from .review import (

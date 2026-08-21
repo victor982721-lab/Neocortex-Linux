@@ -5,7 +5,7 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
-from _02_Deduplicacion import DedupIndex, FileSnapshot
+from neocortex.deduplication import DedupIndex, FileSnapshot
 from _04_Nucleo_Operativo.image_models import Features
 from _04_Nucleo_Operativo.image_visual import FeatureVisualClassifier
 from _04_Nucleo_Operativo import pdf_schema

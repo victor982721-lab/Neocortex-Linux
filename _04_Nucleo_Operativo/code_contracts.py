@@ -14,7 +14,7 @@ from pathlib import Path
 import re
 from typing import Literal, Protocol
 
-from _02_Deduplicacion import FileSnapshot
+from neocortex.deduplication import FileSnapshot
 
 from .route_filters import CandidateSelection
 from .semantic_models import canonical_json, fingerprint_text

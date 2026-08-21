@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 import pytest
 
-from _02_Deduplicacion import FileSnapshot
+from neocortex.deduplication import FileSnapshot
 from _04_Nucleo_Operativo.cli_app import dispatch_direct
 from _04_Nucleo_Operativo.cli_parser import build_parser
 from _04_Nucleo_Operativo.cli_validation import validate_arguments
@@ -42,9 +42,7 @@ def _safe_state_write_policies(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    internal_policy = disjoint_internal_paths_policy(
-        tmp_path.parent / f"{tmp_path.name}-policy"
-    )
+    internal_policy = disjoint_internal_paths_policy(tmp_path.parent / f"{tmp_path.name}-policy")
     protected_policy = ProtectedContentPolicy.capture(())
     monkeypatch.setattr(
         "_04_Nucleo_Operativo.internal_paths.canonical_internal_paths_policy",
@@ -194,9 +192,7 @@ def test_recorded_decisions_are_immediately_traceable_and_consumable(tmp_path) -
 
     # Human labels remain evaluation evidence and never create file actions.
     with sqlite3.connect(database) as connection:
-        assert connection.execute("SELECT COUNT(*) FROM file_actions").fetchone() == (
-            0,
-        )
+        assert connection.execute("SELECT COUNT(*) FROM file_actions").fetchone() == (0,)
         assert connection.execute("SELECT COUNT(*) FROM run_actions").fetchone() == (0,)
 
     # Catching the durable cursor up over writer-materialized rows performs no
@@ -238,9 +234,7 @@ def test_materialization_is_bounded_resumable_and_idempotent(tmp_path) -> None:
         first.last_decision_id,
         first.has_more,
     ) == (2, 2, decision_ids[1], True)
-    assert review_evidence_metrics(database).materialization_coverage == pytest.approx(
-        2 / 3
-    )
+    assert review_evidence_metrics(database).materialization_coverage == pytest.approx(2 / 3)
 
     second = materialize_review_evidence(database, batch_size=2)
     assert (
@@ -296,12 +290,12 @@ def test_materialization_batch_rolls_back_on_partial_candidate_evidence(
     with pytest.raises(sqlite3.DatabaseError, match="partially populated"):
         materialize_review_evidence(database, batch_size=2)
     with sqlite3.connect(database) as connection:
-        assert connection.execute(
-            "SELECT COUNT(*) FROM review_evidence_examples"
-        ).fetchone() == (0,)
-        assert connection.execute(
-            "SELECT COUNT(*) FROM review_evidence_progress"
-        ).fetchone() == (0,)
+        assert connection.execute("SELECT COUNT(*) FROM review_evidence_examples").fetchone() == (
+            0,
+        )
+        assert connection.execute("SELECT COUNT(*) FROM review_evidence_progress").fetchone() == (
+            0,
+        )
 
 
 def test_decision_insert_rolls_back_when_atomic_evidence_conflicts(tmp_path) -> None:
@@ -318,13 +312,9 @@ def test_decision_insert_rolls_back_when_atomic_evidence_conflicts(tmp_path) -> 
         )
 
     with pytest.raises(sqlite3.DatabaseError, match="conflicts"):
-        FrameworkRouteState(database).record_review_decision(
-            _decision("dismissed", sequence=2)
-        )
+        FrameworkRouteState(database).record_review_decision(_decision("dismissed", sequence=2))
     with sqlite3.connect(database) as connection:
-        assert connection.execute(
-            "SELECT COUNT(*) FROM review_decisions"
-        ).fetchone() == (1,)
+        assert connection.execute("SELECT COUNT(*) FROM review_decisions").fetchone() == (1,)
         assert (
             connection.execute(
                 "SELECT decision_id FROM review_decisions WHERE idempotency_key=?",
@@ -367,23 +357,17 @@ def test_schema_15_migrates_without_unbounded_backfill_and_preserves_legacy(
         assert connection.execute(
             "SELECT value FROM metadata WHERE key='schema_version'"
         ).fetchone() == (str(SCHEMA_VERSION),)
-        assert connection.execute(
-            "SELECT COUNT(*) FROM review_decisions"
-        ).fetchone() == (1,)
+        assert connection.execute("SELECT COUNT(*) FROM review_decisions").fetchone() == (1,)
         # Migration stays bounded: explicit synchronization backfills old rows.
-        assert connection.execute(
-            "SELECT COUNT(*) FROM review_evidence_examples"
-        ).fetchone() == (0,)
+        assert connection.execute("SELECT COUNT(*) FROM review_evidence_examples").fetchone() == (
+            0,
+        )
         assert {
             row[0]
-            for row in connection.execute(
-                "SELECT name FROM sqlite_master WHERE type='index'"
-            )
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type='index'")
         } >= {"review_evidence_outcome_idx", "review_evidence_target_idx"}
 
-    assert (
-        materialize_review_evidence(database, batch_size=10).materialized_examples == 1
-    )
+    assert materialize_review_evidence(database, batch_size=10).materialized_examples == 1
     example = list_review_evidence(database, limit=10)[0]
     assert example.decision_id == decision_id
     assert example.actor == "victor"
@@ -404,9 +388,7 @@ def test_failed_schema_15_transition_rolls_back_version_and_ddl(tmp_path) -> Non
     with sqlite3.connect(database) as connection:
         connection.execute("DROP TABLE review_evidence_examples")
         connection.execute("DROP TABLE review_evidence_progress")
-        connection.execute(
-            "CREATE TABLE review_evidence_examples(decision_id INTEGER PRIMARY KEY)"
-        )
+        connection.execute("CREATE TABLE review_evidence_examples(decision_id INTEGER PRIMARY KEY)")
         connection.execute("UPDATE metadata SET value='15' WHERE key='schema_version'")
 
     with pytest.raises(RuntimeError, match="initialization from version 15 failed"):
@@ -417,8 +399,7 @@ def test_failed_schema_15_transition_rolls_back_version_and_ddl(tmp_path) -> Non
             "SELECT value FROM metadata WHERE key='schema_version'"
         ).fetchone() == ("15",)
         assert {
-            row[1]
-            for row in connection.execute("PRAGMA table_info(review_evidence_examples)")
+            row[1] for row in connection.execute("PRAGMA table_info(review_evidence_examples)")
         } == {"decision_id"}
         assert (
             connection.execute(
@@ -528,15 +509,11 @@ def test_review_evidence_cli_sync_metrics_and_filtered_json_list(
     )
     validate_arguments(decision_args)
     assert dispatch_direct(decision_args) == 0
-    decision_payloads = [
-        json.loads(line) for line in capsys.readouterr().out.splitlines()
-    ]
+    decision_payloads = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
     assert len(decision_payloads) == 3
     assert all(payload["kind"] == "review-decision" for payload in decision_payloads)
     assert all(payload["route"] == "image" for payload in decision_payloads)
-    assert all(
-        payload["candidate_snapshot"] is not None for payload in decision_payloads
-    )
+    assert all(payload["candidate_snapshot"] is not None for payload in decision_payloads)
 
 
 @pytest.mark.parametrize("batch_size", (0, 257))
@@ -553,9 +530,7 @@ def test_review_evidence_cli_rejects_unbounded_sync_batches(batch_size: int) -> 
 
 def test_review_evidence_sync_does_not_create_missing_state(tmp_path, capsys) -> None:
     state = tmp_path / "missing-state"
-    args = build_parser().parse_args(
-        ("--state-directory", str(state), "--review-evidence-sync")
-    )
+    args = build_parser().parse_args(("--state-directory", str(state), "--review-evidence-sync"))
     validate_arguments(args)
 
     assert dispatch_direct(args) == 2
@@ -588,14 +563,10 @@ def test_review_evidence_sync_rejects_existing_protected_state_before_write(
         "_04_Nucleo_Operativo.protected_content.canonical_protected_content_policy",
         lambda: protected_policy,
     )
-    args = build_parser().parse_args(
-        ("--state-directory", str(state), "--review-evidence-sync")
-    )
+    args = build_parser().parse_args(("--state-directory", str(state), "--review-evidence-sync"))
     validate_arguments(args)
 
-    with patch(
-        "_04_Nucleo_Operativo.review_evidence.materialize_review_evidence"
-    ) as materialize:
+    with patch("_04_Nucleo_Operativo.review_evidence.materialize_review_evidence") as materialize:
         assert dispatch_direct(args) == 2
 
     materialize.assert_not_called()
@@ -613,9 +584,7 @@ def test_review_evidence_cli_filters_require_a_compatible_query() -> None:
 
 
 def test_review_evidence_cli_does_not_silently_accept_legacy_review_filters() -> None:
-    args = build_parser().parse_args(
-        ("--review-evidence-metrics", "--review-route", "image")
-    )
+    args = build_parser().parse_args(("--review-evidence-metrics", "--review-route", "image"))
     with pytest.raises(SystemExit, match="review options require a review command"):
         validate_arguments(args)
 

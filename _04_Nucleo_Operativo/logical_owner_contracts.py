@@ -152,7 +152,29 @@ LOGICAL_OWNER_SPECS = (
         ),
         ("code",),
     ),
+    LogicalOwnerSpec(
+        "deduplication",
+        (
+            _selector(
+                "deduplication-canonical-package",
+                "module_tree",
+                "neocortex.deduplication",
+            ),
+        ),
+        ("inventory",),
+    ),
     _registered_capability_owner_spec("docx"),
+    LogicalOwnerSpec(
+        "enumeration",
+        (
+            _selector(
+                "enumeration-canonical-package",
+                "module_tree",
+                "neocortex.enumeration",
+            ),
+        ),
+        ("inventory",),
+    ),
     LogicalOwnerSpec(
         "framework",
         (
@@ -169,7 +191,7 @@ LOGICAL_OWNER_SPECS = (
         "interface",
         (
             _selector("cli-core-modules", "module_prefix", "_04_Nucleo_Operativo.cli_"),
-            _selector("gui-package", "module_tree", "_05_Interfaz"),
+            _selector("gui-package", "module_tree", "neocortex.interface"),
             _selector("public-cli", "exact_module", "neocortex.cli"),
             _selector("public-human-cli", "exact_module", "neocortex.human_cli"),
             _selector("public-read-api", "exact_module", "neocortex.read_api"),
@@ -178,8 +200,6 @@ LOGICAL_OWNER_SPECS = (
     LogicalOwnerSpec(
         "inventory",
         (
-            _selector("enumeration-package", "module_tree", "_01_Enumeracion"),
-            _selector("deduplication-package", "module_tree", "_02_Deduplicacion"),
             _selector(
                 "inventory-boundary",
                 "exact_module",
@@ -225,6 +245,16 @@ LOGICAL_OWNER_SPECS = (
         ("pdf",),
     ),
     LogicalOwnerSpec(
+        "progress",
+        (
+            _selector(
+                "progress-canonical-package",
+                "module_tree",
+                "neocortex.progress",
+            ),
+        ),
+    ),
+    LogicalOwnerSpec(
         "retention",
         (
             _selector(
@@ -261,6 +291,16 @@ LOGICAL_OWNER_SPECS = (
         ("framework",),
     ),
     LogicalOwnerSpec(
+        "runtime",
+        (
+            _selector(
+                "runtime-canonical-package",
+                "module_tree",
+                "neocortex.runtime",
+            ),
+        ),
+    ),
+    LogicalOwnerSpec(
         "semantic",
         (
             _selector(
@@ -282,11 +322,7 @@ LOGICAL_OWNER_SPECS = (
 
 PACKAGE_OWNER_SPECS = (
     PackageOwnerSpec("core", "_04_Nucleo_Operativo", "application_and_domain_core"),
-    PackageOwnerSpec("deduplication", "_02_Deduplicacion", "inventory_and_deduplication"),
-    PackageOwnerSpec("enumeration", "_01_Enumeracion", "filesystem_enumeration"),
-    PackageOwnerSpec("interface", "_05_Interfaz", "desktop_user_interface"),
-    PackageOwnerSpec("progress", "_03_Progreso", "progress_reporting"),
-    PackageOwnerSpec("public-api", "neocortex", "public_cli_and_adapters"),
+    PackageOwnerSpec("product", "neocortex", "canonical_product_namespace"),
 )
 
 

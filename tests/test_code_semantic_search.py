@@ -17,7 +17,7 @@ from typing import Iterable, Mapping, Sequence
 
 import pytest
 
-from _02_Deduplicacion import FileSnapshot
+from neocortex.deduplication import FileSnapshot
 from _04_Nucleo_Operativo import code_search as code_search_implementation
 from _04_Nucleo_Operativo import semantic_service
 from _04_Nucleo_Operativo import (
@@ -553,8 +553,7 @@ def test_code_semantic_search_cancels_inside_exact_vector_scan(
         )
     assert len(active_links) == current_chunks > 0
     assert all(
-        json.loads(str(row[0]))["link_protocol"] == "code-semantic-link-v1"
-        for row in active_links
+        json.loads(str(row[0]))["link_protocol"] == "code-semantic-link-v1" for row in active_links
     )
 
     original_search = semantic_search_implementation.search_exact_page
@@ -602,10 +601,7 @@ def test_code_semantic_links_publish_replay_and_follow_current_version(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     source = tmp_path / "relay.py"
-    original = (
-        "def calculate_trip_threshold(current: float) -> float:\n"
-        "    return current * 1.25\n"
-    )
+    original = "def calculate_trip_threshold(current: float) -> float:\n    return current * 1.25\n"
     source.write_text(original, encoding="utf-8")
     state_path = tmp_path / "state" / "code.sqlite3"
     config = CodeRouteConfig(
@@ -641,9 +637,7 @@ def test_code_semantic_links_publish_replay_and_follow_current_version(
     assert first_availability.available
     assert first_availability.generation_id == first_generation
     assert first_availability.current_links == len(first_links)
-    assert {int(row[4]) for row in first_links if int(row[5]) == 1} == {
-        first_generation
-    }
+    assert {int(row[4]) for row in first_links if int(row[5]) == 1} == {first_generation}
 
     replay = semantic_service.index_text_embeddings(
         state_path.parent,
@@ -663,10 +657,7 @@ def test_code_semantic_links_publish_replay_and_follow_current_version(
     assert replay.generations[0].embedded == 0
     assert replay_links == first_links
 
-    changed = (
-        original
-        + "\ndef breaker_health(score: float) -> bool:\n    return score > 0.8\n"
-    )
+    changed = original + "\ndef breaker_health(score: float) -> bool:\n    return score > 0.8\n"
     source.write_text(changed, encoding="utf-8")
     CodeRoute(config, _Inventory((source,)), _FrameworkState(), 2, 2).run()
     stale_availability = code_semantic_search_availability(
@@ -729,9 +720,7 @@ def test_code_semantic_links_publish_replay_and_follow_current_version(
             ).fetchone()[0]
         )
         inactive_history = int(
-            connection.execute(
-                "SELECT COUNT(*) FROM embedding_links WHERE active=0"
-            ).fetchone()[0]
+            connection.execute("SELECT COUNT(*) FROM embedding_links WHERE active=0").fetchone()[0]
         )
     assert refreshed.complete
     assert refreshed_generation > first_generation

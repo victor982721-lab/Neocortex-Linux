@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from _03_Progreso import ProgressCallback, ProgressEvent, ProgressMetric, emit_progress
+from neocortex.progress import ProgressCallback, ProgressEvent, ProgressMetric, emit_progress
 
 if TYPE_CHECKING:
     from .semantic_models import EmbeddingModelSpec

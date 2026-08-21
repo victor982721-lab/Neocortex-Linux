@@ -10,7 +10,7 @@ import zlib
 from contextlib import closing
 from pathlib import Path
 
-from _02_Deduplicacion import FileSnapshot
+from neocortex.deduplication import FileSnapshot
 from _04_Nucleo_Operativo.cancellation import CancellationToken
 from _04_Nucleo_Operativo.docx_route import DocxRoute, _file_key
 from _04_Nucleo_Operativo.docx_state import (

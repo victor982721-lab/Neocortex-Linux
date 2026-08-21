@@ -19,7 +19,7 @@ import zlib
 from dataclasses import dataclass
 from pathlib import Path
 
-from _02_Deduplicacion.path_io import absolute_display_path, native_io_path
+from neocortex.deduplication.io import absolute_display_path, native_io_path
 
 from .zip_safety import ZipStructureError, inspect_zip_structure
 # endregion [01]

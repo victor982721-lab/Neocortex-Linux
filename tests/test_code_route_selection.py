@@ -11,7 +11,7 @@ import sqlite3
 from pathlib import Path
 from typing import Iterable, Mapping
 
-from _02_Deduplicacion import FileSnapshot
+from neocortex.deduplication import FileSnapshot
 from _04_Nucleo_Operativo.code_contracts import CodeRouteConfig
 from _04_Nucleo_Operativo.code_route import CodeRoute
 from _04_Nucleo_Operativo.route_filters import CandidateSelection

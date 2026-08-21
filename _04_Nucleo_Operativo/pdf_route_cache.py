@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 import time
 
-from _02_Deduplicacion import DedupIndex, FileChangedError, FileSnapshot
+from neocortex.deduplication import DedupIndex, FileChangedError, FileSnapshot
 from neocortex.platform_policy import sqlite_path_collation
 
 from .cancellation import CancellationToken

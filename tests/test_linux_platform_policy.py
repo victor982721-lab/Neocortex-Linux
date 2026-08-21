@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 import pytest
 
-from _02_Deduplicacion import (
+from neocortex.deduplication import (
     DedupIndex,
     FileSnapshot,
     InventoryExclusionPolicy,

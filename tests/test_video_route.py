@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator
 
-from _02_Deduplicacion import FileSnapshot, snapshot_path
+from neocortex.deduplication import FileSnapshot, snapshot_path
 from _04_Nucleo_Operativo.video_frames import ExtractedVideoFrame, VideoFrameBatch
 from _04_Nucleo_Operativo.video_models import VideoMediaProbe, VideoStreamProbe
 from _04_Nucleo_Operativo.video_route import VideoRoute, VideoRouteConfig

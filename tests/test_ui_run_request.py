@@ -14,7 +14,7 @@ from _04_Nucleo_Operativo.route_selection import (
     BUILTIN_ROUTE_ORDER,
     normalize_route_selection,
 )
-from _05_Interfaz.run_request import ROUTE_ORDER, RunRequest
+from neocortex.interface.application.request import ROUTE_ORDER, RunRequest
 # endregion [01]
 
 # region [02] Implementación
@@ -30,7 +30,7 @@ class UiRunRequestTests(unittest.TestCase):
                 apply=True,
             )
 
-            with patch("_05_Interfaz.run_request.os.name", "nt"):
+            with patch("neocortex.interface.application.request.os.name", "nt"):
                 arguments = request.cli_arguments()
 
             self.assertNotIn("--all", arguments)
@@ -105,7 +105,7 @@ class UiRunRequestTests(unittest.TestCase):
                 apply=True,
             )
             with (
-                patch("_05_Interfaz.run_request.os.name", "posix"),
+                patch("neocortex.interface.application.request.os.name", "posix"),
                 self.assertRaisesRegex(ValueError, "linux_mutation_backend_unavailable"),
             ):
                 request.validated()

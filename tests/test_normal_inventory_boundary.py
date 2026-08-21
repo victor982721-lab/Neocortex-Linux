@@ -11,8 +11,8 @@ from pathlib import Path
 
 import pytest
 
-from _01_Enumeracion import JournalCursor
-from _02_Deduplicacion import DedupIndex, InventoryCheckpoint, ScanSummary
+from neocortex.enumeration import JournalCursor
+from neocortex.deduplication import DedupIndex, InventoryCheckpoint, ScanSummary
 from _04_Nucleo_Operativo import inventory_boundary as inventory_boundary_module
 from _04_Nucleo_Operativo.corpus_access import (
     CorpusAccessPolicy,

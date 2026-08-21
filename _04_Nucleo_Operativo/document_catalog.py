@@ -16,7 +16,7 @@ from pathlib import Path
 from neocortex.platform_policy import sqlite_path_collation, stat_birthtime_ns
 from typing import TYPE_CHECKING, Iterator, Literal
 
-from _03_Progreso import (
+from neocortex.progress import (
     ProgressCallback,
     ProgressEvent,
     ProgressMetric,

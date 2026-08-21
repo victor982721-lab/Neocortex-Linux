@@ -10,13 +10,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from _01_Enumeracion import (
+from neocortex.enumeration import (
     JournalCursor,
     JournalDiscontinuityError,
     NtfsUsnError,
     UsnJournalReader,
 )
-from _02_Deduplicacion import inventory_schema
+from neocortex.deduplication import schema as inventory_schema
 from neocortex.sqlite_schema_contract import read_metadata_schema_version
 
 from . import framework_schema

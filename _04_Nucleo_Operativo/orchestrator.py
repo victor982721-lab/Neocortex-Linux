@@ -17,15 +17,15 @@ from pathlib import Path
 from neocortex.platform_policy import stat_birthtime_ns
 from typing import TYPE_CHECKING, Mapping, cast
 
-from _01_Enumeracion import JournalCursor, NtfsUsnError, query_journal_cursor
-from _02_Deduplicacion import (
+from neocortex.enumeration import JournalCursor, NtfsUsnError, query_journal_cursor
+from neocortex.deduplication import (
     DedupIndex,
     DedupPlan,
     DedupPlanner,
     InventoryExclusionPolicy,
 )
-from _02_Deduplicacion.inventory import validate_inventory_root
-from _03_Progreso import NullProgress, ProgressCallback, ProgressEvent, emit_progress
+from neocortex.deduplication.inventory.index import validate_inventory_root
+from neocortex.progress import NullProgress, ProgressCallback, ProgressEvent, emit_progress
 
 from .actions import FrameworkActions
 from .application_config_projections import global_resource_limits_from_application

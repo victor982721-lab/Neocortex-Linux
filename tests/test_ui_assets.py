@@ -12,7 +12,7 @@ from PIL import Image
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
-from _05_Interfaz.assets import application_icon_path, asset_directory
+from neocortex.interface.presentation.assets import application_icon_path, asset_directory
 # endregion [01]
 
 # region [02] Implementación

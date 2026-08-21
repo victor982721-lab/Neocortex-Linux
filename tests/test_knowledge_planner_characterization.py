@@ -4,7 +4,6 @@
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
-
 # region [01] Dependencias del módulo
 from __future__ import annotations
 
@@ -85,9 +84,7 @@ _EXPECTED_PRIVATE_SIGNATURES = {
         "project: 'str | None', date_from: 'str | None', "
         "date_to: 'str | None', limit: 'int') -> 'tuple[RetrievalStep, ...]'"
     ),
-    "_exact_terms": (
-        "(text: 'str') -> 'tuple[tuple[str, ...], bool, bool, bool, str, str]'"
-    ),
+    "_exact_terms": ("(text: 'str') -> 'tuple[tuple[str, ...], bool, bool, bool, str, str]'"),
     "_knowledge_plan_identifier": (
         "(*, normalized_query: 'str', retrieval_mode: 'RetrievalMode', "
         "intents: 'tuple[str, ...]', exact_terms: 'tuple[str, ...]', "
@@ -112,8 +109,7 @@ _EXPECTED_PRIVATE_SIGNATURES = {
         "(query: 'KnowledgeQuery') -> 'tuple[tuple[str, ...], tuple[str, ...]]'"
     ),
     "_semantic_ranking_names": (
-        "(source_kinds: 'tuple[str, ...]', formats: 'tuple[str, ...]') "
-        "-> 'tuple[str, ...]'"
+        "(source_kinds: 'tuple[str, ...]', formats: 'tuple[str, ...]') -> 'tuple[str, ...]'"
     ),
     "_validate_knowledge_plan_v2": "(plan: 'KnowledgePlan') -> 'None'",
 }
@@ -337,9 +333,7 @@ def test_public_validation_exception_types_and_messages_are_exact() -> None:
     with pytest.raises(ValueError) as untyped_mode:
         KnowledgeQuery("query", retrieval_mode="evidence")  # type: ignore[arg-type]
     assert type(untyped_mode.value) is ValueError
-    assert str(untyped_mode.value) == (
-        "retrieval_mode must be a RetrievalMode instance"
-    )
+    assert str(untyped_mode.value) == ("retrieval_mode must be a RetrievalMode instance")
 
     with pytest.raises(ValueError) as blank_step:
         RetrievalStep("", "semantic_text", "fixture", 1)
@@ -404,7 +398,7 @@ print(
     assert completed.stderr == ""
     payload: dict[str, Any] = json.loads(completed.stdout)
     assert payload["heavy"] == []
-    assert payload["native"] == ["sqlite3"]
+    assert payload["native"] == []
     loaded = set(payload["internal"])
     assert {
         "_04_Nucleo_Operativo",
@@ -431,4 +425,6 @@ print(
         "_04_Nucleo_Operativo.route_filters",
         "_04_Nucleo_Operativo.semantic_models",
     }
+
+
 # endregion [02]

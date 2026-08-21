@@ -11,8 +11,8 @@ from typing import cast
 
 import pytest
 
-from _01_Enumeracion import JournalCursor
-from _02_Deduplicacion import (
+from neocortex.enumeration import JournalCursor
+from neocortex.deduplication import (
     DedupIndex,
     FileSnapshot,
     InventoryCheckpoint,
@@ -85,9 +85,7 @@ def _source_run(
         run_id = state.begin_initial_run(
             root,
             JournalCursor("C:", 1, 10),
-            inventory_policy_signature=(
-                effective_signature if persist_policy else None
-            ),
+            inventory_policy_signature=(effective_signature if persist_policy else None),
         )
         state.store_route_candidates(run_id, (("application/pdf", snapshot),))
         state.publish_initial_routing_snapshot(
@@ -161,9 +159,7 @@ def _inventory_snapshot_adapter(
 ) -> RouteAdapter:
     def execute(context):
         with DedupIndex(context.config.dedup_database) as index:
-            paths = tuple(
-                snapshot.path for snapshot in index.snapshots(context.scan_id)
-            )
+            paths = tuple(snapshot.path for snapshot in index.snapshots(context.scan_id))
         seen.append((context.scan_id, paths))
         return {"processed": len(paths)}
 
@@ -205,9 +201,7 @@ class _RouteOnlyStateDouble:
         run_kind: str,
         source_run_id: int,
     ) -> int:
-        self.events.append(
-            f"state.begin:{root.name}:{run_kind}:{source_run_id}"
-        )
+        self.events.append(f"state.begin:{root.name}:{run_kind}:{source_run_id}")
         return 84
 
     def copy_route_candidates(self, source_run_id: int, run_id: int) -> int:
@@ -670,9 +664,7 @@ def test_implicit_mime_route_does_not_fallback_to_stale_candidate_run(
     assert stale_candidate_run < newest_run
     assert executed is False
     with sqlite3.connect(database) as connection:
-        assert (
-            connection.execute("SELECT COUNT(*) FROM initial_runs").fetchone()[0] == 2
-        )
+        assert connection.execute("SELECT COUNT(*) FROM initial_runs").fetchone()[0] == 2
 
 
 @pytest.mark.parametrize(
@@ -718,9 +710,7 @@ def test_route_candidate_inputs_fail_closed_on_zero_mime_candidates(
 
     assert executed == []
     with sqlite3.connect(database) as connection:
-        assert (
-            connection.execute("SELECT COUNT(*) FROM initial_runs").fetchone()[0] == 1
-        )
+        assert connection.execute("SELECT COUNT(*) FROM initial_runs").fetchone()[0] == 1
 
 
 def test_resume_infers_interrupted_route_and_preserves_phase_evidence(
@@ -1208,9 +1198,7 @@ def test_route_only_rejects_inconsistent_bound_inventory_scan(
         ).run()
     assert executed is False
     with sqlite3.connect(framework_database) as connection:
-        assert (
-            connection.execute("SELECT COUNT(*) FROM initial_runs").fetchone()[0] == 1
-        )
+        assert connection.execute("SELECT COUNT(*) FROM initial_runs").fetchone()[0] == 1
 
 
 def test_explicit_route_source_with_legacy_policy_fails_before_new_run(
@@ -1248,9 +1236,7 @@ def test_explicit_route_source_with_legacy_policy_fails_before_new_run(
 
     assert not executed
     with sqlite3.connect(framework_database) as connection:
-        assert (
-            connection.execute("SELECT COUNT(*) FROM initial_runs").fetchone()[0] == 1
-        )
+        assert connection.execute("SELECT COUNT(*) FROM initial_runs").fetchone()[0] == 1
 
 
 # endregion [02]

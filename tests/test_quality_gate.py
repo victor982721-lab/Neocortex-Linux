@@ -91,7 +91,7 @@ def _coverage_report(
 ) -> dict[str, object]:
     return {
         "meta": {"version": version, "branch_coverage": True},
-        "files": {"Orquestador.py": {}},
+        "files": {"_04_Nucleo_Operativo/__init__.py": {}},
         "totals": {
             "covered_lines": covered_lines,
             "num_statements": statements,
@@ -207,11 +207,7 @@ def test_repository_does_not_configure_github_actions() -> None:
 
     assert workflows == ()
     assert WHEEL_PACKAGE_ROOTS == (
-        "_01_Enumeracion",
-        "_02_Deduplicacion",
-        "_03_Progreso",
         "_04_Nucleo_Operativo",
-        "_05_Interfaz",
         "neocortex",
     )
 
@@ -413,7 +409,9 @@ def test_coverage_baseline_is_branch_aware_versioned_and_uses_production_scope()
     baseline = coverage_baseline_payload(
         report,
         test_inventory=_coverage_inventory("tests/test_alpha.py", "tests/test_beta.py"),
-        source_inventory=_coverage_inventory("Orquestador.py", "neocortex/__init__.py"),
+        source_inventory=_coverage_inventory(
+            "_04_Nucleo_Operativo/__init__.py", "neocortex/__init__.py"
+        ),
     )
 
     assert baseline["schema"] == COVERAGE_BASELINE_SCHEMA
@@ -431,7 +429,9 @@ def test_coverage_baseline_is_branch_aware_versioned_and_uses_production_scope()
             report,
             baseline,
             test_inventory=_coverage_inventory("tests/test_alpha.py", "tests/test_beta.py"),
-            source_inventory=_coverage_inventory("Orquestador.py", "neocortex/__init__.py"),
+            source_inventory=_coverage_inventory(
+                "_04_Nucleo_Operativo/__init__.py", "neocortex/__init__.py"
+            ),
         )["metrics"]
         == baseline["approved"]
     )
@@ -450,7 +450,9 @@ def test_coverage_gate_rejects_line_or_branch_rate_regression(
     baseline = coverage_baseline_payload(
         _coverage_report(),
         test_inventory=_coverage_inventory("tests/test_alpha.py", "tests/test_beta.py"),
-        source_inventory=_coverage_inventory("Orquestador.py", "neocortex/__init__.py"),
+        source_inventory=_coverage_inventory(
+            "_04_Nucleo_Operativo/__init__.py", "neocortex/__init__.py"
+        ),
     )
 
     with pytest.raises(GateError, match=message):
@@ -458,7 +460,9 @@ def test_coverage_gate_rejects_line_or_branch_rate_regression(
             report,
             baseline,
             test_inventory=_coverage_inventory("tests/test_alpha.py", "tests/test_beta.py"),
-            source_inventory=_coverage_inventory("Orquestador.py", "neocortex/__init__.py"),
+            source_inventory=_coverage_inventory(
+                "_04_Nucleo_Operativo/__init__.py", "neocortex/__init__.py"
+            ),
         )
 
 
@@ -466,7 +470,9 @@ def test_coverage_gate_rejects_non_branch_report_and_tool_version_drift() -> Non
     baseline = coverage_baseline_payload(
         _coverage_report(),
         test_inventory=_coverage_inventory("tests/test_alpha.py", "tests/test_beta.py"),
-        source_inventory=_coverage_inventory("Orquestador.py", "neocortex/__init__.py"),
+        source_inventory=_coverage_inventory(
+            "_04_Nucleo_Operativo/__init__.py", "neocortex/__init__.py"
+        ),
     )
     not_branch_aware = _coverage_report()
     meta = not_branch_aware["meta"]
@@ -478,14 +484,18 @@ def test_coverage_gate_rejects_non_branch_report_and_tool_version_drift() -> Non
             not_branch_aware,
             baseline,
             test_inventory=_coverage_inventory("tests/test_alpha.py", "tests/test_beta.py"),
-            source_inventory=_coverage_inventory("Orquestador.py", "neocortex/__init__.py"),
+            source_inventory=_coverage_inventory(
+                "_04_Nucleo_Operativo/__init__.py", "neocortex/__init__.py"
+            ),
         )
     with pytest.raises(GateError, match="does not match baseline"):
         compare_coverage_report(
             _coverage_report(version="7.15.0"),
             baseline,
             test_inventory=_coverage_inventory("tests/test_alpha.py", "tests/test_beta.py"),
-            source_inventory=_coverage_inventory("Orquestador.py", "neocortex/__init__.py"),
+            source_inventory=_coverage_inventory(
+                "_04_Nucleo_Operativo/__init__.py", "neocortex/__init__.py"
+            ),
         )
 
 
@@ -494,12 +504,12 @@ def test_coverage_gate_rejects_non_branch_report_and_tool_version_drift() -> Non
     (
         (
             _coverage_inventory("tests/test_alpha.py"),
-            _coverage_inventory("Orquestador.py", "neocortex/__init__.py"),
+            _coverage_inventory("_04_Nucleo_Operativo/__init__.py", "neocortex/__init__.py"),
             "test paths removed",
         ),
         (
             _coverage_inventory("tests/test_alpha.py", "tests/test_beta.py"),
-            _coverage_inventory("Orquestador.py"),
+            _coverage_inventory("_04_Nucleo_Operativo/__init__.py"),
             "production source paths removed",
         ),
     ),
@@ -512,7 +522,9 @@ def test_coverage_inventory_ratchet_rejects_deleted_test_or_source_path(
     baseline = coverage_baseline_payload(
         _coverage_report(),
         test_inventory=_coverage_inventory("tests/test_alpha.py", "tests/test_beta.py"),
-        source_inventory=_coverage_inventory("Orquestador.py", "neocortex/__init__.py"),
+        source_inventory=_coverage_inventory(
+            "_04_Nucleo_Operativo/__init__.py", "neocortex/__init__.py"
+        ),
     )
 
     with pytest.raises(GateError, match=message):
@@ -528,14 +540,16 @@ def test_coverage_inventory_ratchet_allows_additions_without_rewriting_baseline(
     baseline = coverage_baseline_payload(
         _coverage_report(),
         test_inventory=_coverage_inventory("tests/test_alpha.py"),
-        source_inventory=_coverage_inventory("Orquestador.py"),
+        source_inventory=_coverage_inventory("_04_Nucleo_Operativo/__init__.py"),
     )
 
     summary = compare_coverage_report(
         _coverage_report(),
         baseline,
         test_inventory=_coverage_inventory("tests/test_alpha.py", "tests/test_new.py"),
-        source_inventory=_coverage_inventory("Orquestador.py", "neocortex/new.py"),
+        source_inventory=_coverage_inventory(
+            "_04_Nucleo_Operativo/__init__.py", "neocortex/new.py"
+        ),
     )
 
     assert summary["metrics"] == baseline["approved"]
@@ -543,8 +557,7 @@ def test_coverage_inventory_ratchet_allows_additions_without_rewriting_baseline(
 
 def test_coverage_inventory_requires_every_production_root(tmp_path: Path) -> None:
     root = _repository_fixture(tmp_path)
-    (root / "Orquestador.py").write_text("VALUE = 1\n", encoding="utf-8")
-    for package in PRODUCTION_COVERAGE_SOURCES[1:-1]:
+    for package in PRODUCTION_COVERAGE_SOURCES[:-1]:
         directory = root / package
         directory.mkdir()
         (directory / "__init__.py").write_text("VALUE = 1\n", encoding="utf-8")
@@ -557,8 +570,7 @@ def test_coverage_runner_uses_branch_mode_exact_scope_and_dynamic_total_inventor
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root = _repository_fixture(tmp_path)
-    (root / "Orquestador.py").write_text("VALUE = 1\n", encoding="utf-8")
-    for package in PRODUCTION_COVERAGE_SOURCES[1:]:
+    for package in PRODUCTION_COVERAGE_SOURCES:
         directory = root / package
         directory.mkdir()
         (directory / "__init__.py").write_text("VALUE = 1\n", encoding="utf-8")

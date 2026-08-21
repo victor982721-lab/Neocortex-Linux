@@ -12,8 +12,13 @@ from pathlib import Path
 
 import pytest
 
-from _02_Deduplicacion import inventory_schema as inventory_schema_module
-from _02_Deduplicacion.errors import InventoryError
+from neocortex.deduplication import schema as inventory_schema_module
+from neocortex.deduplication.domain.errors import InventoryError
+from neocortex.deduplication.persistence import (
+    inventory_schema_contract as persistent_inventory_schema_contract,
+)
+from neocortex.deduplication.persistence.ddl import V9_DDL
+from neocortex.deduplication.persistence.migrations import MIGRATIONS
 from _04_Nucleo_Operativo import knowledge_search_inventory
 
 
@@ -29,6 +34,23 @@ _NEW_INDEXES = {
 }
 
 
+def test_schema_facade_and_versioned_migration_registry_are_explicit() -> None:
+    assert inventory_schema_module.__all__ == [
+        "SCHEMA_VERSION",
+        "configure_inventory_connection",
+        "initialize_inventory_schema",
+        "inventory_schema_contract",
+        "validate_inventory_schema",
+    ]
+    assert inventory_schema_module.inventory_schema_contract() is (
+        persistent_inventory_schema_contract()
+    )
+    assert {version: migration.__module__ for version, migration in MIGRATIONS.items()} == {
+        version: f"neocortex.deduplication.persistence.migrations.v{version}_to_v{version + 1}"
+        for version in range(1, 10)
+    }
+
+
 def _blob(value: int) -> bytes:
     return value.to_bytes(16, "little", signed=False)
 
@@ -42,7 +64,7 @@ def _create_populated_v9(
     keep_path = str(root / "keep.bin")
     redundant_path = str(root / "redundant.bin")
     with sqlite3.connect(database) as connection:
-        for statement in inventory_schema_module._V9_DDL:
+        for statement in V9_DDL:
             connection.execute(statement)
         connection.execute("INSERT INTO metadata(key,value) VALUES('schema_version','9')")
         connection.execute(

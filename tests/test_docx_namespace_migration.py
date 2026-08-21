@@ -208,9 +208,9 @@ def test_docx_package_import_is_light_in_a_fresh_process() -> None:
 
         importlib.import_module({CANONICAL_ROOT!r})
         forbidden = {{
-            {', '.join(repr(f'{CANONICAL_ROOT}.{name}') for name in MODULE_NAMES)},
+            {", ".join(repr(f"{CANONICAL_ROOT}.{name}") for name in MODULE_NAMES)},
             "_04_Nucleo_Operativo.platform.shared.zip_safety",
-            "_02_Deduplicacion",
+            "neocortex.deduplication",
         }}
         loaded = forbidden.intersection(sys.modules)
         if loaded:

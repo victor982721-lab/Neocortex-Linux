@@ -7,8 +7,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import cast
 
-from _01_Enumeracion import JournalCursor
-from _02_Deduplicacion import InventoryExclusionPolicy
+from neocortex.enumeration import JournalCursor
+from neocortex.deduplication import InventoryExclusionPolicy
 
 from .corpus_access import CorpusAccessPolicy
 from .self_analysis import build_self_analysis_completion_manifest
@@ -67,11 +67,7 @@ class SelfAnalysisRunEvidence:
             inventory_attempts,
             inventory_mode,
         ) = row
-        if (
-            status != "running"
-            or run_kind != "self_analysis"
-            or access_mode != "analyze_only"
-        ):
+        if status != "running" or run_kind != "self_analysis" or access_mode != "analyze_only":
             raise ValueError(f"run {run_id} is not a running protected self-analysis")
         required = (
             root_device_id_hex,
@@ -96,9 +92,7 @@ class SelfAnalysisRunEvidence:
             or int(cast(int, reconciliation_records)) != 0
             or int(cast(int, inventory_attempts)) != 1
         ):
-            raise ValueError(
-                f"self-analysis run {run_id} has invalid journal-free inventory"
-            )
+            raise ValueError(f"self-analysis run {run_id} has invalid journal-free inventory")
         return cls(
             run_id=run_id,
             root=str(root),
@@ -244,9 +238,7 @@ def _validate_processing_signature(
     ):
         raise ValueError("self-analysis code signature is invalid")
     if summary.get("processing_signature") != processing_signature:
-        raise ValueError(
-            "self-analysis code signature does not match its route summary"
-        )
+        raise ValueError("self-analysis code signature does not match its route summary")
 
 
 @dataclass(frozen=True, slots=True)

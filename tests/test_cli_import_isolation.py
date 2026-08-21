@@ -16,9 +16,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
-def _run_isolated(
-    script: str, **environment_values: str
-) -> subprocess.CompletedProcess[str]:
+def _run_isolated(script: str, **environment_values: str) -> subprocess.CompletedProcess[str]:
     environment = os.environ.copy()
     environment["PYTHONDONTWRITEBYTECODE"] = "1"
     environment.update(environment_values)
@@ -168,7 +166,7 @@ class CliImportIsolationTests(unittest.TestCase):
 
                 state_directory = Path(os.environ["NEOCORTEX_TEST_STATE"])
                 sys.argv = [
-                    "Orquestador.py",
+                    "Neocortex",
                     "--state-directory",
                     str(state_directory),
                     "--pdf-search",
@@ -213,7 +211,7 @@ class CliImportIsolationTests(unittest.TestCase):
 
                 state_directory = Path(os.environ["NEOCORTEX_TEST_STATE"])
                 sys.argv = [
-                    "Orquestador.py",
+                    "Neocortex",
                     "--state-directory",
                     str(state_directory),
                     "--docx-search",

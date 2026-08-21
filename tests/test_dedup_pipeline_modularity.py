@@ -13,8 +13,8 @@ from unittest.mock import patch
 
 import pytest
 
-from _02_Deduplicacion import DedupIndex, DedupPlanner, ScanSummary
-from _03_Progreso import RecordingProgress
+from neocortex.deduplication import DedupIndex, DedupPlanner, ScanSummary
+from neocortex.progress import RecordingProgress
 # endregion [01]
 
 # region [02] Implementación
@@ -155,7 +155,7 @@ def test_exact_collision_set_limit_abstains_instead_of_merging_distinct_files(
                 return_value=(bytes.fromhex("ff" * 16), True),
             ),
             patch(
-                "_02_Deduplicacion.planning_pipeline.MAX_EXACT_HASH_COLLISION_SETS",
+                "neocortex.deduplication.planning.pipeline.MAX_EXACT_HASH_COLLISION_SETS",
                 2,
             ),
         ):

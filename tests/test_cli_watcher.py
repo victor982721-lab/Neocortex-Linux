@@ -180,7 +180,7 @@ def test_watch_dispatch_builds_normal_config_reports_and_bridges_cancellation(
             "_04_Nucleo_Operativo.watcher.IncrementalWatcher",
             side_effect=build_watcher,
         ) as watcher_class,
-        patch("_03_Progreso.RichProgress", return_value=progress_manager),
+        patch("neocortex.progress.RichProgress", return_value=progress_manager),
         patch(
             "_04_Nucleo_Operativo.console_cancellation.ConsoleCancellationBridge",
             return_value=bridge_manager,
@@ -229,7 +229,7 @@ def test_watch_dispatch_returns_error_for_retained_watcher_failures(tmp_path) ->
             "_04_Nucleo_Operativo.watcher.IncrementalWatcher",
             return_value=fake_watcher,
         ),
-        patch("_03_Progreso.RichProgress", return_value=progress_manager),
+        patch("neocortex.progress.RichProgress", return_value=progress_manager),
         patch(
             "_04_Nucleo_Operativo.console_cancellation.ConsoleCancellationBridge",
             return_value=MagicMock(),

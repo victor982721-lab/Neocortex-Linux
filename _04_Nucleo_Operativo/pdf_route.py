@@ -22,8 +22,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Iterator, Literal, Protocol, cast
 
-from _02_Deduplicacion import DedupIndex, FileSnapshot
-from _03_Progreso import (
+from neocortex.deduplication import DedupIndex, FileSnapshot
+from neocortex.progress import (
     ProgressCallback,
     ProgressEvent,
     ProgressMetric,

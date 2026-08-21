@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from PIL import Image
 
-from _02_Deduplicacion import snapshot_path
+from neocortex.deduplication import snapshot_path
 from _04_Nucleo_Operativo.image_adult import (
     NudeNetAdultClassifier,
     decide_adult_classification,
@@ -108,9 +108,7 @@ class AdultImagePolicyTests(unittest.TestCase):
         classifier = NudeNetAdultClassifier()
         classifier._detector = detector
 
-        evidence = classifier.classify(
-            Path("document.jpg"), "foto", _features(), _document(True)
-        )
+        evidence = classifier.classify(Path("document.jpg"), "foto", _features(), _document(True))
 
         self.assertFalse(evidence.candidate)
         self.assertFalse(evidence.analyzed)
@@ -236,9 +234,7 @@ class AdultImageApplyTests(unittest.TestCase):
                 "_04_Nucleo_Operativo.image_state.iter_explicit_adult_candidates",
                 return_value=iter(((snapshot, "model=evidence"),)),
             ):
-                updated = orchestrator._apply_explicit_adult_images(
-                    runner, summary, state, 7
-                )
+                updated = orchestrator._apply_explicit_adult_images(runner, summary, state, 7)
 
             self.assertIsNotNone(updated)
             self.assertEqual(updated.adult_recycled, 1)

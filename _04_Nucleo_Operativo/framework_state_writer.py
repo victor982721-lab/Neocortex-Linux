@@ -16,8 +16,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
-from _01_Enumeracion import JournalCursor
-from _02_Deduplicacion import FileSnapshot, InventoryExclusionPolicy
+from neocortex.enumeration import JournalCursor
+from neocortex.deduplication import FileSnapshot, InventoryExclusionPolicy
 from neocortex.platform_policy import sqlite_path_collation
 
 from .platform.shared.content_types import DetectedType

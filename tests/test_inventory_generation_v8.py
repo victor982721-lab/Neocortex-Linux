@@ -18,13 +18,17 @@ from pathlib import Path
 
 import pytest
 
-from _02_Deduplicacion import (
+from neocortex.deduplication import (
     DedupIndex,
     InventoryCheckpoint,
     InventoryExclusionPolicy,
 )
-from _02_Deduplicacion import inventory_schema as inventory_schema_module
-from _02_Deduplicacion.errors import InventoryError
+from neocortex.deduplication import schema as inventory_schema_module
+from neocortex.deduplication.domain.errors import InventoryError
+from neocortex.deduplication.persistence.ddl import (
+    LEGACY_SHARED_DDL,
+    V7_GENERATIONAL_DDL,
+)
 # endregion [01]
 
 # region [02] Implementación
@@ -38,9 +42,9 @@ def _create_populated_v7(
 ) -> None:
     identity = bytes(16)
     with sqlite3.connect(database) as connection:
-        for statement in inventory_schema_module._V7_GENERATIONAL_DDL:
+        for statement in V7_GENERATIONAL_DDL:
             connection.execute(statement)
-        for statement in inventory_schema_module._LEGACY_SHARED_DDL:
+        for statement in LEGACY_SHARED_DDL:
             connection.execute(statement)
         connection.execute("INSERT INTO metadata(key,value) VALUES('schema_version','7')")
         connection.execute(

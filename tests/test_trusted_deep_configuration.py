@@ -8,7 +8,7 @@ from typing import cast
 
 import pytest
 
-from _02_Deduplicacion import InventoryExclusionPolicy
+from neocortex.deduplication import InventoryExclusionPolicy
 from _04_Nucleo_Operativo.application_config_projections import (
     code_route_config_from_application,
 )

@@ -226,7 +226,7 @@ RUNTIME_SCENARIOS = (
         test_nodeids=(
             (
                 "tests/test_code_architecture_contracts.py::"
-                "test_declared_boundary_entry_points_pass_with_acyclic_v2_baseline"
+                "test_declared_boundary_entry_points_pass_with_acyclic_v5_baseline"
             ),
             (
                 "tests/test_code_architecture_contracts.py::"
@@ -248,7 +248,7 @@ RUNTIME_SCENARIOS = (
                 "declared_boundary_fixture_accepts_required_entrypoints",
                 (
                     "tests/test_code_architecture_contracts.py::"
-                    "test_declared_boundary_entry_points_pass_with_acyclic_v2_baseline",
+                    "test_declared_boundary_entry_points_pass_with_acyclic_v5_baseline",
                 ),
             ),
             RuntimeScenarioGateSpec(
@@ -526,10 +526,7 @@ RUNTIME_SCENARIOS = (
                 "test_canonical_help_and_translation_accept_question_options_before_or_"
                 "after_positional"
             ),
-            (
-                "tests/test_code_observability_cli.py::"
-                "test_direct_handlers_map_only_ready_to_zero"
-            ),
+            ("tests/test_code_observability_cli.py::test_direct_handlers_map_only_ready_to_zero"),
             *_PUBLIC_CLI_FLAT_INVALID_NODEIDS,
             (
                 "tests/test_code_observability_cli.py::"

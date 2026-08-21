@@ -9,10 +9,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, TypeVar
 
-from _02_Deduplicacion.inventory_schema import (
+from neocortex.deduplication.schema import (
     SCHEMA_VERSION as INVENTORY_SCHEMA_VERSION,
 )
-from _02_Deduplicacion.inventory_schema import validate_inventory_schema
+from neocortex.deduplication.schema import validate_inventory_schema
 from neocortex.sqlite_schema_contract import (
     SQLiteSchemaContractError,
     read_application_schema_version,

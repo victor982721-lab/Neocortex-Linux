@@ -13,8 +13,8 @@ from pathlib import Path
 
 import pytest
 
-from _01_Enumeracion import JournalCursor
-from _02_Deduplicacion import FileSnapshot, InventoryExclusionPolicy
+from neocortex.enumeration import JournalCursor
+from neocortex.deduplication import FileSnapshot, InventoryExclusionPolicy
 from _04_Nucleo_Operativo.corpus_access import CorpusAccessPolicy
 from _04_Nucleo_Operativo.models import ActionSummary
 from _04_Nucleo_Operativo.self_analysis import (

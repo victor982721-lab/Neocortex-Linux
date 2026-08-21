@@ -16,7 +16,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Iterator, Literal
 
-from _02_Deduplicacion import FileSnapshot, stat_matches_snapshot
+from neocortex.deduplication import FileSnapshot, stat_matches_snapshot
 
 from .cancellation import CancellationToken
 from .isolated_process import (

@@ -14,26 +14,108 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 ARCHITECTURE_CONTRACT_SCHEMA = "neocortex.code-architecture-contracts/v1"
-ARCHITECTURE_BASELINE_ID = "neocortex-production-imports-2026-08-10/v2"
+ARCHITECTURE_BASELINE_ID = "neocortex-production-imports-2026-08-23/v5"
 
 PRODUCTION_ROOT_PACKAGES = (
     "neocortex",
-    "_01_Enumeracion",
-    "_02_Deduplicacion",
-    "_03_Progreso",
     "_04_Nucleo_Operativo",
-    "_05_Interfaz",
 )
 EXCLUDED_ARCHITECTURE_NAMESPACES = ("tests", "tools", "benchmarks")
-EXCLUDED_STANDALONE_MODULES = ("Orquestador",)
+EXCLUDED_STANDALONE_MODULES: tuple[str, ...] = ()
 
 _CORE = "_04_Nucleo_Operativo"
-_UI = "_05_Interfaz"
-_FOUNDATION = ("_01_Enumeracion", "_03_Progreso")
+_UI = "neocortex.interface"
+_ENUMERATION = "neocortex.enumeration"
+_DEDUPLICATION = "neocortex.deduplication"
+_PROGRESS = "neocortex.progress"
+_CANONICAL_FAMILY_TREES = (_DEDUPLICATION, _ENUMERATION, _PROGRESS, _UI)
 
 _DEDUP_CORE_ALLOWLIST = (
-    ("_02_Deduplicacion.__main__", "_04_Nucleo_Operativo.app_paths"),
-    ("_02_Deduplicacion.__main__", "_04_Nucleo_Operativo.cli_app"),
+    ("neocortex.deduplication.__main__", "_04_Nucleo_Operativo.app_paths"),
+    ("neocortex.deduplication.__main__", "_04_Nucleo_Operativo.cli_app"),
+)
+_ENUMERATION_PRODUCT_ALLOWLIST = (
+    (
+        "neocortex.enumeration.path_index.schema",
+        "neocortex.sqlite_schema_contract",
+    ),
+    (
+        "neocortex.enumeration.path_index.schema",
+        "neocortex.sqlite_schema_lifecycle",
+    ),
+)
+_DEDUP_PRODUCT_ALLOWLIST = (
+    ("neocortex.deduplication.__main__", "neocortex.platform_policy"),
+    ("neocortex.deduplication.fingerprinting", "neocortex.platform_policy"),
+    ("neocortex.deduplication.inventory.index", "neocortex.progress"),
+    ("neocortex.deduplication.inventory.policy", "neocortex.platform_policy"),
+    (
+        "neocortex.deduplication.inventory.repository_plans",
+        "neocortex.platform_policy",
+    ),
+    ("neocortex.deduplication.inventory.repository_scans", "neocortex.progress"),
+    ("neocortex.deduplication.inventory.scanner", "neocortex.progress"),
+    ("neocortex.deduplication.inventory.traversal", "neocortex.platform_policy"),
+    ("neocortex.deduplication.inventory.traversal", "neocortex.progress"),
+    (
+        "neocortex.deduplication.persistence.connections",
+        "neocortex.sqlite_schema_lifecycle",
+    ),
+    (
+        "neocortex.deduplication.persistence.contracts",
+        "neocortex.sqlite_schema_contract",
+    ),
+    ("neocortex.deduplication.persistence.ddl", "neocortex.platform_policy"),
+    (
+        "neocortex.deduplication.persistence.lifecycle",
+        "neocortex.sqlite_schema_lifecycle",
+    ),
+    (
+        "neocortex.deduplication.persistence.migrations.v6_to_v7",
+        "neocortex.sqlite_schema_contract",
+    ),
+    (
+        "neocortex.deduplication.persistence.migrations.v7_to_v8",
+        "neocortex.sqlite_schema_contract",
+    ),
+    (
+        "neocortex.deduplication.persistence.migrations.v8_to_v9",
+        "neocortex.sqlite_schema_contract",
+    ),
+    (
+        "neocortex.deduplication.persistence.migrations.v9_to_v10",
+        "neocortex.sqlite_schema_contract",
+    ),
+    (
+        "neocortex.deduplication.persistence.validation",
+        "neocortex.sqlite_schema_contract",
+    ),
+    ("neocortex.deduplication.planning.pipeline", "neocortex.progress"),
+    ("neocortex.deduplication.planning.planner", "neocortex.progress"),
+)
+_INTERFACE_CORE_ALLOWLIST = (
+    ("neocortex.interface.application.app", "_04_Nucleo_Operativo.app_paths"),
+    (
+        "neocortex.interface.presentation.windows.main",
+        "_04_Nucleo_Operativo.app_paths",
+    ),
+    ("neocortex.interface.protocol.worker", "_04_Nucleo_Operativo.cli_config"),
+    ("neocortex.interface.protocol.worker", "_04_Nucleo_Operativo.cli_parser"),
+    ("neocortex.interface.protocol.worker", "_04_Nucleo_Operativo.cli_reporting"),
+    ("neocortex.interface.protocol.worker", "_04_Nucleo_Operativo.cli_validation"),
+    ("neocortex.interface.protocol.worker", "_04_Nucleo_Operativo.orchestrator"),
+    ("neocortex.interface.read.status", "_04_Nucleo_Operativo.framework_connection"),
+    ("neocortex.interface.read.status", "_04_Nucleo_Operativo.run_status"),
+)
+_INTERFACE_PRODUCT_ALLOWLIST = (
+    ("neocortex.interface.application.app", "neocortex"),
+    ("neocortex.interface.application.app", "neocortex.platform_policy"),
+    (
+        "neocortex.interface.presentation.windows.main",
+        "neocortex.platform_policy",
+    ),
+    ("neocortex.interface.protocol.messages", "neocortex.progress"),
+    ("neocortex.interface.protocol.worker", "neocortex.progress"),
 )
 _NEOCORTEX_CORE_UI_ALLOWLIST = (
     # Canonical code-analysis facades need the protected owner default without
@@ -41,8 +123,8 @@ _NEOCORTEX_CORE_UI_ALLOWLIST = (
     # an omitted --state-directory.
     ("neocortex.cli", "_04_Nucleo_Operativo.app_paths"),
     ("neocortex.cli", "_04_Nucleo_Operativo.cli_app"),
-    ("neocortex.cli", "_05_Interfaz.app"),
-    ("neocortex.cli", "_05_Interfaz.worker"),
+    ("neocortex.cli", "neocortex.interface.application.app"),
+    ("neocortex.cli", "neocortex.interface.protocol.worker"),
     # Fixed-scope read operations cross through one declared core port instead
     # of coupling the public adapter to each operational owner.
     ("neocortex.read_api", "_04_Nucleo_Operativo.read_api_port"),
@@ -53,7 +135,7 @@ _NEOCORTEX_CORE_UI_ALLOWLIST = (
     ("neocortex.review_task_cli_adapter", "_04_Nucleo_Operativo.value_review_port"),
 )
 
-# The v2 graph is acyclic.  Keep the baseline empty so that reintroducing even
+# The v5 graph is acyclic.  Keep the baseline empty so that reintroducing even
 # a previously resolved component fails the primary architecture contract.
 KNOWN_CYCLE_BASELINE: tuple[tuple[str, ...], ...] = ()
 
@@ -71,6 +153,10 @@ def stable_architecture_id(namespace: str, *parts: object) -> str:
 
 def module_root(module: str) -> str:
     return module.partition(".")[0]
+
+
+def _in_module_tree(module: str, module_tree: str) -> bool:
+    return module == module_tree or module.startswith(module_tree + ".")
 
 
 def is_production_module(module: str) -> bool:
@@ -156,8 +242,17 @@ ARCHITECTURE_CONTRACTS = (
         "forbidden_dependency",
         "transitive production import chains entering core or UI",
         "gate",
-        _FOUNDATION,
+        (_ENUMERATION,),
         (_CORE, _UI),
+    ),
+    ArchitectureContractDefinition(
+        "progress-does-not-depend-on-other-production-v1",
+        "Progress contracts do not depend on another product family",
+        "forbidden_dependency",
+        "transitive production imports leaving neocortex.progress",
+        "gate",
+        (_PROGRESS,),
+        PRODUCTION_ROOT_PACKAGES,
     ),
     ArchitectureContractDefinition(
         "production-does-not-import-nonproduction-namespaces-v1",
@@ -174,9 +269,49 @@ ARCHITECTURE_CONTRACTS = (
         "allowlisted_boundary",
         "direct package-boundary imports",
         "gate",
-        ("_02_Deduplicacion",),
+        (_DEDUPLICATION,),
         (_CORE,),
         _DEDUP_CORE_ALLOWLIST,
+    ),
+    ArchitectureContractDefinition(
+        "dedup-product-boundary-v1",
+        "Deduplication uses only declared shared product foundations",
+        "allowlisted_boundary",
+        "direct imports leaving neocortex.deduplication",
+        "gate",
+        (_DEDUPLICATION,),
+        ("neocortex",),
+        _DEDUP_PRODUCT_ALLOWLIST,
+    ),
+    ArchitectureContractDefinition(
+        "enumeration-product-boundary-v1",
+        "Enumeration uses only declared shared product foundations",
+        "allowlisted_boundary",
+        "direct imports leaving neocortex.enumeration",
+        "gate",
+        (_ENUMERATION,),
+        ("neocortex",),
+        _ENUMERATION_PRODUCT_ALLOWLIST,
+    ),
+    ArchitectureContractDefinition(
+        "interface-core-boundary-v1",
+        "Interface uses only declared application-core entry points",
+        "allowlisted_boundary",
+        "direct imports from neocortex.interface into Core",
+        "gate",
+        (_UI,),
+        (_CORE,),
+        _INTERFACE_CORE_ALLOWLIST,
+    ),
+    ArchitectureContractDefinition(
+        "interface-product-boundary-v1",
+        "Interface uses only declared shared product foundations",
+        "allowlisted_boundary",
+        "direct imports leaving neocortex.interface",
+        "gate",
+        (_UI,),
+        ("neocortex",),
+        _INTERFACE_PRODUCT_ALLOWLIST,
     ),
     ArchitectureContractDefinition(
         "neocortex-core-ui-boundary-v1",
@@ -442,12 +577,17 @@ def evaluate_architecture_contracts(
         (
             "core-does-not-depend-on-ui-v1",
             lambda module: module_root(module) == _CORE,
-            lambda module: module_root(module) == _UI,
+            lambda module: _in_module_tree(module, _UI),
         ),
         (
             "foundation-does-not-depend-on-core-or-ui-v1",
-            lambda module: module_root(module) in _FOUNDATION,
-            lambda module: module_root(module) in (_CORE, _UI),
+            lambda module: _in_module_tree(module, _ENUMERATION),
+            lambda module: module_root(module) == _CORE or _in_module_tree(module, _UI),
+        ),
+        (
+            "progress-does-not-depend-on-other-production-v1",
+            lambda module: _in_module_tree(module, _PROGRESS),
+            lambda module: is_production_module(module) and not _in_module_tree(module, _PROGRESS),
         ),
     )
     for contract_id, source, target in forbidden_groups:
@@ -501,17 +641,49 @@ def evaluate_architecture_contracts(
     )
 
     allowlisted_contracts = (
-        ("dedup-core-boundary-v1", "_02_Deduplicacion", (_CORE,)),
-        ("neocortex-core-ui-boundary-v1", "neocortex", (_CORE, _UI)),
+        (
+            "dedup-core-boundary-v1",
+            lambda module: _in_module_tree(module, _DEDUPLICATION),
+            lambda module: module_root(module) == _CORE,
+        ),
+        (
+            "dedup-product-boundary-v1",
+            lambda module: _in_module_tree(module, _DEDUPLICATION),
+            lambda module: (
+                module_root(module) == "neocortex" and not _in_module_tree(module, _DEDUPLICATION)
+            ),
+        ),
+        (
+            "enumeration-product-boundary-v1",
+            lambda module: _in_module_tree(module, _ENUMERATION),
+            lambda module: (
+                module_root(module) == "neocortex" and not _in_module_tree(module, _ENUMERATION)
+            ),
+        ),
+        (
+            "interface-core-boundary-v1",
+            lambda module: _in_module_tree(module, _UI),
+            lambda module: module_root(module) == _CORE,
+        ),
+        (
+            "interface-product-boundary-v1",
+            lambda module: _in_module_tree(module, _UI),
+            lambda module: module_root(module) == "neocortex" and not _in_module_tree(module, _UI),
+        ),
+        (
+            "neocortex-core-ui-boundary-v1",
+            lambda module: (
+                module_root(module) == "neocortex"
+                and not any(_in_module_tree(module, tree) for tree in _CANONICAL_FAMILY_TREES)
+            ),
+            lambda module: module_root(module) == _CORE or _in_module_tree(module, _UI),
+        ),
     )
-    for contract_id, source_root, target_roots in allowlisted_contracts:
+    for contract_id, source, target in allowlisted_contracts:
         definition = definitions[contract_id]
         allowlist = set(definition.allowlist)
         crossings = tuple(
-            item
-            for item in normalized_imports
-            if module_root(item.importer) == source_root
-            and module_root(item.imported) in target_roots
+            item for item in normalized_imports if source(item.importer) and target(item.imported)
         )
         violations = tuple(
             _violation_for_chain(
@@ -545,7 +717,7 @@ def evaluate_architecture_contracts(
             _violation_for_chain(
                 cycle_contract,
                 chain,
-                "production import cycle is not in the published acyclic v2 baseline",
+                "production import cycle is not in the published acyclic v5 baseline",
                 index,
                 metadata={"component": list(component)},
             )

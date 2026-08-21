@@ -10,7 +10,7 @@ from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 
-from _02_Deduplicacion.inventory_schema import initialize_inventory_schema
+from neocortex.deduplication.schema import initialize_inventory_schema
 from _04_Nucleo_Operativo.document_catalog import initialize_document_catalog
 from _04_Nucleo_Operativo.file_identity import encode_file_identity
 from _04_Nucleo_Operativo.knowledge_asset_health import inspect_knowledge_asset_health

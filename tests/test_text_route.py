@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 import _04_Nucleo_Operativo.text_route as text_route_module
-from _02_Deduplicacion import FileSnapshot, snapshot_path
+from neocortex.deduplication import FileSnapshot, snapshot_path
 from _04_Nucleo_Operativo.cancellation import CancellationToken
 from _04_Nucleo_Operativo.document_catalog import (
     document_catalog_database,

@@ -50,7 +50,7 @@ def _run_framework_with_progress(args: argparse.Namespace, progress):
 def run_framework(args: argparse.Namespace, *, progress=None):
     """Build the validated configuration and run the integrated framework."""
 
-    from _03_Progreso import LineProgress, RichProgress
+    from neocortex.progress import LineProgress, RichProgress
 
     if progress is not None:
         return _run_framework_with_progress(args, progress)
@@ -296,9 +296,9 @@ def main(arguments: Sequence[str] | None = None) -> int:
         if self_analysis_exit_code != 0:
             return 2
 
-    from _03_Progreso import LineProgress, RichProgress
+    from neocortex.progress import LineProgress, RichProgress
     from rich.console import Console
-    from _02_Deduplicacion import InventoryError
+    from neocortex.deduplication import InventoryError
 
     from .cli_reporting import (
         has_organization_errors,

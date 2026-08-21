@@ -13,8 +13,8 @@ from types import SimpleNamespace
 from typing import cast
 from unittest.mock import patch
 
-from _01_Enumeracion import JournalCursor
-from _02_Deduplicacion import (
+from neocortex.enumeration import JournalCursor
+from neocortex.deduplication import (
     DedupIndex,
     DedupPlanner,
     FileChangedError,
@@ -22,7 +22,7 @@ from _02_Deduplicacion import (
     full_fingerprint,
     snapshot_path,
 )
-from _02_Deduplicacion.errors import InventoryError
+from neocortex.deduplication.domain.errors import InventoryError
 from _04_Nucleo_Operativo import action_policy
 from _04_Nucleo_Operativo.action_policy import same_snapshot
 from _04_Nucleo_Operativo.actions import FrameworkActions

@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 from PIL import Image
 
-from _02_Deduplicacion import FULL_ALGORITHM, snapshot_path
+from neocortex.deduplication import FULL_ALGORITHM, snapshot_path
 from _04_Nucleo_Operativo.image_document import (
     DocumentTextEvidence,
     DocumentVerifierRuntime,

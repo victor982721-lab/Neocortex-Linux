@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import io
-import runpy
 import tempfile
 import unittest
 from types import SimpleNamespace
@@ -14,16 +13,11 @@ from contextlib import redirect_stderr
 from pathlib import Path
 from unittest.mock import patch
 
-import Orquestador
-from _02_Deduplicacion import InventoryError
-from _04_Nucleo_Operativo.cli_app import main, run_framework
+from neocortex.deduplication import InventoryError
+from _04_Nucleo_Operativo.cli_app import main
 from _04_Nucleo_Operativo.cli_config import framework_config_from_args
-from _04_Nucleo_Operativo.cli_parser import (
-    ExplicitArgumentParser,
-    build_parser,
-    decimal_megabytes,
-)
-from _04_Nucleo_Operativo.cli_reporting import has_strict_route_errors
+from _04_Nucleo_Operativo.cli_parser import build_parser
+from _04_Nucleo_Operativo.cli_validation import validate_arguments
 
 # endregion [01]
 
@@ -56,7 +50,7 @@ class ModularParserTests(unittest.TestCase):
                 "1.5",
             ]
         )
-        Orquestador._validate_arguments(args)
+        validate_arguments(args)
         config = framework_config_from_args(args)
 
         self.assertEqual(config.route, "image")
@@ -73,35 +67,10 @@ class ModularParserTests(unittest.TestCase):
 # endregion [02]
 
 
-# region [03] Stable shim tests
+# region [03] Integrated CLI tests
 
 
-class OrchestratorShimTests(unittest.TestCase):
-    def test_historical_symbols_reexport_modular_implementations(self) -> None:
-        self.assertIs(Orquestador._ExplicitArgumentParser, ExplicitArgumentParser)
-        self.assertIs(Orquestador._decimal_megabytes, decimal_megabytes)
-        self.assertIs(Orquestador._parser, build_parser)
-        self.assertIs(Orquestador._run_framework, run_framework)
-        self.assertIs(Orquestador._has_strict_route_errors, has_strict_route_errors)
-        self.assertIs(Orquestador.main, main)
-        self.assertEqual(Orquestador._parser().prog, "Neocortex")
-
-    def test_process_shim_preserves_keyboard_interrupt_exit(self) -> None:
-        stderr = io.StringIO()
-        shim_path = Path(Orquestador.__file__)
-        with (
-            patch(
-                "_04_Nucleo_Operativo.cli_app.main",
-                side_effect=KeyboardInterrupt,
-            ),
-            redirect_stderr(stderr),
-            self.assertRaises(SystemExit) as raised,
-        ):
-            runpy.run_path(str(shim_path), run_name="__main__")
-
-        self.assertEqual(raised.exception.code, 130)
-        self.assertIn("Ejecución cancelada por el usuario.", stderr.getvalue())
-
+class CliIntegrationTests(unittest.TestCase):
     def test_all_runs_integrated_semantic_after_framework(self) -> None:
         result = SimpleNamespace(actions=None)
         with (

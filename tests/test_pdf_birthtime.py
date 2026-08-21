@@ -15,7 +15,7 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
-from _02_Deduplicacion import (
+from neocortex.deduplication import (
     FULL_ALGORITHM,
     DedupIndex,
     FileSnapshot,

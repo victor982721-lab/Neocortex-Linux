@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from _02_Deduplicacion import inventory_schema
+from neocortex.deduplication import schema as inventory_schema
 
 from . import document_catalog_schema, framework_schema, semantic_schema
 from .review_task_repository import (

@@ -44,10 +44,10 @@ from neocortex.capabilities import (
 )
 from neocortex.platform_policy import physical_identity_scheme_for_birthtime
 
-from _02_Deduplicacion import FileChangedError, FileSnapshot
-from _02_Deduplicacion.hashing import snapshot_path, stat_matches_snapshot
-from _02_Deduplicacion.path_io import native_io_path
-from _03_Progreso import ProgressCallback, ProgressEvent, ProgressMetric, emit_progress
+from neocortex.deduplication import FileChangedError, FileSnapshot
+from neocortex.deduplication.fingerprinting import snapshot_path, stat_matches_snapshot
+from neocortex.deduplication.io import native_io_path
+from neocortex.progress import ProgressCallback, ProgressEvent, ProgressMetric, emit_progress
 
 from .bounded_subprocess import SubprocessOutputLimitError, run_bounded_capture
 from .cancellation import CancellationRequested, CancellationToken

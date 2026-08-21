@@ -7,7 +7,7 @@ from contextlib import closing
 
 import pytest
 
-from _02_Deduplicacion import FileSnapshot
+from neocortex.deduplication import FileSnapshot
 from _04_Nucleo_Operativo.audio_route import _file_key as audio_file_key
 from _04_Nucleo_Operativo.document_catalog import _split_file_key
 from _04_Nucleo_Operativo.docx_route import _file_key as docx_file_key
@@ -54,14 +54,8 @@ def test_packed_hex_v1_round_trips_all_unsigned_128_bit_boundaries(
     assert len(key) == 65
     assert key[32] == ":"
     assert key == key.lower()
-    assert (
-        decode_file_identity(key, encoding=FileIdentityEncoding.PACKED_HEX_V1)
-        == identity
-    )
-    assert (
-        FileIdentity.decode(key, encoding=FileIdentityEncoding.PACKED_HEX_V1)
-        == identity
-    )
+    assert decode_file_identity(key, encoding=FileIdentityEncoding.PACKED_HEX_V1) == identity
+    assert FileIdentity.decode(key, encoding=FileIdentityEncoding.PACKED_HEX_V1) == identity
 
 
 def test_packed_output_preserves_the_existing_primary_key_exactly() -> None:
@@ -137,15 +131,11 @@ def test_auto_detection_rejects_two_ambiguous_32_digit_decimal_components() -> N
     with pytest.raises(AmbiguousFileIdentityError, match="explicit encoding"):
         decode_file_identity(key)
 
-    assert decode_file_identity(
-        key, encoding=FileIdentityEncoding.LEGACY_DECIMAL
-    ) == FileIdentity(
+    assert decode_file_identity(key, encoding=FileIdentityEncoding.LEGACY_DECIMAL) == FileIdentity(
         12345678901234567890123456789012,
         23456789012345678901234567890123,
     )
-    assert decode_file_identity(
-        key, encoding=FileIdentityEncoding.PACKED_HEX_V1
-    ) == FileIdentity(
+    assert decode_file_identity(key, encoding=FileIdentityEncoding.PACKED_HEX_V1) == FileIdentity(
         int("12345678901234567890123456789012", 16),
         int("23456789012345678901234567890123", 16),
     )
@@ -220,9 +210,7 @@ def test_catalog_identity_fields_use_neutral_decimal_values(
     assert _split_file_key(key) == expected
 
 
-def test_catalog_rejects_ambiguous_legacy_identity_instead_of_reinterpreting_it() -> (
-    None
-):
+def test_catalog_rejects_ambiguous_legacy_identity_instead_of_reinterpreting_it() -> None:
     key = "12345678901234567890123456789012:23456789012345678901234567890123"
 
     with pytest.raises(AmbiguousFileIdentityError):

@@ -4,7 +4,6 @@
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
-
 # region [01] Dependencias del módulo
 from __future__ import annotations
 
@@ -16,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from _02_Deduplicacion import FileSnapshot
+from neocortex.deduplication import FileSnapshot
 
 from .corpus_access import CorpusMutationGuard
 from .framework_state_common import (
@@ -59,8 +58,7 @@ def _bounded_review_reason_codes(reason_codes: object) -> tuple[str, ...]:
     for value in iterator:
         if len(bounded) >= MAX_RECONCILIATION_REASONS:
             raise ValueError(
-                "review reconciliation exceeds "
-                f"{MAX_RECONCILIATION_REASONS} reason codes"
+                f"review reconciliation exceeds {MAX_RECONCILIATION_REASONS} reason codes"
             )
         bounded.append(value)
     return validated_reason_codes(bounded)
@@ -123,9 +121,7 @@ class FrameworkRouteState:
             if readonly:
                 connection.execute("PRAGMA query_only=ON")
                 if int(connection.execute("PRAGMA query_only").fetchone()[0]) != 1:
-                    raise RuntimeError(
-                        "framework route state could not enforce query-only mode"
-                    )
+                    raise RuntimeError("framework route state could not enforce query-only mode")
         except BaseException:
             connection.close()
             raise
@@ -684,7 +680,7 @@ class FrameworkRouteState:
             resolution_note=resolution_note,
             evaluated_reason_codes=(reason_code,),
         )
-        validated_reason = tuple(reconciliation.evaluated_reason_codes)[0]
+        validated_reason = next(iter(reconciliation.evaluated_reason_codes))
         resolved_ns = time.time_ns()
         connection = self._connect(readonly=False)
         try:
@@ -731,8 +727,7 @@ class FrameworkRouteState:
         for reconciliation in reconciliations:
             if not isinstance(reconciliation, ReviewCandidateReconciliation):
                 raise TypeError(
-                    "review reconciliation batch must contain "
-                    "ReviewCandidateReconciliation values"
+                    "review reconciliation batch must contain ReviewCandidateReconciliation values"
                 )
             if len(batch) >= REVIEW_RECONCILIATION_BATCH_SIZE:
                 raise ValueError(
@@ -829,8 +824,7 @@ class FrameworkRouteState:
                 if existing is not None:
                     if tuple(existing[1:15]) != identity:
                         raise ValueError(
-                            "review idempotency_key already identifies a different "
-                            "decision"
+                            "review idempotency_key already identifies a different decision"
                         )
                     stored_snapshot_values = tuple(existing[15:])
                     if all(value is None for value in stored_snapshot_values):
@@ -842,9 +836,7 @@ class FrameworkRouteState:
                         )
                     stored_retryable = int(stored_snapshot_values[2])
                     if stored_retryable not in (0, 1):
-                        raise sqlite3.DatabaseError(
-                            "review decision candidate snapshot is invalid"
-                        )
+                        raise sqlite3.DatabaseError("review decision candidate snapshot is invalid")
                     stored_snapshot = (
                         str(stored_snapshot_values[0]),
                         str(stored_snapshot_values[1]),
@@ -878,28 +870,18 @@ class FrameworkRouteState:
                 if candidate is None:
                     raise ValueError("review decision does not identify a finding")
                 if tuple(candidate[:5]) != expected_candidate:
-                    raise ValueError(
-                        "review decision is stale; refresh the finding generation"
-                    )
+                    raise ValueError("review decision is stale; refresh the finding generation")
                 if str(candidate[5]) != "open":
-                    raise ValueError(
-                        "review decision finding is no longer open; refresh it"
-                    )
+                    raise ValueError("review decision finding is no longer open; refresh it")
                 retryable = int(candidate[8])
                 if retryable not in (0, 1):
-                    raise ValueError(
-                        "review decision finding has invalid retryable state"
-                    )
+                    raise ValueError("review decision finding has invalid retryable state")
                 try:
                     candidate_evidence = json.loads(str(candidate[10]))
                 except (TypeError, ValueError) as exc:
-                    raise ValueError(
-                        "review decision finding has invalid evidence"
-                    ) from exc
+                    raise ValueError("review decision finding has invalid evidence") from exc
                 if not isinstance(candidate_evidence, dict):
-                    raise ValueError(
-                        "review decision finding evidence must be a JSON object"
-                    )
+                    raise ValueError("review decision finding evidence must be a JSON object")
                 candidate_snapshot = (
                     str(candidate[6]),
                     str(candidate[7]),
@@ -931,9 +913,7 @@ class FrameworkRouteState:
                     ),
                 )
                 if cursor.lastrowid is None:
-                    raise RuntimeError(
-                        "SQLite did not return a review-decision identifier"
-                    )
+                    raise RuntimeError("SQLite did not return a review-decision identifier")
                 decision_id = int(cursor.lastrowid)
                 _materialize_review_decision(
                     connection,
@@ -943,4 +923,6 @@ class FrameworkRouteState:
                 return decision_id
         finally:
             connection.close()
+
+
 # endregion [02]

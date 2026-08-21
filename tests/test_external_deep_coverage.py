@@ -314,10 +314,7 @@ def test_provider_runtime_cleanup_failure_preserves_primary_error(
             runtime = created
             raise RuntimeError("primary fixture failure")
 
-    assert any(
-        "cleanup fixture failure" in note
-        for note in getattr(caught.value, "__notes__", ())
-    )
+    assert any("cleanup fixture failure" in note for note in getattr(caught.value, "__notes__", ()))
     assert runtime is not None
     assert runtime.is_dir()
     original_cleanup(runtime, providers._runtime_directory_identity(runtime))
@@ -451,7 +448,7 @@ def test_normalizes_canonical_metrics_context_relations_and_missing_ranges(
     assert progress[-1].completed_shards == progress[-1].total_shards == 2
     assert progress[-1].selected_tests == 3
     assert result.counters["nominal_time_budget_seconds"] == 30
-    assert result.counters["progress_time_limit_seconds"] == 60
+    assert result.counters["progress_time_limit_seconds"] == 75
     canonical = {
         "executable_lines",
         "covered_lines",
@@ -568,7 +565,7 @@ def test_completed_shard_progress_unlocks_one_bounded_time_extension(
             ("pytest",),
             progress_made=True,
         )
-        == 29.0
+        == 44.0
     )
 
 
@@ -587,7 +584,7 @@ def test_reused_shards_cannot_publish_after_the_progress_deadline(
 
     def expire_after_reuse(event: deep.DeepCoverageProgress) -> None:
         if event.phase == "shard_reused":
-            clock[0] = 61.0
+            clock[0] = 76.0
 
     with pytest.raises(subprocess.TimeoutExpired):
         _execute(
@@ -614,7 +611,7 @@ def test_result_normalization_cannot_publish_after_the_progress_deadline(
 
     def overrun_normalization(*args, **kwargs):
         result = normalize(*args, **kwargs)
-        clock[0] = 61.0
+        clock[0] = 76.0
         return result
 
     monkeypatch.setattr(deep, "_normalize", overrun_normalization)

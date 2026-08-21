@@ -15,7 +15,7 @@ from typing import cast
 import pytest
 
 import _04_Nucleo_Operativo.document_organization_application as organization_application
-from _02_Deduplicacion import FileSnapshot, snapshot_path
+from neocortex.deduplication import FileSnapshot, snapshot_path
 from _04_Nucleo_Operativo.corpus_access import (
     CorpusAccessPolicy,
     CorpusMutationGuard,

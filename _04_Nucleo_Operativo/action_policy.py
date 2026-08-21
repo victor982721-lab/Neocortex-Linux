@@ -7,8 +7,8 @@ import stat as stat_module
 from pathlib import Path
 from typing import Any, Iterator
 
-from _02_Deduplicacion import FileSnapshot
-from _02_Deduplicacion.inventory import InventoryExclusionPolicy
+from neocortex.deduplication import FileSnapshot
+from neocortex.deduplication.inventory.index import InventoryExclusionPolicy
 
 
 # region [01] Snapshot and destination policy

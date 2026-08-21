@@ -41,7 +41,7 @@ def watcher_config_from_args(args: argparse.Namespace) -> IncrementalWatcherConf
 def run_incremental_watcher(args: argparse.Namespace) -> int:
     """Run the incremental watcher in this process and calling thread."""
 
-    from _03_Progreso import RichProgress
+    from neocortex.progress import RichProgress
 
     from .cli_config import framework_config_from_args
     from .cli_reporting import (

@@ -24,7 +24,7 @@ from unittest.mock import patch
 
 import fitz  # type: ignore[import-untyped]
 
-from _02_Deduplicacion import DedupIndex, FileSnapshot, snapshot_path
+from neocortex.deduplication import DedupIndex, FileSnapshot, snapshot_path
 from _04_Nucleo_Operativo.cancellation import CancellationToken
 from _04_Nucleo_Operativo.pdf_route import (
     PdfRoute,
@@ -66,11 +66,7 @@ class _State:
 
     def iter_route_candidates(self, run_id, mime):
         if mime == "application/pdf":
-            yield from (
-                item
-                for item in self.candidates
-                if item.path.casefold().endswith(".pdf")
-            )
+            yield from (item for item in self.candidates if item.path.casefold().endswith(".pdf"))
 
     def begin_file_actions(self, run_id, actions):
         ids = []
@@ -408,9 +404,7 @@ class PdfRouteTests(unittest.TestCase):
                 patch("fitz.open", return_value=BrokenPageTree()),
                 patch(
                     "_04_Nucleo_Operativo.pdf_isolation._qpdf_repaired_copy",
-                    return_value=nullcontext(
-                        ("repaired.pdf", {"engine": "qpdf+pymupdf"})
-                    ),
+                    return_value=nullcontext(("repaired.pdf", {"engine": "qpdf+pymupdf"})),
                 ),
                 patch(
                     "_04_Nucleo_Operativo.pdf_isolation._extract_with_pdfminer",
@@ -440,9 +434,7 @@ class PdfRouteTests(unittest.TestCase):
         native_estimate = effective_pdf_worker_memory_bytes(native_only)
         self.assertGreater(automatic_estimate, 1024 * 1024 * 1024)
         self.assertGreater(native_estimate, 256 * 1024 * 1024)
-        self.assertGreater(
-            effective_pdf_job_memory_limit_bytes(automatic), automatic_estimate
-        )
+        self.assertGreater(effective_pdf_job_memory_limit_bytes(automatic), automatic_estimate)
 
     def test_mupdf_warning_samples_are_always_utf8_serializable(self):
         class Tools:
@@ -478,9 +470,7 @@ class PdfRouteTests(unittest.TestCase):
         collision = PermissionError("temporary file busy")
         collision.winerror = 32
         with (
-            patch(
-                "pytesseract.image_to_string", side_effect=(collision, "texto")
-            ) as ocr,
+            patch("pytesseract.image_to_string", side_effect=(collision, "texto")) as ocr,
             patch("_04_Nucleo_Operativo.pdf_isolation.time.sleep"),
         ):
             text = _ocr_page(FakePage(), FakeFitz, config, nullcontext())
@@ -701,9 +691,7 @@ class PdfRouteTests(unittest.TestCase):
         )
         with patch.object(route, "_priority_candidate_keys", return_value=priority):
             prioritized = list(route._candidate_snapshots())
-        self.assertEqual(
-            [item.path for item in prioritized], ["second.pdf", "first.pdf"]
-        )
+        self.assertEqual([item.path for item in prioritized], ["second.pdf", "first.pdf"])
 
         route.config = PdfRouteConfig(Path("state.sqlite3"))
         self.assertEqual(len(list(route._candidate_snapshots())), 4)
@@ -820,9 +808,7 @@ class PdfRouteTests(unittest.TestCase):
                 version = connection.execute(
                     "SELECT value FROM metadata WHERE key='schema_version'"
                 ).fetchone()[0]
-                page_columns = {
-                    row[1] for row in connection.execute("PRAGMA table_info(pages)")
-                }
+                page_columns = {row[1] for row in connection.execute("PRAGMA table_info(pages)")}
                 document_columns = {
                     row[1] for row in connection.execute("PRAGMA table_info(documents)")
                 }
@@ -848,8 +834,7 @@ class PdfRouteTests(unittest.TestCase):
                     "SELECT 1 FROM sqlite_master WHERE name='pdf_inventory'"
                 ).fetchone()
                 inventory_columns = {
-                    row[1]
-                    for row in connection.execute("PRAGMA table_info(pdf_inventory)")
+                    row[1] for row in connection.execute("PRAGMA table_info(pdf_inventory)")
                 }
             self.assertIsNotNone(inventory_table)
             self.assertIn("birthtime_ns", inventory_columns)
@@ -915,17 +900,12 @@ class PdfRouteTests(unittest.TestCase):
                     self.assertEqual(reconciliation[5], frozenset())
             with closing(sqlite3.connect(pdf_state)) as connection:
                 row = connection.execute(
-                    "SELECT status,page_count,native_pages,normalized_text_xxh3_128 "
-                    "FROM documents"
+                    "SELECT status,page_count,native_pages,normalized_text_xxh3_128 FROM documents"
                 ).fetchone()
                 self.assertEqual(row[:3], ("done", 1, 1))
                 self.assertIsNotNone(row[3])
-                self.assertEqual(
-                    connection.execute("SELECT COUNT(*) FROM pages").fetchone()[0], 1
-                )
-                profile = connection.execute(
-                    "SELECT profile_json FROM pages"
-                ).fetchone()[0]
+                self.assertEqual(connection.execute("SELECT COUNT(*) FROM pages").fetchone()[0], 1)
+                profile = connection.execute("SELECT profile_json FROM pages").fetchone()[0]
                 self.assertIn('"font_count"', profile)
             results = search_pdf_state(pdf_state, "transformador", 5)
             self.assertEqual(len(results), 1)
@@ -970,8 +950,7 @@ class PdfRouteTests(unittest.TestCase):
         route._review_reconciliation_lock = threading.Lock()
         route._review_reconciliations = []
         snapshots = tuple(
-            FileSnapshot(f"cached-{number}.pdf", 1, number, 100, 10, 11)
-            for number in range(1, 6)
+            FileSnapshot(f"cached-{number}.pdf", 1, number, 100, 10, 11) for number in range(1, 6)
         )
         decisions = (
             CacheDecision(
@@ -1168,9 +1147,7 @@ class PdfRouteTests(unittest.TestCase):
             self.assertEqual(reused.cache_hits, 1)
             self.assertEqual(reused.retried_documents, 0)
             with closing(sqlite3.connect(pdf_state)) as connection:
-                status = connection.execute("SELECT status FROM documents").fetchone()[
-                    0
-                ]
+                status = connection.execute("SELECT status FROM documents").fetchone()[0]
             self.assertEqual(status, "done")
 
     def test_full_cache_validation_rechecks_binary_fingerprint(self):
@@ -1181,9 +1158,7 @@ class PdfRouteTests(unittest.TestCase):
             with DedupIndex(root / "dedup.sqlite3") as index:
                 scan = index.scan(root, excluded_paths=())
                 snapshots = [
-                    item
-                    for item in index.snapshots(scan.scan_id)
-                    if item.path == str(pdf)
+                    item for item in index.snapshots(scan.scan_id) if item.path == str(pdf)
                 ]
                 config = PdfRouteConfig(
                     root / "pdf.sqlite3",
@@ -1207,9 +1182,7 @@ class PdfRouteTests(unittest.TestCase):
                     self.assertFalse(route._is_cache_hit(snapshots[0]))
 
             with closing(sqlite3.connect(root / "pdf.sqlite3")) as connection:
-                digest = connection.execute(
-                    "SELECT binary_xxh3_128 FROM documents"
-                ).fetchone()[0]
+                digest = connection.execute("SELECT binary_xxh3_128 FROM documents").fetchone()[0]
             self.assertEqual(len(digest), 32)
 
     def test_unexpected_pdf_worker_failure_is_not_silently_counted(self):
@@ -1386,9 +1359,7 @@ class PdfRouteTests(unittest.TestCase):
                     connection.execute("DELETE FROM page_fts")
                     connection.execute("DELETE FROM page_layouts")
                     connection.commit()
-                repaired_derived = PdfRoute(
-                    config, index, _State(snapshots), 2, scan.scan_id
-                ).run()
+                repaired_derived = PdfRoute(config, index, _State(snapshots), 2, scan.scan_id).run()
                 self.assertEqual(repaired_derived.cache_hits, 1)
                 self.assertEqual(repaired_derived.fts_pages_indexed, 1)
                 self.assertEqual(repaired_derived.profiles_built, 1)
@@ -1402,9 +1373,7 @@ class PdfRouteTests(unittest.TestCase):
             self.assertEqual(repaired_extraction.cache_hits, 0)
             self.assertEqual(repaired_extraction.extracted, 1)
             with closing(sqlite3.connect(pdf_state)) as connection:
-                self.assertEqual(
-                    connection.execute("SELECT COUNT(*) FROM pages").fetchone()[0], 1
-                )
+                self.assertEqual(connection.execute("SELECT COUNT(*) FROM pages").fetchone()[0], 1)
                 self.assertEqual(
                     connection.execute("SELECT COUNT(*) FROM page_fts").fetchone()[0], 1
                 )
@@ -1428,9 +1397,7 @@ class PdfRouteTests(unittest.TestCase):
                     first_scan.scan_id,
                 ).run()
                 limited = PdfRoute(
-                    PdfRouteConfig(
-                        pdf_state, ocr_mode="never", workers=1, max_documents=1
-                    ),
+                    PdfRouteConfig(pdf_state, ocr_mode="never", workers=1, max_documents=1),
                     index,
                     _State(candidates),
                     2,
@@ -1440,9 +1407,7 @@ class PdfRouteTests(unittest.TestCase):
                 second_pdf.unlink()
                 second_scan = index.scan(root, excluded_paths=())
                 pruned = PdfRoute(
-                    PdfRouteConfig(
-                        pdf_state, ocr_mode="never", workers=1, max_documents=1
-                    ),
+                    PdfRouteConfig(pdf_state, ocr_mode="never", workers=1, max_documents=1),
                     index,
                     _State(index.snapshots(second_scan.scan_id)),
                     3,
@@ -1509,9 +1474,7 @@ class PdfRouteTests(unittest.TestCase):
                 scan = index.scan(root, excluded_paths=())
                 with patch("fitz.open", side_effect=FailingDocument):
                     summary = PdfRoute(
-                        PdfRouteConfig(
-                            root / "pdf.sqlite3", ocr_mode="never", workers=1
-                        ),
+                        PdfRouteConfig(root / "pdf.sqlite3", ocr_mode="never", workers=1),
                         index,
                         _State(index.snapshots(scan.scan_id)),
                         1,
@@ -1596,9 +1559,7 @@ class PdfRouteTests(unittest.TestCase):
                     yield ("header", 4, 0, 4, {})
                     for page_number in range(3):
                         yield ("page", page_number, "native", str(page_number))
-                    raise PdfDocumentTimeout(
-                        "controlled timeout", phase="page_extraction"
-                    )
+                    raise PdfDocumentTimeout("controlled timeout", phase="page_extraction")
 
                 with patch(
                     "_04_Nucleo_Operativo.pdf_route.stream_isolated_extraction",
@@ -1608,15 +1569,11 @@ class PdfRouteTests(unittest.TestCase):
             self.assertTrue(result.timed_out)
             self.assertEqual(result.status, "partial")
             with closing(sqlite3.connect(root / "pdf.sqlite3")) as connection:
-                staged = connection.execute(
-                    "SELECT COUNT(*) FROM page_staging"
-                ).fetchone()[0]
-                status, completed, retry_count, next_retry_ns, error_message = (
-                    connection.execute(
-                        """SELECT status,completed_pages,transient_retry_count,
+                staged = connection.execute("SELECT COUNT(*) FROM page_staging").fetchone()[0]
+                status, completed, retry_count, next_retry_ns, error_message = connection.execute(
+                    """SELECT status,completed_pages,transient_retry_count,
                         next_retry_ns,error_message FROM documents"""
-                    ).fetchone()
-                )
+                ).fetchone()
             self.assertEqual((staged, completed), (3, 3))
             self.assertEqual(status, "partial")
             self.assertEqual(retry_count, 0)
@@ -1680,9 +1637,7 @@ class PdfRouteTests(unittest.TestCase):
                 stored = connection.execute(
                     "SELECT status,completed_pages,page_errors_count FROM documents"
                 ).fetchone()
-                page_errors = connection.execute(
-                    "SELECT COUNT(*) FROM page_errors"
-                ).fetchone()[0]
+                page_errors = connection.execute("SELECT COUNT(*) FROM page_errors").fetchone()[0]
                 pages = connection.execute("SELECT COUNT(*) FROM pages").fetchone()[0]
             self.assertEqual(stored, ("done", 2, 0))
             self.assertEqual(page_errors, 0)
@@ -1808,9 +1763,7 @@ class PdfRouteTests(unittest.TestCase):
                 stored = connection.execute(
                     "SELECT status,page_errors_count,error_type FROM documents"
                 ).fetchone()
-                errors = connection.execute(
-                    "SELECT COUNT(*) FROM page_errors"
-                ).fetchone()[0]
+                errors = connection.execute("SELECT COUNT(*) FROM page_errors").fetchone()[0]
             self.assertEqual(stored, ("done", 0, None))
             self.assertEqual(errors, 0)
 
@@ -2083,9 +2036,7 @@ class PdfRouteTests(unittest.TestCase):
                 snapshots = list(index.snapshots(scan.scan_id))
                 with patch("fitz.open", side_effect=FailingDocument):
                     first = PdfRoute(
-                        PdfRouteConfig(
-                            root / "pdf.sqlite3", ocr_mode="never", workers=1
-                        ),
+                        PdfRouteConfig(root / "pdf.sqlite3", ocr_mode="never", workers=1),
                         index,
                         _State(snapshots),
                         1,
@@ -2157,9 +2108,7 @@ class PdfRouteTests(unittest.TestCase):
                     if snapshot.path.casefold().endswith(".pdf")
                 ]
                 self.assertEqual(indexed_pdfs, sorted((str(older), str(newer))))
-                self.assertEqual(
-                    state.actions[0]["values"][0], "review_pdf_text_duplicate"
-                )
+                self.assertEqual(state.actions[0]["values"][0], "review_pdf_text_duplicate")
                 self.assertFalse(state.actions[0]["values"][5])
                 self.assertEqual(state.actions[0]["status"], "planned")
                 self.assertIn("Advisory only", state.actions[0]["detail"])
@@ -2181,9 +2130,7 @@ class PdfRouteTests(unittest.TestCase):
                     1,
                     scan.scan_id,
                 )
-                with patch.object(
-                    route, "_ocr_page", return_value="Tablero de control"
-                ):
+                with patch.object(route, "_ocr_page", return_value="Tablero de control"):
                     summary = route.run()
                 self.assertEqual(summary.ocr_pages, 1)
                 self.assertEqual(summary.errors, 0)
@@ -2231,16 +2178,12 @@ class PdfRouteTests(unittest.TestCase):
                     1,
                     scan.scan_id,
                 )
-                with patch(
-                    "fitz.open", side_effect=RuntimeError("forced primary failure")
-                ):
+                with patch("fitz.open", side_effect=RuntimeError("forced primary failure")):
                     summary = route.run()
                 self.assertEqual(summary.extracted, 1)
                 self.assertEqual(summary.errors, 0)
             with closing(sqlite3.connect(root / "pdf.sqlite3")) as connection:
-                metadata = connection.execute(
-                    "SELECT metadata_json FROM documents"
-                ).fetchone()[0]
+                metadata = connection.execute("SELECT metadata_json FROM documents").fetchone()[0]
                 self.assertIn('"engine":"pdfminer"', metadata)
 
     def test_records_bounded_text_and_template_similarity_candidates(self):
@@ -2280,22 +2223,16 @@ class PdfRouteTests(unittest.TestCase):
                 with closing(sqlite3.connect(root / "pdf.sqlite3")) as connection:
                     connection.execute("DELETE FROM similarity_relations")
                     connection.commit()
-                repaired = PdfRoute(
-                    config, index, _State(candidates), 2, scan.scan_id
-                ).run()
+                repaired = PdfRoute(config, index, _State(candidates), 2, scan.scan_id).run()
                 self.assertGreaterEqual(repaired.text_similarity_pairs, 1)
                 self.assertGreaterEqual(repaired.template_similarity_pairs, 1)
                 self.assertGreaterEqual(repaired.layout_similarity_pairs, 1)
             with closing(sqlite3.connect(root / "pdf.sqlite3")) as connection:
                 kinds = {
                     row[0]
-                    for row in connection.execute(
-                        "SELECT DISTINCT kind FROM similarity_relations"
-                    )
+                    for row in connection.execute("SELECT DISTINCT kind FROM similarity_relations")
                 }
-                self.assertEqual(
-                    kinds, {"text_similar", "template_similar", "layout_similar"}
-                )
+                self.assertEqual(kinds, {"text_similar", "template_similar", "layout_similar"})
                 layout_payload = json.loads(
                     zlib.decompress(
                         connection.execute(

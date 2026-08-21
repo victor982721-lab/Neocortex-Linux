@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from _05_Interfaz.read_client import (
+from neocortex.interface.read import (
     MAX_PRESENTATION_CHARACTERS,
     ReadClientError,
     ReadRequest,

@@ -9,8 +9,8 @@ from pathlib import Path
 import pytest
 
 import _04_Nucleo_Operativo.document_catalog_schema as catalog_schema_module
-from _02_Deduplicacion import snapshot_path
-from _03_Progreso import RecordingProgress
+from neocortex.deduplication import snapshot_path
+from neocortex.progress import RecordingProgress
 from _04_Nucleo_Operativo.cli_parser import build_parser
 from _04_Nucleo_Operativo.cli_validation import validate_arguments
 from _04_Nucleo_Operativo.corpus_access import (

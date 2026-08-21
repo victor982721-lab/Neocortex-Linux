@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 import _04_Nucleo_Operativo.code_review as code_review_module
-from _02_Deduplicacion import FileSnapshot
+from neocortex.deduplication import FileSnapshot
 from _04_Nucleo_Operativo.code_contracts import (
     AnalysisStatus,
     ArtifactClassification,

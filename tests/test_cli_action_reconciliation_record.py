@@ -4,7 +4,6 @@
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
-
 # region [01] Dependencias del módulo
 from __future__ import annotations
 
@@ -14,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from _02_Deduplicacion import snapshot_path
+from neocortex.deduplication import snapshot_path
 from _04_Nucleo_Operativo.cli_app import main as cli_main
 from _04_Nucleo_Operativo.file_action_recovery import expected_identity_json
 from _04_Nucleo_Operativo.framework_state_writer import FrameworkState
@@ -25,9 +24,7 @@ from tests.mutation_containment import ContainedMutationRoot
 # region [02] Implementación
 
 
-def _create_uncertain_action(
-    state_directory: Path, root: Path
-) -> tuple[int, Path, Path]:
+def _create_uncertain_action(state_directory: Path, root: Path) -> tuple[int, Path, Path]:
     database = state_directory / "framework.sqlite3"
     source = root / "source-that-must-not-be-created.bin"
     target = root / "target-that-must-not-be-created.bin"
@@ -83,9 +80,7 @@ def test_reconciliation_record_cli_is_explicit_idempotent_and_non_mutating(
     state_directory, root = _action_sandbox(tmp_path)
     action_id, source, target = _create_uncertain_action(state_directory, root)
 
-    first_exit = cli_main(
-        _record_args(state_directory, action_id, actor="  operator-a  ")
-    )
+    first_exit = cli_main(_record_args(state_directory, action_id, actor="  operator-a  "))
     first = json.loads(capsys.readouterr().out)
     second_exit = cli_main(_record_args(state_directory, action_id, actor="operator-a"))
     second = json.loads(capsys.readouterr().out)
@@ -252,4 +247,6 @@ def test_reconciliation_record_cli_requires_scoped_explicit_authorization(
 ) -> None:
     with pytest.raises(SystemExit):
         cli_main(list(arguments))
+
+
 # endregion [02]

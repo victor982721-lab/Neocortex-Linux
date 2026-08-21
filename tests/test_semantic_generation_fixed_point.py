@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from _03_Progreso import RecordingProgress
+from neocortex.progress import RecordingProgress
 from _04_Nucleo_Operativo import semantic_generation_worker
 from _04_Nucleo_Operativo.semantic_chunking import (
     TextChunkingConfig,

@@ -15,8 +15,8 @@ from pathlib import Path
 
 import pytest
 
-from _02_Deduplicacion import FileSnapshot
-from _02_Deduplicacion.inventory_schema import initialize_inventory_schema
+from neocortex.deduplication import FileSnapshot
+from neocortex.deduplication.schema import initialize_inventory_schema
 from _04_Nucleo_Operativo import knowledge_search as knowledge_search_module
 from _04_Nucleo_Operativo import semantic_preparation, semantic_service
 from _04_Nucleo_Operativo.archive_state import (

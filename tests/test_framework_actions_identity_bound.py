@@ -14,8 +14,8 @@ from pathlib import Path
 
 import pytest
 
-from _01_Enumeracion import JournalCursor
-from _02_Deduplicacion import DedupIndex, DedupPlanner, snapshot_path
+from neocortex.enumeration import JournalCursor
+from neocortex.deduplication import DedupIndex, DedupPlanner, snapshot_path
 from _04_Nucleo_Operativo import actions as actions_module
 from _04_Nucleo_Operativo import framework_state_common as state_common_module
 from _04_Nucleo_Operativo.actions import FrameworkActions

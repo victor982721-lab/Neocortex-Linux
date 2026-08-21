@@ -8,8 +8,8 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Protocol
 
-from _02_Deduplicacion import InventoryExclusionPolicy
-from _02_Deduplicacion.inventory import (
+from neocortex.deduplication import InventoryExclusionPolicy
+from neocortex.deduplication.inventory.index import (
     DEFAULT_GENERATED_DIRECTORY_FRAGMENTS,
     DEFAULT_GENERATED_DIRECTORY_PREFIXES,
 )

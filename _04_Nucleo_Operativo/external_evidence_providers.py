@@ -24,7 +24,7 @@ from pathlib import Path, PurePosixPath
 from packaging.utils import canonicalize_name
 from neocortex.semgrep_tool_contract import managed_semgrep_version
 
-from _03_Progreso import ProgressCallback, ProgressEvent, ProgressMetric, emit_progress
+from neocortex.progress import ProgressCallback, ProgressEvent, ProgressMetric, emit_progress
 
 from .bounded_subprocess import SubprocessOutputLimitError, run_bounded_capture
 from .code_architecture_contracts import (

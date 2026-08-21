@@ -14,7 +14,7 @@ from typing import Iterable, Iterator
 
 import xxhash
 
-from _02_Deduplicacion import FileSnapshot
+from neocortex.deduplication import FileSnapshot
 
 from ....file_identity import file_key_from_snapshot as file_key
 from .policy import DOCUMENT_OCR_TEXT_MAX_UTF8_BYTES

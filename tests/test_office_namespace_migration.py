@@ -101,7 +101,7 @@ def test_office_package_import_is_light_in_a_fresh_process() -> None:
         forbidden = {{
             {", ".join(repr(f"{CANONICAL_ROOT}.{name}") for name in MODULE_NAMES)},
             "openpyxl",
-            "_02_Deduplicacion",
+            "neocortex.deduplication",
         }}
         loaded = forbidden.intersection(sys.modules)
         if loaded:

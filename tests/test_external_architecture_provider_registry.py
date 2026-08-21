@@ -58,7 +58,8 @@ def test_architecture_providers_replay_exact_selected_inputs_without_process(
     package.mkdir(parents=True)
     scratch.mkdir()
     selected = package / "sample.py"
-    excluded = root / "Orquestador.py"
+    excluded = root / "tests" / "helper.py"
+    excluded.parent.mkdir()
     selected.write_text("VALUE = 1\n", encoding="utf-8")
     excluded.write_text("VALUE = 2\n", encoding="utf-8")
     files = (
@@ -163,7 +164,8 @@ def test_vulture_provider_uses_exact_project_wide_input_and_replays(
     package.mkdir(parents=True)
     scratch.mkdir()
     package_file = package / "sample.py"
-    root_file = root / "Orquestador.py"
+    root_file = root / "neocortex" / "public.py"
+    root_file.parent.mkdir()
     package_file.write_text("VALUE = 1\n", encoding="utf-8")
     root_file.write_text("VALUE = 2\n", encoding="utf-8")
     files = (
@@ -193,7 +195,7 @@ def test_vulture_provider_uses_exact_project_wide_input_and_replays(
     provider.executor = execute
     publication = provider.run(root, files, baseline=None, scratch_root=scratch)
 
-    assert observed_paths == [("Orquestador.py", "_04_Nucleo_Operativo/sample.py")]
+    assert observed_paths == [("_04_Nucleo_Operativo/sample.py", "neocortex/public.py")]
     assert publication.status == "completed"
     assert publication.descriptor.provider_id == VULTURE_UNUSED_PROVIDER_ID
     assert publication.descriptor.scope == "current-inventory-python"
@@ -202,7 +204,7 @@ def test_vulture_provider_uses_exact_project_wide_input_and_replays(
     assert publication.limitations == limitations
     assert tuple(item.relative_path for item in publication.inputs) == (
         "_04_Nucleo_Operativo/sample.py",
-        "Orquestador.py",
+        "neocortex/public.py",
     )
     assert publication.counters["process_invocations"] == 1
 

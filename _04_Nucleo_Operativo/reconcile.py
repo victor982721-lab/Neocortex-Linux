@@ -4,7 +4,6 @@
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
-
 # region [01] Dependencias del módulo
 from __future__ import annotations
 
@@ -14,14 +13,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from _01_Enumeracion import (
+from neocortex.enumeration import (
     JournalCursor,
     NtfsEntry,
     UsnChangeBatch,
     VolumeAccessError,
     consume_changes,
 )
-from _02_Deduplicacion import (
+from neocortex.deduplication import (
     DedupIndex,
     FileChangedError,
     FileSnapshot,
@@ -29,10 +28,10 @@ from _02_Deduplicacion import (
     InventoryExclusionPolicy,
     snapshot_path,
 )
-from _02_Deduplicacion.inventory_scan import (
+from neocortex.deduplication.inventory.scan import (
     resolve_inventory_exclusion_policy,
 )
-from _03_Progreso import ProgressCallback, ProgressEvent, emit_progress
+from neocortex.progress import ProgressCallback, ProgressEvent, emit_progress
 # endregion [01]
 
 # region [02] Implementación
@@ -332,9 +331,7 @@ def reconcile_usn_window(
 
     emit_progress(
         progress,
-        ProgressEvent(
-            "framework", "reconcile", "Reconciliando cambios USN", 0, unit="registros"
-        ),
+        ProgressEvent("framework", "reconcile", "Reconciliando cambios USN", 0, unit="registros"),
     )
 
     cursor = start
@@ -392,4 +389,6 @@ def reconcile_usn_window(
         state.files_removed,
         state.requires_rescan,
     )
+
+
 # endregion [02]

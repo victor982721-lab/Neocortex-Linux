@@ -19,7 +19,7 @@ import pytest
 import _04_Nucleo_Operativo.text_route as text_route_module
 import _04_Nucleo_Operativo.text_state as text_state_module
 import _04_Nucleo_Operativo.legacy_office_worker as legacy_worker_module
-from _02_Deduplicacion import FileSnapshot, snapshot_path
+from neocortex.deduplication import FileSnapshot, snapshot_path
 from _04_Nucleo_Operativo.cancellation import CancellationRequested, CancellationToken
 from _04_Nucleo_Operativo.file_identity import file_key_from_snapshot
 from _04_Nucleo_Operativo.locking import FrameworkRunLock

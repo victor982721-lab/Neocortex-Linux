@@ -214,8 +214,8 @@ class LazyPackageApiTests(unittest.TestCase):
             import sys
 
             forbidden = {
-                "_01_Enumeracion",
-                "_02_Deduplicacion",
+                "neocortex.enumeration",
+                "neocortex.deduplication",
                 "_04_Nucleo_Operativo.archive_route",
                 "_04_Nucleo_Operativo.capabilities.formats.archive.route",
                 "_04_Nucleo_Operativo.capabilities.formats.audio.models",
@@ -298,11 +298,11 @@ class LazyPackageApiTests(unittest.TestCase):
                 "_04_Nucleo_Operativo.knowledge_search",
                 "_04_Nucleo_Operativo.knowledge_service",
                 "_04_Nucleo_Operativo.knowledge_snapshot",
-                "_05_Interfaz",
-                "_05_Interfaz.app",
-                "_05_Interfaz.main_window",
+                "neocortex.interface",
+                "neocortex.interface.application.app",
+                "neocortex.interface.presentation.windows.main",
             }
-            import Orquestador
+            import neocortex.cli as public_cli
             from _04_Nucleo_Operativo import ApplicationConfig, FrameworkConfig
             from _04_Nucleo_Operativo.application_config import (
                 audio_route_config_from_application,
@@ -334,9 +334,9 @@ class LazyPackageApiTests(unittest.TestCase):
                     "routes loaded by import: " + ",".join(sorted(loaded_after_import))
                 )
 
-            sys.argv = ["Orquestador.py", "--help"]
+            sys.argv = ["Neocortex", "--help"]
             try:
-                Orquestador.main()
+                public_cli.entrypoint()
             except SystemExit as exc:
                 if exc.code != 0:
                     raise

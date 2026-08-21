@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from _02_Deduplicacion import FileSnapshot
+from neocortex.deduplication import FileSnapshot
 from _04_Nucleo_Operativo.code_analysis_epistemics import (
     validate_analysis_question_set,
 )

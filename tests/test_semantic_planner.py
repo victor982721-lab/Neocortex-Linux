@@ -14,8 +14,8 @@ from unittest.mock import patch
 
 import pytest
 
-from _02_Deduplicacion.hashing import FULL_ALGORITHM
-from _02_Deduplicacion.inventory_schema import initialize_inventory_schema
+from neocortex.deduplication.fingerprinting import FULL_ALGORITHM
+from neocortex.deduplication.schema import initialize_inventory_schema
 from _04_Nucleo_Operativo.file_identity import encode_file_identity
 from _04_Nucleo_Operativo.cli_app import main as cli_main
 from _04_Nucleo_Operativo.image_state import image_database, initialize_image_state

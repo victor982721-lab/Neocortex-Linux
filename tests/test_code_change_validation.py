@@ -9,11 +9,12 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Mapping, Sequence
 from contextlib import nullcontext
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Literal, cast
+from typing import Any, Literal, cast
 
 import pytest
 
@@ -28,6 +29,7 @@ from _04_Nucleo_Operativo.code_change_validation import (
     _experiment_gate,
     _fresh_review_gate,
     _global_change_fallback_tests,
+    _pip_audit_dependency_contract_comparison,
     _pip_audit_snapshot_preflight,
     _provider_failure,
     _public_review_stability_gate,
@@ -52,6 +54,7 @@ from _04_Nucleo_Operativo.code_architecture_questions import ARCHITECTURE_CONTRA
 from _04_Nucleo_Operativo.code_change_evolution_analysis import (
     CODE_SCHEMA_EVOLUTION_QUESTION,
 )
+from _04_Nucleo_Operativo.code_validation_resources import CodeValidationRuntimeWindow
 from _04_Nucleo_Operativo.code_interface_surface_analysis import CLI_SURFACE_QUESTION
 from _04_Nucleo_Operativo.code_invariant_contracts import (
     EXPERIMENT_SCENARIO_IDS,
@@ -167,7 +170,9 @@ def test_full_suite_coverage_consumes_the_canonical_no_regression_baseline() -> 
     assert passed.status == "passed"
     assert passed.evidence["coverage_baseline_status"] == "passed"
     assert regressed.status == "failed"
-    assert "lines_coverage_regressed" in regressed.evidence["coverage_regressions"]
+    coverage_regressions = regressed.evidence["coverage_regressions"]
+    assert isinstance(coverage_regressions, list)
+    assert "lines_coverage_regressed" in coverage_regressions
 
 
 def test_full_suite_producer_omits_every_test_selector(tmp_path: Path) -> None:
@@ -627,7 +632,7 @@ def test_public_review_stability_uses_two_repeatable_fresh_process_reads(
     )
 
     review = _public_review_fixture()
-    public_identity = code_review_identity(review)
+    public_identity = code_review_identity(cast(Any, review))
     public_identity["digest"] = {
         "xxh3_128": "c" * 32,
         "xxh3_64_guard": "d" * 16,
@@ -655,7 +660,7 @@ def test_public_review_stability_uses_two_repeatable_fresh_process_reads(
     assert gate.status == "passed"
     assert gate.evidence["fresh_process_reads"] == 2
     assert gate.evidence["validation_stable_identity"] == stable_identity
-    assert gate.evidence["public_identity"] == code_review_identity(review)
+    assert gate.evidence["public_identity"] == code_review_identity(cast(Any, review))
     assert len(commands) == 2
     assert timeouts == [120, 120]
     assert all(command[-1] == "--validation-stable" for command in commands)
@@ -669,10 +674,12 @@ def test_public_review_stability_abstains_when_fresh_reads_disagree(tmp_path: Pa
 
     review = _public_review_fixture()
     identities = [
-        validation_stable_public_review_identity(code_review_identity(review)),
-        validation_stable_public_review_identity(code_review_identity(review)),
+        validation_stable_public_review_identity(code_review_identity(cast(Any, review))),
+        validation_stable_public_review_identity(code_review_identity(cast(Any, review))),
     ]
-    snapshot = dict(identities[1]["snapshot"])
+    raw_snapshot = identities[1]["snapshot"]
+    assert isinstance(raw_snapshot, dict)
+    snapshot = dict(raw_snapshot)
     snapshot["processing_signature"] = "snapshot:displaced"
     identities[1]["snapshot"] = snapshot
 
@@ -688,7 +695,9 @@ def test_public_review_stability_abstains_when_fresh_reads_disagree(tmp_path: Pa
     )
 
     assert gate.status == "abstained"
-    assert "fresh_process_public_review_not_repeatable" in gate.evidence["blockers"]
+    blockers = gate.evidence["blockers"]
+    assert isinstance(blockers, list)
+    assert "fresh_process_public_review_not_repeatable" in blockers
 
 
 def _pip_audit_preflight_fixture(
@@ -698,6 +707,7 @@ def _pip_audit_preflight_fixture(
     fresh_until: float | None,
     findings: tuple[str, ...] = (),
     exact_snapshot: bool = True,
+    snapshot_clean: bool = True,
 ) -> SimpleNamespace:
     from _04_Nucleo_Operativo import code_change_validation
 
@@ -735,10 +745,25 @@ def _pip_audit_preflight_fixture(
     monkeypatch.setattr(code_change_validation, "validate_code_schema", lambda _connection: None)
     monkeypatch.setattr(
         code_change_validation,
+        "pip_audit_run_is_clean",
+        lambda _connection, _tool_run_id: snapshot_clean,
+    )
+    monkeypatch.setattr(
+        code_change_validation,
         "read_external_provider_baselines",
         lambda _connection, **_kwargs: ((exact if exact_snapshot else None), None),
     )
     return SimpleNamespace(state=state)
+
+
+def _runtime_window(seconds: int = 3600) -> CodeValidationRuntimeWindow:
+    active = time.monotonic_ns()
+    return CodeValidationRuntimeWindow(
+        "neocortex-code-validate-1-000000000001",
+        active,
+        active + seconds * 1_000_000_000,
+        seconds,
+    )
 
 
 def test_pip_audit_preflight_requires_freshness_through_the_hard_deadline(
@@ -751,8 +776,7 @@ def test_pip_audit_preflight_requires_freshness_through_the_hard_deadline(
         monkeypatch,
         fresh_until=now + 7200,
     )
-    monotonic = time.monotonic_ns()
-    window = SimpleNamespace(hard_deadline_monotonic_ns=monotonic + 3600 * 1_000_000_000)
+    window = _runtime_window()
 
     passed = _pip_audit_snapshot_preflight(
         tmp_path,
@@ -790,12 +814,23 @@ def test_pip_audit_preflight_requires_a_source_bound_snapshot_for_supply_changes
         fresh_until=time.time() + 7200,
         findings=("vulnerability:fixture",),
     )
-    monotonic = time.monotonic_ns()
-    window = SimpleNamespace(hard_deadline_monotonic_ns=monotonic + 3600 * 1_000_000_000)
+    window = _runtime_window()
 
     vulnerable = _pip_audit_snapshot_preflight(
         tmp_path,
         fixture.state,
+        change=_change_for("neocortex/logic.py"),
+        runtime_window=window,
+    )
+    metric_vulnerable_fixture = _pip_audit_preflight_fixture(
+        tmp_path / "metric-vulnerable",
+        monkeypatch,
+        fresh_until=time.time() + 7200,
+        snapshot_clean=False,
+    )
+    metric_vulnerable = _pip_audit_snapshot_preflight(
+        tmp_path,
+        metric_vulnerable_fixture.state,
         change=_change_for("neocortex/logic.py"),
         runtime_window=window,
     )
@@ -825,11 +860,63 @@ def test_pip_audit_preflight_requires_a_source_bound_snapshot_for_supply_changes
 
     assert vulnerable.status == "failed"
     assert vulnerable.reason == "pip_audit_snapshot_reports_known_vulnerabilities"
+    assert metric_vulnerable.status == "failed"
+    assert metric_vulnerable.reason == "pip_audit_snapshot_reports_known_vulnerabilities"
+    assert metric_vulnerable.evidence["snapshot_clean"] is False
     assert source_bound.status == "passed"
     assert source_bound.evidence["supply_chain_paths"] == ["pyproject.toml"]
     assert lock_missing.status == "abstained"
     assert lock_missing.reason == "pip_audit_exact_snapshot_missing"
+    assert lock_missing.evidence["exact_lookup"]["provider_id"] == (
+        "pip-audit-known-vulnerabilities"
+    )
+    assert lock_missing.evidence["exact_lookup"]["profile"] == "trusted-static"
     assert lock_missing.evidence["supply_chain_paths"] == ["constraints-linux-cp314.lock"]
+
+
+def test_pip_audit_preflight_reuses_fresh_dependency_equivalent_history(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from _04_Nucleo_Operativo import code_change_validation
+
+    fixture = _pip_audit_preflight_fixture(
+        tmp_path,
+        monkeypatch,
+        fresh_until=time.time() + 7200,
+        exact_snapshot=False,
+    )
+    historical = {
+        "tool_run_id": 71,
+        "analysis_run_id": 70,
+        "result_digest": "audit-digest",
+        "fresh_until_unix_seconds": time.time() + 7200,
+        "inventory_versions_identical": True,
+        "known_vulnerabilities": 0,
+        "dependency_contract": {
+            "semantics_identical": True,
+            "current_signature": "sha256:dependency",
+            "baseline_signature": "sha256:dependency",
+        },
+    }
+    monkeypatch.setattr(
+        code_change_validation,
+        "_historical_pip_audit_fallback",
+        lambda *_args, **_kwargs: historical,
+    )
+    window = _runtime_window()
+
+    gate = _pip_audit_snapshot_preflight(
+        tmp_path,
+        fixture.state,
+        change=_change_for("pyproject.toml"),
+        runtime_window=window,
+    )
+
+    assert gate.status == "passed"
+    assert gate.reason == ("dependency_equivalent_historical_snapshot_covers_validation_runtime")
+    assert gate.evidence["tool_run_id"] == 71
+    assert gate.evidence["historical_snapshot"] == historical
 
 
 def test_canonical_validation_stops_before_static_when_supply_preflight_abstains(
@@ -846,8 +933,15 @@ def test_canonical_validation_stops_before_static_when_supply_preflight_abstains
     selection = _selection("tests/test_fixture.py")
     commands: list[tuple[object, ...]] = []
 
-    def runner(command, **_kwargs):
-        commands.append(tuple(command))
+    def runner(
+        arguments: Sequence[str | os.PathLike[str]],
+        *,
+        cwd: Path,
+        timeout: float,
+        environment: Mapping[str, str] | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        del cwd, timeout, environment
+        commands.append(tuple(arguments))
         raise AssertionError("an expensive command ran after a failed supply preflight")
 
     monkeypatch.setattr(code_change_validation, "_default_runner", runner)
@@ -870,7 +964,7 @@ def test_canonical_validation_stops_before_static_when_supply_preflight_abstains
             {},
         ),
     )
-    window = SimpleNamespace(hard_deadline_monotonic_ns=time.monotonic_ns() + 1_000_000_000)
+    window = _runtime_window(60)
 
     result = validate_code_change(
         root=source,
@@ -1749,6 +1843,81 @@ def _repository(tmp_path: Path) -> Path:
     _git(root, "add", ".")
     _git(root, "commit", "-qm", "fixture")
     return root
+
+
+def test_pip_audit_dependency_contract_ignores_topology_but_detects_dependency_changes(
+    tmp_path: Path,
+) -> None:
+    root = _repository(tmp_path)
+    (root / "tools").mkdir()
+    (root / "constraints.txt").write_text("packaging==26.0\n", encoding="utf-8")
+    (root / "constraints-linux-cp314.lock").write_text(
+        "packaging==26.0\n",
+        encoding="utf-8",
+    )
+    (root / "tools/quality_gate_supply_policy.json").write_text(
+        '{"schema":"fixture/v1"}\n',
+        encoding="utf-8",
+    )
+    (root / "tools/release_linux.py").write_text("BUILD_ROOT = 'source'\n", encoding="utf-8")
+    legacy_pattern = "_03" + "_Progreso*"
+    (root / "pyproject.toml").write_text(
+        f"""[build-system]
+requires = ["setuptools==83.0.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fixture"
+requires-python = ">=3.13"
+dependencies = ["packaging>=26,<27"]
+
+[project.optional-dependencies]
+full = ["rich>=15,<16"]
+
+[tool.setuptools.packages.find]
+include = ["{legacy_pattern}", "neocortex*"]
+""",
+        encoding="utf-8",
+    )
+    _git(root, "add", ".")
+    _git(root, "commit", "-qm", "add supply contract")
+
+    pyproject = root / "pyproject.toml"
+    pyproject.write_text(
+        pyproject.read_text(encoding="utf-8").replace(
+            f'include = ["{legacy_pattern}", "neocortex*"]',
+            'include = ["neocortex*"]',
+        ),
+        encoding="utf-8",
+    )
+    (root / "tools/release_linux.py").write_text(
+        "BUILD_ROOT = 'git-owned-stage'\n",
+        encoding="utf-8",
+    )
+    _git(root, "add", ".")
+    _git(root, "commit", "-qm", "change topology only")
+    topology_change = capture_git_change(root, baseline="HEAD^")
+
+    equivalent = _pip_audit_dependency_contract_comparison(root, topology_change)
+
+    assert equivalent["semantics_identical"] is True
+    assert equivalent["current_signature"] == equivalent["baseline_signature"]
+
+    pyproject.write_text(
+        pyproject.read_text(encoding="utf-8").replace(
+            'dependencies = ["packaging>=26,<27"]',
+            'dependencies = ["packaging>=26,<28"]',
+        ),
+        encoding="utf-8",
+    )
+    _git(root, "add", ".")
+    _git(root, "commit", "-qm", "change dependency contract")
+    dependency_change = capture_git_change(root, baseline="HEAD^")
+
+    changed = _pip_audit_dependency_contract_comparison(root, dependency_change)
+
+    assert changed["semantics_identical"] is False
+    assert changed["current_signature"] != changed["baseline_signature"]
 
 
 def test_git_change_includes_tracked_and_untracked_content(tmp_path: Path) -> None:

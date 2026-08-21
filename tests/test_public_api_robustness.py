@@ -127,8 +127,8 @@ def test_projection_module_cold_import_keeps_owner_contracts_deferred() -> None:
         import sys
 
         forbidden = {
-            "_01_Enumeracion",
-            "_02_Deduplicacion",
+            "neocortex.enumeration",
+            "neocortex.deduplication",
             "_04_Nucleo_Operativo.application_config",
             "_04_Nucleo_Operativo.archive_route",
             "_04_Nucleo_Operativo.capabilities.formats.archive.route",

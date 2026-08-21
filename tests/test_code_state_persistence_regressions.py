@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 import _04_Nucleo_Operativo.code_state as code_state_module
-from _02_Deduplicacion import FileSnapshot
+from neocortex.deduplication import FileSnapshot
 from _04_Nucleo_Operativo.cancellation import CancellationRequested
 from _04_Nucleo_Operativo.code_contracts import (
     AnalysisStatus,
@@ -129,9 +129,7 @@ def _skipped(
         diagnostic=DiagnosticRecord(
             "test-skipped",
             "fixture",
-            DiagnosticSeverity.ERROR
-            if status is AnalysisStatus.ERROR
-            else DiagnosticSeverity.INFO,
+            DiagnosticSeverity.ERROR if status is AnalysisStatus.ERROR else DiagnosticSeverity.INFO,
             "fixture observation",
             tool_name="test-skipped",
             tool_version="1",
@@ -172,17 +170,13 @@ def test_error_retry_preserves_attempt_history(tmp_path: Path) -> None:
             """SELECT version_id,replacement_version_id,reason
             FROM invalidation_history ORDER BY invalidation_id"""
         ).fetchall()
-        current = state.connection.execute(
-            "SELECT current_version_id FROM files"
-        ).fetchone()[0]
+        current = state.connection.execute("SELECT current_version_id FROM files").fetchone()[0]
 
     assert [int(row[0]) for row in rows] == [first, second]
     assert rows[0][1] is not None
     assert str(rows[0][2]) == "superseded_observation"
     assert rows[1][1] is None
-    assert [tuple(row) for row in history] == [
-        (first, second, "superseded_observation")
-    ]
+    assert [tuple(row) for row in history] == [(first, second, "superseded_observation")]
     assert int(current) == second
 
 
@@ -353,9 +347,7 @@ def test_path_change_rejects_cache_and_publishes_successor_version(
             _skipped(moved, "alpha", status=AnalysisStatus.TEXT_ONLY),
             3,
         )
-        current_path = state.connection.execute(
-            "SELECT current_path FROM files"
-        ).fetchone()[0]
+        current_path = state.connection.execute("SELECT current_path FROM files").fetchone()[0]
         versions = state.connection.execute(
             """SELECT version_id,path_observed,last_observed_run_id,invalidated_ns
             FROM file_versions ORDER BY version_id"""
@@ -607,10 +599,7 @@ def test_project_instances_keep_homonymous_roots_and_conflicts_ambiguous(
 
 
 def _chunks(*texts: str) -> tuple[CodeChunk, ...]:
-    return tuple(
-        CodeChunk(index, text, _source_range(text))
-        for index, text in enumerate(texts)
-    )
+    return tuple(CodeChunk(index, text, _source_range(text)) for index, text in enumerate(texts))
 
 
 def test_graph_reconciles_fts_projects_once_and_idempotently(
@@ -710,9 +699,7 @@ def test_fts_project_sync_preserves_history_across_rename_root_and_removal(
     database = tmp_path / "code.sqlite3"
     first_root = tmp_path / "first-root"
     second_root = tmp_path / "second-root"
-    first_hint = ProjectHint(
-        "rust", "first-manifest", str(first_root), 1.0, ("manifest",), "cargo"
-    )
+    first_hint = ProjectHint("rust", "first-manifest", str(first_root), 1.0, ("manifest",), "cargo")
     second_hint = ProjectHint(
         "rust", "second-manifest", str(second_root), 1.0, ("manifest",), "cargo"
     )
@@ -753,9 +740,12 @@ def test_fts_project_sync_preserves_history_across_rename_root_and_removal(
             FROM code_fts GROUP BY version_id ORDER BY version_id"""
         ).fetchall()
 
-        assert state.reuse_cached(
-            source_v2.input.snapshot, PROCESSING_SIGNATURE, 3, retry_errors=False
-        ) is not None
+        assert (
+            state.reuse_cached(
+                source_v2.input.snapshot, PROCESSING_SIGNATURE, 3, retry_errors=False
+            )
+            is not None
+        )
         assert state.mark_missing(3) == 1
         state.finalize_graph(3)
         labels_after_removal = state.connection.execute(
@@ -870,11 +860,13 @@ def test_fts_project_sync_matches_legacy_fixture_with_bounded_statements(
         ).fetchall()
 
     legacy_updates = [
-        statement for statement in legacy_trace
+        statement
+        for statement in legacy_trace
         if statement.lstrip().upper().startswith("UPDATE CODE_FTS")
     ]
     sync_updates = [
-        statement for statement in sync_trace
+        statement
+        for statement in sync_trace
         if statement.lstrip().upper().startswith("UPDATE CODE_FTS")
     ]
     assert [tuple(row) for row in synchronized] == [tuple(row) for row in legacy]
@@ -936,20 +928,16 @@ def _graph_derived_snapshot(
 ) -> dict[str, list[tuple[object, ...]]]:
     queries = {
         "projects": "SELECT * FROM projects ORDER BY project_id",
-        "memberships": (
-            "SELECT * FROM project_memberships ORDER BY project_id,version_id"
-        ),
+        "memberships": ("SELECT * FROM project_memberships ORDER BY project_id,version_id"),
         "edges": (
-            "SELECT * FROM project_edges "
-            "ORDER BY source_project_id,dependency_name,edge_kind"
+            "SELECT * FROM project_edges ORDER BY source_project_id,dependency_name,edge_kind"
         ),
         "references": (
             "SELECT reference_id,target_symbol_id,target_version_id "
             "FROM code_references ORDER BY reference_id"
         ),
         "dependencies": (
-            "SELECT dependency_id,resolved_version_id "
-            "FROM dependencies ORDER BY dependency_id"
+            "SELECT dependency_id,resolved_version_id FROM dependencies ORDER BY dependency_id"
         ),
         "diagnostics": "SELECT * FROM diagnostics ORDER BY diagnostic_id",
         "relations": (
@@ -1155,9 +1143,7 @@ def test_finalize_graph_sqlite_cancellation_rolls_back_and_clears_handler(
         expected = {
             **before,
             # A successful rebuild advances only project freshness provenance.
-            "projects": [
-                (*row[:9], 3, *row[10:]) for row in before["projects"]
-            ],
+            "projects": [(*row[:9], 3, *row[10:]) for row in before["projects"]],
         }
         assert recovered == expected
 
@@ -1234,9 +1220,7 @@ def test_set_oriented_resolver_preserves_union_and_module_semantics(
         DependencyRecord("unique_mod", "python_import", evidence="unique"),
         DependencyRecord("unique_mod", "python_relative_import", evidence="relative"),
         DependencyRecord("dup_mod", "python_import", evidence="ambiguous"),
-        DependencyRecord(
-            "same_version_mod", "python_import", evidence="same-version-ambiguous"
-        ),
+        DependencyRecord("same_version_mod", "python_import", evidence="same-version-ambiguous"),
         DependencyRecord("not_module", "python_import", evidence="non-module"),
         DependencyRecord("missing", "python_relative_import", evidence="missing-a"),
         DependencyRecord("missing", "python_relative_import", evidence="missing-b"),
@@ -1302,9 +1286,7 @@ def test_set_oriented_resolver_preserves_union_and_module_semantics(
         )
         suppressor_version, _ = state.store_analysis(
             _analysis(
-                _snapshot(
-                    tmp_path / "preexisting.py", file_id=201, text="preexisting"
-                ),
+                _snapshot(tmp_path / "preexisting.py", file_id=201, text="preexisting"),
                 "preexisting",
                 dependencies=(
                     DependencyRecord(
@@ -1397,9 +1379,7 @@ def test_set_oriented_resolver_preserves_union_and_module_semantics(
     assert dependency_rows["non-module"] is None
     assert dependency_rows["missing-a"] is None
     assert dependency_rows["missing-b"] is None
-    assert [tuple(row) for row in diagnostic_rows] == [
-        ("unresolved_relative_import", 1)
-    ]
+    assert [tuple(row) for row in diagnostic_rows] == [("unresolved_relative_import", 1)]
     assert suppressed_diagnostics == 0
     assert second == first
     assert temporary_tables == []
@@ -1409,22 +1389,22 @@ def test_set_oriented_resolver_preserves_historical_binding_rules(
     tmp_path: Path,
 ) -> None:
     database = tmp_path / "resolver-history.sqlite3"
-    keep_symbol = SymbolRecord(
-        "function", "keep", "pkg.keep", None, _source_range("keep")
-    )
-    drop_symbol = SymbolRecord(
-        "function", "drop", "pkg.drop", None, _source_range("drop")
-    )
-    module_symbol = SymbolRecord(
-        "module", "oldmod", "oldmod", None, _source_range("oldmod")
-    )
+    keep_symbol = SymbolRecord("function", "keep", "pkg.keep", None, _source_range("keep"))
+    drop_symbol = SymbolRecord("function", "drop", "pkg.drop", None, _source_range("drop"))
+    module_symbol = SymbolRecord("module", "oldmod", "oldmod", None, _source_range("oldmod"))
     references = (
         ReferenceRecord(
-            "call", "keep", _source_range("keep"), target_hint="pkg.keep",
+            "call",
+            "keep",
+            _source_range("keep"),
+            target_hint="pkg.keep",
             evidence="keep",
         ),
         ReferenceRecord(
-            "call", "drop", _source_range("drop"), target_hint="pkg.drop",
+            "call",
+            "drop",
+            _source_range("drop"),
+            target_hint="pkg.drop",
             evidence="drop",
         ),
     )
@@ -1441,9 +1421,7 @@ def test_set_oriented_resolver_preserves_historical_binding_rules(
         )
         drop_v1, _ = state.store_analysis(
             _analysis(
-                _snapshot(
-                    tmp_path / "drop.py", file_id=501, text="drop", mtime_ns=1
-                ),
+                _snapshot(tmp_path / "drop.py", file_id=501, text="drop", mtime_ns=1),
                 "drop",
                 symbols=(drop_symbol,),
             ),
@@ -1451,9 +1429,7 @@ def test_set_oriented_resolver_preserves_historical_binding_rules(
         )
         module_v1, _ = state.store_analysis(
             _analysis(
-                _snapshot(
-                    tmp_path / "oldmod.py", file_id=502, text="oldmod", mtime_ns=1
-                ),
+                _snapshot(tmp_path / "oldmod.py", file_id=502, text="oldmod", mtime_ns=1),
                 "oldmod",
                 symbols=(module_symbol,),
             ),
@@ -1488,9 +1464,7 @@ def test_set_oriented_resolver_preserves_historical_binding_rules(
         )
         state.store_analysis(
             _analysis(
-                _snapshot(
-                    tmp_path / "drop.py", file_id=501, text="drop-v2", mtime_ns=2
-                ),
+                _snapshot(tmp_path / "drop.py", file_id=501, text="drop-v2", mtime_ns=2),
                 "drop-v2",
                 symbols=(drop_symbol,),
             ),
@@ -1596,8 +1570,7 @@ def test_set_oriented_resolver_update_plans_are_not_correlated(
         ) -> sqlite3.Cursor:
             if (
                 "FROM _nc_reference_targets AS t" in statement
-                or "FROM _nc_current_versions AS v, _nc_module_lookup AS m"
-                in statement
+                or "FROM _nc_current_versions AS v, _nc_module_lookup AS m" in statement
             ):
                 plan = self.connection.execute(
                     "EXPLAIN QUERY PLAN " + statement, parameters
@@ -1609,12 +1582,8 @@ def test_set_oriented_resolver_update_plans_are_not_correlated(
             self.connection.close()
 
     database = tmp_path / "resolver-plan.sqlite3"
-    symbol = SymbolRecord(
-        "module", "target", "pkg.target", None, _source_range("target")
-    )
-    reference = ReferenceRecord(
-        "call", "target", _source_range("target"), target_hint="pkg.target"
-    )
+    symbol = SymbolRecord("module", "target", "pkg.target", None, _source_range("target"))
+    reference = ReferenceRecord("call", "target", _source_range("target"), target_hint="pkg.target")
     dependency = DependencyRecord("target", "python_import")
     with CodeState(database) as state:
         state.store_analysis(
@@ -1639,9 +1608,7 @@ def test_set_oriented_resolver_update_plans_are_not_correlated(
         state._resolve_symbols_and_dependencies()
 
         assert len(wrapped.plans) == 2
-        assert not any(
-            "CORRELATED" in detail.upper()
-            for plan in wrapped.plans
-            for detail in plan
-        )
+        assert not any("CORRELATED" in detail.upper() for plan in wrapped.plans for detail in plan)
+
+
 # endregion [02]

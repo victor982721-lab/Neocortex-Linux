@@ -16,8 +16,8 @@ from pathlib import Path
 
 from neocortex.platform_policy import sqlite_path_collation, stat_birthtime_ns
 
-from _02_Deduplicacion import FileSnapshot, snapshot_path
-from _03_Progreso import (
+from neocortex.deduplication import FileSnapshot, snapshot_path
+from neocortex.progress import (
     ProgressCallback,
     ProgressEvent,
     ProgressMetric,

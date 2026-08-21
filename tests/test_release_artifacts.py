@@ -54,9 +54,9 @@ _WHEEL = (
 ).encode()
 _ENTRY_POINTS = ("[console_scripts]\nNeocortex = neocortex.cli:entrypoint\n").encode()
 _UI_ASSETS = (
-    "_05_Interfaz/assets/neocortex-app-icon.ico",
-    "_05_Interfaz/assets/neocortex-app-icon.png",
-    "_05_Interfaz/assets/neocortex-app-icon.svg",
+    "neocortex/interface/presentation/assets/neocortex-app-icon.ico",
+    "neocortex/interface/presentation/assets/neocortex-app-icon.png",
+    "neocortex/interface/presentation/assets/neocortex-app-icon.svg",
 )
 _SOURCE_ONLY_TOOLS = (
     "tools/__init__.py",

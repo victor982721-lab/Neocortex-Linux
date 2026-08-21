@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from _02_Deduplicacion import FileSnapshot
+from neocortex.deduplication import FileSnapshot
 from _04_Nucleo_Operativo.audio_state import audio_database, initialize_audio_state
 from _04_Nucleo_Operativo.cli_app import main
 from _04_Nucleo_Operativo.cli_knowledge import KnowledgeExitCode

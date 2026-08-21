@@ -29,12 +29,24 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Literal, Protocol, cast
 
 from neocortex import pip_bootstrap
+from neocortex.runtime.source_staging import (
+    parse_git_tracked_paths,
+    stage_tracked_source,
+)
 
 from .app_paths import self_analysis_data_directory, source_repository_directory
 from .code_analysis_epistemics import (
     AnalysisQuestionEvaluation,
     AnalysisQuestionSpec,
     analysis_question_spec_fingerprint,
+)
+from .code.validation_supply import (
+    PIP_AUDIT_DEPENDENCY_CONTRACT_FILES,
+    dependency_contract_comparison,
+    effective_provider_projection_run as _effective_provider_projection_run,
+    historical_pip_audit_fallback as _resolve_historical_pip_audit_fallback,
+    installed_versions as _installed_versions,
+    pip_audit_run_is_clean,
 )
 from .code_architecture_questions import ARCHITECTURE_CONTRACT_QUESTION
 from .code_change_evolution_analysis import CODE_SCHEMA_EVOLUTION_QUESTION
@@ -110,22 +122,13 @@ _ANSI_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 _TEST_PATH = re.compile(r"^tests/(?:.*/)?test_[^/]+\.py$")
 _PYTHON_SOURCE_ROOTS = frozenset(
     {
-        "Orquestador.py",
-        "_01_Enumeracion",
-        "_02_Deduplicacion",
-        "_03_Progreso",
         "_04_Nucleo_Operativo",
-        "_05_Interfaz",
         "neocortex",
     }
 )
 _PYTHON_SOURCE_PREFIXES = frozenset(
     {
-        "_01_Enumeracion",
-        "_02_Deduplicacion",
-        "_03_Progreso",
         "_04_Nucleo_Operativo",
-        "_05_Interfaz",
         "neocortex",
         "tools",
     }
@@ -171,7 +174,7 @@ _FULL_SUITE_BOUNDARIES = frozenset(
     }
 )
 _FULL_SUITE_PREFIXES = (
-    "_03_Progreso/",
+    "neocortex/progress/",
     "_04_Nucleo_Operativo/cli_app.py",
     "_04_Nucleo_Operativo/cli_parser.py",
     "_04_Nucleo_Operativo/cli_validation.py",
@@ -951,6 +954,32 @@ def _run_text(
     return completed.stdout
 
 
+def _pip_audit_dependency_contract_comparison(
+    source: Path,
+    change: GitChangeSnapshot,
+    *,
+    runner: _CommandRunner = _default_runner,
+) -> dict[str, object]:
+    current_files: dict[str, str] = {}
+    baseline_files: dict[str, str] = {}
+    for relative in (*PIP_AUDIT_DEPENDENCY_CONTRACT_FILES, "pyproject.toml"):
+        try:
+            current_files[relative] = (source / relative).read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as error:
+            raise ChangeValidationError(
+                "pip_audit_dependency_contract_current_unreadable"
+            ) from error
+        baseline_files[relative] = _run_text(
+            runner,
+            source,
+            ("git", "show", f"{change.baseline}:{relative}"),
+        )
+    try:
+        return dependency_contract_comparison(current_files, baseline_files)
+    except (TypeError, ValueError) as error:
+        raise ChangeValidationError(str(error)) from error
+
+
 def _git_paths(raw: str) -> tuple[str, ...]:
     values = tuple(item for item in raw.split("\0") if item)
     normalized: list[str] = []
@@ -1074,8 +1103,6 @@ def capture_git_change(
 
 
 def _module_for_source(relative: str) -> str | None:
-    if relative == "Orquestador.py":
-        return "Orquestador"
     path = PurePosixPath(relative)
     if path.suffix.casefold() != ".py" or not path.parts:
         return None
@@ -1493,153 +1520,183 @@ def _provider_failure(provider: object) -> bool:
     return not (status == "abstained" and isinstance(reason, str) and reason in allowed)
 
 
-def _effective_provider_projection_run(connection: Any, tool_run_id: int) -> int | None:
-    row = connection.execute(
-        """SELECT r.status,c.execution FROM external_tool_runs r
-        JOIN external_run_contracts c USING(tool_run_id) WHERE r.tool_run_id=?""",
-        (tool_run_id,),
-    ).fetchone()
-    if row is None:
-        return None
-    status = str(row["status"])
-    execution = str(row["execution"])
-    if status == "completed" and execution != "cache_replay":
-        return tool_run_id
-    if status != "skipped" or execution != "cache_replay":
-        return None
-    replay = connection.execute(
-        "SELECT source_tool_run_id FROM external_run_replays WHERE tool_run_id=?",
-        (tool_run_id,),
-    ).fetchone()
-    return None if replay is None else int(replay[0])
-
-
-def _installed_versions(connection: Any, tool_run_id: int) -> dict[str, str] | None:
-    effective = _effective_provider_projection_run(connection, tool_run_id)
-    if effective is None:
-        return None
-    rows = connection.execute(
-        """SELECT subject_key,value,metadata_json FROM external_metrics
-        WHERE tool_run_id=? AND category='package_integrity'
-        AND metric_name='distribution_present' ORDER BY subject_key LIMIT 2001""",
-        (effective,),
-    ).fetchall()
-    if not rows or len(rows) > 2_000:
-        return None
-    versions: dict[str, str] = {}
-    for row in rows:
-        if float(row["value"]) != 1.0:
-            return None
-        try:
-            metadata = json.loads(str(row["metadata_json"]))
-        except (TypeError, ValueError, json.JSONDecodeError):
-            return None
-        if not isinstance(metadata, dict):
-            return None
-        name = metadata.get("normalized_name")
-        version = metadata.get("installed_version")
-        if not isinstance(name, str) or not name or not isinstance(version, str) or not version:
-            return None
-        if str(row["subject_key"]) != f"package:{name}" or name in versions:
-            return None
-        versions[name] = version
-    return versions
-
-
 def _historical_pip_audit_fallback(
     state_directory: Path,
     *,
-    analysis_run_id: int,
+    analysis_run_id: int | None,
     change: GitChangeSnapshot | None,
+    source_root: Path | None = None,
 ) -> Mapping[str, object] | None:
-    """Resolve one still-fresh audit only for an unchanged installed inventory."""
+    """Resolve a fresh audit when dependencies and installed versions are unchanged."""
 
-    if change is None or any(path in _SUPPLY_CHAIN_BOUNDARIES for path in change.changed_paths):
+    if change is None:
         return None
-    database = Path(state_directory) / "code.sqlite3"
-    if not database.is_file():
-        return None
-    try:
-        with readonly_code_database(database) as connection:
-            validate_code_schema(connection)
-            current_inventory = connection.execute(
-                """SELECT r.tool_run_id FROM external_tool_runs r
-                JOIN external_run_contracts c USING(tool_run_id)
-                WHERE r.analysis_run_id=? AND c.provider_id=?
-                ORDER BY r.tool_run_id DESC LIMIT 1""",
-                (analysis_run_id, INSTALLED_PACKAGE_PROVIDER_ID),
-            ).fetchone()
-            if current_inventory is None:
-                return None
-            audit = connection.execute(
-                """SELECT r.tool_run_id,r.analysis_run_id,c.result_digest,m.value AS fresh_until
-                FROM external_tool_runs r JOIN external_run_contracts c USING(tool_run_id)
-                JOIN external_metrics m ON m.tool_run_id=r.tool_run_id
-                WHERE c.provider_id=? AND r.status='completed'
-                AND c.coverage_complete=1 AND c.result_digest IS NOT NULL
-                AND m.subject_kind='project'
-                AND m.subject_key='project:installed-environment'
-                AND m.category='known_vulnerability'
-                AND m.metric_name='audit_fresh_until_unix_seconds'
-                AND m.unit='unix_seconds' AND m.value>=?
-                ORDER BY r.tool_run_id DESC LIMIT 1""",
-                (PIP_AUDIT_PROVIDER_ID, time.time()),
-            ).fetchone()
-            if audit is None:
-                return None
-            historical_inventory = connection.execute(
-                """SELECT r.tool_run_id FROM external_tool_runs r
-                JOIN external_run_contracts c USING(tool_run_id)
-                WHERE r.analysis_run_id=? AND c.provider_id=?
-                ORDER BY r.tool_run_id DESC LIMIT 1""",
-                (int(audit["analysis_run_id"]), INSTALLED_PACKAGE_PROVIDER_ID),
-            ).fetchone()
-            if historical_inventory is None:
-                return None
-            current_versions = _installed_versions(
-                connection,
-                int(current_inventory["tool_run_id"]),
+    supply_paths = tuple(path for path in change.changed_paths if path in _SUPPLY_CHAIN_BOUNDARIES)
+    dependency_comparison: Mapping[str, object] | None = None
+    if supply_paths:
+        try:
+            dependency_comparison = _pip_audit_dependency_contract_comparison(
+                source_repository_directory() if source_root is None else source_root,
+                change,
             )
-            historical_versions = _installed_versions(
-                connection,
-                int(historical_inventory["tool_run_id"]),
-            )
-            if current_versions is None or current_versions != historical_versions:
-                return None
-            audit_run = int(audit["tool_run_id"])
-            audit_counts = connection.execute(
-                """SELECT
-                SUM(CASE WHEN metric_name='known_vulnerability_count'
-                    AND subject_key='project:installed-environment' THEN value ELSE 0 END)
-                    AS vulnerabilities,
-                SUM(CASE WHEN metric_name='audit_current_at_observation'
-                    AND subject_key='project:installed-environment' THEN value ELSE 0 END)
-                    AS current_markers
-                FROM external_metrics WHERE tool_run_id=?""",
-                (audit_run,),
-            ).fetchone()
-            if (
-                audit_counts is None
-                or float(audit_counts["vulnerabilities"] or 0) != 0.0
-                or float(audit_counts["current_markers"] or 0) != 1.0
-                or connection.execute(
-                    "SELECT COUNT(*) FROM external_findings WHERE tool_run_id=?",
-                    (audit_run,),
-                ).fetchone()[0]
-                != 0
-            ):
-                return None
-            return {
-                "tool_run_id": audit_run,
-                "analysis_run_id": int(audit["analysis_run_id"]),
-                "result_digest": str(audit["result_digest"]),
-                "fresh_until_unix_seconds": float(audit["fresh_until"]),
-                "installed_distributions": len(current_versions),
-                "inventory_versions_identical": True,
-                "known_vulnerabilities": 0,
-            }
-    except (OSError, RuntimeError, sqlite3.DatabaseError, TypeError, ValueError):
-        return None
+        except (OSError, RuntimeError, TypeError, ValueError):
+            return None
+        if dependency_comparison.get("semantics_identical") is not True:
+            return None
+    return _resolve_historical_pip_audit_fallback(
+        state_directory,
+        analysis_run_id=analysis_run_id,
+        supply_paths=supply_paths,
+        dependency_comparison=dependency_comparison,
+    )
+
+
+def _published_pip_audit_baselines(
+    source: Path,
+    database: Path,
+) -> tuple[Any, Any, bool | None, Mapping[str, object]]:
+    provider = PipAuditKnownVulnerabilitiesProvider(source)
+    tool_version = provider.tool_version()
+    if tool_version is None:
+        raise ValueError("pip-audit runtime is unavailable")
+    descriptor = provider.descriptor
+    lookup = {
+        "provider_id": descriptor.provider_id,
+        "profile": descriptor.profile,
+        "tool_version": tool_version,
+        "configuration_signature": descriptor.configuration_signature,
+        "environment_signature": descriptor.environment_signature,
+        "root_identity": external_root_identity(source),
+        "input_signature": provider.baseline_input_signature(()),
+    }
+    with readonly_code_database(database) as connection:
+        validate_code_schema(connection)
+        exact, comparable = read_external_provider_baselines(
+            connection,
+            provider_id=descriptor.provider_id,
+            profile=descriptor.profile,
+            tool_version=tool_version,
+            configuration_signature=descriptor.configuration_signature,
+            environment_signature=descriptor.environment_signature,
+            root_identity=external_root_identity(source),
+            input_signature=provider.baseline_input_signature(()),
+            comparability_signature=descriptor.comparability_signature,
+        )
+        exact_clean = (
+            None if exact is None else pip_audit_run_is_clean(connection, int(exact.tool_run_id))
+        )
+        return exact, comparable, exact_clean, lookup
+
+
+def _pip_audit_preflight_identity(
+    exact: Any | None,
+    historical: Mapping[str, object] | None,
+) -> tuple[int, float | None]:
+    if exact is not None:
+        return int(exact.tool_run_id), exact.fresh_until_unix_seconds
+    if historical is None:
+        raise ValueError("pip-audit preflight snapshot is unavailable")
+    tool_run_id = historical.get("tool_run_id")
+    fresh_until = historical.get("fresh_until_unix_seconds")
+    if isinstance(tool_run_id, bool) or not isinstance(tool_run_id, int):
+        raise ValueError("historical pip-audit tool run is invalid")
+    if fresh_until is not None and (
+        isinstance(fresh_until, bool) or not isinstance(fresh_until, (int, float))
+    ):
+        raise ValueError("historical pip-audit freshness is invalid")
+    return tool_run_id, None if fresh_until is None else float(fresh_until)
+
+
+def _pip_audit_snapshot_eligibility_gate(
+    exact: Any | None,
+    historical: Mapping[str, object] | None,
+    *,
+    exact_snapshot_clean: bool | None,
+    comparable_present: bool,
+    lookup: Mapping[str, object],
+    supply_paths: Sequence[str],
+    started: int,
+    command: Sequence[str | os.PathLike[str]],
+) -> ValidationGate | None:
+    if exact is None and historical is None:
+        return _gate(
+            "pip_audit_snapshot_preflight",
+            "abstained",
+            "pip_audit_exact_snapshot_missing",
+            started,
+            command,
+            {
+                "comparable_snapshot_present": comparable_present,
+                "exact_lookup": dict(lookup),
+                "supply_chain_paths": list(supply_paths),
+            },
+        )
+    if exact is not None and (exact.portable_finding_ids or exact_snapshot_clean is not True):
+        return _gate(
+            "pip_audit_snapshot_preflight",
+            "failed",
+            "pip_audit_snapshot_reports_known_vulnerabilities",
+            started,
+            command,
+            {
+                "tool_run_id": exact.tool_run_id,
+                "known_vulnerability_findings": len(exact.portable_finding_ids),
+                "snapshot_clean": exact_snapshot_clean,
+            },
+        )
+    return None
+
+
+def _pip_audit_snapshot_freshness_gate(
+    exact: Any | None,
+    historical: Mapping[str, object] | None,
+    *,
+    supply_paths: Sequence[str],
+    runtime_window: CodeValidationRuntimeWindow,
+    started: int,
+    command: Sequence[str | os.PathLike[str]],
+) -> ValidationGate:
+    remaining_seconds = max(
+        0.0,
+        (runtime_window.hard_deadline_monotonic_ns - time.monotonic_ns()) / 1_000_000_000,
+    )
+    required_fresh_until = time.time() + remaining_seconds
+    tool_run_id, fresh_until = _pip_audit_preflight_identity(exact, historical)
+    evidence: dict[str, object] = {
+        "tool_run_id": tool_run_id,
+        "fresh_until_unix_seconds": fresh_until,
+        "required_fresh_until_unix_seconds": required_fresh_until,
+        "remaining_validation_seconds": round(remaining_seconds, 3),
+    }
+    if fresh_until is None or fresh_until < required_fresh_until:
+        return _gate(
+            "pip_audit_snapshot_preflight",
+            "abstained",
+            "pip_audit_snapshot_expires_before_validation_deadline",
+            started,
+            command,
+            evidence,
+        )
+    evidence.update(
+        {
+            "known_vulnerability_findings": 0,
+            "supply_chain_paths": list(supply_paths),
+            "historical_snapshot": historical,
+        }
+    )
+    reason = (
+        "exact_zero_vulnerability_snapshot_covers_validation_runtime"
+        if exact is not None
+        else "dependency_equivalent_historical_snapshot_covers_validation_runtime"
+    )
+    return _gate(
+        "pip_audit_snapshot_preflight",
+        "passed",
+        reason,
+        started,
+        command,
+        evidence,
+    )
 
 
 def _pip_audit_snapshot_preflight(
@@ -1651,13 +1708,12 @@ def _pip_audit_snapshot_preflight(
 ) -> ValidationGate:
     """Reject an unusable offline audit before any expensive acceptance stage.
 
-    Canonical validation deliberately runs without IP sockets.  The producer can
-    therefore consume only an exact, already-published pip-audit snapshot.  Check
-    that contract before static analysis and trusted-deep, and require the
+    Canonical validation deliberately runs without IP sockets. It therefore
+    consumes either an exact published snapshot or a still-fresh historical
+    snapshot whose dependency contract and installed versions are identical.
+    Check that contract before static analysis and trusted-deep, and require the
     freshness fence to cover the complete remaining cgroup runtime instead of
-    discovering an expired snapshot after Coverage has run.  The provider input
-    signature includes the local supply/release files, so an intentional supply
-    change is admitted only after a new source-bound observation exists.
+    discovering an expired snapshot after Coverage has run.
     """
 
     started = time.monotonic_ns()
@@ -1674,25 +1730,10 @@ def _pip_audit_snapshot_preflight(
             {"database_present": False},
         )
     try:
-        provider = PipAuditKnownVulnerabilitiesProvider(source)
-        tool_version = provider.tool_version()
-        if tool_version is None:
-            raise ValueError("pip-audit runtime is unavailable")
-        input_signature = provider.baseline_input_signature(())
-        descriptor = provider.descriptor
-        with readonly_code_database(database) as connection:
-            validate_code_schema(connection)
-            exact, comparable = read_external_provider_baselines(
-                connection,
-                provider_id=descriptor.provider_id,
-                profile=descriptor.profile,
-                tool_version=tool_version,
-                configuration_signature=descriptor.configuration_signature,
-                environment_signature=descriptor.environment_signature,
-                root_identity=external_root_identity(source),
-                input_signature=input_signature,
-                comparability_signature=descriptor.comparability_signature,
-            )
+        exact, comparable, exact_snapshot_clean, lookup = _published_pip_audit_baselines(
+            source,
+            database,
+        )
     except (OSError, RuntimeError, sqlite3.DatabaseError, TypeError, ValueError) as exc:
         return _gate(
             "pip_audit_snapshot_preflight",
@@ -1702,64 +1743,35 @@ def _pip_audit_snapshot_preflight(
             command,
             {"error": str(exc)[:4096]},
         )
-    if exact is None:
-        return _gate(
-            "pip_audit_snapshot_preflight",
-            "abstained",
-            "pip_audit_exact_snapshot_missing",
-            started,
-            command,
-            {
-                "comparable_snapshot_present": comparable is not None,
-                "supply_chain_paths": list(supply_paths),
-            },
+    historical = (
+        _historical_pip_audit_fallback(
+            state_directory,
+            analysis_run_id=None,
+            change=change,
+            source_root=source,
         )
-    if exact.portable_finding_ids:
-        return _gate(
-            "pip_audit_snapshot_preflight",
-            "failed",
-            "pip_audit_snapshot_reports_known_vulnerabilities",
-            started,
-            command,
-            {
-                "tool_run_id": exact.tool_run_id,
-                "known_vulnerability_findings": len(exact.portable_finding_ids),
-            },
-        )
-    remaining_seconds = max(
-        0.0,
-        (runtime_window.hard_deadline_monotonic_ns - time.monotonic_ns()) / 1_000_000_000,
+        if exact is None
+        else None
     )
-    required_fresh_until = time.time() + remaining_seconds
-    fresh_until = exact.fresh_until_unix_seconds
-    if fresh_until is None or fresh_until < required_fresh_until:
-        return _gate(
-            "pip_audit_snapshot_preflight",
-            "abstained",
-            "pip_audit_snapshot_expires_before_validation_deadline",
-            started,
-            command,
-            {
-                "tool_run_id": exact.tool_run_id,
-                "fresh_until_unix_seconds": fresh_until,
-                "required_fresh_until_unix_seconds": required_fresh_until,
-                "remaining_validation_seconds": round(remaining_seconds, 3),
-            },
-        )
-    return _gate(
-        "pip_audit_snapshot_preflight",
-        "passed",
-        "exact_zero_vulnerability_snapshot_covers_validation_runtime",
-        started,
-        command,
-        {
-            "tool_run_id": exact.tool_run_id,
-            "fresh_until_unix_seconds": fresh_until,
-            "required_fresh_until_unix_seconds": required_fresh_until,
-            "remaining_validation_seconds": round(remaining_seconds, 3),
-            "known_vulnerability_findings": 0,
-            "supply_chain_paths": list(supply_paths),
-        },
+    eligibility = _pip_audit_snapshot_eligibility_gate(
+        exact,
+        historical,
+        exact_snapshot_clean=exact_snapshot_clean,
+        comparable_present=comparable is not None,
+        lookup=lookup,
+        supply_paths=supply_paths,
+        started=started,
+        command=command,
+    )
+    if eligibility is not None:
+        return eligibility
+    return _pip_audit_snapshot_freshness_gate(
+        exact,
+        historical,
+        supply_paths=supply_paths,
+        runtime_window=runtime_window,
+        started=started,
+        command=command,
     )
 
 
@@ -2337,6 +2349,11 @@ def _candidate_wheel_gate(
     try:
         with tempfile.TemporaryDirectory(prefix="neocortex-candidate-wheel-") as temporary:
             workspace = Path(temporary)
+            staged_source = workspace / "source"
+            tracked_paths = parse_git_tracked_paths(
+                _run_text(runner, root, ("git", "ls-files", "--cached", "-z"))
+            )
+            staged_summary = stage_tracked_source(root, staged_source, tracked_paths)
             wheelhouse = workspace / "wheelhouse"
             wheelhouse.mkdir()
             # CPython's installed setuptools includes the pinned bdist_wheel
@@ -2352,7 +2369,7 @@ def _candidate_wheel_gate(
             )
             completed = runner(
                 build_command,
-                cwd=root,
+                cwd=staged_source,
                 timeout=phase_timeout(10 * 60),
                 environment=None,
             )
@@ -2489,6 +2506,9 @@ def _candidate_wheel_gate(
                 {
                     "wheel_sha256": hashlib.sha256(wheel.read_bytes()).hexdigest(),
                     "wheel_bytes": wheel.stat().st_size,
+                    "staged_source_files": staged_summary.file_count,
+                    "staged_source_regular_bytes": staged_summary.regular_bytes,
+                    "staged_source_symlinks": staged_summary.symlink_count,
                     "probe": probe_result.stdout.strip(),
                     "version": version_result.stdout.strip(),
                     "entrypoint": str(entrypoint),
@@ -2862,18 +2882,13 @@ def _validation_question_scopes() -> tuple[_ValidationQuestionScope, ...]:
             "architecture.declared_import_contract_acceptance",
             frozenset(
                 {
-                    "Orquestador.py",
                     "tests/test_code_architecture_analysis.py",
                     "tests/test_code_architecture_contracts.py",
                     "tests/test_code_architecture_questions.py",
                 }
             ),
             (
-                "_01_Enumeracion/",
-                "_02_Deduplicacion/",
-                "_03_Progreso/",
                 "_04_Nucleo_Operativo/",
-                "_05_Interfaz/",
                 "neocortex/",
                 "tests/test_code_architecture_",
             ),
@@ -3034,7 +3049,7 @@ def _validation_question_scopes() -> tuple[_ValidationQuestionScope, ...]:
             "retention.durable_hold_safety",
             frozenset(
                 {
-                    "_02_Deduplicacion/inventory_schema.py",
+                    "neocortex/deduplication/schema.py",
                     "_04_Nucleo_Operativo/code_retention_analysis.py",
                     "_04_Nucleo_Operativo/document_catalog.py",
                     "_04_Nucleo_Operativo/framework_schema.py",
@@ -3101,7 +3116,7 @@ def _validation_question_scopes() -> tuple[_ValidationQuestionScope, ...]:
             "knowledge.asset_health_causal_acceptance",
             frozenset(
                 {
-                    "_02_Deduplicacion/inventory_schema.py",
+                    "neocortex/deduplication/schema.py",
                     "_04_Nucleo_Operativo/cli_knowledge.py",
                     "_04_Nucleo_Operativo/cli_knowledge_surface.py",
                     "_04_Nucleo_Operativo/code_knowledge_asset_health_analysis.py",
@@ -3135,7 +3150,7 @@ def _validation_question_scopes() -> tuple[_ValidationQuestionScope, ...]:
             "knowledge.pdf_asset_health_causal_acceptance",
             frozenset(
                 {
-                    "_02_Deduplicacion/inventory_schema.py",
+                    "neocortex/deduplication/schema.py",
                     "_04_Nucleo_Operativo/cli_knowledge.py",
                     "_04_Nucleo_Operativo/cli_knowledge_surface.py",
                     "_04_Nucleo_Operativo/code_knowledge_pdf_asset_health_analysis.py",

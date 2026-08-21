@@ -7,20 +7,20 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from _01_Enumeracion import (
+from neocortex.enumeration import (
     JournalCursor,
     JournalDiscontinuityError,
     NtfsUsnError,
     query_journal_cursor,
 )
-from _02_Deduplicacion import (
+from neocortex.deduplication import (
     DedupIndex,
     InventoryCheckpoint,
     InventoryError,
     InventoryExclusionPolicy,
     ScanSummary,
 )
-from _03_Progreso import ProgressCallback, ProgressEvent, emit_progress
+from neocortex.progress import ProgressCallback, ProgressEvent, emit_progress
 
 from .reconcile import ReconcileResult, reconcile_usn_window
 from .state import FrameworkState

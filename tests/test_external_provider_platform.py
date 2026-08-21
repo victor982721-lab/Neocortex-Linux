@@ -13,7 +13,7 @@ import pytest
 
 import _04_Nucleo_Operativo.code_review as code_review_module
 import _04_Nucleo_Operativo.external_evidence_providers as providers_module
-from _02_Deduplicacion import FileSnapshot
+from neocortex.deduplication import FileSnapshot
 from _04_Nucleo_Operativo.cli_code import _read_code_status_snapshot
 from _04_Nucleo_Operativo.code_contracts import CodeRouteConfig
 from _04_Nucleo_Operativo.code_external_evidence import ExternalEvidenceFile

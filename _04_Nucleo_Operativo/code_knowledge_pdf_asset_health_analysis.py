@@ -14,7 +14,7 @@ from dataclasses import asdict, dataclass
 from importlib import import_module
 from typing import Literal
 
-from _02_Deduplicacion.inventory_schema import SCHEMA_VERSION as INVENTORY_SCHEMA_VERSION
+from neocortex.deduplication.schema import SCHEMA_VERSION as INVENTORY_SCHEMA_VERSION
 
 from .code_analysis_epistemics import (
     AnalysisEvidenceRef,

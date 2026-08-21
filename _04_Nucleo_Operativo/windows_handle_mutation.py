@@ -20,7 +20,7 @@ from types import TracebackType
 from typing import Any, Protocol, Self, cast
 from ctypes import wintypes
 
-from _02_Deduplicacion.path_io import native_io_path
+from neocortex.deduplication.io import native_io_path
 
 
 # region [01] Public contract
@@ -107,9 +107,10 @@ def rename_no_replace_by_identity(
     if destination.name in {"", ".", ".."}:
         raise IdentityBoundMutationError("destination must name one file entry")
 
-    with _open_source(source) as source_handle, _open_directory(
-        destination.parent
-    ) as parent_handle:
+    with (
+        _open_source(source) as source_handle,
+        _open_directory(destination.parent) as parent_handle,
+    ):
         source_info = _handle_identity(source_handle.value)
         parent_info = _handle_identity(parent_handle.value)
         source_legacy = _legacy_handle_info(source_handle.value)
@@ -435,9 +436,7 @@ def _validate_retained_path_binding(
     current_identity = (int(current.st_dev), int(current.st_ino))
     retained_identity = (handle_identity.volume_id, handle_identity.file_id)
     if current_identity != retained_identity:
-        raise IdentityBoundMutationError(
-            f"{role} path does not resolve to the retained handle"
-        )
+        raise IdentityBoundMutationError(f"{role} path does not resolve to the retained handle")
     return current
 
 
@@ -510,17 +509,19 @@ def _validate_rename_postcondition(
     if os.path.lexists(source):
         raise IdentityBoundMutationError("source name still exists after native success")
     if not os.path.lexists(destination):
-        raise IdentityBoundMutationError(
-            "destination name is absent after native success"
-        )
+        raise IdentityBoundMutationError("destination name is absent after native success")
     destination_stat = os.stat(destination, follow_symlinks=False)
     destination_identity = (int(destination_stat.st_dev), int(destination_stat.st_ino))
     retained = _handle_identity(source_handle)
     expected = (expected_identity.volume_id, expected_identity.file_id)
-    if destination_identity != expected or (
-        retained.volume_id,
-        retained.file_id,
-    ) != expected:
+    if (
+        destination_identity != expected
+        or (
+            retained.volume_id,
+            retained.file_id,
+        )
+        != expected
+    ):
         raise IdentityBoundMutationError(
             "destination identity does not match the retained source handle"
         )

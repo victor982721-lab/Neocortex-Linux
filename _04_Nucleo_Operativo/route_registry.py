@@ -12,7 +12,7 @@ from .route_selection import BUILTIN_ROUTE_ORDER as BUILTIN_ROUTE_ORDER
 from .route_selection import normalize_route_selection as normalize_route_selection
 
 if TYPE_CHECKING:
-    from _03_Progreso import ProgressCallback
+    from neocortex.progress import ProgressCallback
 
     from .capabilities.formats.archive.route import ArchiveRoute as ArchiveRoute
     from .capabilities.formats.archive.route import ArchiveRouteConfig as ArchiveRouteConfig
@@ -136,7 +136,7 @@ def pdf_route_config_from_framework(config: "FrameworkConfig") -> "PdfRouteConfi
 
 
 def _run_pdf(context: RouteExecutionContext) -> object:
-    from _02_Deduplicacion import DedupIndex
+    from neocortex.deduplication import DedupIndex
 
     from .pdf_route import PdfRoute
 
@@ -171,7 +171,7 @@ def image_route_config_from_framework(
 
 
 def _run_image(context: RouteExecutionContext) -> object:
-    from _02_Deduplicacion import DedupIndex
+    from neocortex.deduplication import DedupIndex
 
     from .global_resources import CoordinatedMemoryGate
     from .capabilities.formats.image.route import ImageRoute
@@ -391,7 +391,7 @@ def code_route_config_from_framework(config: "FrameworkConfig") -> "CodeRouteCon
 
 
 def _run_code(context: RouteExecutionContext) -> object:
-    from _02_Deduplicacion import DedupIndex
+    from neocortex.deduplication import DedupIndex
 
     from .code_route import CodeRoute
 

@@ -18,15 +18,15 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal, Protocol, runtime_checkable
 
-from _01_Enumeracion import (
+from neocortex.enumeration import (
     JournalCursor,
     JournalDiscontinuityError,
     NtfsUsnError,
     UsnChangeBatch,
     UsnJournalReader,
 )
-from _02_Deduplicacion import DedupIndex, InventoryCheckpoint, InventoryError
-from _03_Progreso import ProgressCallback
+from neocortex.deduplication import DedupIndex, InventoryCheckpoint, InventoryError
+from neocortex.progress import ProgressCallback
 
 from .corpus_access import CorpusAccessPolicy
 from .framework_state_writer import (
@@ -90,21 +90,14 @@ class IncrementalWatcherConfig:
         if self.max_debounce_seconds <= 0:
             raise ValueError("max_debounce_seconds must be positive")
         if self.max_debounce_seconds < self.debounce_seconds:
-            raise ValueError(
-                "max_debounce_seconds cannot be shorter than debounce_seconds"
-            )
+            raise ValueError("max_debounce_seconds cannot be shorter than debounce_seconds")
         if self.error_backoff_initial_seconds < 0:
             raise ValueError("error_backoff_initial_seconds cannot be negative")
         if self.error_backoff_max_seconds < self.error_backoff_initial_seconds:
-            raise ValueError(
-                "error_backoff_max_seconds cannot be shorter than the initial backoff"
-            )
+            raise ValueError("error_backoff_max_seconds cannot be shorter than the initial backoff")
         if self.error_backoff_multiplier < 1:
             raise ValueError("error_backoff_multiplier must be at least 1")
-        if (
-            not math.isfinite(self.portable_interval_seconds)
-            or self.portable_interval_seconds <= 0
-        ):
+        if not math.isfinite(self.portable_interval_seconds) or self.portable_interval_seconds <= 0:
             raise ValueError("portable_interval_seconds must be finite and positive")
 
 
@@ -269,10 +262,7 @@ class IncrementalWatcher:
     ):
         if framework_config.apply_actions:
             raise ValueError("incremental watcher does not allow apply_actions")
-        if (
-            framework_config.self_analysis
-            or framework_config.corpus_access_mode != "normal"
-        ):
+        if framework_config.self_analysis or framework_config.corpus_access_mode != "normal":
             raise ValueError("incremental watcher requires normal corpus access")
         if framework_config.route_only or framework_config.resume_run_id is not None:
             raise ValueError("incremental watcher requires integrated initial runs")
@@ -280,9 +270,7 @@ class IncrementalWatcher:
             raise ValueError("incremental watcher cannot use a retained candidate run")
 
         self.config = config or IncrementalWatcherConfig()
-        requested_root = Path(
-            os.path.abspath(os.fspath(framework_config.root.expanduser()))
-        )
+        requested_root = Path(os.path.abspath(os.fspath(framework_config.root.expanduser())))
         access_policy = CorpusAccessPolicy.capture("normal", requested_root)
         state_layout = initialize_authorized_state_directory(
             access_policy,
@@ -417,9 +405,7 @@ class IncrementalWatcher:
         )
         checkpoint_cursor_complete = all(value is not None for value in cursor_values)
         checkpoint_cursor_absent = all(value is None for value in cursor_values)
-        cursor_binding_matches = (
-            durable_cursor is None and checkpoint_cursor_absent
-        ) or (
+        cursor_binding_matches = (durable_cursor is None and checkpoint_cursor_absent) or (
             durable_cursor is not None
             and checkpoint_cursor_complete
             and checkpoint.volume == durable_cursor.volume
@@ -434,8 +420,7 @@ class IncrementalWatcher:
             or binding.corpus_access_mode != "normal"
             or binding.inventory_policy_signature != self._boundary.effective_signature
             or binding.scan_id != checkpoint.scan_id
-            or checkpoint.inventory_policy_signature
-            != self._boundary.exclusion_policy.signature
+            or checkpoint.inventory_policy_signature != self._boundary.exclusion_policy.signature
             or not cursor_binding_matches
         ):
             self._emit(
@@ -500,9 +485,7 @@ class IncrementalWatcher:
             "run-started",
             "Ejecución integrada iniciada",
             reason=reason,
-            checkpoint_usn=(
-                None if checkpoint_before is None else checkpoint_before.next_usn
-            ),
+            checkpoint_usn=(None if checkpoint_before is None else checkpoint_before.next_usn),
         )
 
         run: WatchRun | None = None
@@ -928,9 +911,9 @@ __all__ = [
     "WatcherCheckpointError",
     "WatcherEvent",
     "WatcherEventCallback",
+    "WatcherLifeLeaseConflict",
     "WatcherRunCallback",
     "WatcherRunReason",
     "WatcherRunSummary",
     "WatcherSummary",
-    "WatcherLifeLeaseConflict",
 ]

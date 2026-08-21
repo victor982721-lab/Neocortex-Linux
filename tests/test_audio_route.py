@@ -13,7 +13,7 @@ from typing import Any
 import pytest
 
 import _04_Nucleo_Operativo.audio_state as audio_state_module
-from _02_Deduplicacion import FileSnapshot, snapshot_path
+from neocortex.deduplication import FileSnapshot, snapshot_path
 from _04_Nucleo_Operativo.audio_models import (
     AudioProcessingError,
     AudioRouteConfig,

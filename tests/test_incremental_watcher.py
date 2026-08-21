@@ -9,13 +9,13 @@ from typing import TypeAlias, cast
 
 import pytest
 
-from _01_Enumeracion import (
+from neocortex.enumeration import (
     JournalCursor,
     JournalDiscontinuityError,
     NtfsEntry,
     UsnChangeBatch,
 )
-from _02_Deduplicacion import InventoryCheckpoint
+from neocortex.deduplication import InventoryCheckpoint
 from _04_Nucleo_Operativo.corpus_access import CorpusAccessPolicy
 from _04_Nucleo_Operativo.framework_state_writer import (
     DurableInventoryBinding,
@@ -61,9 +61,7 @@ class FakeClock:
         self.advance(seconds)
 
 
-PollAction: TypeAlias = (
-    UsnChangeBatch | None | BaseException | Callable[[], UsnChangeBatch | None]
-)
+PollAction: TypeAlias = UsnChangeBatch | None | BaseException | Callable[[], UsnChangeBatch | None]
 
 
 class ScriptedSource:
@@ -354,9 +352,7 @@ def test_portable_checkpoint_schedules_integrated_runs_without_a_usn_source(
         IncrementalWatcherConfig(portable_interval_seconds=15),
         checkpoint_loader=checkpoint_loader,
         durable_owner_loader=owner_loader,
-        journal_source_factory=lambda *_args: pytest.fail(
-            "portable watcher attempted to open USN"
-        ),
+        journal_source_factory=lambda *_args: pytest.fail("portable watcher attempted to open USN"),
         run_factory=lambda: FakeRun(run_once),
         run_callback=lambda summary: reasons.append(summary.reason),
         monotonic=clock.monotonic,

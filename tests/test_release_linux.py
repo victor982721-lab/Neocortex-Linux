@@ -83,6 +83,59 @@ def test_build_workspace_staging_shares_the_release_filesystem(tmp_path: Path) -
     assert layout.staging.parent == layout.releases
 
 
+def test_wheel_build_uses_a_git_owned_source_stage_without_build_residue(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source"
+    package = source / "neocortex"
+    package.mkdir(parents=True)
+    (source / "constraints.txt").write_text("setuptools==83.0.0\n", encoding="utf-8")
+    (source / "pyproject.toml").write_text("[build-system]\n", encoding="utf-8")
+    (package / "__init__.py").write_text("VALUE = 1\n", encoding="utf-8")
+    residue = source / "build/lib/removed_package.py"
+    residue.parent.mkdir(parents=True)
+    residue.write_text("STALE = True\n", encoding="utf-8")
+    layout = LinuxReleaseLayout(source, _policy(tmp_path))
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    observed_build_source: list[Path] = []
+
+    monkeypatch.setattr(
+        release_linux,
+        "_create_pip_environment",
+        lambda root, *_args, **_kwargs: (root / "bin").mkdir(parents=True),
+    )
+    monkeypatch.setattr(release_linux, "_venv_python", lambda root: root / "bin/python")
+    monkeypatch.setattr(release_linux, "build_source_only_wheels", lambda *_args, **_kwargs: ())
+
+    def runner(arguments, **_kwargs):
+        command = tuple(os.fspath(item) for item in arguments)
+        if "ls-files" in command:
+            tracked = "constraints.txt\0neocortex/__init__.py\0pyproject.toml\0"
+            return subprocess.CompletedProcess(command, 0, tracked, "")
+        if "build" in command and "--outdir" in command:
+            staged = Path(command[-1])
+            observed_build_source.append(staged)
+            assert staged != source
+            assert (staged / "neocortex/__init__.py").is_file()
+            assert not (staged / "build").exists()
+            wheelhouse = Path(command[command.index("--outdir") + 1])
+            (wheelhouse / "neocortex_framework-0.9.0-py3-none-any.whl").write_bytes(b"wheel")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    wheel, dependencies = release_linux._build_wheel(
+        layout,
+        workspace,
+        pip_wheel=tmp_path / "pip.whl",
+        runner=runner,
+    )
+
+    assert observed_build_source == [workspace / "source"]
+    assert wheel.read_bytes() == b"wheel"
+    assert dependencies == ()
+
+
 def test_pip_bootstrap_policy_is_hash_pinned_and_matches_constraints() -> None:
     constraints = (PROJECT_ROOT / "constraints.txt").read_text(encoding="utf-8").splitlines()
 
@@ -112,8 +165,8 @@ def test_release_install_uses_the_runtime_lock_as_a_second_constraint(
     runtime_lock = tmp_path / release_linux.RUNTIME_DEPENDENCY_LOCK_NAME
     pip_wheel = tmp_path / release_linux.PIP_BOOTSTRAP_FILENAME
     wheel.write_bytes(b"wheel")
-    constraints.write_text("pip==26.1.2\n", encoding="utf-8")
-    runtime_lock.write_text("pip==26.1.2\n", encoding="utf-8")
+    constraints.write_text("pip==26.2.1\n", encoding="utf-8")
+    runtime_lock.write_text("pip==26.2.1\n", encoding="utf-8")
     observed: list[tuple[str, ...]] = []
 
     monkeypatch.setattr(
@@ -145,13 +198,13 @@ def test_release_install_uses_the_runtime_lock_as_a_second_constraint(
 
 def test_runtime_dependency_verifier_rejects_inventory_drift(tmp_path: Path) -> None:
     lock = tmp_path / release_linux.RUNTIME_DEPENDENCY_LOCK_NAME
-    lock.write_text("pip==26.1.2\n", encoding="utf-8")
+    lock.write_text("pip==26.2.1\n", encoding="utf-8")
 
     def runner(arguments, **_kwargs):
         return subprocess.CompletedProcess(
             arguments,
             0,
-            '{"idna":"3.19","pip":"26.1.2"}',
+            '{"idna":"3.19","pip":"26.2.1"}',
             "",
         )
 
@@ -424,7 +477,7 @@ def test_failed_install_receipt_restores_current_launcher_and_alias(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     source = tmp_path / "source"
-    (source / "_05_Interfaz" / "assets").mkdir(parents=True)
+    (source / "neocortex" / "interface" / "presentation" / "assets").mkdir(parents=True)
     _write_runtime_lock(source)
     layout = LinuxReleaseLayout(source, _policy(tmp_path))
     old = _release(layout, "old")

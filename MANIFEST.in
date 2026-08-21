@@ -6,7 +6,8 @@ prune tests
 recursive-exclude docs KNOWLEDGE_EVOLUTION_*.md
 recursive-exclude docs TECHNICAL_AUDIT_*.md
 recursive-exclude docs TECHNICAL_EVOLUTION_*.md
-include _02_Deduplicacion/README.md
+include neocortex/deduplication/README.md
+include neocortex/enumeration/README.md
 include _04_Nucleo_Operativo/README.md
 include docs/ARCHITECTURE.md
 include docs/AUDIT_REPORTING_STANDARD.md

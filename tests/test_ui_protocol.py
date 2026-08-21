@@ -7,8 +7,8 @@ from __future__ import annotations
 
 import unittest
 
-from _03_Progreso import ProgressEvent, ProgressMetric
-from _05_Interfaz.protocol import (
+from neocortex.progress import ProgressEvent, ProgressMetric
+from neocortex.interface.protocol.messages import (
     command_record,
     decode_message,
     encode_message,

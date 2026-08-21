@@ -663,11 +663,28 @@ def publish_external_provider(
     connection.execute("SAVEPOINT external_provider_publication")
     try:
         tool_run_id = _publish_external_provider(connection, analysis_run_id, publication)
-    except BaseException:
-        connection.execute("ROLLBACK TO external_provider_publication")
-        connection.execute("RELEASE external_provider_publication")
+    except BaseException as error:
+        # SQLITE_FULL, SQLITE_IOERR, SQLITE_INTERRUPT and similar failures may
+        # roll back the whole transaction automatically.  Preserve that primary
+        # cause instead of masking it with a secondary "no such savepoint".
+        if connection.in_transaction:
+            try:
+                connection.execute("ROLLBACK TO external_provider_publication")
+                connection.execute("RELEASE external_provider_publication")
+            except sqlite3.Error as cleanup_error:
+                error.add_note(
+                    "external provider savepoint cleanup failed: "
+                    f"{type(cleanup_error).__name__}: {cleanup_error}"
+                )
         raise
-    connection.execute("RELEASE external_provider_publication")
+    try:
+        connection.execute("RELEASE external_provider_publication")
+    except sqlite3.Error as error:
+        raise RuntimeError(
+            "external provider savepoint disappeared before release: "
+            f"{publication.descriptor.provider_id}; "
+            f"transaction_active={int(connection.in_transaction)}"
+        ) from error
     return tool_run_id
 
 

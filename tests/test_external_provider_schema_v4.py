@@ -1793,6 +1793,31 @@ def test_invalid_provider_publication_rolls_back_its_whole_savepoint(
         connection.close()
 
 
+def test_provider_publish_preserves_a_primary_sqlite_rollback_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "atomic-primary-error.sqlite3"
+    _create_current_owner(database, 1)
+    publication = _full_publication("disk-pressure-provider")
+    connection = code_schema.connect_code_state(database, create=False)
+
+    def fail_after_sqlite_rollback(*_args: object, **_kwargs: object) -> int:
+        connection.rollback()
+        raise sqlite3.OperationalError("database or disk is full")
+
+    monkeypatch.setattr(
+        external_evidence_store,
+        "_publish_external_provider",
+        fail_after_sqlite_rollback,
+    )
+    try:
+        with pytest.raises(sqlite3.OperationalError, match="database or disk is full"):
+            publish_external_provider(connection, 1, publication)
+    finally:
+        connection.close()
+
+
 def test_run_completion_rolls_back_the_entire_provider_bundle_and_failed_owner_is_not_reused(
     tmp_path: Path,
 ) -> None:

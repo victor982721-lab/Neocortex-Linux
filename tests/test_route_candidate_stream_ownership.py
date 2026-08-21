@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Iterator, cast
 from unittest.mock import patch
 
-from _02_Deduplicacion import DedupIndex, FileSnapshot
+from neocortex.deduplication import DedupIndex, FileSnapshot
 from _04_Nucleo_Operativo.cancellation import CancellationRequested
 from _04_Nucleo_Operativo.image_route import (
     ImageRoute,
@@ -94,7 +94,10 @@ class RouteCandidateStreamOwnershipTests(unittest.TestCase):
             RuntimeError("deterministic image worker failure"),
             CancellationRequested("deterministic image cancellation"),
         ):
-            with self.subTest(failure=type(failure).__name__), tempfile.TemporaryDirectory() as temporary:
+            with (
+                self.subTest(failure=type(failure).__name__),
+                tempfile.TemporaryDirectory() as temporary,
+            ):
                 root = Path(temporary)
                 state_path = root / "state" / "image.sqlite3"
                 route = ImageRoute(
@@ -115,14 +118,22 @@ class RouteCandidateStreamOwnershipTests(unittest.TestCase):
                 )
                 streams: list[Any] = []
 
-                def candidate_factory(*args: Any, **kwargs: Any) -> Any:
+                def candidate_factory(
+                    *args: Any,
+                    _streams: list[Any] = streams,
+                    **kwargs: Any,
+                ) -> Any:
                     stream = iter_candidates(*args, **kwargs)
-                    streams.append(stream)
+                    _streams.append(stream)
                     return stream
 
-                def fail_after_open(rows: Iterator[Any], *_args: Any) -> None:
+                def fail_after_open(
+                    rows: Iterator[Any],
+                    *_args: Any,
+                    _failure: BaseException = failure,
+                ) -> None:
                     next(rows)
-                    raise failure
+                    raise _failure
 
                 owner_thread_id = threading.get_ident()
                 with (
@@ -148,7 +159,10 @@ class RouteCandidateStreamOwnershipTests(unittest.TestCase):
             RuntimeError("deterministic PDF worker failure"),
             CancellationRequested("deterministic PDF cancellation"),
         ):
-            with self.subTest(failure=type(failure).__name__), tempfile.TemporaryDirectory() as temporary:
+            with (
+                self.subTest(failure=type(failure).__name__),
+                tempfile.TemporaryDirectory() as temporary,
+            ):
                 root = Path(temporary)
                 state_path = root / "pdf.sqlite3"
                 state = _PdfState(_snapshots(root, ".pdf"))
@@ -169,9 +183,13 @@ class RouteCandidateStreamOwnershipTests(unittest.TestCase):
                     )
                     stream = route._candidate_snapshots()
 
-                    def fail_after_open(runtime: Any, _connection: Any) -> None:
+                    def fail_after_open(
+                        runtime: Any,
+                        _connection: Any,
+                        _failure: BaseException = failure,
+                    ) -> None:
                         next(runtime.iterator)
-                        raise failure
+                        raise _failure
 
                     owner_thread_id = threading.get_ident()
                     with (

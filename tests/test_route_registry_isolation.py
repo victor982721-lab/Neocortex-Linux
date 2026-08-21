@@ -52,7 +52,7 @@ class RouteRegistryIsolationTests(unittest.TestCase):
             ):
                 raise SystemExit(f"unexpected registry: {tuple(registry)!r}")
             forbidden = {
-                "_02_Deduplicacion",
+                "neocortex.deduplication",
                 "_04_Nucleo_Operativo.global_resources",
                 "_04_Nucleo_Operativo.pdf_route",
                 "_04_Nucleo_Operativo.docx_route",
@@ -269,9 +269,9 @@ class RouteRegistryIsolationTests(unittest.TestCase):
             if canonical_name is not None:
                 sys.modules[canonical_name] = selected_module
             if route_name in {"pdf", "image"}:
-                dedup_module = types.ModuleType("_02_Deduplicacion")
+                dedup_module = types.ModuleType("neocortex.deduplication")
                 dedup_module.DedupIndex = FakeDedupIndex
-                sys.modules["_02_Deduplicacion"] = dedup_module
+                sys.modules["neocortex.deduplication"] = dedup_module
             else:
                 resources_module = types.ModuleType(
                     "_04_Nucleo_Operativo.global_resources"
@@ -315,7 +315,7 @@ class RouteRegistryIsolationTests(unittest.TestCase):
             elif route_name == "image":
                 unrelated_dependency = None
             else:
-                unrelated_dependency = "_02_Deduplicacion"
+                unrelated_dependency = "neocortex.deduplication"
             if unrelated_dependency is not None and unrelated_dependency in sys.modules:
                 raise SystemExit(
                     f"{route_name} adapter loaded: {unrelated_dependency}"

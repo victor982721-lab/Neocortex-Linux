@@ -237,6 +237,7 @@ RESPONSIBILITY_MODULES: Final = {
         "_04_Nucleo_Operativo.code_review_work_packages",
     ),
     "code.validation": (
+        "_04_Nucleo_Operativo.code.validation_supply",
         "_04_Nucleo_Operativo.code_change_validation",
         "_04_Nucleo_Operativo.code_validation_public_review",
         "_04_Nucleo_Operativo.code_validation_receipts",

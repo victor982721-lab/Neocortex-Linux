@@ -19,8 +19,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
 
-from _05_Interfaz.main_window import MainWindow
-from _05_Interfaz.run_request import ROUTE_ORDER
+from neocortex.interface.presentation.windows.main import MainWindow
+from neocortex.interface.application.request import ROUTE_ORDER
 
 
 class UiSmokeTests(unittest.TestCase):

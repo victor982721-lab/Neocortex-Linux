@@ -9,7 +9,7 @@ from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import replace
 from pathlib import Path
 
-from _03_Progreso import ProgressCallback, ProgressEvent, ProgressMetric, emit_progress
+from neocortex.progress import ProgressCallback, ProgressEvent, ProgressMetric, emit_progress
 
 from .semantic_chunking import TextChunkingConfig, TextTokenCounter
 from .semantic_config import (

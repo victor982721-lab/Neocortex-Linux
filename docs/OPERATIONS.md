@@ -46,7 +46,7 @@ helper independiente del `pip` ambiental:
 python -I tools/bootstrap_pip.py
 ```
 
-El helper descarga únicamente el wheel oficial fijado de `pip 26.1.2`, valida
+El helper descarga únicamente el wheel oficial fijado de `pip 26.2.1`, valida
 su nombre y SHA-256 antes de ejecutarlo, instala con aislamiento, sin índice ni
 dependencias, y verifica la versión exacta. `--wheel` permite entregar ese mismo
 artefacto ya descargado en un flujo offline; no relaja la autenticación.

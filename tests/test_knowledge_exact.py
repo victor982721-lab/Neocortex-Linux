@@ -17,8 +17,8 @@ from pathlib import Path
 
 import pytest
 
-from _02_Deduplicacion.hashing import FULL_ALGORITHM, PARTIAL_ALGORITHM
-from _02_Deduplicacion.inventory_schema import initialize_inventory_schema
+from neocortex.deduplication.fingerprinting import FULL_ALGORITHM, PARTIAL_ALGORITHM
+from neocortex.deduplication.schema import initialize_inventory_schema
 from _04_Nucleo_Operativo import knowledge_exact as knowledge_exact_module
 from _04_Nucleo_Operativo.code_schema import initialize_code_state
 from _04_Nucleo_Operativo.document_catalog import initialize_document_catalog

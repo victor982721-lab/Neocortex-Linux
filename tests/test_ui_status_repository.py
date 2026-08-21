@@ -11,7 +11,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from _05_Interfaz.status_repository import StatusRepository, StatusRepositoryError
+from neocortex.interface.read.status import StatusRepository, StatusRepositoryError
 # endregion [01]
 
 # region [02] Implementación
@@ -113,9 +113,7 @@ class UiStatusRepositoryTests(unittest.TestCase):
             self.assertEqual(runs[0].run_id, 7)
             self.assertEqual(runs[0].files_checked, 120)
             self.assertEqual(runs[0].route_errors, 7)
-            self.assertEqual(
-                repository.latest_event_details(7, "inventory"), {"files": 125}
-            )
+            self.assertEqual(repository.latest_event_details(7, "inventory"), {"files": 125})
 
             connection = sqlite3.connect(database)
             connection.execute(

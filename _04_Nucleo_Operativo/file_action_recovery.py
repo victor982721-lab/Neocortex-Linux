@@ -4,7 +4,6 @@
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
-
 # region [01] Dependencias del módulo
 from __future__ import annotations
 
@@ -14,7 +13,7 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
-from _02_Deduplicacion import FileSnapshot, snapshot_path
+from neocortex.deduplication import FileSnapshot, snapshot_path
 
 from .framework_connection import connect_existing_framework
 from .framework_schema import SCHEMA_VERSION as FRAMEWORK_SCHEMA_VERSION
@@ -31,9 +30,7 @@ _RECOVERABLE_STATUSES = ("applying", "recovery_required")
 def _reject_future_framework_schema(connection: sqlite3.Connection) -> None:
     """Refuse semantics newer than this read-only reconciler understands."""
 
-    metadata = connection.execute(
-        "SELECT type FROM sqlite_master WHERE name='metadata'"
-    ).fetchone()
+    metadata = connection.execute("SELECT type FROM sqlite_master WHERE name='metadata'").fetchone()
     if metadata is None:
         return
     if tuple(metadata) != ("table",):
@@ -42,22 +39,17 @@ def _reject_future_framework_schema(connection: sqlite3.Connection) -> None:
         "SELECT value FROM metadata WHERE key='schema_version' LIMIT 2"
     ).fetchall()
     if len(rows) != 1:
-        raise sqlite3.DatabaseError(
-            "framework metadata has no unique schema_version"
-        )
+        raise sqlite3.DatabaseError("framework metadata has no unique schema_version")
     raw = str(rows[0][0])
     try:
         version = int(raw)
     except ValueError as exc:
-        raise sqlite3.DatabaseError(
-            "framework schema_version is not an integer"
-        ) from exc
+        raise sqlite3.DatabaseError("framework schema_version is not an integer") from exc
     if raw != str(version):
         raise sqlite3.DatabaseError("framework schema_version is not canonical")
     if version > FRAMEWORK_SCHEMA_VERSION:
         raise sqlite3.DatabaseError(
-            f"framework schema {version} is newer than supported "
-            f"schema {FRAMEWORK_SCHEMA_VERSION}"
+            f"framework schema {version} is newer than supported schema {FRAMEWORK_SCHEMA_VERSION}"
         )
 
 
@@ -188,14 +180,11 @@ def list_file_action_reconciliations(
         raise ValueError("after action identifier cannot be negative")
     if run_id is not None and run_id < 1:
         raise ValueError("recovery run identifier must be positive")
-    connection = connect_existing_framework(
-        database_path, readonly=True, timeout_seconds=10
-    )
+    connection = connect_existing_framework(database_path, readonly=True, timeout_seconds=10)
     try:
         _reject_future_framework_schema(connection)
         columns = {
-            str(row["name"])
-            for row in connection.execute("PRAGMA table_info(file_actions)")
+            str(row["name"]) for row in connection.execute("PRAGMA table_info(file_actions)")
         }
         required = {
             "action_id",
@@ -222,9 +211,9 @@ def list_file_action_reconciliations(
             parameters.append(run_id)
         rows = connection.execute(
             f"""SELECT action_id,run_id,action_type,source_path,target_path,status,
-            {optional['idempotency_key']},{optional['expected_identity_json']},
-            {optional['effect_receipt_json']} FROM file_actions
-            WHERE {' AND '.join(clauses)} ORDER BY action_id LIMIT ?""",
+            {optional["idempotency_key"]},{optional["expected_identity_json"]},
+            {optional["effect_receipt_json"]} FROM file_actions
+            WHERE {" AND ".join(clauses)} ORDER BY action_id LIMIT ?""",
             (*parameters, limit),
         ).fetchall()
         return tuple(_classify_row(row) for row in rows)
@@ -236,9 +225,7 @@ def _classify_row(row: sqlite3.Row) -> FileActionReconciliation:
     action = _RecordedAction(
         action_id=int(row["action_id"]),
         run_id=int(row["run_id"]),
-        idempotency_key=(
-            None if row["idempotency_key"] is None else str(row["idempotency_key"])
-        ),
+        idempotency_key=(None if row["idempotency_key"] is None else str(row["idempotency_key"])),
         action_type=str(row["action_type"]),
         source_path=str(row["source_path"]),
         target_path=None if row["target_path"] is None else str(row["target_path"]),
@@ -361,8 +348,7 @@ def _classify_trash(
         classification="ambiguous",
         recommendation="preserve_evidence_and_review_manually",
         detail=(
-            "source is absent but the Recycle Bin receipt is missing or does not "
-            "match this action"
+            "source is absent but the Recycle Bin receipt is missing or does not match this action"
         ),
     )
 
@@ -417,25 +403,16 @@ def _valid_success_receipt(
         and receipt.get("operation") == operation
         and receipt.get("receipt_type") == "successful_return_and_observation"
         and receipt.get("source_absent") is True
-        and _path_key(str(receipt.get("source_path", "")))
-        == _path_key(action.source_path)
-        and (
-            None
-            if receipt.get("target_path") is None
-            else _path_key(str(receipt["target_path"]))
-        )
-        == (
-            None
-            if action.target_path is None
-            else _path_key(action.target_path)
-        )
+        and _path_key(str(receipt.get("source_path", ""))) == _path_key(action.source_path)
+        and (None if receipt.get("target_path") is None else _path_key(str(receipt["target_path"])))
+        == (None if action.target_path is None else _path_key(action.target_path))
     )
 
 
 __all__ = [
     "FILE_ACTION_RECONCILER_SIGNATURE",
-    "FileActionReconciliation",
     "RECOVERY_BATCH_LIMIT",
+    "FileActionReconciliation",
     "effect_receipt_json",
     "expected_identity_json",
     "list_file_action_reconciliations",

@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from _02_Deduplicacion import FileSnapshot
+from neocortex.deduplication import FileSnapshot
 from _04_Nucleo_Operativo import code_schema, framework_schema
 from _04_Nucleo_Operativo.code_state import CodeState
 from _04_Nucleo_Operativo.route_filters import (

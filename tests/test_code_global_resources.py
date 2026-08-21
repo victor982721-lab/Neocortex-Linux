@@ -10,9 +10,9 @@ from unittest.mock import patch
 
 import pytest
 
-import _02_Deduplicacion
+import neocortex.deduplication
 import _04_Nucleo_Operativo.code_route as code_route_module
-from _02_Deduplicacion import FileSnapshot
+from neocortex.deduplication import FileSnapshot
 from _04_Nucleo_Operativo.cancellation import (
     CancellationRequested,
     CancellationToken,
@@ -290,7 +290,7 @@ def test_run_code_passes_a_releasing_coordinator_gate(tmp_path: Path) -> None:
             "_04_Nucleo_Operativo.global_resources.memory_snapshot",
             return_value=abundant,
         ),
-        patch.object(_02_Deduplicacion, "DedupIndex", FakeDedupIndex),
+        patch.object(neocortex.deduplication, "DedupIndex", FakeDedupIndex),
         patch.object(code_route_module, "CodeRoute", FakeCodeRoute),
     ):
         coordinator = _coordinator()

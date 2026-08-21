@@ -22,10 +22,10 @@ from typing import Literal
 
 import xxhash
 
-from _02_Deduplicacion import FileSnapshot
-from _02_Deduplicacion.hashing import snapshot_path, stat_matches_snapshot
-from _02_Deduplicacion.path_io import native_io_path
-from _03_Progreso import ProgressCallback, ProgressEvent, ProgressMetric, emit_progress
+from neocortex.deduplication import FileSnapshot
+from neocortex.deduplication.fingerprinting import snapshot_path, stat_matches_snapshot
+from neocortex.deduplication.io import native_io_path
+from neocortex.progress import ProgressCallback, ProgressEvent, ProgressMetric, emit_progress
 
 from ....action_policy import same_snapshot
 from ....bounded_subprocess import SubprocessOutputLimitError, run_bounded_capture

@@ -4,7 +4,6 @@
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
-
 # region [01] Dependencias del módulo
 from __future__ import annotations
 
@@ -13,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from _02_Deduplicacion import DedupIndex, InventoryCheckpoint, snapshot_path
+from neocortex.deduplication import DedupIndex, InventoryCheckpoint, snapshot_path
 from _04_Nucleo_Operativo.file_action_recovery import (
     effect_receipt_json,
     expected_identity_json,
@@ -129,9 +128,7 @@ def test_trash_receipt_for_another_source_does_not_confirm_action(
     source = root / "source.bin"
     source.write_bytes(b"source")
     snapshot = snapshot_path(source)
-    identity = expected_identity_json(
-        snapshot, source_path=str(source), target_path=None
-    )
+    identity = expected_identity_json(snapshot, source_path=str(source), target_path=None)
     source.unlink()
     receipt = effect_receipt_json(
         operation="trash",
@@ -393,4 +390,6 @@ def test_framework_exposes_all_cross_store_inventory_holds(tmp_path: Path) -> No
         state._connection.commit()
 
         assert state.referenced_inventory_scan_ids() == (3, 7)
+
+
 # endregion [02]

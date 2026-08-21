@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from _02_Deduplicacion import DedupIndex, FileSnapshot, FULL_ALGORITHM, full_fingerprint
+from neocortex.deduplication import DedupIndex, FileSnapshot, FULL_ALGORITHM, full_fingerprint
 
 
 # region [01] Fingerprint resolution

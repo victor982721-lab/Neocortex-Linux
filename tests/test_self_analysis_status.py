@@ -14,8 +14,8 @@ from pathlib import Path
 
 import pytest
 
-from _01_Enumeracion import JournalCursor, JournalDiscontinuityError, VolumeAccessError
-from _02_Deduplicacion import (
+from neocortex.enumeration import JournalCursor, JournalDiscontinuityError, VolumeAccessError
+from neocortex.deduplication import (
     DedupIndex,
     InventoryCheckpoint,
     InventoryExclusionPolicy,

@@ -4,14 +4,13 @@
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
-
 # region [01] Dependencias del módulo
 from __future__ import annotations
 
 import os
 from pathlib import Path
 
-from _01_Enumeracion import JournalCursor
+from neocortex.enumeration import JournalCursor
 from _04_Nucleo_Operativo.internal_paths import (
     InternalPathSpec,
     InternalPathsPolicy,
@@ -67,9 +66,7 @@ def begin_signed_normal_run(
     """
 
     root = Path(os.path.abspath(os.path.realpath(corpus_root.expanduser())))
-    state_directory = Path(
-        os.path.abspath(os.path.realpath(state.path.parent.expanduser()))
-    )
+    state_directory = Path(os.path.abspath(os.path.realpath(state.path.parent.expanduser())))
     if os.path.normcase(os.fspath(root.parent)) != os.path.normcase(
         os.fspath(state_directory.parent)
     ):

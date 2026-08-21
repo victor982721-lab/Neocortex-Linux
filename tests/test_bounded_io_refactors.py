@@ -9,8 +9,8 @@ from pathlib import Path
 
 import pytest
 
-from _01_Enumeracion import JournalCursor, NtfsEntry, UsnChangeBatch
-from _02_Deduplicacion import InventoryExclusionPolicy
+from neocortex.enumeration import JournalCursor, NtfsEntry, UsnChangeBatch
+from neocortex.deduplication import InventoryExclusionPolicy
 from _04_Nucleo_Operativo.cancellation import (
     CancellationRequested,
     CancellationToken,
@@ -110,9 +110,7 @@ def _png_chunk(kind: bytes, payload: bytes, *, corrupt_crc: bool = False) -> byt
     checksum = zlib.crc32(payload, zlib.crc32(kind)) & 0xFFFFFFFF
     if corrupt_crc:
         checksum ^= 1
-    return (
-        struct.pack(">I", len(payload)) + kind + payload + struct.pack(">I", checksum)
-    )
+    return struct.pack(">I", len(payload)) + kind + payload + struct.pack(">I", checksum)
 
 
 _IHDR = struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)
@@ -148,10 +146,7 @@ _VALID_IEND = _png_chunk(b"IEND", b"")
             "invalid_ihdr",
         ),
         (
-            image_png.PNG_SIGNATURE
-            + _VALID_IHDR
-            + _VALID_IDAT
-            + _png_chunk(b"IEND", b"x"),
+            image_png.PNG_SIGNATURE + _VALID_IHDR + _VALID_IDAT + _png_chunk(b"IEND", b"x"),
             "invalid_iend_length",
         ),
         (
@@ -247,10 +242,7 @@ def test_raw_deflate_refactor_preserves_payload_evidence_and_checkpoints(
     assert result.payload == payload
     assert result.actual_size == len(payload)
     assert result.actual_crc32 == zlib.crc32(payload) & 0xFFFFFFFF
-    assert (
-        checkpoints
-        == (compressed_size + RAW_DEFLATE_CHUNK_BYTES - 1) // RAW_DEFLATE_CHUNK_BYTES
-    )
+    assert checkpoints == (compressed_size + RAW_DEFLATE_CHUNK_BYTES - 1) // RAW_DEFLATE_CHUNK_BYTES
 
     with pytest.raises(ZipStructureError, match="output exceeds the safety limit"):
         read_raw_deflate_member(
@@ -378,9 +370,7 @@ def test_reconcile_refactor_discards_unsafe_batch_without_advancing_checkpoint(
     def fake_consume_changes(*_args, **_kwargs):
         yield reader
 
-    monkeypatch.setattr(
-        "_04_Nucleo_Operativo.reconcile.consume_changes", fake_consume_changes
-    )
+    monkeypatch.setattr("_04_Nucleo_Operativo.reconcile.consume_changes", fake_consume_changes)
     index = _FakeIndex()
 
     result = reconcile_usn_window(

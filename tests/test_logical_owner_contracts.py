@@ -47,9 +47,15 @@ def test_registry_maps_only_explicit_owner_selectors_without_a_default() -> None
     assert matching_logical_owners("_04_Nucleo_Operativo.capabilities.formats.video.route") == (
         "video",
     )
-    assert matching_logical_owners("_02_Deduplicacion.inventory") == ("inventory",)
-    assert matching_logical_owners("_05_Interfaz.main_window") == ("interface",)
+    assert matching_logical_owners("neocortex.deduplication.inventory.index") == ("deduplication",)
+    assert matching_logical_owners("neocortex.enumeration.ntfs.journal") == ("enumeration",)
+    assert matching_logical_owners("_04_Nucleo_Operativo.inventory_boundary") == ("inventory",)
+    assert matching_logical_owners("neocortex.interface.presentation.windows.main") == (
+        "interface",
+    )
     assert matching_logical_owners("neocortex.capability_broker") == ("capability",)
+    assert matching_logical_owners("neocortex.progress.events") == ("progress",)
+    assert matching_logical_owners("neocortex.runtime.source_staging") == ("runtime",)
     assert matching_logical_owners("_04_Nucleo_Operativo.textual_similarity") == ()
 
 
@@ -73,8 +79,10 @@ def test_package_ownership_is_a_separate_explicit_registry() -> None:
         sorted(item.package_owner_id for item in PACKAGE_OWNER_SPECS)
     )
     assert matching_package_owners("_04_Nucleo_Operativo.text_route") == ("core",)
-    assert matching_package_owners("_02_Deduplicacion.inventory") == ("deduplication",)
-    assert matching_package_owners("neocortex.cli") == ("public-api",)
+    assert matching_package_owners("neocortex.deduplication.inventory.index") == ("product",)
+    assert matching_package_owners("neocortex.interface.protocol.worker") == ("product",)
+    assert matching_package_owners("neocortex.cli") == ("product",)
+    assert matching_package_owners("neocortex.progress.events") == ("product",)
     assert matching_package_owners("third_party.module") == ()
     assert package_owner_registry_fingerprint().startswith("package-owner-contract-v1:sha256:")
     assert payload["schema"] == "neocortex.package-owner-contract/v1"

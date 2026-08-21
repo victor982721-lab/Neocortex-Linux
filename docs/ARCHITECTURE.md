@@ -435,7 +435,7 @@ Paquete de instalación mínimo:
 No implementa el pipeline completo. Su función es ofrecer una frontera estable
 y evitar imports pesados durante ayuda, versión o selección de modo.
 
-### `_01_Enumeracion`
+### `neocortex.enumeration`
 
 Frontera de enumeración por plataforma:
 
@@ -452,7 +452,7 @@ Produce observaciones; no decide eliminación ni clasificación. El
 `SqlitePathIndex` es una API auxiliar soportada y probada, pero no se confirmó
 un consumidor dentro de la corrida integrada actual.
 
-### `_02_Deduplicacion`
+### `neocortex.deduplication`
 
 Propietario del inventario común:
 
@@ -473,7 +473,7 @@ semántica generacional. Los diagnósticos no migran una base existente y la
 actualización debe seguir el procedimiento respaldado de
 [PERSISTENCE.md](PERSISTENCE.md).
 
-### `_03_Progreso`
+### `neocortex.progress`
 
 Contratos de eventos y reporteros. Separa el progreso del motor de la
 representación Rich, texto o protocolo de GUI. Las rutas no deben depender de
@@ -508,7 +508,7 @@ Núcleo de aplicación. Contiene:
 Es el paquete más grande y concentra integración, pero las rutas mantienen
 bases y modelos propios para limitar transacciones cruzadas.
 
-### `_05_Interfaz`
+### `neocortex.interface`
 
 Frontend PySide6:
 
@@ -526,11 +526,10 @@ de mutación, sin retirar inventario, procesamiento o búsqueda.
 
 ### Compatibilidad de raíz
 
-`Orquestador.py` conserva imports históricos y delega en los módulos actuales.
-Se incluye en el paquete y tiene consumidores de prueba; por ello sigue siendo
-compatibilidad necesaria. `python -m _02_Deduplicacion` es un wrapper
-explícitamente obsoleto que delega en la aplicación integrada y no activa
-acciones destructivas.
+Las raíces numeradas y el shim independiente anterior fueron retirados del
+checkout y del wheel; no existe una segunda implementación ni una fachada
+paralela. Las invocaciones soportadas son `Neocortex`, `python -m neocortex` y,
+para el planner dedicado, `python -m neocortex.deduplication`.
 
 ## Superficies públicas
 
@@ -797,12 +796,13 @@ La capa arquitectónica divide fuente, política y consumo:
    para publicar complejidad cognitiva por símbolo y agregados total/máximo por
    módulo.
 
-El dominio versionado incluye exactamente los seis paquetes de producción;
-excluye `tests`, `tools`, `benchmarks` y el módulo de compatibilidad independiente
-`Orquestador.py`. Los contratos impiden dependencias transitivas Core→UI y
+El dominio versionado incluye los dos paquetes raíz de producción `neocortex`
+y `_04_Nucleo_Operativo`; interfaz, enumeración, deduplicación y progreso son
+familias canónicas bajo `neocortex`; excluye `tests`, `tools` y `benchmarks`.
+Los contratos impiden dependencias transitivas Core→UI y
 Foundation→Core/UI, imports de producción hacia namespaces no productivos,
 restringen las fronteras Dedup→Core y `neocortex`→Core/UI mediante allowlists.
-El baseline `neocortex-production-imports-2026-08-10/v2` de
+El baseline `neocortex-production-imports-2026-08-23/v5` de
 `no-new-production-import-cycles-v1` es vacío: el grafo de producción es
 acíclico y reintroducir incluso uno de los cuatro SCC históricos falla el
 contrato principal.
@@ -1092,7 +1092,8 @@ corridas directas conservan `framework.lock` por corrida.
 ## GUI y worker
 
 El proceso de UI no ejecuta el pipeline dentro del event loop. `WorkerController`
-crea un proceso hijo con el mismo intérprete y el módulo `_05_Interfaz.worker`.
+crea un proceso hijo con el mismo intérprete y el módulo
+`neocortex.interface.protocol.worker`.
 El worker:
 
 - reconstruye parser y configuración canónicos;
@@ -1297,10 +1298,9 @@ equivale a sandbox completo; véase [SECURITY.md](SECURITY.md).
 
 ## Empaquetado y dependencias opcionales
 
-El paquete se construye con setuptools y exige Python `>=3.13,<3.15`, validado
-en Windows y Linux con CPython 3.13 y 3.14. Incluye
-los seis paquetes de producción, `neocortex`, el shim `Orquestador.py`, las
-reglas Semgrep y assets de la GUI. La base exacta incluye Packaging, Rich y
+El paquete se construye con setuptools y exige Python `>=3.13,<3.15`; la
+plataforma objetivo vigente es Linux con CPython 3.14. Incluye `neocortex`, el
+core aún en transición, las reglas Semgrep y los assets de la GUI. La base exacta incluye Packaging, Rich y
 xxHash; `agent` declara MCP y `analysis` agrupa Complexipy, Cosmic Ray,
 Coverage, Deptry, Grimp, Mypy, pip-audit, Pytest, Radon, Ruff y Vulture.
 `documents`, `audio`, `image`, `semantic` y `ui` declaran runtimes de dominio;
@@ -1357,8 +1357,8 @@ Clasificación actual:
 
 | Elemento | Estado | Criterio de retirada |
 |---|---|---|
-| `Orquestador.py` | necesario | retirar sólo tras deprecación y prueba de ausencia de consumidores |
-| `_02_Deduplicacion.__main__` | temporalmente necesario/deprecable | versión anunciada y migración de invocaciones |
+| shim independiente anterior | retirado | no recrear; usar `Neocortex` o `python -m neocortex` |
+| antiguas raíces numeradas de enumeración y deduplicación | retiradas | no recrear; las superficies canónicas viven bajo `neocortex` |
 | exports diferidos de `route_registry` | deprecables | eliminar después del periodo documentado y búsqueda de consumidores |
 | fachadas `state`/`semantic_state`/`semantic_service` | necesarias | hoy tienen consumidores internos y de prueba |
 | `SqlitePathIndex` | auxiliar soportado, integración no verificada | decidir explícitamente si se integra o se depreca; no eliminar por análisis automático |

@@ -5,8 +5,8 @@
 # region [01] Dependencias del módulo
 from __future__ import annotations
 
-from _03_Progreso import ProgressEvent
-from _05_Interfaz.worker import (
+from neocortex.progress import ProgressEvent
+from neocortex.interface.protocol.worker import (
     _active_progress_snapshot,
     _reset_active_progress,
     _track_progress,
@@ -25,9 +25,9 @@ def test_worker_heartbeat_tracks_only_unfinished_progress() -> None:
     assert active[0]["description"] == "Perfilando PDF"
 
     _track_progress(
-        ProgressEvent(
-            "pdf", "profile", "Perfiles PDF actualizados", 26, 26, "PDF", True
-        )
+        ProgressEvent("pdf", "profile", "Perfiles PDF actualizados", 26, 26, "PDF", True)
     )
     assert _active_progress_snapshot() == []
+
+
 # endregion [02]

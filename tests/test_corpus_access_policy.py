@@ -15,8 +15,8 @@ from pathlib import Path
 import pytest
 
 import _04_Nucleo_Operativo.corpus_access as corpus_access_module
-from _01_Enumeracion import JournalCursor
-from _02_Deduplicacion import InventoryExclusionPolicy
+from neocortex.enumeration import JournalCursor
+from neocortex.deduplication import InventoryExclusionPolicy
 from _04_Nucleo_Operativo.corpus_access import (
     CorpusAccessPolicy,
     CorpusMutationGuard,

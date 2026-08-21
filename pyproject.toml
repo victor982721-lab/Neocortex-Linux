@@ -148,9 +148,6 @@ reportUnusedFunction = "warning"
 reportUnusedClass = "warning"
 reportImportCycles = "warning"
 
-[tool.setuptools]
-py-modules = ["Orquestador"]
-
 [tool.setuptools.dynamic]
 version = {attr = "neocortex.__version__"}
 
@@ -158,14 +155,10 @@ version = {attr = "neocortex.__version__"}
 where = ["."]
 include = [
     "neocortex*",
-    "_01_Enumeracion*",
-    "_02_Deduplicacion*",
-    "_03_Progreso*",
     "_04_Nucleo_Operativo*",
-    "_05_Interfaz*",
 ]
 
 [tool.setuptools.package-data]
 "neocortex" = ["py.typed"]
 "_04_Nucleo_Operativo" = ["py.typed", "semgrep_rules/*.yml"]
-"_05_Interfaz" = ["assets/*.svg", "assets/*.png", "assets/*.ico"]
+"neocortex.interface.presentation" = ["assets/*.svg", "assets/*.png", "assets/*.ico"]

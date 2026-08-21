@@ -7,12 +7,12 @@ from pathlib import Path
 
 import pytest
 
-from _01_Enumeracion import path_index as path_index_module
-from _01_Enumeracion import path_index_schema
-from _01_Enumeracion.path_index import SqlitePathIndex
-from _02_Deduplicacion import inventory as inventory_module
-from _02_Deduplicacion.inventory import DedupIndex
-from _02_Deduplicacion import inventory_schema
+from neocortex.enumeration.path_index import repository as path_index_module
+from neocortex.enumeration.path_index import schema as path_index_schema
+from neocortex.enumeration.path_index.repository import SqlitePathIndex
+from neocortex.deduplication.inventory import index as inventory_module
+from neocortex.deduplication.inventory.index import DedupIndex
+from neocortex.deduplication import schema as inventory_schema
 from _04_Nucleo_Operativo import (
     document_catalog,
     framework_state_writer,
@@ -66,12 +66,8 @@ def test_framework_existing_connections_enforce_mode_fk_wal_and_locking(
     finally:
         reader.close()
 
-    first = connect_existing_framework(
-        database, readonly=False, timeout_seconds=0.05
-    )
-    second = connect_existing_framework(
-        database, readonly=False, timeout_seconds=0.05
-    )
+    first = connect_existing_framework(database, readonly=False, timeout_seconds=0.05)
+    second = connect_existing_framework(database, readonly=False, timeout_seconds=0.05)
     try:
         first.execute("BEGIN IMMEDIATE")
         with pytest.raises(sqlite3.OperationalError, match="locked"):
@@ -144,9 +140,12 @@ def test_framework_state_existing_only_initializes_an_existing_file(
     database.touch()
 
     with FrameworkState(database, existing_only=True) as state:
-        assert state._connection.execute(
-            "SELECT value FROM metadata WHERE key='schema_version'"
-        ).fetchone() is not None
+        assert (
+            state._connection.execute(
+                "SELECT value FROM metadata WHERE key='schema_version'"
+            ).fetchone()
+            is not None
+        )
 
 
 def test_framework_state_existing_only_does_not_recreate_raced_state(
@@ -194,9 +193,7 @@ def _path_connection(path: Path, *, readonly: bool) -> Iterator[sqlite3.Connecti
 
 
 @contextmanager
-def _inventory_connection(
-    path: Path, *, readonly: bool
-) -> Iterator[sqlite3.Connection]:
+def _inventory_connection(path: Path, *, readonly: bool) -> Iterator[sqlite3.Connection]:
     connection = inventory_schema._connect(path, readonly=readonly)
     try:
         yield connection
@@ -354,9 +351,7 @@ def test_cross_cache_writer_rolls_back_keyboard_interrupt_and_handles_special_ur
         raise KeyboardInterrupt("injected cross-cache interruption")
 
     with pytest.raises(KeyboardInterrupt, match="cross-cache interruption"):
-        _synchronize_database(
-            "fixture", database, required=True, operation=interrupt
-        )
+        _synchronize_database("fixture", database, required=True, operation=interrupt)
 
     with sqlite3.connect(database) as verification:
         assert verification.execute("SELECT COUNT(*) FROM probe").fetchone()[0] == 0
@@ -392,9 +387,9 @@ def test_review_evidence_writer_rolls_back_keyboard_interrupt(
         review_evidence.materialize_review_evidence(database)
 
     with sqlite3.connect(database) as verification:
-        assert verification.execute(
-            "SELECT COUNT(*) FROM review_evidence_progress"
-        ).fetchone()[0] == 0
+        assert (
+            verification.execute("SELECT COUNT(*) FROM review_evidence_progress").fetchone()[0] == 0
+        )
 
 
 # endregion [03]

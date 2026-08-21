@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from _02_Deduplicacion.hashing import FULL_ALGORITHM
+from neocortex.deduplication.fingerprinting import FULL_ALGORITHM
 from _04_Nucleo_Operativo import (
     knowledge_exact,
     knowledge_search_inventory,

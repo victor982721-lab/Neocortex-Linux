@@ -13,7 +13,7 @@ from collections.abc import Mapping
 
 import xxhash
 
-from _02_Deduplicacion.inventory_scan import (
+from neocortex.deduplication.inventory.scan import (
     INVENTORY_EXCLUSION_SIGNATURE_VERSION,
     MAX_INVENTORY_EXCLUSION_RULE_CHARS,
     MAX_INVENTORY_EXCLUSION_RULES,

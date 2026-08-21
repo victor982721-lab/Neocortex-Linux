@@ -17,9 +17,9 @@ from pathlib import Path
 import pytest
 
 import _04_Nucleo_Operativo.orchestrator as orchestrator_module
-from _01_Enumeracion import VolumeAccessError
-from _02_Deduplicacion import DedupIndex
-from _02_Deduplicacion.inventory import (
+from neocortex.enumeration import VolumeAccessError
+from neocortex.deduplication import DedupIndex
+from neocortex.deduplication.inventory.index import (
     DEFAULT_EXCLUDED_PATHS,
     DEFAULT_GENERATED_DIRECTORY_FRAGMENTS,
     DEFAULT_GENERATED_DIRECTORY_PREFIXES,

@@ -12,13 +12,13 @@ from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator, Literal, Protocol, cast
 
-from _02_Deduplicacion import (
+from neocortex.deduplication import (
     FULL_ALGORITHM,
     FileSnapshot,
     full_fingerprint,
     snapshot_path,
 )
-from _03_Progreso import (
+from neocortex.progress import (
     ProgressCallback,
     ProgressEvent,
     ProgressMetric,

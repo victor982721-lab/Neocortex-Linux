@@ -12,7 +12,7 @@ import pytest
 
 import _04_Nucleo_Operativo.document_catalog as catalog_module
 import _04_Nucleo_Operativo.document_catalog_schema as catalog_schema_module
-from _02_Deduplicacion.hashing import FULL_ALGORITHM
+from neocortex.deduplication.fingerprinting import FULL_ALGORITHM
 from _04_Nucleo_Operativo import (
     document_cache_sync,
     pdf_derived,

@@ -45,7 +45,7 @@ PRODUCTION_ARCHITECTURE_WORKER = Path("_04_Nucleo_Operativo/external_architectur
 CAPABILITY_REGISTRY_MODULE = Path("_04_Nucleo_Operativo/platform/shared/capability_registry.py")
 CORE_TARGET_REGISTRY_MODULE = Path("_04_Nucleo_Operativo/code/contracts/target_registry.py")
 EXPECTED_ARCHITECTURE_WORKER_SCHEMA = "neocortex.external-architecture-worker/grimp-v3"
-EXPECTED_ARCHITECTURE_BASELINE_ID = "neocortex-production-imports-2026-08-10/v2"
+EXPECTED_ARCHITECTURE_BASELINE_ID = "neocortex-production-imports-2026-08-23/v5"
 EXPECTED_ARCHITECTURE_PROJECTION_SCHEMA = "neocortex.architecture-projection/v1"
 EXPECTED_CAPABILITY_REGISTRY_SCHEMA = "neocortex.capability-registry/v1"
 EXPECTED_CAPABILITY_PROJECTION_POLICY_ID = (
@@ -68,32 +68,25 @@ EXPECTED_ARCHITECTURE_CONTRACTS = frozenset(
     {
         "core-does-not-depend-on-ui-v1",
         "dedup-core-boundary-v1",
+        "dedup-product-boundary-v1",
+        "enumeration-product-boundary-v1",
         "foundation-does-not-depend-on-core-or-ui-v1",
+        "interface-core-boundary-v1",
+        "interface-product-boundary-v1",
         "neocortex-core-ui-boundary-v1",
         "no-new-production-import-cycles-v1",
         "production-does-not-import-nonproduction-namespaces-v1",
+        "progress-does-not-depend-on-other-production-v1",
     }
 )
 TEST_PATTERNS = ("test_*.py", "*_test.py")
 PRODUCTION_TYPE_TARGETS = (
-    "Orquestador.py",
-    "_01_Enumeracion",
-    "_02_Deduplicacion",
-    "_03_Progreso",
     "_04_Nucleo_Operativo",
-    "_05_Interfaz",
     "neocortex",
 )
-PRODUCTION_COVERAGE_SOURCES = (
-    "Orquestador",
-    *PRODUCTION_TYPE_TARGETS[1:],
-)
+PRODUCTION_COVERAGE_SOURCES = PRODUCTION_TYPE_TARGETS
 WHEEL_PACKAGE_ROOTS = (
-    "_01_Enumeracion",
-    "_02_Deduplicacion",
-    "_03_Progreso",
     "_04_Nucleo_Operativo",
-    "_05_Interfaz",
     "neocortex",
 )
 STATIC_TIMEOUT_SECONDS = 15 * 60
@@ -115,7 +108,7 @@ from importlib import metadata
 
 contract = json.loads(sys.argv[1])
 origins = {}
-for name in [*contract["package_roots"], "Orquestador"]:
+for name in contract["package_roots"]:
     module = importlib.import_module(name)
     origin = pathlib.Path(module.__file__).resolve()
     if "site-packages" not in origin.parts:
@@ -372,11 +365,8 @@ def run_test_shard(
 def discover_production_sources(root: Path) -> tuple[str, ...]:
     """Return the exact Python source inventory measured by the coverage gate."""
 
-    orchestrator = root / "Orquestador.py"
-    if orchestrator.is_symlink() or not orchestrator.is_file():
-        _fail(f"production coverage root is missing or unsafe: {orchestrator}")
-    candidates = [orchestrator]
-    for package in PRODUCTION_COVERAGE_SOURCES[1:]:
+    candidates: list[Path] = []
+    for package in PRODUCTION_COVERAGE_SOURCES:
         package_root = root / package
         if package_root.is_symlink() or not package_root.is_dir():
             _fail(f"production coverage root is missing or unsafe: {package_root}")
@@ -444,7 +434,7 @@ def run_installed_wheel_gate(root: Path, probe_directory: Path) -> dict[str, obj
         _fail("installed-wheel probe directory must be outside the repository")
     probe.mkdir(parents=True, exist_ok=True)
     rules_root = root / "_04_Nucleo_Operativo" / "semgrep_rules"
-    assets_root = root / "_05_Interfaz" / "assets"
+    assets_root = root / "neocortex" / "interface" / "presentation" / "assets"
     if any(path.is_symlink() or not path.is_dir() for path in (rules_root, assets_root)):
         _fail("source package-data roots are missing or unsafe")
     rules = sorted(

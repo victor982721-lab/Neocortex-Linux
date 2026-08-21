@@ -14,8 +14,8 @@ from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
-from _02_Deduplicacion import DedupIndex, DedupPlanner, InventoryExclusionPolicy
-from _02_Deduplicacion.path_io import native_io_path
+from neocortex.deduplication import DedupIndex, DedupPlanner, InventoryExclusionPolicy
+from neocortex.deduplication.io import native_io_path
 from _04_Nucleo_Operativo.actions import FrameworkActions
 from _04_Nucleo_Operativo.content_types import detect_content_type
 from _04_Nucleo_Operativo.state import FrameworkState

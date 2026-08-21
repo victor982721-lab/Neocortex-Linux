@@ -358,11 +358,11 @@ def _translate_canonical_arguments(arguments: Sequence[str]) -> list[str]:
 
 def _run_special_mode(arguments: Sequence[str]) -> int | None:
     if arguments and arguments[0] == "--ui":
-        from _05_Interfaz.app import main as run_ui
+        from neocortex.interface.application.app import main as run_ui
 
         return run_ui(arguments[1:])
     if arguments and arguments[0] == "--gui-worker":
-        from _05_Interfaz.worker import main as run_worker
+        from neocortex.interface.protocol.worker import main as run_worker
 
         return run_worker(arguments[1:])
     return None

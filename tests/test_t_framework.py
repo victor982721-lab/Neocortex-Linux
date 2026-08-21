@@ -23,8 +23,8 @@ import fitz  # type: ignore[import-untyped]
 from rich.console import Console
 from PIL import Image
 
-from _01_Enumeracion import JournalCursor
-from _02_Deduplicacion import DedupIndex
+from neocortex.enumeration import JournalCursor
+from neocortex.deduplication import DedupIndex
 from _04_Nucleo_Operativo import (
     FrameworkConfig,
     FrameworkOrchestrator,
@@ -49,14 +49,18 @@ from _04_Nucleo_Operativo.state import (
     FrameworkRouteState,
     FrameworkState,
 )
-from _03_Progreso import (
+from neocortex.progress import (
     LineProgress,
     ProgressEvent,
     ProgressMetric,
     RecordingProgress,
     RichProgress,
 )
-from Orquestador import _has_strict_route_errors, _parser, _validate_arguments
+from _04_Nucleo_Operativo.cli_parser import build_parser as _parser
+from _04_Nucleo_Operativo.cli_reporting import (
+    has_strict_route_errors as _has_strict_route_errors,
+)
+from _04_Nucleo_Operativo.cli_validation import validate_arguments as _validate_arguments
 from tests.internal_paths_test_support import (
     begin_signed_normal_run,
     disjoint_internal_paths_policy,

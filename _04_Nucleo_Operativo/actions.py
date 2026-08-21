@@ -15,7 +15,7 @@ from pathlib import Path
 
 from neocortex.platform_policy import stat_birthtime_ns
 
-from _02_Deduplicacion import (
+from neocortex.deduplication import (
     DedupIndex,
     DedupPlan,
     FileChangedError,
@@ -24,12 +24,12 @@ from _02_Deduplicacion import (
     snapshot_path,
     stat_matches_snapshot,
 )
-from _02_Deduplicacion.inventory import (
+from neocortex.deduplication.inventory.index import (
     DEFAULT_EXCLUDED_PATHS,
     InventoryExclusionPolicy,
     validate_inventory_root,
 )
-from _03_Progreso import ProgressCallback, ProgressEvent, emit_progress
+from neocortex.progress import ProgressCallback, ProgressEvent, emit_progress
 
 from .action_policy import (
     corrected_path as _corrected_path,

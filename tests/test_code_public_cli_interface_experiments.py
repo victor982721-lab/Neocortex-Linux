@@ -24,14 +24,14 @@ def test_public_entrypoint_dispatch_precedence_covers_special_human_canonical_an
     tmp_path: Path,
 ) -> None:
     events: list[tuple[str, tuple[str, ...]]] = []
-    app_module = ModuleType("_05_Interfaz.app")
-    worker_module = ModuleType("_05_Interfaz.worker")
+    app_module = ModuleType("neocortex.interface.application.app")
+    worker_module = ModuleType("neocortex.interface.protocol.worker")
     app_module.__dict__["main"] = lambda arguments: events.append(("ui", tuple(arguments))) or 11
     worker_module.__dict__["main"] = lambda arguments: (
         events.append(("worker", tuple(arguments))) or 12
     )
-    monkeypatch.setitem(sys.modules, "_05_Interfaz.app", app_module)
-    monkeypatch.setitem(sys.modules, "_05_Interfaz.worker", worker_module)
+    monkeypatch.setitem(sys.modules, "neocortex.interface.application.app", app_module)
+    monkeypatch.setitem(sys.modules, "neocortex.interface.protocol.worker", worker_module)
     monkeypatch.setattr(
         human_cli,
         "run_human_command",

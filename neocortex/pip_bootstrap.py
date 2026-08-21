@@ -13,12 +13,12 @@ from pathlib import Path
 from typing import Protocol
 
 
-PIP_BOOTSTRAP_VERSION = "26.1.2"
+PIP_BOOTSTRAP_VERSION = "26.2.1"
 PIP_BOOTSTRAP_FILENAME = f"pip-{PIP_BOOTSTRAP_VERSION}-py3-none-any.whl"
-PIP_BOOTSTRAP_SHA256 = "382ff9f685ee3bc25864f820aa50505825f10f5458ffff07e30a6d96e5715cab"
+PIP_BOOTSTRAP_SHA256 = "71138adf1f4ca900cdb7d289c21b7494329f2332b6d85f0e1c42108c0384ed3e"
 PIP_BOOTSTRAP_URL = (
-    "https://files.pythonhosted.org/packages/5d/95/"
-    "6b5cb3461ea5673ba0995989746db58eb18b91b54dbf331e72f569540946/"
+    "https://files.pythonhosted.org/packages/f3/6e/"
+    "1736e5b4ae2b778ef2f81c47d797de9f891d4d8acb047a24ca37a60294dd/"
     f"{PIP_BOOTSTRAP_FILENAME}"
 )
 PIP_WHEEL_RUNNER = (

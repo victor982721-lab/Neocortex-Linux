@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 import neocortex
 from neocortex.cli import entrypoint
-from _02_Deduplicacion.__main__ import main as legacy_dedup_main
+from neocortex.deduplication.__main__ import main as legacy_dedup_main
 # endregion [01]
 
 # region [02] Implementación
@@ -84,7 +84,10 @@ def test_svg_release_asset_has_canonical_lf_export() -> None:
     project_root = Path(__file__).resolve().parents[1]
     attributes = (project_root / ".gitattributes").read_text(encoding="utf-8")
 
-    assert "_05_Interfaz/assets/neocortex-app-icon.svg text eol=lf" in attributes.splitlines()
+    assert (
+        "neocortex/interface/presentation/assets/neocortex-app-icon.svg text eol=lf"
+        in attributes.splitlines()
+    )
 
 
 def test_installed_entrypoint_forwards_arguments_to_integrated_cli() -> None:
@@ -132,7 +135,7 @@ def test_interface_package_does_not_import_optional_qt_stack_eagerly() -> None:
             (
                 "import sys; "
                 f"sys.path.insert(0, {os.fspath(project_root)!r}); "
-                "import _05_Interfaz; "
+                "import neocortex.interface; "
                 "assert not any(name == 'PySide6' or name.startswith('PySide6.') "
                 "for name in sys.modules)"
             ),
@@ -147,10 +150,10 @@ def test_interface_package_does_not_import_optional_qt_stack_eagerly() -> None:
 
 
 def test_interface_package_entrypoint_preserves_forwarding_contract() -> None:
-    import _05_Interfaz
+    import neocortex.interface as interface
 
-    with patch("_05_Interfaz.app.main", return_value=11) as run_application:
-        assert _05_Interfaz.main(("--portable",)) == 11
+    with patch("neocortex.interface.application.app.main", return_value=11) as run_application:
+        assert interface.main(("--portable",)) == 11
 
     run_application.assert_called_once_with(("--portable",))
 

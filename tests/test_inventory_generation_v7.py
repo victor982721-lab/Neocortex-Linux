@@ -19,16 +19,20 @@ from pathlib import Path
 
 import pytest
 
-from _01_Enumeracion import JournalCursor, NtfsEntry, UsnChangeBatch
-from _02_Deduplicacion import (
+from neocortex.enumeration import JournalCursor, NtfsEntry, UsnChangeBatch
+from neocortex.deduplication import (
     DedupIndex,
     InventoryCheckpoint,
     InventoryExclusionPolicy,
     snapshot_path,
 )
-from _02_Deduplicacion import inventory_scan as inventory_scan_module
-from _02_Deduplicacion import inventory_schema as inventory_schema_module
-from _02_Deduplicacion.errors import InventoryError
+from neocortex.deduplication.inventory import scan as inventory_scan_module
+from neocortex.deduplication import schema as inventory_schema_module
+from neocortex.deduplication.domain.errors import InventoryError
+from neocortex.deduplication.persistence.ddl import (
+    LEGACY_SHARED_DDL,
+    V6_GENERATIONAL_DDL,
+)
 from _04_Nucleo_Operativo import reconcile as reconcile_module
 from _04_Nucleo_Operativo.reconcile import reconcile_usn_window
 # endregion [01]
@@ -56,9 +60,9 @@ def _create_populated_v6(database: Path, root: Path) -> None:
 
     identity = bytes(16)
     with sqlite3.connect(database) as connection:
-        for statement in inventory_schema_module._V6_GENERATIONAL_DDL:
+        for statement in V6_GENERATIONAL_DDL:
             connection.execute(statement)
-        for statement in inventory_schema_module._LEGACY_SHARED_DDL:
+        for statement in LEGACY_SHARED_DDL:
             connection.execute(statement)
         connection.execute("INSERT INTO metadata(key,value) VALUES('schema_version','6')")
         connection.execute(

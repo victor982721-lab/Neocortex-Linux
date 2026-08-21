@@ -8,7 +8,7 @@ import zlib
 from pathlib import Path
 from typing import Callable, Iterable
 
-from _02_Deduplicacion import FileChangedError
+from neocortex.deduplication import FileChangedError
 
 from ....memory_runtime import MemoryBudgetExceeded
 from ....platform.shared.zip_safety import (
@@ -126,13 +126,9 @@ def diagnostic_for_member(
     if isinstance(exc, zlib.error):
         code = "zip_member_deflate_corrupt"
     elif isinstance(exc, zipfile.BadZipFile):
-        code = (
-            "zip_member_crc_mismatch" if "crc" in lower else "zip_local_header_invalid"
-        )
+        code = "zip_member_crc_mismatch" if "crc" in lower else "zip_local_header_invalid"
     elif isinstance(exc, ET.ParseError):
-        code = (
-            "ooxml_required_xml_invalid" if required else "ooxml_optional_xml_invalid"
-        )
+        code = "ooxml_required_xml_invalid" if required else "ooxml_optional_xml_invalid"
     elif isinstance(exc, NotImplementedError):
         code = "zip_compression_unsupported"
     elif isinstance(exc, ZipStructureError):
@@ -144,9 +140,7 @@ def diagnostic_for_member(
             code = "zip_compression_unsupported"
         else:
             code = "zip_local_header_invalid"
-    elif isinstance(exc, RuntimeError) and (
-        "password" in lower or "encrypted" in lower
-    ):
+    elif isinstance(exc, RuntimeError) and ("password" in lower or "encrypted" in lower):
         code = "zip_encrypted_unsupported"
     elif isinstance(exc, ValueError) and _is_policy_limit(message):
         code = "policy_text_limit"
@@ -279,9 +273,7 @@ def classify_docx_exception(exc: Exception) -> DocxFailure:
             False,
             "deletion_candidate",
         )
-    elif isinstance(exc, RuntimeError) and (
-        "password" in lower or "encrypted" in lower
-    ):
+    elif isinstance(exc, RuntimeError) and ("password" in lower or "encrypted" in lower):
         code, integrity, retryable, disposition = (
             "zip_encrypted_unsupported",
             "unsupported",
@@ -289,9 +281,7 @@ def classify_docx_exception(exc: Exception) -> DocxFailure:
             "manual_review",
         )
     elif isinstance(exc, (ValueError, NotImplementedError)):
-        code = (
-            "policy_processing_limit" if _is_policy_limit(message) else "ooxml_invalid"
-        )
+        code = "policy_processing_limit" if _is_policy_limit(message) else "ooxml_invalid"
         integrity = "policy_rejected" if _is_policy_limit(message) else "invalid"
         retryable, disposition = False, "manual_review"
     else:
