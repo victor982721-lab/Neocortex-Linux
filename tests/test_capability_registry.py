@@ -75,6 +75,19 @@ _EXPECTED_TEST_ROOTS = {
         "tests/test_image_schema_contract.py",
         "tests/test_image_semantics.py",
     ),
+    "video": (
+        "tests/test_capability_registry.py",
+        "tests/test_cli_video_surface.py",
+        "tests/test_format_module_move_compatibility.py",
+        "tests/test_route_schema_contracts.py",
+        "tests/test_video_content_types.py",
+        "tests/test_video_frames.py",
+        "tests/test_video_knowledge_integration.py",
+        "tests/test_video_namespace_migration.py",
+        "tests/test_video_probe.py",
+        "tests/test_video_route.py",
+        "tests/test_video_state.py",
+    ),
 }
 
 
@@ -92,7 +105,7 @@ def _module_map(capability_id: str) -> dict[str, tuple[str | None, str]]:
 def test_registry_test_root_matrix_is_independent_complete_and_live() -> None:
     repository = Path(__file__).resolve().parents[1]
 
-    assert sum(len(roots) for roots in _EXPECTED_TEST_ROOTS.values()) == 32
+    assert sum(len(roots) for roots in _EXPECTED_TEST_ROOTS.values()) == 43
     assert {
         capability.capability_id: capability.test_roots
         for capability in CAPABILITY_REGISTRY.capabilities
@@ -111,6 +124,7 @@ def test_registry_declares_exact_format_module_moves() -> None:
         "audio",
         "docx",
         "image",
+        "video",
     )
     assert {
         (item.architecture_family_id, item.compatibility_family_id)
@@ -166,10 +180,17 @@ def test_registry_declares_exact_format_module_moves() -> None:
             "visual",
         )
     }
+    assert _module_map("video") == {
+        role: (
+            f"_04_Nucleo_Operativo.video_{role}",
+            f"{_FORMATS_ROOT}.video.{role}",
+        )
+        for role in ("frames", "models", "probe", "route", "state")
+    }
 
     serialized = capability_registry_canonical_json()
-    assert "content_types" not in serialized
-    assert "zip_safety" not in serialized
+    assert '"legacy_module_id":"_04_Nucleo_Operativo.content_types"' not in serialized
+    assert '"legacy_module_id":"_04_Nucleo_Operativo.zip_safety"' not in serialized
     assert "cli_archive" not in serialized
     assert "cli_docx" not in serialized
 
@@ -179,6 +200,7 @@ def test_routes_preserve_exact_subjects_and_public_fqns() -> None:
     audio = CAPABILITY_REGISTRY.by_route("audio")
     docx = CAPABILITY_REGISTRY.by_route("docx")
     image = CAPABILITY_REGISTRY.by_route("image")
+    video = CAPABILITY_REGISTRY.by_route("video")
 
     assert archive.route is not None
     assert archive.route.input_source == "route_candidates"
@@ -220,6 +242,14 @@ def test_routes_preserve_exact_subjects_and_public_fqns() -> None:
     assert image.route.route_class.qualified_name.endswith(".image.route.ImageRoute")
     assert image.route.version_symbol.qualified_name.endswith(".image.route.IMAGE_ROUTE_VERSION")
 
+    assert video.route is not None
+    assert (video.route.subject_match_kind, video.route.subject_value) == (
+        "mime_prefix",
+        "video/",
+    )
+    assert video.route.route_class.qualified_name.endswith(".video.route.VideoRoute")
+    assert video.route.summary_class.qualified_name.endswith(".video.models.VideoRouteSummary")
+
 
 def test_state_foreign_keys_preserve_live_store_contracts() -> None:
     expected = {
@@ -254,6 +284,14 @@ def test_state_foreign_keys_preserve_live_store_contracts() -> None:
             "images",
             "configured",
             "SCHEMA_VERSION",
+        ),
+        "video": (
+            "sqlite:video.sqlite3",
+            "video.sqlite3",
+            2,
+            "videos",
+            "configured",
+            "VIDEO_SCHEMA_VERSION",
         ),
     }
     for capability_id, values in expected.items():
@@ -315,28 +353,31 @@ def test_logical_owner_projection_exposes_disjoint_canonical_and_source_bindings
         "audio",
         "docx",
         "image",
+        "video",
     )
     assert tuple(item.selector_id for item in bindings) == (
         "archive-core-modules",
         "audio-core-modules",
         "docx-core-modules",
         "image-core-modules",
+        "video-core-modules",
     )
     assert all(item.match_kind == "module_tree" for item in bindings)
     assert tuple(item.value for item in bindings) == tuple(
-        f"{_FORMATS_ROOT}.{owner}" for owner in ("archive", "audio", "docx", "image")
+        f"{_FORMATS_ROOT}.{owner}" for owner in ("archive", "audio", "docx", "image", "video")
     )
     assert tuple(item.state_owner_ids for item in bindings) == (
         ("archive",),
         ("audio",),
         ("docx",),
         ("image",),
+        ("video",),
     )
     assert all("_04_Nucleo_Operativo.archive_" not in item.value for item in bindings)
 
     source_bindings = capability_source_logical_owner_bindings()
     assert all(item.match_kind == "exact_module" for item in source_bindings)
-    assert len(source_bindings) == 30
+    assert len(source_bindings) == 35
     archive_source = tuple(item for item in source_bindings if item.owner_id == "archive")
     assert tuple(item.selector_id for item in archive_source) == (
         "archive-legacy-models",
@@ -357,6 +398,14 @@ def test_logical_owner_projection_exposes_disjoint_canonical_and_source_bindings
         "audio-legacy-route",
         "audio-legacy-state",
         "audio-legacy-whisper",
+    )
+    video_source = tuple(item for item in source_bindings if item.owner_id == "video")
+    assert tuple(item.selector_id for item in video_source) == (
+        "video-legacy-frames",
+        "video-legacy-models",
+        "video-legacy-probe",
+        "video-legacy-route",
+        "video-legacy-state",
     )
     assert capability_logical_owner_bindings() == tuple(
         binding
@@ -575,6 +624,8 @@ forbidden = (
     '_04_Nucleo_Operativo.capabilities.formats.docx.route',
     '_04_Nucleo_Operativo.image_route',
     '_04_Nucleo_Operativo.capabilities.formats.image.route',
+    '_04_Nucleo_Operativo.video_route',
+    '_04_Nucleo_Operativo.capabilities.formats.video.route',
     '_04_Nucleo_Operativo.state_topology_contracts',
 )
 loaded = [name for name in forbidden if name in sys.modules]

@@ -534,6 +534,35 @@ def test_pyright_parser_preserves_structured_range_and_rule(
     assert str(scratch).casefold() not in file_level.message.casefold()
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX executable fixture")
+def test_pyright_prefers_the_owned_release_node(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = tmp_path / "runtime"
+    owned_node = runtime / "tools" / "node" / "bin" / "node"
+    owned_node.parent.mkdir(parents=True)
+    owned_node.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    owned_node.chmod(0o755)
+    pyright = runtime / "tools" / "pyright" / "node_modules" / "pyright"
+    pyright.mkdir(parents=True)
+    (pyright / "index.js").write_text("", encoding="utf-8")
+    (pyright / "package.json").write_text('{"version":"1.1.411"}', encoding="utf-8")
+    system_bin = tmp_path / "system-bin"
+    system_bin.mkdir()
+    system_node = system_bin / "node"
+    system_node.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    system_node.chmod(0o755)
+    monkeypatch.setattr(providers_module.sys, "prefix", str(runtime))
+    monkeypatch.setenv("PATH", str(system_bin))
+
+    node, index, version = providers_module._pyright_locations()
+
+    assert node == owned_node
+    assert index == pyright / "index.js"
+    assert version == "1.1.411"
+
+
 def test_malformed_provider_output_abstains_without_partial_findings(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -34,6 +34,7 @@ PARENT_PACKAGES = (
     "_04_Nucleo_Operativo.capabilities.formats.audio",
     "_04_Nucleo_Operativo.capabilities.formats.docx",
     "_04_Nucleo_Operativo.capabilities.formats.image",
+    "_04_Nucleo_Operativo.capabilities.formats.video",
 )
 
 # One locally-defined, globally addressable object for every moved module that
@@ -70,6 +71,11 @@ HISTORICAL_PICKLE_SYMBOLS = {
     "_04_Nucleo_Operativo.image_semantics": "normalize_text",
     "_04_Nucleo_Operativo.image_state": "EncodedOcrText",
     "_04_Nucleo_Operativo.image_visual": "FeatureVisualClassifier",
+    "_04_Nucleo_Operativo.video_frames": "build_frame_plan",
+    "_04_Nucleo_Operativo.video_models": "VideoRouteSummary",
+    "_04_Nucleo_Operativo.video_probe": "decode_video_probe",
+    "_04_Nucleo_Operativo.video_route": "VideoRoute",
+    "_04_Nucleo_Operativo.video_state": "video_database",
 }
 
 MONKEYPATCH_SEAMS = (
@@ -148,6 +154,26 @@ MONKEYPATCH_SEAMS = (
         "ImageRoute._image_worker",
         "ImageWorkerSupervisor",
     ),
+    (
+        "_04_Nucleo_Operativo.video_frames",
+        "sampled_video_frames.__wrapped__",
+        "resolve_video_ffmpeg",
+    ),
+    (
+        "_04_Nucleo_Operativo.video_probe",
+        "_run_video_probe",
+        "run_bounded_capture",
+    ),
+    (
+        "_04_Nucleo_Operativo.video_route",
+        "VideoRoute.run",
+        "resolve_video_ffmpeg",
+    ),
+    (
+        "_04_Nucleo_Operativo.video_state",
+        "_initialize_locked_video_state",
+        "_migrate_video_v1",
+    ),
 )
 
 INSTANCE_PICKLE_CASES = (
@@ -181,6 +207,12 @@ INSTANCE_PICKLE_CASES = (
         ("test", 0.5, ("evidence",), "test"),
         {},
     ),
+    (
+        "_04_Nucleo_Operativo.video_models",
+        "VideoRouteSummary",
+        (),
+        {},
+    ),
 )
 
 
@@ -210,9 +242,9 @@ def _recursive_code_names(code: CodeType) -> frozenset[str]:
     return frozenset(names)
 
 
-def test_module_move_manifest_contains_all_32_pairs() -> None:
-    assert len(MODULE_MOVES) == 32
-    assert len(set(MODULE_MOVES)) == 32
+def test_module_move_manifest_contains_all_37_pairs() -> None:
+    assert len(MODULE_MOVES) == 37
+    assert len(set(MODULE_MOVES)) == 37
     assert {legacy for legacy, _canonical in MODULE_MOVES} == {
         "_04_Nucleo_Operativo.content_types",
         "_04_Nucleo_Operativo.zip_safety",
@@ -231,6 +263,11 @@ def test_module_move_manifest_contains_all_32_pairs() -> None:
         "_04_Nucleo_Operativo.docx_route",
         "_04_Nucleo_Operativo.docx_schema",
         "_04_Nucleo_Operativo.docx_state",
+        "_04_Nucleo_Operativo.video_frames",
+        "_04_Nucleo_Operativo.video_models",
+        "_04_Nucleo_Operativo.video_probe",
+        "_04_Nucleo_Operativo.video_route",
+        "_04_Nucleo_Operativo.video_state",
         *{
             f"_04_Nucleo_Operativo.image_{leaf}"
             for leaf in (

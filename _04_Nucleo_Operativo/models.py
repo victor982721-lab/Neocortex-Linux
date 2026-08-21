@@ -43,7 +43,7 @@ if TYPE_CHECKING:
     from .office_route import OfficeRouteSummary
     from .pdf_route_models import PdfRouteSummary
     from .text_route import TextRouteSummary
-    from .video_models import VideoRouteSummary
+    from .capabilities.formats.video.models import VideoRouteSummary
 
 
 @dataclass(frozen=True, slots=True)

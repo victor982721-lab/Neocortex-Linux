@@ -136,6 +136,11 @@ def test_full_stages_exact_copy_and_replay_preserves_adapter_costs(
     )
     monkeypatch.setenv("PATH", executable_path)
     monkeypatch.setenv("PATHEXT", executable_extensions)
+    monkeypatch.setattr(
+        providers_module,
+        "trusted_deep_runtime_search_path",
+        lambda: executable_path,
+    )
     observed_stage_roots: list[Path] = []
     observed_scratch_roots: list[Path] = []
 
@@ -227,11 +232,16 @@ def test_mutation_environment_signature_covers_executable_discovery(
     root, _target, _files = _project(tmp_path)
     payload, signature = _deep_payload()
     monkeypatch.setattr(providers_module, "cosmic_ray_tool_version", lambda: "8.4.6")
-    monkeypatch.setenv("PATH", str(tmp_path / "tools-a"))
+    runtime_path = [str(tmp_path / "tools-a")]
+    monkeypatch.setattr(
+        providers_module,
+        "trusted_deep_runtime_search_path",
+        lambda: runtime_path[0],
+    )
     monkeypatch.setenv("PATHEXT", ".EXE;.CMD")
     first = CosmicRayFocalMutationProvider(root, payload, signature)
 
-    monkeypatch.setenv("PATH", str(tmp_path / "tools-b"))
+    runtime_path[0] = str(tmp_path / "tools-b")
     second = CosmicRayFocalMutationProvider(root, payload, signature)
 
     assert first.descriptor.environment_signature != second.descriptor.environment_signature
@@ -255,6 +265,29 @@ def test_mutation_environment_signature_survives_equivalent_release_promotion(
     second = CosmicRayFocalMutationProvider(root, payload, signature)
 
     assert first.descriptor.environment_signature == second.descriptor.environment_signature
+
+
+def test_mutation_signature_ignores_optional_owned_node_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, _target, _files = _project(tmp_path)
+    payload, signature = _deep_payload()
+    monkeypatch.setattr(providers_module, "cosmic_ray_tool_version", lambda: "8.4.6")
+    monkeypatch.setattr(providers_module.sys, "prefix", "/release-a")
+    monkeypatch.setattr(providers_module.sys, "executable", "/release-a/bin/python3.14")
+    monkeypatch.setenv("PATH", "/release-a/tools/node/bin:/usr/bin")
+    validation_runtime = CosmicRayFocalMutationProvider(root, payload, signature)
+
+    monkeypatch.setattr(providers_module.sys, "prefix", "/release-b")
+    monkeypatch.setattr(providers_module.sys, "executable", "/release-b/bin/python3.14")
+    monkeypatch.setenv("PATH", "/usr/bin")
+    public_runtime = CosmicRayFocalMutationProvider(root, payload, signature)
+
+    assert (
+        validation_runtime.descriptor.environment_signature
+        == public_runtime.descriptor.environment_signature
+    )
 
 
 def test_real_provider_baseline_preserves_git_executable_discovery(

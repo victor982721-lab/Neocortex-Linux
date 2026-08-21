@@ -40,7 +40,7 @@ if TYPE_CHECKING:
     from . import office_route as _office_contracts
     from . import pdf_route_models as _pdf_contracts
     from . import text_route as _text_contracts
-    from . import video_route as _video_contracts
+    from .capabilities.formats.video import route as _video_contracts
     from .capabilities.formats.archive import route as _archive_contracts
     from .capabilities.formats.docx import models as _docx_contracts
     from .capabilities.formats.image import route as _image_contracts
@@ -54,7 +54,7 @@ else:
     _office_contracts = _DeferredTypeModule(".office_route")
     _pdf_contracts = _DeferredTypeModule(".pdf_route_models")
     _text_contracts = _DeferredTypeModule(".text_route")
-    _video_contracts = _DeferredTypeModule(".video_route")
+    _video_contracts = _DeferredTypeModule(".capabilities.formats.video.route")
     _resource_contracts = _DeferredTypeModule(".global_resources")
 
 __all__ = [
@@ -174,7 +174,7 @@ def video_route_config_from_application(
 ) -> _video_contracts.VideoRouteConfig:
     """Project current values into dedicated visual-video inspection."""
 
-    from .video_route import VideoRouteConfig
+    from .capabilities.formats.video.route import VideoRouteConfig
 
     return VideoRouteConfig(
         state_path=config.video_database,

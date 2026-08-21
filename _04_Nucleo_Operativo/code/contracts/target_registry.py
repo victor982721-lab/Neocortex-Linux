@@ -337,11 +337,12 @@ RESPONSIBILITY_MODULES: Final = {
         "_04_Nucleo_Operativo.text_state",
     ),
     "formats.video": (
-        "_04_Nucleo_Operativo.video_frames",
-        "_04_Nucleo_Operativo.video_models",
-        "_04_Nucleo_Operativo.video_probe",
-        "_04_Nucleo_Operativo.video_route",
-        "_04_Nucleo_Operativo.video_state",
+        "_04_Nucleo_Operativo.capabilities.formats.video",
+        "_04_Nucleo_Operativo.capabilities.formats.video.frames",
+        "_04_Nucleo_Operativo.capabilities.formats.video.models",
+        "_04_Nucleo_Operativo.capabilities.formats.video.probe",
+        "_04_Nucleo_Operativo.capabilities.formats.video.route",
+        "_04_Nucleo_Operativo.capabilities.formats.video.state",
     ),
     "foundation.identity": (
         "_04_Nucleo_Operativo.file_identity",
@@ -546,6 +547,11 @@ COMPATIBILITY_MODULES: Final = (
     "_04_Nucleo_Operativo.image_semantics",
     "_04_Nucleo_Operativo.image_state",
     "_04_Nucleo_Operativo.image_visual",
+    "_04_Nucleo_Operativo.video_frames",
+    "_04_Nucleo_Operativo.video_models",
+    "_04_Nucleo_Operativo.video_probe",
+    "_04_Nucleo_Operativo.video_route",
+    "_04_Nucleo_Operativo.video_state",
     "_04_Nucleo_Operativo.zip_safety",
 )
 
@@ -608,6 +614,11 @@ COMPATIBILITY_MODULE_PAIRS: Final = tuple(
                     "visual",
                 ),
             ),
+            *_format_compatibility_pairs(
+                "video",
+                "capabilities.formats.video",
+                ("frames", "models", "probe", "route", "state"),
+            ),
         )
     )
 )
@@ -623,6 +634,7 @@ _INSTANCE_PICKLE_MODULES: Final = frozenset(
         "_04_Nucleo_Operativo.content_types",
         "_04_Nucleo_Operativo.docx_models",
         "_04_Nucleo_Operativo.image_models",
+        "_04_Nucleo_Operativo.video_models",
     }
 )
 _MONKEYPATCH_COMPATIBILITY_MODULES: Final = frozenset(
@@ -640,6 +652,10 @@ _MONKEYPATCH_COMPATIBILITY_MODULES: Final = frozenset(
         "_04_Nucleo_Operativo.image_document",
         "_04_Nucleo_Operativo.image_features",
         "_04_Nucleo_Operativo.image_route",
+        "_04_Nucleo_Operativo.video_frames",
+        "_04_Nucleo_Operativo.video_probe",
+        "_04_Nucleo_Operativo.video_route",
+        "_04_Nucleo_Operativo.video_state",
         "_04_Nucleo_Operativo.zip_safety",
     }
 )
@@ -693,6 +709,8 @@ def _compatibility_test_roots(legacy_module_id: str) -> tuple[str, ...]:
         roots.add("tests/test_docx_namespace_migration.py")
     elif ".image_" in legacy_module_id:
         roots.add("tests/test_image_namespace_migration.py")
+    elif ".video_" in legacy_module_id:
+        roots.add("tests/test_video_namespace_migration.py")
     return tuple(sorted(roots))
 
 

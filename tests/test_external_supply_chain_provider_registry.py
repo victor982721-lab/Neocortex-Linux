@@ -269,6 +269,26 @@ def test_environment_providers_replay_declared_snapshots_with_real_inventory_cos
     assert expired.execution == "full"
     assert executions == 1
 
+    monkeypatch.setenv(
+        "NEOCORTEX_PIP_AUDIT_NETWORK_POLICY",
+        "force-refresh-authorized",
+    )
+    forced = pip_provider.run(
+        root,
+        (),
+        baseline=_baseline(
+            pip_publication,
+            75,
+            fresh_until_unix_seconds=time.time() + 3600,
+        ),
+        scratch_root=scratch,
+    )
+    assert forced.execution == "full"
+    assert (
+        forced.publication.provenance["supply_chain_execution"]["force_refresh_requested"] is True
+    )
+    assert executions == 2
+
     inventory_limitations = (
         "optional_extra_and_transitive_requirement_constraints_are_recorded_not_gated",
         "base_direct_url_origin_is_recorded_not_verified",

@@ -21,7 +21,7 @@ from _04_Nucleo_Operativo.global_resources import GlobalResourceLimits
 from _04_Nucleo_Operativo.image_route import ImageRouteConfig
 from _04_Nucleo_Operativo.office_route import OfficeRouteConfig
 from _04_Nucleo_Operativo.pdf_route_models import PdfRouteConfig
-from _04_Nucleo_Operativo.video_route import VideoRouteConfig
+from _04_Nucleo_Operativo.capabilities.formats.video.route import VideoRouteConfig
 from neocortex.capabilities import CAPABILITY_SPECS, inspect_runtime_capabilities
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -143,7 +143,7 @@ def test_projection_module_cold_import_keeps_owner_contracts_deferred() -> None:
             "_04_Nucleo_Operativo.office_route",
             "_04_Nucleo_Operativo.pdf_route_models",
             "_04_Nucleo_Operativo.text_route",
-            "_04_Nucleo_Operativo.video_route",
+            "_04_Nucleo_Operativo.capabilities.formats.video.route",
         }
 
         import _04_Nucleo_Operativo.application_config_projections as projections

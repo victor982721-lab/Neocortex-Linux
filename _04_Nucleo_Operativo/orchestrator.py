@@ -79,7 +79,7 @@ if TYPE_CHECKING:
     from .office_route import OfficeRouteSummary
     from .pdf_route import PdfRouteSummary
     from .text_route import TextRouteSummary
-    from .video_models import VideoRouteSummary
+    from .capabilities.formats.video.models import VideoRouteSummary
     from .document_organization import (
         OrganizationApplySummary,
         OrganizationPlanSummary,

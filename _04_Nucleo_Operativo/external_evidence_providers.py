@@ -68,6 +68,7 @@ from .external_deep_coverage import (
     execute_pytest_coverage,
     prepare_deep_coverage_input,
     trusted_deep_home_directory,
+    trusted_deep_runtime_search_path,
 )
 from .external_dependency_hygiene import (
     DEPTRY_LIMITATIONS,
@@ -174,6 +175,7 @@ _VULTURE_MEMORY_BYTES = 512 * 1024 * 1024
 _SEMGREP_MEMORY_BYTES = 1024 * 1024 * 1024
 _DEPTRY_MEMORY_BYTES = 1024 * 1024 * 1024
 _PIP_AUDIT_MEMORY_BYTES = 512 * 1024 * 1024
+_PIP_AUDIT_FORCE_REFRESH_POLICY = "force-refresh-authorized"
 _PIP_AUDIT_SOURCE_INPUTS = (
     "MANIFEST.in",
     "constraints.txt",
@@ -649,8 +651,15 @@ def _normalized_runtime_path_entry(value: str) -> str:
 
 
 def _normalized_runtime_search_path(value: str) -> str:
-    return os.pathsep.join(
+    normalized = tuple(
         _normalized_runtime_path_entry(item) for item in value.split(os.pathsep) if item
+    )
+    # The release-owned Node directory is added for validation tooling, but
+    # Coverage and Cosmic Ray do not use Node. Its ambient presence must not
+    # displace otherwise identical evidence after a release promotion. Pyright
+    # signs its resolved Node executable separately.
+    return os.pathsep.join(
+        item for item in normalized if item != "$NEOCORTEX_RUNTIME/tools/node/bin"
     )
 
 
@@ -1922,8 +1931,18 @@ class MypyTrustedProjectProvider(_TrustedStaticProvider):
         )
 
 
+def _owned_node_executable() -> Path | None:
+    candidate = (
+        Path(sys.prefix) / "tools" / "node" / ("node.exe" if os.name == "nt" else "bin/node")
+    )
+    if not candidate.is_file() or not os.access(candidate, os.X_OK):
+        return None
+    return candidate
+
+
 def _pyright_locations() -> tuple[Path | None, Path | None, str | None]:
-    node = shutil.which("node")
+    owned_node = _owned_node_executable()
+    node = os.fspath(owned_node) if owned_node is not None else shutil.which("node")
     if node is None:
         return None, None, None
     candidates: list[Path] = []
@@ -2768,8 +2787,11 @@ class PipAuditKnownVulnerabilitiesProvider:
             )
         signature = self.baseline_input_signature(())
         limitations = PIP_AUDIT_LIMITATIONS
+        network_policy = os.environ.get("NEOCORTEX_PIP_AUDIT_NETWORK_POLICY")
+        force_refresh = network_policy == _PIP_AUDIT_FORCE_REFRESH_POLICY
         replay_is_fresh = (
-            _baseline_allows_exact_replay(baseline, signature)
+            not force_refresh
+            and _baseline_allows_exact_replay(baseline, signature)
             and baseline is not None
             and baseline.fresh_until_unix_seconds is not None
             and time.time() <= baseline.fresh_until_unix_seconds
@@ -2805,7 +2827,7 @@ class PipAuditKnownVulnerabilitiesProvider:
                     "fix": False,
                 },
             )
-        if os.environ.get("NEOCORTEX_PIP_AUDIT_NETWORK_POLICY") == "disabled-by-code-validation":
+        if network_policy == "disabled-by-code-validation":
             return _failure(
                 self.descriptor,
                 root,
@@ -2890,6 +2912,7 @@ class PipAuditKnownVulnerabilitiesProvider:
                 "snapshot_id": execution.snapshot_id,
                 "source_input_signature": self._source_input_signature,
                 "source_input_bytes": self._source_input_bytes,
+                "force_refresh_requested": force_refresh,
                 "uses_network": execution.uses_network,
                 "fix": False,
             },
@@ -3652,6 +3675,7 @@ class CosmicRayFocalMutationProvider:
         configured_mutants = 1 if self.config is None else self.config.max_mutants
         pytest_version = _package_version("pytest") or "unavailable"
         self._home_directory = trusted_deep_home_directory()
+        self._runtime_search_path = trusted_deep_runtime_search_path()
         environment_signature = external_signature(
             "cosmic-ray-focal-environment-v1",
             {
@@ -3664,11 +3688,7 @@ class CosmicRayFocalMutationProvider:
                 "cosmic_ray_version": version,
                 "pytest_version": pytest_version,
                 "home_directory": self._home_directory,
-                "path": (
-                    None
-                    if os.environ.get("PATH") is None
-                    else _normalized_runtime_search_path(os.environ["PATH"])
-                ),
+                "path": (_normalized_runtime_search_path(self._runtime_search_path)),
                 "pathext": os.environ.get("PATHEXT"),
             },
         )
@@ -3882,10 +3902,10 @@ class CosmicRayFocalMutationProvider:
                 environment["HOME"] = self._home_directory
                 if os.name == "nt":
                     environment["USERPROFILE"] = self._home_directory
-                for name in ("PATH", "PATHEXT"):
-                    value = os.environ.get(name)
-                    if value:
-                        environment[name] = value
+                environment["PATH"] = self._runtime_search_path
+                pathext = os.environ.get("PATHEXT")
+                if pathext:
+                    environment["PATHEXT"] = pathext
                 for name in ("TEMP", "TMP", "TMPDIR"):
                     environment[name] = str(durable_scratch)
                 execution = self.executor(
@@ -3988,6 +4008,7 @@ class PytestCoverageTrustedDeepProvider:
         self.config = config
         self.progress = progress
         self._version = _deep_tool_version()
+        self._runtime_search_path = trusted_deep_runtime_search_path()
         version = self._version or "unavailable"
         self._root_identity = external_root_identity(root)
         _raw_project, _parsed_project, project_digest = _project_configuration(root)
@@ -4011,7 +4032,7 @@ class PytestCoverageTrustedDeepProvider:
                 tool_name="pytest+coverage",
                 tool_version=version,
                 home_directory=trusted_deep_home_directory(),
-                path_value=os.environ.get("PATH"),
+                path_value=self._runtime_search_path,
                 pathext_value=os.environ.get("PATHEXT"),
             ),
             root_identity=self._root_identity,
@@ -4083,11 +4104,13 @@ class PytestCoverageTrustedDeepProvider:
         if self._preparation_error_key == key and self._preparation_error is not None:
             raise self._preparation_error
         try:
+            environment = _controlled_environment()
+            environment["PATH"] = self._runtime_search_path
             prepared = prepare_deep_coverage_input(
                 self.root,
                 files,
                 self.config,
-                environment=_controlled_environment(),
+                environment=environment,
             )
         except Exception as exc:
             self._preparation_error_key = key

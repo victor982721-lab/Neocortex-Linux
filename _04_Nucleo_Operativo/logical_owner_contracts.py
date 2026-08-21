@@ -287,11 +287,7 @@ LOGICAL_OWNER_SPECS = (
         (_selector("text-core-modules", "module_prefix", "_04_Nucleo_Operativo.text_"),),
         ("text",),
     ),
-    LogicalOwnerSpec(
-        "video",
-        (_selector("video-core-modules", "module_prefix", "_04_Nucleo_Operativo.video_"),),
-        ("video",),
-    ),
+    _registered_capability_owner_spec("video"),
 )
 
 

@@ -64,7 +64,7 @@ class RouteRegistryIsolationTests(unittest.TestCase):
                 "_04_Nucleo_Operativo.capabilities.formats.archive.route",
                 "_04_Nucleo_Operativo.text_route",
                 "_04_Nucleo_Operativo.capabilities.formats.audio.route",
-                "_04_Nucleo_Operativo.video_route",
+                "_04_Nucleo_Operativo.capabilities.formats.video.route",
                 "_04_Nucleo_Operativo.code_route",
                 "_04_Nucleo_Operativo.code_analyzers",
             }
@@ -95,7 +95,7 @@ class RouteRegistryIsolationTests(unittest.TestCase):
                 "_04_Nucleo_Operativo.archive_route",
                 "_04_Nucleo_Operativo.capabilities.formats.archive.route",
                 "_04_Nucleo_Operativo.capabilities.formats.audio.route",
-                "_04_Nucleo_Operativo.video_route",
+                "_04_Nucleo_Operativo.capabilities.formats.video.route",
             }
             if engines.intersection(sys.modules):
                 raise SystemExit("route engines loaded before deferred access")
@@ -139,7 +139,7 @@ class RouteRegistryIsolationTests(unittest.TestCase):
                 "_04_Nucleo_Operativo.archive_route",
                 "_04_Nucleo_Operativo.capabilities.formats.archive.route",
                 "_04_Nucleo_Operativo.capabilities.formats.audio.route",
-                "_04_Nucleo_Operativo.video_route",
+                "_04_Nucleo_Operativo.capabilities.formats.video.route",
             }
             loaded = forbidden.intersection(sys.modules)
             if loaded:
@@ -211,7 +211,7 @@ class RouteRegistryIsolationTests(unittest.TestCase):
                 "archive": "_04_Nucleo_Operativo.archive_route",
                 "office": "_04_Nucleo_Operativo.office_route",
                 "audio": "_04_Nucleo_Operativo.capabilities.formats.audio.route",
-                "video": "_04_Nucleo_Operativo.video_route",
+                "video": "_04_Nucleo_Operativo.capabilities.formats.video.route",
                 "text": "_04_Nucleo_Operativo.text_route",
             }
             canonical_module_names = {

@@ -442,6 +442,50 @@ def trusted_deep_home_directory() -> str:
     return os.fspath(home)
 
 
+def trusted_deep_runtime_search_path() -> str:
+    """Return one deterministic executable search path for trusted tests.
+
+    Validation may be launched by an IDE, a terminal or an agent whose PATH
+    contains ephemeral wrapper directories.  The trusted suite instead uses
+    the immutable release tools plus the canonical Linux user/system roots, so
+    equivalent release promotion cannot invalidate its provider identity.
+    """
+
+    if os.name == "nt":
+        value = os.environ.get("PATH")
+        if not value:
+            raise ValueError("trusted-deep PATH is unavailable")
+        return value
+    candidates = (
+        Path(sys.prefix) / "bin",
+        Path(sys.prefix) / "tools" / "node" / "bin",
+        Path.home() / ".local" / "bin",
+        Path("/usr/local/sbin"),
+        Path("/usr/local/bin"),
+        Path("/usr/sbin"),
+        Path("/usr/bin"),
+        Path("/sbin"),
+        Path("/bin"),
+        Path("/usr/games"),
+        Path("/usr/local/games"),
+        Path("/snap/bin"),
+    )
+    selected: list[str] = []
+    identities: set[Path] = set()
+    for candidate in candidates:
+        try:
+            identity = candidate.resolve(strict=True)
+        except OSError:
+            continue
+        if not identity.is_dir() or identity in identities:
+            continue
+        identities.add(identity)
+        selected.append(os.fspath(candidate))
+    if not selected:
+        raise ValueError("trusted-deep executable search path is unavailable")
+    return os.pathsep.join(selected)
+
+
 def _trusted_support_signature(
     root: Path,
     files: Sequence[ExternalEvidenceFile],
@@ -849,8 +893,7 @@ def _read_regular_file_without_links(path: Path, *, maximum: int) -> bytes | Non
     if (
         len(payload) != before.st_size
         or len(payload) > maximum
-        or (int(before.st_dev), int(before.st_ino))
-        != (int(after.st_dev), int(after.st_ino))
+        or (int(before.st_dev), int(before.st_ino)) != (int(after.st_dev), int(after.st_ino))
         or before.st_size != after.st_size
         or before.st_mtime_ns != after.st_mtime_ns
         or before.st_mode != after.st_mode
@@ -1014,8 +1057,7 @@ def _load_checkpoint(
             record.get("schema") != DEEP_COVERAGE_CHECKPOINT_SCHEMA
             or record.get("status") != "passed"
             or record.get("shard_signature") != shard_signature
-            or record.get("checkpoint_request_signature")
-            != checkpoint_request_signature
+            or record.get("checkpoint_request_signature") != checkpoint_request_signature
         ):
             return None
         result = _required_mapping(record.get("result"), label="checkpoint result")
@@ -1024,10 +1066,9 @@ def _load_checkpoint(
             label="checkpoint execution request signature",
             maximum=512,
         )
-        if (
-            result.get("request_signature") != execution_request_signature
-            or record.get("result_digest") != _checkpoint_digest(result)
-        ):
+        if result.get("request_signature") != execution_request_signature or record.get(
+            "result_digest"
+        ) != _checkpoint_digest(result):
             return None
         return result, execution_request_signature
     except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError):
@@ -1984,7 +2025,8 @@ def _controlled_execution_environment(
     controlled["HOME"] = home_directory
     if os.name == "nt":
         controlled["USERPROFILE"] = home_directory
-    host_names: tuple[str, ...] = ("PATH", "PATHEXT")
+    controlled["PATH"] = trusted_deep_runtime_search_path()
+    host_names: tuple[str, ...] = ("PATHEXT",)
     if os.name == "nt":
         # CPython 3.14 imports Winsock-backed modules while pytest configures
         # debugging. Windows cannot initialize those providers without its
@@ -2600,4 +2642,5 @@ __all__ = [
     "deep_coverage_input_signature",
     "execute_pytest_coverage",
     "prepare_deep_coverage_input",
+    "trusted_deep_runtime_search_path",
 ]
