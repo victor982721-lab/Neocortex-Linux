@@ -243,7 +243,7 @@ def _validate_source_schema(
             validator=_validate_docx_source,
         )
     if source_kind in {"xlsx", "pptx", "odt"}:
-        from . import office_state
+        from .capabilities.formats.office import state as office_state
 
         return _require_current_schema(
             connection,

@@ -34,6 +34,7 @@ PARENT_PACKAGES = (
     "_04_Nucleo_Operativo.capabilities.formats.audio",
     "_04_Nucleo_Operativo.capabilities.formats.docx",
     "_04_Nucleo_Operativo.capabilities.formats.image",
+    "_04_Nucleo_Operativo.capabilities.formats.office",
     "_04_Nucleo_Operativo.capabilities.formats.video",
 )
 
@@ -71,6 +72,9 @@ HISTORICAL_PICKLE_SYMBOLS = {
     "_04_Nucleo_Operativo.image_semantics": "normalize_text",
     "_04_Nucleo_Operativo.image_state": "EncodedOcrText",
     "_04_Nucleo_Operativo.image_visual": "FeatureVisualClassifier",
+    "_04_Nucleo_Operativo.legacy_office_worker": "main",
+    "_04_Nucleo_Operativo.office_route": "OfficeRoute",
+    "_04_Nucleo_Operativo.office_state": "office_database",
     "_04_Nucleo_Operativo.video_frames": "build_frame_plan",
     "_04_Nucleo_Operativo.video_models": "VideoRouteSummary",
     "_04_Nucleo_Operativo.video_probe": "decode_video_probe",
@@ -155,6 +159,21 @@ MONKEYPATCH_SEAMS = (
         "ImageWorkerSupervisor",
     ),
     (
+        "_04_Nucleo_Operativo.legacy_office_worker",
+        "_backend_command",
+        "os",
+    ),
+    (
+        "_04_Nucleo_Operativo.office_route",
+        "extract_office_document",
+        "_extract_xlsx_shared_strings",
+    ),
+    (
+        "_04_Nucleo_Operativo.office_state",
+        "_initialize_locked_office_state",
+        "_migrate_office_v2_path_collation",
+    ),
+    (
         "_04_Nucleo_Operativo.video_frames",
         "sampled_video_frames.__wrapped__",
         "resolve_video_ffmpeg",
@@ -213,6 +232,12 @@ INSTANCE_PICKLE_CASES = (
         (),
         {},
     ),
+    (
+        "_04_Nucleo_Operativo.office_route",
+        "OfficeRouteSummary",
+        (),
+        {},
+    ),
 )
 
 
@@ -242,9 +267,9 @@ def _recursive_code_names(code: CodeType) -> frozenset[str]:
     return frozenset(names)
 
 
-def test_module_move_manifest_contains_all_37_pairs() -> None:
-    assert len(MODULE_MOVES) == 37
-    assert len(set(MODULE_MOVES)) == 37
+def test_module_move_manifest_contains_all_40_pairs() -> None:
+    assert len(MODULE_MOVES) == 40
+    assert len(set(MODULE_MOVES)) == 40
     assert {legacy for legacy, _canonical in MODULE_MOVES} == {
         "_04_Nucleo_Operativo.content_types",
         "_04_Nucleo_Operativo.zip_safety",
@@ -263,6 +288,9 @@ def test_module_move_manifest_contains_all_37_pairs() -> None:
         "_04_Nucleo_Operativo.docx_route",
         "_04_Nucleo_Operativo.docx_schema",
         "_04_Nucleo_Operativo.docx_state",
+        "_04_Nucleo_Operativo.legacy_office_worker",
+        "_04_Nucleo_Operativo.office_route",
+        "_04_Nucleo_Operativo.office_state",
         "_04_Nucleo_Operativo.video_frames",
         "_04_Nucleo_Operativo.video_models",
         "_04_Nucleo_Operativo.video_probe",
@@ -314,7 +342,10 @@ def test_compatibility_matrix_covers_pickle_patch_and_worker_contracts() -> None
         module
         for module, contract in contracts.items()
         if "worker_module_execution" in contract.requirement_ids
-    } == {"_04_Nucleo_Operativo.archive_text_worker"}
+    } == {
+        "_04_Nucleo_Operativo.archive_text_worker",
+        "_04_Nucleo_Operativo.legacy_office_worker",
+    }
 
 
 @pytest.mark.parametrize(

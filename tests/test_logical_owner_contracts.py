@@ -37,6 +37,11 @@ def test_registry_maps_only_explicit_owner_selectors_without_a_default() -> None
     assert matching_logical_owners("_04_Nucleo_Operativo.capabilities.formats.image.route") == (
         "image",
     )
+    assert matching_logical_owners("_04_Nucleo_Operativo.office_route") == ("office",)
+    assert matching_logical_owners("_04_Nucleo_Operativo.legacy_office_worker") == ("office",)
+    assert matching_logical_owners("_04_Nucleo_Operativo.capabilities.formats.office.route") == (
+        "office",
+    )
     assert matching_logical_owners("_04_Nucleo_Operativo.pdf_route") == ("pdf",)
     assert matching_logical_owners("_04_Nucleo_Operativo.video_route") == ("video",)
     assert matching_logical_owners("_04_Nucleo_Operativo.capabilities.formats.video.route") == (

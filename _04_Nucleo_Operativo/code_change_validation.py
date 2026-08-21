@@ -2420,14 +2420,21 @@ def _candidate_wheel_gate(
             probe = workspace / "probe"
             probe.mkdir()
             probe_script = (
-                "import importlib.metadata,json,pathlib;"
+                "import importlib.metadata,importlib.util,json,pathlib;"
                 "import neocortex,_04_Nucleo_Operativo.code_change_validation as c;"
+                "from _04_Nucleo_Operativo.platform.shared.capability_registry "
+                "import CAPABILITY_REGISTRY;"
                 "root=pathlib.Path(c.__file__).resolve();"
                 "assert 'site-packages' in root.parts,root;"
                 "rules=root.parent/'semgrep_rules'/'neocortex_invariants.yml';"
                 "assert rules.is_file(),rules;"
+                "executables=sorted(module_id for capability in "
+                "CAPABILITY_REGISTRY.capabilities for module_id in "
+                "capability.executable_module_ids);"
+                "assert all(importlib.util.find_spec(name) is not None for name in executables);"
                 "print(json.dumps({'module':str(root),'version':"
-                "importlib.metadata.version('neocortex-framework'),'rules':str(rules)},sort_keys=True))"
+                "importlib.metadata.version('neocortex-framework'),'rules':str(rules),"
+                "'executables':executables},sort_keys=True))"
             )
             probe_result = runner(
                 (candidate_python, "-I", "-c", probe_script),

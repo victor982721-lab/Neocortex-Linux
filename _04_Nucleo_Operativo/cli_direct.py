@@ -965,7 +965,7 @@ def run_docx_missing_pdf(args: argparse.Namespace) -> int:
 def run_office_search(args: argparse.Namespace) -> int:
     """Search indexed XLSX, PPTX and ODT text without extracting files."""
 
-    from .office_route import search_office_state
+    from .capabilities.formats.office.state import search_office_state
 
     try:
         results = search_office_state(

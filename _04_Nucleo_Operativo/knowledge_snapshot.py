@@ -27,13 +27,13 @@ from neocortex.platform_policy import sqlite_path_collation
 
 from . import (
     document_catalog_schema,
-    office_state,
     text_state,
 )
 from . import semantic_schema as semantic_schema_module
 from .capabilities.formats.audio import state as audio_state
 from .capabilities.formats.archive import state as archive_state
 from .capabilities.formats.docx.schema import validate_docx_schema
+from .capabilities.formats.office import state as office_state
 from .capabilities.formats.video import state as video_state
 from .code_schema import validate_code_schema
 from .framework_schema import (

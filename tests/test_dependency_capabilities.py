@@ -326,7 +326,7 @@ def test_semantic_facades_cold_import_no_owner_or_image_runtime() -> None:
             "_04_Nucleo_Operativo.capabilities.formats.docx.schema",
             "_04_Nucleo_Operativo.image_state",
             "_04_Nucleo_Operativo.capabilities.formats.image.state",
-            "_04_Nucleo_Operativo.office_state",
+            "_04_Nucleo_Operativo.capabilities.formats.office.state",
             "_04_Nucleo_Operativo.pdf_schema",
         }
 

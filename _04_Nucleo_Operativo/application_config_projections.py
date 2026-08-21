@@ -37,7 +37,7 @@ if TYPE_CHECKING:
     from . import code_contracts as _code_contracts
     from . import global_resources as _resource_contracts
     from . import models as _application_contracts
-    from . import office_route as _office_contracts
+    from .capabilities.formats.office import route as _office_contracts
     from . import pdf_route_models as _pdf_contracts
     from . import text_route as _text_contracts
     from .capabilities.formats.video import route as _video_contracts
@@ -51,7 +51,7 @@ else:
     _code_contracts = _DeferredTypeModule(".code_contracts")
     _docx_contracts = _DeferredTypeModule(".capabilities.formats.docx.models")
     _image_contracts = _DeferredTypeModule(".capabilities.formats.image.route")
-    _office_contracts = _DeferredTypeModule(".office_route")
+    _office_contracts = _DeferredTypeModule(".capabilities.formats.office.route")
     _pdf_contracts = _DeferredTypeModule(".pdf_route_models")
     _text_contracts = _DeferredTypeModule(".text_route")
     _video_contracts = _DeferredTypeModule(".capabilities.formats.video.route")
@@ -304,7 +304,7 @@ def office_route_config_from_application(
 ) -> _office_contracts.OfficeRouteConfig:
     """Project current application values into the Office owner's contract."""
 
-    from .office_route import OfficeRouteConfig
+    from .capabilities.formats.office.route import OfficeRouteConfig
 
     return OfficeRouteConfig(
         state_path=config.office_database,

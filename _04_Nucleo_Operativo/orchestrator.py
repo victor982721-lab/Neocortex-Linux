@@ -76,7 +76,7 @@ if TYPE_CHECKING:
     from .code_contracts import CodeRouteSummary
     from .capabilities.formats.docx.route import DocxRouteSummary
     from .capabilities.formats.image.route import ImageRouteSummary
-    from .office_route import OfficeRouteSummary
+    from .capabilities.formats.office.route import OfficeRouteSummary
     from .pdf_route import PdfRouteSummary
     from .text_route import TextRouteSummary
     from .capabilities.formats.video.models import VideoRouteSummary

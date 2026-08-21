@@ -19,7 +19,7 @@ from _04_Nucleo_Operativo.code_contracts import CodeRouteConfig
 from _04_Nucleo_Operativo.docx_models import DocxRouteConfig
 from _04_Nucleo_Operativo.global_resources import GlobalResourceLimits
 from _04_Nucleo_Operativo.image_route import ImageRouteConfig
-from _04_Nucleo_Operativo.office_route import OfficeRouteConfig
+from _04_Nucleo_Operativo.capabilities.formats.office.route import OfficeRouteConfig
 from _04_Nucleo_Operativo.pdf_route_models import PdfRouteConfig
 from _04_Nucleo_Operativo.capabilities.formats.video.route import VideoRouteConfig
 from neocortex.capabilities import CAPABILITY_SPECS, inspect_runtime_capabilities
@@ -140,7 +140,7 @@ def test_projection_module_cold_import_keeps_owner_contracts_deferred() -> None:
             "_04_Nucleo_Operativo.image_route",
             "_04_Nucleo_Operativo.capabilities.formats.image.route",
             "_04_Nucleo_Operativo.models",
-            "_04_Nucleo_Operativo.office_route",
+            "_04_Nucleo_Operativo.capabilities.formats.office.route",
             "_04_Nucleo_Operativo.pdf_route_models",
             "_04_Nucleo_Operativo.text_route",
             "_04_Nucleo_Operativo.capabilities.formats.video.route",

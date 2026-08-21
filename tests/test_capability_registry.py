@@ -75,6 +75,17 @@ _EXPECTED_TEST_ROOTS = {
         "tests/test_image_schema_contract.py",
         "tests/test_image_semantics.py",
     ),
+    "office": (
+        "tests/test_application_config_media_projections.py",
+        "tests/test_capability_registry.py",
+        "tests/test_cli_review_office.py",
+        "tests/test_format_module_move_compatibility.py",
+        "tests/test_office_namespace_migration.py",
+        "tests/test_office_route.py",
+        "tests/test_route_schema_contracts.py",
+        "tests/test_text_derivation_route.py",
+        "tests/test_text_implementation_identity.py",
+    ),
     "video": (
         "tests/test_capability_registry.py",
         "tests/test_cli_video_surface.py",
@@ -105,7 +116,7 @@ def _module_map(capability_id: str) -> dict[str, tuple[str | None, str]]:
 def test_registry_test_root_matrix_is_independent_complete_and_live() -> None:
     repository = Path(__file__).resolve().parents[1]
 
-    assert sum(len(roots) for roots in _EXPECTED_TEST_ROOTS.values()) == 43
+    assert sum(len(roots) for roots in _EXPECTED_TEST_ROOTS.values()) == 52
     assert {
         capability.capability_id: capability.test_roots
         for capability in CAPABILITY_REGISTRY.capabilities
@@ -124,6 +135,7 @@ def test_registry_declares_exact_format_module_moves() -> None:
         "audio",
         "docx",
         "image",
+        "office",
         "video",
     )
     assert {
@@ -180,6 +192,24 @@ def test_registry_declares_exact_format_module_moves() -> None:
             "visual",
         )
     }
+    assert _module_map("office") == {
+        "extraction": (None, f"{_FORMATS_ROOT}.office.extraction"),
+        "extraction_support": (None, f"{_FORMATS_ROOT}.office.extraction_support"),
+        "legacy_worker": (
+            "_04_Nucleo_Operativo.legacy_office_worker",
+            f"{_FORMATS_ROOT}.office.legacy_worker",
+        ),
+        "models": (None, f"{_FORMATS_ROOT}.office.models"),
+        "route": (
+            "_04_Nucleo_Operativo.office_route",
+            f"{_FORMATS_ROOT}.office.route",
+        ),
+        "state": (
+            "_04_Nucleo_Operativo.office_state",
+            f"{_FORMATS_ROOT}.office.state",
+        ),
+        "xlsx": (None, f"{_FORMATS_ROOT}.office.xlsx"),
+    }
     assert _module_map("video") == {
         role: (
             f"_04_Nucleo_Operativo.video_{role}",
@@ -200,6 +230,7 @@ def test_routes_preserve_exact_subjects_and_public_fqns() -> None:
     audio = CAPABILITY_REGISTRY.by_route("audio")
     docx = CAPABILITY_REGISTRY.by_route("docx")
     image = CAPABILITY_REGISTRY.by_route("image")
+    office = CAPABILITY_REGISTRY.by_route("office")
     video = CAPABILITY_REGISTRY.by_route("video")
 
     assert archive.route is not None
@@ -241,6 +272,16 @@ def test_routes_preserve_exact_subjects_and_public_fqns() -> None:
     )
     assert image.route.route_class.qualified_name.endswith(".image.route.ImageRoute")
     assert image.route.version_symbol.qualified_name.endswith(".image.route.IMAGE_ROUTE_VERSION")
+
+    assert office.route is not None
+    assert (office.route.subject_match_kind, office.route.subject_value) == (
+        "exact_mime",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+    assert office.route.route_class.qualified_name.endswith(".office.route.OfficeRoute")
+    assert office.route.config_class.qualified_name.endswith(".office.models.OfficeRouteConfig")
+    assert office.route.summary_class.qualified_name.endswith(".office.models.OfficeRouteSummary")
+    assert office.executable_module_ids == (f"{_FORMATS_ROOT}.office.legacy_worker",)
 
     assert video.route is not None
     assert (video.route.subject_match_kind, video.route.subject_value) == (
@@ -284,6 +325,14 @@ def test_state_foreign_keys_preserve_live_store_contracts() -> None:
             "images",
             "configured",
             "SCHEMA_VERSION",
+        ),
+        "office": (
+            "sqlite:office.sqlite3",
+            "office.sqlite3",
+            3,
+            "documents",
+            "configured",
+            "OFFICE_SCHEMA_VERSION",
         ),
         "video": (
             "sqlite:video.sqlite3",
@@ -339,7 +388,8 @@ def test_source_and_canonical_resolvers_are_disjoint_and_never_fallback() -> Non
             )
             assert resolve_source_capabilities(binding.canonical_module_id) == ()
             legacy_module_id = binding.legacy_module_id
-            assert legacy_module_id is not None
+            if legacy_module_id is None:
+                continue
             assert _ids(resolve_source_capabilities(legacy_module_id)) == (
                 capability.capability_id,
             )
@@ -353,6 +403,7 @@ def test_logical_owner_projection_exposes_disjoint_canonical_and_source_bindings
         "audio",
         "docx",
         "image",
+        "office",
         "video",
     )
     assert tuple(item.selector_id for item in bindings) == (
@@ -360,24 +411,27 @@ def test_logical_owner_projection_exposes_disjoint_canonical_and_source_bindings
         "audio-core-modules",
         "docx-core-modules",
         "image-core-modules",
+        "office-core-modules",
         "video-core-modules",
     )
     assert all(item.match_kind == "module_tree" for item in bindings)
     assert tuple(item.value for item in bindings) == tuple(
-        f"{_FORMATS_ROOT}.{owner}" for owner in ("archive", "audio", "docx", "image", "video")
+        f"{_FORMATS_ROOT}.{owner}"
+        for owner in ("archive", "audio", "docx", "image", "office", "video")
     )
     assert tuple(item.state_owner_ids for item in bindings) == (
         ("archive",),
         ("audio",),
         ("docx",),
         ("image",),
+        ("office",),
         ("video",),
     )
     assert all("_04_Nucleo_Operativo.archive_" not in item.value for item in bindings)
 
     source_bindings = capability_source_logical_owner_bindings()
     assert all(item.match_kind == "exact_module" for item in source_bindings)
-    assert len(source_bindings) == 35
+    assert len(source_bindings) == 38
     archive_source = tuple(item for item in source_bindings if item.owner_id == "archive")
     assert tuple(item.selector_id for item in archive_source) == (
         "archive-legacy-models",
@@ -398,6 +452,17 @@ def test_logical_owner_projection_exposes_disjoint_canonical_and_source_bindings
         "audio-legacy-route",
         "audio-legacy-state",
         "audio-legacy-whisper",
+    )
+    office_source = tuple(item for item in source_bindings if item.owner_id == "office")
+    assert tuple(item.selector_id for item in office_source) == (
+        "office-legacy-legacy-worker",
+        "office-legacy-route",
+        "office-legacy-state",
+    )
+    assert tuple(item.value for item in office_source) == (
+        "_04_Nucleo_Operativo.legacy_office_worker",
+        "_04_Nucleo_Operativo.office_route",
+        "_04_Nucleo_Operativo.office_state",
     )
     video_source = tuple(item for item in source_bindings if item.owner_id == "video")
     assert tuple(item.selector_id for item in video_source) == (
@@ -624,6 +689,8 @@ forbidden = (
     '_04_Nucleo_Operativo.capabilities.formats.docx.route',
     '_04_Nucleo_Operativo.image_route',
     '_04_Nucleo_Operativo.capabilities.formats.image.route',
+    '_04_Nucleo_Operativo.office_route',
+    '_04_Nucleo_Operativo.capabilities.formats.office.route',
     '_04_Nucleo_Operativo.video_route',
     '_04_Nucleo_Operativo.capabilities.formats.video.route',
     '_04_Nucleo_Operativo.state_topology_contracts',

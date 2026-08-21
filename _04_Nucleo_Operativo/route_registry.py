@@ -28,8 +28,8 @@ if TYPE_CHECKING:
     from .capabilities.formats.image.route import ImageRoute as ImageRoute
     from .capabilities.formats.image.route import ImageRouteConfig as ImageRouteConfig
     from .models import FrameworkConfig
-    from .office_route import OfficeRoute as OfficeRoute
-    from .office_route import OfficeRouteConfig as OfficeRouteConfig
+    from .capabilities.formats.office.route import OfficeRoute as OfficeRoute
+    from .capabilities.formats.office.route import OfficeRouteConfig as OfficeRouteConfig
     from .pdf_route import PdfRoute as PdfRoute
     from .pdf_route import PdfRouteConfig as PdfRouteConfig
     from .state import FrameworkRouteState
@@ -89,8 +89,8 @@ _DEFERRED_ROUTE_EXPORTS = {
     "DocxRouteConfig": (".capabilities.formats.docx.route", "DocxRouteConfig"),
     "ImageRoute": (".capabilities.formats.image.route", "ImageRoute"),
     "ImageRouteConfig": (".capabilities.formats.image.route", "ImageRouteConfig"),
-    "OfficeRoute": (".office_route", "OfficeRoute"),
-    "OfficeRouteConfig": (".office_route", "OfficeRouteConfig"),
+    "OfficeRoute": (".capabilities.formats.office.route", "OfficeRoute"),
+    "OfficeRouteConfig": (".capabilities.formats.office.route", "OfficeRouteConfig"),
     "TextRoute": (".text_route", "TextRoute"),
     "TextRouteConfig": (".text_route", "TextRouteConfig"),
     "VideoRoute": (".capabilities.formats.video.route", "VideoRoute"),
@@ -238,7 +238,7 @@ def office_route_config_from_framework(
 
 def _run_office(context: RouteExecutionContext) -> object:
     from .global_resources import CoordinatedMemoryGate
-    from .office_route import OfficeRoute
+    from .capabilities.formats.office.route import OfficeRoute
 
     config = context.config
     gate = (

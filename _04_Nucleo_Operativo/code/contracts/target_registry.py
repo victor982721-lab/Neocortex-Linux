@@ -309,9 +309,14 @@ RESPONSIBILITY_MODULES: Final = {
         "_04_Nucleo_Operativo.ocr_profiles",
     ),
     "formats.office": (
-        "_04_Nucleo_Operativo.legacy_office_worker",
-        "_04_Nucleo_Operativo.office_route",
-        "_04_Nucleo_Operativo.office_state",
+        "_04_Nucleo_Operativo.capabilities.formats.office",
+        "_04_Nucleo_Operativo.capabilities.formats.office.extraction",
+        "_04_Nucleo_Operativo.capabilities.formats.office.extraction_support",
+        "_04_Nucleo_Operativo.capabilities.formats.office.legacy_worker",
+        "_04_Nucleo_Operativo.capabilities.formats.office.models",
+        "_04_Nucleo_Operativo.capabilities.formats.office.route",
+        "_04_Nucleo_Operativo.capabilities.formats.office.state",
+        "_04_Nucleo_Operativo.capabilities.formats.office.xlsx",
     ),
     "formats.pdf": (
         "_04_Nucleo_Operativo.pdf_admin",
@@ -547,6 +552,9 @@ COMPATIBILITY_MODULES: Final = (
     "_04_Nucleo_Operativo.image_semantics",
     "_04_Nucleo_Operativo.image_state",
     "_04_Nucleo_Operativo.image_visual",
+    "_04_Nucleo_Operativo.legacy_office_worker",
+    "_04_Nucleo_Operativo.office_route",
+    "_04_Nucleo_Operativo.office_state",
     "_04_Nucleo_Operativo.video_frames",
     "_04_Nucleo_Operativo.video_models",
     "_04_Nucleo_Operativo.video_probe",
@@ -614,6 +622,18 @@ COMPATIBILITY_MODULE_PAIRS: Final = tuple(
                     "visual",
                 ),
             ),
+            (
+                f"{CORE_MODULE_ROOT}.legacy_office_worker",
+                f"{CORE_MODULE_ROOT}.capabilities.formats.office.legacy_worker",
+            ),
+            (
+                f"{CORE_MODULE_ROOT}.office_route",
+                f"{CORE_MODULE_ROOT}.capabilities.formats.office.route",
+            ),
+            (
+                f"{CORE_MODULE_ROOT}.office_state",
+                f"{CORE_MODULE_ROOT}.capabilities.formats.office.state",
+            ),
             *_format_compatibility_pairs(
                 "video",
                 "capabilities.formats.video",
@@ -634,6 +654,7 @@ _INSTANCE_PICKLE_MODULES: Final = frozenset(
         "_04_Nucleo_Operativo.content_types",
         "_04_Nucleo_Operativo.docx_models",
         "_04_Nucleo_Operativo.image_models",
+        "_04_Nucleo_Operativo.office_route",
         "_04_Nucleo_Operativo.video_models",
     }
 )
@@ -652,6 +673,9 @@ _MONKEYPATCH_COMPATIBILITY_MODULES: Final = frozenset(
         "_04_Nucleo_Operativo.image_document",
         "_04_Nucleo_Operativo.image_features",
         "_04_Nucleo_Operativo.image_route",
+        "_04_Nucleo_Operativo.legacy_office_worker",
+        "_04_Nucleo_Operativo.office_route",
+        "_04_Nucleo_Operativo.office_state",
         "_04_Nucleo_Operativo.video_frames",
         "_04_Nucleo_Operativo.video_probe",
         "_04_Nucleo_Operativo.video_route",
@@ -659,7 +683,12 @@ _MONKEYPATCH_COMPATIBILITY_MODULES: Final = frozenset(
         "_04_Nucleo_Operativo.zip_safety",
     }
 )
-_EXECUTABLE_COMPATIBILITY_MODULES: Final = frozenset({"_04_Nucleo_Operativo.archive_text_worker"})
+_EXECUTABLE_COMPATIBILITY_MODULES: Final = frozenset(
+    {
+        "_04_Nucleo_Operativo.archive_text_worker",
+        "_04_Nucleo_Operativo.legacy_office_worker",
+    }
+)
 _COMPATIBILITY_REQUIREMENTS: Final = frozenset(
     {
         "historical_pickle_global",
@@ -709,6 +738,8 @@ def _compatibility_test_roots(legacy_module_id: str) -> tuple[str, ...]:
         roots.add("tests/test_docx_namespace_migration.py")
     elif ".image_" in legacy_module_id:
         roots.add("tests/test_image_namespace_migration.py")
+    elif ".office_" in legacy_module_id or legacy_module_id.endswith(".legacy_office_worker"):
+        roots.add("tests/test_office_namespace_migration.py")
     elif ".video_" in legacy_module_id:
         roots.add("tests/test_video_namespace_migration.py")
     return tuple(sorted(roots))

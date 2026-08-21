@@ -203,18 +203,7 @@ LOGICAL_OWNER_SPECS = (
             ),
         ),
     ),
-    LogicalOwnerSpec(
-        "office",
-        (
-            _selector("office-core-modules", "module_prefix", "_04_Nucleo_Operativo.office_"),
-            _selector(
-                "legacy-office-worker",
-                "exact_module",
-                "_04_Nucleo_Operativo.legacy_office_worker",
-            ),
-        ),
-        ("office",),
-    ),
+    _registered_capability_owner_spec("office"),
     LogicalOwnerSpec(
         "orchestration",
         tuple(

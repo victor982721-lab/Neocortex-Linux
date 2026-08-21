@@ -40,7 +40,7 @@ if TYPE_CHECKING:
     from .capabilities.formats.docx.route import DocxRouteSummary
     from .global_resources import GlobalResourceSummary
     from .capabilities.formats.image.route import ImageRouteSummary
-    from .office_route import OfficeRouteSummary
+    from .capabilities.formats.office.route import OfficeRouteSummary
     from .pdf_route_models import PdfRouteSummary
     from .text_route import TextRouteSummary
     from .capabilities.formats.video.models import VideoRouteSummary
