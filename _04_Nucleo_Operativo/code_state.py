@@ -32,6 +32,11 @@ from .code_external_evidence import (
     read_external_evidence_files,
 )
 from .code_schema import connect_code_state, initialize_code_state
+from .code_retention import (
+    CodeRetentionPolicy,
+    CodeRetentionResult,
+    apply_code_retention,
+)
 from .external_evidence_models import (
     ExternalEvidenceBundle,
     ExternalProviderBaseline,
@@ -234,10 +239,16 @@ def _project_identity_keys(
 class CodeState:
     """Single-writer route repository with bounded, atomic file publications."""
 
-    def __init__(self, path: Path):
+    def __init__(
+        self,
+        path: Path,
+        *,
+        retention_policy: CodeRetentionPolicy | None = None,
+    ):
         self.path = Path(path)
         initialize_code_state(self.path)
         self.connection = connect_code_state(self.path, create=False)
+        self.retention_policy = retention_policy
         self._version_count_cache: dict[int, tuple[int, int, int]] | None = None
 
     def close(self) -> None:
@@ -263,6 +274,12 @@ class CodeState:
                 WHERE status='running'""",
                 (now,),
             )
+            if self.retention_policy is not None:
+                apply_code_retention(
+                    self.connection,
+                    policy=self.retention_policy,
+                    now_ns=now,
+                )
             cursor = self.connection.execute(
                 """INSERT INTO analysis_runs(
                 framework_run_id,scan_id,processing_signature,status,started_ns)
@@ -284,7 +301,8 @@ class CodeState:
             | Sequence[ExternalProviderPublication]
             | None
         ) = None,
-    ) -> None:
+        retention_policy: CodeRetentionPolicy | None = None,
+    ) -> CodeRetentionResult | None:
         """Complete one run and optionally publish its graph-completion fence."""
 
         with self.connection:
@@ -361,6 +379,14 @@ class CodeState:
                         ),
                     ),
                 )
+            effective_retention = retention_policy or self.retention_policy
+            if effective_retention is not None:
+                return apply_code_retention(
+                    self.connection,
+                    current_run_id=analysis_run_id,
+                    policy=effective_retention,
+                )
+        return None
 
     def external_evidence_files(self, root: Path) -> tuple[ExternalEvidenceFile, ...]:
         """Return every current fingerprinted Python version under an owner root."""

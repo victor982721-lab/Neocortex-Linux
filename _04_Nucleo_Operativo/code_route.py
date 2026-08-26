@@ -1119,7 +1119,10 @@ class CodeRoute:
         if run.analysis_run_id is None:
             return
         try:
-            with CodeState(self.config.state_path) as state:
+            with CodeState(
+                self.config.state_path,
+                retention_policy=self.config.retention_policy,
+            ) as state:
                 state.fail_run(run.analysis_run_id, exc)
         except Exception as cleanup_exc:
             exc.add_note(
@@ -1137,7 +1140,10 @@ class CodeRoute:
             run.current_phase,
         )
         try:
-            with CodeState(self.config.state_path) as state:
+            with CodeState(
+                self.config.state_path,
+                retention_policy=self.config.retention_policy,
+            ) as state:
                 self._run_analysis_phase(state, run)
                 self._advance_to_graph_phase(run)
                 summary = self._run_graph_phase(state, run)

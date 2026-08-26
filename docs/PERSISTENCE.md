@@ -545,6 +545,16 @@ de la transacción que finaliza Code. Un fallo, timeout o proveedor indisponible
 publica su estado terminal y no deja una proyección vieja aparentando frescura;
 no borra las publicaciones válidas de los otros proveedores.
 
+El owner Code aplica en esa misma frontera una retención generacional acotada.
+Conserva los dos runs completados más recientes, cuatro runs incidentales,
+todos los `code_experiment_receipts` y cualquier run que sea fuente de un
+replay; las filas `external_*` y el `analysis_run` antiguo se eliminan sólo en
+lotes acotados de un run por frontera cuando no tienen un hold. La selección también impone un techo
+de 64 runs terminales y se revierte junto con la transacción si falla. No toca
+`file_versions`, símbolos, FTS, grafo vigente ni `VACUUM`: el espacio liberado
+queda disponible para SQLite y la compactación física sigue siendo una
+operación de mantenimiento separada.
+
 Un input exacto sólo reutiliza una línea base con el mismo proveedor, perfil,
 versión, configuración, entorno, raíz y firma de inputs. El replay registra
 `execution=cache_replay`, vuelve a verificar todos los archivos y bytes, enlaza
@@ -1345,8 +1355,9 @@ Se observó poda acotada de:
 
 No existe una política de eliminación global para historiales de
 runs/acciones/revisión, generaciones de catálogo o semántica fallidas/parciales,
-payloads vectoriales, modelos o compactación del archivo principal. El árbol
-actual sí permite inventariar una página protegida/elegible sin borrar.
+payloads vectoriales, modelos o compactación del archivo principal. Code es la
+excepción acotada descrita arriba para sus proyecciones externas de run; el
+árbol actual sí permite inventariar una página protegida/elegible sin borrar.
 
 ### Planificador dry-run actual
 

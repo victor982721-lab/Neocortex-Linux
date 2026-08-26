@@ -1,6 +1,6 @@
 # NeoCortex — handoff operativo vigente
 
-> Actualizado: 2026-08-25 CST. El basename es histórico y permanece estable.
+> Actualizado: 2026-08-26 CST. El basename es histórico y permanece estable.
 > `~/.codex/PENDIENTES.md` conserva el compromiso operativo; este archivo
 > describe sólo la frontera técnica de reanudación.
 
@@ -51,22 +51,33 @@ cada consumidor, cerrar cada alias y demostrar uso cero.
   (`min_available=6,224,046,128`, PSI `some/full avg10=5.44`). No existe
   receipt; Code/Framework WAL quedaron vacíos. Transcript y hash viven en
   `cut-10-final-candidate/code-validate-c1d8726-final.log`.
+- Para evitar que el owner Code vuelva a acumular runs y proyecciones externas
+  sin límite, el working tree incorpora `code-owner-generational-retention-v1`.
+  La política conserva dos completados, cuatro incidentes, receipts y fuentes
+  de replay, impone un techo de 64 runs terminales y elimina sólo un run
+  elegible por frontera dentro de la transacción del owner. Las versiones de
+  archivos, símbolos, FTS, grafo y compactación física quedan fuera; las
+  regresiones focales de retención, storage, estado y arquitectura están
+  verdes, pero aún falta congelar el candidato y obtener el receipt canónico.
 
 ## Próximos pasos, en orden
 
-1. Esperar un preflight host con margen real sobre la reserva de KDE/Chrome y
+1. Congelar el working tree de retención después de revisar el diff y el
+   resultado focal; no tocar el corpus ni ejecutar poda manual sobre el owner
+   vivo desde este handoff.
+2. Esperar un preflight host con margen real sobre la reserva de KDE/Chrome y
    PSI estable; no iniciar el gate si la memoria disponible está demasiado
    cerca de la reserva. No tocar release ni corpus.
-2. Mantener el candidato y su snapshot trusted-static; no repetir el producer
-   porque el fallo fue del watchdog, no de supply.
-3. Con el candidato inmutable, recursos holgados y sin writers, ejecutar una
+3. Mantener el snapshot trusted-static que siga siendo exacto para el candidato;
+   no repetir el producer salvo que el gate lo declare obsoleto.
+4. Con el candidato inmutable, recursos holgados y sin writers, ejecutar una
    sola aceptación:
    `Neocortex code validate --baseline HEAD^`. No relanzarla si falla: guardar
    el transcript y diagnosticar sólo el gate señalado.
-4. Con receipt `passed`, instalar desde ese SHA, verificar `current`, manifest
+5. Con receipt `passed`, instalar desde ese SHA, verificar `current`, manifest
    y launcher, y ejecutar el E2E público sin `--apply`. Repetir sólo si el diff
    final cruza caché, reanudación, schema o pipeline.
-5. Continuar `_04_Nucleo_Operativo` por una familia vertical con productor,
+6. Continuar `_04_Nucleo_Operativo` por una familia vertical con productor,
    estado, lector y comando visibles. El push permanece reservado para el
    cierre integral único, con `main=origin/main=current.source_sha` y árbol
    limpio.

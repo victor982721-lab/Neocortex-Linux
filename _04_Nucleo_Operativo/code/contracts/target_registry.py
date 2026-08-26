@@ -160,6 +160,7 @@ RESPONSIBILITY_MODULES: Final = {
         "_04_Nucleo_Operativo.code_knowledge_pdf_asset_health_analysis",
         "_04_Nucleo_Operativo.code_publication_diff",
         "_04_Nucleo_Operativo.code_question_resolver",
+        "_04_Nucleo_Operativo.code_retention",
         "_04_Nucleo_Operativo.code_retention_analysis",
         "_04_Nucleo_Operativo.code_route_capability_analysis",
         "_04_Nucleo_Operativo.code_state_interaction_analysis",

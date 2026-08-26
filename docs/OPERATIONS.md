@@ -336,6 +336,15 @@ dos runs completados, no bytes históricos de toda la base. `--retain-runs` es
 una simulación `preview_only`; no ejecute `DELETE`, prune, `VACUUM`, checkpoint
 ni eliminación de WAL/SHM a partir de esa vista.
 
+El owner Code aplica automáticamente una política generacional al iniciar y
+completar cada run: conserva dos runs completados, cuatro incidentes, receipts
+de experimentos y fuentes de replay, y elimina en un lote pequeño únicamente
+las proyecciones externas y runs que ya no tienen esos holds. El límite duro de
+64 runs terminales evita que el historial operativo crezca sin límite; las
+versiones de archivos, el grafo vigente y la evidencia contractual no se
+eliminan. El reader `code storage` sigue siendo sólo observabilidad y no activa
+esa poda ni ejecuta compactación física.
+
 `trusted-static` ejecuta 13 proveedores independientes: Ruff basic, Ruff
 con la política acotada `E4,E7,E9,F,B,C4,PIE,RUF`, Mypy, Pyright, Ruff Analyze,
 Grimp, Complexipy, Vulture, Semgrep, Deptry, pip-audit, inventario del entorno

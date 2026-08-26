@@ -699,6 +699,7 @@ def _retention(
         (
             "historical_rows_are_observations_not_safe_delete_candidates",
             "foreign_keys_holds_replay_and_audit_require_owner_specific_retention",
+            "code_owner_retention_runs_at_run_boundaries_not_in_this_reader",
             "no_prune_vacuum_checkpoint_or_sidecar_operation_is_supported",
         ),
     )

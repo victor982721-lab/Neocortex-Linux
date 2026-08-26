@@ -17,6 +17,7 @@ from typing import Literal, Protocol
 from neocortex.deduplication import FileSnapshot
 
 from .route_filters import CandidateSelection
+from .code_retention import DEFAULT_CODE_RETENTION_POLICY, CodeRetentionPolicy
 from .semantic_models import canonical_json, fingerprint_text
 
 DEEP_CONFIGURATION_SCHEMA = "neocortex.code-deep-configuration/v2"
@@ -533,6 +534,7 @@ class CodeRouteConfig:
     deep_mutation_max_mutants: int = DEFAULT_DEEP_MUTATION_MAX_MUTANTS
     deep_mutation_timeout_seconds: int = DEFAULT_DEEP_MUTATION_TIMEOUT_SECONDS
     deep_mutation_time_budget_seconds: int = DEFAULT_DEEP_MUTATION_TIME_BUDGET_SECONDS
+    retention_policy: CodeRetentionPolicy = DEFAULT_CODE_RETENTION_POLICY
 
     def __post_init__(self) -> None:
         if self.max_file_bytes < 4096:
