@@ -59,12 +59,20 @@ cada consumidor, cerrar cada alias y demostrar uso cero.
   archivos, símbolos, FTS, grafo y compactación física quedan fuera; las
   regresiones focales de retención, storage, estado y arquitectura están
   verdes, pero aún falta congelar el candidato y obtener el receipt canónico.
+- Por solicitud expresa de Víctor, el 2026-08-26 se auditó y vació
+  `/home/winterboss/.local/state/Neocortex`: se retiraron 882 bases/sidecars
+  (45,382,755,503 bytes) después de confirmar quiescencia en el host. El
+  inventario, el resumen de retención y el recibo de borrado permanecen fuera
+  del vault en `/home/winterboss/Documentos/NeoCortex/Auditorias/2026-08-26-neocortex-db-retention/`;
+  el corpus, releases, checkout y recibos no se tocaron. El próximo run debe
+  recrear sólo el estado necesario, y no se debe tratar el estado vacío como un
+  receipt de validación.
 
 ## Próximos pasos, en orden
 
-1. Congelar el working tree de retención después de revisar el diff y el
-   resultado focal; no tocar el corpus ni ejecutar poda manual sobre el owner
-   vivo desde este handoff.
+1. Congelar el working tree de retención y este handoff después de revisar el
+   diff y el resultado focal; no tocar el corpus ni ejecutar poda manual sobre
+   el owner vivo desde este handoff.
 2. Esperar un preflight host con margen real sobre la reserva de KDE/Chrome y
    PSI estable; no iniciar el gate si la memoria disponible está demasiado
    cerca de la reserva. No tocar release ni corpus.
