@@ -16,10 +16,14 @@ from neocortex.semgrep_tool_contract import (
     SEMGREP_SCAN_WRAPPER_NAME,
     SEMGREP_TOOL_CONSTRAINTS_SHA256,
     SEMGREP_TOOL_DENIED_ENTRYPOINTS,
+    SEMGREP_TOOL_LEGACY_PIP_FILENAME,
+    SEMGREP_TOOL_LEGACY_PIP_SHA256,
+    SEMGREP_TOOL_LEGACY_PIP_VERSION,
     SEMGREP_TOOL_MCP_VERSION,
     SEMGREP_TOOL_RECEIPT_NAME,
     SEMGREP_TOOL_VERSION,
     canonical_json,
+    runtime_digest,
     resolve_semgrep_tool_runtime,
 )
 from tools import release_linux, semgrep_tool_runtime
@@ -113,6 +117,36 @@ def test_receipt_resolves_only_contained_regular_executables(tmp_path: Path) -> 
         "-I",
         str(tool_root / SEMGREP_SCAN_WRAPPER_NAME),
     )
+
+
+def test_receipt_accepts_exact_previous_bootstrap_during_release_transition(
+    tmp_path: Path,
+) -> None:
+    tool_root, receipt = _write_synthetic_runtime(tmp_path)
+    inventory = list(receipt["installed_packages"])
+    for item in inventory:
+        if item["name"] == "pip":
+            item["version"] = SEMGREP_TOOL_LEGACY_PIP_VERSION
+    receipt["pip_bootstrap_version"] = SEMGREP_TOOL_LEGACY_PIP_VERSION
+    receipt["pip_bootstrap_filename"] = SEMGREP_TOOL_LEGACY_PIP_FILENAME
+    receipt["pip_bootstrap_sha256"] = SEMGREP_TOOL_LEGACY_PIP_SHA256
+    receipt["installed_packages"] = inventory
+    receipt["installed_packages_sha256"] = hashlib.sha256(canonical_json(inventory)).hexdigest()
+    receipt["runtime_digest_sha256"] = runtime_digest(receipt)
+    (tool_root / SEMGREP_TOOL_RECEIPT_NAME).write_bytes(canonical_json(receipt))
+
+    runtime = resolve_semgrep_tool_runtime(tmp_path)
+
+    assert runtime.version == SEMGREP_TOOL_VERSION
+
+
+def test_receipt_rejects_unknown_bootstrap_policy(tmp_path: Path) -> None:
+    tool_root, receipt = _write_synthetic_runtime(tmp_path)
+    receipt["pip_bootstrap_version"] = "26.0.0"
+    (tool_root / SEMGREP_TOOL_RECEIPT_NAME).write_bytes(canonical_json(receipt))
+
+    with pytest.raises(ValueError, match="receipt policy"):
+        resolve_semgrep_tool_runtime(tmp_path)
 
 
 def test_receipt_rejects_wrapper_digest_tampering(tmp_path: Path) -> None:

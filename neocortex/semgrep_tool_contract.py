@@ -25,6 +25,11 @@ SEMGREP_TOOL_RECEIPT_NAME = "neocortex-tool-runtime.json"
 SEMGREP_TOOL_VERSION = "1.172.0"
 SEMGREP_TOOL_MCP_VERSION = "1.23.3"
 SEMGREP_TOOL_PIP_VERSION = PIP_BOOTSTRAP_VERSION
+SEMGREP_TOOL_LEGACY_PIP_VERSION = "26.1.2"
+SEMGREP_TOOL_LEGACY_PIP_FILENAME = "pip-26.1.2-py3-none-any.whl"
+SEMGREP_TOOL_LEGACY_PIP_SHA256 = (
+    "382ff9f685ee3bc25864f820aa50505825f10f5458ffff07e30a6d96e5715cab"
+)
 SEMGREP_TOOL_CONSTRAINTS_NAME = "semgrep_tool_constraints.txt"
 SEMGREP_TOOL_CONSTRAINTS_SHA256 = "61457161ee91f3908d4447b50311d2e54f63db62f1b342e9ceddda2de2b7595f"
 
@@ -114,6 +119,22 @@ _EXPECTED_RECEIPT_KEYS = frozenset(
         "denied_console_entrypoints",
         "vulnerability_exceptions",
     }
+)
+# A source checkout can be validated by the last installed release while its
+# main-runtime bootstrap pin is being advanced.  The isolated Semgrep runtime
+# remains exact in either case; the legacy tuple is only a compatibility bridge
+# and does not alter the current release policy emitted by new installations.
+_SEMGREP_BOOTSTRAP_POLICIES = (
+    {
+        "pip_bootstrap_version": SEMGREP_TOOL_PIP_VERSION,
+        "pip_bootstrap_filename": PIP_BOOTSTRAP_FILENAME,
+        "pip_bootstrap_sha256": PIP_BOOTSTRAP_SHA256,
+    },
+    {
+        "pip_bootstrap_version": SEMGREP_TOOL_LEGACY_PIP_VERSION,
+        "pip_bootstrap_filename": SEMGREP_TOOL_LEGACY_PIP_FILENAME,
+        "pip_bootstrap_sha256": SEMGREP_TOOL_LEGACY_PIP_SHA256,
+    },
 )
 
 
@@ -249,11 +270,18 @@ def validate_semgrep_tool_receipt(
         "scan_wrapper_sha256": SEMGREP_SCAN_WRAPPER_SHA256,
         "constraints_filename": SEMGREP_TOOL_CONSTRAINTS_NAME,
         "constraints_sha256": SEMGREP_TOOL_CONSTRAINTS_SHA256,
-        "pip_bootstrap_version": SEMGREP_TOOL_PIP_VERSION,
-        "pip_bootstrap_filename": PIP_BOOTSTRAP_FILENAME,
-        "pip_bootstrap_sha256": PIP_BOOTSTRAP_SHA256,
     }
     if any(payload.get(key) != value for key, value in expected_scalars.items()):
+        raise ValueError("managed Semgrep receipt policy is incompatible")
+    bootstrap_policy = next(
+        (
+            candidate
+            for candidate in _SEMGREP_BOOTSTRAP_POLICIES
+            if all(payload.get(key) == value for key, value in candidate.items())
+        ),
+        None,
+    )
+    if bootstrap_policy is None:
         raise ValueError("managed Semgrep receipt policy is incompatible")
     if payload.get("allowed_surfaces") != list(SEMGREP_TOOL_ALLOWED_SURFACES):
         raise ValueError("managed Semgrep allowed surface is incompatible")
@@ -283,7 +311,7 @@ def validate_semgrep_tool_receipt(
         raise ValueError("managed Semgrep inventory has an incompatible Semgrep")
     if inventory_by_name.get("mcp") != SEMGREP_TOOL_MCP_VERSION:
         raise ValueError("managed Semgrep inventory has an incompatible MCP")
-    if inventory_by_name.get("pip") != SEMGREP_TOOL_PIP_VERSION:
+    if inventory_by_name.get("pip") != bootstrap_policy["pip_bootstrap_version"]:
         raise ValueError("managed Semgrep inventory has an incompatible pip")
     artifact_versions = {row["name"]: row["version"] for row in artifacts}
     expected_artifacts = {
