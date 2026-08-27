@@ -257,7 +257,13 @@ def validate_semgrep_tool_receipt(
     *,
     tool_root: Path,
 ) -> ManagedSemgrepRuntime:
-    """Validate an exact receipt and return only its contained scan command."""
+    """Validate an exact receipt and return only its contained scan command.
+
+    During a source/runtime transition, the last installed release may carry
+    the exact 26.1.2 bootstrap while the current main runtime is pinned to
+    26.2.1.  Both tuples are accepted only with their matching filename, digest
+    and installed ``pip`` identity; a new release still emits the current tuple.
+    """
 
     if not isinstance(payload, dict) or set(payload) != _EXPECTED_RECEIPT_KEYS:
         raise ValueError("managed Semgrep receipt shape is invalid")
