@@ -67,12 +67,19 @@ cada consumidor, cerrar cada alias y demostrar uso cero.
   el corpus, releases, checkout y recibos no se tocaron. El próximo run debe
   recrear sólo el estado necesario, y no se debe tratar el estado vacío como un
   receipt de validación.
+- La causa precisa del veredicto `provider/supply` fallido quedó verificada:
+  el source exige `pip=26.2.1`, pero el runtime Semgrep aislado de la release
+  instalada todavía tiene el recibo exacto de `pip=26.1.2`; por eso Semgrep se
+  publicaba como `unavailable` aunque el resto del runtime estuviera presente.
+  El candidato `01dc841…` acepta únicamente esa tupla legacy exacta como puente
+  de transición, conserva la política actual para instalaciones nuevas y añade
+  la regresión focal; el probe instalado ya devuelve Semgrep `1.172.0`.
 
 ## Próximos pasos, en orden
 
-1. Congelar el working tree de retención y este handoff después de revisar el
-   diff y el resultado focal; no tocar el corpus ni ejecutar poda manual sobre
-   el owner vivo desde este handoff.
+1. Mantener el candidato `01dc841…` y recrear un estado protegido acotado,
+   seguido de una publicación `trusted-static` que renueve el snapshot
+   `pip-audit`; no tocar el corpus ni ejecutar poda manual sobre el owner vivo.
 2. Esperar un preflight host con margen real sobre la reserva de KDE/Chrome y
    PSI estable; no iniciar el gate si la memoria disponible está demasiado
    cerca de la reserva. No tocar release ni corpus.
