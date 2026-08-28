@@ -7,6 +7,7 @@ keeps the historical public imports and hosts format-specific implementations.
 
 from __future__ import annotations
 
+from . import formats as formats
 from . import runtime as _runtime
 from .runtime import (
     CAPABILITY_MANIFESTS,
