@@ -14,8 +14,8 @@ from .route_selection import normalize_route_selection as normalize_route_select
 if TYPE_CHECKING:
     from neocortex.progress import ProgressCallback
 
-    from .capabilities.formats.archive.route import ArchiveRoute as ArchiveRoute
-    from .capabilities.formats.archive.route import ArchiveRouteConfig as ArchiveRouteConfig
+    from neocortex.capabilities.formats.archive.route import ArchiveRoute as ArchiveRoute
+    from neocortex.capabilities.formats.archive.route import ArchiveRouteConfig as ArchiveRouteConfig
     from .capabilities.formats.audio.models import AudioRouteConfig as AudioRouteConfig
     from .capabilities.formats.audio.route import AudioRoute as AudioRoute
     from .code_contracts import CodeRouteConfig as CodeRouteConfig
@@ -79,8 +79,8 @@ class RouteAdapter:
 _DEFERRED_ROUTE_EXPORTS = {
     "AudioRoute": (".capabilities.formats.audio.route", "AudioRoute"),
     "AudioRouteConfig": (".capabilities.formats.audio.models", "AudioRouteConfig"),
-    "ArchiveRoute": (".capabilities.formats.archive.route", "ArchiveRoute"),
-    "ArchiveRouteConfig": (".capabilities.formats.archive.route", "ArchiveRouteConfig"),
+    "ArchiveRoute": ("neocortex.capabilities.formats.archive.route", "ArchiveRoute"),
+    "ArchiveRouteConfig": ("neocortex.capabilities.formats.archive.route", "ArchiveRouteConfig"),
     "CodeRoute": (".code_route", "CodeRoute"),
     "CodeRouteConfig": (".code_contracts", "CodeRouteConfig"),
     "PdfRoute": (".pdf_route", "PdfRoute"),
@@ -271,7 +271,7 @@ def archive_route_config_from_framework(
 
 
 def _run_archive(context: RouteExecutionContext) -> object:
-    from .capabilities.formats.archive.route import ArchiveRoute
+    from neocortex.capabilities.formats.archive.route import ArchiveRoute
 
     gate = None
     if context.resource_coordinator is not None:

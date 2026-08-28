@@ -271,7 +271,7 @@ def _validate_source_schema(
             ),
         )
     if source_kind == "archive":
-        from .capabilities.formats.archive import state as archive_state
+        from neocortex.capabilities.formats.archive import state as archive_state
 
         return _require_current_schema(
             connection,

@@ -151,6 +151,31 @@ def test_legacy_archive_modules_are_real_canonical_aliases() -> None:
         assert sys.modules[canonical_name] is canonical
 
 
+def test_archive_implementation_lives_under_the_product_namespace() -> None:
+    canonical_root = PROJECT_ROOT / "neocortex" / "capabilities" / "formats" / "archive"
+    for module_name in (
+        "neocortex.capabilities.formats.archive.models",
+        "neocortex.capabilities.formats.archive.route",
+        "neocortex.capabilities.formats.archive.state",
+        "neocortex.capabilities.formats.archive.text_worker",
+    ):
+        module = importlib.import_module(module_name)
+        assert Path(module.__file__).resolve().is_relative_to(canonical_root)
+
+    for relative_path in (
+        "_04_Nucleo_Operativo/application_config_projections.py",
+        "_04_Nucleo_Operativo/cli_archive.py",
+        "_04_Nucleo_Operativo/knowledge_snapshot.py",
+        "_04_Nucleo_Operativo/models.py",
+        "_04_Nucleo_Operativo/orchestrator.py",
+        "_04_Nucleo_Operativo/route_registry.py",
+        "_04_Nucleo_Operativo/semantic_plan_owners.py",
+        "_04_Nucleo_Operativo/state_topology_contracts.py",
+    ):
+        source = (PROJECT_ROOT / relative_path).read_text(encoding="utf-8")
+        assert "neocortex.capabilities.formats.archive" in source
+
+
 def test_archive_parent_packages_remain_import_light() -> None:
     script = textwrap.dedent(
         """
@@ -297,6 +322,7 @@ def test_archive_route_invokes_the_canonical_worker_module(
 @pytest.mark.parametrize(
     "module_name",
     (
+        "neocortex.capabilities.formats.archive.text_worker",
         "_04_Nucleo_Operativo.capabilities.formats.archive.text_worker",
         "_04_Nucleo_Operativo.archive_text_worker",
     ),

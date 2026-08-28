@@ -41,12 +41,12 @@ if TYPE_CHECKING:
     from . import pdf_route_models as _pdf_contracts
     from . import text_route as _text_contracts
     from .capabilities.formats.video import route as _video_contracts
-    from .capabilities.formats.archive import route as _archive_contracts
+    from neocortex.capabilities.formats.archive import route as _archive_contracts
     from .capabilities.formats.docx import models as _docx_contracts
     from .capabilities.formats.image import route as _image_contracts
 else:
     _application_contracts = _DeferredTypeModule(".models")
-    _archive_contracts = _DeferredTypeModule(".capabilities.formats.archive.route")
+    _archive_contracts = _DeferredTypeModule("neocortex.capabilities.formats.archive.route")
     _audio_contracts = _DeferredTypeModule(".capabilities.formats.audio.models")
     _code_contracts = _DeferredTypeModule(".code_contracts")
     _docx_contracts = _DeferredTypeModule(".capabilities.formats.docx.models")
@@ -81,7 +81,7 @@ def archive_route_config_from_application(
 ) -> _archive_contracts.ArchiveRouteConfig:
     """Project current application values into recursive ZIP indexing."""
 
-    from .capabilities.formats.archive.route import ArchiveRouteConfig
+    from neocortex.capabilities.formats.archive.route import ArchiveRouteConfig
 
     return ArchiveRouteConfig(
         state_path=config.archive_database,

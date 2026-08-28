@@ -6,7 +6,7 @@ import argparse
 import json
 import sqlite3
 
-from .capabilities.formats.archive.state import (
+from neocortex.capabilities.formats.archive.state import (
     ArchiveSearchHit,
     list_archive_members,
     read_archive_status,

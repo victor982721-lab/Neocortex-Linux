@@ -46,9 +46,9 @@ def test_registry_exhaustively_assigns_every_current_core_module() -> None:
     observed = tuple(sorted(_module_id(path) for path in CORE_ROOT.rglob("*.py")))
 
     assert observed == registered_core_modules()
-    assert len(observed) == 376
+    assert len(observed) == 377
     assert len(COMPATIBILITY_MODULES) == 40
-    assert sum(len(items) for items in RESPONSIBILITY_MODULES.values()) == 336
+    assert sum(len(items) for items in RESPONSIBILITY_MODULES.values()) == 337
     for module in observed:
         families = matching_target_families(module)
         responsibilities = matching_target_responsibilities(module)
@@ -68,13 +68,13 @@ def test_target_vocabulary_dag_and_transition_baseline_are_frozen() -> None:
     assert len(TARGET_FAMILIES) == 12
     assert TARGET_FAMILY_DEPENDENCIES == tuple(pairwise(TARGET_FAMILY_LAYERS))
     assert len(FORBIDDEN_FAMILY_EDGE_BASELINE) == 24
-    assert sum(item.direct_module_edges for item in FORBIDDEN_FAMILY_EDGE_BASELINE) == 186
+    assert sum(item.direct_module_edges for item in FORBIDDEN_FAMILY_EDGE_BASELINE) == 181
     assert payload["responsibility_registry"]["schema"] == (CORE_RESPONSIBILITY_REGISTRY_SCHEMA)
     assert payload["family_dag"]["schema"] == CORE_FAMILY_DAG_SCHEMA
     assert payload["compatibility_matrix"]["schema"] == (CORE_COMPATIBILITY_MATRIX_SCHEMA)
     assert core_architecture_target_fingerprint() == (
         "core-architecture-target-v1:sha256:"
-        "68da52f0531dc7cdb363e5c1b4167f6ac68d781230e5d64c5a2f3cba58d8a0d2"
+        "fa7d2c2869972ba850fa5c4d740a32c33095e9331f7bce380ac39a77303ccbe9"
     )
 
 

@@ -71,7 +71,7 @@ from .state import FrameworkRouteState, FrameworkState
 # region [02] Implementación
 
 if TYPE_CHECKING:
-    from .capabilities.formats.archive.models import ArchiveRouteSummary
+    from neocortex.capabilities.formats.archive.models import ArchiveRouteSummary
     from .capabilities.formats.audio.models import AudioRouteSummary
     from .code_contracts import CodeRouteSummary
     from .capabilities.formats.docx.route import DocxRouteSummary
