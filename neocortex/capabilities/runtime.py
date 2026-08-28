@@ -23,7 +23,7 @@ from itertools import islice
 from pathlib import Path
 from types import MappingProxyType
 
-from .capability_broker import (
+from ..capability_broker import (
     MAX_CAPABILITY_CANDIDATES,
     MAX_CAPABILITY_EVIDENCE_VALUES,
     MAX_CAPABILITY_MANIFESTS,
