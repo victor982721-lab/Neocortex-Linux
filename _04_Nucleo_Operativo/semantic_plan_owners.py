@@ -214,7 +214,7 @@ def _validate_pdf_source(connection: sqlite3.Connection) -> None:
 
 
 def _validate_docx_source(connection: sqlite3.Connection) -> None:
-    from .capabilities.formats.docx import schema as docx_schema
+    from neocortex.capabilities.formats.docx import schema as docx_schema
 
     docx_schema.validate_docx_metadata(connection)
     docx_schema.validate_docx_schema(connection)
@@ -234,7 +234,7 @@ def _validate_source_schema(
             validator=_validate_pdf_source,
         )
     if source_kind == "docx":
-        from .capabilities.formats.docx import schema as docx_schema
+        from neocortex.capabilities.formats.docx import schema as docx_schema
 
         return _require_current_schema(
             connection,

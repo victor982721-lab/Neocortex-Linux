@@ -27,10 +27,10 @@ if TYPE_CHECKING:
     from .code_search import search_code as search_code
     from .platform.shared.content_types import DetectedType as DetectedType
     from .platform.shared.content_types import detect_content_type as detect_content_type
-    from .capabilities.formats.docx.route import DocxRoute as DocxRoute
-    from .capabilities.formats.docx.route import DocxRouteConfig as DocxRouteConfig
-    from .capabilities.formats.docx.route import DocxRouteSummary as DocxRouteSummary
-    from .capabilities.formats.docx.route import search_docx_state as search_docx_state
+    from neocortex.capabilities.formats.docx.route import DocxRoute as DocxRoute
+    from neocortex.capabilities.formats.docx.route import DocxRouteConfig as DocxRouteConfig
+    from neocortex.capabilities.formats.docx.route import DocxRouteSummary as DocxRouteSummary
+    from neocortex.capabilities.formats.docx.route import search_docx_state as search_docx_state
     from .derivation_contracts import CapabilityFailure as CapabilityFailure
     from .derivation_contracts import (
         DERIVATION_CONTRACT_SCHEMA_VERSION as DERIVATION_CONTRACT_SCHEMA_VERSION,
@@ -212,9 +212,9 @@ _EXPORTS: Final[dict[str, tuple[str, str]]] = {
     ),
     "DetectedType": (".platform.shared.content_types", "DetectedType"),
     "DerivationRef": (".derivation_contracts", "DerivationRef"),
-    "DocxRoute": (".capabilities.formats.docx.route", "DocxRoute"),
-    "DocxRouteConfig": (".capabilities.formats.docx.route", "DocxRouteConfig"),
-    "DocxRouteSummary": (".capabilities.formats.docx.route", "DocxRouteSummary"),
+    "DocxRoute": ("neocortex.capabilities.formats.docx.route", "DocxRoute"),
+    "DocxRouteConfig": ("neocortex.capabilities.formats.docx.route", "DocxRouteConfig"),
+    "DocxRouteSummary": ("neocortex.capabilities.formats.docx.route", "DocxRouteSummary"),
     "FrameworkConfig": (".models", "FrameworkConfig"),
     "FrameworkOrchestrator": (".orchestrator", "FrameworkOrchestrator"),
     "GlobalResourceCoordinator": (
@@ -243,7 +243,7 @@ _EXPORTS: Final[dict[str, tuple[str, str]]] = {
     "PdfDerivedIndexer": (".pdf_derived", "PdfDerivedIndexer"),
     "PdfDerivedSummary": (".pdf_derived", "PdfDerivedSummary"),
     "search_pdf_state": (".pdf_derived", "search_pdf_state"),
-    "search_docx_state": (".capabilities.formats.docx.route", "search_docx_state"),
+    "search_docx_state": ("neocortex.capabilities.formats.docx.route", "search_docx_state"),
     "doctor_pdf_runtime": (".pdf_admin", "doctor_pdf_runtime"),
     "InitialRunResult": (".models", "InitialRunResult"),
     "OfficeRoute": (".capabilities.formats.office.route", "OfficeRoute"),

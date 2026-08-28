@@ -148,6 +148,21 @@ _NEOCORTEX_CORE_UI_ALLOWLIST = (
     ("neocortex.capabilities.formats.archive.route", "_04_Nucleo_Operativo.state"),
     ("neocortex.capabilities.formats.archive.state", "_04_Nucleo_Operativo.semantic_lexical"),
     ("neocortex.capabilities.formats.archive.state", "_04_Nucleo_Operativo.sqlite_schema_contract"),
+    # DOCX is the next format cohort; these legacy foundation leaves remain
+    # explicit until the shared platform and workflow families move.
+    ("neocortex.capabilities.formats.docx.integrity", "_04_Nucleo_Operativo.memory_runtime"),
+    ("neocortex.capabilities.formats.docx.integrity", "_04_Nucleo_Operativo.platform.shared.zip_safety"),
+    ("neocortex.capabilities.formats.docx.layout", "_04_Nucleo_Operativo.cancellation"),
+    ("neocortex.capabilities.formats.docx.models", "_04_Nucleo_Operativo.processing_provenance"),
+    ("neocortex.capabilities.formats.docx.models", "_04_Nucleo_Operativo.route_filters"),
+    ("neocortex.capabilities.formats.docx.route", "_04_Nucleo_Operativo.cancellation"),
+    ("neocortex.capabilities.formats.docx.route", "_04_Nucleo_Operativo.file_identity"),
+    ("neocortex.capabilities.formats.docx.route", "_04_Nucleo_Operativo.memory_runtime"),
+    ("neocortex.capabilities.formats.docx.route", "_04_Nucleo_Operativo.platform.shared.zip_safety"),
+    ("neocortex.capabilities.formats.docx.route", "_04_Nucleo_Operativo.review"),
+    ("neocortex.capabilities.formats.docx.route", "_04_Nucleo_Operativo.state"),
+    ("neocortex.capabilities.formats.docx.schema", "_04_Nucleo_Operativo.sqlite_schema_contract"),
+    ("neocortex.capabilities.formats.docx.state", "_04_Nucleo_Operativo.sqlite_schema_lifecycle"),
 )
 
 # The v5 graph is acyclic.  Keep the baseline empty so that reintroducing even

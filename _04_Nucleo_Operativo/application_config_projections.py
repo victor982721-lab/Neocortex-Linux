@@ -43,14 +43,14 @@ if TYPE_CHECKING:
     from . import text_route as _text_contracts
     from .capabilities.formats.video import route as _video_contracts
     from neocortex.capabilities.formats.archive import route as _archive_contracts
-    from .capabilities.formats.docx import models as _docx_contracts
+    from neocortex.capabilities.formats.docx import models as _docx_contracts
     from .capabilities.formats.image import route as _image_contracts
 else:
     _application_contracts = _DeferredTypeModule(".models")
     _archive_contracts = _DeferredTypeModule("neocortex.capabilities.formats.archive.route")
     _audio_contracts = _DeferredTypeModule(".capabilities.formats.audio.models")
     _code_contracts = _DeferredTypeModule(".code_contracts")
-    _docx_contracts = _DeferredTypeModule(".capabilities.formats.docx.models")
+    _docx_contracts = _DeferredTypeModule("neocortex.capabilities.formats.docx.models")
     _image_contracts = _DeferredTypeModule(".capabilities.formats.image.route")
     _office_contracts = _DeferredTypeModule(".capabilities.formats.office.route")
     _pdf_contracts = _DeferredTypeModule(".pdf_route_models")
@@ -262,9 +262,18 @@ def docx_route_config_from_application(
 ) -> _docx_contracts.DocxRouteConfig:
     """Project current application values into the DOCX owner's contract."""
 
-    from .capabilities.formats.docx.models import DocxRouteConfig
+    compatibility_module = sys.modules.get(
+        "_04_Nucleo_Operativo.capabilities.formats.docx.models"
+    )
+    if compatibility_module is None:
+        from neocortex.capabilities.formats.docx.models import (
+            DocxRouteConfig as _DocxRouteConfig,
+        )
+        route_config_type: Any = _DocxRouteConfig
+    else:
+        route_config_type = compatibility_module.__dict__["DocxRouteConfig"]
 
-    return DocxRouteConfig(
+    return route_config_type(
         state_path=config.docx_database,
         max_file_bytes=config.docx_max_file_bytes,
         max_documents=config.docx_max_documents,

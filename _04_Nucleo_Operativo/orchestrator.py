@@ -74,7 +74,7 @@ if TYPE_CHECKING:
     from neocortex.capabilities.formats.archive.models import ArchiveRouteSummary
     from .capabilities.formats.audio.models import AudioRouteSummary
     from .code_contracts import CodeRouteSummary
-    from .capabilities.formats.docx.route import DocxRouteSummary
+    from neocortex.capabilities.formats.docx.route import DocxRouteSummary
     from .capabilities.formats.image.route import ImageRouteSummary
     from .capabilities.formats.office.route import OfficeRouteSummary
     from .pdf_route import PdfRouteSummary

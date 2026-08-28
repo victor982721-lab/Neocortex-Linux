@@ -22,8 +22,8 @@ if TYPE_CHECKING:
     from .code_contracts import CodeRouteConfig as CodeRouteConfig
     from .code_route import CodeRoute as CodeRoute
     from .cancellation import CancellationToken
-    from .capabilities.formats.docx.route import DocxRoute as DocxRoute
-    from .capabilities.formats.docx.route import DocxRouteConfig as DocxRouteConfig
+    from neocortex.capabilities.formats.docx.route import DocxRoute as DocxRoute
+    from neocortex.capabilities.formats.docx.route import DocxRouteConfig as DocxRouteConfig
     from .document_catalog import CatalogUpdateSummary, SourceKind
     from .global_resources import GlobalResourceCoordinator
     from .capabilities.formats.image.route import ImageRoute as ImageRoute
@@ -86,8 +86,8 @@ _DEFERRED_ROUTE_EXPORTS = {
     "CodeRouteConfig": (".code_contracts", "CodeRouteConfig"),
     "PdfRoute": (".pdf_route", "PdfRoute"),
     "PdfRouteConfig": (".pdf_route", "PdfRouteConfig"),
-    "DocxRoute": (".capabilities.formats.docx.route", "DocxRoute"),
-    "DocxRouteConfig": (".capabilities.formats.docx.route", "DocxRouteConfig"),
+    "DocxRoute": ("neocortex.capabilities.formats.docx.route", "DocxRoute"),
+    "DocxRouteConfig": ("neocortex.capabilities.formats.docx.route", "DocxRouteConfig"),
     "ImageRoute": (".capabilities.formats.image.route", "ImageRoute"),
     "ImageRouteConfig": (".capabilities.formats.image.route", "ImageRouteConfig"),
     "OfficeRoute": (".capabilities.formats.office.route", "OfficeRoute"),
@@ -204,7 +204,12 @@ def docx_route_config_from_framework(config: "FrameworkConfig") -> "DocxRouteCon
 
 
 def _run_docx(context: RouteExecutionContext) -> object:
-    from .capabilities.formats.docx.route import DocxRoute
+    compatibility_module = sys.modules.get("_04_Nucleo_Operativo.docx_route")
+    if compatibility_module is None:
+        from neocortex.capabilities.formats.docx.route import DocxRoute as _DocxRoute
+        route_type: Any = _DocxRoute
+    else:
+        route_type = compatibility_module.__dict__["DocxRoute"]
     from .global_resources import CoordinatedMemoryGate
 
     config = context.config
@@ -213,7 +218,7 @@ def _run_docx(context: RouteExecutionContext) -> object:
         if context.resource_coordinator is None
         else CoordinatedMemoryGate(context.resource_coordinator, "docx")
     )
-    summary = DocxRoute(
+    summary = route_type(
         docx_route_config_from_framework(config),
         context.framework_state,
         context.run_id,

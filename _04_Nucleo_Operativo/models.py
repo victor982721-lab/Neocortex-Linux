@@ -37,7 +37,7 @@ if TYPE_CHECKING:
         OrganizationApplySummary,
         OrganizationPlanSummary,
     )
-    from .capabilities.formats.docx.route import DocxRouteSummary
+    from neocortex.capabilities.formats.docx.route import DocxRouteSummary
     from .global_resources import GlobalResourceSummary
     from .capabilities.formats.image.route import ImageRouteSummary
     from .capabilities.formats.office.route import OfficeRouteSummary

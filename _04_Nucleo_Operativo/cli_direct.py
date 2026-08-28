@@ -905,7 +905,7 @@ def run_pdf_verify(args: argparse.Namespace) -> int:
 
 
 def run_docx_search(args: argparse.Namespace) -> int:
-    from .capabilities.formats.docx.route import search_docx_state
+    from neocortex.capabilities.formats.docx.route import search_docx_state
 
     try:
         results = search_docx_state(
@@ -922,7 +922,7 @@ def run_docx_search(args: argparse.Namespace) -> int:
 
 
 def run_docx_layout_groups(args: argparse.Namespace) -> int:
-    from .capabilities.formats.docx.route import list_docx_layout_groups
+    from neocortex.capabilities.formats.docx.route import list_docx_layout_groups
 
     try:
         groups = list_docx_layout_groups(
@@ -941,7 +941,7 @@ def run_docx_layout_groups(args: argparse.Namespace) -> int:
 
 
 def run_docx_missing_pdf(args: argparse.Namespace) -> int:
-    from .capabilities.formats.docx.route import list_missing_pdf_counterparts
+    from neocortex.capabilities.formats.docx.route import list_missing_pdf_counterparts
 
     try:
         paths = list_missing_pdf_counterparts(
