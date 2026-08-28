@@ -1,110 +1,62 @@
 # NeoCortex — handoff operativo vigente
 
-> Actualizado: 2026-08-26 CST. El basename es histórico y permanece estable.
+> Actualizado: 2026-08-28 CST. El basename es histórico y permanece estable.
 > `~/.codex/PENDIENTES.md` conserva el compromiso operativo; este archivo
 > describe sólo la frontera técnica de reanudación.
 
 ## Objetivo activo
 
-Reorganizar la topología productiva en el namespace único `neocortex`, con
-responsabilidades explícitas y sin raíces históricas numeradas. El resultado
-final elimina `_01_Enumeracion`, `_02_Deduplicacion`, `_03_Progreso`,
-`_04_Nucleo_Operativo`, `_05_Interfaz` y `Orquestador.py` después de migrar
-cada consumidor, cerrar cada alias y demostrar uso cero.
+Reorganizar toda la topología productiva en el namespace único `neocortex`, con
+responsabilidades explícitas, límites de dependencia y compatibilidad
+transitoria verificable, hasta retirar `_01_Enumeracion`, `_02_Deduplicacion`,
+`_03_Progreso`, `_04_Nucleo_Operativo`, `_05_Interfaz` y `Orquestador.py`.
 
-## Estado vivo al reanudar
+## Corte aceptado
 
-- El candidato congelado conserva como padre directo
-  `6770ba5e194d46dede86e456fac64cbcac1b1ce1`; al reanudar, confirmar `HEAD`,
-  ese padre y árbol limpio. `main` sigue 25 commits delante de `origin/main`;
-  no se ha hecho push.
-- `_01_Enumeracion`, `_02_Deduplicacion`, `_03_Progreso`, `_05_Interfaz` y
-  `Orquestador.py` ya están ausentes. `neocortex` contiene las familias
-  canónicas `enumeration`, `deduplication`, `progress`, `interface`, `runtime`
-  y `sdk`; `_04_Nucleo_Operativo` sigue pendiente de migración por cohortes.
-- La última aceptación de `4aa0f03…` llegó a `trusted_deep_publication`, donde
-  falló con `OperationalError: no such savepoint: external_provider_publication`.
-  El candidato `2a0e3ac…` incorpora la corrección que preserva el error SQLite
-  primario cuando SQLite revierte la transacción completa, más su regresión en
-  `tests/test_external_provider_schema_v4.py`. La prueba focal aprobó 32/32 el
-  2026-08-25. La primera validación del lote se abstuvo en el preflight
-  pip-audit aunque el snapshot publicado era exacto y vigente. El candidato
-  añade `exact_lookup` a esa abstención y la regresión correspondiente, para
-  conservar las identidades que expliquen cualquier discrepancia futura; no
-  existe aún receipt canónico del lote.
-- Preflight host del 2026-08-25: cero unidades/procesos de gate NeoCortex,
-  `code.sqlite3-wal=0`, `framework.sqlite3-wal=0`, 9,980,633,088 bytes de
-  memoria disponibles, 49,421,869,056 bytes libres y PSI `some/full avg10=0`.
-  `pdf.sqlite3-wal=189,552` pertenece al owner documental `pdf`; el status
-  público registra el run 78 como `completed` con
-  `recovery_required_actions=0`. No abrir ni modificar ese owner durante el
-  gate Code, que cerca únicamente `code.sqlite3`.
-- La release instalada sigue siendo la base aceptada `6770ba5…` (`Neocortex
-  0.9.0`). El verificador del source actual rechaza su manifiesto porque la
-  política vigente cambió el bootstrap de pip de 26.1.2 a 26.2.1. Es un
-  rechazo de política fail-closed, no corrupción del artefacto histórico ni
-  una corrección de código: la próxima release deberá construirse desde el
-  candidato congelado con los pins vigentes.
-- La aceptación de `c1d8726…` completó Coverage trusted-deep 24/24 y la
-  publicación incremental terminó exit 0 con 899 cache hits, pero el watchdog
-  abortó al leer el verdict por `memory_pressure_full_abort_threshold`
-  (`min_available=6,224,046,128`, PSI `some/full avg10=5.44`). No existe
-  receipt; Code/Framework WAL quedaron vacíos. Transcript y hash viven en
-  `cut-10-final-candidate/code-validate-c1d8726-final.log`.
-- Para evitar que el owner Code vuelva a acumular runs y proyecciones externas
-  sin límite, el working tree incorpora `code-owner-generational-retention-v1`.
-  La política conserva dos completados, cuatro incidentes, receipts y fuentes
-  de replay, impone un techo de 64 runs terminales y elimina sólo un run
-  elegible por frontera dentro de la transacción del owner. Las versiones de
-  archivos, símbolos, FTS, grafo y compactación física quedan fuera; las
-  regresiones focales de retención, storage, estado y arquitectura están
-  verdes, pero aún falta congelar el candidato y obtener el receipt canónico.
-- Por solicitud expresa de Víctor, el 2026-08-26 se auditó y vació
-  `/home/winterboss/.local/state/Neocortex`: se retiraron 882 bases/sidecars
-  (45,382,755,503 bytes) después de confirmar quiescencia en el host. El
-  inventario, el resumen de retención y el recibo de borrado permanecen fuera
-  del vault en `/home/winterboss/Documentos/NeoCortex/Auditorias/2026-08-26-neocortex-db-retention/`;
-  el corpus, releases, checkout y recibos no se tocaron. El próximo run debe
-  recrear sólo el estado necesario, y no se debe tratar el estado vacío como un
-  receipt de validación.
-- La causa precisa del veredicto `provider/supply` fallido quedó verificada:
-  el source exige `pip=26.2.1`, pero el runtime Semgrep aislado de la release
-  instalada todavía tiene el recibo exacto de `pip=26.1.2`; por eso Semgrep se
-  publicaba como `unavailable` aunque el resto del runtime estuviera presente.
-  El candidato `01dc841…` acepta únicamente esa tupla legacy exacta como puente
-  de transición, conserva la política actual para instalaciones nuevas y añade
-  la regresión focal; el probe instalado ya devuelve Semgrep `1.172.0`.
+- Checkout: `/home/winterboss/Neocortex/Repository`
+- SHA aceptado: `f92f4e9ff070a2098d8f01a48beb68696e5fe60d`
+- Árbol verificado limpio en ese corte; `main` sigue sin publicar y está 36
+  commits delante de `origin/main`.
+- Archive vive en
+  `neocortex/capabilities/formats/archive/{models,route,state,text_worker}.py`;
+  los módulos `_04_Nucleo_Operativo` correspondientes son fachadas de
+  compatibilidad. Las sondas de capacidades viven en
+  `neocortex/capabilities/runtime.py` y el paquete ya no colisiona con un
+  módulo plano.
+- El registro de arquitectura conserva explícitos los 11 cruces transitorios
+  Archive → foundation/core; deben desaparecer al migrar esas hojas.
 
-## Próximos pasos, en orden
+## Evidencia de aceptación y release
 
-1. Mantener el candidato `01dc841…` y recrear un estado protegido acotado,
-   seguido de una publicación `trusted-static` que renueve el snapshot
-   `pip-audit`; no tocar el corpus ni ejecutar poda manual sobre el owner vivo.
-2. Esperar un preflight host con margen real sobre la reserva de KDE/Chrome y
-   PSI estable; no iniciar el gate si la memoria disponible está demasiado
-   cerca de la reserva. No tocar release ni corpus.
-3. Mantener el snapshot trusted-static que siga siendo exacto para el candidato;
-   no repetir el producer salvo que el gate lo declare obsoleto.
-4. Con el candidato inmutable, recursos holgados y sin writers, ejecutar una
-   sola aceptación:
-   `Neocortex code validate --baseline HEAD^`. No relanzarla si falla: guardar
-   el transcript y diagnosticar sólo el gate señalado.
-5. Con receipt `passed`, instalar desde ese SHA, verificar `current`, manifest
-   y launcher, y ejecutar el E2E público sin `--apply`. Repetir sólo si el diff
-   final cruza caché, reanudación, schema o pipeline.
-6. Continuar `_04_Nucleo_Operativo` por una familia vertical con productor,
-   estado, lector y comando visibles. El push permanece reservado para el
-   cierre integral único, con `main=origin/main=current.source_sha` y árbol
-   limpio.
+- `Neocortex code validate --baseline 23a9597374266887357f62c7b02ee3681e77b916`
+  terminó `passed`: 17 barreras, 335 pruebas seleccionadas, Coverage 24/24,
+  experimentos, wheel, replay e identidades públicas. Receipt:
+  `/home/winterboss/.local/state/Neocortex/self-analysis/validation-receipts/f92f4e9ff070a2098d8f01a48beb68696e5fe60d-bf89169b5fe639c837dd6a6e74a17c43992226656e704d2acdaa9aae6bdca62d.json`
+  (`sha256:7809a854f82525ad9a85302927a8f6b600356f29fbd9a85f0fd7b54e97eef6b2`).
+- Release instalada y verificada: `0.9.0-f92f4e9ff070-cp314-linux-x86_64`,
+  pip `26.2.1`, Semgrep `1.172.0`; `current`, manifest y launcher declaran el
+  mismo SHA.
+- E2E instalado, sin `PYTHONPATH` ni `--apply`: primera corrida de 20 módulos
+  (`processed=20`) y replay de los mismos 20 (`processed=0`, `cache_hits=20`),
+  ambas con exit 0. Transcripts finales:
+  `/home/winterboss/Documentos/NeoCortex/Auditorias/2026-08-28-neocortex-archive-cohort/`.
 
-## Límites operativos
+## Próximo corte, en orden
 
-- Linux/Kubuntu es la única plataforma activa. GitHub Actions y Windows no son
-  gates ni superficies de trabajo.
-- Observa gates sólo por systemd/transcript/progreso. No abras SQLite cercadas
-  con lectores ordinarios ni borres WAL/SHM para forzar una corrida.
-- La aceptación canónica consume el snapshot de supply ya publicado; pip-audit
-  se renueva únicamente por su productor explícito y con el permiso permanente
-  de Víctor, sin `--fix`.
-- Toda release y E2E final se ejecutan desde el artefacto instalado, sin
-  `PYTHONPATH` ni imports desde este checkout.
+1. Migrar una familia de formatos siguiente, preferentemente DOCX, con
+   implementación física bajo `neocortex/capabilities/formats/docx`, fachadas
+   `_04` explícitas y consumidores productivos apuntando al namespace nuevo.
+2. Mantener un lote material coherente, ejecutar pruebas focales y congelar un
+   commit; después producir el snapshot trusted-static autorizado, ejecutar una
+   sola aceptación canónica, instalar desde el SHA y repetir el E2E instalado.
+3. No iniciar otra vertical mientras falte el receipt, la release o el E2E del
+   corte vigente; no hacer push hasta el cierre integral de `NEO-CORE-004`.
+
+## Límites
+
+- Linux/Kubuntu es la única plataforma activa; Windows y GitHub Actions quedan
+  fuera de alcance.
+- Durante gates observa únicamente stream, transcript, proceso y systemd en el
+  namespace real; no abras SQLite cercadas con lectores ordinarios.
+- pip-audit sólo se renueva mediante su productor explícito autorizado, sin
+  `--fix` ni otros proveedores remotos.
