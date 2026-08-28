@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from dataclasses import asdict, dataclass, is_dataclass, replace
 from importlib import import_module
 from pathlib import Path
@@ -271,14 +272,19 @@ def archive_route_config_from_framework(
 
 
 def _run_archive(context: RouteExecutionContext) -> object:
-    from neocortex.capabilities.formats.archive.route import ArchiveRoute
+    compatibility_module = sys.modules.get("_04_Nucleo_Operativo.archive_route")
+    if compatibility_module is None:
+        from neocortex.capabilities.formats.archive.route import ArchiveRoute as _ArchiveRoute
+        route_type: Any = _ArchiveRoute
+    else:
+        route_type = compatibility_module.__dict__["ArchiveRoute"]
 
     gate = None
     if context.resource_coordinator is not None:
         from .global_resources import CoordinatedMemoryGate
 
         gate = CoordinatedMemoryGate(context.resource_coordinator, "archive")
-    return ArchiveRoute(
+    return route_type(
         archive_route_config_from_framework(context.config),
         context.framework_state,
         context.run_id,

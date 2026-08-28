@@ -7,10 +7,11 @@ dependency doubles and lazy-load guarantees intact.
 
 from __future__ import annotations
 
+import sys
 from importlib import import_module
 from pathlib import Path
 from types import ModuleType
-from typing import TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 
 # region [01] Static contracts and public projection surface
 
@@ -81,9 +82,18 @@ def archive_route_config_from_application(
 ) -> _archive_contracts.ArchiveRouteConfig:
     """Project current application values into recursive ZIP indexing."""
 
-    from neocortex.capabilities.formats.archive.route import ArchiveRouteConfig
+    compatibility_module = sys.modules.get(
+        "_04_Nucleo_Operativo.capabilities.formats.archive.route"
+    )
+    if compatibility_module is None:
+        from neocortex.capabilities.formats.archive.route import (
+            ArchiveRouteConfig as _ArchiveRouteConfig,
+        )
+        route_config_type: Any = _ArchiveRouteConfig
+    else:
+        route_config_type = compatibility_module.__dict__["ArchiveRouteConfig"]
 
-    return ArchiveRouteConfig(
+    return route_config_type(
         state_path=config.archive_database,
         max_file_bytes=config.archive_max_file_bytes,
         max_documents=config.archive_max_documents,

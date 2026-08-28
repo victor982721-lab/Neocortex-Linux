@@ -13,9 +13,10 @@ from __future__ import annotations
 import time
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
-import sqlite3
+if TYPE_CHECKING:
+    import sqlite3
 
 CODE_RETENTION_POLICY_ID = "code-owner-generational-retention-v1"
 CODE_RETENTION_DAY_NS = 86_400_000_000_000
@@ -239,6 +240,8 @@ def plan_code_retention(
     now_ns: int | None = None,
 ) -> CodeRetentionPlan:
     """Classify old Code runs without changing the connection or sidecars."""
+
+    import sqlite3
 
     if not isinstance(connection, sqlite3.Connection):
         raise TypeError("Code retention requires a sqlite3 connection")

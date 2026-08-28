@@ -410,6 +410,7 @@ print(
     assert loaded <= {
         "_04_Nucleo_Operativo",
         "_04_Nucleo_Operativo.code_contracts",
+        "_04_Nucleo_Operativo.code_retention",
         "_04_Nucleo_Operativo.code_detection",
         "_04_Nucleo_Operativo.knowledge_contract_context",
         "_04_Nucleo_Operativo.knowledge_contract_payloads",
