@@ -133,6 +133,21 @@ _NEOCORTEX_CORE_UI_ALLOWLIST = (
     ("neocortex.value_cli_adapter", "_04_Nucleo_Operativo.value_review_port"),
     # Durable ReviewTask commands share the same bounded advisory-only port.
     ("neocortex.review_task_cli_adapter", "_04_Nucleo_Operativo.value_review_port"),
+    # Archive is the first format capability moved into the canonical package.
+    # Its bounded route still consumes these legacy foundation leaves until
+    # the platform/foundation cohorts migrate, keeping the transition explicit
+    # instead of hiding a reverse dependency in a compatibility wrapper.
+    ("neocortex.capabilities.formats.archive.models", "_04_Nucleo_Operativo.processing_provenance"),
+    ("neocortex.capabilities.formats.archive.route", "_04_Nucleo_Operativo.action_policy"),
+    ("neocortex.capabilities.formats.archive.route", "_04_Nucleo_Operativo.bounded_subprocess"),
+    ("neocortex.capabilities.formats.archive.route", "_04_Nucleo_Operativo.cancellation"),
+    ("neocortex.capabilities.formats.archive.route", "_04_Nucleo_Operativo.file_identity"),
+    ("neocortex.capabilities.formats.archive.route", "_04_Nucleo_Operativo.platform.shared.zip_safety"),
+    ("neocortex.capabilities.formats.archive.route", "_04_Nucleo_Operativo.processing_provenance"),
+    ("neocortex.capabilities.formats.archive.route", "_04_Nucleo_Operativo.route_filters"),
+    ("neocortex.capabilities.formats.archive.route", "_04_Nucleo_Operativo.state"),
+    ("neocortex.capabilities.formats.archive.state", "_04_Nucleo_Operativo.semantic_lexical"),
+    ("neocortex.capabilities.formats.archive.state", "_04_Nucleo_Operativo.sqlite_schema_contract"),
 )
 
 # The v5 graph is acyclic.  Keep the baseline empty so that reintroducing even
