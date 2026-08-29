@@ -11,48 +11,55 @@ responsabilidades explícitas, límites de dependencia y compatibilidad
 transitoria verificable, hasta retirar `_01_Enumeracion`, `_02_Deduplicacion`,
 `_03_Progreso`, `_04_Nucleo_Operativo`, `_05_Interfaz` y `Orquestador.py`.
 
-## Corte Video aceptado
+## Corte Text aceptado
 
 - Checkout: `/home/winterboss/Neocortex/Repository`
-- SHA ejecutable aceptado: `249c7b300ab3258ebbfc0ceafd9f5b30d7a26462`
-- Árbol verificado limpio; `main` sigue sin publicar y está 55 commits delante
-  de `origin/main`.
-- Archive, DOCX, Audio, Image, Office, PDF y Video viven físicamente en
-  `neocortex/capabilities/formats/{archive,docx,audio,image,office,pdf,video}`. Las fachadas
-  `_04_Nucleo_Operativo` correspondientes son compatibilidad explícita; las
-  sondas runtime están en `neocortex/capabilities/runtime.py`.
+- SHA ejecutable aceptado: `860a8ec8dbcd32e2fc3514f6938d924f7ba4dbb9`
+- Árbol verificado limpio; `main` sigue sin publicar y el push permanece
+  reservado al cierre integral de `NEO-CORE-004`.
+- Archive, DOCX, Audio, Image, Office, PDF, Video y Text viven físicamente en
+  `neocortex/capabilities/formats/{archive,docx,audio,image,office,pdf,text,video}`.
+  Las fachadas `_04_Nucleo_Operativo` correspondientes son compatibilidad
+  explícita; las sondas runtime están en `neocortex/capabilities/runtime.py`.
 - El registro de arquitectura conserva explícitos los cruces transitorios de
-  las siete familias hacia foundation/core, pendiente la cohorte Text y las
-  cohortes de plataforma.
+  las ocho familias hacia foundation/core. El fingerprint de transición actual
+  es `core-architecture-target-v1:sha256:c41ff44364df73be950eb46dd8f2a19a4e26ed7529d23d51d66e34a152d78f3a`.
 
 ## Evidencia de aceptación y release
 
-- `Neocortex code validate --baseline bf9f729ab597228811703f9fc1ddb3c2ba32faa2`
-  sobre `249c7b3` terminó `passed`: 17 barreras, selección afectada de 55
-  pruebas, Coverage de 20 shards, experimentos, wheel, replay e identidades
-  públicas. Receipt:
-  `/home/winterboss/.local/state/Neocortex/self-analysis/validation-receipts/249c7b300ab3258ebbfc0ceafd9f5b30d7a26462-30a5d08c404885eab364fc0bb8058d15d385cd58eda1c88881b1559298e6f73c.json`
-  (`sha256:d3458c9d469df79b24c3f95b06b6e742984c2311f6288213311573f2a32f0656`).
+- `Neocortex code validate --baseline 07a9f3600edcc3d3b146a595ac4cfbd2cd407022`
+  sobre `860a8ec` terminó `passed`: selección `full`, 337 pruebas reportadas,
+  17 barreras, Coverage trusted-deep de 24 shards, experimentos, wheel,
+  replay e identidades públicas. Receipt:
+  `/home/winterboss/.local/state/Neocortex/self-analysis/validation-receipts/860a8ec8dbcd32e2fc3514f6938d924f7ba4dbb9-88ea686c42cde13910e6cdb09d4c168a8d8ab4f89ccc5bd5f6468f6621786888.json`
+  (`sha256:1a3eea5a7ecdab0755383a9f279d796964ef22db0df9e6acd01cb35023843d09`).
+- Trusted-deep publicó `run_id=52` con 980 archivos, 974 candidatos,
+  `code_processed=0`, `code_cache_hits=974`, y el replay `run_id=53` conservó
+  los mismos contadores, ambos sin errores.
 - La release vigente se reconstruyó desde el SHA ejecutable aceptado:
-  `0.9.0-249c7b300ab3-cp314-linux-x86_64`, pip `26.2.1`, Semgrep `1.172.0`;
+  `0.9.0-860a8ec8dbcd-cp314-linux-x86_64`, pip `26.2.1`, Semgrep `1.172.0`;
   `release_linux.py verify` devolvió `verified=true` y current/manifest/launcher
   coinciden.
-- E2E público instalado, sin `PYTHONPATH` ni `--apply`: un MP4 sintético
-  produjo `processed=1`, `frames_sampled=1`, `visual_only=1`, `partial=1` y
-  `errors=0`; el replay obtuvo `cache_hits=1`, ambos con exit 0. La condición
-  parcial es esperada para la muestra sin audio. Evidencia:
-  `/home/winterboss/Documentos/NeoCortex/Auditorias/2026-08-29-neocortex-video-cohort/`.
+- E2E público instalado, sin `PYTHONPATH` ni `--apply`: un TXT produjo
+  `processed=1`, `cache_hits=0`, `extracted=1`, `errors=0`; el replay produjo
+  `processed=0`, `cache_hits=1`, `extracted=0`, `errors=0`, ambos con exit 0.
+  Evidencia:
+  `/home/winterboss/Documentos/NeoCortex/Auditorias/2026-08-29-neocortex-text-cohort/`.
 
 ## Próximo corte, en orden
 
-1. Migrar Text físicamente a `neocortex/capabilities/formats/text`, con el
-   extractor, worker Office heredado, contratos, fachadas y consumidores
-   separados de Video.
+1. Migrar la cohorte de plataforma compartida a un namespace canónico bajo
+   `neocortex/platform`, empezando por `content_types`, `zip_safety` y las
+   proyecciones/registro de capacidades, con fachadas compatibles y sin tocar
+   el estado SQLite.
 2. Mantener el lote material, ejecutar pruebas focales, congelar un commit,
    renovar trusted-static con la consulta pip-audit autorizada, ejecutar una sola
    aceptación canónica, instalar desde el SHA y repetir el E2E instalado.
-3. No iniciar otra vertical mientras falte el receipt, release o E2E del corte;
-   no hacer push hasta el cierre integral de `NEO-CORE-004`.
+3. Después continuar por las responsabilidades restantes de `_04_Nucleo_Operativo`
+   (runtime, workflow, knowledge, semantic y code) hasta retirar las raíces
+   numeradas, sin iniciar un nuevo corte mientras falte el receipt, release o
+   E2E del corte vigente y sin hacer push hasta el cierre integral de
+   `NEO-CORE-004`.
 
 ## Límites
 
