@@ -38,7 +38,7 @@ from .semantic_quality import (
     content_title_from_sample,
 )
 from .sqlite_paths import readonly_sqlite_uri
-from .text_derivation_repository import (
+from neocortex.capabilities.formats.text.text_derivation_repository import (
     TextDerivationIntegrityError,
     validate_text_publications_from_connection,
 )

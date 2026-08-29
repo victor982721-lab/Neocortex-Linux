@@ -40,7 +40,7 @@ if TYPE_CHECKING:
     from . import models as _application_contracts
     from neocortex.capabilities.formats.office import route as _office_contracts
     from neocortex.capabilities.formats.pdf import pdf_route_models as _pdf_contracts
-    from . import text_route as _text_contracts
+    from neocortex.capabilities.formats.text import text_route as _text_contracts
     from neocortex.capabilities.formats.video import route as _video_contracts
     from neocortex.capabilities.formats.archive import route as _archive_contracts
     from neocortex.capabilities.formats.docx import models as _docx_contracts
@@ -54,7 +54,7 @@ else:
     _image_contracts = _DeferredTypeModule("neocortex.capabilities.formats.image.route")
     _office_contracts = _DeferredTypeModule("neocortex.capabilities.formats.office.route")
     _pdf_contracts = _DeferredTypeModule("neocortex.capabilities.formats.pdf.pdf_route_models")
-    _text_contracts = _DeferredTypeModule(".text_route")
+    _text_contracts = _DeferredTypeModule("neocortex.capabilities.formats.text.text_route")
     _video_contracts = _DeferredTypeModule("neocortex.capabilities.formats.video.route")
     _resource_contracts = _DeferredTypeModule(".global_resources")
 
@@ -126,9 +126,16 @@ def text_route_config_from_application(
 ) -> _text_contracts.TextRouteConfig:
     """Project generic text and legacy Office extraction limits."""
 
-    from .text_route import TextRouteConfig
+    compatibility_module = sys.modules.get("_04_Nucleo_Operativo.text_route")
+    if compatibility_module is None:
+        from neocortex.capabilities.formats.text.text_route import (
+            TextRouteConfig as _TextRouteConfig,
+        )
+        route_config_type: Any = _TextRouteConfig
+    else:
+        route_config_type = compatibility_module.__dict__["TextRouteConfig"]
 
-    return TextRouteConfig(
+    return route_config_type(
         state_path=config.text_database,
         max_file_bytes=config.text_max_file_bytes,
         max_documents=config.text_max_documents,

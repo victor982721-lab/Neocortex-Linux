@@ -24,7 +24,7 @@ from .semantic_lineage_repository import (
     read_semantic_derivation_outbox,
 )
 from .knowledge_snapshot import KnowledgeStatePaths, KnowledgeStateRootError
-from .text_derivation_repository import (
+from neocortex.capabilities.formats.text.text_derivation_repository import (
     TextDerivationIntegrityError,
     read_text_derivation_dependents_page,
     read_text_derivation_outbox,

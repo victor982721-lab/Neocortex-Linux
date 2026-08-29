@@ -25,10 +25,8 @@ from neocortex.sqlite_schema_contract import (
 )
 from neocortex.platform_policy import sqlite_path_collation
 
-from . import (
-    document_catalog_schema,
-    text_state,
-)
+from . import document_catalog_schema
+from neocortex.capabilities.formats.text import text_state
 from . import semantic_schema as semantic_schema_module
 from neocortex.capabilities.formats.audio import state as audio_state
 from neocortex.capabilities.formats.archive import state as archive_state

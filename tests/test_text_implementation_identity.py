@@ -22,7 +22,7 @@ from _04_Nucleo_Operativo.text_route import TextRoute, TextRouteConfig
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 _EXTRACTOR_ROOTS = {
-    "_04_Nucleo_Operativo/text_route.py": ("_extract", "_extractor_selector"),
+    "neocortex/capabilities/formats/text/text_route.py": ("_extract", "_extractor_selector"),
     "neocortex/capabilities/formats/office/legacy_worker.py": ("main",),
 }
 
@@ -256,8 +256,8 @@ def test_text_extractor_contract_ignores_formatting_but_detects_behavior_changes
         for path, source in sources.items()
     }
     changed = dict(sources)
-    changed["_04_Nucleo_Operativo/text_route.py"] = changed[
-        "_04_Nucleo_Operativo/text_route.py"
+    changed["neocortex/capabilities/formats/text/text_route.py"] = changed[
+        "neocortex/capabilities/formats/text/text_route.py"
     ].replace('("utf-8-sig", "cp1252")', '("utf-8-sig", "latin-1")', 1)
 
     assert _normalized_extractor_contract(reformatted) == baseline

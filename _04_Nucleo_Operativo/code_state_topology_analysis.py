@@ -33,7 +33,7 @@ from .sqlite_schema_contract import (
     validate_sqlite_schema_contract,
 )
 from .state_topology_contracts import TEXT_DERIVATION_WORKFLOW
-from .text_state import TEXT_SCHEMA_VERSION, text_schema_contract
+from neocortex.capabilities.formats.text.text_state import TEXT_SCHEMA_VERSION, text_schema_contract
 
 CODE_STATE_TOPOLOGY_SCHEMA = "neocortex.code-state-topology/v1"
 TEXT_TERMINAL_PUBLICATION_POLICY = "text-terminal-publication-closure-v1"

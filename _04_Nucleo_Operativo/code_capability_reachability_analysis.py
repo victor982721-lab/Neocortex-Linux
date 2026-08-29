@@ -39,7 +39,7 @@ from .sqlite_schema_contract import (
     read_application_schema_version,
     validate_sqlite_schema_contract,
 )
-from .text_state import TEXT_SCHEMA_VERSION, text_schema_contract
+from neocortex.capabilities.formats.text.text_state import TEXT_SCHEMA_VERSION, text_schema_contract
 
 CODE_CAPABILITY_REACHABILITY_SCHEMA = "neocortex.code-capability-reachability/v1"
 CAPABILITY_REACHABILITY_POLICY = "text-extract-durable-reachability-v1"

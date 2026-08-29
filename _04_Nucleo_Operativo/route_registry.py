@@ -34,8 +34,8 @@ if TYPE_CHECKING:
     from neocortex.capabilities.formats.pdf.pdf_route import PdfRoute as PdfRoute
     from neocortex.capabilities.formats.pdf.pdf_route_models import PdfRouteConfig as PdfRouteConfig
     from .state import FrameworkRouteState
-    from .text_route import TextRoute as TextRoute
-    from .text_route import TextRouteConfig as TextRouteConfig
+    from neocortex.capabilities.formats.text.text_route import TextRoute as TextRoute
+    from neocortex.capabilities.formats.text.text_route import TextRouteConfig as TextRouteConfig
     from neocortex.capabilities.formats.video.route import VideoRoute as VideoRoute
     from neocortex.capabilities.formats.video.route import VideoRouteConfig as VideoRouteConfig
 
@@ -92,8 +92,8 @@ _DEFERRED_ROUTE_EXPORTS = {
     "ImageRouteConfig": ("neocortex.capabilities.formats.image.route", "ImageRouteConfig"),
     "OfficeRoute": ("neocortex.capabilities.formats.office.route", "OfficeRoute"),
     "OfficeRouteConfig": ("neocortex.capabilities.formats.office.route", "OfficeRouteConfig"),
-    "TextRoute": (".text_route", "TextRoute"),
-    "TextRouteConfig": (".text_route", "TextRouteConfig"),
+    "TextRoute": ("neocortex.capabilities.formats.text.text_route", "TextRoute"),
+    "TextRouteConfig": ("neocortex.capabilities.formats.text.text_route", "TextRouteConfig"),
     "VideoRoute": ("neocortex.capabilities.formats.video.route", "VideoRoute"),
     "VideoRouteConfig": ("neocortex.capabilities.formats.video.route", "VideoRouteConfig"),
 }
@@ -330,14 +330,20 @@ def text_route_config_from_framework(config: "FrameworkConfig") -> "TextRouteCon
 
 def _run_text(context: RouteExecutionContext) -> object:
     from .global_resources import CoordinatedMemoryGate
-    from .text_route import TextRoute
+
+    compatibility_module = sys.modules.get("_04_Nucleo_Operativo.text_route")
+    if compatibility_module is None:
+        from neocortex.capabilities.formats.text.text_route import TextRoute as _TextRoute
+        route_type: Any = _TextRoute
+    else:
+        route_type = compatibility_module.__dict__["TextRoute"]
 
     gate = (
         None
         if context.resource_coordinator is None
         else CoordinatedMemoryGate(context.resource_coordinator, "text")
     )
-    summary = TextRoute(
+    summary = route_type(
         text_route_config_from_framework(context.config),
         context.framework_state,
         context.run_id,

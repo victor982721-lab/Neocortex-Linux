@@ -49,7 +49,7 @@ from .sqlite_schema_contract import (
     read_application_schema_version,
     validate_sqlite_schema_contract,
 )
-from .text_state import TEXT_SCHEMA_VERSION, text_schema_contract
+from neocortex.capabilities.formats.text.text_state import TEXT_SCHEMA_VERSION, text_schema_contract
 
 CODE_STATE_PROJECTION_SCHEMA = "neocortex.code-state-projection/v1"
 TEXT_SEMANTIC_PROJECTION_POLICY = "text-semantic-published-head-projection-v2"

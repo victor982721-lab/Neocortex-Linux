@@ -285,7 +285,7 @@ def _validate_source_schema(
             ),
         )
     if source_kind == "text":
-        from . import text_state
+        from neocortex.capabilities.formats.text import text_state
 
         return _require_current_schema(
             connection,

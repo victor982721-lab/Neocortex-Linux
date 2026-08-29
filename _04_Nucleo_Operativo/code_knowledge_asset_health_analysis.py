@@ -42,8 +42,8 @@ from .knowledge_asset_health_contracts import (
 )
 from .knowledge_contracts import KNOWLEDGE_CONTRACT_SCHEMA_VERSION
 from .state_topology_contracts import STATE_STORE_REGISTRY, STATE_STORE_REGISTRY_SCHEMA
-from .text_route import TEXT_ROUTE_VERSION
-from .text_state import TEXT_SCHEMA_VERSION
+from neocortex.capabilities.formats.text.text_route import TEXT_ROUTE_VERSION
+from neocortex.capabilities.formats.text.text_state import TEXT_SCHEMA_VERSION
 
 
 CODE_KNOWLEDGE_ASSET_HEALTH_ANALYSIS_SCHEMA = "neocortex.code-knowledge-asset-health-analysis/v1"

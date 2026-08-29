@@ -78,7 +78,7 @@ if TYPE_CHECKING:
     from neocortex.capabilities.formats.image.route import ImageRouteSummary
     from neocortex.capabilities.formats.office.route import OfficeRouteSummary
     from neocortex.capabilities.formats.pdf.pdf_route import PdfRouteSummary
-    from .text_route import TextRouteSummary
+    from neocortex.capabilities.formats.text.text_route import TextRouteSummary
     from neocortex.capabilities.formats.video.models import VideoRouteSummary
     from .document_organization import (
         OrganizationApplySummary,
