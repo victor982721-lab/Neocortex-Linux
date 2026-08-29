@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from _04_Nucleo_Operativo.processing_provenance import ROUTE_SUMMARY_SCHEMA
+from neocortex.foundation.processing_provenance import ROUTE_SUMMARY_SCHEMA
 
 
 @dataclass(frozen=True, slots=True)

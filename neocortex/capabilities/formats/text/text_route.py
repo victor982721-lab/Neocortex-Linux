@@ -63,7 +63,7 @@ from _04_Nucleo_Operativo.derivation_contracts import (
     WorkExecutionMode,
     WorkOutcome,
 )
-from _04_Nucleo_Operativo.file_identity import file_key_from_snapshot
+from neocortex.foundation.file_identity import file_key_from_snapshot
 from _04_Nucleo_Operativo.knowledge_contracts import (
     PhysicalIdentityRef,
     ResourceDisposition,
@@ -72,7 +72,7 @@ from _04_Nucleo_Operativo.knowledge_contracts import (
     RevisionState,
 )
 from _04_Nucleo_Operativo.locking import FrameworkRunLock
-from _04_Nucleo_Operativo.processing_provenance import (
+from neocortex.foundation.processing_provenance import (
     ROUTE_SUMMARY_SCHEMA,
     ProcessingProvenance,
     build_processing_provenance,

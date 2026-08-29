@@ -32,7 +32,7 @@ from neocortex.platform_policy import (
 from .code_detection import LANGUAGE_EXTENSIONS
 from .code_schema import readonly_code_database
 from .document_catalog import connect_document_catalog
-from .file_identity import FileIdentity, FileIdentityError
+from neocortex.foundation.file_identity import FileIdentity, FileIdentityError
 from .knowledge_contracts import (
     EvidenceMethod,
     EvidenceRef,

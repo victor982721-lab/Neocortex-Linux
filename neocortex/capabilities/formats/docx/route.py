@@ -29,7 +29,7 @@ from neocortex.progress import (
 from neocortex.platform_policy import sqlite_path_collation
 
 from _04_Nucleo_Operativo.cancellation import CancellationRequested, CancellationToken
-from _04_Nucleo_Operativo.file_identity import file_key_from_snapshot as _file_key
+from neocortex.foundation.file_identity import file_key_from_snapshot as _file_key
 from _04_Nucleo_Operativo.memory_runtime import (
     MemoryBudgetExceeded,
     MemoryResourceLimits,

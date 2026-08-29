@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, Mapping
 
-from _04_Nucleo_Operativo.processing_provenance import (
+from neocortex.foundation.processing_provenance import (
     ROUTE_SUMMARY_SCHEMA,
     ProcessingProvenance,
     build_processing_provenance,

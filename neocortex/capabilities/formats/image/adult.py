@@ -15,7 +15,7 @@ from .models import (
     DocumentCandidate,
     Features,
 )
-from _04_Nucleo_Operativo.processing_provenance import distribution_component
+from neocortex.foundation.processing_provenance import distribution_component
 
 
 # region [01] Candidate and decision policy

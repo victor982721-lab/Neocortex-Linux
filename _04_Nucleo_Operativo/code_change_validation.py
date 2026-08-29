@@ -211,6 +211,41 @@ _SOURCE_BOUNDARY_TESTS = {
             "tests/test_platform_namespace_migration.py",
         }
     ),
+    "neocortex/foundation/__init__.py": frozenset(
+        {
+            "tests/test_file_identity.py",
+            "tests/test_foundation_namespace_migration.py",
+            "tests/test_processing_provenance.py",
+        }
+    ),
+    "neocortex/foundation/file_identity.py": frozenset(
+        {
+            "tests/test_file_identity.py",
+            "tests/test_foundation_namespace_migration.py",
+            "tests/test_knowledge_asset_health.py",
+            "tests/test_knowledge_exact.py",
+        }
+    ),
+    "_04_Nucleo_Operativo/file_identity.py": frozenset(
+        {
+            "tests/test_file_identity.py",
+            "tests/test_foundation_namespace_migration.py",
+            "tests/test_knowledge_asset_health.py",
+            "tests/test_knowledge_exact.py",
+        }
+    ),
+    "neocortex/foundation/processing_provenance.py": frozenset(
+        {
+            "tests/test_foundation_namespace_migration.py",
+            "tests/test_processing_provenance.py",
+        }
+    ),
+    "_04_Nucleo_Operativo/processing_provenance.py": frozenset(
+        {
+            "tests/test_foundation_namespace_migration.py",
+            "tests/test_processing_provenance.py",
+        }
+    ),
     "_04_Nucleo_Operativo/platform/shared/__init__.py": frozenset(
         {
             "tests/test_architecture_projection.py",

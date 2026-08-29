@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal, Mapping
 
-from _04_Nucleo_Operativo.processing_provenance import ROUTE_SUMMARY_SCHEMA
+from neocortex.foundation.processing_provenance import ROUTE_SUMMARY_SCHEMA
 
 
 VIDEO_ROUTE_VERSION = "video-route-v1"

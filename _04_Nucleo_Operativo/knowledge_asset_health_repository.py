@@ -23,7 +23,7 @@ from .document_catalog_schema import (
     CATALOG_SCHEMA_VERSION,
     document_catalog_schema_contract,
 )
-from .file_identity import encode_file_identity
+from neocortex.foundation.file_identity import encode_file_identity
 from .knowledge_asset_health_contracts import (
     MAX_KNOWLEDGE_ASSET_HEALTH_EXAMPLES,
     KnowledgeAssetFactSnapshot,

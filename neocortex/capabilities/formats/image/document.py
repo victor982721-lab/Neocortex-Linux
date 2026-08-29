@@ -46,7 +46,7 @@ from .policy import (
     OPERATIONAL_CONTEXT_HINTS,
     SAFETY_CONDITION_HINTS,
 )
-from _04_Nucleo_Operativo.processing_provenance import (
+from neocortex.foundation.processing_provenance import (
     build_processing_provenance,
     resolve_tesseract_runtime,
 )

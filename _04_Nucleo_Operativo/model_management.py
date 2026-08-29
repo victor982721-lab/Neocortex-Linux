@@ -9,7 +9,7 @@ from pathlib import Path
 
 from neocortex.platform_policy import current_platform_policy
 
-from .processing_provenance import distribution_component
+from neocortex.foundation.processing_provenance import distribution_component
 from .semantic_config import production_models
 from .semantic_preparation import (
     SemanticModelUnavailableError,

@@ -16,7 +16,7 @@ import xxhash
 
 from neocortex.deduplication import FileSnapshot
 
-from _04_Nucleo_Operativo.file_identity import file_key_from_snapshot as file_key
+from neocortex.foundation.file_identity import file_key_from_snapshot as file_key
 from .policy import DOCUMENT_OCR_TEXT_MAX_UTF8_BYTES
 from _04_Nucleo_Operativo.route_filters import CandidateSelection
 from _04_Nucleo_Operativo.sqlite_paths import readonly_sqlite_uri

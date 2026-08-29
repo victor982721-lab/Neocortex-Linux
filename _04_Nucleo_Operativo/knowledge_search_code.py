@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from .code_contracts import CodeSearchHit, CodeSearchQuery, CodeSearchRelation
-from .file_identity import FileIdentity
+from neocortex.foundation.file_identity import FileIdentity
 from .knowledge_contracts import (
     EvidenceMethod,
     EvidenceRef,

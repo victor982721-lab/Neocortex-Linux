@@ -21,7 +21,7 @@ from neocortex.deduplication.fingerprinting import FULL_ALGORITHM, stat_matches_
 from neocortex.deduplication.io import native_io_path
 from neocortex.platform_policy import sqlite_path_collation
 
-from .file_identity import FileIdentityError, decode_file_identity
+from neocortex.foundation.file_identity import FileIdentityError, decode_file_identity
 from .derivation_contracts import MaterializationRef
 from .knowledge_contracts import RevisionRef, RevisionState
 from .semantic_models import (

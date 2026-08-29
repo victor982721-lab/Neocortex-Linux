@@ -37,7 +37,7 @@ from .probe import probe_media
 from .state import audio_database, initialize_audio_state
 from .whisper import WhisperTranscriber, resolve_whisper_runtime
 from _04_Nucleo_Operativo.cancellation import CancellationToken
-from _04_Nucleo_Operativo.file_identity import file_key_from_snapshot as _file_key
+from neocortex.foundation.file_identity import file_key_from_snapshot as _file_key
 from _04_Nucleo_Operativo.memory_runtime import MemoryResourceLimits, WeightedMemoryGate
 from _04_Nucleo_Operativo.review import ReviewCandidate
 from _04_Nucleo_Operativo.state import FrameworkRouteState, ReviewCandidateReconciliation

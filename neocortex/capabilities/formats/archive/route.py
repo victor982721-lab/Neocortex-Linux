@@ -33,14 +33,14 @@ from _04_Nucleo_Operativo.bounded_subprocess import (
     run_bounded_capture,
 )
 from _04_Nucleo_Operativo.cancellation import CancellationToken
-from _04_Nucleo_Operativo.file_identity import file_key_from_snapshot
+from neocortex.foundation.file_identity import file_key_from_snapshot
 from neocortex.platform.zip_safety import (
     DEFAULT_MAX_CENTRAL_DIRECTORY_BYTES,
     ZipStructureError,
     inspect_zip_bytes,
     inspect_zip_stream,
 )
-from _04_Nucleo_Operativo.processing_provenance import (
+from neocortex.foundation.processing_provenance import (
     ProcessingProvenance,
     build_processing_provenance,
     distribution_component,

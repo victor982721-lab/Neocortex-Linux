@@ -16,9 +16,9 @@ from neocortex.progress import ProgressCallback, ProgressEvent, ProgressMetric, 
 
 from _04_Nucleo_Operativo.action_policy import same_snapshot
 from _04_Nucleo_Operativo.cancellation import CancellationToken
-from _04_Nucleo_Operativo.file_identity import file_key_from_snapshot
+from neocortex.foundation.file_identity import file_key_from_snapshot
 from _04_Nucleo_Operativo.ocr_profiles import OCR_PROFILE_CHOICES, OcrProfileName
-from _04_Nucleo_Operativo.processing_provenance import (
+from neocortex.foundation.processing_provenance import (
     ProcessingProvenance,
     build_processing_provenance,
     executable_component,

@@ -18,7 +18,7 @@ from contextlib import AbstractContextManager
 from types import TracebackType
 from typing import Protocol
 
-from .file_identity import FileIdentity, FileIdentityEncoding
+from neocortex.foundation.file_identity import FileIdentity, FileIdentityEncoding
 from .knowledge_contracts import (
     EvidenceMethod,
     EvidenceRef,

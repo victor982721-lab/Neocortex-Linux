@@ -11,7 +11,7 @@ from neocortex.deduplication import DedupIndex, FileChangedError, FileSnapshot
 from neocortex.platform_policy import sqlite_path_collation
 
 from _04_Nucleo_Operativo.cancellation import CancellationToken
-from _04_Nucleo_Operativo.file_identity import file_key_from_snapshot as file_key
+from neocortex.foundation.file_identity import file_key_from_snapshot as file_key
 from .pdf_cache import binary_fingerprint
 from .pdf_route_models import (
     PDF_PAGE_SEQUENCE_ERROR_LIMIT,

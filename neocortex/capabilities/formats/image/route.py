@@ -78,7 +78,7 @@ from .state import (
 )
 from _04_Nucleo_Operativo.memory_runtime import MemoryBudgetExceeded, MemoryHeadroomTimeout
 from _04_Nucleo_Operativo.ocr_profiles import OcrProfileName
-from _04_Nucleo_Operativo.processing_provenance import (
+from neocortex.foundation.processing_provenance import (
     ROUTE_SUMMARY_SCHEMA,
     ProcessingProvenance,
     build_processing_provenance,

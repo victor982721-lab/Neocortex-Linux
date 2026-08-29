@@ -12,7 +12,7 @@ from pathlib import Path
 
 from _04_Nucleo_Operativo.ocr_profiles import OcrProfileName, resolve_ocr_profile
 from .pdf_state import connect_pdf_state
-from _04_Nucleo_Operativo.processing_provenance import resolve_tesseract_runtime
+from neocortex.foundation.processing_provenance import resolve_tesseract_runtime
 
 
 # region [01] Result models

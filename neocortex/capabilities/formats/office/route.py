@@ -13,7 +13,7 @@ from neocortex.progress import ProgressCallback, ProgressEvent, ProgressMetric, 
 
 from _04_Nucleo_Operativo.action_policy import same_snapshot
 from _04_Nucleo_Operativo.cancellation import CancellationToken
-from _04_Nucleo_Operativo.file_identity import file_key_from_snapshot as _file_key
+from neocortex.foundation.file_identity import file_key_from_snapshot as _file_key
 from _04_Nucleo_Operativo.memory_runtime import MemoryResourceLimits, WeightedMemoryGate
 from _04_Nucleo_Operativo.review import ReviewCandidate
 from _04_Nucleo_Operativo.route_filters import CandidateSelection as CandidateSelection

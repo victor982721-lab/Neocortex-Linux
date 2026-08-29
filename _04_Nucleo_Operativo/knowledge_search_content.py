@@ -21,7 +21,7 @@ from neocortex.platform_policy import (
     physical_identity_scheme_for_birthtime,
 )
 
-from .file_identity import FileIdentity, FileIdentityEncoding
+from neocortex.foundation.file_identity import FileIdentity, FileIdentityEncoding
 from .knowledge_contracts import (
     MAX_EVIDENCE_IDENTIFIER_COMPONENT_CHARS,
     EvidenceMethod,

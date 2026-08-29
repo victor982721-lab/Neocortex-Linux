@@ -20,7 +20,7 @@ from .code_detection import LANGUAGE_EXTENSIONS
 from .code_schema import connect_code_state
 from .code_search import search_code
 from .document_catalog import document_catalog_database
-from .file_identity import FileIdentity, FileIdentityEncoding, FileIdentityError
+from neocortex.foundation.file_identity import FileIdentity, FileIdentityEncoding, FileIdentityError
 from .knowledge_contracts import (
     MAX_EVIDENCE_IDENTIFIER_COMPONENT_CHARS,
     EvidenceMethod,

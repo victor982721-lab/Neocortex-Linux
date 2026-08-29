@@ -40,7 +40,7 @@ from _04_Nucleo_Operativo.knowledge_contracts import (
     RevisionRef,
     RevisionState,
 )
-from _04_Nucleo_Operativo.file_identity import FileIdentityEncoding, decode_file_identity
+from neocortex.foundation.file_identity import FileIdentityEncoding, decode_file_identity
 from _04_Nucleo_Operativo.semantic_models import canonical_json, fingerprint_text
 from .text_state import TEXT_SCHEMA_VERSION, _validate_reader, text_database
 

@@ -46,7 +46,7 @@ from .document_catalog_schema import (
     validate_v6_document_catalog_schema,
 )
 from .cancellation import CancellationRequested
-from .file_identity import decode_file_identity
+from neocortex.foundation.file_identity import decode_file_identity
 from .sqlite_paths import readonly_sqlite_uri
 from .sqlite_schema_contract import (
     read_metadata_schema_version,

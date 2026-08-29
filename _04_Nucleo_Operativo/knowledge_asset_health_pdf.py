@@ -15,7 +15,7 @@ from neocortex.sqlite_schema_contract import (
     read_application_schema_version,
 )
 
-from .file_identity import encode_file_identity
+from neocortex.foundation.file_identity import encode_file_identity
 from .knowledge_asset_health_contracts import KnowledgeAssetIdentity
 from neocortex.capabilities.formats.pdf.pdf_schema import PDF_SCHEMA_VERSION, validate_pdf_schema
 from .sqlite_immutable import ImmutableSQLiteUnavailable, immutable_sqlite_database
