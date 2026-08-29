@@ -15,8 +15,10 @@ transitoria verificable, hasta retirar `_01_Enumeracion`, `_02_Deduplicacion`,
 
 - Checkout: `/home/winterboss/Neocortex/Repository`
 - SHA ejecutable aceptado: `a8083e5fcb740c1d632a7b02d7a8d7e692dee594`
-- Árbol verificado limpio en ese corte; `main` sigue sin publicar y está 39
-  commits delante de `origin/main`.
+- SHA final docs-only: `6725cdf077ee215abbbb7ab73cc63629cd9d05fa`; sólo actualiza este
+  handoff respecto del árbol ejecutable aceptado.
+- Árbol verificado limpio; `main` sigue sin publicar y está 40 commits delante
+  de `origin/main`.
 - Archive y DOCX viven físicamente en
   `neocortex/capabilities/formats/{archive,docx}`. Las fachadas
   `_04_Nucleo_Operativo` correspondientes son compatibilidad explícita; las
@@ -27,13 +29,14 @@ transitoria verificable, hasta retirar `_01_Enumeracion`, `_02_Deduplicacion`,
 ## Evidencia de aceptación y release
 
 - `Neocortex code validate --baseline 40aad1fd9e1797d5e94d136b1bbf842137e90a7c`
-  terminó `passed`: 17 barreras, 335 pruebas seleccionadas, Coverage 24/24,
-  experimentos, wheel, replay e identidades públicas. Receipt:
+  sobre `a8083e5` terminó `passed`: 17 barreras, 335 pruebas seleccionadas,
+  Coverage 24/24, experimentos, wheel, replay e identidades públicas. Receipt:
   `/home/winterboss/.local/state/Neocortex/self-analysis/validation-receipts/a8083e5fcb740c1d632a7b02d7a8d7e692dee594-08c4afb88f4b969fb4caeb8d4d26c10a7119bf0a2f5d7b5e85cb645d6ecef61a.json`
   (`sha256:257d9868c5919b7164b7ba6f2456c8c20d78e6624e687d7a5f6b713645e5752e`).
-- Release instalada y verificada: `0.9.0-a8083e5fcb74-cp314-linux-x86_64`,
-  pip `26.2.1`, Semgrep `1.172.0`; `current`, manifest y launcher declaran el
-  mismo SHA.
+- La release vigente se reconstruyó desde el SHA final docs-only:
+  `0.9.0-6725cdf077ee-cp314-linux-x86_64`, pip `26.2.1`, Semgrep `1.172.0`;
+  `release_linux.py verify` devolvió `verified=true` y current/manifest/launcher
+  coinciden.
 - E2E público instalado, sin `PYTHONPATH` ni `--apply`: una muestra DOCX real
   procesó un documento (`processed=1`, `new_documents=1`) y el replay reutilizó
   su resultado (`cache_hits=1`, `new_documents=0`), ambos con exit 0. Evidencia:
