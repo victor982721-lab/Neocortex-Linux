@@ -37,6 +37,7 @@ STATE_WRITER_MODULE = f"{PACKAGE}.framework_state_writer"
 MODELS_MODULE = f"{PACKAGE}.models"
 PDF_ROUTE_MODULE = f"{PACKAGE}.pdf_route"
 PDF_MODELS_MODULE = f"{PACKAGE}.pdf_route_models"
+PDF_MODELS_PRODUCT_MODULE = "neocortex.capabilities.formats.pdf.pdf_route_models"
 
 SELF_ANALYSIS_CONFIG_FIELDS = {
     "analysis_profile",
@@ -171,7 +172,7 @@ def test_static_contract_ports_replace_only_the_three_feedback_edges() -> None:
     assert MODELS_MODULE not in self_imports
     assert MODELS_MODULE not in writer_imports
     assert PDF_ROUTE_MODULE not in model_imports
-    assert PDF_MODELS_MODULE in model_imports
+    assert PDF_MODELS_PRODUCT_MODULE in model_imports
 
     config_port = _type_checking_protocol(SELF_ANALYSIS_MODULE, "FrameworkConfig")
     summary_port = _type_checking_protocol(STATE_WRITER_MODULE, "ActionSummary")
