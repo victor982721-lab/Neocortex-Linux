@@ -11,41 +11,42 @@ responsabilidades explícitas, límites de dependencia y compatibilidad
 transitoria verificable, hasta retirar `_01_Enumeracion`, `_02_Deduplicacion`,
 `_03_Progreso`, `_04_Nucleo_Operativo`, `_05_Interfaz` y `Orquestador.py`.
 
-## Corte Office aceptado
+## Corte PDF aceptado
 
 - Checkout: `/home/winterboss/Neocortex/Repository`
-- SHA ejecutable aceptado: `fcad813008e4369c1e03961b06f4075cc0aecdd1`
-- Árbol verificado limpio; `main` sigue sin publicar y está 49 commits delante
+- SHA ejecutable aceptado: `da6679221e3a2803664d382779d95714ac0231b4`
+- Árbol verificado limpio; `main` sigue sin publicar y está 53 commits delante
   de `origin/main`.
-- Archive, DOCX, Audio, Image y Office viven físicamente en
-  `neocortex/capabilities/formats/{archive,docx,audio,image,office}`. Las fachadas
+- Archive, DOCX, Audio, Image, Office y PDF viven físicamente en
+  `neocortex/capabilities/formats/{archive,docx,audio,image,office,pdf}`. Las fachadas
   `_04_Nucleo_Operativo` correspondientes son compatibilidad explícita; las
   sondas runtime están en `neocortex/capabilities/runtime.py`.
 - El registro de arquitectura conserva explícitos los cruces transitorios de
-  las cinco familias hacia foundation/core, pendientes de las cohortes de plataforma.
+  las seis familias hacia foundation/core, pendientes de la cohorte Video y
+  de las cohortes de plataforma.
 
 ## Evidencia de aceptación y release
 
-- `Neocortex code validate --baseline d0cd0d919e6b553ba8d13a54284d64c5d0666a65`
-  sobre `fcad813` terminó `passed`: 17 barreras, 335 pruebas seleccionadas,
+- `Neocortex code validate --baseline 70770bbd79746a3f8b87e91a25a2b2178f483c6e`
+  sobre `da66792` terminó `passed`: 17 barreras, 336 pruebas seleccionadas,
   Coverage 24/24, experimentos, wheel, replay e identidades públicas. Receipt:
-  `/home/winterboss/.local/state/Neocortex/self-analysis/validation-receipts/fcad813008e4369c1e03961b06f4075cc0aecdd1-81f4217e542abf3a01ce0705c1c4873f9d447e055c25e6b5fe87aa24bdd3d594.json`
-  (`sha256:c63923bc68b72689f4e859d9b8ea14b9909f1cee76b40e5282f12a7d4f90486b`).
+  `/home/winterboss/.local/state/Neocortex/self-analysis/validation-receipts/da6679221e3a2803664d382779d95714ac0231b4-fd2724eb342c41127bc01b386794a9fca01f0173347221cc6edcc74afaa5ce56.json`
+  (`sha256:ccb87ef30bfc7733112289c18f7fc57f72412002fc0b3e7a821343522c5b8925`).
 - La release vigente se reconstruyó desde el SHA ejecutable aceptado:
-  `0.9.0-fcad813008e4-cp314-linux-x86_64`, pip `26.2.1`, Semgrep `1.172.0`;
+  `0.9.0-da6679221e3a-cp314-linux-x86_64`, pip `26.2.1`, Semgrep `1.172.0`;
   `release_linux.py verify` devolvió `verified=true` y current/manifest/launcher
   coinciden.
-- E2E público instalado, sin `PYTHONPATH` ni `--apply`: un XLSX sintético
-  procesó un documento (`processed=1`, `extracted=1`, `errors=0`) y el replay
-  reutilizó su resultado (`processed=1`, `cache_hits=1`, `extracted=0`,
-  `errors=0`), ambos con exit 0. Evidencia:
-  `/home/winterboss/Documentos/NeoCortex/Auditorias/2026-08-29-neocortex-office-cohort/`.
+- E2E público instalado, sin `PYTHONPATH` ni `--apply`: un PDF sintético
+  procesó un documento (`processed=1`, `new_documents=1`, `extracted=1`,
+  `errors=0`) y el replay reutilizó su resultado (`processed=1`, `cache_hits=1`,
+  `new_documents=0`, `extracted=0`, `errors=0`), ambos con exit 0. Evidencia:
+  `/home/winterboss/Documentos/NeoCortex/Auditorias/2026-08-29-neocortex-pdf-cohort/`.
 
 ## Próximo corte, en orden
 
-1. Migrar PDF físicamente a `neocortex/capabilities/formats/pdf`, con sus
-   rutas de administración, derivación, OCR/aislamiento, fachadas y
-   consumidores separados de Office.
+1. Migrar Video físicamente a `neocortex/capabilities/formats/video`, con
+   frames, probe, OCR acotado, estado, fachadas y consumidores separados de
+   PDF.
 2. Mantener el lote material, ejecutar pruebas focales, congelar un commit,
    renovar trusted-static con la consulta pip-audit autorizada, ejecutar una sola
    aceptación canónica, instalar desde el SHA y repetir el E2E instalado.
