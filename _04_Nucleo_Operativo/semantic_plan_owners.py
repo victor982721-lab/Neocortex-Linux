@@ -314,7 +314,7 @@ def _validate_source_schema(
             validator=validate_code,
         )
     if source_kind == IMAGE_SOURCE_KIND:
-        from .capabilities.formats.image import state as image_state
+        from neocortex.capabilities.formats.image import state as image_state
 
         return _require_current_schema(
             connection,

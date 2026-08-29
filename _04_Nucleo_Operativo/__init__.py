@@ -49,9 +49,9 @@ if TYPE_CHECKING:
     from .global_resources import GlobalResourceCoordinator as GlobalResourceCoordinator
     from .global_resources import GlobalResourceLimits as GlobalResourceLimits
     from .global_resources import GlobalResourceSummary as GlobalResourceSummary
-    from .capabilities.formats.image.route import ImageRoute as ImageRoute
-    from .capabilities.formats.image.route import ImageRouteConfig as ImageRouteConfig
-    from .capabilities.formats.image.route import ImageRouteSummary as ImageRouteSummary
+    from neocortex.capabilities.formats.image.route import ImageRoute as ImageRoute
+    from neocortex.capabilities.formats.image.route import ImageRouteConfig as ImageRouteConfig
+    from neocortex.capabilities.formats.image.route import ImageRouteSummary as ImageRouteSummary
     from .knowledge_contracts import ContextBundle as ContextBundle
     from .knowledge_contracts import ContextContradictionRef as ContextContradictionRef
     from .knowledge_contracts import ContextEntityRef as ContextEntityRef

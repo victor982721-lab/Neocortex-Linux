@@ -26,8 +26,8 @@ if TYPE_CHECKING:
     from neocortex.capabilities.formats.docx.route import DocxRouteConfig as DocxRouteConfig
     from .document_catalog import CatalogUpdateSummary, SourceKind
     from .global_resources import GlobalResourceCoordinator
-    from .capabilities.formats.image.route import ImageRoute as ImageRoute
-    from .capabilities.formats.image.route import ImageRouteConfig as ImageRouteConfig
+    from neocortex.capabilities.formats.image.route import ImageRoute as ImageRoute
+    from neocortex.capabilities.formats.image.route import ImageRouteConfig as ImageRouteConfig
     from .models import FrameworkConfig
     from .capabilities.formats.office.route import OfficeRoute as OfficeRoute
     from .capabilities.formats.office.route import OfficeRouteConfig as OfficeRouteConfig
@@ -88,8 +88,8 @@ _DEFERRED_ROUTE_EXPORTS = {
     "PdfRouteConfig": (".pdf_route", "PdfRouteConfig"),
     "DocxRoute": ("neocortex.capabilities.formats.docx.route", "DocxRoute"),
     "DocxRouteConfig": ("neocortex.capabilities.formats.docx.route", "DocxRouteConfig"),
-    "ImageRoute": (".capabilities.formats.image.route", "ImageRoute"),
-    "ImageRouteConfig": (".capabilities.formats.image.route", "ImageRouteConfig"),
+    "ImageRoute": ("neocortex.capabilities.formats.image.route", "ImageRoute"),
+    "ImageRouteConfig": ("neocortex.capabilities.formats.image.route", "ImageRouteConfig"),
     "OfficeRoute": (".capabilities.formats.office.route", "OfficeRoute"),
     "OfficeRouteConfig": (".capabilities.formats.office.route", "OfficeRouteConfig"),
     "TextRoute": (".text_route", "TextRoute"),
@@ -175,7 +175,15 @@ def _run_image(context: RouteExecutionContext) -> object:
     from neocortex.deduplication import DedupIndex
 
     from .global_resources import CoordinatedMemoryGate
-    from .capabilities.formats.image.route import ImageRoute
+
+    compatibility_module = sys.modules.get(
+        "_04_Nucleo_Operativo.image_route"
+    ) or sys.modules.get("_04_Nucleo_Operativo.capabilities.formats.image.route")
+    if compatibility_module is None:
+        from neocortex.capabilities.formats.image.route import ImageRoute as _ImageRoute
+        route_type: Any = _ImageRoute
+    else:
+        route_type = compatibility_module.__dict__["ImageRoute"]
 
     config = context.config
     gate = (
@@ -184,7 +192,7 @@ def _run_image(context: RouteExecutionContext) -> object:
         else CoordinatedMemoryGate(context.resource_coordinator, "image")
     )
     with DedupIndex(config.dedup_database) as dedup_index:
-        return ImageRoute(
+        return route_type(
             image_route_config_from_framework(config, root=context.root),
             context.framework_state,
             context.run_id,

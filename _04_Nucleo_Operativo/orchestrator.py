@@ -75,7 +75,7 @@ if TYPE_CHECKING:
     from neocortex.capabilities.formats.audio.models import AudioRouteSummary
     from .code_contracts import CodeRouteSummary
     from neocortex.capabilities.formats.docx.route import DocxRouteSummary
-    from .capabilities.formats.image.route import ImageRouteSummary
+    from neocortex.capabilities.formats.image.route import ImageRouteSummary
     from .capabilities.formats.office.route import OfficeRouteSummary
     from .pdf_route import PdfRouteSummary
     from .text_route import TextRouteSummary
@@ -478,7 +478,7 @@ class FrameworkOrchestrator:
 
         if image_summary is None:
             return None
-        from .capabilities.formats.image.state import iter_explicit_adult_candidates
+        from neocortex.capabilities.formats.image.state import iter_explicit_adult_candidates
 
         if image_summary.processing_signature is None:
             return image_summary

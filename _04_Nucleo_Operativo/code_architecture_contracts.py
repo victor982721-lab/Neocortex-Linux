@@ -178,6 +178,29 @@ _NEOCORTEX_CORE_UI_ALLOWLIST = (
     ("neocortex.capabilities.formats.audio.state", "_04_Nucleo_Operativo.sqlite_schema_contract"),
     ("neocortex.capabilities.formats.audio.whisper", "_04_Nucleo_Operativo.cancellation"),
     ("neocortex.capabilities.formats.audio.whisper", "_04_Nucleo_Operativo.isolated_process"),
+    # Image completes the current OCR/visual format cohort; decoding, OCR and
+    # worker safety still consume these legacy foundation leaves until their
+    # shared platform owners receive canonical homes.
+    ("neocortex.capabilities.formats.image.adult", "_04_Nucleo_Operativo.processing_provenance"),
+    ("neocortex.capabilities.formats.image.document", "_04_Nucleo_Operativo.bounded_subprocess"),
+    ("neocortex.capabilities.formats.image.document", "_04_Nucleo_Operativo.ocr_image_preprocess"),
+    ("neocortex.capabilities.formats.image.document", "_04_Nucleo_Operativo.ocr_profiles"),
+    ("neocortex.capabilities.formats.image.document", "_04_Nucleo_Operativo.processing_provenance"),
+    ("neocortex.capabilities.formats.image.features", "_04_Nucleo_Operativo.memory_runtime"),
+    ("neocortex.capabilities.formats.image.isolation", "_04_Nucleo_Operativo.cancellation"),
+    ("neocortex.capabilities.formats.image.isolation", "_04_Nucleo_Operativo.isolated_process"),
+    ("neocortex.capabilities.formats.image.policy", "_04_Nucleo_Operativo.semantic_ontology"),
+    ("neocortex.capabilities.formats.image.route", "_04_Nucleo_Operativo.cancellation"),
+    ("neocortex.capabilities.formats.image.route", "_04_Nucleo_Operativo.memory_runtime"),
+    ("neocortex.capabilities.formats.image.route", "_04_Nucleo_Operativo.ocr_profiles"),
+    ("neocortex.capabilities.formats.image.route", "_04_Nucleo_Operativo.processing_provenance"),
+    ("neocortex.capabilities.formats.image.route", "_04_Nucleo_Operativo.review"),
+    ("neocortex.capabilities.formats.image.route", "_04_Nucleo_Operativo.route_filters"),
+    ("neocortex.capabilities.formats.image.route", "_04_Nucleo_Operativo.state"),
+    ("neocortex.capabilities.formats.image.state", "_04_Nucleo_Operativo.file_identity"),
+    ("neocortex.capabilities.formats.image.state", "_04_Nucleo_Operativo.route_filters"),
+    ("neocortex.capabilities.formats.image.state", "_04_Nucleo_Operativo.sqlite_paths"),
+    ("neocortex.capabilities.formats.image.state", "_04_Nucleo_Operativo.sqlite_schema_contract"),
 )
 
 # The v5 graph is acyclic.  Keep the baseline empty so that reintroducing even

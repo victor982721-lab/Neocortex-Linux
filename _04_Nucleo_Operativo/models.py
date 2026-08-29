@@ -39,7 +39,7 @@ if TYPE_CHECKING:
     )
     from neocortex.capabilities.formats.docx.route import DocxRouteSummary
     from .global_resources import GlobalResourceSummary
-    from .capabilities.formats.image.route import ImageRouteSummary
+    from neocortex.capabilities.formats.image.route import ImageRouteSummary
     from .capabilities.formats.office.route import OfficeRouteSummary
     from .pdf_route_models import PdfRouteSummary
     from .text_route import TextRouteSummary

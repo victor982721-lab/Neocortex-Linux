@@ -282,7 +282,7 @@ def _validate_text(connection: sqlite3.Connection) -> None:
 
 
 def _validate_image(connection: sqlite3.Connection) -> None:
-    from .capabilities.formats.image import state as image_state
+    from neocortex.capabilities.formats.image import state as image_state
 
     image_state._validate_current_image_schema(connection)
 

@@ -44,14 +44,14 @@ if TYPE_CHECKING:
     from .capabilities.formats.video import route as _video_contracts
     from neocortex.capabilities.formats.archive import route as _archive_contracts
     from neocortex.capabilities.formats.docx import models as _docx_contracts
-    from .capabilities.formats.image import route as _image_contracts
+    from neocortex.capabilities.formats.image import route as _image_contracts
 else:
     _application_contracts = _DeferredTypeModule(".models")
     _archive_contracts = _DeferredTypeModule("neocortex.capabilities.formats.archive.route")
     _audio_contracts = _DeferredTypeModule("neocortex.capabilities.formats.audio.models")
     _code_contracts = _DeferredTypeModule(".code_contracts")
     _docx_contracts = _DeferredTypeModule("neocortex.capabilities.formats.docx.models")
-    _image_contracts = _DeferredTypeModule(".capabilities.formats.image.route")
+    _image_contracts = _DeferredTypeModule("neocortex.capabilities.formats.image.route")
     _office_contracts = _DeferredTypeModule(".capabilities.formats.office.route")
     _pdf_contracts = _DeferredTypeModule(".pdf_route_models")
     _text_contracts = _DeferredTypeModule(".text_route")
@@ -303,9 +303,18 @@ def image_route_config_from_application(
 ) -> _image_contracts.ImageRouteConfig:
     """Project current values and the effective root into the image contract."""
 
-    from .capabilities.formats.image.route import ImageRouteConfig
+    compatibility_module = sys.modules.get(
+        "_04_Nucleo_Operativo.image_route"
+    ) or sys.modules.get("_04_Nucleo_Operativo.capabilities.formats.image.route")
+    if compatibility_module is None:
+        from neocortex.capabilities.formats.image.route import (
+            ImageRouteConfig as _ImageRouteConfig,
+        )
+        route_config_type: Any = _ImageRouteConfig
+    else:
+        route_config_type = compatibility_module.__dict__["ImageRouteConfig"]
 
-    return ImageRouteConfig(
+    return route_config_type(
         state_path=config.image_database,
         root=config.root if root is None else root,
         workers=config.image_workers,
