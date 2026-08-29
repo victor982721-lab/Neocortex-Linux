@@ -262,6 +262,23 @@ _NEOCORTEX_CORE_UI_ALLOWLIST = (
     ("neocortex.capabilities.formats.video.state", "_04_Nucleo_Operativo.file_identity"),
     ("neocortex.capabilities.formats.video.state", "_04_Nucleo_Operativo.semantic_lexical"),
     ("neocortex.capabilities.formats.video.state", "_04_Nucleo_Operativo.sqlite_schema_contract"),
+    # Text completes the format routes while derivation, FTS and control
+    # foundations remain in the legacy core during the staged migration.
+    ("neocortex.capabilities.formats.text.text_derivation_repository", "_04_Nucleo_Operativo.derivation_contracts"),
+    ("neocortex.capabilities.formats.text.text_derivation_repository", "_04_Nucleo_Operativo.file_identity"),
+    ("neocortex.capabilities.formats.text.text_derivation_repository", "_04_Nucleo_Operativo.knowledge_contracts"),
+    ("neocortex.capabilities.formats.text.text_derivation_repository", "_04_Nucleo_Operativo.semantic_models"),
+    ("neocortex.capabilities.formats.text.text_route", "_04_Nucleo_Operativo.bounded_subprocess"),
+    ("neocortex.capabilities.formats.text.text_route", "_04_Nucleo_Operativo.cancellation"),
+    ("neocortex.capabilities.formats.text.text_route", "_04_Nucleo_Operativo.derivation_contracts"),
+    ("neocortex.capabilities.formats.text.text_route", "_04_Nucleo_Operativo.file_identity"),
+    ("neocortex.capabilities.formats.text.text_route", "_04_Nucleo_Operativo.knowledge_contracts"),
+    ("neocortex.capabilities.formats.text.text_route", "_04_Nucleo_Operativo.locking"),
+    ("neocortex.capabilities.formats.text.text_route", "_04_Nucleo_Operativo.processing_provenance"),
+    ("neocortex.capabilities.formats.text.text_route", "_04_Nucleo_Operativo.route_filters"),
+    ("neocortex.capabilities.formats.text.text_route", "_04_Nucleo_Operativo.semantic_models"),
+    ("neocortex.capabilities.formats.text.text_state", "_04_Nucleo_Operativo.semantic_lexical"),
+    ("neocortex.capabilities.formats.text.text_state", "_04_Nucleo_Operativo.sqlite_schema_contract"),
 )
 
 # The v5 graph is acyclic.  Keep the baseline empty so that reintroducing even
