@@ -73,7 +73,8 @@ def memory_snapshot() -> MemorySnapshot:
 
         status = MemoryStatus()
         status.length = ctypes.sizeof(status)
-        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+        windll = getattr(ctypes, "windll", None)
+        if windll is not None and windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
             return MemorySnapshot(
                 int(status.total_physical),
                 int(status.available_physical),

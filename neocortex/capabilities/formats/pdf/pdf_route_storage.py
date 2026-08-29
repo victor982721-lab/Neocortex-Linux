@@ -87,7 +87,7 @@ class PdfRouteStorageMixin:
                     "WHERE file_key=?",
                     (key,),
                 )
-        elif old["status"] in {"partial", "error"} and (
+        elif old is not None and old["status"] in {"partial", "error"} and (
             old["status"] == "error"
             or old["error_type"]
             in {

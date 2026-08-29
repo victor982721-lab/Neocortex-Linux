@@ -168,7 +168,7 @@ class PdfPageSequenceAborted(RuntimeError):
 # The child never opens SQLite; only the parent promotes streamed results atomically.
 
 
-def _normalized_length(text: str) -> int:
+def _normalized_length(text: str) -> int:  # pyright: ignore[reportUnusedFunction]
     return len(" ".join(text.casefold().split()))
 
 
@@ -501,7 +501,9 @@ def _ocr_page_result(
     raise RuntimeError("unreachable adaptive OCR state")
 
 
-def _ocr_page(page, fitz, config: IsolatedExtractionConfig, ocr_admission) -> str:
+def _ocr_page(  # pyright: ignore[reportUnusedFunction]
+    page, fitz, config: IsolatedExtractionConfig, ocr_admission
+) -> str:
     """Compatibility wrapper for callers that only consume recognized text."""
 
     return _ocr_page_result(page, fitz, config, ocr_admission).text
