@@ -11,46 +11,43 @@ responsabilidades explícitas, límites de dependencia y compatibilidad
 transitoria verificable, hasta retirar `_01_Enumeracion`, `_02_Deduplicacion`,
 `_03_Progreso`, `_04_Nucleo_Operativo`, `_05_Interfaz` y `Orquestador.py`.
 
-## Corte aceptado
+## Corte DOCX aceptado
 
 - Checkout: `/home/winterboss/Neocortex/Repository`
-- SHA aceptado: `f92f4e9ff070a2098d8f01a48beb68696e5fe60d`
-- Árbol verificado limpio en ese corte; `main` sigue sin publicar y está 36
+- SHA ejecutable aceptado: `a8083e5fcb740c1d632a7b02d7a8d7e692dee594`
+- Árbol verificado limpio en ese corte; `main` sigue sin publicar y está 39
   commits delante de `origin/main`.
-- Archive vive en
-  `neocortex/capabilities/formats/archive/{models,route,state,text_worker}.py`;
-  los módulos `_04_Nucleo_Operativo` correspondientes son fachadas de
-  compatibilidad. Las sondas de capacidades viven en
-  `neocortex/capabilities/runtime.py` y el paquete ya no colisiona con un
-  módulo plano.
-- El registro de arquitectura conserva explícitos los 11 cruces transitorios
-  Archive → foundation/core; deben desaparecer al migrar esas hojas.
+- Archive y DOCX viven físicamente en
+  `neocortex/capabilities/formats/{archive,docx}`. Las fachadas
+  `_04_Nucleo_Operativo` correspondientes son compatibilidad explícita; las
+  sondas runtime están en `neocortex/capabilities/runtime.py`.
+- El registro de arquitectura conserva explícitos los cruces transitorios de
+  ambas familias hacia foundation/core, pendientes de las cohortes de plataforma.
 
 ## Evidencia de aceptación y release
 
-- `Neocortex code validate --baseline 23a9597374266887357f62c7b02ee3681e77b916`
+- `Neocortex code validate --baseline 40aad1fd9e1797d5e94d136b1bbf842137e90a7c`
   terminó `passed`: 17 barreras, 335 pruebas seleccionadas, Coverage 24/24,
   experimentos, wheel, replay e identidades públicas. Receipt:
-  `/home/winterboss/.local/state/Neocortex/self-analysis/validation-receipts/f92f4e9ff070a2098d8f01a48beb68696e5fe60d-bf89169b5fe639c837dd6a6e74a17c43992226656e704d2acdaa9aae6bdca62d.json`
-  (`sha256:7809a854f82525ad9a85302927a8f6b600356f29fbd9a85f0fd7b54e97eef6b2`).
-- Release instalada y verificada: `0.9.0-f92f4e9ff070-cp314-linux-x86_64`,
+  `/home/winterboss/.local/state/Neocortex/self-analysis/validation-receipts/a8083e5fcb740c1d632a7b02d7a8d7e692dee594-08c4afb88f4b969fb4caeb8d4d26c10a7119bf0a2f5d7b5e85cb645d6ecef61a.json`
+  (`sha256:257d9868c5919b7164b7ba6f2456c8c20d78e6624e687d7a5f6b713645e5752e`).
+- Release instalada y verificada: `0.9.0-a8083e5fcb74-cp314-linux-x86_64`,
   pip `26.2.1`, Semgrep `1.172.0`; `current`, manifest y launcher declaran el
   mismo SHA.
-- E2E instalado, sin `PYTHONPATH` ni `--apply`: primera corrida de 20 módulos
-  (`processed=20`) y replay de los mismos 20 (`processed=0`, `cache_hits=20`),
-  ambas con exit 0. Transcripts finales:
-  `/home/winterboss/Documentos/NeoCortex/Auditorias/2026-08-28-neocortex-archive-cohort/`.
+- E2E público instalado, sin `PYTHONPATH` ni `--apply`: una muestra DOCX real
+  procesó un documento (`processed=1`, `new_documents=1`) y el replay reutilizó
+  su resultado (`cache_hits=1`, `new_documents=0`), ambos con exit 0. Evidencia:
+  `/home/winterboss/Documentos/NeoCortex/Auditorias/2026-08-28-neocortex-docx-cohort/`.
 
 ## Próximo corte, en orden
 
-1. Migrar una familia de formatos siguiente, preferentemente DOCX, con
-   implementación física bajo `neocortex/capabilities/formats/docx`, fachadas
-   `_04` explícitas y consumidores productivos apuntando al namespace nuevo.
-2. Mantener un lote material coherente, ejecutar pruebas focales y congelar un
-   commit; después producir el snapshot trusted-static autorizado, ejecutar una
-   sola aceptación canónica, instalar desde el SHA y repetir el E2E instalado.
-3. No iniciar otra vertical mientras falte el receipt, la release o el E2E del
-   corte vigente; no hacer push hasta el cierre integral de `NEO-CORE-004`.
+1. Migrar Audio físicamente a `neocortex/capabilities/formats/audio`, con
+   workers, contratos, fachadas y consumidores separados de DOCX.
+2. Mantener el lote material, ejecutar pruebas focales, congelar un commit,
+   renovar trusted-static con la consulta pip-audit autorizada, ejecutar una sola
+   aceptación canónica, instalar desde el SHA y repetir el E2E instalado.
+3. No iniciar otra vertical mientras falte el receipt, release o E2E del corte;
+   no hacer push hasta el cierre integral de `NEO-CORE-004`.
 
 ## Límites
 
