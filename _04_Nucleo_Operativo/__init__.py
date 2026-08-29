@@ -84,9 +84,9 @@ if TYPE_CHECKING:
     from .models import InitialRunResult as InitialRunResult
     from .models import RouteOnlyRunResult as RouteOnlyRunResult
     from .models import SelfAnalysisRunResult as SelfAnalysisRunResult
-    from .capabilities.formats.office.route import OfficeRoute as OfficeRoute
-    from .capabilities.formats.office.route import OfficeRouteConfig as OfficeRouteConfig
-    from .capabilities.formats.office.route import OfficeRouteSummary as OfficeRouteSummary
+    from neocortex.capabilities.formats.office.route import OfficeRoute as OfficeRoute
+    from neocortex.capabilities.formats.office.route import OfficeRouteConfig as OfficeRouteConfig
+    from neocortex.capabilities.formats.office.route import OfficeRouteSummary as OfficeRouteSummary
     from .orchestrator import FrameworkOrchestrator as FrameworkOrchestrator
     from .pdf_admin import PdfDoctorReport as PdfDoctorReport
     from .pdf_admin import PdfVerifyReport as PdfVerifyReport
@@ -246,9 +246,9 @@ _EXPORTS: Final[dict[str, tuple[str, str]]] = {
     "search_docx_state": ("neocortex.capabilities.formats.docx.route", "search_docx_state"),
     "doctor_pdf_runtime": (".pdf_admin", "doctor_pdf_runtime"),
     "InitialRunResult": (".models", "InitialRunResult"),
-    "OfficeRoute": (".capabilities.formats.office.route", "OfficeRoute"),
-    "OfficeRouteConfig": (".capabilities.formats.office.route", "OfficeRouteConfig"),
-    "OfficeRouteSummary": (".capabilities.formats.office.route", "OfficeRouteSummary"),
+    "OfficeRoute": ("neocortex.capabilities.formats.office.route", "OfficeRoute"),
+    "OfficeRouteConfig": ("neocortex.capabilities.formats.office.route", "OfficeRouteConfig"),
+    "OfficeRouteSummary": ("neocortex.capabilities.formats.office.route", "OfficeRouteSummary"),
     "RouteOnlyRunResult": (".models", "RouteOnlyRunResult"),
     "SelfAnalysisRunResult": (".models", "SelfAnalysisRunResult"),
     "StageDescriptor": (".derivation_contracts", "StageDescriptor"),

@@ -201,6 +201,21 @@ _NEOCORTEX_CORE_UI_ALLOWLIST = (
     ("neocortex.capabilities.formats.image.state", "_04_Nucleo_Operativo.route_filters"),
     ("neocortex.capabilities.formats.image.state", "_04_Nucleo_Operativo.sqlite_paths"),
     ("neocortex.capabilities.formats.image.state", "_04_Nucleo_Operativo.sqlite_schema_contract"),
+    # Office follows the same explicit transition pattern; legacy ZIP safety,
+    # extraction workers and route/state foundations remain declared seams.
+    ("neocortex.capabilities.formats.office.extraction", "_04_Nucleo_Operativo.platform.shared.zip_safety"),
+    ("neocortex.capabilities.formats.office.legacy_worker", "_04_Nucleo_Operativo.bounded_subprocess"),
+    ("neocortex.capabilities.formats.office.models", "_04_Nucleo_Operativo.processing_provenance"),
+    ("neocortex.capabilities.formats.office.models", "_04_Nucleo_Operativo.route_filters"),
+    ("neocortex.capabilities.formats.office.route", "_04_Nucleo_Operativo.action_policy"),
+    ("neocortex.capabilities.formats.office.route", "_04_Nucleo_Operativo.cancellation"),
+    ("neocortex.capabilities.formats.office.route", "_04_Nucleo_Operativo.file_identity"),
+    ("neocortex.capabilities.formats.office.route", "_04_Nucleo_Operativo.memory_runtime"),
+    ("neocortex.capabilities.formats.office.route", "_04_Nucleo_Operativo.review"),
+    ("neocortex.capabilities.formats.office.route", "_04_Nucleo_Operativo.route_filters"),
+    ("neocortex.capabilities.formats.office.route", "_04_Nucleo_Operativo.state"),
+    ("neocortex.capabilities.formats.office.state", "_04_Nucleo_Operativo.file_identity"),
+    ("neocortex.capabilities.formats.office.state", "_04_Nucleo_Operativo.sqlite_schema_contract"),
 )
 
 # The v5 graph is acyclic.  Keep the baseline empty so that reintroducing even

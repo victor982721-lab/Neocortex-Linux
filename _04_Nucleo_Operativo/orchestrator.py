@@ -76,7 +76,7 @@ if TYPE_CHECKING:
     from .code_contracts import CodeRouteSummary
     from neocortex.capabilities.formats.docx.route import DocxRouteSummary
     from neocortex.capabilities.formats.image.route import ImageRouteSummary
-    from .capabilities.formats.office.route import OfficeRouteSummary
+    from neocortex.capabilities.formats.office.route import OfficeRouteSummary
     from .pdf_route import PdfRouteSummary
     from .text_route import TextRouteSummary
     from .capabilities.formats.video.models import VideoRouteSummary

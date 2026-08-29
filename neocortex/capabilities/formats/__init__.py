@@ -6,5 +6,6 @@ from . import archive as archive
 from . import audio as audio
 from . import docx as docx
 from . import image as image
+from . import office as office
 
-__all__ = ["archive", "audio", "docx", "image"]
+__all__ = ["archive", "audio", "docx", "image", "office"]

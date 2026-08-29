@@ -19,7 +19,7 @@ from .code_schema import CODE_SCHEMA_VERSION
 from .document_catalog_schema import CATALOG_SCHEMA_VERSION
 from neocortex.capabilities.formats.docx.schema import DOCX_SCHEMA_VERSION
 from .framework_schema import SCHEMA_VERSION as FRAMEWORK_SCHEMA_VERSION
-from .capabilities.formats.office.state import OFFICE_SCHEMA_VERSION
+from neocortex.capabilities.formats.office.state import OFFICE_SCHEMA_VERSION
 from .pdf_schema import PDF_SCHEMA_VERSION
 from .semantic_schema import SEMANTIC_SCHEMA_VERSION
 from .text_state import TEXT_SCHEMA_VERSION

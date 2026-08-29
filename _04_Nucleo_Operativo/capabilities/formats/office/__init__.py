@@ -1,1 +1,1 @@
-"""Import-light canonical namespace for the Office capability."""
+"""Import-light compatibility namespace for the relocated Office capability."""

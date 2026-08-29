@@ -38,7 +38,7 @@ if TYPE_CHECKING:
     from . import code_contracts as _code_contracts
     from . import global_resources as _resource_contracts
     from . import models as _application_contracts
-    from .capabilities.formats.office import route as _office_contracts
+    from neocortex.capabilities.formats.office import route as _office_contracts
     from . import pdf_route_models as _pdf_contracts
     from . import text_route as _text_contracts
     from .capabilities.formats.video import route as _video_contracts
@@ -52,7 +52,7 @@ else:
     _code_contracts = _DeferredTypeModule(".code_contracts")
     _docx_contracts = _DeferredTypeModule("neocortex.capabilities.formats.docx.models")
     _image_contracts = _DeferredTypeModule("neocortex.capabilities.formats.image.route")
-    _office_contracts = _DeferredTypeModule(".capabilities.formats.office.route")
+    _office_contracts = _DeferredTypeModule("neocortex.capabilities.formats.office.route")
     _pdf_contracts = _DeferredTypeModule(".pdf_route_models")
     _text_contracts = _DeferredTypeModule(".text_route")
     _video_contracts = _DeferredTypeModule(".capabilities.formats.video.route")
@@ -341,9 +341,18 @@ def office_route_config_from_application(
 ) -> _office_contracts.OfficeRouteConfig:
     """Project current application values into the Office owner's contract."""
 
-    from .capabilities.formats.office.route import OfficeRouteConfig
+    compatibility_module = sys.modules.get(
+        "_04_Nucleo_Operativo.office_route"
+    ) or sys.modules.get("_04_Nucleo_Operativo.capabilities.formats.office.route")
+    if compatibility_module is None:
+        from neocortex.capabilities.formats.office.route import (
+            OfficeRouteConfig as _OfficeRouteConfig,
+        )
+        route_config_type: Any = _OfficeRouteConfig
+    else:
+        route_config_type = compatibility_module.__dict__["OfficeRouteConfig"]
 
-    return OfficeRouteConfig(
+    return route_config_type(
         state_path=config.office_database,
         max_file_bytes=config.office_max_file_bytes,
         max_documents=config.office_max_documents,

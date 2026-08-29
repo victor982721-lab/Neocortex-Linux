@@ -29,8 +29,8 @@ if TYPE_CHECKING:
     from neocortex.capabilities.formats.image.route import ImageRoute as ImageRoute
     from neocortex.capabilities.formats.image.route import ImageRouteConfig as ImageRouteConfig
     from .models import FrameworkConfig
-    from .capabilities.formats.office.route import OfficeRoute as OfficeRoute
-    from .capabilities.formats.office.route import OfficeRouteConfig as OfficeRouteConfig
+    from neocortex.capabilities.formats.office.route import OfficeRoute as OfficeRoute
+    from neocortex.capabilities.formats.office.route import OfficeRouteConfig as OfficeRouteConfig
     from .pdf_route import PdfRoute as PdfRoute
     from .pdf_route import PdfRouteConfig as PdfRouteConfig
     from .state import FrameworkRouteState
@@ -90,8 +90,8 @@ _DEFERRED_ROUTE_EXPORTS = {
     "DocxRouteConfig": ("neocortex.capabilities.formats.docx.route", "DocxRouteConfig"),
     "ImageRoute": ("neocortex.capabilities.formats.image.route", "ImageRoute"),
     "ImageRouteConfig": ("neocortex.capabilities.formats.image.route", "ImageRouteConfig"),
-    "OfficeRoute": (".capabilities.formats.office.route", "OfficeRoute"),
-    "OfficeRouteConfig": (".capabilities.formats.office.route", "OfficeRouteConfig"),
+    "OfficeRoute": ("neocortex.capabilities.formats.office.route", "OfficeRoute"),
+    "OfficeRouteConfig": ("neocortex.capabilities.formats.office.route", "OfficeRouteConfig"),
     "TextRoute": (".text_route", "TextRoute"),
     "TextRouteConfig": (".text_route", "TextRouteConfig"),
     "VideoRoute": (".capabilities.formats.video.route", "VideoRoute"),
@@ -252,7 +252,15 @@ def office_route_config_from_framework(
 
 def _run_office(context: RouteExecutionContext) -> object:
     from .global_resources import CoordinatedMemoryGate
-    from .capabilities.formats.office.route import OfficeRoute
+
+    compatibility_module = sys.modules.get(
+        "_04_Nucleo_Operativo.office_route"
+    ) or sys.modules.get("_04_Nucleo_Operativo.capabilities.formats.office.route")
+    if compatibility_module is None:
+        from neocortex.capabilities.formats.office.route import OfficeRoute as _OfficeRoute
+        route_type: Any = _OfficeRoute
+    else:
+        route_type = compatibility_module.__dict__["OfficeRoute"]
 
     config = context.config
     gate = (
@@ -260,7 +268,7 @@ def _run_office(context: RouteExecutionContext) -> object:
         if context.resource_coordinator is None
         else CoordinatedMemoryGate(context.resource_coordinator, "office")
     )
-    summary = OfficeRoute(
+    summary = route_type(
         office_route_config_from_framework(config),
         context.framework_state,
         context.run_id,
