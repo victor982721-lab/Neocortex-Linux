@@ -103,7 +103,7 @@ _TEXT_EXTRACT_STAGE_VERSION = "2"
 # hash; the source characterization requires updating it when those symbols
 # change, which in turn changes every affected processing signature.
 _TEXT_EXTRACTOR_CONTRACT_SHA256 = (
-    "sha256:76a299fd4ce00e7715c651e63d7e7294b94c9a9b4bea0a65b7176b459f8e350b"
+    "sha256:cebf563db8020f377ae93253435f904ebd6dfb869cf6644ddaf3583d0fb0aa8a"
 )
 _TEXT_IMPLEMENTATION_SCHEMA = "neocortex.text-implementation-contract/v1"
 _TEXT_DISTRIBUTION_NAME = "neocortex-framework"
@@ -859,7 +859,7 @@ def _legacy_office_text(
     command = (
         sys.executable,
         "-m",
-        "_04_Nucleo_Operativo.capabilities.formats.office.legacy_worker",
+        "neocortex.capabilities.formats.office.legacy_worker",
         "--kind",
         kind,
         "--max-input-bytes",

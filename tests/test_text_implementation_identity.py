@@ -23,7 +23,7 @@ from _04_Nucleo_Operativo.text_route import TextRoute, TextRouteConfig
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 _EXTRACTOR_ROOTS = {
     "_04_Nucleo_Operativo/text_route.py": ("_extract", "_extractor_selector"),
-    "_04_Nucleo_Operativo/capabilities/formats/office/legacy_worker.py": ("main",),
+    "neocortex/capabilities/formats/office/legacy_worker.py": ("main",),
 }
 
 
