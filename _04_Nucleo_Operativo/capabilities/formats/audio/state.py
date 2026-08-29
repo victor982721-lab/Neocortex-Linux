@@ -12,6 +12,7 @@ if TYPE_CHECKING:
         _AUDIO_V1_SCHEMA_DDL as _AUDIO_V1_SCHEMA_DDL,
         _audio_schema_contract as _audio_schema_contract,
         _audio_schema_ddl as _audio_schema_ddl,
+        _migrate_audio_v1_path_collation as _migrate_audio_v1_path_collation,
         audio_database as audio_database,
         initialize_audio_state as initialize_audio_state,
     )

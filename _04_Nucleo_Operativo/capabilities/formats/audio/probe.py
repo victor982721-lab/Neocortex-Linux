@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from neocortex.capabilities.formats.audio.probe import (
+        MAX_FFPROBE_OUTPUT_BYTES as MAX_FFPROBE_OUTPUT_BYTES,
         probe_media as probe_media,
         resolve_ffprobe as resolve_ffprobe,
     )
