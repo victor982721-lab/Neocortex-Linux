@@ -15,8 +15,9 @@ transitoria verificable, hasta retirar `_01_Enumeracion`, `_02_Deduplicacion`,
 
 - Checkout: `/home/winterboss/Neocortex/Repository`
 - SHA ejecutable aceptado: `ee4bdec1359fab0cc9fed18af6973f57f792bf33`
-- Árbol verificado limpio; `main` sigue sin publicar y el push permanece
-  reservado al cierre integral de `NEO-CORE-004`.
+- Árbol verificado limpio; `main` sigue sin publicar. El snapshot de la cohorte
+  foundation quedó publicado únicamente en `codex/neocortex-local-20260829`;
+  no hay merge ni push a `main`.
 - Archive, DOCX, Audio, Image, Office, PDF, Video y Text viven físicamente en
   `neocortex/capabilities/formats/{archive,docx,audio,image,office,pdf,text,video}`.
   Las fachadas `_04_Nucleo_Operativo` correspondientes son compatibilidad
@@ -50,34 +51,39 @@ transitoria verificable, hasta retirar `_01_Enumeracion`, `_02_Deduplicacion`,
   `members=1`, `indexed=1` y `errors=0`, ambos con exit 0. Evidencia:
   `/home/winterboss/Documentos/NeoCortex/Auditorias/2026-08-29-neocortex-platform-cohort/`.
 
-## Candidato foundation pausado
+## Corte foundation aceptado en rama de snapshot
 
 - El candidato `c183afc088aaa78d82efcd0841085568d543416a` mueve
   `file_identity.py` y `processing_provenance.py` a `neocortex/foundation` y
-  deja las fachadas legacy verificables.
-- Sus pruebas focales, el diagnóstico de arquitectura y las regresiones de
-  rutas pasaron, pero la aceptación canónica fue interrumpida por solicitud de
-  Víctor durante `trusted-deep` (shard 19/24 completado). El log terminó con
-  `code_validation_resource_boundary_interrupted`; no existe receipt, release
-  ni E2E de foundation aceptado.
-- Evidencia durable de la pausa:
+  deja las fachadas legacy verificables. La aceptación canónica del corte
+  quedó ligada al árbol `1ed6be61bcfdf7bd2c3239ae22e96f6d66c52b4d`, con
+  baseline `ff58f0ed7d1e230d3d3a1bcaa7eff488c5cd1c68`, `status=passed`, 17
+  barreras, 5800 pruebas recolectadas y Coverage trusted-deep de 24 shards.
+- Receipt: `/home/winterboss/.local/state/Neocortex/self-analysis/validation-receipts/1ed6be61bcfdf7bd2c3239ae22e96f6d66c52b4d-59545ac64382e64d27ae18c0f115558d67607fc87eeff4ffea3b28ae2e334f40.json`,
+  digest `sha256:53da4228853257451405e525ade378646eb053fe0044870e8bb695a3f7529358`.
+- La release `0.9.0-1ed6be61bcfd-cp314-linux-x86_64` se instaló y verificó con
+  `current`, manifiesto y launcher alineados. El E2E desde
+  `/home/winterboss/.local/bin/Neocortex` procesó un ZIP sintético en la primera
+  corrida (`processed=1`, `cache_hits=0`, `complete=1`, `members=1`,
+  `indexed=1`, `errors=0`) y en el replay (`processed=1`, `cache_hits=1`,
+  `complete=1`, `members=1`, `indexed=1`, `errors=0`), ambos con exit 0.
+- El snapshot se publicó en `origin/codex/neocortex-local-20260829` con SHA
+  `1ed6be61bcfdf7bd2c3239ae22e96f6d66c52b4d`; `origin/main` permanece en
+  `d1adefc4cdafbd16a97e0f40bd349827fc74f98e`.
+- Evidencia durable:
   `/home/winterboss/Documentos/NeoCortex/Auditorias/2026-08-29-neocortex-foundation-cohort/summary.json`.
 
 ## Próximo corte, en orden
 
-1. Cuando Víctor indique continuar, reanudar una sola aceptación canónica del
-   candidato foundation `c183afc088aaa78d82efcd0841085568d543416a` desde el
-   baseline `ff58f0ed7d1e230d3d3a1bcaa7eff488c5cd1c68`; no inferir aceptación
-   desde la corrida interrumpida ni abrir otra cohorte antes de su receipt,
-   release y E2E.
-2. Mantener el lote material, ejecutar pruebas focales, congelar un commit,
-   renovar trusted-static con la consulta pip-audit autorizada, ejecutar una sola
-   aceptación canónica, instalar desde el SHA y repetir el E2E instalado.
-3. Después continuar por las responsabilidades restantes de `_04_Nucleo_Operativo`
-   (runtime, workflow, knowledge, semantic y code) hasta retirar las raíces
-   numeradas, sin iniciar un nuevo corte mientras falte el receipt, release o
-   E2E del corte vigente y sin hacer push hasta el cierre integral de
-   `NEO-CORE-004`.
+1. Mantener como evidencia vigente el receipt, la release y el E2E del corte
+   foundation aceptado; la corrida interrumpida anterior no se usa como prueba.
+2. Cuando Víctor indique continuar la reorganización integral, abrir el siguiente
+   lote material de `_04_Nucleo_Operativo` (runtime, workflow, knowledge,
+   semantic o code) y repetir la secuencia focal → commit → aceptación
+   canónica → release → E2E.
+3. Conservar `main` sin merge ni push hasta el cierre integral de
+   `NEO-CORE-004`; el snapshot de la rama sirve para revisión y trazabilidad,
+   no equivale a la integración final.
 
 ## Límites
 
