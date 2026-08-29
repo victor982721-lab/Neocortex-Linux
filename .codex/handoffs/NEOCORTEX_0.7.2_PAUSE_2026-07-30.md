@@ -1,6 +1,6 @@
 # NeoCortex — handoff operativo vigente
 
-> Actualizado: 2026-08-28 CST. El basename es histórico y permanece estable.
+> Actualizado: 2026-08-29 CST. El basename es histórico y permanece estable.
 > `~/.codex/PENDIENTES.md` conserva el compromiso operativo; este archivo
 > describe sólo la frontera técnica de reanudación.
 
@@ -11,40 +11,40 @@ responsabilidades explícitas, límites de dependencia y compatibilidad
 transitoria verificable, hasta retirar `_01_Enumeracion`, `_02_Deduplicacion`,
 `_03_Progreso`, `_04_Nucleo_Operativo`, `_05_Interfaz` y `Orquestador.py`.
 
-## Corte Audio aceptado
+## Corte Image aceptado
 
 - Checkout: `/home/winterboss/Neocortex/Repository`
-- SHA ejecutable aceptado: `8b5191b4bb8bdd4484b810acc37904667614258f`
-- Árbol verificado limpio; `main` sigue sin publicar y está 43 commits delante
+- SHA ejecutable aceptado: `cf431f8bd01fcc97e1bbbaf14db094a8bf9e8c2b`
+- Árbol verificado limpio; `main` sigue sin publicar y está 46 commits delante
   de `origin/main`.
-- Archive, DOCX y Audio viven físicamente en
-  `neocortex/capabilities/formats/{archive,docx,audio}`. Las fachadas
+- Archive, DOCX, Audio e Image viven físicamente en
+  `neocortex/capabilities/formats/{archive,docx,audio,image}`. Las fachadas
   `_04_Nucleo_Operativo` correspondientes son compatibilidad explícita; las
   sondas runtime están en `neocortex/capabilities/runtime.py`.
 - El registro de arquitectura conserva explícitos los cruces transitorios de
-  las tres familias hacia foundation/core, pendientes de las cohortes de plataforma.
+  las cuatro familias hacia foundation/core, pendientes de las cohortes de plataforma.
 
 ## Evidencia de aceptación y release
 
-- `Neocortex code validate --baseline 77e432f23202c9e8fd048123755f8dad16c36760`
-  sobre `8b5191b` terminó `passed`: 17 barreras, 335 pruebas seleccionadas,
+- `Neocortex code validate --baseline 49498351f88d489cae13d476747e1e187096e0fa`
+  sobre `cf431f8` terminó `passed`: 17 barreras, 335 pruebas seleccionadas,
   Coverage 24/24, experimentos, wheel, replay e identidades públicas. Receipt:
-  `/home/winterboss/.local/state/Neocortex/self-analysis/validation-receipts/8b5191b4bb8bdd4484b810acc37904667614258f-0f0eb93677950c2f6e9c1b851654bfb2cd72ccbe0294754672863d0dd133cfd2.json`
-  (`sha256:6bac865288b9399f97e7568dd2c0cf78c2e648307f80d4aa890644f57dd673fc`).
+  `/home/winterboss/.local/state/Neocortex/self-analysis/validation-receipts/cf431f8bd01fcc97e1bbbaf14db094a8bf9e8c2b-8869ef385e0f5cba461170faa8cee7cb77f917946c8f54134458d91270f57d4b.json`
+  (`sha256:a7a9c2a3b070e9de6eff55549490dc272459fde8c867110aee7f4cc53634d52c`).
 - La release vigente se reconstruyó desde el SHA ejecutable aceptado:
-  `0.9.0-8b5191b4bb8b-cp314-linux-x86_64`, pip `26.2.1`, Semgrep `1.172.0`;
+  `0.9.0-cf431f8bd01f-cp314-linux-x86_64`, pip `26.2.1`, Semgrep `1.172.0`;
   `release_linux.py verify` devolvió `verified=true` y current/manifest/launcher
   coinciden.
-- E2E público instalado, sin `PYTHONPATH` ni `--apply`: un WAV sintético
-  procesó un archivo (`processed=1`, `cache_hits=0`, `errors=0`) y el replay
-  reutilizó su resultado (`processed=1`, `cache_hits=1`, `errors=0`), ambos con
-  exit 0. Evidencia:
-  `/home/winterboss/Documentos/NeoCortex/Auditorias/2026-08-28-neocortex-audio-cohort/`.
+- E2E público instalado, sin `PYTHONPATH` ni `--apply`: un PNG sintético
+  procesó una imagen (`processed=1`, `cache_hits=0`, `new_images=1`, `errors=0`)
+  y el replay reutilizó su resultado (`processed=1`, `cache_hits=1`,
+  `new_images=0`, `errors=0`), ambos con exit 0. Evidencia:
+  `/home/winterboss/Documentos/NeoCortex/Auditorias/2026-08-29-neocortex-image-cohort/`.
 
 ## Próximo corte, en orden
 
-1. Migrar Image físicamente a `neocortex/capabilities/formats/image`, con OCR,
-   clasificación, contratos, fachadas y consumidores separados de Audio.
+1. Migrar Office físicamente a `neocortex/capabilities/formats/office`, con
+   extracción XLSX, contratos, fachadas y consumidores separados de Image.
 2. Mantener el lote material, ejecutar pruebas focales, congelar un commit,
    renovar trusted-static con la consulta pip-audit autorizada, ejecutar una sola
    aceptación canónica, instalar desde el SHA y repetir el E2E instalado.
