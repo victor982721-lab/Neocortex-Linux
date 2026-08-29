@@ -8,5 +8,6 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from neocortex.capabilities.formats.image.route import *  # noqa: F403
+    from neocortex.capabilities.formats.image.route import _same_snapshot as _same_snapshot
 else:
     sys.modules[__name__] = import_module("neocortex.capabilities.formats.image.route")
