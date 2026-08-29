@@ -204,6 +204,13 @@ _SOURCE_BOUNDARY_TESTS = {
             "tests/test_format_module_move_compatibility.py",
         }
     ),
+    "neocortex/platform/__init__.py": frozenset(
+        {
+            "tests/test_capability_registry.py",
+            "tests/test_format_module_move_compatibility.py",
+            "tests/test_platform_namespace_migration.py",
+        }
+    ),
     "_04_Nucleo_Operativo/platform/shared/__init__.py": frozenset(
         {
             "tests/test_architecture_projection.py",
@@ -239,12 +246,35 @@ _SOURCE_BOUNDARY_TESTS = {
             "tests/test_quality_gate.py",
         }
     ),
+    "neocortex/platform/architecture_projection.py": frozenset(
+        {
+            "tests/test_architecture_projection.py",
+            "tests/test_code_architecture_contracts.py",
+            "tests/test_platform_namespace_migration.py",
+            "tests/test_quality_gate.py",
+        }
+    ),
     "_04_Nucleo_Operativo/platform/shared/capability_registry.py": frozenset(
         {
             "tests/test_capability_registry.py",
             "tests/test_code_change_validation.py",
             "tests/test_format_module_move_compatibility.py",
             "tests/test_logical_owner_contracts.py",
+        }
+    ),
+    "neocortex/platform/capability_registry.py": frozenset(
+        {
+            "tests/test_capability_registry.py",
+            "tests/test_code_change_validation.py",
+            "tests/test_format_module_move_compatibility.py",
+            "tests/test_logical_owner_contracts.py",
+            "tests/test_platform_namespace_migration.py",
+        }
+    ),
+    "neocortex/platform/capability_registry_specs.py": frozenset(
+        {
+            "tests/test_capability_registry.py",
+            "tests/test_platform_namespace_migration.py",
         }
     ),
     "_04_Nucleo_Operativo/content_types.py": frozenset(
@@ -263,6 +293,15 @@ _SOURCE_BOUNDARY_TESTS = {
             "tests/test_video_content_types.py",
         }
     ),
+    "neocortex/platform/content_types.py": frozenset(
+        {
+            "tests/test_bounded_io_refactors.py",
+            "tests/test_format_module_move_compatibility.py",
+            "tests/test_framework_actions.py",
+            "tests/test_platform_namespace_migration.py",
+            "tests/test_video_content_types.py",
+        }
+    ),
     "_04_Nucleo_Operativo/zip_safety.py": frozenset(
         {
             "tests/test_bounded_io_refactors.py",
@@ -274,6 +313,14 @@ _SOURCE_BOUNDARY_TESTS = {
         {
             "tests/test_bounded_io_refactors.py",
             "tests/test_format_module_move_compatibility.py",
+            "tests/test_zip_safety.py",
+        }
+    ),
+    "neocortex/platform/zip_safety.py": frozenset(
+        {
+            "tests/test_bounded_io_refactors.py",
+            "tests/test_format_module_move_compatibility.py",
+            "tests/test_platform_namespace_migration.py",
             "tests/test_zip_safety.py",
         }
     ),
