@@ -36,8 +36,8 @@ if TYPE_CHECKING:
     from .state import FrameworkRouteState
     from .text_route import TextRoute as TextRoute
     from .text_route import TextRouteConfig as TextRouteConfig
-    from .capabilities.formats.video.route import VideoRoute as VideoRoute
-    from .capabilities.formats.video.route import VideoRouteConfig as VideoRouteConfig
+    from neocortex.capabilities.formats.video.route import VideoRoute as VideoRoute
+    from neocortex.capabilities.formats.video.route import VideoRouteConfig as VideoRouteConfig
 
 
 # region [01] Generic route contracts and selection reexports
@@ -94,8 +94,8 @@ _DEFERRED_ROUTE_EXPORTS = {
     "OfficeRouteConfig": ("neocortex.capabilities.formats.office.route", "OfficeRouteConfig"),
     "TextRoute": (".text_route", "TextRoute"),
     "TextRouteConfig": (".text_route", "TextRouteConfig"),
-    "VideoRoute": (".capabilities.formats.video.route", "VideoRoute"),
-    "VideoRouteConfig": (".capabilities.formats.video.route", "VideoRouteConfig"),
+    "VideoRoute": ("neocortex.capabilities.formats.video.route", "VideoRoute"),
+    "VideoRouteConfig": ("neocortex.capabilities.formats.video.route", "VideoRouteConfig"),
 }
 
 
@@ -404,14 +404,22 @@ def video_route_config_from_framework(
 
 def _run_video(context: RouteExecutionContext) -> object:
     from .global_resources import CoordinatedMemoryGate
-    from .capabilities.formats.video.route import VideoRoute
+
+    compatibility_module = sys.modules.get(
+        "_04_Nucleo_Operativo.video_route"
+    ) or sys.modules.get("_04_Nucleo_Operativo.capabilities.formats.video.route")
+    if compatibility_module is None:
+        from neocortex.capabilities.formats.video.route import VideoRoute as _VideoRoute
+        route_type: Any = _VideoRoute
+    else:
+        route_type = compatibility_module.__dict__["VideoRoute"]
 
     gate = (
         None
         if context.resource_coordinator is None
         else CoordinatedMemoryGate(context.resource_coordinator, "video")
     )
-    return VideoRoute(
+    return route_type(
         video_route_config_from_framework(context.config, root=context.root),
         context.framework_state,
         context.run_id,

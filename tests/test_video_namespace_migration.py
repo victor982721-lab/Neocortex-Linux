@@ -15,6 +15,7 @@ import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 CANONICAL_ROOT = "_04_Nucleo_Operativo.capabilities.formats.video"
+PRODUCT_ROOT = "neocortex.capabilities.formats.video"
 LEGACY_ROOT = "_04_Nucleo_Operativo"
 MODULE_NAMES = ("frames", "models", "probe", "route", "state")
 HISTORICAL_SYMBOLS = {
@@ -47,6 +48,26 @@ def test_legacy_video_modules_are_exact_canonical_aliases(name: str) -> None:
 
     assert legacy is canonical
     assert sys.modules[f"{LEGACY_ROOT}.video_{name}"] is canonical
+
+
+def test_video_implementation_lives_under_the_product_namespace() -> None:
+    product_root = PROJECT_ROOT / "neocortex" / "capabilities" / "formats" / "video"
+    for name in MODULE_NAMES:
+        module = importlib.import_module(f"{PRODUCT_ROOT}.{name}")
+        assert Path(module.__file__).resolve().is_relative_to(product_root)
+
+    for relative_path in (
+        "_04_Nucleo_Operativo/application_config_projections.py",
+        "_04_Nucleo_Operativo/cli_video.py",
+        "_04_Nucleo_Operativo/cli_video_surface.py",
+        "_04_Nucleo_Operativo/knowledge_snapshot.py",
+        "_04_Nucleo_Operativo/models.py",
+        "_04_Nucleo_Operativo/orchestrator.py",
+        "_04_Nucleo_Operativo/route_registry.py",
+        "_04_Nucleo_Operativo/state_topology_contracts.py",
+    ):
+        source = (PROJECT_ROOT / relative_path).read_text(encoding="utf-8")
+        assert PRODUCT_ROOT in source
 
 
 @pytest.mark.parametrize("name", MODULE_NAMES)

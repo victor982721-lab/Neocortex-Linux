@@ -245,6 +245,23 @@ _NEOCORTEX_CORE_UI_ALLOWLIST = (
     ("neocortex.capabilities.formats.pdf.pdf_runtime", "_04_Nucleo_Operativo.memory_runtime"),
     ("neocortex.capabilities.formats.pdf.pdf_schema", "_04_Nucleo_Operativo.sqlite_schema_contract"),
     ("neocortex.capabilities.formats.pdf.pdf_state", "_04_Nucleo_Operativo.sqlite_schema_lifecycle"),
+    # Video completes the media route cohort; frame extraction and probing keep
+    # explicit seams to the shared process, OCR, retry and state foundations.
+    ("neocortex.capabilities.formats.video.frames", "_04_Nucleo_Operativo.bounded_subprocess"),
+    ("neocortex.capabilities.formats.video.frames", "_04_Nucleo_Operativo.cancellation"),
+    ("neocortex.capabilities.formats.video.models", "_04_Nucleo_Operativo.processing_provenance"),
+    ("neocortex.capabilities.formats.video.probe", "_04_Nucleo_Operativo.bounded_subprocess"),
+    ("neocortex.capabilities.formats.video.route", "_04_Nucleo_Operativo.action_policy"),
+    ("neocortex.capabilities.formats.video.route", "_04_Nucleo_Operativo.cancellation"),
+    ("neocortex.capabilities.formats.video.route", "_04_Nucleo_Operativo.file_identity"),
+    ("neocortex.capabilities.formats.video.route", "_04_Nucleo_Operativo.ocr_profiles"),
+    ("neocortex.capabilities.formats.video.route", "_04_Nucleo_Operativo.processing_provenance"),
+    ("neocortex.capabilities.formats.video.route", "_04_Nucleo_Operativo.review"),
+    ("neocortex.capabilities.formats.video.route", "_04_Nucleo_Operativo.route_filters"),
+    ("neocortex.capabilities.formats.video.route", "_04_Nucleo_Operativo.state"),
+    ("neocortex.capabilities.formats.video.state", "_04_Nucleo_Operativo.file_identity"),
+    ("neocortex.capabilities.formats.video.state", "_04_Nucleo_Operativo.semantic_lexical"),
+    ("neocortex.capabilities.formats.video.state", "_04_Nucleo_Operativo.sqlite_schema_contract"),
 )
 
 # The v5 graph is acyclic.  Keep the baseline empty so that reintroducing even

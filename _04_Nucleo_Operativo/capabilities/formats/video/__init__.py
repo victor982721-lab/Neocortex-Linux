@@ -1,1 +1,1 @@
-"""Import-light canonical namespace for the Video capability."""
+"""Import-light compatibility namespace for the relocated Video capability."""

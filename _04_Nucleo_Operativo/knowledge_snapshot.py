@@ -34,7 +34,7 @@ from neocortex.capabilities.formats.audio import state as audio_state
 from neocortex.capabilities.formats.archive import state as archive_state
 from neocortex.capabilities.formats.docx.schema import validate_docx_schema
 from neocortex.capabilities.formats.office import state as office_state
-from .capabilities.formats.video import state as video_state
+from neocortex.capabilities.formats.video import state as video_state
 from .code_schema import validate_code_schema
 from .framework_schema import (
     validate_framework_schema_v19,

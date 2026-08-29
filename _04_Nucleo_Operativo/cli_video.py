@@ -10,7 +10,7 @@ __all__ = ("run_video_doctor", "run_video_search", "run_video_status")
 
 
 def run_video_search(args: argparse.Namespace) -> int:
-    from .capabilities.formats.video.state import search_video_state
+    from neocortex.capabilities.formats.video.state import search_video_state
 
     try:
         results = search_video_state(
@@ -34,7 +34,7 @@ def run_video_search(args: argparse.Namespace) -> int:
 
 
 def run_video_status(args: argparse.Namespace) -> int:
-    from .capabilities.formats.video.state import video_state_status
+    from neocortex.capabilities.formats.video.state import video_state_status
 
     try:
         status = video_state_status(args.state_directory / "video.sqlite3")
@@ -46,8 +46,8 @@ def run_video_status(args: argparse.Namespace) -> int:
 
 
 def run_video_doctor(args: argparse.Namespace) -> int:
-    from .capabilities.formats.video.frames import resolve_video_ffmpeg
-    from .capabilities.formats.video.probe import resolve_video_ffprobe
+    from neocortex.capabilities.formats.video.frames import resolve_video_ffmpeg
+    from neocortex.capabilities.formats.video.probe import resolve_video_ffprobe
 
     report: dict[str, object] = {"ok": False}
     failures: list[str] = []
