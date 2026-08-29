@@ -435,6 +435,23 @@ Paquete de instalación mínimo:
 No implementa el pipeline completo. Su función es ofrecer una frontera estable
 y evitar imports pesados durante ayuda, versión o selección de modo.
 
+### `neocortex.platform`
+
+Frontera canónica de contratos y primitivas compartidas de plataforma:
+
+- `content_types.py` detecta tipos únicamente con evidencia acotada de
+  contenido, sin convertir la extensión en una afirmación;
+- `zip_safety.py` inspecciona estructuras ZIP y recupera miembros DEFLATE bajo
+  límites explícitos antes de materializar metadatos;
+- `architecture_projection.py` proyecta grafos y evalúa el DAG de familias;
+- `capability_registry.py` y `capability_registry_specs.py` declaran el
+  registro de capacidades y sus relaciones, sin ejecutar providers ni abrir
+  estado.
+
+Las rutas históricas `_04_Nucleo_Operativo.platform.shared.*`, junto con los
+aliases planos de tipos y ZIP, son fachadas de compatibilidad que apuntan a
+este namespace; no contienen una segunda implementación.
+
 ### `neocortex.enumeration`
 
 Frontera de enumeración por plataforma:

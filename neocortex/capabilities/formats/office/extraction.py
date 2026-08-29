@@ -9,7 +9,7 @@ import zlib
 from pathlib import Path, PurePosixPath
 from typing import Literal, Mapping
 
-from _04_Nucleo_Operativo.platform.shared.zip_safety import ZipStructureError, inspect_zip_structure
+from neocortex.platform.zip_safety import ZipStructureError, inspect_zip_structure
 from .extraction_support import (
     CancellationCheckpoint,
     _ReadBudget,

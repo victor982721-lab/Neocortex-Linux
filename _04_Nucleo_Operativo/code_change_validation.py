@@ -97,7 +97,7 @@ from .external_evidence_providers import (
     VULTURE_UNUSED_PROVIDER_ID,
 )
 from .external_evidence_store import read_external_provider_baselines
-from .platform.shared.capability_registry import (
+from neocortex.platform.capability_registry import (
     resolve_canonical_capabilities,
     resolve_source_capabilities,
 )
@@ -2439,7 +2439,7 @@ def _candidate_wheel_gate(
             probe_script = (
                 "import importlib.metadata,importlib.util,json,pathlib;"
                 "import neocortex,_04_Nucleo_Operativo.code_change_validation as c;"
-                "from _04_Nucleo_Operativo.platform.shared.capability_registry "
+                "from neocortex.platform.capability_registry "
                 "import CAPABILITY_REGISTRY;"
                 "root=pathlib.Path(c.__file__).resolve();"
                 "assert 'site-packages' in root.parts,root;"

@@ -25,8 +25,8 @@ if TYPE_CHECKING:
     from .code_projects import reconstruct_project as reconstruct_project
     from .code_route import CodeRoute as CodeRoute
     from .code_search import search_code as search_code
-    from .platform.shared.content_types import DetectedType as DetectedType
-    from .platform.shared.content_types import detect_content_type as detect_content_type
+    from neocortex.platform.content_types import DetectedType as DetectedType
+    from neocortex.platform.content_types import detect_content_type as detect_content_type
     from neocortex.capabilities.formats.docx.route import DocxRoute as DocxRoute
     from neocortex.capabilities.formats.docx.route import DocxRouteConfig as DocxRouteConfig
     from neocortex.capabilities.formats.docx.route import DocxRouteSummary as DocxRouteSummary
@@ -210,7 +210,7 @@ _EXPORTS: Final[dict[str, tuple[str, str]]] = {
         ".derivation_contracts",
         "DERIVATION_CONTRACT_SCHEMA_VERSION",
     ),
-    "DetectedType": (".platform.shared.content_types", "DetectedType"),
+    "DetectedType": ("neocortex.platform.content_types", "DetectedType"),
     "DerivationRef": (".derivation_contracts", "DerivationRef"),
     "DocxRoute": ("neocortex.capabilities.formats.docx.route", "DocxRoute"),
     "DocxRouteConfig": ("neocortex.capabilities.formats.docx.route", "DocxRouteConfig"),
@@ -252,7 +252,7 @@ _EXPORTS: Final[dict[str, tuple[str, str]]] = {
     "RouteOnlyRunResult": (".models", "RouteOnlyRunResult"),
     "SelfAnalysisRunResult": (".models", "SelfAnalysisRunResult"),
     "StageDescriptor": (".derivation_contracts", "StageDescriptor"),
-    "detect_content_type": (".platform.shared.content_types", "detect_content_type"),
+    "detect_content_type": ("neocortex.platform.content_types", "detect_content_type"),
     "verify_pdf_state": ("neocortex.capabilities.formats.pdf.pdf_admin", "verify_pdf_state"),
     "list_projects": (".code_projects", "list_projects"),
     "reconstruct_project": (".code_projects", "reconstruct_project"),

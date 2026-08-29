@@ -35,7 +35,7 @@ from _04_Nucleo_Operativo.memory_runtime import (
     MemoryResourceLimits,
     WeightedMemoryGate,
 )
-from _04_Nucleo_Operativo.platform.shared.zip_safety import (
+from neocortex.platform.zip_safety import (
     ZipStructureError,
     inspect_zip_structure,
 )

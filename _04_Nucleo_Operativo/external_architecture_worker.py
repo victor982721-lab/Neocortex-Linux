@@ -26,14 +26,14 @@ if TYPE_CHECKING:
     from . import code_architecture_contracts as _contracts
     from .code.contracts import target_projection as _target_projection
     from .code.contracts import target_registry as _target_registry
-    from .platform.shared import architecture_projection as _projection
-    from .platform.shared import capability_registry as _capability_registry
+    from neocortex.platform import architecture_projection as _projection
+    from neocortex.platform import capability_registry as _capability_registry
 elif __package__:
     from . import code_architecture_contracts as _contracts
     from .code.contracts import target_projection as _target_projection
     from .code.contracts import target_registry as _target_registry
-    from .platform.shared import architecture_projection as _projection
-    from .platform.shared import capability_registry as _capability_registry
+    from neocortex.platform import architecture_projection as _projection
+    from neocortex.platform import capability_registry as _capability_registry
 else:  # Direct isolated worker execution; do not import the staged package.
 
     def _load_control_plane_module(alias: str, path: Path) -> Any:
@@ -50,17 +50,18 @@ else:  # Direct isolated worker execution; do not import the staged package.
         return module
 
     _control_plane_root = Path(__file__).parent
+    _repository_root = _control_plane_root.parent
     _contracts = _load_control_plane_module(
         "_neocortex_code_architecture_contracts",
         _control_plane_root / "code_architecture_contracts.py",
     )
     _projection = _load_control_plane_module(
         "_neocortex_architecture_projection",
-        _control_plane_root / "platform" / "shared" / "architecture_projection.py",
+        _repository_root / "neocortex" / "platform" / "architecture_projection.py",
     )
     _capability_registry = _load_control_plane_module(
         "_neocortex_capability_registry",
-        _control_plane_root / "platform" / "shared" / "capability_registry.py",
+        _repository_root / "neocortex" / "platform" / "capability_registry.py",
     )
     _target_registry = _load_control_plane_module(
         "_neocortex_core_target_registry",

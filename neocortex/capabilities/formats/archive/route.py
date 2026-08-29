@@ -34,7 +34,7 @@ from _04_Nucleo_Operativo.bounded_subprocess import (
 )
 from _04_Nucleo_Operativo.cancellation import CancellationToken
 from _04_Nucleo_Operativo.file_identity import file_key_from_snapshot
-from _04_Nucleo_Operativo.platform.shared.zip_safety import (
+from neocortex.platform.zip_safety import (
     DEFAULT_MAX_CENTRAL_DIRECTORY_BYTES,
     ZipStructureError,
     inspect_zip_bytes,

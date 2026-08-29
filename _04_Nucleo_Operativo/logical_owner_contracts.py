@@ -12,7 +12,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 
 from .code_architecture_contracts import stable_architecture_id
-from .platform.shared.capability_registry import capability_logical_owner_bindings
+from neocortex.platform.capability_registry import capability_logical_owner_bindings
 from .semantic_models import canonical_json
 
 LOGICAL_OWNER_CONTRACT_SCHEMA = "neocortex.logical-owner-contract/v2"
