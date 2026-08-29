@@ -820,7 +820,7 @@ def run_organization_apply(args: argparse.Namespace) -> int:
 
 
 def run_pdf_search(args: argparse.Namespace) -> int:
-    from .pdf_derived_queries import search_pdf_state
+    from neocortex.capabilities.formats.pdf.pdf_derived_queries import search_pdf_state
 
     database_path = args.state_directory / "pdf.sqlite3"
     try:
@@ -839,7 +839,7 @@ def run_pdf_search(args: argparse.Namespace) -> int:
 
 
 def run_pdf_layout_groups(args: argparse.Namespace) -> int:
-    from .pdf_derived_queries import list_layout_groups
+    from neocortex.capabilities.formats.pdf.pdf_derived_queries import list_layout_groups
 
     database_path = args.state_directory / "pdf.sqlite3"
     try:
@@ -861,7 +861,7 @@ def run_pdf_layout_groups(args: argparse.Namespace) -> int:
 
 
 def run_pdf_doctor(args: argparse.Namespace) -> int:
-    from .pdf_admin import doctor_pdf_runtime
+    from neocortex.capabilities.formats.pdf.pdf_admin import doctor_pdf_runtime
 
     report = doctor_pdf_runtime(
         ocr_mode=args.ocr,
@@ -876,7 +876,7 @@ def run_pdf_doctor(args: argparse.Namespace) -> int:
 
 
 def run_pdf_verify(args: argparse.Namespace) -> int:
-    from .pdf_admin import verify_pdf_state
+    from neocortex.capabilities.formats.pdf.pdf_admin import verify_pdf_state
 
     try:
         report = verify_pdf_state(args.state_directory / "pdf.sqlite3")

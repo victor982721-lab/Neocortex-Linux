@@ -29,7 +29,7 @@ from . import document_catalog_schema, text_state
 from neocortex.capabilities.formats.audio import state as audio_state
 from neocortex.capabilities.formats.docx.schema import DOCX_SCHEMA_VERSION, validate_docx_schema
 from neocortex.capabilities.formats.office import state as office_state
-from .pdf_schema import PDF_SCHEMA_VERSION, validate_pdf_schema
+from neocortex.capabilities.formats.pdf.pdf_schema import PDF_SCHEMA_VERSION, validate_pdf_schema
 from .sqlite_paths import readonly_sqlite_uri
 from .sqlite_schema_contract import SQLiteSchemaContract, validate_sqlite_schema_contract
 from .value_review_contracts import (

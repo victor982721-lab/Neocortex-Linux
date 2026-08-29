@@ -88,16 +88,16 @@ if TYPE_CHECKING:
     from neocortex.capabilities.formats.office.route import OfficeRouteConfig as OfficeRouteConfig
     from neocortex.capabilities.formats.office.route import OfficeRouteSummary as OfficeRouteSummary
     from .orchestrator import FrameworkOrchestrator as FrameworkOrchestrator
-    from .pdf_admin import PdfDoctorReport as PdfDoctorReport
-    from .pdf_admin import PdfVerifyReport as PdfVerifyReport
-    from .pdf_admin import doctor_pdf_runtime as doctor_pdf_runtime
-    from .pdf_admin import verify_pdf_state as verify_pdf_state
-    from .pdf_derived import PdfDerivedIndexer as PdfDerivedIndexer
-    from .pdf_derived import PdfDerivedSummary as PdfDerivedSummary
-    from .pdf_derived import search_pdf_state as search_pdf_state
-    from .pdf_route import PdfRoute as PdfRoute
-    from .pdf_route import PdfRouteConfig as PdfRouteConfig
-    from .pdf_route import PdfRouteSummary as PdfRouteSummary
+    from neocortex.capabilities.formats.pdf.pdf_admin import PdfDoctorReport as PdfDoctorReport
+    from neocortex.capabilities.formats.pdf.pdf_admin import PdfVerifyReport as PdfVerifyReport
+    from neocortex.capabilities.formats.pdf.pdf_admin import doctor_pdf_runtime as doctor_pdf_runtime
+    from neocortex.capabilities.formats.pdf.pdf_admin import verify_pdf_state as verify_pdf_state
+    from neocortex.capabilities.formats.pdf.pdf_derived import PdfDerivedIndexer as PdfDerivedIndexer
+    from neocortex.capabilities.formats.pdf.pdf_derived import PdfDerivedSummary as PdfDerivedSummary
+    from neocortex.capabilities.formats.pdf.pdf_derived import search_pdf_state as search_pdf_state
+    from neocortex.capabilities.formats.pdf.pdf_route import PdfRoute as PdfRoute
+    from neocortex.capabilities.formats.pdf.pdf_route import PdfRouteConfig as PdfRouteConfig
+    from neocortex.capabilities.formats.pdf.pdf_route import PdfRouteSummary as PdfRouteSummary
     from .route_registry import RouteAdapter as RouteAdapter
     from .route_registry import RouteExecutionContext as RouteExecutionContext
 
@@ -229,22 +229,22 @@ _EXPORTS: Final[dict[str, tuple[str, str]]] = {
     "InputBinding": (".derivation_contracts", "InputBinding"),
     "MaterializationRef": (".derivation_contracts", "MaterializationRef"),
     "OutputBinding": (".derivation_contracts", "OutputBinding"),
-    "PdfDoctorReport": (".pdf_admin", "PdfDoctorReport"),
-    "PdfRoute": (".pdf_route", "PdfRoute"),
-    "PdfRouteConfig": (".pdf_route", "PdfRouteConfig"),
-    "PdfRouteSummary": (".pdf_route", "PdfRouteSummary"),
-    "PdfVerifyReport": (".pdf_admin", "PdfVerifyReport"),
+    "PdfDoctorReport": ("neocortex.capabilities.formats.pdf.pdf_admin", "PdfDoctorReport"),
+    "PdfRoute": ("neocortex.capabilities.formats.pdf.pdf_route", "PdfRoute"),
+    "PdfRouteConfig": ("neocortex.capabilities.formats.pdf.pdf_route_models", "PdfRouteConfig"),
+    "PdfRouteSummary": ("neocortex.capabilities.formats.pdf.pdf_route_models", "PdfRouteSummary"),
+    "PdfVerifyReport": ("neocortex.capabilities.formats.pdf.pdf_admin", "PdfVerifyReport"),
     "RouteAdapter": (".route_registry", "RouteAdapter"),
     "RouteExecutionContext": (".route_registry", "RouteExecutionContext"),
     "ReproducibilityClass": (
         ".derivation_contracts",
         "ReproducibilityClass",
     ),
-    "PdfDerivedIndexer": (".pdf_derived", "PdfDerivedIndexer"),
-    "PdfDerivedSummary": (".pdf_derived", "PdfDerivedSummary"),
-    "search_pdf_state": (".pdf_derived", "search_pdf_state"),
+    "PdfDerivedIndexer": ("neocortex.capabilities.formats.pdf.pdf_derived", "PdfDerivedIndexer"),
+    "PdfDerivedSummary": ("neocortex.capabilities.formats.pdf.pdf_derived", "PdfDerivedSummary"),
+    "search_pdf_state": ("neocortex.capabilities.formats.pdf.pdf_derived", "search_pdf_state"),
     "search_docx_state": ("neocortex.capabilities.formats.docx.route", "search_docx_state"),
-    "doctor_pdf_runtime": (".pdf_admin", "doctor_pdf_runtime"),
+    "doctor_pdf_runtime": ("neocortex.capabilities.formats.pdf.pdf_admin", "doctor_pdf_runtime"),
     "InitialRunResult": (".models", "InitialRunResult"),
     "OfficeRoute": ("neocortex.capabilities.formats.office.route", "OfficeRoute"),
     "OfficeRouteConfig": ("neocortex.capabilities.formats.office.route", "OfficeRouteConfig"),
@@ -253,7 +253,7 @@ _EXPORTS: Final[dict[str, tuple[str, str]]] = {
     "SelfAnalysisRunResult": (".models", "SelfAnalysisRunResult"),
     "StageDescriptor": (".derivation_contracts", "StageDescriptor"),
     "detect_content_type": (".platform.shared.content_types", "detect_content_type"),
-    "verify_pdf_state": (".pdf_admin", "verify_pdf_state"),
+    "verify_pdf_state": ("neocortex.capabilities.formats.pdf.pdf_admin", "verify_pdf_state"),
     "list_projects": (".code_projects", "list_projects"),
     "reconstruct_project": (".code_projects", "reconstruct_project"),
     "search_code": (".code_search", "search_code"),

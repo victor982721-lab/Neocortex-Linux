@@ -31,8 +31,8 @@ if TYPE_CHECKING:
     from .models import FrameworkConfig
     from neocortex.capabilities.formats.office.route import OfficeRoute as OfficeRoute
     from neocortex.capabilities.formats.office.route import OfficeRouteConfig as OfficeRouteConfig
-    from .pdf_route import PdfRoute as PdfRoute
-    from .pdf_route import PdfRouteConfig as PdfRouteConfig
+    from neocortex.capabilities.formats.pdf.pdf_route import PdfRoute as PdfRoute
+    from neocortex.capabilities.formats.pdf.pdf_route_models import PdfRouteConfig as PdfRouteConfig
     from .state import FrameworkRouteState
     from .text_route import TextRoute as TextRoute
     from .text_route import TextRouteConfig as TextRouteConfig
@@ -84,8 +84,8 @@ _DEFERRED_ROUTE_EXPORTS = {
     "ArchiveRouteConfig": ("neocortex.capabilities.formats.archive.route", "ArchiveRouteConfig"),
     "CodeRoute": (".code_route", "CodeRoute"),
     "CodeRouteConfig": (".code_contracts", "CodeRouteConfig"),
-    "PdfRoute": (".pdf_route", "PdfRoute"),
-    "PdfRouteConfig": (".pdf_route", "PdfRouteConfig"),
+    "PdfRoute": ("neocortex.capabilities.formats.pdf.pdf_route", "PdfRoute"),
+    "PdfRouteConfig": ("neocortex.capabilities.formats.pdf.pdf_route_models", "PdfRouteConfig"),
     "DocxRoute": ("neocortex.capabilities.formats.docx.route", "DocxRoute"),
     "DocxRouteConfig": ("neocortex.capabilities.formats.docx.route", "DocxRouteConfig"),
     "ImageRoute": ("neocortex.capabilities.formats.image.route", "ImageRoute"),
@@ -139,11 +139,16 @@ def pdf_route_config_from_framework(config: "FrameworkConfig") -> "PdfRouteConfi
 def _run_pdf(context: RouteExecutionContext) -> object:
     from neocortex.deduplication import DedupIndex
 
-    from .pdf_route import PdfRoute
+    compatibility_module = sys.modules.get("_04_Nucleo_Operativo.pdf_route")
+    if compatibility_module is None:
+        from neocortex.capabilities.formats.pdf.pdf_route import PdfRoute as _PdfRoute
+        route_type: Any = _PdfRoute
+    else:
+        route_type = compatibility_module.__dict__["PdfRoute"]
 
     config = context.config
     with DedupIndex(config.dedup_database) as dedup_index:
-        summary = PdfRoute(
+        summary = route_type(
             pdf_route_config_from_framework(config),
             dedup_index,
             context.framework_state,

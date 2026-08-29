@@ -51,7 +51,7 @@ from .knowledge_contracts import (
     PublicationHead,
     SnapshotConsistency,
 )
-from .pdf_schema import validate_pdf_schema
+from neocortex.capabilities.formats.pdf.pdf_schema import validate_pdf_schema
 from .semantic_models import canonical_json
 from .sqlite_cancellation import SQLiteCancellationBridge, sqlite_cancellation_scope
 from .sqlite_immutable import (

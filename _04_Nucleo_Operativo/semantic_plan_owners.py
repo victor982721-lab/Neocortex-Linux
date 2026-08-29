@@ -207,7 +207,7 @@ def _require_current_schema(
 
 
 def _validate_pdf_source(connection: sqlite3.Connection) -> None:
-    from . import pdf_schema
+    from neocortex.capabilities.formats.pdf import pdf_schema
 
     pdf_schema.validate_pdf_metadata(connection)
     pdf_schema.validate_pdf_schema(connection)
@@ -225,7 +225,7 @@ def _validate_source_schema(
     source_kind: str,
 ) -> int:
     if source_kind == "pdf":
-        from . import pdf_schema
+        from neocortex.capabilities.formats.pdf import pdf_schema
 
         return _require_current_schema(
             connection,

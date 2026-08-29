@@ -43,12 +43,12 @@ from .knowledge_asset_health_contracts import (
 )
 from .knowledge_contracts import KNOWLEDGE_CONTRACT_SCHEMA_VERSION
 from .logical_owner_contracts import LOGICAL_OWNER_SPECS, matching_logical_owners
-from .pdf_route_models import (
+from neocortex.capabilities.formats.pdf.pdf_route_models import (
     ALGORITHM_VERSION as PDF_ROUTE_VERSION,
     FAILURE_DETECTOR_VERSION as PDF_FAILURE_VERSION,
     STRUCTURAL_RECOVERY_VERSION as PDF_STRUCTURAL_RECOVERY_VERSION,
 )
-from .pdf_schema import PDF_SCHEMA_VERSION
+from neocortex.capabilities.formats.pdf.pdf_schema import PDF_SCHEMA_VERSION
 from .state_topology_contracts import STATE_STORE_REGISTRY, STATE_STORE_REGISTRY_SCHEMA
 
 

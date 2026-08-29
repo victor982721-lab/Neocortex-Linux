@@ -39,7 +39,7 @@ if TYPE_CHECKING:
     from . import global_resources as _resource_contracts
     from . import models as _application_contracts
     from neocortex.capabilities.formats.office import route as _office_contracts
-    from . import pdf_route_models as _pdf_contracts
+    from neocortex.capabilities.formats.pdf import pdf_route_models as _pdf_contracts
     from . import text_route as _text_contracts
     from .capabilities.formats.video import route as _video_contracts
     from neocortex.capabilities.formats.archive import route as _archive_contracts
@@ -53,7 +53,7 @@ else:
     _docx_contracts = _DeferredTypeModule("neocortex.capabilities.formats.docx.models")
     _image_contracts = _DeferredTypeModule("neocortex.capabilities.formats.image.route")
     _office_contracts = _DeferredTypeModule("neocortex.capabilities.formats.office.route")
-    _pdf_contracts = _DeferredTypeModule(".pdf_route_models")
+    _pdf_contracts = _DeferredTypeModule("neocortex.capabilities.formats.pdf.pdf_route_models")
     _text_contracts = _DeferredTypeModule(".text_route")
     _video_contracts = _DeferredTypeModule(".capabilities.formats.video.route")
     _resource_contracts = _DeferredTypeModule(".global_resources")
@@ -371,9 +371,16 @@ def pdf_route_config_from_application(
 ) -> _pdf_contracts.PdfRouteConfig:
     """Project current application values into the PDF owner's contract."""
 
-    from .pdf_route_models import PdfRouteConfig
+    compatibility_module = sys.modules.get("_04_Nucleo_Operativo.pdf_route_models")
+    if compatibility_module is None:
+        from neocortex.capabilities.formats.pdf.pdf_route_models import (
+            PdfRouteConfig as _PdfRouteConfig,
+        )
+        route_config_type: Any = _PdfRouteConfig
+    else:
+        route_config_type = compatibility_module.__dict__["PdfRouteConfig"]
 
-    return PdfRouteConfig(
+    return route_config_type(
         state_path=config.pdf_database,
         apply_actions=config.apply_actions,
         ocr_mode=config.pdf_ocr_mode,

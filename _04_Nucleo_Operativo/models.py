@@ -41,7 +41,7 @@ if TYPE_CHECKING:
     from .global_resources import GlobalResourceSummary
     from neocortex.capabilities.formats.image.route import ImageRouteSummary
     from neocortex.capabilities.formats.office.route import OfficeRouteSummary
-    from .pdf_route_models import PdfRouteSummary
+    from neocortex.capabilities.formats.pdf.pdf_route_models import PdfRouteSummary
     from .text_route import TextRouteSummary
     from .capabilities.formats.video.models import VideoRouteSummary
 

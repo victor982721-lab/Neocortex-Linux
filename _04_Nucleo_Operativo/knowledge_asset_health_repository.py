@@ -40,7 +40,7 @@ from .knowledge_asset_health_pdf import (
     PdfHealthRecord,
     read_pdf_health_records,
 )
-from .pdf_schema import PDF_SCHEMA_VERSION
+from neocortex.capabilities.formats.pdf.pdf_schema import PDF_SCHEMA_VERSION
 from .semantic_models import canonical_json, fingerprint_text
 from .sqlite_immutable import ImmutableSQLiteUnavailable, immutable_sqlite_database
 from .text_state import TEXT_SCHEMA_VERSION, text_schema_contract
