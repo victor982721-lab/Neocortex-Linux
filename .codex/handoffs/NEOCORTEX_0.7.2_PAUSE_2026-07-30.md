@@ -11,41 +11,40 @@ responsabilidades explícitas, límites de dependencia y compatibilidad
 transitoria verificable, hasta retirar `_01_Enumeracion`, `_02_Deduplicacion`,
 `_03_Progreso`, `_04_Nucleo_Operativo`, `_05_Interfaz` y `Orquestador.py`.
 
-## Corte DOCX aceptado
+## Corte Audio aceptado
 
 - Checkout: `/home/winterboss/Neocortex/Repository`
-- SHA ejecutable aceptado: `a8083e5fcb740c1d632a7b02d7a8d7e692dee594`
-- SHA final docs-only: `6725cdf077ee215abbbb7ab73cc63629cd9d05fa`; sólo actualiza este
-  handoff respecto del árbol ejecutable aceptado.
-- Árbol verificado limpio; `main` sigue sin publicar y está 40 commits delante
+- SHA ejecutable aceptado: `8b5191b4bb8bdd4484b810acc37904667614258f`
+- Árbol verificado limpio; `main` sigue sin publicar y está 43 commits delante
   de `origin/main`.
-- Archive y DOCX viven físicamente en
-  `neocortex/capabilities/formats/{archive,docx}`. Las fachadas
+- Archive, DOCX y Audio viven físicamente en
+  `neocortex/capabilities/formats/{archive,docx,audio}`. Las fachadas
   `_04_Nucleo_Operativo` correspondientes son compatibilidad explícita; las
   sondas runtime están en `neocortex/capabilities/runtime.py`.
 - El registro de arquitectura conserva explícitos los cruces transitorios de
-  ambas familias hacia foundation/core, pendientes de las cohortes de plataforma.
+  las tres familias hacia foundation/core, pendientes de las cohortes de plataforma.
 
 ## Evidencia de aceptación y release
 
-- `Neocortex code validate --baseline 40aad1fd9e1797d5e94d136b1bbf842137e90a7c`
-  sobre `a8083e5` terminó `passed`: 17 barreras, 335 pruebas seleccionadas,
+- `Neocortex code validate --baseline 77e432f23202c9e8fd048123755f8dad16c36760`
+  sobre `8b5191b` terminó `passed`: 17 barreras, 335 pruebas seleccionadas,
   Coverage 24/24, experimentos, wheel, replay e identidades públicas. Receipt:
-  `/home/winterboss/.local/state/Neocortex/self-analysis/validation-receipts/a8083e5fcb740c1d632a7b02d7a8d7e692dee594-08c4afb88f4b969fb4caeb8d4d26c10a7119bf0a2f5d7b5e85cb645d6ecef61a.json`
-  (`sha256:257d9868c5919b7164b7ba6f2456c8c20d78e6624e687d7a5f6b713645e5752e`).
-- La release vigente se reconstruyó desde el SHA final docs-only:
-  `0.9.0-6725cdf077ee-cp314-linux-x86_64`, pip `26.2.1`, Semgrep `1.172.0`;
+  `/home/winterboss/.local/state/Neocortex/self-analysis/validation-receipts/8b5191b4bb8bdd4484b810acc37904667614258f-0f0eb93677950c2f6e9c1b851654bfb2cd72ccbe0294754672863d0dd133cfd2.json`
+  (`sha256:6bac865288b9399f97e7568dd2c0cf78c2e648307f80d4aa890644f57dd673fc`).
+- La release vigente se reconstruyó desde el SHA ejecutable aceptado:
+  `0.9.0-8b5191b4bb8b-cp314-linux-x86_64`, pip `26.2.1`, Semgrep `1.172.0`;
   `release_linux.py verify` devolvió `verified=true` y current/manifest/launcher
   coinciden.
-- E2E público instalado, sin `PYTHONPATH` ni `--apply`: una muestra DOCX real
-  procesó un documento (`processed=1`, `new_documents=1`) y el replay reutilizó
-  su resultado (`cache_hits=1`, `new_documents=0`), ambos con exit 0. Evidencia:
-  `/home/winterboss/Documentos/NeoCortex/Auditorias/2026-08-28-neocortex-docx-cohort/`.
+- E2E público instalado, sin `PYTHONPATH` ni `--apply`: un WAV sintético
+  procesó un archivo (`processed=1`, `cache_hits=0`, `errors=0`) y el replay
+  reutilizó su resultado (`processed=1`, `cache_hits=1`, `errors=0`), ambos con
+  exit 0. Evidencia:
+  `/home/winterboss/Documentos/NeoCortex/Auditorias/2026-08-28-neocortex-audio-cohort/`.
 
 ## Próximo corte, en orden
 
-1. Migrar Audio físicamente a `neocortex/capabilities/formats/audio`, con
-   workers, contratos, fachadas y consumidores separados de DOCX.
+1. Migrar Image físicamente a `neocortex/capabilities/formats/image`, con OCR,
+   clasificación, contratos, fachadas y consumidores separados de Audio.
 2. Mantener el lote material, ejecutar pruebas focales, congelar un commit,
    renovar trusted-static con la consulta pip-audit autorizada, ejecutar una sola
    aceptación canónica, instalar desde el SHA y repetir el E2E instalado.
