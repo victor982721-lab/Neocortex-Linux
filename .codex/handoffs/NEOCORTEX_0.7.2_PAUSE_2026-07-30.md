@@ -50,12 +50,26 @@ transitoria verificable, hasta retirar `_01_Enumeracion`, `_02_Deduplicacion`,
   `members=1`, `indexed=1` y `errors=0`, ambos con exit 0. Evidencia:
   `/home/winterboss/Documentos/NeoCortex/Auditorias/2026-08-29-neocortex-platform-cohort/`.
 
+## Candidato foundation pausado
+
+- El candidato `c183afc088aaa78d82efcd0841085568d543416a` mueve
+  `file_identity.py` y `processing_provenance.py` a `neocortex/foundation` y
+  deja las fachadas legacy verificables.
+- Sus pruebas focales, el diagnóstico de arquitectura y las regresiones de
+  rutas pasaron, pero la aceptación canónica fue interrumpida por solicitud de
+  Víctor durante `trusted-deep` (shard 19/24 completado). El log terminó con
+  `code_validation_resource_boundary_interrupted`; no existe receipt, release
+  ni E2E de foundation aceptado.
+- Evidencia durable de la pausa:
+  `/home/winterboss/Documentos/NeoCortex/Auditorias/2026-08-29-neocortex-foundation-cohort/summary.json`.
+
 ## Próximo corte, en orden
 
-1. Migrar la frontera `foundation.identity` y `foundation.provenance` a un
-   namespace canónico bajo `neocortex/foundation`, empezando por
-   `file_identity.py` y `processing_provenance.py`, con fachadas compatibles,
-   consumidores explícitos y sin tocar el estado SQLite.
+1. Cuando Víctor indique continuar, reanudar una sola aceptación canónica del
+   candidato foundation `c183afc088aaa78d82efcd0841085568d543416a` desde el
+   baseline `ff58f0ed7d1e230d3d3a1bcaa7eff488c5cd1c68`; no inferir aceptación
+   desde la corrida interrumpida ni abrir otra cohorte antes de su receipt,
+   release y E2E.
 2. Mantener el lote material, ejecutar pruebas focales, congelar un commit,
    renovar trusted-static con la consulta pip-audit autorizada, ejecutar una sola
    aceptación canónica, instalar desde el SHA y repetir el E2E instalado.
