@@ -257,7 +257,7 @@ def _validate_source_schema(
             ),
         )
     if source_kind == "audio":
-        from .capabilities.formats.audio import state as audio_state
+        from neocortex.capabilities.formats.audio import state as audio_state
 
         return _require_current_schema(
             connection,

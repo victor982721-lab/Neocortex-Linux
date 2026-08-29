@@ -12,9 +12,9 @@ from typing import TYPE_CHECKING, Any, Final
 
 if TYPE_CHECKING:
     from .application_config import ApplicationConfig as ApplicationConfig
-    from .capabilities.formats.audio.models import AudioRouteConfig as AudioRouteConfig
-    from .capabilities.formats.audio.models import AudioRouteSummary as AudioRouteSummary
-    from .capabilities.formats.audio.route import AudioRoute as AudioRoute
+    from neocortex.capabilities.formats.audio.models import AudioRouteConfig as AudioRouteConfig
+    from neocortex.capabilities.formats.audio.models import AudioRouteSummary as AudioRouteSummary
+    from neocortex.capabilities.formats.audio.route import AudioRoute as AudioRoute
     from .code_contracts import CodeRelationEndpoint as CodeRelationEndpoint
     from .code_contracts import CodeRouteConfig as CodeRouteConfig
     from .code_contracts import CodeRouteSummary as CodeRouteSummary
@@ -195,9 +195,9 @@ __all__ = [  # noqa: RUF022
 _EXPORTS: Final[dict[str, tuple[str, str]]] = {
     "ActionSummary": (".models", "ActionSummary"),
     "ApplicationConfig": (".application_config", "ApplicationConfig"),
-    "AudioRoute": (".capabilities.formats.audio.route", "AudioRoute"),
-    "AudioRouteConfig": (".capabilities.formats.audio.models", "AudioRouteConfig"),
-    "AudioRouteSummary": (".capabilities.formats.audio.models", "AudioRouteSummary"),
+    "AudioRoute": ("neocortex.capabilities.formats.audio.route", "AudioRoute"),
+    "AudioRouteConfig": ("neocortex.capabilities.formats.audio.models", "AudioRouteConfig"),
+    "AudioRouteSummary": ("neocortex.capabilities.formats.audio.models", "AudioRouteSummary"),
     "CapabilityFailure": (".derivation_contracts", "CapabilityFailure"),
     "CodeRelationEndpoint": (".code_contracts", "CodeRelationEndpoint"),
     "CodeRoute": (".code_route", "CodeRoute"),

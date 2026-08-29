@@ -17,8 +17,8 @@ if TYPE_CHECKING:
 
     from neocortex.capabilities.formats.archive.route import ArchiveRoute as ArchiveRoute
     from neocortex.capabilities.formats.archive.route import ArchiveRouteConfig as ArchiveRouteConfig
-    from .capabilities.formats.audio.models import AudioRouteConfig as AudioRouteConfig
-    from .capabilities.formats.audio.route import AudioRoute as AudioRoute
+    from neocortex.capabilities.formats.audio.models import AudioRouteConfig as AudioRouteConfig
+    from neocortex.capabilities.formats.audio.route import AudioRoute as AudioRoute
     from .code_contracts import CodeRouteConfig as CodeRouteConfig
     from .code_route import CodeRoute as CodeRoute
     from .cancellation import CancellationToken
@@ -78,8 +78,8 @@ class RouteAdapter:
 
 
 _DEFERRED_ROUTE_EXPORTS = {
-    "AudioRoute": (".capabilities.formats.audio.route", "AudioRoute"),
-    "AudioRouteConfig": (".capabilities.formats.audio.models", "AudioRouteConfig"),
+    "AudioRoute": ("neocortex.capabilities.formats.audio.route", "AudioRoute"),
+    "AudioRouteConfig": ("neocortex.capabilities.formats.audio.models", "AudioRouteConfig"),
     "ArchiveRoute": ("neocortex.capabilities.formats.archive.route", "ArchiveRoute"),
     "ArchiveRouteConfig": ("neocortex.capabilities.formats.archive.route", "ArchiveRouteConfig"),
     "CodeRoute": (".code_route", "CodeRoute"),
@@ -339,7 +339,14 @@ def audio_route_config_from_framework(config: "FrameworkConfig") -> "AudioRouteC
 
 
 def _run_audio(context: RouteExecutionContext) -> object:
-    from .capabilities.formats.audio.route import AudioRoute
+    compatibility_module = sys.modules.get(
+        "_04_Nucleo_Operativo.audio_route"
+    ) or sys.modules.get("_04_Nucleo_Operativo.capabilities.formats.audio.route")
+    if compatibility_module is None:
+        from neocortex.capabilities.formats.audio.route import AudioRoute as _AudioRoute
+        route_type: Any = _AudioRoute
+    else:
+        route_type = compatibility_module.__dict__["AudioRoute"]
     from .global_resources import CoordinatedMemoryGate
 
     config = context.config
@@ -348,7 +355,7 @@ def _run_audio(context: RouteExecutionContext) -> object:
         if context.resource_coordinator is None
         else CoordinatedMemoryGate(context.resource_coordinator, "audio")
     )
-    summary = AudioRoute(
+    summary = route_type(
         audio_route_config_from_framework(config),
         context.framework_state,
         context.run_id,

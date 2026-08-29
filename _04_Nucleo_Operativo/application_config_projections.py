@@ -34,7 +34,7 @@ class _DeferredTypeModule:
 
 
 if TYPE_CHECKING:
-    from .capabilities.formats.audio import models as _audio_contracts
+    from neocortex.capabilities.formats.audio import models as _audio_contracts
     from . import code_contracts as _code_contracts
     from . import global_resources as _resource_contracts
     from . import models as _application_contracts
@@ -48,7 +48,7 @@ if TYPE_CHECKING:
 else:
     _application_contracts = _DeferredTypeModule(".models")
     _archive_contracts = _DeferredTypeModule("neocortex.capabilities.formats.archive.route")
-    _audio_contracts = _DeferredTypeModule(".capabilities.formats.audio.models")
+    _audio_contracts = _DeferredTypeModule("neocortex.capabilities.formats.audio.models")
     _code_contracts = _DeferredTypeModule(".code_contracts")
     _docx_contracts = _DeferredTypeModule("neocortex.capabilities.formats.docx.models")
     _image_contracts = _DeferredTypeModule(".capabilities.formats.image.route")
@@ -146,9 +146,18 @@ def audio_route_config_from_application(
 ) -> _audio_contracts.AudioRouteConfig:
     """Project current application values into the audio owner's contract."""
 
-    from .capabilities.formats.audio.models import AudioRouteConfig
+    compatibility_module = sys.modules.get(
+        "_04_Nucleo_Operativo.capabilities.formats.audio.models"
+    )
+    if compatibility_module is None:
+        from neocortex.capabilities.formats.audio.models import (
+            AudioRouteConfig as _AudioRouteConfig,
+        )
+        route_config_type: Any = _AudioRouteConfig
+    else:
+        route_config_type = compatibility_module.__dict__["AudioRouteConfig"]
 
-    return AudioRouteConfig(
+    return route_config_type(
         state_path=config.audio_database,
         model_name=config.audio_model_name,
         device=config.audio_device,

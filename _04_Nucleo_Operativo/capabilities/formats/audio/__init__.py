@@ -1,1 +1,1 @@
-"""Import-light canonical namespace for the Audio capability."""
+"""Import-light compatibility namespace for the relocated Audio capability."""

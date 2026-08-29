@@ -15,6 +15,7 @@ import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 CANONICAL_ROOT = "_04_Nucleo_Operativo.capabilities.formats.audio"
+PRODUCT_ROOT = "neocortex.capabilities.formats.audio"
 LEGACY_ROOT = "_04_Nucleo_Operativo"
 MODULE_NAMES = ("models", "probe", "route", "state", "whisper")
 HISTORICAL_SYMBOLS = {
@@ -50,6 +51,27 @@ def test_legacy_audio_modules_are_exact_canonical_aliases(name: str) -> None:
 
     assert legacy is canonical
     assert sys.modules[f"{LEGACY_ROOT}.audio_{name}"] is canonical
+
+
+def test_audio_implementation_lives_under_the_product_namespace() -> None:
+    product_root = PROJECT_ROOT / "neocortex" / "capabilities" / "formats" / "audio"
+    for name in MODULE_NAMES:
+        module = importlib.import_module(f"{PRODUCT_ROOT}.{name}")
+        assert Path(module.__file__).resolve().is_relative_to(product_root)
+
+    for relative_path in (
+        "_04_Nucleo_Operativo/application_config_projections.py",
+        "_04_Nucleo_Operativo/cli_audio.py",
+        "_04_Nucleo_Operativo/knowledge_snapshot.py",
+        "_04_Nucleo_Operativo/models.py",
+        "_04_Nucleo_Operativo/orchestrator.py",
+        "_04_Nucleo_Operativo/route_registry.py",
+        "_04_Nucleo_Operativo/semantic_plan_owners.py",
+        "_04_Nucleo_Operativo/state_topology_contracts.py",
+        "_04_Nucleo_Operativo/value_review_repository.py",
+    ):
+        source = (PROJECT_ROOT / relative_path).read_text(encoding="utf-8")
+        assert PRODUCT_ROOT in source
 
 
 @pytest.mark.parametrize("name", MODULE_NAMES)

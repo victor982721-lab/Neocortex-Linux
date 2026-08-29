@@ -14,7 +14,7 @@ from typing import Literal, Mapping, Sequence
 from neocortex.deduplication.schema import SCHEMA_VERSION as INVENTORY_SCHEMA_VERSION
 
 from neocortex.capabilities.formats.archive.state import ARCHIVE_SCHEMA_VERSION
-from .capabilities.formats.audio.state import AUDIO_SCHEMA_VERSION
+from neocortex.capabilities.formats.audio.state import AUDIO_SCHEMA_VERSION
 from .code_schema import CODE_SCHEMA_VERSION
 from .document_catalog_schema import CATALOG_SCHEMA_VERSION
 from neocortex.capabilities.formats.docx.schema import DOCX_SCHEMA_VERSION

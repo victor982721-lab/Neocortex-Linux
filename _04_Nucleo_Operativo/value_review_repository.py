@@ -26,7 +26,7 @@ from neocortex.deduplication.schema import (
 from neocortex.sqlite_schema_contract import read_application_schema_version
 
 from . import document_catalog_schema, text_state
-from .capabilities.formats.audio import state as audio_state
+from neocortex.capabilities.formats.audio import state as audio_state
 from neocortex.capabilities.formats.docx.schema import DOCX_SCHEMA_VERSION, validate_docx_schema
 from .capabilities.formats.office import state as office_state
 from .pdf_schema import PDF_SCHEMA_VERSION, validate_pdf_schema

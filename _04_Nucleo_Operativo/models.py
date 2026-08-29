@@ -31,7 +31,7 @@ from .route_filters import CandidateSelection
 
 if TYPE_CHECKING:
     from neocortex.capabilities.formats.archive.models import ArchiveRouteSummary
-    from .capabilities.formats.audio.models import AudioRouteSummary
+    from neocortex.capabilities.formats.audio.models import AudioRouteSummary
     from .code_contracts import CodeRouteSummary
     from .document_organization import (
         OrganizationApplySummary,

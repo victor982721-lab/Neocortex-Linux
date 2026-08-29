@@ -163,6 +163,21 @@ _NEOCORTEX_CORE_UI_ALLOWLIST = (
     ("neocortex.capabilities.formats.docx.route", "_04_Nucleo_Operativo.state"),
     ("neocortex.capabilities.formats.docx.schema", "_04_Nucleo_Operativo.sqlite_schema_contract"),
     ("neocortex.capabilities.formats.docx.state", "_04_Nucleo_Operativo.sqlite_schema_lifecycle"),
+    # Audio completes the currently migrated media cohort; transcription and
+    # probing still use the legacy process/safety leaves until those families
+    # receive their own canonical homes.
+    ("neocortex.capabilities.formats.audio.models", "_04_Nucleo_Operativo.processing_provenance"),
+    ("neocortex.capabilities.formats.audio.models", "_04_Nucleo_Operativo.route_filters"),
+    ("neocortex.capabilities.formats.audio.probe", "_04_Nucleo_Operativo.bounded_subprocess"),
+    ("neocortex.capabilities.formats.audio.route", "_04_Nucleo_Operativo.action_policy"),
+    ("neocortex.capabilities.formats.audio.route", "_04_Nucleo_Operativo.cancellation"),
+    ("neocortex.capabilities.formats.audio.route", "_04_Nucleo_Operativo.file_identity"),
+    ("neocortex.capabilities.formats.audio.route", "_04_Nucleo_Operativo.memory_runtime"),
+    ("neocortex.capabilities.formats.audio.route", "_04_Nucleo_Operativo.review"),
+    ("neocortex.capabilities.formats.audio.route", "_04_Nucleo_Operativo.state"),
+    ("neocortex.capabilities.formats.audio.state", "_04_Nucleo_Operativo.sqlite_schema_contract"),
+    ("neocortex.capabilities.formats.audio.whisper", "_04_Nucleo_Operativo.cancellation"),
+    ("neocortex.capabilities.formats.audio.whisper", "_04_Nucleo_Operativo.isolated_process"),
 )
 
 # The v5 graph is acyclic.  Keep the baseline empty so that reintroducing even
