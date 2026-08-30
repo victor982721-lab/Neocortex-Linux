@@ -1,6 +1,6 @@
 # NeoCortex — handoff operativo vigente
 
-> Actualizado: 2026-08-29 23:45 CST. El basename es histórico y permanece estable.
+> Actualizado: 2026-08-30 00:00 CST. El basename es histórico y permanece estable.
 > `~/.codex/PENDIENTES.md` conserva el compromiso operativo; este archivo
 > describe sólo la frontera técnica de reanudación.
 
@@ -21,8 +21,8 @@ históricos.
 
 - Checkout: `/home/winterboss/Neocortex/Repository`
 - SHA ejecutable aceptado: `5455b90992ef2e6f2b0d49590a99448f0342aeea`
-- Árbol verificado limpio; la rama local está 24 commits por delante de su
-  remoto y no se hizo merge ni push a `main`.
+- Árbol verificado limpio; la rama local conserva commits locales posteriores a
+  su snapshot remoto y no se hizo merge ni push a `main`.
 - Archive, DOCX, Audio, Image, Office, PDF, Video y Text viven físicamente en
   `neocortex/capabilities/formats/{archive,docx,audio,image,office,pdf,text,video}`.
   Las fachadas `_04_Nucleo_Operativo` correspondientes son compatibilidad
@@ -45,19 +45,17 @@ históricos.
   Receipt:
   `/home/winterboss/.local/state/Neocortex/self-analysis/validation-receipts/5455b90992ef2e6f2b0d49590a99448f0342aeea-e560a0fabf37593e205bec93f26fc3a85b6c587dc7a0bd58e01eca84252d5a18.json`
   (`sha256:38b13f6d89fecdb24a582cd2a83b279e4c3ad4c1e3ad3c4c1e99620a2b51299a`).
-- La evidencia durable de la cohorte conserva el gate completo, métricas de
-  cobertura/replay y la correspondencia de release:
-  `/home/winterboss/Documentos/NeoCortex/Auditorias/2026-08-29-neocortex-canonical-refactor/summary.json`
-  (`sha256:bd910eb29d58bf936743c636b338c482838815809762a0461d6bb67c1b450349`).
-- La release instalada desde el SHA aceptado es
-  `0.9.0-5455b90992ef-cp314-linux-x86_64`; `release_linux.py verify` devolvió
-  `verified=true`, con `current`, manifest y launcher alineados al mismo SHA.
+- La evidencia durable de la cohorte conserva el gate completo, la equivalencia
+  docs-only, las métricas de cobertura/replay y la correspondencia de la release
+  actualmente instalada:
+  `/home/winterboss/Documentos/NeoCortex/Auditorias/2026-08-29-neocortex-canonical-refactor/summary.json`.
+- `release_linux.py verify` devolvió `verified=true` para el `current` activo;
+  el manifest, el launcher y su `source_sha` se conservan en el resumen durable
+  junto con el recibo de instalación.
 - El launcher público `/home/winterboss/.local/bin/Neocortex`, sin
-  `PYTHONPATH` ni `--apply`, procesó un fixture aislado en la primera corrida:
-  Archive `processed=1`, `cache_hits=0`, `complete=1`, `members=1`, `indexed=1`;
-  Text `processed=1`, `cache_hits=0`, `extracted=1`. El replay terminó con exit
-  0, Archive `cache_hits=1` y Text `processed=0`, `cache_hits=1`; Semantic quedó
-  `status=ok` y el receipt de validación fue reutilizado. Ambos exits fueron 0.
+  `PYTHONPATH` ni `--apply`, procesó un fixture aislado en la primera corrida y
+  reutilizó Archive, Text y Semantic en el replay; ambos exits fueron 0 y los
+  contadores de caché quedan registrados en la evidencia durable.
 
 ## Corte foundation aceptado en rama de snapshot
 
