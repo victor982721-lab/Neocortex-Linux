@@ -26,7 +26,6 @@ from _04_Nucleo_Operativo.code.contracts.target_registry import (
     forbidden_family_edge_baseline,
     matching_target_families,
     matching_target_responsibilities,
-    registered_core_modules,
 )
 from _04_Nucleo_Operativo.platform.shared.capability_registry import (
     CAPABILITY_REGISTRY,

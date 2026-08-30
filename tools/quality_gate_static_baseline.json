@@ -15,304 +15,94 @@
     "mypy": {
       "by_path_rule": [
         {
-          "count": 4,
-          "path": "_04_Nucleo_Operativo/console_cancellation.py",
-          "rule": "attr-defined",
-          "severity": "error"
-        },
-        {
-          "count": 1,
-          "path": "_04_Nucleo_Operativo/cpu_runtime.py",
-          "rule": "attr-defined",
-          "severity": "error"
-        },
-        {
           "count": 5,
-          "path": "_04_Nucleo_Operativo/external_mutation_cosmic_ray_worker.py",
+          "path": "neocortex/code/external_mutation_cosmic_ray_worker.py",
           "rule": "import-untyped",
           "severity": "error"
         },
         {
           "count": 4,
-          "path": "_04_Nucleo_Operativo/external_mutation_cosmic_ray_worker.py",
+          "path": "neocortex/code/external_mutation_cosmic_ray_worker.py",
           "rule": "unused-ignore",
           "severity": "error"
         },
         {
           "count": 1,
-          "path": "_04_Nucleo_Operativo/inventory_coordinator.py",
+          "path": "neocortex/integrations/inventory/inventory_coordinator.py",
           "rule": "unreachable",
           "severity": "error"
         },
         {
-          "count": 32,
-          "path": "_04_Nucleo_Operativo/isolated_process.py",
-          "rule": "attr-defined",
-          "severity": "error"
-        },
-        {
           "count": 2,
-          "path": "_04_Nucleo_Operativo/knowledge_search.py",
+          "path": "neocortex/knowledge/knowledge_search.py",
           "rule": "unreachable",
           "severity": "error"
         },
         {
           "count": 4,
-          "path": "_04_Nucleo_Operativo/locking.py",
+          "path": "neocortex/runtime/control/console_cancellation.py",
           "rule": "attr-defined",
           "severity": "error"
         },
         {
           "count": 1,
-          "path": "_04_Nucleo_Operativo/memory_runtime.py",
+          "path": "neocortex/runtime/control/cpu_runtime.py",
+          "rule": "attr-defined",
+          "severity": "error"
+        },
+        {
+          "count": 32,
+          "path": "neocortex/runtime/control/isolated_process.py",
+          "rule": "attr-defined",
+          "severity": "error"
+        },
+        {
+          "count": 4,
+          "path": "neocortex/runtime/control/locking.py",
           "rule": "attr-defined",
           "severity": "error"
         },
         {
           "count": 1,
-          "path": "_04_Nucleo_Operativo/pdf_runtime.py",
+          "path": "neocortex/runtime/control/memory_runtime.py",
           "rule": "attr-defined",
-          "severity": "error"
-        },
-        {
-          "count": 1,
-          "path": "_04_Nucleo_Operativo/protected_content.py",
-          "rule": "attr-defined",
-          "severity": "error"
-        },
-        {
-          "count": 1,
-          "path": "_04_Nucleo_Operativo/review_evidence.py",
-          "rule": "unused-ignore",
           "severity": "error"
         },
         {
           "count": 6,
-          "path": "_04_Nucleo_Operativo/watcher_life_lease.py",
+          "path": "neocortex/runtime/control/watcher_life_lease.py",
+          "rule": "attr-defined",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "neocortex/safety/protected_content.py",
           "rule": "attr-defined",
           "severity": "error"
         },
         {
           "count": 11,
-          "path": "_04_Nucleo_Operativo/windows_handle_mutation.py",
+          "path": "neocortex/safety/windows_handle_mutation.py",
           "rule": "attr-defined",
+          "severity": "error"
+        },
+        {
+          "count": 1,
+          "path": "neocortex/workflow/review/review_evidence.py",
+          "rule": "unused-ignore",
           "severity": "error"
         }
       ],
-      "total": 74,
+      "total": 73,
       "version": "2.1.0"
     },
     "pyright": {
       "by_path_rule": [
         {
-          "count": 4,
+          "count": 1,
           "path": "_04_Nucleo_Operativo/__init__.py",
-          "rule": "reportImportCycles",
+          "rule": "reportUnsupportedDunderAll",
           "severity": "warning"
-        },
-        {
-          "count": 5,
-          "path": "_04_Nucleo_Operativo/cli_validation.py",
-          "rule": "reportArgumentType",
-          "severity": "error"
-        },
-        {
-          "count": 1,
-          "path": "_04_Nucleo_Operativo/code_architecture_analysis.py",
-          "rule": "reportGeneralTypeIssues",
-          "severity": "error"
-        },
-        {
-          "count": 2,
-          "path": "_04_Nucleo_Operativo/code_architecture_contracts.py",
-          "rule": "reportGeneralTypeIssues",
-          "severity": "error"
-        },
-        {
-          "count": 1,
-          "path": "_04_Nucleo_Operativo/code_contracts.py",
-          "rule": "reportReturnType",
-          "severity": "error"
-        },
-        {
-          "count": 1,
-          "path": "_04_Nucleo_Operativo/code_contracts.py",
-          "rule": "reportUnusedFunction",
-          "severity": "warning"
-        },
-        {
-          "count": 1,
-          "path": "_04_Nucleo_Operativo/console_cancellation.py",
-          "rule": "reportAttributeAccessIssue",
-          "severity": "error"
-        },
-        {
-          "count": 1,
-          "path": "_04_Nucleo_Operativo/cpu_runtime.py",
-          "rule": "reportAttributeAccessIssue",
-          "severity": "error"
-        },
-        {
-          "count": 1,
-          "path": "_04_Nucleo_Operativo/document_organization_models.py",
-          "rule": "reportUnusedClass",
-          "severity": "warning"
-        },
-        {
-          "count": 3,
-          "path": "_04_Nucleo_Operativo/document_organization_models.py",
-          "rule": "reportUnusedFunction",
-          "severity": "warning"
-        },
-        {
-          "count": 10,
-          "path": "_04_Nucleo_Operativo/document_taxonomy_entities.py",
-          "rule": "reportUnusedFunction",
-          "severity": "warning"
-        },
-        {
-          "count": 2,
-          "path": "_04_Nucleo_Operativo/document_taxonomy_kinds.py",
-          "rule": "reportUnusedFunction",
-          "severity": "warning"
-        },
-        {
-          "count": 3,
-          "path": "_04_Nucleo_Operativo/document_taxonomy_references.py",
-          "rule": "reportUnusedFunction",
-          "severity": "warning"
-        },
-        {
-          "count": 1,
-          "path": "_04_Nucleo_Operativo/external_evidence_models.py",
-          "rule": "reportReturnType",
-          "severity": "error"
-        },
-        {
-          "count": 2,
-          "path": "_04_Nucleo_Operativo/external_mutation_cosmic_ray_worker.py",
-          "rule": "reportArgumentType",
-          "severity": "error"
-        },
-        {
-          "count": 1,
-          "path": "_04_Nucleo_Operativo/isolated_process.py",
-          "rule": "reportGeneralTypeIssues",
-          "severity": "error"
-        },
-        {
-          "count": 6,
-          "path": "_04_Nucleo_Operativo/isolated_process.py",
-          "rule": "reportUndefinedVariable",
-          "severity": "error"
-        },
-        {
-          "count": 1,
-          "path": "_04_Nucleo_Operativo/knowledge_search.py",
-          "rule": "reportArgumentType",
-          "severity": "error"
-        },
-        {
-          "count": 2,
-          "path": "_04_Nucleo_Operativo/knowledge_search.py",
-          "rule": "reportGeneralTypeIssues",
-          "severity": "error"
-        },
-        {
-          "count": 2,
-          "path": "_04_Nucleo_Operativo/pdf_isolation.py",
-          "rule": "reportUnusedFunction",
-          "severity": "warning"
-        },
-        {
-          "count": 3,
-          "path": "_04_Nucleo_Operativo/pdf_route_storage.py",
-          "rule": "reportOptionalSubscript",
-          "severity": "error"
-        },
-        {
-          "count": 1,
-          "path": "_04_Nucleo_Operativo/protected_content.py",
-          "rule": "reportAttributeAccessIssue",
-          "severity": "error"
-        },
-        {
-          "count": 1,
-          "path": "_04_Nucleo_Operativo/review_evidence.py",
-          "rule": "reportUnusedFunction",
-          "severity": "warning"
-        },
-        {
-          "count": 1,
-          "path": "_04_Nucleo_Operativo/semantic_backends.py",
-          "rule": "reportReturnType",
-          "severity": "error"
-        },
-        {
-          "count": 2,
-          "path": "_04_Nucleo_Operativo/semantic_generation_repository.py",
-          "rule": "reportUnusedFunction",
-          "severity": "warning"
-        },
-        {
-          "count": 1,
-          "path": "_04_Nucleo_Operativo/semantic_item_repository.py",
-          "rule": "reportUnusedFunction",
-          "severity": "warning"
-        },
-        {
-          "count": 7,
-          "path": "_04_Nucleo_Operativo/semantic_plan_owners.py",
-          "rule": "reportUnusedFunction",
-          "severity": "warning"
-        },
-        {
-          "count": 6,
-          "path": "_04_Nucleo_Operativo/semantic_plan_results.py",
-          "rule": "reportUnusedFunction",
-          "severity": "warning"
-        },
-        {
-          "count": 1,
-          "path": "_04_Nucleo_Operativo/semantic_plan_scratch.py",
-          "rule": "reportUnusedClass",
-          "severity": "warning"
-        },
-        {
-          "count": 1,
-          "path": "_04_Nucleo_Operativo/semantic_plan_scratch.py",
-          "rule": "reportUnusedFunction",
-          "severity": "warning"
-        },
-        {
-          "count": 1,
-          "path": "_04_Nucleo_Operativo/semantic_preparation.py",
-          "rule": "reportGeneralTypeIssues",
-          "severity": "error"
-        },
-        {
-          "count": 6,
-          "path": "_04_Nucleo_Operativo/semantic_repository_common.py",
-          "rule": "reportUnusedFunction",
-          "severity": "warning"
-        },
-        {
-          "count": 23,
-          "path": "_04_Nucleo_Operativo/semantic_service.py",
-          "rule": "reportUnusedFunction",
-          "severity": "warning"
-        },
-        {
-          "count": 1,
-          "path": "_04_Nucleo_Operativo/value_review_repository.py",
-          "rule": "reportReturnType",
-          "severity": "error"
-        },
-        {
-          "count": 9,
-          "path": "_04_Nucleo_Operativo/windows_handle_mutation.py",
-          "rule": "reportAttributeAccessIssue",
-          "severity": "error"
         },
         {
           "count": 5,
@@ -321,119 +111,209 @@
           "severity": "warning"
         },
         {
+          "count": 5,
+          "path": "neocortex/api/cli/cli_validation.py",
+          "rule": "reportArgumentType",
+          "severity": "error"
+        },
+        {
           "count": 1,
           "path": "neocortex/cli.py",
           "rule": "reportReturnType",
           "severity": "error"
-        }
-      ],
-      "total": 120,
-      "version": "1.1.411"
-    },
-    "ruff": {
-      "by_path_rule": [
-        {
-          "count": 1,
-          "path": "_04_Nucleo_Operativo/code_analyzers.py",
-          "rule": "RUF022",
-          "severity": "error"
         },
         {
           "count": 1,
-          "path": "_04_Nucleo_Operativo/code_generic.py",
-          "rule": "B007",
-          "severity": "error"
-        },
-        {
-          "count": 1,
-          "path": "_04_Nucleo_Operativo/code_projects.py",
-          "rule": "RUF022",
+          "path": "neocortex/code/code_architecture_analysis.py",
+          "rule": "reportGeneralTypeIssues",
           "severity": "error"
         },
         {
           "count": 2,
-          "path": "_04_Nucleo_Operativo/code_python.py",
-          "rule": "C409",
+          "path": "neocortex/code/code_architecture_contracts.py",
+          "rule": "reportGeneralTypeIssues",
           "severity": "error"
         },
         {
           "count": 1,
-          "path": "_04_Nucleo_Operativo/code_semantic_links.py",
-          "rule": "RUF022",
+          "path": "neocortex/code/code_contracts.py",
+          "rule": "reportReturnType",
           "severity": "error"
         },
         {
           "count": 1,
-          "path": "_04_Nucleo_Operativo/document_taxonomy.py",
-          "rule": "RUF022",
+          "path": "neocortex/code/code_contracts.py",
+          "rule": "reportUnusedFunction",
+          "severity": "warning"
+        },
+        {
+          "count": 1,
+          "path": "neocortex/code/external_evidence_models.py",
+          "rule": "reportReturnType",
+          "severity": "error"
+        },
+        {
+          "count": 2,
+          "path": "neocortex/code/external_mutation_cosmic_ray_worker.py",
+          "rule": "reportArgumentType",
           "severity": "error"
         },
         {
           "count": 1,
-          "path": "_04_Nucleo_Operativo/knowledge_contracts.py",
-          "rule": "RUF022",
+          "path": "neocortex/documents/document_organization_models.py",
+          "rule": "reportUnusedClass",
+          "severity": "warning"
+        },
+        {
+          "count": 3,
+          "path": "neocortex/documents/document_organization_models.py",
+          "rule": "reportUnusedFunction",
+          "severity": "warning"
+        },
+        {
+          "count": 10,
+          "path": "neocortex/documents/document_taxonomy_entities.py",
+          "rule": "reportUnusedFunction",
+          "severity": "warning"
+        },
+        {
+          "count": 2,
+          "path": "neocortex/documents/document_taxonomy_kinds.py",
+          "rule": "reportUnusedFunction",
+          "severity": "warning"
+        },
+        {
+          "count": 3,
+          "path": "neocortex/documents/document_taxonomy_references.py",
+          "rule": "reportUnusedFunction",
+          "severity": "warning"
+        },
+        {
+          "count": 1,
+          "path": "neocortex/knowledge/knowledge_search.py",
+          "rule": "reportArgumentType",
           "severity": "error"
         },
         {
-          "count": 4,
-          "path": "_04_Nucleo_Operativo/knowledge_evaluation.py",
-          "rule": "B905",
+          "count": 2,
+          "path": "neocortex/knowledge/knowledge_search.py",
+          "rule": "reportGeneralTypeIssues",
           "severity": "error"
         },
         {
           "count": 1,
-          "path": "_04_Nucleo_Operativo/knowledge_evaluation.py",
-          "rule": "C401",
+          "path": "neocortex/runtime/control/console_cancellation.py",
+          "rule": "reportAttributeAccessIssue",
           "severity": "error"
         },
         {
           "count": 1,
-          "path": "_04_Nucleo_Operativo/knowledge_planner_intents.py",
-          "rule": "RUF022",
+          "path": "neocortex/runtime/control/cpu_runtime.py",
+          "rule": "reportAttributeAccessIssue",
           "severity": "error"
         },
         {
           "count": 1,
-          "path": "_04_Nucleo_Operativo/knowledge_planner_steps.py",
-          "rule": "RUF022",
+          "path": "neocortex/runtime/control/isolated_process.py",
+          "rule": "reportGeneralTypeIssues",
           "severity": "error"
         },
         {
-          "count": 5,
-          "path": "_04_Nucleo_Operativo/knowledge_service.py",
-          "rule": "B009",
-          "severity": "error"
-        },
-        {
-          "count": 1,
-          "path": "_04_Nucleo_Operativo/semantic_backend_supervisor.py",
-          "rule": "B904",
+          "count": 6,
+          "path": "neocortex/runtime/control/isolated_process.py",
+          "rule": "reportUndefinedVariable",
           "severity": "error"
         },
         {
           "count": 1,
-          "path": "_04_Nucleo_Operativo/sqlite_cancellation.py",
-          "rule": "RUF022",
+          "path": "neocortex/safety/protected_content.py",
+          "rule": "reportAttributeAccessIssue",
+          "severity": "error"
+        },
+        {
+          "count": 9,
+          "path": "neocortex/safety/windows_handle_mutation.py",
+          "rule": "reportAttributeAccessIssue",
           "severity": "error"
         },
         {
           "count": 1,
-          "path": "neocortex/sqlite_backup.py",
-          "rule": "B008",
+          "path": "neocortex/semantic/semantic_backends.py",
+          "rule": "reportReturnType",
           "severity": "error"
         },
         {
-          "count": 1,
-          "path": "neocortex/sqlite_cancellation.py",
-          "rule": "RUF022",
-          "severity": "error"
+          "count": 2,
+          "path": "neocortex/semantic/semantic_generation_repository.py",
+          "rule": "reportUnusedFunction",
+          "severity": "warning"
         },
         {
           "count": 1,
-          "path": "neocortex/sqlite_integrity.py",
-          "rule": "B008",
+          "path": "neocortex/semantic/semantic_item_repository.py",
+          "rule": "reportUnusedFunction",
+          "severity": "warning"
+        },
+        {
+          "count": 7,
+          "path": "neocortex/semantic/semantic_plan_owners.py",
+          "rule": "reportUnusedFunction",
+          "severity": "warning"
+        },
+        {
+          "count": 6,
+          "path": "neocortex/semantic/semantic_plan_results.py",
+          "rule": "reportUnusedFunction",
+          "severity": "warning"
+        },
+        {
+          "count": 1,
+          "path": "neocortex/semantic/semantic_plan_scratch.py",
+          "rule": "reportUnusedClass",
+          "severity": "warning"
+        },
+        {
+          "count": 1,
+          "path": "neocortex/semantic/semantic_plan_scratch.py",
+          "rule": "reportUnusedFunction",
+          "severity": "warning"
+        },
+        {
+          "count": 1,
+          "path": "neocortex/semantic/semantic_preparation.py",
+          "rule": "reportGeneralTypeIssues",
           "severity": "error"
         },
+        {
+          "count": 6,
+          "path": "neocortex/semantic/semantic_repository_common.py",
+          "rule": "reportUnusedFunction",
+          "severity": "warning"
+        },
+        {
+          "count": 23,
+          "path": "neocortex/semantic/semantic_service.py",
+          "rule": "reportUnusedFunction",
+          "severity": "warning"
+        },
+        {
+          "count": 1,
+          "path": "neocortex/workflow/review/review_evidence.py",
+          "rule": "reportUnusedFunction",
+          "severity": "warning"
+        },
+        {
+          "count": 1,
+          "path": "neocortex/workflow/review/value_review_repository.py",
+          "rule": "reportReturnType",
+          "severity": "error"
+        }
+      ],
+      "total": 112,
+      "version": "1.1.411"
+    },
+    "ruff": {
+      "by_path_rule": [
         {
           "count": 1,
           "path": "tests/test_framework_schema_contract.py",
@@ -495,7 +375,7 @@
           "severity": "error"
         }
       ],
-      "total": 44,
+      "total": 19,
       "version": "0.15.17"
     }
   }

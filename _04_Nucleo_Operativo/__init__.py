@@ -6,7 +6,7 @@ from typing import Any
 
 from neocortex.api import public as _public
 
-__all__ = _public.__all__
+__all__: list[str] = list(_public.__all__)
 
 
 def __getattr__(name: str) -> Any:
