@@ -44,7 +44,7 @@ def test_foundation_implementation_lives_under_product_namespace() -> None:
         "_04_Nucleo_Operativo/knowledge_search_catalog.py",
         "_04_Nucleo_Operativo/knowledge_search_code.py",
         "_04_Nucleo_Operativo/knowledge_search_content.py",
-        "_04_Nucleo_Operativo/model_management.py",
+        "neocortex/runtime/config/model_management.py",
         "_04_Nucleo_Operativo/semantic_sources.py",
         "neocortex/capabilities/formats/archive/route.py",
         "neocortex/capabilities/formats/audio/models.py",
