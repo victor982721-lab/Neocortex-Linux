@@ -2457,7 +2457,7 @@ def _public_review_stability_gate(
     command = (
         sys.executable,
         "-m",
-        "_04_Nucleo_Operativo.code_validation_public_review",
+        "neocortex.code.code_validation_public_review",
         "--state-directory",
         str(state_directory),
         "--validation-stable",
