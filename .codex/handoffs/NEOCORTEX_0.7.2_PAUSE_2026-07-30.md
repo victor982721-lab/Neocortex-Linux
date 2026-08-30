@@ -4,6 +4,10 @@
 > `~/.codex/PENDIENTES.md` conserva el compromiso operativo; este archivo
 > describe sólo la frontera técnica de reanudación.
 
+> Modo de trabajo vigente: desarrollo rápido por lotes materiales, con controles
+> focales durante la organización y un único gate canónico al congelar la cohorte;
+> ningún candidato provisional tiene aceptación hasta contar con receipt local.
+
 ## Objetivo activo
 
 Reorganizar toda la topología productiva en el namespace único `neocortex`, con
@@ -28,7 +32,7 @@ transitoria verificable, hasta retirar `_01_Enumeracion`, `_02_Deduplicacion`,
   tipos/ZIP son fachadas de compatibilidad, sin una segunda implementación.
 - El registro de arquitectura conserva explícitos los cruces transitorios de
   las ocho familias hacia foundation/core. El fingerprint de transición actual
-  es `core-architecture-target-v1:sha256:779cf513def70abcde4f7c42f9dca335bc891ef382e1610840cfedd0ef2de9fa`.
+  es `core-architecture-target-v1:sha256:9c6d868bd95490aa6d7a584b37195ba060bf6027de979764f06ddbe480fba354`.
 
 ## Evidencia de aceptación y release
 
@@ -77,10 +81,14 @@ transitoria verificable, hasta retirar `_01_Enumeracion`, `_02_Deduplicacion`,
 
 1. Mantener como evidencia vigente el receipt, la release y el E2E del corte
    foundation aceptado; la corrida interrumpida anterior no se usa como prueba.
-2. Cuando Víctor indique continuar la reorganización integral, abrir el siguiente
-   lote material de `_04_Nucleo_Operativo` (runtime, workflow, knowledge,
-   semantic o code) y repetir la secuencia focal → commit → aceptación
-   canónica → release → E2E.
+2. La continuidad rápida ya está autorizada. Los lotes posteriores al corte
+   aceptado son configuración/modelos (`6305e98`), control runtime (`e0b2137`),
+   orchestration (`4a366b0`), workflow actions/recovery (`ec5b7a1`) y baseline
+   arquitectónico (`e6475fe`); todos siguen sin receipt canónico. Abrir el
+   siguiente lote material de `_04_Nucleo_Operativo` (workflow review/self-analysis,
+   knowledge, semantic o code) con controles focales y un commit por lote, y
+   reservar la secuencia aceptación canónica → release → E2E para el candidato
+   congelado.
 3. Conservar `main` sin merge ni push hasta el cierre integral de
    `NEO-CORE-004`; el snapshot de la rama sirve para revisión y trazabilidad,
    no equivale a la integración final.
