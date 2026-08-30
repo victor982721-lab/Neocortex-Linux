@@ -68,18 +68,18 @@ from .document_taxonomy_vocabulary import (
 
 
 __all__ = (
-    "AuthoritySpec",
     "BUILTIN_TAXONOMY_VERSION",
     "CLASSIFIER_VERSION",
-    "ClientSpec",
-    "DocumentClassification",
-    "DocumentSignals",
     "MAX_TAXONOMY_BYTES",
     "MAX_TAXONOMY_PATTERNS",
     "MAX_TAXONOMY_PATTERN_CHARS",
     "MAX_TAXONOMY_SEQUENCE_ITEMS",
     "MAX_TAXONOMY_TABLES_PER_SECTION",
     "MAX_TAXONOMY_TEXT_CHARS",
+    "AuthoritySpec",
+    "ClientSpec",
+    "DocumentClassification",
+    "DocumentSignals",
     "OrganizationSpec",
     "ProjectSpec",
     "ScoredLabel",

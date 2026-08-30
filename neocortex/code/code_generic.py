@@ -120,7 +120,7 @@ def _syntax_diagnostics(source: CodeFileInput) -> tuple[DiagnosticRecord, ...]:
     try:
         if language in {"json", "jsonl"}:
             if language == "jsonl":
-                for index, json_line in enumerate(source.text.splitlines(), start=1):
+                for json_line in source.text.splitlines():
                     if json_line.strip():
                         json.loads(json_line)
             else:

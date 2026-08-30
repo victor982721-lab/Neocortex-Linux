@@ -392,8 +392,8 @@ def infer_query_plan_signals(
 
 __all__ = (
     "NormalizedKnowledgeQuery",
-    "QueryLimits",
     "QueryLike",
+    "QueryLimits",
     "infer_query_plan_signals",
     "normalize_knowledge_query",
 )

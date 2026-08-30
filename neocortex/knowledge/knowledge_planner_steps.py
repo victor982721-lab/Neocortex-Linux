@@ -967,11 +967,11 @@ __all__ = (
     "canonical_retrieval_step_specs_v3",
     "knowledge_plan_identity_payload",
     "semantic_ranking_names",
-    "validated_date",
     "validate_knowledge_plan_base",
     "validate_knowledge_plan_v2",
     "validate_knowledge_plan_v3",
     "validate_retrieval_step",
+    "validated_date",
 )
 # endregion [02]
 

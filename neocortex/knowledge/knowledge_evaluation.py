@@ -19,6 +19,7 @@ from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from enum import StrEnum
+from itertools import pairwise
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -626,7 +627,7 @@ class GoldenCase:
         if self.category == "available_multihop":
             if len(self.relation_hops) < 2:
                 raise ValueError("multihop case needs at least two hops")
-            for left, right in zip(self.relation_hops, self.relation_hops[1:]):
+            for left, right in pairwise(self.relation_hops):
                 if left.to_resource_id != right.from_resource_id:
                     raise ValueError("multihop relation chain is disconnected")
         if self.category == "no_answer" and (
@@ -638,7 +639,7 @@ class GoldenCase:
             raise ValueError("no answer must expect abstention without evidence")
         if self.category == "incomplete_by_limit" and (
             self.expected_omitted_by_limit < 1
-            or set(item.evidence_id for item in self.relevant_evidence).issubset(
+            or {item.evidence_id for item in self.relevant_evidence}.issubset(
                 self.expected_retrieved_ids
             )
             or self.expected_outcome is not EvaluationOutcome.PARTIAL
@@ -2306,7 +2307,7 @@ def evaluate_golden_suite(
     run = run_golden_suite(suite, require_all_categories=require_all_categories)
     scenario_results = tuple(
         _evaluate_case(case, observation, cutoff_k)
-        for case, observation in zip(suite.cases, run.observations)
+        for case, observation in zip(suite.cases, run.observations, strict=True)
     )
     ranked = tuple(item for item in scenario_results if item.recall_at_k is not None)
     relevant_total = sum(item.relevant_evidence for item in ranked)
@@ -2343,11 +2344,11 @@ def evaluate_golden_suite(
     actual_abstentions = sum(item.actual_abstained for item in run.observations)
     abstention_correct = sum(
         case.expected_abstain == item.actual_abstained
-        for case, item in zip(suite.cases, run.observations)
+        for case, item in zip(suite.cases, run.observations, strict=True)
     )
     outcome_correct = sum(
         case.expected_outcome is item.actual_outcome
-        for case, item in zip(suite.cases, run.observations)
+        for case, item in zip(suite.cases, run.observations, strict=True)
     )
     stale_retrieved = sum(item.stale_retrieved for item in run.observations)
     stale_candidates = stale_retrieved + sum(

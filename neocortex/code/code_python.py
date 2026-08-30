@@ -980,8 +980,8 @@ class PythonAnalyzer:
             "python",
             structure=structure,
         )
-        all_dependencies = tuple([*visitor.dependencies, *manifest_dependencies])
-        all_diagnostics = tuple([*visitor.diagnostics, *manifest_diagnostics])
+        all_dependencies = (*visitor.dependencies, *manifest_dependencies)
+        all_diagnostics = (*visitor.diagnostics, *manifest_diagnostics)
         all_symbols = tuple(symbols)
         complexities = [
             item.complexity for item in all_symbols if item.complexity is not None

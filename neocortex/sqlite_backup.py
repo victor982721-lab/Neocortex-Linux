@@ -63,6 +63,9 @@ class SQLiteBackupPolicy:
             raise TypeError("integrity must be a SQLiteIntegrityPolicy")
 
 
+_DEFAULT_SQLITE_BACKUP_POLICY = SQLiteBackupPolicy()
+
+
 @dataclass(frozen=True, slots=True)
 class SQLiteBackupProgress:
     """One page-bounded callback from SQLite's online backup API."""
@@ -280,7 +283,7 @@ def backup_sqlite_online(
     source_path: str | Path,
     destination_path: str | Path,
     *,
-    policy: SQLiteBackupPolicy = SQLiteBackupPolicy(),
+    policy: SQLiteBackupPolicy = _DEFAULT_SQLITE_BACKUP_POLICY,
     cancellation_check: CancellationCheck | None = None,
     progress_callback: SQLiteBackupProgressCallback | None = None,
 ) -> SQLiteBackupResult:

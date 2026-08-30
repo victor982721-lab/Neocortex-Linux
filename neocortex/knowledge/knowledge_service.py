@@ -117,7 +117,7 @@ def _default_search_executor(
     module = import_module(f"{__package__}.knowledge_search")
     executor = cast(
         _ClockAwareSearchExecutor,
-        getattr(module, "execute_knowledge_search"),
+        getattr(module, "execute_knowledge_search"),  # noqa: B009
     )
     return executor(
         paths,
@@ -131,9 +131,9 @@ def _default_search_executor(
 def _context_limits() -> tuple[int, int, int]:
     module = import_module(f"{__package__}.knowledge_context")
     return (
-        int(getattr(module, "DEFAULT_CONTEXT_CHARACTER_LIMIT")),
-        int(getattr(module, "MAX_CONTEXT_CHARACTER_LIMIT")),
-        int(getattr(module, "MAX_CONTEXT_HITS")),
+        int(getattr(module, "DEFAULT_CONTEXT_CHARACTER_LIMIT")),  # noqa: B009
+        int(getattr(module, "MAX_CONTEXT_CHARACTER_LIMIT")),  # noqa: B009
+        int(getattr(module, "MAX_CONTEXT_HITS")),  # noqa: B009
     )
 
 
@@ -145,7 +145,7 @@ def _default_context_builder(
 ) -> ContextBundle:
     # Kept lazy so status and search do not depend on the context compiler.
     module = import_module(f"{__package__}.knowledge_context")
-    builder = cast(_ContextCompiler, getattr(module, "build_context_bundle"))
+    builder = cast(_ContextCompiler, getattr(module, "build_context_bundle"))  # noqa: B009
     if max_hits is None:
         return builder(result, character_limit=max_characters)
     return builder(result, character_limit=max_characters, max_hits=max_hits)

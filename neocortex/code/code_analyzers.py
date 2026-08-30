@@ -195,9 +195,9 @@ def builtin_analyzer_registry() -> AnalyzerRegistry:
 
 
 __all__ = [
+    "BUILTIN_ANALYZERS",
     "AnalyzerRegistry",
     "AnalyzerSpec",
-    "BUILTIN_ANALYZERS",
     "builtin_analyzer_registry",
 ]
 

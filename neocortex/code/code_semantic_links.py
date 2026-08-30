@@ -653,8 +653,8 @@ __all__ = [
     "CodeSemanticAvailability",
     "CodeSemanticLinkError",
     "CodeSemanticLinkSummary",
-    "current_code_embedding_link_counts",
     "code_semantic_search_availability",
+    "current_code_embedding_link_counts",
     "synchronize_code_embedding_links",
 ]
 

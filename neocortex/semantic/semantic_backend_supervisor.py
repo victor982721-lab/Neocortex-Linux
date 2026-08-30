@@ -211,7 +211,7 @@ class DeadlineEmbeddingBackend(EmbeddingBackend):
                     raise RuntimeError(
                         "semantic backend worker exited with code "
                         f"{self._process.exitcode}"
-                    )
+                    ) from None
 
     def _submit(self, operation: str, payload: object) -> object:
         if self._process is None or not self._process.is_alive():

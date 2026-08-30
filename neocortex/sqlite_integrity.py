@@ -61,6 +61,9 @@ class SQLiteIntegrityPolicy:
         object.__setattr__(self, "timeout_seconds", timeout_seconds)
 
 
+_DEFAULT_SQLITE_INTEGRITY_POLICY = SQLiteIntegrityPolicy()
+
+
 @dataclass(frozen=True, slots=True, order=True)
 class SQLiteForeignKeyViolation:
     """One row from SQLite's ``foreign_key_check`` diagnostic."""
@@ -179,7 +182,7 @@ def _foreign_key_check(
 def check_sqlite_integrity(
     database_path: str | Path,
     *,
-    policy: SQLiteIntegrityPolicy = SQLiteIntegrityPolicy(),
+    policy: SQLiteIntegrityPolicy = _DEFAULT_SQLITE_INTEGRITY_POLICY,
     cancellation_check: CancellationCheck | None = None,
 ) -> SQLiteIntegrityReport:
     """Inspect one existing database without creating or mutating it.
