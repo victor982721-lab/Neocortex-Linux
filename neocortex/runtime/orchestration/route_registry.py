@@ -40,7 +40,7 @@ if TYPE_CHECKING:
     from neocortex.capabilities.formats.video.route import VideoRouteConfig as VideoRouteConfig
 
 
-# region [01] Generic route contracts and selection reexports
+# region [01] Generic route contracts and selection exports
 
 
 @dataclass(frozen=True, slots=True)

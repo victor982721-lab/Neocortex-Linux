@@ -1,7 +1,7 @@
 """Stable, read-only Python facade for the canonical Knowledge Plane.
 
 Symbols are resolved lazily and cached here without wrapping or subclassing
-them, so legacy and canonical imports retain object identity.
+them, so callers receive the canonical contract objects directly.
 The supported operations are the existing ``KnowledgeSearchService`` methods
 ``status()``, ``search()`` and ``context()``; this module deliberately adds no
 future Knowledge endpoints.

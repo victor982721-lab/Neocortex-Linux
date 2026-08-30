@@ -468,7 +468,7 @@
         "neocortex/workflow/self_analysis/self_analysis_status.py"
       ],
       "hash_algorithm": "sha256(path,lf-size,sha256(lf-content))-v1",
-      "sha256": "31d3c5c9c4e8e71d4b5005e35877d9800a7f15f0f0495a0de8fe684a2bb5314b"
+      "sha256": "0dac9c4e567b26cd582fd3c2f3ebfc5a563f58567314d3f4b77ce578d15fd357"
     },
     "test_inventory": {
       "file_count": 358,
