@@ -1,6 +1,6 @@
 # NeoCortex — handoff operativo vigente
 
-> Actualizado: 2026-08-30 11:20 CST. El basename es histórico y permanece estable.
+> Actualizado: 2026-08-30 11:45 CST. El basename es histórico y permanece estable.
 > `~/.codex/PENDIENTES.md` conserva el compromiso operativo; este archivo
 > describe sólo la frontera técnica de reanudación.
 
@@ -19,7 +19,7 @@ Linux y demostrar el recorrido público instalado.
 ## Corte canónico de implementación en verificación final
 
 - Checkout: `/home/winterboss/Neocortex/Repository`
-- El árbol candidato quedó congelado en `40d4d329b4ce52279a23a48b8a745ce7d93d6576`;
+- El árbol candidato quedó congelado en `8e5ea302adbb266a3ccdc6cbce66cb8a7a369c1f`;
   no se reutiliza el receipt de `5455b90992ef2e6f2b0d49590a99448f0342aeea` como
   aceptación de esta migración.
 - La verificación viva observó 453 módulos Python canónicos, sin referencias de
