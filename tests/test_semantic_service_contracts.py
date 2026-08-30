@@ -566,8 +566,6 @@ def test_contract_cold_import_stays_free_of_owners_pil_planner_and_service() -> 
             "neocortex.semantic.semantic_models",
             "neocortex.semantic.semantic_service_contracts",
             "neocortex.sqlite_cancellation",
-            "neocortex.sqlite_schema_contract",
-            "neocortex.sqlite_schema_lifecycle",
             "neocortex.persistence",
             "neocortex.persistence.sqlite_paths",
         }

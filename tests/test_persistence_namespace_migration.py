@@ -20,7 +20,6 @@ MODULES = (
     "framework_state_writer",
     "sqlite_immutable",
     "sqlite_paths",
-    "state",
 )
 
 

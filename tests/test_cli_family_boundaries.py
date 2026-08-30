@@ -8,17 +8,13 @@
 # region [01] Dependencias del módulo
 from __future__ import annotations
 
-import argparse
-import importlib
 import subprocess
 import sys
 import textwrap
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
-from neocortex.api.cli import cli_direct
 from neocortex.api.cli.cli_app import main
 from neocortex.api.cli.cli_operations import DIRECT_OPERATIONS
 from neocortex.api.cli.cli_parser import build_parser
@@ -118,26 +114,12 @@ def test_family_handlers_remain_lazy_and_isolated_in_a_fresh_process() -> None:
     assert completed.returncode == 0, completed.stderr or completed.stdout
 
 
-@pytest.mark.parametrize(
-    ("handler_name", "module_name"),
-    tuple(
-        (operation.handler_name, operation.module_name)
-        for operation in DIRECT_OPERATIONS
-        if operation.module_name in {".cli_audio", ".cli_semantic"}
-    ),
-)
-def test_cli_direct_imports_delegate_to_family_handler(
-    handler_name: str,
-    module_name: str,
-) -> None:
-    family = importlib.import_module(module_name, package="neocortex.api.cli")
-    handler = getattr(cli_direct, handler_name)
-    args = argparse.Namespace()
-
-    with patch.object(family, handler_name, return_value=47) as mocked:
-        assert handler(args) == 47
-
-    mocked.assert_called_once_with(args)
+def test_direct_cli_has_no_cross_family_handler_delegates() -> None:
+    for operation in DIRECT_OPERATIONS:
+        if operation.module_name not in {".cli_audio", ".cli_semantic"}:
+            continue
+        direct = __import__("neocortex.api.cli.cli_direct", fromlist=["cli_direct"])
+        assert not hasattr(direct, operation.handler_name)
 
 
 @pytest.mark.parametrize("direct_arguments", FAMILY_DIRECT_ARGUMENTS)
