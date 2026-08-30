@@ -1,9 +1,6 @@
 """Stable configuration and result contracts for the integrated PDF route."""
 
 from __future__ import annotations
-
-from . import preserve_legacy_module as _preserve_legacy_module
-
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
@@ -300,5 +297,3 @@ class CacheDecision:
 
 
 # endregion [03]
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.pdf_route_models")

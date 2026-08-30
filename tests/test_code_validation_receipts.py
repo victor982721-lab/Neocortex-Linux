@@ -10,8 +10,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from _04_Nucleo_Operativo import code_change_validation, code_validation_receipts
-from _04_Nucleo_Operativo.code_change_validation import (
+from neocortex.code import code_change_validation, code_validation_receipts
+from neocortex.code.code_change_validation import (
     AffectedTestSelection,
     CODE_CHANGE_VALIDATION_POLICY,
     CodeChangeValidationResult,
@@ -19,18 +19,18 @@ from _04_Nucleo_Operativo.code_change_validation import (
     ValidationGate,
     _build_result,
 )
-from _04_Nucleo_Operativo.code_validation_receipts import (
+from neocortex.code.code_validation_receipts import (
     CodeValidationReceiptError,
     load_current_code_validation_receipt,
     publish_code_validation_receipt,
 )
-from _04_Nucleo_Operativo.code_validation_public_review import (
+from neocortex.code.code_validation_public_review import (
     VALIDATION_STABLE_PUBLIC_REVIEW_SCHEMA,
     code_review_identity,
     validation_stable_public_review_identity,
     validation_stable_review_identity,
 )
-from _04_Nucleo_Operativo.semantic_models import canonical_json
+from neocortex.semantic.semantic_models import canonical_json
 
 
 _REQUIRED_GATES = (
@@ -292,7 +292,7 @@ def test_published_receipt_reuses_only_the_exact_clean_state(
         ),
     )
     monkeypatch.setattr(
-        "_04_Nucleo_Operativo.code_validation_public_review.validation_stable_review_identity",
+        "neocortex.code.code_validation_public_review.validation_stable_review_identity",
         lambda *_args, **_kwargs: validation_stable_public_review_identity(
             code_review_identity(_review_result("published-review"))
         ),
@@ -367,7 +367,7 @@ def test_receipt_becomes_stale_when_review_publication_is_displaced(
         freshness="publication_only",
     )
     monkeypatch.setattr(
-        "_04_Nucleo_Operativo.code_validation_public_review.validation_stable_review_identity",
+        "neocortex.code.code_validation_public_review.validation_stable_review_identity",
         lambda *_args, **_kwargs: validation_stable_public_review_identity(
             code_review_identity(displaced)
         ),
@@ -409,7 +409,7 @@ def test_receipt_survives_operational_review_digest_and_experiment_visibility(
     )
     advanced.question_evaluations = (object(), object())
     monkeypatch.setattr(
-        "_04_Nucleo_Operativo.code_validation_public_review.validation_stable_review_identity",
+        "neocortex.code.code_validation_public_review.validation_stable_review_identity",
         lambda *_args, **_kwargs: validation_stable_public_review_identity(
             code_review_identity(advanced)
         ),

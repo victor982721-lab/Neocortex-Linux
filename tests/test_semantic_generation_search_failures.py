@@ -11,8 +11,8 @@ from pathlib import Path
 
 import pytest
 
-from _04_Nucleo_Operativo import semantic_search_repository
-from _04_Nucleo_Operativo.semantic_models import (
+from neocortex.semantic import semantic_search_repository
+from neocortex.semantic.semantic_models import (
     EmbeddingModality,
     EmbeddingModelSpec,
     EmbeddingRole,
@@ -23,8 +23,8 @@ from _04_Nucleo_Operativo.semantic_models import (
     fingerprint_bytes,
     fingerprint_text,
 )
-from _04_Nucleo_Operativo.semantic_repository_common import MAX_WRITE_BATCH
-from _04_Nucleo_Operativo.semantic_state import (
+from neocortex.semantic.semantic_repository_common import MAX_WRITE_BATCH
+from neocortex.semantic.semantic_state import (
     SemanticStateError,
     StaleEmbeddingJobError,
     claim_embedding_jobs,

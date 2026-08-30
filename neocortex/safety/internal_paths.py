@@ -6,9 +6,6 @@ specific run.  Both reuse the same Windows path and physical-identity rules.
 """
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 # region [01] Contracts and immutable schema
 
 import json
@@ -561,6 +558,3 @@ __all__ = [
 ]
 
 # endregion [03]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.internal_paths")

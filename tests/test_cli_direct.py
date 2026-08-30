@@ -11,19 +11,19 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from _04_Nucleo_Operativo.cli_direct import (
+from neocortex.api.cli.cli_direct import (
     run_organization_apply,
     run_organization_plan,
     run_pdf_layout_groups,
     run_pdf_search,
 )
-from _04_Nucleo_Operativo.corpus_access import CorpusMutationGuard
-from _04_Nucleo_Operativo.pdf_derived_queries import (
+from neocortex.safety.corpus_access import CorpusMutationGuard
+from neocortex.capabilities.formats.pdf.pdf_derived_queries import (
     MAX_LAYOUT_MEMBERS_PER_GROUP,
     list_layout_groups,
     search_pdf_state,
 )
-from _04_Nucleo_Operativo.protected_content import (
+from neocortex.safety.protected_content import (
     ProtectedContentPolicy,
     ProtectedPathSpec,
 )
@@ -239,7 +239,7 @@ class PdfReadOnlyQueryTests(unittest.TestCase):
         output = io.StringIO()
         with (
             patch(
-                "_04_Nucleo_Operativo.pdf_derived_queries.search_pdf_state",
+                "neocortex.capabilities.formats.pdf.pdf_derived_queries.search_pdf_state",
                 side_effect=OSError("access denied"),
             ),
             redirect_stdout(output),
@@ -284,25 +284,25 @@ class OrganizationApplyBoundaryTests(unittest.TestCase):
 
             with (
                 patch(
-                    "_04_Nucleo_Operativo.document_catalog.update_document_catalog",
+                    "neocortex.documents.document_catalog.update_document_catalog",
                     return_value=(),
                 ),
                 patch(
-                    "_04_Nucleo_Operativo.document_organization."
+                    "neocortex.documents.document_organization."
                     "plan_document_organization",
                     return_value=summary,
                 ) as plan_mock,
                 patch(
-                    "_04_Nucleo_Operativo.internal_paths."
+                    "neocortex.safety.internal_paths."
                     "canonical_internal_paths_policy",
                     return_value=internal_policy,
                 ) as internal_factory,
                 patch(
-                    "_04_Nucleo_Operativo.protected_content."
+                    "neocortex.safety.protected_content."
                     "canonical_protected_content_policy",
                     return_value=protected_policy,
                 ) as protected_factory,
-                patch("_04_Nucleo_Operativo.locking.FrameworkRunLock"),
+                patch("neocortex.runtime.control.locking.FrameworkRunLock"),
                 redirect_stdout(io.StringIO()),
             ):
                 exit_code = run_organization_plan(args)
@@ -353,21 +353,21 @@ class OrganizationApplyBoundaryTests(unittest.TestCase):
 
             with (
                 patch(
-                    "_04_Nucleo_Operativo.document_organization."
+                    "neocortex.documents.document_organization."
                     "apply_document_organization",
                     return_value=summary,
                 ) as apply_mock,
                 patch(
-                    "_04_Nucleo_Operativo.internal_paths."
+                    "neocortex.safety.internal_paths."
                     "canonical_internal_paths_policy",
                     return_value=internal_policy,
                 ) as policy_factory,
                 patch(
-                    "_04_Nucleo_Operativo.protected_content."
+                    "neocortex.safety.protected_content."
                     "canonical_protected_content_policy",
                     return_value=protected_policy,
                 ) as protected_factory,
-                patch("_04_Nucleo_Operativo.locking.FrameworkRunLock"),
+                patch("neocortex.runtime.control.locking.FrameworkRunLock"),
                 redirect_stdout(io.StringIO()),
             ):
                 exit_code = run_organization_apply(args)
@@ -420,23 +420,23 @@ class OrganizationApplyBoundaryTests(unittest.TestCase):
 
             with (
                 patch(
-                    "_04_Nucleo_Operativo.document_catalog.update_document_catalog"
+                    "neocortex.documents.document_catalog.update_document_catalog"
                 ) as catalog_mock,
                 patch(
-                    "_04_Nucleo_Operativo.document_organization."
+                    "neocortex.documents.document_organization."
                     "plan_document_organization"
                 ) as plan_mock,
                 patch(
-                    "_04_Nucleo_Operativo.internal_paths."
+                    "neocortex.safety.internal_paths."
                     "canonical_internal_paths_policy",
                     return_value=internal_policy,
                 ),
                 patch(
-                    "_04_Nucleo_Operativo.protected_content."
+                    "neocortex.safety.protected_content."
                     "canonical_protected_content_policy",
                     return_value=protected_policy,
                 ),
-                patch("_04_Nucleo_Operativo.locking.FrameworkRunLock") as lock_mock,
+                patch("neocortex.runtime.control.locking.FrameworkRunLock") as lock_mock,
                 redirect_stdout(io.StringIO()),
             ):
                 exit_code = run_organization_plan(args)
@@ -474,20 +474,20 @@ class OrganizationApplyBoundaryTests(unittest.TestCase):
 
             with (
                 patch(
-                    "_04_Nucleo_Operativo.document_organization."
+                    "neocortex.documents.document_organization."
                     "apply_document_organization"
                 ) as apply_mock,
                 patch(
-                    "_04_Nucleo_Operativo.internal_paths."
+                    "neocortex.safety.internal_paths."
                     "canonical_internal_paths_policy",
                     return_value=internal_policy,
                 ),
                 patch(
-                    "_04_Nucleo_Operativo.protected_content."
+                    "neocortex.safety.protected_content."
                     "canonical_protected_content_policy",
                     return_value=protected_policy,
                 ),
-                patch("_04_Nucleo_Operativo.locking.FrameworkRunLock") as lock_mock,
+                patch("neocortex.runtime.control.locking.FrameworkRunLock") as lock_mock,
                 redirect_stdout(io.StringIO()),
             ):
                 exit_code = run_organization_apply(args)
@@ -533,23 +533,23 @@ class OrganizationApplyBoundaryTests(unittest.TestCase):
 
             with (
                 patch(
-                    "_04_Nucleo_Operativo.document_catalog.update_document_catalog"
+                    "neocortex.documents.document_catalog.update_document_catalog"
                 ) as catalog_mock,
                 patch(
-                    "_04_Nucleo_Operativo.document_organization."
+                    "neocortex.documents.document_organization."
                     "plan_document_organization"
                 ) as plan_mock,
                 patch(
-                    "_04_Nucleo_Operativo.internal_paths."
+                    "neocortex.safety.internal_paths."
                     "canonical_internal_paths_policy",
                     return_value=internal_policy,
                 ),
                 patch(
-                    "_04_Nucleo_Operativo.protected_content."
+                    "neocortex.safety.protected_content."
                     "canonical_protected_content_policy",
                     return_value=protected_policy,
                 ),
-                patch("_04_Nucleo_Operativo.locking.FrameworkRunLock") as lock_mock,
+                patch("neocortex.runtime.control.locking.FrameworkRunLock") as lock_mock,
                 redirect_stdout(io.StringIO()),
             ):
                 exit_code = run_organization_plan(args)

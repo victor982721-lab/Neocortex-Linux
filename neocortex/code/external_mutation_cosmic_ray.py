@@ -1,9 +1,6 @@
 """Bounded focal mutation evidence backed by Cosmic Ray 8.4.6."""
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import hashlib
 import importlib.metadata
 import json
@@ -909,6 +906,3 @@ __all__ = [
     "execute_cosmic_ray_mutation",
     "mutation_input_signature",
 ]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.external_mutation_cosmic_ray")

@@ -8,9 +8,6 @@ searchable textual representation.
 """
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import os
 import stat
 import subprocess
@@ -1175,6 +1172,3 @@ __all__ = [
     "estimate_code_analysis_memory_bytes",
     "estimate_code_graph_memory_bytes",
 ]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.code_route")

@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from _04_Nucleo_Operativo.video_models import VideoProcessingError
-from _04_Nucleo_Operativo.video_probe import decode_video_probe
+from neocortex.capabilities.formats.video.models import VideoProcessingError
+from neocortex.capabilities.formats.video.probe import decode_video_probe
 
 
 def test_visual_only_video_is_a_valid_video_resource() -> None:

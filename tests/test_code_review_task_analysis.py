@@ -4,11 +4,11 @@ from dataclasses import asdict, replace
 
 import pytest
 
-from _04_Nucleo_Operativo.code_analysis_epistemics import (
+from neocortex.code.code_analysis_epistemics import (
     AnalysisQuestionEvaluation,
     analysis_identity,
 )
-from _04_Nucleo_Operativo.code_review_task_analysis import (
+from neocortex.code.code_review_task_analysis import (
     CODE_REVIEW_TASK_PROTOCOL_ANALYSIS_SCHEMA,
     CODE_REVIEW_TASK_PROTOCOL_POLICY,
     FRAMEWORK_REVIEW_TASK_PROTOCOL_QUESTION,

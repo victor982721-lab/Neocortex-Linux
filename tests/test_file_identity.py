@@ -8,10 +8,10 @@ from contextlib import closing
 import pytest
 
 from neocortex.deduplication import FileSnapshot
-from _04_Nucleo_Operativo.audio_route import _file_key as audio_file_key
-from _04_Nucleo_Operativo.document_catalog import _split_file_key
-from _04_Nucleo_Operativo.docx_route import _file_key as docx_file_key
-from _04_Nucleo_Operativo.file_identity import (
+from neocortex.capabilities.formats.audio.route import _file_key as audio_file_key
+from neocortex.documents.document_catalog import _split_file_key
+from neocortex.capabilities.formats.docx.route import _file_key as docx_file_key
+from neocortex.foundation.file_identity import (
     MAX_FILE_IDENTITY_COMPONENT,
     AmbiguousFileIdentityError,
     FileIdentity,
@@ -21,10 +21,10 @@ from _04_Nucleo_Operativo.file_identity import (
     encode_file_identity,
     file_key_from_snapshot,
 )
-from _04_Nucleo_Operativo.image_state import file_key as image_file_key
-from _04_Nucleo_Operativo.office_route import _file_key as office_file_key
-from _04_Nucleo_Operativo.pdf_route_cache import file_key as pdf_file_key
-from _04_Nucleo_Operativo.semantic_sources import (
+from neocortex.capabilities.formats.image.state import file_key as image_file_key
+from neocortex.capabilities.formats.office.route import _file_key as office_file_key
+from neocortex.capabilities.formats.pdf.pdf_route_cache import file_key as pdf_file_key
+from neocortex.semantic.semantic_sources import (
     SemanticSourceError,
     _snapshot_from_image_row,
 )

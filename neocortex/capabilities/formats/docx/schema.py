@@ -595,5 +595,5 @@ for _historical_symbol in (
     validate_docx_metadata,
     validate_docx_schema,
 ):
-    _historical_symbol.__module__ = "_04_Nucleo_Operativo.docx_schema"
+    _historical_symbol.__module__ = "neocortex.capabilities.formats.docx.schema"
 del _historical_symbol

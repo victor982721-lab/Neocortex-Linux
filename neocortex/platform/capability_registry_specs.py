@@ -7,22 +7,19 @@ from typing import Final
 CAPABILITY_SPEC_PAYLOADS: Final = (
     {
         "capability_id": "archive",
-        "architecture_family_id": "_04.capabilities.formats",
-        "compatibility_family_id": "_04.compat.formats",
+        "architecture_family_id": "neocortex.capabilities.formats",
         "logical_owner_id": "archive",
         "canonical_module_tree": "neocortex.capabilities.formats.archive",
         "modules": [
             {
                 "role": "models",
                 "canonical_module_id": "neocortex.capabilities.formats.archive.models",
-                "legacy_module_id": "_04_Nucleo_Operativo.archive_models",
                 "public_symbols": ["ArchiveRouteSummary"],
                 "warning_policy": "silent",
             },
             {
                 "role": "route",
                 "canonical_module_id": "neocortex.capabilities.formats.archive.route",
-                "legacy_module_id": "_04_Nucleo_Operativo.archive_route",
                 "public_symbols": [
                     "ARCHIVE_MIME",
                     "ARCHIVE_ROUTE_VERSION",
@@ -35,7 +32,6 @@ CAPABILITY_SPEC_PAYLOADS: Final = (
             {
                 "role": "state",
                 "canonical_module_id": "neocortex.capabilities.formats.archive.state",
-                "legacy_module_id": "_04_Nucleo_Operativo.archive_state",
                 "public_symbols": [
                     "ARCHIVE_SCHEMA_VERSION",
                     "archive_database",
@@ -47,7 +43,6 @@ CAPABILITY_SPEC_PAYLOADS: Final = (
             {
                 "role": "text_worker",
                 "canonical_module_id": "neocortex.capabilities.formats.archive.text_worker",
-                "legacy_module_id": "_04_Nucleo_Operativo.archive_text_worker",
                 "public_symbols": ["main"],
                 "warning_policy": "silent",
             },
@@ -92,26 +87,22 @@ CAPABILITY_SPEC_PAYLOADS: Final = (
         },
         "test_roots": [
             "tests/test_archive_cli.py",
-            "tests/test_archive_namespace_migration.py",
             "tests/test_archive_route.py",
             "tests/test_archive_text_worker_unit.py",
             "tests/test_capability_registry.py",
-            "tests/test_format_module_move_compatibility.py",
             "tests/test_route_schema_contracts.py",
         ],
         "executable_module_ids": ["neocortex.capabilities.formats.archive.text_worker"],
     },
     {
         "capability_id": "audio",
-        "architecture_family_id": "_04.capabilities.formats",
-        "compatibility_family_id": "_04.compat.formats",
+        "architecture_family_id": "neocortex.capabilities.formats",
         "logical_owner_id": "audio",
         "canonical_module_tree": "neocortex.capabilities.formats.audio",
         "modules": [
             {
                 "role": "models",
                 "canonical_module_id": "neocortex.capabilities.formats.audio.models",
-                "legacy_module_id": "_04_Nucleo_Operativo.audio_models",
                 "public_symbols": [
                     "AUDIO_ROUTE_VERSION",
                     "AudioProcessingError",
@@ -128,21 +119,18 @@ CAPABILITY_SPEC_PAYLOADS: Final = (
             {
                 "role": "probe",
                 "canonical_module_id": "neocortex.capabilities.formats.audio.probe",
-                "legacy_module_id": "_04_Nucleo_Operativo.audio_probe",
                 "public_symbols": ["MAX_FFPROBE_OUTPUT_BYTES", "probe_media", "resolve_ffprobe"],
                 "warning_policy": "silent",
             },
             {
                 "role": "route",
                 "canonical_module_id": "neocortex.capabilities.formats.audio.route",
-                "legacy_module_id": "_04_Nucleo_Operativo.audio_route",
                 "public_symbols": ["AUDIO_MIME_TYPES", "AudioRoute", "search_audio_state"],
                 "warning_policy": "silent",
             },
             {
                 "role": "state",
                 "canonical_module_id": "neocortex.capabilities.formats.audio.state",
-                "legacy_module_id": "_04_Nucleo_Operativo.audio_state",
                 "public_symbols": [
                     "AUDIO_SCHEMA_VERSION",
                     "audio_database",
@@ -153,7 +141,6 @@ CAPABILITY_SPEC_PAYLOADS: Final = (
             {
                 "role": "whisper",
                 "canonical_module_id": "neocortex.capabilities.formats.audio.whisper",
-                "legacy_module_id": "_04_Nucleo_Operativo.audio_whisper",
                 "public_symbols": [
                     "WhisperTranscriber",
                     "audio_runtime_doctor",
@@ -205,50 +192,43 @@ CAPABILITY_SPEC_PAYLOADS: Final = (
             "tests/test_audio_route.py",
             "tests/test_capability_registry.py",
             "tests/test_cli_audio_surface.py",
-            "tests/test_format_module_move_compatibility.py",
             "tests/test_route_schema_contracts.py",
         ],
         "executable_module_ids": [],
     },
     {
         "capability_id": "docx",
-        "architecture_family_id": "_04.capabilities.formats",
-        "compatibility_family_id": "_04.compat.formats",
+        "architecture_family_id": "neocortex.capabilities.formats",
         "logical_owner_id": "docx",
         "canonical_module_tree": "neocortex.capabilities.formats.docx",
         "modules": [
             {
                 "role": "integrity",
                 "canonical_module_id": "neocortex.capabilities.formats.docx.integrity",
-                "legacy_module_id": "_04_Nucleo_Operativo.docx_integrity",
                 "public_symbols": [],
                 "warning_policy": "silent",
             },
             {
                 "role": "layout",
                 "canonical_module_id": "neocortex.capabilities.formats.docx.layout",
-                "legacy_module_id": "_04_Nucleo_Operativo.docx_layout",
                 "public_symbols": [],
                 "warning_policy": "silent",
             },
             {
                 "role": "models",
                 "canonical_module_id": "neocortex.capabilities.formats.docx.models",
-                "legacy_module_id": "_04_Nucleo_Operativo.docx_models",
                 "public_symbols": ["ALGORITHM_VERSION", "DocxRouteConfig", "DocxRouteSummary"],
                 "warning_policy": "silent",
             },
             {
                 "role": "route",
                 "canonical_module_id": "neocortex.capabilities.formats.docx.route",
-                "legacy_module_id": "_04_Nucleo_Operativo.docx_route",
                 "public_symbols": ["DOCX_MIME", "DocxRoute", "DocxRouteConfig", "DocxRouteSummary"],
                 "warning_policy": "silent",
             },
             {
                 "role": "schema",
                 "canonical_module_id": "neocortex.capabilities.formats.docx.schema",
-                "legacy_module_id": "_04_Nucleo_Operativo.docx_schema",
                 "public_symbols": [
                     "DOCX_SCHEMA_VERSION",
                     "validate_docx_metadata",
@@ -259,7 +239,6 @@ CAPABILITY_SPEC_PAYLOADS: Final = (
             {
                 "role": "state",
                 "canonical_module_id": "neocortex.capabilities.formats.docx.state",
-                "legacy_module_id": "_04_Nucleo_Operativo.docx_state",
                 "public_symbols": ["connect_docx_state", "docx_database", "initialize_docx_state"],
                 "warning_policy": "silent",
             },
@@ -304,101 +283,86 @@ CAPABILITY_SPEC_PAYLOADS: Final = (
         },
         "test_roots": [
             "tests/test_capability_registry.py",
-            "tests/test_docx_namespace_migration.py",
             "tests/test_docx_route.py",
-            "tests/test_format_module_move_compatibility.py",
             "tests/test_pdf_docx_schema_contracts.py",
         ],
         "executable_module_ids": [],
     },
     {
         "capability_id": "image",
-        "architecture_family_id": "_04.capabilities.formats",
-        "compatibility_family_id": "_04.compat.formats",
+        "architecture_family_id": "neocortex.capabilities.formats",
         "logical_owner_id": "image",
         "canonical_module_tree": "neocortex.capabilities.formats.image",
         "modules": [
             {
                 "role": "adult",
                 "canonical_module_id": "neocortex.capabilities.formats.image.adult",
-                "legacy_module_id": "_04_Nucleo_Operativo.image_adult",
                 "public_symbols": [],
                 "warning_policy": "silent",
             },
             {
                 "role": "analysis",
                 "canonical_module_id": "neocortex.capabilities.formats.image.analysis",
-                "legacy_module_id": "_04_Nucleo_Operativo.image_analysis",
                 "public_symbols": [],
                 "warning_policy": "silent",
             },
             {
                 "role": "decision",
                 "canonical_module_id": "neocortex.capabilities.formats.image.decision",
-                "legacy_module_id": "_04_Nucleo_Operativo.image_decision",
                 "public_symbols": [],
                 "warning_policy": "silent",
             },
             {
                 "role": "decode",
                 "canonical_module_id": "neocortex.capabilities.formats.image.decode",
-                "legacy_module_id": "_04_Nucleo_Operativo.image_decode",
                 "public_symbols": [],
                 "warning_policy": "silent",
             },
             {
                 "role": "document",
                 "canonical_module_id": "neocortex.capabilities.formats.image.document",
-                "legacy_module_id": "_04_Nucleo_Operativo.image_document",
                 "public_symbols": [],
                 "warning_policy": "silent",
             },
             {
                 "role": "errors",
                 "canonical_module_id": "neocortex.capabilities.formats.image.errors",
-                "legacy_module_id": "_04_Nucleo_Operativo.image_errors",
                 "public_symbols": [],
                 "warning_policy": "silent",
             },
             {
                 "role": "features",
                 "canonical_module_id": "neocortex.capabilities.formats.image.features",
-                "legacy_module_id": "_04_Nucleo_Operativo.image_features",
                 "public_symbols": [],
                 "warning_policy": "silent",
             },
             {
                 "role": "isolation",
                 "canonical_module_id": "neocortex.capabilities.formats.image.isolation",
-                "legacy_module_id": "_04_Nucleo_Operativo.image_isolation",
                 "public_symbols": [],
                 "warning_policy": "silent",
             },
             {
                 "role": "models",
                 "canonical_module_id": "neocortex.capabilities.formats.image.models",
-                "legacy_module_id": "_04_Nucleo_Operativo.image_models",
                 "public_symbols": [],
                 "warning_policy": "silent",
             },
             {
                 "role": "png",
                 "canonical_module_id": "neocortex.capabilities.formats.image.png",
-                "legacy_module_id": "_04_Nucleo_Operativo.image_png",
                 "public_symbols": [],
                 "warning_policy": "silent",
             },
             {
                 "role": "policy",
                 "canonical_module_id": "neocortex.capabilities.formats.image.policy",
-                "legacy_module_id": "_04_Nucleo_Operativo.image_policy",
                 "public_symbols": [],
                 "warning_policy": "silent",
             },
             {
                 "role": "route",
                 "canonical_module_id": "neocortex.capabilities.formats.image.route",
-                "legacy_module_id": "_04_Nucleo_Operativo.image_route",
                 "public_symbols": [
                     "IMAGE_ROUTE_VERSION",
                     "ImageRoute",
@@ -410,14 +374,12 @@ CAPABILITY_SPEC_PAYLOADS: Final = (
             {
                 "role": "semantics",
                 "canonical_module_id": "neocortex.capabilities.formats.image.semantics",
-                "legacy_module_id": "_04_Nucleo_Operativo.image_semantics",
                 "public_symbols": [],
                 "warning_policy": "silent",
             },
             {
                 "role": "state",
                 "canonical_module_id": "neocortex.capabilities.formats.image.state",
-                "legacy_module_id": "_04_Nucleo_Operativo.image_state",
                 "public_symbols": [
                     "SCHEMA_VERSION",
                     "connect_image_state",
@@ -429,7 +391,6 @@ CAPABILITY_SPEC_PAYLOADS: Final = (
             {
                 "role": "visual",
                 "canonical_module_id": "neocortex.capabilities.formats.image.visual",
-                "legacy_module_id": "_04_Nucleo_Operativo.image_visual",
                 "public_symbols": [],
                 "warning_policy": "silent",
             },
@@ -474,14 +435,12 @@ CAPABILITY_SPEC_PAYLOADS: Final = (
         },
         "test_roots": [
             "tests/test_capability_registry.py",
-            "tests/test_format_module_move_compatibility.py",
             "tests/test_image_adult.py",
             "tests/test_image_analysis.py",
             "tests/test_image_classifier_memory.py",
             "tests/test_image_document.py",
             "tests/test_image_features.py",
             "tests/test_image_isolation.py",
-            "tests/test_image_namespace_migration.py",
             "tests/test_image_ocr_profiles.py",
             "tests/test_image_png.py",
             "tests/test_image_route.py",
@@ -492,36 +451,31 @@ CAPABILITY_SPEC_PAYLOADS: Final = (
     },
     {
         "capability_id": "office",
-        "architecture_family_id": "_04.capabilities.formats",
-        "compatibility_family_id": "_04.compat.formats",
+        "architecture_family_id": "neocortex.capabilities.formats",
         "logical_owner_id": "office",
         "canonical_module_tree": "neocortex.capabilities.formats.office",
         "modules": [
             {
                 "role": "extraction",
                 "canonical_module_id": "neocortex.capabilities.formats.office.extraction",
-                "legacy_module_id": None,
                 "public_symbols": ["extract_office_document"],
                 "warning_policy": "silent",
             },
             {
                 "role": "extraction_support",
                 "canonical_module_id": "neocortex.capabilities.formats.office.extraction_support",
-                "legacy_module_id": None,
                 "public_symbols": [],
                 "warning_policy": "silent",
             },
             {
                 "role": "legacy_worker",
                 "canonical_module_id": "neocortex.capabilities.formats.office.legacy_worker",
-                "legacy_module_id": "_04_Nucleo_Operativo.legacy_office_worker",
                 "public_symbols": ["main"],
                 "warning_policy": "silent",
             },
             {
                 "role": "models",
                 "canonical_module_id": "neocortex.capabilities.formats.office.models",
-                "legacy_module_id": None,
                 "public_symbols": [
                     "ExtractedOfficeDocument",
                     "OFFICE_MIME_FORMATS",
@@ -536,7 +490,6 @@ CAPABILITY_SPEC_PAYLOADS: Final = (
             {
                 "role": "route",
                 "canonical_module_id": "neocortex.capabilities.formats.office.route",
-                "legacy_module_id": "_04_Nucleo_Operativo.office_route",
                 "public_symbols": [
                     "OFFICE_MIME_FORMATS",
                     "OFFICE_ROUTE_VERSION",
@@ -550,7 +503,6 @@ CAPABILITY_SPEC_PAYLOADS: Final = (
             {
                 "role": "state",
                 "canonical_module_id": "neocortex.capabilities.formats.office.state",
-                "legacy_module_id": "_04_Nucleo_Operativo.office_state",
                 "public_symbols": [
                     "OFFICE_SCHEMA_VERSION",
                     "initialize_office_state",
@@ -562,7 +514,6 @@ CAPABILITY_SPEC_PAYLOADS: Final = (
             {
                 "role": "xlsx",
                 "canonical_module_id": "neocortex.capabilities.formats.office.xlsx",
-                "legacy_module_id": None,
                 "public_symbols": [],
                 "warning_policy": "silent",
             },
@@ -609,8 +560,6 @@ CAPABILITY_SPEC_PAYLOADS: Final = (
             "tests/test_application_config_media_projections.py",
             "tests/test_capability_registry.py",
             "tests/test_cli_review_office.py",
-            "tests/test_format_module_move_compatibility.py",
-            "tests/test_office_namespace_migration.py",
             "tests/test_office_route.py",
             "tests/test_route_schema_contracts.py",
             "tests/test_text_derivation_route.py",
@@ -620,15 +569,13 @@ CAPABILITY_SPEC_PAYLOADS: Final = (
     },
     {
         "capability_id": "video",
-        "architecture_family_id": "_04.capabilities.formats",
-        "compatibility_family_id": "_04.compat.formats",
+        "architecture_family_id": "neocortex.capabilities.formats",
         "logical_owner_id": "video",
         "canonical_module_tree": "neocortex.capabilities.formats.video",
         "modules": [
             {
                 "role": "frames",
                 "canonical_module_id": "neocortex.capabilities.formats.video.frames",
-                "legacy_module_id": "_04_Nucleo_Operativo.video_frames",
                 "public_symbols": [
                     "ExtractedVideoFrame",
                     "MAX_VIDEO_FRAMES",
@@ -643,7 +590,6 @@ CAPABILITY_SPEC_PAYLOADS: Final = (
             {
                 "role": "models",
                 "canonical_module_id": "neocortex.capabilities.formats.video.models",
-                "legacy_module_id": "_04_Nucleo_Operativo.video_models",
                 "public_symbols": [
                     "SubtitleStreamProbe",
                     "VIDEO_ROUTE_VERSION",
@@ -657,14 +603,12 @@ CAPABILITY_SPEC_PAYLOADS: Final = (
             {
                 "role": "probe",
                 "canonical_module_id": "neocortex.capabilities.formats.video.probe",
-                "legacy_module_id": "_04_Nucleo_Operativo.video_probe",
                 "public_symbols": ["decode_video_probe", "probe_video", "resolve_video_ffprobe"],
                 "warning_policy": "silent",
             },
             {
                 "role": "route",
                 "canonical_module_id": "neocortex.capabilities.formats.video.route",
-                "legacy_module_id": "_04_Nucleo_Operativo.video_route",
                 "public_symbols": [
                     "VIDEO_MIME_TYPES",
                     "VideoRoute",
@@ -676,7 +620,6 @@ CAPABILITY_SPEC_PAYLOADS: Final = (
             {
                 "role": "state",
                 "canonical_module_id": "neocortex.capabilities.formats.video.state",
-                "legacy_module_id": "_04_Nucleo_Operativo.video_state",
                 "public_symbols": [
                     "VIDEO_SCHEMA_VERSION",
                     "initialize_video_state",
@@ -729,12 +672,10 @@ CAPABILITY_SPEC_PAYLOADS: Final = (
         "test_roots": [
             "tests/test_capability_registry.py",
             "tests/test_cli_video_surface.py",
-            "tests/test_format_module_move_compatibility.py",
             "tests/test_route_schema_contracts.py",
             "tests/test_video_content_types.py",
             "tests/test_video_frames.py",
             "tests/test_video_knowledge_integration.py",
-            "tests/test_video_namespace_migration.py",
             "tests/test_video_probe.py",
             "tests/test_video_route.py",
             "tests/test_video_state.py",

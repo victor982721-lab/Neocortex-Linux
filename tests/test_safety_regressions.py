@@ -23,15 +23,15 @@ from neocortex.deduplication import (
     snapshot_path,
 )
 from neocortex.deduplication.domain.errors import InventoryError
-from _04_Nucleo_Operativo import action_policy
-from _04_Nucleo_Operativo.action_policy import same_snapshot
-from _04_Nucleo_Operativo.actions import FrameworkActions
-from _04_Nucleo_Operativo.content_types import DetectedType
-from _04_Nucleo_Operativo.corpus_access import ProtectedAnalysisRootError
-from _04_Nucleo_Operativo.image_route import _same_snapshot as image_same_snapshot
-from _04_Nucleo_Operativo.models import ActionSummary
-from _04_Nucleo_Operativo.pdf_isolation import _source_matches
-from _04_Nucleo_Operativo.state import SCHEMA_VERSION, FrameworkState
+from neocortex.workflow.actions import action_policy
+from neocortex.workflow.actions.action_policy import same_snapshot
+from neocortex.workflow.actions.actions import FrameworkActions
+from neocortex.platform.content_types import DetectedType
+from neocortex.safety.corpus_access import ProtectedAnalysisRootError
+from neocortex.capabilities.formats.image.route import _same_snapshot as image_same_snapshot
+from neocortex.runtime.models import ActionSummary
+from neocortex.capabilities.formats.pdf.pdf_isolation import _source_matches
+from neocortex.persistence.state import SCHEMA_VERSION, FrameworkState
 from tests.internal_paths_test_support import begin_signed_normal_run
 
 
@@ -165,7 +165,7 @@ class InventoryRootSafetyTests(_DirectoryLinkTestCase):
                 )
 
                 with (
-                    patch("_04_Nucleo_Operativo.actions.send2trash") as trash,
+                    patch("neocortex.workflow.actions.actions.send2trash") as trash,
                     self.assertRaisesRegex(
                         RuntimeError,
                         "framework run root does not match the inventory scan root",
@@ -200,7 +200,7 @@ class InventoryRootSafetyTests(_DirectoryLinkTestCase):
                     excluded_paths=(),
                 )
 
-                with patch("_04_Nucleo_Operativo.actions.send2trash") as trash:
+                with patch("neocortex.workflow.actions.actions.send2trash") as trash:
                     summary = actions.execute(
                         plan,
                         cleanup_empty_directories=False,
@@ -261,7 +261,7 @@ class InventoryRootSafetyTests(_DirectoryLinkTestCase):
                         "_apply_trash_batch",
                         new=inject_late_file,
                     ),
-                    patch("_04_Nucleo_Operativo.actions.send2trash") as trash,
+                    patch("neocortex.workflow.actions.actions.send2trash") as trash,
                 ):
                     summary = actions.execute(plan)
 
@@ -327,7 +327,7 @@ class InventoryRootSafetyTests(_DirectoryLinkTestCase):
                         "_apply_trash_batch",
                         new=mutate_keeper,
                     ),
-                    patch("_04_Nucleo_Operativo.actions.send2trash") as trash,
+                    patch("neocortex.workflow.actions.actions.send2trash") as trash,
                 ):
                     summary = actions.execute(
                         plan,
@@ -368,7 +368,7 @@ class InventoryRootSafetyTests(_DirectoryLinkTestCase):
                     excluded_paths=(),
                 )
 
-                with patch("_04_Nucleo_Operativo.actions.send2trash") as trash:
+                with patch("neocortex.workflow.actions.actions.send2trash") as trash:
                     summary = actions.execute(
                         plan,
                         cleanup_empty_directories=False,
@@ -432,7 +432,7 @@ class InventoryRootSafetyTests(_DirectoryLinkTestCase):
                         "_validate_trash_candidate",
                         side_effect=replace_root_after_preflight,
                     ),
-                    patch("_04_Nucleo_Operativo.actions.send2trash") as trash,
+                    patch("neocortex.workflow.actions.actions.send2trash") as trash,
                     self.assertRaisesRegex(
                         ProtectedAnalysisRootError,
                         "root identity changed",
@@ -476,10 +476,10 @@ class InventoryRootSafetyTests(_DirectoryLinkTestCase):
 
                 with (
                     patch(
-                        "_04_Nucleo_Operativo.actions.files_equal_exact",
+                        "neocortex.workflow.actions.actions.files_equal_exact",
                         side_effect=FileChangedError("changed while reading"),
                     ),
-                    patch("_04_Nucleo_Operativo.actions.send2trash") as trash,
+                    patch("neocortex.workflow.actions.actions.send2trash") as trash,
                 ):
                     summary = actions.execute(
                         plan,
@@ -520,7 +520,7 @@ class InventoryRootSafetyTests(_DirectoryLinkTestCase):
                     excluded_paths=(),
                 )
 
-                with patch("_04_Nucleo_Operativo.actions.send2trash") as trash:
+                with patch("neocortex.workflow.actions.actions.send2trash") as trash:
                     result = actions._apply_trash_batch(
                         "trash_test_candidate",
                         (
@@ -580,7 +580,7 @@ class InventoryRootSafetyTests(_DirectoryLinkTestCase):
                         "_is_reparse_entry",
                         side_effect=simulated_reparse,
                     ),
-                    patch("_04_Nucleo_Operativo.actions.send2trash") as trash,
+                    patch("neocortex.workflow.actions.actions.send2trash") as trash,
                 ):
                     result = actions.recycle_verified_files(
                         "trash_test_reparse",
@@ -651,7 +651,7 @@ class InventoryRootSafetyTests(_DirectoryLinkTestCase):
                         "_validate_trash_candidate",
                         side_effect=substitute_after_first_pass,
                     ),
-                    patch("_04_Nucleo_Operativo.actions.send2trash") as trash,
+                    patch("neocortex.workflow.actions.actions.send2trash") as trash,
                 ):
                     result = actions._apply_trash_batch(
                         "trash_test_substitution",
@@ -694,7 +694,7 @@ class InventoryRootSafetyTests(_DirectoryLinkTestCase):
                     apply=True,
                     excluded_paths=(),
                 )
-                with patch("_04_Nucleo_Operativo.actions.send2trash") as trash:
+                with patch("neocortex.workflow.actions.actions.send2trash") as trash:
                     result = actions._apply_trash_batch(
                         "trash_duplicate",
                         ((str(candidate), "outside keeper fixture"),),
@@ -745,7 +745,7 @@ class InventoryRootSafetyTests(_DirectoryLinkTestCase):
                         "_is_reparse_entry",
                         side_effect=simulated_reparse,
                     ),
-                    patch("_04_Nucleo_Operativo.actions.send2trash") as trash,
+                    patch("neocortex.workflow.actions.actions.send2trash") as trash,
                 ):
                     result = actions._apply_trash_batch(
                         "trash_duplicate",
@@ -1134,7 +1134,7 @@ class VerifiedRecycleSafetyTests(unittest.TestCase):
                     excluded_paths=(),
                 )
                 candidate.write_bytes(b"%PDF-1.4\nchanged")
-                with patch("_04_Nucleo_Operativo.actions.send2trash") as trash:
+                with patch("neocortex.workflow.actions.actions.send2trash") as trash:
                     applied, failed, protected = actions.recycle_verified_files(
                         "trash_unrecoverable_pdf",
                         ((snapshot, "all PDF engines failed"),),
@@ -1167,7 +1167,7 @@ class VerifiedRecycleSafetyTests(unittest.TestCase):
                     excluded_paths=(),
                 )
 
-                with patch("_04_Nucleo_Operativo.actions.send2trash") as trash:
+                with patch("neocortex.workflow.actions.actions.send2trash") as trash:
                     result = actions.recycle_verified_files(
                         "trash_unrecoverable_pdf",
                         ((snapshot, "all PDF engines failed"),),

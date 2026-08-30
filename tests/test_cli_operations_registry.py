@@ -16,13 +16,13 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from _04_Nucleo_Operativo.cli_app import dispatch_direct
-from _04_Nucleo_Operativo.cli_operations import (
+from neocortex.api.cli.cli_app import dispatch_direct
+from neocortex.api.cli.cli_operations import (
     DIRECT_OPERATIONS,
     selected_direct_operations,
 )
-from _04_Nucleo_Operativo.cli_parser import build_parser
-from _04_Nucleo_Operativo.cli_validation import validate_arguments
+from neocortex.api.cli.cli_parser import build_parser
+from neocortex.api.cli.cli_validation import validate_arguments
 # endregion [01]
 
 # region [02] Implementación
@@ -189,19 +189,19 @@ def test_importing_dispatch_keeps_direct_handler_module_lazy() -> None:
                 """
                 import sys
 
-                from _04_Nucleo_Operativo.cli_app import dispatch_direct
-                from _04_Nucleo_Operativo.cli_parser import build_parser
+                from neocortex.api.cli.cli_app import dispatch_direct
+                from neocortex.api.cli.cli_parser import build_parser
 
                 handler_modules = {
-                    "_04_Nucleo_Operativo.cli_capabilities",
-                    "_04_Nucleo_Operativo.cli_direct",
-                    "_04_Nucleo_Operativo.cli_review_evidence",
-                    "_04_Nucleo_Operativo.cli_watcher",
-                    "_04_Nucleo_Operativo.cli_code",
-                    "_04_Nucleo_Operativo.cli_knowledge",
-                    "_04_Nucleo_Operativo.cli_video",
-                    "_04_Nucleo_Operativo.review_evidence",
-                    "_04_Nucleo_Operativo.watcher",
+                    "neocortex.api.cli.cli_capabilities",
+                    "neocortex.api.cli.cli_direct",
+                    "neocortex.api.cli.cli_review_evidence",
+                    "neocortex.api.cli.cli_watcher",
+                    "neocortex.api.cli.cli_code",
+                    "neocortex.api.cli.cli_knowledge",
+                    "neocortex.api.cli.cli_video",
+                    "neocortex.workflow.review.review_evidence",
+                    "neocortex.runtime.control.watcher",
                 }
                 loaded = handler_modules.intersection(sys.modules)
                 if loaded:
@@ -268,7 +268,7 @@ def test_each_direct_flag_selects_and_lazily_dispatches_its_registered_handler(
 
 def test_no_direct_selection_imports_no_handler_module() -> None:
     args = build_parser().parse_args([])
-    with patch("_04_Nucleo_Operativo.cli_operations.importlib.import_module") as import_module:
+    with patch("neocortex.api.cli.cli_operations.importlib.import_module") as import_module:
         assert dispatch_direct(args) is None
     import_module.assert_not_called()
 

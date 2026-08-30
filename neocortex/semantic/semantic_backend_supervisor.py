@@ -1,9 +1,6 @@
 """Terminable FastEmbed worker owned by the SQLite generation coordinator."""
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import multiprocessing
 import queue
 from pathlib import Path
@@ -320,6 +317,3 @@ class DeadlineEmbeddingBackend(EmbeddingBackend):
                 self._discard(terminate=True)
                 return
         self._discard(terminate=False)
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.semantic_backend_supervisor")

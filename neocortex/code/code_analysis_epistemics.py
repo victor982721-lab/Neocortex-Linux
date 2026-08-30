@@ -10,9 +10,6 @@ the human decision itself.
 """
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, fields
@@ -784,6 +781,3 @@ __all__ = [
     "validate_analysis_question_evaluation",
     "validate_analysis_question_set",
 ]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.code_analysis_epistemics")

@@ -9,8 +9,8 @@ from pathlib import Path
 
 import pytest
 
-import _04_Nucleo_Operativo.external_architecture_providers as adapters
-from _04_Nucleo_Operativo.code_external_evidence import ExternalEvidenceFile
+import neocortex.code.external_architecture_providers as adapters
+from neocortex.code.code_external_evidence import ExternalEvidenceFile
 
 
 def _staged(
@@ -38,8 +38,8 @@ def test_ruff_analyze_normalizes_owned_production_edges(
 ) -> None:
     staged = _staged(
         tmp_path,
-        "_04_Nucleo_Operativo/a.py",
-        "_04_Nucleo_Operativo/b.py",
+        "neocortex/a.py",
+        "neocortex/b.py",
     )
     observed: list[tuple[str, ...]] = []
 
@@ -47,8 +47,8 @@ def test_ruff_analyze_normalizes_owned_production_edges(
         observed.append(tuple(arguments))
         assert kwargs["cwd"] == tmp_path
         payload = {
-            "source/_04_Nucleo_Operativo/a.py": ["source/_04_Nucleo_Operativo/b.py"],
-            "source/_04_Nucleo_Operativo/b.py": [],
+            "source/neocortex/a.py": ["source/neocortex/b.py"],
+            "source/neocortex/b.py": [],
         }
         return subprocess.CompletedProcess(arguments, 0, json.dumps(payload).encode(), b"")
 
@@ -60,7 +60,7 @@ def test_ruff_analyze_normalizes_owned_production_edges(
     assert "--no-preview" in observed[0]
     assert "--no-fix" not in observed[0]
     assert tuple((item.source_key, item.target_key) for item in result.relations) == (
-        ("_04_Nucleo_Operativo.a", "_04_Nucleo_Operativo.b"),
+        ("neocortex.a", "neocortex.b"),
     )
     assert result.findings == result.metrics == ()
     assert result.process_invocations == 1
@@ -70,8 +70,8 @@ def test_ruff_analyze_rejects_unowned_paths(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    staged = _staged(tmp_path, "_04_Nucleo_Operativo/a.py")
-    payload = {"source/_04_Nucleo_Operativo/a.py": ["source/missing.py"]}
+    staged = _staged(tmp_path, "neocortex/a.py")
+    payload = {"source/neocortex/a.py": ["source/missing.py"]}
     monkeypatch.setattr(
         adapters,
         "run_bounded_capture",
@@ -90,21 +90,21 @@ def test_grimp_normalizes_graph_contracts_and_gates(
 ) -> None:
     staged = _staged(
         tmp_path,
-        "_04_Nucleo_Operativo/a.py",
-        "_04_Nucleo_Operativo/b.py",
+        "neocortex/a.py",
+        "neocortex/b.py",
     )
     payload = {
         "module_metrics": [
             {
-                "module": "_04_Nucleo_Operativo.a",
-                "relative_path": "_04_Nucleo_Operativo/a.py",
+                "module": "neocortex.a",
+                "relative_path": "neocortex/a.py",
                 "fan_in": 0,
                 "fan_out": 1,
                 "cycle_ids": [],
             },
             {
-                "module": "_04_Nucleo_Operativo.b",
-                "relative_path": "_04_Nucleo_Operativo/b.py",
+                "module": "neocortex.b",
+                "relative_path": "neocortex/b.py",
                 "fan_in": 1,
                 "fan_out": 0,
                 "cycle_ids": [],
@@ -119,8 +119,8 @@ def test_grimp_normalizes_graph_contracts_and_gates(
         "relations": [
             {
                 "relation": "module_import",
-                "importer": "_04_Nucleo_Operativo.a",
-                "imported": "_04_Nucleo_Operativo.b",
+                "importer": "neocortex.a",
+                "imported": "neocortex.b",
                 "details": [{"line_number": 1, "line_contents": "from . import b"}],
             }
         ],
@@ -130,11 +130,11 @@ def test_grimp_normalizes_graph_contracts_and_gates(
                 "status": "failed",
                 "violations": [
                     {
-                        "importer": "_04_Nucleo_Operativo.a",
-                        "imported": "_04_Nucleo_Operativo.b",
+                        "importer": "neocortex.a",
+                        "imported": "neocortex.b",
                         "import_chain": [
-                            "_04_Nucleo_Operativo.a",
-                            "_04_Nucleo_Operativo.b",
+                            "neocortex.a",
+                            "neocortex.b",
                         ],
                         "message": "fixture violation",
                         "details": [{"line_number": 1, "line_contents": "from . import b"}],
@@ -169,15 +169,15 @@ def test_grimp_normalizes_graph_contracts_and_gates(
     assert result.findings[0].mutation_authority is False
 
 
-def test_core_target_projection_emits_regression_and_compatibility_findings(
+def test_core_target_projection_emits_regression_findings(
     tmp_path: Path,
 ) -> None:
-    module = "_04_Nucleo_Operativo.a"
-    relative = "_04_Nucleo_Operativo/a.py"
+    module = "neocortex.a"
+    relative = "neocortex/a.py"
     staged = _staged(tmp_path, relative)
     relation = {
         "source_module": module,
-        "target_module": "_04_Nucleo_Operativo.b",
+        "target_module": "neocortex.b",
         "witness_ids": ["module-import-v1:fixture"],
     }
     payload = {
@@ -191,7 +191,6 @@ def test_core_target_projection_emits_regression_and_compatibility_findings(
                     "registered_modules": [module],
                     "missing_registered_modules": [],
                     "unregistered_core_modules": [module],
-                    "compatibility_modules": [],
                 },
                 "target_responsibility": {
                     "counters": {"unmapped_modules": 1, "overlapping_modules": 0},
@@ -207,7 +206,6 @@ def test_core_target_projection_emits_regression_and_compatibility_findings(
                         "baseline_forbidden_direct_module_edges": 186,
                         "regression_direct_module_edges": 1,
                         "resolved_direct_module_edges": 0,
-                        "canonical_to_compat_direct_module_edges": 1,
                     },
                     "mapping_resolutions": [
                         {"module_id": module, "status": "resolved", "labels": ["code"]}
@@ -218,11 +216,6 @@ def test_core_target_projection_emits_regression_and_compatibility_findings(
                             "target_label": "knowledge",
                             "module_relations": [relation],
                         },
-                        {
-                            "source_label": "code",
-                            "target_label": "compat",
-                            "module_relations": [relation],
-                        },
                     ],
                     "transition_baseline": [
                         {
@@ -231,13 +224,7 @@ def test_core_target_projection_emits_regression_and_compatibility_findings(
                             "regression_direct_module_edges": 1,
                         }
                     ],
-                    "edge_decisions": [
-                        {
-                            "source_family": "code",
-                            "target_family": "compat",
-                            "reason": "canonical_to_compat",
-                        }
-                    ],
+                    "edge_decisions": [],
                 },
             }
         }
@@ -250,25 +237,23 @@ def test_core_target_projection_emits_regression_and_compatibility_findings(
     )
 
     assert {item.code for item in findings} == {
-        "core_target_canonical_to_compat",
         "core_target_family_regression",
         "core_target_responsibility_unmapped",
     }
     values = {item.metric_name: item.value for item in metrics}
     assert values["family_regression_direct_edge_count"] == 1
-    assert values["canonical_to_compat_direct_edge_count"] == 1
 
 
 def test_complexipy_normalizes_module_and_symbol_metrics(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    staged = _staged(tmp_path, "_04_Nucleo_Operativo/a.py")
+    staged = _staged(tmp_path, "neocortex/a.py")
     payload = {
         "module_metrics": [
             {
-                "module": "_04_Nucleo_Operativo.a",
-                "relative_path": "_04_Nucleo_Operativo/a.py",
+                "module": "neocortex.a",
+                "relative_path": "neocortex/a.py",
                 "total": 7,
                 "maximum": 5,
                 "function_count": 2,
@@ -276,8 +261,8 @@ def test_complexipy_normalizes_module_and_symbol_metrics(
         ],
         "function_metrics": [
             {
-                "module": "_04_Nucleo_Operativo.a",
-                "relative_path": "_04_Nucleo_Operativo/a.py",
+                "module": "neocortex.a",
+                "relative_path": "neocortex/a.py",
                 "symbol": "f",
                 "start_line": 1,
                 "end_line": 4,

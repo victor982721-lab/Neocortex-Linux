@@ -8,9 +8,6 @@ here.
 """
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import ctypes
 import errno
 import os
@@ -539,6 +536,3 @@ __all__ = [
     "UnsupportedIdentityBoundMutation",
     "rename_no_replace_by_identity",
 ]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.windows_handle_mutation")

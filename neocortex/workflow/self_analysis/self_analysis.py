@@ -1,9 +1,6 @@
 """Pure contracts for protected source-tree self-analysis runs."""
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import json
 import os
 from collections.abc import Mapping, Sequence
@@ -568,6 +565,3 @@ __all__ = [
     "inventory_policy_manifest",
     "self_analysis_commands",
 ]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.self_analysis")

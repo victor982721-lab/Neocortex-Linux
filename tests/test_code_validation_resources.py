@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from _04_Nucleo_Operativo import code_validation_resources as resources
+from neocortex.code import code_validation_resources as resources
 
 
 GIB = 1024**3

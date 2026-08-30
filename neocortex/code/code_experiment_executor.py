@@ -12,9 +12,6 @@ repository-provided selector text, or product-state mutation.
 """
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import os
 import sqlite3
 import time
@@ -1380,6 +1377,3 @@ __all__ = [
     "parse_code_experiment_receipt_payload",
     "validate_code_experiment_declared_test_relations",
 ]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.code_experiment_executor")

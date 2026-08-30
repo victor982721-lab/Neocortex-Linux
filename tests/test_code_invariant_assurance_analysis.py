@@ -7,12 +7,12 @@ from pathlib import Path
 
 import pytest
 
-from _04_Nucleo_Operativo.code_invariant_assurance_analysis import (
+from neocortex.code.code_invariant_assurance_analysis import (
     analyze_code_invariant_assurance,
     invariant_assurance_questions,
     parse_code_invariant_assurance_payload,
 )
-from _04_Nucleo_Operativo.code_invariant_contracts import (
+from neocortex.code.code_invariant_contracts import (
     CALIBRATION_SCENARIO_IDS,
     EXPERIMENT_SCENARIO_IDS,
     INVARIANT_SPECS,
@@ -24,8 +24,8 @@ from _04_Nucleo_Operativo.code_invariant_contracts import (
     runtime_scenario,
     runtime_scenario_registry_fingerprint,
 )
-from _04_Nucleo_Operativo.external_deep_coverage import PYTEST_COVERAGE_PROVIDER_ID
-from _04_Nucleo_Operativo.external_evidence_models import (
+from neocortex.code.external_deep_coverage import PYTEST_COVERAGE_PROVIDER_ID
+from neocortex.code.external_evidence_models import (
     ExternalProviderEvidence,
     ExternalProviderRelation,
     external_relation_identity,

@@ -1,14 +1,11 @@
 """Reconcile a scoped inventory with a finite USN journal window."""
 # region [00] Contexto del módulo
-# Módulo: _04_Nucleo_Operativo/reconcile.py
+# Módulo: neocortex/reconcile.py
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
 # region [01] Dependencias del módulo
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import os
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -394,6 +391,3 @@ def reconcile_usn_window(
 
 
 # endregion [02]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.reconcile")

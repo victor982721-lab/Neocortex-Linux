@@ -1,9 +1,6 @@
 """Fresh-process public review identity for canonical Code validation."""
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import argparse
 import sqlite3
 from collections.abc import Mapping
@@ -260,6 +257,3 @@ __all__ = [
     "validation_stable_public_review_identity",
     "validation_stable_review_identity",
 ]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.code_validation_public_review")

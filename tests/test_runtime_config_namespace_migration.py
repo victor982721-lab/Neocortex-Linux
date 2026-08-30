@@ -12,41 +12,19 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 RUNTIME_ROOT = PROJECT_ROOT / "neocortex" / "runtime"
 
-LEGACY_ALIASES = {
-    "_04_Nucleo_Operativo.app_paths": "neocortex.runtime.config.app_paths",
-    "_04_Nucleo_Operativo.application_config": (
-        "neocortex.runtime.config.application_config"
-    ),
-    "_04_Nucleo_Operativo.application_config_projections": (
-        "neocortex.runtime.config.application_config_projections"
-    ),
-    "_04_Nucleo_Operativo.model_management": (
-        "neocortex.runtime.config.model_management"
-    ),
-    "_04_Nucleo_Operativo.models": "neocortex.runtime.models",
-}
-
-
-def test_legacy_runtime_modules_are_exact_product_aliases() -> None:
-    for legacy_name, product_name in LEGACY_ALIASES.items():
-        legacy = importlib.import_module(legacy_name)
-        product = importlib.import_module(product_name)
-
-        assert legacy is product
-        assert sys.modules[legacy_name] is product
-        assert sys.modules[product_name] is product
+CANONICAL_MODULES = (
+    "neocortex.runtime.config.app_paths",
+    "neocortex.runtime.config.application_config",
+    "neocortex.runtime.config.application_config_projections",
+    "neocortex.runtime.config.model_management",
+    "neocortex.runtime.models",
+)
 
 
 def test_runtime_configuration_implementation_lives_under_product_namespace() -> None:
-    for product_name in LEGACY_ALIASES.values():
+    for product_name in CANONICAL_MODULES:
         module = importlib.import_module(product_name)
         assert Path(module.__file__).resolve().is_relative_to(RUNTIME_ROOT)
-
-    for legacy_name in LEGACY_ALIASES:
-        source = (PROJECT_ROOT / (legacy_name.replace(".", "/") + ".py")).read_text(
-            encoding="utf-8"
-        )
-        assert "sys.modules[__name__]" in source
 
 
 def test_runtime_configuration_parent_packages_remain_import_light() -> None:
@@ -85,7 +63,7 @@ def test_runtime_models_keep_historical_pickle_fqns() -> None:
     models = importlib.import_module("neocortex.runtime.models")
     config = models.FrameworkConfig(root=Path("runtime-config-fixture"))
 
-    assert models.FrameworkConfig.__module__ == "_04_Nucleo_Operativo.models"
+    assert models.FrameworkConfig.__module__ == "neocortex.runtime.models"
     restored = pickle.loads(pickle.dumps(config, protocol=5))
     assert type(restored) is type(config)
     assert restored == config
@@ -101,7 +79,7 @@ def test_model_management_keeps_historical_status_identity() -> None:
         "/tmp/fixture-model",
     )
 
-    assert module.ManagedModelStatus.__module__ == "_04_Nucleo_Operativo.model_management"
+    assert module.ManagedModelStatus.__module__ == "neocortex.runtime.config.model_management"
     restored = pickle.loads(pickle.dumps(status, protocol=5))
     assert type(restored) is type(status)
     assert restored == status

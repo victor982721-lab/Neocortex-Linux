@@ -9,26 +9,26 @@ from typing import Any
 
 import pytest
 
-import _04_Nucleo_Operativo.office_route as office_route_module
-import _04_Nucleo_Operativo.office_state as office_state_module
+import neocortex.capabilities.formats.office.route as office_route_module
+import neocortex.capabilities.formats.office.state as office_state_module
 from neocortex.deduplication import FileSnapshot, snapshot_path
-from _04_Nucleo_Operativo.cancellation import CancellationToken
-from _04_Nucleo_Operativo.cli_config import framework_config_from_args
-from _04_Nucleo_Operativo.cli_parser import build_parser
-from _04_Nucleo_Operativo.cli_validation import validate_arguments
-from _04_Nucleo_Operativo.corpus_access import (
+from neocortex.runtime.control.cancellation import CancellationToken
+from neocortex.api.cli.cli_config import framework_config_from_args
+from neocortex.api.cli.cli_parser import build_parser
+from neocortex.api.cli.cli_validation import validate_arguments
+from neocortex.safety.corpus_access import (
     CorpusAccessPolicy,
     CorpusMutationGuard,
 )
-from _04_Nucleo_Operativo.document_catalog import (
+from neocortex.documents.document_catalog import (
     document_catalog_database,
     update_document_catalog,
 )
-from _04_Nucleo_Operativo.document_organization import (
+from neocortex.documents.document_organization import (
     apply_document_organization,
     plan_document_organization,
 )
-from _04_Nucleo_Operativo.office_route import (
+from neocortex.capabilities.formats.office.route import (
     OFFICE_MIME_FORMATS,
     ODT_MIME,
     PPTX_MIME,
@@ -37,12 +37,12 @@ from _04_Nucleo_Operativo.office_route import (
     OfficeRouteConfig,
     search_office_state,
 )
-from _04_Nucleo_Operativo.office_state import (
+from neocortex.capabilities.formats.office.state import (
     OFFICE_SCHEMA_VERSION,
     initialize_office_state,
     office_database,
 )
-from _04_Nucleo_Operativo.route_filters import CandidateSelection
+from neocortex.safety.route_filters import CandidateSelection
 from neocortex.platform_policy import sqlite_path_collation
 from tests.internal_paths_test_support import disjoint_internal_paths_policy
 

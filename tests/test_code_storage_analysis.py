@@ -5,13 +5,13 @@ from pathlib import Path
 
 import pytest
 
-from _04_Nucleo_Operativo.code_schema import (
+from neocortex.code.code_schema import (
     checkpoint_code_wal,
     connect_code_state,
     remove_checkpointed_code_sidecars,
 )
-from _04_Nucleo_Operativo.code_storage_analysis import analyze_code_storage
-from _04_Nucleo_Operativo.sqlite_immutable import capture_sqlite_immutable_fence
+from neocortex.code.code_storage_analysis import analyze_code_storage
+from neocortex.persistence.sqlite_immutable import capture_sqlite_immutable_fence
 from tests.test_code_review import _build_state
 
 

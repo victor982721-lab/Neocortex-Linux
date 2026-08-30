@@ -11,19 +11,19 @@ from pathlib import Path
 import pytest
 
 from neocortex.deduplication import FileSnapshot, snapshot_path
-from _04_Nucleo_Operativo.archive_route import (
+from neocortex.capabilities.formats.archive.route import (
     ARCHIVE_MIME,
     ArchiveRoute,
     ArchiveRouteConfig,
 )
-from _04_Nucleo_Operativo.archive_state import (
+from neocortex.capabilities.formats.archive.state import (
     archive_database,
     list_archive_members,
     read_archive_status,
     search_archive_state,
 )
-from _04_Nucleo_Operativo.cancellation import CancellationToken
-from _04_Nucleo_Operativo.route_filters import CandidateSelection
+from neocortex.runtime.control.cancellation import CancellationToken
+from neocortex.safety.route_filters import CandidateSelection
 
 
 class FakeFrameworkRouteState:

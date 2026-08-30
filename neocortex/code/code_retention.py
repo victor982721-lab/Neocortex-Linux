@@ -9,9 +9,6 @@ keyset batches inside the Code owner's existing writer transaction.
 """
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import time
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -412,6 +409,3 @@ __all__ = [
     "apply_code_retention",
     "plan_code_retention",
 ]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.code_retention")

@@ -18,26 +18,24 @@ from typing import Iterable, Mapping, Sequence
 import pytest
 
 from neocortex.deduplication import FileSnapshot
-from _04_Nucleo_Operativo import code_search as code_search_implementation
-from _04_Nucleo_Operativo import semantic_service
-from _04_Nucleo_Operativo import (
-    semantic_search_service as semantic_search_implementation,
-)
-from _04_Nucleo_Operativo.code_contracts import CodeRouteConfig, CodeSearchQuery
-from _04_Nucleo_Operativo.code_route import CodeRoute
-from _04_Nucleo_Operativo.code_schema import readonly_code_database
-from _04_Nucleo_Operativo.code_search import search_code
-from _04_Nucleo_Operativo.code_semantic_links import (
+from neocortex.code import code_search as code_search_implementation
+from neocortex.semantic import semantic_service
+from neocortex.semantic import semantic_search_service as semantic_search_implementation
+from neocortex.code.code_contracts import CodeRouteConfig, CodeSearchQuery
+from neocortex.code.code_route import CodeRoute
+from neocortex.code.code_schema import readonly_code_database
+from neocortex.code.code_search import search_code
+from neocortex.code.code_semantic_links import (
     CodeSemanticLinkError,
     code_semantic_search_availability,
     synchronize_code_embedding_links,
 )
-from _04_Nucleo_Operativo.semantic_models import (
+from neocortex.semantic.semantic_models import (
     BackendEmbedding,
     EmbeddingModelSpec,
     EmbeddingRequest,
 )
-from _04_Nucleo_Operativo.sqlite_cancellation import SQLiteCancellationBridge
+from neocortex.sqlite_cancellation import SQLiteCancellationBridge
 # endregion [01]
 
 # region [02] Implementación

@@ -1,9 +1,6 @@
 """Bounded causal health query for one published Knowledge resource."""
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 from collections.abc import Callable
 from pathlib import Path
 
@@ -401,6 +398,3 @@ __all__ = [
     "KNOWLEDGE_ASSET_HEALTH_SOURCE_VERSION",
     "inspect_knowledge_asset_health",
 ]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.knowledge_asset_health")

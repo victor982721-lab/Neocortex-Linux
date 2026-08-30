@@ -6,10 +6,6 @@ import ctypes
 import os
 from dataclasses import dataclass
 from pathlib import Path
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
-
 # region [01] Platform cumulative CPU counters
 
 
@@ -84,9 +80,4 @@ class CpuLoadSampler:
         load = 100.0 * (1.0 - min(idle_delta, total_delta) / total_delta)
         self._last_load_percent = max(0.0, min(100.0, load))
         return self._last_load_percent
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.cpu_runtime")
-
-
 # endregion [02]

@@ -9,16 +9,16 @@ from pathlib import Path
 import pytest
 
 from neocortex.deduplication import FileSnapshot
-from _04_Nucleo_Operativo.audio_state import audio_database, initialize_audio_state
-from _04_Nucleo_Operativo.cli_app import main
-from _04_Nucleo_Operativo.cli_knowledge import KnowledgeExitCode
-from _04_Nucleo_Operativo.file_identity import file_key_from_snapshot
-from _04_Nucleo_Operativo.knowledge_contracts import OwnerAvailability
-from _04_Nucleo_Operativo.knowledge_planner import KnowledgeQuery
-from _04_Nucleo_Operativo.knowledge_service import KnowledgeSearchService
-from _04_Nucleo_Operativo.knowledge_snapshot import KnowledgeStatePaths
-from _04_Nucleo_Operativo.video_models import VideoMediaProbe, VideoStreamProbe
-from _04_Nucleo_Operativo.video_state import (
+from neocortex.capabilities.formats.audio.state import audio_database, initialize_audio_state
+from neocortex.api.cli.cli_app import main
+from neocortex.api.cli.cli_knowledge import KnowledgeExitCode
+from neocortex.foundation.file_identity import file_key_from_snapshot
+from neocortex.knowledge.knowledge_contracts import OwnerAvailability
+from neocortex.knowledge.knowledge_planner import KnowledgeQuery
+from neocortex.knowledge.knowledge_service import KnowledgeSearchService
+from neocortex.knowledge.knowledge_snapshot import KnowledgeStatePaths
+from neocortex.capabilities.formats.video.models import VideoMediaProbe, VideoStreamProbe
+from neocortex.capabilities.formats.video.state import (
     VIDEO_SCHEMA_VERSION,
     VideoFrameEvidence,
     find_published_audio_link,

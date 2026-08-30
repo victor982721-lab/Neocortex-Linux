@@ -76,15 +76,14 @@ GRIMP_WORKER_SCHEMA = "neocortex.external-architecture-worker/grimp-v3"
 COMPLEXIPY_WORKER_SCHEMA = "neocortex.external-architecture-worker/complexipy-v1"
 WORKER_ERROR_SCHEMA = "neocortex.external-architecture-worker/error-v1"
 
-CAPABILITY_PROJECTION_POLICY_ID = "neocortex.capability-architecture-projection/transitional-v1"
-CAPABILITY_PROJECTION_SCOPE_POLICY = "exact-capability-registry-modules-canonical-and-legacy-v1"
-CAPABILITY_OWNER_RESOLUTION_POLICY = "capability-logical-owner-exact-v1"
-CAPABILITY_FAMILY_RESOLUTION_POLICY = "canonical-target-or-exact-source-compatibility-v1"
+CAPABILITY_PROJECTION_POLICY_ID = "neocortex.capability-architecture-projection/canonical-v2"
+CAPABILITY_PROJECTION_SCOPE_POLICY = "exact-capability-registry-modules-canonical-v2"
+CAPABILITY_OWNER_RESOLUTION_POLICY = "capability-logical-owner-canonical-v2"
+CAPABILITY_FAMILY_RESOLUTION_POLICY = "canonical-target-v2"
 CAPABILITY_FAMILY_DAG_SCHEMA = "neocortex.architecture-family-dag/v1"
-CAPABILITY_FAMILY_DAG_POLICY_ID = "neocortex.formats-family-dependencies/transitional-v1"
+CAPABILITY_FAMILY_DAG_POLICY_ID = "neocortex.formats-family-dependencies/canonical-v2"
 CAPABILITY_FAMILY_DAG_FINGERPRINT_PREFIX = "architecture-family-dag-v1:sha256:"
-CAPABILITY_CANONICAL_FAMILY = "_04.capabilities.formats"
-CAPABILITY_COMPATIBILITY_FAMILY = "_04.compat.formats"
+CAPABILITY_CANONICAL_FAMILY = "neocortex.capabilities.formats"
 
 DEFAULT_MAX_FILES = 4096
 DEFAULT_MAX_INPUT_BYTES = 64 * 1024 * 1024
@@ -359,30 +358,20 @@ def _cycle_payloads(
 
 
 def _capability_family_dag() -> Any:
+    """Return the single canonical capability family with no compatibility tier."""
+
     canonical_families = {
         item.architecture_family_id
         for item in _capability_registry.CAPABILITY_REGISTRY.capabilities
     }
-    compatibility_families = {
-        item.compatibility_family_id
-        for item in _capability_registry.CAPABILITY_REGISTRY.capabilities
-    }
-    if canonical_families != {CAPABILITY_CANONICAL_FAMILY} or compatibility_families != {
-        CAPABILITY_COMPATIBILITY_FAMILY
-    }:
+    if canonical_families != {CAPABILITY_CANONICAL_FAMILY}:
         raise WorkerContractError(
             "projection_policy_drift",
-            "capability families drifted from the transitional dependency policy",
+            "capability families drifted from the canonical dependency policy",
         )
     return _projection.FamilyDag(
-        families=(CAPABILITY_CANONICAL_FAMILY, CAPABILITY_COMPATIBILITY_FAMILY),
-        direct_dependencies=(
-            _projection.FamilyDependency(
-                CAPABILITY_COMPATIBILITY_FAMILY,
-                CAPABILITY_CANONICAL_FAMILY,
-            ),
-        ),
-        compat_families=(CAPABILITY_COMPATIBILITY_FAMILY,),
+        families=(CAPABILITY_CANONICAL_FAMILY,),
+        direct_dependencies=(),
     )
 
 
@@ -402,7 +391,6 @@ def capability_family_dag_manifest() -> dict[str, object]:
             }
             for item in dag.direct_dependencies
         ],
-        "compat_families": list(dag.compat_families),
     }
     canonical = json.dumps(
         contract,
@@ -421,40 +409,22 @@ def capability_family_dag_manifest() -> dict[str, object]:
 
 def _registered_capability_labels() -> tuple[
     tuple[str, ...],
-    tuple[str, ...],
     dict[str, tuple[str, ...]],
     dict[str, tuple[str, ...]],
 ]:
+    """Return canonical capability modules and their owner/family labels."""
+
     canonical_modules: set[str] = set()
-    legacy_modules: set[str] = set()
     owner_matches: dict[str, set[str]] = {}
     family_matches: dict[str, set[str]] = {}
     for capability in _capability_registry.CAPABILITY_REGISTRY.capabilities:
         for binding in capability.modules:
-            canonical_modules.add(binding.canonical_module_id)
-            owner_matches.setdefault(binding.canonical_module_id, set()).add(
-                capability.logical_owner_id
-            )
-            family_matches.setdefault(binding.canonical_module_id, set()).add(
-                capability.architecture_family_id
-            )
-            if binding.legacy_module_id is None:
-                continue
-            legacy_modules.add(binding.legacy_module_id)
-            owner_matches.setdefault(binding.legacy_module_id, set()).add(
-                capability.logical_owner_id
-            )
-            family_matches.setdefault(binding.legacy_module_id, set()).add(
-                capability.compatibility_family_id
-            )
-    if canonical_modules & legacy_modules:
-        raise WorkerContractError(
-            "projection_registry_overlap",
-            "canonical and legacy capability module scopes overlap",
-        )
+            module = binding.canonical_module_id
+            canonical_modules.add(module)
+            owner_matches.setdefault(module, set()).add(capability.logical_owner_id)
+            family_matches.setdefault(module, set()).add(capability.architecture_family_id)
     return (
         tuple(sorted(canonical_modules)),
-        tuple(sorted(legacy_modules)),
         {module: tuple(sorted(labels)) for module, labels in sorted(owner_matches.items())},
         {module: tuple(sorted(labels)) for module, labels in sorted(family_matches.items())},
     )
@@ -596,10 +566,8 @@ def _projection_payload(projection: Any, *, label_kind: str) -> dict[str, object
 def _capability_projection_payload(
     modules: Sequence[str], production_imports: Sequence[_contracts.ModuleImport]
 ) -> dict[str, object]:
-    canonical_modules, legacy_modules, owner_matches, family_matches = (
-        _registered_capability_labels()
-    )
-    registered_modules = tuple(sorted((*canonical_modules, *legacy_modules)))
+    canonical_modules, owner_matches, family_matches = _registered_capability_labels()
+    registered_modules = canonical_modules
     registered_set = set(registered_modules)
     present_modules = tuple(sorted(registered_set & set(modules)))
     missing_modules = tuple(sorted(registered_set - set(modules)))
@@ -641,16 +609,12 @@ def _capability_projection_payload(
         for item in family_evaluation.decisions
     ]
     forbidden_ids = [str(item["edge_id"]) for item in decisions if item["allowed"] is False]
-    canonical_to_compat_ids = [
-        str(item["edge_id"]) for item in decisions if item["reason"] == "canonical_to_compat"
-    ]
     family_payload.update(
         {
             "resolution_policy": CAPABILITY_FAMILY_RESOLUTION_POLICY,
             "dag": capability_family_dag_manifest(),
             "edge_decisions": decisions,
             "forbidden_edge_ids": forbidden_ids,
-            "canonical_to_compat_edge_ids": canonical_to_compat_ids,
         }
     )
     family_counters = family_payload["counters"]
@@ -662,7 +626,6 @@ def _capability_projection_payload(
         {
             "edge_decisions": len(decisions),
             "forbidden_edges": len(forbidden_ids),
-            "canonical_to_compat_edges": len(canonical_to_compat_ids),
         }
     )
     return {
@@ -675,7 +638,6 @@ def _capability_projection_payload(
         "scope": {
             "policy": CAPABILITY_PROJECTION_SCOPE_POLICY,
             "canonical_modules": list(canonical_modules),
-            "legacy_modules": list(legacy_modules),
             "registered_modules": list(registered_modules),
             "present_registered_modules": list(present_modules),
             "missing_registered_modules": list(missing_modules),

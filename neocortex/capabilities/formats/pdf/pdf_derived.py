@@ -1,14 +1,11 @@
 """Derived PDF indexes built from persisted page text and document structure."""
 # region [00] Contexto del módulo
-# Módulo: _04_Nucleo_Operativo/pdf_derived.py
+# Módulo: neocortex/pdf_derived.py
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
 # region [01] Dependencias del módulo
 from __future__ import annotations
-
-from . import preserve_legacy_module as _preserve_legacy_module
-
 import json
 import re
 import sqlite3
@@ -1239,5 +1236,3 @@ class PdfDerivedIndexer:
 
 
 # endregion [02]
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.pdf_derived")

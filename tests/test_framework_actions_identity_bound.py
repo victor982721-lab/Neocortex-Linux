@@ -16,30 +16,30 @@ import pytest
 
 from neocortex.enumeration import JournalCursor
 from neocortex.deduplication import DedupIndex, DedupPlanner, snapshot_path
-from _04_Nucleo_Operativo import actions as actions_module
-from _04_Nucleo_Operativo import framework_state_common as state_common_module
-from _04_Nucleo_Operativo.actions import FrameworkActions
-from _04_Nucleo_Operativo.content_types import DetectedType
-from _04_Nucleo_Operativo.corpus_access import (
+from neocortex.workflow.actions import actions as actions_module
+from neocortex.persistence import framework_state_common as state_common_module
+from neocortex.workflow.actions.actions import FrameworkActions
+from neocortex.platform.content_types import DetectedType
+from neocortex.safety.corpus_access import (
     CorpusAccessPolicy,
     CorpusMutationGuard,
     ProtectedAnalysisRootError,
 )
-from _04_Nucleo_Operativo.internal_paths import (
+from neocortex.safety.internal_paths import (
     InternalPathProtectionError,
     InternalPathSpec,
     InternalPathsPolicy,
 )
-from _04_Nucleo_Operativo.models import ActionSummary
-from _04_Nucleo_Operativo.protected_content import (
+from neocortex.runtime.models import ActionSummary
+from neocortex.safety.protected_content import (
     ProtectedContentPolicy,
     ProtectedPathSpec,
 )
-from _04_Nucleo_Operativo.self_analysis import (
+from neocortex.workflow.self_analysis.self_analysis import (
     build_self_analysis_inventory_policy,
 )
-from _04_Nucleo_Operativo.state import FrameworkState
-from _04_Nucleo_Operativo.windows_handle_mutation import (
+from neocortex.persistence.state import FrameworkState
+from neocortex.safety.windows_handle_mutation import (
     rename_no_replace_by_identity,
 )
 from tests.internal_paths_test_support import (

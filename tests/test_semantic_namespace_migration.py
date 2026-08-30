@@ -21,15 +21,10 @@ MODULES = tuple(
 )
 
 
-def test_legacy_semantic_modules_are_exact_product_aliases() -> None:
+def test_semantic_modules_are_owned_by_the_canonical_tree() -> None:
     assert len(MODULES) == 37
     for name in MODULES:
-        legacy = importlib.import_module(f"_04_Nucleo_Operativo.{name}")
         product = importlib.import_module(f"neocortex.semantic.{name}")
-
-        assert legacy is product
-        assert sys.modules[f"_04_Nucleo_Operativo.{name}"] is product
-        assert sys.modules[f"neocortex.semantic.{name}"] is product
         assert Path(product.__file__).resolve().is_relative_to(SEMANTIC_ROOT)
 
 

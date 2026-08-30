@@ -12,8 +12,8 @@ from pathlib import Path
 
 import pytest
 
-from _04_Nucleo_Operativo.code_external_evidence import ExternalEvidencePublication
-from _04_Nucleo_Operativo.code_supply_chain_analysis import (
+from neocortex.code.code_external_evidence import ExternalEvidencePublication
+from neocortex.code.code_supply_chain_analysis import (
     CODE_SUPPLY_CHAIN_OBSERVATION_LIMIT,
     CODE_SUPPLY_CHAIN_REQUIRED_PROVIDERS,
     CODE_SUPPLY_CHAIN_SCHEMA,
@@ -21,7 +21,7 @@ from _04_Nucleo_Operativo.code_supply_chain_analysis import (
     parse_code_supply_chain_payload,
     read_code_supply_chain_analysis,
 )
-from _04_Nucleo_Operativo.external_evidence_models import (
+from neocortex.code.external_evidence_models import (
     ExternalProviderFinding,
     ExternalProviderMetric,
     ExternalProviderPublication,
@@ -33,7 +33,7 @@ from _04_Nucleo_Operativo.external_evidence_models import (
     external_provider_result_digest,
     external_relation_identity,
 )
-from _04_Nucleo_Operativo.external_evidence_store import publish_external_provider
+from neocortex.code.external_evidence_store import publish_external_provider
 from tests.test_external_provider_schema_v4 import _create_current_owner
 
 _OBSERVED_AT = 1_700_000_000

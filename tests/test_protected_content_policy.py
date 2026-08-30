@@ -14,12 +14,12 @@ from pathlib import Path
 
 import pytest
 
-import _04_Nucleo_Operativo.protected_content as protected_content_module
-from _04_Nucleo_Operativo.corpus_access import (
+import neocortex.safety.protected_content as protected_content_module
+from neocortex.safety.corpus_access import (
     CorpusAccessPolicy,
     ProtectedAnalysisRootError,
 )
-from _04_Nucleo_Operativo.protected_content import (
+from neocortex.safety.protected_content import (
     MAX_PROTECTED_PATH_ENTRIES,
     ProtectedContentError,
     ProtectedContentPolicy,

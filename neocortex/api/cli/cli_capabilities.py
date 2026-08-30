@@ -4,9 +4,6 @@
 # region [01] Imports and exit contract
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import argparse
 import json
 import sys
@@ -252,6 +249,3 @@ def run_doctor_capabilities(args: argparse.Namespace) -> int:
 
 
 # endregion [03]
-
-
-_preserve_legacy_module(globals(), '_04_Nucleo_Operativo.cli_capabilities')

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib
 import subprocess
 import sys
 from pathlib import Path
@@ -22,14 +21,9 @@ MODULES = (
 )
 
 
-def test_legacy_safety_modules_are_exact_product_aliases() -> None:
+def test_safety_modules_are_owned_by_the_canonical_tree() -> None:
     for name in MODULES:
-        legacy = importlib.import_module(f"_04_Nucleo_Operativo.{name}")
-        product = importlib.import_module(f"neocortex.safety.{name}")
-
-        assert legacy is product
-        assert sys.modules[f"_04_Nucleo_Operativo.{name}"] is product
-        assert sys.modules[f"neocortex.safety.{name}"] is product
+        product = __import__(f"neocortex.safety.{name}", fromlist=[name])
         assert Path(product.__file__).resolve().is_relative_to(SAFETY_ROOT)
 
 

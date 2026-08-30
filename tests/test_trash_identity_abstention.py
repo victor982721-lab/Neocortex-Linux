@@ -10,11 +10,11 @@ from pathlib import Path
 from unittest.mock import patch
 
 from neocortex.deduplication import DedupIndex, snapshot_path
-from _04_Nucleo_Operativo.actions import (
+from neocortex.workflow.actions.actions import (
     TRASH_IDENTITY_ABSTENTION,
     FrameworkActions,
 )
-from _04_Nucleo_Operativo.state import FrameworkState
+from neocortex.persistence.state import FrameworkState
 from tests.internal_paths_test_support import begin_signed_normal_run
 # endregion [01]
 
@@ -45,7 +45,7 @@ def test_apply_abstains_when_recycle_backend_is_path_bound(tmp_path: Path) -> No
             apply=True,
             excluded_paths=(),
         )
-        with patch("_04_Nucleo_Operativo.actions.send2trash") as recycle:
+        with patch("neocortex.workflow.actions.actions.send2trash") as recycle:
             result = actions._apply_trash_batch(
                 "trash_duplicate",
                 ((str(candidate), "fixture"),),

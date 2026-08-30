@@ -6,9 +6,9 @@ from types import ModuleType
 
 import pytest
 
-import _04_Nucleo_Operativo.cli_app as cli_app
-from _04_Nucleo_Operativo.code_experiment_planner import experiment_template
-from _04_Nucleo_Operativo.code_invariant_contracts import (
+import neocortex.api.cli.cli_app as cli_app
+from neocortex.code.code_experiment_planner import experiment_template
+from neocortex.code.code_invariant_contracts import (
     CALIBRATION_SCENARIO_IDS,
     EXPERIMENT_SCENARIO_IDS,
     runtime_scenario,

@@ -8,8 +8,8 @@ from pathlib import Path
 
 import pytest
 
-import _04_Nucleo_Operativo.document_catalog as catalog_module
-from _04_Nucleo_Operativo.document_catalog import (
+import neocortex.documents.document_catalog as catalog_module
+from neocortex.documents.document_catalog import (
     CatalogDocumentView,
     list_catalog_documents,
 )

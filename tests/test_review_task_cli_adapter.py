@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from _04_Nucleo_Operativo.framework_schema import initialize_framework_schema
-from _04_Nucleo_Operativo.knowledge_contracts import (
+from neocortex.persistence.framework_schema import initialize_framework_schema
+from neocortex.knowledge.knowledge_contracts import (
     EvidenceMethod,
     EvidenceRef,
     PhysicalIdentityRef,
@@ -15,7 +15,7 @@ from _04_Nucleo_Operativo.knowledge_contracts import (
     RevisionRef,
     RevisionState,
 )
-from _04_Nucleo_Operativo.review_task_contracts import (
+from neocortex.workflow.review.review_task_contracts import (
     CanonicalJsonObject,
     ReviewTaskCoverage,
     ReviewTaskDraft,
@@ -23,7 +23,7 @@ from _04_Nucleo_Operativo.review_task_contracts import (
     ReviewTaskPublication,
     ReviewTaskSourceFence,
 )
-from _04_Nucleo_Operativo.review_task_repository import (
+from neocortex.workflow.review.review_task_repository import (
     list_current_review_tasks,
     publish_review_task_page,
 )

@@ -11,11 +11,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from _04_Nucleo_Operativo.cli_app import dispatch_direct
-from _04_Nucleo_Operativo.cli_parser import build_parser
-from _04_Nucleo_Operativo.cli_reporting import watcher_exit_code
-from _04_Nucleo_Operativo.cli_validation import validate_arguments
-from _04_Nucleo_Operativo.watcher import (
+from neocortex.api.cli.cli_app import dispatch_direct
+from neocortex.api.cli.cli_parser import build_parser
+from neocortex.api.cli.cli_reporting import watcher_exit_code
+from neocortex.api.cli.cli_validation import validate_arguments
+from neocortex.runtime.control.watcher import (
     WatcherEvent,
     WatcherRunSummary,
     WatcherSummary,
@@ -177,12 +177,12 @@ def test_watch_dispatch_builds_normal_config_reports_and_bridges_cancellation(
 
     with (
         patch(
-            "_04_Nucleo_Operativo.watcher.IncrementalWatcher",
+            "neocortex.runtime.control.watcher.IncrementalWatcher",
             side_effect=build_watcher,
         ) as watcher_class,
         patch("neocortex.progress.RichProgress", return_value=progress_manager),
         patch(
-            "_04_Nucleo_Operativo.console_cancellation.ConsoleCancellationBridge",
+            "neocortex.runtime.control.console_cancellation.ConsoleCancellationBridge",
             return_value=bridge_manager,
         ) as bridge_class,
     ):
@@ -226,12 +226,12 @@ def test_watch_dispatch_returns_error_for_retained_watcher_failures(tmp_path) ->
     progress_manager = MagicMock()
     with (
         patch(
-            "_04_Nucleo_Operativo.watcher.IncrementalWatcher",
+            "neocortex.runtime.control.watcher.IncrementalWatcher",
             return_value=fake_watcher,
         ),
         patch("neocortex.progress.RichProgress", return_value=progress_manager),
         patch(
-            "_04_Nucleo_Operativo.console_cancellation.ConsoleCancellationBridge",
+            "neocortex.runtime.control.console_cancellation.ConsoleCancellationBridge",
             return_value=MagicMock(),
         ),
     ):

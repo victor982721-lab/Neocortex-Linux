@@ -1,9 +1,6 @@
 """Generic textual analyzer and controlled fallback for unsupported languages."""
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import json
 import re
 import tomllib
@@ -288,6 +285,3 @@ class GenericAnalyzer:
 
 
 __all__ = ["GenericAnalyzer"]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.code_generic")

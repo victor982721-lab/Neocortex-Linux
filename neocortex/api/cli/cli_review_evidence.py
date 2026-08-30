@@ -1,9 +1,6 @@
 """Bounded review-evidence commands for the canonical CLI."""
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import argparse
 import json
 import sqlite3
@@ -174,6 +171,3 @@ def run_review_evidence_list(args: argparse.Namespace) -> int:
 
 
 # endregion [02]
-
-
-_preserve_legacy_module(globals(), '_04_Nucleo_Operativo.cli_review_evidence')

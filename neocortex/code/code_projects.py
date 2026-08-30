@@ -1,9 +1,6 @@
 """Conceptual project discovery and provenance-preserving reconstruction."""
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import os
 import sqlite3
 from collections import defaultdict
@@ -288,6 +285,3 @@ __all__ = [  # noqa: RUF022
     "reconstruct_project",
     "resolve_project_id",
 ]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.code_projects")

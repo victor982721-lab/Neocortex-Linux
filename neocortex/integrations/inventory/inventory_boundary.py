@@ -1,6 +1,6 @@
 """Identity-bound filesystem boundaries shared by inventory consumers.
 # region [00] Contexto del módulo
-# Módulo: _04_Nucleo_Operativo/inventory_boundary.py
+# Módulo: neocortex/inventory_boundary.py
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
@@ -12,9 +12,6 @@ path policy that must agree before inventory reuse or filesystem mutation.
 
 # region [01] Dependencias del módulo
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -523,6 +520,3 @@ __all__ = [
     "validate_authorized_state_path",
 ]
 # endregion [02]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.inventory_boundary")

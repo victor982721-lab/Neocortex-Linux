@@ -17,11 +17,11 @@ import coverage
 import pytest
 import xxhash
 
-import _04_Nucleo_Operativo.external_deep_coverage_worker as worker
-import _04_Nucleo_Operativo.external_deep_coverage as deep
-import _04_Nucleo_Operativo.external_evidence_providers as providers
-from _04_Nucleo_Operativo.code_external_evidence import ExternalEvidenceFile
-from _04_Nucleo_Operativo.semantic_models import fingerprint_bytes
+import neocortex.code.external_deep_coverage_worker as worker
+import neocortex.code.external_deep_coverage as deep
+import neocortex.code.external_evidence_providers as providers
+from neocortex.code.code_external_evidence import ExternalEvidenceFile
+from neocortex.semantic.semantic_models import fingerprint_bytes
 
 
 def test_worker_cleanup_failure_does_not_replace_the_primary_contract_error(
@@ -1130,7 +1130,7 @@ def test_real_adapter_runs_collect_shards_and_checkpoint_replay(
 ) -> None:
     project = tmp_path / "trusted"
     scratch = tmp_path / "s"
-    package = project / "_04_Nucleo_Operativo"
+    package = project / "neocortex"
     tests = project / "tests"
     package.mkdir(parents=True)
     tests.mkdir()
@@ -1151,7 +1151,7 @@ def test_real_adapter_runs_collect_shards_and_checkpoint_replay(
         "import subprocess\n\n"
         "import os\n"
         "from pathlib import Path\n\n"
-        "from _04_Nucleo_Operativo.logic import choose\n\n"
+        "from neocortex.logic import choose\n\n"
         "def test_true(tmp_path):\n"
         "    assert choose(True) == 1\n"
         "    runtime = Path(os.environ['NEOCORTEX_AUDIT_LAB_ROOT']).resolve()\n"
@@ -1210,8 +1210,8 @@ def test_real_adapter_runs_collect_shards_and_checkpoint_replay(
     owners: dict[str, ExternalEvidenceFile] = {}
     for version_id, relative_path in enumerate(
         (
-            "_04_Nucleo_Operativo/__init__.py",
-            "_04_Nucleo_Operativo/logic.py",
+            "neocortex/__init__.py",
+            "neocortex/logic.py",
             "tests/conftest.py",
             "tests/test_logic.py",
         ),

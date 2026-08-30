@@ -1,14 +1,11 @@
 """Evidence-key RRF fusion and post-retrieval diversity."""
 # region [00] Contexto del módulo
-# Módulo: _04_Nucleo_Operativo/knowledge_search_fusion.py
+# Módulo: neocortex/knowledge_search_fusion.py
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
 # region [01] Dependencias del módulo
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import math
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
@@ -458,6 +455,3 @@ def fuse_evidence_rankings(
 
 __all__ = ("fuse_evidence_rankings", "overlaps_or_too_close")
 # endregion [02]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.knowledge_search_fusion")

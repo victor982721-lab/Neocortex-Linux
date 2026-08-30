@@ -11,14 +11,14 @@ import os
 from pathlib import Path
 
 from neocortex.enumeration import JournalCursor
-from _04_Nucleo_Operativo.internal_paths import (
+from neocortex.safety.internal_paths import (
     InternalPathSpec,
     InternalPathsPolicy,
 )
-from _04_Nucleo_Operativo.inventory_boundary import (
+from neocortex.integrations.inventory.inventory_boundary import (
     build_normal_inventory_boundary,
 )
-from _04_Nucleo_Operativo.state import FrameworkState
+from neocortex.persistence.state import FrameworkState
 # endregion [01]
 
 # region [02] Implementación

@@ -1,9 +1,6 @@
 """Pluggable embedding backends and rank-only cross-space fusion."""
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import importlib
 import importlib.util
 import itertools
@@ -611,6 +608,3 @@ def reciprocal_rank_fusion(
 
 
 # endregion [03]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.semantic_backends")

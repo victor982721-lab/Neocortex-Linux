@@ -1,9 +1,6 @@
 """Bounded adapters for external architecture and complexity evidence."""
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import json
 import os
 import subprocess
@@ -418,7 +415,7 @@ def _core_target_finding(
     metadata: Mapping[str, object],
 ) -> ExternalProviderFinding:
     owner_path = module_paths.get(module) or module_paths.get(
-        "_04_Nucleo_Operativo.code.contracts.target_registry"
+        "neocortex.code.contracts.target_registry"
     )
     if owner_path is None:
         raise ValueError("Core target finding has no owned source module")
@@ -475,7 +472,7 @@ def _family_edge_source_module(
             break
         relation = _required_mapping(relations[0], label="Core projected module relation")
         return _required_text(relation.get("source_module"), label="Core projected source module")
-    return "_04_Nucleo_Operativo.code.contracts.target_registry"
+    return "neocortex.code.contracts.target_registry"
 
 
 @dataclass(frozen=True, slots=True)
@@ -517,10 +514,6 @@ def _core_target_metric_values(target: _CoreTargetProjection) -> dict[str, int]:
         "unregistered_core_module_count": (
             "unregistered_core_modules",
             "unregistered Core modules",
-        ),
-        "compatibility_module_count": (
-            "compatibility_modules",
-            "Core compatibility modules",
         ),
     }
     values = {
@@ -568,11 +561,6 @@ def _core_target_metric_values(target: _CoreTargetProjection) -> dict[str, int]:
             "resolved_direct_module_edges",
             "Core family resolved edges",
         ),
-        "canonical_to_compat_direct_edge_count": (
-            family,
-            "canonical_to_compat_direct_module_edges",
-            "Core canonical-to-compat edges",
-        ),
     }
     values.update(
         {
@@ -601,7 +589,7 @@ def _core_mapping_findings(
         )
         status = resolution.get("status")
         module = _required_text(resolution.get("module_id"), label="Core mapped module")
-        if status not in {"unmapped", "overlap"} or not module.startswith("_04_Nucleo_Operativo"):
+        if status not in {"unmapped", "overlap"}:
             continue
         findings.append(
             _core_target_finding(
@@ -656,35 +644,6 @@ def _core_family_transition_findings(
     return findings
 
 
-def _core_canonical_to_compat_findings(
-    family: Mapping[str, object],
-    *,
-    staged: Mapping[str, ExternalEvidenceFile],
-    module_paths: Mapping[str, str],
-) -> list[ExternalProviderFinding]:
-    findings: list[ExternalProviderFinding] = []
-    decisions = _required_list(family.get("edge_decisions"), label="Core family edge decisions")
-    for raw_decision in decisions:
-        decision = _required_mapping(raw_decision, label="Core family edge decision")
-        if decision.get("reason") != "canonical_to_compat":
-            continue
-        source = _required_text(decision.get("source_family"), label="Core canonical source family")
-        target = _required_text(
-            decision.get("target_family"), label="Core compatibility target family"
-        )
-        findings.append(
-            _core_target_finding(
-                module=_family_edge_source_module(family, source, target),
-                code="core_target_canonical_to_compat",
-                message=f"Canonical Core family {source} depends on {target}",
-                staged=staged,
-                module_paths=module_paths,
-                metadata=dict(decision),
-            )
-        )
-    return findings
-
-
 def _core_target_evidence(
     payload: Mapping[str, object],
     staged: Mapping[str, ExternalEvidenceFile],
@@ -719,13 +678,6 @@ def _core_target_evidence(
     )
     findings.extend(
         _core_family_transition_findings(
-            target.family,
-            staged=staged,
-            module_paths=module_paths,
-        )
-    )
-    findings.extend(
-        _core_canonical_to_compat_findings(
             target.family,
             staged=staged,
             module_paths=module_paths,
@@ -955,6 +907,3 @@ __all__ = [
     "execute_grimp_architecture",
     "execute_ruff_analyze_imports",
 ]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.external_architecture_providers")

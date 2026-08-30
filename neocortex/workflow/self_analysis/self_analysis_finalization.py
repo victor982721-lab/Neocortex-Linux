@@ -1,9 +1,6 @@
 """Pure evidence contracts for protected self-analysis finalization."""
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -337,6 +334,3 @@ __all__ = [
     "SelfAnalysisRunEvidence",
     "SelfAnalysisSafetyCounts",
 ]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.self_analysis_finalization")

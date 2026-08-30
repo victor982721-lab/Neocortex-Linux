@@ -1,9 +1,6 @@
 """Read-only CLI status, search and listing for indexed ZIP members."""
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import argparse
 import json
 import sqlite3
@@ -100,6 +97,3 @@ def run_archive_list(args: argparse.Namespace) -> int:
     for hit in hits:
         _print_hit(hit, json_output=args.archive_json)
     return 0 if hits else 3
-
-
-_preserve_legacy_module(globals(), '_04_Nucleo_Operativo.cli_archive')

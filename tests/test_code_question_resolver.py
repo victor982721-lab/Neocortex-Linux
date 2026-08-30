@@ -5,19 +5,19 @@ from pathlib import Path
 
 import pytest
 
-import _04_Nucleo_Operativo.code_question_resolver as resolver_module
-import _04_Nucleo_Operativo.code_review as review_module
-from _04_Nucleo_Operativo.code_interface_surface_analysis import (
+import neocortex.code.code_question_resolver as resolver_module
+import neocortex.code.code_review as review_module
+from neocortex.code.code_interface_surface_analysis import (
     CLI_SURFACE_QUESTION,
     interface_surface_questions,
     read_code_interface_surface_analysis,
 )
-from _04_Nucleo_Operativo.code_question_resolver import (
+from neocortex.code.code_question_resolver import (
     code_question_reader_registry,
     compare_code_question_parity,
     resolve_code_question,
 )
-from _04_Nucleo_Operativo.self_analysis_status import quiescent_sqlite_database
+from neocortex.workflow.self_analysis.self_analysis_status import quiescent_sqlite_database
 from tests.test_code_review import PROCESSING_SIGNATURE, _build_state, _status
 
 

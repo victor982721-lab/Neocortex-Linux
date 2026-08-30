@@ -1,9 +1,6 @@
 """Pure PDF page-profile primitives shared by local and isolated workers."""
 
 from __future__ import annotations
-
-from . import preserve_legacy_module as _preserve_legacy_module
-
 from typing import Any
 
 from .pdf_layout import map_page_layout
@@ -33,5 +30,3 @@ def profile_page(page: Any) -> dict:
 
 
 # endregion [01]
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.pdf_profile")

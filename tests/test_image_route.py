@@ -13,13 +13,13 @@ from unittest.mock import patch
 from PIL import Image
 
 from neocortex.deduplication import FULL_ALGORITHM, snapshot_path
-from _04_Nucleo_Operativo.image_document import (
+from neocortex.capabilities.formats.image.document import (
     DocumentTextEvidence,
     DocumentVerifierRuntime,
 )
-from _04_Nucleo_Operativo.image_models import AdultContentEvidence
-from _04_Nucleo_Operativo.image_route import ImageRoute, ImageRouteConfig
-from _04_Nucleo_Operativo.image_state import (
+from neocortex.capabilities.formats.image.models import AdultContentEvidence
+from neocortex.capabilities.formats.image.route import ImageRoute, ImageRouteConfig
+from neocortex.capabilities.formats.image.state import (
     initialize_image_state,
     iter_candidates,
     iter_ocr_text_records,
@@ -530,7 +530,7 @@ class ImageRouteTests(unittest.TestCase):
                 connection.commit()
 
             with patch(
-                "_04_Nucleo_Operativo.image_analysis.extract_features",
+                "neocortex.capabilities.formats.image.analysis.extract_features",
                 side_effect=AssertionError("cached decision upgrade decoded an image"),
             ):
                 upgraded = _route(
@@ -641,7 +641,7 @@ class ImageRouteTests(unittest.TestCase):
             state = _State((("image/jpeg", snapshot_path(path)),))
 
             with patch(
-                "_04_Nucleo_Operativo.image_route.DEFAULT_ADULT_CLASSIFIER",
+                "neocortex.capabilities.formats.image.route.DEFAULT_ADULT_CLASSIFIER",
                 new=_UnavailableAdultClassifier(),
             ):
                 first = _route(root, state, 1).run()
@@ -700,11 +700,11 @@ class ImageRouteTests(unittest.TestCase):
 
             with (
                 patch(
-                    "_04_Nucleo_Operativo.image_route.resolve_document_verifier",
+                    "neocortex.capabilities.formats.image.route.resolve_document_verifier",
                     return_value=runtime,
                 ),
                 patch(
-                    "_04_Nucleo_Operativo.image_analysis.verify_document_text",
+                    "neocortex.capabilities.formats.image.analysis.verify_document_text",
                     return_value=evidence,
                 ) as verifier,
             ):

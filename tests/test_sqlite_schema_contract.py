@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 from neocortex import sqlite_schema_contract as shared_schema_contract
 
-from _04_Nucleo_Operativo.sqlite_schema_contract import (
+from neocortex.sqlite_schema_contract import (
     SQLiteSchemaContractError,
     capture_sqlite_schema_contract,
     read_metadata_schema_version,

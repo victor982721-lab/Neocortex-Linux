@@ -11,15 +11,15 @@ from pathlib import Path
 
 import pytest
 
-import _04_Nucleo_Operativo.document_catalog as catalog_module
-from _04_Nucleo_Operativo.document_catalog import (
+import neocortex.documents.document_catalog as catalog_module
+from neocortex.documents.document_catalog import (
     document_catalog_database,
     list_catalog_documents,
     update_document_catalog_source,
 )
-from _04_Nucleo_Operativo.cancellation import CancellationRequested, CancellationToken
-from _04_Nucleo_Operativo.docx_state import initialize_docx_state
-from _04_Nucleo_Operativo.document_organization_models import _begin_organization_run
+from neocortex.runtime.control.cancellation import CancellationRequested, CancellationToken
+from neocortex.capabilities.formats.docx.state import initialize_docx_state
+from neocortex.documents.document_organization_models import _begin_organization_run
 from neocortex.deduplication import snapshot_path
 # endregion [01]
 

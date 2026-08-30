@@ -20,25 +20,25 @@ from neocortex.deduplication import (
     InventoryCheckpoint,
     InventoryExclusionPolicy,
 )
-from _04_Nucleo_Operativo import framework_schema
-from _04_Nucleo_Operativo import self_analysis_status as status_module
-from _04_Nucleo_Operativo.cli_app import dispatch_direct
-from _04_Nucleo_Operativo.cli_parser import build_parser
-from _04_Nucleo_Operativo.cli_validation import validate_arguments
-from _04_Nucleo_Operativo.code_contracts import (
+from neocortex.persistence import framework_schema
+from neocortex.workflow.self_analysis import self_analysis_status as status_module
+from neocortex.api.cli.cli_app import dispatch_direct
+from neocortex.api.cli.cli_parser import build_parser
+from neocortex.api.cli.cli_validation import validate_arguments
+from neocortex.code.code_contracts import (
     deep_configuration_payload,
     deep_configuration_signature,
 )
-from _04_Nucleo_Operativo.code_state import CodeState
-from _04_Nucleo_Operativo.corpus_access import CorpusAccessPolicy
-from _04_Nucleo_Operativo.framework_state_writer import FrameworkState
-from _04_Nucleo_Operativo.self_analysis import (
+from neocortex.code.code_state import CodeState
+from neocortex.safety.corpus_access import CorpusAccessPolicy
+from neocortex.persistence.framework_state_writer import FrameworkState
+from neocortex.workflow.self_analysis.self_analysis import (
     MAX_SELF_ANALYSIS_MANIFEST_BYTES,
     SELF_ANALYSIS_MANIFEST_MESSAGE,
     SELF_ANALYSIS_MANIFEST_PHASE,
     build_self_analysis_inventory_policy,
 )
-from _04_Nucleo_Operativo.self_analysis_status import (
+from neocortex.workflow.self_analysis.self_analysis_status import (
     CodeRunStatusEvidence,
     JournalStatus,
     QuiescentSQLiteUnavailable,

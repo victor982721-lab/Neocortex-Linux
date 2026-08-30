@@ -6,9 +6,6 @@ transaction; human/system transitions are append-only compare-and-swap events.
 """
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import hashlib
 import json
 import sqlite3
@@ -3038,6 +3035,3 @@ __all__ = (
     "read_review_task_progress",
     "validate_latest_review_task_source_publications_from_connection",
 )
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.review_task_repository")

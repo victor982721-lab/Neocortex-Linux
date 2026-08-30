@@ -1,9 +1,6 @@
 """Incremental cross-format catalog built from durable document text caches."""
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import codecs
 import json
 import os
@@ -1489,6 +1486,3 @@ def _json_labels(value: object, key: str) -> tuple[str, ...]:
 
 
 # endregion [05]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.document_catalog")

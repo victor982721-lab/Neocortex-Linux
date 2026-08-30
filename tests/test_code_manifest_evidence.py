@@ -12,8 +12,8 @@ from pathlib import Path
 
 import pytest
 
-from _04_Nucleo_Operativo.code_analyzer_common import manifest_evidence
-from _04_Nucleo_Operativo.code_contracts import DiagnosticSeverity
+from neocortex.code.code_analyzer_common import manifest_evidence
+from neocortex.code.code_contracts import DiagnosticSeverity
 # endregion [01]
 
 # region [02] Implementación

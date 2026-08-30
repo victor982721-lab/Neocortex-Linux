@@ -15,9 +15,6 @@ alone does not.
 """
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import json
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
@@ -874,6 +871,3 @@ __all__ = [
     "analyzer_calibration_questions",
     "parse_code_analyzer_calibration_payload",
 ]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.code_analyzer_calibration")

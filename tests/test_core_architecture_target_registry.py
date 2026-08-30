@@ -1,4 +1,4 @@
-"""Executable contracts for the exhaustive Core target architecture."""
+"""Executable contracts for the canonical Core target architecture."""
 
 from __future__ import annotations
 
@@ -8,11 +8,7 @@ from pathlib import Path
 
 import grimp
 
-from _04_Nucleo_Operativo.code.contracts.target_registry import (
-    COMPATIBILITY_CONTRACTS,
-    COMPATIBILITY_MODULES,
-    COMPATIBILITY_MODULE_PAIRS,
-    CORE_COMPATIBILITY_MATRIX_SCHEMA,
+from neocortex.code.contracts.target_registry import (
     CORE_FAMILY_DAG_SCHEMA,
     CORE_RESPONSIBILITY_REGISTRY_SCHEMA,
     FORBIDDEN_FAMILY_EDGE_BASELINE,
@@ -26,105 +22,60 @@ from _04_Nucleo_Operativo.code.contracts.target_registry import (
     forbidden_family_edge_baseline,
     matching_target_families,
     matching_target_responsibilities,
+    registered_core_modules,
 )
-from _04_Nucleo_Operativo.platform.shared.capability_registry import (
-    CAPABILITY_REGISTRY,
-)
-
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 CORE_ROOT = REPOSITORY_ROOT / "neocortex"
 
 
 def _module_id(path: Path) -> str:
-    module = ".".join(path.relative_to(REPOSITORY_ROOT).with_suffix("").parts)
-    return module.removesuffix(".__init__")
+    return ".".join(path.relative_to(REPOSITORY_ROOT).with_suffix("").parts).removesuffix(".__init__")
 
 
 def test_registry_exhaustively_assigns_every_current_core_module() -> None:
     observed = tuple(sorted(_module_id(path) for path in CORE_ROOT.rglob("*.py")))
-
+    registered = registered_core_modules()
     product_registered = tuple(
         sorted(module for modules in RESPONSIBILITY_MODULES.values() for module in modules)
     )
-    assert observed == product_registered
-    assert len(observed) == 454
-    assert len(COMPATIBILITY_MODULES) == 40
-    assert sum(len(items) for items in RESPONSIBILITY_MODULES.values()) == 454
+    assert observed == registered == product_registered
+    assert len(observed) == 455
+    assert sum(len(items) for items in RESPONSIBILITY_MODULES.values()) == 455
     for module in observed:
         families = matching_target_families(module)
         responsibilities = matching_target_responsibilities(module)
         assert len(families) == 1
-        if module in COMPATIBILITY_MODULES:
-            assert families == ("compat",)
-            assert responsibilities == ()
-        else:
-            assert len(responsibilities) == 1
-            assert responsibilities[0].partition(".")[0] == families[0]
+        assert len(responsibilities) == 1
+        assert responsibilities[0].partition(".")[0] == families[0]
 
 
-def test_target_vocabulary_dag_and_transition_baseline_are_frozen() -> None:
+def test_target_vocabulary_is_canonical_and_legacy_free() -> None:
     payload = core_architecture_target_payload()
-
     assert len(TARGET_RESPONSIBILITY_IDS) == 45
     assert len(TARGET_FAMILIES) == 12
     assert TARGET_FAMILY_DEPENDENCIES == tuple(pairwise(TARGET_FAMILY_LAYERS))
     assert len(FORBIDDEN_FAMILY_EDGE_BASELINE) == 28
     assert sum(item.direct_module_edges for item in FORBIDDEN_FAMILY_EDGE_BASELINE) == 227
-    assert payload["responsibility_registry"]["schema"] == (CORE_RESPONSIBILITY_REGISTRY_SCHEMA)
+    assert payload["responsibility_registry"]["schema"] == CORE_RESPONSIBILITY_REGISTRY_SCHEMA
     assert payload["family_dag"]["schema"] == CORE_FAMILY_DAG_SCHEMA
-    assert payload["compatibility_matrix"]["schema"] == (CORE_COMPATIBILITY_MATRIX_SCHEMA)
+    assert "compatibility_matrix" not in payload
+    assert "compatibility_modules" not in payload["responsibility_registry"]
     assert core_architecture_target_fingerprint() == (
         "core-architecture-target-v1:sha256:"
-        "5b1f31c493ee544417c1ac44f59e84f26aaa4a0bc3fd5fb46530733997af99af"
+        "5e5cc16adca95020bc50ffa6920bae5736c9c54b27dc47f806d8339213559e27"
     )
-
-
-def test_compatibility_matrix_joins_capability_and_shared_migrations() -> None:
-    capability_pairs = {
-        (binding.legacy_module_id, binding.canonical_module_id)
-        for capability in CAPABILITY_REGISTRY.capabilities
-        for binding in capability.modules
-        if binding.legacy_module_id is not None
-    }
-    shared_pairs = {
-        (
-            "_04_Nucleo_Operativo.content_types",
-            "neocortex.platform.content_types",
-        ),
-        (
-            "_04_Nucleo_Operativo.zip_safety",
-            "neocortex.platform.zip_safety",
-        ),
-    }
-
-    assert set(COMPATIBILITY_MODULE_PAIRS) == capability_pairs | shared_pairs
-    assert tuple(item.legacy_module_id for item in COMPATIBILITY_CONTRACTS) == (
-        COMPATIBILITY_MODULES
-    )
-    assert all(
-        "tests/test_format_module_move_compatibility.py" in item.test_roots
-        for item in COMPATIBILITY_CONTRACTS
-    )
-    image_policy = next(
-        item
-        for item in COMPATIBILITY_CONTRACTS
-        if item.legacy_module_id == "_04_Nucleo_Operativo.image_policy"
-    )
-    assert "historical_pickle_global" not in image_policy.requirement_ids
 
 
 def test_forbidden_family_edge_baseline_matches_the_current_import_graph() -> None:
     graph = grimp.build_graph(
         "neocortex",
-        "_04_Nucleo_Operativo",
         include_external_packages=False,
         exclude_type_checking_imports=False,
         cache_dir=None,
     )
     rank = {family: index for index, family in enumerate(TARGET_FAMILY_LAYERS)}
     forbidden: Counter[tuple[str, str]] = Counter()
-    canonical_to_compat = 0
     for importer in sorted(graph.modules):
         source_matches = matching_target_families(importer)
         if len(source_matches) != 1:
@@ -135,12 +86,6 @@ def test_forbidden_family_edge_baseline_matches_the_current_import_graph() -> No
             if len(target_matches) != 1:
                 continue
             target = target_matches[0]
-            if source == target:
-                continue
-            if source != "compat" and target == "compat":
-                canonical_to_compat += 1
-            elif rank[source] >= rank[target]:
+            if source != target and rank[source] >= rank[target]:
                 forbidden[source, target] += 1
-
-    assert canonical_to_compat == 0
     assert dict(forbidden) == forbidden_family_edge_baseline()

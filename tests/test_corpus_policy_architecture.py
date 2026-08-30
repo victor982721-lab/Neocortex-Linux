@@ -15,7 +15,7 @@ import sys
 from dataclasses import fields
 from pathlib import Path
 
-from _04_Nucleo_Operativo import corpus_access, internal_paths, protected_content
+from neocortex.safety import corpus_access, internal_paths, protected_content
 # endregion [01]
 
 # region [02] Implementación
@@ -25,9 +25,9 @@ CORPUS_MODULE = "neocortex.safety.corpus_access"
 INTERNAL_MODULE = "neocortex.safety.internal_paths"
 PROTECTED_MODULE = "neocortex.safety.protected_content"
 LEGACY_POLICY_MODULES = {
-    "_04_Nucleo_Operativo.corpus_access",
-    "_04_Nucleo_Operativo.internal_paths",
-    "_04_Nucleo_Operativo.protected_content",
+    "neocortex.safety.corpus_access",
+    "neocortex.safety.internal_paths",
+    "neocortex.safety.protected_content",
 }
 POLICY_MODULES = (CORPUS_MODULE, INTERNAL_MODULE, PROTECTED_MODULE)
 

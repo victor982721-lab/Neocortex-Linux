@@ -11,20 +11,20 @@ import pytest
 
 from neocortex.enumeration import JournalCursor, NtfsEntry, UsnChangeBatch
 from neocortex.deduplication import InventoryExclusionPolicy
-from _04_Nucleo_Operativo.cancellation import (
+from neocortex.runtime.control.cancellation import (
     CancellationRequested,
     CancellationToken,
 )
-from _04_Nucleo_Operativo.docx_layout import TextBudget, xml_text_and_layout
-from _04_Nucleo_Operativo import image_png
-from _04_Nucleo_Operativo.reconcile import (
+from neocortex.capabilities.formats.docx.layout import TextBudget, xml_text_and_layout
+from neocortex.capabilities.formats.image import png as image_png
+from neocortex.integrations.inventory.reconcile import (
     FILE_ATTRIBUTE_DIRECTORY,
     USN_REASON_FILE_DELETE,
     USN_REASON_RENAME_NEW_NAME,
     USN_REASON_RENAME_OLD_NAME,
     reconcile_usn_window,
 )
-from _04_Nucleo_Operativo.zip_safety import (
+from neocortex.platform.zip_safety import (
     LOCAL_FILE_SIGNATURE,
     RAW_DEFLATE_CHUNK_BYTES,
     ZipStructureError,
@@ -370,7 +370,7 @@ def test_reconcile_refactor_discards_unsafe_batch_without_advancing_checkpoint(
     def fake_consume_changes(*_args, **_kwargs):
         yield reader
 
-    monkeypatch.setattr("_04_Nucleo_Operativo.reconcile.consume_changes", fake_consume_changes)
+    monkeypatch.setattr("neocortex.integrations.inventory.reconcile.consume_changes", fake_consume_changes)
     index = _FakeIndex()
 
     result = reconcile_usn_window(

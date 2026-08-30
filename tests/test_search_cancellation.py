@@ -7,9 +7,9 @@ from pathlib import Path
 
 import pytest
 
-from _04_Nucleo_Operativo.code_contracts import CodeSearchQuery
-from _04_Nucleo_Operativo.code_search import search_code
-from _04_Nucleo_Operativo.semantic_lexical import (
+from neocortex.code.code_contracts import CodeSearchQuery
+from neocortex.code.code_search import search_code
+from neocortex.semantic.semantic_lexical import (
     LexicalAvailability,
     LexicalStatePaths,
     search_lexical_source,

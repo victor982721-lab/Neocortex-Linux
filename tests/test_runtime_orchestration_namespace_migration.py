@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib
 import pickle
 import subprocess
 import sys
@@ -25,14 +24,9 @@ def _noop(_context: object) -> None:
     return None
 
 
-def test_legacy_orchestration_modules_are_exact_product_aliases() -> None:
+def test_orchestration_modules_are_owned_by_the_canonical_tree() -> None:
     for name in MODULES:
-        legacy = importlib.import_module(f"_04_Nucleo_Operativo.{name}")
-        product = importlib.import_module(f"neocortex.runtime.orchestration.{name}")
-
-        assert legacy is product
-        assert sys.modules[f"_04_Nucleo_Operativo.{name}"] is product
-        assert sys.modules[f"neocortex.runtime.orchestration.{name}"] is product
+        product = __import__(f"neocortex.runtime.orchestration.{name}", fromlist=[name])
         assert Path(product.__file__).resolve().is_relative_to(ORCHESTRATION_ROOT)
 
 
@@ -68,8 +62,8 @@ print("RUNTIME_ORCHESTRATION_IMPORT_LIGHT")
 
 
 def test_orchestration_status_models_keep_historical_pickle_fqns() -> None:
-    registry = importlib.import_module("neocortex.runtime.orchestration.route_registry")
-    status = importlib.import_module("neocortex.runtime.orchestration.run_status")
+    registry = __import__("neocortex.runtime.orchestration.route_registry", fromlist=["registry"])
+    status = __import__("neocortex.runtime.orchestration.run_status", fromlist=["status"])
 
     adapter = registry.RouteAdapter("fixture", _noop)
     phase = status.PhaseStatus("fixture", "phase", "complete", 1, 2, None)
@@ -83,5 +77,5 @@ def test_orchestration_status_models_keep_historical_pickle_fqns() -> None:
         else:
             assert restored == value
 
-    assert registry.RouteAdapter.__module__ == "_04_Nucleo_Operativo.route_registry"
-    assert status.PhaseStatus.__module__ == "_04_Nucleo_Operativo.run_status"
+    assert registry.RouteAdapter.__module__ == "neocortex.runtime.orchestration.route_registry"
+    assert status.PhaseStatus.__module__ == "neocortex.runtime.orchestration.run_status"

@@ -5,9 +5,6 @@ corpus, decompresses page text, or returns raw metadata and diagnostic strings.
 """
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
@@ -364,6 +361,3 @@ __all__ = [
     "PdfHealthRecord",
     "read_pdf_health_records",
 ]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.knowledge_asset_health_pdf")

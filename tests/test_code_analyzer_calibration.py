@@ -6,17 +6,17 @@ from pathlib import Path
 
 import pytest
 
-from _04_Nucleo_Operativo.code_analyzer_calibration import (
+from neocortex.code.code_analyzer_calibration import (
     analyze_code_analyzer_calibration,
     analyzer_calibration_questions,
     parse_code_analyzer_calibration_payload,
 )
-from _04_Nucleo_Operativo.code_invariant_assurance_analysis import (
+from neocortex.code.code_invariant_assurance_analysis import (
     analyze_code_invariant_assurance,
 )
-from _04_Nucleo_Operativo.code_invariant_contracts import RUNTIME_SCENARIOS
-from _04_Nucleo_Operativo.external_deep_coverage import PYTEST_COVERAGE_PROVIDER_ID
-from _04_Nucleo_Operativo.external_evidence_models import (
+from neocortex.code.code_invariant_contracts import RUNTIME_SCENARIOS
+from neocortex.code.external_deep_coverage import PYTEST_COVERAGE_PROVIDER_ID
+from neocortex.code.external_evidence_models import (
     ExternalProviderEvidence,
     ExternalProviderRelation,
     external_relation_identity,

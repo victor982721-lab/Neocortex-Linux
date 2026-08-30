@@ -1,6 +1,6 @@
 """Fail-closed access contracts for corpus roots.
 # region [00] Contexto del módulo
-# Módulo: _04_Nucleo_Operativo/corpus_access.py
+# Módulo: neocortex/corpus_access.py
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
@@ -12,9 +12,6 @@ this boundary.  The policy describes only the corpus tree observed by a run;
 
 # region [01] Dependencias del módulo
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import os
 import stat
 from dataclasses import dataclass
@@ -436,6 +433,3 @@ __all__ = [
     "path_trees_intersect",
 ]
 # endregion [02]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.corpus_access")

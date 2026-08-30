@@ -18,8 +18,8 @@ from neocortex.platform_policy import (
     default_whisper_model_cache,
 )
 
-from _04_Nucleo_Operativo.cli_parser import build_parser, decimal_megabytes
-from _04_Nucleo_Operativo.cli_validation import validate_arguments
+from neocortex.api.cli.cli_parser import build_parser, decimal_megabytes
+from neocortex.api.cli.cli_validation import validate_arguments
 # endregion [01]
 
 # region [02] Implementación

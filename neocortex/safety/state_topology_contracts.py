@@ -7,9 +7,6 @@ module names, paths, SQL text, or a final database state.
 """
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 from dataclasses import asdict, dataclass, fields
 from typing import Literal, Mapping, Sequence
 
@@ -527,6 +524,3 @@ __all__ = [
     "parse_durable_workflow_implementation_binding_payload",
     "parse_state_store_registry_payload",
 ]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.state_topology_contracts")

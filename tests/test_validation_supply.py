@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from _04_Nucleo_Operativo.code import validation_supply as supply
+from neocortex.code import validation_supply as supply
 
 
 def _dependency_files(pyproject: str) -> dict[str, str]:

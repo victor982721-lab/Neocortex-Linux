@@ -1,15 +1,12 @@
 """Process-local serialization for all SQLite writes to persistent PDF state."""
 # region [00] Contexto del módulo
-# Módulo: _04_Nucleo_Operativo/pdf_writer.py
+# Módulo: neocortex/pdf_writer.py
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
 
 # region [01] Dependencias del módulo
 from __future__ import annotations
-
-from . import preserve_legacy_module as _preserve_legacy_module
-
 from contextlib import contextmanager
 from threading import RLock
 # endregion [01]
@@ -27,5 +24,3 @@ def serialized_pdf_write():
     with _PDF_WRITE_LOCK:
         yield
 # endregion [02]
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.pdf_writer")

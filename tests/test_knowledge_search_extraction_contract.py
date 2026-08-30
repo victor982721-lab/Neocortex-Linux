@@ -1,4 +1,4 @@
-"""Compatibility contracts for the Knowledge Search CL3 extraction."""
+"""Contracts for the Knowledge Search data-model extraction."""
 # region [00] Contexto del módulo
 # Módulo: tests/test_knowledge_search_extraction_contract.py
 # Propósito: documentación embebida y separación visual de regiones.
@@ -13,8 +13,8 @@ from dataclasses import FrozenInstanceError, replace
 
 import pytest
 
-from _04_Nucleo_Operativo import knowledge_search
-from _04_Nucleo_Operativo.knowledge_contracts import (
+from neocortex.knowledge import knowledge_search
+from neocortex.knowledge.knowledge_contracts import (
     EvidenceMethod,
     EvidenceRef,
     KnowledgeSnapshot,
@@ -26,11 +26,11 @@ from _04_Nucleo_Operativo.knowledge_contracts import (
     RevisionRef,
     RevisionState,
 )
-from _04_Nucleo_Operativo.knowledge_planner import (
+from neocortex.knowledge.knowledge_planner import (
     KnowledgeQuery,
     plan_knowledge_query,
 )
-from _04_Nucleo_Operativo.knowledge_search import (
+from neocortex.knowledge.knowledge_search import (
     KnowledgeCandidate,
     KnowledgeSearchResult,
     RankingExecution,
@@ -41,7 +41,8 @@ from _04_Nucleo_Operativo.knowledge_search import (
 # region [02] Implementación
 
 
-PUBLIC_MODULE = "_04_Nucleo_Operativo.knowledge_search"
+PUBLIC_MODULE = "neocortex.knowledge.knowledge_search"
+CONTRACT_MODULE = "neocortex.knowledge.knowledge_search_contracts"
 RESULT_JSON_SHA256 = "38120699E8E7AE58B0F23416DAB0EC74FDB032E4C94B616E6B94F480980EADA0"
 
 
@@ -149,7 +150,7 @@ def test_public_contract_shape_and_pickle_paths_are_stable() -> None:
     )
     for value, field_name in values_and_fields:
         contract = type(value)
-        assert contract.__module__ == PUBLIC_MODULE
+        assert contract.__module__ == CONTRACT_MODULE
         assert contract.__qualname__ == contract.__name__
         assert contract.__match_args__ == contract.__slots__
         assert contract.__dataclass_params__.frozen

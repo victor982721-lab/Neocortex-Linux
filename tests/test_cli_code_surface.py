@@ -13,8 +13,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from _04_Nucleo_Operativo.cli_parser import build_parser, decimal_megabytes
-from _04_Nucleo_Operativo.cli_validation import validate_arguments
+from neocortex.api.cli.cli_parser import build_parser, decimal_megabytes
+from neocortex.api.cli.cli_validation import validate_arguments
 # endregion [01]
 
 # region [02] Implementación
@@ -552,10 +552,10 @@ def test_code_validate_json_keeps_live_progress_on_stderr(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    from _04_Nucleo_Operativo import cli_code
-    from _04_Nucleo_Operativo import code_change_validation
-    from _04_Nucleo_Operativo import code_validation_resources
-    from _04_Nucleo_Operativo import code_validation_receipts
+    from neocortex.api.cli import cli_code
+    from neocortex.code import code_change_validation
+    from neocortex.code import code_validation_resources
+    from neocortex.code import code_validation_receipts
 
     monkeypatch.setattr(
         code_validation_resources,
@@ -621,10 +621,10 @@ def test_code_validate_noop_passes_without_fabricating_runtime_receipt(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    from _04_Nucleo_Operativo import cli_code
-    from _04_Nucleo_Operativo import code_change_validation
-    from _04_Nucleo_Operativo import code_validation_resources
-    from _04_Nucleo_Operativo import code_validation_receipts
+    from neocortex.api.cli import cli_code
+    from neocortex.code import code_change_validation
+    from neocortex.code import code_validation_resources
+    from neocortex.code import code_validation_receipts
 
     monkeypatch.setattr(
         code_validation_resources,
@@ -685,9 +685,9 @@ def test_code_validate_classifies_resource_boundary_interrupts_without_blame(
     now: int,
     reason: str,
 ) -> None:
-    from _04_Nucleo_Operativo import cli_code
-    from _04_Nucleo_Operativo import code_change_validation
-    from _04_Nucleo_Operativo import code_validation_resources
+    from neocortex.api.cli import cli_code
+    from neocortex.code import code_change_validation
+    from neocortex.code import code_validation_resources
 
     monkeypatch.setattr(
         code_validation_resources,

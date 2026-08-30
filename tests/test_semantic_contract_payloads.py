@@ -14,13 +14,13 @@ from pathlib import Path
 
 from pytest import MonkeyPatch
 
-from _04_Nucleo_Operativo import semantic_planner, semantic_service
-from _04_Nucleo_Operativo.semantic_service_contracts import (
+from neocortex.semantic import semantic_planner, semantic_service
+from neocortex.semantic.semantic_service_contracts import (
     SemanticPlan,
     SemanticSourcePlan,
     SemanticWorkloadPlan,
 )
-from _04_Nucleo_Operativo.semantic_models import canonical_json, fingerprint_text
+from neocortex.semantic.semantic_models import canonical_json, fingerprint_text
 # endregion [01]
 
 # region [02] Implementación
@@ -211,7 +211,7 @@ def test_planner_payload_public_wrapper_identity_is_stable() -> None:
         "(plan: 'SemanticPlan') -> 'dict[str, object]'"
     )
     assert semantic_planner.semantic_plan_payload.__module__ == (
-        "_04_Nucleo_Operativo.semantic_planner"
+        "neocortex.semantic.semantic_planner"
     )
     assert semantic_planner.__all__ == [
         "CONTENT_BATCH_SIZE",
@@ -224,7 +224,7 @@ def test_planner_payload_public_wrapper_identity_is_stable() -> None:
     ]
     assert semantic_service.semantic_plan_payload is not (semantic_planner.semantic_plan_payload)
     assert semantic_service.semantic_plan_payload.__module__ == (
-        "_04_Nucleo_Operativo.semantic_service"
+        "neocortex.semantic.semantic_service"
     )
     assert str(inspect.signature(semantic_service.semantic_plan_payload)) == (
         "(plan: 'SemanticPlan') -> 'dict[str, object]'"
@@ -390,7 +390,7 @@ def test_signature_preimage_is_private_separate_and_byte_stable() -> None:
         semantic_snapshot_xxh3_128=plan.semantic_snapshot_xxh3_128,
     )
     assert semantic_planner._plan_payload_for_signature.__module__ == (
-        "_04_Nucleo_Operativo.semantic_planner"
+        "neocortex.semantic.semantic_planner"
     )
     assert tuple(preimage) == (
         "algorithm",
@@ -439,7 +439,7 @@ def test_planner_payload_wrapper_forwards_when_builder_is_present(
 
 
 def test_extracted_payload_builder_matches_wrapper_when_present() -> None:
-    module_name = "_04_Nucleo_Operativo.semantic_contract_payloads"
+    module_name = "neocortex.semantic.semantic_contract_payloads"
     if importlib.util.find_spec(module_name) is None:
         return
     module = importlib.import_module(module_name)

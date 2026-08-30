@@ -13,9 +13,6 @@ rule.
 """
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import json
 from dataclasses import asdict, dataclass, fields
 from typing import Any, Literal, Mapping, Sequence, TypeGuard, cast
@@ -998,7 +995,7 @@ def _knowledge_asset_health_predicate(evaluation: AnalysisQuestionEvaluation) ->
             "health_source_version": "knowledge-asset-health-v1",
             "public_read": "neocortex.read_api.asset_health_payload",
             "service": (
-                "_04_Nucleo_Operativo.knowledge_asset_health."
+                "neocortex.knowledge.knowledge_asset_health."
                 "inspect_knowledge_asset_health"
             ),
             "operation": "knowledge-health",
@@ -1073,7 +1070,7 @@ def _knowledge_pdf_asset_health_predicate(
             "identity_components": "volume_id,file_id,birthtime_ns",
             "public_read": "neocortex.read_api.asset_health_payload",
             "service": (
-                "_04_Nucleo_Operativo.knowledge_asset_health."
+                "neocortex.knowledge.knowledge_asset_health."
                 "inspect_knowledge_asset_health"
             ),
             "operation": "knowledge-health",
@@ -1476,6 +1473,3 @@ __all__ = [
     "build_code_technical_verification",
     "parse_code_technical_verification_payload",
 ]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.code_technical_verification")

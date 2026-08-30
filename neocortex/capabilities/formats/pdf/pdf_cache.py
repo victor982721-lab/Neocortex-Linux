@@ -1,9 +1,6 @@
 """Binary cache evidence shared by PDF extraction and the deduplication index."""
 
 from __future__ import annotations
-
-from . import preserve_legacy_module as _preserve_legacy_module
-
 from neocortex.deduplication import DedupIndex, FileSnapshot, FULL_ALGORITHM, full_fingerprint
 
 
@@ -26,5 +23,3 @@ def binary_fingerprint(
 
 
 # endregion [01]
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.pdf_cache")

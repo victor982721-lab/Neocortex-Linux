@@ -16,37 +16,37 @@ import pytest
 
 from neocortex.deduplication.fingerprinting import FULL_ALGORITHM
 from neocortex.deduplication.schema import initialize_inventory_schema
-from _04_Nucleo_Operativo.file_identity import encode_file_identity
-from _04_Nucleo_Operativo.cli_app import main as cli_main
-from _04_Nucleo_Operativo.image_state import image_database, initialize_image_state
-from _04_Nucleo_Operativo.office_state import (
+from neocortex.foundation.file_identity import encode_file_identity
+from neocortex.api.cli.cli_app import main as cli_main
+from neocortex.capabilities.formats.image.state import image_database, initialize_image_state
+from neocortex.capabilities.formats.office.state import (
     initialize_office_state,
     office_database,
 )
-from _04_Nucleo_Operativo.pdf_state import (
+from neocortex.capabilities.formats.pdf.pdf_state import (
     SCHEMA_VERSION as PDF_SCHEMA_VERSION,
     initialize_pdf_state,
     pdf_database,
 )
-from _04_Nucleo_Operativo.semantic_config import (
+from neocortex.semantic.semantic_config import (
     clip_image_model,
     multilingual_text_model,
 )
-from _04_Nucleo_Operativo.semantic_chunking import TextChunkingConfig
-from _04_Nucleo_Operativo.semantic_models import EmbeddingRole, fingerprint_text
-from _04_Nucleo_Operativo.semantic_planner import (
+from neocortex.semantic.semantic_chunking import TextChunkingConfig
+from neocortex.semantic.semantic_models import EmbeddingRole, fingerprint_text
+from neocortex.semantic.semantic_planner import (
     SemanticPlanBlocked,
     SemanticScratchLimitExceeded,
     plan_semantic_index,
     semantic_plan_payload,
 )
-from _04_Nucleo_Operativo.semantic_service_contracts import SemanticCostCalibration
-from _04_Nucleo_Operativo.semantic_state import (
+from neocortex.semantic.semantic_service_contracts import SemanticCostCalibration
+from neocortex.semantic.semantic_state import (
     initialize_semantic_state,
     register_embedding_model,
     semantic_database,
 )
-from _04_Nucleo_Operativo.sqlite_paths import readonly_sqlite_uri
+from neocortex.persistence.sqlite_paths import readonly_sqlite_uri
 
 
 # region [01] Temporary owner fixtures
@@ -486,7 +486,7 @@ def test_image_plan_uses_cached_digest_and_separates_ocr(tmp_path: Path) -> None
 
     with patch.object(
         __import__(
-            "_04_Nucleo_Operativo.semantic_planner",
+            "neocortex.semantic.semantic_planner",
             fromlist=["_sources"],
         )._sources,
         "_stream_file_fingerprint",
@@ -543,7 +543,7 @@ def test_image_plan_blocks_missing_digest_without_reading_original(
     tmp_path: Path,
 ) -> None:
     _create_image_state(tmp_path, include_dedup=False, ocr_text=None)
-    from _04_Nucleo_Operativo import semantic_planner as planner_module
+    from neocortex.semantic import semantic_planner as planner_module
 
     with patch.object(
         planner_module._sources,
@@ -645,7 +645,7 @@ def test_preexisting_reuse_is_batched_on_the_bounded_scratch_connection(
     texts = tuple(f"Payload reutilizable {index:03d}" for index in range(205))
     _create_pdf_state(tmp_path, texts)
     _create_semantic_payloads(tmp_path, texts)
-    from _04_Nucleo_Operativo import semantic_planner as planner_module
+    from neocortex.semantic import semantic_planner as planner_module
 
     real_mark = planner_module._ContentAccumulator.mark_preexisting_reuse
     batch_sizes: list[int] = []
@@ -688,7 +688,7 @@ def test_sqlite_full_during_reuse_mark_is_translated_and_cleans_scratch(
     _create_semantic_payload(tmp_path, text)
     scratch = tmp_path / "scratch"
     scratch.mkdir()
-    from _04_Nucleo_Operativo import semantic_planner as planner_module
+    from neocortex.semantic import semantic_planner as planner_module
 
     real_connect = sqlite3.connect
 
@@ -977,7 +977,7 @@ def test_same_version_semantic_ddl_drift_is_rejected(tmp_path: Path) -> None:
 
 def test_owner_data_version_fence_blocks_mid_plan_mutation(tmp_path: Path) -> None:
     source = _create_pdf_state(tmp_path, ("TOCTOU owner",))
-    from _04_Nucleo_Operativo import semantic_planner as planner_module
+    from neocortex.semantic import semantic_planner as planner_module
 
     real_validator = planner_module._validate_source_schema
     mutated = False
@@ -1013,7 +1013,7 @@ def test_office_views_share_one_connection_transaction_and_snapshot(
     tmp_path: Path,
 ) -> None:
     office = _create_office_state(tmp_path)
-    from _04_Nucleo_Operativo import semantic_planner as planner_module
+    from neocortex.semantic import semantic_planner as planner_module
 
     real_projector = planner_module._plan_text_source
     connection_ids: list[int] = []
@@ -1045,7 +1045,7 @@ def test_office_group_fence_blocks_mutation_between_logical_views(
     tmp_path: Path,
 ) -> None:
     office = _create_office_state(tmp_path)
-    from _04_Nucleo_Operativo import semantic_planner as planner_module
+    from neocortex.semantic import semantic_planner as planner_module
 
     real_projector = planner_module._plan_text_source
     projections = 0
@@ -1082,7 +1082,7 @@ def test_semantic_data_version_fence_blocks_mid_plan_model_mutation(
     text = "TOCTOU semantic"
     _create_pdf_state(tmp_path, (text,))
     semantic = _create_semantic_payload(tmp_path, text)
-    from _04_Nucleo_Operativo import semantic_planner as planner_module
+    from neocortex.semantic import semantic_planner as planner_module
 
     real_validator = planner_module._validate_semantic_cache
     mutated = False
@@ -1270,7 +1270,7 @@ def test_valid_dedup_without_matching_fingerprint_still_blocks_cache_only_image(
     _create_image_state(tmp_path, include_dedup=True, ocr_text=None)
     with sqlite3.connect(tmp_path / "dedup.sqlite3") as connection:
         connection.execute("DELETE FROM fingerprints")
-    from _04_Nucleo_Operativo import semantic_planner as planner_module
+    from neocortex.semantic import semantic_planner as planner_module
 
     with patch.object(
         planner_module._sources,
@@ -1505,7 +1505,7 @@ def test_arbitrary_planner_fault_cleans_scratch(tmp_path: Path) -> None:
     _create_pdf_state(tmp_path, ("fault",))
     scratch = tmp_path / "scratch"
     scratch.mkdir()
-    from _04_Nucleo_Operativo import semantic_planner as planner_module
+    from neocortex.semantic import semantic_planner as planner_module
 
     with patch.object(
         planner_module._ContentAccumulator,
@@ -1570,7 +1570,7 @@ def test_image_plan_attach_is_readonly_query_only_and_detaches_on_success(
     dedup = tmp_path / "dedup.sqlite3"
     scratch = tmp_path / "scratch"
     scratch.mkdir()
-    from _04_Nucleo_Operativo import semantic_planner as planner_module
+    from neocortex.semantic import semantic_planner as planner_module
 
     real_connect = sqlite3.connect
     attach_parameters: list[tuple[object, ...]] = []
@@ -1633,7 +1633,7 @@ def test_attach_failure_is_controlled_closes_owner_and_cleans_scratch(
     _create_image_state(tmp_path, include_dedup=True, ocr_text=None)
     scratch = tmp_path / "scratch"
     scratch.mkdir()
-    from _04_Nucleo_Operativo import semantic_planner as planner_module
+    from neocortex.semantic import semantic_planner as planner_module
 
     real_connect = sqlite3.connect
     events: list[str] = []
@@ -1686,7 +1686,7 @@ def test_image_data_version_fence_blocks_mid_plan_mutation(tmp_path: Path) -> No
     )
     scratch = tmp_path / "scratch"
     scratch.mkdir()
-    from _04_Nucleo_Operativo import semantic_planner as planner_module
+    from neocortex.semantic import semantic_planner as planner_module
 
     real_projector = planner_module._plan_images
 
@@ -1732,7 +1732,7 @@ def test_attached_dedup_data_version_fence_blocks_mid_plan_mutation(
         assert str(wal_connection.execute("PRAGMA journal_mode=WAL").fetchone()[0]).lower() == "wal"
     finally:
         wal_connection.close()
-    from _04_Nucleo_Operativo import semantic_planner as planner_module
+    from neocortex.semantic import semantic_planner as planner_module
 
     real_projector = planner_module._plan_images
     replacement_digest = b"\x22" * 16
@@ -1777,7 +1777,7 @@ def test_dedup_schema_is_revalidated_between_probe_and_attach(
     dedup = tmp_path / "dedup.sqlite3"
     scratch = tmp_path / "scratch"
     scratch.mkdir()
-    from _04_Nucleo_Operativo import semantic_planner as planner_module
+    from neocortex.semantic import semantic_planner as planner_module
 
     real_validator = planner_module._validated_dedup_schema
 
@@ -1824,7 +1824,7 @@ def test_late_cancellation_before_scratch_commit_is_exact_and_cleans_scratch(
     source_before = source.read_bytes()
     scratch = tmp_path / "scratch"
     scratch.mkdir()
-    from _04_Nucleo_Operativo import semantic_planner as planner_module
+    from neocortex.semantic import semantic_planner as planner_module
 
     class LatePlanCancellation(RuntimeError):
         pass
@@ -1870,7 +1870,7 @@ def test_final_cancellation_after_scratch_close_is_exact_and_cleans_scratch(
     source_before = source.read_bytes()
     scratch = tmp_path / "scratch"
     scratch.mkdir()
-    from _04_Nucleo_Operativo import semantic_planner as planner_module
+    from neocortex.semantic import semantic_planner as planner_module
 
     class FinalPlanCancellation(RuntimeError):
         pass
@@ -1926,7 +1926,7 @@ def test_detach_failure_does_not_mask_exact_cancellation(tmp_path: Path) -> None
     )
     scratch = tmp_path / "scratch"
     scratch.mkdir()
-    from _04_Nucleo_Operativo import semantic_planner as planner_module
+    from neocortex.semantic import semantic_planner as planner_module
 
     class ExactImageCancellation(RuntimeError):
         pass
@@ -2011,7 +2011,7 @@ def test_detach_failure_does_not_mask_primary_projection_error(
     )
     scratch = tmp_path / "scratch"
     scratch.mkdir()
-    from _04_Nucleo_Operativo import semantic_planner as planner_module
+    from neocortex.semantic import semantic_planner as planner_module
 
     owner_uri = readonly_sqlite_uri(image_path)
     real_connect = sqlite3.connect
@@ -2083,7 +2083,7 @@ def test_detach_failure_without_primary_is_controlled_and_closes_owner(
     )
     scratch = tmp_path / "scratch"
     scratch.mkdir()
-    from _04_Nucleo_Operativo import semantic_planner as planner_module
+    from neocortex.semantic import semantic_planner as planner_module
 
     owner_uri = readonly_sqlite_uri(image_path)
     real_connect = sqlite3.connect
@@ -2151,7 +2151,7 @@ def test_accumulator_rollback_failure_does_not_mask_primary_sqlite_error(
         _create_semantic_payload(tmp_path, text)
     scratch = tmp_path / "scratch"
     scratch.mkdir()
-    from _04_Nucleo_Operativo import semantic_planner as planner_module
+    from neocortex.semantic import semantic_planner as planner_module
 
     real_connect = sqlite3.connect
     primary = sqlite3.OperationalError("primary accumulator write failure")
@@ -2211,7 +2211,7 @@ def test_scratch_create_close_failure_does_not_mask_primary_setup_error(
 ) -> None:
     scratch = tmp_path / "scratch"
     scratch.mkdir()
-    from _04_Nucleo_Operativo import semantic_planner as planner_module
+    from neocortex.semantic import semantic_planner as planner_module
 
     real_connect = sqlite3.connect
     primary = sqlite3.OperationalError("primary scratch setup failure")
@@ -2265,7 +2265,7 @@ def test_readonly_owner_close_failure_preserves_primary_or_surfaces_unique(
     source_before = source.read_bytes()
     scratch = tmp_path / "scratch"
     scratch.mkdir()
-    from _04_Nucleo_Operativo import semantic_planner as planner_module
+    from neocortex.semantic import semantic_planner as planner_module
 
     owner_uri = readonly_sqlite_uri(source)
     real_connect = sqlite3.connect
@@ -2343,7 +2343,7 @@ def test_final_scratch_close_failure_preserves_primary_or_surfaces_unique(
     source_before = source.read_bytes()
     scratch = tmp_path / "scratch"
     scratch.mkdir()
-    from _04_Nucleo_Operativo import semantic_planner as planner_module
+    from neocortex.semantic import semantic_planner as planner_module
 
     real_connect = sqlite3.connect
     real_payload = planner_module._plan_payload_for_signature
@@ -2441,7 +2441,7 @@ def test_snapshot_rollback_failure_preserves_primary_or_surfaces_unique(
 ) -> None:
     scratch = tmp_path / "scratch"
     scratch.mkdir()
-    from _04_Nucleo_Operativo import semantic_planner as planner_module
+    from neocortex.semantic import semantic_planner as planner_module
 
     if owner_kind == "text":
         owner_path = _create_pdf_state(tmp_path, ("Rollback de texto",))
@@ -2550,7 +2550,7 @@ def test_plan_orchestrator_resolves_modularization_seams_dynamically(
     _create_image_state(tmp_path, include_dedup=True, ocr_text=None)
     scratch = tmp_path / "scratch"
     scratch.mkdir()
-    from _04_Nucleo_Operativo import semantic_planner as planner_module
+    from neocortex.semantic import semantic_planner as planner_module
 
     seam_names = (
         "_create_scratch_database",

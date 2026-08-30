@@ -1,15 +1,12 @@
 """Stable models and catalog queries for document organization."""
 # region [00] Contexto del módulo
-# Módulo: _04_Nucleo_Operativo/document_organization_models.py
+# Módulo: neocortex/document_organization_models.py
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
 
 # region [01] Dependencias del módulo
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import json
 import os
 import sqlite3
@@ -225,6 +222,3 @@ def _fail_organization_run(
     )
     connection.commit()
 # endregion [02]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.document_organization_models")

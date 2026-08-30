@@ -94,5 +94,5 @@ for _historical_symbol in (
     docx_database,
     initialize_docx_state,
 ):
-    _historical_symbol.__module__ = "_04_Nucleo_Operativo.docx_state"
+    _historical_symbol.__module__ = "neocortex.capabilities.formats.docx.state"
 del _historical_symbol

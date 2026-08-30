@@ -12,8 +12,8 @@ import sqlite3
 
 import pytest
 
-from _04_Nucleo_Operativo.framework_schema import initialize_framework_schema
-from _04_Nucleo_Operativo.state import SCHEMA_VERSION, FrameworkState
+from neocortex.persistence.framework_schema import initialize_framework_schema
+from neocortex.persistence.state import SCHEMA_VERSION, FrameworkState
 # endregion [01]
 
 # region [02] Implementación
@@ -75,7 +75,7 @@ def test_current_version_with_malformed_named_index_is_rejected(tmp_path) -> Non
     )
     connection.close()
 
-    with pytest.raises(RuntimeError, match="run_events_run_idx.*incompatible columns"):
+    with pytest.raises(RuntimeError, match=r"run_events_run_idx.*incompatible columns"):
         FrameworkState(database)
 
 

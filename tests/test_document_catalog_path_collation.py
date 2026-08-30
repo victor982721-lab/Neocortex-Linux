@@ -7,17 +7,17 @@ import pytest
 
 from neocortex.platform_policy import sqlite_path_collation
 
-from _04_Nucleo_Operativo import document_catalog as catalog_module
-from _04_Nucleo_Operativo import document_catalog_schema as schema_module
-from _04_Nucleo_Operativo import document_organization_application as application_module
-from _04_Nucleo_Operativo import document_organization_planning as planning_module
-from _04_Nucleo_Operativo.document_catalog import (
+from neocortex.documents import document_catalog as catalog_module
+from neocortex.documents import document_catalog_schema as schema_module
+from neocortex.documents import document_organization_application as application_module
+from neocortex.documents import document_organization_planning as planning_module
+from neocortex.documents.document_catalog import (
     CatalogBuild,
     SourceDocument,
     document_catalog_database,
     initialize_document_catalog,
 )
-from _04_Nucleo_Operativo.sqlite_schema_contract import SQLiteSchemaContractError
+from neocortex.sqlite_schema_contract import SQLiteSchemaContractError
 
 
 _DOCUMENT_COLUMNS = (

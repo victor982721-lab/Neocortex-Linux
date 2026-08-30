@@ -1,9 +1,6 @@
 """Direct read-only CLI operations for dedicated visual-video evidence."""
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import argparse
 import json
 import sqlite3
@@ -98,6 +95,3 @@ def run_video_doctor(args: argparse.Namespace) -> int:
     report["ok"] = not failures
     print(json.dumps(report, ensure_ascii=False, sort_keys=True))
     return 0 if report["ok"] else 2
-
-
-_preserve_legacy_module(globals(), '_04_Nucleo_Operativo.cli_video')

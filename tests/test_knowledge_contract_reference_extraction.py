@@ -19,14 +19,14 @@ from pathlib import Path
 
 import pytest
 
-from _04_Nucleo_Operativo import knowledge_contracts as contracts
+from neocortex.knowledge import knowledge_contracts as contracts
 # endregion [01]
 
 # region [02] Implementación
 
 
-CONTRACT_MODULE = "_04_Nucleo_Operativo.knowledge_contracts"
-REFERENCE_MODULE = "_04_Nucleo_Operativo.knowledge_contract_references"
+CONTRACT_MODULE = "neocortex.knowledge.knowledge_contracts"
+REFERENCE_MODULE = "neocortex.knowledge.knowledge_contract_references"
 DELEGATES = {
     "PhysicalIdentityRef": "validate_physical_identity_ref",
     "ResourceRef": "validate_resource_ref",

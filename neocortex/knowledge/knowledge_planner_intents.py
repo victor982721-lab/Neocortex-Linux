@@ -1,15 +1,12 @@
 """Query normalization and deterministic intent inference for knowledge plans."""
 # region [00] Contexto del módulo
-# Módulo: _04_Nucleo_Operativo/knowledge_planner_intents.py
+# Módulo: neocortex/knowledge_planner_intents.py
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
 
 # region [01] Dependencias del módulo
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
@@ -398,6 +395,3 @@ __all__ = (  # noqa: RUF022
     "normalize_knowledge_query",
 )
 # endregion [02]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.knowledge_planner_intents")

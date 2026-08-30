@@ -8,10 +8,10 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from neocortex.deduplication import FileSnapshot, snapshot_path
-from _04_Nucleo_Operativo.video_frames import ExtractedVideoFrame, VideoFrameBatch
-from _04_Nucleo_Operativo.video_models import VideoMediaProbe, VideoStreamProbe
-from _04_Nucleo_Operativo.video_route import VideoRoute, VideoRouteConfig
-from _04_Nucleo_Operativo.video_state import search_video_state, video_state_status
+from neocortex.capabilities.formats.video.frames import ExtractedVideoFrame, VideoFrameBatch
+from neocortex.capabilities.formats.video.models import VideoMediaProbe, VideoStreamProbe
+from neocortex.capabilities.formats.video.route import VideoRoute, VideoRouteConfig
+from neocortex.capabilities.formats.video.state import search_video_state, video_state_status
 
 
 class _FrameworkState:
@@ -149,10 +149,10 @@ def test_visual_only_video_is_searchable_and_second_run_is_a_true_cache_hit(
         return _Evidence()
 
     monkeypatch.setattr(
-        "_04_Nucleo_Operativo.video_route.resolve_video_ffmpeg", lambda _path: "ffmpeg"
+        "neocortex.capabilities.formats.video.route.resolve_video_ffmpeg", lambda _path: "ffmpeg"
     )
     monkeypatch.setattr(
-        "_04_Nucleo_Operativo.video_route.resolve_video_ffprobe", lambda _path: "ffprobe"
+        "neocortex.capabilities.formats.video.route.resolve_video_ffprobe", lambda _path: "ffprobe"
     )
     config = _config(tmp_path)
     first = VideoRoute(
@@ -223,10 +223,10 @@ def test_bounded_discovery_warning_publishes_partial_and_reviewable_evidence(
         yield VideoFrameBatch((_frame(tmp_path),), ("video_frame_discovery_timeout",))
 
     monkeypatch.setattr(
-        "_04_Nucleo_Operativo.video_route.resolve_video_ffmpeg", lambda _path: "ffmpeg"
+        "neocortex.capabilities.formats.video.route.resolve_video_ffmpeg", lambda _path: "ffmpeg"
     )
     monkeypatch.setattr(
-        "_04_Nucleo_Operativo.video_route.resolve_video_ffprobe", lambda _path: "ffprobe"
+        "neocortex.capabilities.formats.video.route.resolve_video_ffprobe", lambda _path: "ffprobe"
     )
     summary = VideoRoute(
         _config(tmp_path),
@@ -261,10 +261,10 @@ def test_duration_limit_fails_before_any_frame_is_materialized(
         yield  # type: ignore[unreachable]  # pragma: no cover
 
     monkeypatch.setattr(
-        "_04_Nucleo_Operativo.video_route.resolve_video_ffmpeg", lambda _path: "ffmpeg"
+        "neocortex.capabilities.formats.video.route.resolve_video_ffmpeg", lambda _path: "ffmpeg"
     )
     monkeypatch.setattr(
-        "_04_Nucleo_Operativo.video_route.resolve_video_ffprobe", lambda _path: "ffprobe"
+        "neocortex.capabilities.formats.video.route.resolve_video_ffprobe", lambda _path: "ffprobe"
     )
     (tmp_path / "state").mkdir(exist_ok=True)
     config = VideoRouteConfig(

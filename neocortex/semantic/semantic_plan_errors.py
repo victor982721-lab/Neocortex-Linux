@@ -1,22 +1,16 @@
 """Semantic planning errors and primary-preserving cleanup support."""
 # region [00] Contexto del módulo
-# Módulo: _04_Nucleo_Operativo/semantic_plan_errors.py
+# Módulo: neocortex/semantic_plan_errors.py
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
 
 # region [01] Dependencias del módulo
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 from collections.abc import Callable
 # endregion [01]
 
 # region [02] Implementación
-
-
-_PLANNER_COMPATIBILITY_MODULE = "_04_Nucleo_Operativo.semantic_planner"
 
 
 class SemanticPlanBlocked(RuntimeError):
@@ -25,10 +19,6 @@ class SemanticPlanBlocked(RuntimeError):
 
 class SemanticScratchLimitExceeded(SemanticPlanBlocked):
     """The planner exhausted its explicit private scratch storage allowance."""
-
-
-SemanticPlanBlocked.__module__ = _PLANNER_COMPATIBILITY_MODULE
-SemanticScratchLimitExceeded.__module__ = _PLANNER_COMPATIBILITY_MODULE
 
 
 def cleanup_preserving_primary(
@@ -52,6 +42,3 @@ __all__ = [
     "SemanticScratchLimitExceeded",
 ]
 # endregion [02]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.semantic_plan_errors")

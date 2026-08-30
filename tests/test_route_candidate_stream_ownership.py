@@ -13,14 +13,14 @@ from typing import Any, Iterator, cast
 from unittest.mock import patch
 
 from neocortex.deduplication import DedupIndex, FileSnapshot
-from _04_Nucleo_Operativo.cancellation import CancellationRequested
-from _04_Nucleo_Operativo.image_route import (
+from neocortex.runtime.control.cancellation import CancellationRequested
+from neocortex.capabilities.formats.image.route import (
     ImageRoute,
     ImageRouteConfig,
     ImageRouteState,
 )
-from _04_Nucleo_Operativo.image_state import iter_candidates
-from _04_Nucleo_Operativo.pdf_route import PdfRoute, PdfRouteConfig, PdfRouteState
+from neocortex.capabilities.formats.image.state import iter_candidates
+from neocortex.capabilities.formats.pdf.pdf_route import PdfRoute, PdfRouteConfig, PdfRouteState
 # endregion [01]
 
 # region [02] Implementación
@@ -138,7 +138,7 @@ class RouteCandidateStreamOwnershipTests(unittest.TestCase):
                 owner_thread_id = threading.get_ident()
                 with (
                     patch(
-                        "_04_Nucleo_Operativo.image_route.iter_candidates",
+                        "neocortex.capabilities.formats.image.route.iter_candidates",
                         side_effect=candidate_factory,
                     ),
                     patch.object(route, "_execute_rows", side_effect=fail_after_open),

@@ -22,9 +22,6 @@ from typing import BinaryIO, Literal
 import xxhash
 
 from neocortex import __version__
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
-
 _METADATA_SCHEMA = "neocortex-watcher-life-lease-v1"
 _MAX_METADATA_BYTES = 64 * 1024
 _MAX_ARG_COUNT = 64
@@ -318,4 +315,3 @@ __all__ = [
     "WatcherLifeLeaseConflict",
     "watcher_lease_identity",
 ]
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.watcher_life_lease")

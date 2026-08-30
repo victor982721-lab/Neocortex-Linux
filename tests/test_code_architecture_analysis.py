@@ -7,13 +7,13 @@ from dataclasses import replace
 from pathlib import Path
 from typing import cast
 
-from _04_Nucleo_Operativo.code_architecture_analysis import (
+from neocortex.code.code_architecture_analysis import (
     CODE_ARCHITECTURE_CENTRALITY_FORMULA,
     CODE_ARCHITECTURE_REACHABILITY_LIMIT,
     read_code_architecture_analysis,
 )
-from _04_Nucleo_Operativo.code_external_evidence import ExternalEvidencePublication
-from _04_Nucleo_Operativo.external_evidence_models import (
+from neocortex.code.code_external_evidence import ExternalEvidencePublication
+from neocortex.code.external_evidence_models import (
     ExternalProviderFinding,
     ExternalProviderMetric,
     ExternalProviderPublication,
@@ -25,7 +25,7 @@ from _04_Nucleo_Operativo.external_evidence_models import (
     external_provider_result_digest,
     external_relation_identity,
 )
-from _04_Nucleo_Operativo.external_evidence_store import publish_external_provider
+from neocortex.code.external_evidence_store import publish_external_provider
 from tests.test_external_provider_schema_v4 import _complete_owner, _create_current_owner
 
 

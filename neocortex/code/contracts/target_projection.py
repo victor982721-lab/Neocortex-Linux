@@ -22,7 +22,6 @@ def _core_family_dag(projection: Any, registry: Any) -> Any:
             projection.FamilyDependency(source, target)
             for source, target in registry.TARGET_FAMILY_DEPENDENCIES
         ),
-        compat_families=("compat",),
     )
 
 
@@ -99,15 +98,8 @@ def _payload_int(payload: Mapping[str, object], field: str) -> int:
 
 def _core_scope_modules(modules: Sequence[str], registry: Any) -> tuple[str, ...]:
     root = registry.CORE_MODULE_ROOT
-    compatibility = set(registry.COMPATIBILITY_MODULES)
     return tuple(
-        sorted(
-            module
-            for module in modules
-            if module == root
-            or module.startswith(root + ".")
-            or module in compatibility
-        )
+        sorted(module for module in modules if module == root or module.startswith(root + "."))
     )
 
 
@@ -123,7 +115,6 @@ def build_core_target_projection(
     registered, responsibility_matches, family_matches = _registered_labels(registry)
     module_set = set(modules)
     registered_set = set(registered)
-    compatibility_set = set(registry.COMPATIBILITY_MODULES)
     core_modules = _core_scope_modules(modules, registry)
     present_registered = tuple(sorted(registered_set & module_set))
     missing_registered = tuple(sorted(registered_set - module_set))
@@ -138,7 +129,7 @@ def build_core_target_projection(
     responsibility_mapping = projection.resolve_exact_mapping(
         graph.modules,
         responsibility_matches,
-        in_scope_modules=tuple(sorted(set(core_modules) - compatibility_set)),
+        in_scope_modules=core_modules,
     )
     family_mapping = projection.resolve_exact_mapping(
         graph.modules,
@@ -163,11 +154,6 @@ def build_core_target_projection(
     decisions = _family_decision_payloads(family_evaluation, projected_edge_id)
     current_forbidden = _forbidden_family_counts(family_evaluation)
     comparison = _family_baseline_comparison(current_forbidden, registry)
-    canonical_to_compat = sum(
-        _payload_int(item, "direct_module_edges")
-        for item in decisions
-        if item["reason"] == "canonical_to_compat"
-    )
     family.update(
         {
             "resolution_policy": "exhaustive-core-module-to-responsibility-v1",
@@ -191,7 +177,6 @@ def build_core_target_projection(
             "resolved_direct_module_edges": sum(
                 _payload_int(item, "resolved_direct_module_edges") for item in comparison
             ),
-            "canonical_to_compat_direct_module_edges": canonical_to_compat,
         }
     )
     return {
@@ -206,7 +191,6 @@ def build_core_target_projection(
             "present_registered_modules": list(present_registered),
             "missing_registered_modules": list(missing_registered),
             "unregistered_core_modules": list(unregistered_core),
-            "compatibility_modules": list(registry.COMPATIBILITY_MODULES),
         },
         "target_responsibility": responsibility,
         "target_family": family,

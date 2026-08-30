@@ -1,9 +1,6 @@
 """Bounded language, artifact and encoding detection for textual files."""
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import codecs
 import io
 import re
@@ -718,6 +715,3 @@ __all__ = [
 
 
 # endregion [04]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.code_detection")

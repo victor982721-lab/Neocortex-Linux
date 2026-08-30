@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from _04_Nucleo_Operativo import code_schema
+from neocortex.code import code_schema
 
 # region [01] Version-one fixture and snapshots
 

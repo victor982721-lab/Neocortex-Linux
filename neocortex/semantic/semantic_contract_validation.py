@@ -1,14 +1,11 @@
 """Pure validation helpers for the public Semantic service contracts."""
 # region [00] Contexto del módulo
-# Módulo: _04_Nucleo_Operativo/semantic_contract_validation.py
+# Módulo: neocortex/semantic_contract_validation.py
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
 # region [01] Dependencias del módulo
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import json
 import math
 from collections.abc import Set
@@ -895,6 +892,3 @@ def validate_semantic_plan(
 
 
 # endregion [02]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.semantic_contract_validation")

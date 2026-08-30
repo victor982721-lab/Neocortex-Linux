@@ -230,5 +230,5 @@ class WhisperRuntimeError(RuntimeError):
 
 for _defined_value in tuple(globals().values()):
     if getattr(_defined_value, "__module__", None) == __name__:
-        _defined_value.__module__ = "_04_Nucleo_Operativo.audio_models"
+        _defined_value.__module__ = "neocortex.capabilities.formats.audio.models"
 del _defined_value

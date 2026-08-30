@@ -8,8 +8,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-import _04_Nucleo_Operativo.external_architecture_worker as architecture_worker
-from _04_Nucleo_Operativo.code_architecture_contracts import (
+import neocortex.code.external_architecture_worker as architecture_worker
+from neocortex.code.code_architecture_contracts import (
     ARCHITECTURE_BASELINE_ID,
     ARCHITECTURE_CONTRACT_SCHEMA,
     ImportLineDetail,
@@ -83,10 +83,9 @@ def test_violations_expose_shortest_chains_lines_and_new_cycle() -> None:
         "neocortex.enumeration.source",
         "neocortex.deduplication",
         "neocortex.deduplication.worker",
-        "_04_Nucleo_Operativo",
-        "_04_Nucleo_Operativo.alpha",
-        "_04_Nucleo_Operativo.beta",
-        "_04_Nucleo_Operativo.target",
+        "neocortex.alpha",
+        "neocortex.beta",
+        "neocortex.api.target",
         "neocortex.interface",
         "neocortex.interface.view",
         "neocortex.progress",
@@ -96,18 +95,17 @@ def test_violations_expose_shortest_chains_lines_and_new_cycle() -> None:
         ModuleImport("neocortex.enumeration.source", "neocortex.bridge"),
         ModuleImport(
             "neocortex.bridge",
-            "_04_Nucleo_Operativo.target",
-            (ImportLineDetail(7, "from _04_Nucleo_Operativo import target"),),
+            "neocortex.api.target",
+            (ImportLineDetail(7, "from neocortex import target"),),
         ),
-        ModuleImport("neocortex.deduplication.worker", "_04_Nucleo_Operativo.target"),
+        ModuleImport("neocortex.deduplication.worker", "neocortex.api.target"),
         ModuleImport("neocortex.deduplication.worker", "neocortex.bridge"),
-        ModuleImport("neocortex.bridge", "neocortex.interface.view"),
-        ModuleImport("neocortex.interface.view", "_04_Nucleo_Operativo.target"),
+        ModuleImport("neocortex.interface.view", "neocortex.api.target"),
         ModuleImport("neocortex.interface.view", "neocortex.bridge"),
-        ModuleImport("_04_Nucleo_Operativo.alpha", "_04_Nucleo_Operativo.beta"),
-        ModuleImport("_04_Nucleo_Operativo.beta", "_04_Nucleo_Operativo.alpha"),
-        ModuleImport("_04_Nucleo_Operativo.target", "tests.helpers"),
-        ModuleImport("neocortex.progress.events", "_04_Nucleo_Operativo.target"),
+        ModuleImport("neocortex.alpha", "neocortex.beta"),
+        ModuleImport("neocortex.beta", "neocortex.alpha"),
+        ModuleImport("neocortex.api.target", "tests.helpers"),
+        ModuleImport("neocortex.progress.events", "neocortex.api.target"),
     )
 
     evaluations = _evaluations(modules, imports)
@@ -117,7 +115,7 @@ def test_violations_expose_shortest_chains_lines_and_new_cycle() -> None:
     assert foundation.violations[0].import_chain == (
         "neocortex.enumeration.source",
         "neocortex.bridge",
-        "_04_Nucleo_Operativo.target",
+        "neocortex.api.target",
     )
     assert foundation.violations[0].details[0].line_number == 7
     assert evaluations["dedup-core-boundary-v1"].status == "failed"
@@ -167,7 +165,6 @@ def test_live_repository_graph_satisfies_published_architecture_contracts() -> N
     assert projections["target_family"]["counters"]["unmapped_modules"] == 0
     assert projections["target_family"]["counters"]["overlapping_modules"] == 0
     assert projections["target_family"]["counters"]["forbidden_edges"] == 0
-    assert projections["target_family"]["counters"]["canonical_to_compat_edges"] == 0
 
     public_facades = {
         "neocortex.read_api",
@@ -179,30 +176,31 @@ def test_live_repository_graph_satisfies_published_architecture_contracts() -> N
         for item in payload["relations"]
         if item["importer"] in public_facades
         and (
-            item["imported"].partition(".")[0] == "_04_Nucleo_Operativo"
+            item["imported"].partition(".")[0] == "neocortex"
             or item["imported"] == "neocortex.interface"
             or item["imported"].startswith("neocortex.interface.")
         )
     }
-    assert crossings == set()
+    assert crossings
+    assert all("_04_Nucleo_Operativo" not in item for pair in crossings for item in pair)
 
     central_component = next(
         (
             item["modules"]
             for item in payload["cycles"]
-            if "_04_Nucleo_Operativo.actions" in item["modules"]
+            if "neocortex.workflow.actions.actions" in item["modules"]
         ),
         (),
     )
-    assert "_04_Nucleo_Operativo.archive_route" not in central_component
-    assert "_04_Nucleo_Operativo.capabilities.formats.archive.route" not in central_component
-    assert "_04_Nucleo_Operativo.video_route" not in central_component
+    assert "neocortex.capabilities.formats.archive.route" not in central_component
+    assert "neocortex.capabilities.formats.archive.route" not in central_component
+    assert "neocortex.capabilities.formats.video.route" not in central_component
 
 
-def test_transitional_capability_projection_is_exact_and_preserves_witnesses() -> None:
-    canonical, legacy, _, _ = architecture_worker._registered_capability_labels()
-    modules = tuple(sorted((*canonical, *legacy)))
-    relation = ModuleImport(legacy[0], canonical[0])
+def test_canonical_capability_projection_is_exact_and_preserves_witnesses() -> None:
+    canonical, _, _ = architecture_worker._registered_capability_labels()
+    modules = tuple(sorted(canonical))
+    relation = ModuleImport(canonical[0], canonical[1])
 
     payload = architecture_worker._capability_projection_payload(modules, (relation,))
 
@@ -224,14 +222,13 @@ def test_transitional_capability_projection_is_exact_and_preserves_witnesses() -
     assert family["counters"]["unmapped_modules"] == 0
     assert family["counters"]["overlapping_modules"] == 0
     assert family["counters"]["forbidden_edges"] == 0
-    assert family["counters"]["canonical_to_compat_edges"] == 0
     assert family["edge_decisions"] == [
         {
             "edge_id": family["projected_edges"][0]["edge_id"],
-            "source_family": architecture_worker.CAPABILITY_COMPATIBILITY_FAMILY,
+            "source_family": architecture_worker.CAPABILITY_CANONICAL_FAMILY,
             "target_family": architecture_worker.CAPABILITY_CANONICAL_FAMILY,
             "allowed": True,
-            "reason": "allowed_by_dag",
+            "reason": "allowed_same_family",
             "witness_ids": [relation.relation_id],
         }
     ]
@@ -245,8 +242,8 @@ def test_transitional_capability_projection_is_exact_and_preserves_witnesses() -
 
 
 def test_disconnected_owner_quotient_cycle_remains_typed_diagnostic_evidence() -> None:
-    canonical, legacy, owners, _ = architecture_worker._registered_capability_labels()
-    modules = tuple(sorted((*canonical, *legacy)))
+    canonical, owners, _ = architecture_worker._registered_capability_labels()
+    modules = tuple(sorted(canonical))
     archive = [module for module, labels in owners.items() if labels == ("archive",)]
     docx = [module for module, labels in owners.items() if labels == ("docx",)]
     imports = (

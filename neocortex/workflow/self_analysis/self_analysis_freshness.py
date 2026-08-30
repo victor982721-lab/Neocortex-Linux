@@ -1,15 +1,12 @@
 """Pure freshness aggregation for protected self-analysis evidence."""
 # region [00] Contexto del módulo
-# Módulo: _04_Nucleo_Operativo/self_analysis_freshness.py
+# Módulo: neocortex/self_analysis_freshness.py
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
 
 # region [01] Dependencias del módulo
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 from dataclasses import dataclass
 from typing import Literal
 # endregion [01]
@@ -92,6 +89,3 @@ __all__ = [
     "evaluate_self_analysis_freshness",
 ]
 # endregion [02]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.self_analysis_freshness")

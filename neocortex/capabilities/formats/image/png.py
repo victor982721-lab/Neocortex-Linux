@@ -1,9 +1,6 @@
 """Bounded structural PNG probe for independent corruption evidence."""
 
 from __future__ import annotations
-
-from . import preserve_legacy_module as _preserve_legacy_module
-
 import zlib
 from dataclasses import dataclass
 from pathlib import Path
@@ -259,6 +256,3 @@ def probe_png_structure(path: Path) -> PngProbeResult:
 
 
 # endregion [02]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.image_png")

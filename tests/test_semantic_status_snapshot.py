@@ -11,13 +11,13 @@ from pathlib import Path
 
 import pytest
 
-from _04_Nucleo_Operativo import semantic_status_service
-from _04_Nucleo_Operativo.semantic_models import (
+from neocortex.semantic import semantic_status_service
+from neocortex.semantic.semantic_models import (
     EmbeddingModality,
     EmbeddingModelSpec,
     EmbeddingRole,
 )
-from _04_Nucleo_Operativo.semantic_state import (
+from neocortex.semantic.semantic_state import (
     initialize_semantic_state,
     register_embedding_model,
     semantic_database,

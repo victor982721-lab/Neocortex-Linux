@@ -1,6 +1,6 @@
 """Bounded catalog retrieval for Knowledge Search.
 # region [00] Contexto del módulo
-# Módulo: _04_Nucleo_Operativo/knowledge_search_catalog.py
+# Módulo: neocortex/knowledge_search_catalog.py
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
@@ -12,9 +12,6 @@ module deliberately has no dependency on ``knowledge_search`` or
 
 # region [01] Dependencias del módulo
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import AbstractContextManager
 from types import TracebackType
@@ -559,6 +556,3 @@ def catalog_ranking(
 
 __all__ = ["catalog_identifiers", "catalog_ranking", "escape_like"]
 # endregion [02]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.knowledge_search_catalog")

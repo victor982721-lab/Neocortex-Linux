@@ -1,6 +1,6 @@
 """Explicit durable recording for read-only file-action reconciliations.
 # region [00] Contexto del módulo
-# Módulo: _04_Nucleo_Operativo/file_action_reconciliation_store.py
+# Módulo: neocortex/file_action_reconciliation_store.py
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
@@ -18,9 +18,6 @@ import time
 from dataclasses import dataclass
 
 import xxhash
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 from neocortex.workflow.actions.file_action_recovery import FileActionReconciliation
 # endregion [01]
 
@@ -543,5 +540,4 @@ __all__ = [
     "RecordedFileActionReconciliation",
     "record_file_action_reconciliation",
 ]
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.file_action_reconciliation_store")
 # endregion [02]

@@ -10,17 +10,17 @@ from pathlib import Path
 
 import pytest
 
-import _04_Nucleo_Operativo.document_catalog as catalog_module
-import _04_Nucleo_Operativo.document_catalog_schema as catalog_schema_module
-from _04_Nucleo_Operativo.document_catalog import (
+import neocortex.documents.document_catalog as catalog_module
+import neocortex.documents.document_catalog_schema as catalog_schema_module
+from neocortex.documents.document_catalog import (
     CATALOG_SCHEMA_VERSION,
     document_catalog_database,
     initialize_document_catalog,
 )
-from _04_Nucleo_Operativo.document_catalog_schema import (
+from neocortex.documents.document_catalog_schema import (
     document_catalog_schema_contract,
 )
-from _04_Nucleo_Operativo.sqlite_schema_contract import (
+from neocortex.sqlite_schema_contract import (
     SQLiteSchemaContractError,
     validate_sqlite_schema_contract,
 )

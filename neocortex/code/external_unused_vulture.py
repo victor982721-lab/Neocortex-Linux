@@ -7,9 +7,6 @@ source content.
 """
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import hashlib
 import importlib.metadata
 import json
@@ -445,6 +442,3 @@ __all__ = [
     "VultureUnusedExecution",
     "execute_vulture_unused",
 ]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.external_unused_vulture")

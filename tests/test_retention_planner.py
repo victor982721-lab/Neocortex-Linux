@@ -17,22 +17,22 @@ from types import SimpleNamespace
 import pytest
 
 from neocortex.deduplication.schema import initialize_inventory_schema
-from _04_Nucleo_Operativo import framework_schema
-from _04_Nucleo_Operativo import retention_planner as retention_module
-from _04_Nucleo_Operativo.cli_app import main as cli_main
-from _04_Nucleo_Operativo.document_catalog import (
+from neocortex.persistence import framework_schema
+from neocortex.workflow.retention import planner as retention_module
+from neocortex.api.cli.cli_app import main as cli_main
+from neocortex.documents.document_catalog import (
     document_catalog_database,
     initialize_document_catalog,
 )
-from _04_Nucleo_Operativo.framework_state_writer import FrameworkState
-from _04_Nucleo_Operativo.retention_planner import (
+from neocortex.persistence.framework_state_writer import FrameworkState
+from neocortex.workflow.retention.planner import (
     RetentionItem,
     RetentionPlan,
     RetentionPlanningCancelled,
     RetentionPolicy,
     plan_retention,
 )
-from _04_Nucleo_Operativo.review_task_contracts import (
+from neocortex.workflow.review.review_task_contracts import (
     CanonicalJsonObject,
     ReviewTaskActorKind,
     ReviewTaskCoverage,
@@ -43,17 +43,17 @@ from _04_Nucleo_Operativo.review_task_contracts import (
     ReviewTaskState,
     ReviewTaskTransition,
 )
-from _04_Nucleo_Operativo.review_task_repository import (
+from neocortex.workflow.review.review_task_repository import (
     append_review_task_event,
     list_current_review_tasks,
     publish_review_task_page,
 )
-from _04_Nucleo_Operativo.semantic_models import (
+from neocortex.semantic.semantic_models import (
     EmbeddingModality,
     EmbeddingModelSpec,
     EmbeddingRole,
 )
-from _04_Nucleo_Operativo.semantic_state import (
+from neocortex.semantic.semantic_state import (
     initialize_semantic_state,
     register_embedding_model,
     semantic_database,

@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 
-from _04_Nucleo_Operativo import sqlite_cancellation as legacy_cancellation
+from neocortex import sqlite_cancellation as legacy_cancellation
 from neocortex import sqlite_cancellation as shared_cancellation
 from neocortex import sqlite_integrity as integrity_module
 from neocortex.sqlite_backup import (

@@ -1,9 +1,6 @@
 """Bounded, explainable page-layout mapping for native and scanned PDFs."""
 
 from __future__ import annotations
-
-from . import preserve_legacy_module as _preserve_legacy_module
-
 import re
 from typing import Any
 
@@ -284,5 +281,3 @@ def map_page_layout(page: Any) -> dict:
 
 
 # endregion [05]
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.pdf_layout")

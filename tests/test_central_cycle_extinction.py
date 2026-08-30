@@ -18,14 +18,11 @@ from pathlib import Path
 
 import pytest
 
-import _04_Nucleo_Operativo as public_api
-from _04_Nucleo_Operativo import (
-    framework_state_writer,
-    models,
-    pdf_route,
-    pdf_route_models,
-    self_analysis,
-)
+from neocortex.api import public as public_api
+from neocortex.persistence import framework_state_writer
+from neocortex.runtime import models
+from neocortex.capabilities.formats.pdf import pdf_route, pdf_route_models
+from neocortex.workflow.self_analysis import self_analysis
 # endregion [01]
 
 # region [02] Implementación
@@ -37,8 +34,8 @@ STATE_WRITER_MODULE = "neocortex.persistence.framework_state_writer"
 MODELS_MODULE = "neocortex.runtime.models"
 PDF_ROUTE_MODULE = "neocortex.capabilities.formats.pdf.pdf_route"
 PDF_MODELS_MODULE = "neocortex.capabilities.formats.pdf.pdf_route_models"
-LEGACY_MODELS_MODULE = "_04_Nucleo_Operativo.models"
-LEGACY_PDF_MODELS_MODULE = "_04_Nucleo_Operativo.pdf_route_models"
+LEGACY_MODELS_MODULE = "neocortex.runtime.models"
+LEGACY_PDF_MODELS_MODULE = "neocortex.capabilities.formats.pdf.pdf_route_models"
 PDF_MODELS_PRODUCT_MODULE = "neocortex.capabilities.formats.pdf.pdf_route_models"
 
 SELF_ANALYSIS_CONFIG_FIELDS = {

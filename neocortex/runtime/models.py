@@ -6,9 +6,6 @@
 
 # region [01] Dependencias del módulo
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
@@ -390,11 +387,4 @@ class ActionSummary:
     empty_directories_trashed: int = 0
     empty_directory_skips: int = 0
     errors: int = 0
-
-
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.models")
-
-
 # endregion [02]

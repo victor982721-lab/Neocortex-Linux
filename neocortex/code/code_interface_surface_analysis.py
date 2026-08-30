@@ -6,9 +6,6 @@ code, and therefore never claim effective runtime reachability or behavior.
 """
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import ast
 import json
 import sqlite3
@@ -1562,6 +1559,3 @@ __all__ = [
     "parse_code_interface_surface_payload",
     "read_code_interface_surface_analysis",
 ]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.code_interface_surface_analysis")

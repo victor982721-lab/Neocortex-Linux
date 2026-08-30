@@ -8,10 +8,10 @@ from pathlib import Path
 
 import pytest
 
-import _04_Nucleo_Operativo.framework_schema as framework_schema
-import _04_Nucleo_Operativo.review_task_repository as review_task_repository
-from _04_Nucleo_Operativo.framework_schema import initialize_framework_schema
-from _04_Nucleo_Operativo.knowledge_contracts import (
+import neocortex.persistence.framework_schema as framework_schema
+import neocortex.workflow.review.review_task_repository as review_task_repository
+from neocortex.persistence.framework_schema import initialize_framework_schema
+from neocortex.knowledge.knowledge_contracts import (
     EvidenceMethod,
     EvidenceRef,
     PhysicalIdentityRef,
@@ -19,7 +19,7 @@ from _04_Nucleo_Operativo.knowledge_contracts import (
     RevisionRef,
     RevisionState,
 )
-from _04_Nucleo_Operativo.review_task_contracts import (
+from neocortex.workflow.review.review_task_contracts import (
     CanonicalJsonObject,
     ReviewTaskActorKind,
     ReviewTaskCoverage,
@@ -30,7 +30,7 @@ from _04_Nucleo_Operativo.review_task_contracts import (
     ReviewTaskState,
     ReviewTaskTransition,
 )
-from _04_Nucleo_Operativo.review_task_repository import (
+from neocortex.workflow.review.review_task_repository import (
     ReviewTaskCASConflict,
     ReviewTaskRepositoryError,
     append_review_task_event,

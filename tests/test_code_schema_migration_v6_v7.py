@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from _04_Nucleo_Operativo import code_schema
-from _04_Nucleo_Operativo.code_schema import initialize_code_state, validate_code_schema
+from neocortex.code import code_schema
+from neocortex.code.code_schema import initialize_code_state, validate_code_schema
 
 
 _RECEIPT_COLUMNS = code_schema._CODE_EXPERIMENT_RECEIPT_COLUMNS

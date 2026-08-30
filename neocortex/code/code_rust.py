@@ -1,9 +1,6 @@
 """Bounded Rust lexical analyzer with explicit non-parser provenance."""
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -521,6 +518,3 @@ class RustAnalyzer:
 
 
 __all__ = ["RustAnalyzer"]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.code_rust")

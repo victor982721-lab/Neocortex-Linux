@@ -1,15 +1,12 @@
 """Built-in electrical-sector vocabulary for document classification."""
 # region [00] Contexto del módulo
-# Módulo: _04_Nucleo_Operativo/document_taxonomy_vocabulary.py
+# Módulo: neocortex/document_taxonomy_vocabulary.py
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
 
 # region [01] Dependencias del módulo
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 from typing import Mapping
 
 from .document_taxonomy_models import (
@@ -1059,6 +1056,3 @@ def semantic_label_inventory() -> Mapping[str, tuple[str, ...]]:
         "activity": tuple(_ACTIVITY_PATTERNS),
     }
 # endregion [02]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.document_taxonomy_vocabulary")

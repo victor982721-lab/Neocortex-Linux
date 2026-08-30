@@ -43,20 +43,20 @@ class CliImportIsolationTests(unittest.TestCase):
             """
             import sys
 
-            from _04_Nucleo_Operativo.cli_parser import build_parser
-            from _04_Nucleo_Operativo.cli_validation import validate_arguments
+            from neocortex.api.cli.cli_parser import build_parser
+            from neocortex.api.cli.cli_validation import validate_arguments
 
             args = build_parser().parse_args(["--route", "pdf,image"])
             validate_arguments(args)
             forbidden = {
-                "_04_Nucleo_Operativo.route_registry",
-                "_04_Nucleo_Operativo.archive_route",
-                "_04_Nucleo_Operativo.capabilities.formats.archive.route",
-                "_04_Nucleo_Operativo.pdf_route",
-                "_04_Nucleo_Operativo.docx_route",
-                "_04_Nucleo_Operativo.capabilities.formats.docx.route",
-                "_04_Nucleo_Operativo.image_route",
-                "_04_Nucleo_Operativo.capabilities.formats.image.route",
+                "neocortex.runtime.orchestration.route_registry",
+                "neocortex.capabilities.formats.archive.route",
+                "neocortex.capabilities.formats.archive.route",
+                "neocortex.capabilities.formats.pdf.pdf_route",
+                "neocortex.capabilities.formats.docx.route",
+                "neocortex.capabilities.formats.docx.route",
+                "neocortex.capabilities.formats.image.route",
+                "neocortex.capabilities.formats.image.route",
             }
             loaded = forbidden.intersection(sys.modules)
             if loaded:
@@ -73,19 +73,19 @@ class CliImportIsolationTests(unittest.TestCase):
             """
             import sys
 
-            import _04_Nucleo_Operativo.cli_direct
+            import neocortex.api.cli.cli_direct
 
             forbidden = {
-                "_04_Nucleo_Operativo.route_registry",
-                "_04_Nucleo_Operativo.archive_route",
-                "_04_Nucleo_Operativo.capabilities.formats.archive.route",
-                "_04_Nucleo_Operativo.pdf_route",
-                "_04_Nucleo_Operativo.pdf_admin",
-                "_04_Nucleo_Operativo.pdf_derived_queries",
-                "_04_Nucleo_Operativo.docx_route",
-                "_04_Nucleo_Operativo.capabilities.formats.docx.route",
-                "_04_Nucleo_Operativo.image_route",
-                "_04_Nucleo_Operativo.capabilities.formats.image.route",
+                "neocortex.runtime.orchestration.route_registry",
+                "neocortex.capabilities.formats.archive.route",
+                "neocortex.capabilities.formats.archive.route",
+                "neocortex.capabilities.formats.pdf.pdf_route",
+                "neocortex.capabilities.formats.pdf.pdf_admin",
+                "neocortex.capabilities.formats.pdf.pdf_derived_queries",
+                "neocortex.capabilities.formats.docx.route",
+                "neocortex.capabilities.formats.docx.route",
+                "neocortex.capabilities.formats.image.route",
+                "neocortex.capabilities.formats.image.route",
             }
             loaded = forbidden.intersection(sys.modules)
             if loaded:
@@ -106,7 +106,7 @@ class CliImportIsolationTests(unittest.TestCase):
                 import sys
                 from pathlib import Path
 
-                from _04_Nucleo_Operativo.cli_app import main
+                from neocortex.api.cli.cli_app import main
 
                 state_directory = Path(os.environ["NEOCORTEX_TEST_STATE"])
                 result = main(
@@ -120,12 +120,12 @@ class CliImportIsolationTests(unittest.TestCase):
                 if result != 0:
                     raise SystemExit(f"unexpected Knowledge status: {result}")
                 forbidden = {
-                    "_04_Nucleo_Operativo.knowledge_search",
-                    "_04_Nucleo_Operativo.semantic_backends",
-                    "_04_Nucleo_Operativo.semantic_lexical",
-                    "_04_Nucleo_Operativo.semantic_search_service",
-                    "_04_Nucleo_Operativo.semantic_service",
-                    "_04_Nucleo_Operativo.semantic_sources",
+                    "neocortex.knowledge.knowledge_search",
+                    "neocortex.semantic.semantic_backends",
+                    "neocortex.semantic.semantic_lexical",
+                    "neocortex.semantic.semantic_search_service",
+                    "neocortex.semantic.semantic_service",
+                    "neocortex.semantic.semantic_sources",
                 }
                 loaded = forbidden.intersection(sys.modules)
                 loaded_pillow = {
@@ -162,7 +162,7 @@ class CliImportIsolationTests(unittest.TestCase):
                 import sys
                 from pathlib import Path
 
-                from _04_Nucleo_Operativo.cli_app import main
+                from neocortex.api.cli.cli_app import main
 
                 state_directory = Path(os.environ["NEOCORTEX_TEST_STATE"])
                 sys.argv = [
@@ -175,15 +175,15 @@ class CliImportIsolationTests(unittest.TestCase):
                 if main() != 2:
                     raise SystemExit("unexpected PDF search status")
                 forbidden = {
-                    "_04_Nucleo_Operativo.route_registry",
-                    "_04_Nucleo_Operativo.archive_route",
-                    "_04_Nucleo_Operativo.capabilities.formats.archive.route",
-                    "_04_Nucleo_Operativo.pdf_route",
-                    "_04_Nucleo_Operativo.pdf_admin",
-                    "_04_Nucleo_Operativo.docx_route",
-                    "_04_Nucleo_Operativo.capabilities.formats.docx.route",
-                    "_04_Nucleo_Operativo.image_route",
-                    "_04_Nucleo_Operativo.capabilities.formats.image.route",
+                    "neocortex.runtime.orchestration.route_registry",
+                    "neocortex.capabilities.formats.archive.route",
+                    "neocortex.capabilities.formats.archive.route",
+                    "neocortex.capabilities.formats.pdf.pdf_route",
+                    "neocortex.capabilities.formats.pdf.pdf_admin",
+                    "neocortex.capabilities.formats.docx.route",
+                    "neocortex.capabilities.formats.docx.route",
+                    "neocortex.capabilities.formats.image.route",
+                    "neocortex.capabilities.formats.image.route",
                 }
                 loaded = forbidden.intersection(sys.modules)
                 if loaded:
@@ -207,7 +207,7 @@ class CliImportIsolationTests(unittest.TestCase):
                 import sys
                 from pathlib import Path
 
-                from _04_Nucleo_Operativo.cli_app import main
+                from neocortex.api.cli.cli_app import main
 
                 state_directory = Path(os.environ["NEOCORTEX_TEST_STATE"])
                 sys.argv = [
@@ -220,14 +220,14 @@ class CliImportIsolationTests(unittest.TestCase):
                 if main() != 2:
                     raise SystemExit("unexpected DOCX search status")
                 forbidden = {
-                    "_04_Nucleo_Operativo.route_registry",
-                    "_04_Nucleo_Operativo.archive_route",
-                    "_04_Nucleo_Operativo.capabilities.formats.archive.route",
-                    "_04_Nucleo_Operativo.pdf_route",
-                    "_04_Nucleo_Operativo.pdf_admin",
-                    "_04_Nucleo_Operativo.pdf_derived_queries",
-                    "_04_Nucleo_Operativo.image_route",
-                    "_04_Nucleo_Operativo.capabilities.formats.image.route",
+                    "neocortex.runtime.orchestration.route_registry",
+                    "neocortex.capabilities.formats.archive.route",
+                    "neocortex.capabilities.formats.archive.route",
+                    "neocortex.capabilities.formats.pdf.pdf_route",
+                    "neocortex.capabilities.formats.pdf.pdf_admin",
+                    "neocortex.capabilities.formats.pdf.pdf_derived_queries",
+                    "neocortex.capabilities.formats.image.route",
+                    "neocortex.capabilities.formats.image.route",
                 }
                 loaded = forbidden.intersection(sys.modules)
                 if loaded:
@@ -251,7 +251,7 @@ class CliImportIsolationTests(unittest.TestCase):
 
 class RouteSelectionCompatibilityTests(unittest.TestCase):
     def test_heavy_registry_reexports_the_stable_selection_contract(self) -> None:
-        from _04_Nucleo_Operativo import route_registry, route_selection
+        from neocortex.runtime.orchestration import route_registry, route_selection
 
         self.assertIs(
             route_registry.BUILTIN_ROUTE_ORDER,

@@ -18,11 +18,11 @@ from unittest.mock import patch
 
 import pytest
 
-from _04_Nucleo_Operativo import cli_direct
-from _04_Nucleo_Operativo.cli_app import main
-from _04_Nucleo_Operativo.cli_operations import DIRECT_OPERATIONS
-from _04_Nucleo_Operativo.cli_parser import build_parser
-from _04_Nucleo_Operativo.cli_validation import validate_arguments
+from neocortex.api.cli import cli_direct
+from neocortex.api.cli.cli_app import main
+from neocortex.api.cli.cli_operations import DIRECT_OPERATIONS
+from neocortex.api.cli.cli_parser import build_parser
+from neocortex.api.cli.cli_validation import validate_arguments
 # endregion [01]
 
 # region [02] Implementación
@@ -101,8 +101,8 @@ def test_family_handlers_remain_lazy_and_isolated_in_a_fresh_process() -> None:
                 if "neocortex.api.cli.cli_audio" not in sys.modules:
                     raise SystemExit("audio handler was not loaded")
                 if {
-                    "_04_Nucleo_Operativo.cli_direct",
-                    "_04_Nucleo_Operativo.cli_semantic",
+                    "neocortex.api.cli.cli_direct",
+                    "neocortex.api.cli.cli_semantic",
                 }.intersection(sys.modules):
                     raise SystemExit("audio loading crossed a family boundary")
                 """
@@ -119,25 +119,25 @@ def test_family_handlers_remain_lazy_and_isolated_in_a_fresh_process() -> None:
 
 
 @pytest.mark.parametrize(
-    ("legacy_name", "module_name"),
+    ("handler_name", "module_name"),
     tuple(
         (operation.handler_name, operation.module_name)
         for operation in DIRECT_OPERATIONS
         if operation.module_name in {".cli_audio", ".cli_semantic"}
     ),
 )
-def test_legacy_cli_direct_imports_delegate_to_family_handler(
-    legacy_name: str,
+def test_cli_direct_imports_delegate_to_family_handler(
+    handler_name: str,
     module_name: str,
 ) -> None:
-    family = importlib.import_module(module_name, package="_04_Nucleo_Operativo")
-    legacy = getattr(cli_direct, legacy_name)
+    family = importlib.import_module(module_name, package="neocortex.api.cli")
+    handler = getattr(cli_direct, handler_name)
     args = argparse.Namespace()
 
-    with patch.object(family, legacy_name, return_value=47) as handler:
-        assert legacy(args) == 47
+    with patch.object(family, handler_name, return_value=47) as mocked:
+        assert handler(args) == 47
 
-    handler.assert_called_once_with(args)
+    mocked.assert_called_once_with(args)
 
 
 @pytest.mark.parametrize("direct_arguments", FAMILY_DIRECT_ARGUMENTS)

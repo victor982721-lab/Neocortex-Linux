@@ -11,8 +11,6 @@ import sys
 import textwrap
 from pathlib import Path
 
-import pytest
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PRODUCT_ROOT = "neocortex.capabilities.formats.image"
 
@@ -33,24 +31,6 @@ IMAGE_MODULES = (
     "state",
     "visual",
 )
-LEGACY_ALIASES = {
-    f"_04_Nucleo_Operativo.image_{name}": (
-        f"_04_Nucleo_Operativo.capabilities.formats.image.{name}"
-    )
-    for name in IMAGE_MODULES
-}
-
-
-def test_legacy_image_modules_are_real_canonical_aliases() -> None:
-    for legacy_name, canonical_name in LEGACY_ALIASES.items():
-        legacy = importlib.import_module(legacy_name)
-        canonical = importlib.import_module(canonical_name)
-
-        assert legacy is canonical
-        assert sys.modules[legacy_name] is canonical
-        assert sys.modules[canonical_name] is canonical
-
-
 def test_image_implementation_lives_under_the_product_namespace() -> None:
     product_root = PROJECT_ROOT / "neocortex" / "capabilities" / "formats" / "image"
     for name in IMAGE_MODULES:
@@ -73,14 +53,14 @@ def test_image_implementation_lives_under_the_product_namespace() -> None:
 
 def test_image_parent_packages_remain_import_light() -> None:
     script = textwrap.dedent(
-        f"""
+        """
         import sys
 
-        import _04_Nucleo_Operativo.capabilities
-        import _04_Nucleo_Operativo.capabilities.formats
-        import _04_Nucleo_Operativo.capabilities.formats.image
+        import neocortex.capabilities
+        import neocortex.capabilities.formats
+        import neocortex.capabilities.formats.image
 
-        forbidden = {set(LEGACY_ALIASES) | set(LEGACY_ALIASES.values())!r}
+        forbidden = set()
         loaded = sorted(forbidden.intersection(sys.modules))
         loaded_pillow = sorted(
             name for name in sys.modules if name == "PIL" or name.startswith("PIL.")
@@ -108,15 +88,20 @@ def test_image_parent_packages_remain_import_light() -> None:
     assert completed.stdout.strip() == "IMAGE_PARENTS_IMPORT_LIGHT"
 
 
-def test_canonical_image_modules_do_not_route_through_legacy_aliases() -> None:
+def test_canonical_image_modules_do_not_import_outside_their_tree() -> None:
     script = textwrap.dedent(
         f"""
         import importlib
         import sys
 
-        for module_name in {tuple(LEGACY_ALIASES.values())!r}:
+        for module_name in {tuple(f"{PRODUCT_ROOT}.{name}" for name in IMAGE_MODULES)!r}:
             importlib.import_module(module_name)
-        loaded = sorted(set({tuple(LEGACY_ALIASES)!r}).intersection(sys.modules))
+        loaded = sorted(
+            name
+            for name in sys.modules
+            if name == "_04_Nucleo_Operativo"
+            or name.startswith("_04_Nucleo_Operativo.")
+        )
         if loaded:
             raise SystemExit("canonical Image import used legacy aliases: " + ",".join(loaded))
         print("IMAGE_CANONICAL_IMPORTS_ONLY")
@@ -138,10 +123,10 @@ def test_canonical_image_modules_do_not_route_through_legacy_aliases() -> None:
     assert completed.stdout.strip() == "IMAGE_CANONICAL_IMPORTS_ONLY"
 
 
-def test_image_definitions_keep_historical_pickle_fqns() -> None:
+def test_image_definitions_are_owned_by_canonical_modules() -> None:
     definitions_checked = 0
-    for legacy_name, canonical_name in LEGACY_ALIASES.items():
-        module = importlib.import_module(canonical_name)
+    for name in IMAGE_MODULES:
+        module = importlib.import_module(f"{PRODUCT_ROOT}.{name}")
         module_path = Path(module.__file__ or "")
         tree = ast.parse(module_path.read_text(encoding="utf-8"), filename=str(module_path))
         defined_names = tuple(
@@ -155,30 +140,17 @@ def test_image_definitions_keep_historical_pickle_fqns() -> None:
         definitions_checked += len(defined_names)
         for name in defined_names:
             symbol = getattr(module, name)
-            assert symbol.__module__ == legacy_name
+            assert symbol.__module__ == module.__name__
             assert pickle.loads(pickle.dumps(symbol, protocol=5)) is symbol
     assert definitions_checked > 0
 
 
-def test_legacy_monkeypatch_reaches_each_canonical_image_module(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    for legacy_name, canonical_name in LEGACY_ALIASES.items():
-        legacy = importlib.import_module(legacy_name)
-        canonical = importlib.import_module(canonical_name)
-        sentinel = object()
-
-        monkeypatch.setattr(legacy, "_namespace_migration_probe", sentinel, raising=False)
-
-        assert vars(canonical)["_namespace_migration_probe"] is sentinel
-
-
 def test_image_schema_and_processing_contracts_remain_stable() -> None:
     route = importlib.import_module(
-        "_04_Nucleo_Operativo.capabilities.formats.image.route"
+        "neocortex.capabilities.formats.image.route"
     )
     state = importlib.import_module(
-        "_04_Nucleo_Operativo.capabilities.formats.image.state"
+        "neocortex.capabilities.formats.image.state"
     )
 
     assert state.SCHEMA_VERSION == 5

@@ -35,14 +35,10 @@ MODULE_NAMES = (
 )
 
 
-def test_legacy_pdf_modules_are_exact_product_aliases() -> None:
+def test_pdf_modules_are_owned_by_the_canonical_tree() -> None:
     for name in MODULE_NAMES:
-        legacy_name = f"_04_Nucleo_Operativo.{name}"
-        legacy = importlib.import_module(legacy_name)
         canonical = importlib.import_module(f"{PRODUCT_ROOT}.{name}")
 
-        assert legacy is canonical
-        assert sys.modules[legacy_name] is canonical
         assert Path(canonical.__file__).resolve().is_relative_to(
             PROJECT_ROOT / "neocortex" / "capabilities" / "formats" / "pdf"
         )
@@ -116,19 +112,5 @@ def test_pdf_parent_package_remains_import_light() -> None:
 def test_pdf_symbols_keep_historical_pickle_fqns(module_name: str, symbol_name: str) -> None:
     module = importlib.import_module(f"{PRODUCT_ROOT}.{module_name}")
     symbol = getattr(module, symbol_name)
-    historical = f"_04_Nucleo_Operativo.{module_name}"
-
-    assert symbol.__module__ == historical
+    assert symbol.__module__ == module.__name__
     assert pickle.loads(pickle.dumps(symbol, protocol=5)) is symbol
-
-
-def test_legacy_pdf_monkeypatch_reaches_canonical_route_globals(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    legacy = importlib.import_module("_04_Nucleo_Operativo.pdf_route")
-    canonical = importlib.import_module(f"{PRODUCT_ROOT}.pdf_route")
-    marker = object()
-
-    monkeypatch.setattr(legacy, "binary_fingerprint", marker)
-
-    assert canonical.binary_fingerprint is marker

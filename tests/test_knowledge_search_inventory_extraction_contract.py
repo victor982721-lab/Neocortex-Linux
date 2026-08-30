@@ -21,8 +21,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from _04_Nucleo_Operativo import knowledge_search
-from _04_Nucleo_Operativo.knowledge_contracts import (
+from neocortex.knowledge import knowledge_search
+from neocortex.knowledge.knowledge_contracts import (
     EvidenceMethod,
     EvidenceRef,
     KnowledgeSnapshot,
@@ -35,21 +35,22 @@ from _04_Nucleo_Operativo.knowledge_contracts import (
     RevisionRef,
     RevisionState,
 )
-from _04_Nucleo_Operativo.knowledge_search import (
+from neocortex.knowledge.knowledge_search import (
     KnowledgeCandidate,
 )
-from _04_Nucleo_Operativo.knowledge_planner import (
+from neocortex.knowledge.knowledge_planner import (
     KnowledgeQuery,
     plan_knowledge_query,
 )
-from _04_Nucleo_Operativo.knowledge_snapshot import KnowledgeStatePaths
+from neocortex.knowledge.knowledge_snapshot import KnowledgeStatePaths
 # endregion [01]
 
 # region [02] Implementación
 
 
-PUBLIC_MODULE = "_04_Nucleo_Operativo.knowledge_search"
-INVENTORY_MODULE = "_04_Nucleo_Operativo.knowledge_search_inventory"
+PUBLIC_MODULE = "neocortex.knowledge.knowledge_search"
+CONTRACT_MODULE = "neocortex.knowledge.knowledge_search_contracts"
+INVENTORY_MODULE = "neocortex.knowledge.knowledge_search_inventory"
 EXPECTED_SIGNATURES = {
     "_open_direct_readonly_sqlite": "(path: 'Path') -> 'sqlite3.Connection'",
     "_decimal_identity_value": "(value: 'object') -> 'int'",
@@ -312,7 +313,7 @@ def test_inventory_extraction_module_exists_without_a_facade_cycle() -> None:
 def test_inventory_helper_and_facade_support_both_cold_import_orders(
     module_order: tuple[str, str],
 ) -> None:
-    repository = Path(knowledge_search.__file__).resolve().parents[1]
+    repository = Path(knowledge_search.__file__).resolve().parents[2]
     helper_exports = tuple(name.removeprefix("_") for name in INVENTORY_DELEGATES)
     script = textwrap.dedent(
         f"""

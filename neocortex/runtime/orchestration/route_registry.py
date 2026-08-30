@@ -2,15 +2,9 @@
 
 from __future__ import annotations
 
-import sys
 from dataclasses import asdict, dataclass, is_dataclass, replace
-from importlib import import_module
 from pathlib import Path
 from typing import Any, Callable, Literal, Mapping, TYPE_CHECKING
-from warnings import warn
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 from neocortex.runtime.orchestration.route_selection import (
     BUILTIN_ROUTE_ORDER as BUILTIN_ROUTE_ORDER,
 )
@@ -80,58 +74,7 @@ class RouteAdapter:
 # endregion [01]
 
 
-# region [02] Deferred compatibility exports
-
-
-_DEFERRED_ROUTE_EXPORTS = {
-    "AudioRoute": ("neocortex.capabilities.formats.audio.route", "AudioRoute"),
-    "AudioRouteConfig": ("neocortex.capabilities.formats.audio.models", "AudioRouteConfig"),
-    "ArchiveRoute": ("neocortex.capabilities.formats.archive.route", "ArchiveRoute"),
-    "ArchiveRouteConfig": ("neocortex.capabilities.formats.archive.route", "ArchiveRouteConfig"),
-    "CodeRoute": ("_04_Nucleo_Operativo.code_route", "CodeRoute"),
-    "CodeRouteConfig": ("neocortex.code.code_contracts", "CodeRouteConfig"),
-    "PdfRoute": ("neocortex.capabilities.formats.pdf.pdf_route", "PdfRoute"),
-    "PdfRouteConfig": ("neocortex.capabilities.formats.pdf.pdf_route_models", "PdfRouteConfig"),
-    "DocxRoute": ("neocortex.capabilities.formats.docx.route", "DocxRoute"),
-    "DocxRouteConfig": ("neocortex.capabilities.formats.docx.route", "DocxRouteConfig"),
-    "ImageRoute": ("neocortex.capabilities.formats.image.route", "ImageRoute"),
-    "ImageRouteConfig": ("neocortex.capabilities.formats.image.route", "ImageRouteConfig"),
-    "OfficeRoute": ("neocortex.capabilities.formats.office.route", "OfficeRoute"),
-    "OfficeRouteConfig": ("neocortex.capabilities.formats.office.route", "OfficeRouteConfig"),
-    "TextRoute": ("neocortex.capabilities.formats.text.text_route", "TextRoute"),
-    "TextRouteConfig": ("neocortex.capabilities.formats.text.text_route", "TextRouteConfig"),
-    "VideoRoute": ("neocortex.capabilities.formats.video.route", "VideoRoute"),
-    "VideoRouteConfig": ("neocortex.capabilities.formats.video.route", "VideoRouteConfig"),
-}
-
-
-def __getattr__(name: str) -> Any:
-    """Resolve historical route-registry attributes without eager imports."""
-
-    target = _DEFERRED_ROUTE_EXPORTS.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    warn(
-        f"route_registry.{name} is deprecated; import {name} from its route module",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-    module_name, attribute_name = target
-    value = getattr(import_module(module_name, __package__), attribute_name)
-    globals()[name] = value
-    return value
-
-
-def __dir__() -> list[str]:
-    """Expose deferred compatibility names to interactive introspection."""
-
-    return sorted({*globals(), *_DEFERRED_ROUTE_EXPORTS})
-
-
-# endregion [02]
-
-
-# region [03] Built-in route adapters
+# region [02] Built-in route adapters
 
 
 def pdf_route_config_from_framework(config: "FrameworkConfig") -> "PdfRouteConfig":
@@ -146,17 +89,11 @@ def pdf_route_config_from_framework(config: "FrameworkConfig") -> "PdfRouteConfi
 
 def _run_pdf(context: RouteExecutionContext) -> object:
     from neocortex.deduplication import DedupIndex
-
-    compatibility_module = sys.modules.get("_04_Nucleo_Operativo.pdf_route")
-    if compatibility_module is None:
-        from neocortex.capabilities.formats.pdf.pdf_route import PdfRoute as _PdfRoute
-        route_type: Any = _PdfRoute
-    else:
-        route_type = compatibility_module.__dict__["PdfRoute"]
+    from neocortex.capabilities.formats.pdf.pdf_route import PdfRoute
 
     config = context.config
     with DedupIndex(config.dedup_database) as dedup_index:
-        summary = route_type(
+        summary = PdfRoute(
             pdf_route_config_from_framework(config),
             dedup_index,
             context.framework_state,
@@ -191,14 +128,7 @@ def _run_image(context: RouteExecutionContext) -> object:
 
     from neocortex.runtime.control.global_resources import CoordinatedMemoryGate
 
-    compatibility_module = sys.modules.get(
-        "_04_Nucleo_Operativo.image_route"
-    ) or sys.modules.get("_04_Nucleo_Operativo.capabilities.formats.image.route")
-    if compatibility_module is None:
-        from neocortex.capabilities.formats.image.route import ImageRoute as _ImageRoute
-        route_type: Any = _ImageRoute
-    else:
-        route_type = compatibility_module.__dict__["ImageRoute"]
+    from neocortex.capabilities.formats.image.route import ImageRoute
 
     config = context.config
     gate = (
@@ -207,7 +137,7 @@ def _run_image(context: RouteExecutionContext) -> object:
         else CoordinatedMemoryGate(context.resource_coordinator, "image")
     )
     with DedupIndex(config.dedup_database) as dedup_index:
-        return route_type(
+        return ImageRoute(
             image_route_config_from_framework(config, root=context.root),
             context.framework_state,
             context.run_id,
@@ -229,12 +159,7 @@ def docx_route_config_from_framework(config: "FrameworkConfig") -> "DocxRouteCon
 
 
 def _run_docx(context: RouteExecutionContext) -> object:
-    compatibility_module = sys.modules.get("_04_Nucleo_Operativo.docx_route")
-    if compatibility_module is None:
-        from neocortex.capabilities.formats.docx.route import DocxRoute as _DocxRoute
-        route_type: Any = _DocxRoute
-    else:
-        route_type = compatibility_module.__dict__["DocxRoute"]
+    from neocortex.capabilities.formats.docx.route import DocxRoute
     from neocortex.runtime.control.global_resources import CoordinatedMemoryGate
 
     config = context.config
@@ -243,7 +168,7 @@ def _run_docx(context: RouteExecutionContext) -> object:
         if context.resource_coordinator is None
         else CoordinatedMemoryGate(context.resource_coordinator, "docx")
     )
-    summary = route_type(
+    summary = DocxRoute(
         docx_route_config_from_framework(config),
         context.framework_state,
         context.run_id,
@@ -271,15 +196,7 @@ def office_route_config_from_framework(
 
 def _run_office(context: RouteExecutionContext) -> object:
     from neocortex.runtime.control.global_resources import CoordinatedMemoryGate
-
-    compatibility_module = sys.modules.get(
-        "_04_Nucleo_Operativo.office_route"
-    ) or sys.modules.get("_04_Nucleo_Operativo.capabilities.formats.office.route")
-    if compatibility_module is None:
-        from neocortex.capabilities.formats.office.route import OfficeRoute as _OfficeRoute
-        route_type: Any = _OfficeRoute
-    else:
-        route_type = compatibility_module.__dict__["OfficeRoute"]
+    from neocortex.capabilities.formats.office.route import OfficeRoute
 
     config = context.config
     gate = (
@@ -287,7 +204,7 @@ def _run_office(context: RouteExecutionContext) -> object:
         if context.resource_coordinator is None
         else CoordinatedMemoryGate(context.resource_coordinator, "office")
     )
-    summary = route_type(
+    summary = OfficeRoute(
         office_route_config_from_framework(config),
         context.framework_state,
         context.run_id,
@@ -314,19 +231,14 @@ def archive_route_config_from_framework(
 
 
 def _run_archive(context: RouteExecutionContext) -> object:
-    compatibility_module = sys.modules.get("_04_Nucleo_Operativo.archive_route")
-    if compatibility_module is None:
-        from neocortex.capabilities.formats.archive.route import ArchiveRoute as _ArchiveRoute
-        route_type: Any = _ArchiveRoute
-    else:
-        route_type = compatibility_module.__dict__["ArchiveRoute"]
+    from neocortex.capabilities.formats.archive.route import ArchiveRoute
 
     gate = None
     if context.resource_coordinator is not None:
         from neocortex.runtime.control.global_resources import CoordinatedMemoryGate
 
         gate = CoordinatedMemoryGate(context.resource_coordinator, "archive")
-    return route_type(
+    return ArchiveRoute(
         archive_route_config_from_framework(context.config),
         context.framework_state,
         context.run_id,
@@ -348,20 +260,14 @@ def text_route_config_from_framework(config: "FrameworkConfig") -> "TextRouteCon
 
 def _run_text(context: RouteExecutionContext) -> object:
     from neocortex.runtime.control.global_resources import CoordinatedMemoryGate
-
-    compatibility_module = sys.modules.get("_04_Nucleo_Operativo.text_route")
-    if compatibility_module is None:
-        from neocortex.capabilities.formats.text.text_route import TextRoute as _TextRoute
-        route_type: Any = _TextRoute
-    else:
-        route_type = compatibility_module.__dict__["TextRoute"]
+    from neocortex.capabilities.formats.text.text_route import TextRoute
 
     gate = (
         None
         if context.resource_coordinator is None
         else CoordinatedMemoryGate(context.resource_coordinator, "text")
     )
-    summary = route_type(
+    summary = TextRoute(
         text_route_config_from_framework(context.config),
         context.framework_state,
         context.run_id,
@@ -386,14 +292,7 @@ def audio_route_config_from_framework(config: "FrameworkConfig") -> "AudioRouteC
 
 
 def _run_audio(context: RouteExecutionContext) -> object:
-    compatibility_module = sys.modules.get(
-        "_04_Nucleo_Operativo.audio_route"
-    ) or sys.modules.get("_04_Nucleo_Operativo.capabilities.formats.audio.route")
-    if compatibility_module is None:
-        from neocortex.capabilities.formats.audio.route import AudioRoute as _AudioRoute
-        route_type: Any = _AudioRoute
-    else:
-        route_type = compatibility_module.__dict__["AudioRoute"]
+    from neocortex.capabilities.formats.audio.route import AudioRoute
     from neocortex.runtime.control.global_resources import CoordinatedMemoryGate
 
     config = context.config
@@ -402,7 +301,7 @@ def _run_audio(context: RouteExecutionContext) -> object:
         if context.resource_coordinator is None
         else CoordinatedMemoryGate(context.resource_coordinator, "audio")
     )
-    summary = route_type(
+    summary = AudioRoute(
         audio_route_config_from_framework(config),
         context.framework_state,
         context.run_id,
@@ -432,22 +331,14 @@ def video_route_config_from_framework(
 
 def _run_video(context: RouteExecutionContext) -> object:
     from neocortex.runtime.control.global_resources import CoordinatedMemoryGate
-
-    compatibility_module = sys.modules.get(
-        "_04_Nucleo_Operativo.video_route"
-    ) or sys.modules.get("_04_Nucleo_Operativo.capabilities.formats.video.route")
-    if compatibility_module is None:
-        from neocortex.capabilities.formats.video.route import VideoRoute as _VideoRoute
-        route_type: Any = _VideoRoute
-    else:
-        route_type = compatibility_module.__dict__["VideoRoute"]
+    from neocortex.capabilities.formats.video.route import VideoRoute
 
     gate = (
         None
         if context.resource_coordinator is None
         else CoordinatedMemoryGate(context.resource_coordinator, "video")
     )
-    return route_type(
+    return VideoRoute(
         video_route_config_from_framework(context.config, root=context.root),
         context.framework_state,
         context.run_id,
@@ -458,7 +349,7 @@ def _run_video(context: RouteExecutionContext) -> object:
 
 
 def code_route_config_from_framework(config: "FrameworkConfig") -> "CodeRouteConfig":
-    """Preserve the historical projection name at the route-registry boundary."""
+    """Project application values into the canonical Code route contract."""
 
     from neocortex.runtime.config.application_config_projections import (
         code_route_config_from_application,
@@ -593,9 +484,4 @@ def builtin_route_registry() -> dict[str, RouteAdapter]:
         RouteAdapter("code", _run_code, input_source="inventory_snapshot"),
     )
     return {adapter.name: adapter for adapter in adapters}
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.route_registry")
-
-
-# endregion [03]
+# endregion [02]

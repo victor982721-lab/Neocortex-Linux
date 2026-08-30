@@ -44,9 +44,6 @@ from neocortex.runtime.control.watcher_life_lease import (
     WatcherLifeLease,
     WatcherLifeLeaseConflict,
 )
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
-
 # region [01] Public configuration and observability contracts
 
 BootstrapMode = Literal["if-needed", "always", "never"]
@@ -921,4 +918,3 @@ __all__ = [
     "WatcherRunSummary",
     "WatcherSummary",
 ]
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.watcher")

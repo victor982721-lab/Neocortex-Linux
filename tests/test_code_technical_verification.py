@@ -7,49 +7,49 @@ from pathlib import Path
 
 import pytest
 
-import _04_Nucleo_Operativo.code_technical_verification as technical_verification_module
-from _04_Nucleo_Operativo.code_architecture_questions import architecture_questions
-from _04_Nucleo_Operativo.code_experiment_planner import plan_code_experiments
-from _04_Nucleo_Operativo.code_experiment_store import (
+import neocortex.code.code_technical_verification as technical_verification_module
+from neocortex.code.code_architecture_questions import architecture_questions
+from neocortex.code.code_experiment_planner import plan_code_experiments
+from neocortex.code.code_experiment_store import (
     apply_code_experiment_receipts,
     read_code_experiment_receipts,
     record_code_experiment_receipt,
 )
-from _04_Nucleo_Operativo.code_change_evolution_analysis import (
+from neocortex.code.code_change_evolution_analysis import (
     analyze_code_change_evolution,
     expected_code_change_evolution_questions,
 )
-from _04_Nucleo_Operativo.code_interface_surface_analysis import (
+from neocortex.code.code_interface_surface_analysis import (
     CLI_SURFACE_QUESTION,
     interface_surface_questions,
 )
-from _04_Nucleo_Operativo.code_knowledge_asset_health_analysis import (
+from neocortex.code.code_knowledge_asset_health_analysis import (
     KNOWLEDGE_ASSET_HEALTH_QUESTION,
     knowledge_asset_health_questions,
 )
-from _04_Nucleo_Operativo.code_knowledge_pdf_asset_health_analysis import (
+from neocortex.code.code_knowledge_pdf_asset_health_analysis import (
     KNOWLEDGE_PDF_ASSET_HEALTH_QUESTION,
     knowledge_pdf_asset_health_questions,
 )
-from _04_Nucleo_Operativo.code_state_projection_analysis import (
+from neocortex.code.code_state_projection_analysis import (
     analyze_text_semantic_projection,
     state_projection_questions,
 )
-from _04_Nucleo_Operativo.code_retention_analysis import (
+from neocortex.code.code_retention_analysis import (
     analyze_code_retention,
     retention_questions,
 )
-from _04_Nucleo_Operativo.code_review_task_analysis import (
+from neocortex.code.code_review_task_analysis import (
     FRAMEWORK_REVIEW_TASK_PROTOCOL_QUESTION_ID,
     framework_review_task_questions,
 )
-from _04_Nucleo_Operativo.code_security_dependency_questions import (
+from neocortex.code.code_security_dependency_questions import (
     DEPENDENCY_EVIDENCE_QUESTION,
     SECURITY_EVIDENCE_QUESTION,
     security_dependency_questions,
 )
-from _04_Nucleo_Operativo.code_supply_chain_analysis import read_code_supply_chain_analysis
-from _04_Nucleo_Operativo.code_technical_verification import (
+from neocortex.code.code_supply_chain_analysis import read_code_supply_chain_analysis
+from neocortex.code.code_technical_verification import (
     build_code_technical_verification,
     parse_code_technical_verification_payload,
 )

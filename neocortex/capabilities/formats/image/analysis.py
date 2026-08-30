@@ -5,9 +5,6 @@ evidence and decision policy evolve independently.
 """
 
 from __future__ import annotations
-
-from . import preserve_legacy_module as _preserve_legacy_module
-
 from dataclasses import replace
 from pathlib import Path
 
@@ -160,6 +157,3 @@ __all__ = [
     "textual_context",
     "verify_document_text",
 ]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.image_analysis")

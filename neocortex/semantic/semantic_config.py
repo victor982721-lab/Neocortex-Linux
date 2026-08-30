@@ -1,9 +1,6 @@
 """Pinned semantic model contracts and resource defaults for Neocortex."""
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import os
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -331,6 +328,3 @@ def default_semantic_threads() -> int:
 
 
 # endregion [04]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.semantic_config")

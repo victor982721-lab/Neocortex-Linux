@@ -8,9 +8,6 @@ decision-level claims that require the registered isolated experiment.
 """
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from importlib import import_module
@@ -87,7 +84,7 @@ _RESOURCE_ID_SCHEME = "resource:file:{volume_id}:{file_id}:{birthtime_ns}"
 _IDENTITY_COMPONENTS = ("volume_id", "file_id", "birthtime_ns")
 _PUBLIC_READ_MODULE = "neocortex.read_api"
 _PUBLIC_READ_SYMBOL = "asset_health_payload"
-_SERVICE_MODULE = "_04_Nucleo_Operativo.knowledge_asset_health"
+_SERVICE_MODULE = "neocortex.knowledge.knowledge_asset_health"
 _SERVICE_SYMBOL = "inspect_knowledge_asset_health"
 
 _LIMITATIONS = (
@@ -163,7 +160,7 @@ def _required_text(label: str, value: object, *, maximum: int = 1_024) -> str:
 
 
 def _live_contract_projection() -> dict[str, object]:
-    owner_matches = matching_logical_owners("_04_Nucleo_Operativo.pdf_route")
+    owner_matches = matching_logical_owners("neocortex.capabilities.formats.pdf.pdf_route")
     owner_specs = tuple(item for item in LOGICAL_OWNER_SPECS if item.owner_id == _LOGICAL_OWNER_ID)
     if (
         owner_matches != (_LOGICAL_OWNER_ID,)
@@ -520,6 +517,3 @@ __all__ = [
     "build_knowledge_pdf_asset_health_contract_analysis",
     "knowledge_pdf_asset_health_questions",
 ]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.code_knowledge_pdf_asset_health_analysis")

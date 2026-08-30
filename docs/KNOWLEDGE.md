@@ -49,9 +49,10 @@ estado ya producido por inventario, extractores, FTS, catálogo, semantic y
 código. No es una segunda indexación ni un RAG que trate chunks o embeddings
 como verdad primaria:
 
-El estado canónico que consulta está bajo `%LOCALAPPDATA%\Neocortex\state`,
-separado de la fuente `%USERPROFILE%\Neocortex\Repository` y de los runtimes
-versionados bajo `%LOCALAPPDATA%\Programs\Neocortex\versions`.
+El estado canónico que consulta está bajo
+`${XDG_STATE_HOME:-~/.local/state}/Neocortex/state`, separado de la fuente
+`~/Neocortex/Repository` y de los runtimes versionados bajo
+`${XDG_DATA_HOME:-~/.local/share}/Neocortex/releases`.
 
 ```text
 archivos e identidades físicas
@@ -83,7 +84,7 @@ y sus consumidores son la API Python, la salida JSON y la CLI instalada.
 
 ## Contratos públicos
 
-Los contratos de `_04_Nucleo_Operativo.knowledge_contracts` son dataclasses
+Los contratos de `neocortex.knowledge.knowledge_contracts` son dataclasses
 inmutables con `slots`. Los envelopes públicos usan `schema_version=1` y
 `kind`; sus objetos anidados contienen sólo claves documentadas. El JSON tiene
 orden canónico y conserva Unicode. Un campo opcional no se serializa cuando el
@@ -786,7 +787,7 @@ snapshot de owners `absent`.
 
 ## API Python estable
 
-La fachada lazy `_04_Nucleo_Operativo` exporta `ContextBundle`, `EvidenceRef`,
+La fachada lazy `neocortex.api.public` exporta `ContextBundle`, `EvidenceRef`,
 `KnowledgeHit`, `KnowledgePlan`, `KnowledgeQuery`, `KnowledgeSearchResult`,
 `KnowledgeSearchService`, `KnowledgeSnapshot`, `KnowledgeStatePaths`,
 `KnowledgeStateRootError`, `ResourceRef`, `RetrievalMode`, `RevisionRef` y
@@ -795,7 +796,7 @@ La fachada lazy `_04_Nucleo_Operativo` exporta `ContextBundle`, `EvidenceRef`,
 ```python
 from pathlib import Path
 
-from _04_Nucleo_Operativo import (
+from neocortex.api.public import (
     KnowledgeQuery,
     KnowledgeSearchService,
     KnowledgeStatePaths,
@@ -803,7 +804,7 @@ from _04_Nucleo_Operativo import (
 )
 
 paths = KnowledgeStatePaths.from_directory(
-    Path.home() / "AppData" / "Local" / "Neocortex" / "state"
+    Path.home() / ".local" / "state" / "Neocortex" / "state"
 )
 service = KnowledgeSearchService(paths)
 
@@ -851,7 +852,7 @@ La evaluación está separada del servicio productivo:
 - fixture versionado:
   `tests/fixtures/knowledge/phase1_golden_v1.json`;
 - cargador/métricas:
-  `_04_Nucleo_Operativo/knowledge_evaluation.py`;
+  `neocortex/knowledge/knowledge_evaluation.py`;
 - regresiones: `tests/test_knowledge_evaluation.py`.
 
 El fixture v1 contiene exactamente 17 escenarios:
@@ -976,4 +977,4 @@ corpus permanecen intactos.
 
 Consulte también [Arquitectura](ARCHITECTURE.md), [CLI](CLI.md),
 [Persistencia](PERSISTENCE.md), [Seguridad](SECURITY.md) y el
-[README del núcleo](../_04_Nucleo_Operativo/README.md).
+[arquitectura canónica](ARCHITECTURE.md).

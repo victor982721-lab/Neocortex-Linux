@@ -7,9 +7,6 @@ state and no task authorizes a physical mutation.
 """
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import hashlib
 import json
 import os
@@ -990,6 +987,3 @@ __all__ = (
     "read_value_review_task_queue",
     "refresh_value_review_tasks",
 )
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.value_review_tasks")

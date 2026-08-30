@@ -15,14 +15,14 @@ from pathlib import Path
 
 import pytest
 
-from _04_Nucleo_Operativo import knowledge_search
-from _04_Nucleo_Operativo.code_contracts import (
+from neocortex.knowledge import knowledge_search
+from neocortex.code.code_contracts import (
     CodeRelationEndpoint,
     CodeSearchHit,
     CodeSearchQuery,
     CodeSearchRelation,
 )
-from _04_Nucleo_Operativo.knowledge_contracts import (
+from neocortex.knowledge.knowledge_contracts import (
     MAX_EVIDENCE_IDENTIFIER_COMPONENT_CHARS,
     EvidenceMethod,
     EvidenceRef,
@@ -34,21 +34,21 @@ from _04_Nucleo_Operativo.knowledge_contracts import (
     RevisionRef,
     RevisionState,
 )
-from _04_Nucleo_Operativo.knowledge_planner import (
+from neocortex.knowledge.knowledge_planner import (
     KnowledgeQuery,
     plan_knowledge_query,
 )
-from _04_Nucleo_Operativo.knowledge_search import (
+from neocortex.knowledge.knowledge_search import (
     KnowledgeCandidate,
 )
-from _04_Nucleo_Operativo.knowledge_snapshot import KnowledgeStatePaths
-from _04_Nucleo_Operativo.semantic_models import canonical_json, fingerprint_text
+from neocortex.knowledge.knowledge_snapshot import KnowledgeStatePaths
+from neocortex.semantic.semantic_models import canonical_json, fingerprint_text
 
 
 PUBLIC_MODULE = "neocortex.knowledge.knowledge_search"
 CODE_MODULE = "neocortex.knowledge.knowledge_search_code"
 CODE_SEARCH_MODULE = "neocortex.code.code_search"
-LEGACY_PUBLIC_MODULE = "_04_Nucleo_Operativo.knowledge_search"
+LEGACY_PUBLIC_MODULE = "neocortex.knowledge.knowledge_search"
 EXPECTED_SIGNATURES = {
     "_code_version_metadata": (
         "(path: 'Path', version_ids: 'Sequence[int]', *, "

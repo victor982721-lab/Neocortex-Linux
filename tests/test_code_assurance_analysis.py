@@ -7,24 +7,24 @@ from dataclasses import replace
 
 import pytest
 
-from _04_Nucleo_Operativo.code_assurance_analysis import (
+from neocortex.code.code_assurance_analysis import (
     ASSURANCE_AVAILABILITY_QUESTION,
     CODE_ASSURANCE_SCHEMA,
     analyze_code_assurance,
     assurance_questions,
     parse_code_assurance_payload,
 )
-from _04_Nucleo_Operativo.code_coverage_analysis import (
+from neocortex.code.code_coverage_analysis import (
     CodeCoverageAnalysis,
     CoverageTotals,
     analyze_code_coverage,
 )
-from _04_Nucleo_Operativo.external_evidence_models import (
+from neocortex.code.external_evidence_models import (
     ExternalProviderEvidence,
     ExternalProviderMetric,
     ExternalProviderRelation,
 )
-from _04_Nucleo_Operativo.external_mutation_cosmic_ray import (
+from neocortex.code.external_mutation_cosmic_ray import (
     COSMIC_RAY_MUTATION_PROVIDER_ID,
     COSMIC_RAY_MUTATION_PROVIDER_SCHEMA,
 )

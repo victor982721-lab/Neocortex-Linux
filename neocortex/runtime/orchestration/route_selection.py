@@ -4,9 +4,6 @@
 # region [01] Stable route selection contract
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 __all__ = [
     "BUILTIN_ROUTE_ORDER",
     "ORGANIZABLE_ROUTE_NAMES",
@@ -52,9 +49,4 @@ def normalize_route_selection(
             f"unknown routes: {', '.join(unknown)}; available: {', '.join(available_routes)}"
         )
     return values
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.route_selection")
-
-
 # endregion [01]

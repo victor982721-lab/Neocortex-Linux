@@ -8,16 +8,16 @@ from pathlib import Path
 
 import pytest
 
-from _04_Nucleo_Operativo.code_analyzer_effectiveness import (
+from neocortex.code.code_analyzer_effectiveness import (
     analyze_code_analyzer_effectiveness,
     analyzer_effectiveness_questions,
     parse_code_analyzer_effectiveness_payload,
 )
-from _04_Nucleo_Operativo.code_schema import (
+from neocortex.code.code_schema import (
     checkpoint_code_wal,
     remove_checkpointed_code_sidecars,
 )
-from _04_Nucleo_Operativo.code_state import CodeState
+from neocortex.code.code_state import CodeState
 from tests.test_code_review import PROCESSING_SIGNATURE, _analysis
 
 

@@ -1,9 +1,6 @@
 """Bounded multidimensional queries over explicit published Code surfaces."""
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import json
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass
@@ -3282,6 +3279,3 @@ def query_code_analysis(
 
 
 __all__ = ["CODE_ANALYSIS_QUERY_SCHEMA", "CodeAnalysisQuery", "query_code_analysis"]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.code_analysis_query")

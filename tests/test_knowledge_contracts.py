@@ -12,7 +12,7 @@ from dataclasses import FrozenInstanceError, replace
 
 import pytest
 
-from _04_Nucleo_Operativo.knowledge_contracts import (
+from neocortex.knowledge.knowledge_contracts import (
     MAX_EVIDENCE_IDENTIFIER_COMPONENT_CHARS,
     MAX_EVIDENCE_IDENTIFIERS,
     MAX_EVIDENCE_SYMBOL_CHARS,

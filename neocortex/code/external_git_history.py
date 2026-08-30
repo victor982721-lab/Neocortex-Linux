@@ -7,9 +7,6 @@ external diff drivers, a pager, or the network.
 """
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import os
 import re
 import subprocess
@@ -1117,6 +1114,3 @@ __all__ = [
     "git_history_input_signature",
     "inspect_git_repository",
 ]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.external_git_history")

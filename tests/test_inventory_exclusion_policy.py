@@ -26,12 +26,10 @@ from neocortex.deduplication.inventory import scan as inventory_scan_module
 from neocortex.deduplication.inventory import scanner as inventory_scanner_module
 from neocortex.deduplication.inventory import traversal as inventory_traversal_module
 from neocortex.deduplication.inventory.scan import DEFAULT_EXCLUDED_PATHS
-from _04_Nucleo_Operativo import (
-    inventory_coordinator as inventory_coordinator_module,
-)
-from _04_Nucleo_Operativo import reconcile as reconcile_module
-from _04_Nucleo_Operativo.reconcile import reconcile_usn_window
-from _04_Nucleo_Operativo.state import FrameworkState
+from neocortex.integrations.inventory import inventory_coordinator as inventory_coordinator_module
+from neocortex.integrations.inventory import reconcile as reconcile_module
+from neocortex.integrations.inventory.reconcile import reconcile_usn_window
+from neocortex.persistence.state import FrameworkState
 # endregion [01]
 
 # region [02] Implementación

@@ -48,7 +48,7 @@ def test_numbered_deduplication_root_is_extinct() -> None:
     legacy = "_02" + "_Deduplicacion"
 
     assert not (REPOSITORY_ROOT / legacy).exists()
-    for relative in ("_04_Nucleo_Operativo", "neocortex", "tools"):
+    for relative in ("neocortex", "tools"):
         for path in (REPOSITORY_ROOT / relative).rglob("*.py"):
             assert legacy not in path.read_text(encoding="utf-8"), path
 

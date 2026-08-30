@@ -1,9 +1,6 @@
 """Embedding backend construction, readiness probes and source prerequisites."""
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import tempfile
 import time
 import gc
@@ -398,6 +395,3 @@ def require_source_databases(
 
 
 # endregion [03]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.semantic_preparation")

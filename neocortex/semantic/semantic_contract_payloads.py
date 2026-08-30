@@ -1,15 +1,12 @@
 """Stable JSON-ready payload builders for Semantic service contracts."""
 # region [00] Contexto del módulo
-# Módulo: _04_Nucleo_Operativo/semantic_contract_payloads.py
+# Módulo: neocortex/semantic_contract_payloads.py
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
 
 # region [01] Dependencias del módulo
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 from .semantic_models import canonical_json
 from .semantic_service_contracts import (
     SemanticPlan,
@@ -147,6 +144,3 @@ def build_semantic_plan_payload(plan: SemanticPlan) -> dict[str, object]:
 
 __all__ = ["build_semantic_plan_payload"]
 # endregion [02]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.semantic_contract_payloads")

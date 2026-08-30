@@ -7,10 +7,10 @@ from types import SimpleNamespace
 
 import pytest
 
-import _04_Nucleo_Operativo.external_evidence_providers as providers_module
-from _04_Nucleo_Operativo.code_external_evidence import ExternalEvidenceFile
-from _04_Nucleo_Operativo.external_evidence_models import ExternalProviderBaseline
-from _04_Nucleo_Operativo.external_evidence_providers import (
+import neocortex.code.external_evidence_providers as providers_module
+from neocortex.code.code_external_evidence import ExternalEvidenceFile
+from neocortex.code.external_evidence_models import ExternalProviderBaseline
+from neocortex.code.external_evidence_providers import (
     COMPLEXIPY_COGNITIVE_PROVIDER_ID,
     GRIMP_ARCHITECTURE_PROVIDER_ID,
     RUFF_ANALYZE_PROVIDER_ID,
@@ -21,7 +21,7 @@ from _04_Nucleo_Operativo.external_evidence_providers import (
     VultureUnusedStaticProvider,
     providers_for_profile,
 )
-from _04_Nucleo_Operativo.semantic_models import fingerprint_bytes
+from neocortex.semantic.semantic_models import fingerprint_bytes
 
 
 def _external_file(path: Path, root: Path, version_id: int) -> ExternalEvidenceFile:
@@ -54,7 +54,7 @@ def test_architecture_providers_replay_exact_selected_inputs_without_process(
 ) -> None:
     root = tmp_path / "root"
     scratch = tmp_path / "scratch"
-    package = root / "_04_Nucleo_Operativo"
+    package = root / "neocortex"
     package.mkdir(parents=True)
     scratch.mkdir()
     selected = package / "sample.py"
@@ -85,14 +85,14 @@ def test_architecture_providers_replay_exact_selected_inputs_without_process(
     selected_signature = provider.baseline_input_signature(files)
     publication = provider.run(root, files, baseline=None, scratch_root=scratch)
 
-    assert observed_paths == [("_04_Nucleo_Operativo/sample.py",)]
+    assert observed_paths == [("neocortex/sample.py",)]
     assert publication.status == "completed"
     assert publication.descriptor.provider_id == provider_id
     assert publication.descriptor.scope == "production-packages-python-v1"
     assert publication.descriptor.project_configuration_digest is None
     assert publication.descriptor.loads_project_configuration is False
     assert tuple(item.relative_path for item in publication.inputs) == (
-        "_04_Nucleo_Operativo/sample.py",
+        "neocortex/sample.py",
     )
     assert publication.counters["process_invocations"] == 1
     assert publication.input_signature == selected_signature
@@ -128,8 +128,8 @@ def test_architecture_providers_replay_exact_selected_inputs_without_process(
     assert compared.counters["process_invocations"] == 1
     assert compared.counters["comparable"] == 1
     assert observed_paths == [
-        ("_04_Nucleo_Operativo/sample.py",),
-        ("_04_Nucleo_Operativo/sample.py",),
+        ("neocortex/sample.py",),
+        ("neocortex/sample.py",),
     ]
 
     baseline = ExternalProviderBaseline(
@@ -160,12 +160,12 @@ def test_vulture_provider_uses_exact_project_wide_input_and_replays(
 ) -> None:
     root = tmp_path / "root"
     scratch = tmp_path / "scratch"
-    package = root / "_04_Nucleo_Operativo"
+    package = root / "neocortex"
     package.mkdir(parents=True)
     scratch.mkdir()
     package_file = package / "sample.py"
     root_file = root / "neocortex" / "public.py"
-    root_file.parent.mkdir()
+    root_file.parent.mkdir(parents=True, exist_ok=True)
     package_file.write_text("VALUE = 1\n", encoding="utf-8")
     root_file.write_text("VALUE = 2\n", encoding="utf-8")
     files = (
@@ -195,7 +195,7 @@ def test_vulture_provider_uses_exact_project_wide_input_and_replays(
     provider.executor = execute
     publication = provider.run(root, files, baseline=None, scratch_root=scratch)
 
-    assert observed_paths == [("_04_Nucleo_Operativo/sample.py", "neocortex/public.py")]
+    assert observed_paths == [("neocortex/public.py", "neocortex/sample.py")]
     assert publication.status == "completed"
     assert publication.descriptor.provider_id == VULTURE_UNUSED_PROVIDER_ID
     assert publication.descriptor.scope == "current-inventory-python"
@@ -203,7 +203,7 @@ def test_vulture_provider_uses_exact_project_wide_input_and_replays(
     assert publication.descriptor.loads_project_configuration is False
     assert publication.limitations == limitations
     assert tuple(item.relative_path for item in publication.inputs) == (
-        "_04_Nucleo_Operativo/sample.py",
+        "neocortex/sample.py",
         "neocortex/public.py",
     )
     assert publication.counters["process_invocations"] == 1

@@ -11,11 +11,11 @@ from dataclasses import replace
 
 import pytest
 
-from _04_Nucleo_Operativo.knowledge_context import (
+from neocortex.knowledge.knowledge_context import (
     TOKEN_ESTIMATOR_SIGNATURE,
     build_context_bundle,
 )
-from _04_Nucleo_Operativo.knowledge_contracts import (
+from neocortex.knowledge.knowledge_contracts import (
     EvidenceMethod,
     EvidenceRef,
     KnowledgeCompleteness,
@@ -30,11 +30,11 @@ from _04_Nucleo_Operativo.knowledge_contracts import (
     RevisionRef,
     RevisionState,
 )
-from _04_Nucleo_Operativo.knowledge_planner import (
+from neocortex.knowledge.knowledge_planner import (
     KnowledgePlan,
     RetrievalMode,
 )
-from _04_Nucleo_Operativo.knowledge_search import (
+from neocortex.knowledge.knowledge_search import (
     KnowledgeSearchResult,
     RankingExecution,
 )

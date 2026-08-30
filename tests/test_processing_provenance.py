@@ -9,16 +9,16 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
-from _04_Nucleo_Operativo.audio_models import AudioRouteConfig, AudioRouteSummary
-from _04_Nucleo_Operativo.docx_models import DocxRouteConfig, DocxRouteSummary
-from _04_Nucleo_Operativo.image_route import ImageRouteConfig, ImageRouteSummary
-from _04_Nucleo_Operativo.office_route import OfficeRouteConfig, OfficeRouteSummary
-from _04_Nucleo_Operativo.pdf_route_models import (
+from neocortex.capabilities.formats.audio.models import AudioRouteConfig, AudioRouteSummary
+from neocortex.capabilities.formats.docx.models import DocxRouteConfig, DocxRouteSummary
+from neocortex.capabilities.formats.image.route import ImageRouteConfig, ImageRouteSummary
+from neocortex.capabilities.formats.office.route import OfficeRouteConfig, OfficeRouteSummary
+from neocortex.capabilities.formats.pdf.pdf_route_models import (
     PdfRouteConfig,
     PdfRouteSummary,
     _pdf_processing_provenance,
 )
-from _04_Nucleo_Operativo.processing_provenance import (
+from neocortex.foundation.processing_provenance import (
     ROUTE_SUMMARY_SCHEMA,
     build_processing_provenance,
     clear_processing_provenance_caches,
@@ -108,11 +108,11 @@ class RouteProcessingSignatureTests(unittest.TestCase):
         config = PdfRouteConfig(Path("pdf.sqlite3"))
         with (
             patch(
-                "_04_Nucleo_Operativo.processing_provenance.installed_distribution_version",
+                "neocortex.foundation.processing_provenance.installed_distribution_version",
                 side_effect=installed_version,
             ),
             patch(
-                "_04_Nucleo_Operativo.pdf_route_models.executable_component",
+                "neocortex.capabilities.formats.pdf.pdf_route_models.executable_component",
                 return_value={
                     "name": "qpdf",
                     "kind": "native-executable",
@@ -121,7 +121,7 @@ class RouteProcessingSignatureTests(unittest.TestCase):
                 },
             ),
             patch(
-                "_04_Nucleo_Operativo.pdf_route_models.resolve_tesseract_runtime",
+                "neocortex.capabilities.formats.pdf.pdf_route_models.resolve_tesseract_runtime",
                 return_value=tesseract,
             ),
         ):
@@ -147,11 +147,11 @@ class RouteProcessingSignatureTests(unittest.TestCase):
         config = PdfRouteConfig(Path("pdf.sqlite3"))
         with (
             patch(
-                "_04_Nucleo_Operativo.pdf_route_models.executable_component",
+                "neocortex.capabilities.formats.pdf.pdf_route_models.executable_component",
                 return_value={"name": "qpdf", "status": "available"},
             ),
             patch(
-                "_04_Nucleo_Operativo.pdf_route_models.resolve_tesseract_runtime",
+                "neocortex.capabilities.formats.pdf.pdf_route_models.resolve_tesseract_runtime",
                 return_value=SimpleNamespace(component=component),
             ),
         ):
@@ -181,38 +181,38 @@ class RouteProcessingSignatureTests(unittest.TestCase):
             model_path.write_bytes(b"fixture-model")
             distribution = SimpleNamespace(locate_file=lambda _relative: model_path)
             with patch(
-                "_04_Nucleo_Operativo.processing_provenance.metadata.distribution",
+                "neocortex.foundation.processing_provenance.metadata.distribution",
                 return_value=distribution,
             ):
                 with (
                     patch(
-                        "_04_Nucleo_Operativo.processing_provenance.installed_distribution_version",
+                        "neocortex.foundation.processing_provenance.installed_distribution_version",
                         side_effect=version_12,
                     ),
                     patch(
-                        "_04_Nucleo_Operativo.processing_provenance.fingerprint_file_xxh3_128",
+                        "neocortex.foundation.processing_provenance.fingerprint_file_xxh3_128",
                         return_value="a" * 32,
                     ),
                 ):
                     initial = config.processing_signature
                 with (
                     patch(
-                        "_04_Nucleo_Operativo.processing_provenance.installed_distribution_version",
+                        "neocortex.foundation.processing_provenance.installed_distribution_version",
                         side_effect=version_12,
                     ),
                     patch(
-                        "_04_Nucleo_Operativo.processing_provenance.fingerprint_file_xxh3_128",
+                        "neocortex.foundation.processing_provenance.fingerprint_file_xxh3_128",
                         return_value="b" * 32,
                     ),
                 ):
                     changed_model = config.processing_signature
                 with (
                     patch(
-                        "_04_Nucleo_Operativo.processing_provenance.installed_distribution_version",
+                        "neocortex.foundation.processing_provenance.installed_distribution_version",
                         side_effect=version_13,
                     ),
                     patch(
-                        "_04_Nucleo_Operativo.processing_provenance.fingerprint_file_xxh3_128",
+                        "neocortex.foundation.processing_provenance.fingerprint_file_xxh3_128",
                         return_value="b" * 32,
                     ),
                 ):
@@ -261,7 +261,7 @@ class RouteProcessingSignatureTests(unittest.TestCase):
             "version": "8.0",
         }
         with patch(
-            "_04_Nucleo_Operativo.audio_models.executable_component",
+            "neocortex.capabilities.formats.audio.models.executable_component",
             return_value=ffprobe,
         ) as executable:
             initial = config.processing_provenance(
@@ -343,7 +343,7 @@ class TesseractRuntimeProvenanceTests(unittest.TestCase):
                 )
 
             with patch(
-                "_04_Nucleo_Operativo.processing_provenance.run_bounded_capture",
+                "neocortex.foundation.processing_provenance.run_bounded_capture",
                 side_effect=completed,
             ):
                 clear_processing_provenance_caches()

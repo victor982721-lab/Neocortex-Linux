@@ -6,9 +6,6 @@ resource diversity afterwards.  It does not index, migrate or create state.
 """
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import json
 import sqlite3
 import time
@@ -1413,6 +1410,3 @@ __all__ = (
     "execute_knowledge_search",
     "fuse_evidence_rankings",
 )
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.knowledge_search")

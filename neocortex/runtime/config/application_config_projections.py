@@ -7,11 +7,10 @@ dependency doubles and lazy-load guarantees intact.
 
 from __future__ import annotations
 
-import sys
 from importlib import import_module
 from pathlib import Path
 from types import ModuleType
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING
 
 # region [01] Static contracts and public projection surface
 
@@ -82,18 +81,9 @@ def archive_route_config_from_application(
 ) -> _archive_contracts.ArchiveRouteConfig:
     """Project current application values into recursive ZIP indexing."""
 
-    compatibility_module = sys.modules.get(
-        "_04_Nucleo_Operativo.capabilities.formats.archive.route"
-    )
-    if compatibility_module is None:
-        from neocortex.capabilities.formats.archive.route import (
-            ArchiveRouteConfig as _ArchiveRouteConfig,
-        )
-        route_config_type: Any = _ArchiveRouteConfig
-    else:
-        route_config_type = compatibility_module.__dict__["ArchiveRouteConfig"]
+    from neocortex.capabilities.formats.archive.route import ArchiveRouteConfig
 
-    return route_config_type(
+    return ArchiveRouteConfig(
         state_path=config.archive_database,
         max_file_bytes=config.archive_max_file_bytes,
         max_documents=config.archive_max_documents,
@@ -126,16 +116,9 @@ def text_route_config_from_application(
 ) -> _text_contracts.TextRouteConfig:
     """Project generic text and legacy Office extraction limits."""
 
-    compatibility_module = sys.modules.get("_04_Nucleo_Operativo.text_route")
-    if compatibility_module is None:
-        from neocortex.capabilities.formats.text.text_route import (
-            TextRouteConfig as _TextRouteConfig,
-        )
-        route_config_type: Any = _TextRouteConfig
-    else:
-        route_config_type = compatibility_module.__dict__["TextRouteConfig"]
+    from neocortex.capabilities.formats.text.text_route import TextRouteConfig
 
-    return route_config_type(
+    return TextRouteConfig(
         state_path=config.text_database,
         max_file_bytes=config.text_max_file_bytes,
         max_documents=config.text_max_documents,
@@ -153,18 +136,9 @@ def audio_route_config_from_application(
 ) -> _audio_contracts.AudioRouteConfig:
     """Project current application values into the audio owner's contract."""
 
-    compatibility_module = sys.modules.get(
-        "_04_Nucleo_Operativo.capabilities.formats.audio.models"
-    )
-    if compatibility_module is None:
-        from neocortex.capabilities.formats.audio.models import (
-            AudioRouteConfig as _AudioRouteConfig,
-        )
-        route_config_type: Any = _AudioRouteConfig
-    else:
-        route_config_type = compatibility_module.__dict__["AudioRouteConfig"]
+    from neocortex.capabilities.formats.audio.models import AudioRouteConfig
 
-    return route_config_type(
+    return AudioRouteConfig(
         state_path=config.audio_database,
         model_name=config.audio_model_name,
         device=config.audio_device,
@@ -200,18 +174,9 @@ def video_route_config_from_application(
 ) -> _video_contracts.VideoRouteConfig:
     """Project current values into dedicated visual-video inspection."""
 
-    compatibility_module = sys.modules.get(
-        "_04_Nucleo_Operativo.video_route"
-    ) or sys.modules.get("_04_Nucleo_Operativo.capabilities.formats.video.route")
-    if compatibility_module is None:
-        from neocortex.capabilities.formats.video.route import (
-            VideoRouteConfig as _VideoRouteConfig,
-        )
-        route_config_type: Any = _VideoRouteConfig
-    else:
-        route_config_type = compatibility_module.__dict__["VideoRouteConfig"]
+    from neocortex.capabilities.formats.video.route import VideoRouteConfig
 
-    return route_config_type(
+    return VideoRouteConfig(
         state_path=config.video_database,
         root=config.root if root is None else root,
         audio_state_path=config.audio_database,
@@ -287,18 +252,9 @@ def docx_route_config_from_application(
 ) -> _docx_contracts.DocxRouteConfig:
     """Project current application values into the DOCX owner's contract."""
 
-    compatibility_module = sys.modules.get(
-        "_04_Nucleo_Operativo.capabilities.formats.docx.models"
-    )
-    if compatibility_module is None:
-        from neocortex.capabilities.formats.docx.models import (
-            DocxRouteConfig as _DocxRouteConfig,
-        )
-        route_config_type: Any = _DocxRouteConfig
-    else:
-        route_config_type = compatibility_module.__dict__["DocxRouteConfig"]
+    from neocortex.capabilities.formats.docx.models import DocxRouteConfig
 
-    return route_config_type(
+    return DocxRouteConfig(
         state_path=config.docx_database,
         max_file_bytes=config.docx_max_file_bytes,
         max_documents=config.docx_max_documents,
@@ -319,18 +275,9 @@ def image_route_config_from_application(
 ) -> _image_contracts.ImageRouteConfig:
     """Project current values and the effective root into the image contract."""
 
-    compatibility_module = sys.modules.get(
-        "_04_Nucleo_Operativo.image_route"
-    ) or sys.modules.get("_04_Nucleo_Operativo.capabilities.formats.image.route")
-    if compatibility_module is None:
-        from neocortex.capabilities.formats.image.route import (
-            ImageRouteConfig as _ImageRouteConfig,
-        )
-        route_config_type: Any = _ImageRouteConfig
-    else:
-        route_config_type = compatibility_module.__dict__["ImageRouteConfig"]
+    from neocortex.capabilities.formats.image.route import ImageRouteConfig
 
-    return route_config_type(
+    return ImageRouteConfig(
         state_path=config.image_database,
         root=config.root if root is None else root,
         workers=config.image_workers,
@@ -357,18 +304,9 @@ def office_route_config_from_application(
 ) -> _office_contracts.OfficeRouteConfig:
     """Project current application values into the Office owner's contract."""
 
-    compatibility_module = sys.modules.get(
-        "_04_Nucleo_Operativo.office_route"
-    ) or sys.modules.get("_04_Nucleo_Operativo.capabilities.formats.office.route")
-    if compatibility_module is None:
-        from neocortex.capabilities.formats.office.route import (
-            OfficeRouteConfig as _OfficeRouteConfig,
-        )
-        route_config_type: Any = _OfficeRouteConfig
-    else:
-        route_config_type = compatibility_module.__dict__["OfficeRouteConfig"]
+    from neocortex.capabilities.formats.office.route import OfficeRouteConfig
 
-    return route_config_type(
+    return OfficeRouteConfig(
         state_path=config.office_database,
         max_file_bytes=config.office_max_file_bytes,
         max_documents=config.office_max_documents,
@@ -387,16 +325,9 @@ def pdf_route_config_from_application(
 ) -> _pdf_contracts.PdfRouteConfig:
     """Project current application values into the PDF owner's contract."""
 
-    compatibility_module = sys.modules.get("_04_Nucleo_Operativo.pdf_route_models")
-    if compatibility_module is None:
-        from neocortex.capabilities.formats.pdf.pdf_route_models import (
-            PdfRouteConfig as _PdfRouteConfig,
-        )
-        route_config_type: Any = _PdfRouteConfig
-    else:
-        route_config_type = compatibility_module.__dict__["PdfRouteConfig"]
+    from neocortex.capabilities.formats.pdf.pdf_route_models import PdfRouteConfig
 
-    return route_config_type(
+    return PdfRouteConfig(
         state_path=config.pdf_database,
         apply_actions=config.apply_actions,
         ocr_mode=config.pdf_ocr_mode,

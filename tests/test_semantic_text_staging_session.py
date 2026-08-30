@@ -18,13 +18,13 @@ from pathlib import Path
 
 import pytest
 
-from _04_Nucleo_Operativo import semantic_generation_repository, semantic_text_index
-from _04_Nucleo_Operativo.semantic_chunking import (
+from neocortex.semantic import semantic_generation_repository, semantic_text_index
+from neocortex.semantic.semantic_chunking import (
     TextChunkingConfig,
     iter_text_chunks,
 )
-from _04_Nucleo_Operativo.semantic_generation_worker import batches, run_generation
-from _04_Nucleo_Operativo.semantic_models import (
+from neocortex.semantic.semantic_generation_worker import batches, run_generation
+from neocortex.semantic.semantic_models import (
     BackendEmbedding,
     EmbeddingModality,
     EmbeddingModelSpec,
@@ -35,13 +35,13 @@ from _04_Nucleo_Operativo.semantic_models import (
     TextSection,
     fingerprint_text,
 )
-from _04_Nucleo_Operativo.semantic_sources import (
+from neocortex.semantic.semantic_sources import (
     SEMANTIC_TITLE_POLICY,
     SEMANTIC_TITLE_SECTION_KIND,
     TextSourceRecord,
     iter_text_sections_with_metadata,
 )
-from _04_Nucleo_Operativo.semantic_state import (
+from neocortex.semantic.semantic_state import (
     claim_embedding_jobs,
     complete_embedding_job,
     enqueue_text_chunk_jobs,
@@ -54,8 +54,8 @@ from _04_Nucleo_Operativo.semantic_state import (
     start_embedding_generation,
     upsert_semantic_item,
 )
-from _04_Nucleo_Operativo.semantic_work_budget import SemanticWorkBudget
-from _04_Nucleo_Operativo.semantic_work_budget import SemanticIndexDeadlineExceeded
+from neocortex.semantic.semantic_work_budget import SemanticWorkBudget
+from neocortex.semantic.semantic_work_budget import SemanticIndexDeadlineExceeded
 # endregion [01]
 
 # region [02] Implementación

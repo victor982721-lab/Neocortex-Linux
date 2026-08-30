@@ -8,9 +8,6 @@ counts, or elapsed time into a quality score or a defect probability.
 """
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import json
 import os
 import sqlite3
@@ -1060,6 +1057,3 @@ __all__ = [
     "analyzer_effectiveness_questions",
     "parse_code_analyzer_effectiveness_payload",
 ]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.code_analyzer_effectiveness")

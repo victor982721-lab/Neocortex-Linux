@@ -1,9 +1,6 @@
 """Shared bounded utilities for language analyzers."""
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import json
 import re
 import tomllib
@@ -448,6 +445,3 @@ __all__ = [
     "manifest_evidence",
     "searchable_chunks",
 ]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.code_analyzer_common")

@@ -6,9 +6,6 @@ archive, rename, or delete a file.
 """
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import json
 from dataclasses import asdict, dataclass
 from enum import Enum
@@ -318,6 +315,3 @@ __all__ = [
     "ValueReviewReport",
     "ValueReviewState",
 ]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.value_review_contracts")

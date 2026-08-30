@@ -1,9 +1,6 @@
 """Exact read-only causal facts for one Knowledge resource identity."""
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import hashlib
 import json
 import sqlite3
@@ -1361,6 +1358,3 @@ def capture_knowledge_asset_fact_snapshot(
 
 
 __all__ = ["capture_knowledge_asset_fact_snapshot"]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.knowledge_asset_health_repository")

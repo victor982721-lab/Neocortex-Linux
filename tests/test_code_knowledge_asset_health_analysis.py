@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from _04_Nucleo_Operativo.code_knowledge_asset_health_analysis import (
+from neocortex.code.code_knowledge_asset_health_analysis import (
     CODE_KNOWLEDGE_ASSET_HEALTH_ANALYSIS_SCHEMA,
     CODE_KNOWLEDGE_ASSET_HEALTH_POLICY,
     KNOWLEDGE_ASSET_HEALTH_QUESTION,
@@ -14,16 +14,16 @@ from _04_Nucleo_Operativo.code_knowledge_asset_health_analysis import (
     build_knowledge_asset_health_contract_analysis,
     knowledge_asset_health_questions,
 )
-from _04_Nucleo_Operativo.file_identity import FileIdentity, encode_file_identity
-from _04_Nucleo_Operativo.knowledge_asset_health import inspect_knowledge_asset_health
-from _04_Nucleo_Operativo.knowledge_asset_health_contracts import (
+from neocortex.foundation.file_identity import FileIdentity, encode_file_identity
+from neocortex.knowledge.knowledge_asset_health import inspect_knowledge_asset_health
+from neocortex.knowledge.knowledge_asset_health_contracts import (
     KnowledgeAssetHealthCompleteness,
     KnowledgeAssetHealthQuery,
     KnowledgeAssetHealthState,
 )
-from _04_Nucleo_Operativo.knowledge_contracts import PhysicalIdentityRef, ResourceRef
-from _04_Nucleo_Operativo.knowledge_search_content import direct_resource_ref
-from _04_Nucleo_Operativo.knowledge_snapshot import KnowledgeStatePaths
+from neocortex.knowledge.knowledge_contracts import PhysicalIdentityRef, ResourceRef
+from neocortex.knowledge.knowledge_search_content import direct_resource_ref
+from neocortex.knowledge.knowledge_snapshot import KnowledgeStatePaths
 from neocortex.read_api import asset_health_payload
 
 

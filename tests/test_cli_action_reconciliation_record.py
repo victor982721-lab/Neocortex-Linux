@@ -14,9 +14,9 @@ from pathlib import Path
 import pytest
 
 from neocortex.deduplication import snapshot_path
-from _04_Nucleo_Operativo.cli_app import main as cli_main
-from _04_Nucleo_Operativo.file_action_recovery import expected_identity_json
-from _04_Nucleo_Operativo.framework_state_writer import FrameworkState
+from neocortex.api.cli.cli_app import main as cli_main
+from neocortex.workflow.actions.file_action_recovery import expected_identity_json
+from neocortex.persistence.framework_state_writer import FrameworkState
 from tests.internal_paths_test_support import begin_signed_normal_run
 from tests.mutation_containment import ContainedMutationRoot
 # endregion [01]

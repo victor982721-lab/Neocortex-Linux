@@ -11,28 +11,28 @@ from typing import cast
 
 import pytest
 
-import _04_Nucleo_Operativo.code_review as code_review_module
-import _04_Nucleo_Operativo.external_evidence_providers as providers_module
+import neocortex.code.code_review as code_review_module
+import neocortex.code.external_evidence_providers as providers_module
 from neocortex.deduplication import FileSnapshot
-from _04_Nucleo_Operativo.cli_code import _read_code_status_snapshot
-from _04_Nucleo_Operativo.code_contracts import CodeRouteConfig
-from _04_Nucleo_Operativo.code_external_evidence import ExternalEvidenceFile
-from _04_Nucleo_Operativo.code_publication_diff import compare_code_publications
-from _04_Nucleo_Operativo.code_review import review_code_state
-from _04_Nucleo_Operativo.code_route import CodeRoute
-from _04_Nucleo_Operativo.code_schema import connect_code_state, readonly_code_database
-from _04_Nucleo_Operativo.external_evidence_providers import (
+from neocortex.api.cli.cli_code import _read_code_status_snapshot
+from neocortex.code.code_contracts import CodeRouteConfig
+from neocortex.code.code_external_evidence import ExternalEvidenceFile
+from neocortex.code.code_publication_diff import compare_code_publications
+from neocortex.code.code_review import review_code_state
+from neocortex.code.code_route import CodeRoute
+from neocortex.code.code_schema import connect_code_state, readonly_code_database
+from neocortex.code.external_evidence_providers import (
     MypyTrustedProjectProvider,
     PyrightTrustedProjectProvider,
 )
-from _04_Nucleo_Operativo.external_evidence_store import (
+from neocortex.code.external_evidence_store import (
     read_external_evidence_suite,
 )
-from _04_Nucleo_Operativo.self_analysis_status import (
+from neocortex.workflow.self_analysis.self_analysis_status import (
     SelfAnalysisFreshness,
     SelfAnalysisStatus,
 )
-from _04_Nucleo_Operativo.semantic_models import fingerprint_bytes
+from neocortex.semantic.semantic_models import fingerprint_bytes
 
 
 class _Inventory:

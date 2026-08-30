@@ -13,9 +13,6 @@ joined to explicit logical-owner, state-store, and workflow contracts.
 """
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import ast
 import importlib
 import json
@@ -1378,6 +1375,3 @@ __all__ = [
     "parse_code_state_interaction_payload",
     "state_interaction_questions",
 ]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.code_state_interaction_analysis")

@@ -16,7 +16,6 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 CANONICAL_ROOT = "neocortex.capabilities.formats.video"
 PRODUCT_ROOT = "neocortex.capabilities.formats.video"
-LEGACY_ROOT = "_04_Nucleo_Operativo"
 MODULE_NAMES = ("frames", "models", "probe", "route", "state")
 HISTORICAL_SYMBOLS = {
     "frames": ("VideoFrameSamplingConfig", "build_frame_plan", "sampled_video_frames"),
@@ -35,19 +34,6 @@ HISTORICAL_SYMBOLS = {
 
 def _canonical_module(name: str):
     return importlib.import_module(f"{CANONICAL_ROOT}.{name}")
-
-
-def _legacy_module(name: str):
-    return importlib.import_module(f"{LEGACY_ROOT}.video_{name}")
-
-
-@pytest.mark.parametrize("name", MODULE_NAMES)
-def test_legacy_video_modules_are_exact_canonical_aliases(name: str) -> None:
-    canonical = _canonical_module(name)
-    legacy = _legacy_module(name)
-
-    assert legacy is canonical
-    assert sys.modules[f"{LEGACY_ROOT}.video_{name}"] is canonical
 
 
 def test_video_implementation_lives_under_the_product_namespace() -> None:
@@ -71,13 +57,12 @@ def test_video_implementation_lives_under_the_product_namespace() -> None:
 
 
 @pytest.mark.parametrize("name", MODULE_NAMES)
-def test_video_symbols_keep_historical_pickle_fqns(name: str) -> None:
+def test_video_symbols_are_owned_by_canonical_modules(name: str) -> None:
     module = _canonical_module(name)
-    historical_module = f"{LEGACY_ROOT}.video_{name}"
 
     for symbol_name in HISTORICAL_SYMBOLS[name]:
         symbol = getattr(module, symbol_name)
-        assert symbol.__module__ == historical_module
+        assert symbol.__module__ == module.__name__
         assert pickle.loads(pickle.dumps(symbol, protocol=5)) is symbol
 
 
@@ -89,24 +74,7 @@ def test_video_summary_instance_remains_pickle_compatible() -> None:
 
     assert restored == summary
     assert type(restored) is models.VideoRouteSummary
-    assert type(restored).__module__ == "_04_Nucleo_Operativo.video_models"
-
-
-def test_legacy_video_monkeypatch_reaches_canonical_globals(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    cases = (
-        ("frames", "resolve_video_ffmpeg"),
-        ("probe", "run_bounded_capture"),
-        ("route", "resolve_video_ffmpeg"),
-        ("state", "_migrate_video_v1"),
-    )
-    sentinel = object()
-    for module_name, attribute_name in cases:
-        legacy = _legacy_module(module_name)
-        canonical = _canonical_module(module_name)
-        monkeypatch.setattr(legacy, attribute_name, sentinel)
-        assert getattr(canonical, attribute_name) is sentinel
+    assert type(restored).__module__ == "neocortex.capabilities.formats.video.models"
 
 
 def test_video_package_import_is_light_in_a_fresh_process() -> None:

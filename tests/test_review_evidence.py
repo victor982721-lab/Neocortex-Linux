@@ -12,24 +12,24 @@ from unittest.mock import patch
 import pytest
 
 from neocortex.deduplication import FileSnapshot
-from _04_Nucleo_Operativo.cli_app import dispatch_direct
-from _04_Nucleo_Operativo.cli_parser import build_parser
-from _04_Nucleo_Operativo.cli_validation import validate_arguments
-from _04_Nucleo_Operativo.protected_content import (
+from neocortex.api.cli.cli_app import dispatch_direct
+from neocortex.api.cli.cli_parser import build_parser
+from neocortex.api.cli.cli_validation import validate_arguments
+from neocortex.safety.protected_content import (
     ProtectedContentPolicy,
     ProtectedPathSpec,
 )
-from _04_Nucleo_Operativo.review import (
+from neocortex.workflow.review.review import (
     ReviewCandidate,
     ReviewDecision,
     ReviewDecisionStatus,
 )
-from _04_Nucleo_Operativo.review_evidence import (
+from neocortex.workflow.review.review_evidence import (
     list_review_evidence,
     materialize_review_evidence,
     review_evidence_metrics,
 )
-from _04_Nucleo_Operativo.state import (
+from neocortex.persistence.state import (
     SCHEMA_VERSION,
     FrameworkRouteState,
     FrameworkState,
@@ -45,11 +45,11 @@ def _safe_state_write_policies(
     internal_policy = disjoint_internal_paths_policy(tmp_path.parent / f"{tmp_path.name}-policy")
     protected_policy = ProtectedContentPolicy.capture(())
     monkeypatch.setattr(
-        "_04_Nucleo_Operativo.internal_paths.canonical_internal_paths_policy",
+        "neocortex.safety.internal_paths.canonical_internal_paths_policy",
         lambda: internal_policy,
     )
     monkeypatch.setattr(
-        "_04_Nucleo_Operativo.protected_content.canonical_protected_content_policy",
+        "neocortex.safety.protected_content.canonical_protected_content_policy",
         lambda: protected_policy,
     )
 
@@ -560,13 +560,13 @@ def test_review_evidence_sync_rejects_existing_protected_state_before_write(
         )
     )
     monkeypatch.setattr(
-        "_04_Nucleo_Operativo.protected_content.canonical_protected_content_policy",
+        "neocortex.safety.protected_content.canonical_protected_content_policy",
         lambda: protected_policy,
     )
     args = build_parser().parse_args(("--state-directory", str(state), "--review-evidence-sync"))
     validate_arguments(args)
 
-    with patch("_04_Nucleo_Operativo.review_evidence.materialize_review_evidence") as materialize:
+    with patch("neocortex.workflow.review.review_evidence.materialize_review_evidence") as materialize:
         assert dispatch_direct(args) == 2
 
     materialize.assert_not_called()

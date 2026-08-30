@@ -1,9 +1,6 @@
 """Resolve Code-review observations into the general question contract."""
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import json
 import sqlite3
 from collections.abc import Sequence
@@ -710,6 +707,3 @@ __all__ = [
     "expected_integrated_code_review_questions",
     "resolve_code_review_questions",
 ]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.code_review_epistemics")

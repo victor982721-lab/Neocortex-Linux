@@ -7,9 +7,6 @@ legal compatibility, imports project content, or grants mutation authority.
 """
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import base64
 import binascii
 import csv
@@ -1998,6 +1995,3 @@ __all__ = [
     "execute_pip_audit_known_vulnerabilities",
     "installed_environment_distributions",
 ]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.external_supply_chain_audit")

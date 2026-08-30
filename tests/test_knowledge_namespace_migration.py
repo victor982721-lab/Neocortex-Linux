@@ -20,15 +20,10 @@ MODULES = tuple(
 )
 
 
-def test_legacy_knowledge_modules_are_exact_product_aliases() -> None:
+def test_knowledge_modules_are_owned_by_the_canonical_tree() -> None:
     assert len(MODULES) == 28
     for name in MODULES:
-        legacy = importlib.import_module(f"_04_Nucleo_Operativo.{name}")
         product = importlib.import_module(f"neocortex.knowledge.{name}")
-
-        assert legacy is product
-        assert sys.modules[f"_04_Nucleo_Operativo.{name}"] is product
-        assert sys.modules[f"neocortex.knowledge.{name}"] is product
         assert Path(product.__file__).resolve().is_relative_to(KNOWLEDGE_ROOT)
 
 
@@ -77,5 +72,5 @@ def test_knowledge_contracts_keep_historical_pickle_fqns() -> None:
         assert restored == value
 
     assert contracts.KnowledgeTelemetryClock.__module__ == (
-        "_04_Nucleo_Operativo.knowledge_contracts"
+        "neocortex.knowledge.knowledge_contracts"
     )

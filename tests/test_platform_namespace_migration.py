@@ -12,37 +12,6 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PRODUCT_ROOT = PROJECT_ROOT / "neocortex" / "platform"
 
-LEGACY_ALIASES = {
-    "_04_Nucleo_Operativo.platform.shared.architecture_projection": (
-        "neocortex.platform.architecture_projection"
-    ),
-    "_04_Nucleo_Operativo.platform.shared.capability_registry": (
-        "neocortex.platform.capability_registry"
-    ),
-    "_04_Nucleo_Operativo.platform.shared.capability_registry_specs": (
-        "neocortex.platform.capability_registry_specs"
-    ),
-    "_04_Nucleo_Operativo.platform.shared.content_types": (
-        "neocortex.platform.content_types"
-    ),
-    "_04_Nucleo_Operativo.platform.shared.zip_safety": (
-        "neocortex.platform.zip_safety"
-    ),
-    "_04_Nucleo_Operativo.content_types": "neocortex.platform.content_types",
-    "_04_Nucleo_Operativo.zip_safety": "neocortex.platform.zip_safety",
-}
-
-
-def test_legacy_platform_modules_are_exact_product_aliases() -> None:
-    for legacy_name, product_name in LEGACY_ALIASES.items():
-        legacy = importlib.import_module(legacy_name)
-        product = importlib.import_module(product_name)
-
-        assert legacy is product
-        assert sys.modules[legacy_name] is product
-        assert sys.modules[product_name] is product
-
-
 def test_platform_implementation_lives_under_product_namespace() -> None:
     for name in (
         "architecture_projection",
@@ -100,22 +69,22 @@ print("PLATFORM_PACKAGE_IMPORT_LIGHT")
     assert completed.stdout.strip() == "PLATFORM_PACKAGE_IMPORT_LIGHT"
 
 
-def test_platform_symbols_keep_historical_pickle_fqns() -> None:
+def test_platform_symbols_are_owned_by_canonical_modules() -> None:
     projection = importlib.import_module("neocortex.platform.architecture_projection")
     registry = importlib.import_module("neocortex.platform.capability_registry")
     content_types = importlib.import_module("neocortex.platform.content_types")
     zip_safety = importlib.import_module("neocortex.platform.zip_safety")
 
     symbols = (
-        (projection, "ModuleEdge", "_04_Nucleo_Operativo.platform.shared.architecture_projection"),
-        (registry, "CapabilitySpec", "_04_Nucleo_Operativo.platform.shared.capability_registry"),
-        (content_types, "DetectedType", "_04_Nucleo_Operativo.content_types"),
-        (zip_safety, "ZipStructure", "_04_Nucleo_Operativo.zip_safety"),
-        (zip_safety, "RawDeflateMember", "_04_Nucleo_Operativo.zip_safety"),
+        (projection, "ModuleEdge", "neocortex.platform.architecture_projection"),
+        (registry, "CapabilitySpec", "neocortex.platform.capability_registry"),
+        (content_types, "DetectedType", "neocortex.platform.content_types"),
+        (zip_safety, "ZipStructure", "neocortex.platform.zip_safety"),
+        (zip_safety, "RawDeflateMember", "neocortex.platform.zip_safety"),
     )
-    for module, name, historical_module in symbols:
+    for module, name, canonical_module in symbols:
         symbol = getattr(module, name)
-        assert symbol.__module__ == historical_module
+        assert symbol.__module__ == canonical_module
         assert pickle.loads(pickle.dumps(symbol, protocol=5)) is symbol
 
     instances = (
@@ -132,10 +101,6 @@ def test_platform_symbols_keep_historical_pickle_fqns() -> None:
 
 def test_platform_capability_registry_specs_are_loaded_from_product_file() -> None:
     product = importlib.import_module("neocortex.platform.capability_registry_specs")
-    legacy = importlib.import_module(
-        "_04_Nucleo_Operativo.platform.shared.capability_registry_specs"
-    )
 
-    assert product is legacy
     assert product.CAPABILITY_SPEC_PAYLOADS
     assert Path(product.__file__).resolve() == PRODUCT_ROOT / "capability_registry_specs.py"

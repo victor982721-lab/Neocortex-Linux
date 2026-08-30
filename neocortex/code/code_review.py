@@ -1,9 +1,6 @@
 """Deterministic, read-only maintenance shortlist over published Code evidence."""
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import json
 import sqlite3
 import time
@@ -1392,6 +1389,3 @@ __all__ = [
     "CodeReviewSnapshot",
     "review_code_state",
 ]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.code_review")

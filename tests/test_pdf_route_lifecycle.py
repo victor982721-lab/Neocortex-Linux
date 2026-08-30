@@ -7,14 +7,14 @@ from __future__ import annotations
 
 from unittest.mock import Mock
 
-from _04_Nucleo_Operativo.pdf_derived import PdfDerivedSummary
-from _04_Nucleo_Operativo.pdf_route import (
+from neocortex.capabilities.formats.pdf.pdf_derived import PdfDerivedSummary
+from neocortex.capabilities.formats.pdf.pdf_route import (
     PdfRoute,
     _ExtractionStats,
     _IsolatedExtractionState,
     _PdfRunPlan,
 )
-from _04_Nucleo_Operativo.pdf_route_models import (
+from neocortex.capabilities.formats.pdf.pdf_route_models import (
     CacheDecision,
     DocumentResult,
     PdfRouteSummary,

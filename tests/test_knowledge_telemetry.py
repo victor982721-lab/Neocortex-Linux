@@ -12,9 +12,9 @@ from pathlib import Path
 
 import pytest
 
-import _04_Nucleo_Operativo.knowledge_search as knowledge_search
-from _04_Nucleo_Operativo.knowledge_context import build_context_bundle
-from _04_Nucleo_Operativo.knowledge_contracts import (
+import neocortex.knowledge.knowledge_search as knowledge_search
+from neocortex.knowledge.knowledge_context import build_context_bundle
+from neocortex.knowledge.knowledge_contracts import (
     KNOWLEDGE_TELEMETRY_CLOCK_SIGNATURE,
     KNOWLEDGE_TELEMETRY_UNIDENTIFIED_CLOCK_SIGNATURE,
     KnowledgePhaseTiming,
@@ -26,21 +26,21 @@ from _04_Nucleo_Operativo.knowledge_contracts import (
     OwnerAvailability,
     OwnerSnapshot,
 )
-from _04_Nucleo_Operativo.knowledge_exact import (
+from neocortex.knowledge.knowledge_exact import (
     ExactLookupKind,
     ExactLookupRequest,
     ExactLookupTerm,
     ExactOwnerTiming,
     lookup_exact,
 )
-from _04_Nucleo_Operativo.knowledge_planner import KnowledgeQuery, plan_knowledge_query
-from _04_Nucleo_Operativo.knowledge_search import (
+from neocortex.knowledge.knowledge_planner import KnowledgeQuery, plan_knowledge_query
+from neocortex.knowledge.knowledge_search import (
     RankingExecution,
     execute_knowledge_search,
 )
-from _04_Nucleo_Operativo.knowledge_service import KnowledgeSearchService
-from _04_Nucleo_Operativo.knowledge_snapshot import KnowledgeStatePaths
-from _04_Nucleo_Operativo.semantic_lexical import (
+from neocortex.knowledge.knowledge_service import KnowledgeSearchService
+from neocortex.knowledge.knowledge_snapshot import KnowledgeStatePaths
+from neocortex.semantic.semantic_lexical import (
     LexicalStatePaths,
     search_lexical_sources,
 )

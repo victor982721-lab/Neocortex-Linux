@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from _04_Nucleo_Operativo.code_state_topology_analysis import (
+from neocortex.code.code_state_topology_analysis import (
     TEXT_TERMINAL_PUBLICATION_QUESTION,
     CodeStateTopologyResolutionError,
     analyze_text_terminal_publication,
@@ -15,7 +15,7 @@ from _04_Nucleo_Operativo.code_state_topology_analysis import (
     resolve_state_topology_questions,
     state_topology_questions,
 )
-from _04_Nucleo_Operativo.derivation_contracts import (
+from neocortex.semantic.derivation_contracts import (
     InputBinding,
     MaterializationRef,
     OutputBinding,
@@ -23,20 +23,20 @@ from _04_Nucleo_Operativo.derivation_contracts import (
     StageDescriptor,
     WorkExecutionMode,
 )
-from _04_Nucleo_Operativo.knowledge_contracts import (
+from neocortex.knowledge.knowledge_contracts import (
     ResourceRef,
     RevisionRef,
     RevisionState,
 )
-from _04_Nucleo_Operativo.semantic_models import fingerprint_text
-from _04_Nucleo_Operativo.text_derivation_repository import (
+from neocortex.semantic.semantic_models import fingerprint_text
+from neocortex.capabilities.formats.text.text_derivation_repository import (
     TextDerivationAttemptStart,
     begin_text_derivation_attempt,
     compute_text_fts_fingerprint,
     compute_text_representation_fingerprint,
     succeed_text_derivation_attempt,
 )
-from _04_Nucleo_Operativo.text_state import (
+from neocortex.capabilities.formats.text.text_state import (
     TEXT_SCHEMA_VERSION,
     initialize_text_state,
     text_database,

@@ -6,9 +6,6 @@ honours a hard Unicode-codepoint budget without silently cutting citations.
 """
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import json
 import math
 from dataclasses import dataclass, field, replace
@@ -1249,6 +1246,3 @@ __all__ = (
     "build_knowledge_context",
     "estimate_context_tokens",
 )
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.knowledge_context")

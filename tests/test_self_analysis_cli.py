@@ -12,10 +12,10 @@ from pathlib import Path
 
 import pytest
 
-from _04_Nucleo_Operativo.cli_config import framework_config_from_args
-from _04_Nucleo_Operativo.cli_parser import build_parser
-from _04_Nucleo_Operativo.cli_validation import validate_arguments
-from _04_Nucleo_Operativo import cli_validation
+from neocortex.api.cli.cli_config import framework_config_from_args
+from neocortex.api.cli.cli_parser import build_parser
+from neocortex.api.cli.cli_validation import validate_arguments
+from neocortex.api.cli import cli_validation
 
 # endregion [01]
 
@@ -248,7 +248,7 @@ def test_trusted_deep_normalizes_bounded_selection(
         "--deep-shard-size",
         "250",
         "--deep-mutation-target",
-        r"_04_Nucleo_Operativo\external_deep_coverage.py",
+        r"neocortex\external_deep_coverage.py",
         "--deep-mutation-symbol",
         "external_deep_coverage._normalize",
         "--deep-mutation-max-mutants",
@@ -268,7 +268,7 @@ def test_trusted_deep_normalizes_bounded_selection(
     assert config.deep_max_tests == 10000
     assert config.deep_time_budget_seconds == 900
     assert config.deep_shard_size == 250
-    assert config.deep_mutation_target == "_04_Nucleo_Operativo/external_deep_coverage.py"
+    assert config.deep_mutation_target == "neocortex/external_deep_coverage.py"
     assert config.deep_mutation_symbol == "external_deep_coverage._normalize"
     assert config.deep_mutation_max_mutants == 100
     assert config.deep_mutation_timeout_seconds == 120
@@ -430,7 +430,7 @@ def test_trusted_deep_mutation_target_requires_explicit_suite(
             "--state-directory",
             str(tmp_path / "state"),
             "--deep-mutation-target",
-            "_04_Nucleo_Operativo/external_deep_coverage.py",
+            "neocortex/external_deep_coverage.py",
         )
 
 

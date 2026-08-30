@@ -1,6 +1,6 @@
 """Pure Semantic plan configuration, projection and result assembly helpers.
 # region [00] Contexto del módulo
-# Módulo: _04_Nucleo_Operativo/semantic_plan_results.py
+# Módulo: neocortex/semantic_plan_results.py
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
@@ -12,9 +12,6 @@ planner facade.
 
 # region [01] Dependencias del módulo
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import itertools
 import sqlite3
 from collections.abc import Callable, Iterator, Mapping, Sequence
@@ -852,6 +849,3 @@ def assemble_semantic_plan(
 
 
 # endregion [02]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.semantic_plan_results")

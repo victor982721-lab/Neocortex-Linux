@@ -16,8 +16,8 @@ import time
 
 import pytest
 
-from _04_Nucleo_Operativo import isolated_process as isolated_process_module
-from _04_Nucleo_Operativo.bounded_subprocess import (
+from neocortex.runtime.control import isolated_process as isolated_process_module
+from neocortex.runtime.control.bounded_subprocess import (
     SubprocessOutputLimitError,
     run_bounded_capture,
 )
@@ -81,7 +81,7 @@ def test_bounded_capture_without_input_does_not_create_a_temporary_file(
         raise AssertionError("stdin without a payload must use DEVNULL")
 
     monkeypatch.setattr(
-        "_04_Nucleo_Operativo.bounded_subprocess.tempfile.TemporaryFile",
+        "neocortex.runtime.control.bounded_subprocess.tempfile.TemporaryFile",
         reject_temporary_file,
     )
 

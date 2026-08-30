@@ -18,14 +18,8 @@ from unittest.mock import Mock
 
 import pytest
 
-from _04_Nucleo_Operativo import (
-    knowledge_context,
-    knowledge_evaluation as evaluation_module,
-    knowledge_planner,
-    knowledge_search,
-    knowledge_service,
-)
-from _04_Nucleo_Operativo.knowledge_evaluation import (
+from neocortex.knowledge import knowledge_context, knowledge_evaluation as evaluation_module, knowledge_planner, knowledge_search, knowledge_service
+from neocortex.knowledge.knowledge_evaluation import (
     MAX_GOLDEN_FIXTURE_BYTES,
     REQUIRED_GOLDEN_CATEGORIES,
     SCRIPTED_FIXTURE_LIMITATION,
@@ -43,8 +37,8 @@ from _04_Nucleo_Operativo.knowledge_evaluation import (
     load_golden_suite,
     run_golden_suite,
 )
-from _04_Nucleo_Operativo.knowledge_planner import KnowledgeQuery
-from _04_Nucleo_Operativo.knowledge_search import KnowledgeSearchResult
+from neocortex.knowledge.knowledge_planner import KnowledgeQuery
+from neocortex.knowledge.knowledge_search import KnowledgeSearchResult
 # endregion [01]
 
 # region [02] Implementación

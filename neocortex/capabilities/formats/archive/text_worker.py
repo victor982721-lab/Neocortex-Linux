@@ -257,7 +257,7 @@ def main(argv: list[str] | None = None) -> int:
 
 for _defined_value in tuple(globals().values()):
     if getattr(_defined_value, "__module__", None) == __name__:
-        _defined_value.__module__ = "_04_Nucleo_Operativo.archive_text_worker"
+        _defined_value.__module__ = "neocortex.capabilities.formats.archive.text_worker"
 del _defined_value
 
 

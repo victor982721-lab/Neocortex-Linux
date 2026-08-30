@@ -8,19 +8,19 @@ from pathlib import Path
 
 import pytest
 
-import _04_Nucleo_Operativo.text_route as text_route_module
+import neocortex.capabilities.formats.text.text_route as text_route_module
 from neocortex.deduplication import FileSnapshot, snapshot_path
-from _04_Nucleo_Operativo.cancellation import CancellationToken
-from _04_Nucleo_Operativo.document_catalog import (
+from neocortex.runtime.control.cancellation import CancellationToken
+from neocortex.documents.document_catalog import (
     document_catalog_database,
     list_catalog_documents,
     update_document_catalog,
 )
-from _04_Nucleo_Operativo.document_cache_sync import synchronize_moved_document
-from _04_Nucleo_Operativo.file_identity import file_key_from_snapshot
-from _04_Nucleo_Operativo.route_filters import CandidateSelection
-from _04_Nucleo_Operativo.text_route import TextRoute, TextRouteConfig
-from _04_Nucleo_Operativo.text_state import read_text_status, search_text_state
+from neocortex.documents.document_cache_sync import synchronize_moved_document
+from neocortex.foundation.file_identity import file_key_from_snapshot
+from neocortex.safety.route_filters import CandidateSelection
+from neocortex.capabilities.formats.text.text_route import TextRoute, TextRouteConfig
+from neocortex.capabilities.formats.text.text_state import read_text_status, search_text_state
 
 
 class FakeTextFrameworkState:

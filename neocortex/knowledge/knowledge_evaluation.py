@@ -9,9 +9,6 @@ not semantic-model quality or production latency.
 """
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import json
 import math
 import time
@@ -2413,6 +2410,3 @@ def evaluate_golden_suite(
 
 
 # endregion [04]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.knowledge_evaluation")

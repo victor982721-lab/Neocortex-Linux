@@ -1,10 +1,7 @@
 """Declared core port for the conservative public value-review adapter."""
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
-from neocortex.api.cli.cli_knowledge import KnowledgeExitCode
+from neocortex.api.status_codes import KnowledgeExitCode
 from neocortex.workflow.review.value_review import preview_value_review
 from neocortex.workflow.review.value_review_contracts import (
     ValueReviewAvailability,
@@ -54,6 +51,3 @@ __all__ = (
     "read_value_review_task_queue",
     "refresh_value_review_tasks",
 )
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.value_review_port")

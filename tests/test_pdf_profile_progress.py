@@ -9,7 +9,7 @@ import time
 from unittest.mock import patch
 
 from neocortex.progress import ProgressEvent
-from _04_Nucleo_Operativo.pdf_derived import PdfDerivedIndexer
+from neocortex.capabilities.formats.pdf.pdf_derived import PdfDerivedIndexer
 # endregion [01]
 
 # region [02] Implementación
@@ -20,7 +20,7 @@ def test_profile_wait_emits_periodic_liveness_metrics() -> None:
     indexer = object.__new__(PdfDerivedIndexer)
     indexer.workers = 1
     indexer.progress = events.append
-    from _04_Nucleo_Operativo.cancellation import CancellationToken
+    from neocortex.runtime.control.cancellation import CancellationToken
 
     indexer.cancellation = CancellationToken()
     indexer._profile_candidates = (  # type: ignore[method-assign]
@@ -35,7 +35,7 @@ def test_profile_wait_emits_periodic_liveness_metrics() -> None:
     indexer._profile_document_admitted = admit_document  # type: ignore[method-assign]
 
     with patch(
-        "_04_Nucleo_Operativo.pdf_derived.PROFILE_PROGRESS_INTERVAL_SECONDS",
+        "neocortex.capabilities.formats.pdf.pdf_derived.PROFILE_PROGRESS_INTERVAL_SECONDS",
         0.01,
     ):
         built, errors = indexer._build_profiles()

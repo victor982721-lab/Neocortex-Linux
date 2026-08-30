@@ -13,29 +13,29 @@ from pathlib import Path
 import pytest
 
 from neocortex.deduplication import snapshot_path
-from _04_Nucleo_Operativo import document_organization_application as application
-from _04_Nucleo_Operativo import document_organization_planning as planning
-from _04_Nucleo_Operativo.cli_parser import build_parser
-from _04_Nucleo_Operativo.corpus_access import (
+from neocortex.documents import document_organization_application as application
+from neocortex.documents import document_organization_planning as planning
+from neocortex.api.cli.cli_parser import build_parser
+from neocortex.safety.corpus_access import (
     CorpusAccessPolicy,
     CorpusMutationGuard,
     ProtectedAnalysisRootError,
 )
-from _04_Nucleo_Operativo.document_catalog import (
+from neocortex.documents.document_catalog import (
     document_catalog_database,
     initialize_document_catalog,
 )
-from _04_Nucleo_Operativo.internal_paths import (
+from neocortex.safety.internal_paths import (
     InternalPathProtectionError,
     InternalPathSpec,
     InternalPathsPolicy,
 )
-from _04_Nucleo_Operativo.protected_content import (
+from neocortex.safety.protected_content import (
     ProtectedContentError,
     ProtectedContentPolicy,
     ProtectedPathSpec,
 )
-from _04_Nucleo_Operativo.windows_handle_mutation import (
+from neocortex.safety.windows_handle_mutation import (
     MutationEffectUncertainError,
 )
 from tests.internal_paths_test_support import disjoint_internal_paths_policy

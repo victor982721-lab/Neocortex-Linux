@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import unittest
 
-from _04_Nucleo_Operativo.retry_policy import (
+from neocortex.runtime.control.retry_policy import (
     PDF_MAX_AUTOMATIC_RETRIES,
     automatic_retry_due,
     classify_pdf_failure,

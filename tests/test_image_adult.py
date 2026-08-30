@@ -9,19 +9,19 @@ from unittest.mock import patch
 from PIL import Image
 
 from neocortex.deduplication import snapshot_path
-from _04_Nucleo_Operativo.image_adult import (
+from neocortex.capabilities.formats.image.adult import (
     NudeNetAdultClassifier,
     decide_adult_classification,
     is_adult_model_candidate,
 )
-from _04_Nucleo_Operativo.image_models import (
+from neocortex.capabilities.formats.image.models import (
     AdultDetection,
     DocumentCandidate,
     Features,
 )
-from _04_Nucleo_Operativo.image_route import ImageRouteSummary
-from _04_Nucleo_Operativo.models import FrameworkConfig
-from _04_Nucleo_Operativo.orchestrator import FrameworkOrchestrator
+from neocortex.capabilities.formats.image.route import ImageRouteSummary
+from neocortex.runtime.models import FrameworkConfig
+from neocortex.runtime.orchestration.orchestrator import FrameworkOrchestrator
 
 
 # region [01] Bounded fixtures
@@ -231,7 +231,7 @@ class AdultImageApplyTests(unittest.TestCase):
             )
 
             with patch(
-                "_04_Nucleo_Operativo.image_state.iter_explicit_adult_candidates",
+                "neocortex.capabilities.formats.image.state.iter_explicit_adult_candidates",
                 return_value=iter(((snapshot, "model=evidence"),)),
             ):
                 updated = orchestrator._apply_explicit_adult_images(runner, summary, state, 7)

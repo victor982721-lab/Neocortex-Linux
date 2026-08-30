@@ -1,15 +1,12 @@
 """Bounded read-only inspection of semantic state."""
 # region [00] Contexto del módulo
-# Módulo: _04_Nucleo_Operativo/semantic_status_service.py
+# Módulo: neocortex/semantic_status_service.py
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
 
 # region [01] Dependencias del módulo
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 from pathlib import Path
 
 from .semantic_service_contracts import SEMANTIC_DATABASE_NAME, SemanticStatus
@@ -80,6 +77,3 @@ def semantic_status(
         generation_summaries,
     )
 # endregion [02]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.semantic_status_service")

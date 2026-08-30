@@ -8,9 +8,6 @@ eligible.  The result is an observation, never a defect or repair decision.
 """
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import json
 import sqlite3
 import time
@@ -1089,6 +1086,3 @@ __all__ = [
     "parse_code_state_projection_payload",
     "state_projection_questions",
 ]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.code_state_projection_analysis")

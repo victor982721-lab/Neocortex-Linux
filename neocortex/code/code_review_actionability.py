@@ -8,9 +8,6 @@ experiment, never a change recommendation by itself.
 """
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 from dataclasses import dataclass
 from typing import Literal
 
@@ -454,6 +451,3 @@ __all__ = [
     "assess_code_review_actionability",
     "classify_source_role",
 ]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.code_review_actionability")

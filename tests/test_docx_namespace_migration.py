@@ -16,7 +16,6 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 CANONICAL_ROOT = "neocortex.capabilities.formats.docx"
 PRODUCT_ROOT = "neocortex.capabilities.formats.docx"
-LEGACY_ROOT = "_04_Nucleo_Operativo"
 MODULE_NAMES = ("integrity", "layout", "models", "route", "schema", "state")
 
 HISTORICAL_SYMBOLS = {
@@ -122,19 +121,6 @@ def _canonical_module(name: str):
     return importlib.import_module(f"{CANONICAL_ROOT}.{name}")
 
 
-def _legacy_module(name: str):
-    return importlib.import_module(f"{LEGACY_ROOT}.docx_{name}")
-
-
-@pytest.mark.parametrize("name", MODULE_NAMES)
-def test_legacy_modules_are_real_aliases_of_canonical_modules(name: str) -> None:
-    canonical = _canonical_module(name)
-    legacy = _legacy_module(name)
-
-    assert legacy is canonical
-    assert sys.modules[f"{LEGACY_ROOT}.docx_{name}"] is canonical
-
-
 def test_docx_implementation_lives_under_the_product_namespace() -> None:
     product_root = PROJECT_ROOT / "neocortex" / "capabilities" / "formats" / "docx"
     for name in MODULE_NAMES:
@@ -157,17 +143,16 @@ def test_docx_implementation_lives_under_the_product_namespace() -> None:
 
 
 @pytest.mark.parametrize("name", MODULE_NAMES)
-def test_module_symbols_keep_historical_serializable_fqns(name: str) -> None:
+def test_module_symbols_are_owned_by_canonical_modules(name: str) -> None:
     module = _canonical_module(name)
-    historical_module = f"{LEGACY_ROOT}.docx_{name}"
 
     for symbol_name in HISTORICAL_SYMBOLS[name]:
         symbol = getattr(module, symbol_name)
-        assert symbol.__module__ == historical_module
+        assert symbol.__module__ == module.__name__
         assert pickle.loads(pickle.dumps(symbol, protocol=5)) is symbol
 
 
-def test_docx_config_remains_pickle_compatible_through_legacy_fqn() -> None:
+def test_docx_config_roundtrips_through_canonical_fqn() -> None:
     models = _canonical_module("models")
     config = models.DocxRouteConfig(Path("state/docx.sqlite3"))
 
@@ -175,28 +160,11 @@ def test_docx_config_remains_pickle_compatible_through_legacy_fqn() -> None:
 
     assert restored == config
     assert type(restored) is models.DocxRouteConfig
-    assert type(restored).__module__ == "_04_Nucleo_Operativo.docx_models"
-
-
-def test_legacy_monkeypatch_seams_reach_canonical_globals(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    cases = (
-        ("integrity", "read_raw_deflate_member"),
-        ("route", "extract_docx"),
-        ("state", "connect_docx_state"),
-    )
-    sentinel = object()
-
-    for module_name, attribute_name in cases:
-        legacy = _legacy_module(module_name)
-        canonical = _canonical_module(module_name)
-        monkeypatch.setattr(legacy, attribute_name, sentinel)
-        assert getattr(canonical, attribute_name) is sentinel
+    assert type(restored).__module__ == "neocortex.capabilities.formats.docx.models"
 
 
 def test_docx_uses_the_shared_zip_safety_primitives() -> None:
-    shared = importlib.import_module("_04_Nucleo_Operativo.platform.shared.zip_safety")
+    shared = importlib.import_module("neocortex.platform.zip_safety")
     integrity = _canonical_module("integrity")
     route = _canonical_module("route")
 
@@ -231,7 +199,7 @@ def test_docx_package_import_is_light_in_a_fresh_process() -> None:
         importlib.import_module({CANONICAL_ROOT!r})
         forbidden = {{
             {", ".join(repr(f"{CANONICAL_ROOT}.{name}") for name in MODULE_NAMES)},
-            "_04_Nucleo_Operativo.platform.shared.zip_safety",
+            "neocortex.platform.zip_safety",
             "neocortex.deduplication",
         }}
         loaded = forbidden.intersection(sys.modules)

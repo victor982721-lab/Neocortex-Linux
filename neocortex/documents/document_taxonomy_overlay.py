@@ -1,15 +1,12 @@
 """Bounded loading and validation for user-controlled taxonomy overlays."""
 # region [00] Contexto del módulo
-# Módulo: _04_Nucleo_Operativo/document_taxonomy_overlay.py
+# Módulo: neocortex/document_taxonomy_overlay.py
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
 
 # region [01] Dependencias del módulo
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import re
 import tomllib
 from dataclasses import dataclass
@@ -353,6 +350,3 @@ def _deduplicate_projects(values: Iterable[ProjectSpec]) -> tuple[ProjectSpec, .
         )
     return tuple(merged.values())
 # endregion [02]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.document_taxonomy_overlay")

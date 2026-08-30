@@ -13,23 +13,23 @@ from typing import Any
 
 import pytest
 
-import _04_Nucleo_Operativo.knowledge_snapshot as knowledge_snapshot
+import neocortex.knowledge.knowledge_snapshot as knowledge_snapshot
 from neocortex.deduplication import schema as inventory_schema_module
 from neocortex.deduplication.schema import initialize_inventory_schema
-from _04_Nucleo_Operativo import framework_schema as framework_schema_module
-from _04_Nucleo_Operativo.archive_state import initialize_archive_state
-from _04_Nucleo_Operativo.code_schema import initialize_code_state
-from _04_Nucleo_Operativo.document_catalog import initialize_document_catalog
-from _04_Nucleo_Operativo.knowledge_contracts import (
+from neocortex.persistence import framework_schema as framework_schema_module
+from neocortex.capabilities.formats.archive.state import initialize_archive_state
+from neocortex.code.code_schema import initialize_code_state
+from neocortex.documents.document_catalog import initialize_document_catalog
+from neocortex.knowledge.knowledge_contracts import (
     OwnerAvailability,
     SnapshotConsistency,
 )
-from _04_Nucleo_Operativo.knowledge_snapshot import (
+from neocortex.knowledge.knowledge_snapshot import (
     KnowledgeStatePaths,
     KnowledgeStateRootError,
     collect_knowledge_snapshot,
 )
-from _04_Nucleo_Operativo.review_task_contracts import (
+from neocortex.workflow.review.review_task_contracts import (
     CanonicalJsonObject,
     ReviewTaskActorKind,
     ReviewTaskCoverage,
@@ -40,24 +40,24 @@ from _04_Nucleo_Operativo.review_task_contracts import (
     ReviewTaskState,
     ReviewTaskTransition,
 )
-from _04_Nucleo_Operativo.review_task_repository import (
+from neocortex.workflow.review.review_task_repository import (
     append_review_task_event,
     list_current_review_tasks,
     publish_review_task_page,
 )
-from _04_Nucleo_Operativo.semantic_models import (
+from neocortex.semantic.semantic_models import (
     EmbeddingModality,
     EmbeddingModelSpec,
     EmbeddingRole,
 )
-from _04_Nucleo_Operativo.semantic_state import (
+from neocortex.semantic.semantic_state import (
     initialize_semantic_state,
     register_embedding_model,
     semantic_database,
 )
-from _04_Nucleo_Operativo.pdf_state import SCHEMA_VERSION as PDF_SCHEMA_VERSION
-from _04_Nucleo_Operativo.text_state import initialize_text_state
-from _04_Nucleo_Operativo.video_state import initialize_video_state
+from neocortex.capabilities.formats.pdf.pdf_state import SCHEMA_VERSION as PDF_SCHEMA_VERSION
+from neocortex.capabilities.formats.text.text_state import initialize_text_state
+from neocortex.capabilities.formats.video.state import initialize_video_state
 # endregion [01]
 
 # region [02] Implementación
@@ -681,7 +681,7 @@ def test_public_snapshot_rejects_non_file_owner_state_path(
 
 
 def test_snapshot_lazily_validates_an_existing_image_owner(tmp_path: Path) -> None:
-    from _04_Nucleo_Operativo.image_state import (
+    from neocortex.capabilities.formats.image.state import (
         SCHEMA_VERSION,
         initialize_image_state,
     )

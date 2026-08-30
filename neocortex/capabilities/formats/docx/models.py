@@ -201,5 +201,5 @@ for _historical_symbol in (
     DocxPart,
     ExtractedDocx,
 ):
-    _historical_symbol.__module__ = "_04_Nucleo_Operativo.docx_models"
+    _historical_symbol.__module__ = "neocortex.capabilities.formats.docx.models"
 del _historical_symbol

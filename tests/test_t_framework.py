@@ -25,26 +25,22 @@ from PIL import Image
 
 from neocortex.enumeration import JournalCursor
 from neocortex.deduplication import DedupIndex
-from _04_Nucleo_Operativo import (
-    FrameworkConfig,
-    FrameworkOrchestrator,
-    RouteAdapter,
-)
-from _04_Nucleo_Operativo.cli_reporting import _print_image_report
-from _04_Nucleo_Operativo.image_route import ImageRouteSummary
-from _04_Nucleo_Operativo.reconcile import reconcile_usn_window
-from _04_Nucleo_Operativo.orchestrator import RouteExecutionError
-from _04_Nucleo_Operativo.document_organization import (
+from neocortex.api.public import FrameworkConfig, FrameworkOrchestrator, RouteAdapter
+from neocortex.api.cli.cli_reporting import _print_image_report
+from neocortex.capabilities.formats.image.route import ImageRouteSummary
+from neocortex.integrations.inventory.reconcile import reconcile_usn_window
+from neocortex.runtime.orchestration.orchestrator import RouteExecutionError
+from neocortex.documents.document_organization import (
     OrganizationApplySummary,
     OrganizationPlanSummary,
 )
 from neocortex.platform_policy import default_corpus_root
-from _04_Nucleo_Operativo.route_selection import (
+from neocortex.runtime.orchestration.route_selection import (
     BUILTIN_ROUTE_ORDER,
     normalize_route_selection,
 )
-from _04_Nucleo_Operativo.route_registry import builtin_route_registry
-from _04_Nucleo_Operativo.state import (
+from neocortex.runtime.orchestration.route_registry import builtin_route_registry
+from neocortex.persistence.state import (
     SCHEMA_VERSION,
     FrameworkRouteState,
     FrameworkState,
@@ -56,11 +52,11 @@ from neocortex.progress import (
     RecordingProgress,
     RichProgress,
 )
-from _04_Nucleo_Operativo.cli_parser import build_parser as _parser
-from _04_Nucleo_Operativo.cli_reporting import (
+from neocortex.api.cli.cli_parser import build_parser as _parser
+from neocortex.api.cli.cli_reporting import (
     has_strict_route_errors as _has_strict_route_errors,
 )
-from _04_Nucleo_Operativo.cli_validation import validate_arguments as _validate_arguments
+from neocortex.api.cli.cli_validation import validate_arguments as _validate_arguments
 from tests.internal_paths_test_support import (
     begin_signed_normal_run,
     disjoint_internal_paths_policy,
@@ -291,7 +287,7 @@ class CommandLineTests(unittest.TestCase):
 
 class ProgressTests(unittest.TestCase):
     def test_framework_stream_environment_selects_line_reporter(self) -> None:
-        from _04_Nucleo_Operativo.cli_app import run_framework
+        from neocortex.api.cli.cli_app import run_framework
 
         observed: list[object] = []
 
@@ -302,7 +298,7 @@ class ProgressTests(unittest.TestCase):
         with (
             patch.dict(os.environ, {"NEOCORTEX_PROGRESS_STREAM": "1"}),
             patch(
-                "_04_Nucleo_Operativo.cli_app._run_framework_with_progress",
+                "neocortex.api.cli.cli_app._run_framework_with_progress",
                 side_effect=record,
             ),
         ):
@@ -472,8 +468,8 @@ class OrchestratorTests(unittest.TestCase):
         policy = disjoint_internal_paths_policy(Path(policy_root.name))
         self._internal_paths_policy = policy
         for target in (
-            "_04_Nucleo_Operativo.inventory_boundary.canonical_internal_paths_policy",
-            "_04_Nucleo_Operativo.framework_state_common.canonical_internal_paths_policy",
+            "neocortex.integrations.inventory.inventory_boundary.canonical_internal_paths_policy",
+            "neocortex.persistence.framework_state_common.canonical_internal_paths_policy",
         ):
             policy_patch = patch(target, return_value=policy)
             policy_patch.start()
@@ -1157,11 +1153,11 @@ class OrchestratorTests(unittest.TestCase):
             )
             with (
                 patch(
-                    "_04_Nucleo_Operativo.document_organization.plan_document_organization",
+                    "neocortex.documents.document_organization.plan_document_organization",
                     side_effect=plan,
                 ),
                 patch(
-                    "_04_Nucleo_Operativo.document_organization.apply_all_document_organization",
+                    "neocortex.documents.document_organization.apply_all_document_organization",
                     side_effect=apply_all,
                 ),
             ):
@@ -1189,7 +1185,7 @@ class OrchestratorTests(unittest.TestCase):
                 route_registry={"pdf": RouteAdapter("pdf", lambda _context: {})},
             )
             with patch(
-                "_04_Nucleo_Operativo.document_organization.plan_document_organization"
+                "neocortex.documents.document_organization.plan_document_organization"
             ) as plan:
                 result = orchestrator.run_initial()
             plan.assert_not_called()

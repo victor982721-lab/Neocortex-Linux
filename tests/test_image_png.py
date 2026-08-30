@@ -6,8 +6,8 @@ import struct
 import zlib
 from pathlib import Path
 
-from _04_Nucleo_Operativo.image_errors import ImageFailure, refine_image_failure
-from _04_Nucleo_Operativo.image_png import PNG_SIGNATURE, probe_png_structure
+from neocortex.capabilities.formats.image.errors import ImageFailure, refine_image_failure
+from neocortex.capabilities.formats.image.png import PNG_SIGNATURE, probe_png_structure
 
 
 def _chunk(kind: bytes, payload: bytes) -> bytes:

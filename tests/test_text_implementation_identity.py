@@ -12,12 +12,12 @@ from pathlib import Path
 
 import pytest
 
-import _04_Nucleo_Operativo.text_route as text_route_module
+import neocortex.capabilities.formats.text.text_route as text_route_module
 import neocortex
 from neocortex.deduplication import FileSnapshot, snapshot_path
-from _04_Nucleo_Operativo.cancellation import CancellationToken
-from _04_Nucleo_Operativo.route_filters import CandidateSelection
-from _04_Nucleo_Operativo.text_route import TextRoute, TextRouteConfig
+from neocortex.runtime.control.cancellation import CancellationToken
+from neocortex.safety.route_filters import CandidateSelection
+from neocortex.capabilities.formats.text.text_route import TextRoute, TextRouteConfig
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]

@@ -1,9 +1,6 @@
 """Incremental extraction for physical text, email, and legacy Office files."""
 
 from __future__ import annotations
-
-from . import preserve_legacy_module as _preserve_legacy_module
-
 import hashlib
 import json
 import os
@@ -1928,5 +1925,3 @@ __all__ = (
     "TextRouteConfig",
     "TextRouteSummary",
 )
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.text_route")

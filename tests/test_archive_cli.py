@@ -7,11 +7,11 @@ from pathlib import Path
 import pytest
 
 from neocortex.deduplication import snapshot_path
-from _04_Nucleo_Operativo.archive_route import ArchiveRoute, ArchiveRouteConfig
-from _04_Nucleo_Operativo.cli_app import dispatch_direct
-from _04_Nucleo_Operativo.cli_parser import build_parser
-from _04_Nucleo_Operativo.cli_validation import validate_arguments
-from _04_Nucleo_Operativo.cancellation import CancellationToken
+from neocortex.capabilities.formats.archive.route import ArchiveRoute, ArchiveRouteConfig
+from neocortex.api.cli.cli_app import dispatch_direct
+from neocortex.api.cli.cli_parser import build_parser
+from neocortex.api.cli.cli_validation import validate_arguments
+from neocortex.runtime.control.cancellation import CancellationToken
 from tests.test_archive_route import FakeFrameworkRouteState
 
 

@@ -26,11 +26,6 @@ MODULE_NAMES = (
     "state",
     "xlsx",
 )
-MODULE_MOVES = {
-    "legacy_worker": "_04_Nucleo_Operativo.legacy_office_worker",
-    "route": "_04_Nucleo_Operativo.office_route",
-    "state": "_04_Nucleo_Operativo.office_state",
-}
 HISTORICAL_SYMBOLS = {
     "legacy_worker": ("main",),
     "route": ("OfficeRoute", "OfficeRouteConfig", "OfficeRouteSummary"),
@@ -40,18 +35,6 @@ HISTORICAL_SYMBOLS = {
 
 def _canonical_module(name: str):
     return importlib.import_module(f"{CANONICAL_ROOT}.{name}")
-
-
-@pytest.mark.parametrize(("name", "legacy_name"), MODULE_MOVES.items())
-def test_legacy_office_modules_are_exact_canonical_aliases(
-    name: str,
-    legacy_name: str,
-) -> None:
-    canonical = _canonical_module(name)
-    legacy = importlib.import_module(legacy_name)
-
-    assert legacy is canonical
-    assert sys.modules[legacy_name] is canonical
 
 
 def test_office_implementation_lives_under_the_product_namespace() -> None:
@@ -76,13 +59,13 @@ def test_office_implementation_lives_under_the_product_namespace() -> None:
         assert PRODUCT_ROOT in source
 
 
-@pytest.mark.parametrize(("name", "legacy_name"), MODULE_MOVES.items())
-def test_office_symbols_keep_historical_pickle_fqns(name: str, legacy_name: str) -> None:
+@pytest.mark.parametrize("name", ("legacy_worker", "route", "state"))
+def test_office_symbols_are_owned_by_canonical_modules(name: str) -> None:
     module = _canonical_module(name)
 
     for symbol_name in HISTORICAL_SYMBOLS[name]:
         symbol = getattr(module, symbol_name)
-        assert symbol.__module__ == legacy_name
+        assert symbol.__module__ == module.__name__
         assert pickle.loads(pickle.dumps(symbol, protocol=5)) is symbol
 
 
@@ -94,24 +77,8 @@ def test_office_summary_instance_remains_pickle_compatible() -> None:
 
     assert restored == summary
     assert type(restored) is route.OfficeRouteSummary
-    assert type(restored).__module__ == "_04_Nucleo_Operativo.office_route"
+    assert type(restored).__module__ == "neocortex.capabilities.formats.office.route"
     assert get_type_hints(route.OfficeRouteConfig)["selection"].__name__ == ("CandidateSelection")
-
-
-def test_legacy_office_monkeypatch_reaches_canonical_globals(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    cases = (
-        ("legacy_worker", "os"),
-        ("route", "_extract_xlsx_shared_strings"),
-        ("state", "_migrate_office_v2_path_collation"),
-    )
-    sentinel = object()
-    for module_name, attribute_name in cases:
-        legacy = importlib.import_module(MODULE_MOVES[module_name])
-        canonical = _canonical_module(module_name)
-        monkeypatch.setattr(legacy, attribute_name, sentinel)
-        assert getattr(canonical, attribute_name) is sentinel
 
 
 def test_office_package_import_is_light_in_a_fresh_process() -> None:

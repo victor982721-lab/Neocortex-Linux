@@ -9,7 +9,7 @@
 
 ## Finalidad y principios
 
-NeoCortex es un framework local para Windows y Linux que permite descubrir, identificar, extraer,
+NeoCortex es un framework local para Linux/Kubuntu que permite descubrir, identificar, extraer,
 indexar, relacionar, clasificar, revisar y buscar contenido personal de forma
 incremental. Sus rutas actuales cubren PDF, DOCX, otros documentos Office,
 ZIP anidados, texto físico/correo/Office heredado, audio, video, imágenes y
@@ -40,38 +40,34 @@ eludirlo.
 | Tema | Fuente primaria |
 |---|---|
 | Entry point instalado | `[project.scripts]` de `pyproject.toml` y `neocortex.cli` |
-| Parser y validación CLI | `cli_parser.py` y `cli_validation.py`, con superficies extraídas `cli_{audio,code,semantic,knowledge}_surface.py` |
-| Configuración efectiva de una corrida | `models.py`; fachada plana compatible `application_config.py`, proyecciones en `application_config_projections.py` y construcción CLI en `cli_config.py` |
-| Plataforma y rutas canónicas por usuario | `neocortex/platform_policy.py` y `app_paths.py` |
-| Protección de rutas propias | `internal_paths.py`, `inventory_boundary.py` e `incremental_gate.py` |
-| Orden y adaptadores de rutas | `route_selection.py` y `route_registry.py` |
-| Coordinación de corridas | `orchestrator.py` |
-| Knowledge Plane read-only | `knowledge_contracts.py`, `knowledge_snapshot.py`, `knowledge_planner.py`, `knowledge_search.py`, `knowledge_context.py` y `knowledge_service.py` |
-| Derivaciones reproducibles | `derivation_contracts.py`, repositorios owner-local de Text/Semantic, `derivation_projection.py` y `derivation_lineage_service.py` |
-| Manifests y selección de capacidades | contratos puros en `neocortex/capability_broker.py`, declaraciones/probes en `neocortex/capabilities.py` y consumidor Text en `text_route.py` |
-| Planner semántico read-only | `semantic_planner.py` y contratos en `semantic_service_contracts.py` |
+| Parser y validación CLI | `neocortex/api/cli/cli_parser.py` y `neocortex/api/cli/cli_validation.py`, con superficies `cli_{audio,code,semantic,knowledge}_surface.py` |
+| Configuración efectiva de una corrida | `neocortex/runtime/models.py`; `application_config.py`, proyecciones en `neocortex/runtime/config/application_config_projections.py` y construcción CLI en `neocortex/api/cli/cli_config.py` |
+| Plataforma y rutas canónicas por usuario | `neocortex/platform_policy.py` y `neocortex/runtime/config/app_paths.py` |
+| Protección de rutas propias | `neocortex/safety/internal_paths.py`, `neocortex/integrations/inventory/inventory_boundary.py` y `neocortex/runtime/control/incremental_gate.py` |
+| Orden y adaptadores de rutas | `neocortex/runtime/orchestration/route_selection.py` y `route_registry.py` |
+| Coordinación de corridas | `neocortex/runtime/orchestration/orchestrator.py` |
+| Knowledge Plane read-only | `neocortex/knowledge/knowledge_contracts.py`, `knowledge_snapshot.py`, `knowledge_planner.py`, `knowledge_search.py`, `knowledge_context.py` y `knowledge_service.py` |
+| Derivaciones reproducibles | `neocortex/semantic/derivation_contracts.py`, repositorios owner-local de Text/Semantic, `derivation_projection.py` y `derivation_lineage_service.py` |
+| Manifests y selección de capacidades | contratos en `neocortex/capability_broker.py`, declaraciones/probes en `neocortex/capabilities/runtime.py` y consumidor Text en `neocortex/capabilities/formats/text/text_route.py` |
+| Planner semántico read-only | `neocortex/semantic/semantic_planner.py` y contratos en `semantic_service_contracts.py` |
 | SDK, consulta y capacidades públicas | `neocortex/sdk`, `neocortex/read_api.py`, `neocortex/human_cli.py`, `neocortex/agent_server.py`, `neocortex/capabilities.py` y markers `py.typed` |
-| Apertura SQLite compartida | `neocortex/sqlite_connection.py`; su adopción actual no es universal |
+| Apertura SQLite compartida | `neocortex/persistence/sqlite_immutable.py` y `sqlite_paths.py` |
 | Esquemas persistentes | módulos `*_schema.py` y propietarios `*_state.py`/repositorios |
-| Estado operacional | Windows: `%LOCALAPPDATA%\Neocortex\state`; Linux: `${XDG_STATE_HOME:-~/.local/state}/Neocortex/state` |
+| Estado operacional | `${XDG_STATE_HOME:-~/.local/state}/Neocortex/state` |
 | Comportamiento comprobable | código ejecutado y pruebas; la documentación no lo sustituye |
 
-La topología Windows derivada de la política central y `app_paths.py` separa
-los árboles propios:
+La topología Linux derivada de la política central separa los árboles propios:
 
 ```text
-Fuente:       %USERPROFILE%\Neocortex\Repository
-Runtime:      %LOCALAPPDATA%\Programs\Neocortex\versions\<runtime-id>\venv
-Launcher:     %LOCALAPPDATA%\Programs\Neocortex\bin\Neocortex.exe
-Estado:       %LOCALAPPDATA%\Neocortex\state
-Autoanálisis: %LOCALAPPDATA%\Neocortex\self-analysis
+Fuente:       ~/Neocortex/Repository
+Runtime:      ~/.local/share/Neocortex/releases/<runtime-id>
+Launcher:     ~/.local/share/Neocortex/bin/Neocortex
+Estado:       ${XDG_STATE_HOME:-~/.local/state}/Neocortex/state
+Autoanálisis: ${XDG_STATE_HOME:-~/.local/state}/Neocortex/self-analysis
 ```
 
-Los runtimes son versionados; `bin\Neocortex.exe` es la única ruta estable de
-promoción y se valida contra el artefacto exacto antes de incorporarla al
-`PATH`.
-
-En Linux, estado, configuración y datos respetan XDG. Las releases inmutables
+Los runtimes son versionados y el launcher estable se valida contra el artefacto
+exacto antes de promoverlo. Estado, configuración y datos respetan XDG. Las releases inmutables
 viven en `~/.local/share/Neocortex/releases`, `current` selecciona la activa,
 los modelos compartidos viven en `~/.local/share/Neocortex/models`, el launcher
 estable es `~/.local/share/Neocortex/bin/Neocortex` y el alias público es
@@ -448,9 +444,8 @@ Frontera canónica de contratos y primitivas compartidas de plataforma:
   registro de capacidades y sus relaciones, sin ejecutar providers ni abrir
   estado.
 
-Las rutas históricas `_04_Nucleo_Operativo.platform.shared.*`, junto con los
-aliases planos de tipos y ZIP, son fachadas de compatibilidad que apuntan a
-este namespace; no contienen una segunda implementación.
+La plataforma expone únicamente los módulos canónicos de este namespace; no
+existe una segunda implementación ni un alias físico paralelo.
 
 ### `neocortex.enumeration`
 
@@ -496,9 +491,10 @@ Contratos de eventos y reporteros. Separa el progreso del motor de la
 representación Rich, texto o protocolo de GUI. Las rutas no deben depender de
 widgets ni escribir directamente a una terminal para informar avance.
 
-### `_04_Nucleo_Operativo`
+### Composición canónica del producto
 
-Núcleo de aplicación. Contiene:
+La composición canónica agrupa cada responsabilidad bajo su propio paquete y
+mantiene una sola implementación física. Contiene:
 
 - configuración, parser, validación y reporte CLI;
 - fachada plana `ApplicationConfig` compatible con `FrameworkConfig`, nueve
@@ -541,7 +537,7 @@ La GUI ofrece PDF, DOCX, Office, ZIP, texto/correo, audio, video, imagen y Code.
 Linux presenta modo portátil, no solicita elevación y desactiva los controles
 de mutación, sin retirar inventario, procesamiento o búsqueda.
 
-### Compatibilidad de raíz
+### Topología de raíz
 
 Las raíces numeradas y el shim independiente anterior fueron retirados del
 checkout y del wheel; no existe una segunda implementación ni una fachada
@@ -561,7 +557,7 @@ Neocortex --help
 `neocortex.cli` selecciona perezosamente cuatro modos:
 
 1. subcomandos humanos `help/status/search/ask/inspect/review/knowledge/agent`;
-2. CLI normal: delega en `_04_Nucleo_Operativo.cli_app`;
+2. CLI normal: delega en `neocortex.api.cli.cli_app`;
 3. `--ui`: inicia la aplicación de escritorio;
 4. `--gui-worker`: protocolo interno del frontend, no comando de usuario.
 
@@ -614,7 +610,7 @@ repetir una syscall. Su salida JSON pertenece sólo a esa familia.
 
 ### API Python
 
-`_04_Nucleo_Operativo.__init__` expone perezosamente configuraciones, summaries,
+`neocortex.api.public` expone perezosamente configuraciones, summaries,
 rutas, orquestador, búsquedas, doctors y coordinador de recursos. Las clases de
 ruta y `PdfDerivedIndexer` son superficies de bajo nivel: un consumidor que las
 invoque fuera del orquestador debe respetar inicialización de esquema,
@@ -622,8 +618,8 @@ cancelación, recursos y exclusión de writers. La ejecución canónica mediante
 `FrameworkOrchestrator` es la frontera que aplica el contrato integrado.
 
 `neocortex.sdk` es la fachada pública lazy y tipada PEP 561 para Knowledge. Sus
-símbolos conservan identidad con los imports legacy y tanto el paquete canónico
-como el shim de implementación distribuyen `py.typed`.
+símbolos resuelven únicamente contratos canónicos y el paquete distribuye
+`py.typed`.
 
 La superficie diferida también exporta `ResourceRef`, `RevisionRef`,
 `EvidenceRef`, `KnowledgeHit`, `KnowledgeSnapshot`, `ContextBundle`,
@@ -639,9 +635,8 @@ mantiene los resultados de cada scope separados.
 Code; su valor predeterminado es Framework y nunca convierte una pregunta no
 registrada en una consulta global automática.
 
-Los exports diferidos de `route_registry` existen para compatibilidad y emiten
-`DeprecationWarning`; los nuevos consumidores deben importar desde el módulo de
-la ruta correspondiente.
+`route_registry` sólo contiene adaptadores y contratos de ejecución; los
+consumidores importan cada ruta desde su módulo canónico.
 
 ## Corrida integrada
 
@@ -813,8 +808,8 @@ La capa arquitectónica divide fuente, política y consumo:
    para publicar complejidad cognitiva por símbolo y agregados total/máximo por
    módulo.
 
-El dominio versionado incluye los dos paquetes raíz de producción `neocortex`
-y `_04_Nucleo_Operativo`; interfaz, enumeración, deduplicación y progreso son
+El dominio versionado incluye el único paquete raíz de producción `neocortex`;
+interfaz, enumeración, deduplicación y progreso son
 familias canónicas bajo `neocortex`; excluye `tests`, `tools` y `benchmarks`.
 Los contratos impiden dependencias transitivas Core→UI y
 Foundation→Core/UI, imports de producción hacia namespaces no productivos,
@@ -1132,15 +1127,7 @@ abstención visible y no intenta migrar ni reparar.
 
 ## Persistencia y flujo de datos
 
-Las ubicaciones persistentes por usuario son:
-
-```text
-Estado normal: %LOCALAPPDATA%\Neocortex\state
-Autoanálisis:  %LOCALAPPDATA%\Neocortex\self-analysis
-Modelos:       %LOCALAPPDATA%\Neocortex\models
-```
-
-En Linux:
+Las ubicaciones persistentes por usuario en Linux son:
 
 ```text
 Estado normal: ${XDG_STATE_HOME:-~/.local/state}/Neocortex/state
@@ -1152,10 +1139,8 @@ Modelos:       ${XDG_DATA_HOME:-~/.local/share}/Neocortex/models
 Las bases principales son `dedup`, `framework`, `pdf`, `docx`, `office`,
 `archive`, `text`, `audio`, `video`, `image`, `document_catalog`, `code` y
 `semantic`.
-No todas existen antes de usar su ruta. La UI persiste configuración aparte, en
-`%LOCALAPPDATA%\Neocortex\ui.ini`, y FastEmbed usa el directorio hermano
-`models\fastembed`. En Linux la UI usa el árbol de configuración XDG y
-FastEmbed el cache compartido `models/fastembed`.
+No todas existen antes de usar su ruta. La UI persiste configuración en el árbol
+XDG y FastEmbed usa el cache compartido `models/fastembed`.
 
 La Knowledge Plane no es otro owner persistente: conserva once owners base
 históricos y agrega Archive y texto sólo cuando existen sus bases. Su snapshot
@@ -1376,8 +1361,8 @@ Clasificación actual:
 |---|---|---|
 | shim independiente anterior | retirado | no recrear; usar `Neocortex` o `python -m neocortex` |
 | antiguas raíces numeradas de enumeración y deduplicación | retiradas | no recrear; las superficies canónicas viven bajo `neocortex` |
-| exports diferidos de `route_registry` | deprecables | eliminar después del periodo documentado y búsqueda de consumidores |
-| fachadas `state`/`semantic_state`/`semantic_service` | necesarias | hoy tienen consumidores internos y de prueba |
+| exports de motores en `route_registry` | retirados | importar cada ruta desde su módulo canónico |
+| agregadores `state`/`semantic_state`/`semantic_service` | superficies públicas | no duplican la implementación física ni crean una raíz paralela |
 | `SqlitePathIndex` | auxiliar soportado, integración no verificada | decidir explícitamente si se integra o se depreca; no eliminar por análisis automático |
 
 Una métrica de complejidad, vulture o ausencia de import interno no basta para

@@ -10,26 +10,22 @@ from pathlib import Path
 
 import pytest
 
-import _04_Nucleo_Operativo.document_catalog as catalog_module
-import _04_Nucleo_Operativo.document_catalog_schema as catalog_schema_module
+import neocortex.documents.document_catalog as catalog_module
+import neocortex.documents.document_catalog_schema as catalog_schema_module
 from neocortex.deduplication.fingerprinting import FULL_ALGORITHM
-from _04_Nucleo_Operativo import (
-    document_cache_sync,
-    pdf_derived,
-    pdf_isolation,
-    pdf_route,
-)
-from _04_Nucleo_Operativo import run_status as run_status_module
-from _04_Nucleo_Operativo.cli_app import main as cli_main
-from _04_Nucleo_Operativo.document_catalog import (
+from neocortex.documents import document_cache_sync
+from neocortex.capabilities.formats.pdf import pdf_derived, pdf_isolation, pdf_route
+from neocortex.runtime.orchestration import run_status as run_status_module
+from neocortex.api.cli.cli_app import main as cli_main
+from neocortex.documents.document_catalog import (
     CATALOG_SCHEMA_VERSION,
     initialize_document_catalog,
 )
-from _04_Nucleo_Operativo.pdf_state import initialize_pdf_state
-from _04_Nucleo_Operativo.run_status import list_run_status
-from _04_Nucleo_Operativo.semantic_sources import iter_image_source_records
-from _04_Nucleo_Operativo.sqlite_schema_contract import SQLiteSchemaContractError
-from _04_Nucleo_Operativo.state import FrameworkState
+from neocortex.capabilities.formats.pdf.pdf_state import initialize_pdf_state
+from neocortex.runtime.orchestration.run_status import list_run_status
+from neocortex.semantic.semantic_sources import iter_image_source_records
+from neocortex.sqlite_schema_contract import SQLiteSchemaContractError
+from neocortex.persistence.state import FrameworkState
 from tests.internal_paths_test_support import begin_signed_normal_run
 
 

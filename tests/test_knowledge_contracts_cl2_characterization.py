@@ -11,7 +11,7 @@ from dataclasses import replace
 
 import pytest
 
-import _04_Nucleo_Operativo.knowledge_contracts as contracts
+import neocortex.knowledge.knowledge_contracts as contracts
 from tests.test_knowledge_contracts_characterization import (
     _contract_instances as make_contract_instances,
 )

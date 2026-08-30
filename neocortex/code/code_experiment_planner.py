@@ -12,9 +12,6 @@ allow-listed by code, not free-form text from a repository.
 """
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 from dataclasses import asdict, dataclass, fields
 from typing import Any, Literal, Mapping, Sequence, cast
 
@@ -1216,6 +1213,3 @@ __all__ = [
     "parse_code_experiment_plan_payload",
     "plan_code_experiments",
 ]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.code_experiment_planner")

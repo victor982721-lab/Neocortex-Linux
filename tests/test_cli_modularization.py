@@ -14,10 +14,10 @@ from pathlib import Path
 from unittest.mock import patch
 
 from neocortex.deduplication import InventoryError
-from _04_Nucleo_Operativo.cli_app import main
-from _04_Nucleo_Operativo.cli_config import framework_config_from_args
-from _04_Nucleo_Operativo.cli_parser import build_parser
-from _04_Nucleo_Operativo.cli_validation import validate_arguments
+from neocortex.api.cli.cli_app import main
+from neocortex.api.cli.cli_config import framework_config_from_args
+from neocortex.api.cli.cli_parser import build_parser
+from neocortex.api.cli.cli_validation import validate_arguments
 
 # endregion [01]
 
@@ -75,7 +75,7 @@ class CliIntegrationTests(unittest.TestCase):
         result = SimpleNamespace(actions=None)
         with (
             patch(
-                "_04_Nucleo_Operativo.code_validation_receipts."
+                "neocortex.code.code_validation_receipts."
                 "load_current_code_validation_receipt",
                 return_value=SimpleNamespace(
                     status="reused",
@@ -84,18 +84,18 @@ class CliIntegrationTests(unittest.TestCase):
                     head_sha="b" * 40,
                 ),
             ) as receipt,
-            patch("_04_Nucleo_Operativo.cli_app.run_framework", return_value=result),
-            patch("_04_Nucleo_Operativo.cli_reporting.print_reports"),
+            patch("neocortex.api.cli.cli_app.run_framework", return_value=result),
+            patch("neocortex.api.cli.cli_reporting.print_reports"),
             patch(
-                "_04_Nucleo_Operativo.cli_reporting.has_organization_errors",
+                "neocortex.api.cli.cli_reporting.has_organization_errors",
                 return_value=False,
             ),
             patch(
-                "_04_Nucleo_Operativo.cli_reporting.has_strict_route_errors",
+                "neocortex.api.cli.cli_reporting.has_strict_route_errors",
                 return_value=False,
             ),
             patch(
-                "_04_Nucleo_Operativo.cli_semantic.run_integrated_all_semantic_index",
+                "neocortex.api.cli.cli_semantic.run_integrated_all_semantic_index",
                 return_value=0,
             ) as semantic,
         ):
@@ -121,7 +121,7 @@ class CliIntegrationTests(unittest.TestCase):
             corpus.mkdir()
             with (
                 patch(
-                    "_04_Nucleo_Operativo.code_validation_receipts."
+                    "neocortex.code.code_validation_receipts."
                     "load_current_code_validation_receipt",
                     return_value=SimpleNamespace(
                         status="missing",
@@ -131,20 +131,20 @@ class CliIntegrationTests(unittest.TestCase):
                     ),
                 ),
                 patch(
-                    "_04_Nucleo_Operativo.cli_app.run_framework",
+                    "neocortex.api.cli.cli_app.run_framework",
                     side_effect=record_framework,
                 ),
-                patch("_04_Nucleo_Operativo.cli_reporting.print_reports"),
+                patch("neocortex.api.cli.cli_reporting.print_reports"),
                 patch(
-                    "_04_Nucleo_Operativo.cli_reporting.has_organization_errors",
+                    "neocortex.api.cli.cli_reporting.has_organization_errors",
                     return_value=False,
                 ),
                 patch(
-                    "_04_Nucleo_Operativo.cli_reporting.has_strict_route_errors",
+                    "neocortex.api.cli.cli_reporting.has_strict_route_errors",
                     return_value=False,
                 ),
                 patch(
-                    "_04_Nucleo_Operativo.cli_semantic.run_integrated_all_semantic_index",
+                    "neocortex.api.cli.cli_semantic.run_integrated_all_semantic_index",
                     return_value=0,
                 ),
             ):
@@ -171,12 +171,12 @@ class CliIntegrationTests(unittest.TestCase):
 
         with (
             patch(
-                "_04_Nucleo_Operativo.code_validation_receipts."
+                "neocortex.code.code_validation_receipts."
                 "load_current_code_validation_receipt",
                 side_effect=load_receipt,
             ),
             patch(
-                "_04_Nucleo_Operativo.cli_app.run_framework",
+                "neocortex.api.cli.cli_app.run_framework",
                 side_effect=fail_corpus,
             ),
             redirect_stderr(stderr),
@@ -190,7 +190,7 @@ class CliIntegrationTests(unittest.TestCase):
     def test_all_strict_receipt_failure_stops_before_corpus(self) -> None:
         with (
             patch(
-                "_04_Nucleo_Operativo.code_validation_receipts."
+                "neocortex.code.code_validation_receipts."
                 "load_current_code_validation_receipt",
                 return_value=SimpleNamespace(
                     status="stale",
@@ -199,7 +199,7 @@ class CliIntegrationTests(unittest.TestCase):
                     head_sha=None,
                 ),
             ),
-            patch("_04_Nucleo_Operativo.cli_app.run_framework") as framework,
+            patch("neocortex.api.cli.cli_app.run_framework") as framework,
         ):
             self.assertEqual(main(["--all", "--require-fresh-self-analysis"]), 2)
 
@@ -209,21 +209,21 @@ class CliIntegrationTests(unittest.TestCase):
         result = SimpleNamespace(actions=None)
         with (
             patch(
-                "_04_Nucleo_Operativo.cli_app._run_integrated_self_analysis",
+                "neocortex.api.cli.cli_app._run_integrated_self_analysis",
                 return_value=0,
             ) as self_analysis,
-            patch("_04_Nucleo_Operativo.cli_app.run_framework", return_value=result),
-            patch("_04_Nucleo_Operativo.cli_reporting.print_reports"),
+            patch("neocortex.api.cli.cli_app.run_framework", return_value=result),
+            patch("neocortex.api.cli.cli_reporting.print_reports"),
             patch(
-                "_04_Nucleo_Operativo.cli_reporting.has_organization_errors",
+                "neocortex.api.cli.cli_reporting.has_organization_errors",
                 return_value=False,
             ),
             patch(
-                "_04_Nucleo_Operativo.cli_reporting.has_strict_route_errors",
+                "neocortex.api.cli.cli_reporting.has_strict_route_errors",
                 return_value=False,
             ),
             patch(
-                "_04_Nucleo_Operativo.cli_semantic.run_integrated_all_semantic_index",
+                "neocortex.api.cli.cli_semantic.run_integrated_all_semantic_index",
                 return_value=0,
             ),
         ):

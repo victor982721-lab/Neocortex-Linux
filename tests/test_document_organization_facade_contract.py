@@ -7,10 +7,10 @@ from __future__ import annotations
 
 import inspect
 
-from _04_Nucleo_Operativo import document_organization as facade
-from _04_Nucleo_Operativo import document_organization_application as application
-from _04_Nucleo_Operativo import document_organization_models as models
-from _04_Nucleo_Operativo import document_organization_planning as planning
+from neocortex.documents import document_organization as facade
+from neocortex.documents import document_organization_application as application
+from neocortex.documents import document_organization_models as models
+from neocortex.documents import document_organization_planning as planning
 # endregion [01]
 
 # region [02] Implementación

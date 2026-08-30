@@ -1,9 +1,6 @@
 """Stable facade for Neocortex semantic indexing, retrieval and evidence."""
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from functools import partial
 from pathlib import Path
@@ -801,6 +798,3 @@ def semantic_status(state_directory: Path, *, generation_limit: int = 10) -> Sem
 
 
 # endregion [06]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.semantic_service")

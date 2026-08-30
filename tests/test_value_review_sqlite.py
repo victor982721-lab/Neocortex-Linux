@@ -7,32 +7,32 @@ from pathlib import Path
 import pytest
 
 from neocortex.deduplication.schema import initialize_inventory_schema
-from _04_Nucleo_Operativo import review_task_repository, value_review_repository
-from _04_Nucleo_Operativo.document_catalog_schema import (
+from neocortex.workflow.review import review_task_repository, value_review_repository
+from neocortex.documents.document_catalog_schema import (
     CATALOG_SCHEMA_VERSION,
     create_document_catalog_schema,
 )
-from _04_Nucleo_Operativo.framework_state_writer import FrameworkState
-from _04_Nucleo_Operativo.text_state import initialize_text_state
-from _04_Nucleo_Operativo.review_task_contracts import (
+from neocortex.persistence.framework_state_writer import FrameworkState
+from neocortex.capabilities.formats.text.text_state import initialize_text_state
+from neocortex.workflow.review.review_task_contracts import (
     CanonicalJsonObject,
     ReviewTaskActorKind,
     ReviewTaskState,
     ReviewTaskTransition,
 )
-from _04_Nucleo_Operativo.review_task_repository import (
+from neocortex.workflow.review.review_task_repository import (
     append_review_task_event,
     list_current_review_tasks,
 )
-from _04_Nucleo_Operativo.value_review import preview_value_review
-from _04_Nucleo_Operativo.value_review_contracts import (
+from neocortex.workflow.review.value_review import preview_value_review
+from neocortex.workflow.review.value_review_contracts import (
     ValueDimensionName,
     ValueReviewAvailability,
     ValueReviewPaths,
     ValueReviewQuery,
     ValueReviewState,
 )
-from _04_Nucleo_Operativo.value_review_tasks import (
+from neocortex.workflow.review.value_review_tasks import (
     ValueReviewTaskQueueStatus,
     ValueReviewTaskStateError,
     read_value_review_task_queue,
@@ -1265,7 +1265,7 @@ def test_last_complete_value_queue_remains_visible_while_new_epoch_is_partial(
     root = tmp_path / "state"
     paths = _create_state(root)
     monkeypatch.setattr(
-        "_04_Nucleo_Operativo.value_review_tasks.VALUE_REVIEW_TASK_PAGE_SIZE",
+        "neocortex.workflow.review.value_review_tasks.VALUE_REVIEW_TASK_PAGE_SIZE",
         4,
     )
     framework = root / "framework.sqlite3"
@@ -1324,7 +1324,7 @@ def test_human_resolution_after_complete_head_remains_terminal_during_partial_ep
     root = tmp_path / "state"
     paths = _create_state(root)
     monkeypatch.setattr(
-        "_04_Nucleo_Operativo.value_review_tasks.VALUE_REVIEW_TASK_PAGE_SIZE",
+        "neocortex.workflow.review.value_review_tasks.VALUE_REVIEW_TASK_PAGE_SIZE",
         4,
     )
     framework = root / "framework.sqlite3"

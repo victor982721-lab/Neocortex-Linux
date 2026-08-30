@@ -16,9 +16,9 @@ from unittest.mock import patch
 
 from neocortex.deduplication import DedupIndex, DedupPlanner, InventoryExclusionPolicy
 from neocortex.deduplication.io import native_io_path
-from _04_Nucleo_Operativo.actions import FrameworkActions
-from _04_Nucleo_Operativo.content_types import detect_content_type
-from _04_Nucleo_Operativo.state import FrameworkState
+from neocortex.workflow.actions.actions import FrameworkActions
+from neocortex.platform.content_types import detect_content_type
+from neocortex.persistence.state import FrameworkState
 from tests.internal_paths_test_support import begin_signed_normal_run
 # endregion [01]
 
@@ -186,7 +186,7 @@ class ActionTests(unittest.TestCase):
                 scan = index.scan(corpus)
                 plan = DedupPlanner(index).plan(scan.scan_id)
                 run_id = begin_signed_normal_run(state, corpus)
-                with patch("_04_Nucleo_Operativo.actions.send2trash") as trash:
+                with patch("neocortex.workflow.actions.actions.send2trash") as trash:
                     summary = FrameworkActions(
                         index,
                         state,
@@ -300,7 +300,7 @@ class ActionTests(unittest.TestCase):
                 plan = DedupPlanner(index).plan(scan.scan_id, exact_compare=False, preview_limit=0)
                 run_id = begin_signed_normal_run(state, corpus)
 
-                with patch("_04_Nucleo_Operativo.actions.send2trash") as recycle:
+                with patch("neocortex.workflow.actions.actions.send2trash") as recycle:
                     summary = FrameworkActions(
                         index,
                         state,
@@ -334,7 +334,7 @@ class ActionTests(unittest.TestCase):
                 plan = DedupPlanner(index).plan(scan.scan_id)
                 run_id = begin_signed_normal_run(state, corpus)
 
-                with patch("_04_Nucleo_Operativo.actions.send2trash") as recycle:
+                with patch("neocortex.workflow.actions.actions.send2trash") as recycle:
                     summary = FrameworkActions(
                         index,
                         state,
@@ -398,7 +398,7 @@ class ActionTests(unittest.TestCase):
                 plan = DedupPlanner(index).plan(scan.scan_id, exact_compare=False, preview_limit=0)
                 run_id = begin_signed_normal_run(state, corpus)
 
-                with patch("_04_Nucleo_Operativo.actions.send2trash") as recycle:
+                with patch("neocortex.workflow.actions.actions.send2trash") as recycle:
                     summary = FrameworkActions(
                         index,
                         state,
@@ -438,7 +438,7 @@ class ActionTests(unittest.TestCase):
                     return load_guard(current_run_id)
 
                 with (
-                    patch("_04_Nucleo_Operativo.actions.send2trash") as recycle,
+                    patch("neocortex.workflow.actions.actions.send2trash") as recycle,
                     patch.object(
                         state,
                         "corpus_mutation_guard",
@@ -484,7 +484,7 @@ class ActionTests(unittest.TestCase):
                 plan = DedupPlanner(index, partial_threshold=0).plan(scan.scan_id)
                 run_id = begin_signed_normal_run(state, corpus)
 
-                with patch("_04_Nucleo_Operativo.actions.send2trash") as recycle:
+                with patch("neocortex.workflow.actions.actions.send2trash") as recycle:
                     summary = FrameworkActions(
                         index,
                         state,
@@ -531,7 +531,7 @@ class ActionTests(unittest.TestCase):
                 scan = index.scan(corpus, excluded_paths=())
                 plan = DedupPlanner(index).plan(scan.scan_id)
                 run_id = begin_signed_normal_run(state, corpus)
-                with patch("_04_Nucleo_Operativo.actions.send2trash") as recycle:
+                with patch("neocortex.workflow.actions.actions.send2trash") as recycle:
                     summary = FrameworkActions(
                         index,
                         state,

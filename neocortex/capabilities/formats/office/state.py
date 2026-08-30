@@ -582,5 +582,5 @@ __all__ = (
 
 for _defined_value in tuple(globals().values()):
     if getattr(_defined_value, "__module__", None) == __name__:
-        _defined_value.__module__ = "_04_Nucleo_Operativo.office_state"
+        _defined_value.__module__ = "neocortex.capabilities.formats.office.state"
 del _defined_value

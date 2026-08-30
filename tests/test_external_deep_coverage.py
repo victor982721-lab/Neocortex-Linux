@@ -9,10 +9,10 @@ from pathlib import Path
 
 import pytest
 
-import _04_Nucleo_Operativo.external_deep_coverage as deep
-import _04_Nucleo_Operativo.external_evidence_providers as providers
-from _04_Nucleo_Operativo.code_external_evidence import ExternalEvidenceFile
-from _04_Nucleo_Operativo.semantic_models import fingerprint_bytes
+import neocortex.code.external_deep_coverage as deep
+import neocortex.code.external_evidence_providers as providers
+from neocortex.code.code_external_evidence import ExternalEvidenceFile
+from neocortex.semantic.semantic_models import fingerprint_bytes
 
 
 _VERSIONS = {"coverage": "7.14.0", "pytest": "9.1.0", "python": "3.13.5"}
@@ -40,7 +40,7 @@ def _fixture(
     trusted = tmp_path / "trusted"
     stage = tmp_path / "stage"
     scratch = tmp_path / "scratch"
-    (trusted / "_04_Nucleo_Operativo").mkdir(parents=True)
+    (trusted / "neocortex").mkdir(parents=True)
     (trusted / "tests").mkdir()
     stage.mkdir()
     scratch.mkdir()
@@ -49,12 +49,12 @@ def _fixture(
     runtime_parent.chmod(0o700)
     monkeypatch.delenv("RUNTIME_DIRECTORY", raising=False)
     monkeypatch.setenv("XDG_RUNTIME_DIR", os.fspath(runtime_parent))
-    (trusted / "_04_Nucleo_Operativo" / "logic.py").write_text(
+    (trusted / "neocortex" / "logic.py").write_text(
         "def choose(value: bool) -> int:\n    if value:\n        return 1\n    return 2\n",
         encoding="utf-8",
     )
     (trusted / "tests" / "test_logic.py").write_text(
-        "from _04_Nucleo_Operativo.logic import choose\n\n"
+        "from neocortex.logic import choose\n\n"
         "def test_true():\n"
         "    assert choose(True) == 1\n\n"
         "def test_false():\n"
@@ -77,7 +77,7 @@ def _fixture(
         stderr=subprocess.PIPE,
     )
     owners = (
-        _owner(trusted, "_04_Nucleo_Operativo/logic.py", 1),
+        _owner(trusted, "neocortex/logic.py", 1),
         _owner(trusted, "tests/test_logic.py", 2),
     )
     staged = {
@@ -123,9 +123,9 @@ def _worker(
                     "nodeids": list(nodeids),
                     "symbols": [
                         {
-                            "relative_path": "_04_Nucleo_Operativo/logic.py",
-                            "module": "_04_Nucleo_Operativo.logic",
-                            "qualified_name": "_04_Nucleo_Operativo.logic.choose",
+                            "relative_path": "neocortex/logic.py",
+                            "module": "neocortex.logic",
+                            "qualified_name": "neocortex.logic.choose",
                             "kind": "function",
                             "start_line": 1,
                             "end_line": 4,
@@ -173,8 +173,8 @@ def _worker(
                 "failures": failures,
                 "files": [
                     {
-                        "relative_path": "_04_Nucleo_Operativo/logic.py",
-                        "module": "_04_Nucleo_Operativo.logic",
+                        "relative_path": "neocortex/logic.py",
+                        "module": "neocortex.logic",
                         "statements": [1, 2, 3, 4],
                         "executed_lines": [1, 2, 3],
                         "missing_lines": [4],
@@ -524,7 +524,7 @@ def test_normalizes_canonical_metrics_context_relations_and_missing_ranges(
     relation = coverage_relations[0]
     assert relation.relation_kind == "test_covers_symbol"
     assert relation.source_key.startswith("pytest-nodeid:tests/test_logic.py::")
-    assert relation.metadata["qualified_name"] == "_04_Nucleo_Operativo.logic.choose"
+    assert relation.metadata["qualified_name"] == "neocortex.logic.choose"
     assert relation.metadata["start_line"] == 1
     assert relation.metadata["end_line"] == 4
     for relation in coverage_relations:

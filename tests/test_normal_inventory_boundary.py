@@ -13,28 +13,28 @@ import pytest
 
 from neocortex.enumeration import JournalCursor
 from neocortex.deduplication import DedupIndex, InventoryCheckpoint, ScanSummary
-from _04_Nucleo_Operativo import inventory_boundary as inventory_boundary_module
-from _04_Nucleo_Operativo.corpus_access import (
+from neocortex.integrations.inventory import inventory_boundary as inventory_boundary_module
+from neocortex.safety.corpus_access import (
     CorpusAccessPolicy,
     ProtectedAnalysisRootError,
 )
-from _04_Nucleo_Operativo.internal_paths import (
+from neocortex.safety.internal_paths import (
     InternalPathSpec,
     InternalPathsPolicy,
 )
-from _04_Nucleo_Operativo.orchestrator import (
+from neocortex.runtime.orchestration.orchestrator import (
     FrameworkOrchestrator,
     NormalInventoryBoundary,
     build_normal_inventory_boundary,
     initialize_authorized_state_directory,
 )
-from _04_Nucleo_Operativo.models import FrameworkConfig
-from _04_Nucleo_Operativo.protected_content import (
+from neocortex.runtime.models import FrameworkConfig
+from neocortex.safety.protected_content import (
     ProtectedContentError,
     ProtectedContentPolicy,
     ProtectedPathSpec,
 )
-from _04_Nucleo_Operativo.state import FrameworkState
+from neocortex.persistence.state import FrameworkState
 from tests.internal_paths_test_support import (
     begin_signed_normal_run,
     disjoint_internal_paths_policy,
@@ -75,7 +75,7 @@ def _empty_default_protected_policy(
         lambda: policy,
     )
     monkeypatch.setattr(
-        "_04_Nucleo_Operativo.framework_state_common.canonical_protected_content_policy",
+        "neocortex.persistence.framework_state_common.canonical_protected_content_policy",
         lambda: policy,
     )
 

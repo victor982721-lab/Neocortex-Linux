@@ -7,9 +7,6 @@ fallback is attempted.
 """
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import math
 import re
 import unicodedata
@@ -402,6 +399,3 @@ __all__ = (
     "route_ocr_languages",
     "should_use_ocr_fallback",
 )
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.ocr_profiles")

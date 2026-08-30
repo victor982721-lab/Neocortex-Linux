@@ -10,9 +10,6 @@ from collections import deque
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Callable
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 from .cancellation import CancellationRequested, CancellationToken
 from .cpu_runtime import CpuLoadSampler
 from .memory_runtime import (
@@ -467,9 +464,4 @@ class CoordinatedMemoryGate:
     def admit(self, estimated_bytes: int):
         with self.coordinator.admit(self.route_name, estimated_bytes, 1):
             yield
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.global_resources")
-
-
 # endregion [03]

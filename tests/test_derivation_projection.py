@@ -5,8 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 
-import _04_Nucleo_Operativo.derivation_projection as projection_module
-from _04_Nucleo_Operativo.derivation_contracts import (
+import neocortex.semantic.derivation_projection as projection_module
+from neocortex.semantic.derivation_contracts import (
     InputBinding,
     MaterializationRef,
     OutputBinding,
@@ -16,12 +16,12 @@ from _04_Nucleo_Operativo.derivation_contracts import (
     WorkOutcome,
     WorkReceipt,
 )
-from _04_Nucleo_Operativo.derivation_projection import (
+from neocortex.semantic.derivation_projection import (
     DerivationProjectionEvent,
     projection_event_from_semantic_outbox,
     rebuild_derivation_projection,
 )
-from _04_Nucleo_Operativo.knowledge_contracts import (
+from neocortex.knowledge.knowledge_contracts import (
     ResourceRef,
     RevisionRef,
     RevisionState,

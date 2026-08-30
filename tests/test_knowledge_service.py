@@ -13,8 +13,8 @@ from typing import Any
 
 import pytest
 
-import _04_Nucleo_Operativo.knowledge_snapshot as knowledge_snapshot
-from _04_Nucleo_Operativo.knowledge_contracts import (
+import neocortex.knowledge.knowledge_snapshot as knowledge_snapshot
+from neocortex.knowledge.knowledge_contracts import (
     ContextBudget,
     ContextBundle,
     ContextGraphBudget,
@@ -35,17 +35,17 @@ from _04_Nucleo_Operativo.knowledge_contracts import (
     RevisionState,
     SnapshotConsistency,
 )
-from _04_Nucleo_Operativo.knowledge_planner import KnowledgePlan, KnowledgeQuery
-from _04_Nucleo_Operativo.knowledge_search import KnowledgeSearchResult
-from _04_Nucleo_Operativo.knowledge_context import (
+from neocortex.knowledge.knowledge_planner import KnowledgePlan, KnowledgeQuery
+from neocortex.knowledge.knowledge_search import KnowledgeSearchResult
+from neocortex.knowledge.knowledge_context import (
     MAX_CONTEXT_CHARACTER_LIMIT,
     MAX_CONTEXT_HITS,
 )
-from _04_Nucleo_Operativo.knowledge_service import (
+from neocortex.knowledge.knowledge_service import (
     KnowledgeSearchService,
     KnowledgeStateRootError,
 )
-from _04_Nucleo_Operativo.knowledge_snapshot import KnowledgeStatePaths
+from neocortex.knowledge.knowledge_snapshot import KnowledgeStatePaths
 # endregion [01]
 
 # region [02] Implementación

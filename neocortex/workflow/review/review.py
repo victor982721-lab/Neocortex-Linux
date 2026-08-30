@@ -13,8 +13,6 @@ from pathlib import Path
 from typing import Literal, Mapping
 
 from neocortex.deduplication import FileSnapshot
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 from neocortex.persistence.framework_connection import connect_existing_framework
 
 ReviewRecommendation = Literal[
@@ -560,6 +558,3 @@ def get_review_decision_by_key(
 
 
 # endregion [02]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.review")

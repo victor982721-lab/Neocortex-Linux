@@ -13,14 +13,14 @@ from pathlib import Path
 
 import pytest
 
-import _04_Nucleo_Operativo.internal_paths as internal_paths_module
-from _04_Nucleo_Operativo.app_paths import local_application_data_directory
-from _04_Nucleo_Operativo.corpus_access import (
+import neocortex.safety.internal_paths as internal_paths_module
+from neocortex.runtime.config.app_paths import local_application_data_directory
+from neocortex.safety.corpus_access import (
     CorpusAccessPolicy,
     CorpusMutationGuard,
     ProtectedAnalysisRootError,
 )
-from _04_Nucleo_Operativo.internal_paths import (
+from neocortex.safety.internal_paths import (
     InternalPathIdentity,
     InternalPathProtectionError,
     InternalPathSpec,

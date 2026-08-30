@@ -1,9 +1,6 @@
 """Versioned label-prototype and advisory semantic-evidence repository."""
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import itertools
 import json
 import sqlite3
@@ -1022,6 +1019,3 @@ def list_semantic_evidence(
 
 
 # endregion [08]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.semantic_evidence_repository")

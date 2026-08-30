@@ -6,9 +6,6 @@ not share a calibrated scale; callers can combine ranks with RRF instead.
 """
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import math
 import re
 import sqlite3
@@ -1067,6 +1064,3 @@ def search_lexical_sources(
 
 
 # endregion [04]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.semantic_lexical")

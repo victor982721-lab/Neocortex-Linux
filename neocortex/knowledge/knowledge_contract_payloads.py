@@ -1,6 +1,6 @@
 """Deterministic payload builders for immutable Knowledge contracts.
 # region [00] Contexto del módulo
-# Módulo: _04_Nucleo_Operativo/knowledge_contract_payloads.py
+# Módulo: neocortex/knowledge_contract_payloads.py
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
@@ -12,9 +12,6 @@ facade; class names below are available only to static type checkers.
 
 # region [01] Dependencias del módulo
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING
 # endregion [01]
@@ -499,6 +496,3 @@ __all__ = [  # noqa: RUF022
     "context_bundle_payload",
 ]
 # endregion [02]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.knowledge_contract_payloads")

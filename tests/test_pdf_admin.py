@@ -7,8 +7,8 @@ import zlib
 from contextlib import closing
 from pathlib import Path
 
-from _04_Nucleo_Operativo.pdf_admin import doctor_pdf_runtime, verify_pdf_state
-from _04_Nucleo_Operativo.pdf_state import initialize_pdf_state
+from neocortex.capabilities.formats.pdf.pdf_admin import doctor_pdf_runtime, verify_pdf_state
+from neocortex.capabilities.formats.pdf.pdf_state import initialize_pdf_state
 
 
 # region [01] PDF administrative diagnostics

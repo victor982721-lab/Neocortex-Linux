@@ -11,7 +11,7 @@ import inspect
 from pathlib import Path
 from unittest.mock import patch
 
-from _04_Nucleo_Operativo import semantic_service as service
+from neocortex.semantic import semantic_service as service
 # endregion [01]
 
 # region [02] Implementación

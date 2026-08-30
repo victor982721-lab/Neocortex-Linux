@@ -95,7 +95,6 @@ def _wheel_payloads() -> dict[str, bytes]:
         "neocortex/__init__.py": b'__version__ = "0.7.2"\n',
         "neocortex/cli.py": b"def entrypoint():\n    return 0\n",
         "neocortex/py.typed": b"",
-        "_04_Nucleo_Operativo/py.typed": b"",
         f"{_DIST_INFO}/METADATA": _METADATA,
         f"{_DIST_INFO}/WHEEL": _WHEEL,
         f"{_DIST_INFO}/entry_points.txt": _ENTRY_POINTS,
@@ -142,7 +141,6 @@ def _sdist_payloads(root: str = _SDIST_ROOT) -> dict[str, bytes]:
         f"{root}/neocortex/__init__.py": b'__version__ = "0.7.2"\n',
         f"{root}/neocortex/cli.py": b"def entrypoint():\n    return 0\n",
         f"{root}/neocortex/py.typed": b"",
-        f"{root}/_04_Nucleo_Operativo/py.typed": b"",
     }
     payloads.update({f"{root}/{path}": payload for path, payload in _UI_ASSET_PAYLOADS.items()})
     payloads.update(
@@ -510,7 +508,7 @@ def test_valid_wheel_contract_includes_verified_record_and_typed_markers(
     assert report.root is None
     assert report.entry_points == ("Neocortex = neocortex.cli:entrypoint",)
     assert report.record_verified
-    assert report.typed_packages == ("_04_Nucleo_Operativo", "neocortex")
+    assert report.typed_packages == ("neocortex",)
     assert validate_release_artifact(path) == report
 
 
@@ -543,7 +541,6 @@ def test_ui_asset_payload_hash_is_pinned(tmp_path: Path) -> None:
         (f"{_DIST_INFO}/entry_points.txt", "entry_points.txt"),
         (f"{_DIST_INFO}/RECORD", "RECORD"),
         ("neocortex/py.typed", "py.typed"),
-        ("_04_Nucleo_Operativo/py.typed", "py.typed"),
     ],
 )
 def test_wheel_rejects_missing_contract_members(
@@ -642,7 +639,7 @@ def test_valid_sdist_has_one_root_pkg_info_and_required_content(tmp_path: Path) 
     assert report.version == "0.7.2"
     assert not report.record_verified
     assert report.entry_points == ()
-    assert report.typed_packages == ("_04_Nucleo_Operativo", "neocortex")
+    assert report.typed_packages == ("neocortex",)
     assert validate_release_artifact(path) == report
 
 
@@ -661,7 +658,6 @@ def test_sdist_rejects_multiple_roots(tmp_path: Path) -> None:
         ("PKG-INFO", "PKG-INFO"),
         ("pyproject.toml", "required sdist content"),
         ("neocortex/py.typed", "required sdist content"),
-        ("_04_Nucleo_Operativo/py.typed", "required sdist content"),
     ],
 )
 def test_sdist_rejects_missing_contract_content(

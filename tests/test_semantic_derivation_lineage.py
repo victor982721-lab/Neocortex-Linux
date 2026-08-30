@@ -9,23 +9,19 @@ from pathlib import Path
 import pytest
 import xxhash
 
-from _04_Nucleo_Operativo import (
-    semantic_evidence_repository,
-    semantic_generation_repository,
-    semantic_schema,
-)
-from _04_Nucleo_Operativo.derivation_contracts import WorkReceipt
-from _04_Nucleo_Operativo.derivation_projection import (
+from neocortex.semantic import semantic_evidence_repository, semantic_generation_repository, semantic_schema
+from neocortex.semantic.derivation_contracts import WorkReceipt
+from neocortex.semantic.derivation_projection import (
     projection_event_from_semantic_outbox,
     rebuild_derivation_projection,
 )
-from _04_Nucleo_Operativo.semantic_chunking import TextChunkingConfig, chunk_text_sections
-from _04_Nucleo_Operativo.semantic_lineage_repository import (
+from neocortex.semantic.semantic_chunking import TextChunkingConfig, chunk_text_sections
+from neocortex.semantic.semantic_lineage_repository import (
     explain_text_chunk_lineage,
     find_text_chunks_for_source_revision,
     read_semantic_derivation_outbox,
 )
-from _04_Nucleo_Operativo.semantic_models import (
+from neocortex.semantic.semantic_models import (
     EmbeddingModality,
     EmbeddingModelSpec,
     EmbeddingRole,
@@ -36,7 +32,7 @@ from _04_Nucleo_Operativo.semantic_models import (
     fingerprint_bytes,
     fingerprint_text,
 )
-from _04_Nucleo_Operativo.semantic_state import (
+from neocortex.semantic.semantic_state import (
     claim_embedding_jobs,
     complete_embedding_job,
     deactivate_text_chunks_for_item,
@@ -807,7 +803,7 @@ def test_receipt_and_outbox_roll_back_with_chunk_materialization(
         (TextSection("text", "body", text),),
         config,
     )
-    import _04_Nucleo_Operativo.semantic_lineage_repository as lineage_repository
+    import neocortex.semantic.semantic_lineage_repository as lineage_repository
 
     real_record = lineage_repository._record_work_receipt
 
@@ -1921,7 +1917,7 @@ def test_semantic_outbox_page_has_a_hard_byte_budget_and_progresses(
         text="eventos owner-local deben paginarse por bytes",
         ordinal=1,
     )
-    import _04_Nucleo_Operativo.semantic_lineage_repository as lineage_repository
+    import neocortex.semantic.semantic_lineage_repository as lineage_repository
 
     monkeypatch.setattr(lineage_repository, "_MAX_OUTBOX_PAGE_BYTES", 1)
     cursor = 0

@@ -5,9 +5,6 @@ value models, built-in vocabulary, bounded overlays, and evidence specialists.
 """
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 from dataclasses import dataclass
 
 from .document_naming import NAMING_VERSION, suggest_document_stem
@@ -404,6 +401,3 @@ def classify_document(
 
 
 # endregion [02]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.document_taxonomy")

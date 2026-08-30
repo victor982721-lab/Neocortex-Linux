@@ -1,6 +1,6 @@
 """Stable facade for safe technical-document organization.
 # region [00] Contexto del módulo
-# Módulo: _04_Nucleo_Operativo/document_organization.py
+# Módulo: neocortex/document_organization.py
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
@@ -11,9 +11,6 @@ behind the explicitly invoked apply functions.
 
 # region [01] Dependencias del módulo
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 from .document_organization_application import (
     _create_destination_parent as _create_destination_parent,
 )
@@ -56,6 +53,3 @@ __all__ = (
     "plan_document_organization",
 )
 # endregion [02]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.document_organization")

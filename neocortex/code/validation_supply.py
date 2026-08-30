@@ -1,9 +1,6 @@
 """Dependency-equivalent pip-audit replay for canonical Code validation."""
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import hashlib
 import json
 import sqlite3
@@ -328,6 +325,3 @@ __all__ = [
     "installed_versions",
     "pip_audit_run_is_clean",
 ]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.code.validation_supply")

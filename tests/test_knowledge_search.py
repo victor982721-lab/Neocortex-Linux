@@ -17,23 +17,23 @@ import pytest
 
 from neocortex.deduplication import FileSnapshot
 from neocortex.deduplication.schema import initialize_inventory_schema
-from _04_Nucleo_Operativo import knowledge_search as knowledge_search_module
-from _04_Nucleo_Operativo import semantic_preparation, semantic_service
-from _04_Nucleo_Operativo.archive_state import (
+from neocortex.knowledge import knowledge_search as knowledge_search_module
+from neocortex.semantic import semantic_preparation, semantic_service
+from neocortex.capabilities.formats.archive.state import (
     archive_database,
     initialize_archive_state,
 )
-from _04_Nucleo_Operativo.code_contracts import (
+from neocortex.code.code_contracts import (
     CodeRelationEndpoint,
     CodeRouteConfig,
     CodeSearchHit,
     CodeSearchQuery,
     CodeSearchRelation,
 )
-from _04_Nucleo_Operativo.code_detection import DETECTOR_VERSION
-from _04_Nucleo_Operativo.code_route import CodeRoute
-from _04_Nucleo_Operativo.document_catalog import initialize_document_catalog
-from _04_Nucleo_Operativo.knowledge_contracts import (
+from neocortex.code.code_detection import DETECTOR_VERSION
+from neocortex.code.code_route import CodeRoute
+from neocortex.documents.document_catalog import initialize_document_catalog
+from neocortex.knowledge.knowledge_contracts import (
     EvidenceMethod,
     EvidenceRef,
     KnowledgeSnapshot,
@@ -48,31 +48,31 @@ from _04_Nucleo_Operativo.knowledge_contracts import (
     RevisionRef,
     RevisionState,
 )
-from _04_Nucleo_Operativo.knowledge_planner import (
+from neocortex.knowledge.knowledge_planner import (
     KnowledgeQuery,
     RetrievalMode,
     plan_knowledge_query,
 )
-from _04_Nucleo_Operativo.knowledge_search_contracts import (
+from neocortex.knowledge.knowledge_search_contracts import (
     ResourceDiscoverySignal,
 )
-from _04_Nucleo_Operativo.knowledge_search import (
+from neocortex.knowledge.knowledge_search import (
     KnowledgeCandidate,
     _candidate_from_resolved,
     execute_knowledge_search,
     fuse_evidence_rankings,
 )
-from _04_Nucleo_Operativo.knowledge_snapshot import KnowledgeStatePaths
-from _04_Nucleo_Operativo.video_models import VideoMediaProbe, VideoStreamProbe
-from _04_Nucleo_Operativo.video_state import (
+from neocortex.knowledge.knowledge_snapshot import KnowledgeStatePaths
+from neocortex.capabilities.formats.video.models import VideoMediaProbe, VideoStreamProbe
+from neocortex.capabilities.formats.video.state import (
     VideoFrameEvidence,
     initialize_video_state,
     store_video_success,
     video_database,
 )
-from _04_Nucleo_Operativo.semantic_chunking import TextChunkingConfig
-from _04_Nucleo_Operativo.semantic_config import multilingual_text_model
-from _04_Nucleo_Operativo.semantic_models import (
+from neocortex.semantic.semantic_chunking import TextChunkingConfig
+from neocortex.semantic.semantic_config import multilingual_text_model
+from neocortex.semantic.semantic_models import (
     BackendEmbedding,
     EmbeddingModality,
     EmbeddingModelSpec,

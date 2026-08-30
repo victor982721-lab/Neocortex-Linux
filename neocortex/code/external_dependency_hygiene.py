@@ -7,9 +7,6 @@ publication and gate evaluation.
 """
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import importlib.metadata
 import json
 import os
@@ -843,6 +840,3 @@ __all__ = [
     "DependencyHygieneExecution",
     "execute_deptry_dependency_hygiene",
 ]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.external_dependency_hygiene")

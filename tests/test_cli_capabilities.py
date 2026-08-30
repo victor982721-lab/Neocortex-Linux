@@ -17,8 +17,8 @@ from unittest.mock import patch
 
 import pytest
 
-import _04_Nucleo_Operativo.cli_capabilities as cli_capabilities
-from _04_Nucleo_Operativo.app_paths import self_analysis_data_directory
+import neocortex.api.cli.cli_capabilities as cli_capabilities
+from neocortex.runtime.config.app_paths import self_analysis_data_directory
 from neocortex.capability_broker import (
     CapabilityAvailability,
     CapabilityBroker,
@@ -35,9 +35,9 @@ from neocortex.capabilities import (
     TEXT_LEGACY_OFFICE_IMPLEMENTATION_ID,
 )
 from neocortex.cli import _translate_canonical_arguments, entrypoint
-from _04_Nucleo_Operativo.cli_app import main
-from _04_Nucleo_Operativo.cli_parser import build_parser
-from _04_Nucleo_Operativo.cli_validation import validate_arguments
+from neocortex.api.cli.cli_app import main
+from neocortex.api.cli.cli_parser import build_parser
+from neocortex.api.cli.cli_validation import validate_arguments
 # endregion [01]
 
 # region [02] Implementación
@@ -130,7 +130,7 @@ def _unavailable_status() -> RuntimeCapabilityStatus:
 
 
 def test_canonical_argv_translates_to_hidden_flat_compatibility_flags() -> None:
-    with patch("_04_Nucleo_Operativo.cli_app.main", return_value=7) as run_cli:
+    with patch("neocortex.api.cli.cli_app.main", return_value=7) as run_cli:
         result = entrypoint(("doctor", "capabilities", "--json"))
 
     assert result == 7
@@ -145,7 +145,7 @@ def test_canonical_argv_translates_to_hidden_flat_compatibility_flags() -> None:
         "--help",
     ]
 
-    with patch("_04_Nucleo_Operativo.cli_app.main", return_value=3) as run_cli:
+    with patch("neocortex.api.cli.cli_app.main", return_value=3) as run_cli:
         result = entrypoint(
             (
                 "doctor",
@@ -171,7 +171,7 @@ def test_canonical_argv_translates_to_hidden_flat_compatibility_flags() -> None:
     )
 
     canonical_state = str(self_analysis_data_directory())
-    with patch("_04_Nucleo_Operativo.cli_app.main", return_value=9) as run_cli:
+    with patch("neocortex.api.cli.cli_app.main", return_value=9) as run_cli:
         result = entrypoint(
             (
                 "code",
@@ -238,7 +238,7 @@ def test_canonical_argv_translates_to_hidden_flat_compatibility_flags() -> None:
         "--code-json",
     ]
 
-    with patch("_04_Nucleo_Operativo.cli_app.main", return_value=5) as run_cli:
+    with patch("neocortex.api.cli.cli_app.main", return_value=5) as run_cli:
         result = entrypoint(
             (
                 "code",

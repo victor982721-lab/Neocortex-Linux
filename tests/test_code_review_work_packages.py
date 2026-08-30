@@ -6,13 +6,13 @@ import json
 import sqlite3
 from pathlib import Path
 
-from _04_Nucleo_Operativo.code_architecture_analysis import (
+from neocortex.code.code_architecture_analysis import (
     ArchitectureContract,
     ArchitectureImportEdge,
     ArchitectureModule,
     CodeArchitectureAnalysis,
 )
-from _04_Nucleo_Operativo.code_coverage_analysis import (
+from neocortex.code.code_coverage_analysis import (
     CODE_COVERAGE_PROVIDER_ID,
     CodeCoverageAnalysis,
     CoverageGateEvaluation,
@@ -22,7 +22,7 @@ from _04_Nucleo_Operativo.code_coverage_analysis import (
     CoverageTotals,
     TestToSymbolRelation as CoverageTestToSymbolRelation,
 )
-from _04_Nucleo_Operativo.code_engineering_analytics import (
+from neocortex.code.code_engineering_analytics import (
     CodeEngineeringAnalytics,
     EngineeringDimension,
     EngineeringGate,
@@ -30,7 +30,7 @@ from _04_Nucleo_Operativo.code_engineering_analytics import (
     EngineeringProviderSummary,
     ModuleEngineeringProfile,
 )
-from _04_Nucleo_Operativo.code_review_models import (
+from neocortex.code.code_review_models import (
     CodeReviewDiagnostic,
     CodeReviewFinding,
     CodeReviewImpact,
@@ -40,13 +40,13 @@ from _04_Nucleo_Operativo.code_review_models import (
     bounded_code_unused_payload,
     build_code_review_recommendations,
 )
-from _04_Nucleo_Operativo.code_review_actionability import CodeReviewEpistemicState
-from _04_Nucleo_Operativo.code_review_work_packages import (
+from neocortex.code.code_review_actionability import CodeReviewEpistemicState
+from neocortex.code.code_review_work_packages import (
     build_code_review_work_packages,
     plan_code_review_work_packages,
     read_code_review_planning_links,
 )
-from _04_Nucleo_Operativo.code_unused_analysis import (
+from neocortex.code.code_unused_analysis import (
     UnusedCalibrationSample,
     UnusedConsensusCandidate,
     UnusedEvidenceSignals,

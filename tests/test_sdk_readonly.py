@@ -101,7 +101,7 @@ def test_sdk_manifest_is_the_existing_public_knowledge_surface() -> None:
 
 
 def test_sdk_exports_preserve_legacy_object_identity() -> None:
-    import _04_Nucleo_Operativo as legacy
+    from neocortex.api import public as legacy
 
     for name in EXPECTED_EXPORTS:
         assert getattr(sdk, name) is getattr(legacy, name), name
@@ -137,7 +137,6 @@ def test_sdk_cold_import_resolves_no_operational_or_optional_engine() -> None:
         loaded = set(sys.modules) - before
 
         forbidden_prefixes = (
-            "_04_Nucleo_Operativo",
             "PIL",
             "PySide6",
             "ctranslate2",
@@ -230,12 +229,12 @@ def test_sdk_status_tolerates_absent_optional_engines_without_creating_state(
             raise SystemExit("SDK status created missing state")
 
         forbidden_modules = {
-            "_04_Nucleo_Operativo.knowledge_context",
-            "_04_Nucleo_Operativo.knowledge_search",
-            "_04_Nucleo_Operativo.semantic_backends",
-            "_04_Nucleo_Operativo.semantic_preparation",
-            "_04_Nucleo_Operativo.semantic_search_service",
-            "_04_Nucleo_Operativo.semantic_service",
+            "neocortex.knowledge.knowledge_context",
+            "neocortex.knowledge.knowledge_search",
+            "neocortex.semantic.semantic_backends",
+            "neocortex.semantic.semantic_preparation",
+            "neocortex.semantic.semantic_search_service",
+            "neocortex.semantic.semantic_service",
         }
         loaded = sorted(forbidden_modules.intersection(sys.modules))
         if loaded:

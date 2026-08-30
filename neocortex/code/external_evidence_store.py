@@ -1,9 +1,6 @@
 """Normalized persistence and read models for external code providers."""
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import json
 import sqlite3
 from collections.abc import Collection, Iterable, Mapping, Sequence
@@ -2230,6 +2227,3 @@ __all__ = [
     "read_external_provider_findings",
     "read_external_validation_provider_statuses",
 ]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.external_evidence_store")

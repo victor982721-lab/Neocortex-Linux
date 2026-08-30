@@ -22,15 +22,15 @@ from neocortex.deduplication import (
     full_fingerprint,
     snapshot_path,
 )
-from _04_Nucleo_Operativo.cancellation import (
+from neocortex.runtime.control.cancellation import (
     CancellationRequested,
     CancellationToken,
 )
-from _04_Nucleo_Operativo.pdf_cache import binary_fingerprint
-from _04_Nucleo_Operativo import pdf_schema
-from _04_Nucleo_Operativo.pdf_route import PdfRoute, PdfRouteConfig
-from _04_Nucleo_Operativo.pdf_route_cache import file_key
-from _04_Nucleo_Operativo.pdf_state import (
+from neocortex.capabilities.formats.pdf.pdf_cache import binary_fingerprint
+from neocortex.capabilities.formats.pdf import pdf_schema
+from neocortex.capabilities.formats.pdf.pdf_route import PdfRoute, PdfRouteConfig
+from neocortex.capabilities.formats.pdf.pdf_route_cache import file_key
+from neocortex.capabilities.formats.pdf.pdf_state import (
     SCHEMA_VERSION,
     UNKNOWN_BIRTHTIME_NS,
     initialize_pdf_state,
@@ -346,7 +346,7 @@ class PdfBirthtimeInvariantTests(unittest.TestCase):
                 route.index = index
                 route.cancellation = CancellationToken()
                 with patch(
-                    "_04_Nucleo_Operativo.pdf_route_cache.binary_fingerprint",
+                    "neocortex.capabilities.formats.pdf.pdf_route_cache.binary_fingerprint",
                     wraps=binary_fingerprint,
                 ) as fingerprint:
                     self.assertTrue(route._is_cache_hit(snapshot, touch=False))
@@ -405,7 +405,7 @@ class PdfBirthtimeInvariantTests(unittest.TestCase):
                 route.run_id = 1
                 with (
                     patch(
-                        "_04_Nucleo_Operativo.pdf_cache.full_fingerprint",
+                        "neocortex.capabilities.formats.pdf.pdf_cache.full_fingerprint",
                         side_effect=AssertionError("source was read again"),
                     ),
                     pdf_database(state) as cache,

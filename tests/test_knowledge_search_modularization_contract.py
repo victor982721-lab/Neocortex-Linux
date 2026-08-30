@@ -1,4 +1,4 @@
-"""Compatibility seams for the incremental Knowledge Search extraction."""
+"""Contracts for the incremental Knowledge Search module boundaries."""
 # region [00] Contexto del módulo
 # Módulo: tests/test_knowledge_search_modularization_contract.py
 # Propósito: documentación embebida y separación visual de regiones.
@@ -17,10 +17,10 @@ from pathlib import Path
 
 import pytest
 
-import _04_Nucleo_Operativo as operational
+from neocortex.api import public as operational
 import neocortex.sdk as sdk
-from _04_Nucleo_Operativo import knowledge_search
-from _04_Nucleo_Operativo.knowledge_contracts import (
+from neocortex.knowledge import knowledge_search
+from neocortex.knowledge.knowledge_contracts import (
     EvidenceMethod,
     EvidenceRef,
     KnowledgeSnapshot,
@@ -33,24 +33,25 @@ from _04_Nucleo_Operativo.knowledge_contracts import (
     RevisionRef,
     RevisionState,
 )
-from _04_Nucleo_Operativo.knowledge_planner import (
+from neocortex.knowledge.knowledge_planner import (
     KnowledgePlan,
     KnowledgeQuery,
     plan_knowledge_query,
 )
-from _04_Nucleo_Operativo.knowledge_search import (
+from neocortex.knowledge.knowledge_search import (
     KnowledgeCandidate,
     RankingExecution,
     execute_knowledge_search,
 )
-from _04_Nucleo_Operativo.knowledge_snapshot import KnowledgeStatePaths
+from neocortex.knowledge.knowledge_snapshot import KnowledgeStatePaths
 # endregion [01]
 
 # region [02] Implementación
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-PUBLIC_MODULE = "_04_Nucleo_Operativo.knowledge_search"
+PUBLIC_MODULE = "neocortex.knowledge.knowledge_search"
+CONTRACT_MODULE = "neocortex.knowledge.knowledge_search_contracts"
 PUBLIC_EXPORTS = (
     "KnowledgeCandidate",
     "KnowledgeSearchResult",
@@ -190,7 +191,12 @@ def test_public_facade_surface_signatures_and_identity_are_stable() -> None:
     assert knowledge_search.__all__ == PUBLIC_EXPORTS
     for name, expected_signature in PUBLIC_SIGNATURES.items():
         value = getattr(knowledge_search, name)
-        assert value.__module__ == PUBLIC_MODULE
+        expected_module = CONTRACT_MODULE if name in {
+            "KnowledgeCandidate",
+            "KnowledgeSearchResult",
+            "RankingExecution",
+        } else PUBLIC_MODULE
+        assert value.__module__ == expected_module
         assert str(inspect.signature(value)) == expected_signature
 
     assert operational.KnowledgeSearchResult is knowledge_search.KnowledgeSearchResult
@@ -203,8 +209,8 @@ def test_public_facade_surface_signatures_and_identity_are_stable() -> None:
 @pytest.mark.parametrize(
     "module_order",
     (
-        (PUBLIC_MODULE, "_04_Nucleo_Operativo", "neocortex.sdk"),
-        ("_04_Nucleo_Operativo", "neocortex.sdk", PUBLIC_MODULE),
+        (PUBLIC_MODULE, "neocortex.api.public", "neocortex.sdk"),
+        ("neocortex.api.public", "neocortex.sdk", PUBLIC_MODULE),
     ),
 )
 def test_knowledge_search_cold_import_orders_preserve_facade_identity(
@@ -216,13 +222,13 @@ def test_knowledge_search_cold_import_orders_preserve_facade_identity(
 
         for module_name in {module_order!r}:
             importlib.import_module(module_name)
-        package = importlib.import_module("_04_Nucleo_Operativo")
+        public = importlib.import_module("neocortex.api.public")
         sdk = importlib.import_module("neocortex.sdk")
         search = importlib.import_module("{PUBLIC_MODULE}")
         assert search.__all__ == {PUBLIC_EXPORTS!r}
-        assert package.KnowledgeSearchResult is search.KnowledgeSearchResult
+        assert public.KnowledgeSearchResult is search.KnowledgeSearchResult
         assert sdk.KnowledgeSearchResult is search.KnowledgeSearchResult
-        assert search.KnowledgeSearchResult.__module__ == "{PUBLIC_MODULE}"
+        assert search.KnowledgeSearchResult.__module__ == "neocortex.knowledge.knowledge_search_contracts"
         """
     )
     environment = os.environ.copy()

@@ -1,6 +1,6 @@
 """Validation and normalization for immutable Knowledge telemetry contracts.
 # region [00] Contexto del módulo
-# Módulo: _04_Nucleo_Operativo/knowledge_contract_telemetry.py
+# Módulo: neocortex/knowledge_contract_telemetry.py
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
@@ -12,9 +12,6 @@ point back to that facade.
 
 # region [01] Dependencias del módulo
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, TypeVar
 # endregion [01]
@@ -304,6 +301,3 @@ __all__ = [
     "validate_telemetry_clock",
 ]
 # endregion [02]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.knowledge_contract_telemetry")

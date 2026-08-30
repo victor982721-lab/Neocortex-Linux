@@ -6,9 +6,6 @@ repairs owner state.
 """
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import hashlib
 import json
 import re
@@ -1900,6 +1897,3 @@ __all__ = [
     "load_value_review_observations",
     "read_value_review_source_snapshot",
 ]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.value_review_repository")

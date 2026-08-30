@@ -1,9 +1,6 @@
 """Bounded read-only queries over persisted PDF derived indexes."""
 
 from __future__ import annotations
-
-from . import preserve_legacy_module as _preserve_legacy_module
-
 import json
 from pathlib import Path
 
@@ -121,5 +118,3 @@ def search_pdf_state(
 
 
 # endregion [03]
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.pdf_derived_queries")

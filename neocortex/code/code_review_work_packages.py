@@ -1,9 +1,6 @@
 """Deterministic work packages over bounded published Code review evidence."""
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import sqlite3
 from dataclasses import dataclass, replace
 from typing import Literal, cast
@@ -626,6 +623,3 @@ __all__ = [
     "plan_code_review_work_packages",
     "read_code_review_planning_links",
 ]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.code_review_work_packages")

@@ -19,14 +19,14 @@ from pathlib import Path
 
 import pytest
 
-from _04_Nucleo_Operativo import knowledge_contracts as contracts
+from neocortex.knowledge import knowledge_contracts as contracts
 # endregion [01]
 
 # region [02] Implementación
 
 
-CONTRACT_MODULE = "_04_Nucleo_Operativo.knowledge_contracts"
-CONTEXT_MODULE = "_04_Nucleo_Operativo.knowledge_contract_context"
+CONTRACT_MODULE = "neocortex.knowledge.knowledge_contracts"
+CONTEXT_MODULE = "neocortex.knowledge.knowledge_contract_context"
 FUNCTION_DELEGATES = {
     "_validate_context_plan_values": "validate_context_plan_values",
     "_validate_context_references": "validate_context_references",
@@ -180,7 +180,7 @@ def test_context_modules_form_one_way_runtime_import_dag() -> None:
 def test_context_modules_support_both_cold_import_orders(
     module_order: tuple[str, str],
 ) -> None:
-    repository = Path(contracts.__file__).resolve().parents[1]
+    repository = Path(contracts.__file__).resolve().parents[2]
     script = textwrap.dedent(
         f"""
         import importlib
@@ -191,9 +191,7 @@ def test_context_modules_support_both_cold_import_orders(
             importlib.import_module(module_name)
         facade = importlib.import_module({CONTRACT_MODULE!r})
         helper = importlib.import_module({CONTEXT_MODULE!r})
-        helper_names = {
-            tuple((*FUNCTION_DELEGATES.values(), *METHOD_DELEGATES.values()))!r
-        }
+        helper_names = {(*FUNCTION_DELEGATES.values(), *METHOD_DELEGATES.values())!r}
         for helper_name in helper_names:
             assert callable(getattr(helper, helper_name))
         assert facade.ContextBundle.__module__ == {CONTRACT_MODULE!r}

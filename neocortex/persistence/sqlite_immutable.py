@@ -1,9 +1,6 @@
 """Fenced immutable SQLite reads that never create or update sidecars."""
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import sqlite3
 import stat
 from contextlib import contextmanager
@@ -173,6 +170,3 @@ __all__ = [
     "immutable_sqlite_database",
     "require_inactive_sqlite_sidecars",
 ]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.sqlite_immutable")

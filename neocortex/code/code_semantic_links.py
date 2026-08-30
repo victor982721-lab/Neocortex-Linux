@@ -1,9 +1,6 @@
 """Publish exact Code-to-Semantic coverage links after a Semantic head is ready."""
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import json
 import sqlite3
 from dataclasses import dataclass
@@ -657,6 +654,3 @@ __all__ = [  # noqa: RUF022
     "code_semantic_search_availability",
     "synchronize_code_embedding_links",
 ]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.code_semantic_links")

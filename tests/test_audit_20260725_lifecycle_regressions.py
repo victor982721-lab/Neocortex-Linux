@@ -13,24 +13,24 @@ from pathlib import Path
 import pytest
 
 from neocortex.deduplication import DedupIndex, InventoryCheckpoint, snapshot_path
-from _04_Nucleo_Operativo.file_action_recovery import (
+from neocortex.workflow.actions.file_action_recovery import (
     effect_receipt_json,
     expected_identity_json,
     list_file_action_reconciliations,
 )
-from _04_Nucleo_Operativo.framework_state_writer import FrameworkState
-from _04_Nucleo_Operativo.framework_schema import SCHEMA_VERSION
-from _04_Nucleo_Operativo.retention_planner import (
+from neocortex.persistence.framework_state_writer import FrameworkState
+from neocortex.persistence.framework_schema import SCHEMA_VERSION
+from neocortex.workflow.retention.planner import (
     RetentionPlanningCancelled,
     RetentionPolicy,
     plan_retention,
 )
-from _04_Nucleo_Operativo.semantic_models import (
+from neocortex.semantic.semantic_models import (
     EmbeddingModality,
     EmbeddingModelSpec,
     EmbeddingRole,
 )
-from _04_Nucleo_Operativo.semantic_state import (
+from neocortex.semantic.semantic_state import (
     initialize_semantic_state,
     register_embedding_model,
     semantic_database,

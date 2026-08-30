@@ -5,10 +5,6 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 from typing import Literal
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
-
 # region [01] Stable retry bounds
 
 PDF_MAX_AUTOMATIC_RETRIES = 3
@@ -322,9 +318,4 @@ def is_ocr_scale_retryable_failure(exc: Exception) -> bool:
             "tesseract process timeout",
         )
     )
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.retry_policy")
-
-
 # endregion [02]

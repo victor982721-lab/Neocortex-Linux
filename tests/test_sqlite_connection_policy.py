@@ -10,14 +10,12 @@ from types import ModuleType
 
 import pytest
 
-from _04_Nucleo_Operativo import (
-    audio_state,
-    code_schema,
-    document_catalog,
-    docx_state,
-    office_state,
-    pdf_state,
-)
+from neocortex.capabilities.formats.audio import state as audio_state
+from neocortex.code import code_schema
+from neocortex.documents import document_catalog
+from neocortex.capabilities.formats.docx import state as docx_state
+from neocortex.capabilities.formats.office import state as office_state
+from neocortex.capabilities.formats.pdf import pdf_state
 from neocortex import sqlite_connection
 from neocortex.sqlite_connection import (
     READONLY_EXISTING,

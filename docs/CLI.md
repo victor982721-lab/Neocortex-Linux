@@ -2,7 +2,7 @@
 
 La interfaz pública canónica de NeoCortex es el ejecutable instalado
 `Neocortex`. La definición exacta de argumentos vive en
-`_04_Nucleo_Operativo/cli_parser.py`; esta guía resume los contratos operativos
+`neocortex/api/cli/cli_parser.py`; esta guía resume los contratos operativos
 que conviene conocer antes de usar `--help`.
 
 ## Comandos cotidianos
@@ -42,11 +42,8 @@ esperadas, deténgase: el launcher instalado y el árbol fuente no representan l
 misma entrega. No use una ruta nueva hasta actualizar y volver a comprobar el
 entrypoint.
 
-Esta fuente declara `0.9.0`. En Windows, la fuente canónica está en
-`%USERPROFILE%\Neocortex\Repository`; los runtimes versionados viven bajo
-`%LOCALAPPDATA%\Programs\Neocortex\versions` y el launcher estable es
-`%LOCALAPPDATA%\Programs\Neocortex\bin\Neocortex.exe`. En Linux, la fuente está
-en `~/Neocortex/Repository`, las releases en
+Esta fuente declara `0.9.0` para Linux/Kubuntu. La fuente está en
+`~/Neocortex/Repository`, las releases en
 `${XDG_DATA_HOME:-~/.local/share}/Neocortex/releases`, `current` selecciona la
 activa y `~/.local/bin/Neocortex` es el alias público. Valide primero el
 ejecutable exacto del runtime y promueva el launcher sólo después de esa
@@ -215,7 +212,7 @@ Neocortex --self-analysis --analysis-profile trusted-deep --root $Root --state-d
 # Mutación focal del módulo/símbolo del work package.
 Neocortex --self-analysis --analysis-profile trusted-deep --root $Root --state-directory $State `
   --deep-test-selector tests/test_external_deep_coverage.py `
-  --deep-mutation-target _04_Nucleo_Operativo/external_deep_coverage.py `
+  --deep-mutation-target neocortex/code/external_deep_coverage.py `
   --deep-mutation-symbol external_deep_coverage._normalize `
   --deep-mutation-max-mutants 20 --deep-mutation-timeout-seconds 30 `
   --deep-mutation-time-budget-seconds 600

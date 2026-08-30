@@ -13,20 +13,20 @@ from unittest.mock import patch
 
 import pytest
 
-import _04_Nucleo_Operativo.framework_schema as framework_schema
+import neocortex.persistence.framework_schema as framework_schema
 from neocortex.deduplication import DedupIndex, DedupPlanner, snapshot_path
-from _04_Nucleo_Operativo import actions as actions_module
-from _04_Nucleo_Operativo.actions import FrameworkActions
-from _04_Nucleo_Operativo.cli_app import main as cli_main
-from _04_Nucleo_Operativo.file_action_recovery import (
+from neocortex.workflow.actions import actions as actions_module
+from neocortex.workflow.actions.actions import FrameworkActions
+from neocortex.api.cli.cli_app import main as cli_main
+from neocortex.workflow.actions.file_action_recovery import (
     expected_identity_json,
     list_file_action_reconciliations,
 )
-from _04_Nucleo_Operativo.framework_schema import (
+from neocortex.persistence.framework_schema import (
     SCHEMA_VERSION,
     initialize_framework_schema,
 )
-from _04_Nucleo_Operativo.state import FrameworkRouteState, FrameworkState
+from neocortex.persistence.state import FrameworkRouteState, FrameworkState
 from tests.internal_paths_test_support import begin_signed_normal_run
 from tests.mutation_containment import ContainedMutationRoot
 
@@ -550,7 +550,7 @@ def test_trash_apply_abstains_before_effect_confirmation(
         actions = FrameworkActions(index, state, run_id, scan.scan_id, apply=True)
 
         with (
-            patch("_04_Nucleo_Operativo.actions.send2trash") as trash,
+            patch("neocortex.workflow.actions.actions.send2trash") as trash,
             patch.object(state, "confirm_file_actions_applied") as confirm,
         ):
             result = actions.recycle_verified_files(

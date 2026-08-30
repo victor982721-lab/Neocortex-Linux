@@ -1,9 +1,6 @@
 """Versioned SQLite schema for structured source-code intelligence."""
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import os
 import sqlite3
 import stat as stat_module
@@ -1362,6 +1359,3 @@ __all__ = [
     "validate_code_schema",
     "verify_code_storage_integrity",
 ]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.code_schema")

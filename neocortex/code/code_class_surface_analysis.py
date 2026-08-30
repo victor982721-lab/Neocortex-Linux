@@ -7,9 +7,6 @@ material only and never decide selection or actionability.
 """
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import json
 import sqlite3
 from dataclasses import asdict, dataclass, fields
@@ -903,6 +900,3 @@ __all__ = [
     "read_code_class_surface_analysis",
     "validate_code_class_surface_observation",
 ]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.code_class_surface_analysis")

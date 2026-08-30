@@ -42,7 +42,7 @@ class RouteRegistryIsolationTests(unittest.TestCase):
             """
             import sys
 
-            from _04_Nucleo_Operativo.route_registry import (
+            from neocortex.runtime.orchestration.route_registry import (
                 builtin_route_registry,
             )
 
@@ -53,20 +53,20 @@ class RouteRegistryIsolationTests(unittest.TestCase):
                 raise SystemExit(f"unexpected registry: {tuple(registry)!r}")
             forbidden = {
                 "neocortex.deduplication",
-                "_04_Nucleo_Operativo.global_resources",
-                "_04_Nucleo_Operativo.pdf_route",
-                "_04_Nucleo_Operativo.docx_route",
-                "_04_Nucleo_Operativo.capabilities.formats.docx.route",
-                "_04_Nucleo_Operativo.image_route",
-                "_04_Nucleo_Operativo.capabilities.formats.image.route",
-                "_04_Nucleo_Operativo.capabilities.formats.office.route",
-                "_04_Nucleo_Operativo.archive_route",
-                "_04_Nucleo_Operativo.capabilities.formats.archive.route",
-                "_04_Nucleo_Operativo.text_route",
-                "_04_Nucleo_Operativo.capabilities.formats.audio.route",
-                "_04_Nucleo_Operativo.capabilities.formats.video.route",
-                "_04_Nucleo_Operativo.code_route",
-                "_04_Nucleo_Operativo.code_analyzers",
+                "neocortex.runtime.control.global_resources",
+                "neocortex.capabilities.formats.pdf.pdf_route",
+                "neocortex.capabilities.formats.docx.route",
+                "neocortex.capabilities.formats.docx.route",
+                "neocortex.capabilities.formats.image.route",
+                "neocortex.capabilities.formats.image.route",
+                "neocortex.capabilities.formats.office.route",
+                "neocortex.capabilities.formats.archive.route",
+                "neocortex.capabilities.formats.archive.route",
+                "neocortex.capabilities.formats.text.text_route",
+                "neocortex.capabilities.formats.audio.route",
+                "neocortex.capabilities.formats.video.route",
+                "neocortex.code.code_route",
+                "neocortex.code.code_analyzers",
             }
             loaded = forbidden.intersection(sys.modules)
             if loaded:
@@ -78,52 +78,30 @@ class RouteRegistryIsolationTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertIn("REGISTRY_ISOLATED", completed.stdout)
 
-    def test_deferred_route_reexport_loads_only_its_engine(self) -> None:
+    def test_registry_does_not_reexport_route_engines(self) -> None:
         completed = _run_isolated(
             """
-            import sys
+            from neocortex.runtime.orchestration import route_registry
 
-            from _04_Nucleo_Operativo import route_registry
-
-            engines = {
-                "_04_Nucleo_Operativo.pdf_route",
-                "_04_Nucleo_Operativo.docx_route",
-                "_04_Nucleo_Operativo.capabilities.formats.docx.route",
-                "_04_Nucleo_Operativo.image_route",
-                "_04_Nucleo_Operativo.capabilities.formats.image.route",
-                "_04_Nucleo_Operativo.capabilities.formats.office.route",
-                "_04_Nucleo_Operativo.archive_route",
-                "_04_Nucleo_Operativo.capabilities.formats.archive.route",
-                "_04_Nucleo_Operativo.capabilities.formats.audio.route",
-                "_04_Nucleo_Operativo.capabilities.formats.video.route",
-            }
-            if engines.intersection(sys.modules):
-                raise SystemExit("route engines loaded before deferred access")
-            if "PdfRoute" not in dir(route_registry):
-                raise SystemExit("deferred export absent from dir()")
-
-            from _04_Nucleo_Operativo.route_registry import PdfRoute
-            from _04_Nucleo_Operativo.pdf_route import PdfRoute as OriginalPdfRoute
-
-            if PdfRoute is not OriginalPdfRoute:
-                raise SystemExit("deferred export changed the original symbol")
-            loaded = engines.intersection(sys.modules)
-            if loaded != {"_04_Nucleo_Operativo.pdf_route"}:
-                raise SystemExit("deferred export loaded: " + ",".join(loaded))
-            print("DEFERRED_EXPORT_ISOLATED")
+            if "PdfRoute" in dir(route_registry):
+                raise SystemExit("route registry still reexports PdfRoute")
+            from neocortex.capabilities.formats.pdf.pdf_route import PdfRoute
+            if PdfRoute.__module__ != "neocortex.capabilities.formats.pdf.pdf_route":
+                raise SystemExit("canonical route identity changed")
+            print("REGISTRY_CANONICAL_ONLY")
             """
         )
 
         self.assertEqual(completed.returncode, 0, completed.stderr)
-        self.assertIn("DEFERRED_EXPORT_ISOLATED", completed.stdout)
+        self.assertIn("REGISTRY_CANONICAL_ONLY", completed.stdout)
 
     def test_route_none_orchestrator_does_not_load_route_engines(self) -> None:
         completed = _run_isolated(
             """
             import sys
 
-            from _04_Nucleo_Operativo.models import FrameworkConfig
-            from _04_Nucleo_Operativo.orchestrator import FrameworkOrchestrator
+            from neocortex.runtime.models import FrameworkConfig
+            from neocortex.runtime.orchestration.orchestrator import FrameworkOrchestrator
 
             orchestrator = FrameworkOrchestrator(FrameworkConfig(route="none"))
             if orchestrator.selected_routes:
@@ -131,15 +109,15 @@ class RouteRegistryIsolationTests(unittest.TestCase):
                     f"unexpected selected routes: {orchestrator.selected_routes!r}"
                 )
             forbidden = {
-                "_04_Nucleo_Operativo.pdf_route",
-                "_04_Nucleo_Operativo.docx_route",
-                "_04_Nucleo_Operativo.capabilities.formats.docx.route",
-                "_04_Nucleo_Operativo.image_route",
-                "_04_Nucleo_Operativo.capabilities.formats.image.route",
-                "_04_Nucleo_Operativo.archive_route",
-                "_04_Nucleo_Operativo.capabilities.formats.archive.route",
-                "_04_Nucleo_Operativo.capabilities.formats.audio.route",
-                "_04_Nucleo_Operativo.capabilities.formats.video.route",
+                "neocortex.capabilities.formats.pdf.pdf_route",
+                "neocortex.capabilities.formats.docx.route",
+                "neocortex.capabilities.formats.docx.route",
+                "neocortex.capabilities.formats.image.route",
+                "neocortex.capabilities.formats.image.route",
+                "neocortex.capabilities.formats.archive.route",
+                "neocortex.capabilities.formats.archive.route",
+                "neocortex.capabilities.formats.audio.route",
+                "neocortex.capabilities.formats.video.route",
             }
             loaded = forbidden.intersection(sys.modules)
             if loaded:
@@ -158,8 +136,8 @@ class RouteRegistryIsolationTests(unittest.TestCase):
             import os
             import sys
 
-            from _04_Nucleo_Operativo.models import FrameworkConfig
-            from _04_Nucleo_Operativo.orchestrator import FrameworkOrchestrator
+            from neocortex.runtime.models import FrameworkConfig
+            from neocortex.runtime.orchestration.orchestrator import FrameworkOrchestrator
 
             expression = os.environ["NEOCORTEX_TEST_SELECTION"]
             orchestrator = FrameworkOrchestrator(
@@ -171,14 +149,14 @@ class RouteRegistryIsolationTests(unittest.TestCase):
                     f"unexpected selected routes: {orchestrator.selected_routes!r}"
                 )
             forbidden = {
-                "_04_Nucleo_Operativo.pdf_route",
-                "_04_Nucleo_Operativo.docx_route",
-                "_04_Nucleo_Operativo.capabilities.formats.docx.route",
-                "_04_Nucleo_Operativo.image_route",
-                "_04_Nucleo_Operativo.capabilities.formats.image.route",
-                "_04_Nucleo_Operativo.archive_route",
-                "_04_Nucleo_Operativo.capabilities.formats.archive.route",
-                "_04_Nucleo_Operativo.capabilities.formats.audio.route",
+                "neocortex.capabilities.formats.pdf.pdf_route",
+                "neocortex.capabilities.formats.docx.route",
+                "neocortex.capabilities.formats.docx.route",
+                "neocortex.capabilities.formats.image.route",
+                "neocortex.capabilities.formats.image.route",
+                "neocortex.capabilities.formats.archive.route",
+                "neocortex.capabilities.formats.archive.route",
+                "neocortex.capabilities.formats.audio.route",
             }
             loaded = forbidden.intersection(sys.modules)
             if loaded:
@@ -201,23 +179,23 @@ class RouteRegistryIsolationTests(unittest.TestCase):
             import types
             from pathlib import Path
 
-            from _04_Nucleo_Operativo import route_registry
+            from neocortex.runtime.orchestration import route_registry
 
             route_name = os.environ["NEOCORTEX_TEST_ROUTE"]
             module_names = {
-                "pdf": "_04_Nucleo_Operativo.pdf_route",
-                "docx": "_04_Nucleo_Operativo.docx_route",
-                "image": "_04_Nucleo_Operativo.image_route",
-                "archive": "_04_Nucleo_Operativo.archive_route",
-                "office": "_04_Nucleo_Operativo.capabilities.formats.office.route",
-                "audio": "_04_Nucleo_Operativo.capabilities.formats.audio.route",
-                "video": "_04_Nucleo_Operativo.capabilities.formats.video.route",
-                "text": "_04_Nucleo_Operativo.text_route",
+                "pdf": "neocortex.capabilities.formats.pdf.pdf_route",
+                "docx": "neocortex.capabilities.formats.docx.route",
+                "image": "neocortex.capabilities.formats.image.route",
+                "archive": "neocortex.capabilities.formats.archive.route",
+                "office": "neocortex.capabilities.formats.office.route",
+                "audio": "neocortex.capabilities.formats.audio.route",
+                "video": "neocortex.capabilities.formats.video.route",
+                "text": "neocortex.capabilities.formats.text.text_route",
             }
             canonical_module_names = {
-                "docx": "_04_Nucleo_Operativo.capabilities.formats.docx.route",
-                "image": "_04_Nucleo_Operativo.capabilities.formats.image.route",
-                "archive": "_04_Nucleo_Operativo.capabilities.formats.archive.route",
+                "docx": "neocortex.capabilities.formats.docx.route",
+                "image": "neocortex.capabilities.formats.image.route",
+                "archive": "neocortex.capabilities.formats.archive.route",
             }
             class_names = {
                 "pdf": ("PdfRoute", "PdfRouteConfig"),
@@ -274,11 +252,11 @@ class RouteRegistryIsolationTests(unittest.TestCase):
                 sys.modules["neocortex.deduplication"] = dedup_module
             else:
                 resources_module = types.ModuleType(
-                    "_04_Nucleo_Operativo.global_resources"
+                    "neocortex.runtime.control.global_resources"
                 )
                 resources_module.CoordinatedMemoryGate = object
                 sys.modules[
-                    "_04_Nucleo_Operativo.global_resources"
+                    "neocortex.runtime.control.global_resources"
                 ] = resources_module
 
             context = route_registry.RouteExecutionContext(
@@ -310,7 +288,7 @@ class RouteRegistryIsolationTests(unittest.TestCase):
                 )
             if route_name == "pdf":
                 unrelated_dependency = (
-                    "_04_Nucleo_Operativo.global_resources"
+                    "neocortex.runtime.control.global_resources"
                 )
             elif route_name == "image":
                 unrelated_dependency = None

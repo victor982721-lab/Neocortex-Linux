@@ -8,11 +8,11 @@ from pathlib import Path
 import pytest
 
 from neocortex.deduplication import FileSnapshot
-from _04_Nucleo_Operativo import video_state as video_state_module
-from _04_Nucleo_Operativo.audio_state import audio_database, initialize_audio_state
-from _04_Nucleo_Operativo.file_identity import file_key_from_snapshot
-from _04_Nucleo_Operativo.video_models import VideoMediaProbe, VideoStreamProbe
-from _04_Nucleo_Operativo.video_state import (
+from neocortex.capabilities.formats.video import state as video_state_module
+from neocortex.capabilities.formats.audio.state import audio_database, initialize_audio_state
+from neocortex.foundation.file_identity import file_key_from_snapshot
+from neocortex.capabilities.formats.video.models import VideoMediaProbe, VideoStreamProbe
+from neocortex.capabilities.formats.video.state import (
     VIDEO_SCHEMA_VERSION,
     VideoFrameEvidence,
     find_published_audio_link,

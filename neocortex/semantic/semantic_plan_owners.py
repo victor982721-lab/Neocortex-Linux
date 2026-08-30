@@ -1,6 +1,6 @@
 """Read-only durable-owner validation and snapshot projection.
 # region [00] Contexto del módulo
-# Módulo: _04_Nucleo_Operativo/semantic_plan_owners.py
+# Módulo: neocortex/semantic_plan_owners.py
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
@@ -13,9 +13,6 @@ and integration seams without importing the facade back into this leaf.
 
 # region [01] Dependencias del módulo
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import sqlite3
 import time
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
@@ -919,6 +916,3 @@ def _plan_source_snapshots(
 
 
 # endregion [02]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.semantic_plan_owners")

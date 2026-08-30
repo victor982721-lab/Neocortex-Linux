@@ -1,6 +1,6 @@
 """Safely apply exact-duplicate and extension-correction actions."""
 # region [00] Contexto del módulo
-# Módulo: _04_Nucleo_Operativo/actions.py
+# Módulo: neocortex/actions.py
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
@@ -30,8 +30,6 @@ from neocortex.deduplication.inventory.index import (
     validate_inventory_root,
 )
 from neocortex.progress import ProgressCallback, ProgressEvent, emit_progress
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 from neocortex.workflow.actions.action_policy import (
     corrected_path as _corrected_path,
     path_key as _path_key,
@@ -1481,9 +1479,4 @@ class FrameworkActions:
         """Reload the current fail-closed guard at every mutation boundary."""
 
         return self._state.corpus_mutation_guard(self._run_id)
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.actions")
-
-
 # endregion [02]

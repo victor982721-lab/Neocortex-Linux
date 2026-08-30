@@ -6,9 +6,6 @@ fields instead of promoting a parser or heuristic result to permanent truth.
 """
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -859,6 +856,3 @@ __all__ = [
     "normalize_deep_mutation_target",
     "normalize_deep_test_selectors",
 ]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.code_contracts")

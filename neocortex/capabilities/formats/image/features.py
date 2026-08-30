@@ -1,9 +1,6 @@
 """Memory-bounded pixel and metadata feature extraction."""
 
 from __future__ import annotations
-
-from . import preserve_legacy_module as _preserve_legacy_module
-
 import math
 from contextlib import nullcontext
 from pathlib import Path
@@ -337,6 +334,3 @@ def extract_features(
 
 
 # endregion [03]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.image_features")

@@ -33,7 +33,6 @@ FamilyDecisionReason = Literal[
     "allowed_same_family",
     "allowed_by_dag",
     "forbidden_dependency",
-    "canonical_to_compat",
 ]
 
 
@@ -303,30 +302,23 @@ class FamilyDependency:
 
 @dataclass(frozen=True, slots=True)
 class FamilyDag:
-    """A validated, explicit DAG; import permission uses its reachability."""
+    """A validated, explicit canonical family DAG."""
 
     families: tuple[str, ...]
     direct_dependencies: tuple[FamilyDependency, ...]
-    compat_families: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         raw_families = self.families
         raw_dependencies = self.direct_dependencies
-        raw_compat = self.compat_families
         families = tuple(sorted(set(raw_families)))
         dependencies = tuple(sorted(set(raw_dependencies)))
-        compat = tuple(sorted(set(raw_compat)))
         if not families or len(families) != len(raw_families):
             raise ValueError("family DAG identities must be non-empty and unique")
         if len(dependencies) != len(raw_dependencies):
             raise ValueError("family DAG dependencies cannot repeat")
-        if len(compat) != len(raw_compat):
-            raise ValueError("compat family identities cannot repeat")
         for family in families:
             _required_identifier("family DAG identity", family)
         family_set = set(families)
-        if not set(compat) <= family_set:
-            raise ValueError("compat family is absent from the family DAG")
         for item in dependencies:
             if item.source_family not in family_set or item.target_family not in family_set:
                 raise ValueError("family DAG dependency references an unknown family")
@@ -334,26 +326,17 @@ class FamilyDag:
                 raise ValueError("family DAG cannot contain self dependencies")
         object.__setattr__(self, "families", families)
         object.__setattr__(self, "direct_dependencies", dependencies)
-        object.__setattr__(self, "compat_families", compat)
 
         pairs = tuple((item.source_family, item.target_family) for item in dependencies)
         if _cyclic_components(families, pairs):
             raise ValueError("family dependency policy must be acyclic")
-        for source in families:
-            if source in compat:
-                continue
-            if set(self.reachable_dependencies(source)) & set(compat):
-                raise ValueError("family DAG allows a canonical-to-compat dependency")
 
     def reachable_dependencies(self, source_family: str) -> tuple[str, ...]:
         if source_family not in self.families:
             raise KeyError(source_family)
         adjacency = _adjacency(
             self.families,
-            (
-                (item.source_family, item.target_family)
-                for item in self.direct_dependencies
-            ),
+            ((item.source_family, item.target_family) for item in self.direct_dependencies),
         )
         reached: set[str] = set()
         queue = deque(adjacency[source_family])
@@ -368,9 +351,7 @@ class FamilyDag:
     def allows(self, source_family: str, target_family: str) -> bool:
         if source_family not in self.families or target_family not in self.families:
             raise KeyError(source_family if source_family not in self.families else target_family)
-        return source_family == target_family or target_family in self.reachable_dependencies(
-            source_family
-        )
+        return source_family == target_family or target_family in self.reachable_dependencies(source_family)
 
 
 @dataclass(frozen=True, slots=True)
@@ -391,10 +372,6 @@ class FamilyDagEvaluation:
     @property
     def forbidden_edges(self) -> tuple[FamilyEdgeDecision, ...]:
         return tuple(item for item in self.decisions if not item.allowed)
-
-    @property
-    def canonical_to_compat_edges(self) -> tuple[FamilyEdgeDecision, ...]:
-        return tuple(item for item in self.decisions if item.reason == "canonical_to_compat")
 
     @property
     def dag_forbidden_edges(self) -> tuple[FamilyEdgeDecision, ...]:
@@ -705,35 +682,22 @@ def project_module_graph(graph: ModuleGraph, mapping: ExactMapping) -> Architect
 def evaluate_family_dag(
     projection: ArchitectureProjection, dag: FamilyDag
 ) -> FamilyDagEvaluation:
-    """Evaluate every exactly projected edge against an explicit family DAG."""
+    """Evaluate every projected edge against the canonical family DAG."""
 
     resolved_labels = {item.labels[0] for item in projection.mapping.resolved}
     unknown = resolved_labels - set(dag.families)
     if unknown:
         raise ValueError(f"mapping resolved families absent from DAG: {sorted(unknown)!r}")
-    compat = set(dag.compat_families)
     decisions: list[FamilyEdgeDecision] = []
     for edge in projection.projected_edges:
         if edge.source_label == edge.target_label:
             decisions.append(FamilyEdgeDecision(edge, True, "allowed_same_family"))
-        elif edge.source_label not in compat and edge.target_label in compat:
-            decisions.append(FamilyEdgeDecision(edge, False, "canonical_to_compat"))
         elif dag.allows(edge.source_label, edge.target_label):
             decisions.append(FamilyEdgeDecision(edge, True, "allowed_by_dag"))
         else:
             decisions.append(FamilyEdgeDecision(edge, False, "forbidden_dependency"))
     return FamilyDagEvaluation(projection, dag, tuple(decisions))
 
-
-for _defined_value in tuple(globals().values()):
-    if getattr(_defined_value, "__module__", None) == __name__:
-        try:
-            _defined_value.__module__ = (
-                "_04_Nucleo_Operativo.platform.shared.architecture_projection"
-            )
-        except (AttributeError, TypeError):
-            pass
-del _defined_value
 
 
 __all__ = [

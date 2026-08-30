@@ -6,23 +6,23 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
-import _04_Nucleo_Operativo.application_config_projections as runtime_projections
-from _04_Nucleo_Operativo import ApplicationConfig
-from _04_Nucleo_Operativo.application_config import (
+import neocortex.runtime.config.application_config_projections as runtime_projections
+from neocortex.api.public import ApplicationConfig
+from neocortex.runtime.config.application_config import (
     audio_route_config_from_application,
     code_route_config_from_application,
     image_route_config_from_application,
     office_route_config_from_application,
 )
-from _04_Nucleo_Operativo.audio_models import AudioRouteConfig
-from _04_Nucleo_Operativo.app_paths import (
+from neocortex.capabilities.formats.audio.models import AudioRouteConfig
+from neocortex.runtime.config.app_paths import (
     default_code_project_roots,
     source_repository_directory,
 )
-from _04_Nucleo_Operativo.image_route import ImageRouteConfig
-from _04_Nucleo_Operativo.office_route import OfficeRouteConfig
-from _04_Nucleo_Operativo.route_filters import CandidateSelection
-from _04_Nucleo_Operativo.route_registry import (
+from neocortex.capabilities.formats.image.route import ImageRouteConfig
+from neocortex.capabilities.formats.office.route import OfficeRouteConfig
+from neocortex.safety.route_filters import CandidateSelection
+from neocortex.runtime.orchestration.route_registry import (
     audio_route_config_from_framework,
     image_route_config_from_framework,
     office_route_config_from_framework,
@@ -321,17 +321,17 @@ def test_route_registry_delegates_media_projections() -> None:
     )
 
     with patch(
-        "_04_Nucleo_Operativo.application_config_projections.audio_route_config_from_application",
+        "neocortex.runtime.config.application_config_projections.audio_route_config_from_application",
         wraps=audio_route_config_from_application,
     ) as audio_projection:
         legacy_audio = audio_route_config_from_framework(config)
     with patch(
-        "_04_Nucleo_Operativo.application_config_projections.office_route_config_from_application",
+        "neocortex.runtime.config.application_config_projections.office_route_config_from_application",
         wraps=office_route_config_from_application,
     ) as office_projection:
         legacy_office = office_route_config_from_framework(config)
     with patch(
-        "_04_Nucleo_Operativo.application_config_projections.image_route_config_from_application",
+        "neocortex.runtime.config.application_config_projections.image_route_config_from_application",
         wraps=image_route_config_from_application,
     ) as image_projection:
         legacy_image = image_route_config_from_framework(

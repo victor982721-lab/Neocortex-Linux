@@ -12,13 +12,13 @@ import importlib
 
 
 def test_state_facade_preserves_public_import_contract() -> None:
-    facade = importlib.import_module("_04_Nucleo_Operativo.state")
+    facade = importlib.import_module("neocortex.persistence.state")
     route_repository = importlib.import_module(
-        "_04_Nucleo_Operativo.framework_route_state"
+        "neocortex.persistence.framework_route_state"
     )
-    schema = importlib.import_module("_04_Nucleo_Operativo.framework_schema")
-    shared = importlib.import_module("_04_Nucleo_Operativo.framework_state_common")
-    writer = importlib.import_module("_04_Nucleo_Operativo.framework_state_writer")
+    schema = importlib.import_module("neocortex.persistence.framework_schema")
+    shared = importlib.import_module("neocortex.persistence.framework_state_common")
+    writer = importlib.import_module("neocortex.persistence.framework_state_writer")
 
     assert facade.FrameworkState is writer.FrameworkState
     assert facade.FrameworkRouteState is route_repository.FrameworkRouteState
@@ -45,7 +45,7 @@ def test_state_facade_preserves_public_import_contract() -> None:
 
 
 def test_state_facade_classes_are_physically_separated() -> None:
-    facade = importlib.import_module("_04_Nucleo_Operativo.state")
+    facade = importlib.import_module("neocortex.persistence.state")
 
     assert facade.FrameworkState.__module__.endswith("framework_state_writer")
     assert facade.FrameworkRouteState.__module__.endswith("framework_route_state")

@@ -13,8 +13,8 @@ from pathlib import Path
 
 import pytest
 
-from _04_Nucleo_Operativo import knowledge_search
-from _04_Nucleo_Operativo.knowledge_contracts import (
+from neocortex.knowledge import knowledge_search
+from neocortex.knowledge.knowledge_contracts import (
     EvidenceMethod,
     EvidenceRef,
     KnowledgeHit,
@@ -26,23 +26,23 @@ from _04_Nucleo_Operativo.knowledge_contracts import (
     RevisionRef,
     RevisionState,
 )
-from _04_Nucleo_Operativo.knowledge_planner import (
+from neocortex.knowledge.knowledge_planner import (
     KnowledgePlan,
     KnowledgeQuery,
     RetrievalMode,
     plan_knowledge_query,
 )
-from _04_Nucleo_Operativo.knowledge_search import (
+from neocortex.knowledge.knowledge_search import (
     KnowledgeCandidate,
     RankingExecution,
     execute_knowledge_search,
 )
-from _04_Nucleo_Operativo.knowledge_snapshot import KnowledgeStatePaths
-from _04_Nucleo_Operativo.cli_knowledge import (
+from neocortex.knowledge.knowledge_snapshot import KnowledgeStatePaths
+from neocortex.api.cli.cli_knowledge import (
     KnowledgeExitCode,
     knowledge_search_exit_code,
 )
-from _04_Nucleo_Operativo.semantic_service_contracts import (
+from neocortex.semantic.semantic_service_contracts import (
     SemanticRanking,
     SemanticSearchResult,
 )

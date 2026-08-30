@@ -8,9 +8,6 @@ experiment before an independent technical disposition can exist.
 """
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import time
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
@@ -783,6 +780,3 @@ __all__ = [
     "resolve_code_retention",
     "retention_questions",
 ]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.code_retention_analysis")

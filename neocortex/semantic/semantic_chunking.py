@@ -1,9 +1,6 @@
 """Deterministic bounded chunking at natural document boundaries."""
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import re
 from collections import deque
 from dataclasses import dataclass
@@ -371,6 +368,3 @@ def chunk_text_sections(
 
 
 # endregion [03]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.semantic_chunking")

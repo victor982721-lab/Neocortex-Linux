@@ -1,9 +1,6 @@
 """Ontology prototypes and advisory-only semantic evidence materialization."""
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import math
 import time
 from collections.abc import Iterable, Mapping, Sequence
@@ -646,6 +643,3 @@ def classify_semantic_index(
 
 
 # endregion [03]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.semantic_classification_service")

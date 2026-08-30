@@ -474,7 +474,7 @@ Neocortex --self-analysis --analysis-profile trusted-deep --root $Root --state-d
 # Objetivo focal publicado por el work package H6.
 Neocortex --self-analysis --analysis-profile trusted-deep --root $Root --state-directory $State `
   --deep-test-selector tests/test_external_deep_coverage.py `
-  --deep-mutation-target _04_Nucleo_Operativo/external_deep_coverage.py `
+  --deep-mutation-target neocortex/code/external_deep_coverage.py `
   --deep-mutation-symbol external_deep_coverage._normalize `
   --deep-mutation-max-mutants 20 --deep-mutation-timeout-seconds 30 `
   --deep-mutation-time-budget-seconds 600
@@ -520,7 +520,7 @@ de líneas y ramas cuando suite, alcance, configuración y herramientas coincide
 
 La corrida canónica H6 Run 9 terminó en 343.168 s: 585 candidatos, 2 procesados,
 583 por caché, 15 proveedores y 0 errores. Sobre
-`_04_Nucleo_Operativo.external_deep_coverage` /
+`neocortex.code.external_deep_coverage` /
 `external_deep_coverage._normalize`, Cosmic Ray seleccionó y completó 20/20 de
 524 mutantes generados: 5 killed, 5 survived, 10 incompetent, 0 timeout y score
 0.50. Run 10 tardó 23.996 s con 585/585 candidatos por caché, cero
@@ -594,8 +594,8 @@ recorrer y publicar un snapshot portable; el checkpoint conserva sus tres
 campos USN en `NULL` y las rutas reutilizan caches por identidad/metadata.
 
 Sólo un cambio al autoanálisis o un cierre de release requiere un smoke de la
-raíz canónica. En ese caso analiza `%USERPROFILE%\Neocortex\Repository` con un
-estado externo nuevo bajo `$HOME\Neocortex\Laboratory\self-analysis`.
+raíz canónica. En ese caso analiza `~/Neocortex/Repository` con un estado
+externo nuevo bajo `${XDG_STATE_HOME:-~/.local/state}/Neocortex/self-analysis`.
 Un cambio cotidiano no debe convertirse por rutina en un análisis completo del
 repositorio.
 

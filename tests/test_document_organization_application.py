@@ -14,22 +14,22 @@ from typing import cast
 
 import pytest
 
-import _04_Nucleo_Operativo.document_organization_application as organization_application
+import neocortex.documents.document_organization_application as organization_application
 from neocortex.deduplication import FileSnapshot, snapshot_path
-from _04_Nucleo_Operativo.corpus_access import (
+from neocortex.safety.corpus_access import (
     CorpusAccessPolicy,
     CorpusMutationGuard,
 )
-from _04_Nucleo_Operativo.document_catalog import (
+from neocortex.documents.document_catalog import (
     document_catalog_database,
     update_document_catalog,
 )
-from _04_Nucleo_Operativo.document_organization import (
+from neocortex.documents.document_organization import (
     apply_document_organization,
     plan_document_organization,
 )
-from _04_Nucleo_Operativo.docx_state import initialize_docx_state
-from _04_Nucleo_Operativo.protected_content import (
+from neocortex.capabilities.formats.docx.state import initialize_docx_state
+from neocortex.safety.protected_content import (
     ProtectedContentPolicy,
     ProtectedPathSpec,
 )

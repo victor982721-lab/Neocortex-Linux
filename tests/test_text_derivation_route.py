@@ -16,23 +16,23 @@ from pathlib import Path
 
 import pytest
 
-import _04_Nucleo_Operativo.text_route as text_route_module
-import _04_Nucleo_Operativo.text_state as text_state_module
-import _04_Nucleo_Operativo.legacy_office_worker as legacy_worker_module
+import neocortex.capabilities.formats.text.text_route as text_route_module
+import neocortex.capabilities.formats.text.text_state as text_state_module
+import neocortex.capabilities.formats.office.legacy_worker as legacy_worker_module
 from neocortex.deduplication import FileSnapshot, snapshot_path
-from _04_Nucleo_Operativo.cancellation import CancellationRequested, CancellationToken
-from _04_Nucleo_Operativo.file_identity import file_key_from_snapshot
-from _04_Nucleo_Operativo.locking import FrameworkRunLock
-from _04_Nucleo_Operativo.route_filters import CandidateSelection
-from _04_Nucleo_Operativo.text_derivation_repository import (
+from neocortex.runtime.control.cancellation import CancellationRequested, CancellationToken
+from neocortex.foundation.file_identity import file_key_from_snapshot
+from neocortex.runtime.control.locking import FrameworkRunLock
+from neocortex.safety.route_filters import CandidateSelection
+from neocortex.capabilities.formats.text.text_derivation_repository import (
     TextDerivationIntegrityError,
     read_reusable_text_derivation,
     read_reusable_text_derivation_from_connection,
     read_text_document_lineage,
     validate_text_publications_from_connection,
 )
-from _04_Nucleo_Operativo.text_route import TextRoute, TextRouteConfig
-from _04_Nucleo_Operativo.text_state import initialize_text_state, text_database
+from neocortex.capabilities.formats.text.text_route import TextRoute, TextRouteConfig
+from neocortex.capabilities.formats.text.text_state import initialize_text_state, text_database
 from neocortex.capability_broker import CapabilityBinaryIdentity
 
 

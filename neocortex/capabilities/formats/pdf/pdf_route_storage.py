@@ -1,9 +1,6 @@
 """Bounded PDF staging, promotion, warning and failure persistence."""
 
 from __future__ import annotations
-
-from . import preserve_legacy_module as _preserve_legacy_module
-
 import json
 import sqlite3
 import time
@@ -580,5 +577,3 @@ class PdfRouteStorageMixin:
 
 
 # endregion [04]
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.pdf_route_storage")

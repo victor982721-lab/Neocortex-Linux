@@ -11,8 +11,8 @@ from typing import Any
 import pytest
 
 from neocortex.deduplication import FileSnapshot
-from _04_Nucleo_Operativo.cli_direct import run_review_candidates
-from _04_Nucleo_Operativo.review import (
+from neocortex.api.cli.cli_direct import run_review_candidates
+from neocortex.workflow.review.review import (
     MAX_EVIDENCE_BYTES,
     ReviewCandidate,
     ReviewDecision,
@@ -21,7 +21,7 @@ from _04_Nucleo_Operativo.review import (
     list_review_candidates,
     list_review_decisions,
 )
-from _04_Nucleo_Operativo.state import (
+from neocortex.persistence.state import (
     REVIEW_RECONCILIATION_BATCH_SIZE,
     SCHEMA_VERSION,
     FrameworkRouteState,

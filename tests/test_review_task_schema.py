@@ -10,8 +10,8 @@ from pathlib import Path
 
 import pytest
 
-import _04_Nucleo_Operativo.framework_schema as framework_schema
-from _04_Nucleo_Operativo.framework_schema import initialize_framework_schema
+import neocortex.persistence.framework_schema as framework_schema
+from neocortex.persistence.framework_schema import initialize_framework_schema
 
 
 _NEW_TABLES = {

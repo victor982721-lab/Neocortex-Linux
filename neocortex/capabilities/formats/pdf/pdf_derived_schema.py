@@ -1,9 +1,6 @@
 """Idempotent schema migrations for derived PDF indexes."""
 
 from __future__ import annotations
-
-from . import preserve_legacy_module as _preserve_legacy_module
-
 import sqlite3
 
 
@@ -140,5 +137,3 @@ def initialize_derived_schema(connection: sqlite3.Connection) -> None:
 
 
 # endregion [02]
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.pdf_derived_schema")

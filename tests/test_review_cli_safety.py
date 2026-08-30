@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from _04_Nucleo_Operativo.cli_parser import build_parser
-from _04_Nucleo_Operativo.cli_validation import validate_arguments
+from neocortex.api.cli.cli_parser import build_parser
+from neocortex.api.cli.cli_validation import validate_arguments
 
 
 @pytest.mark.parametrize("status", ("open", "resolved"))

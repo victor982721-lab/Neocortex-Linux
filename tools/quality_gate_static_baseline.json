@@ -2,11 +2,9 @@
   "schema": "neocortex.quality-gate-static-baseline/v1",
   "scope": {
     "mypy": [
-      "_04_Nucleo_Operativo",
       "neocortex"
     ],
     "pyright": [
-      "_04_Nucleo_Operativo",
       "neocortex"
     ],
     "ruff": "complete repository Python tree"
@@ -98,12 +96,6 @@
     },
     "pyright": {
       "by_path_rule": [
-        {
-          "count": 1,
-          "path": "_04_Nucleo_Operativo/__init__.py",
-          "rule": "reportUnsupportedDunderAll",
-          "severity": "warning"
-        },
         {
           "count": 5,
           "path": "neocortex/agent_server.py",
@@ -309,7 +301,7 @@
           "severity": "error"
         }
       ],
-      "total": 112,
+      "total": 111,
       "version": "1.1.411"
     },
     "ruff": {

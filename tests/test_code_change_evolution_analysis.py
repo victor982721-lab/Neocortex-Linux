@@ -7,13 +7,13 @@ from pathlib import Path
 import pytest
 
 from neocortex.deduplication import FileSnapshot
-from _04_Nucleo_Operativo.code_change_evolution_analysis import (
+from neocortex.code.code_change_evolution_analysis import (
     CODE_CHANGE_EVOLUTION_SCHEMA,
     analyze_code_change_evolution,
     expected_code_change_evolution_questions,
     parse_code_change_evolution_payload,
 )
-from _04_Nucleo_Operativo.code_contracts import (
+from neocortex.code.code_contracts import (
     AnalysisStatus,
     ArtifactClassification,
     ArtifactKind,
@@ -23,16 +23,16 @@ from _04_Nucleo_Operativo.code_contracts import (
     SourceRange,
     SymbolRecord,
 )
-from _04_Nucleo_Operativo.code_external_evidence import (
+from neocortex.code.code_external_evidence import (
     ExternalEvidencePublication,
 )
-from _04_Nucleo_Operativo.code_schema import (
+from neocortex.code.code_schema import (
     CODE_SCHEMA_VERSION,
     checkpoint_code_wal,
     remove_checkpointed_code_sidecars,
 )
-from _04_Nucleo_Operativo.code_state import CodeState
-from _04_Nucleo_Operativo.external_evidence_models import (
+from neocortex.code.code_state import CodeState
+from neocortex.code.external_evidence_models import (
     ExternalProviderMetric,
     ExternalProviderPublication,
     ExternalProviderRelation,
@@ -44,11 +44,11 @@ from _04_Nucleo_Operativo.external_evidence_models import (
     external_relation_identity,
     external_root_identity,
 )
-from _04_Nucleo_Operativo.external_git_history import (
+from neocortex.code.external_git_history import (
     GIT_HISTORY_PROVIDER_ID,
     GIT_HISTORY_PROVIDER_SCHEMA,
 )
-from _04_Nucleo_Operativo.semantic_models import fingerprint_bytes, fingerprint_text
+from neocortex.semantic.semantic_models import fingerprint_bytes, fingerprint_text
 
 
 PROCESSING_SIGNATURE = "code-change-evolution-fixture-v1"

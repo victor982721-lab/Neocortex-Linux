@@ -14,7 +14,7 @@ import pytest
 
 from neocortex.enumeration import JournalCursor
 from neocortex.deduplication import InventoryError
-from _04_Nucleo_Operativo.incremental_gate import (
+from neocortex.runtime.control.incremental_gate import (
     IncrementalGateDecision,
     IncrementalGateRequest,
     evaluate_incremental_gate,

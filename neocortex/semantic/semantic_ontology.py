@@ -6,9 +6,6 @@ original producer remains responsible for scores and provenance.
 """
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import re
 import unicodedata
 from dataclasses import dataclass
@@ -417,6 +414,3 @@ def expand_domain_query(query: str, *, max_aliases: int = 8) -> str:
 
 
 # endregion [04]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.semantic_ontology")

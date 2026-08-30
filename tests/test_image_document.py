@@ -12,8 +12,8 @@ from unittest.mock import patch
 
 from PIL import Image
 
-from _04_Nucleo_Operativo.bounded_subprocess import SubprocessOutputLimitError
-from _04_Nucleo_Operativo.image_document import (
+from neocortex.runtime.control.bounded_subprocess import SubprocessOutputLimitError
+from neocortex.capabilities.formats.image.document import (
     DOCUMENT_OCR_DIAGNOSTIC_MAX_BYTES,
     DOCUMENT_OCR_MEMORY_BYTES,
     DOCUMENT_OCR_TEXT_MAX_UTF8_BYTES,
@@ -153,11 +153,11 @@ class ImageDocumentTextTests(unittest.TestCase):
             path = _image(Path(temporary))
             with (
                 patch(
-                    "_04_Nucleo_Operativo.image_document.pillow_decode_scope",
+                    "neocortex.capabilities.formats.image.document.pillow_decode_scope",
                     new=decode_scope,
                 ),
                 patch(
-                    "_04_Nucleo_Operativo.image_document.run_bounded_capture",
+                    "neocortex.capabilities.formats.image.document.run_bounded_capture",
                     side_effect=run,
                 ),
             ):
@@ -206,7 +206,7 @@ class ImageDocumentTextTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             path = _image(Path(temporary))
             with patch(
-                "_04_Nucleo_Operativo.image_document.run_bounded_capture",
+                "neocortex.capabilities.formats.image.document.run_bounded_capture",
                 side_effect=failure,
             ):
                 with self.assertRaises(KeyboardInterrupt) as caught:
@@ -220,7 +220,7 @@ class ImageDocumentTextTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             path = _image(Path(temporary))
             with patch(
-                "_04_Nucleo_Operativo.image_document.run_bounded_capture",
+                "neocortex.capabilities.formats.image.document.run_bounded_capture",
                 return_value=_tsv_result(["factura"]),
             ) as run:
                 evidence = verify_document_text(path, runtime)
@@ -267,7 +267,7 @@ class ImageDocumentTextTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             path = _image(Path(temporary))
             with patch(
-                "_04_Nucleo_Operativo.image_document.run_bounded_capture",
+                "neocortex.capabilities.formats.image.document.run_bounded_capture",
                 return_value=result,
             ):
                 evidence = verify_document_text(path, RUNTIME)
@@ -293,7 +293,7 @@ class ImageDocumentTextTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             path = _image(Path(temporary))
             with patch(
-                "_04_Nucleo_Operativo.image_document.run_bounded_capture",
+                "neocortex.capabilities.formats.image.document.run_bounded_capture",
                 return_value=failed,
             ):
                 evidence = verify_document_text(path, RUNTIME)
@@ -310,7 +310,7 @@ class ImageDocumentTextTests(unittest.TestCase):
             words = ["Subestación", "eléctrica", "número", "tres"]
 
             with patch(
-                "_04_Nucleo_Operativo.image_document.run_bounded_capture",
+                "neocortex.capabilities.formats.image.document.run_bounded_capture",
                 return_value=_tsv_result(words),
             ):
                 evidence = verify_document_text(path, RUNTIME)
@@ -331,7 +331,7 @@ class ImageDocumentTextTests(unittest.TestCase):
             words = [word] * 400
 
             with patch(
-                "_04_Nucleo_Operativo.image_document.run_bounded_capture",
+                "neocortex.capabilities.formats.image.document.run_bounded_capture",
                 return_value=_tsv_result(words),
             ):
                 evidence = verify_document_text(path, RUNTIME)
@@ -352,7 +352,7 @@ class ImageDocumentTextTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             path = _image(Path(temporary))
             with patch(
-                "_04_Nucleo_Operativo.image_document.run_bounded_capture",
+                "neocortex.capabilities.formats.image.document.run_bounded_capture",
                 side_effect=SubprocessOutputLimitError("stdout", 1024),
             ):
                 evidence = verify_document_text(path, RUNTIME)

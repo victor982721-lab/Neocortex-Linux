@@ -1,6 +1,6 @@
 """Single-process guard for one framework state directory."""
 # region [00] Contexto del módulo
-# Módulo: _04_Nucleo_Operativo/locking.py
+# Módulo: neocortex/locking.py
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
@@ -12,8 +12,6 @@ import os
 import importlib
 from pathlib import Path
 from typing import BinaryIO
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
 # endregion [01]
 
 # region [02] Implementación
@@ -62,5 +60,4 @@ class FrameworkRunLock:
         finally:
             self._stream.close()
             self._stream = None
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.locking")
 # endregion [02]

@@ -1,9 +1,6 @@
 """Real bounded providers for protected, trusted-static and trusted-deep analysis."""
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import datetime as dt
 import hashlib
 import importlib.metadata
@@ -4461,6 +4458,3 @@ __all__ = [
     "provider_tool_versions",
     "providers_for_profile",
 ]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.external_evidence_providers")

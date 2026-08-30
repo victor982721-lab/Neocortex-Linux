@@ -1,9 +1,6 @@
 """Owner-local semantic work receipts and read-only lineage explanations."""
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import json
 import math
 import platform
@@ -4342,6 +4339,3 @@ __all__ = (
     "find_text_chunks_for_source_revision",
     "read_semantic_derivation_outbox",
 )
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.semantic_lineage_repository")

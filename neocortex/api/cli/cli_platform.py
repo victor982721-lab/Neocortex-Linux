@@ -1,9 +1,6 @@
 """Canonical, read-only platform policy report."""
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import argparse
 import json
 import platform
@@ -101,6 +98,3 @@ def run_doctor_platform(args: argparse.Namespace) -> int:
 
 
 __all__ = ["PLATFORM_REPORT_SCHEMA_VERSION", "platform_report", "run_doctor_platform"]
-
-
-_preserve_legacy_module(globals(), '_04_Nucleo_Operativo.cli_platform')

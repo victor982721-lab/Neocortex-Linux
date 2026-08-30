@@ -5,7 +5,7 @@ from dataclasses import replace
 
 import pytest
 
-from _04_Nucleo_Operativo.code_experiment_planner import (
+from neocortex.code.code_experiment_planner import (
     CODE_EXPERIMENT_MAX_PROPOSALS,
     CODE_EXPERIMENT_TEMPLATES,
     experiment_template,
@@ -13,18 +13,18 @@ from _04_Nucleo_Operativo.code_experiment_planner import (
     parse_code_experiment_plan_payload,
     plan_code_experiments,
 )
-from _04_Nucleo_Operativo.code_invariant_assurance_analysis import (
+from neocortex.code.code_invariant_assurance_analysis import (
     analyze_code_invariant_assurance,
     invariant_assurance_questions,
 )
-from _04_Nucleo_Operativo.code_invariant_contracts import (
+from neocortex.code.code_invariant_contracts import (
     EXPERIMENT_SCENARIO_IDS,
     INVARIANT_SPECS,
     INVARIANT_RUNTIME_SCENARIOS,
     runtime_scenario,
 )
-from _04_Nucleo_Operativo.external_deep_coverage import PYTEST_COVERAGE_PROVIDER_ID
-from _04_Nucleo_Operativo.external_evidence_models import (
+from neocortex.code.external_deep_coverage import PYTEST_COVERAGE_PROVIDER_ID
+from neocortex.code.external_evidence_models import (
     ExternalProviderEvidence,
     ExternalProviderRelation,
     external_relation_identity,
@@ -347,7 +347,7 @@ def test_question_owned_unknown_experiment_becomes_explicit_registry_gap() -> No
     evaluation = replace(
         evaluations[0],
         question_spec_fingerprint=__import__(
-            "_04_Nucleo_Operativo.code_analysis_epistemics",
+            "neocortex.code.code_analysis_epistemics",
             fromlist=["analysis_question_spec_fingerprint"],
         ).analysis_question_spec_fingerprint(spec),
         next_action_ids=("unknown_but_question_owned_experiment",),

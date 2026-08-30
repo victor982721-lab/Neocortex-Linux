@@ -1,14 +1,11 @@
 """Concurrent route view and review-evidence repository."""
 # region [00] Contexto del módulo
-# Módulo: _04_Nucleo_Operativo/framework_route_state.py
+# Módulo: neocortex/framework_route_state.py
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
 # region [01] Dependencias del módulo
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import json
 import sqlite3
 import time
@@ -928,6 +925,3 @@ class FrameworkRouteState:
 
 
 # endregion [02]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.framework_route_state")

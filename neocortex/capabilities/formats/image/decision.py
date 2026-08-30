@@ -1,9 +1,6 @@
 """Conservative image decision policy over bounded extracted evidence."""
 
 from __future__ import annotations
-
-from . import preserve_legacy_module as _preserve_legacy_module
-
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -915,6 +912,3 @@ def classify(
 
 
 # endregion [07]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.image_decision")

@@ -7,10 +7,10 @@ from pathlib import Path
 import pytest
 
 from neocortex.deduplication import FileSnapshot
-from _04_Nucleo_Operativo.code_analysis_epistemics import (
+from neocortex.code.code_analysis_epistemics import (
     validate_analysis_question_set,
 )
-from _04_Nucleo_Operativo.code_contracts import (
+from neocortex.code.code_contracts import (
     AnalysisStatus,
     ArtifactClassification,
     ArtifactKind,
@@ -18,8 +18,8 @@ from _04_Nucleo_Operativo.code_contracts import (
     CodeFileInput,
     CodeRouteConfig,
 )
-from _04_Nucleo_Operativo.code_experiment_planner import plan_code_experiments
-from _04_Nucleo_Operativo.code_interface_surface_analysis import (
+from neocortex.code.code_experiment_planner import plan_code_experiments
+from neocortex.code.code_interface_surface_analysis import (
     CLI_SURFACE_QUESTION,
     CONFIGURATION_SURFACE_QUESTION,
     MODULE_SURFACE_QUESTION,
@@ -28,14 +28,14 @@ from _04_Nucleo_Operativo.code_interface_surface_analysis import (
     parse_code_interface_surface_payload,
     read_code_interface_surface_analysis,
 )
-from _04_Nucleo_Operativo.code_python import PythonAnalyzer
-from _04_Nucleo_Operativo.code_schema import (
+from neocortex.code.code_python import PythonAnalyzer
+from neocortex.code.code_schema import (
     checkpoint_code_wal,
     readonly_code_database,
     remove_checkpointed_code_sidecars,
 )
-from _04_Nucleo_Operativo.code_state import CodeState
-from _04_Nucleo_Operativo.semantic_models import fingerprint_bytes, fingerprint_text
+from neocortex.code.code_state import CodeState
+from neocortex.semantic.semantic_models import fingerprint_bytes, fingerprint_text
 
 _SIGNATURE = "interface-surface-fixture-v1"
 

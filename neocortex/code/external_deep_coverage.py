@@ -7,9 +7,6 @@ generic external-evidence store can publish it.
 """
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import importlib.metadata
 import json
 import os
@@ -2650,6 +2647,3 @@ __all__ = [
     "prepare_deep_coverage_input",
     "trusted_deep_runtime_search_path",
 ]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.external_deep_coverage")

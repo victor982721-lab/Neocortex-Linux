@@ -7,9 +7,6 @@ directory independently.
 """
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import importlib.metadata
 import json
 import os
@@ -2091,6 +2088,3 @@ __all__ = [
     "skipped_external_publication",
     "validate_external_inputs",
 ]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.code_external_evidence")

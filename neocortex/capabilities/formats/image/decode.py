@@ -1,9 +1,6 @@
 """Scoped Pillow decode policy and conservative recovery validation."""
 
 from __future__ import annotations
-
-from . import preserve_legacy_module as _preserve_legacy_module
-
 import threading
 from contextlib import contextmanager
 from typing import Iterator, Protocol
@@ -79,6 +76,3 @@ def pillow_decode_scope(*, allow_truncated: bool) -> Iterator[None]:
 
 
 # endregion [02]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.image_decode")

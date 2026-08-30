@@ -7,9 +7,6 @@ neighbours for unrelated queries.
 """
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import re
 import unicodedata
 from collections.abc import Iterable, Iterator
@@ -204,6 +201,3 @@ __all__ = [
     "content_title_from_sample",
     "iter_semantic_text_chunks",
 ]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.semantic_quality")

@@ -6,11 +6,11 @@ from pathlib import Path
 
 from PIL import Image
 
-from _04_Nucleo_Operativo.ocr_image_preprocess import (
+from neocortex.safety.ocr_image_preprocess import (
     bounded_grayscale,
     estimate_deskew_degrees,
 )
-from _04_Nucleo_Operativo.ocr_profiles import (
+from neocortex.safety.ocr_profiles import (
     HAN_SIMPLIFIED_LANGUAGES,
     HAN_TRADITIONAL_LANGUAGES,
     LATIN_LANGUAGES,

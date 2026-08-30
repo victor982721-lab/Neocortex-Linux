@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from _04_Nucleo_Operativo.knowledge_snapshot import KnowledgeStatePaths
-from _04_Nucleo_Operativo.state_topology_contracts import (
+from neocortex.knowledge.knowledge_snapshot import KnowledgeStatePaths
+from neocortex.safety.state_topology_contracts import (
     STATE_STORE_REGISTRY,
     STATE_STORE_REGISTRY_SCHEMA,
     TEXT_DERIVATION_IMPLEMENTATION_BINDING,

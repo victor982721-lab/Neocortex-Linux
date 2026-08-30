@@ -9,10 +9,6 @@ import time
 from pathlib import Path
 
 from neocortex.persistence.framework_connection import connect_existing_framework
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
-
 # region [01] Process and heartbeat constants
 
 
@@ -141,9 +137,4 @@ class RunHeartbeat:
 
     def __exit__(self, exc_type, exc, traceback) -> None:
         self.stop()
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.run_lifecycle")
-
-
 # endregion [02]

@@ -614,7 +614,7 @@ def _extract_media_text(
     command = (
         sys.executable,
         "-m",
-        "_04_Nucleo_Operativo.capabilities.formats.archive.text_worker",
+        "neocortex.capabilities.formats.archive.text_worker",
         "--kind",
         kind,
         "--max-input-bytes",
@@ -1771,5 +1771,5 @@ __all__ = (
 
 for _defined_value in tuple(globals().values()):
     if getattr(_defined_value, "__module__", None) == __name__:
-        _defined_value.__module__ = "_04_Nucleo_Operativo.archive_route"
+        _defined_value.__module__ = "neocortex.capabilities.formats.archive.route"
 del _defined_value

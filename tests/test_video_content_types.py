@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from _04_Nucleo_Operativo.content_types import DETECTOR_VERSION, detect_content_type
+from neocortex.platform.content_types import DETECTOR_VERSION, detect_content_type
 
 
 def _ebml_header(doc_type: bytes) -> bytes:

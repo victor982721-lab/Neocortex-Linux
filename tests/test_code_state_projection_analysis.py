@@ -7,24 +7,24 @@ from pathlib import Path
 
 import pytest
 
-import _04_Nucleo_Operativo.code_state_projection_analysis as projection_module
-from _04_Nucleo_Operativo.code_state_projection_analysis import (
+import neocortex.code.code_state_projection_analysis as projection_module
+from neocortex.code.code_state_projection_analysis import (
     analyze_text_semantic_projection,
     parse_code_state_projection_payload,
     state_projection_questions,
 )
-from _04_Nucleo_Operativo.derivation_contracts import (
+from neocortex.semantic.derivation_contracts import (
     MaterializationRef,
 )
-from _04_Nucleo_Operativo.knowledge_contracts import (
+from neocortex.knowledge.knowledge_contracts import (
     PhysicalIdentityRef,
     ResourceRef,
     RevisionRef,
     RevisionState,
 )
-from _04_Nucleo_Operativo.semantic_models import canonical_json
-from _04_Nucleo_Operativo.semantic_schema import initialize_semantic_state, semantic_database
-from _04_Nucleo_Operativo.text_state import initialize_text_state, text_database
+from neocortex.semantic.semantic_models import canonical_json
+from neocortex.semantic.semantic_schema import initialize_semantic_state, semantic_database
+from neocortex.capabilities.formats.text.text_state import initialize_text_state, text_database
 
 
 def _source_revision(revision_id: str) -> str:

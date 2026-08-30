@@ -5,15 +5,15 @@ from pathlib import Path
 
 import pytest
 
-from _04_Nucleo_Operativo import semantic_backend_supervisor as supervisor
-from _04_Nucleo_Operativo.semantic_models import (
+from neocortex.semantic import semantic_backend_supervisor as supervisor
+from neocortex.semantic.semantic_models import (
     EmbeddingModality,
     EmbeddingModelSpec,
     EmbeddingRequest,
     EmbeddingRole,
     fingerprint_text,
 )
-from _04_Nucleo_Operativo.semantic_work_budget import (
+from neocortex.semantic.semantic_work_budget import (
     SemanticIndexDeadlineExceeded,
     SemanticWorkBudget,
 )

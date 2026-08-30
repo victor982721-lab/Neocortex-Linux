@@ -8,8 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from _04_Nucleo_Operativo import semantic_lexical
-from _04_Nucleo_Operativo.semantic_lexical import (
+from neocortex.semantic import semantic_lexical
+from neocortex.semantic.semantic_lexical import (
     MAX_QUERY_CHARS,
     MAX_QUERY_TERM_CHARS,
     MAX_QUERY_TERMS,
@@ -19,7 +19,7 @@ from _04_Nucleo_Operativo.semantic_lexical import (
     search_lexical_source,
     search_lexical_sources,
 )
-from _04_Nucleo_Operativo.semantic_models import EmbeddingModality
+from neocortex.semantic.semantic_models import EmbeddingModality
 
 
 # region [01] Minimal route-compatible FTS fixtures

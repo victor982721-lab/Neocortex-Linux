@@ -1,6 +1,6 @@
 """Read-only authorization gate for reusing one durable inventory boundary.
 # region [00] Contexto del módulo
-# Módulo: _04_Nucleo_Operativo/incremental_gate.py
+# Módulo: neocortex/incremental_gate.py
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
@@ -21,7 +21,6 @@ from typing import Literal, Protocol, cast
 
 from neocortex.enumeration import JournalCursor
 from neocortex.deduplication import InventoryError
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
 # endregion [01]
 
 # region [02] Implementación
@@ -341,5 +340,4 @@ __all__ = (
     "InventoryGateEvidence",
     "evaluate_incremental_gate",
 )
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.incremental_gate")
 # endregion [02]

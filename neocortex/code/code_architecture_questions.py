@@ -8,9 +8,6 @@ until NeoCortex declares and resolves one.
 """
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, fields
@@ -950,6 +947,3 @@ __all__ = [
     "architecture_questions",
     "parse_code_architecture_question_payload",
 ]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.code_architecture_questions")

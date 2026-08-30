@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib
 import pickle
 import subprocess
 import sys
@@ -25,14 +24,9 @@ MODULES = (
 )
 
 
-def test_legacy_persistence_modules_are_exact_product_aliases() -> None:
+def test_persistence_modules_are_owned_by_the_canonical_tree() -> None:
     for name in MODULES:
-        legacy = importlib.import_module(f"_04_Nucleo_Operativo.{name}")
-        product = importlib.import_module(f"neocortex.persistence.{name}")
-
-        assert legacy is product
-        assert sys.modules[f"_04_Nucleo_Operativo.{name}"] is product
-        assert sys.modules[f"neocortex.persistence.{name}"] is product
+        product = __import__(f"neocortex.persistence.{name}", fromlist=[name])
         assert Path(product.__file__).resolve().is_relative_to(PERSISTENCE_ROOT)
 
 
@@ -66,8 +60,8 @@ print("PERSISTENCE_IMPORT_LIGHT")
 
 
 def test_persistence_models_keep_historical_pickle_fqns() -> None:
-    state = importlib.import_module("neocortex.persistence.framework_route_state")
-    sqlite = importlib.import_module("neocortex.persistence.sqlite_immutable")
+    state = __import__("neocortex.persistence.framework_route_state", fromlist=["state"])
+    sqlite = __import__("neocortex.persistence.sqlite_immutable", fromlist=["sqlite"])
 
     values = (
         state.ReviewCandidateReconciliation(

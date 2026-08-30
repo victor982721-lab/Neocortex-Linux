@@ -1,9 +1,6 @@
 """Bounded normalization and regular-expression helpers for document signals."""
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import re
 import unicodedata
 from functools import lru_cache
@@ -119,6 +116,3 @@ def alias_count(text: str, alias: str) -> int:
 
 
 # endregion [02]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.document_signals")

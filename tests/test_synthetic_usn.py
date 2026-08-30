@@ -11,7 +11,8 @@ from pathlib import Path
 
 import pytest
 
-from _04_Nucleo_Operativo import inventory_coordinator, orchestrator, reconcile
+from neocortex.integrations.inventory import inventory_coordinator, reconcile
+from neocortex.runtime.orchestration import orchestrator
 from tests.synthetic_usn import (
     SyntheticUsnContainmentError,
     SyntheticUsnJournal,

@@ -1,9 +1,6 @@
 """Stable public contracts and operational bounds for semantic services."""
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import json
 import math
 from dataclasses import dataclass, field
@@ -406,6 +403,3 @@ class SemanticClassificationResult:
 
 
 # endregion [02]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.semantic_service_contracts")

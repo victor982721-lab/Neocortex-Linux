@@ -15,15 +15,15 @@ import pytest
 
 from neocortex.enumeration import JournalCursor
 from neocortex.deduplication import FileSnapshot, InventoryExclusionPolicy
-from _04_Nucleo_Operativo.corpus_access import CorpusAccessPolicy
-from _04_Nucleo_Operativo.models import ActionSummary
-from _04_Nucleo_Operativo.self_analysis import (
+from neocortex.safety.corpus_access import CorpusAccessPolicy
+from neocortex.runtime.models import ActionSummary
+from neocortex.workflow.self_analysis.self_analysis import (
     SELF_ANALYSIS_MANIFEST_MESSAGE,
     SELF_ANALYSIS_MANIFEST_PHASE,
     SELF_ANALYSIS_MANIFEST_SCHEMA,
     build_self_analysis_completion_manifest,
 )
-from _04_Nucleo_Operativo.state import FrameworkState
+from neocortex.persistence.state import FrameworkState
 # endregion [01]
 
 # region [02] Implementación

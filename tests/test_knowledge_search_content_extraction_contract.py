@@ -15,9 +15,9 @@ from pathlib import Path
 
 import pytest
 
-from _04_Nucleo_Operativo import knowledge_search
-from _04_Nucleo_Operativo import knowledge_search_content as content_implementation
-from _04_Nucleo_Operativo.knowledge_contracts import (
+from neocortex.knowledge import knowledge_search
+from neocortex.knowledge import knowledge_search_content as content_implementation
+from neocortex.knowledge.knowledge_contracts import (
     EvidenceMethod,
     EvidenceRef,
     KnowledgeSnapshot,
@@ -29,27 +29,27 @@ from _04_Nucleo_Operativo.knowledge_contracts import (
     RevisionRef,
     RevisionState,
 )
-from _04_Nucleo_Operativo.knowledge_planner import (
+from neocortex.knowledge.knowledge_planner import (
     KnowledgePlan,
     KnowledgeQuery,
     plan_knowledge_query,
 )
-from _04_Nucleo_Operativo.knowledge_search import (
+from neocortex.knowledge.knowledge_search import (
     KnowledgeCandidate,
     RankingExecution,
 )
-from _04_Nucleo_Operativo.knowledge_snapshot import KnowledgeStatePaths
-from _04_Nucleo_Operativo.semantic_lexical import (
+from neocortex.knowledge.knowledge_snapshot import KnowledgeStatePaths
+from neocortex.semantic.semantic_lexical import (
     LexicalAvailability,
     LexicalRanking,
     LexicalStatePaths,
 )
-from _04_Nucleo_Operativo.semantic_models import (
+from neocortex.semantic.semantic_models import (
     EmbeddingModality,
     ResolvedSearchHit,
     SearchHit,
 )
-from _04_Nucleo_Operativo.semantic_service import (
+from neocortex.semantic.semantic_service import (
     SemanticRanking,
     SemanticSearchResult,
 )
@@ -58,7 +58,7 @@ from _04_Nucleo_Operativo.semantic_service import (
 # region [02] Implementación
 
 
-PUBLIC_MODULE = "_04_Nucleo_Operativo.knowledge_search"
+PUBLIC_MODULE = "neocortex.knowledge.knowledge_search"
 EXPECTED_SIGNATURES = {
     "_revision_identity": (
         "(resolved: 'ResolvedSearchHit', producer: 'str') -> "

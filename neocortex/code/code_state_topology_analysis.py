@@ -8,9 +8,6 @@ result always abstains from inference and change decisions.
 """
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import sqlite3
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
@@ -966,6 +963,3 @@ __all__ = [
     "resolve_state_topology_questions",
     "state_topology_questions",
 ]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.code_state_topology_analysis")

@@ -5,9 +5,6 @@ not a filesystem probe, a quality score, or authority to mutate the corpus.
 """
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import hashlib
 import json
 import re
@@ -515,6 +512,3 @@ __all__ = [
     "KnowledgeAssetIdentity",
     "parse_knowledge_asset_resource_id",
 ]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.knowledge_asset_health_contracts")

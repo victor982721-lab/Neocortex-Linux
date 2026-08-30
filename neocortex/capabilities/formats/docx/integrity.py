@@ -320,5 +320,5 @@ for _historical_symbol in (
     fatal_member_error,
     classify_docx_exception,
 ):
-    _historical_symbol.__module__ = "_04_Nucleo_Operativo.docx_integrity"
+    _historical_symbol.__module__ = "neocortex.capabilities.formats.docx.integrity"
 del _historical_symbol

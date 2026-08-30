@@ -572,7 +572,7 @@ Neocortex --self-analysis --analysis-profile trusted-deep --root $Root --state-d
 # Mutación focal del símbolo elegido por el work package.
 Neocortex --self-analysis --analysis-profile trusted-deep --root $Root --state-directory $State `
   --deep-test-selector tests/test_external_deep_coverage.py `
-  --deep-mutation-target _04_Nucleo_Operativo/external_deep_coverage.py `
+  --deep-mutation-target neocortex/code/external_deep_coverage.py `
   --deep-mutation-symbol external_deep_coverage._normalize `
   --deep-mutation-max-mutants 20 --deep-mutation-timeout-seconds 30 `
   --deep-mutation-time-budget-seconds 600
@@ -967,7 +967,7 @@ que cada sesión deba reconstruir manualmente. Para validar un commit ya creado
 contra su padre use `Neocortex code validate --baseline HEAD^`.
 
 La validación H6 sobre la raíz canónica produjo el work package
-`_04_Nucleo_Operativo.external_deep_coverage` /
+`neocortex.code.external_deep_coverage` /
 `external_deep_coverage._normalize`. Run 9 terminó en 343.168 s con 585
 candidatos (2 procesados, 583 por caché), 15 proveedores y 0 errores; Cosmic Ray
 completó 20/20 mutantes seleccionados (5 killed, 5 survived, 10 incompetent, 0
@@ -1169,7 +1169,7 @@ WAL.
 - [Registro de cambios](docs/CHANGELOG.md)
 - [Inventario técnico de licencias de terceros](docs/THIRD_PARTY_LICENSE_INVENTORY.md)
 - [Estándar de cierre de auditorías](docs/AUDIT_REPORTING_STANDARD.md)
-- [Núcleo operativo](_04_Nucleo_Operativo/README.md)
+- [Estructura canónica](docs/ARCHITECTURE.md)
 
 ### Referencia histórica; no es flujo de trabajo
 

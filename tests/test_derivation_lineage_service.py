@@ -6,31 +6,31 @@ from pathlib import Path
 
 import pytest
 
-import _04_Nucleo_Operativo.derivation_lineage_service as lineage_service_module
+import neocortex.semantic.derivation_lineage_service as lineage_service_module
 from neocortex.deduplication import FileSnapshot, snapshot_path
-from _04_Nucleo_Operativo.cancellation import CancellationToken
-from _04_Nucleo_Operativo.derivation_lineage_service import (
+from neocortex.runtime.control.cancellation import CancellationToken
+from neocortex.semantic.derivation_lineage_service import (
     inspect_derivation_lineage,
     rebuild_derivation_projection_from_owners,
     rebuild_text_derivation_projection,
 )
-from _04_Nucleo_Operativo.derivation_contracts import (
+from neocortex.semantic.derivation_contracts import (
     CapabilityFailure,
     InputBinding,
     ReproducibilityClass,
     StageDescriptor,
 )
-from _04_Nucleo_Operativo.file_identity import file_key_from_snapshot
-from _04_Nucleo_Operativo.knowledge_contracts import RevisionRef, RevisionState
-from _04_Nucleo_Operativo.knowledge_snapshot import KnowledgeStateRootError
-from _04_Nucleo_Operativo.route_filters import CandidateSelection
-from _04_Nucleo_Operativo.text_derivation_repository import (
+from neocortex.foundation.file_identity import file_key_from_snapshot
+from neocortex.knowledge.knowledge_contracts import RevisionRef, RevisionState
+from neocortex.knowledge.knowledge_snapshot import KnowledgeStateRootError
+from neocortex.safety.route_filters import CandidateSelection
+from neocortex.capabilities.formats.text.text_derivation_repository import (
     TextDerivationAttemptStart,
     begin_text_derivation_attempt,
     cancel_text_derivation_attempt,
 )
-from _04_Nucleo_Operativo.text_route import TextRoute, TextRouteConfig
-from _04_Nucleo_Operativo.text_state import initialize_text_state, text_database
+from neocortex.capabilities.formats.text.text_route import TextRoute, TextRouteConfig
+from neocortex.capabilities.formats.text.text_state import initialize_text_state, text_database
 
 
 class _OneTextCandidate:

@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from _04_Nucleo_Operativo import sqlite_immutable
-from _04_Nucleo_Operativo.sqlite_immutable import (
+from neocortex.persistence import sqlite_immutable
+from neocortex.persistence.sqlite_immutable import (
     ImmutableSQLiteUnavailable,
     immutable_sqlite_database,
 )

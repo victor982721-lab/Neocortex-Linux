@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib
 import subprocess
 import sys
 from pathlib import Path
@@ -14,25 +13,16 @@ CLI_ROOT = API_ROOT / "cli"
 CLI_MODULES = tuple(sorted(path.stem for path in CLI_ROOT.glob("cli_*.py")))
 
 
-def test_legacy_cli_modules_are_exact_product_aliases() -> None:
+def test_canonical_cli_modules_are_owned_by_the_api_tree() -> None:
     assert len(CLI_MODULES) == 31
     for name in CLI_MODULES:
-        legacy = importlib.import_module(f"_04_Nucleo_Operativo.{name}")
-        product = importlib.import_module(f"neocortex.api.cli.{name}")
-
-        assert legacy is product
-        assert sys.modules[f"_04_Nucleo_Operativo.{name}"] is product
-        assert sys.modules[f"neocortex.api.cli.{name}"] is product
-        assert Path(product.__file__).resolve().is_relative_to(CLI_ROOT)
+        module = __import__(f"neocortex.api.cli.{name}", fromlist=[name])
+        assert Path(module.__file__).resolve().is_relative_to(CLI_ROOT)
 
 
-def test_legacy_read_api_port_is_exact_product_alias() -> None:
-    legacy = importlib.import_module("_04_Nucleo_Operativo.read_api_port")
-    product = importlib.import_module("neocortex.api.read_api_port")
-
-    assert legacy is product
-    assert sys.modules["_04_Nucleo_Operativo.read_api_port"] is product
-    assert Path(product.__file__).resolve().is_relative_to(API_ROOT)
+def test_canonical_read_api_port_is_owned_by_the_api_tree() -> None:
+    module = __import__("neocortex.api.read_api_port", fromlist=["read_api_port"])
+    assert Path(module.__file__).resolve().is_relative_to(API_ROOT)
 
 
 def test_api_packages_remain_import_light() -> None:

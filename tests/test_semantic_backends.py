@@ -6,7 +6,7 @@ from typing import Sequence
 
 import pytest
 
-from _04_Nucleo_Operativo.semantic_backends import (
+from neocortex.semantic.semantic_backends import (
     FastEmbedBackend,
     SourceRevisionMismatchError,
     _verify_image_source,
@@ -15,7 +15,7 @@ from _04_Nucleo_Operativo.semantic_backends import (
     merge_exact_search_pages,
     reciprocal_rank_fusion,
 )
-from _04_Nucleo_Operativo.semantic_models import (
+from neocortex.semantic.semantic_models import (
     BackendEmbedding,
     EmbeddingModality,
     EmbeddingModelSpec,

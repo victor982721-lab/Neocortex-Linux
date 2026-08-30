@@ -10,8 +10,8 @@ from typing import Any
 
 import pytest
 
-from _04_Nucleo_Operativo.cancellation import CancellationToken
-from _04_Nucleo_Operativo.video_frames import (
+from neocortex.runtime.control.cancellation import CancellationToken
+from neocortex.capabilities.formats.video.frames import (
     MAX_VIDEO_FRAME_BATCH_BYTES,
     ExtractedVideoFrame,
     VideoFrameSamplingConfig,
@@ -20,7 +20,7 @@ from _04_Nucleo_Operativo.video_frames import (
     parse_showinfo_timestamps,
     sampled_video_frames,
 )
-from _04_Nucleo_Operativo.video_probe import probe_video
+from neocortex.capabilities.formats.video.probe import probe_video
 
 
 @pytest.mark.parametrize(
@@ -133,11 +133,11 @@ def test_sampler_stops_before_aggregate_ephemeral_disk_bound(
         )
 
     monkeypatch.setattr(
-        "_04_Nucleo_Operativo.video_frames.resolve_video_ffmpeg",
+        "neocortex.capabilities.formats.video.frames.resolve_video_ffmpeg",
         lambda _path: "ffmpeg",
     )
     monkeypatch.setattr(
-        "_04_Nucleo_Operativo.video_frames._extract_frame",
+        "neocortex.capabilities.formats.video.frames._extract_frame",
         fake_extract,
     )
     with sampled_video_frames(

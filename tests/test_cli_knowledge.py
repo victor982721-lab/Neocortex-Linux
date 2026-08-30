@@ -14,21 +14,21 @@ from pathlib import Path
 
 import pytest
 
-import _04_Nucleo_Operativo.cli_knowledge as cli_knowledge
-import _04_Nucleo_Operativo.knowledge_snapshot as knowledge_snapshot
-from _04_Nucleo_Operativo.cli_app import main
-from _04_Nucleo_Operativo.cli_operations import selected_direct_operations
-from _04_Nucleo_Operativo.cli_parser import build_parser
-from _04_Nucleo_Operativo.cli_validation import validate_arguments
-from _04_Nucleo_Operativo.knowledge_context import build_context_bundle
-from _04_Nucleo_Operativo.knowledge_contracts import (
+import neocortex.api.cli.cli_knowledge as cli_knowledge
+import neocortex.knowledge.knowledge_snapshot as knowledge_snapshot
+from neocortex.api.cli.cli_app import main
+from neocortex.api.cli.cli_operations import selected_direct_operations
+from neocortex.api.cli.cli_parser import build_parser
+from neocortex.api.cli.cli_validation import validate_arguments
+from neocortex.knowledge.knowledge_context import build_context_bundle
+from neocortex.knowledge.knowledge_contracts import (
     KnowledgeSnapshot,
     OwnerAvailability,
     OwnerSnapshot,
     SnapshotConsistency,
 )
-from _04_Nucleo_Operativo.knowledge_planner import KnowledgeQuery, plan_knowledge_query
-from _04_Nucleo_Operativo.knowledge_search import KnowledgeSearchResult
+from neocortex.knowledge.knowledge_planner import KnowledgeQuery, plan_knowledge_query
+from neocortex.knowledge.knowledge_search import KnowledgeSearchResult
 # endregion [01]
 
 # region [02] Implementación

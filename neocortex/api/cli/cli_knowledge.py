@@ -1,16 +1,13 @@
 """Canonical flat CLI handlers for the read-only Knowledge Plane."""
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import argparse
 import json
 import sqlite3
 import sys
 import threading
 from collections.abc import Callable
-from enum import IntEnum
+from neocortex.api.status_codes import KnowledgeExitCode
 from typing import TYPE_CHECKING, TextIO, TypeVar
 
 from neocortex.runtime.control.console_cancellation import ConsoleCancellationBridge
@@ -28,18 +25,6 @@ if TYPE_CHECKING:
 
 
 # region [01] Stable exit contract and cancellation boundary
-
-
-class KnowledgeExitCode(IntEnum):
-    SUCCESS = 0
-    FATAL = 1
-    USAGE = 2
-    NO_RESULTS = 3
-    PARTIAL = 4
-    SNAPSHOT_CHANGED = 5
-    SCHEMA_INCOMPATIBLE = 6
-    CORRUPT = 7
-    CANCELLED = 130
 
 
 _T = TypeVar("_T")
@@ -347,6 +332,3 @@ __all__ = (
     "run_knowledge_search",
     "run_knowledge_status",
 )
-
-
-_preserve_legacy_module(globals(), '_04_Nucleo_Operativo.cli_knowledge')

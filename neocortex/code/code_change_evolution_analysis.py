@@ -12,9 +12,6 @@ refactor claim, change recommendation, or mutation authorization.
 """
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import json
 import sqlite3
 from dataclasses import asdict, dataclass, fields
@@ -2531,6 +2528,3 @@ __all__ = [
     "parse_code_change_evolution_payload",
     "read_code_change_evolution_analysis",
 ]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.code_change_evolution_analysis")

@@ -1,6 +1,6 @@
 """Content retrieval and evidence materialization for Knowledge Search.
 # region [00] Contexto del módulo
-# Módulo: _04_Nucleo_Operativo/knowledge_search_content.py
+# Módulo: neocortex/knowledge_search_content.py
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
@@ -11,9 +11,6 @@ dependency back to knowledge_search and captures no mutable facade defaults.
 
 # region [01] Dependencias del módulo
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
@@ -1300,6 +1297,3 @@ def exact_rankings(
 
 __all__: tuple[str, ...] = ()
 # endregion [02]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.knowledge_search_content")

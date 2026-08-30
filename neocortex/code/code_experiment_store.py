@@ -16,9 +16,6 @@ question decision-ready.
 """
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 from collections.abc import Iterable
 import json
 import sqlite3
@@ -1392,6 +1389,3 @@ __all__ = [
     "record_code_experiment_receipt",
     "record_code_experiment_receipts",
 ]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.code_experiment_store")

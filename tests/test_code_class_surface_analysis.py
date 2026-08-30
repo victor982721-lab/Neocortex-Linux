@@ -6,12 +6,12 @@ from pathlib import Path
 
 import pytest
 
-import _04_Nucleo_Operativo.code_review as code_review_module
-from _04_Nucleo_Operativo.code_analysis_query import (
+import neocortex.code.code_review as code_review_module
+from neocortex.code.code_analysis_query import (
     CodeAnalysisQuery,
     query_code_analysis,
 )
-from _04_Nucleo_Operativo.code_class_surface_analysis import (
+from neocortex.code.code_class_surface_analysis import (
     CLASS_DIRECT_METHODS_ATTENTION_THRESHOLD,
     CLASS_SPAN_LINES_ATTENTION_THRESHOLD,
     CodeClassSurfaceEvidenceResolutionError,
@@ -19,14 +19,14 @@ from _04_Nucleo_Operativo.code_class_surface_analysis import (
     read_code_class_surface_analysis,
     validate_code_class_surface_observation,
 )
-from _04_Nucleo_Operativo.code_contracts import SourceRange, SymbolRecord
-from _04_Nucleo_Operativo.code_review import review_code_state
-from _04_Nucleo_Operativo.code_schema import (
+from neocortex.code.code_contracts import SourceRange, SymbolRecord
+from neocortex.code.code_review import review_code_state
+from neocortex.code.code_schema import (
     checkpoint_code_wal,
     readonly_code_database,
     remove_checkpointed_code_sidecars,
 )
-from _04_Nucleo_Operativo.code_state import CodeState
+from neocortex.code.code_state import CodeState
 from tests.test_code_review import PROCESSING_SIGNATURE, _analysis, _status
 
 

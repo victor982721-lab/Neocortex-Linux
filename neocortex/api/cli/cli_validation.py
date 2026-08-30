@@ -1,9 +1,6 @@
 """Preset expansion and bounded command-line validation."""
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import argparse
 import math
 from pathlib import Path
@@ -950,6 +947,3 @@ def validate_arguments(args: argparse.Namespace) -> None:
 
 
 # endregion [03]
-
-
-_preserve_legacy_module(globals(), '_04_Nucleo_Operativo.cli_validation')

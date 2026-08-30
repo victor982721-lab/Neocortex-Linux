@@ -12,13 +12,13 @@ from pathlib import Path
 import pytest
 
 from neocortex.progress import RecordingProgress
-from _04_Nucleo_Operativo import semantic_generation_worker
-from _04_Nucleo_Operativo.semantic_chunking import (
+from neocortex.semantic import semantic_generation_worker
+from neocortex.semantic.semantic_chunking import (
     TextChunkingConfig,
     iter_text_chunks,
 )
-from _04_Nucleo_Operativo.semantic_generation_worker import run_generation
-from _04_Nucleo_Operativo.semantic_models import (
+from neocortex.semantic.semantic_generation_worker import run_generation
+from neocortex.semantic.semantic_models import (
     BackendEmbedding,
     EmbeddingModality,
     EmbeddingModelSpec,
@@ -28,7 +28,7 @@ from _04_Nucleo_Operativo.semantic_models import (
     TextSection,
     fingerprint_text,
 )
-from _04_Nucleo_Operativo.semantic_state import (
+from neocortex.semantic.semantic_state import (
     enqueue_text_chunk_jobs,
     finalize_text_chunk_refresh,
     initialize_semantic_state,
@@ -39,8 +39,8 @@ from _04_Nucleo_Operativo.semantic_state import (
     update_embedding_generation_cursor,
     upsert_semantic_item,
 )
-from _04_Nucleo_Operativo.semantic_schema import SemanticStateError
-from _04_Nucleo_Operativo.semantic_work_budget import (
+from neocortex.semantic.semantic_schema import SemanticStateError
+from neocortex.semantic.semantic_work_budget import (
     SemanticIndexDeadlineExceeded,
     SemanticWorkBudget,
 )

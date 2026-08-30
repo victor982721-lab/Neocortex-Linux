@@ -1,9 +1,6 @@
 """Bounded, resumable embedding generation worker with renewable leases."""
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import itertools
 import math
 import os
@@ -576,6 +573,3 @@ def run_generation(
 
 
 # endregion [03]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.semantic_generation_worker")

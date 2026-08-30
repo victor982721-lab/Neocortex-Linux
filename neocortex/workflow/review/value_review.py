@@ -6,9 +6,6 @@ for coverage, citations, use, or uniqueness.
 """
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import hashlib
 import math
 import re
@@ -828,6 +825,3 @@ __all__ = [
     "preview_value_review",
     "rank_value_observations",
 ]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.value_review")

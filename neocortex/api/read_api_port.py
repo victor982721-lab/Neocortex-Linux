@@ -6,15 +6,12 @@ the internal layout of the Knowledge, Code and path owners.
 """
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from neocortex.runtime.config.app_paths import default_state_directory, self_analysis_data_directory
+from neocortex.api.status_codes import KnowledgeExitCode
 from neocortex.api.cli.cli_knowledge import (
-    KnowledgeExitCode,
     knowledge_context_exit_code,
     knowledge_search_exit_code,
 )
@@ -104,6 +101,3 @@ __all__ = (
     "self_analysis_data_directory",
     "validate_knowledge_asset_resource_id",
 )
-
-
-_preserve_legacy_module(globals(), '_04_Nucleo_Operativo.read_api_port')

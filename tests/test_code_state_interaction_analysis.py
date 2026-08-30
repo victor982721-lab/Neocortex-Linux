@@ -8,16 +8,16 @@ from pathlib import Path
 
 import pytest
 
-from _04_Nucleo_Operativo import code_state_interaction_analysis as state_interactions
-from _04_Nucleo_Operativo.code_schema import initialize_code_state
-from _04_Nucleo_Operativo.code_experiment_planner import plan_code_experiments
-from _04_Nucleo_Operativo.code_state_interaction_analysis import (
+from neocortex.code import code_state_interaction_analysis as state_interactions
+from neocortex.code.code_schema import initialize_code_state
+from neocortex.code.code_experiment_planner import plan_code_experiments
+from neocortex.code.code_state_interaction_analysis import (
     CODE_STATE_INTERACTION_EXAMPLE_LIMIT,
     analyze_code_state_interactions,
     parse_code_state_interaction_payload,
     state_interaction_questions,
 )
-from _04_Nucleo_Operativo.semantic_models import fingerprint_text
+from neocortex.semantic.semantic_models import fingerprint_text
 
 
 def _published_code_state(tmp_path: Path, sources: dict[str, str]) -> Path:
@@ -111,7 +111,7 @@ def test_literal_sql_is_parsed_and_dynamic_sql_remains_missing_evidence(tmp_path
     state = _published_code_state(
         tmp_path,
         {
-            "_04_Nucleo_Operativo/text_fixture.py": """
+            "neocortex/capabilities/formats/text/text_fixture.py": """
 def publish(connection, dynamic_sql):
     connection.execute("SELECT value FROM source_table")
     connection.execute("INSERT INTO target_table(value) SELECT value FROM source_table")
@@ -183,7 +183,7 @@ def test_sqlite_numbered_parameters_parse_without_rewriting_quoted_data(tmp_path
     state = _published_code_state(
         tmp_path,
         {
-            "_04_Nucleo_Operativo/text_fixture.py": """
+            "neocortex/capabilities/formats/text/text_fixture.py": """
 def search(connection):
     connection.execute(
         \"\"\"WITH ranked AS MATERIALIZED (
@@ -208,7 +208,7 @@ def test_question_projection_remains_experiment_required_and_never_recommends_ch
     state = _published_code_state(
         tmp_path,
         {
-            "_04_Nucleo_Operativo/text_fixture.py": "def read(c):\n    c.execute('SELECT * FROM x')\n"
+            "neocortex/capabilities/formats/text/text_fixture.py": "def read(c):\n    c.execute('SELECT * FROM x')\n"
         },
     )
     analysis = analyze_code_state_interactions(state)
@@ -277,7 +277,7 @@ def test_wire_round_trip_rejects_forged_counts_and_decision_authority(tmp_path: 
     state = _published_code_state(
         tmp_path,
         {
-            "_04_Nucleo_Operativo/text_fixture.py": "def read(c):\n    c.execute('SELECT * FROM x')\n"
+            "neocortex/capabilities/formats/text/text_fixture.py": "def read(c):\n    c.execute('SELECT * FROM x')\n"
         },
     )
     analysis = analyze_code_state_interactions(state)

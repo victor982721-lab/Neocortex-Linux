@@ -1,9 +1,6 @@
 """Shared limits, validation and row conversion for semantic repositories."""
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import itertools
 import json
 import sqlite3
@@ -162,6 +159,3 @@ def _same_fingerprint(row: sqlite3.Row, fingerprint: ContentFingerprint) -> bool
 
 
 # endregion [02]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.semantic_repository_common")

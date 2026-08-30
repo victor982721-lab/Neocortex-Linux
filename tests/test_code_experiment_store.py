@@ -8,10 +8,10 @@ from types import SimpleNamespace
 
 import pytest
 
-import _04_Nucleo_Operativo.code_schema as code_schema
-import _04_Nucleo_Operativo.code_experiment_store as experiment_store
+import neocortex.code.code_schema as code_schema
+import neocortex.code.code_experiment_store as experiment_store
 
-from _04_Nucleo_Operativo.code_analysis_epistemics import (
+from neocortex.code.code_analysis_epistemics import (
     AnalysisEvidenceRef,
     AnalysisEvidenceRequirementSpec,
     AnalysisFact,
@@ -24,15 +24,15 @@ from _04_Nucleo_Operativo.code_analysis_epistemics import (
     analysis_question_spec_fingerprint,
     validate_analysis_question_evaluation,
 )
-from _04_Nucleo_Operativo.code_experiment_executor import (
+from neocortex.code.code_experiment_executor import (
     CODE_EXPERIMENT_RECEIPT_SCHEMA,
     CODE_EXPERIMENT_RECEIPT_V3_SCHEMA,
     CodeExperimentGateOutcome,
     CodeExperimentOutcome,
     CodeExperimentReceipt,
 )
-from _04_Nucleo_Operativo.code_experiment_planner import plan_code_experiments
-from _04_Nucleo_Operativo.code_experiment_store import (
+from neocortex.code.code_experiment_planner import plan_code_experiments
+from neocortex.code.code_experiment_store import (
     CodeExperimentStoreError,
     apply_code_experiment_receipts,
     parse_resolved_code_experiment_receipt_payload,
@@ -40,32 +40,32 @@ from _04_Nucleo_Operativo.code_experiment_store import (
     record_code_experiment_receipt,
     record_code_experiment_receipts,
 )
-from _04_Nucleo_Operativo.code_invariant_contracts import runtime_scenario
-from _04_Nucleo_Operativo.code_interface_surface_analysis import (
+from neocortex.code.code_invariant_contracts import runtime_scenario
+from neocortex.code.code_interface_surface_analysis import (
     CLI_SURFACE_QUESTION,
     interface_surface_questions,
     read_code_interface_surface_analysis,
 )
-from _04_Nucleo_Operativo.code_knowledge_asset_health_analysis import (
+from neocortex.code.code_knowledge_asset_health_analysis import (
     knowledge_asset_health_questions,
 )
-from _04_Nucleo_Operativo.code_knowledge_pdf_asset_health_analysis import (
+from neocortex.code.code_knowledge_pdf_asset_health_analysis import (
     knowledge_pdf_asset_health_questions,
 )
-from _04_Nucleo_Operativo.code_route_capability_analysis import ROUTE_CAPABILITY_QUESTION
-from _04_Nucleo_Operativo.code_state_interaction_analysis import (
+from neocortex.code.code_route_capability_analysis import ROUTE_CAPABILITY_QUESTION
+from neocortex.code.code_state_interaction_analysis import (
     analyze_code_state_interactions,
     state_interaction_questions,
 )
-from _04_Nucleo_Operativo.code_schema import (
+from neocortex.code.code_schema import (
     connect_code_state,
     initialize_code_state,
     readonly_code_database,
 )
-from _04_Nucleo_Operativo.code_technical_verification import (
+from neocortex.code.code_technical_verification import (
     build_code_technical_verification,
 )
-from _04_Nucleo_Operativo.semantic_models import fingerprint_text
+from neocortex.semantic.semantic_models import fingerprint_text
 
 
 def _source_evidence(subject_key: str, snapshot_id: str) -> AnalysisEvidenceRef:
@@ -493,7 +493,7 @@ def _add_python_source(
     database: Path,
     *,
     text: str = "def noop():\n    return None\n",
-    relative_path: str = "_04_Nucleo_Operativo/noop.py",
+    relative_path: str = "neocortex/noop.py",
 ) -> None:
     raw = text.encode("utf-8")
     digest = fingerprint_text(text)
@@ -2179,9 +2179,9 @@ def test_review_consumes_a_persisted_receipt_and_does_not_propose_it_again(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import _04_Nucleo_Operativo.code_review as review_module
-    import _04_Nucleo_Operativo.code_review_epistemics as epistemics_module
-    from _04_Nucleo_Operativo.code_experiment_store import code_review_digest_identity
+    import neocortex.code.code_review as review_module
+    import neocortex.code.code_review_epistemics as epistemics_module
+    from neocortex.code.code_experiment_store import code_review_digest_identity
     from tests.test_code_review import PROCESSING_SIGNATURE, _build_state, _status
 
     state_directory = tmp_path / "state"

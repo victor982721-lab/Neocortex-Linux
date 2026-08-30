@@ -538,7 +538,7 @@ def clear_processing_provenance_caches() -> None:
 for _defined_value in tuple(globals().values()):
     if getattr(_defined_value, "__module__", None) == __name__:
         try:
-            _defined_value.__module__ = "_04_Nucleo_Operativo.processing_provenance"
+            _defined_value.__module__ = "neocortex.foundation.processing_provenance"
         except (AttributeError, TypeError):
             pass
 del _defined_value

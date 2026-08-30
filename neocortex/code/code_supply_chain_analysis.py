@@ -6,9 +6,6 @@ turning a tool report into mutation authority or a synthetic aggregate score.
 """
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import datetime as dt
 import json
 import math
@@ -1457,6 +1454,3 @@ __all__ = [
     "parse_code_supply_chain_payload",
     "read_code_supply_chain_analysis",
 ]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.code_supply_chain_analysis")

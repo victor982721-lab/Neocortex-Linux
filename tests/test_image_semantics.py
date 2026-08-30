@@ -6,13 +6,13 @@ import inspect
 
 import pytest
 
-from _04_Nucleo_Operativo.image_document import DocumentTextEvidence
-from _04_Nucleo_Operativo.image_models import (
+from neocortex.capabilities.formats.image.document import DocumentTextEvidence
+from neocortex.capabilities.formats.image.models import (
     IndustrialContext,
     SemanticLabel,
     VisualSemanticEvidence,
 )
-from _04_Nucleo_Operativo.image_semantics import classify_industrial_context
+from neocortex.capabilities.formats.image.semantics import classify_industrial_context
 
 
 PATH_CONTEXT = "transformador mantenimiento sala de control epp"

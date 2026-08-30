@@ -13,8 +13,8 @@ from pathlib import Path
 
 import pytest
 
-import _04_Nucleo_Operativo.cli_app as cli_app
-from _04_Nucleo_Operativo.cli_parser import build_parser
+import neocortex.api.cli.cli_app as cli_app
+from neocortex.api.cli.cli_parser import build_parser
 from neocortex.cli import entrypoint
 
 
@@ -148,10 +148,10 @@ def test_cold_leaf_avoids_read_and_runtime_owner_imports_with_bounded_latency(
             if name in {{
                 "neocortex.human_cli",
                 "neocortex.read_api",
-                "_04_Nucleo_Operativo.read_api_port",
+                "neocortex.api.read_api_port",
             }}
-            or name.startswith("_04_Nucleo_Operativo.knowledge_")
-            or name.startswith("_04_Nucleo_Operativo.semantic_")
+            or name.startswith("neocortex.knowledge_")
+            or name.startswith("neocortex.semantic_")
         )
         print(json.dumps({{
             "elapsed_seconds": elapsed_seconds,

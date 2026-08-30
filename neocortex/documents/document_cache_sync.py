@@ -1,9 +1,6 @@
 """Idempotent path synchronization after an authorized document move."""
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import json
 import os
 import sqlite3
@@ -677,6 +674,3 @@ def _path_key(value: str) -> str:
 
 
 # endregion [06]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.document_cache_sync")

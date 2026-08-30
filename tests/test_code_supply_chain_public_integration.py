@@ -5,10 +5,10 @@ from __future__ import annotations
 from dataclasses import asdict
 from pathlib import Path
 
-from _04_Nucleo_Operativo.cli_code import _read_code_status_snapshot
-from _04_Nucleo_Operativo.code_publication_diff import _supply_chain_delta
-from _04_Nucleo_Operativo.code_review_models import build_code_review_recommendations
-from _04_Nucleo_Operativo.code_review_work_packages import (
+from neocortex.api.cli.cli_code import _read_code_status_snapshot
+from neocortex.code.code_publication_diff import _supply_chain_delta
+from neocortex.code.code_review_models import build_code_review_recommendations
+from neocortex.code.code_review_work_packages import (
     plan_code_review_work_packages,
 )
 from tests.test_code_review_work_packages import (

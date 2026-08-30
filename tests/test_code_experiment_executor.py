@@ -9,15 +9,15 @@ from types import SimpleNamespace
 
 import pytest
 
-from _04_Nucleo_Operativo.code_experiment_executor import (
+from neocortex.code.code_experiment_executor import (
     CodeExperimentGateOutcome,
     CodeExperimentOutcome,
     CodeExperimentReceipt,
     parse_code_experiment_receipt_payload,
 )
-from _04_Nucleo_Operativo.code_experiment_planner import CodeExperimentProposal
-from _04_Nucleo_Operativo.code_invariant_contracts import RUNTIME_SCENARIOS, runtime_scenario
-from _04_Nucleo_Operativo.external_evidence_models import (
+from neocortex.code.code_experiment_planner import CodeExperimentProposal
+from neocortex.code.code_invariant_contracts import RUNTIME_SCENARIOS, runtime_scenario
+from neocortex.code.external_evidence_models import (
     ExternalProviderMetric,
     ExternalProviderRelation,
     external_metric_identity,
@@ -26,8 +26,8 @@ from _04_Nucleo_Operativo.external_evidence_models import (
 
 
 def _proposal() -> CodeExperimentProposal:
-    from _04_Nucleo_Operativo.code_analysis_epistemics import analysis_identity
-    from _04_Nucleo_Operativo.code_experiment_planner import experiment_template
+    from neocortex.code.code_analysis_epistemics import analysis_identity
+    from neocortex.code.code_experiment_planner import experiment_template
 
     template = experiment_template("capability.public_route_acceptance")
     values = {
@@ -68,7 +68,7 @@ def _receipt(
     provider_status: str = "completed",
     observed_outcomes: int | None = None,
 ):
-    from _04_Nucleo_Operativo.code_analysis_epistemics import analysis_identity
+    from neocortex.code.code_analysis_epistemics import analysis_identity
 
     proposal = _proposal()
     scenario_specs = tuple(runtime_scenario(item) for item in proposal.scenario_ids)
@@ -263,7 +263,7 @@ def test_wire_rejects_free_form_runner_and_missing_outcomes() -> None:
 def test_execution_rejects_a_source_root_different_from_the_published_manifest(
     tmp_path,
 ) -> None:
-    from _04_Nucleo_Operativo.code_experiment_executor import execute_code_experiment
+    from neocortex.code.code_experiment_executor import execute_code_experiment
 
     source = tmp_path / "source"
     expected = tmp_path / "expected"
@@ -289,7 +289,7 @@ def test_code_database_fence_is_fixed_cost_without_read_bytes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import _04_Nucleo_Operativo.code_experiment_executor as executor
+    import neocortex.code.code_experiment_executor as executor
 
     database = tmp_path / "code.sqlite3"
     with sqlite3.connect(database) as connection:
@@ -314,7 +314,7 @@ def test_code_database_fence_is_fixed_cost_without_read_bytes(
 def test_code_database_fence_accepts_large_sparse_history_and_detects_mutation(
     tmp_path: Path,
 ) -> None:
-    import _04_Nucleo_Operativo.code_experiment_executor as executor
+    import neocortex.code.code_experiment_executor as executor
 
     database = tmp_path / "code.sqlite3"
     with database.open("wb") as stream:
@@ -332,7 +332,7 @@ def test_code_database_fence_accepts_large_sparse_history_and_detects_mutation(
 
 
 def test_code_database_fence_rejects_an_active_wal(tmp_path: Path) -> None:
-    import _04_Nucleo_Operativo.code_experiment_executor as executor
+    import neocortex.code.code_experiment_executor as executor
 
     database = tmp_path / "code.sqlite3"
     database.write_bytes(b"SQLite format 3\x00fixture")
@@ -343,7 +343,7 @@ def test_code_database_fence_rejects_an_active_wal(tmp_path: Path) -> None:
 
 
 def test_complete_aggregate_counts_are_recovered_when_relation_payload_is_bounded() -> None:
-    import _04_Nucleo_Operativo.code_experiment_executor as executor
+    import neocortex.code.code_experiment_executor as executor
 
     def metric(name: str, value: int) -> ExternalProviderMetric:
         return ExternalProviderMetric(
@@ -388,7 +388,7 @@ def test_complete_aggregate_counts_are_recovered_when_relation_payload_is_bounde
 
 
 def test_retention_parameter_variants_have_exact_terminal_gate_evidence() -> None:
-    import _04_Nucleo_Operativo.code_experiment_executor as executor
+    import neocortex.code.code_experiment_executor as executor
 
     scenario = runtime_scenario("retention.durable_hold_safety")
     relations = tuple(
@@ -435,8 +435,8 @@ def test_retention_parameter_variants_have_exact_terminal_gate_evidence() -> Non
 
 
 def test_public_cli_scenario_has_exact_measured_gates_and_fails_closed_if_incomplete() -> None:
-    import _04_Nucleo_Operativo.code_experiment_executor as executor
-    from _04_Nucleo_Operativo.code_experiment_planner import experiment_template
+    import neocortex.code.code_experiment_executor as executor
+    from neocortex.code.code_experiment_planner import experiment_template
 
     scenario = runtime_scenario("interfaces.public_cli_and_static_surface")
     template = experiment_template("interfaces.public_cli_contract_acceptance")
@@ -485,8 +485,8 @@ def test_public_cli_scenario_has_exact_measured_gates_and_fails_closed_if_incomp
 
 
 def test_knowledge_health_scenario_has_exact_gates_and_fails_closed_if_incomplete() -> None:
-    import _04_Nucleo_Operativo.code_experiment_executor as executor
-    from _04_Nucleo_Operativo.code_experiment_planner import experiment_template
+    import neocortex.code.code_experiment_executor as executor
+    from neocortex.code.code_experiment_planner import experiment_template
 
     scenario = runtime_scenario("knowledge.asset_health_causal_acceptance")
     template = experiment_template("knowledge.asset_health_causal_acceptance")
@@ -535,8 +535,8 @@ def test_knowledge_health_scenario_has_exact_gates_and_fails_closed_if_incomplet
 
 
 def test_pdf_health_scenario_has_exact_gates_and_fails_closed_if_incomplete() -> None:
-    import _04_Nucleo_Operativo.code_experiment_executor as executor
-    from _04_Nucleo_Operativo.code_experiment_planner import experiment_template
+    import neocortex.code.code_experiment_executor as executor
+    from neocortex.code.code_experiment_planner import experiment_template
 
     scenario = runtime_scenario("knowledge.pdf_asset_health_causal_acceptance")
     template = experiment_template("knowledge.pdf_asset_health_causal_acceptance")
@@ -592,7 +592,7 @@ def test_experiment_rejects_outcomes_if_the_exact_source_input_changes(
     published: str,
     after: str,
 ) -> None:
-    import _04_Nucleo_Operativo.code_experiment_executor as executor
+    import neocortex.code.code_experiment_executor as executor
 
     with pytest.raises(ValueError, match="source input changed"):
         executor._require_stable_source_input("source:exact", published, after)
@@ -656,14 +656,14 @@ def test_attestation_reuses_exact_current_coverage_without_relaunching_pytest(
     omit_last_relation: bool,
     expected_status: str,
 ) -> None:
-    import _04_Nucleo_Operativo.code_experiment_executor as executor
-    import _04_Nucleo_Operativo.external_evidence_store as evidence_store
-    from _04_Nucleo_Operativo.code_external_evidence import ExternalEvidenceFile
-    from _04_Nucleo_Operativo.external_deep_coverage import (
+    import neocortex.code.code_experiment_executor as executor
+    import neocortex.code.external_evidence_store as evidence_store
+    from neocortex.code.code_external_evidence import ExternalEvidenceFile
+    from neocortex.code.external_deep_coverage import (
         DEEP_COVERAGE_PROVIDER_SCHEMA,
         PYTEST_COVERAGE_PROVIDER_ID,
     )
-    from _04_Nucleo_Operativo.external_evidence_models import (
+    from neocortex.code.external_evidence_models import (
         ExternalProviderAttestation,
         ExternalRunInput,
         external_provider_result_digest,
@@ -798,7 +798,7 @@ def test_attestation_reuses_exact_current_coverage_without_relaunching_pytest(
 
 
 def test_attestation_rejects_forged_declared_test_relation_contracts() -> None:
-    import _04_Nucleo_Operativo.code_experiment_executor as executor
+    import neocortex.code.code_experiment_executor as executor
 
     relations = _attestation_relations(_proposal())
 

@@ -19,7 +19,7 @@ from neocortex.deduplication.persistence import (
 )
 from neocortex.deduplication.persistence.ddl import V9_DDL
 from neocortex.deduplication.persistence.migrations import MIGRATIONS
-from _04_Nucleo_Operativo import knowledge_search_inventory
+from neocortex.knowledge import knowledge_search_inventory
 
 
 _NEW_INDEXES = {

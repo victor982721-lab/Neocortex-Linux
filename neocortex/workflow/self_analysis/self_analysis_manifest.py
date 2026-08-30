@@ -6,9 +6,6 @@ recorded paths with their current targets.
 """
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import json
 import os
 from collections.abc import Mapping
@@ -571,6 +568,3 @@ __all__ = [
 
 
 # endregion [04]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.self_analysis_manifest")

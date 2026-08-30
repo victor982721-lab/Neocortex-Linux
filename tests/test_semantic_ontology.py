@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from _04_Nucleo_Operativo.document_taxonomy import semantic_label_inventory
-from _04_Nucleo_Operativo.semantic_ontology import (
+from neocortex.documents.document_taxonomy import semantic_label_inventory
+from neocortex.semantic.semantic_ontology import (
     all_concepts,
     resolve_legacy_label,
 )

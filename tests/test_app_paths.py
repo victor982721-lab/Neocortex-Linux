@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from _04_Nucleo_Operativo.app_paths import (
+from neocortex.runtime.config.app_paths import (
     default_generated_artifact_directories,
     default_state_directory,
     default_ui_settings_path,
@@ -21,7 +21,7 @@ from _04_Nucleo_Operativo.app_paths import (
     source_repository_directory,
     stable_launcher_path,
 )
-from _04_Nucleo_Operativo.cli_parser import build_parser
+from neocortex.api.cli.cli_parser import build_parser
 # endregion [01]
 
 # region [02] Implementación

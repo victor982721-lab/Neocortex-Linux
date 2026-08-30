@@ -5,9 +5,6 @@ uncertainty of labels inferred only from file and directory names.
 """
 
 from __future__ import annotations
-
-from . import preserve_legacy_module as _preserve_legacy_module
-
 import unicodedata
 from pathlib import Path
 from typing import Iterable
@@ -278,6 +275,3 @@ def classify_industrial_context(
 
 
 # endregion [02]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.image_semantics")

@@ -17,7 +17,7 @@ rules:
     severity: ERROR
     paths:
       include:
-        - "**/_04_Nucleo_Operativo/external_*.py"
+        - "**/neocortex/code/external_*.py"
     metadata:
       category: project_invariant
       confidence: HIGH
@@ -36,7 +36,7 @@ rules:
     severity: ERROR
     paths:
       include:
-        - "**/_04_Nucleo_Operativo/external_*.py"
+        - "**/neocortex/code/external_*.py"
     metadata:
       category: project_invariant
       confidence: HIGH

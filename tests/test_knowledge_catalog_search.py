@@ -13,23 +13,23 @@ from pathlib import Path
 
 import pytest
 
-from _04_Nucleo_Operativo.document_catalog import initialize_document_catalog
-from _04_Nucleo_Operativo.knowledge_contracts import (
+from neocortex.documents.document_catalog import initialize_document_catalog
+from neocortex.knowledge.knowledge_contracts import (
     KnowledgeSnapshot,
     OwnerAvailability,
     OwnerSnapshot,
     PublicationHead,
     RevisionState,
 )
-from _04_Nucleo_Operativo.knowledge_planner import (
+from neocortex.knowledge.knowledge_planner import (
     KnowledgeQuery,
     plan_knowledge_query,
 )
-from _04_Nucleo_Operativo.knowledge_search import (
+from neocortex.knowledge.knowledge_search import (
     _catalog_ranking,
     execute_knowledge_search,
 )
-from _04_Nucleo_Operativo.knowledge_snapshot import KnowledgeStatePaths
+from neocortex.knowledge.knowledge_snapshot import KnowledgeStatePaths
 # endregion [01]
 
 # region [02] Implementación

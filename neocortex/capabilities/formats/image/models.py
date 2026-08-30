@@ -1,9 +1,6 @@
 """Stable data contracts shared by image analysis components."""
 
 from __future__ import annotations
-
-from . import preserve_legacy_module as _preserve_legacy_module
-
 from dataclasses import dataclass
 from typing import Literal
 
@@ -169,6 +166,3 @@ class Decision:
 
 
 # endregion [02]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.image_models")

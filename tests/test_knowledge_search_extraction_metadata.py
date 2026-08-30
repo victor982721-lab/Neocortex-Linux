@@ -1,4 +1,4 @@
-"""Descriptor provenance frozen before moving Knowledge Search contracts."""
+"""Descriptor provenance for the Knowledge Search data contracts."""
 # region [00] Contexto del módulo
 # Módulo: tests/test_knowledge_search_extraction_metadata.py
 # Propósito: documentación embebida y separación visual de regiones.
@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from types import FunctionType
 
-from _04_Nucleo_Operativo.knowledge_search import (
+from neocortex.knowledge.knowledge_search import (
     KnowledgeCandidate,
     KnowledgeSearchResult,
     RankingExecution,
@@ -20,7 +20,8 @@ from _04_Nucleo_Operativo.knowledge_search import (
 # region [02] Implementación
 
 
-PUBLIC_MODULE = "_04_Nucleo_Operativo.knowledge_search"
+PUBLIC_MODULE = "neocortex.knowledge.knowledge_search"
+CONTRACT_MODULE = "neocortex.knowledge.knowledge_search_contracts"
 
 
 def _module_of(value: object) -> str | None:
@@ -68,7 +69,7 @@ def test_contract_method_and_descriptor_modules_are_stable() -> None:
     for contract, names in public_members.items():
         assert {
             name: _module_of(vars(contract)[name]) for name in names
-        } == dict.fromkeys(names, PUBLIC_MODULE)
+        } == dict.fromkeys(names, CONTRACT_MODULE)
         assert {
             name: _module_of(vars(contract)[name]) for name in dataclass_members
         } == dict.fromkeys(dataclass_members, "dataclasses")

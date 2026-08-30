@@ -1,15 +1,12 @@
 """Read-only CLI facade for bounded retention planning."""
 # region [00] Contexto del módulo
-# Módulo: _04_Nucleo_Operativo/cli_retention.py
+# Módulo: neocortex/cli_retention.py
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
 
 # region [01] Dependencias del módulo
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import argparse
 import json
 import sqlite3
@@ -99,6 +96,3 @@ def run_retention_status(args: argparse.Namespace) -> int:
 
 __all__ = ["run_retention_status"]
 # endregion [02]
-
-
-_preserve_legacy_module(globals(), '_04_Nucleo_Operativo.cli_retention')

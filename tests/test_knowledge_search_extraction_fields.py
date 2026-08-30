@@ -11,7 +11,7 @@ import hashlib
 import pickle
 from dataclasses import fields, is_dataclass
 
-from _04_Nucleo_Operativo.knowledge_search import (
+from neocortex.knowledge.knowledge_search import (
     KnowledgeCandidate,
     KnowledgeSearchResult,
     RankingExecution,
@@ -67,9 +67,9 @@ def test_contract_field_topology_and_class_pickle_bytes_are_stable() -> None:
         ),
     }
     pickle_sha256 = {
-        KnowledgeCandidate: ("6E6E55E406EBFFBA58E2F888A1D1CD907F1B8DA7B6D394F1484C3DE7210AF873"),
-        RankingExecution: ("5382CB89ABDF9E9E1E043B4A6E418D1A1E5BE3DC2443E8000C15730FC1292368"),
-        KnowledgeSearchResult: ("E577900298AD8FDAAB3E0E67D71E9BF39C275298C409E4A23F969385F02A9C54"),
+        KnowledgeCandidate: ("F0183B14AD707A7902120E0C9B9F37E53FDC600D88F33E37071858937CAF8763"),
+        RankingExecution: ("86E57682056EF105EDC080D32A10F622CEF001A11633E904B97DF9C62DDE143A"),
+        KnowledgeSearchResult: ("B6A5381B16DCE1E5D23794C0C299ED1BA20855A6B36F7797238D7586393FF9FC"),
     }
 
     for contract, names in expected.items():

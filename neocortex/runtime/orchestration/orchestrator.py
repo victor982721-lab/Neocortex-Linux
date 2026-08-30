@@ -1,6 +1,6 @@
 """Coordination of filesystem checkpoints and pre-index deduplication."""
 # region [00] Contexto del módulo
-# Módulo: _04_Nucleo_Operativo/orchestrator.py
+# Módulo: neocortex/orchestrator.py
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
@@ -26,8 +26,6 @@ from neocortex.deduplication import (
 )
 from neocortex.deduplication.inventory.index import validate_inventory_root
 from neocortex.progress import NullProgress, ProgressCallback, ProgressEvent, emit_progress
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 from neocortex.workflow.actions.actions import FrameworkActions
 from neocortex.runtime.config.application_config_projections import (
     global_resource_limits_from_application,
@@ -2124,9 +2122,4 @@ class FrameworkOrchestrator:
             route_results=routes,
             global_resources=execution.global_resources,
         )
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.orchestrator")
-
-
 # endregion [02]

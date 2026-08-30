@@ -11,7 +11,7 @@ from typing import Sequence
 
 import xxhash
 
-from _04_Nucleo_Operativo.semantic_models import (
+from neocortex.semantic.semantic_models import (
     BackendEmbedding,
     EmbeddingModelSpec,
     EmbeddingRequest,

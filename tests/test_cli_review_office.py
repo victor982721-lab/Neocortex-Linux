@@ -7,25 +7,25 @@ import argparse
 import pytest
 
 from neocortex.deduplication import FileSnapshot
-from _04_Nucleo_Operativo.cli_app import dispatch_direct
-from _04_Nucleo_Operativo.cli_direct import (
+from neocortex.api.cli.cli_app import dispatch_direct
+from neocortex.api.cli.cli_direct import (
     run_office_search,
     run_review_candidates,
     run_review_decisions,
 )
-from _04_Nucleo_Operativo.cli_parser import build_parser
-from _04_Nucleo_Operativo.cli_validation import validate_arguments
-from _04_Nucleo_Operativo.office_state import (
+from neocortex.api.cli.cli_parser import build_parser
+from neocortex.api.cli.cli_validation import validate_arguments
+from neocortex.capabilities.formats.office.state import (
     initialize_office_state,
     office_database,
 )
-from _04_Nucleo_Operativo.review import (
+from neocortex.workflow.review.review import (
     ReviewCandidate,
     get_review_candidate,
     list_review_candidates,
     list_review_decisions,
 )
-from _04_Nucleo_Operativo.state import FrameworkRouteState, FrameworkState
+from neocortex.persistence.state import FrameworkRouteState, FrameworkState
 
 
 def _snapshot() -> FileSnapshot:

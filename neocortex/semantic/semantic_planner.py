@@ -7,16 +7,13 @@ externally bound exact tokenizer contract are explicitly marked pre-tokenizer.
 """
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
-import sqlite3  # noqa: F401 - compatibility seam
+import sqlite3  # noqa: F401 - exposed for the planner's bounded test seam
 import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
-from . import semantic_sources as _sources  # noqa: F401 - compatibility seam
 from .semantic_chunking import TextChunkingConfig
+from . import semantic_sources as _sources  # noqa: F401 - injected source seam
 from .semantic_contract_payloads import (
     build_semantic_plan_payload as _build_semantic_plan_payload,
 )
@@ -327,6 +324,3 @@ __all__ = [
 
 
 # endregion [05]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.semantic_planner")

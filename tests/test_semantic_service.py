@@ -8,25 +8,25 @@ from typing import Sequence, cast
 
 import pytest
 
-from _04_Nucleo_Operativo import semantic_service as service
-from _04_Nucleo_Operativo import semantic_preparation
-from _04_Nucleo_Operativo import semantic_search_service as search_implementation
-from _04_Nucleo_Operativo import semantic_state as state
-from _04_Nucleo_Operativo.semantic_chunking import TextChunkingConfig
-from _04_Nucleo_Operativo.semantic_chunking import iter_text_chunks
-from _04_Nucleo_Operativo.semantic_config import (
+from neocortex.semantic import semantic_service as service
+from neocortex.semantic import semantic_preparation
+from neocortex.semantic import semantic_search_service as search_implementation
+from neocortex.semantic import semantic_state as state
+from neocortex.semantic.semantic_chunking import TextChunkingConfig
+from neocortex.semantic.semantic_chunking import iter_text_chunks
+from neocortex.semantic.semantic_config import (
     compact_multilingual_text_model,
     fastembed_cache_contract,
 )
-from _04_Nucleo_Operativo.semantic_lexical import (
+from neocortex.semantic.semantic_lexical import (
     LEXICAL_MODEL_SIGNATURE,
     MAX_QUERY_CHARS,
     LexicalAvailability,
     LexicalRanking,
     LexicalStatePaths,
 )
-from _04_Nucleo_Operativo.semantic_generation_repository import merge_source_head_ledger
-from _04_Nucleo_Operativo.semantic_models import (
+from neocortex.semantic.semantic_generation_repository import merge_source_head_ledger
+from neocortex.semantic.semantic_models import (
     BackendEmbedding,
     EmbeddingJobLease,
     EmbeddingModality,
@@ -42,15 +42,15 @@ from _04_Nucleo_Operativo.semantic_models import (
     fingerprint_bytes,
     fingerprint_text,
 )
-from _04_Nucleo_Operativo.semantic_ontology import CONCEPTS, ONTOLOGY_VERSION
-from _04_Nucleo_Operativo.semantic_sources import (
+from neocortex.semantic.semantic_ontology import CONCEPTS, ONTOLOGY_VERSION
+from neocortex.semantic.semantic_sources import (
     SEMANTIC_TITLE_POLICY,
     SEMANTIC_TITLE_SECTION_KIND,
     ImageSourceRecord,
     SemanticSourceHead,
     TextSourceRecord,
 )
-from _04_Nucleo_Operativo.semantic_state import (
+from neocortex.semantic.semantic_state import (
     has_active_embeddings,
     list_semantic_evidence,
     semantic_database,

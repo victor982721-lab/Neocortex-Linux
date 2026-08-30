@@ -5,12 +5,12 @@ import time
 import unittest
 from unittest.mock import patch
 
-from _04_Nucleo_Operativo.cpu_runtime import CpuLoadSampler, CpuTimes
-from _04_Nucleo_Operativo.global_resources import (
+from neocortex.runtime.control.cpu_runtime import CpuLoadSampler, CpuTimes
+from neocortex.runtime.control.global_resources import (
     GlobalResourceCoordinator,
     GlobalResourceLimits,
 )
-from _04_Nucleo_Operativo.memory_runtime import (
+from neocortex.runtime.control.memory_runtime import (
     MemoryBudgetExceeded,
     MemoryHeadroomTimeout,
     MemoryResourceLimits,
@@ -26,7 +26,7 @@ class CpuLoadSamplerTests(unittest.TestCase):
     def test_calculates_whole_system_load_from_counter_deltas(self) -> None:
         samples = [CpuTimes(600, 1_000), CpuTimes(650, 1_100)]
         with patch(
-            "_04_Nucleo_Operativo.cpu_runtime.cpu_times",
+            "neocortex.runtime.control.cpu_runtime.cpu_times",
             side_effect=samples,
         ):
             sampler = CpuLoadSampler()
@@ -35,7 +35,7 @@ class CpuLoadSamplerTests(unittest.TestCase):
     def test_preserves_last_load_when_counters_do_not_advance(self) -> None:
         samples = [CpuTimes(600, 1_000), CpuTimes(600, 1_000)]
         with patch(
-            "_04_Nucleo_Operativo.cpu_runtime.cpu_times",
+            "neocortex.runtime.control.cpu_runtime.cpu_times",
             side_effect=samples,
         ):
             sampler = CpuLoadSampler()
@@ -90,10 +90,10 @@ class GlobalResourceCoordinatorTests(unittest.TestCase):
         snapshot = MemorySnapshot(8 * gib, 12 * gib, 16 * gib, 24 * gib)
         with (
             patch(
-                "_04_Nucleo_Operativo.global_resources.memory_snapshot",
+                "neocortex.runtime.control.global_resources.memory_snapshot",
                 return_value=snapshot,
             ),
-            patch("_04_Nucleo_Operativo.global_resources.os.cpu_count", return_value=16),
+            patch("neocortex.runtime.control.global_resources.os.cpu_count", return_value=16),
         ):
             coordinator = GlobalResourceCoordinator(
                 ("pdf", "audio"),
@@ -111,7 +111,7 @@ class GlobalResourceCoordinatorTests(unittest.TestCase):
         gib = 1024 * 1024 * 1024
         snapshot = MemorySnapshot(9 * gib, 10 * gib, 14 * gib, 15 * gib)
         with patch(
-            "_04_Nucleo_Operativo.global_resources.memory_snapshot",
+            "neocortex.runtime.control.global_resources.memory_snapshot",
             return_value=snapshot,
         ):
             coordinator = GlobalResourceCoordinator(
@@ -134,7 +134,7 @@ class GlobalResourceCoordinatorTests(unittest.TestCase):
     def test_round_robin_prevents_one_route_from_monopolizing_slots(self):
         snapshot = MemorySnapshot(10_000, 10_000, 20_000, 20_000)
         with patch(
-            "_04_Nucleo_Operativo.global_resources.memory_snapshot",
+            "neocortex.runtime.control.global_resources.memory_snapshot",
             return_value=snapshot,
         ):
             coordinator = self._coordinator()
@@ -178,7 +178,7 @@ class GlobalResourceCoordinatorTests(unittest.TestCase):
     def test_internal_contention_does_not_become_a_headroom_timeout(self):
         snapshot = MemorySnapshot(10_000, 10_000, 20_000, 20_000)
         with patch(
-            "_04_Nucleo_Operativo.global_resources.memory_snapshot",
+            "neocortex.runtime.control.global_resources.memory_snapshot",
             return_value=snapshot,
         ):
             coordinator = GlobalResourceCoordinator(
@@ -217,7 +217,7 @@ class GlobalResourceCoordinatorTests(unittest.TestCase):
     def test_inactive_fitting_route_precedes_route_with_active_work(self):
         snapshot = MemorySnapshot(10_000, 10_000, 20_000, 20_000)
         with patch(
-            "_04_Nucleo_Operativo.global_resources.memory_snapshot",
+            "neocortex.runtime.control.global_resources.memory_snapshot",
             return_value=snapshot,
         ):
             coordinator = GlobalResourceCoordinator(
@@ -278,7 +278,7 @@ class GlobalResourceCoordinatorTests(unittest.TestCase):
     def test_rejects_one_item_larger_than_the_shared_budget(self):
         snapshot = MemorySnapshot(10_000, 10_000, 20_000, 20_000)
         with patch(
-            "_04_Nucleo_Operativo.global_resources.memory_snapshot",
+            "neocortex.runtime.control.global_resources.memory_snapshot",
             return_value=snapshot,
         ):
             coordinator = self._coordinator()
@@ -289,7 +289,7 @@ class GlobalResourceCoordinatorTests(unittest.TestCase):
     def test_cpu_and_memory_can_expand_when_both_are_available(self):
         snapshot = MemorySnapshot(10_000, 10_000, 20_000, 20_000)
         with patch(
-            "_04_Nucleo_Operativo.global_resources.memory_snapshot",
+            "neocortex.runtime.control.global_resources.memory_snapshot",
             return_value=snapshot,
         ):
             coordinator = self._coordinator(cpu_slots=2)
@@ -318,7 +318,7 @@ class GlobalResourceCoordinatorTests(unittest.TestCase):
     def test_live_headroom_is_rechecked_until_the_computer_recovers(self):
         current = [MemorySnapshot(10_000, 10_000, 20_000, 20_000)]
         with patch(
-            "_04_Nucleo_Operativo.global_resources.memory_snapshot",
+            "neocortex.runtime.control.global_resources.memory_snapshot",
             side_effect=lambda: current[0],
         ):
             coordinator = GlobalResourceCoordinator(
@@ -366,7 +366,7 @@ class GlobalResourceCoordinatorTests(unittest.TestCase):
             return calls.pop() if calls else low
 
         with patch(
-            "_04_Nucleo_Operativo.global_resources.memory_snapshot",
+            "neocortex.runtime.control.global_resources.memory_snapshot",
             side_effect=snapshot,
         ):
             coordinator = GlobalResourceCoordinator(
@@ -389,7 +389,7 @@ class GlobalResourceCoordinatorTests(unittest.TestCase):
         snapshot = MemorySnapshot(10_000, 10_000, 20_000, 20_000)
         current_load = [0.0]
         with patch(
-            "_04_Nucleo_Operativo.global_resources.memory_snapshot",
+            "neocortex.runtime.control.global_resources.memory_snapshot",
             return_value=snapshot,
         ):
             coordinator = GlobalResourceCoordinator(

@@ -9,15 +9,15 @@ from typing import cast
 import pytest
 
 from neocortex.deduplication import InventoryExclusionPolicy
-from _04_Nucleo_Operativo.application_config_projections import (
+from neocortex.runtime.config.application_config_projections import (
     code_route_config_from_application,
 )
-from _04_Nucleo_Operativo.code_contracts import (
+from neocortex.code.code_contracts import (
     MAX_DEEP_TEST_SELECTORS,
     CodeRouteConfig,
 )
-from _04_Nucleo_Operativo.models import FrameworkConfig
-from _04_Nucleo_Operativo.self_analysis import (
+from neocortex.runtime.models import FrameworkConfig
+from neocortex.workflow.self_analysis.self_analysis import (
     build_self_analysis_completion_manifest,
     self_analysis_commands,
 )
@@ -40,7 +40,7 @@ def _deep_framework_config(root: Path, state: Path) -> FrameworkConfig:
         deep_max_tests=120,
         deep_time_budget_seconds=240,
         deep_shard_size=12,
-        deep_mutation_target=r"_04_Nucleo_Operativo\external_deep_coverage.py",
+        deep_mutation_target=r"neocortex\external_deep_coverage.py",
         deep_mutation_symbol="external_deep_coverage._normalize",
         deep_mutation_max_mutants=17,
         deep_mutation_timeout_seconds=11,
@@ -64,7 +64,7 @@ def test_deep_projection_declares_execution_with_separate_signature(tmp_path: Pa
         "max_tests": 120,
         "time_budget_seconds": 240,
         "shard_size": 12,
-        "mutation_target": "_04_Nucleo_Operativo/external_deep_coverage.py",
+        "mutation_target": "neocortex/external_deep_coverage.py",
         "mutation_symbol": "external_deep_coverage._normalize",
         "mutation_max_mutants": 17,
         "mutation_timeout_seconds": 11,
@@ -131,7 +131,7 @@ def test_trusted_deep_command_and_manifest_are_exact(tmp_path: Path) -> None:
     assert analyze[analyze.index("--deep-time-budget-seconds") + 1] == "240"
     assert analyze[analyze.index("--deep-shard-size") + 1] == "12"
     assert analyze[analyze.index("--deep-mutation-target") + 1] == (
-        "_04_Nucleo_Operativo/external_deep_coverage.py"
+        "neocortex/external_deep_coverage.py"
     )
     assert analyze[analyze.index("--deep-mutation-symbol") + 1] == (
         "external_deep_coverage._normalize"

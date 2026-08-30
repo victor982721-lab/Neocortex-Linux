@@ -8,9 +8,6 @@ natural language.
 """
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import sqlite3
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass
@@ -618,6 +615,3 @@ __all__ = [
     "compare_code_question_parity",
     "resolve_code_question",
 ]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.code_question_resolver")

@@ -10,8 +10,8 @@ from pathlib import Path
 
 import pytest
 
-from _04_Nucleo_Operativo import semantic_schema
-from _04_Nucleo_Operativo import semantic_state
+from neocortex.semantic import semantic_schema
+from neocortex.semantic import semantic_state
 # endregion [01]
 
 # region [02] Implementación

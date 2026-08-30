@@ -8,33 +8,33 @@ from pathlib import Path
 
 import pytest
 
-import _04_Nucleo_Operativo.external_evidence_providers as providers_module
-from _04_Nucleo_Operativo.code_external_evidence import ExternalEvidenceFile
-from _04_Nucleo_Operativo.external_dependency_hygiene import (
+import neocortex.code.external_evidence_providers as providers_module
+from neocortex.code.code_external_evidence import ExternalEvidenceFile
+from neocortex.code.external_dependency_hygiene import (
     DEPTRY_LIMITATIONS,
     DependencyHygieneExecution,
 )
-from _04_Nucleo_Operativo.external_evidence_models import ExternalProviderBaseline
-from _04_Nucleo_Operativo.external_evidence_providers import (
+from neocortex.code.external_evidence_models import ExternalProviderBaseline
+from neocortex.code.external_evidence_providers import (
     DeptryProjectDependenciesProvider,
     InstalledPackageInventoryProvider,
     PipAuditKnownVulnerabilitiesProvider,
     SemgrepNeocortexInvariantsProvider,
     providers_for_profile,
 )
-from _04_Nucleo_Operativo.external_semgrep_invariants import (
+from neocortex.code.external_semgrep_invariants import (
     SEMGREP_INVARIANT_RULE_IDS,
     SEMGREP_RULESET_SHA256,
     SemgrepInvariantExecution,
 )
-from _04_Nucleo_Operativo.external_supply_chain_audit import (
+from neocortex.code.external_supply_chain_audit import (
     PIP_AUDIT_LIMITATIONS,
     InstalledPackageCounters,
     InstalledPackageInventoryExecution,
     PipAuditCounters,
     PipAuditExecution,
 )
-from _04_Nucleo_Operativo.semantic_models import fingerprint_bytes
+from neocortex.semantic.semantic_models import fingerprint_bytes
 
 
 def _root(tmp_path: Path) -> tuple[Path, Path]:
@@ -104,7 +104,7 @@ def test_semgrep_and_deptry_use_their_exact_python_domains_and_replay(
         / "tests"
         / "fixtures"
         / "semgrep_invariants"
-        / "_04_Nucleo_Operativo"
+        / "neocortex"
         / "external_fixture_provider.py"
     )
     rule_fixture.parent.mkdir(parents=True)
@@ -176,7 +176,7 @@ def test_semgrep_and_deptry_use_their_exact_python_domains_and_replay(
     assert deptry_paths == [
         (
             "module.py",
-            "tests/fixtures/semgrep_invariants/_04_Nucleo_Operativo/external_fixture_provider.py",
+            "tests/fixtures/semgrep_invariants/neocortex/external_fixture_provider.py",
         )
     ]
     assert deptry_publication.status == "completed"

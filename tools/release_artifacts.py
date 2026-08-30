@@ -36,7 +36,7 @@ SOURCE_DATE_EPOCH: Final = 1_785_369_600
 _DISTRIBUTION: Final = "neocortex-framework"
 _WHEEL_DISTRIBUTION: Final = "neocortex_framework"
 _ENTRY_POINT: Final = ("Neocortex", "neocortex.cli:entrypoint")
-_TYPED_PACKAGES: Final = ("_04_Nucleo_Operativo", "neocortex")
+_TYPED_PACKAGES: Final = ("neocortex",)
 _UI_ASSETS: Final = (
     "neocortex/interface/presentation/assets/neocortex-app-icon.ico",
     "neocortex/interface/presentation/assets/neocortex-app-icon.png",
@@ -79,7 +79,6 @@ _REQUIRED_SDIST_CONTENT: Final = (
     "neocortex/__init__.py",
     "neocortex/cli.py",
     "neocortex/py.typed",
-    "_04_Nucleo_Operativo/py.typed",
 )
 _CACHE_COMPONENTS: Final = frozenset(
     {
@@ -739,7 +738,7 @@ def canonicalize_sdist(
     return result
 
 
-# This order is a characterized public compatibility contract.
+# This order is a characterized public typed contract.
 __all__ = [  # noqa: RUF022
     "ArchiveInspection",
     "ArchiveLimits",

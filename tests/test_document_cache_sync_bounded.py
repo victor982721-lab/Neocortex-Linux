@@ -8,7 +8,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from _04_Nucleo_Operativo.document_cache_sync import (
+from neocortex.documents.document_cache_sync import (
     _PENDING_ACTION_SYNC_BATCH_SIZE,
     _sync_pending_file_actions,
 )

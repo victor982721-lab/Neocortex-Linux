@@ -1,9 +1,6 @@
 """Versioned constants and conservative policy tables for image analysis."""
 
 from __future__ import annotations
-
-from . import preserve_legacy_module as _preserve_legacy_module
-
 import re
 
 from neocortex.semantic.semantic_ontology import (
@@ -207,6 +204,3 @@ TOKEN_RE = re.compile(r"[a-z0-9]+")
 # path evidence, visual prototypes and document semantics use one vocabulary.
 
 # endregion [03]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.image_policy")

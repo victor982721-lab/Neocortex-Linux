@@ -8,9 +8,6 @@ separate; no aggregate quality or defect score is produced.
 """
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import math
 import sqlite3
 from collections.abc import Mapping, Sequence
@@ -1360,6 +1357,3 @@ __all__ = [
     "project_work_package_coverage_scope",
     "read_code_coverage_analysis",
 ]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.code_coverage_analysis")

@@ -8,9 +8,6 @@ fallback.  Bounded deterministic path rules run before candidate bytes are read.
 """
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import os
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -273,6 +270,3 @@ __all__ = [
     "ScopeDecision",
     "is_project_marker",
 ]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.code_candidate_scope")

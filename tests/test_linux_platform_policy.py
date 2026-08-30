@@ -17,10 +17,10 @@ from neocortex.deduplication import (
     InventoryExclusionPolicy,
     stat_matches_snapshot,
 )
-from _04_Nucleo_Operativo.cli_app import main
-from _04_Nucleo_Operativo.file_identity import FileIdentity
-from _04_Nucleo_Operativo.knowledge_contracts import PhysicalIdentityRef, ResourceRef
-from _04_Nucleo_Operativo.knowledge_search_inventory import physical_identity_tuple
+from neocortex.api.cli.cli_app import main
+from neocortex.foundation.file_identity import FileIdentity
+from neocortex.knowledge.knowledge_contracts import PhysicalIdentityRef, ResourceRef
+from neocortex.knowledge.knowledge_search_inventory import physical_identity_tuple
 from neocortex.cli import _translate_canonical_arguments, entrypoint
 from neocortex.platform_policy import (
     LINUX_MUTATION_REASON,

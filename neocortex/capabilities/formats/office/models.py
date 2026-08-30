@@ -173,5 +173,5 @@ for _name in (
     "ExtractedOfficeDocument",
     "OfficeExtractionError",
 ):
-    globals()[_name].__module__ = "_04_Nucleo_Operativo.office_route"
+    globals()[_name].__module__ = "neocortex.capabilities.formats.office.route"
 del _name

@@ -6,8 +6,8 @@ import json
 from dataclasses import replace
 from types import SimpleNamespace
 
-import _04_Nucleo_Operativo.code_coverage_analysis as coverage_module
-from _04_Nucleo_Operativo.code_coverage_analysis import (
+import neocortex.code.code_coverage_analysis as coverage_module
+from neocortex.code.code_coverage_analysis import (
     CODE_COVERAGE_PROVIDER_ID,
     CODE_COVERAGE_SCHEMA,
     analyze_code_coverage,
@@ -16,7 +16,7 @@ from _04_Nucleo_Operativo.code_coverage_analysis import (
     project_work_package_coverage_scope,
     read_code_coverage_analysis,
 )
-from _04_Nucleo_Operativo.external_evidence_models import (
+from neocortex.code.external_evidence_models import (
     ExternalProviderEvidence,
     ExternalProviderMetric,
     ExternalProviderRelation,
@@ -25,7 +25,7 @@ from _04_Nucleo_Operativo.external_evidence_models import (
 SYMBOL = "pkg.mod:target:10:20"
 SECOND_SYMBOL = "pkg.mod:target:30:40"
 TEST_NODEID = "tests/test_mod.py::test_target"
-PACKAGED_MODULE = "_04_Nucleo_Operativo.external_deep_coverage"
+PACKAGED_MODULE = "neocortex.code.external_deep_coverage"
 PACKAGED_QUALIFIED_NAME = f"{PACKAGED_MODULE}._normalize"
 PACKAGED_SYMBOL = f"{PACKAGED_MODULE}:{PACKAGED_QUALIFIED_NAME}:984:1200"
 PACKAGED_REVIEW_SYMBOL = "external_deep_coverage._normalize"
@@ -257,7 +257,7 @@ def _packaged_symbol_evidence(
             end_line=1200,
             module_key=module_key,
             qualified_name=qualified_name,
-            relative_path="_04_Nucleo_Operativo/external_deep_coverage.py",
+            relative_path="neocortex/external_deep_coverage.py",
             executable=44,
             covered=38,
             branches=22,
@@ -276,7 +276,7 @@ def _packaged_symbol_evidence(
             "test_nodeids": [TEST_NODEID],
             "lines": [984, 990, 1000],
             "contexts": [TEST_NODEID],
-            "relative_path": "_04_Nucleo_Operativo/external_deep_coverage.py",
+            "relative_path": "neocortex/external_deep_coverage.py",
             "module_key": module_key,
             "symbol_key": symbol,
         },

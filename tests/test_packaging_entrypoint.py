@@ -93,7 +93,7 @@ def test_svg_release_asset_has_canonical_lf_export() -> None:
 def test_installed_entrypoint_forwards_arguments_to_integrated_cli() -> None:
     with (
         patch("neocortex.cli._run_special_mode", return_value=None),
-        patch("_04_Nucleo_Operativo.cli_app.main", return_value=7) as run_cli,
+        patch("neocortex.api.cli.cli_app.main", return_value=7) as run_cli,
     ):
         result = entrypoint(("--status",))
 
@@ -114,7 +114,7 @@ def test_installed_entrypoint_exposes_owned_pyright_shim_and_node(
     monkeypatch.setenv("PATH", original_path)
     monkeypatch.setattr("neocortex.cli.sys.prefix", str(prefix))
 
-    with patch("_04_Nucleo_Operativo.cli_app.main", return_value=0):
+    with patch("neocortex.api.cli.cli_app.main", return_value=0):
         assert entrypoint(("--version",)) == 0
         assert entrypoint(("--version",)) == 0
 
@@ -163,7 +163,7 @@ def test_legacy_dedup_entrypoint_delegates_without_legacy_state(
     capsys,
 ) -> None:
     database = tmp_path / "state" / "dedup.sqlite3"
-    with patch("_04_Nucleo_Operativo.cli_app.main", return_value=0) as run_cli:
+    with patch("neocortex.api.cli.cli_app.main", return_value=0) as run_cli:
         result = legacy_dedup_main(
             (
                 "--root",

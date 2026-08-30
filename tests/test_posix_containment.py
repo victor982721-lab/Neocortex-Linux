@@ -11,8 +11,8 @@ from pathlib import Path
 
 import pytest
 
-from _04_Nucleo_Operativo import bounded_subprocess as bounded_module
-from _04_Nucleo_Operativo.bounded_subprocess import run_bounded_capture
+from neocortex.runtime.control import bounded_subprocess as bounded_module
+from neocortex.runtime.control.bounded_subprocess import run_bounded_capture
 
 
 pytestmark = pytest.mark.skipif(os.name == "nt", reason="POSIX containment contract")

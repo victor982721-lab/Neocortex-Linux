@@ -444,10 +444,10 @@ try:
 except SystemExit as error:
     code = error.code
 forbidden = {
-    "_04_Nucleo_Operativo.review_task_contracts",
-    "_04_Nucleo_Operativo.review_task_repository",
-    "_04_Nucleo_Operativo.value_review_repository",
-    "_04_Nucleo_Operativo.value_review_tasks",
+    "neocortex.workflow.review.review_task_contracts",
+    "neocortex.workflow.review.review_task_repository",
+    "neocortex.workflow.review.value_review_repository",
+    "neocortex.workflow.review.value_review_tasks",
     "torch",
     "transformers",
     "sentence_transformers",

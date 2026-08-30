@@ -7,7 +7,6 @@ does not own Git mutation, a push, release promotion or corpus mutation.
 
 from __future__ import annotations
 
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
 
 import ctypes
 import hashlib
@@ -99,10 +98,7 @@ from .external_evidence_providers import (
     VULTURE_UNUSED_PROVIDER_ID,
 )
 from .external_evidence_store import read_external_provider_baselines
-from neocortex.platform.capability_registry import (
-    resolve_canonical_capabilities,
-    resolve_source_capabilities,
-)
+from neocortex.platform.capability_registry import resolve_canonical_capabilities
 from neocortex.semantic.semantic_models import canonical_json
 
 
@@ -122,19 +118,7 @@ _PR_GET_CHILD_SUBREAPER = 37
 _COMMAND_SUBREAPER_LOCK = threading.Lock()
 _ANSI_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 _TEST_PATH = re.compile(r"^tests/(?:.*/)?test_[^/]+\.py$")
-_PYTHON_SOURCE_ROOTS = frozenset(
-    {
-        "_04_Nucleo_Operativo",
-        "neocortex",
-    }
-)
-_PYTHON_SOURCE_PREFIXES = frozenset(
-    {
-        "_04_Nucleo_Operativo",
-        "neocortex",
-        "tools",
-    }
-)
+_PYTHON_SOURCE_PREFIXES = frozenset({"neocortex", "tools"})
 
 _TRUSTED_DEEP_REQUIRED_PROVIDER_IDS = frozenset(
     {
@@ -193,40 +177,11 @@ _FULL_SUITE_PREFIXES = (
     "neocortex/platform/capability_registry.py",
     "neocortex/platform/capability_registry_specs.py",
     "neocortex/platform/architecture_projection.py",
-    "_04_Nucleo_Operativo/cli_app.py",
-    "_04_Nucleo_Operativo/cli_parser.py",
-    "_04_Nucleo_Operativo/cli_validation.py",
-    "_04_Nucleo_Operativo/code_change_validation.py",
-    "_04_Nucleo_Operativo/code_contracts.py",
-    "_04_Nucleo_Operativo/code_route.py",
-    "_04_Nucleo_Operativo/code_state.py",
-    "_04_Nucleo_Operativo/code_validation_receipts.py",
-    "_04_Nucleo_Operativo/semantic_",
 )
 _SOURCE_BOUNDARY_TESTS = {
-    "_04_Nucleo_Operativo/capabilities/__init__.py": frozenset(
-        {
-            "tests/test_capability_registry.py",
-            "tests/test_format_module_move_compatibility.py",
-        }
-    ),
-    "_04_Nucleo_Operativo/capabilities/formats/__init__.py": frozenset(
-        {
-            "tests/test_capability_registry.py",
-            "tests/test_format_module_move_compatibility.py",
-        }
-    ),
-    "_04_Nucleo_Operativo/platform/__init__.py": frozenset(
-        {
-            "tests/test_capability_registry.py",
-            "tests/test_format_module_move_compatibility.py",
-        }
-    ),
     "neocortex/platform/__init__.py": frozenset(
         {
             "tests/test_capability_registry.py",
-            "tests/test_format_module_move_compatibility.py",
-            "tests/test_platform_namespace_migration.py",
         }
     ),
     "neocortex/foundation/__init__.py": frozenset(
@@ -244,43 +199,13 @@ _SOURCE_BOUNDARY_TESTS = {
             "tests/test_knowledge_exact.py",
         }
     ),
-    "_04_Nucleo_Operativo/file_identity.py": frozenset(
-        {
-            "tests/test_file_identity.py",
-            "tests/test_foundation_namespace_migration.py",
-            "tests/test_knowledge_asset_health.py",
-            "tests/test_knowledge_exact.py",
-        }
-    ),
     "neocortex/foundation/processing_provenance.py": frozenset(
         {
             "tests/test_foundation_namespace_migration.py",
             "tests/test_processing_provenance.py",
         }
     ),
-    "_04_Nucleo_Operativo/processing_provenance.py": frozenset(
-        {
-            "tests/test_foundation_namespace_migration.py",
-            "tests/test_processing_provenance.py",
-        }
-    ),
-    "_04_Nucleo_Operativo/platform/shared/__init__.py": frozenset(
-        {
-            "tests/test_architecture_projection.py",
-            "tests/test_capability_registry.py",
-            "tests/test_format_module_move_compatibility.py",
-        }
-    ),
-    "tools/quality_gate.py": frozenset(
-        {
-            "tests/test_code_change_validation.py",
-            "tests/test_packaging_entrypoint.py",
-            "tests/test_quality_gate.py",
-            "tests/test_release_artifacts.py",
-            "tests/test_release_linux.py",
-        }
-    ),
-    "_04_Nucleo_Operativo/code_schema.py": frozenset(
+    "neocortex/code/code_schema.py": frozenset(
         {
             "tests/test_code_change_evolution_analysis.py",
             "tests/test_code_experiment_store.py",
@@ -292,88 +217,44 @@ _SOURCE_BOUNDARY_TESTS = {
             "tests/test_framework_code_path_collation.py",
         }
     ),
-    "_04_Nucleo_Operativo/platform/shared/architecture_projection.py": frozenset(
+    "tools/quality_gate.py": frozenset(
         {
-            "tests/test_architecture_projection.py",
-            "tests/test_code_architecture_contracts.py",
+            "tests/test_code_change_validation.py",
+            "tests/test_packaging_entrypoint.py",
             "tests/test_quality_gate.py",
+            "tests/test_release_artifacts.py",
+            "tests/test_release_linux.py",
         }
     ),
     "neocortex/platform/architecture_projection.py": frozenset(
         {
             "tests/test_architecture_projection.py",
             "tests/test_code_architecture_contracts.py",
-            "tests/test_platform_namespace_migration.py",
             "tests/test_quality_gate.py",
-        }
-    ),
-    "_04_Nucleo_Operativo/platform/shared/capability_registry.py": frozenset(
-        {
-            "tests/test_capability_registry.py",
-            "tests/test_code_change_validation.py",
-            "tests/test_format_module_move_compatibility.py",
-            "tests/test_logical_owner_contracts.py",
         }
     ),
     "neocortex/platform/capability_registry.py": frozenset(
         {
             "tests/test_capability_registry.py",
             "tests/test_code_change_validation.py",
-            "tests/test_format_module_move_compatibility.py",
             "tests/test_logical_owner_contracts.py",
-            "tests/test_platform_namespace_migration.py",
         }
     ),
     "neocortex/platform/capability_registry_specs.py": frozenset(
         {
             "tests/test_capability_registry.py",
-            "tests/test_platform_namespace_migration.py",
-        }
-    ),
-    "_04_Nucleo_Operativo/content_types.py": frozenset(
-        {
-            "tests/test_bounded_io_refactors.py",
-            "tests/test_format_module_move_compatibility.py",
-            "tests/test_framework_actions.py",
-            "tests/test_video_content_types.py",
-        }
-    ),
-    "_04_Nucleo_Operativo/platform/shared/content_types.py": frozenset(
-        {
-            "tests/test_bounded_io_refactors.py",
-            "tests/test_format_module_move_compatibility.py",
-            "tests/test_framework_actions.py",
-            "tests/test_video_content_types.py",
         }
     ),
     "neocortex/platform/content_types.py": frozenset(
         {
             "tests/test_bounded_io_refactors.py",
-            "tests/test_format_module_move_compatibility.py",
             "tests/test_framework_actions.py",
-            "tests/test_platform_namespace_migration.py",
             "tests/test_video_content_types.py",
-        }
-    ),
-    "_04_Nucleo_Operativo/zip_safety.py": frozenset(
-        {
-            "tests/test_bounded_io_refactors.py",
-            "tests/test_format_module_move_compatibility.py",
-            "tests/test_zip_safety.py",
-        }
-    ),
-    "_04_Nucleo_Operativo/platform/shared/zip_safety.py": frozenset(
-        {
-            "tests/test_bounded_io_refactors.py",
-            "tests/test_format_module_move_compatibility.py",
-            "tests/test_zip_safety.py",
         }
     ),
     "neocortex/platform/zip_safety.py": frozenset(
         {
             "tests/test_bounded_io_refactors.py",
-            "tests/test_format_module_move_compatibility.py",
-            "tests/test_platform_namespace_migration.py",
             "tests/test_zip_safety.py",
         }
     ),
@@ -451,20 +332,6 @@ _EXPERIMENT_CONTROL_PLANE_PATHS = frozenset(
         "neocortex/code/code_validation_resources.py",
         "neocortex/code/external_evidence_models.py",
         "neocortex/code/external_evidence_store.py",
-        "_04_Nucleo_Operativo/cli_code.py",
-        "_04_Nucleo_Operativo/code_analysis_epistemics.py",
-        "_04_Nucleo_Operativo/code_change_validation.py",
-        "_04_Nucleo_Operativo/code_experiment_executor.py",
-        "_04_Nucleo_Operativo/code_experiment_planner.py",
-        "_04_Nucleo_Operativo/code_experiment_store.py",
-        "_04_Nucleo_Operativo/code_invariant_contracts.py",
-        "_04_Nucleo_Operativo/code_review.py",
-        "_04_Nucleo_Operativo/code_review_models.py",
-        "_04_Nucleo_Operativo/code_review_serialization.py",
-        "_04_Nucleo_Operativo/code_technical_verification.py",
-        "_04_Nucleo_Operativo/code_validation_resources.py",
-        "_04_Nucleo_Operativo/external_evidence_models.py",
-        "_04_Nucleo_Operativo/external_evidence_store.py",
         "tests/test_code_change_validation.py",
         "tests/test_code_experiment_executor.py",
         "tests/test_code_experiment_planner.py",
@@ -1231,99 +1098,9 @@ def _module_for_source(relative: str) -> str | None:
 
 
 def _canonical_source_path(relative: str) -> str | None:
-    """Map one historical source path to its canonical Linux path.
+    """Return a canonical source path; historical roots are not accepted."""
 
-    The change validator still accepts old paths for replaying historical
-    receipts, while new diffs are expected to use the canonical ``neocortex``
-    namespaces.  Keeping this mapping in one place lets the question scopes
-    remain compatible without weakening their exact path matching.
-    """
-
-    prefix = "_04_Nucleo_Operativo/"
-    if not relative.startswith(prefix):
-        return relative if relative.startswith("neocortex/") else None
-    tail = relative[len(prefix) :]
-    if tail.startswith("capabilities/formats/"):
-        return "neocortex/" + tail
-    if tail.startswith("platform/shared/"):
-        return "neocortex/platform/" + tail[len("platform/shared/") :]
-    if tail in {"platform/__init__.py", "capabilities/__init__.py", "capabilities/formats/__init__.py"}:
-        target = {
-            "platform/__init__.py": "neocortex/platform/__init__.py",
-            "capabilities/__init__.py": "neocortex/capabilities/__init__.py",
-            "capabilities/formats/__init__.py": "neocortex/capabilities/formats/__init__.py",
-        }
-        return target[tail]
-    if tail.startswith("code/"):
-        return "neocortex/code/" + tail[len("code/") :]
-    if tail.startswith("cli_"):
-        return "neocortex/api/cli/" + tail
-    if tail.startswith(("code_", "external_")) or tail == "logical_owner_contracts.py":
-        return "neocortex/code/" + tail
-    if tail.startswith("knowledge_"):
-        return "neocortex/knowledge/" + tail
-    if tail.startswith(("semantic_", "derivation_")):
-        return "neocortex/semantic/" + tail
-    if tail.startswith("document_"):
-        return "neocortex/documents/" + tail
-    if tail.startswith("archive_"):
-        return "neocortex/capabilities/formats/archive/" + tail
-    if tail.startswith("audio_"):
-        return "neocortex/capabilities/formats/audio/" + tail
-    if tail.startswith("docx_"):
-        return "neocortex/capabilities/formats/docx/" + tail
-    if tail.startswith("image_"):
-        return "neocortex/capabilities/formats/image/" + tail
-    if tail.startswith("office_"):
-        return "neocortex/capabilities/formats/office/" + tail
-    if tail.startswith("pdf_"):
-        return "neocortex/capabilities/formats/pdf/" + tail
-    if tail.startswith("text_"):
-        return "neocortex/capabilities/formats/text/" + tail
-    if tail.startswith("video_"):
-        return "neocortex/capabilities/formats/video/" + tail
-    if tail in {"file_identity.py", "processing_provenance.py"}:
-        return "neocortex/foundation/" + tail
-    if tail in {"content_types.py", "zip_safety.py"}:
-        return "neocortex/platform/" + tail
-    if tail.startswith("inventory_") or tail == "reconcile.py":
-        return "neocortex/integrations/inventory/" + tail
-    if tail in {
-        "corpus_access.py",
-        "internal_paths.py",
-        "ocr_image_preprocess.py",
-        "ocr_profiles.py",
-        "protected_content.py",
-        "route_filters.py",
-        "state_topology_contracts.py",
-        "windows_handle_mutation.py",
-    }:
-        return "neocortex/safety/" + tail
-    if tail.startswith("framework_") or tail in {"sqlite_immutable.py", "sqlite_paths.py", "state.py"}:
-        return "neocortex/persistence/" + tail
-    if tail in {"sqlite_cancellation.py", "sqlite_schema_contract.py", "sqlite_schema_lifecycle.py"}:
-        return "neocortex/" + tail
-    if tail in {"app_paths.py", "application_config.py", "application_config_projections.py", "model_management.py"}:
-        return "neocortex/runtime/config/" + tail
-    if tail == "models.py":
-        return "neocortex/runtime/models.py"
-    if tail in {"bounded_subprocess.py", "cancellation.py", "console_cancellation.py", "cpu_runtime.py", "global_resources.py", "incremental_gate.py", "isolated_process.py", "locking.py", "memory_runtime.py", "retry_policy.py", "watcher.py", "watcher_life_lease.py"}:
-        return "neocortex/runtime/control/" + tail
-    if tail in {"orchestrator.py", "route_registry.py", "route_selection.py", "run_lifecycle.py", "run_status.py"}:
-        return "neocortex/runtime/orchestration/" + tail
-    if tail in {"action_policy.py", "actions.py", "file_action_reconciliation_store.py", "file_action_recovery.py"}:
-        return "neocortex/workflow/actions/" + tail
-    if tail == "retention_planner.py":
-        return "neocortex/workflow/retention/planner.py"
-    if tail in {"review.py", "review_evidence.py", "review_task_contracts.py", "review_task_repository.py", "value_review.py", "value_review_contracts.py", "value_review_port.py", "value_review_repository.py", "value_review_tasks.py"}:
-        return "neocortex/workflow/review/" + tail
-    if tail == "self_analysis.py":
-        return "neocortex/workflow/self_analysis/self_analysis.py"
-    if tail.startswith("self_analysis_"):
-        return "neocortex/workflow/self_analysis/" + tail
-    if tail == "read_api_port.py":
-        return "neocortex/api/read_api_port.py"
-    return None
+    return relative if relative.startswith("neocortex/") else None
 
 
 def _convention_candidates(root: Path, relative: str) -> tuple[str, ...]:
@@ -1347,7 +1124,7 @@ def _convention_candidates(root: Path, relative: str) -> tuple[str, ...]:
 
 
 def _source_boundary_tests(root: Path, relative: str) -> tuple[str, ...]:
-    """Return the bounded compatibility matrix declared for a source boundary."""
+    """Return the bounded regression matrix declared for a source boundary."""
 
     declared = set(_SOURCE_BOUNDARY_TESTS.get(relative, ()))
     module_id = _module_for_source(relative)
@@ -1362,7 +1139,6 @@ def _source_boundary_tests(root: Path, relative: str) -> tuple[str, ...]:
             item.capability_id: item
             for candidate in sorted(module_ids)
             for item in (
-                *resolve_source_capabilities(candidate),
                 *resolve_canonical_capabilities(candidate),
             )
         }
@@ -1535,7 +1311,6 @@ def select_affected_tests(
                 "tools/release_",
                 "neocortex/platform_policy",
                 "neocortex/persistence/framework_schema",
-                "_04_Nucleo_Operativo/framework_schema",
             )
         )
         for path in change.changed_paths
@@ -2656,7 +2431,7 @@ def _candidate_wheel_gate(
             probe.mkdir()
             probe_script = (
                 "import importlib.metadata,importlib.util,json,pathlib;"
-                "import neocortex,_04_Nucleo_Operativo.code_change_validation as c;"
+                "import neocortex.code.code_change_validation as c;"
                 "from neocortex.platform.capability_registry "
                 "import CAPABILITY_REGISTRY;"
                 "root=pathlib.Path(c.__file__).resolve();"
@@ -3106,7 +2881,6 @@ def _validation_question_scopes() -> tuple[_ValidationQuestionScope, ...]:
                 }
             ),
             (
-                "_04_Nucleo_Operativo/",
                 "neocortex/",
                 "tests/test_code_architecture_",
             ),
@@ -3120,17 +2894,17 @@ def _validation_question_scopes() -> tuple[_ValidationQuestionScope, ...]:
             "capability.public_route_acceptance",
             frozenset(
                 {
-                    "_04_Nucleo_Operativo/code_capability_reachability_analysis.py",
-                    "_04_Nucleo_Operativo/code_route_capability_analysis.py",
-                    "_04_Nucleo_Operativo/text_route.py",
+                    "neocortex/code/code_capability_reachability_analysis.py",
+                    "neocortex/code/code_route_capability_analysis.py",
+                    "neocortex/capabilities/formats/text/text_route.py",
                     "neocortex/cli.py",
                     "tests/test_code_public_route_experiments.py",
                 }
             ),
             (
-                "_04_Nucleo_Operativo/code_capability_",
-                "_04_Nucleo_Operativo/code_route_capability_",
-                "_04_Nucleo_Operativo/text_route",
+                "neocortex/code/code_capability_",
+                "neocortex/code/code_route_capability_",
+                "neocortex/capabilities/formats/text/text_route",
             ),
             frozenset({"tests/test_code_public_route_experiments.py"}),
             True,
@@ -3142,29 +2916,27 @@ def _validation_question_scopes() -> tuple[_ValidationQuestionScope, ...]:
             "interfaces.public_cli_contract_acceptance",
             frozenset(
                 {
-                    "_04_Nucleo_Operativo/cli_app.py",
-                    "_04_Nucleo_Operativo/cli_code.py",
-                    "_04_Nucleo_Operativo/cli_code_surface.py",
-                    "_04_Nucleo_Operativo/cli_knowledge.py",
-                    "_04_Nucleo_Operativo/cli_knowledge_surface.py",
-                    "_04_Nucleo_Operativo/cli_operations.py",
-                    "_04_Nucleo_Operativo/code_interface_surface_analysis.py",
-                    "_04_Nucleo_Operativo/code_question_resolver.py",
-                    "_04_Nucleo_Operativo/code_storage_analysis.py",
                     "neocortex/cli.py",
                     "neocortex/human_cli.py",
                     "neocortex/read_api.py",
+                    "neocortex/api/cli/cli_app.py",
+                    "neocortex/api/cli/cli_code.py",
+                    "neocortex/api/cli/cli_knowledge.py",
+                    "neocortex/api/cli/cli_operations.py",
+                    "neocortex/code/code_interface_surface_analysis.py",
+                    "neocortex/code/code_question_resolver.py",
+                    "neocortex/code/code_storage_analysis.py",
                     "tests/test_code_observability_cli.py",
                     "tests/test_code_public_cli_interface_experiments.py",
                 }
             ),
             (
-                "_04_Nucleo_Operativo/cli_",
-                "_04_Nucleo_Operativo/code_question_resolver",
-                "_04_Nucleo_Operativo/code_storage_analysis",
                 "neocortex/cli",
                 "neocortex/human_cli",
                 "neocortex/read_api",
+                "neocortex/api/cli/cli_",
+                "neocortex/code/code_question_resolver",
+                "neocortex/code/code_storage_analysis",
                 "tests/test_cli_",
                 "tests/test_code_cli",
                 "tests/test_code_observability_cli",
@@ -3184,21 +2956,21 @@ def _validation_question_scopes() -> tuple[_ValidationQuestionScope, ...]:
             "state.runtime_sql_trace",
             frozenset(
                 {
-                    "_04_Nucleo_Operativo/code_state_interaction_analysis.py",
-                    "_04_Nucleo_Operativo/state_topology_contracts.py",
-                    "_04_Nucleo_Operativo/text_derivation_repository.py",
-                    "_04_Nucleo_Operativo/text_route.py",
-                    "_04_Nucleo_Operativo/text_state.py",
+                    "neocortex/code/code_state_interaction_analysis.py",
+                    "neocortex/safety/state_topology_contracts.py",
+                    "neocortex/capabilities/formats/text/text_derivation_repository.py",
+                    "neocortex/capabilities/formats/text/text_route.py",
+                    "neocortex/capabilities/formats/text/text_state.py",
                     "tests/test_code_state_interaction_analysis.py",
                     "tests/test_text_derivation_route.py",
                 }
             ),
             (
-                "_04_Nucleo_Operativo/code_state_interaction_",
-                "_04_Nucleo_Operativo/state_topology_",
-                "_04_Nucleo_Operativo/text_derivation_",
-                "_04_Nucleo_Operativo/text_route",
-                "_04_Nucleo_Operativo/text_state",
+                "neocortex/code/code_state_interaction_",
+                "neocortex/safety/state_topology_",
+                "neocortex/capabilities/formats/text/text_derivation_",
+                "neocortex/capabilities/formats/text/text_route",
+                "neocortex/capabilities/formats/text/text_state",
             ),
             frozenset(
                 {
@@ -3215,21 +2987,21 @@ def _validation_question_scopes() -> tuple[_ValidationQuestionScope, ...]:
             "state.semantic_process_death_recovery",
             frozenset(
                 {
-                    "_04_Nucleo_Operativo/code_state_projection_analysis.py",
-                    "_04_Nucleo_Operativo/semantic_generation_repository.py",
-                    "_04_Nucleo_Operativo/semantic_generation_worker.py",
-                    "_04_Nucleo_Operativo/semantic_sources.py",
-                    "_04_Nucleo_Operativo/semantic_text_index.py",
-                    "_04_Nucleo_Operativo/text_derivation_repository.py",
-                    "_04_Nucleo_Operativo/text_state.py",
+                    "neocortex/code/code_state_projection_analysis.py",
+                    "neocortex/semantic/semantic_generation_repository.py",
+                    "neocortex/semantic/semantic_generation_worker.py",
+                    "neocortex/semantic/semantic_sources.py",
+                    "neocortex/semantic/semantic_text_index.py",
+                    "neocortex/capabilities/formats/text/text_derivation_repository.py",
+                    "neocortex/capabilities/formats/text/text_state.py",
                     "tests/test_semantic_text_staging_session.py",
                 }
             ),
             (
-                "_04_Nucleo_Operativo/code_state_projection_",
-                "_04_Nucleo_Operativo/semantic_",
-                "_04_Nucleo_Operativo/text_derivation_",
-                "_04_Nucleo_Operativo/text_state",
+                "neocortex/code/code_state_projection_",
+                "neocortex/semantic/",
+                "neocortex/capabilities/formats/text/text_derivation_",
+                "neocortex/capabilities/formats/text/text_state",
             ),
             frozenset({"tests/test_semantic_text_staging_session.py"}),
             True,
@@ -3241,16 +3013,16 @@ def _validation_question_scopes() -> tuple[_ValidationQuestionScope, ...]:
             "evolution.code_schema_upgrade_matrix",
             frozenset(
                 {
-                    "_04_Nucleo_Operativo/code_change_evolution_analysis.py",
-                    "_04_Nucleo_Operativo/code_experiment_store.py",
-                    "_04_Nucleo_Operativo/code_schema.py",
+                    "neocortex/code/code_change_evolution_analysis.py",
+                    "neocortex/code/code_experiment_store.py",
+                    "neocortex/code/code_schema.py",
                     "tests/test_code_experiment_store.py",
                     "tests/test_code_schema_migration_v1_v2.py",
                     "tests/test_code_schema_migration_v6_v7.py",
                     "tests/test_framework_code_path_collation.py",
                 }
             ),
-            ("_04_Nucleo_Operativo/code_schema_migration_",),
+            ("neocortex/code/code_schema.py",),
             frozenset(
                 {
                     "tests/test_code_schema_migration_v1_v2.py",
@@ -3268,20 +3040,20 @@ def _validation_question_scopes() -> tuple[_ValidationQuestionScope, ...]:
             frozenset(
                 {
                     "neocortex/deduplication/schema.py",
-                    "_04_Nucleo_Operativo/code_retention_analysis.py",
-                    "_04_Nucleo_Operativo/document_catalog.py",
-                    "_04_Nucleo_Operativo/framework_schema.py",
-                    "_04_Nucleo_Operativo/retention_planner.py",
-                    "_04_Nucleo_Operativo/review_task_contracts.py",
-                    "_04_Nucleo_Operativo/review_task_repository.py",
-                    "_04_Nucleo_Operativo/semantic_schema.py",
+                    "neocortex/code/code_retention_analysis.py",
+                    "neocortex/documents/document_catalog.py",
+                    "neocortex/persistence/framework_schema.py",
+                    "neocortex/workflow/retention/planner.py",
+                    "neocortex/workflow/review/review_task_contracts.py",
+                    "neocortex/workflow/review/review_task_repository.py",
+                    "neocortex/semantic/semantic_schema.py",
                     "tests/test_code_retention_analysis.py",
                     "tests/test_retention_planner.py",
                 }
             ),
             (
-                "_04_Nucleo_Operativo/retention_",
-                "_04_Nucleo_Operativo/review_task_",
+                "neocortex/workflow/retention/",
+                "neocortex/workflow/review/review_task_",
             ),
             frozenset(
                 {
@@ -3298,14 +3070,14 @@ def _validation_question_scopes() -> tuple[_ValidationQuestionScope, ...]:
             "framework.review_task_protocol_acceptance",
             frozenset(
                 {
-                    "_04_Nucleo_Operativo/code_review_task_analysis.py",
-                    "_04_Nucleo_Operativo/framework_connection.py",
-                    "_04_Nucleo_Operativo/framework_schema.py",
-                    "_04_Nucleo_Operativo/logical_owner_contracts.py",
-                    "_04_Nucleo_Operativo/review_task_contracts.py",
-                    "_04_Nucleo_Operativo/review_task_repository.py",
-                    "_04_Nucleo_Operativo/state_topology_contracts.py",
-                    "_04_Nucleo_Operativo/value_review_port.py",
+                    "neocortex/code/code_review_task_analysis.py",
+                    "neocortex/persistence/framework_connection.py",
+                    "neocortex/persistence/framework_schema.py",
+                    "neocortex/code/logical_owner_contracts.py",
+                    "neocortex/workflow/review/review_task_contracts.py",
+                    "neocortex/workflow/review/review_task_repository.py",
+                    "neocortex/safety/state_topology_contracts.py",
+                    "neocortex/workflow/review/value_review_port.py",
                     "neocortex/cli.py",
                     "neocortex/human_cli.py",
                     "neocortex/review_task_cli_adapter.py",
@@ -3315,8 +3087,7 @@ def _validation_question_scopes() -> tuple[_ValidationQuestionScope, ...]:
                 }
             ),
             (
-                "_04_Nucleo_Operativo/review_task_",
-                "neocortex/review_task_",
+                "neocortex/workflow/review/review_task_",
             ),
             frozenset(
                 {
@@ -3335,17 +3106,17 @@ def _validation_question_scopes() -> tuple[_ValidationQuestionScope, ...]:
             frozenset(
                 {
                     "neocortex/deduplication/schema.py",
-                    "_04_Nucleo_Operativo/cli_knowledge.py",
-                    "_04_Nucleo_Operativo/cli_knowledge_surface.py",
-                    "_04_Nucleo_Operativo/code_knowledge_asset_health_analysis.py",
-                    "_04_Nucleo_Operativo/document_catalog.py",
-                    "_04_Nucleo_Operativo/document_catalog_schema.py",
-                    "_04_Nucleo_Operativo/knowledge_asset_health.py",
-                    "_04_Nucleo_Operativo/knowledge_asset_health_contracts.py",
-                    "_04_Nucleo_Operativo/knowledge_asset_health_repository.py",
-                    "_04_Nucleo_Operativo/knowledge_snapshot.py",
-                    "_04_Nucleo_Operativo/read_api_port.py",
-                    "_04_Nucleo_Operativo/text_state.py",
+                    "neocortex/api/cli/cli_knowledge.py",
+                    "neocortex/api/cli/cli_knowledge_surface.py",
+                    "neocortex/code/code_knowledge_asset_health_analysis.py",
+                    "neocortex/documents/document_catalog.py",
+                    "neocortex/documents/document_catalog_schema.py",
+                    "neocortex/knowledge/knowledge_asset_health.py",
+                    "neocortex/knowledge/knowledge_asset_health_contracts.py",
+                    "neocortex/knowledge/knowledge_asset_health_repository.py",
+                    "neocortex/knowledge/knowledge_snapshot.py",
+                    "neocortex/api/read_api_port.py",
+                    "neocortex/capabilities/formats/text/text_state.py",
                     "neocortex/cli.py",
                     "neocortex/human_cli.py",
                     "neocortex/read_api.py",
@@ -3355,7 +3126,7 @@ def _validation_question_scopes() -> tuple[_ValidationQuestionScope, ...]:
                 }
             ),
             (
-                "_04_Nucleo_Operativo/code_knowledge_asset_health_",
+                "neocortex/code/code_knowledge_asset_health_",
                 "tests/test_knowledge_asset_health.py",
             ),
             frozenset({"tests/test_knowledge_asset_health.py"}),
@@ -3369,23 +3140,23 @@ def _validation_question_scopes() -> tuple[_ValidationQuestionScope, ...]:
             frozenset(
                 {
                     "neocortex/deduplication/schema.py",
-                    "_04_Nucleo_Operativo/cli_knowledge.py",
-                    "_04_Nucleo_Operativo/cli_knowledge_surface.py",
-                    "_04_Nucleo_Operativo/code_knowledge_pdf_asset_health_analysis.py",
-                    "_04_Nucleo_Operativo/document_catalog.py",
-                    "_04_Nucleo_Operativo/document_catalog_schema.py",
-                    "_04_Nucleo_Operativo/knowledge_asset_health.py",
-                    "_04_Nucleo_Operativo/knowledge_asset_health_contracts.py",
-                    "_04_Nucleo_Operativo/knowledge_asset_health_pdf.py",
-                    "_04_Nucleo_Operativo/knowledge_asset_health_repository.py",
-                    "_04_Nucleo_Operativo/knowledge_snapshot.py",
-                    "_04_Nucleo_Operativo/pdf_route.py",
-                    "_04_Nucleo_Operativo/pdf_route_cache.py",
-                    "_04_Nucleo_Operativo/pdf_route_models.py",
-                    "_04_Nucleo_Operativo/pdf_route_storage.py",
-                    "_04_Nucleo_Operativo/pdf_schema.py",
-                    "_04_Nucleo_Operativo/read_api_port.py",
-                    "_04_Nucleo_Operativo/route_registry.py",
+                    "neocortex/api/cli/cli_knowledge.py",
+                    "neocortex/api/cli/cli_knowledge_surface.py",
+                    "neocortex/code/code_knowledge_pdf_asset_health_analysis.py",
+                    "neocortex/documents/document_catalog.py",
+                    "neocortex/documents/document_catalog_schema.py",
+                    "neocortex/knowledge/knowledge_asset_health.py",
+                    "neocortex/knowledge/knowledge_asset_health_contracts.py",
+                    "neocortex/knowledge/knowledge_asset_health_pdf.py",
+                    "neocortex/knowledge/knowledge_asset_health_repository.py",
+                    "neocortex/knowledge/knowledge_snapshot.py",
+                    "neocortex/capabilities/formats/pdf/pdf_route.py",
+                    "neocortex/capabilities/formats/pdf/pdf_route_cache.py",
+                    "neocortex/capabilities/formats/pdf/pdf_route_models.py",
+                    "neocortex/capabilities/formats/pdf/pdf_route_storage.py",
+                    "neocortex/capabilities/formats/pdf/pdf_schema.py",
+                    "neocortex/api/read_api_port.py",
+                    "neocortex/runtime/orchestration/route_registry.py",
                     "neocortex/cli.py",
                     "neocortex/human_cli.py",
                     "neocortex/read_api.py",
@@ -3398,8 +3169,8 @@ def _validation_question_scopes() -> tuple[_ValidationQuestionScope, ...]:
                 }
             ),
             (
-                "_04_Nucleo_Operativo/code_knowledge_pdf_asset_health_",
-                "_04_Nucleo_Operativo/pdf_",
+                "neocortex/code/code_knowledge_pdf_asset_health_",
+                "neocortex/capabilities/formats/pdf/pdf_",
                 "tests/test_code_knowledge_pdf_asset_health_",
                 "tests/test_knowledge_asset_health_pdf",
             ),
@@ -3417,15 +3188,16 @@ def _validation_question_scopes() -> tuple[_ValidationQuestionScope, ...]:
                     "constraints.txt",
                     "constraints-linux-cp314.lock",
                     "pyproject.toml",
-                    "_04_Nucleo_Operativo/code_security_dependency_questions.py",
-                    "_04_Nucleo_Operativo/code_supply_chain_analysis.py",
+                    "neocortex/code/code_security_dependency_questions.py",
+                    "neocortex/code/code_supply_chain_analysis.py",
+                    "neocortex/code/external_evidence_providers.py",
                     "tools/quality_gate_supply_policy.json",
                 }
             ),
             (
-                "_04_Nucleo_Operativo/code_security_dependency_",
-                "_04_Nucleo_Operativo/code_supply_chain_",
-                "_04_Nucleo_Operativo/external_evidence_provider",
+                "neocortex/code/code_security_dependency_",
+                "neocortex/code/code_supply_chain_",
+                "neocortex/code/external_evidence_provider",
             ),
             frozenset(),
         ),
@@ -3440,16 +3212,17 @@ def _validation_question_scopes() -> tuple[_ValidationQuestionScope, ...]:
                     "constraints.txt",
                     "constraints-linux-cp314.lock",
                     "pyproject.toml",
-                    "_04_Nucleo_Operativo/code_security_dependency_questions.py",
-                    "_04_Nucleo_Operativo/code_supply_chain_analysis.py",
+                    "neocortex/code/code_security_dependency_questions.py",
+                    "neocortex/code/code_supply_chain_analysis.py",
+                    "neocortex/code/external_evidence_providers.py",
                     "tools/release_linux.py",
                     "tools/quality_gate_supply_policy.json",
                 }
             ),
             (
-                "_04_Nucleo_Operativo/code_security_dependency_",
-                "_04_Nucleo_Operativo/code_supply_chain_",
-                "_04_Nucleo_Operativo/external_evidence_provider",
+                "neocortex/code/code_security_dependency_",
+                "neocortex/code/code_supply_chain_",
+                "neocortex/code/external_evidence_provider",
             ),
             frozenset(),
         ),
@@ -4543,6 +4316,3 @@ __all__ = [
     "select_affected_tests",
     "validate_code_change",
 ]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.code_change_validation")

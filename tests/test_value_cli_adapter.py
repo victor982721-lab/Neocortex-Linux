@@ -6,8 +6,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from _04_Nucleo_Operativo.value_review_contracts import ValueReviewAvailability
-from _04_Nucleo_Operativo.value_review_tasks import (
+from neocortex.workflow.review.value_review_contracts import ValueReviewAvailability
+from neocortex.workflow.review.value_review_tasks import (
     ValueReviewTaskQueueStatus,
     ValueReviewTaskStateError,
 )

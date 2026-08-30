@@ -11,7 +11,7 @@ from __future__ import annotations
 import pytest
 
 from neocortex import __version__
-from _04_Nucleo_Operativo.cli_parser import build_parser
+from neocortex.api.cli.cli_parser import build_parser
 # endregion [01]
 
 # region [02] Implementación

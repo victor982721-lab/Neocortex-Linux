@@ -1,9 +1,6 @@
 """Resumable semantic embedding generations and bounded job queue."""
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import json
 import math
 import sqlite3
@@ -3486,6 +3483,3 @@ def finalize_embedding_generation(
 
 
 # endregion [05]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.semantic_generation_repository")

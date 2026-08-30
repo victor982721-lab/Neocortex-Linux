@@ -4,8 +4,8 @@ from dataclasses import replace
 
 import pytest
 
-from _04_Nucleo_Operativo.value_review import rank_value_observations
-from _04_Nucleo_Operativo.value_review_contracts import (
+from neocortex.workflow.review.value_review import rank_value_observations
+from neocortex.workflow.review.value_review_contracts import (
     ValueDimensionName,
     ValueEvidence,
     ValueEvidenceFact,

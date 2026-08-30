@@ -11,13 +11,14 @@ from types import ModuleType, SimpleNamespace
 import pytest
 
 from neocortex.deduplication import FileSnapshot
-from _04_Nucleo_Operativo import docx_schema, docx_state, pdf_schema, pdf_state
-from _04_Nucleo_Operativo.cancellation import CancellationToken
-from _04_Nucleo_Operativo.docx_route import DocxRoute
-from _04_Nucleo_Operativo.file_identity import file_key_from_snapshot
-from _04_Nucleo_Operativo.pdf_route_cache import PdfRouteCacheMixin
-from _04_Nucleo_Operativo.pdf_route_storage import PdfRouteStorageMixin
-from _04_Nucleo_Operativo.sqlite_schema_contract import (
+from neocortex.capabilities.formats.docx import schema as docx_schema, state as docx_state
+from neocortex.capabilities.formats.pdf import pdf_schema, pdf_state
+from neocortex.runtime.control.cancellation import CancellationToken
+from neocortex.capabilities.formats.docx.route import DocxRoute
+from neocortex.foundation.file_identity import file_key_from_snapshot
+from neocortex.capabilities.formats.pdf.pdf_route_cache import PdfRouteCacheMixin
+from neocortex.capabilities.formats.pdf.pdf_route_storage import PdfRouteStorageMixin
+from neocortex.sqlite_schema_contract import (
     SQLiteSchemaContractError,
     schema_contract_from_builder,
     validate_sqlite_schema_contract,

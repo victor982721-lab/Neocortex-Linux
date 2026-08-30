@@ -10,8 +10,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from _04_Nucleo_Operativo.code_analyzers import AnalyzerRegistry, AnalyzerSpec
-from _04_Nucleo_Operativo.code_contracts import CodeRouteConfig
+from neocortex.code.code_analyzers import AnalyzerRegistry, AnalyzerSpec
+from neocortex.code.code_contracts import CodeRouteConfig
 # endregion [01]
 
 # region [02] Implementación

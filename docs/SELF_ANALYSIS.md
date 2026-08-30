@@ -1,11 +1,10 @@
 # Autoanálisis de código y evidencia externa
 
 > **Estado del contrato.** Esta capacidad pertenece a la fuente `0.9.0` bajo
-> `%USERPROFILE%\Neocortex\Repository`. Debe ejecutarse desde un runtime
-> versionado bajo `%LOCALAPPDATA%\Programs\Neocortex\versions` y promoverse
-> únicamente mediante el launcher estable
-> `%LOCALAPPDATA%\Programs\Neocortex\bin\Neocortex.exe` después de validar el
-> artefacto exacto.
+> `~/Neocortex/Repository`. Debe ejecutarse desde un runtime Linux versionado
+> bajo `${XDG_DATA_HOME:-~/.local/share}/Neocortex/releases` y promoverse
+> únicamente mediante `~/.local/share/Neocortex/bin/Neocortex` después de
+> validar el artefacto exacto.
 
 ## Finalidad y frontera
 
@@ -90,7 +89,7 @@ Los proveedores arquitectónicos conservan responsabilidades separadas:
 
 El dominio arquitectónico exacto son `neocortex` —incluidos
 `neocortex.interface`, `neocortex.enumeration`, `neocortex.deduplication` y
-`neocortex.progress`— y `_04_Nucleo_Operativo`. `tests`, `tools` y `benchmarks`
+`neocortex.progress`. `tests`, `tools` y `benchmarks`
 quedan fuera de ese grafo de producción. Los
 contratos `neocortex.code-architecture-contracts/v1` fijan fronteras reales y
 allowlists explícitas. Su baseline

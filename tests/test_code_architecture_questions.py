@@ -5,7 +5,7 @@ from dataclasses import replace
 
 import pytest
 
-from _04_Nucleo_Operativo.code_architecture_analysis import (
+from neocortex.code.code_architecture_analysis import (
     ArchitectureContract,
     ArchitectureGateEvaluation,
     ArchitectureImportEdge,
@@ -14,11 +14,11 @@ from _04_Nucleo_Operativo.code_architecture_analysis import (
     ArchitectureSummary,
     CodeArchitectureAnalysis,
 )
-from _04_Nucleo_Operativo.code_architecture_questions import (
+from neocortex.code.code_architecture_questions import (
     architecture_questions,
     parse_code_architecture_question_payload,
 )
-from _04_Nucleo_Operativo.code_experiment_planner import plan_code_experiments
+from neocortex.code.code_experiment_planner import plan_code_experiments
 
 
 def _provider(provider_id: str) -> ArchitectureProviderStatus:

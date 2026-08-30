@@ -25,16 +25,16 @@ from unittest.mock import patch
 import fitz  # type: ignore[import-untyped]
 
 from neocortex.deduplication import DedupIndex, FileSnapshot, snapshot_path
-from _04_Nucleo_Operativo.cancellation import CancellationToken
-from _04_Nucleo_Operativo.pdf_route import (
+from neocortex.runtime.control.cancellation import CancellationToken
+from neocortex.capabilities.formats.pdf.pdf_route import (
     PdfRoute,
     PdfRouteConfig,
     _initialize,
     effective_pdf_job_memory_limit_bytes,
     effective_pdf_worker_memory_bytes,
 )
-from _04_Nucleo_Operativo.pdf_derived import search_pdf_state
-from _04_Nucleo_Operativo.pdf_isolation import (
+from neocortex.capabilities.formats.pdf.pdf_derived import search_pdf_state
+from neocortex.capabilities.formats.pdf.pdf_isolation import (
     MAX_CONSECUTIVE_PAGE_ERRORS,
     IsolatedExtractionConfig,
     PdfDocumentTimeout,
@@ -45,11 +45,11 @@ from _04_Nucleo_Operativo.pdf_isolation import (
     _qpdf_repaired_copy,
     stream_isolated_extraction,
 )
-from _04_Nucleo_Operativo.pdf_route_models import CacheDecision
-from _04_Nucleo_Operativo.pdf_state import SCHEMA_VERSION as PDF_SCHEMA_VERSION
-from _04_Nucleo_Operativo.review import list_review_candidates
-from _04_Nucleo_Operativo.retry_policy import classify_pdf_failure
-from _04_Nucleo_Operativo.state import FrameworkRouteState, FrameworkState
+from neocortex.capabilities.formats.pdf.pdf_route_models import CacheDecision
+from neocortex.capabilities.formats.pdf.pdf_state import SCHEMA_VERSION as PDF_SCHEMA_VERSION
+from neocortex.workflow.review.review import list_review_candidates
+from neocortex.runtime.control.retry_policy import classify_pdf_failure
+from neocortex.persistence.state import FrameworkRouteState, FrameworkState
 # endregion [01]
 
 # region [02] Implementación
@@ -258,7 +258,7 @@ class PdfRouteTests(unittest.TestCase):
         # Functional route tests must not depend on machine-wide commit pressure;
         # test_pdf_runtime.py retains the dedicated resource-admission coverage.
         automatic_limit_patcher = patch(
-            "_04_Nucleo_Operativo.pdf_runtime._automatic_limit",
+            "neocortex.capabilities.formats.pdf.pdf_runtime._automatic_limit",
             return_value=0,
         )
         automatic_limit_patcher.start()
@@ -403,11 +403,11 @@ class PdfRouteTests(unittest.TestCase):
             with (
                 patch("fitz.open", return_value=BrokenPageTree()),
                 patch(
-                    "_04_Nucleo_Operativo.pdf_isolation._qpdf_repaired_copy",
+                    "neocortex.capabilities.formats.pdf.pdf_isolation._qpdf_repaired_copy",
                     return_value=nullcontext(("repaired.pdf", {"engine": "qpdf+pymupdf"})),
                 ),
                 patch(
-                    "_04_Nucleo_Operativo.pdf_isolation._extract_with_pdfminer",
+                    "neocortex.capabilities.formats.pdf.pdf_isolation._extract_with_pdfminer",
                     side_effect=pdfminer_success,
                 ),
             ):
@@ -471,7 +471,7 @@ class PdfRouteTests(unittest.TestCase):
         collision.winerror = 32
         with (
             patch("pytesseract.image_to_string", side_effect=(collision, "texto")) as ocr,
-            patch("_04_Nucleo_Operativo.pdf_isolation.time.sleep"),
+            patch("neocortex.capabilities.formats.pdf.pdf_isolation.time.sleep"),
         ):
             text = _ocr_page(FakePage(), FakeFitz, config, nullcontext())
         self.assertEqual(text, "texto")
@@ -562,11 +562,11 @@ class PdfRouteTests(unittest.TestCase):
 
             with (
                 patch(
-                    "_04_Nucleo_Operativo.pdf_isolation.shutil.which",
+                    "neocortex.capabilities.formats.pdf.pdf_isolation.shutil.which",
                     return_value="qpdf",
                 ),
                 patch(
-                    "_04_Nucleo_Operativo.pdf_isolation.subprocess.run",
+                    "neocortex.capabilities.formats.pdf.pdf_isolation.subprocess.run",
                     side_effect=fake_run,
                 ),
                 _qpdf_repaired_copy(
@@ -613,11 +613,11 @@ class PdfRouteTests(unittest.TestCase):
 
         with (
             patch(
-                "_04_Nucleo_Operativo.pdf_isolation.multiprocessing.get_context",
+                "neocortex.capabilities.formats.pdf.pdf_isolation.multiprocessing.get_context",
                 return_value=_ProtocolContext(),
             ),
             patch(
-                "_04_Nucleo_Operativo.pdf_isolation.isolated_spawn_process",
+                "neocortex.capabilities.formats.pdf.pdf_isolation.isolated_spawn_process",
                 side_effect=process_factory,
             ),
         ):
@@ -645,11 +645,11 @@ class PdfRouteTests(unittest.TestCase):
 
         with (
             patch(
-                "_04_Nucleo_Operativo.pdf_isolation.multiprocessing.get_context",
+                "neocortex.capabilities.formats.pdf.pdf_isolation.multiprocessing.get_context",
                 return_value=_ProtocolContext(),
             ),
             patch(
-                "_04_Nucleo_Operativo.pdf_isolation.isolated_spawn_process",
+                "neocortex.capabilities.formats.pdf.pdf_isolation.isolated_spawn_process",
                 side_effect=process_factory,
             ),
             self.assertRaises(PdfDocumentTimeout),
@@ -1176,7 +1176,7 @@ class PdfRouteTests(unittest.TestCase):
                 self.assertEqual(first.extracted, 1)
                 route = PdfRoute(config, index, _State(snapshots), 2, scan.scan_id)
                 with patch(
-                    "_04_Nucleo_Operativo.pdf_cache.full_fingerprint",
+                    "neocortex.capabilities.formats.pdf.pdf_cache.full_fingerprint",
                     return_value=b"\xff" * 16,
                 ):
                     self.assertFalse(route._is_cache_hit(snapshots[0]))
@@ -1562,7 +1562,7 @@ class PdfRouteTests(unittest.TestCase):
                     raise PdfDocumentTimeout("controlled timeout", phase="page_extraction")
 
                 with patch(
-                    "_04_Nucleo_Operativo.pdf_route.stream_isolated_extraction",
+                    "neocortex.capabilities.formats.pdf.pdf_route.stream_isolated_extraction",
                     side_effect=interrupted_stream,
                 ):
                     result = route._process_document_isolated(snapshot, None)
@@ -1615,7 +1615,7 @@ class PdfRouteTests(unittest.TestCase):
                 )
 
             with patch(
-                "_04_Nucleo_Operativo.pdf_route.stream_isolated_extraction",
+                "neocortex.capabilities.formats.pdf.pdf_route.stream_isolated_extraction",
                 side_effect=timed_out_stream,
             ):
                 first = route._process_document_isolated(snapshot, None)
@@ -1627,7 +1627,7 @@ class PdfRouteTests(unittest.TestCase):
                 yield ("done", 2, 0, 2)
 
             with patch(
-                "_04_Nucleo_Operativo.pdf_route.stream_isolated_extraction",
+                "neocortex.capabilities.formats.pdf.pdf_route.stream_isolated_extraction",
                 side_effect=resumed_stream,
             ):
                 resumed = route._process_document_isolated(snapshot, None)
@@ -1683,7 +1683,7 @@ class PdfRouteTests(unittest.TestCase):
                 yield ("done", 100, 0, 100)
 
             with patch(
-                "_04_Nucleo_Operativo.pdf_route.stream_isolated_extraction",
+                "neocortex.capabilities.formats.pdf.pdf_route.stream_isolated_extraction",
                 side_effect=bounded_failure_stream,
             ):
                 result = route._process_document_isolated(snapshot, None)
@@ -1752,7 +1752,7 @@ class PdfRouteTests(unittest.TestCase):
                 yield ("done", 1, 0, 1)
 
             with patch(
-                "_04_Nucleo_Operativo.pdf_route.stream_isolated_extraction",
+                "neocortex.capabilities.formats.pdf.pdf_route.stream_isolated_extraction",
                 side_effect=recovered_stream,
             ):
                 result = route._process_document_isolated(snapshot, None)
@@ -1802,7 +1802,7 @@ class PdfRouteTests(unittest.TestCase):
 
             with (
                 patch(
-                    "_04_Nucleo_Operativo.pdf_route.stream_isolated_extraction",
+                    "neocortex.capabilities.formats.pdf.pdf_route.stream_isolated_extraction",
                     side_effect=failed_stream,
                 ),
                 patch.object(route, "_recycle_unrecoverable_pdf") as recycle,
@@ -1845,7 +1845,7 @@ class PdfRouteTests(unittest.TestCase):
 
             with (
                 patch(
-                    "_04_Nucleo_Operativo.pdf_route.stream_isolated_extraction",
+                    "neocortex.capabilities.formats.pdf.pdf_route.stream_isolated_extraction",
                     side_effect=failed_stream,
                 ),
                 patch.object(
@@ -1902,7 +1902,7 @@ class PdfRouteTests(unittest.TestCase):
                 evidence={"message": "password required"},
             )
 
-            with patch("_04_Nucleo_Operativo.actions.FrameworkActions") as actions_type:
+            with patch("neocortex.workflow.actions.actions.FrameworkActions") as actions_type:
                 actions_type.return_value.recycle_verified_files.return_value = (
                     1,
                     0,
@@ -1969,7 +1969,7 @@ class PdfRouteTests(unittest.TestCase):
 
             with (
                 patch(
-                    "_04_Nucleo_Operativo.pdf_route.stream_isolated_extraction",
+                    "neocortex.capabilities.formats.pdf.pdf_route.stream_isolated_extraction",
                     side_effect=failed_stream,
                 ),
                 patch.object(route, "_recycle_unrecoverable_pdf") as recycle,

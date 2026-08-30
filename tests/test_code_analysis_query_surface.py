@@ -8,12 +8,12 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from _04_Nucleo_Operativo.cli_operations import (
+from neocortex.api.cli.cli_operations import (
     DirectOperationFamily,
     selected_direct_operations,
 )
-from _04_Nucleo_Operativo.cli_parser import build_parser
-from _04_Nucleo_Operativo.cli_validation import validate_arguments
+from neocortex.api.cli.cli_parser import build_parser
+from neocortex.api.cli.cli_validation import validate_arguments
 
 
 def _validated(*arguments: str) -> argparse.Namespace:
@@ -155,10 +155,10 @@ def test_code_query_is_one_lazy_code_direct_operation_and_allows_json() -> None:
     assert operation.module_name == ".cli_code"
 
     handler = Mock(return_value=23)
-    module = ModuleType("_04_Nucleo_Operativo.cli_code")
+    module = ModuleType("neocortex.api.cli.cli_code")
     module.run_code_query = handler  # type: ignore[attr-defined]
     with patch(
-        "_04_Nucleo_Operativo.cli_operations.importlib.import_module",
+        "neocortex.api.cli.cli_operations.importlib.import_module",
         return_value=module,
     ):
         assert operation.dispatch(args) == 23

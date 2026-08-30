@@ -7,9 +7,6 @@ changes, terminal receipt and outbox event in one SQLite transaction.
 """
 
 from __future__ import annotations
-
-from . import preserve_legacy_module as _preserve_legacy_module
-
 import json
 import math
 import sqlite3
@@ -2502,5 +2499,3 @@ __all__ = (
     "validate_text_publication_from_connection",
     "validate_text_publications_from_connection",
 )
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.text_derivation_repository")

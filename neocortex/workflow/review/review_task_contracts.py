@@ -5,9 +5,6 @@ human decisions, but never carry action authorization or a physical mutation.
 """
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import hashlib
 import json
 import math
@@ -1041,6 +1038,3 @@ __all__ = (
     "ReviewTaskVersionHead",
     "review_task_source_snapshot_fingerprint",
 )
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.review_task_contracts")

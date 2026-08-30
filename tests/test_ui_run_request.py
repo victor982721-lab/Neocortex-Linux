@@ -10,7 +10,7 @@ import unittest
 from unittest.mock import patch
 from pathlib import Path
 
-from _04_Nucleo_Operativo.route_selection import (
+from neocortex.runtime.orchestration.route_selection import (
     BUILTIN_ROUTE_ORDER,
     normalize_route_selection,
 )

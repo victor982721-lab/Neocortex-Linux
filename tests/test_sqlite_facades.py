@@ -5,9 +5,9 @@
 # region [01] Dependencias del módulo
 from __future__ import annotations
 
-from _04_Nucleo_Operativo import sqlite_paths
-from _04_Nucleo_Operativo import sqlite_schema_contract as operational_contract
-from _04_Nucleo_Operativo import sqlite_schema_lifecycle as operational_lifecycle
+from neocortex.persistence import sqlite_paths
+from neocortex import sqlite_schema_contract as operational_contract
+from neocortex import sqlite_schema_lifecycle as operational_lifecycle
 from neocortex import sqlite_schema_contract as shared_contract
 from neocortex import sqlite_schema_lifecycle as shared_lifecycle
 # endregion [01]

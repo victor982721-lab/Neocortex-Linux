@@ -14,14 +14,14 @@ from pathlib import Path
 
 import pytest
 
-from _04_Nucleo_Operativo import semantic_generation_repository
-from _04_Nucleo_Operativo import semantic_lineage_repository
-from _04_Nucleo_Operativo import semantic_schema
-from _04_Nucleo_Operativo.semantic_chunking import (
+from neocortex.semantic import semantic_generation_repository
+from neocortex.semantic import semantic_lineage_repository
+from neocortex.semantic import semantic_schema
+from neocortex.semantic.semantic_chunking import (
     TextChunkingConfig,
     chunk_text_sections,
 )
-from _04_Nucleo_Operativo.semantic_models import (
+from neocortex.semantic.semantic_models import (
     EmbeddingModality,
     EmbeddingModelSpec,
     EmbeddingRole,
@@ -33,8 +33,8 @@ from _04_Nucleo_Operativo.semantic_models import (
     encode_vector,
     fingerprint_text,
 )
-from _04_Nucleo_Operativo.semantic_item_repository import _encode_chunk_text
-from _04_Nucleo_Operativo.semantic_state import (
+from neocortex.semantic.semantic_item_repository import _encode_chunk_text
+from neocortex.semantic.semantic_state import (
     SemanticStateError,
     claim_embedding_jobs,
     complete_embedding_job,
@@ -54,7 +54,7 @@ from _04_Nucleo_Operativo.semantic_state import (
     start_embedding_generation,
     upsert_semantic_item,
 )
-from _04_Nucleo_Operativo.semantic_work_budget import (
+from neocortex.semantic.semantic_work_budget import (
     SemanticIndexDeadlineExceeded,
     SemanticWorkBudget,
 )

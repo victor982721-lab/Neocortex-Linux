@@ -8,14 +8,15 @@ from pathlib import Path
 import pytest
 
 from neocortex.deduplication import FileSnapshot
-from _04_Nucleo_Operativo import code_schema, framework_schema
-from _04_Nucleo_Operativo.code_state import CodeState
-from _04_Nucleo_Operativo.route_filters import (
+from neocortex.code import code_schema
+from neocortex.persistence import framework_schema
+from neocortex.code.code_state import CodeState
+from neocortex.safety.route_filters import (
     CandidateSelection,
     framework_selection_predicate,
 )
-from _04_Nucleo_Operativo.self_analysis_status import quiescent_sqlite_database
-from _04_Nucleo_Operativo.state import FrameworkState
+from neocortex.workflow.self_analysis.self_analysis_status import quiescent_sqlite_database
+from neocortex.persistence.state import FrameworkState
 from neocortex.platform_policy import sqlite_path_collation
 
 

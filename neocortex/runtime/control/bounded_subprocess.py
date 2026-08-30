@@ -1,6 +1,6 @@
 """Hard-bounded subprocess capture with timeout and deterministic cleanup."""
 # region [00] Contexto del módulo
-# Módulo: _04_Nucleo_Operativo/bounded_subprocess.py
+# Módulo: neocortex/bounded_subprocess.py
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
@@ -18,9 +18,6 @@ from contextlib import ExitStack
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 from .isolated_process import WindowsKillOnCloseJob
 # endregion [01]
 
@@ -515,5 +512,4 @@ def run_bounded_capture(
 
 
 __all__ = ["SubprocessOutputLimitError", "run_bounded_capture"]
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.bounded_subprocess")
 # endregion [02]

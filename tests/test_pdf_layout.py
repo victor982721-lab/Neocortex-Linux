@@ -13,7 +13,7 @@ from pathlib import Path
 import fitz  # type: ignore[import-untyped]
 from PIL import Image, ImageDraw
 
-from _04_Nucleo_Operativo.pdf_layout import map_page_layout, signature_similarity
+from neocortex.capabilities.formats.pdf.pdf_layout import map_page_layout, signature_similarity
 # endregion [01]
 
 # region [02] Implementación

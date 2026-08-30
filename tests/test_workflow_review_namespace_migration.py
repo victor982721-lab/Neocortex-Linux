@@ -25,14 +25,9 @@ MODULES = (
 )
 
 
-def test_legacy_review_modules_are_exact_product_aliases() -> None:
+def test_review_modules_are_owned_by_the_canonical_tree() -> None:
     for name in MODULES:
-        legacy = importlib.import_module(f"_04_Nucleo_Operativo.{name}")
         product = importlib.import_module(f"neocortex.workflow.review.{name}")
-
-        assert legacy is product
-        assert sys.modules[f"_04_Nucleo_Operativo.{name}"] is product
-        assert sys.modules[f"neocortex.workflow.review.{name}"] is product
         assert Path(product.__file__).resolve().is_relative_to(REVIEW_ROOT)
 
 
@@ -81,8 +76,8 @@ def test_review_models_keep_historical_pickle_fqns() -> None:
         assert restored == value
 
     assert evidence.ReviewEvidenceSyncResult.__module__ == (
-        "_04_Nucleo_Operativo.review_evidence"
+        "neocortex.workflow.review.review_evidence"
     )
     assert value_contracts.ValueEvidenceFact.__module__ == (
-        "_04_Nucleo_Operativo.value_review_contracts"
+        "neocortex.workflow.review.value_review_contracts"
     )

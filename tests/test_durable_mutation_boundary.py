@@ -12,25 +12,25 @@ from pathlib import Path
 
 import pytest
 
-import _04_Nucleo_Operativo.framework_state_common as state_common_module
-import _04_Nucleo_Operativo.inventory_boundary as boundary_module
-import _04_Nucleo_Operativo.orchestrator as orchestrator_module
-import _04_Nucleo_Operativo.watcher as watcher_module
+import neocortex.persistence.framework_state_common as state_common_module
+import neocortex.integrations.inventory.inventory_boundary as boundary_module
+import neocortex.runtime.orchestration.orchestrator as orchestrator_module
+import neocortex.runtime.control.watcher as watcher_module
 from neocortex.enumeration import JournalCursor
-from _04_Nucleo_Operativo.corpus_access import ProtectedAnalysisRootError
-from _04_Nucleo_Operativo.internal_paths import InternalPathProtectionError
-from _04_Nucleo_Operativo.inventory_boundary import (
+from neocortex.safety.corpus_access import ProtectedAnalysisRootError
+from neocortex.safety.internal_paths import InternalPathProtectionError
+from neocortex.integrations.inventory.inventory_boundary import (
     NormalInventoryBoundary,
     build_normal_inventory_boundary,
 )
-from _04_Nucleo_Operativo.protected_content import (
+from neocortex.safety.protected_content import (
     ProtectedContentPolicy,
     ProtectedPathSpec,
 )
-from _04_Nucleo_Operativo.self_analysis import (
+from neocortex.workflow.self_analysis.self_analysis import (
     build_self_analysis_inventory_policy,
 )
-from _04_Nucleo_Operativo.state import FrameworkRouteState, FrameworkState
+from neocortex.persistence.state import FrameworkRouteState, FrameworkState
 from tests.internal_paths_test_support import disjoint_internal_paths_policy
 # endregion [01]
 

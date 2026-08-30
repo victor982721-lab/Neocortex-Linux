@@ -6,17 +6,17 @@ from pathlib import Path
 from unittest.mock import patch
 
 from neocortex.deduplication import DedupIndex, FileSnapshot
-from _04_Nucleo_Operativo.image_models import Features
-from _04_Nucleo_Operativo.image_visual import FeatureVisualClassifier
-from _04_Nucleo_Operativo import pdf_schema
-from _04_Nucleo_Operativo.pdf_derived import PdfDerivedSummary
-from _04_Nucleo_Operativo.pdf_route import PdfRoute
-from _04_Nucleo_Operativo.pdf_route_models import (
+from neocortex.capabilities.formats.image.models import Features
+from neocortex.capabilities.formats.image.visual import FeatureVisualClassifier
+from neocortex.capabilities.formats.pdf import pdf_schema
+from neocortex.capabilities.formats.pdf.pdf_derived import PdfDerivedSummary
+from neocortex.capabilities.formats.pdf.pdf_route import PdfRoute
+from neocortex.capabilities.formats.pdf.pdf_route_models import (
     PdfRouteConfig,
     effective_document_timeout_seconds,
 )
-from _04_Nucleo_Operativo.pdf_state import initialize_pdf_state
-from _04_Nucleo_Operativo.route_filters import CandidateSelection
+from neocortex.capabilities.formats.pdf.pdf_state import initialize_pdf_state
+from neocortex.safety.route_filters import CandidateSelection
 
 
 # region [01] Adaptive PDF timeout and cache metrics
@@ -186,7 +186,7 @@ def test_pdf_resume_skips_completed_extraction_and_text_dedup(tmp_path) -> None:
         patch.object(route, "_process_document") as process,
         patch.object(route, "_deduplicate_text") as deduplicate,
         patch(
-            "_04_Nucleo_Operativo.pdf_route.PdfDerivedIndexer.run",
+            "neocortex.capabilities.formats.pdf.pdf_route.PdfDerivedIndexer.run",
             return_value=PdfDerivedSummary(),
         ),
     ):

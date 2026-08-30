@@ -20,14 +20,14 @@ from pathlib import Path
 
 import pytest
 
-from _04_Nucleo_Operativo import knowledge_contracts as contracts
+from neocortex.knowledge import knowledge_contracts as contracts
 # endregion [01]
 
 # region [02] Implementación
 
 
-CONTRACT_MODULE = "_04_Nucleo_Operativo.knowledge_contracts"
-VALIDATION_MODULE = "_04_Nucleo_Operativo.knowledge_contract_validation"
+CONTRACT_MODULE = "neocortex.knowledge.knowledge_contracts"
+VALIDATION_MODULE = "neocortex.knowledge.knowledge_contract_validation"
 DELEGATES = {
     "_required_text": "_contract_required_text_impl",
     "_optional_text": "_contract_optional_text_impl",
@@ -141,7 +141,7 @@ def test_validation_modules_form_one_way_relative_import_dag() -> None:
 def test_validation_modules_support_both_cold_import_orders(
     module_order: tuple[str, str],
 ) -> None:
-    repository = Path(contracts.__file__).resolve().parents[1]
+    repository = Path(contracts.__file__).resolve().parents[2]
     script = textwrap.dedent(
         f"""
         import importlib

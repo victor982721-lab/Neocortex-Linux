@@ -11,10 +11,10 @@ from pathlib import Path
 import pytest
 
 from neocortex.deduplication.schema import initialize_inventory_schema
-from _04_Nucleo_Operativo.document_catalog import initialize_document_catalog
-from _04_Nucleo_Operativo.file_identity import encode_file_identity
-from _04_Nucleo_Operativo.knowledge_asset_health import inspect_knowledge_asset_health
-from _04_Nucleo_Operativo.knowledge_asset_health_contracts import (
+from neocortex.documents.document_catalog import initialize_document_catalog
+from neocortex.foundation.file_identity import encode_file_identity
+from neocortex.knowledge.knowledge_asset_health import inspect_knowledge_asset_health
+from neocortex.knowledge.knowledge_asset_health_contracts import (
     KNOWLEDGE_ASSET_HEALTH_SCHEMA,
     MAX_KNOWLEDGE_ASSET_HEALTH_EXAMPLES,
     KnowledgeAssetHealthCompleteness,
@@ -23,8 +23,8 @@ from _04_Nucleo_Operativo.knowledge_asset_health_contracts import (
     KnowledgeAssetHealthState,
     parse_knowledge_asset_resource_id,
 )
-from _04_Nucleo_Operativo.knowledge_snapshot import KnowledgeStatePaths
-from _04_Nucleo_Operativo.text_state import initialize_text_state
+from neocortex.knowledge.knowledge_snapshot import KnowledgeStatePaths
+from neocortex.capabilities.formats.text.text_state import initialize_text_state
 
 
 @dataclass(frozen=True, slots=True)

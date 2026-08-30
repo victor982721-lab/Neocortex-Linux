@@ -16,9 +16,9 @@ from pathlib import Path
 
 import pytest
 
-from _04_Nucleo_Operativo.models import FrameworkConfig
-from _04_Nucleo_Operativo.watcher import IncrementalWatcher
-from _04_Nucleo_Operativo.watcher_life_lease import (
+from neocortex.runtime.models import FrameworkConfig
+from neocortex.runtime.control.watcher import IncrementalWatcher
+from neocortex.runtime.control.watcher_life_lease import (
     WatcherLifeLease,
     WatcherLifeLeaseConflict,
 )
@@ -33,7 +33,7 @@ import os
 import pathlib
 import sys
 
-from _04_Nucleo_Operativo.watcher_life_lease import WatcherLifeLease
+from neocortex.runtime.control.watcher_life_lease import WatcherLifeLease
 
 root = pathlib.Path(sys.argv[1])
 state = pathlib.Path(sys.argv[2])

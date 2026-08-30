@@ -11,24 +11,24 @@ from unittest.mock import patch
 import pytest
 
 from neocortex.deduplication import snapshot_path
-from _04_Nucleo_Operativo import pdf_schema
-from _04_Nucleo_Operativo.pdf_admin import doctor_pdf_runtime
-from _04_Nucleo_Operativo.pdf_isolation import (
+from neocortex.capabilities.formats.pdf import pdf_schema
+from neocortex.capabilities.formats.pdf.pdf_admin import doctor_pdf_runtime
+from neocortex.capabilities.formats.pdf.pdf_isolation import (
     IsolatedExtractionConfig,
     PdfOcrPageResult,
     _ChildExtractionSession,
     _ocr_page_result,
 )
-from _04_Nucleo_Operativo.pdf_route import PdfRoute
-from _04_Nucleo_Operativo.pdf_route_models import PdfRouteConfig
-from _04_Nucleo_Operativo.pdf_route_cache import file_key
-from _04_Nucleo_Operativo.pdf_route_storage import PdfRouteStorageMixin
-from _04_Nucleo_Operativo.pdf_state import (
+from neocortex.capabilities.formats.pdf.pdf_route import PdfRoute
+from neocortex.capabilities.formats.pdf.pdf_route_models import PdfRouteConfig
+from neocortex.capabilities.formats.pdf.pdf_route_cache import file_key
+from neocortex.capabilities.formats.pdf.pdf_route_storage import PdfRouteStorageMixin
+from neocortex.capabilities.formats.pdf.pdf_state import (
     SCHEMA_VERSION,
     initialize_pdf_state,
     pdf_database,
 )
-from _04_Nucleo_Operativo.processing_provenance import (
+from neocortex.foundation.processing_provenance import (
     TesseractRuntimeProvenance,
 )
 
@@ -78,7 +78,7 @@ def test_native_pdf_quality_gate_ocr_replaces_long_mojibake() -> None:
         {"schema": "neocortex.ocr-page/v1", "effective_languages": ["spa", "eng"]},
     )
     with patch(
-        "_04_Nucleo_Operativo.pdf_isolation._ocr_page_result",
+        "neocortex.capabilities.formats.pdf.pdf_isolation._ocr_page_result",
         return_value=result,
     ) as ocr:
         source, text, provenance = session._page_text(_Page("Ã" * 100))
@@ -104,7 +104,7 @@ def test_native_pdf_quality_gate_ocr_replaces_long_mojibake() -> None:
 )
 def test_clean_german_and_han_native_text_skip_ocr(native_text: str) -> None:
     session = _ChildExtractionSession(None, _config(), object(), object())
-    with patch("_04_Nucleo_Operativo.pdf_isolation._ocr_page_result") as ocr:
+    with patch("neocortex.capabilities.formats.pdf.pdf_isolation._ocr_page_result") as ocr:
         source, text, provenance = session._page_text(_Page(native_text))
 
     ocr.assert_not_called()
@@ -359,7 +359,7 @@ def test_multilingual_missing_packs_fail_doctor_and_pdf_route_preflight() -> Non
         "missing OCR languages: deu, chi_sim, chi_tra",
     )
     with patch(
-        "_04_Nucleo_Operativo.pdf_admin.resolve_tesseract_runtime",
+        "neocortex.capabilities.formats.pdf.pdf_admin.resolve_tesseract_runtime",
         return_value=unavailable,
     ):
         report = doctor_pdf_runtime(ocr_profile="auto-multilingual")
@@ -372,7 +372,7 @@ def test_multilingual_missing_packs_fail_doctor_and_pdf_route_preflight() -> Non
         ocr_profile="auto-multilingual",
     )
     with patch(
-        "_04_Nucleo_Operativo.pdf_route.resolve_pdf_tesseract_runtime",
+        "neocortex.capabilities.formats.pdf.pdf_route.resolve_pdf_tesseract_runtime",
         return_value=unavailable,
     ):
         with pytest.raises(RuntimeError, match="profile preflight failed"):
@@ -401,7 +401,7 @@ def test_configured_pdf_profile_fails_closed_when_requested_pack_is_missing() ->
     )
     config = PdfRouteConfig(Path("unused.sqlite3"), ocr_profile="configured")
     with patch(
-        "_04_Nucleo_Operativo.pdf_route.resolve_pdf_tesseract_runtime",
+        "neocortex.capabilities.formats.pdf.pdf_route.resolve_pdf_tesseract_runtime",
         return_value=unavailable,
     ):
         with pytest.raises(RuntimeError, match="missing OCR languages: spa"):

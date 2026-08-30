@@ -7,14 +7,14 @@ from pathlib import Path
 
 import pytest
 
-from _04_Nucleo_Operativo.application_config_projections import (
+from neocortex.runtime.config.application_config_projections import (
     video_route_config_from_application,
 )
-from _04_Nucleo_Operativo.cli_config import framework_config_from_args
-from _04_Nucleo_Operativo.cli_operations import selected_direct_operations
-from _04_Nucleo_Operativo.cli_parser import build_parser
-from _04_Nucleo_Operativo.cli_validation import validate_arguments
-from _04_Nucleo_Operativo.cli_video import run_video_doctor
+from neocortex.api.cli.cli_config import framework_config_from_args
+from neocortex.api.cli.cli_operations import selected_direct_operations
+from neocortex.api.cli.cli_parser import build_parser
+from neocortex.api.cli.cli_validation import validate_arguments
+from neocortex.api.cli.cli_video import run_video_doctor
 
 
 def test_video_route_arguments_project_every_safety_bound(tmp_path: Path) -> None:
@@ -163,15 +163,15 @@ def test_video_doctor_fails_closed_when_configured_ocr_pack_preflight_fails(
     args = build_parser().parse_args(("--video-doctor", "--video-ocr-profile", "auto-multilingual"))
     validate_arguments(args)
     monkeypatch.setattr(
-        "_04_Nucleo_Operativo.video_frames.resolve_video_ffmpeg",
+        "neocortex.capabilities.formats.video.frames.resolve_video_ffmpeg",
         lambda _path: "/fixture/ffmpeg",
     )
     monkeypatch.setattr(
-        "_04_Nucleo_Operativo.video_probe.resolve_video_ffprobe",
+        "neocortex.capabilities.formats.video.probe.resolve_video_ffprobe",
         lambda _path: "/fixture/ffprobe",
     )
     monkeypatch.setattr(
-        "_04_Nucleo_Operativo.image_document.resolve_document_verifier",
+        "neocortex.capabilities.formats.image.document.resolve_document_verifier",
         lambda _config: (_ for _ in ()).throw(RuntimeError("missing chi_sim.traineddata")),
     )
 

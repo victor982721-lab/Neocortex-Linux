@@ -12,8 +12,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from neocortex.deduplication import FileSnapshot, snapshot_path
-from _04_Nucleo_Operativo import docx_schema
-from _04_Nucleo_Operativo.docx_route import (
+from neocortex.capabilities.formats.docx import schema as docx_schema
+from neocortex.capabilities.formats.docx.route import (
     DOCX_MIME,
     PDF_MIME,
     DocxRoute,
@@ -23,7 +23,7 @@ from _04_Nucleo_Operativo.docx_route import (
     search_docx_state,
     extract_docx,
 )
-from _04_Nucleo_Operativo.docx_state import (
+from neocortex.capabilities.formats.docx.state import (
     SCHEMA_VERSION,
     UNKNOWN_BIRTHTIME_NS,
     initialize_docx_state,
@@ -398,7 +398,7 @@ class DocxRouteTests(unittest.TestCase):
                 return snapshot_path(path)
 
             with patch(
-                "_04_Nucleo_Operativo.docx_route.snapshot_path",
+                "neocortex.capabilities.formats.docx.route.snapshot_path",
                 side_effect=validate_pdf_only,
             ) as live_snapshot:
                 second = DocxRoute(DocxRouteConfig(database), state, 2).run()
@@ -429,7 +429,7 @@ class DocxRouteTests(unittest.TestCase):
             # real filesystem fixture has not been replaced, so its creation
             # time cannot otherwise match the replacement snapshot.
             with patch(
-                "_04_Nucleo_Operativo.docx_route.stat_matches_snapshot",
+                "neocortex.capabilities.formats.docx.route.stat_matches_snapshot",
                 return_value=True,
             ) as live_identity:
                 second = DocxRoute(DocxRouteConfig(database), changed_state, 2).run()
@@ -506,7 +506,7 @@ class DocxRouteTests(unittest.TestCase):
             database = root / "docx.sqlite3"
 
             with patch(
-                "_04_Nucleo_Operativo.docx_route.extract_docx",
+                "neocortex.capabilities.formats.docx.route.extract_docx",
                 side_effect=zlib.error("invalid distance too far back"),
             ):
                 result = DocxRoute(DocxRouteConfig(database), state, 1).run()
@@ -683,7 +683,7 @@ class DocxRouteTests(unittest.TestCase):
             database = root / "docx.sqlite3"
 
             with patch(
-                "_04_Nucleo_Operativo.docx_route.extract_docx",
+                "neocortex.capabilities.formats.docx.route.extract_docx",
                 side_effect=OSError("temporarily unavailable"),
             ):
                 failed = DocxRoute(DocxRouteConfig(database), state, 1).run()
@@ -723,7 +723,7 @@ class DocxRouteTests(unittest.TestCase):
                 )
 
             with patch(
-                "_04_Nucleo_Operativo.docx_route.extract_docx",
+                "neocortex.capabilities.formats.docx.route.extract_docx",
                 side_effect=interrupt_ninth,
             ):
                 with self.assertRaises(KeyboardInterrupt):
@@ -920,7 +920,7 @@ class DocxRouteTests(unittest.TestCase):
                 return extract_docx(path, *args, **kwargs)
 
             with patch(
-                "_04_Nucleo_Operativo.docx_route.extract_docx",
+                "neocortex.capabilities.formats.docx.route.extract_docx",
                 side_effect=recording_extract,
             ):
                 limited = DocxRoute(

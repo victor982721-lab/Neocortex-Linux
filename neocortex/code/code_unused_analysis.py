@@ -6,9 +6,6 @@ never treats a tool confidence value as deletion authority.
 """
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import ast
 import math
 import re
@@ -1642,6 +1639,3 @@ __all__ = [
     "evaluate_unused_calibration",
     "read_code_unused_analysis",
 ]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.code_unused_analysis")

@@ -18,21 +18,21 @@ from typing import Any
 
 import pytest
 
-from _04_Nucleo_Operativo import knowledge_search
-from _04_Nucleo_Operativo.knowledge_contracts import (
+from neocortex.knowledge import knowledge_search
+from neocortex.knowledge.knowledge_contracts import (
     KnowledgeSnapshot,
     OwnerAvailability,
     OwnerSnapshot,
     PublicationHead,
     RevisionState,
 )
-from _04_Nucleo_Operativo.knowledge_snapshot import KnowledgeStatePaths
+from neocortex.knowledge.knowledge_snapshot import KnowledgeStatePaths
 
 
 PUBLIC_MODULE = "neocortex.knowledge.knowledge_search"
 CATALOG_MODULE = "neocortex.knowledge.knowledge_search_catalog"
 DOCUMENT_CATALOG_MODULE = "neocortex.documents.document_catalog"
-LEGACY_PUBLIC_MODULE = "_04_Nucleo_Operativo.knowledge_search"
+LEGACY_PUBLIC_MODULE = "neocortex.knowledge.knowledge_search"
 CATALOG_DELEGATES = (
     "_escape_like",
     "_catalog_identifiers",

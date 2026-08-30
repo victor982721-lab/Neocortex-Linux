@@ -7,12 +7,12 @@ from typing import Sequence, cast
 
 import pytest
 
-from _04_Nucleo_Operativo.semantic_chunking import (
+from neocortex.semantic.semantic_chunking import (
     ChunkLimitExceeded,
     TextChunkingConfig,
     chunk_text_sections,
 )
-from _04_Nucleo_Operativo.semantic_models import (
+from neocortex.semantic.semantic_models import (
     CalibrationStatus,
     ContentFingerprint,
     EmbeddingModality,

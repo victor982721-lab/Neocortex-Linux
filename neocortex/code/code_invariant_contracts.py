@@ -6,9 +6,6 @@ it is never promoted to a proof that the invariant holds for all executions.
 """
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 from dataclasses import asdict, dataclass
 from typing import Literal
 
@@ -1498,6 +1495,3 @@ __all__ = [
     "runtime_scenario_registry_fingerprint",
     "runtime_scenario_registry_payload",
 ]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.code_invariant_contracts")

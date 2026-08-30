@@ -8,9 +8,6 @@ inventing atomicity.
 """
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import os
 import sqlite3
 import stat
@@ -1161,6 +1158,3 @@ __all__ = (
     "KnowledgeStateRootError",
     "collect_knowledge_snapshot",
 )
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.knowledge_snapshot")

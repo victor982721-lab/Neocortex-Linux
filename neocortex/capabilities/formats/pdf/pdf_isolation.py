@@ -1,9 +1,6 @@
 """Process-isolated, streaming PDF extraction with enforceable document deadlines."""
 
 from __future__ import annotations
-
-from . import preserve_legacy_module as _preserve_legacy_module
-
 import multiprocessing
 import math
 import os
@@ -1333,5 +1330,3 @@ def stream_isolated_profiles(
 
 
 # endregion [03]
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.pdf_isolation")

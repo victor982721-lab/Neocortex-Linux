@@ -9,15 +9,11 @@ from pathlib import Path
 
 import pytest
 
-from _04_Nucleo_Operativo import (
-    semantic_evidence_repository as evidence_repository,
-)
-from _04_Nucleo_Operativo import (
-    semantic_generation_repository as generation_repository,
-)
-from _04_Nucleo_Operativo import semantic_item_repository as item_repository
-from _04_Nucleo_Operativo import semantic_schema, semantic_state
-from _04_Nucleo_Operativo import semantic_search_repository as search_repository
+from neocortex.semantic import semantic_evidence_repository as evidence_repository
+from neocortex.semantic import semantic_generation_repository as generation_repository
+from neocortex.semantic import semantic_item_repository as item_repository
+from neocortex.semantic import semantic_schema, semantic_state
+from neocortex.semantic import semantic_search_repository as search_repository
 # endregion [01]
 
 # region [02] Implementación

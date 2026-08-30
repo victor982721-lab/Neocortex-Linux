@@ -9,11 +9,11 @@ from pathlib import Path
 
 from PIL import Image
 
-from _04_Nucleo_Operativo.cancellation import (
+from neocortex.runtime.control.cancellation import (
     CancellationRequested,
     CancellationToken,
 )
-from _04_Nucleo_Operativo.image_isolation import (
+from neocortex.capabilities.formats.image.isolation import (
     ImageWorkerError,
     ImageWorkerSupervisor,
     ImageWorkerTimeout,

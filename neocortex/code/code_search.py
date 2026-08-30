@@ -1,9 +1,6 @@
 """Exact, full-text and structural search over current code observations."""
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import re
 import sqlite3
 from collections import defaultdict
@@ -1013,6 +1010,3 @@ def available_search_modes() -> tuple[str, ...]:
 
 
 __all__ = ["SEARCH_MODES", "available_search_modes", "search_code"]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.code_search")

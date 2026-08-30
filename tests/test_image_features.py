@@ -9,9 +9,9 @@ from unittest.mock import patch
 
 from PIL import Image, ImageFile
 
-from _04_Nucleo_Operativo.image_decode import RecoveredImageContentError
-from _04_Nucleo_Operativo.image_errors import classify_image_failure
-from _04_Nucleo_Operativo.image_features import extract_features
+from neocortex.capabilities.formats.image.decode import RecoveredImageContentError
+from neocortex.capabilities.formats.image.errors import classify_image_failure
+from neocortex.capabilities.formats.image.features import extract_features
 
 
 # region [01] Temporary image fixtures
@@ -66,7 +66,7 @@ class ImageFeatureRecoveryTests(unittest.TestCase):
 
     def test_unknown_os_error_never_enables_tolerant_decode(self) -> None:
         with patch(
-            "_04_Nucleo_Operativo.image_features._extract_features_once",
+            "neocortex.capabilities.formats.image.features._extract_features_once",
             side_effect=OSError("unrelated storage failure"),
         ) as extractor:
             with self.assertRaisesRegex(OSError, "storage failure"):

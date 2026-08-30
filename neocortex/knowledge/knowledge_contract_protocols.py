@@ -6,9 +6,6 @@ the facade may delegate to them without creating reverse import edges.
 """
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 from collections.abc import Callable
 from typing import Any, Protocol
 
@@ -731,6 +728,3 @@ __all__ = [
     "ResourceRef",
     "RevisionRef",
 ]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.knowledge_contract_protocols")

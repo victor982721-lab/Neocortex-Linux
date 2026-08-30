@@ -6,9 +6,6 @@ side can be imported first without creating a cycle.
 """
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import sqlite3
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -888,6 +885,3 @@ __all__ = [
     "code_resource_revision",
     "code_version_metadata",
 ]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.knowledge_search_code")

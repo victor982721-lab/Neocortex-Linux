@@ -1,9 +1,6 @@
 """USN-aware preparation of one durable inventory generation."""
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -369,6 +366,3 @@ def prepare_inventory(
 
 
 # endregion [04]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.inventory_coordinator")

@@ -1,9 +1,6 @@
 """Persistent, memory-capped Pillow workers with cooperative supervision."""
 
 from __future__ import annotations
-
-from . import preserve_legacy_module as _preserve_legacy_module
-
 import multiprocessing
 import queue
 import time
@@ -304,6 +301,3 @@ class ImageWorkerSupervisor:
 
 
 # endregion [02]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.image_isolation")

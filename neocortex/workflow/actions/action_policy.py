@@ -9,9 +9,6 @@ from typing import Any, Iterator
 
 from neocortex.deduplication import FileSnapshot
 from neocortex.deduplication.inventory.index import InventoryExclusionPolicy
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
-
 # region [01] Snapshot and destination policy
 
 PROFILE_SYSTEM_PREFIXES = ("ntuser.dat", "usrclass.dat")
@@ -267,9 +264,4 @@ def postorder_directories(
         for _directory, iterator in stack:
             if iterator is not None:
                 iterator.close()
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.action_policy")
-
-
 # endregion [02]

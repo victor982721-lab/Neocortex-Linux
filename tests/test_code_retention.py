@@ -4,13 +4,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from _04_Nucleo_Operativo.code_retention import (
+from neocortex.code.code_retention import (
     CodeRetentionPolicy,
     apply_code_retention,
     plan_code_retention,
 )
-from _04_Nucleo_Operativo.code_schema import connect_code_state, initialize_code_state
-from _04_Nucleo_Operativo.code_state import CodeState
+from neocortex.code.code_schema import connect_code_state, initialize_code_state
+from neocortex.code.code_state import CodeState
 
 
 def _database(tmp_path: Path):

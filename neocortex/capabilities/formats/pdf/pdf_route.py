@@ -1,6 +1,6 @@
 """Incremental PDF route for the integrated framework.
 # region [00] Contexto del módulo
-# Módulo: _04_Nucleo_Operativo/pdf_route.py
+# Módulo: neocortex/pdf_route.py
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
@@ -12,9 +12,6 @@ page per active worker and interrupted documents can resume.
 
 # region [01] Dependencias del módulo
 from __future__ import annotations
-
-from . import preserve_legacy_module as _preserve_legacy_module
-
 import json
 import sqlite3
 import threading
@@ -2750,5 +2747,3 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
 
 
 # endregion [02]
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.pdf_route")

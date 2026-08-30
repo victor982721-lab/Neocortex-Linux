@@ -4,11 +4,11 @@ from dataclasses import asdict, replace
 
 import pytest
 
-from _04_Nucleo_Operativo.code_analysis_epistemics import (
+from neocortex.code.code_analysis_epistemics import (
     AnalysisQuestionEvaluation,
     analysis_identity,
 )
-from _04_Nucleo_Operativo.code_knowledge_pdf_asset_health_analysis import (
+from neocortex.code.code_knowledge_pdf_asset_health_analysis import (
     CODE_KNOWLEDGE_PDF_ASSET_HEALTH_ANALYSIS_SCHEMA,
     CODE_KNOWLEDGE_PDF_ASSET_HEALTH_POLICY,
     KNOWLEDGE_PDF_ASSET_HEALTH_QUESTION,
@@ -160,7 +160,7 @@ def test_pdf_asset_health_question_requires_partial_protected_and_recovery_exper
             "identity_components": "volume_id,file_id,birthtime_ns",
             "public_read": "neocortex.read_api.asset_health_payload",
             "service": (
-                "_04_Nucleo_Operativo.knowledge_asset_health.inspect_knowledge_asset_health"
+                "neocortex.knowledge.knowledge_asset_health.inspect_knowledge_asset_health"
             ),
             "operation": "knowledge-health",
             "read_only": True,

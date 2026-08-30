@@ -22,7 +22,6 @@ from pathlib import Path
 from neocortex.deduplication.io import absolute_display_path, native_io_path
 
 from .zip_safety import ZipStructureError, inspect_zip_structure
-from . import preserve_legacy_module as _preserve_legacy_module
 # endregion [01]
 
 # region [02] Implementación
@@ -528,6 +527,3 @@ def detect_content_type(path: str | Path) -> DetectedType | None:
 
 
 # endregion [02]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.content_types")

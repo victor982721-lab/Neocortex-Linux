@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from _04_Nucleo_Operativo.code_unused_analysis import (
+from neocortex.code.code_unused_analysis import (
     CODE_UNUSED_REFERENCE_LIMIT,
     DEFAULT_CALIBRATION_SAMPLES,
     DEFAULT_HOLDOUT_SAMPLES,
@@ -479,7 +479,7 @@ def test_graph_bound_still_applies_to_the_current_projection(
         ((1,), (2,)),
     )
     monkeypatch.setattr(
-        "_04_Nucleo_Operativo.code_unused_analysis.CODE_UNUSED_REFERENCE_LIMIT",
+        "neocortex.code.code_unused_analysis.CODE_UNUSED_REFERENCE_LIMIT",
         1,
     )
 

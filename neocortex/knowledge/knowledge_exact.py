@@ -11,9 +11,6 @@ database.  Missing and incompatible state is reported without creating files.
 """
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import json
 import os
 import re
@@ -3073,6 +3070,3 @@ def lookup_plan_exact(
 
 
 # endregion [07]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.knowledge_exact")

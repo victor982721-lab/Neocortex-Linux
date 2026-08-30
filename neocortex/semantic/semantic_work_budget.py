@@ -1,9 +1,6 @@
 """Shared admission and deadline budget for one Semantic index invocation."""
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import math
 import time
 from collections.abc import Callable
@@ -192,6 +189,3 @@ def unlimited_semantic_work_budget() -> SemanticWorkBudget:
     """Return an invocation-local unlimited budget for API compatibility."""
 
     return SemanticWorkBudget()
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.semantic_work_budget")

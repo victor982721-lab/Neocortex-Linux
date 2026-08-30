@@ -22,8 +22,6 @@ from pathlib import Path
 from typing import Literal
 
 from neocortex.deduplication import schema as inventory_schema
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 from neocortex.documents import document_catalog_schema
 from neocortex.persistence import framework_schema
 from neocortex.semantic import semantic_schema
@@ -1415,5 +1413,4 @@ __all__ = [
     "plan_retention",
     "retention_plan_payload",
 ]
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.retention_planner")
 # endregion [02]

@@ -8,10 +8,6 @@ import os
 import threading
 from collections.abc import Callable
 from typing import Any
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
-
 # region [01] Console control bridge
 
 CTRL_C_EVENT = 0
@@ -116,9 +112,4 @@ class ConsoleCancellationBridge:
         self._registered = False
         self._callback = None
         self._kernel32 = None
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.console_cancellation")
-
-
 # endregion [01]

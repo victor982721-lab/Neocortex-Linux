@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib
 import pickle
 import subprocess
 import sys
@@ -28,14 +27,9 @@ MODULES = (
 )
 
 
-def test_legacy_runtime_control_modules_are_exact_product_aliases() -> None:
+def test_runtime_control_modules_are_owned_by_the_canonical_tree() -> None:
     for name in MODULES:
-        legacy = importlib.import_module(f"_04_Nucleo_Operativo.{name}")
-        product = importlib.import_module(f"neocortex.runtime.control.{name}")
-
-        assert legacy is product
-        assert sys.modules[f"_04_Nucleo_Operativo.{name}"] is product
-        assert sys.modules[f"neocortex.runtime.control.{name}"] is product
+        product = __import__(f"neocortex.runtime.control.{name}", fromlist=[name])
         assert Path(product.__file__).resolve().is_relative_to(CONTROL_ROOT)
 
 
@@ -70,10 +64,10 @@ print("RUNTIME_CONTROL_IMPORT_LIGHT")
 
 
 def test_runtime_control_symbols_keep_historical_pickle_fqns() -> None:
-    cancellation = importlib.import_module("neocortex.runtime.control.cancellation")
-    resources = importlib.import_module("neocortex.runtime.control.global_resources")
-    memory = importlib.import_module("neocortex.runtime.control.memory_runtime")
-    lease = importlib.import_module("neocortex.runtime.control.watcher_life_lease")
+    cancellation = __import__("neocortex.runtime.control.cancellation", fromlist=["cancellation"])
+    resources = __import__("neocortex.runtime.control.global_resources", fromlist=["resources"])
+    memory = __import__("neocortex.runtime.control.memory_runtime", fromlist=["memory"])
+    lease = __import__("neocortex.runtime.control.watcher_life_lease", fromlist=["lease"])
 
     values = (
         cancellation.CancellationRequested("fixture"),
@@ -90,12 +84,12 @@ def test_runtime_control_symbols_keep_historical_pickle_fqns() -> None:
             assert restored == value
 
     assert cancellation.CancellationRequested.__module__ == (
-        "_04_Nucleo_Operativo.cancellation"
+        "neocortex.runtime.control.cancellation"
     )
     assert resources.GlobalResourceLimits.__module__ == (
-        "_04_Nucleo_Operativo.global_resources"
+        "neocortex.runtime.control.global_resources"
     )
-    assert memory.MemorySnapshot.__module__ == "_04_Nucleo_Operativo.memory_runtime"
+    assert memory.MemorySnapshot.__module__ == "neocortex.runtime.control.memory_runtime"
     assert lease.WatcherLeaseIdentity.__module__ == (
-        "_04_Nucleo_Operativo.watcher_life_lease"
+        "neocortex.runtime.control.watcher_life_lease"
     )

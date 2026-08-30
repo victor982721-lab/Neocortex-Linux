@@ -1,9 +1,6 @@
 """Bounded direct CLI operations over durable NeoCortex state."""
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import argparse
 import json
 import sqlite3
@@ -1066,6 +1063,3 @@ def run_audio_doctor(args: argparse.Namespace) -> int:
 
 
 # endregion [08]
-
-
-_preserve_legacy_module(globals(), '_04_Nucleo_Operativo.cli_direct')

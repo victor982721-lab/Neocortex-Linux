@@ -1,9 +1,6 @@
 """Conservative local adult-content cascade for photographic images."""
 
 from __future__ import annotations
-
-from . import preserve_legacy_module as _preserve_legacy_module
-
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -262,6 +259,3 @@ DEFAULT_ADULT_CLASSIFIER: AdultContentClassifier = NudeNetAdultClassifier()
 
 
 # endregion [02]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.image_adult")

@@ -159,12 +159,9 @@ def test_project_metadata_separates_canonical_runtime_and_extras() -> None:
     assert "Pillow>=12.3,<13" in extras["semantic"]
     package_data = metadata_document["tool"]["setuptools"]["package-data"]
     assert package_data["neocortex"] == ["py.typed"]
-    assert package_data["_04_Nucleo_Operativo"] == [
-        "py.typed",
-        "semgrep_rules/*.yml",
-    ]
+    assert package_data["neocortex.code"] == ["semgrep_rules/*.yml"]
+    assert "_04_Nucleo_Operativo" not in package_data
     assert (PROJECT_ROOT / "neocortex" / "py.typed").is_file()
-    assert (PROJECT_ROOT / "_04_Nucleo_Operativo" / "py.typed").is_file()
 
 
 # endregion [02]
@@ -203,7 +200,7 @@ def _inspect_with(
 
 
 def test_every_builtin_route_has_one_static_capability_declaration() -> None:
-    from _04_Nucleo_Operativo.route_selection import BUILTIN_ROUTE_ORDER
+    from neocortex.runtime.orchestration.route_selection import BUILTIN_ROUTE_ORDER
 
     assert ROUTE_CAPABILITY_NAMES == BUILTIN_ROUTE_ORDER
     assert all(name in CAPABILITY_SPECS for name in ROUTE_CAPABILITY_NAMES)
@@ -320,14 +317,14 @@ def test_semantic_facades_cold_import_no_owner_or_image_runtime() -> None:
         import sys
 
         blocked_modules = {
-            "_04_Nucleo_Operativo.capabilities.formats.audio.state",
-            "_04_Nucleo_Operativo.code_schema",
-            "_04_Nucleo_Operativo.docx_schema",
-            "_04_Nucleo_Operativo.capabilities.formats.docx.schema",
-            "_04_Nucleo_Operativo.image_state",
-            "_04_Nucleo_Operativo.capabilities.formats.image.state",
-            "_04_Nucleo_Operativo.capabilities.formats.office.state",
-            "_04_Nucleo_Operativo.pdf_schema",
+            "neocortex.capabilities.formats.audio.state",
+            "neocortex.code.code_schema",
+            "neocortex.capabilities.formats.docx.schema",
+            "neocortex.capabilities.formats.docx.schema",
+            "neocortex.capabilities.formats.image.state",
+            "neocortex.capabilities.formats.image.state",
+            "neocortex.capabilities.formats.office.state",
+            "neocortex.capabilities.formats.pdf.pdf_schema",
         }
 
         class OwnerImportBlocker(importlib.abc.MetaPathFinder):
@@ -342,8 +339,8 @@ def test_semantic_facades_cold_import_no_owner_or_image_runtime() -> None:
 
         sys.meta_path.insert(0, OwnerImportBlocker())
 
-        import _04_Nucleo_Operativo.semantic_planner
-        import _04_Nucleo_Operativo.semantic_service
+        import neocortex.semantic.semantic_planner
+        import neocortex.semantic.semantic_service
 
         loaded = sorted(blocked_modules.intersection(sys.modules))
         loaded_pillow = sorted(
@@ -499,7 +496,7 @@ def test_base_surfaces_and_absent_knowledge_state_ignore_optional_engines(
 def test_base_knowledge_reads_existing_image_state_without_pillow(
     tmp_path: Path,
 ) -> None:
-    from _04_Nucleo_Operativo.image_state import initialize_image_state
+    from neocortex.capabilities.formats.image.state import initialize_image_state
 
     state_directory = tmp_path / "state"
     state_directory.mkdir()
@@ -571,8 +568,8 @@ def test_base_knowledge_reads_existing_image_state_without_pillow(
                 "existing image state loaded engines: " + ",".join(loaded_optional)
             )
         if (
-            "_04_Nucleo_Operativo.image_document" in sys.modules
-            or "_04_Nucleo_Operativo.capabilities.formats.image.document" in sys.modules
+            "neocortex.capabilities.formats.image.document" in sys.modules
+            or "neocortex.capabilities.formats.image.document" in sys.modules
         ):
             raise SystemExit("image state loaded the Pillow-backed OCR module")
         print("BASE_EXISTING_IMAGE_STATE_OK")

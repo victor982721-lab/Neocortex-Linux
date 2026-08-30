@@ -8,8 +8,8 @@ from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
-from _04_Nucleo_Operativo import code_schema as code_schema_module
-from _04_Nucleo_Operativo.code_architecture_analysis import (
+from neocortex.code import code_schema as code_schema_module
+from neocortex.code.code_architecture_analysis import (
     ArchitectureContract,
     ArchitectureCycle,
     ArchitectureImportEdge,
@@ -17,17 +17,17 @@ from _04_Nucleo_Operativo.code_architecture_analysis import (
     ArchitectureProviderStatus,
     CodeArchitectureAnalysis,
 )
-from _04_Nucleo_Operativo.code_contracts import (
+from neocortex.code.code_contracts import (
     DiagnosticRecord,
     DiagnosticSeverity,
     ReferenceRecord,
     SymbolRecord,
 )
-from _04_Nucleo_Operativo.code_engineering_analytics import (
+from neocortex.code.code_engineering_analytics import (
     CodeEngineeringAnalytics,
     EngineeringGate,
 )
-from _04_Nucleo_Operativo.code_publication_diff import (
+from neocortex.code.code_publication_diff import (
     _architecture_delta,
     _architecture_module_deltas,
     _engineering_delta,
@@ -36,13 +36,13 @@ from _04_Nucleo_Operativo.code_publication_diff import (
     _unused_delta,
     compare_code_publications,
 )
-from _04_Nucleo_Operativo.code_schema import (
+from neocortex.code.code_schema import (
     checkpoint_code_wal,
     initialize_code_state,
     remove_checkpointed_code_sidecars,
 )
-from _04_Nucleo_Operativo.code_state import CodeState
-from _04_Nucleo_Operativo.external_evidence_models import (
+from neocortex.code.code_state import CodeState
+from neocortex.code.external_evidence_models import (
     ExternalProviderFinding,
     external_finding_identity,
 )

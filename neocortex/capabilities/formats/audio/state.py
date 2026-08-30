@@ -283,5 +283,5 @@ def _initialize_locked_audio_state(connection: sqlite3.Connection) -> None:
 
 for _defined_value in tuple(globals().values()):
     if getattr(_defined_value, "__module__", None) == __name__:
-        _defined_value.__module__ = "_04_Nucleo_Operativo.audio_state"
+        _defined_value.__module__ = "neocortex.capabilities.formats.audio.state"
 del _defined_value

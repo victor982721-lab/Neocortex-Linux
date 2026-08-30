@@ -1,9 +1,6 @@
 """Separate-space semantic retrieval and deterministic rank-only fusion."""
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import re
 import unicodedata
 from collections.abc import Callable, Mapping, Sequence
@@ -1230,6 +1227,3 @@ def search_semantic_index(
 
 
 # endregion [03]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.semantic_search_service")

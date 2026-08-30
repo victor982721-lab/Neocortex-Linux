@@ -9,7 +9,6 @@ recursive-exclude docs TECHNICAL_EVOLUTION_*.md
 include neocortex/deduplication/README.md
 include neocortex/enumeration/README.md
 include neocortex/code/semgrep_rules/*.yml
-include _04_Nucleo_Operativo/README.md
 include docs/ARCHITECTURE.md
 include docs/AUDIT_REPORTING_STANDARD.md
 include docs/CHANGELOG.md

@@ -11,26 +11,26 @@ from unittest.mock import patch
 import pytest
 
 import neocortex.deduplication
-import _04_Nucleo_Operativo.code_route as code_route_module
+import neocortex.code.code_route as code_route_module
 from neocortex.deduplication import FileSnapshot
-from _04_Nucleo_Operativo.cancellation import (
+from neocortex.runtime.control.cancellation import (
     CancellationRequested,
     CancellationToken,
 )
-from _04_Nucleo_Operativo.code_contracts import CodeRouteConfig
-from _04_Nucleo_Operativo.code_route import (
+from neocortex.code.code_contracts import CodeRouteConfig
+from neocortex.code.code_route import (
     CodeRoute,
     estimate_code_analysis_memory_bytes,
 )
-from _04_Nucleo_Operativo.code_state import CodeState
-from _04_Nucleo_Operativo.global_resources import (
+from neocortex.code.code_state import CodeState
+from neocortex.runtime.control.global_resources import (
     GlobalResourceCoordinator,
     GlobalResourceLimits,
 )
-from _04_Nucleo_Operativo.memory_runtime import MemorySnapshot
-from _04_Nucleo_Operativo.route_filters import CandidateSelection
-from _04_Nucleo_Operativo.route_registry import RouteExecutionContext, _run_code
-from _04_Nucleo_Operativo.sqlite_cancellation import CancellationCheck
+from neocortex.runtime.control.memory_runtime import MemorySnapshot
+from neocortex.safety.route_filters import CandidateSelection
+from neocortex.runtime.orchestration.route_registry import RouteExecutionContext, _run_code
+from neocortex.sqlite_cancellation import CancellationCheck
 
 
 # region [01] Deterministic collaborators
@@ -287,7 +287,7 @@ def test_run_code_passes_a_releasing_coordinator_gate(tmp_path: Path) -> None:
     abundant = MemorySnapshot(2**40, 2**40, 2**40, 2**40)
     with (
         patch(
-            "_04_Nucleo_Operativo.global_resources.memory_snapshot",
+            "neocortex.runtime.control.global_resources.memory_snapshot",
             return_value=abundant,
         ),
         patch.object(neocortex.deduplication, "DedupIndex", FakeDedupIndex),

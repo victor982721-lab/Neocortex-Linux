@@ -1,9 +1,6 @@
 """Transactional schema management for the framework orchestration database."""
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -2827,6 +2824,3 @@ def initialize_framework_schema(
 
 
 # endregion [04]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.framework_schema")

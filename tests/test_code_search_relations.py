@@ -13,8 +13,8 @@ from pathlib import Path
 import pytest
 
 from neocortex.deduplication import FileSnapshot
-from _04_Nucleo_Operativo import code_search as code_search_module
-from _04_Nucleo_Operativo.code_contracts import (
+from neocortex.code import code_search as code_search_module
+from neocortex.code.code_contracts import (
     AnalysisStatus,
     ArtifactClassification,
     ArtifactKind,
@@ -27,25 +27,25 @@ from _04_Nucleo_Operativo.code_contracts import (
     SourceRange,
     SymbolRecord,
 )
-from _04_Nucleo_Operativo.code_search import search_code
-from _04_Nucleo_Operativo.code_state import CodeState
-from _04_Nucleo_Operativo.knowledge_context import build_context_bundle
-from _04_Nucleo_Operativo.knowledge_contracts import (
+from neocortex.code.code_search import search_code
+from neocortex.code.code_state import CodeState
+from neocortex.knowledge.knowledge_context import build_context_bundle
+from neocortex.knowledge.knowledge_contracts import (
     EvidenceMethod,
     KnowledgeSnapshot,
     OwnerAvailability,
     OwnerSnapshot,
 )
-from _04_Nucleo_Operativo.knowledge_planner import (
+from neocortex.knowledge.knowledge_planner import (
     KnowledgeQuery,
     plan_knowledge_query,
 )
-from _04_Nucleo_Operativo.knowledge_search import (
+from neocortex.knowledge.knowledge_search import (
     KnowledgeSearchResult,
     execute_knowledge_search,
 )
-from _04_Nucleo_Operativo.knowledge_snapshot import KnowledgeStatePaths
-from _04_Nucleo_Operativo.semantic_models import fingerprint_bytes, fingerprint_text
+from neocortex.knowledge.knowledge_snapshot import KnowledgeStatePaths
+from neocortex.semantic.semantic_models import fingerprint_bytes, fingerprint_text
 # endregion [01]
 
 # region [02] Implementación

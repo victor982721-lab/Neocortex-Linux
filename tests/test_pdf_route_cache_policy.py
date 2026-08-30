@@ -7,13 +7,13 @@ from pathlib import Path
 
 import pytest
 
-from _04_Nucleo_Operativo.pdf_route_cache import PdfRouteCacheMixin
-from _04_Nucleo_Operativo.pdf_route_models import CacheDecision, PdfRouteConfig
-from _04_Nucleo_Operativo.retry_policy import (
+from neocortex.capabilities.formats.pdf.pdf_route_cache import PdfRouteCacheMixin
+from neocortex.capabilities.formats.pdf.pdf_route_models import CacheDecision, PdfRouteConfig
+from neocortex.runtime.control.retry_policy import (
     classify_pdf_failure,
     is_retryable_pdf_document_error,
 )
-from _04_Nucleo_Operativo.route_filters import CandidateSelection
+from neocortex.safety.route_filters import CandidateSelection
 
 
 def _route(

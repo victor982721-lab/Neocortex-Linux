@@ -1,9 +1,6 @@
 """Persistent, resumable state for the integrated image route."""
 
 from __future__ import annotations
-
-from . import preserve_legacy_module as _preserve_legacy_module
-
 import sqlite3
 import zlib
 from contextlib import contextmanager
@@ -714,6 +711,3 @@ def iter_ocr_text_records(
 
 
 # endregion [04]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.image_state")

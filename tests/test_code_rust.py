@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from neocortex.deduplication import FileSnapshot
-from _04_Nucleo_Operativo.code_contracts import (
+from neocortex.code.code_contracts import (
     AnalysisStatus,
     ArtifactClassification,
     ArtifactKind,
@@ -16,7 +16,7 @@ from _04_Nucleo_Operativo.code_contracts import (
     CodeFileInput,
     CodeRouteConfig,
 )
-from _04_Nucleo_Operativo.code_rust import RustAnalyzer
+from neocortex.code.code_rust import RustAnalyzer
 
 
 REPRESENTATIVE_RUST = """use serde::Serialize;

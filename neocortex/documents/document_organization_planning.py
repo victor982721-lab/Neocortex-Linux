@@ -1,14 +1,11 @@
 """Deterministic, non-mutating destination planning for technical documents."""
 # region [00] Contexto del módulo
-# Módulo: _04_Nucleo_Operativo/document_organization_planning.py
+# Módulo: neocortex/document_organization_planning.py
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
 # region [01] Dependencias del módulo
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import json
 import os
 import re
@@ -828,6 +825,3 @@ def _reject_state_destination(catalog_path: Path, root: Path) -> None:
 
 
 # endregion [02]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.document_organization_planning")

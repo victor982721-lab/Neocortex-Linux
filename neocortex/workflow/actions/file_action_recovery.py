@@ -1,6 +1,6 @@
 """Read-only, idempotent reconciliation of uncertain filesystem actions."""
 # region [00] Contexto del módulo
-# Módulo: _04_Nucleo_Operativo/file_action_recovery.py
+# Módulo: neocortex/file_action_recovery.py
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
@@ -14,8 +14,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from neocortex.deduplication import FileSnapshot, snapshot_path
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 from neocortex.persistence.framework_connection import connect_existing_framework
 from neocortex.persistence.framework_schema import SCHEMA_VERSION as FRAMEWORK_SCHEMA_VERSION
 # endregion [01]
@@ -418,5 +416,4 @@ __all__ = [
     "expected_identity_json",
     "list_file_action_reconciliations",
 ]
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.file_action_recovery")
 # endregion [02]

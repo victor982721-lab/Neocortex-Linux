@@ -10,9 +10,9 @@ from pathlib import Path
 
 import pytest
 
-from _04_Nucleo_Operativo import audio_probe
-from _04_Nucleo_Operativo.audio_models import AudioProcessingError
-from _04_Nucleo_Operativo.bounded_subprocess import SubprocessOutputLimitError
+from neocortex.capabilities.formats.audio import probe as audio_probe
+from neocortex.capabilities.formats.audio.models import AudioProcessingError
+from neocortex.runtime.control.bounded_subprocess import SubprocessOutputLimitError
 # endregion [01]
 
 # region [02] Implementación

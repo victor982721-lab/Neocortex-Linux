@@ -1,9 +1,6 @@
 """Durable state and read-only queries for generic physical text documents."""
 
 from __future__ import annotations
-
-from . import preserve_legacy_module as _preserve_legacy_module
-
 import sqlite3
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
@@ -622,5 +619,3 @@ __all__ = (
     "text_database",
     "text_schema_contract",
 )
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.text_state")

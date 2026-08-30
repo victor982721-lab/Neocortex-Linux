@@ -8,18 +8,18 @@ from pathlib import Path
 
 import pytest
 
-import _04_Nucleo_Operativo.external_evidence_providers as providers_module
-from _04_Nucleo_Operativo.code_contracts import CodeRouteConfig
-from _04_Nucleo_Operativo.code_external_evidence import ExternalEvidenceFile
-from _04_Nucleo_Operativo.external_evidence_models import ExternalProviderBaseline
-from _04_Nucleo_Operativo.external_evidence_providers import (
+import neocortex.code.external_evidence_providers as providers_module
+from neocortex.code.code_contracts import CodeRouteConfig
+from neocortex.code.code_external_evidence import ExternalEvidenceFile
+from neocortex.code.external_evidence_models import ExternalProviderBaseline
+from neocortex.code.external_evidence_providers import (
     GIT_HISTORY_PROVIDER_ID,
     GitHistoryLocalProvider,
     provider_tool_versions,
     providers_for_profile,
 )
-from _04_Nucleo_Operativo.external_git_history import GitHistoryConfig
-from _04_Nucleo_Operativo.semantic_models import fingerprint_bytes
+from neocortex.code.external_git_history import GitHistoryConfig
+from neocortex.semantic.semantic_models import fingerprint_bytes
 
 
 def _git(root: Path, *arguments: str, environment: dict[str, str] | None = None) -> bytes:

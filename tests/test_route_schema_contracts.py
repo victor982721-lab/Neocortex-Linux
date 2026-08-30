@@ -11,21 +11,21 @@ from pathlib import Path
 
 import pytest
 
-from _04_Nucleo_Operativo.archive_state import (
+from neocortex.capabilities.formats.archive.state import (
     ARCHIVE_SCHEMA_VERSION,
     initialize_archive_state,
 )
-from _04_Nucleo_Operativo.audio_state import (
+from neocortex.capabilities.formats.audio.state import (
     AUDIO_SCHEMA_VERSION,
     initialize_audio_state,
 )
-from _04_Nucleo_Operativo.office_state import (
+from neocortex.capabilities.formats.office.state import (
     OFFICE_SCHEMA_VERSION,
     initialize_office_state,
 )
-from _04_Nucleo_Operativo.sqlite_schema_contract import SQLiteSchemaContractError
-from _04_Nucleo_Operativo.text_state import TEXT_SCHEMA_VERSION, initialize_text_state
-from _04_Nucleo_Operativo.video_state import VIDEO_SCHEMA_VERSION, initialize_video_state
+from neocortex.sqlite_schema_contract import SQLiteSchemaContractError
+from neocortex.capabilities.formats.text.text_state import TEXT_SCHEMA_VERSION, initialize_text_state
+from neocortex.capabilities.formats.video.state import VIDEO_SCHEMA_VERSION, initialize_video_state
 # endregion [01]
 
 # region [02] Implementación

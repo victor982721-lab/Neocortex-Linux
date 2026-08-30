@@ -1,9 +1,6 @@
 """Lower-level wire identity and digest construction for Code review."""
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 from dataclasses import asdict, dataclass
 from typing import Any, Literal
 
@@ -223,6 +220,3 @@ __all__ = [
     "build_code_review_digest",
     "rebuild_code_review_result_digest",
 ]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.code_review_serialization")

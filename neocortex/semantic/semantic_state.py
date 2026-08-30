@@ -1,6 +1,6 @@
 """Stable compatibility facade for the modular semantic-state repositories."""
 # region [00] Contexto del módulo
-# Módulo: _04_Nucleo_Operativo/semantic_state.py
+# Módulo: neocortex/semantic_state.py
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
@@ -11,9 +11,6 @@
 
 # region [01] Dependencias del módulo
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import heapq
 import itertools
 import json
@@ -200,6 +197,3 @@ def publish_semantic_evidence_entities(
 
 
 # endregion [02]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.semantic_state")

@@ -20,14 +20,9 @@ MODULES = (
 )
 
 
-def test_legacy_self_analysis_modules_are_exact_product_aliases() -> None:
+def test_self_analysis_modules_are_owned_by_the_canonical_tree() -> None:
     for name in MODULES:
-        legacy = importlib.import_module(f"_04_Nucleo_Operativo.{name}")
         product = importlib.import_module(f"neocortex.workflow.self_analysis.{name}")
-
-        assert legacy is product
-        assert sys.modules[f"_04_Nucleo_Operativo.{name}"] is product
-        assert sys.modules[f"neocortex.workflow.self_analysis.{name}"] is product
         assert Path(product.__file__).resolve().is_relative_to(SELF_ANALYSIS_ROOT)
 
 
@@ -62,11 +57,9 @@ print("SELF_ANALYSIS_IMPORT_LIGHT")
 
 def test_self_analysis_status_exports_are_available_through_canonical_module() -> None:
     product = importlib.import_module("neocortex.workflow.self_analysis.self_analysis_status")
-    legacy = importlib.import_module("_04_Nucleo_Operativo.self_analysis_status")
-
     for name in (
         "SelfAnalysisFreshness",
         "ManifestStatus",
         "read_self_analysis_status",
     ):
-        assert getattr(product, name) is getattr(legacy, name)
+        assert getattr(product, name)

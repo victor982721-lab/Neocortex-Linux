@@ -1,9 +1,6 @@
 """Bounded read-only explanations across owner-local derivation state."""
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import json
 import os
 import sqlite3
@@ -587,6 +584,3 @@ __all__ = (
     "rebuild_derivation_projection_from_owners",
     "rebuild_text_derivation_projection",
 )
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.derivation_lineage_service")

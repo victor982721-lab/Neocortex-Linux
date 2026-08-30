@@ -7,9 +7,6 @@ claims require the registered isolated experiment receipt.
 """
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from importlib import import_module
@@ -73,7 +70,7 @@ _CAUSAL_STAGE_OWNERS = ("inventory", "text", "catalog", "knowledge")
 _STATE_OWNER_IDS = ("inventory", "text", "catalog")
 _PUBLIC_READ_MODULE = "neocortex.read_api"
 _PUBLIC_READ_SYMBOL = "asset_health_payload"
-_SERVICE_MODULE = "_04_Nucleo_Operativo.knowledge_asset_health"
+_SERVICE_MODULE = "neocortex.knowledge.knowledge_asset_health"
 _SERVICE_SYMBOL = "inspect_knowledge_asset_health"
 
 _LIMITATIONS = (
@@ -482,6 +479,3 @@ __all__ = [
     "build_knowledge_asset_health_contract_analysis",
     "knowledge_asset_health_questions",
 ]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.code_knowledge_asset_health_analysis")

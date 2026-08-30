@@ -45,7 +45,7 @@ CAPABILITY_REGISTRY_SCHEMA: Literal["neocortex.capability-registry/v1"] = (
 )
 CAPABILITY_REGISTRY_FINGERPRINT_PREFIX = "capability-registry-v1:sha256:"
 
-ModuleResolutionMode = Literal["source", "canonical"]
+ModuleResolutionMode = Literal["canonical"]
 RouteInputSource = Literal["route_candidates", "inventory_snapshot"]
 RouteSubjectMatchKind = Literal["exact_mime", "mime_prefix"]
 KnowledgeCaptureMode = Literal["configured", "if_present"]
@@ -130,32 +130,26 @@ class PythonSymbolRef:
 
 @dataclass(frozen=True, slots=True)
 class CapabilityModuleBinding:
-    """One exact flat source module and its canonical capability module."""
+    """One exact canonical module binding for a capability role."""
 
     role: str
     canonical_module_id: str
-    legacy_module_id: str | None
     public_symbols: tuple[str, ...] = ()
     warning_policy: WarningPolicy = "silent"
 
     def __post_init__(self) -> None:
         _identifier("capability module role", self.role, _ROLE_ID)
         _module_id("canonical capability module id", self.canonical_module_id)
-        if self.legacy_module_id is not None:
-            _module_id("legacy capability module id", self.legacy_module_id)
-            if self.legacy_module_id == self.canonical_module_id:
-                raise ValueError("legacy and canonical capability modules must differ")
         _unique_texts("capability public symbol", self.public_symbols, ordered=True)
         for symbol in self.public_symbols:
             _identifier("capability public symbol", symbol, _SYMBOL_NAME)
         if self.warning_policy != "silent":
-            raise ValueError("capability compatibility warnings must remain silent")
+            raise ValueError("capability warning policy must remain silent")
 
     def as_payload(self) -> dict[str, object]:
         return {
             "role": self.role,
             "canonical_module_id": self.canonical_module_id,
-            "legacy_module_id": self.legacy_module_id,
             "public_symbols": list(self.public_symbols),
             "warning_policy": self.warning_policy,
         }
@@ -298,7 +292,6 @@ class CapabilitySpec:
 
     capability_id: str
     architecture_family_id: str
-    compatibility_family_id: str
     logical_owner_id: str
     canonical_module_tree: str
     modules: tuple[CapabilityModuleBinding, ...]
@@ -309,14 +302,7 @@ class CapabilitySpec:
 
     def __post_init__(self) -> None:
         _identifier("capability id", self.capability_id, _CAPABILITY_ID)
-        architecture_family_id = _module_id(
-            "capability architecture family id", self.architecture_family_id
-        )
-        compatibility_family_id = _module_id(
-            "capability compatibility family id", self.compatibility_family_id
-        )
-        if architecture_family_id == compatibility_family_id:
-            raise ValueError("capability architecture and compatibility families must differ")
+        _module_id("capability architecture family id", self.architecture_family_id)
         _identifier("capability logical owner id", self.logical_owner_id, _CAPABILITY_ID)
         tree = _module_id("canonical capability module tree", self.canonical_module_tree)
         if not self.modules or any(
@@ -329,13 +315,6 @@ class CapabilitySpec:
         _unique_texts("canonical capability module", canonical_modules)
         if any(not _module_in_tree(module, tree) for module in canonical_modules):
             raise ValueError("canonical capability modules must remain inside their module tree")
-        legacy_modules = tuple(
-            item.legacy_module_id for item in self.modules if item.legacy_module_id is not None
-        )
-        _unique_texts("legacy capability module", legacy_modules)
-        if any(_module_in_tree(module, tree) for module in legacy_modules):
-            raise ValueError("legacy capability modules cannot live inside the canonical tree")
-
         known_modules = set(canonical_modules)
         if self.route is not None:
             route_refs = (
@@ -381,32 +360,15 @@ class CapabilitySpec:
             state_owner_ids=state_owner_ids,
         )
 
-    def source_logical_owner_bindings(self) -> tuple[CapabilityLogicalOwnerBinding, ...]:
-        """Return exact compatibility selectors without widening a flat prefix."""
-
-        state_owner_ids = () if self.state is None else (self.state.state_owner_id,)
-        return tuple(
-            CapabilityLogicalOwnerBinding(
-                owner_id=self.logical_owner_id,
-                selector_id=(f"{self.capability_id}-legacy-{binding.role.replace('_', '-')}"),
-                match_kind="exact_module",
-                value=binding.legacy_module_id,
-                state_owner_ids=state_owner_ids,
-            )
-            for binding in self.modules
-            if binding.legacy_module_id is not None
-        )
-
     def logical_owner_bindings(self) -> tuple[CapabilityLogicalOwnerBinding, ...]:
-        """Return canonical-tree and exact-source bindings in stable order."""
+        """Return the canonical module-tree selector for this capability."""
 
-        return (self.canonical_logical_owner_binding(), *self.source_logical_owner_bindings())
+        return (self.canonical_logical_owner_binding(),)
 
     def as_payload(self) -> dict[str, object]:
         return {
             "capability_id": self.capability_id,
             "architecture_family_id": self.architecture_family_id,
-            "compatibility_family_id": self.compatibility_family_id,
             "logical_owner_id": self.logical_owner_id,
             "canonical_module_tree": self.canonical_module_tree,
             "modules": [item.as_payload() for item in self.modules],
@@ -460,24 +422,6 @@ class CapabilityRegistry:
             for binding in capability.modules
         )
         _unique_texts("canonical capability module", canonical_modules)
-        legacy_modules = tuple(
-            binding.legacy_module_id
-            for capability in self.capabilities
-            for binding in capability.modules
-            if binding.legacy_module_id is not None
-        )
-        _unique_texts("legacy capability module", legacy_modules)
-        if set(canonical_modules) & set(legacy_modules):
-            raise ValueError("legacy and canonical capability modules cannot overlap")
-        cross_namespace_matches = tuple(
-            (legacy_module, canonical_tree)
-            for legacy_module in legacy_modules
-            for canonical_tree in trees
-            if _module_in_tree(legacy_module, canonical_tree)
-        )
-        if cross_namespace_matches:
-            raise ValueError("legacy capability modules cannot match any canonical capability tree")
-
         owner_bindings = tuple(
             binding
             for capability in self.capabilities
@@ -512,16 +456,6 @@ class CapabilityRegistry:
             raise ValueError(f"unknown capability route: {selected}")
         return match
 
-    def resolve_source(self, module_id: str) -> tuple[CapabilitySpec, ...]:
-        """Resolve an exact flat source module; never inspect canonical trees."""
-
-        selected = _module_id("source capability module id", module_id)
-        return tuple(
-            capability
-            for capability in self.capabilities
-            if any(binding.legacy_module_id == selected for binding in capability.modules)
-        )
-
     def resolve_canonical(self, module_id: str) -> tuple[CapabilitySpec, ...]:
         """Resolve a canonical module tree; never fall back to source modules."""
 
@@ -536,14 +470,11 @@ class CapabilityRegistry:
         self,
         module_id: str,
         *,
-        resolver_mode: ModuleResolutionMode,
+        resolver_mode: ModuleResolutionMode = "canonical",
     ) -> tuple[str, ...]:
-        if resolver_mode == "source":
-            matches = self.resolve_source(module_id)
-        elif resolver_mode == "canonical":
-            matches = self.resolve_canonical(module_id)
-        else:
-            raise ValueError("capability resolver mode is invalid")
+        if resolver_mode != "canonical":
+            raise ValueError("only canonical capability resolution is supported")
+        matches = self.resolve_canonical(module_id)
         return tuple(dict.fromkeys(item.architecture_family_id for item in matches))
 
     def as_payload(self) -> dict[str, object]:
@@ -553,30 +484,12 @@ class CapabilityRegistry:
         }
 
 
-def resolve_source_capabilities(module_id: str) -> tuple[CapabilitySpec, ...]:
-    return CAPABILITY_REGISTRY.resolve_source(module_id)
-
-
 def resolve_canonical_capabilities(module_id: str) -> tuple[CapabilitySpec, ...]:
     return CAPABILITY_REGISTRY.resolve_canonical(module_id)
 
 
-def source_target_architecture_families(module_id: str) -> tuple[str, ...]:
-    return CAPABILITY_REGISTRY.target_families(module_id, resolver_mode="source")
-
-
 def canonical_target_architecture_families(module_id: str) -> tuple[str, ...]:
-    return CAPABILITY_REGISTRY.target_families(module_id, resolver_mode="canonical")
-
-
-def source_compatibility_architecture_families(module_id: str) -> tuple[str, ...]:
-    """Resolve explicit compatibility families for exact source modules only."""
-
-    return tuple(
-        dict.fromkeys(
-            item.compatibility_family_id for item in CAPABILITY_REGISTRY.resolve_source(module_id)
-        )
-    )
+    return CAPABILITY_REGISTRY.target_families(module_id)
 
 
 def capability_canonical_logical_owner_bindings() -> tuple[CapabilityLogicalOwnerBinding, ...]:
@@ -587,24 +500,10 @@ def capability_canonical_logical_owner_bindings() -> tuple[CapabilityLogicalOwne
     )
 
 
-def capability_source_logical_owner_bindings() -> tuple[CapabilityLogicalOwnerBinding, ...]:
-    """Return exact selectors for source compatibility modules."""
-
-    return tuple(
-        binding
-        for item in CAPABILITY_REGISTRY.capabilities
-        for binding in item.source_logical_owner_bindings()
-    )
-
-
 def capability_logical_owner_bindings() -> tuple[CapabilityLogicalOwnerBinding, ...]:
-    """Return canonical and compatibility selectors without importing the adapter."""
+    """Return canonical ownership selectors."""
 
-    return tuple(
-        binding
-        for item in CAPABILITY_REGISTRY.capabilities
-        for binding in item.logical_owner_bindings()
-    )
+    return capability_canonical_logical_owner_bindings()
 
 
 def capability_registry_payload() -> dict[str, object]:
@@ -652,20 +551,15 @@ def _parse_module(value: object) -> CapabilityModuleBinding:
         {
             "role",
             "canonical_module_id",
-            "legacy_module_id",
             "public_symbols",
             "warning_policy",
         },
     )
-    legacy = raw["legacy_module_id"]
-    if legacy is not None and not isinstance(legacy, str):
-        raise ValueError("legacy capability module id is invalid")
     return CapabilityModuleBinding(
         role=_required_text("capability module role", raw["role"]),
         canonical_module_id=_required_text(
             "canonical capability module id", raw["canonical_module_id"]
         ),
-        legacy_module_id=legacy,
         public_symbols=tuple(
             _required_text("capability public symbol", item)
             for item in _sequence(raw["public_symbols"], "capability public symbols")
@@ -763,7 +657,6 @@ def _parse_capability(value: object) -> CapabilitySpec:
         {
             "capability_id",
             "architecture_family_id",
-            "compatibility_family_id",
             "logical_owner_id",
             "canonical_module_tree",
             "modules",
@@ -779,9 +672,6 @@ def _parse_capability(value: object) -> CapabilitySpec:
         capability_id=_required_text("capability id", raw["capability_id"]),
         architecture_family_id=_required_text(
             "capability architecture family id", raw["architecture_family_id"]
-        ),
-        compatibility_family_id=_required_text(
-            "capability compatibility family id", raw["compatibility_family_id"]
         ),
         logical_owner_id=_required_text("capability logical owner id", raw["logical_owner_id"]),
         canonical_module_tree=_required_text(
@@ -823,16 +713,6 @@ CAPABILITY_REGISTRY = CapabilityRegistry(
 )
 
 
-for _defined_value in tuple(globals().values()):
-    if getattr(_defined_value, "__module__", None) == __name__:
-        try:
-            _defined_value.__module__ = (
-                "_04_Nucleo_Operativo.platform.shared.capability_registry"
-            )
-        except (AttributeError, TypeError):
-            pass
-del _defined_value
-
 
 __all__ = [
     "CAPABILITY_REGISTRY",
@@ -851,10 +731,6 @@ __all__ = [
     "capability_registry_canonical_json",
     "capability_registry_fingerprint",
     "capability_registry_payload",
-    "capability_source_logical_owner_bindings",
     "parse_capability_registry_payload",
     "resolve_canonical_capabilities",
-    "resolve_source_capabilities",
-    "source_compatibility_architecture_families",
-    "source_target_architecture_families",
 ]

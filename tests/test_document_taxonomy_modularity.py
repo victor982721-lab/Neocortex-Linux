@@ -12,8 +12,8 @@ from typing import Any
 import pytest
 import xxhash
 
-from _04_Nucleo_Operativo import document_taxonomy_models
-from _04_Nucleo_Operativo.document_taxonomy import (
+from neocortex.documents import document_taxonomy_models
+from neocortex.documents.document_taxonomy import (
     BUILTIN_TAXONOMY_VERSION,
     CLASSIFIER_VERSION,
     AuthoritySpec,

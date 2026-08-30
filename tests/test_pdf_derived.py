@@ -7,11 +7,11 @@ import unittest
 import zlib
 from pathlib import Path
 
-from _04_Nucleo_Operativo.pdf_derived import (
+from neocortex.capabilities.formats.pdf.pdf_derived import (
     PdfDerivedIndexer,
     initialize_derived_schema,
 )
-from _04_Nucleo_Operativo.pdf_state import initialize_pdf_state
+from neocortex.capabilities.formats.pdf.pdf_state import initialize_pdf_state
 from neocortex.platform_policy import sqlite_path_collation
 
 

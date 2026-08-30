@@ -1,9 +1,6 @@
 """Lazy, extensible registry for source-language analyzers."""
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import sys
 from dataclasses import dataclass
 from importlib import import_module
@@ -68,18 +65,7 @@ class AnalyzerRegistry:
             loaded = self._loaded.get(spec.analyzer_id)
             if loaded is not None:
                 return loaded
-        try:
-            module = import_module(spec.module_name, package=__package__)
-        except ModuleNotFoundError:
-            # Third-party and historical analyzer recipes may still name the
-            # legacy package while the built-in registry resolves canonical
-            # modules.  Keep that optional seam lazy and fail closed when both
-            # locations are unavailable.
-            if not spec.module_name.startswith("."):
-                raise
-            module = import_module(
-                "_04_Nucleo_Operativo" + spec.module_name,
-            )
+        module = import_module(spec.module_name, package=__package__)
         analyzer = cast(LanguageAnalyzer, getattr(module, spec.class_name)())
         if analyzer.analyzer_id != spec.analyzer_id:
             raise RuntimeError(
@@ -200,6 +186,3 @@ __all__ = [  # noqa: RUF022
     "BUILTIN_ANALYZERS",
     "builtin_analyzer_registry",
 ]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.code_analyzers")

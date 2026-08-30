@@ -12,7 +12,7 @@ from typing import Any, cast
 
 import pytest
 
-from _04_Nucleo_Operativo import cli_code
+from neocortex.api.cli import cli_code
 
 
 @dataclass(frozen=True)
@@ -61,7 +61,7 @@ def test_code_query_review_uses_public_payload_and_exact_query_contract(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    from _04_Nucleo_Operativo import code_review
+    from neocortex.code import code_review
 
     calls: dict[str, Any] = {}
 
@@ -114,7 +114,8 @@ def test_code_query_status_reuses_snapshot_and_self_analysis_without_writing(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from _04_Nucleo_Operativo import code_analyzers, self_analysis_status
+    from neocortex.code import code_analyzers
+    from neocortex.workflow.self_analysis import self_analysis_status
 
     database = tmp_path / "code.sqlite3"
     database.write_bytes(b"published-state")
@@ -172,7 +173,7 @@ def test_code_query_diff_uses_public_comparison_payload(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from _04_Nucleo_Operativo import code_publication_diff
+    from neocortex.code import code_publication_diff
 
     baseline = tmp_path / "baseline"
     current = tmp_path / "current"

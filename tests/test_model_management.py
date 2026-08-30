@@ -6,8 +6,8 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
-from _04_Nucleo_Operativo import model_management
-from _04_Nucleo_Operativo.cli_app import main
+from neocortex.runtime.config import model_management
+from neocortex.api.cli.cli_app import main
 from neocortex.cli import _translate_canonical_arguments, entrypoint
 
 
@@ -92,7 +92,7 @@ def test_canonical_models_facade_translates_help_and_json(
 def test_models_status_json_exit_contract(capsys) -> None:
     report = _complete_report(Path("/models"))
     with patch(
-        "_04_Nucleo_Operativo.cli_models.inspect_models",
+        "neocortex.api.cli.cli_models.inspect_models",
         return_value=report,
     ):
         assert main(("--models-status", "--models-json")) == 0
@@ -102,7 +102,7 @@ def test_models_status_json_exit_contract(capsys) -> None:
 def test_incomplete_models_status_exits_two(capsys) -> None:
     report = {**_complete_report(Path("/models")), "all_prepared": False}
     with patch(
-        "_04_Nucleo_Operativo.cli_models.inspect_models",
+        "neocortex.api.cli.cli_models.inspect_models",
         return_value=report,
     ):
         assert main(("--models-status", "--models-json")) == 2

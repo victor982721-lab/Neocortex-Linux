@@ -7,10 +7,6 @@ import importlib
 import os
 import signal
 import subprocess
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
-
 def _posix_resource_module():
     try:
         return importlib.import_module("resource")
@@ -540,9 +536,4 @@ def close_isolated_process(process) -> None:
             process.close()
     except (AttributeError, ValueError):
         return
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.isolated_process")
-
-
 # endregion [03]

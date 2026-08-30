@@ -11,7 +11,7 @@ import unittest
 import zipfile
 from pathlib import Path
 
-from _04_Nucleo_Operativo.zip_safety import (
+from neocortex.platform.zip_safety import (
     ZipStructureError,
     inspect_zip_bytes,
     inspect_zip_structure,

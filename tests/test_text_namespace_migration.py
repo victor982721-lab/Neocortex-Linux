@@ -16,14 +16,11 @@ PRODUCT_ROOT = "neocortex.capabilities.formats.text"
 MODULE_NAMES = ("text_derivation_repository", "text_route", "text_state")
 
 
-def test_legacy_text_modules_are_exact_product_aliases() -> None:
+def test_text_modules_are_owned_by_the_canonical_tree() -> None:
     product_root = PROJECT_ROOT / "neocortex" / "capabilities" / "formats" / "text"
     for name in MODULE_NAMES:
-        legacy = importlib.import_module(f"_04_Nucleo_Operativo.{name}")
         canonical = importlib.import_module(f"{PRODUCT_ROOT}.{name}")
 
-        assert legacy is canonical
-        assert sys.modules[f"_04_Nucleo_Operativo.{name}"] is canonical
         assert Path(canonical.__file__).resolve().is_relative_to(product_root)
 
 
@@ -81,7 +78,7 @@ def test_text_parent_package_remains_import_light() -> None:
     assert completed.stdout.strip() == "TEXT_PACKAGE_IMPORT_LIGHT"
 
 
-def test_text_symbols_keep_historical_pickle_fqns() -> None:
+def test_text_symbols_are_owned_by_canonical_modules() -> None:
     route = importlib.import_module(f"{PRODUCT_ROOT}.text_route")
     state = importlib.import_module(f"{PRODUCT_ROOT}.text_state")
     for module, name in (
@@ -90,5 +87,5 @@ def test_text_symbols_keep_historical_pickle_fqns() -> None:
         (state, "TextSearchHit"),
     ):
         symbol = getattr(module, name)
-        assert symbol.__module__ == f"_04_Nucleo_Operativo.{module.__name__.rsplit('.', 1)[-1]}"
+        assert symbol.__module__ == module.__name__
         assert pickle.loads(pickle.dumps(symbol, protocol=5)) is symbol

@@ -12,9 +12,9 @@ from typing import cast
 
 import pytest
 
-import _04_Nucleo_Operativo.external_git_history as history
-from _04_Nucleo_Operativo.code_external_evidence import ExternalEvidenceFile
-from _04_Nucleo_Operativo.semantic_models import fingerprint_bytes
+import neocortex.code.external_git_history as history
+from neocortex.code.code_external_evidence import ExternalEvidenceFile
+from neocortex.semantic.semantic_models import fingerprint_bytes
 
 
 def _git(repo: Path, *arguments: str, environment: dict[str, str] | None = None) -> bytes:

@@ -6,9 +6,6 @@ match the validation that produced it.
 """
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import hashlib
 import json
 import os
@@ -322,6 +319,3 @@ __all__ = [
     "load_current_code_validation_receipt",
     "publish_code_validation_receipt",
 ]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.code_validation_receipts")

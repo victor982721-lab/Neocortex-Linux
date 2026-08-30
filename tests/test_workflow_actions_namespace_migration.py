@@ -20,14 +20,9 @@ MODULES = (
 )
 
 
-def test_legacy_workflow_action_modules_are_exact_product_aliases() -> None:
+def test_workflow_action_modules_are_owned_by_the_canonical_tree() -> None:
     for name in MODULES:
-        legacy = importlib.import_module(f"_04_Nucleo_Operativo.{name}")
         product = importlib.import_module(f"neocortex.workflow.actions.{name}")
-
-        assert legacy is product
-        assert sys.modules[f"_04_Nucleo_Operativo.{name}"] is product
-        assert sys.modules[f"neocortex.workflow.actions.{name}"] is product
         assert Path(product.__file__).resolve().is_relative_to(ACTIONS_ROOT)
 
 
@@ -82,4 +77,4 @@ def test_action_policy_and_reconciliation_keep_historical_pickle_fqns() -> None:
     assert type(restored) is type(action)
     assert restored == action
     assert policy.__file__
-    assert action.__class__.__module__ == "_04_Nucleo_Operativo.file_action_recovery"
+    assert action.__class__.__module__ == "neocortex.workflow.actions.file_action_recovery"

@@ -12,8 +12,8 @@ from typing import cast
 
 import pytest
 
-from _04_Nucleo_Operativo import code_schema, external_evidence_store
-from _04_Nucleo_Operativo.code_external_evidence import (
+from neocortex.code import code_schema, external_evidence_store
+from neocortex.code.code_external_evidence import (
     EXTERNAL_EVIDENCE_SCHEMA,
     RUFF_CONFIGURATION_SIGNATURE,
     ExternalDiagnostic,
@@ -25,8 +25,8 @@ from _04_Nucleo_Operativo.code_external_evidence import (
     external_input_signature,
     read_external_evidence,
 )
-from _04_Nucleo_Operativo.code_state import CodeState
-from _04_Nucleo_Operativo.external_evidence_models import (
+from neocortex.code.code_state import CodeState
+from neocortex.code.external_evidence_models import (
     ExternalEvidenceBundle,
     ExternalProviderFinding,
     ExternalProviderMetric,
@@ -42,7 +42,7 @@ from _04_Nucleo_Operativo.external_evidence_models import (
     external_relation_identity,
     external_signature,
 )
-from _04_Nucleo_Operativo.external_evidence_store import (
+from neocortex.code.external_evidence_store import (
     publish_external_provider,
     read_external_evidence_suite,
     read_external_provider_attestation,

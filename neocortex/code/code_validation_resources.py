@@ -11,9 +11,6 @@ the local experiment bounded, observable and fail-closed.
 """
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import base64
 import errno
 import fcntl
@@ -921,6 +918,3 @@ __all__ = [
     "read_linux_resource_snapshot",
     "run_code_validation_in_resource_boundary",
 ]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.code_validation_resources")

@@ -11,27 +11,27 @@ from contextlib import closing
 from pathlib import Path
 
 from neocortex.deduplication import FileSnapshot
-from _04_Nucleo_Operativo.cancellation import CancellationToken
-from _04_Nucleo_Operativo.docx_route import DocxRoute, _file_key
-from _04_Nucleo_Operativo.docx_state import (
+from neocortex.runtime.control.cancellation import CancellationToken
+from neocortex.capabilities.formats.docx.route import DocxRoute, _file_key
+from neocortex.capabilities.formats.docx.state import (
     UNKNOWN_BIRTHTIME_NS as DOCX_UNKNOWN_BIRTHTIME_NS,
 )
-from _04_Nucleo_Operativo.docx_state import (
+from neocortex.capabilities.formats.docx.state import (
     connect_docx_state,
     docx_database,
     initialize_docx_state,
 )
-from _04_Nucleo_Operativo.pdf_route import PdfRoute, PdfRouteConfig
-from _04_Nucleo_Operativo.pdf_route_cache import file_key
-from _04_Nucleo_Operativo.pdf_state import (
+from neocortex.capabilities.formats.pdf.pdf_route import PdfRoute, PdfRouteConfig
+from neocortex.capabilities.formats.pdf.pdf_route_cache import file_key
+from neocortex.capabilities.formats.pdf.pdf_state import (
     UNKNOWN_BIRTHTIME_NS as PDF_UNKNOWN_BIRTHTIME_NS,
 )
-from _04_Nucleo_Operativo.pdf_state import (
+from neocortex.capabilities.formats.pdf.pdf_state import (
     connect_pdf_state,
     initialize_pdf_state,
     pdf_database,
 )
-from _04_Nucleo_Operativo.state import FrameworkRouteState
+from neocortex.persistence.state import FrameworkRouteState
 
 
 # region [01] Fixture helpers

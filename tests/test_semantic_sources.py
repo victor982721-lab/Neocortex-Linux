@@ -9,17 +9,17 @@ from typing import Iterator
 
 import pytest
 
-import _04_Nucleo_Operativo.text_state as text_state_module
+import neocortex.capabilities.formats.text.text_state as text_state_module
 from neocortex.deduplication.fingerprinting import FULL_ALGORITHM, full_fingerprint, snapshot_path
-from _04_Nucleo_Operativo import semantic_sources
-from _04_Nucleo_Operativo.derivation_contracts import MaterializationRef
-from _04_Nucleo_Operativo.file_identity import file_key_from_snapshot
-from _04_Nucleo_Operativo.semantic_models import (
+from neocortex.semantic import semantic_sources
+from neocortex.semantic.derivation_contracts import MaterializationRef
+from neocortex.foundation.file_identity import file_key_from_snapshot
+from neocortex.semantic.semantic_models import (
     SemanticItem,
     TextSection,
     fingerprint_text,
 )
-from _04_Nucleo_Operativo.semantic_sources import (
+from neocortex.semantic.semantic_sources import (
     MAX_SEMANTIC_TITLE_CHARS,
     SEMANTIC_TITLE_POLICY,
     SEMANTIC_TITLE_SECTION_KIND,
@@ -30,8 +30,8 @@ from _04_Nucleo_Operativo.semantic_sources import (
     semantic_item_title_section,
     semantic_source_heads,
 )
-from _04_Nucleo_Operativo.text_route import TextRoute, TextRouteConfig
-from _04_Nucleo_Operativo.text_state import initialize_text_state, text_database
+from neocortex.capabilities.formats.text.text_route import TextRoute, TextRouteConfig
+from neocortex.capabilities.formats.text.text_state import initialize_text_state, text_database
 
 
 # region [01] Minimal durable image and dedup states

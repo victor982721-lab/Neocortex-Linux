@@ -1,4 +1,4 @@
-"""Compatibility contracts for incremental Semantic planner extraction."""
+"""Contracts for the incremental Semantic planner module boundaries."""
 # region [00] Contexto del módulo
 # Módulo: tests/test_semantic_planner_modularization_contract.py
 # Propósito: documentación embebida y separación visual de regiones.
@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from _04_Nucleo_Operativo import semantic_planner, semantic_service
+from neocortex.semantic import semantic_planner, semantic_service
 # endregion [01]
 
 # region [02] Implementación
@@ -47,7 +47,7 @@ EXPECTED_SERVICE_SIGNATURE = EXPECTED_PLANNER_SIGNATURE.replace(
 )
 
 
-def test_planner_and_service_facades_keep_exact_distinct_wrappers() -> None:
+def test_planner_and_service_keep_distinct_public_boundaries() -> None:
     assert semantic_planner.__all__ == EXPECTED_PLANNER_ALL
     assert str(inspect.signature(semantic_planner.plan_semantic_index)) == (
         EXPECTED_PLANNER_SIGNATURE
@@ -56,10 +56,10 @@ def test_planner_and_service_facades_keep_exact_distinct_wrappers() -> None:
         EXPECTED_SERVICE_SIGNATURE
     )
     assert semantic_planner.plan_semantic_index.__module__ == (
-        "_04_Nucleo_Operativo.semantic_planner"
+        "neocortex.semantic.semantic_planner"
     )
     assert semantic_service.plan_semantic_index.__module__ == (
-        "_04_Nucleo_Operativo.semantic_service"
+        "neocortex.semantic.semantic_service"
     )
     assert semantic_service.plan_semantic_index is not (semantic_planner.plan_semantic_index)
     assert semantic_service.semantic_plan_payload is not (semantic_planner.semantic_plan_payload)
@@ -71,8 +71,8 @@ def test_planner_exception_identity_module_and_pickle_are_stable() -> None:
 
     assert semantic_service.SemanticPlanBlocked is blocked
     assert issubclass(scratch, blocked)
-    assert blocked.__module__ == "_04_Nucleo_Operativo.semantic_planner"
-    assert scratch.__module__ == "_04_Nucleo_Operativo.semantic_planner"
+    assert blocked.__module__ == "neocortex.semantic.semantic_plan_errors"
+    assert scratch.__module__ == "neocortex.semantic.semantic_plan_errors"
     for exception_type in (blocked, scratch):
         original = exception_type("stable semantic planner exception")
         restored = pickle.loads(pickle.dumps(original))
@@ -82,7 +82,7 @@ def test_planner_exception_identity_module_and_pickle_are_stable() -> None:
 
 def test_extracted_error_module_reexports_exact_exception_objects() -> None:
     errors = __import__(
-        "_04_Nucleo_Operativo.semantic_plan_errors",
+        "neocortex.semantic.semantic_plan_errors",
         fromlist=["SemanticPlanBlocked"],
     )
 
@@ -92,15 +92,15 @@ def test_extracted_error_module_reexports_exact_exception_objects() -> None:
     ]
     assert errors.SemanticPlanBlocked is semantic_planner.SemanticPlanBlocked
     assert errors.SemanticScratchLimitExceeded is (semantic_planner.SemanticScratchLimitExceeded)
-    assert errors.SemanticPlanBlocked.__module__ == ("_04_Nucleo_Operativo.semantic_planner")
+    assert errors.SemanticPlanBlocked.__module__ == ("neocortex.semantic.semantic_plan_errors")
     assert errors.SemanticScratchLimitExceeded.__module__ == (
-        "_04_Nucleo_Operativo.semantic_planner"
+        "neocortex.semantic.semantic_plan_errors"
     )
 
 
 def test_extracted_scratch_module_keeps_planner_compatibility_aliases() -> None:
     scratch = __import__(
-        "_04_Nucleo_Operativo.semantic_plan_scratch",
+        "neocortex.semantic.semantic_plan_scratch",
         fromlist=["CONTENT_BATCH_SIZE"],
     )
 
@@ -117,7 +117,7 @@ def test_extracted_scratch_module_keeps_planner_compatibility_aliases() -> None:
 
 def test_extracted_results_module_keeps_required_compatibility_aliases() -> None:
     results = __import__(
-        "_04_Nucleo_Operativo.semantic_plan_results",
+        "neocortex.semantic.semantic_plan_results",
         fromlist=["_WorkloadSpec"],
     )
 
@@ -140,12 +140,12 @@ def test_extracted_results_module_keeps_required_compatibility_aliases() -> None
         semantic_planner._plan_payload_for_signature,
         semantic_planner._assemble_semantic_plan,
     ):
-        assert wrapper.__module__ == "_04_Nucleo_Operativo.semantic_planner"
+        assert wrapper.__module__ == "neocortex.semantic.semantic_planner"
 
 
 def test_extracted_owner_module_keeps_dynamic_facade_seams() -> None:
     owners = __import__(
-        "_04_Nucleo_Operativo.semantic_plan_owners",
+        "neocortex.semantic.semantic_plan_owners",
         fromlist=["_validate_source_schema"],
     )
 
@@ -163,7 +163,7 @@ def test_extracted_owner_module_keeps_dynamic_facade_seams() -> None:
     ):
         planner_wrapper = getattr(semantic_planner, name)
         assert planner_wrapper is not getattr(owners, name)
-        assert planner_wrapper.__module__ == "_04_Nucleo_Operativo.semantic_planner"
+        assert planner_wrapper.__module__ == "neocortex.semantic.semantic_planner"
 
     required_callbacks = {
         "_plan_text_database_group": (
@@ -195,12 +195,12 @@ def test_extracted_owner_module_keeps_dynamic_facade_seams() -> None:
     "import_order",
     (
         (
-            "_04_Nucleo_Operativo.semantic_planner",
-            "_04_Nucleo_Operativo.semantic_service",
+            "neocortex.semantic.semantic_planner",
+            "neocortex.semantic.semantic_service",
         ),
         (
-            "_04_Nucleo_Operativo.semantic_service",
-            "_04_Nucleo_Operativo.semantic_planner",
+            "neocortex.semantic.semantic_service",
+            "neocortex.semantic.semantic_planner",
         ),
     ),
     ids=("planner-first", "service-first"),
@@ -214,16 +214,16 @@ def test_planner_service_cold_import_orders_preserve_identity(
         f"sys.path.insert(0, {str(repository)!r})\n"
         f"first = importlib.import_module({import_order[0]!r})\n"
         f"second = importlib.import_module({import_order[1]!r})\n"
-        "planner = importlib.import_module('_04_Nucleo_Operativo.semantic_planner')\n"
-        "service = importlib.import_module('_04_Nucleo_Operativo.semantic_service')\n"
+        "planner = importlib.import_module('neocortex.semantic.semantic_planner')\n"
+        "service = importlib.import_module('neocortex.semantic.semantic_service')\n"
         f"assert planner.__all__ == {EXPECTED_PLANNER_ALL!r}\n"
         "assert service.SemanticPlanBlocked is planner.SemanticPlanBlocked\n"
         "assert service.plan_semantic_index is not planner.plan_semantic_index\n"
         "assert service.semantic_plan_payload is not planner.semantic_plan_payload\n"
         "assert planner.SemanticPlanBlocked.__module__ == "
-        "'_04_Nucleo_Operativo.semantic_planner'\n"
+        "'neocortex.semantic.semantic_plan_errors'\n"
         "assert planner.SemanticScratchLimitExceeded.__module__ == "
-        "'_04_Nucleo_Operativo.semantic_planner'\n"
+        "'neocortex.semantic.semantic_plan_errors'\n"
         f"assert str(inspect.signature(planner.plan_semantic_index)) == "
         f"{EXPECTED_PLANNER_SIGNATURE!r}\n"
         "print('ok')\n"
@@ -244,12 +244,12 @@ def test_planner_service_cold_import_orders_preserve_identity(
     "import_order",
     (
         (
-            "_04_Nucleo_Operativo.semantic_plan_owners",
-            "_04_Nucleo_Operativo.semantic_planner",
+            "neocortex.semantic.semantic_plan_owners",
+            "neocortex.semantic.semantic_planner",
         ),
         (
-            "_04_Nucleo_Operativo.semantic_planner",
-            "_04_Nucleo_Operativo.semantic_plan_owners",
+            "neocortex.semantic.semantic_planner",
+            "neocortex.semantic.semantic_plan_owners",
         ),
     ),
     ids=("owners-first", "planner-first"),
@@ -264,11 +264,11 @@ def test_owner_planner_cold_import_orders_keep_live_facade_bindings(
         f"importlib.import_module({import_order[0]!r})\n"
         f"importlib.import_module({import_order[1]!r})\n"
         "owners = importlib.import_module("
-        "'_04_Nucleo_Operativo.semantic_plan_owners')\n"
+        "'neocortex.semantic.semantic_plan_owners')\n"
         "planner = importlib.import_module("
-        "'_04_Nucleo_Operativo.semantic_planner')\n"
+        "'neocortex.semantic.semantic_planner')\n"
         "results = importlib.import_module("
-        "'_04_Nucleo_Operativo.semantic_plan_results')\n"
+        "'neocortex.semantic.semantic_plan_results')\n"
         "for name in ('_validate_source_schema', '_validate_dedup_schema', "
         "'_validate_semantic_cache'):\n"
         "    assert getattr(planner, name) is getattr(owners, name)\n"

@@ -1,9 +1,6 @@
 """Bounded Pillow preprocessing shared by image and PDF OCR."""
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import math
 from dataclasses import dataclass
 
@@ -155,6 +152,3 @@ __all__ = (
     "estimate_deskew_degrees",
     "orient_and_deskew",
 )
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.ocr_image_preprocess")

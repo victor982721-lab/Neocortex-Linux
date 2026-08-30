@@ -13,10 +13,6 @@ from neocortex.runtime.orchestration.run_lifecycle import (
     DEFAULT_STALE_HEARTBEAT_SECONDS,
     process_is_alive,
 )
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
-
 # region [01] Status models
 
 
@@ -58,11 +54,6 @@ class RunStatus:
     completed_ns: int | None
     routes: tuple[RouteStatus, ...]
     recovery_required_actions: int = 0
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.run_status")
-
-
 # endregion [01]
 
 

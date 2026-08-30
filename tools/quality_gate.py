@@ -49,17 +49,16 @@ EXPECTED_ARCHITECTURE_BASELINE_ID = "neocortex-production-imports-2026-08-23/v5"
 EXPECTED_ARCHITECTURE_PROJECTION_SCHEMA = "neocortex.architecture-projection/v1"
 EXPECTED_CAPABILITY_REGISTRY_SCHEMA = "neocortex.capability-registry/v1"
 EXPECTED_CAPABILITY_PROJECTION_POLICY_ID = (
-    "neocortex.capability-architecture-projection/transitional-v1"
+    "neocortex.capability-architecture-projection/canonical-v2"
 )
 EXPECTED_CAPABILITY_PROJECTION_SCOPE_POLICY = (
-    "exact-capability-registry-modules-canonical-and-legacy-v1"
+    "exact-capability-registry-modules-canonical-v2"
 )
-EXPECTED_CAPABILITY_OWNER_RESOLUTION_POLICY = "capability-logical-owner-exact-v1"
-EXPECTED_CAPABILITY_FAMILY_RESOLUTION_POLICY = "canonical-target-or-exact-source-compatibility-v1"
+EXPECTED_CAPABILITY_OWNER_RESOLUTION_POLICY = "capability-logical-owner-canonical-v2"
+EXPECTED_CAPABILITY_FAMILY_RESOLUTION_POLICY = "canonical-target-v2"
 EXPECTED_CAPABILITY_FAMILY_DAG_SCHEMA = "neocortex.architecture-family-dag/v1"
-EXPECTED_CAPABILITY_FAMILY_DAG_POLICY_ID = "neocortex.formats-family-dependencies/transitional-v1"
-EXPECTED_CAPABILITY_CANONICAL_FAMILY = "_04.capabilities.formats"
-EXPECTED_CAPABILITY_COMPATIBILITY_FAMILY = "_04.compat.formats"
+EXPECTED_CAPABILITY_FAMILY_DAG_POLICY_ID = "neocortex.formats-family-dependencies/canonical-v2"
+EXPECTED_CAPABILITY_CANONICAL_FAMILY = "neocortex.capabilities.formats"
 EXPECTED_CAPABILITY_FAMILY_DAG_FINGERPRINT_PREFIX = "architecture-family-dag-v1:sha256:"
 EXPECTED_CORE_RESPONSIBILITY_REGISTRY_SCHEMA = "neocortex.core-responsibility-registry/v1"
 EXPECTED_CORE_PROJECTION_POLICY_ID = "neocortex.core-target-projection/v1"
@@ -80,13 +79,9 @@ EXPECTED_ARCHITECTURE_CONTRACTS = frozenset(
     }
 )
 TEST_PATTERNS = ("test_*.py", "*_test.py")
-PRODUCTION_TYPE_TARGETS = (
-    "_04_Nucleo_Operativo",
-    "neocortex",
-)
+PRODUCTION_TYPE_TARGETS = ("neocortex",)
 PRODUCTION_COVERAGE_SOURCES = PRODUCTION_TYPE_TARGETS
 WHEEL_PACKAGE_ROOTS = (
-    "_04_Nucleo_Operativo",
     "neocortex",
 )
 STATIC_TIMEOUT_SECONDS = 15 * 60
@@ -607,14 +602,11 @@ def _expected_capability_projection(root: Path) -> dict[str, object]:
     ):
         _fail("capability registry contract is unavailable or stale")
     canonical_modules: set[str] = set()
-    legacy_modules: set[str] = set()
     owner_labels: dict[str, set[str]] = {}
     family_labels: dict[str, set[str]] = {}
     canonical_families: set[str] = set()
-    compatibility_families: set[str] = set()
     for capability in registry.capabilities:
         canonical_families.add(capability.architecture_family_id)
-        compatibility_families.add(capability.compatibility_family_id)
         for binding in capability.modules:
             canonical_modules.add(binding.canonical_module_id)
             owner_labels.setdefault(binding.canonical_module_id, set()).add(
@@ -623,29 +615,14 @@ def _expected_capability_projection(root: Path) -> dict[str, object]:
             family_labels.setdefault(binding.canonical_module_id, set()).add(
                 capability.architecture_family_id
             )
-            if binding.legacy_module_id is None:
-                continue
-            legacy_modules.add(binding.legacy_module_id)
-            owner_labels.setdefault(binding.legacy_module_id, set()).add(
-                capability.logical_owner_id
-            )
-            family_labels.setdefault(binding.legacy_module_id, set()).add(
-                capability.compatibility_family_id
-            )
-    if canonical_modules & legacy_modules:
-        _fail("capability registry canonical and legacy module scopes overlap")
     if canonical_families != {EXPECTED_CAPABILITY_CANONICAL_FAMILY}:
         _fail("capability registry canonical family inventory drifted")
-    if compatibility_families != {EXPECTED_CAPABILITY_COMPATIBILITY_FAMILY}:
-        _fail("capability registry compatibility family inventory drifted")
     canonical = sorted(canonical_modules)
-    legacy = sorted(legacy_modules)
     return {
         "schema": schema,
         "fingerprint": fingerprint_function(),
         "canonical_modules": canonical,
-        "legacy_modules": legacy,
-        "registered_modules": sorted((*canonical, *legacy)),
+        "registered_modules": canonical,
         "owner_labels": {module: tuple(sorted(labels)) for module, labels in owner_labels.items()},
         "family_labels": {
             module: tuple(sorted(labels)) for module, labels in family_labels.items()
@@ -658,17 +635,8 @@ def _expected_capability_family_dag() -> dict[str, object]:
         "schema": EXPECTED_CAPABILITY_FAMILY_DAG_SCHEMA,
         "policy_id": EXPECTED_CAPABILITY_FAMILY_DAG_POLICY_ID,
         "edge_semantics": "importer-may-depend-on-reachable-dependency-v1",
-        "families": [
-            EXPECTED_CAPABILITY_CANONICAL_FAMILY,
-            EXPECTED_CAPABILITY_COMPATIBILITY_FAMILY,
-        ],
-        "direct_dependencies": [
-            {
-                "source_family": EXPECTED_CAPABILITY_COMPATIBILITY_FAMILY,
-                "target_family": EXPECTED_CAPABILITY_CANONICAL_FAMILY,
-            }
-        ],
-        "compat_families": [EXPECTED_CAPABILITY_COMPATIBILITY_FAMILY],
+        "families": [EXPECTED_CAPABILITY_CANONICAL_FAMILY],
+        "direct_dependencies": [],
     }
     encoded = json.dumps(
         contract,
@@ -720,8 +688,7 @@ def _expected_core_target(root: Path) -> dict[str, object]:
     payload_function = cast(Callable[[], Mapping[str, object]], payload)
     baseline_function = cast(Callable[[], Mapping[tuple[str, str], int]], baseline)
     registered_modules = tuple(registered_function())
-    compatibility_modules = tuple(namespace.get("COMPATIBILITY_MODULES", ()))
-    implementation_modules = tuple(sorted(set(registered_modules) - set(compatibility_modules)))
+    implementation_modules = registered_modules
     target_payload = payload_function()
     family_dag = _architecture_mapping(target_payload.get("family_dag"), "Core family DAG")
     return {
@@ -729,7 +696,6 @@ def _expected_core_target(root: Path) -> dict[str, object]:
         "fingerprint": fingerprint_function(),
         "registered_modules": list(registered_modules),
         "implementation_modules": list(implementation_modules),
-        "compatibility_modules": list(compatibility_modules),
         "module_root": module_root,
         "responsibility_labels": {
             module: tuple(responsibility_function(module)) for module in implementation_modules
@@ -1033,7 +999,6 @@ def _validate_family_decisions(validation: Mapping[str, object]) -> None:
     )
     decision_by_id: dict[str, Mapping[str, object]] = {}
     forbidden_ids: list[str] = []
-    canonical_to_compat_ids: list[str] = []
     for item in decisions:
         decision = _architecture_mapping(item, "target family edge decision")
         edge_id = _architecture_text(decision.get("edge_id"), "target family decision edge")
@@ -1044,18 +1009,11 @@ def _validate_family_decisions(validation: Mapping[str, object]) -> None:
         target = edge["target_label"]
         if source == target:
             expected_allowed, expected_reason = True, "allowed_same_family"
-        elif (
-            source == EXPECTED_CAPABILITY_CANONICAL_FAMILY
-            and target == EXPECTED_CAPABILITY_COMPATIBILITY_FAMILY
-        ):
-            expected_allowed, expected_reason = False, "canonical_to_compat"
-        elif (
-            source == EXPECTED_CAPABILITY_COMPATIBILITY_FAMILY
-            and target == EXPECTED_CAPABILITY_CANONICAL_FAMILY
-        ):
-            expected_allowed, expected_reason = True, "allowed_by_dag"
         else:
-            expected_allowed, expected_reason = False, "forbidden_dependency"
+            expected_allowed, expected_reason = (
+                target != EXPECTED_CAPABILITY_CANONICAL_FAMILY,
+                "allowed_by_dag" if target == EXPECTED_CAPABILITY_CANONICAL_FAMILY else "forbidden_dependency",
+            )
         if (
             decision.get("source_family") != source
             or decision.get("target_family") != target
@@ -1067,23 +1025,18 @@ def _validate_family_decisions(validation: Mapping[str, object]) -> None:
         decision_by_id[edge_id] = decision
         if not expected_allowed:
             forbidden_ids.append(edge_id)
-        if expected_reason == "canonical_to_compat":
-            canonical_to_compat_ids.append(edge_id)
     if set(decision_by_id) != set(projected_edges):
         _fail("Grimp worker target family decisions do not cover every projected edge")
     if projection.get("forbidden_edge_ids") != forbidden_ids:
         _fail("Grimp worker target family forbidden edge inventory drifted")
-    if projection.get("canonical_to_compat_edge_ids") != canonical_to_compat_ids:
-        _fail("Grimp worker canonical-to-compat edge inventory drifted")
     decision_counts = {
         "edge_decisions": len(decisions),
         "forbidden_edges": len(forbidden_ids),
-        "canonical_to_compat_edges": len(canonical_to_compat_ids),
     }
     for counter_name, expected in decision_counts.items():
         if _architecture_count(counters.get(counter_name), counter_name) != expected:
             _fail(f"Grimp worker target family decision counter drifted: {counter_name}")
-    if forbidden_ids or canonical_to_compat_ids:
+    if forbidden_ids:
         _fail("live target family dependencies violate the allowed DAG")
 
 
@@ -1094,8 +1047,6 @@ def _core_family_decision_expectation(
 ) -> tuple[bool, str]:
     if source == target:
         return True, "allowed_same_family"
-    if source != "compat" and target == "compat":
-        return False, "canonical_to_compat"
     if rank[source] < rank[target]:
         return True, "allowed_by_dag"
     return False, "forbidden_dependency"
@@ -1139,10 +1090,9 @@ def _collect_core_family_decisions(
     projection: Mapping[str, object],
     projected_edges: Mapping[str, Mapping[str, object]],
     rank: Mapping[str, int],
-) -> tuple[Counter[tuple[str, str]], int]:
+) -> Counter[tuple[str, str]]:
     observed_ids: set[str] = set()
     forbidden: Counter[tuple[str, str]] = Counter()
-    canonical_to_compat = 0
     decisions = _architecture_sequence(
         projection.get("edge_decisions"), "Core target family decisions"
     )
@@ -1155,11 +1105,9 @@ def _collect_core_family_decisions(
         )
         if reason == "forbidden_dependency":
             forbidden[source, target] += direct_edges
-        elif reason == "canonical_to_compat":
-            canonical_to_compat += direct_edges
     if observed_ids != set(projected_edges):
         _fail("Core target family decisions do not cover every projected edge")
-    return forbidden, canonical_to_compat
+    return forbidden
 
 
 def _core_transition_comparison(
@@ -1190,7 +1138,6 @@ def _core_transition_counters(
     *,
     forbidden: Mapping[tuple[str, str], int],
     baseline: Mapping[tuple[str, str], int],
-    canonical_to_compat: int,
 ) -> dict[str, int]:
     return {
         "forbidden_direct_module_edges": sum(forbidden.values()),
@@ -1209,7 +1156,6 @@ def _core_transition_counters(
             )
             for item in comparison
         ),
-        "canonical_to_compat_direct_module_edges": canonical_to_compat,
     }
 
 
@@ -1234,7 +1180,7 @@ def _validate_core_family_decisions(
         family_dag.get("layer_order"), "Core target family layers"
     )
     rank = {family: index for index, family in enumerate(layers)}
-    forbidden, canonical_to_compat = _collect_core_family_decisions(
+    forbidden = _collect_core_family_decisions(
         projection,
         projected_edges,
         rank,
@@ -1247,14 +1193,12 @@ def _validate_core_family_decisions(
         comparison,
         forbidden=forbidden,
         baseline=baseline,
-        canonical_to_compat=canonical_to_compat,
     )
     for name, count in expected_counters.items():
         if _architecture_count(counters.get(name), f"Core target {name}") != count:
             _fail(f"Core target family counter drifted: {name}")
     if (
         expected_counters["regression_direct_module_edges"]
-        or expected_counters["canonical_to_compat_direct_module_edges"]
     ):
         _fail("live Core target family dependencies regressed")
     return counters
@@ -1264,7 +1208,7 @@ def _validate_core_target_scope(
     target: Mapping[str, object],
     expected: Mapping[str, object],
     modules: Sequence[str],
-) -> tuple[Mapping[str, object], list[str], list[str]]:
+) -> tuple[Mapping[str, object], list[str]]:
     registry = _architecture_mapping(target.get("registry"), "Core target identity")
     if (
         registry.get("schema") != expected["schema"]
@@ -1282,11 +1226,7 @@ def _validate_core_target_scope(
     unregistered = _architecture_text_list(
         scope.get("unregistered_core_modules"), "Core unregistered modules"
     )
-    compatibility = _architecture_text_list(
-        scope.get("compatibility_modules"), "Core compatibility modules"
-    )
     expected_registered = cast(list[str], expected["registered_modules"])
-    expected_compatibility = cast(list[str], expected["compatibility_modules"])
     core_root = cast(str, expected["module_root"])
     core_modules = {
         module
@@ -1294,7 +1234,6 @@ def _validate_core_target_scope(
         if (
             module == core_root
             or module.startswith(core_root + ".")
-            or module in set(expected_compatibility)
         )
     }
     expected_scope = (
@@ -1302,13 +1241,12 @@ def _validate_core_target_scope(
         sorted(set(expected_registered) & set(modules)),
         sorted(set(expected_registered) - set(modules)),
         sorted(core_modules - set(expected_registered)),
-        expected_compatibility,
     )
-    if (registered, present, missing, unregistered, compatibility) != expected_scope:
+    if (registered, present, missing, unregistered) != expected_scope:
         _fail("Grimp worker Core target scope drifted")
     if missing or unregistered:
         _fail("live Core target registry does not cover the source tree")
-    return registry, registered, compatibility
+    return registry, registered
 
 
 def _validate_core_target_mappings(
@@ -1354,7 +1292,7 @@ def _validate_core_target_projection(
     if target.get("policy_id") != EXPECTED_CORE_PROJECTION_POLICY_ID:
         _fail("Grimp worker Core target projection policy drifted")
     expected = _expected_core_target(root)
-    registry, registered, compatibility = _validate_core_target_scope(
+    registry, registered = _validate_core_target_scope(
         target,
         expected,
         modules=modules,
@@ -1372,16 +1310,12 @@ def _validate_core_target_projection(
     return {
         "registry_fingerprint": registry["fingerprint"],
         "registered_modules": len(registered),
-        "compatibility_modules": len(compatibility),
         "responsibility_unmapped_modules": responsibility_counters["unmapped_modules"],
         "responsibility_overlapping_modules": responsibility_counters["overlapping_modules"],
         "family_unmapped_modules": family_counters["unmapped_modules"],
         "family_overlapping_modules": family_counters["overlapping_modules"],
         "forbidden_direct_module_edges": family_counters["forbidden_direct_module_edges"],
         "family_regression_direct_module_edges": family_counters["regression_direct_module_edges"],
-        "canonical_to_compat_direct_module_edges": family_counters[
-            "canonical_to_compat_direct_module_edges"
-        ],
     }
 
 
@@ -1461,9 +1395,6 @@ def evaluate_architecture_payload(
     canonical_modules = _architecture_text_list(
         scope.get("canonical_modules"), "projection canonical modules"
     )
-    legacy_modules = _architecture_text_list(
-        scope.get("legacy_modules"), "projection legacy modules"
-    )
     registered_modules = _architecture_text_list(
         scope.get("registered_modules"), "projection registered modules"
     )
@@ -1475,7 +1406,6 @@ def evaluate_architecture_payload(
     )
     if (
         canonical_modules != expected_projection["canonical_modules"]
-        or legacy_modules != expected_projection["legacy_modules"]
         or registered_modules != expected_projection["registered_modules"]
         or present_modules != sorted(set(registered_modules) & set(modules))
         or missing_modules != sorted(set(registered_modules) - set(modules))
@@ -1552,20 +1482,15 @@ def evaluate_architecture_payload(
         "family_unmapped_modules": family_counters["unmapped_modules"],
         "family_overlapping_modules": family_counters["overlapping_modules"],
         "family_forbidden_edges": family_counters["forbidden_edges"],
-        "family_canonical_to_compat_edges": family_counters["canonical_to_compat_edges"],
         "owner_aggregate_quotient_sccs": owner_validation["aggregate_quotient_sccs"],
         "family_aggregate_quotient_sccs": family_validation["aggregate_quotient_sccs"],
         "core_target_registry_fingerprint": core_validation["registry_fingerprint"],
         "core_target_registered_modules": core_validation["registered_modules"],
-        "core_target_compatibility_modules": core_validation["compatibility_modules"],
         "core_target_forbidden_direct_module_edges": core_validation[
             "forbidden_direct_module_edges"
         ],
         "core_target_family_regression_direct_module_edges": core_validation[
             "family_regression_direct_module_edges"
-        ],
-        "core_target_canonical_to_compat_direct_module_edges": core_validation[
-            "canonical_to_compat_direct_module_edges"
         ],
     }
 

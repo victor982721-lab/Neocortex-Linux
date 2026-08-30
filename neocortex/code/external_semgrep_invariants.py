@@ -6,9 +6,6 @@ telemetry, applies fixes, or grants mutation authority.
 """
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import hashlib
 import json
 import os
@@ -32,7 +29,7 @@ from neocortex.semgrep_tool_contract import (
 SEMGREP_INVARIANTS_PROVIDER_ID = "semgrep-neocortex-invariants"
 SEMGREP_INVARIANTS_PROVIDER_SCHEMA = "neocortex.semgrep-neocortex-invariants/v1"
 SEMGREP_RULESET_VERSION = "2026.08.03-v1"
-SEMGREP_RULESET_SHA256 = "2df7ed44d0ee407d6c6213ee9f6f5d39d5d710a219089a8ffab762d272253e38"
+SEMGREP_RULESET_SHA256 = "f8a7c4f6aeb21a8d3e434a9d3aee4fafd17ebc1a31c98dc5ed2b934b83066404"
 SEMGREP_INVARIANT_RULE_IDS = (
     "neocortex.no-shell-true",
     "neocortex.no-provider-mutation-authority",
@@ -773,6 +770,3 @@ __all__ = [
     "SemgrepInvariantExecution",
     "execute_semgrep_invariants",
 ]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.external_semgrep_invariants")

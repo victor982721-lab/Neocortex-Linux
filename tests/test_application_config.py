@@ -11,9 +11,9 @@ from dataclasses import fields, replace
 from pathlib import Path
 from unittest.mock import patch
 
-import _04_Nucleo_Operativo.application_config_projections as runtime_projections
-from _04_Nucleo_Operativo import ApplicationConfig, FrameworkConfig
-from _04_Nucleo_Operativo.application_config import (
+import neocortex.runtime.config.application_config_projections as runtime_projections
+from neocortex.api.public import ApplicationConfig, FrameworkConfig
+from neocortex.runtime.config.application_config import (
     archive_route_config_from_application,
     code_route_config_from_application,
     docx_route_config_from_application,
@@ -21,17 +21,17 @@ from _04_Nucleo_Operativo.application_config import (
     pdf_route_config_from_application,
     text_route_config_from_application,
 )
-from _04_Nucleo_Operativo.archive_route import ArchiveRouteConfig
-from _04_Nucleo_Operativo.cli_config import framework_config_from_args
-from _04_Nucleo_Operativo.cli_parser import build_parser
-from _04_Nucleo_Operativo.cli_validation import validate_arguments
-from _04_Nucleo_Operativo.code_contracts import CodeRouteConfig
-from _04_Nucleo_Operativo.docx_models import DocxRouteConfig
-from _04_Nucleo_Operativo.global_resources import GlobalResourceLimits
-from _04_Nucleo_Operativo.orchestrator import FrameworkOrchestrator
-from _04_Nucleo_Operativo.pdf_route_models import PdfRouteConfig
-from _04_Nucleo_Operativo.route_filters import CandidateSelection
-from _04_Nucleo_Operativo.route_registry import (
+from neocortex.capabilities.formats.archive.route import ArchiveRouteConfig
+from neocortex.api.cli.cli_config import framework_config_from_args
+from neocortex.api.cli.cli_parser import build_parser
+from neocortex.api.cli.cli_validation import validate_arguments
+from neocortex.code.code_contracts import CodeRouteConfig
+from neocortex.capabilities.formats.docx.models import DocxRouteConfig
+from neocortex.runtime.control.global_resources import GlobalResourceLimits
+from neocortex.runtime.orchestration.orchestrator import FrameworkOrchestrator
+from neocortex.capabilities.formats.pdf.pdf_route_models import PdfRouteConfig
+from neocortex.safety.route_filters import CandidateSelection
+from neocortex.runtime.orchestration.route_registry import (
     RouteAdapter,
     archive_route_config_from_framework,
     code_route_config_from_framework,
@@ -39,7 +39,7 @@ from _04_Nucleo_Operativo.route_registry import (
     pdf_route_config_from_framework,
     text_route_config_from_framework,
 )
-from _04_Nucleo_Operativo.text_route import TextRouteConfig
+from neocortex.capabilities.formats.text.text_route import TextRouteConfig
 # endregion [01]
 
 # region [02] Implementación
@@ -269,7 +269,7 @@ def test_route_registry_preserves_the_legacy_code_projection_name() -> None:
     config = ApplicationConfig(state_directory=Path("legacy-code-state"))
 
     with patch(
-        "_04_Nucleo_Operativo.application_config_projections.code_route_config_from_application",
+        "neocortex.runtime.config.application_config_projections.code_route_config_from_application",
         wraps=code_route_config_from_application,
     ) as projection:
         legacy = code_route_config_from_framework(config)
@@ -439,12 +439,12 @@ def test_route_registry_delegates_pdf_and_docx_projections() -> None:
     config = ApplicationConfig(state_directory=Path("legacy-document-state"))
 
     with patch(
-        "_04_Nucleo_Operativo.application_config_projections.pdf_route_config_from_application",
+        "neocortex.runtime.config.application_config_projections.pdf_route_config_from_application",
         wraps=pdf_route_config_from_application,
     ) as pdf_projection:
         legacy_pdf = pdf_route_config_from_framework(config)
     with patch(
-        "_04_Nucleo_Operativo.application_config_projections.docx_route_config_from_application",
+        "neocortex.runtime.config.application_config_projections.docx_route_config_from_application",
         wraps=docx_route_config_from_application,
     ) as docx_projection:
         legacy_docx = docx_route_config_from_framework(config)
@@ -523,10 +523,10 @@ def test_orchestrator_consumes_the_domain_projection() -> None:
 
     with (
         patch(
-            "_04_Nucleo_Operativo.orchestrator.global_resource_limits_from_application",
+            "neocortex.runtime.orchestration.orchestrator.global_resource_limits_from_application",
             return_value=projected,
         ) as projection,
-        patch("_04_Nucleo_Operativo.orchestrator.GlobalResourceCoordinator") as coordinator,
+        patch("neocortex.runtime.orchestration.orchestrator.GlobalResourceCoordinator") as coordinator,
     ):
         result = orchestrator._resource_coordinator()
 

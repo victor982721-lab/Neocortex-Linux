@@ -1,9 +1,6 @@
 """Bounded direct CLI operations for structured code intelligence."""
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import argparse
 import json
 import os
@@ -2780,6 +2777,3 @@ __all__ = [
     "run_code_status",
     "run_code_validate_change",
 ]
-
-
-_preserve_legacy_module(globals(), '_04_Nucleo_Operativo.cli_code')

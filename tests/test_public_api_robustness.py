@@ -12,16 +12,16 @@ from typing import get_type_hints
 
 import pytest
 
-import _04_Nucleo_Operativo.application_config_projections as projections
-from _04_Nucleo_Operativo import ApplicationConfig, FrameworkConfig
-from _04_Nucleo_Operativo.capabilities.formats.audio.models import AudioRouteConfig
-from _04_Nucleo_Operativo.code_contracts import CodeRouteConfig
-from _04_Nucleo_Operativo.docx_models import DocxRouteConfig
-from _04_Nucleo_Operativo.global_resources import GlobalResourceLimits
-from _04_Nucleo_Operativo.image_route import ImageRouteConfig
-from _04_Nucleo_Operativo.capabilities.formats.office.route import OfficeRouteConfig
-from _04_Nucleo_Operativo.pdf_route_models import PdfRouteConfig
-from _04_Nucleo_Operativo.capabilities.formats.video.route import VideoRouteConfig
+import neocortex.runtime.config.application_config_projections as projections
+from neocortex.api.public import ApplicationConfig, FrameworkConfig
+from neocortex.capabilities.formats.audio.models import AudioRouteConfig
+from neocortex.code.code_contracts import CodeRouteConfig
+from neocortex.capabilities.formats.docx.models import DocxRouteConfig
+from neocortex.runtime.control.global_resources import GlobalResourceLimits
+from neocortex.capabilities.formats.image.route import ImageRouteConfig
+from neocortex.capabilities.formats.office.route import OfficeRouteConfig
+from neocortex.capabilities.formats.pdf.pdf_route_models import PdfRouteConfig
+from neocortex.capabilities.formats.video.route import VideoRouteConfig
 from neocortex.capabilities import CAPABILITY_SPECS, inspect_runtime_capabilities
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -129,24 +129,24 @@ def test_projection_module_cold_import_keeps_owner_contracts_deferred() -> None:
         forbidden = {
             "neocortex.enumeration",
             "neocortex.deduplication",
-            "_04_Nucleo_Operativo.application_config",
-            "_04_Nucleo_Operativo.archive_route",
-            "_04_Nucleo_Operativo.capabilities.formats.archive.route",
-            "_04_Nucleo_Operativo.capabilities.formats.audio.models",
-            "_04_Nucleo_Operativo.code_contracts",
-            "_04_Nucleo_Operativo.docx_models",
-            "_04_Nucleo_Operativo.capabilities.formats.docx.models",
-            "_04_Nucleo_Operativo.global_resources",
-            "_04_Nucleo_Operativo.image_route",
-            "_04_Nucleo_Operativo.capabilities.formats.image.route",
-            "_04_Nucleo_Operativo.models",
-            "_04_Nucleo_Operativo.capabilities.formats.office.route",
-            "_04_Nucleo_Operativo.pdf_route_models",
-            "_04_Nucleo_Operativo.text_route",
-            "_04_Nucleo_Operativo.capabilities.formats.video.route",
+            "neocortex.runtime.config.application_config",
+            "neocortex.capabilities.formats.archive.route",
+            "neocortex.capabilities.formats.archive.route",
+            "neocortex.capabilities.formats.audio.models",
+            "neocortex.code.code_contracts",
+            "neocortex.capabilities.formats.docx.models",
+            "neocortex.capabilities.formats.docx.models",
+            "neocortex.runtime.control.global_resources",
+            "neocortex.capabilities.formats.image.route",
+            "neocortex.capabilities.formats.image.route",
+            "neocortex.runtime.models",
+            "neocortex.capabilities.formats.office.route",
+            "neocortex.capabilities.formats.pdf.pdf_route_models",
+            "neocortex.capabilities.formats.text.text_route",
+            "neocortex.capabilities.formats.video.route",
         }
 
-        import _04_Nucleo_Operativo.application_config_projections as projections
+        import neocortex.runtime.config.application_config_projections as projections
 
         if tuple(projections.__all__) != (
             "archive_route_config_from_application",

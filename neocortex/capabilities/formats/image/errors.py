@@ -1,9 +1,6 @@
 """Structured image failure policy shared by workers and persistence."""
 
 from __future__ import annotations
-
-from . import preserve_legacy_module as _preserve_legacy_module
-
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -167,6 +164,3 @@ def refine_image_failure(path: Path, failure: ImageFailure) -> ImageFailure:
 
 
 # endregion [02]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.image_errors")

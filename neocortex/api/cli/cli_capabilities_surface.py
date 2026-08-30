@@ -4,9 +4,6 @@
 # region [01] Lightweight imports and public contract
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import argparse
 import re
 
@@ -113,6 +110,3 @@ def validate_capabilities_arguments(args: argparse.Namespace) -> None:
 
 
 # endregion [03]
-
-
-_preserve_legacy_module(globals(), '_04_Nucleo_Operativo.cli_capabilities_surface')

@@ -1,9 +1,6 @@
 """Explicit diagnostics and integrity verification for PDF framework state."""
 
 from __future__ import annotations
-
-from . import preserve_legacy_module as _preserve_legacy_module
-
 import json
 import sqlite3
 import zlib
@@ -240,5 +237,3 @@ def verify_pdf_state(path: Path) -> PdfVerifyReport:
 
 
 # endregion [03]
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.pdf_admin")

@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-import _04_Nucleo_Operativo.orchestrator as orchestrator_module
+import neocortex.runtime.orchestration.orchestrator as orchestrator_module
 from neocortex.enumeration import VolumeAccessError
 from neocortex.deduplication import DedupIndex
 from neocortex.deduplication.inventory.index import (
@@ -24,15 +24,15 @@ from neocortex.deduplication.inventory.index import (
     DEFAULT_GENERATED_DIRECTORY_FRAGMENTS,
     DEFAULT_GENERATED_DIRECTORY_PREFIXES,
 )
-from _04_Nucleo_Operativo.code_contracts import CodeRouteSummary
-from _04_Nucleo_Operativo.models import FrameworkConfig, SelfAnalysisRunResult
-from _04_Nucleo_Operativo.orchestrator import (
+from neocortex.code.code_contracts import CodeRouteSummary
+from neocortex.runtime.models import FrameworkConfig, SelfAnalysisRunResult
+from neocortex.runtime.orchestration.orchestrator import (
     FrameworkOrchestrator,
     RouteExecutionError,
 )
-from _04_Nucleo_Operativo.route_filters import CandidateSelection
-from _04_Nucleo_Operativo.route_registry import RouteAdapter
-from _04_Nucleo_Operativo.self_analysis import (
+from neocortex.safety.route_filters import CandidateSelection
+from neocortex.runtime.orchestration.route_registry import RouteAdapter
+from neocortex.workflow.self_analysis.self_analysis import (
     SELF_ANALYSIS_MANIFEST_PHASE,
     build_self_analysis_inventory_policy,
 )

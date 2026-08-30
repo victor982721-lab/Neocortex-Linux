@@ -7,9 +7,6 @@ remain the owners of their normalized evidence.
 """
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import math
 import sqlite3
 from collections import defaultdict
@@ -750,6 +747,3 @@ __all__ = [
     "engineering_profile_for_module",
     "read_code_engineering_analysis",
 ]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.code_engineering_analytics")

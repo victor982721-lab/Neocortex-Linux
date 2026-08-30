@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-import _04_Nucleo_Operativo.external_mutation_cosmic_ray as mutation
+import neocortex.code.external_mutation_cosmic_ray as mutation
 
 
 def _python_with_cosmic_ray() -> str:
@@ -148,7 +148,7 @@ def test_real_current_work_package_external_deep_coverage_normalize(tmp_path: Pa
     scratch = tmp_path / "scratch"
     scratch.mkdir()
     selected_sources = [
-        *sorted((repository / "_04_Nucleo_Operativo").rglob("*.py")),
+        *sorted((repository / "neocortex").rglob("*.py")),
         repository / "tests" / "test_external_deep_coverage.py",
     ]
     manifest = []
@@ -165,7 +165,7 @@ def test_real_current_work_package_external_deep_coverage_normalize(tmp_path: Pa
                 "sha256": hashlib.sha256(raw).hexdigest(),
             }
         )
-    target_relative = "_04_Nucleo_Operativo/external_deep_coverage.py"
+    target_relative = "neocortex/external_deep_coverage.py"
     target = project / target_relative
     before = hashlib.sha256(target.read_bytes()).hexdigest()
     request: dict[str, object] = {
@@ -192,7 +192,7 @@ def test_real_current_work_package_external_deep_coverage_normalize(tmp_path: Pa
 
     payload = _run(python, request_path, timeout=180)
 
-    assert payload["canonical_symbol"] == ("_04_Nucleo_Operativo.external_deep_coverage._normalize")
+    assert payload["canonical_symbol"] == ("neocortex.code.external_deep_coverage._normalize")
     assert payload["counts"]["selected"] == payload["counts"]["completed"] == 2
     assert payload["baseline_passed"] is True
     assert hashlib.sha256(target.read_bytes()).hexdigest() == before

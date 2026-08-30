@@ -5,9 +5,6 @@
 # Route engines are imported only after parsing and direct-command dispatch.
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import argparse
 import os
 import sys
@@ -360,6 +357,3 @@ def main(arguments: Sequence[str] | None = None) -> int:
 
 
 # endregion [04]
-
-
-_preserve_legacy_module(globals(), '_04_Nucleo_Operativo.cli_app')

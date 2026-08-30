@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from _04_Nucleo_Operativo.pdf_runtime import (
+from neocortex.capabilities.formats.pdf.pdf_runtime import (
     MemorySnapshot,
     PdfResourceError,
     PdfResourceGate,
@@ -50,7 +50,7 @@ class PdfRuntimeTests(unittest.TestCase):
 
     def test_free_space_floor_rejects_dispatch(self):
         with patch(
-            "_04_Nucleo_Operativo.pdf_runtime.shutil.disk_usage",
+            "neocortex.capabilities.formats.pdf.pdf_runtime.shutil.disk_usage",
             return_value=SimpleNamespace(free=100),
         ):
             with self.assertRaises(PdfResourceError):
@@ -59,12 +59,12 @@ class PdfRuntimeTests(unittest.TestCase):
     def test_memory_backpressure_has_bounded_wait(self):
         with (
             patch(
-                "_04_Nucleo_Operativo.pdf_runtime.memory_snapshot",
+                "neocortex.capabilities.formats.pdf.pdf_runtime.memory_snapshot",
                 return_value=MemorySnapshot(None, 100, None, None),
             ),
-            patch("_04_Nucleo_Operativo.pdf_runtime.time.sleep"),
+            patch("neocortex.capabilities.formats.pdf.pdf_runtime.time.sleep"),
             patch(
-                "_04_Nucleo_Operativo.pdf_runtime.time.monotonic",
+                "neocortex.capabilities.formats.pdf.pdf_runtime.time.monotonic",
                 side_effect=(0.0, 0.0, 1.0),
             ),
         ):
@@ -74,12 +74,12 @@ class PdfRuntimeTests(unittest.TestCase):
     def test_commit_backpressure_has_bounded_wait(self):
         with (
             patch(
-                "_04_Nucleo_Operativo.pdf_runtime.memory_snapshot",
+                "neocortex.capabilities.formats.pdf.pdf_runtime.memory_snapshot",
                 return_value=MemorySnapshot(None, 1_000, None, 100),
             ),
-            patch("_04_Nucleo_Operativo.pdf_runtime.time.sleep"),
+            patch("neocortex.capabilities.formats.pdf.pdf_runtime.time.sleep"),
             patch(
-                "_04_Nucleo_Operativo.pdf_runtime.time.monotonic",
+                "neocortex.capabilities.formats.pdf.pdf_runtime.time.monotonic",
                 side_effect=(0.0, 0.0, 1.0),
             ),
         ):
@@ -113,7 +113,7 @@ class PdfRuntimeTests(unittest.TestCase):
 
         with (
             patch(
-                "_04_Nucleo_Operativo.pdf_runtime.memory_snapshot",
+                "neocortex.capabilities.formats.pdf.pdf_runtime.memory_snapshot",
                 return_value=MemorySnapshot(None, 1_000, None, 1_000),
             ),
         ):

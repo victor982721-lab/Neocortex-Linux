@@ -19,14 +19,14 @@ from pathlib import Path
 
 import pytest
 
-from _04_Nucleo_Operativo import knowledge_contracts as contracts
+from neocortex.knowledge import knowledge_contracts as contracts
 # endregion [01]
 
 # region [02] Implementación
 
 
-CONTRACT_MODULE = "_04_Nucleo_Operativo.knowledge_contracts"
-SNAPSHOT_MODULE = "_04_Nucleo_Operativo.knowledge_contract_snapshot"
+CONTRACT_MODULE = "neocortex.knowledge.knowledge_contracts"
+SNAPSHOT_MODULE = "neocortex.knowledge.knowledge_contract_snapshot"
 DELEGATES = {
     ("PublicationHead", "__post_init__"): "validate_publication_head",
     ("LogicalWatermark", "__post_init__"): "validate_logical_watermark",

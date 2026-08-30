@@ -1,9 +1,6 @@
 """SQLite connection, schema contract, and migrations for semantic state."""
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import sqlite3
 import time
 from collections.abc import Callable, Iterator
@@ -1361,6 +1358,3 @@ def initialize_semantic_state(path: Path) -> None:
 
 
 # endregion [04]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.semantic_schema")

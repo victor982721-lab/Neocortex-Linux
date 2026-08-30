@@ -6,26 +6,26 @@ from pathlib import Path
 
 import pytest
 
-import _04_Nucleo_Operativo.external_evidence_providers as providers_module
-import _04_Nucleo_Operativo.external_mutation_cosmic_ray as mutation_module
-from _04_Nucleo_Operativo.code_contracts import (
+import neocortex.code.external_evidence_providers as providers_module
+import neocortex.code.external_mutation_cosmic_ray as mutation_module
+from neocortex.code.code_contracts import (
     LEGACY_DEEP_CONFIGURATION_SCHEMA,
     deep_configuration_payload,
     deep_configuration_signature,
 )
-from _04_Nucleo_Operativo.code_external_evidence import ExternalEvidenceFile
-from _04_Nucleo_Operativo.external_evidence_models import ExternalProviderBaseline
-from _04_Nucleo_Operativo.external_evidence_providers import (
+from neocortex.code.code_external_evidence import ExternalEvidenceFile
+from neocortex.code.external_evidence_models import ExternalProviderBaseline
+from neocortex.code.external_evidence_providers import (
     COSMIC_RAY_MUTATION_PROVIDER_ID,
     CosmicRayFocalMutationProvider,
     provider_tool_versions,
     providers_for_profile,
 )
-from _04_Nucleo_Operativo.external_mutation_cosmic_ray import (
+from neocortex.code.external_mutation_cosmic_ray import (
     FocalMutationExecution,
     mutation_input_signature,
 )
-from _04_Nucleo_Operativo.semantic_models import fingerprint_bytes
+from neocortex.semantic.semantic_models import fingerprint_bytes
 
 
 def _owner(root: Path, relative_path: str, version_id: int) -> ExternalEvidenceFile:

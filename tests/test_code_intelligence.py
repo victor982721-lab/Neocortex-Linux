@@ -15,15 +15,15 @@ from typing import Callable, Iterable, Literal, Mapping, ParamSpec, TypeVar
 
 import pytest
 
-import _04_Nucleo_Operativo.code_route as code_route_module
-import _04_Nucleo_Operativo.code_state as code_state_module
+import neocortex.code.code_route as code_route_module
+import neocortex.code.code_state as code_state_module
 from neocortex.deduplication import FileSnapshot
-from _04_Nucleo_Operativo.cancellation import (
+from neocortex.runtime.control.cancellation import (
     CancellationRequested,
     CancellationToken,
 )
-from _04_Nucleo_Operativo.code_analyzers import AnalyzerRegistry, AnalyzerSpec
-from _04_Nucleo_Operativo.code_contracts import (
+from neocortex.code.code_analyzers import AnalyzerRegistry, AnalyzerSpec
+from neocortex.code.code_contracts import (
     AnalysisStatus,
     ArtifactKind,
     CodeAnalysis,
@@ -31,11 +31,11 @@ from _04_Nucleo_Operativo.code_contracts import (
     CodeRouteConfig,
     CodeSearchQuery,
 )
-from _04_Nucleo_Operativo.code_detection import classify_artifact, decode_text
-from _04_Nucleo_Operativo.code_generic import GenericAnalyzer
-from _04_Nucleo_Operativo.code_projects import list_projects, reconstruct_project
-from _04_Nucleo_Operativo.code_route import CodeRoute
-from _04_Nucleo_Operativo.code_schema import (
+from neocortex.code.code_detection import classify_artifact, decode_text
+from neocortex.code.code_generic import GenericAnalyzer
+from neocortex.code.code_projects import list_projects, reconstruct_project
+from neocortex.code.code_route import CodeRoute
+from neocortex.code.code_schema import (
     CODE_SCHEMA_VERSION,
     checkpoint_code_wal,
     code_database,
@@ -43,13 +43,13 @@ from _04_Nucleo_Operativo.code_schema import (
     initialize_code_state,
     remove_checkpointed_code_sidecars,
 )
-from _04_Nucleo_Operativo.code_search import search_code
-from _04_Nucleo_Operativo.code_state import (
+from neocortex.code.code_search import search_code
+from neocortex.code.code_state import (
     CODE_GRAPH_RESOLVER_SIGNATURE,
     CodeState,
 )
-from _04_Nucleo_Operativo.semantic_sources import iter_text_source_records
-from _04_Nucleo_Operativo.sqlite_cancellation import (
+from neocortex.semantic.semantic_sources import iter_text_source_records
+from neocortex.sqlite_cancellation import (
     CancellationCheck,
     SQLiteCancellationBridge,
 )
@@ -1396,7 +1396,7 @@ def test_newly_available_analyzer_invalidates_runtime_fallback_cache(
 ) -> None:
     source = tmp_path / "worker.py"
     source.write_text("def runtime_upgrade():\n    return 1\n", encoding="utf-8")
-    module_name = "_04_Nucleo_Operativo._fixture_optional_code_analyzer"
+    module_name = "neocortex.code._fixture_optional_code_analyzer"
     sys.modules.pop(module_name, None)
     specs = (
         AnalyzerSpec(
@@ -1484,7 +1484,7 @@ def test_cached_incomplete_status_counters_match_first_publication(
         encoding="utf-8",
     )
     failing.write_text("pub fn failing() {}\n", encoding="utf-8")
-    module_name = "_04_Nucleo_Operativo._fixture_failing_code_analyzer"
+    module_name = "neocortex.code._fixture_failing_code_analyzer"
 
     class FixtureFailingAnalyzer:
         analyzer_id = "fixture-failing-rust"

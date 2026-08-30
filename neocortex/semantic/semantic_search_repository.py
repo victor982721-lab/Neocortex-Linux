@@ -1,9 +1,6 @@
 """Bounded exact-vector search and semantic-hit resolution repository."""
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import heapq
 import json
 import sqlite3
@@ -927,6 +924,3 @@ def resolve_search_hits(
 
 
 # endregion [07]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.semantic_search_repository")

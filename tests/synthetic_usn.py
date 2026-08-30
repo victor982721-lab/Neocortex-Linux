@@ -13,7 +13,8 @@ from unittest.mock import patch
 
 from neocortex.enumeration import JournalCursor, NtfsEntry, UsnChangeBatch
 from neocortex.enumeration.ntfs.volume import VolumeHandle
-from _04_Nucleo_Operativo import inventory_coordinator, orchestrator, reconcile
+from neocortex.integrations.inventory import inventory_coordinator, reconcile
+from neocortex.runtime.orchestration import orchestrator
 
 
 # region [01] Contained filesystem snapshots

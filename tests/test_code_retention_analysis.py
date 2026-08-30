@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from neocortex.deduplication.schema import initialize_inventory_schema
-from _04_Nucleo_Operativo.code_retention_analysis import (
+from neocortex.code.code_retention_analysis import (
     RETENTION_HOLD_QUESTION,
     CodeRetentionResolutionError,
     analyze_code_retention,
@@ -15,9 +15,9 @@ from _04_Nucleo_Operativo.code_retention_analysis import (
     resolve_code_retention,
     retention_questions,
 )
-from _04_Nucleo_Operativo.document_catalog import initialize_document_catalog
-from _04_Nucleo_Operativo.framework_state_writer import FrameworkState
-from _04_Nucleo_Operativo.semantic_state import initialize_semantic_state
+from neocortex.documents.document_catalog import initialize_document_catalog
+from neocortex.persistence.framework_state_writer import FrameworkState
+from neocortex.semantic.semantic_state import initialize_semantic_state
 
 
 REFERENCE_NS = 10_000_000_000
@@ -117,7 +117,7 @@ def test_missing_hold_is_preserved_as_counterevidence_not_a_decision(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import _04_Nucleo_Operativo.code_retention_analysis as module
+    import neocortex.code.code_retention_analysis as module
 
     state = _initialized_state(tmp_path / "state")
     original = module.plan_retention

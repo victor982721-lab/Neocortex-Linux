@@ -1,9 +1,6 @@
 """Hidden compatibility flags for the canonical platform doctor."""
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import argparse
 
 from .cli_operations import DirectOperationFamily, selected_direct_operations
@@ -31,6 +28,3 @@ def validate_platform_arguments(args: argparse.Namespace) -> None:
 
 
 __all__ = ["register_platform_arguments", "validate_platform_arguments"]
-
-
-_preserve_legacy_module(globals(), '_04_Nucleo_Operativo.cli_platform_surface')

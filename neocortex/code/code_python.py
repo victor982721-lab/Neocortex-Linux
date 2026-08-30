@@ -1,9 +1,6 @@
 """Native Python AST analyzer with explicit syntax and inference boundaries."""
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import ast
 import sys
 from dataclasses import dataclass, replace
@@ -1029,6 +1026,3 @@ class PythonAnalyzer:
 
 
 __all__ = ["PythonAnalyzer"]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.code_python")

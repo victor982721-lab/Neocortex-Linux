@@ -9,25 +9,25 @@ from types import SimpleNamespace
 
 import pytest
 
-import _04_Nucleo_Operativo.code_route as code_route_module
-import _04_Nucleo_Operativo.external_deep_coverage as deep_module
-import _04_Nucleo_Operativo.external_evidence_providers as providers_module
-import _04_Nucleo_Operativo.external_evidence_store as store_module
+import neocortex.code.code_route as code_route_module
+import neocortex.code.external_deep_coverage as deep_module
+import neocortex.code.external_evidence_providers as providers_module
+import neocortex.code.external_evidence_store as store_module
 from neocortex.progress import RecordingProgress
-from _04_Nucleo_Operativo.code_contracts import CodeRouteConfig
-from _04_Nucleo_Operativo.code_external_evidence import ExternalEvidenceFile
-from _04_Nucleo_Operativo.code_route import CodeRoute
-from _04_Nucleo_Operativo.external_deep_coverage import (
+from neocortex.code.code_contracts import CodeRouteConfig
+from neocortex.code.code_external_evidence import ExternalEvidenceFile
+from neocortex.code.code_route import CodeRoute
+from neocortex.code.external_deep_coverage import (
     DeepCoverageExecution,
     DeepCoverageProgress,
 )
-from _04_Nucleo_Operativo.external_evidence_models import (
+from neocortex.code.external_evidence_models import (
     ExternalProviderBaseline,
     ExternalProviderStatus,
     ProviderDescriptor,
     ProviderLimits,
 )
-from _04_Nucleo_Operativo.external_evidence_providers import (
+from neocortex.code.external_evidence_providers import (
     COSMIC_RAY_MUTATION_PROVIDER_ID,
     PYTEST_COVERAGE_PROVIDER_ID,
     VULTURE_UNUSED_PROVIDER_ID,
@@ -35,11 +35,11 @@ from _04_Nucleo_Operativo.external_evidence_providers import (
     provider_tool_versions,
     providers_for_profile,
 )
-from _04_Nucleo_Operativo.semantic_models import fingerprint_bytes
+from neocortex.semantic.semantic_models import fingerprint_bytes
 
 
 def _project(root: Path) -> tuple[Path, Path]:
-    package = root / "_04_Nucleo_Operativo"
+    package = root / "neocortex"
     tests = root / "tests"
     package.mkdir(parents=True)
     tests.mkdir()
@@ -47,7 +47,7 @@ def _project(root: Path) -> tuple[Path, Path]:
     test = tests / "test_sample.py"
     source.write_text("def value() -> int:\n    return 1\n", encoding="utf-8")
     test.write_text(
-        "from _04_Nucleo_Operativo.sample import value\n\n"
+        "from neocortex.sample import value\n\n"
         "def test_value() -> None:\n    assert value() == 1\n",
         encoding="utf-8",
     )

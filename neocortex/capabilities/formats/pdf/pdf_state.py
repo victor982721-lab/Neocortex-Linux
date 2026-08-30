@@ -1,9 +1,6 @@
 """SQLite lifecycle and conservative migrations for persistent PDF state."""
 
 from __future__ import annotations
-
-from . import preserve_legacy_module as _preserve_legacy_module
-
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
@@ -96,5 +93,3 @@ def initialize_pdf_state(path: Path) -> None:
 
 
 # endregion [03]
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.pdf_state")

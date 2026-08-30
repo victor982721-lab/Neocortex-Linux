@@ -9,9 +9,6 @@ ownership.
 """
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import math
 import os
 import sqlite3
@@ -1258,6 +1255,3 @@ __all__ = [
     "module_id_from_path",
     "read_code_architecture_analysis",
 ]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.code_architecture_analysis")

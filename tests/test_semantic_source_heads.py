@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from _04_Nucleo_Operativo.semantic_sources import (
+from neocortex.semantic.semantic_sources import (
     _source_head_query,
     _update_head_digest,
     semantic_source_heads,

@@ -7,9 +7,6 @@ object and replaying the same events must produce the same graph.
 """
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import json
 from collections import deque
 from collections.abc import Iterable, Mapping
@@ -594,6 +591,3 @@ __all__ = (
     "projection_event_from_text_outbox",
     "rebuild_derivation_projection",
 )
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.derivation_projection")

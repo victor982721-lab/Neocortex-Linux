@@ -1,9 +1,6 @@
 """Pluggable visual multi-label evidence with conservative built-in cues."""
 
 from __future__ import annotations
-
-from . import preserve_legacy_module as _preserve_legacy_module
-
 from pathlib import Path
 from typing import Protocol
 
@@ -115,6 +112,3 @@ DEFAULT_VISUAL_CLASSIFIER = FeatureVisualClassifier()
 
 
 # endregion [02]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.image_visual")

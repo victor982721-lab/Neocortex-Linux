@@ -18,7 +18,7 @@ from typing import Any, Literal, cast
 
 import pytest
 
-from _04_Nucleo_Operativo.code_change_validation import (
+from neocortex.code.code_change_validation import (
     AffectedTestSelection,
     CODE_CHANGE_VALIDATION_POLICY,
     ChangeValidationError,
@@ -44,48 +44,48 @@ from _04_Nucleo_Operativo.code_change_validation import (
     select_affected_tests,
     validate_code_change,
 )
-from _04_Nucleo_Operativo.code_analysis_epistemics import (
+from neocortex.code.code_analysis_epistemics import (
     AnalysisQuestionEvaluation,
     AnalysisQuestionSpec,
     AnalysisSubjectRef,
     analysis_question_spec_fingerprint,
 )
-from _04_Nucleo_Operativo.code_architecture_questions import ARCHITECTURE_CONTRACT_QUESTION
-from _04_Nucleo_Operativo.code_change_evolution_analysis import (
+from neocortex.code.code_architecture_questions import ARCHITECTURE_CONTRACT_QUESTION
+from neocortex.code.code_change_evolution_analysis import (
     CODE_SCHEMA_EVOLUTION_QUESTION,
 )
-from _04_Nucleo_Operativo.code_validation_resources import CodeValidationRuntimeWindow
-from _04_Nucleo_Operativo.code_interface_surface_analysis import CLI_SURFACE_QUESTION
-from _04_Nucleo_Operativo.code_invariant_contracts import (
+from neocortex.code.code_validation_resources import CodeValidationRuntimeWindow
+from neocortex.code.code_interface_surface_analysis import CLI_SURFACE_QUESTION
+from neocortex.code.code_invariant_contracts import (
     EXPERIMENT_SCENARIO_IDS,
     RUNTIME_SCENARIOS,
 )
-from _04_Nucleo_Operativo.code_knowledge_asset_health_analysis import (
+from neocortex.code.code_knowledge_asset_health_analysis import (
     KNOWLEDGE_ASSET_HEALTH_QUESTION,
 )
-from _04_Nucleo_Operativo.code_knowledge_pdf_asset_health_analysis import (
+from neocortex.code.code_knowledge_pdf_asset_health_analysis import (
     KNOWLEDGE_PDF_ASSET_HEALTH_QUESTION,
 )
-from _04_Nucleo_Operativo.code_route_capability_analysis import ROUTE_CAPABILITY_QUESTION
-from _04_Nucleo_Operativo.code_retention_analysis import RETENTION_HOLD_QUESTION
-from _04_Nucleo_Operativo.code_review_serialization import CodeReviewDigest
-from _04_Nucleo_Operativo.code_review_task_analysis import (
+from neocortex.code.code_route_capability_analysis import ROUTE_CAPABILITY_QUESTION
+from neocortex.code.code_retention_analysis import RETENTION_HOLD_QUESTION
+from neocortex.code.code_review_serialization import CodeReviewDigest
+from neocortex.code.code_review_task_analysis import (
     FRAMEWORK_REVIEW_TASK_PROTOCOL_QUESTION,
 )
-from _04_Nucleo_Operativo.code_security_dependency_questions import (
+from neocortex.code.code_security_dependency_questions import (
     DEPENDENCY_EVIDENCE_QUESTION,
     SECURITY_EVIDENCE_QUESTION,
 )
-from _04_Nucleo_Operativo.code_state_interaction_analysis import WORKFLOW_SQL_QUESTION
-from _04_Nucleo_Operativo.code_state_projection_analysis import (
+from neocortex.code.code_state_interaction_analysis import WORKFLOW_SQL_QUESTION
+from neocortex.code.code_state_projection_analysis import (
     TEXT_SEMANTIC_PROJECTION_QUESTION,
 )
-from _04_Nucleo_Operativo.external_evidence_providers import (
+from neocortex.code.external_evidence_providers import (
     INSTALLED_PACKAGE_PROVIDER_ID,
     PIP_AUDIT_PROVIDER_ID,
 )
-from _04_Nucleo_Operativo.platform.shared.capability_registry import CAPABILITY_REGISTRY
-from _04_Nucleo_Operativo.semantic_models import canonical_json
+from neocortex.platform.capability_registry import CAPABILITY_REGISTRY
+from neocortex.semantic.semantic_models import canonical_json
 
 
 def test_optional_mutation_abstention_is_not_a_failed_machine_gate() -> None:
@@ -113,7 +113,7 @@ def test_global_fallback_covers_every_allowlisted_experiment_test_module() -> No
 
 
 def test_full_suite_coverage_consumes_the_canonical_no_regression_baseline() -> None:
-    from _04_Nucleo_Operativo import code_change_validation
+    from neocortex.code import code_change_validation
 
     root = Path(__file__).resolve().parents[1]
     totals = SimpleNamespace(
@@ -302,7 +302,7 @@ def test_default_runner_kills_a_descendant_that_keeps_pipes_after_interrupt(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from _04_Nucleo_Operativo import code_change_validation
+    from neocortex.code import code_change_validation
 
     monkeypatch.setattr(code_change_validation, "_COMMAND_INTERRUPT_GRACE_SECONDS", 0.25)
     subreaper_before = code_change_validation._subreaper_state()
@@ -355,7 +355,7 @@ def test_default_runner_kills_a_descendant_that_keeps_pipes_after_interrupt(
 def test_default_runner_restores_subreaper_after_keyboard_interrupt(
     tmp_path: Path,
 ) -> None:
-    from _04_Nucleo_Operativo import code_change_validation
+    from neocortex.code import code_change_validation
 
     subreaper_before = code_change_validation._subreaper_state()
     file_descriptors_before = len(tuple(Path("/proc/self/fd").iterdir()))
@@ -406,7 +406,7 @@ def test_linux_publication_only_snapshot_is_an_eligible_review_fence(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from _04_Nucleo_Operativo import code_change_validation
+    from neocortex.code import code_change_validation
 
     monkeypatch.setattr(
         code_change_validation,
@@ -626,7 +626,7 @@ def _public_review_fixture() -> SimpleNamespace:
 def test_public_review_stability_uses_two_repeatable_fresh_process_reads(
     tmp_path: Path,
 ) -> None:
-    from _04_Nucleo_Operativo.code_validation_public_review import (
+    from neocortex.code.code_validation_public_review import (
         code_review_identity,
         validation_stable_public_review_identity,
     )
@@ -667,7 +667,7 @@ def test_public_review_stability_uses_two_repeatable_fresh_process_reads(
 
 
 def test_public_review_stability_abstains_when_fresh_reads_disagree(tmp_path: Path) -> None:
-    from _04_Nucleo_Operativo.code_validation_public_review import (
+    from neocortex.code.code_validation_public_review import (
         code_review_identity,
         validation_stable_public_review_identity,
     )
@@ -709,7 +709,7 @@ def _pip_audit_preflight_fixture(
     exact_snapshot: bool = True,
     snapshot_clean: bool = True,
 ) -> SimpleNamespace:
-    from _04_Nucleo_Operativo import code_change_validation
+    from neocortex.code import code_change_validation
 
     state = tmp_path / "state"
     state.mkdir(parents=True)
@@ -878,7 +878,7 @@ def test_pip_audit_preflight_reuses_fresh_dependency_equivalent_history(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from _04_Nucleo_Operativo import code_change_validation
+    from neocortex.code import code_change_validation
 
     fixture = _pip_audit_preflight_fixture(
         tmp_path,
@@ -923,7 +923,7 @@ def test_canonical_validation_stops_before_static_when_supply_preflight_abstains
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from _04_Nucleo_Operativo import code_change_validation
+    from neocortex.code import code_change_validation
 
     source = tmp_path / "source"
     state = tmp_path / "state"
@@ -985,7 +985,7 @@ def test_network_only_pip_failure_uses_only_a_resolved_fresh_exact_inventory(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from _04_Nucleo_Operativo import code_change_validation
+    from neocortex.code import code_change_validation
 
     monkeypatch.setattr(
         code_change_validation,
@@ -1036,7 +1036,7 @@ def test_replay_accepts_the_same_resolved_fresh_pip_snapshot_only_once(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from _04_Nucleo_Operativo import code_change_validation
+    from neocortex.code import code_change_validation
 
     fixture_provider_id = "fixture-provider"
     monkeypatch.setattr(
@@ -1122,7 +1122,7 @@ def test_replay_accepts_identical_full_reobservation_when_physical_replay_is_uns
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from _04_Nucleo_Operativo import code_change_validation
+    from neocortex.code import code_change_validation
 
     provider_id = "fixture-version-bound-provider"
     monkeypatch.setattr(
@@ -1158,8 +1158,8 @@ def test_canonical_experiment_gate_persists_each_exact_receipt(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import _04_Nucleo_Operativo.code_experiment_executor as executor
-    import _04_Nucleo_Operativo.code_experiment_store as store
+    import neocortex.code.code_experiment_executor as executor
+    import neocortex.code.code_experiment_store as store
 
     evaluation = _question_evaluation(
         ROUTE_CAPABILITY_QUESTION,
@@ -1241,8 +1241,8 @@ def test_supply_questions_use_their_measured_allowlisted_runner(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import _04_Nucleo_Operativo.code_experiment_executor as executor
-    import _04_Nucleo_Operativo.code_experiment_store as store
+    import neocortex.code.code_experiment_executor as executor
+    import neocortex.code.code_experiment_store as store
 
     evaluations = tuple(
         _question_evaluation(
@@ -1590,7 +1590,7 @@ def test_experiment_control_plane_change_binds_all_executable_question_scopes() 
 
     bindings, relevant, errors = _relevant_question_state(
         review,
-        change=_change_for("_04_Nucleo_Operativo/code_change_validation.py"),
+        change=_change_for("neocortex/code/code_change_validation.py"),
         selection=_selection(),
     )
 
@@ -1646,7 +1646,7 @@ def test_review_task_protocol_change_binds_architecture_retention_and_its_exact_
 
     bindings, relevant, errors = _relevant_question_state(
         review,
-        change=_change_for("_04_Nucleo_Operativo/review_task_repository.py"),
+        change=_change_for("neocortex/workflow/review/review_task_repository.py"),
         selection=_selection("tests/test_review_tasks.py"),
     )
 
@@ -1659,7 +1659,7 @@ def test_review_task_protocol_change_binds_architecture_retention_and_its_exact_
     binding = next(
         item for item in bindings if item["scope_id"] == "framework_review_task_protocol"
     )
-    assert binding["matched_changed_paths"] == ["_04_Nucleo_Operativo/review_task_repository.py"]
+    assert binding["matched_changed_paths"] == ["neocortex/workflow/review/review_task_repository.py"]
     assert binding["matched_test_selectors"] == ["tests/test_review_tasks.py"]
 
 
@@ -1683,7 +1683,7 @@ def test_knowledge_asset_health_change_binds_its_exact_causal_question() -> None
 
     bindings, relevant, errors = _relevant_question_state(
         review,
-        change=_change_for("_04_Nucleo_Operativo/knowledge_asset_health.py"),
+        change=_change_for("neocortex/knowledge/knowledge_asset_health.py"),
         selection=_selection("tests/test_knowledge_asset_health.py"),
     )
 
@@ -1695,7 +1695,7 @@ def test_knowledge_asset_health_change_binds_its_exact_causal_question() -> None
     }
     binding = next(item for item in bindings if item["scope_id"] == "knowledge_asset_health")
     assert binding["relevance"] == "affected"
-    assert binding["matched_changed_paths"] == ["_04_Nucleo_Operativo/knowledge_asset_health.py"]
+    assert binding["matched_changed_paths"] == ["neocortex/knowledge/knowledge_asset_health.py"]
     assert binding["matched_test_selectors"] == ["tests/test_knowledge_asset_health.py"]
 
 
@@ -1714,7 +1714,7 @@ def test_pdf_asset_health_change_binds_only_its_exact_pdf_causal_question() -> N
 
     bindings, relevant, errors = _relevant_question_state(
         review,
-        change=_change_for("_04_Nucleo_Operativo/knowledge_asset_health_pdf.py"),
+        change=_change_for("neocortex/knowledge/knowledge_asset_health_pdf.py"),
         selection=_selection("tests/test_knowledge_asset_health_pdf.py"),
     )
 
@@ -1726,7 +1726,7 @@ def test_pdf_asset_health_change_binds_only_its_exact_pdf_causal_question() -> N
     binding = next(item for item in bindings if item["scope_id"] == "knowledge_pdf_asset_health")
     assert binding["relevance"] == "affected"
     assert binding["matched_changed_paths"] == [
-        "_04_Nucleo_Operativo/knowledge_asset_health_pdf.py"
+        "neocortex/knowledge/knowledge_asset_health_pdf.py"
     ]
     assert binding["matched_test_selectors"] == ["tests/test_knowledge_asset_health_pdf.py"]
 
@@ -1746,7 +1746,7 @@ def test_retention_planner_change_makes_durable_hold_evidence_acceptance_critica
 
     bindings, relevant, errors = _relevant_question_state(
         review,
-        change=_change_for("_04_Nucleo_Operativo/retention_planner.py"),
+        change=_change_for("neocortex/workflow/retention/planner.py"),
         selection=_selection("tests/test_retention_planner.py"),
     )
 
@@ -1757,7 +1757,7 @@ def test_retention_planner_change_makes_durable_hold_evidence_acceptance_critica
     }
     binding = next(item for item in bindings if item["scope_id"] == "durable_retention_holds")
     assert binding["relevance"] == "affected"
-    assert binding["matched_changed_paths"] == ["_04_Nucleo_Operativo/retention_planner.py"]
+    assert binding["matched_changed_paths"] == ["neocortex/workflow/retention/planner.py"]
 
 
 def test_production_python_change_makes_declared_architecture_contracts_acceptance_critical() -> (
@@ -1938,8 +1938,8 @@ def test_git_change_preserves_both_sides_of_a_renamed_acceptance_boundary(
     tmp_path: Path,
 ) -> None:
     root = _repository(tmp_path)
-    schema = root / "_04_Nucleo_Operativo" / "code_schema.py"
-    schema.parent.mkdir()
+    schema = root / "neocortex" / "code" / "code_schema.py"
+    schema.parent.mkdir(parents=True, exist_ok=True)
     schema.write_text("SCHEMA_VERSION = 1\n", encoding="utf-8")
     _git(root, "add", ".")
     _git(root, "commit", "-qm", "add schema boundary")
@@ -1955,10 +1955,10 @@ def test_git_change_preserves_both_sides_of_a_renamed_acceptance_boundary(
     matched_paths, _matched_selectors = _scope_relevance(scope, change, selection)
 
     assert change.changed_paths == (
-        "_04_Nucleo_Operativo/code_schema.py",
+        "neocortex/code/code_schema.py",
         "neocortex/renamed_schema.py",
     )
-    assert matched_paths == ("_04_Nucleo_Operativo/code_schema.py",)
+    assert matched_paths == ("neocortex/code/code_schema.py",)
 
 
 def test_selection_preserves_changed_tests_and_convention(tmp_path: Path) -> None:
@@ -2020,7 +2020,7 @@ def test_full_suite_selection_cannot_publish_module_prefixes_as_uncovered_source
             direct_tests=(),
             dependency_tests=(),
             convention_tests=(),
-            uncovered_sources=("_04_Nucleo_Operativo/semantic_",),
+            uncovered_sources=("neocortex/semantic_",),
             reasons=("change_crosses_full_suite_boundary",),
         )
 
@@ -2030,19 +2030,19 @@ def test_validation_preserves_full_suite_strategy_without_a_false_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     root = _repository(tmp_path)
-    boundary = root / "_04_Nucleo_Operativo" / "semantic_text_index.py"
-    boundary.parent.mkdir()
+    boundary = root / "neocortex" / "semantic" / "semantic_text_index.py"
+    boundary.parent.mkdir(parents=True, exist_ok=True)
     boundary.write_text("PIPELINE = 'fixture'\n", encoding="utf-8")
     change = GitChangeSnapshot(
         "a" * 40,
         "a" * 40,
-        ("_04_Nucleo_Operativo/semantic_text_index.py",),
+        ("neocortex/semantic/semantic_text_index.py",),
         (),
         (),
         (),
         "b" * 64,
     )
-    from _04_Nucleo_Operativo import code_change_validation
+    from neocortex.code import code_change_validation
 
     monkeypatch.setattr(
         code_change_validation,
@@ -2065,7 +2065,7 @@ def test_validation_preserves_full_suite_strategy_without_a_false_fallback(
     assert result.selection.selectors == ("tests/test_logic.py",)
     assert result.selection.dependency_tests == ()
     assert result.selection.convention_tests == ()
-    assert result.selection.uncovered_sources == ("_04_Nucleo_Operativo/semantic_text_index.py",)
+    assert result.selection.uncovered_sources == ("neocortex/semantic/semantic_text_index.py",)
     assert "change_crosses_full_suite_boundary" in result.selection.reasons
     assert "published_import_graph_stale_for_changed_source" in result.selection.reasons
 
@@ -2074,8 +2074,8 @@ def test_code_schema_boundary_selects_its_bounded_compatibility_matrix(
     tmp_path: Path,
 ) -> None:
     root = _repository(tmp_path)
-    schema = root / "_04_Nucleo_Operativo" / "code_schema.py"
-    schema.parent.mkdir()
+    schema = root / "neocortex" / "code" / "code_schema.py"
+    schema.parent.mkdir(parents=True, exist_ok=True)
     schema.write_text("SCHEMA_VERSION = 2\n", encoding="utf-8")
     expected = (
         "tests/test_code_change_evolution_analysis.py",
@@ -2096,7 +2096,7 @@ def test_code_schema_boundary_selects_its_bounded_compatibility_matrix(
     change = GitChangeSnapshot(
         "a" * 40,
         "a" * 40,
-        ("_04_Nucleo_Operativo/code_schema.py",),
+        ("neocortex/code/code_schema.py",),
         (),
         (),
         (),
@@ -2151,62 +2151,26 @@ def test_quality_gate_source_selects_its_bounded_compatibility_matrix(
 @pytest.mark.parametrize(
     ("relative", "capability_id", "shared_expected"),
     (
-        ("_04_Nucleo_Operativo/docx_route.py", "docx", None),
+        ("neocortex/capabilities/formats/docx/route.py", "docx", None),
         (
-            "_04_Nucleo_Operativo/capabilities/formats/docx/route.py",
-            "docx",
-            None,
-        ),
-        (
-            "_04_Nucleo_Operativo/platform/shared/zip_safety.py",
+            "neocortex/platform/zip_safety.py",
             None,
             (
                 "tests/test_bounded_io_refactors.py",
-                "tests/test_format_module_move_compatibility.py",
                 "tests/test_zip_safety.py",
             ),
         ),
         (
-            "_04_Nucleo_Operativo/zip_safety.py",
+            "neocortex/platform/content_types.py",
             None,
             (
                 "tests/test_bounded_io_refactors.py",
-                "tests/test_format_module_move_compatibility.py",
-                "tests/test_zip_safety.py",
-            ),
-        ),
-        (
-            "_04_Nucleo_Operativo/content_types.py",
-            None,
-            (
-                "tests/test_bounded_io_refactors.py",
-                "tests/test_format_module_move_compatibility.py",
                 "tests/test_framework_actions.py",
                 "tests/test_video_content_types.py",
             ),
         ),
-        (
-            "_04_Nucleo_Operativo/platform/shared/content_types.py",
-            None,
-            (
-                "tests/test_bounded_io_refactors.py",
-                "tests/test_format_module_move_compatibility.py",
-                "tests/test_framework_actions.py",
-                "tests/test_video_content_types.py",
-            ),
-        ),
-        ("_04_Nucleo_Operativo/archive_route.py", "archive", None),
-        (
-            "_04_Nucleo_Operativo/capabilities/formats/archive/route.py",
-            "archive",
-            None,
-        ),
-        ("_04_Nucleo_Operativo/image_route.py", "image", None),
-        (
-            "_04_Nucleo_Operativo/capabilities/formats/image/route.py",
-            "image",
-            None,
-        ),
+        ("neocortex/capabilities/formats/archive/route.py", "archive", None),
+        ("neocortex/capabilities/formats/image/route.py", "image", None),
     ),
 )
 def test_format_boundaries_select_registry_matrices_without_a_published_graph(
@@ -2250,7 +2214,7 @@ def test_format_boundaries_select_registry_matrices_without_a_published_graph(
 
 def test_format_boundary_rejects_a_partial_registry_test_matrix(tmp_path: Path) -> None:
     root = _repository(tmp_path)
-    relative = "_04_Nucleo_Operativo/capabilities/formats/docx/route.py"
+    relative = "neocortex/capabilities/formats/docx/route.py"
     source = root / relative
     source.parent.mkdir(parents=True, exist_ok=True)
     source.write_text("CONTRACT = 'fixture'\n", encoding="utf-8")
@@ -2356,7 +2320,7 @@ def test_dirty_tree_fails_before_any_external_gate(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     root = _repository(tmp_path)
-    from _04_Nucleo_Operativo import code_change_validation
+    from neocortex.code import code_change_validation
 
     change = GitChangeSnapshot(
         "b" * 40,
@@ -2396,7 +2360,7 @@ def test_non_executable_change_never_expands_empty_selection_to_full_suite(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     root = _repository(tmp_path)
-    from _04_Nucleo_Operativo import code_change_validation
+    from neocortex.code import code_change_validation
 
     change = GitChangeSnapshot(
         "a" * 40,
@@ -2445,7 +2409,7 @@ def test_unknown_change_with_empty_selection_abstains_without_running_full_suite
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     root = _repository(tmp_path)
-    from _04_Nucleo_Operativo import code_change_validation
+    from neocortex.code import code_change_validation
 
     change = GitChangeSnapshot(
         "a" * 40,
@@ -2525,7 +2489,7 @@ def test_changed_source_never_trusts_a_stale_published_import_closure(
         (),
         "b" * 64,
     )
-    from _04_Nucleo_Operativo import code_change_validation
+    from neocortex.code import code_change_validation
 
     monkeypatch.setattr(
         code_change_validation,
@@ -2584,7 +2548,7 @@ def test_validation_fallback_stays_bounded_and_runs_public_boundaries(
     ):
         (root / "tests" / name).write_text("def test_boundary(): pass\n", encoding="utf-8")
 
-    from _04_Nucleo_Operativo import code_change_validation
+    from neocortex.code import code_change_validation
 
     change = GitChangeSnapshot(
         "a" * 40,
@@ -2647,7 +2611,7 @@ def test_primary_keeps_its_budget_and_replay_has_a_bounded_closure_timeout(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from _04_Nucleo_Operativo import code_change_validation
+    from neocortex.code import code_change_validation
 
     root = _repository(tmp_path)
     change = _change_for("neocortex/logic.py")
@@ -2746,8 +2710,8 @@ def test_primary_keeps_its_budget_and_replay_has_a_bounded_closure_timeout(
 def test_replay_budget_reserves_finalization_inside_the_global_deadline(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from _04_Nucleo_Operativo import code_change_validation
-    from _04_Nucleo_Operativo.code_validation_resources import (
+    from neocortex.code import code_change_validation
+    from neocortex.code.code_validation_resources import (
         CodeValidationRuntimeWindow,
     )
 
@@ -2794,8 +2758,8 @@ def test_replay_budget_reserves_finalization_inside_the_global_deadline(
 def test_candidate_subprocess_timeout_consumes_only_surplus_before_replay(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from _04_Nucleo_Operativo import code_change_validation
-    from _04_Nucleo_Operativo.code_validation_resources import (
+    from neocortex.code import code_change_validation
+    from neocortex.code.code_validation_resources import (
         CodeValidationRuntimeWindow,
     )
 
@@ -2851,7 +2815,7 @@ def test_failed_replay_publication_stops_before_replay_review_consumers(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from _04_Nucleo_Operativo import code_change_validation
+    from neocortex.code import code_change_validation
 
     root = _repository(tmp_path)
     change = _change_for("neocortex/logic.py")
@@ -2968,7 +2932,7 @@ def test_failed_static_gate_stops_before_trusted_execution(
         (),
         "b" * 64,
     )
-    from _04_Nucleo_Operativo import code_change_validation
+    from neocortex.code import code_change_validation
 
     monkeypatch.setattr(
         code_change_validation, "capture_git_change", lambda *_args, **_kwargs: change

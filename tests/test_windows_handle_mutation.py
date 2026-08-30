@@ -15,8 +15,8 @@ from pathlib import Path
 import pytest
 
 from neocortex.deduplication import snapshot_path
-from _04_Nucleo_Operativo import windows_handle_mutation
-from _04_Nucleo_Operativo.windows_handle_mutation import (
+from neocortex.safety import windows_handle_mutation
+from neocortex.safety.windows_handle_mutation import (
     IdentityBoundMutationError,
     MutationEffectUncertainError,
     UnsupportedIdentityBoundMutation,

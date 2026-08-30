@@ -10,24 +10,24 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from _04_Nucleo_Operativo.code_contracts import CodeSearchQuery
-from _04_Nucleo_Operativo.code_search import search_code
-from _04_Nucleo_Operativo.knowledge_context import build_context_bundle
-from _04_Nucleo_Operativo.knowledge_contracts import (
+from neocortex.code.code_contracts import CodeSearchQuery
+from neocortex.code.code_search import search_code
+from neocortex.knowledge.knowledge_context import build_context_bundle
+from neocortex.knowledge.knowledge_contracts import (
     EvidenceMethod,
     OwnerAvailability,
 )
-from _04_Nucleo_Operativo.knowledge_planner import (
+from neocortex.knowledge.knowledge_planner import (
     KnowledgeQuery,
     plan_knowledge_query,
 )
-from _04_Nucleo_Operativo.knowledge_search import execute_knowledge_search
-from _04_Nucleo_Operativo.knowledge_snapshot import (
+from neocortex.knowledge.knowledge_search import execute_knowledge_search
+from neocortex.knowledge.knowledge_snapshot import (
     KnowledgeStatePaths,
     collect_knowledge_snapshot,
 )
-from _04_Nucleo_Operativo.models import FrameworkConfig, SelfAnalysisRunResult
-from _04_Nucleo_Operativo.orchestrator import FrameworkOrchestrator
+from neocortex.runtime.models import FrameworkConfig, SelfAnalysisRunResult
+from neocortex.runtime.orchestration.orchestrator import FrameworkOrchestrator
 from neocortex import __version__
 from tests.synthetic_usn import SyntheticUsnJournal
 # endregion [01]

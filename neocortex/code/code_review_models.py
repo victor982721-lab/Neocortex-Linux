@@ -1,9 +1,6 @@
 """Public immutable contracts for deterministic Code review."""
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import math
 from dataclasses import asdict, dataclass, replace
 from typing import Literal, cast
@@ -1477,6 +1474,3 @@ __all__ = [
     "bounded_code_unused_payload",
     "build_code_review_recommendations",
 ]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.code_review_models")

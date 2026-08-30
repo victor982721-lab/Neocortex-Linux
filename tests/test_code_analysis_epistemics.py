@@ -7,7 +7,7 @@ from dataclasses import replace
 
 import pytest
 
-from _04_Nucleo_Operativo.code_analysis_epistemics import (
+from neocortex.code.code_analysis_epistemics import (
     AnalysisEvidenceRef,
     AnalysisEvidenceRequirementSpec,
     AnalysisFact,

@@ -8,9 +8,6 @@ result; it is not evidence that a human saw or valued that result.
 """
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import json
 import sqlite3
 from collections import Counter
@@ -1159,6 +1156,3 @@ __all__ = [
     "capability_reachability_questions",
     "parse_capability_reachability_payload",
 ]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.code_capability_reachability_analysis")

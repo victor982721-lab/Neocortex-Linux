@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from _04_Nucleo_Operativo.derivation_contracts import (
+from neocortex.semantic.derivation_contracts import (
     DERIVATION_CONTRACT_SCHEMA_VERSION,
     CapabilityFailure,
     DerivationRef,
@@ -25,12 +25,12 @@ from _04_Nucleo_Operativo.derivation_contracts import (
     WorkOutcome,
     WorkReceipt,
 )
-from _04_Nucleo_Operativo.knowledge_contracts import (
+from neocortex.knowledge.knowledge_contracts import (
     ResourceRef,
     RevisionRef,
     RevisionState,
 )
-from _04_Nucleo_Operativo.semantic_models import fingerprint_text
+from neocortex.semantic.semantic_models import fingerprint_text
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -113,7 +113,7 @@ def _successful_receipt(
 
 
 def test_public_vocabulary_is_versioned_and_does_not_duplicate_evidence_ref() -> None:
-    import _04_Nucleo_Operativo.derivation_contracts as contracts
+    import neocortex.semantic.derivation_contracts as contracts
 
     assert DERIVATION_CONTRACT_SCHEMA_VERSION == 1
     assert tuple(member.value for member in ReproducibilityClass) == (

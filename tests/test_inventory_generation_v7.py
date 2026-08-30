@@ -33,8 +33,8 @@ from neocortex.deduplication.persistence.ddl import (
     LEGACY_SHARED_DDL,
     V6_GENERATIONAL_DDL,
 )
-from _04_Nucleo_Operativo import reconcile as reconcile_module
-from _04_Nucleo_Operativo.reconcile import reconcile_usn_window
+from neocortex.integrations.inventory import reconcile as reconcile_module
+from neocortex.integrations.inventory.reconcile import reconcile_usn_window
 # endregion [01]
 
 # region [02] Implementación

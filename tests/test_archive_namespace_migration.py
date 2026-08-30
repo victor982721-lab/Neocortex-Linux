@@ -15,32 +15,11 @@ import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
-LEGACY_ALIASES = {
-    "_04_Nucleo_Operativo.archive_models": (
-        "_04_Nucleo_Operativo.capabilities.formats.archive.models"
-    ),
-    "_04_Nucleo_Operativo.archive_route": (
-        "_04_Nucleo_Operativo.capabilities.formats.archive.route"
-    ),
-    "_04_Nucleo_Operativo.archive_state": (
-        "_04_Nucleo_Operativo.capabilities.formats.archive.state"
-    ),
-    "_04_Nucleo_Operativo.archive_text_worker": (
-        "_04_Nucleo_Operativo.capabilities.formats.archive.text_worker"
-    ),
-    "_04_Nucleo_Operativo.content_types": (
-        "_04_Nucleo_Operativo.platform.shared.content_types"
-    ),
-    "_04_Nucleo_Operativo.zip_safety": (
-        "_04_Nucleo_Operativo.platform.shared.zip_safety"
-    ),
-}
-
 HISTORICAL_SYMBOLS = {
-    "_04_Nucleo_Operativo.capabilities.formats.archive.models": (
+    "neocortex.capabilities.formats.archive.models": (
         "ArchiveRouteSummary",
     ),
-    "_04_Nucleo_Operativo.capabilities.formats.archive.route": (
+    "neocortex.capabilities.formats.archive.route": (
         "ArchiveRouteConfig",
         "_archive_processing_provenance",
         "ArchiveExtractionError",
@@ -79,7 +58,7 @@ HISTORICAL_SYMBOLS = {
         "_require_current_source",
         "ArchiveRoute",
     ),
-    "_04_Nucleo_Operativo.capabilities.formats.archive.state": (
+    "neocortex.capabilities.formats.archive.state": (
         "_create_archive_schema",
         "archive_schema_contract",
         "archive_database",
@@ -94,7 +73,7 @@ HISTORICAL_SYMBOLS = {
         "search_archive_state",
         "list_archive_members",
     ),
-    "_04_Nucleo_Operativo.capabilities.formats.archive.text_worker": (
+    "neocortex.capabilities.formats.archive.text_worker": (
         "_parser",
         "_emit",
         "_ocr_config",
@@ -105,7 +84,7 @@ HISTORICAL_SYMBOLS = {
         "_extract_pdf",
         "main",
     ),
-    "_04_Nucleo_Operativo.platform.shared.content_types": (
+    "neocortex.platform.content_types": (
         "DetectedType",
         "_type",
         "_detect_zip",
@@ -121,7 +100,7 @@ HISTORICAL_SYMBOLS = {
         "_detect_text",
         "detect_content_type",
     ),
-    "_04_Nucleo_Operativo.platform.shared.zip_safety": (
+    "neocortex.platform.zip_safety": (
         "ZipStructureError",
         "ZipStructure",
         "RawDeflateMember",
@@ -139,16 +118,6 @@ HISTORICAL_SYMBOLS = {
         "read_raw_deflate_member",
     ),
 }
-
-
-def test_legacy_archive_modules_are_real_canonical_aliases() -> None:
-    for legacy_name, canonical_name in LEGACY_ALIASES.items():
-        legacy = importlib.import_module(legacy_name)
-        canonical = importlib.import_module(canonical_name)
-
-        assert legacy is canonical
-        assert sys.modules[legacy_name] is canonical
-        assert sys.modules[canonical_name] is canonical
 
 
 def test_archive_implementation_lives_under_the_product_namespace() -> None:
@@ -181,17 +150,17 @@ def test_archive_parent_packages_remain_import_light() -> None:
         """
         import sys
 
-        import _04_Nucleo_Operativo.capabilities
-        import _04_Nucleo_Operativo.capabilities.formats
-        import _04_Nucleo_Operativo.capabilities.formats.archive
+        import neocortex.capabilities
+        import neocortex.capabilities.formats
+        import neocortex.capabilities.formats.archive
 
         forbidden = {
-            "_04_Nucleo_Operativo.capabilities.formats.archive.models",
-            "_04_Nucleo_Operativo.capabilities.formats.archive.route",
-            "_04_Nucleo_Operativo.capabilities.formats.archive.state",
-            "_04_Nucleo_Operativo.capabilities.formats.archive.text_worker",
-            "_04_Nucleo_Operativo.platform.shared.content_types",
-            "_04_Nucleo_Operativo.platform.shared.zip_safety",
+            "neocortex.capabilities.formats.archive.models",
+            "neocortex.capabilities.formats.archive.route",
+            "neocortex.capabilities.formats.archive.state",
+            "neocortex.capabilities.formats.archive.text_worker",
+            "neocortex.platform.content_types",
+            "neocortex.platform.zip_safety",
         }
         loaded = sorted(forbidden.intersection(sys.modules))
         if loaded:
@@ -215,32 +184,27 @@ def test_archive_parent_packages_remain_import_light() -> None:
     assert completed.stdout.strip() == "ARCHIVE_PARENTS_IMPORT_LIGHT"
 
 
-def test_archive_defined_symbols_keep_historical_pickle_fqns() -> None:
+def test_archive_defined_symbols_are_owned_by_canonical_modules() -> None:
     models = importlib.import_module(
-        "_04_Nucleo_Operativo.capabilities.formats.archive.models"
+        "neocortex.capabilities.formats.archive.models"
     )
     route = importlib.import_module(
-        "_04_Nucleo_Operativo.capabilities.formats.archive.route"
+        "neocortex.capabilities.formats.archive.route"
     )
     state = importlib.import_module(
-        "_04_Nucleo_Operativo.capabilities.formats.archive.state"
+        "neocortex.capabilities.formats.archive.state"
     )
     content_types = importlib.import_module(
-        "_04_Nucleo_Operativo.platform.shared.content_types"
+        "neocortex.platform.content_types"
     )
     zip_safety = importlib.import_module(
-        "_04_Nucleo_Operativo.platform.shared.zip_safety"
+        "neocortex.platform.zip_safety"
     )
     for canonical_name, symbol_names in HISTORICAL_SYMBOLS.items():
         canonical = importlib.import_module(canonical_name)
-        legacy_module = next(
-            legacy
-            for legacy, canonical_target in LEGACY_ALIASES.items()
-            if canonical_target == canonical_name
-        )
         for symbol_name in symbol_names:
             symbol = getattr(canonical, symbol_name)
-            assert symbol.__module__ == legacy_module
+            assert symbol.__module__ == canonical.__name__
             assert pickle.loads(pickle.dumps(symbol, protocol=5)) is symbol
 
     instances = (
@@ -269,25 +233,11 @@ def test_archive_defined_symbols_keep_historical_pickle_fqns() -> None:
         assert restored == instance
 
 
-def test_legacy_monkeypatch_reaches_canonical_archive_owner(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    legacy = importlib.import_module("_04_Nucleo_Operativo.archive_route")
-    canonical = importlib.import_module(
-        "_04_Nucleo_Operativo.capabilities.formats.archive.route"
-    )
-
-    sentinel = object()
-    monkeypatch.setattr(legacy, "run_bounded_capture", sentinel)
-
-    assert canonical.run_bounded_capture is sentinel
-
-
 def test_archive_route_invokes_the_canonical_worker_module(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     route = importlib.import_module(
-        "_04_Nucleo_Operativo.capabilities.formats.archive.route"
+        "neocortex.capabilities.formats.archive.route"
     )
     observed: list[tuple[str, ...]] = []
 
@@ -315,7 +265,7 @@ def test_archive_route_invokes_the_canonical_worker_module(
     assert observed[0][:3] == (
         sys.executable,
         "-m",
-        "_04_Nucleo_Operativo.capabilities.formats.archive.text_worker",
+        "neocortex.capabilities.formats.archive.text_worker",
     )
 
 
@@ -323,11 +273,11 @@ def test_archive_route_invokes_the_canonical_worker_module(
     "module_name",
     (
         "neocortex.capabilities.formats.archive.text_worker",
-        "_04_Nucleo_Operativo.capabilities.formats.archive.text_worker",
-        "_04_Nucleo_Operativo.archive_text_worker",
+        "neocortex.capabilities.formats.archive.text_worker",
+        "neocortex.capabilities.formats.archive.text_worker",
     ),
 )
-def test_archive_worker_dash_m_preserves_canonical_and_legacy_entrypoints(
+def test_archive_worker_dash_m_rejects_invalid_limits(
     module_name: str,
 ) -> None:
     environment = os.environ.copy()
@@ -363,13 +313,13 @@ def test_archive_worker_dash_m_preserves_canonical_and_legacy_entrypoints(
 
 def test_archive_versions_schema_and_store_contract_remain_stable() -> None:
     route = importlib.import_module(
-        "_04_Nucleo_Operativo.capabilities.formats.archive.route"
+        "neocortex.capabilities.formats.archive.route"
     )
     state = importlib.import_module(
-        "_04_Nucleo_Operativo.capabilities.formats.archive.state"
+        "neocortex.capabilities.formats.archive.state"
     )
     content_types = importlib.import_module(
-        "_04_Nucleo_Operativo.platform.shared.content_types"
+        "neocortex.platform.content_types"
     )
 
     assert route.ARCHIVE_MIME == "application/zip"

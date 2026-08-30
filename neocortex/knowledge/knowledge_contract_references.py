@@ -1,6 +1,6 @@
 """Validation for Knowledge resource, evidence, ranking and hit contracts.
 # region [00] Contexto del módulo
-# Módulo: _04_Nucleo_Operativo/knowledge_contract_references.py
+# Módulo: neocortex/knowledge_contract_references.py
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
@@ -11,9 +11,6 @@ pickle identity. This helper has no runtime dependency on that facade.
 
 # region [01] Dependencias del módulo
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import math
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
@@ -294,6 +291,3 @@ __all__ = [
     "validate_revision_ref",
 ]
 # endregion [02]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.knowledge_contract_references")

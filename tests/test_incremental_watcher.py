@@ -16,19 +16,19 @@ from neocortex.enumeration import (
     UsnChangeBatch,
 )
 from neocortex.deduplication import InventoryCheckpoint
-from _04_Nucleo_Operativo.corpus_access import CorpusAccessPolicy
-from _04_Nucleo_Operativo.framework_state_writer import (
+from neocortex.safety.corpus_access import CorpusAccessPolicy
+from neocortex.persistence.framework_state_writer import (
     DurableInventoryBinding,
     DurableInventoryOwner,
     FrameworkState,
     read_latest_durable_inventory_owner,
 )
-from _04_Nucleo_Operativo.models import FrameworkConfig
-from _04_Nucleo_Operativo.orchestrator import (
+from neocortex.runtime.models import FrameworkConfig
+from neocortex.runtime.orchestration.orchestrator import (
     build_normal_inventory_boundary,
     initialize_authorized_state_directory,
 )
-from _04_Nucleo_Operativo.watcher import (
+from neocortex.runtime.control.watcher import (
     CheckpointLoader,
     DurableOwnerLoader,
     IncrementalWatcher,

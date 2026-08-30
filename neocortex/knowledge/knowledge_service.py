@@ -7,9 +7,6 @@ retrieval once when that view is unstable, and exposes a partial result with a
 """
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
@@ -553,6 +550,3 @@ __all__ = (
     "SearchExecutor",
     "SnapshotCollector",
 )
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.knowledge_service")

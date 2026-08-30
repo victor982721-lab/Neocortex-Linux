@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from _04_Nucleo_Operativo.platform.shared.architecture_projection import (
+from neocortex.platform.architecture_projection import (
     AGGREGATE_QUOTIENT_SCC_SEMANTICS,
     REALIZABLE_SCC_SEMANTICS,
     AggregateQuotientScc,
@@ -146,11 +146,9 @@ def test_unmapped_overlap_and_out_of_scope_stay_explicit_without_a_default() -> 
     }
 
 
-def test_family_dag_distinguishes_reachable_forbidden_and_canonical_compat_edges() -> None:
+def test_family_dag_distinguishes_reachable_and_forbidden_edges() -> None:
     modules = (
         "base.from",
-        "compat.from",
-        "compat.to",
         "top.from",
         "top.same",
         "top.to",
@@ -161,26 +159,20 @@ def test_family_dag_distinguishes_reachable_forbidden_and_canonical_compat_edges
             ModuleEdge("top.from", "top.same", "same-family"),
             ModuleEdge("top.from", "base.from", "transitive-allowed"),
             ModuleEdge("base.from", "top.to", "reverse-forbidden"),
-            ModuleEdge("top.from", "compat.to", "canonical-compat"),
-            ModuleEdge("compat.from", "base.from", "compat-canonical"),
         ),
         {
             "base.from": ("base",),
-            "compat.from": ("compat",),
-            "compat.to": ("compat",),
             "top.from": ("top",),
             "top.same": ("top",),
             "top.to": ("top",),
         },
     )
     dag = FamilyDag(
-        ("top", "middle", "base", "compat"),
+        ("top", "middle", "base"),
         (
             FamilyDependency("top", "middle"),
             FamilyDependency("middle", "base"),
-            FamilyDependency("compat", "top"),
         ),
-        ("compat",),
     )
 
     evaluation = evaluate_family_dag(projection, dag)
@@ -190,17 +182,14 @@ def test_family_dag_distinguishes_reachable_forbidden_and_canonical_compat_edges
     }
     assert decisions == {
         ("base", "top"): (False, "forbidden_dependency"),
-        ("compat", "base"): (True, "allowed_by_dag"),
         ("top", "base"): (True, "allowed_by_dag"),
-        ("top", "compat"): (False, "canonical_to_compat"),
         ("top", "top"): (True, "allowed_same_family"),
     }
     assert evaluation.dag_forbidden_edges[0].edge.witness_ids == ("reverse-forbidden",)
-    assert evaluation.canonical_to_compat_edges[0].edge.witness_ids == ("canonical-compat",)
     assert evaluation.is_accepted is False
 
 
-def test_family_policy_rejects_cycles_unknown_nodes_and_canonical_to_compat_paths() -> None:
+def test_family_policy_rejects_cycles_and_unknown_nodes() -> None:
     with pytest.raises(ValueError, match="must be acyclic"):
         FamilyDag(
             ("a", "b"),
@@ -208,12 +197,6 @@ def test_family_policy_rejects_cycles_unknown_nodes_and_canonical_to_compat_path
         )
     with pytest.raises(ValueError, match="unknown family"):
         FamilyDag(("a",), (FamilyDependency("a", "missing"),))
-    with pytest.raises(ValueError, match="canonical-to-compat"):
-        FamilyDag(
-            ("canonical", "compat"),
-            (FamilyDependency("canonical", "compat"),),
-            ("compat",),
-        )
 
 
 def test_projection_is_deterministic_for_reordered_inputs_and_mapping_candidates() -> None:
@@ -347,10 +330,6 @@ def test_family_dag_rejects_duplicate_and_self_referential_policy_entries() -> N
         FamilyDag(("a", "a"), ())
     with pytest.raises(ValueError, match="cannot repeat"):
         FamilyDag(("a", "b"), (dependency, dependency))
-    with pytest.raises(ValueError, match="cannot repeat"):
-        FamilyDag(("a", "b"), (), ("a", "a"))
-    with pytest.raises(ValueError, match="absent"):
-        FamilyDag(("a",), (), ("missing",))
     with pytest.raises(ValueError, match="self dependencies"):
         FamilyDag(("a",), (FamilyDependency("a", "a"),))
 

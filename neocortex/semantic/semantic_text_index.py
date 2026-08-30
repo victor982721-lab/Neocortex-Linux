@@ -1,9 +1,6 @@
 """Incremental text indexing from durable extraction caches."""
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import itertools
 import sqlite3
 import time
@@ -602,6 +599,3 @@ def index_text_embeddings(
 
 
 # endregion [02]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.semantic_text_index")

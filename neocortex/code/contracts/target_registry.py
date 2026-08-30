@@ -1,11 +1,9 @@
-"""Exhaustive target architecture and compatibility contracts for Core.
+"""Exhaustive target architecture contracts for the canonical Core tree.
 
 This module is deliberately data-only and imports only the standard library.
-It assigns every current ``_04_Nucleo_Operativo`` Python module to exactly one
-of the 45 product responsibilities, or to the explicit compatibility surface.
-The family dependency policy is the desired end-state DAG; a frozen transition
-baseline makes existing reverse edges visible and non-increasing while the
-cohorts move.
+It assigns every current ``neocortex`` production module to exactly one of the
+45 product responsibilities. The family dependency policy is the desired
+end-state DAG; the frozen transition baseline keeps forbidden edges explicit.
 """
 
 from __future__ import annotations
@@ -19,11 +17,9 @@ from typing import Final
 
 CORE_RESPONSIBILITY_REGISTRY_SCHEMA: Final = "neocortex.core-responsibility-registry/v1"
 CORE_FAMILY_DAG_SCHEMA: Final = "neocortex.core-family-dag/v1"
-CORE_COMPATIBILITY_MATRIX_SCHEMA: Final = "neocortex.core-compatibility-matrix/v1"
 CORE_TRANSITION_BASELINE_SCHEMA: Final = "neocortex.core-family-transition-baseline/v1"
 CORE_ARCHITECTURE_FINGERPRINT_PREFIX: Final = "core-architecture-target-v1:sha256:"
 CORE_MODULE_ROOT: Final = "neocortex"
-LEGACY_MODULE_ROOT: Final = "_04_Nucleo_Operativo"
 
 _MODULE_ID = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$")
 _RESPONSIBILITY_ID = re.compile(r"^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$")
@@ -36,7 +32,6 @@ def _validate_module_id(value: str) -> None:
 
 
 TARGET_FAMILY_LAYERS: Final = (
-    "compat",
     "api",
     "runtime",
     "workflow",
@@ -50,7 +45,7 @@ TARGET_FAMILY_LAYERS: Final = (
     "safety",
     "foundation",
 )
-TARGET_FAMILIES: Final = TARGET_FAMILY_LAYERS[1:]
+TARGET_FAMILIES: Final = TARGET_FAMILY_LAYERS
 TARGET_FAMILY_DEPENDENCIES: Final = tuple(pairwise(TARGET_FAMILY_LAYERS))
 
 TARGET_RESPONSIBILITY_IDS: Final = (
@@ -143,6 +138,7 @@ RESPONSIBILITY_MODULES: Final = {
         "neocortex.api.cli",
         "neocortex.api.public",
         "neocortex.api.read_api_port",
+        "neocortex.api.status_codes",
         "neocortex.capabilities",
         "neocortex.capabilities.formats",
         "neocortex.capabilities.runtime",
@@ -648,249 +644,6 @@ RESPONSIBILITY_MODULES: Final = {
     ),
 }
 
-COMPATIBILITY_MODULES: Final = (
-    "_04_Nucleo_Operativo.archive_models",
-    "_04_Nucleo_Operativo.archive_route",
-    "_04_Nucleo_Operativo.archive_state",
-    "_04_Nucleo_Operativo.archive_text_worker",
-    "_04_Nucleo_Operativo.audio_models",
-    "_04_Nucleo_Operativo.audio_probe",
-    "_04_Nucleo_Operativo.audio_route",
-    "_04_Nucleo_Operativo.audio_state",
-    "_04_Nucleo_Operativo.audio_whisper",
-    "_04_Nucleo_Operativo.content_types",
-    "_04_Nucleo_Operativo.docx_integrity",
-    "_04_Nucleo_Operativo.docx_layout",
-    "_04_Nucleo_Operativo.docx_models",
-    "_04_Nucleo_Operativo.docx_route",
-    "_04_Nucleo_Operativo.docx_schema",
-    "_04_Nucleo_Operativo.docx_state",
-    "_04_Nucleo_Operativo.image_adult",
-    "_04_Nucleo_Operativo.image_analysis",
-    "_04_Nucleo_Operativo.image_decision",
-    "_04_Nucleo_Operativo.image_decode",
-    "_04_Nucleo_Operativo.image_document",
-    "_04_Nucleo_Operativo.image_errors",
-    "_04_Nucleo_Operativo.image_features",
-    "_04_Nucleo_Operativo.image_isolation",
-    "_04_Nucleo_Operativo.image_models",
-    "_04_Nucleo_Operativo.image_png",
-    "_04_Nucleo_Operativo.image_policy",
-    "_04_Nucleo_Operativo.image_route",
-    "_04_Nucleo_Operativo.image_semantics",
-    "_04_Nucleo_Operativo.image_state",
-    "_04_Nucleo_Operativo.image_visual",
-    "_04_Nucleo_Operativo.legacy_office_worker",
-    "_04_Nucleo_Operativo.office_route",
-    "_04_Nucleo_Operativo.office_state",
-    "_04_Nucleo_Operativo.video_frames",
-    "_04_Nucleo_Operativo.video_models",
-    "_04_Nucleo_Operativo.video_probe",
-    "_04_Nucleo_Operativo.video_route",
-    "_04_Nucleo_Operativo.video_state",
-    "_04_Nucleo_Operativo.zip_safety",
-)
-
-
-def _format_compatibility_pairs(
-    source_prefix: str,
-    target_tree: str,
-    roles: tuple[str, ...],
-) -> tuple[tuple[str, str], ...]:
-    return tuple(
-        (
-            f"{LEGACY_MODULE_ROOT}.{source_prefix}_{role}",
-            f"{CORE_MODULE_ROOT}.{target_tree}.{role}",
-        )
-        for role in roles
-    )
-
-
-COMPATIBILITY_MODULE_PAIRS: Final = tuple(
-    sorted(
-        (
-            (
-                f"{LEGACY_MODULE_ROOT}.content_types",
-                f"{CORE_MODULE_ROOT}.platform.content_types",
-            ),
-            (
-                f"{LEGACY_MODULE_ROOT}.zip_safety",
-                f"{CORE_MODULE_ROOT}.platform.zip_safety",
-            ),
-            *_format_compatibility_pairs(
-                "archive",
-                "capabilities.formats.archive",
-                ("models", "route", "state", "text_worker"),
-            ),
-            *_format_compatibility_pairs(
-                "audio",
-                "capabilities.formats.audio",
-                ("models", "probe", "route", "state", "whisper"),
-            ),
-            *_format_compatibility_pairs(
-                "docx",
-                "capabilities.formats.docx",
-                ("integrity", "layout", "models", "route", "schema", "state"),
-            ),
-            *_format_compatibility_pairs(
-                "image",
-                "capabilities.formats.image",
-                ("adult", "analysis", "decision", "decode", "document", "errors",
-                 "features", "isolation", "models", "png", "policy", "route",
-                 "semantics", "state", "visual"),
-            ),
-            (
-                f"{LEGACY_MODULE_ROOT}.legacy_office_worker",
-                f"{CORE_MODULE_ROOT}.capabilities.formats.office.legacy_worker",
-            ),
-            (
-                f"{LEGACY_MODULE_ROOT}.office_route",
-                f"{CORE_MODULE_ROOT}.capabilities.formats.office.route",
-            ),
-            (
-                f"{LEGACY_MODULE_ROOT}.office_state",
-                f"{CORE_MODULE_ROOT}.capabilities.formats.office.state",
-            ),
-            *_format_compatibility_pairs(
-                "video",
-                "capabilities.formats.video",
-                ("frames", "models", "probe", "route", "state"),
-            ),
-        )
-    )
-)
-
-
-_PICKLE_COMPATIBILITY_MODULES: Final = frozenset(COMPATIBILITY_MODULES) - {
-    "_04_Nucleo_Operativo.image_policy"
-}
-_INSTANCE_PICKLE_MODULES: Final = frozenset(
-    {
-        "_04_Nucleo_Operativo.archive_models",
-        "_04_Nucleo_Operativo.audio_models",
-        "_04_Nucleo_Operativo.content_types",
-        "_04_Nucleo_Operativo.docx_models",
-        "_04_Nucleo_Operativo.image_models",
-        "_04_Nucleo_Operativo.office_route",
-        "_04_Nucleo_Operativo.video_models",
-    }
-)
-_MONKEYPATCH_COMPATIBILITY_MODULES: Final = frozenset(
-    {
-        "_04_Nucleo_Operativo.archive_route",
-        "_04_Nucleo_Operativo.archive_state",
-        "_04_Nucleo_Operativo.audio_probe",
-        "_04_Nucleo_Operativo.audio_state",
-        "_04_Nucleo_Operativo.audio_whisper",
-        "_04_Nucleo_Operativo.content_types",
-        "_04_Nucleo_Operativo.docx_integrity",
-        "_04_Nucleo_Operativo.docx_route",
-        "_04_Nucleo_Operativo.docx_state",
-        "_04_Nucleo_Operativo.image_analysis",
-        "_04_Nucleo_Operativo.image_document",
-        "_04_Nucleo_Operativo.image_features",
-        "_04_Nucleo_Operativo.image_route",
-        "_04_Nucleo_Operativo.legacy_office_worker",
-        "_04_Nucleo_Operativo.office_route",
-        "_04_Nucleo_Operativo.office_state",
-        "_04_Nucleo_Operativo.video_frames",
-        "_04_Nucleo_Operativo.video_probe",
-        "_04_Nucleo_Operativo.video_route",
-        "_04_Nucleo_Operativo.video_state",
-        "_04_Nucleo_Operativo.zip_safety",
-    }
-)
-_EXECUTABLE_COMPATIBILITY_MODULES: Final = frozenset(
-    {
-        "_04_Nucleo_Operativo.archive_text_worker",
-        "_04_Nucleo_Operativo.legacy_office_worker",
-    }
-)
-_COMPATIBILITY_REQUIREMENTS: Final = frozenset(
-    {
-        "historical_pickle_global",
-        "import_module_identity",
-        "lazy_parent_import",
-        "monkeypatch_seam",
-        "pickle_instance_roundtrip",
-        "source_alias_only",
-        "type_checking_exports",
-        "worker_module_execution",
-    }
-)
-_GENERIC_COMPATIBILITY_TEST = "tests/test_format_module_move_compatibility.py"
-
-
-@dataclass(frozen=True, slots=True, order=True)
-class CompatibilityModuleContract:
-    legacy_module_id: str
-    canonical_module_id: str
-    requirement_ids: tuple[str, ...]
-    test_roots: tuple[str, ...]
-
-    def __post_init__(self) -> None:
-        _validate_module_id(self.legacy_module_id)
-        _validate_module_id(self.canonical_module_id)
-        if self.legacy_module_id == self.canonical_module_id:
-            raise ValueError("compatibility modules must identify a real move")
-        if self.requirement_ids != tuple(sorted(set(self.requirement_ids))):
-            raise ValueError("compatibility requirements must be canonical")
-        if not set(self.requirement_ids) <= _COMPATIBILITY_REQUIREMENTS:
-            raise ValueError("compatibility requirement is unsupported")
-        if self.test_roots != tuple(sorted(set(self.test_roots))):
-            raise ValueError("compatibility tests must be canonical")
-        if not self.test_roots or any(
-            _TEST_PATH.fullmatch(item) is None for item in self.test_roots
-        ):
-            raise ValueError("compatibility tests must be normalized test modules")
-
-
-def _compatibility_test_roots(legacy_module_id: str) -> tuple[str, ...]:
-    roots = {_GENERIC_COMPATIBILITY_TEST}
-    if ".archive_" in legacy_module_id:
-        roots.add("tests/test_archive_namespace_migration.py")
-    elif ".audio_" in legacy_module_id:
-        roots.add("tests/test_audio_namespace_migration.py")
-    elif ".docx_" in legacy_module_id:
-        roots.add("tests/test_docx_namespace_migration.py")
-    elif ".image_" in legacy_module_id:
-        roots.add("tests/test_image_namespace_migration.py")
-    elif ".office_" in legacy_module_id or legacy_module_id.endswith(".legacy_office_worker"):
-        roots.add("tests/test_office_namespace_migration.py")
-    elif ".video_" in legacy_module_id:
-        roots.add("tests/test_video_namespace_migration.py")
-    return tuple(sorted(roots))
-
-
-def _compatibility_requirement_ids(legacy_module_id: str) -> tuple[str, ...]:
-    requirements = {
-        "import_module_identity",
-        "lazy_parent_import",
-        "source_alias_only",
-        "type_checking_exports",
-    }
-    if legacy_module_id in _PICKLE_COMPATIBILITY_MODULES:
-        requirements.add("historical_pickle_global")
-    if legacy_module_id in _INSTANCE_PICKLE_MODULES:
-        requirements.add("pickle_instance_roundtrip")
-    if legacy_module_id in _MONKEYPATCH_COMPATIBILITY_MODULES:
-        requirements.add("monkeypatch_seam")
-    if legacy_module_id in _EXECUTABLE_COMPATIBILITY_MODULES:
-        requirements.add("worker_module_execution")
-    return tuple(sorted(requirements))
-
-
-COMPATIBILITY_CONTRACTS: Final = tuple(
-    CompatibilityModuleContract(
-        legacy,
-        canonical,
-        _compatibility_requirement_ids(legacy),
-        _compatibility_test_roots(legacy),
-    )
-    for legacy, canonical in COMPATIBILITY_MODULE_PAIRS
-)
-
-
 @dataclass(frozen=True, slots=True, order=True)
 class FamilyEdgeBaseline:
     source_family: str
@@ -972,18 +725,12 @@ def core_architecture_target_payload() -> dict[str, object]:
             "schema": CORE_RESPONSIBILITY_REGISTRY_SCHEMA,
             "coverage_policy": "exhaustive-exact-module-no-default-v1",
             "responsibilities": _responsibility_payload(),
-            "compatibility_modules": list(COMPATIBILITY_MODULES),
         },
         "family_dag": {
             "schema": CORE_FAMILY_DAG_SCHEMA,
             "edge_semantics": "importer-may-depend-on-later-layer-v1",
             "layer_order": list(TARGET_FAMILY_LAYERS),
             "direct_dependencies": [list(item) for item in TARGET_FAMILY_DEPENDENCIES],
-            "compat_families": ["compat"],
-        },
-        "compatibility_matrix": {
-            "schema": CORE_COMPATIBILITY_MATRIX_SCHEMA,
-            "contracts": [asdict(item) for item in COMPATIBILITY_CONTRACTS],
         },
         "transition_baseline": {
             "schema": CORE_TRANSITION_BASELINE_SCHEMA,
@@ -1003,9 +750,6 @@ _MODULE_RESPONSIBILITIES: Final = {
     for responsibility_id, module_ids in RESPONSIBILITY_MODULES.items()
     for module_id in module_ids
 }
-_COMPATIBILITY_SET: Final = frozenset(COMPATIBILITY_MODULES)
-
-
 def matching_target_responsibilities(module_id: str) -> tuple[str, ...]:
     """Return the one explicit product responsibility, never a default."""
 
@@ -1014,10 +758,8 @@ def matching_target_responsibilities(module_id: str) -> tuple[str, ...]:
 
 
 def matching_target_families(module_id: str) -> tuple[str, ...]:
-    """Return one exact target family or the explicit compatibility family."""
+    """Return one exact canonical target family, never a legacy fallback."""
 
-    if module_id in _COMPATIBILITY_SET:
-        return ("compat",)
     responsibility = _MODULE_RESPONSIBILITIES.get(module_id)
     return () if responsibility is None else (_responsibility_family(responsibility),)
 
@@ -1030,7 +772,7 @@ def forbidden_family_edge_baseline() -> dict[tuple[str, str], int]:
 
 
 def registered_core_modules() -> tuple[str, ...]:
-    return tuple(sorted((*_MODULE_RESPONSIBILITIES, *COMPATIBILITY_MODULES)))
+    return tuple(sorted(_MODULE_RESPONSIBILITIES))
 
 
 def _validate_responsibility_vocabulary() -> None:
@@ -1059,17 +801,6 @@ def _validated_assigned_modules() -> tuple[str, ...]:
     return tuple(assigned)
 
 
-def _validate_compatibility_registry(assigned: tuple[str, ...]) -> None:
-    if COMPATIBILITY_MODULES != tuple(sorted(set(COMPATIBILITY_MODULES))):
-        raise ValueError("Core compatibility modules must be canonical")
-    if set(assigned) & set(COMPATIBILITY_MODULES):
-        raise ValueError("Core implementation and compatibility modules overlap")
-    if tuple(item.legacy_module_id for item in COMPATIBILITY_CONTRACTS) != (COMPATIBILITY_MODULES):
-        raise ValueError("Core compatibility matrix does not cover every facade exactly")
-    if any(item.canonical_module_id not in set(assigned) for item in COMPATIBILITY_CONTRACTS):
-        raise ValueError("Core compatibility target is not a registered implementation")
-
-
 def _validate_family_transition_baseline() -> None:
     if TARGET_FAMILY_LAYERS != tuple(dict.fromkeys(TARGET_FAMILY_LAYERS)):
         raise ValueError("Core family layers cannot repeat")
@@ -1085,8 +816,7 @@ def _validate_family_transition_baseline() -> None:
 
 def _validate_registry() -> None:
     _validate_responsibility_vocabulary()
-    assigned = _validated_assigned_modules()
-    _validate_compatibility_registry(assigned)
+    _validated_assigned_modules()
     _validate_family_transition_baseline()
 
 
@@ -1094,11 +824,7 @@ _validate_registry()
 
 
 __all__ = [
-    "COMPATIBILITY_CONTRACTS",
-    "COMPATIBILITY_MODULES",
-    "COMPATIBILITY_MODULE_PAIRS",
     "CORE_ARCHITECTURE_FINGERPRINT_PREFIX",
-    "CORE_COMPATIBILITY_MATRIX_SCHEMA",
     "CORE_FAMILY_DAG_SCHEMA",
     "CORE_MODULE_ROOT",
     "CORE_RESPONSIBILITY_REGISTRY_SCHEMA",
@@ -1109,7 +835,6 @@ __all__ = [
     "TARGET_FAMILY_DEPENDENCIES",
     "TARGET_FAMILY_LAYERS",
     "TARGET_RESPONSIBILITY_IDS",
-    "CompatibilityModuleContract",
     "FamilyEdgeBaseline",
     "core_architecture_target_fingerprint",
     "core_architecture_target_payload",

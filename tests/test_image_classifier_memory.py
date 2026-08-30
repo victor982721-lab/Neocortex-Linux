@@ -9,12 +9,12 @@ from unittest.mock import patch
 
 from PIL import Image
 
-from _04_Nucleo_Operativo.image_analysis import (
+from neocortex.capabilities.formats.image.analysis import (
     ImageMemoryGate,
     ImageResourceLimits,
     extract_features,
 )
-from _04_Nucleo_Operativo.memory_runtime import (
+from neocortex.runtime.control.memory_runtime import (
     MemoryBudgetExceeded,
     MemoryHeadroomTimeout,
     MemorySnapshot,
@@ -89,7 +89,7 @@ class ImageClassifierMemoryTests(unittest.TestCase):
                 errors.append(exc)
 
         with patch(
-            "_04_Nucleo_Operativo.memory_runtime.memory_snapshot",
+            "neocortex.runtime.control.memory_runtime.memory_snapshot",
             return_value=MemorySnapshot(150, 150),
         ):
             first_thread = threading.Thread(target=first)
@@ -154,7 +154,7 @@ class ImageClassifierMemoryTests(unittest.TestCase):
 
         with (
             patch(
-                "_04_Nucleo_Operativo.memory_runtime.memory_snapshot",
+                "neocortex.runtime.control.memory_runtime.memory_snapshot",
                 return_value=MemorySnapshot(150, 150),
             ),
             patch.object(gate, "_wait_for_headroom", side_effect=blocked_wait),
@@ -229,7 +229,7 @@ class ImageClassifierMemoryTests(unittest.TestCase):
             )
         )
         with patch(
-            "_04_Nucleo_Operativo.memory_runtime.memory_snapshot",
+            "neocortex.runtime.control.memory_runtime.memory_snapshot",
             return_value=MemorySnapshot(150, 150),
         ):
             with self.assertRaises(MemoryHeadroomTimeout):

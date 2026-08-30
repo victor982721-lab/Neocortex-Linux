@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from _04_Nucleo_Operativo.cli_reporting import (
+from neocortex.api.cli.cli_reporting import (
     _print_audio_report,
     _print_office_report,
     print_professional_summary,

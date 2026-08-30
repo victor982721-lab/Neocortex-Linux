@@ -1,6 +1,6 @@
 # NeoCortex — handoff operativo vigente
 
-> Actualizado: 2026-08-30 03:45 CST. El basename es histórico y permanece estable.
+> Actualizado: 2026-08-30 05:30 CST. El basename es histórico y permanece estable.
 > `~/.codex/PENDIENTES.md` conserva el compromiso operativo; este archivo
 > describe sólo la frontera técnica de reanudación.
 
@@ -10,34 +10,29 @@
 
 ## Objetivo activo
 
-La implementación productiva ya está organizada en el namespace único
-`neocortex`, con responsabilidades explícitas y límites de dependencia
-comprobados, pero la migración física todavía no está cerrada: las raíces
-numeradas conservan cientos de fachadas de compatibilidad. El siguiente tramo
-debe inventariar sus consumidores y retirar esas fachadas por cohortes, sin
-declarar final la reorganización mientras `_04_Nucleo_Operativo` siga siendo una
-carpeta poblada de aliases.
+La migración física del producto ya quedó aplicada en el checkout candidato:
+`neocortex` es la única raíz productiva, la carpeta `_04_Nucleo_Operativo` ya no
+existe y sus consumidores usan los módulos canónicos. El cierre técnico todavía
+requiere congelar el commit, ejecutar el gate canónico, construir la release
+Linux y demostrar el recorrido público instalado.
 
-## Corte canónico de implementación aceptado (no cierre físico)
+## Corte canónico de implementación en verificación final
 
 - Checkout: `/home/winterboss/Neocortex/Repository`
-- SHA ejecutable aceptado: `5455b90992ef2e6f2b0d49590a99448f0342aeea`
-- Árbol verificado limpio; la rama local conserva commits locales posteriores a
-  su snapshot remoto y no se hizo merge ni push a `main`.
-- Este corte acepta la implementación canónica y su comportamiento, no la
-  eliminación física de la raíz legacy; el cierre solicitado por Víctor sigue
-  pendiente hasta retirar o reducir explícitamente esa compatibilidad.
+- El árbol candidato está pendiente de commit; no se reutiliza el receipt de
+  `5455b90992ef2e6f2b0d49590a99448f0342aeea` como aceptación de esta migración.
+- La verificación viva observó 455 módulos Python canónicos, sin referencias de
+  código a `_04_Nucleo_Operativo` y sin la carpeta legacy en el checkout.
+- El fingerprint del registro exhaustivo actual es
+  `core-architecture-target-v1:sha256:5e5cc16adca95020bc50ffa6920bae5736c9c54b27dc47f806d8339213559e27`.
 - Archive, DOCX, Audio, Image, Office, PDF, Video y Text viven físicamente en
   `neocortex/capabilities/formats/{archive,docx,audio,image,office,pdf,text,video}`.
-  Las fachadas `_04_Nucleo_Operativo` correspondientes son compatibilidad
-  explícita; las sondas runtime están en `neocortex/capabilities/runtime.py`.
+  Las rutas de formato y sus consumidores viven únicamente en esos módulos;
+  las sondas runtime están en `neocortex/capabilities/runtime.py`.
 - La cohorte compartida de plataforma vive físicamente en
   `neocortex/platform/{architecture_projection,capability_registry,capability_registry_specs,content_types,zip_safety}.py`.
-  Las rutas `_04_Nucleo_Operativo.platform.shared.*` y los aliases planos de
-  tipos/ZIP son fachadas de compatibilidad, sin una segunda implementación.
-- El registro de arquitectura conserva explícitos los cruces transitorios de
-  las ocho familias hacia foundation/core. El registro canónico actual cubre 454 módulos productivos y su fingerprint es
-  `core-architecture-target-v1:sha256:5b1f31c493ee544417c1ac44f59e84f26aaa4a0bc3fd5fb46530733997af99af`; los aliases legacy permanecen fuera de la implementación.
+- El registro de arquitectura conserva explícitos los cruces permitidos de las
+  familias hacia foundation/core, sin una matriz de aliases legacy.
 
 ## Evidencia de aceptación y release
 
@@ -85,14 +80,11 @@ carpeta poblada de aliases.
 
 ## Próximo corte, en orden
 
-1. Levantar un inventario read-only de imports, entry points, tests, packaging y
-   consumers que aún atraviesan `_04_Nucleo_Operativo`, distinguiendo aliases
-   necesarios de residuos retirables.
-2. Retirar la compatibilidad en cohortes pequeñas, actualizar consumidores y
-   añadir regresiones; no borrar la raíz ni sus archivos antes de comprobar cada
-   frontera.
-3. Congelar después el nuevo árbol, ejecutar el gate canónico, instalar la
-   release y repetir el E2E/replay; `main` permanece sin merge ni push.
+1. Crear el commit congelado del árbol canónico y registrar su SHA.
+2. Ejecutar una sola validación canónica sobre ese SHA, incluyendo la suite y
+   los controles arquitectónicos sin abrir SQLite cercadas.
+3. Instalar desde el mismo SHA, verificar launcher/manifiesto y repetir el E2E
+   con replay; sólo entonces queda listo el cierre Git final.
 
 ## Límites
 

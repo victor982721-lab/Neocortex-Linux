@@ -17,14 +17,9 @@ from typing import Any
 
 import pytest
 
-from _04_Nucleo_Operativo import (
-    KnowledgePlan as PackageKnowledgePlan,
-    KnowledgeQuery as PackageKnowledgeQuery,
-    RetrievalMode as PackageRetrievalMode,
-    plan_knowledge_query as package_plan_knowledge_query,
-)
-from _04_Nucleo_Operativo import knowledge_planner
-from _04_Nucleo_Operativo.knowledge_planner import (
+from neocortex.api.public import KnowledgePlan as PackageKnowledgePlan, KnowledgeQuery as PackageKnowledgeQuery, RetrievalMode as PackageRetrievalMode, plan_knowledge_query as package_plan_knowledge_query
+from neocortex.knowledge import knowledge_planner
+from neocortex.knowledge.knowledge_planner import (
     KnowledgePlan,
     KnowledgeQuery,
     RetrievalMode,
@@ -365,12 +360,12 @@ import sys
 
 sys.path.insert(0, sys.argv[1])
 before = set(sys.modules)
-module = importlib.import_module("_04_Nucleo_Operativo.knowledge_planner")
+module = importlib.import_module("neocortex.knowledge.knowledge_planner")
 assert module.plan_knowledge_query(module.KnowledgeQuery("cold import")).plan_id
 internal = sorted(
     name
     for name in set(sys.modules) - before
-    if name.startswith("_04_Nucleo_Operativo") or name.startswith("neocortex.knowledge")
+    if name.startswith("neocortex") or name.startswith("neocortex.knowledge")
 )
 heavy = sorted(
     name
@@ -401,18 +396,22 @@ print(
     assert payload["native"] == []
     loaded = set(payload["internal"])
     assert {
-        "_04_Nucleo_Operativo",
+        "neocortex",
         "neocortex.knowledge",
         "neocortex.knowledge.knowledge_contracts",
         "neocortex.knowledge.knowledge_planner",
     } <= loaded
     assert loaded <= {
-        "_04_Nucleo_Operativo",
-        "_04_Nucleo_Operativo.knowledge_planner",
+        "neocortex",
+        "neocortex.knowledge.knowledge_planner",
         "neocortex.code",
         "neocortex.code.code_contracts",
         "neocortex.code.code_retention",
         "neocortex.code.code_detection",
+        "neocortex.deduplication",
+        "neocortex.deduplication.domain",
+        "neocortex.deduplication.domain.errors",
+        "neocortex.deduplication.domain.models",
         "neocortex.knowledge.knowledge_contract_context",
         "neocortex.knowledge.knowledge_contract_payloads",
         "neocortex.knowledge.knowledge_contract_references",
@@ -420,13 +419,16 @@ print(
         "neocortex.knowledge.knowledge_contract_telemetry",
         "neocortex.knowledge.knowledge_contract_validation",
         "neocortex.knowledge.knowledge_contracts",
-        "neocortex.knowledge.knowledge_planner",
         "neocortex.knowledge.knowledge_planner_exact",
         "neocortex.knowledge.knowledge_planner_intents",
         "neocortex.knowledge.knowledge_planner_steps",
         "neocortex.semantic",
         "neocortex.semantic.semantic_models",
         "neocortex.knowledge",
+        "neocortex.platform",
+        "neocortex.platform_policy",
+        "neocortex.safety",
+        "neocortex.safety.route_filters",
     }
 
 

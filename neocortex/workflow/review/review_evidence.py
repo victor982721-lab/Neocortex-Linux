@@ -6,9 +6,6 @@ themselves.
 """
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 # region [01] Public evidence and metric models
 
 import json
@@ -856,6 +853,3 @@ def review_evidence_metrics(
 
 
 # endregion [03]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.review_evidence")

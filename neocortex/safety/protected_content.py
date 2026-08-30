@@ -7,9 +7,6 @@ entry, regardless of disposition, remains a symmetric mutation boundary.
 """
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 # region [01] Contracts and physical identities
 
 import ctypes
@@ -702,6 +699,3 @@ __all__ = [
 ]
 
 # endregion [03]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.protected_content")

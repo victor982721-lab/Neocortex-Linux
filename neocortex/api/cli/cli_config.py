@@ -5,9 +5,6 @@
 # Configuration translation is isolated from execution and terminal concerns.
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import argparse
 
 from neocortex.runtime.config.app_paths import default_code_project_roots
@@ -240,6 +237,3 @@ def framework_config_from_args(args: argparse.Namespace) -> FrameworkConfig:
 
 
 # endregion [02]
-
-
-_preserve_legacy_module(globals(), '_04_Nucleo_Operativo.cli_config')

@@ -10,9 +10,6 @@ complete process tree.
 # region [01] Imports, policy and result models
 
 from __future__ import annotations
-
-from . import preserve_legacy_module as _preserve_legacy_module
-
 import csv
 import io
 import re
@@ -779,6 +776,3 @@ def verify_document_text(
 
 
 # endregion [03]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.image_document")

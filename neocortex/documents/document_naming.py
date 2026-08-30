@@ -1,9 +1,6 @@
 """Deterministic semantic filename suggestions from bounded catalog signals."""
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import re
 import unicodedata
 from dataclasses import dataclass
@@ -1309,6 +1306,3 @@ def _contains_token(values: Iterable[str], candidate: str) -> bool:
 
 
 # endregion [06]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.document_naming")

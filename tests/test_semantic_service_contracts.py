@@ -15,11 +15,11 @@ from pathlib import Path
 
 import pytest
 
-from _04_Nucleo_Operativo import semantic_service
-from _04_Nucleo_Operativo import semantic_contract_validation as validation
-from _04_Nucleo_Operativo import semantic_service_contracts as contracts
-from _04_Nucleo_Operativo.semantic_models import canonical_json
-from _04_Nucleo_Operativo.semantic_service_contracts import (
+from neocortex.semantic import semantic_service
+from neocortex.semantic import semantic_contract_validation as validation
+from neocortex.semantic import semantic_service_contracts as contracts
+from neocortex.semantic.semantic_models import canonical_json
+from neocortex.semantic.semantic_service_contracts import (
     FusedResolvedHit,
     GenerationWorkResult,
     ImageRetrievalCalibration,
@@ -544,9 +544,9 @@ def test_contract_cold_import_stays_free_of_owners_pil_planner_and_service() -> 
     script = (
         "import sys\n"
         f"sys.path.insert(0, {str(repository)!r})\n"
-        "import _04_Nucleo_Operativo.semantic_service_contracts\n"
+        "import neocortex.semantic.semantic_service_contracts\n"
         "print('\\n'.join(sorted(name for name in sys.modules "
-        "if name.startswith('_04_Nucleo_Operativo') or "
+        "if name.startswith('neocortex') or "
         "name.startswith('neocortex.semantic') or "
         "name.startswith('neocortex.sqlite') or name.startswith('PIL'))))\n"
     )
@@ -559,8 +559,7 @@ def test_contract_cold_import_stays_free_of_owners_pil_planner_and_service() -> 
     loaded = frozenset(completed.stdout.splitlines())
     baseline = frozenset(
         {
-            "_04_Nucleo_Operativo",
-            "_04_Nucleo_Operativo.semantic_service_contracts",
+            "neocortex",
             "neocortex.semantic",
             "neocortex.semantic.semantic_contract_validation",
             "neocortex.semantic.semantic_lexical",
@@ -569,6 +568,8 @@ def test_contract_cold_import_stays_free_of_owners_pil_planner_and_service() -> 
             "neocortex.sqlite_cancellation",
             "neocortex.sqlite_schema_contract",
             "neocortex.sqlite_schema_lifecycle",
+            "neocortex.persistence",
+            "neocortex.persistence.sqlite_paths",
         }
     )
     assert loaded == baseline
@@ -612,7 +613,7 @@ def test_contract_signatures_fields_defaults_and_dataclass_shape_are_stable() ->
         assert tuple(item.name for item in fields(contract)) == expected_fields
         assert tuple(contract.__slots__) == expected_fields
         assert contract.__match_args__ == expected_fields
-        assert contract.__module__ == "_04_Nucleo_Operativo.semantic_service_contracts"
+        assert contract.__module__ == "neocortex.semantic.semantic_service_contracts"
         parameters = contract.__dataclass_params__
         assert parameters.frozen is True
         assert parameters.slots is True

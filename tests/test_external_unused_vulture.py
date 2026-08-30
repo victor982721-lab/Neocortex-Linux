@@ -11,9 +11,9 @@ from pathlib import Path
 
 import pytest
 
-import _04_Nucleo_Operativo.external_unused_vulture as adapter
-from _04_Nucleo_Operativo.code_external_evidence import ExternalEvidenceFile
-from _04_Nucleo_Operativo.semantic_models import fingerprint_bytes
+import neocortex.code.external_unused_vulture as adapter
+from neocortex.code.code_external_evidence import ExternalEvidenceFile
+from neocortex.semantic.semantic_models import fingerprint_bytes
 
 
 def _stage(

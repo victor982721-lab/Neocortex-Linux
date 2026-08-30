@@ -22,13 +22,13 @@ from typing import cast
 
 import pytest
 
-import _04_Nucleo_Operativo.knowledge_contracts as contracts
+import neocortex.knowledge.knowledge_contracts as contracts
 # endregion [01]
 
 # region [02] Implementación
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-CONTRACT_MODULE = "_04_Nucleo_Operativo.knowledge_contracts"
+CONTRACT_MODULE = "neocortex.knowledge.knowledge_contracts"
 
 EXPECTED_ALL = (
     "KNOWLEDGE_CONTRACT_SCHEMA_VERSION",
@@ -809,7 +809,7 @@ def test_private_validation_and_serialization_seams_remain_local() -> None:
 
 
 def test_legacy_and_sdk_exports_preserve_exact_type_identity() -> None:
-    import _04_Nucleo_Operativo as legacy
+    from neocortex.api import public as legacy
     import neocortex.sdk as sdk
 
     for name in LEGACY_AND_SDK_EXPORTS:
@@ -824,23 +824,19 @@ def test_contract_module_cold_import_has_a_minimal_dag() -> None:
         import sys
 
         before = set(sys.modules)
-        import _04_Nucleo_Operativo.knowledge_contracts
+        import neocortex.knowledge.knowledge_contracts
         loaded = {
             name
             for name in set(sys.modules) - before
-            if name.startswith("_04_Nucleo_Operativo")
+            if name.startswith("neocortex")
             or name.startswith("neocortex")
             or name == "xxhash"
         }
         required = {
-            "_04_Nucleo_Operativo",
-            "_04_Nucleo_Operativo.knowledge_contracts",
             "neocortex",
-            "neocortex.api",
-            "neocortex.api.public",
+            "neocortex.knowledge.knowledge_contracts",
             "neocortex.knowledge",
             "neocortex.knowledge.knowledge_contracts",
-            "neocortex.platform",
             "neocortex.semantic",
             "neocortex.semantic.semantic_models",
             "xxhash",
@@ -874,21 +870,30 @@ def test_sdk_resolves_context_bundle_lazily_without_search_owners() -> None:
         import sys
 
         import neocortex.sdk as sdk
-        if any(name.startswith("_04_Nucleo_Operativo") for name in sys.modules):
-            raise SystemExit("SDK imported the legacy facade eagerly")
+        allowed_bootstrap = {"neocortex", "neocortex.sdk"}
+        unexpected_bootstrap = sorted(
+            name
+            for name in sys.modules
+            if name.startswith("neocortex") and name not in allowed_bootstrap
+        )
+        if unexpected_bootstrap:
+            raise SystemExit(
+                "SDK imported operational modules eagerly: "
+                + ",".join(unexpected_bootstrap)
+            )
 
         resolved = sdk.ContextBundle
-        import _04_Nucleo_Operativo as legacy
-        import _04_Nucleo_Operativo.knowledge_contracts as contracts
+        from neocortex.api import public
+        import neocortex.knowledge.knowledge_contracts as contracts
 
-        if resolved is not legacy.ContextBundle or resolved is not contracts.ContextBundle:
+        if resolved is not public.ContextBundle or resolved is not contracts.ContextBundle:
             raise SystemExit("ContextBundle identity changed across facades")
         forbidden = {
-            "_04_Nucleo_Operativo.knowledge_context",
-            "_04_Nucleo_Operativo.knowledge_planner",
-            "_04_Nucleo_Operativo.knowledge_search",
-            "_04_Nucleo_Operativo.knowledge_service",
-            "_04_Nucleo_Operativo.knowledge_snapshot",
+            "neocortex.knowledge.knowledge_context",
+            "neocortex.knowledge.knowledge_planner",
+            "neocortex.knowledge.knowledge_search",
+            "neocortex.knowledge.knowledge_service",
+            "neocortex.knowledge.knowledge_snapshot",
         }
         unexpected = sorted(forbidden.intersection(sys.modules))
         if unexpected:

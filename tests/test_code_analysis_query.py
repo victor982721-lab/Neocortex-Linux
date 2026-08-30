@@ -10,7 +10,7 @@ from typing import cast
 
 import pytest
 
-from _04_Nucleo_Operativo.code_analysis_query import (
+from neocortex.code.code_analysis_query import (
     CODE_ANALYSIS_QUERY_MAX_SOURCE_SEQUENCE_ITEMS,
     CODE_ANALYSIS_QUERY_SCHEMA,
     CodeAnalysisQuery,
@@ -36,10 +36,10 @@ def _closed_v22_experiment_payload(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> dict[str, object]:
-    import _04_Nucleo_Operativo.code_analysis_query as query_module
-    import _04_Nucleo_Operativo.code_review as review_module
-    import _04_Nucleo_Operativo.code_review_epistemics as epistemics_module
-    from _04_Nucleo_Operativo.code_experiment_store import (
+    import neocortex.code.code_analysis_query as query_module
+    import neocortex.code.code_review as review_module
+    import neocortex.code.code_review_epistemics as epistemics_module
+    from neocortex.code.code_experiment_store import (
         code_review_digest_identity,
         record_code_experiment_receipt,
     )
@@ -116,8 +116,8 @@ def _closed_v22_knowledge_health_payload(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> dict[str, object]:
-    import _04_Nucleo_Operativo.code_review as review_module
-    from _04_Nucleo_Operativo.code_experiment_store import (
+    import neocortex.code.code_review as review_module
+    from neocortex.code.code_experiment_store import (
         code_review_digest_identity,
         record_code_experiment_receipt,
     )
@@ -158,8 +158,8 @@ def _closed_v22_pdf_health_payload(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> dict[str, object]:
-    import _04_Nucleo_Operativo.code_review as review_module
-    from _04_Nucleo_Operativo.code_experiment_store import (
+    import neocortex.code.code_review as review_module
+    from neocortex.code.code_experiment_store import (
         code_review_digest_identity,
         record_code_experiment_receipt,
     )
@@ -346,8 +346,8 @@ def test_review_query_accepts_and_indexes_source_linked_v13_questions(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import _04_Nucleo_Operativo.code_review as review_module
-    from _04_Nucleo_Operativo.code_review import review_code_state
+    import neocortex.code.code_review as review_module
+    from neocortex.code.code_review import review_code_state
     from tests.test_code_review import _build_state, _status
 
     state_directory = tmp_path / "state"
@@ -451,8 +451,8 @@ def test_review_query_rejects_forged_v22_evidence_linkage(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import _04_Nucleo_Operativo.code_review as review_module
-    from _04_Nucleo_Operativo.code_review import review_code_state
+    import neocortex.code.code_review as review_module
+    from neocortex.code.code_review import review_code_state
     from tests.test_code_review import _build_state, _status
 
     state_directory = tmp_path / "state"
@@ -476,8 +476,8 @@ def test_review_query_rejects_forged_v22_question_semantics(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import _04_Nucleo_Operativo.code_review as review_module
-    from _04_Nucleo_Operativo.code_review import review_code_state
+    import neocortex.code.code_review as review_module
+    from neocortex.code.code_review import review_code_state
     from tests.test_code_review import _build_state, _status
 
     state_directory = tmp_path / "state"
@@ -512,8 +512,8 @@ def test_review_query_rejects_tampered_v22_integrated_projection(
     projection: str,
     field: str,
 ) -> None:
-    import _04_Nucleo_Operativo.code_review as review_module
-    from _04_Nucleo_Operativo.code_review import review_code_state
+    import neocortex.code.code_review as review_module
+    from neocortex.code.code_review import review_code_state
     from tests.test_code_review import _build_state, _status
 
     state_directory = tmp_path / "state"
@@ -537,8 +537,8 @@ def test_review_query_rejects_a_tampered_v22_retention_projection(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import _04_Nucleo_Operativo.code_review as review_module
-    from _04_Nucleo_Operativo.code_review import review_code_state
+    import neocortex.code.code_review as review_module
+    from neocortex.code.code_review import review_code_state
     from tests.test_code_review import _build_state, _status
 
     state_directory = tmp_path / "state"
@@ -560,8 +560,8 @@ def test_review_query_rejects_a_tampered_v22_experiment_plan(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import _04_Nucleo_Operativo.code_review as review_module
-    from _04_Nucleo_Operativo.code_review import review_code_state
+    import neocortex.code.code_review as review_module
+    from neocortex.code.code_review import review_code_state
     from tests.test_code_review import _build_state, _status
 
     state_directory = tmp_path / "state"
@@ -583,9 +583,9 @@ def test_review_query_requires_the_exact_ordered_v22_knowledge_health_question(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import _04_Nucleo_Operativo.code_analysis_query as query_module
-    import _04_Nucleo_Operativo.code_review as review_module
-    from _04_Nucleo_Operativo.code_review import review_code_state
+    import neocortex.code.code_analysis_query as query_module
+    import neocortex.code.code_review as review_module
+    from neocortex.code.code_review import review_code_state
     from tests.test_code_review import _build_state, _status
 
     state_directory = tmp_path / "state"
@@ -688,9 +688,9 @@ def test_review_query_requires_the_exact_ordered_v22_pdf_health_question(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import _04_Nucleo_Operativo.code_analysis_query as query_module
-    import _04_Nucleo_Operativo.code_review as review_module
-    from _04_Nucleo_Operativo.code_review import review_code_state
+    import neocortex.code.code_analysis_query as query_module
+    import neocortex.code.code_review as review_module
+    from neocortex.code.code_review import review_code_state
     from tests.test_code_review import _build_state, _status
 
     state_directory = tmp_path / "state"
@@ -804,9 +804,9 @@ def test_review_query_preserves_abstained_v16_v22_compatibility(
     monkeypatch: pytest.MonkeyPatch,
     schema: str,
 ) -> None:
-    import _04_Nucleo_Operativo.code_review as review_module
-    from _04_Nucleo_Operativo.code_review import review_code_state
-    from _04_Nucleo_Operativo.code_review_epistemics import CodeReviewEvidenceResolutionError
+    import neocortex.code.code_review as review_module
+    from neocortex.code.code_review import review_code_state
+    from neocortex.code.code_review_epistemics import CodeReviewEvidenceResolutionError
     from tests.test_code_review import _build_state, _status
 
     state_directory = tmp_path / "state"
@@ -848,9 +848,9 @@ def test_review_query_rejects_future_evidence_under_historical_review_schemas(
     field: str,
     value: object,
 ) -> None:
-    import _04_Nucleo_Operativo.code_review as review_module
-    from _04_Nucleo_Operativo.code_review import review_code_state
-    from _04_Nucleo_Operativo.code_review_epistemics import CodeReviewEvidenceResolutionError
+    import neocortex.code.code_review as review_module
+    from neocortex.code.code_review import review_code_state
+    from neocortex.code.code_review_epistemics import CodeReviewEvidenceResolutionError
     from tests.test_code_review import _build_state, _status
 
     state_directory = tmp_path / "state"
@@ -880,8 +880,8 @@ def test_review_query_preserves_ready_v22_fail_closed_validation_order_and_bound
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import _04_Nucleo_Operativo.code_review as review_module
-    from _04_Nucleo_Operativo.code_review import review_code_state
+    import neocortex.code.code_review as review_module
+    from neocortex.code.code_review import review_code_state
     from tests.test_code_review import _build_state, _status
 
     state_directory = tmp_path / "state"
@@ -1122,7 +1122,7 @@ def test_review_query_rejects_a_tampered_v22_receipt_envelope(
     assert isinstance(analysis_run_id, int) and not isinstance(analysis_run_id, bool)
     from dataclasses import replace
 
-    from _04_Nucleo_Operativo.code_experiment_store import (
+    from neocortex.code.code_experiment_store import (
         parse_resolved_code_experiment_receipt_payload,
     )
 
@@ -1174,7 +1174,7 @@ def test_experiment_plan_summary_separates_coverage_from_execution(
     planning_coverage: str,
     execution_readiness: str,
 ) -> None:
-    import _04_Nucleo_Operativo.code_analysis_query as query_module
+    import neocortex.code.code_analysis_query as query_module
 
     records: list[dict[str, object]] = []
     query_module._append_experiment_plan_summary(
@@ -1210,7 +1210,7 @@ def test_experiment_plan_summary_separates_coverage_from_execution(
 
 
 def test_experiment_plan_summary_rejects_counts_that_invent_readiness() -> None:
-    import _04_Nucleo_Operativo.code_analysis_query as query_module
+    import neocortex.code.code_analysis_query as query_module
 
     with pytest.raises(ValueError, match="cannot derive query readiness"):
         query_module._append_experiment_plan_summary(
@@ -1405,7 +1405,7 @@ def test_malformed_queries_fail_closed(constructor: object) -> None:
 
 
 def test_filter_quantity_and_utf8_byte_bounds_fail_closed_before_echo() -> None:
-    import _04_Nucleo_Operativo.code_analysis_query as query_module
+    import neocortex.code.code_analysis_query as query_module
 
     with pytest.raises(ValueError, match="exceed 32 values"):
         CodeAnalysisQuery(
@@ -1433,7 +1433,7 @@ def test_filter_quantity_and_utf8_byte_bounds_fail_closed_before_echo() -> None:
 
 
 def test_query_output_applies_a_public_json_byte_bound_with_honest_counts() -> None:
-    import _04_Nucleo_Operativo.code_analysis_query as query_module
+    import neocortex.code.code_analysis_query as query_module
 
     repeated = "x" * 512
     modules = [
@@ -1586,7 +1586,7 @@ def test_diff_extractor_signature_order_and_exact_fixture_are_frozen() -> None:
     from hashlib import sha256
     from inspect import signature
 
-    import _04_Nucleo_Operativo.code_analysis_query as query_module
+    import neocortex.code.code_analysis_query as query_module
 
     assert str(signature(query_module._extract_diff)) == (
         "(payload: 'Mapping[str, object]') -> 'list[dict[str, object]]'"
@@ -1652,7 +1652,7 @@ def test_diff_extractor_signature_order_and_exact_fixture_are_frozen() -> None:
 
 
 def test_diff_extractor_ignores_unsupported_and_malformed_sections() -> None:
-    import _04_Nucleo_Operativo.code_analysis_query as query_module
+    import neocortex.code.code_analysis_query as query_module
 
     assert query_module._extract_diff({}) == []
     records = query_module._extract_diff(

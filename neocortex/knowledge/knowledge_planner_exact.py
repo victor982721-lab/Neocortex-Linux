@@ -1,15 +1,12 @@
 """Exact-syntax recognition primitives for deterministic knowledge planning."""
 # region [00] Contexto del módulo
-# Módulo: _04_Nucleo_Operativo/knowledge_planner_exact.py
+# Módulo: neocortex/knowledge_planner_exact.py
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
 
 # region [01] Dependencias del módulo
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import re
 # endregion [01]
 
@@ -394,6 +391,3 @@ __all__ = (
     "token_words",
 )
 # endregion [02]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.knowledge_planner_exact")

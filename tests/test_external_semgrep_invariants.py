@@ -12,9 +12,9 @@ from pathlib import Path
 
 import pytest
 
-import _04_Nucleo_Operativo.external_semgrep_invariants as adapter
-from _04_Nucleo_Operativo.code_external_evidence import ExternalEvidenceFile
-from _04_Nucleo_Operativo.semantic_models import fingerprint_bytes
+import neocortex.code.external_semgrep_invariants as adapter
+from neocortex.code.code_external_evidence import ExternalEvidenceFile
+from neocortex.semantic.semantic_models import fingerprint_bytes
 from neocortex.semgrep_tool_contract import (
     ManagedSemgrepRuntime,
     resolve_semgrep_tool_runtime,
@@ -189,7 +189,7 @@ def test_real_semgrep_works_with_minimal_provider_environment(
     _require_real_runtime(monkeypatch)
     staged = _stage(
         tmp_path,
-        {"_04_Nucleo_Operativo/external_safe.py": "value = 1\n"},
+        {"neocortex/external_safe.py": "value = 1\n"},
     )
 
     result = adapter.execute_semgrep_invariants(tmp_path, staged, {})
@@ -203,7 +203,7 @@ def test_command_and_environment_disable_network_registry_and_autofix(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    staged = _stage(tmp_path, {"_04_Nucleo_Operativo/external_safe.py": "value = 1\n"})
+    staged = _stage(tmp_path, {"neocortex/external_safe.py": "value = 1\n"})
     cli_variant = _mock_runtime(monkeypatch)
     injected_environment = {
         "SystemRoot": os.environ.get("SystemRoot", "C:\\Windows"),
@@ -240,7 +240,7 @@ def test_command_and_environment_disable_network_registry_and_autofix(
         assert "--fix" not in command
         assert "--validate" not in command
         targets = list(command[command.index("--") + 1 :])
-        assert targets == [os.path.join("source", "_04_Nucleo_Operativo", "external_safe.py")]
+        assert targets == [os.path.join("source", "neocortex", "external_safe.py")]
         child_environment = kwargs["environment"]
         folded = {str(key).casefold(): value for key, value in child_environment.items()}
         for forbidden in (
@@ -294,7 +294,7 @@ def test_parser_normalizes_advisory_finding_without_fix_or_mutation_authority(
 ) -> None:
     staged = _stage(
         tmp_path,
-        {"_04_Nucleo_Operativo/external_fixture_provider.py": "call(shell=True)\n"},
+        {"neocortex/external_fixture_provider.py": "call(shell=True)\n"},
     )
     cli_variant = _mock_runtime(monkeypatch)
 
@@ -363,7 +363,7 @@ def test_parser_fails_closed_on_incomplete_or_unauthorized_output(
     mutate: Callable[[dict[str, object], str], None],
     message: str,
 ) -> None:
-    staged = _stage(tmp_path, {"_04_Nucleo_Operativo/external_safe.py": "value = 1\n"})
+    staged = _stage(tmp_path, {"neocortex/external_safe.py": "value = 1\n"})
     _mock_runtime(monkeypatch)
 
     def run(arguments, **_kwargs):

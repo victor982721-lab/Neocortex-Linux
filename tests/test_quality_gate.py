@@ -11,8 +11,8 @@ from pathlib import Path
 
 import pytest
 
-import _04_Nucleo_Operativo.external_architecture_worker as architecture_worker
-from _04_Nucleo_Operativo.code_architecture_contracts import ModuleImport
+import neocortex.code.external_architecture_worker as architecture_worker
+from neocortex.code.code_architecture_contracts import ModuleImport
 from neocortex import semgrep_tool_contract
 from tools import quality_gate
 from tools.quality_gate import (
@@ -21,7 +21,6 @@ from tools.quality_gate import (
     EXPECTED_ARCHITECTURE_BASELINE_ID,
     EXPECTED_ARCHITECTURE_CONTRACTS,
     EXPECTED_CAPABILITY_CANONICAL_FAMILY,
-    EXPECTED_CAPABILITY_COMPATIBILITY_FAMILY,
     PRODUCTION_COVERAGE_SOURCES,
     WHEEL_PACKAGE_ROOTS,
     GateError,
@@ -91,7 +90,7 @@ def _coverage_report(
 ) -> dict[str, object]:
     return {
         "meta": {"version": version, "branch_coverage": True},
-        "files": {"_04_Nucleo_Operativo/__init__.py": {}},
+        "files": {"neocortex/__init__.py": {}},
         "totals": {
             "covered_lines": covered_lines,
             "num_statements": statements,
@@ -113,9 +112,9 @@ def _coverage_inventory(*paths: str) -> dict[str, object]:
 def _architecture_payload(
     imports: tuple[ModuleImport, ...] = (),
 ) -> dict[str, object]:
-    canonical, legacy, _, _ = architecture_worker._registered_capability_labels()
+    canonical, _, _ = architecture_worker._registered_capability_labels()
     target_modules = architecture_worker._target_registry.registered_core_modules()
-    modules = tuple(sorted({*canonical, *legacy, *target_modules}))
+    modules = tuple(sorted({*canonical, *target_modules}))
     cycles = architecture_worker._cycle_payloads(modules, imports)
     return {
         "schema": architecture_worker.GRIMP_WORKER_SCHEMA,
@@ -206,10 +205,7 @@ def test_repository_does_not_configure_github_actions() -> None:
     workflows = () if not workflow_root.exists() else tuple(workflow_root.glob("*.y*ml"))
 
     assert workflows == ()
-    assert WHEEL_PACKAGE_ROOTS == (
-        "_04_Nucleo_Operativo",
-        "neocortex",
-    )
+    assert WHEEL_PACKAGE_ROOTS == ("neocortex",)
 
 
 def test_installed_wheel_gate_refuses_a_source_backed_probe(tmp_path: Path) -> None:
@@ -410,7 +406,7 @@ def test_coverage_baseline_is_branch_aware_versioned_and_uses_production_scope()
         report,
         test_inventory=_coverage_inventory("tests/test_alpha.py", "tests/test_beta.py"),
         source_inventory=_coverage_inventory(
-            "_04_Nucleo_Operativo/__init__.py", "neocortex/__init__.py"
+            "neocortex/__init__.py", "neocortex/cli.py"
         ),
     )
 
@@ -430,7 +426,7 @@ def test_coverage_baseline_is_branch_aware_versioned_and_uses_production_scope()
             baseline,
             test_inventory=_coverage_inventory("tests/test_alpha.py", "tests/test_beta.py"),
             source_inventory=_coverage_inventory(
-                "_04_Nucleo_Operativo/__init__.py", "neocortex/__init__.py"
+                "neocortex/__init__.py", "neocortex/cli.py"
             ),
         )["metrics"]
         == baseline["approved"]
@@ -451,7 +447,7 @@ def test_coverage_gate_rejects_line_or_branch_rate_regression(
         _coverage_report(),
         test_inventory=_coverage_inventory("tests/test_alpha.py", "tests/test_beta.py"),
         source_inventory=_coverage_inventory(
-            "_04_Nucleo_Operativo/__init__.py", "neocortex/__init__.py"
+            "neocortex/__init__.py", "neocortex/cli.py"
         ),
     )
 
@@ -461,7 +457,7 @@ def test_coverage_gate_rejects_line_or_branch_rate_regression(
             baseline,
             test_inventory=_coverage_inventory("tests/test_alpha.py", "tests/test_beta.py"),
             source_inventory=_coverage_inventory(
-                "_04_Nucleo_Operativo/__init__.py", "neocortex/__init__.py"
+                "neocortex/__init__.py", "neocortex/cli.py"
             ),
         )
 
@@ -471,7 +467,7 @@ def test_coverage_gate_rejects_non_branch_report_and_tool_version_drift() -> Non
         _coverage_report(),
         test_inventory=_coverage_inventory("tests/test_alpha.py", "tests/test_beta.py"),
         source_inventory=_coverage_inventory(
-            "_04_Nucleo_Operativo/__init__.py", "neocortex/__init__.py"
+            "neocortex/__init__.py", "neocortex/cli.py"
         ),
     )
     not_branch_aware = _coverage_report()
@@ -485,7 +481,7 @@ def test_coverage_gate_rejects_non_branch_report_and_tool_version_drift() -> Non
             baseline,
             test_inventory=_coverage_inventory("tests/test_alpha.py", "tests/test_beta.py"),
             source_inventory=_coverage_inventory(
-                "_04_Nucleo_Operativo/__init__.py", "neocortex/__init__.py"
+                "neocortex/__init__.py", "neocortex/cli.py"
             ),
         )
     with pytest.raises(GateError, match="does not match baseline"):
@@ -494,7 +490,7 @@ def test_coverage_gate_rejects_non_branch_report_and_tool_version_drift() -> Non
             baseline,
             test_inventory=_coverage_inventory("tests/test_alpha.py", "tests/test_beta.py"),
             source_inventory=_coverage_inventory(
-                "_04_Nucleo_Operativo/__init__.py", "neocortex/__init__.py"
+                "neocortex/__init__.py", "neocortex/cli.py"
             ),
         )
 
@@ -504,12 +500,12 @@ def test_coverage_gate_rejects_non_branch_report_and_tool_version_drift() -> Non
     (
         (
             _coverage_inventory("tests/test_alpha.py"),
-            _coverage_inventory("_04_Nucleo_Operativo/__init__.py", "neocortex/__init__.py"),
+            _coverage_inventory("neocortex/__init__.py", "neocortex/cli.py"),
             "test paths removed",
         ),
         (
             _coverage_inventory("tests/test_alpha.py", "tests/test_beta.py"),
-            _coverage_inventory("_04_Nucleo_Operativo/__init__.py"),
+            _coverage_inventory("neocortex/__init__.py"),
             "production source paths removed",
         ),
     ),
@@ -523,7 +519,7 @@ def test_coverage_inventory_ratchet_rejects_deleted_test_or_source_path(
         _coverage_report(),
         test_inventory=_coverage_inventory("tests/test_alpha.py", "tests/test_beta.py"),
         source_inventory=_coverage_inventory(
-            "_04_Nucleo_Operativo/__init__.py", "neocortex/__init__.py"
+            "neocortex/__init__.py", "neocortex/cli.py"
         ),
     )
 
@@ -540,7 +536,7 @@ def test_coverage_inventory_ratchet_allows_additions_without_rewriting_baseline(
     baseline = coverage_baseline_payload(
         _coverage_report(),
         test_inventory=_coverage_inventory("tests/test_alpha.py"),
-        source_inventory=_coverage_inventory("_04_Nucleo_Operativo/__init__.py"),
+        source_inventory=_coverage_inventory("neocortex/__init__.py"),
     )
 
     summary = compare_coverage_report(
@@ -548,7 +544,7 @@ def test_coverage_inventory_ratchet_allows_additions_without_rewriting_baseline(
         baseline,
         test_inventory=_coverage_inventory("tests/test_alpha.py", "tests/test_new.py"),
         source_inventory=_coverage_inventory(
-            "_04_Nucleo_Operativo/__init__.py", "neocortex/new.py"
+            "neocortex/__init__.py", "neocortex/new.py"
         ),
     )
 
@@ -665,15 +661,12 @@ def test_live_architecture_gate_requires_the_exact_acyclic_v2_contract() -> None
         "family_unmapped_modules": 0,
         "family_overlapping_modules": 0,
         "family_forbidden_edges": 0,
-        "family_canonical_to_compat_edges": 0,
         "owner_aggregate_quotient_sccs": 0,
         "family_aggregate_quotient_sccs": 0,
         "core_target_registry_fingerprint": core_registry["fingerprint"],
         "core_target_registered_modules": len(core_scope["registered_modules"]),
-        "core_target_compatibility_modules": len(core_scope["compatibility_modules"]),
         "core_target_forbidden_direct_module_edges": 0,
         "core_target_family_regression_direct_module_edges": 0,
-        "core_target_canonical_to_compat_direct_module_edges": 0,
     }
 
 
@@ -778,33 +771,13 @@ def test_live_architecture_gate_rejects_stale_or_incomplete_projection_evidence(
                     "status": "overlap",
                     "labels": [
                         EXPECTED_CAPABILITY_CANONICAL_FAMILY,
-                        EXPECTED_CAPABILITY_COMPATIBILITY_FAMILY,
+                        "neocortex.other.family",
                     ],
                 }
             )
 
     with pytest.raises(GateError, match=message):
         evaluate_architecture_payload(payload)
-
-
-def test_live_architecture_gate_allows_compat_to_canonical_family_dependency() -> None:
-    _, _, _, families = architecture_worker._registered_capability_labels()
-    canonical = next(
-        module
-        for module, labels in families.items()
-        if labels == (architecture_worker.CAPABILITY_CANONICAL_FAMILY,)
-    )
-    compatibility = next(
-        module
-        for module, labels in families.items()
-        if labels == (architecture_worker.CAPABILITY_COMPATIBILITY_FAMILY,)
-    )
-
-    summary = evaluate_architecture_payload(
-        _architecture_payload((ModuleImport(compatibility, canonical),))
-    )
-
-    assert summary["family_aggregate_quotient_sccs"] == 0
 
 
 def test_live_architecture_gate_rejects_core_family_baseline_regression() -> None:
@@ -828,27 +801,8 @@ def test_live_architecture_gate_rejects_core_family_baseline_regression() -> Non
         evaluate_architecture_payload(_architecture_payload(imports))
 
 
-def test_live_architecture_gate_rejects_canonical_to_compat_family_dependency() -> None:
-    _, _, _, families = architecture_worker._registered_capability_labels()
-    canonical = next(
-        module
-        for module, labels in families.items()
-        if labels == (architecture_worker.CAPABILITY_CANONICAL_FAMILY,)
-    )
-    compatibility = next(
-        module
-        for module, labels in families.items()
-        if labels == (architecture_worker.CAPABILITY_COMPATIBILITY_FAMILY,)
-    )
-
-    with pytest.raises(GateError, match="allowed DAG"):
-        evaluate_architecture_payload(
-            _architecture_payload((ModuleImport(canonical, compatibility),))
-        )
-
-
 def test_aggregate_owner_quotient_scc_is_diagnostic_not_a_gate() -> None:
-    _, _, owners, families = architecture_worker._registered_capability_labels()
+    _, owners, families = architecture_worker._registered_capability_labels()
     archive = [
         module
         for module, labels in owners.items()

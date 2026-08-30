@@ -7,7 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from _04_Nucleo_Operativo import memory_runtime, pdf_runtime
+from neocortex.runtime.control import memory_runtime
+from neocortex.capabilities.formats.pdf import pdf_runtime
 
 
 def test_linux_meminfo_prefers_memavailable_over_memfree(tmp_path: Path) -> None:

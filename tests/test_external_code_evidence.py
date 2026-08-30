@@ -10,11 +10,11 @@ from pathlib import Path
 
 import pytest
 
-import _04_Nucleo_Operativo.code_external_evidence as evidence_module
+import neocortex.code.code_external_evidence as evidence_module
 from neocortex.deduplication import FileSnapshot
-from _04_Nucleo_Operativo.cli_code import _read_code_status_snapshot
-from _04_Nucleo_Operativo.code_contracts import CodeRouteConfig, CodeSearchQuery
-from _04_Nucleo_Operativo.code_external_evidence import (
+from neocortex.api.cli.cli_code import _read_code_status_snapshot
+from neocortex.code.code_contracts import CodeRouteConfig, CodeSearchQuery
+from neocortex.code.code_external_evidence import (
     RUFF_CONFIGURATION_SIGNATURE,
     ExternalEvidenceFile,
     RuffEvidenceProvider,
@@ -22,16 +22,16 @@ from _04_Nucleo_Operativo.code_external_evidence import (
     external_status_digest_payload,
     external_status_from_row,
 )
-from _04_Nucleo_Operativo.code_publication_diff import compare_code_publications
-from _04_Nucleo_Operativo.code_route import CodeRoute
-from _04_Nucleo_Operativo.code_schema import (
+from neocortex.code.code_publication_diff import compare_code_publications
+from neocortex.code.code_route import CodeRoute
+from neocortex.code.code_schema import (
     checkpoint_code_wal,
     readonly_code_database,
     remove_checkpointed_code_sidecars,
 )
-from _04_Nucleo_Operativo.code_search import search_code
-from _04_Nucleo_Operativo.code_state import CodeState
-from _04_Nucleo_Operativo.semantic_models import fingerprint_bytes
+from neocortex.code.code_search import search_code
+from neocortex.code.code_state import CodeState
+from neocortex.semantic.semantic_models import fingerprint_bytes
 
 
 class _Inventory:

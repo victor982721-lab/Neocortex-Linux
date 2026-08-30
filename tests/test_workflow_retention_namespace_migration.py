@@ -13,13 +13,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 RETENTION_ROOT = PROJECT_ROOT / "neocortex" / "workflow" / "retention"
 
 
-def test_legacy_retention_module_is_an_exact_product_alias() -> None:
-    legacy = importlib.import_module("_04_Nucleo_Operativo.retention_planner")
+def test_retention_module_is_owned_by_the_canonical_tree() -> None:
     product = importlib.import_module("neocortex.workflow.retention.planner")
-
-    assert legacy is product
-    assert sys.modules["_04_Nucleo_Operativo.retention_planner"] is product
-    assert sys.modules["neocortex.workflow.retention.planner"] is product
     assert Path(product.__file__).resolve().is_relative_to(RETENTION_ROOT)
 
 
@@ -53,4 +48,4 @@ def test_retention_models_keep_historical_pickle_fqns() -> None:
     restored = pickle.loads(pickle.dumps(policy, protocol=5))
     assert type(restored) is type(policy)
     assert restored == policy
-    assert module.RetentionPolicy.__module__ == "_04_Nucleo_Operativo.retention_planner"
+    assert module.RetentionPolicy.__module__ == "neocortex.workflow.retention.planner"

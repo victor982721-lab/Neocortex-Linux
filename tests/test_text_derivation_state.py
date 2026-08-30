@@ -7,9 +7,9 @@ from pathlib import Path
 
 import pytest
 
-import _04_Nucleo_Operativo.text_derivation_repository as text_derivation_repository_module
-import _04_Nucleo_Operativo.text_state as text_state_module
-from _04_Nucleo_Operativo.derivation_contracts import (
+import neocortex.capabilities.formats.text.text_derivation_repository as text_derivation_repository_module
+import neocortex.capabilities.formats.text.text_state as text_state_module
+from neocortex.semantic.derivation_contracts import (
     CapabilityFailure,
     InputBinding,
     MaterializationRef,
@@ -19,12 +19,12 @@ from _04_Nucleo_Operativo.derivation_contracts import (
     WorkExecutionMode,
     WorkOutcome,
 )
-from _04_Nucleo_Operativo.knowledge_contracts import (
+from neocortex.knowledge.knowledge_contracts import (
     ResourceRef,
     RevisionRef,
     RevisionState,
 )
-from _04_Nucleo_Operativo.text_derivation_repository import (
+from neocortex.capabilities.formats.text.text_derivation_repository import (
     TextDerivationAttemptStart,
     TextDerivationIntegrityError,
     abandon_running_text_derivations,
@@ -43,12 +43,12 @@ from _04_Nucleo_Operativo.text_derivation_repository import (
     resolve_text_lineage_identifier,
     succeed_text_derivation_attempt,
 )
-from _04_Nucleo_Operativo.text_state import (
+from neocortex.capabilities.formats.text.text_state import (
     TEXT_SCHEMA_VERSION,
     initialize_text_state,
     text_database,
 )
-from _04_Nucleo_Operativo.semantic_models import fingerprint_text
+from neocortex.semantic.semantic_models import fingerprint_text
 
 
 STARTED = "2026-08-11T00:00:00Z"

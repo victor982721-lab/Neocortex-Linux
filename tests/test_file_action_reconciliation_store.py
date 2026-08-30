@@ -19,23 +19,23 @@ from unittest.mock import patch
 
 import pytest
 
-import _04_Nucleo_Operativo.file_action_reconciliation_store as store_module
-import _04_Nucleo_Operativo.framework_schema as framework_schema
-from _04_Nucleo_Operativo.file_action_reconciliation_store import (
+import neocortex.workflow.actions.file_action_reconciliation_store as store_module
+import neocortex.persistence.framework_schema as framework_schema
+from neocortex.workflow.actions.file_action_reconciliation_store import (
     FileActionReconciliationConflict,
     RecordedFileActionReconciliation,
     record_file_action_reconciliation,
 )
-from _04_Nucleo_Operativo.file_action_recovery import (
+from neocortex.workflow.actions.file_action_recovery import (
     FILE_ACTION_RECONCILER_SIGNATURE,
     FileActionReconciliation,
     list_file_action_reconciliations,
 )
-from _04_Nucleo_Operativo.framework_schema import (
+from neocortex.persistence.framework_schema import (
     SCHEMA_VERSION,
     initialize_framework_schema,
 )
-from _04_Nucleo_Operativo.state import FrameworkState
+from neocortex.persistence.state import FrameworkState
 from tests.internal_paths_test_support import begin_signed_normal_run
 # endregion [01]
 

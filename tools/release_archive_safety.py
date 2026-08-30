@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO, Literal, Protocol, cast
 
-from _04_Nucleo_Operativo.platform.shared.zip_safety import (
+from neocortex.platform.zip_safety import (
     ZipStructure,
     ZipStructureError,
     inspect_zip_structure,

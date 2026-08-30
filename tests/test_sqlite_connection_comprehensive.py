@@ -13,16 +13,14 @@ from neocortex.enumeration.path_index.repository import SqlitePathIndex
 from neocortex.deduplication.inventory import index as inventory_module
 from neocortex.deduplication.inventory.index import DedupIndex
 from neocortex.deduplication import schema as inventory_schema
-from _04_Nucleo_Operativo import (
-    document_catalog,
-    framework_state_writer,
-    review_evidence,
-    semantic_sources,
-)
-from _04_Nucleo_Operativo.document_cache_sync import _synchronize_database
-from _04_Nucleo_Operativo.framework_connection import connect_existing_framework
-from _04_Nucleo_Operativo.framework_state_writer import FrameworkState
-from _04_Nucleo_Operativo.pdf_state import initialize_pdf_state
+from neocortex.documents import document_catalog
+from neocortex.persistence import framework_state_writer
+from neocortex.workflow.review import review_evidence
+from neocortex.semantic import semantic_sources
+from neocortex.documents.document_cache_sync import _synchronize_database
+from neocortex.persistence.framework_connection import connect_existing_framework
+from neocortex.persistence.framework_state_writer import FrameworkState
+from neocortex.capabilities.formats.pdf.pdf_state import initialize_pdf_state
 from neocortex.sqlite_schema_lifecycle import existing_sqlite_uri
 
 
@@ -94,7 +92,7 @@ def test_framework_connection_closes_if_configuration_is_interrupted(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from _04_Nucleo_Operativo import framework_connection
+    from neocortex.persistence import framework_connection
 
     class _InterruptedConnection:
         row_factory: object | None = None

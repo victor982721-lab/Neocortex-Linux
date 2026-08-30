@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from _04_Nucleo_Operativo.logical_owner_contracts import (
+from neocortex.code.logical_owner_contracts import (
     LOGICAL_OWNER_SPECS,
     PACKAGE_OWNER_SPECS,
     logical_owner_registry_fingerprint,
@@ -13,50 +13,50 @@ from _04_Nucleo_Operativo.logical_owner_contracts import (
 
 
 def test_registry_maps_only_explicit_owner_selectors_without_a_default() -> None:
-    assert matching_logical_owners("_04_Nucleo_Operativo.text_route") == ("text",)
-    assert matching_logical_owners("_04_Nucleo_Operativo.semantic_sources") == ("semantic",)
-    assert matching_logical_owners("_04_Nucleo_Operativo.knowledge_snapshot") == ("knowledge",)
-    assert matching_logical_owners("_04_Nucleo_Operativo.review_task_repository") == ("review",)
+    assert matching_logical_owners("neocortex.capabilities.formats.text.text_route") == ("text",)
+    assert matching_logical_owners("neocortex.semantic.semantic_sources") == ("semantic",)
+    assert matching_logical_owners("neocortex.knowledge.knowledge_snapshot") == ("knowledge",)
+    assert matching_logical_owners("neocortex.workflow.review.review_task_repository") == ("review",)
     assert matching_logical_owners("neocortex.review_task_cli_adapter") == ("review",)
-    assert matching_logical_owners("_04_Nucleo_Operativo.retention_plan") == ("retention",)
-    assert matching_logical_owners("_04_Nucleo_Operativo.framework_state") == ("framework",)
-    assert matching_logical_owners("_04_Nucleo_Operativo.actions") == ("orchestration",)
-    assert matching_logical_owners("_04_Nucleo_Operativo.archive_route") == ("archive",)
+    assert matching_logical_owners("neocortex.workflow.retention.planner") == ("retention",)
+    assert matching_logical_owners("neocortex.persistence.framework_state_writer") == ("framework",)
+    assert matching_logical_owners("neocortex.workflow.actions.actions") == ("orchestration",)
+    assert matching_logical_owners("neocortex.capabilities.formats.archive.route") == ("archive",)
     assert matching_logical_owners("neocortex.capabilities.formats.archive.route") == (
         "archive",
     )
-    assert matching_logical_owners("_04_Nucleo_Operativo.audio_route") == ("audio",)
+    assert matching_logical_owners("neocortex.capabilities.formats.audio.route") == ("audio",)
     assert matching_logical_owners("neocortex.capabilities.formats.audio.route") == (
         "audio",
     )
-    assert matching_logical_owners("_04_Nucleo_Operativo.code_review") == ("code-analysis",)
-    assert matching_logical_owners("_04_Nucleo_Operativo.image_route") == ("image",)
+    assert matching_logical_owners("neocortex.code.code_review") == ("code-analysis",)
+    assert matching_logical_owners("neocortex.capabilities.formats.image.route") == ("image",)
     assert matching_logical_owners("neocortex.capabilities.formats.docx.route") == (
         "docx",
     )
     assert matching_logical_owners("neocortex.capabilities.formats.image.route") == (
         "image",
     )
-    assert matching_logical_owners("_04_Nucleo_Operativo.office_route") == ("office",)
-    assert matching_logical_owners("_04_Nucleo_Operativo.legacy_office_worker") == ("office",)
+    assert matching_logical_owners("neocortex.capabilities.formats.office.route") == ("office",)
+    assert matching_logical_owners("neocortex.capabilities.formats.office.legacy_worker") == ("office",)
     assert matching_logical_owners("neocortex.capabilities.formats.office.route") == (
         "office",
     )
-    assert matching_logical_owners("_04_Nucleo_Operativo.pdf_route") == ("pdf",)
-    assert matching_logical_owners("_04_Nucleo_Operativo.video_route") == ("video",)
+    assert matching_logical_owners("neocortex.capabilities.formats.pdf.pdf_route") == ("pdf",)
+    assert matching_logical_owners("neocortex.capabilities.formats.video.route") == ("video",)
     assert matching_logical_owners("neocortex.capabilities.formats.video.route") == (
         "video",
     )
     assert matching_logical_owners("neocortex.deduplication.inventory.index") == ("deduplication",)
     assert matching_logical_owners("neocortex.enumeration.ntfs.journal") == ("enumeration",)
-    assert matching_logical_owners("_04_Nucleo_Operativo.inventory_boundary") == ("inventory",)
+    assert matching_logical_owners("neocortex.integrations.inventory.inventory_boundary") == ("inventory",)
     assert matching_logical_owners("neocortex.interface.presentation.windows.main") == (
         "interface",
     )
     assert matching_logical_owners("neocortex.capability_broker") == ("capability",)
     assert matching_logical_owners("neocortex.progress.events") == ("progress",)
     assert matching_logical_owners("neocortex.runtime.source_staging") == ("runtime",)
-    assert matching_logical_owners("_04_Nucleo_Operativo.textual_similarity") == ()
+    assert matching_logical_owners("neocortex.textual_similarity") == ()
 
 
 def test_registry_is_canonical_nonoverlapping_and_fingerprinted() -> None:
@@ -78,7 +78,7 @@ def test_package_ownership_is_a_separate_explicit_registry() -> None:
     assert tuple(item.package_owner_id for item in PACKAGE_OWNER_SPECS) == tuple(
         sorted(item.package_owner_id for item in PACKAGE_OWNER_SPECS)
     )
-    assert matching_package_owners("_04_Nucleo_Operativo.text_route") == ("core",)
+    assert matching_package_owners("neocortex.capabilities.formats.text.text_route") == ("product",)
     assert matching_package_owners("neocortex.deduplication.inventory.index") == ("product",)
     assert matching_package_owners("neocortex.interface.protocol.worker") == ("product",)
     assert matching_package_owners("neocortex.cli") == ("product",)

@@ -1,9 +1,6 @@
 """Terminal summaries and strict-exit evaluation for completed framework runs."""
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import argparse
 import json
 from collections.abc import Mapping
@@ -871,6 +868,3 @@ def has_strict_route_errors(result) -> bool:
 
 
 # endregion [04]
-
-
-_preserve_legacy_module(globals(), '_04_Nucleo_Operativo.cli_reporting')

@@ -10,9 +10,6 @@ from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 from .cancellation import CancellationToken
 
 
@@ -255,9 +252,4 @@ class WeightedMemoryGate:
                 with self._condition:
                     self._reserved -= reservation
                     self._condition.notify_all()
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.memory_runtime")
-
-
 # endregion [02]

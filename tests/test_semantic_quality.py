@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import pytest
 
-from _04_Nucleo_Operativo.semantic_chunking import TextChunkingConfig
-from _04_Nucleo_Operativo.semantic_models import TextSection
-from _04_Nucleo_Operativo.semantic_quality import (
+from neocortex.semantic.semantic_chunking import TextChunkingConfig
+from neocortex.semantic.semantic_models import TextSection
+from neocortex.semantic.semantic_quality import (
     SEMANTIC_TEXT_QUALITY_POLICY,
     assess_semantic_text,
     iter_semantic_text_chunks,

@@ -1,9 +1,6 @@
 """Flat CLI arguments and validation for generic physical text extraction."""
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import argparse
 from collections.abc import Callable
 
@@ -66,6 +63,3 @@ def validate_text_arguments(args: argparse.Namespace) -> None:
     ):
         if getattr(args, name) <= 0:
             raise SystemExit(f"--{name.replace('_', '-')} must be positive")
-
-
-_preserve_legacy_module(globals(), '_04_Nucleo_Operativo.cli_text_surface')

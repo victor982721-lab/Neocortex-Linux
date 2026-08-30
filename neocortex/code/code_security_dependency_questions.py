@@ -6,9 +6,6 @@ does not reinterpret a passing tool run as proof that the repository is safe.
 """
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 from dataclasses import asdict
 from typing import Literal
 
@@ -592,6 +589,3 @@ __all__ = [
     "SECURITY_EVIDENCE_QUESTION",
     "security_dependency_questions",
 ]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.code_security_dependency_questions")

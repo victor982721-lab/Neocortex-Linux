@@ -221,7 +221,7 @@ def file_key_from_snapshot(snapshot: FileIdentitySource) -> str:
 for _defined_value in tuple(globals().values()):
     if getattr(_defined_value, "__module__", None) == __name__:
         try:
-            _defined_value.__module__ = "_04_Nucleo_Operativo.file_identity"
+            _defined_value.__module__ = "neocortex.foundation.file_identity"
         except (AttributeError, TypeError):
             pass
 del _defined_value

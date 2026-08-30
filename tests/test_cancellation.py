@@ -12,24 +12,24 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from _04_Nucleo_Operativo import FrameworkConfig, FrameworkOrchestrator, RouteAdapter
-from _04_Nucleo_Operativo.cancellation import (
+from neocortex.api.public import FrameworkConfig, FrameworkOrchestrator, RouteAdapter
+from neocortex.runtime.control.cancellation import (
     CancellationRequested,
     CancellationToken,
 )
-from _04_Nucleo_Operativo import console_cancellation
-from _04_Nucleo_Operativo.console_cancellation import (
+from neocortex.runtime.control import console_cancellation
+from neocortex.runtime.control.console_cancellation import (
     CTRL_BREAK_EVENT,
     CTRL_C_EVENT,
     ConsoleCancellationBridge,
 )
-from _04_Nucleo_Operativo.global_resources import (
+from neocortex.runtime.control.global_resources import (
     GlobalResourceCoordinator,
     GlobalResourceLimits,
 )
-from _04_Nucleo_Operativo.memory_runtime import MemorySnapshot
-from _04_Nucleo_Operativo.isolated_process import isolated_spawn_process
-from _04_Nucleo_Operativo.pdf_isolation import stream_isolated_profiles
+from neocortex.runtime.control.memory_runtime import MemorySnapshot
+from neocortex.runtime.control.isolated_process import isolated_spawn_process
+from neocortex.capabilities.formats.pdf.pdf_isolation import stream_isolated_profiles
 from neocortex.progress import RecordingProgress
 from tests.synthetic_usn import SyntheticUsnJournal
 
@@ -280,7 +280,7 @@ class BlockingCancellationTests(unittest.TestCase):
                 errors.append(exc)
 
         with patch(
-            "_04_Nucleo_Operativo.global_resources.memory_snapshot",
+            "neocortex.runtime.control.global_resources.memory_snapshot",
             return_value=snapshot,
         ):
             with coordinator.admit("pdf", 80):
@@ -345,11 +345,11 @@ class BlockingCancellationTests(unittest.TestCase):
 
         with (
             patch(
-                "_04_Nucleo_Operativo.pdf_isolation.multiprocessing.get_context",
+                "neocortex.capabilities.formats.pdf.pdf_isolation.multiprocessing.get_context",
                 return_value=FakeContext(),
             ),
             patch(
-                "_04_Nucleo_Operativo.pdf_isolation.isolated_spawn_process",
+                "neocortex.capabilities.formats.pdf.pdf_isolation.isolated_spawn_process",
                 return_value=fake_process,
             ),
         ):

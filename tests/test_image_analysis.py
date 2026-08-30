@@ -5,13 +5,13 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
-from _04_Nucleo_Operativo.image_analysis import (
+from neocortex.capabilities.formats.image.analysis import (
     Features,
     cached_features_are_compatible,
     classify,
     requires_document_verification,
 )
-from _04_Nucleo_Operativo.image_document import (
+from neocortex.capabilities.formats.image.document import (
     DocumentTextEvidence,
     DocumentVerifierRuntime,
 )
@@ -96,7 +96,7 @@ def evidence(
 
 def decide(features: Features, text: DocumentTextEvidence, name: str = "sample.png"):
     with patch(
-        "_04_Nucleo_Operativo.image_analysis.verify_document_text",
+        "neocortex.capabilities.formats.image.analysis.verify_document_text",
         return_value=text,
     ):
         return classify(

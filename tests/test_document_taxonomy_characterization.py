@@ -8,8 +8,8 @@ from dataclasses import asdict, dataclass
 import pytest
 import xxhash
 
-import _04_Nucleo_Operativo.document_taxonomy as taxonomy_module
-from _04_Nucleo_Operativo.document_taxonomy import (
+import neocortex.documents.document_taxonomy as taxonomy_module
+from neocortex.documents.document_taxonomy import (
     CLASSIFIER_VERSION,
     DocumentSignals,
     ScoredLabel,

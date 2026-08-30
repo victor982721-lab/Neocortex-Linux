@@ -53,7 +53,7 @@ def test_numbered_progress_root_and_python_references_are_extinct() -> None:
     legacy = "_03" + "_Progreso"
     assert not (REPOSITORY_ROOT / legacy).exists()
     for relative in (
-        "_04_Nucleo_Operativo",
+        "neocortex",
         "neocortex",
         "tests",
         "tools",

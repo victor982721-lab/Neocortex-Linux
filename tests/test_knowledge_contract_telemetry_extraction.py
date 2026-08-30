@@ -19,14 +19,14 @@ from pathlib import Path
 
 import pytest
 
-from _04_Nucleo_Operativo import knowledge_contracts as contracts
+from neocortex.knowledge import knowledge_contracts as contracts
 # endregion [01]
 
 # region [02] Implementación
 
 
-CONTRACT_MODULE = "_04_Nucleo_Operativo.knowledge_contracts"
-TELEMETRY_MODULE = "_04_Nucleo_Operativo.knowledge_contract_telemetry"
+CONTRACT_MODULE = "neocortex.knowledge.knowledge_contracts"
+TELEMETRY_MODULE = "neocortex.knowledge.knowledge_contract_telemetry"
 DELEGATES = {
     ("KnowledgeTelemetryClock", "__post_init__"): "validate_telemetry_clock",
     ("KnowledgeTelemetryClock", "from_legacy"): "telemetry_clock_from_legacy",

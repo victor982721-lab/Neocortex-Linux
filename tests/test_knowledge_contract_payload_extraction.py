@@ -20,14 +20,14 @@ from pathlib import Path
 
 import pytest
 
-from _04_Nucleo_Operativo import knowledge_contracts as contracts
+from neocortex.knowledge import knowledge_contracts as contracts
 # endregion [01]
 
 # region [02] Implementación
 
 
-CONTRACT_MODULE = "_04_Nucleo_Operativo.knowledge_contracts"
-PAYLOAD_MODULE = "_04_Nucleo_Operativo.knowledge_contract_payloads"
+CONTRACT_MODULE = "neocortex.knowledge.knowledge_contracts"
+PAYLOAD_MODULE = "neocortex.knowledge.knowledge_contract_payloads"
 PAYLOAD_METHODS = {
     ("KnowledgePhaseTiming", "to_dict"): "knowledge_phase_timing_payload",
     ("KnowledgeQueryTelemetry", "to_dict"): "knowledge_query_telemetry_payload",

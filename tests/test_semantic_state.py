@@ -9,15 +9,15 @@ from pathlib import Path
 
 import pytest
 
-from _04_Nucleo_Operativo import semantic_state as state_module
-from _04_Nucleo_Operativo import semantic_generation_repository
-from _04_Nucleo_Operativo import semantic_search_repository
-from _04_Nucleo_Operativo.semantic_backends import merge_exact_search_pages
-from _04_Nucleo_Operativo.semantic_chunking import (
+from neocortex.semantic import semantic_state as state_module
+from neocortex.semantic import semantic_generation_repository
+from neocortex.semantic import semantic_search_repository
+from neocortex.semantic.semantic_backends import merge_exact_search_pages
+from neocortex.semantic.semantic_chunking import (
     TextChunkingConfig,
     chunk_text_sections,
 )
-from _04_Nucleo_Operativo.semantic_models import (
+from neocortex.semantic.semantic_models import (
     EmbeddingModality,
     EmbeddingModelSpec,
     EmbeddingRole,
@@ -32,7 +32,7 @@ from _04_Nucleo_Operativo.semantic_models import (
     fingerprint_bytes,
     fingerprint_text,
 )
-from _04_Nucleo_Operativo.semantic_state import (
+from neocortex.semantic.semantic_state import (
     SemanticStateError,
     claim_embedding_jobs,
     complete_embedding_job,
@@ -74,7 +74,7 @@ from _04_Nucleo_Operativo.semantic_state import (
     update_embedding_generation_cursor,
     upsert_semantic_item,
 )
-from _04_Nucleo_Operativo.semantic_sources import (
+from neocortex.semantic.semantic_sources import (
     SEMANTIC_TITLE_POLICY,
     SEMANTIC_TITLE_SECTION_KIND,
 )

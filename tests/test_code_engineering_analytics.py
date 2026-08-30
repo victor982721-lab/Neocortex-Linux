@@ -7,33 +7,33 @@ from collections.abc import Collection
 
 import pytest
 
-from _04_Nucleo_Operativo import code_engineering_analytics as engineering_module
-from _04_Nucleo_Operativo.code_architecture_analysis import (
+from neocortex.code import code_engineering_analytics as engineering_module
+from neocortex.code.code_architecture_analysis import (
     ArchitectureModule,
     ArchitectureSummary,
     CodeArchitectureAnalysis,
 )
-from _04_Nucleo_Operativo.code_coverage_analysis import (
+from neocortex.code.code_coverage_analysis import (
     CodeCoverageAnalysis,
     CoverageScopeSummary,
     CoverageTotals,
 )
-from _04_Nucleo_Operativo.code_engineering_analytics import (
+from neocortex.code.code_engineering_analytics import (
     GIT_HISTORY_PROVIDER_ID,
     MUTATION_PROVIDER_ID,
     analyze_code_engineering,
     engineering_profile_for_module,
     read_code_engineering_analysis,
 )
-from _04_Nucleo_Operativo.external_evidence_models import (
+from neocortex.code.external_evidence_models import (
     ExternalProviderEvidence,
     ExternalProviderMetric,
     ExternalProviderRelation,
 )
 
 
-MODULE = "_04_Nucleo_Operativo.external_deep_coverage"
-TARGET_PATH = "_04_Nucleo_Operativo/external_deep_coverage.py"
+MODULE = "neocortex.code.external_deep_coverage"
+TARGET_PATH = "neocortex/code/external_deep_coverage.py"
 
 
 def _architecture() -> CodeArchitectureAnalysis:
@@ -50,7 +50,7 @@ def _architecture() -> CodeArchitectureAnalysis:
         3,
         0,
         False,
-        "_04_Nucleo_Operativo",
+        "neocortex",
         12,
         False,
         ("neocortex",),
@@ -271,7 +271,7 @@ def test_engineering_analysis_correlates_dimensions_without_score() -> None:
     assert [gate.status for gate in first.gates] == ["passed", "passed", "passed"]
     profile = engineering_profile_for_module(first, MODULE)
     assert profile is not None
-    assert profile.path_namespace_id == "_04_Nucleo_Operativo"
+    assert profile.path_namespace_id == "neocortex"
     assert {item.name for item in profile.graph.metrics} >= {
         "blast_radius",
         "directed_degree_centrality",
@@ -370,12 +370,12 @@ def test_engineering_analyzer_signature_status_order_and_digests_are_frozen() ->
     assert (ready.status, ready.reason, ready.digest) == (
         "ready",
         None,
-        "code-engineering-v2:xxh3_128:c12478f85542583c61459460a1d1d327",
+        "code-engineering-v2:xxh3_128:3e5f3f352ab664b37400a8e5c5367d4a",
     )
     assert (partial.status, partial.reason, partial.digest) == (
         "partial",
         "one_or_more_engineering_dimensions_not_ready",
-        "code-engineering-v2:xxh3_128:e16e09fe8adb9737b7287d89aed45160",
+        "code-engineering-v2:xxh3_128:7b06f5b21f2f3f8fef50727d29e8ff0a",
     )
     assert (abstained.status, abstained.reason, abstained.digest) == (
         "abstained",

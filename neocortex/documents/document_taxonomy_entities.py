@@ -1,15 +1,12 @@
 """Entity, context, and generic pattern evidence for document taxonomy."""
 # region [00] Contexto del módulo
-# Módulo: _04_Nucleo_Operativo/document_taxonomy_entities.py
+# Módulo: neocortex/document_taxonomy_entities.py
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
 
 # region [01] Dependencias del módulo
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import re
 from typing import Mapping
 
@@ -555,6 +552,3 @@ def _pattern_evidence(
 def _clean_identifier(value: str) -> str:
     return re.sub(r"\s+", " ", value.strip()).upper()
 # endregion [02]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.document_taxonomy_entities")

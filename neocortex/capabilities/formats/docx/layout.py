@@ -236,5 +236,5 @@ for _historical_symbol in (
     _page_class,
     layout_result,
 ):
-    _historical_symbol.__module__ = "_04_Nucleo_Operativo.docx_layout"
+    _historical_symbol.__module__ = "neocortex.capabilities.formats.docx.layout"
 del _historical_symbol

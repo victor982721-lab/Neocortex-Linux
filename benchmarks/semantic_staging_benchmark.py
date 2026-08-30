@@ -29,17 +29,13 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
-from _04_Nucleo_Operativo import (  # noqa: E402
-    semantic_generation_repository,
-    semantic_item_repository,
-    semantic_text_index,
-)
-from _04_Nucleo_Operativo.semantic_chunking import (  # noqa: E402
+from neocortex.semantic import semantic_generation_repository, semantic_item_repository, semantic_text_index  # noqa: E402
+from neocortex.semantic.semantic_chunking import (  # noqa: E402
     TextChunkingConfig,
     iter_text_chunks,
 )
-from _04_Nucleo_Operativo.semantic_generation_worker import batches  # noqa: E402
-from _04_Nucleo_Operativo.semantic_models import (  # noqa: E402
+from neocortex.semantic.semantic_generation_worker import batches  # noqa: E402
+from neocortex.semantic.semantic_models import (  # noqa: E402
     EmbeddingModality,
     EmbeddingModelSpec,
     EmbeddingRole,
@@ -47,8 +43,8 @@ from _04_Nucleo_Operativo.semantic_models import (  # noqa: E402
     TextSection,
     fingerprint_text,
 )
-from _04_Nucleo_Operativo.semantic_sources import TextSourceRecord  # noqa: E402
-from _04_Nucleo_Operativo.semantic_state import (  # noqa: E402
+from neocortex.semantic.semantic_sources import TextSourceRecord  # noqa: E402
+from neocortex.semantic.semantic_state import (  # noqa: E402
     enqueue_text_chunk_jobs,
     finalize_semantic_item_refresh,
     finalize_text_chunk_refresh,

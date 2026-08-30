@@ -16,14 +16,11 @@ from typing import Literal
 ARCHITECTURE_CONTRACT_SCHEMA = "neocortex.code-architecture-contracts/v1"
 ARCHITECTURE_BASELINE_ID = "neocortex-production-imports-2026-08-23/v5"
 
-PRODUCTION_ROOT_PACKAGES = (
-    "neocortex",
-    "_04_Nucleo_Operativo",
-)
+PRODUCTION_ROOT_PACKAGES = ("neocortex",)
 EXCLUDED_ARCHITECTURE_NAMESPACES = ("tests", "tools", "benchmarks")
 EXCLUDED_STANDALONE_MODULES: tuple[str, ...] = ()
 
-_CORE = "_04_Nucleo_Operativo"
+_CORE = "neocortex.api"
 _UI = "neocortex.interface"
 _ENUMERATION = "neocortex.enumeration"
 _DEDUPLICATION = "neocortex.deduplication"
@@ -106,7 +103,7 @@ _INTERFACE_CORE_ALLOWLIST = (
     ("neocortex.interface.protocol.worker", "neocortex.api.cli.cli_reporting"),
     ("neocortex.interface.protocol.worker", "neocortex.api.cli.cli_validation"),
     ("neocortex.interface.protocol.worker", "neocortex.runtime.orchestration.orchestrator"),
-    ("neocortex.interface.read.status", "_04_Nucleo_Operativo.framework_connection"),
+    ("neocortex.interface.read.status", "neocortex.persistence.framework_connection"),
     ("neocortex.interface.read.status", "neocortex.runtime.orchestration.run_status"),
 )
 _INTERFACE_PRODUCT_ALLOWLIST = (
@@ -154,6 +151,7 @@ _NEOCORTEX_CORE_UI_ALLOWLIST = (
     ("neocortex.sdk", "neocortex.api.public"),
     # Value review is a separate advisory-only public contract.
     ("neocortex.value_cli_adapter", "neocortex.workflow.review.value_review_port"),
+    ("neocortex.workflow.review.value_review_port", "neocortex.api.status_codes"),
     # Durable ReviewTask commands share the same bounded advisory-only port.
     ("neocortex.review_task_cli_adapter", "neocortex.workflow.review.value_review_port"),
     # Processing provenance is now a canonical foundation contract; its
@@ -161,9 +159,9 @@ _NEOCORTEX_CORE_UI_ALLOWLIST = (
     # runtime.control cohort moves.
     ("neocortex.foundation.processing_provenance", "neocortex.runtime.control.bounded_subprocess"),
     # Archive is the first format capability moved into the canonical package.
-    # Its bounded route still consumes these legacy foundation leaves until
-    # the platform/foundation cohorts migrate, keeping the transition explicit
-    # instead of hiding a reverse dependency in a compatibility wrapper.
+    # Its bounded route still consumes shared foundation modules while the
+    # platform and foundation contracts remain explicit rather than hidden in
+    # an implicit reverse dependency.
     ("neocortex.capabilities.formats.archive.models", "neocortex.foundation.processing_provenance"),
     ("neocortex.capabilities.formats.archive.route", "neocortex.workflow.actions.action_policy"),
     ("neocortex.capabilities.formats.archive.route", "neocortex.runtime.control.bounded_subprocess"),
@@ -171,107 +169,104 @@ _NEOCORTEX_CORE_UI_ALLOWLIST = (
     ("neocortex.capabilities.formats.archive.route", "neocortex.foundation.file_identity"),
     ("neocortex.capabilities.formats.archive.route", "neocortex.platform.zip_safety"),
     ("neocortex.capabilities.formats.archive.route", "neocortex.foundation.processing_provenance"),
-    ("neocortex.capabilities.formats.archive.route", "_04_Nucleo_Operativo.route_filters"),
-    ("neocortex.capabilities.formats.archive.route", "_04_Nucleo_Operativo.state"),
-    ("neocortex.capabilities.formats.archive.state", "_04_Nucleo_Operativo.semantic_lexical"),
-    ("neocortex.capabilities.formats.archive.state", "_04_Nucleo_Operativo.sqlite_schema_contract"),
-    # DOCX is the next format cohort; these legacy foundation leaves remain
-    # explicit until the shared platform and workflow families move.
+    ("neocortex.capabilities.formats.archive.route", "neocortex.safety.route_filters"),
+    ("neocortex.capabilities.formats.archive.route", "neocortex.persistence.state"),
+    ("neocortex.capabilities.formats.archive.state", "neocortex.semantic.semantic_lexical"),
+    ("neocortex.capabilities.formats.archive.state", "neocortex.sqlite_schema_contract"),
+    # DOCX uses the same explicit shared platform and workflow boundaries.
     ("neocortex.capabilities.formats.docx.integrity", "neocortex.runtime.control.memory_runtime"),
     ("neocortex.capabilities.formats.docx.integrity", "neocortex.platform.zip_safety"),
     ("neocortex.capabilities.formats.docx.layout", "neocortex.runtime.control.cancellation"),
     ("neocortex.capabilities.formats.docx.models", "neocortex.foundation.processing_provenance"),
-    ("neocortex.capabilities.formats.docx.models", "_04_Nucleo_Operativo.route_filters"),
+    ("neocortex.capabilities.formats.docx.models", "neocortex.safety.route_filters"),
     ("neocortex.capabilities.formats.docx.route", "neocortex.runtime.control.cancellation"),
     ("neocortex.capabilities.formats.docx.route", "neocortex.foundation.file_identity"),
     ("neocortex.capabilities.formats.docx.route", "neocortex.runtime.control.memory_runtime"),
     ("neocortex.capabilities.formats.docx.route", "neocortex.platform.zip_safety"),
     ("neocortex.capabilities.formats.docx.route", "neocortex.workflow.review.review"),
-    ("neocortex.capabilities.formats.docx.route", "_04_Nucleo_Operativo.state"),
-    ("neocortex.capabilities.formats.docx.schema", "_04_Nucleo_Operativo.sqlite_schema_contract"),
-    ("neocortex.capabilities.formats.docx.state", "_04_Nucleo_Operativo.sqlite_schema_lifecycle"),
+    ("neocortex.capabilities.formats.docx.route", "neocortex.persistence.state"),
+    ("neocortex.capabilities.formats.docx.schema", "neocortex.sqlite_schema_contract"),
+    ("neocortex.capabilities.formats.docx.state", "neocortex.sqlite_schema_lifecycle"),
     # Audio completes the currently migrated media cohort; transcription and
-    # probing still use the legacy process/safety leaves until those families
-    # receive their own canonical homes.
+    # probing still use the shared process and safety contracts.
     ("neocortex.capabilities.formats.audio.models", "neocortex.foundation.processing_provenance"),
-    ("neocortex.capabilities.formats.audio.models", "_04_Nucleo_Operativo.route_filters"),
+    ("neocortex.capabilities.formats.audio.models", "neocortex.safety.route_filters"),
     ("neocortex.capabilities.formats.audio.probe", "neocortex.runtime.control.bounded_subprocess"),
     ("neocortex.capabilities.formats.audio.route", "neocortex.workflow.actions.action_policy"),
     ("neocortex.capabilities.formats.audio.route", "neocortex.runtime.control.cancellation"),
     ("neocortex.capabilities.formats.audio.route", "neocortex.foundation.file_identity"),
     ("neocortex.capabilities.formats.audio.route", "neocortex.runtime.control.memory_runtime"),
     ("neocortex.capabilities.formats.audio.route", "neocortex.workflow.review.review"),
-    ("neocortex.capabilities.formats.audio.route", "_04_Nucleo_Operativo.state"),
-    ("neocortex.capabilities.formats.audio.state", "_04_Nucleo_Operativo.sqlite_schema_contract"),
+    ("neocortex.capabilities.formats.audio.route", "neocortex.persistence.state"),
+    ("neocortex.capabilities.formats.audio.state", "neocortex.sqlite_schema_contract"),
     ("neocortex.capabilities.formats.audio.whisper", "neocortex.runtime.control.cancellation"),
     ("neocortex.capabilities.formats.audio.whisper", "neocortex.runtime.control.isolated_process"),
     # Image completes the current OCR/visual format cohort; decoding, OCR and
-    # worker safety still consume these legacy foundation leaves until their
-    # shared platform owners receive canonical homes.
+    # worker safety still consume the shared process and safety contracts.
     ("neocortex.capabilities.formats.image.adult", "neocortex.foundation.processing_provenance"),
     ("neocortex.capabilities.formats.image.document", "neocortex.runtime.control.bounded_subprocess"),
-    ("neocortex.capabilities.formats.image.document", "_04_Nucleo_Operativo.ocr_image_preprocess"),
-    ("neocortex.capabilities.formats.image.document", "_04_Nucleo_Operativo.ocr_profiles"),
+    ("neocortex.capabilities.formats.image.document", "neocortex.safety.ocr_image_preprocess"),
+    ("neocortex.capabilities.formats.image.document", "neocortex.safety.ocr_profiles"),
     ("neocortex.capabilities.formats.image.document", "neocortex.foundation.processing_provenance"),
     ("neocortex.capabilities.formats.image.features", "neocortex.runtime.control.memory_runtime"),
     ("neocortex.capabilities.formats.image.isolation", "neocortex.runtime.control.cancellation"),
     ("neocortex.capabilities.formats.image.isolation", "neocortex.runtime.control.isolated_process"),
-    ("neocortex.capabilities.formats.image.policy", "_04_Nucleo_Operativo.semantic_ontology"),
+    ("neocortex.capabilities.formats.image.policy", "neocortex.semantic.semantic_ontology"),
     ("neocortex.capabilities.formats.image.route", "neocortex.runtime.control.cancellation"),
     ("neocortex.capabilities.formats.image.route", "neocortex.runtime.control.memory_runtime"),
-    ("neocortex.capabilities.formats.image.route", "_04_Nucleo_Operativo.ocr_profiles"),
+    ("neocortex.capabilities.formats.image.route", "neocortex.safety.ocr_profiles"),
     ("neocortex.capabilities.formats.image.route", "neocortex.foundation.processing_provenance"),
     ("neocortex.capabilities.formats.image.route", "neocortex.workflow.review.review"),
-    ("neocortex.capabilities.formats.image.route", "_04_Nucleo_Operativo.route_filters"),
-    ("neocortex.capabilities.formats.image.route", "_04_Nucleo_Operativo.state"),
+    ("neocortex.capabilities.formats.image.route", "neocortex.safety.route_filters"),
+    ("neocortex.capabilities.formats.image.route", "neocortex.persistence.state"),
     ("neocortex.capabilities.formats.image.state", "neocortex.foundation.file_identity"),
-    ("neocortex.capabilities.formats.image.state", "_04_Nucleo_Operativo.route_filters"),
-    ("neocortex.capabilities.formats.image.state", "_04_Nucleo_Operativo.sqlite_paths"),
-    ("neocortex.capabilities.formats.image.state", "_04_Nucleo_Operativo.sqlite_schema_contract"),
-    # Office follows the same explicit transition pattern; legacy ZIP safety,
-    # extraction workers and route/state foundations remain declared seams.
+    ("neocortex.capabilities.formats.image.state", "neocortex.safety.route_filters"),
+    ("neocortex.capabilities.formats.image.state", "neocortex.persistence.sqlite_paths"),
+    ("neocortex.capabilities.formats.image.state", "neocortex.sqlite_schema_contract"),
+    # Office follows the same explicit boundary pattern for ZIP safety,
+    # extraction workers and route/state foundations.
     ("neocortex.capabilities.formats.office.extraction", "neocortex.platform.zip_safety"),
     ("neocortex.capabilities.formats.office.legacy_worker", "neocortex.runtime.control.bounded_subprocess"),
     ("neocortex.capabilities.formats.office.models", "neocortex.foundation.processing_provenance"),
-    ("neocortex.capabilities.formats.office.models", "_04_Nucleo_Operativo.route_filters"),
+    ("neocortex.capabilities.formats.office.models", "neocortex.safety.route_filters"),
     ("neocortex.capabilities.formats.office.route", "neocortex.workflow.actions.action_policy"),
     ("neocortex.capabilities.formats.office.route", "neocortex.runtime.control.cancellation"),
     ("neocortex.capabilities.formats.office.route", "neocortex.foundation.file_identity"),
     ("neocortex.capabilities.formats.office.route", "neocortex.runtime.control.memory_runtime"),
     ("neocortex.capabilities.formats.office.route", "neocortex.workflow.review.review"),
-    ("neocortex.capabilities.formats.office.route", "_04_Nucleo_Operativo.route_filters"),
-    ("neocortex.capabilities.formats.office.route", "_04_Nucleo_Operativo.state"),
+    ("neocortex.capabilities.formats.office.route", "neocortex.safety.route_filters"),
+    ("neocortex.capabilities.formats.office.route", "neocortex.persistence.state"),
     ("neocortex.capabilities.formats.office.state", "neocortex.foundation.file_identity"),
-    ("neocortex.capabilities.formats.office.state", "_04_Nucleo_Operativo.sqlite_schema_contract"),
-    # PDF now has a package-owned implementation while its shared safety,
-    # OCR, retry and state foundations remain explicit legacy seams.
-    ("neocortex.capabilities.formats.pdf.pdf_admin", "_04_Nucleo_Operativo.ocr_profiles"),
+    ("neocortex.capabilities.formats.office.state", "neocortex.sqlite_schema_contract"),
+    # PDF has a package-owned implementation while its shared safety, OCR,
+    # retry and state foundations remain explicit seams.
+    ("neocortex.capabilities.formats.pdf.pdf_admin", "neocortex.safety.ocr_profiles"),
     ("neocortex.capabilities.formats.pdf.pdf_admin", "neocortex.foundation.processing_provenance"),
     ("neocortex.capabilities.formats.pdf.pdf_derived", "neocortex.runtime.control.cancellation"),
     ("neocortex.capabilities.formats.pdf.pdf_isolation", "neocortex.runtime.control.cancellation"),
     ("neocortex.capabilities.formats.pdf.pdf_isolation", "neocortex.runtime.control.isolated_process"),
-    ("neocortex.capabilities.formats.pdf.pdf_isolation", "_04_Nucleo_Operativo.ocr_image_preprocess"),
-    ("neocortex.capabilities.formats.pdf.pdf_isolation", "_04_Nucleo_Operativo.ocr_profiles"),
+    ("neocortex.capabilities.formats.pdf.pdf_isolation", "neocortex.safety.ocr_image_preprocess"),
+    ("neocortex.capabilities.formats.pdf.pdf_isolation", "neocortex.safety.ocr_profiles"),
     ("neocortex.capabilities.formats.pdf.pdf_isolation", "neocortex.runtime.control.retry_policy"),
-    ("neocortex.capabilities.formats.pdf.pdf_isolation", "_04_Nucleo_Operativo.sqlite_paths"),
+    ("neocortex.capabilities.formats.pdf.pdf_isolation", "neocortex.persistence.sqlite_paths"),
     ("neocortex.capabilities.formats.pdf.pdf_route", "neocortex.workflow.actions.actions"),
     ("neocortex.capabilities.formats.pdf.pdf_route", "neocortex.runtime.control.cancellation"),
-    ("neocortex.capabilities.formats.pdf.pdf_route", "_04_Nucleo_Operativo.ocr_profiles"),
+    ("neocortex.capabilities.formats.pdf.pdf_route", "neocortex.safety.ocr_profiles"),
     ("neocortex.capabilities.formats.pdf.pdf_route", "neocortex.runtime.control.retry_policy"),
     ("neocortex.capabilities.formats.pdf.pdf_route", "neocortex.workflow.review.review"),
-    ("neocortex.capabilities.formats.pdf.pdf_route", "_04_Nucleo_Operativo.route_filters"),
-    ("neocortex.capabilities.formats.pdf.pdf_route", "_04_Nucleo_Operativo.state"),
+    ("neocortex.capabilities.formats.pdf.pdf_route", "neocortex.safety.route_filters"),
+    ("neocortex.capabilities.formats.pdf.pdf_route", "neocortex.persistence.state"),
     ("neocortex.capabilities.formats.pdf.pdf_route_cache", "neocortex.runtime.control.cancellation"),
     ("neocortex.capabilities.formats.pdf.pdf_route_cache", "neocortex.foundation.file_identity"),
     ("neocortex.capabilities.formats.pdf.pdf_route_cache", "neocortex.runtime.control.retry_policy"),
-    ("neocortex.capabilities.formats.pdf.pdf_route_models", "_04_Nucleo_Operativo.ocr_profiles"),
+    ("neocortex.capabilities.formats.pdf.pdf_route_models", "neocortex.safety.ocr_profiles"),
     ("neocortex.capabilities.formats.pdf.pdf_route_models", "neocortex.foundation.processing_provenance"),
-    ("neocortex.capabilities.formats.pdf.pdf_route_models", "_04_Nucleo_Operativo.route_filters"),
+    ("neocortex.capabilities.formats.pdf.pdf_route_models", "neocortex.safety.route_filters"),
     ("neocortex.capabilities.formats.pdf.pdf_route_storage", "neocortex.runtime.control.retry_policy"),
     ("neocortex.capabilities.formats.pdf.pdf_runtime", "neocortex.runtime.control.cancellation"),
     ("neocortex.capabilities.formats.pdf.pdf_runtime", "neocortex.runtime.control.memory_runtime"),
-    ("neocortex.capabilities.formats.pdf.pdf_schema", "_04_Nucleo_Operativo.sqlite_schema_contract"),
-    ("neocortex.capabilities.formats.pdf.pdf_state", "_04_Nucleo_Operativo.sqlite_schema_lifecycle"),
+    ("neocortex.capabilities.formats.pdf.pdf_schema", "neocortex.sqlite_schema_contract"),
+    ("neocortex.capabilities.formats.pdf.pdf_state", "neocortex.sqlite_schema_lifecycle"),
     # Video completes the media route cohort; frame extraction and probing keep
     # explicit seams to the shared process, OCR, retry and state foundations.
     ("neocortex.capabilities.formats.video.frames", "neocortex.runtime.control.bounded_subprocess"),
@@ -281,31 +276,31 @@ _NEOCORTEX_CORE_UI_ALLOWLIST = (
     ("neocortex.capabilities.formats.video.route", "neocortex.workflow.actions.action_policy"),
     ("neocortex.capabilities.formats.video.route", "neocortex.runtime.control.cancellation"),
     ("neocortex.capabilities.formats.video.route", "neocortex.foundation.file_identity"),
-    ("neocortex.capabilities.formats.video.route", "_04_Nucleo_Operativo.ocr_profiles"),
+    ("neocortex.capabilities.formats.video.route", "neocortex.safety.ocr_profiles"),
     ("neocortex.capabilities.formats.video.route", "neocortex.foundation.processing_provenance"),
     ("neocortex.capabilities.formats.video.route", "neocortex.workflow.review.review"),
-    ("neocortex.capabilities.formats.video.route", "_04_Nucleo_Operativo.route_filters"),
-    ("neocortex.capabilities.formats.video.route", "_04_Nucleo_Operativo.state"),
+    ("neocortex.capabilities.formats.video.route", "neocortex.safety.route_filters"),
+    ("neocortex.capabilities.formats.video.route", "neocortex.persistence.state"),
     ("neocortex.capabilities.formats.video.state", "neocortex.foundation.file_identity"),
-    ("neocortex.capabilities.formats.video.state", "_04_Nucleo_Operativo.semantic_lexical"),
-    ("neocortex.capabilities.formats.video.state", "_04_Nucleo_Operativo.sqlite_schema_contract"),
+    ("neocortex.capabilities.formats.video.state", "neocortex.semantic.semantic_lexical"),
+    ("neocortex.capabilities.formats.video.state", "neocortex.sqlite_schema_contract"),
     # Text completes the format routes while derivation, FTS and control
-    # foundations remain in the legacy core during the staged migration.
-    ("neocortex.capabilities.formats.text.text_derivation_repository", "_04_Nucleo_Operativo.derivation_contracts"),
+    # foundations remain explicit shared boundaries.
+    ("neocortex.capabilities.formats.text.text_derivation_repository", "neocortex.semantic.derivation_contracts"),
     ("neocortex.capabilities.formats.text.text_derivation_repository", "neocortex.foundation.file_identity"),
-    ("neocortex.capabilities.formats.text.text_derivation_repository", "_04_Nucleo_Operativo.knowledge_contracts"),
-    ("neocortex.capabilities.formats.text.text_derivation_repository", "_04_Nucleo_Operativo.semantic_models"),
+    ("neocortex.capabilities.formats.text.text_derivation_repository", "neocortex.knowledge.knowledge_contracts"),
+    ("neocortex.capabilities.formats.text.text_derivation_repository", "neocortex.semantic.semantic_models"),
     ("neocortex.capabilities.formats.text.text_route", "neocortex.runtime.control.bounded_subprocess"),
     ("neocortex.capabilities.formats.text.text_route", "neocortex.runtime.control.cancellation"),
-    ("neocortex.capabilities.formats.text.text_route", "_04_Nucleo_Operativo.derivation_contracts"),
+    ("neocortex.capabilities.formats.text.text_route", "neocortex.semantic.derivation_contracts"),
     ("neocortex.capabilities.formats.text.text_route", "neocortex.foundation.file_identity"),
-    ("neocortex.capabilities.formats.text.text_route", "_04_Nucleo_Operativo.knowledge_contracts"),
+    ("neocortex.capabilities.formats.text.text_route", "neocortex.knowledge.knowledge_contracts"),
     ("neocortex.capabilities.formats.text.text_route", "neocortex.runtime.control.locking"),
     ("neocortex.capabilities.formats.text.text_route", "neocortex.foundation.processing_provenance"),
-    ("neocortex.capabilities.formats.text.text_route", "_04_Nucleo_Operativo.route_filters"),
-    ("neocortex.capabilities.formats.text.text_route", "_04_Nucleo_Operativo.semantic_models"),
-    ("neocortex.capabilities.formats.text.text_state", "_04_Nucleo_Operativo.semantic_lexical"),
-    ("neocortex.capabilities.formats.text.text_state", "_04_Nucleo_Operativo.sqlite_schema_contract"),
+    ("neocortex.capabilities.formats.text.text_route", "neocortex.safety.route_filters"),
+    ("neocortex.capabilities.formats.text.text_route", "neocortex.semantic.semantic_models"),
+    ("neocortex.capabilities.formats.text.text_state", "neocortex.semantic.semantic_lexical"),
+    ("neocortex.capabilities.formats.text.text_state", "neocortex.sqlite_schema_contract"),
 )
 
 # The v5 graph is acyclic.  Keep the baseline empty so that reintroducing even
@@ -749,13 +744,13 @@ def evaluate_architecture_contracts(
     forbidden_groups = (
         (
             "core-does-not-depend-on-ui-v1",
-            lambda module: module_root(module) == _CORE,
+            lambda module: _in_module_tree(module, _CORE),
             lambda module: _in_module_tree(module, _UI),
         ),
         (
             "foundation-does-not-depend-on-core-or-ui-v1",
             lambda module: _in_module_tree(module, _ENUMERATION),
-            lambda module: module_root(module) == _CORE or _in_module_tree(module, _UI),
+            lambda module: _in_module_tree(module, _CORE) or _in_module_tree(module, _UI),
         ),
         (
             "progress-does-not-depend-on-other-production-v1",
@@ -817,7 +812,7 @@ def evaluate_architecture_contracts(
         (
             "dedup-core-boundary-v1",
             lambda module: _in_module_tree(module, _DEDUPLICATION),
-            lambda module: module_root(module) == _CORE,
+            lambda module: _in_module_tree(module, _CORE),
         ),
         (
             "dedup-product-boundary-v1",
@@ -836,7 +831,7 @@ def evaluate_architecture_contracts(
         (
             "interface-core-boundary-v1",
             lambda module: _in_module_tree(module, _UI),
-            lambda module: module_root(module) == _CORE,
+            lambda module: _in_module_tree(module, _CORE),
         ),
         (
             "interface-product-boundary-v1",
@@ -847,9 +842,10 @@ def evaluate_architecture_contracts(
             "neocortex-core-ui-boundary-v1",
             lambda module: (
                 module_root(module) == "neocortex"
+                and not _in_module_tree(module, _CORE)
                 and not any(_in_module_tree(module, tree) for tree in _CANONICAL_FAMILY_TREES)
             ),
-            lambda module: module_root(module) == _CORE or _in_module_tree(module, _UI),
+            lambda module: _in_module_tree(module, _CORE) or _in_module_tree(module, _UI),
         ),
     )
     for contract_id, source, target in allowlisted_contracts:

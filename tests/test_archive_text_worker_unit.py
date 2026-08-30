@@ -11,7 +11,7 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
-from _04_Nucleo_Operativo.capabilities.formats.archive import text_worker as worker
+from neocortex.capabilities.formats.archive import text_worker as worker
 
 
 def _args(**overrides: object) -> argparse.Namespace:

@@ -11,22 +11,22 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from neocortex.deduplication.schema import initialize_inventory_schema
-from _04_Nucleo_Operativo.document_catalog import initialize_document_catalog
-from _04_Nucleo_Operativo.file_identity import encode_file_identity
-from _04_Nucleo_Operativo.knowledge_asset_health import inspect_knowledge_asset_health
-from _04_Nucleo_Operativo.knowledge_asset_health_contracts import (
+from neocortex.documents.document_catalog import initialize_document_catalog
+from neocortex.foundation.file_identity import encode_file_identity
+from neocortex.knowledge.knowledge_asset_health import inspect_knowledge_asset_health
+from neocortex.knowledge.knowledge_asset_health_contracts import (
     KnowledgeAssetHealthCompleteness,
     KnowledgeAssetHealthQuery,
     KnowledgeAssetHealthStage,
     KnowledgeAssetHealthState,
 )
-from _04_Nucleo_Operativo.knowledge_asset_health_pdf import (
+from neocortex.knowledge.knowledge_asset_health_pdf import (
     PDF_STRUCTURAL_RECOVERY_VERSION,
 )
-from _04_Nucleo_Operativo.knowledge_snapshot import KnowledgeStatePaths
-from _04_Nucleo_Operativo.pdf_schema import PDF_SCHEMA_VERSION
-from _04_Nucleo_Operativo.pdf_state import initialize_pdf_state
-from _04_Nucleo_Operativo.text_state import initialize_text_state
+from neocortex.knowledge.knowledge_snapshot import KnowledgeStatePaths
+from neocortex.capabilities.formats.pdf.pdf_schema import PDF_SCHEMA_VERSION
+from neocortex.capabilities.formats.pdf.pdf_state import initialize_pdf_state
+from neocortex.capabilities.formats.text.text_state import initialize_text_state
 
 
 _RESOURCE_ID = "resource:file:11:3:-1"

@@ -16,24 +16,24 @@ from unittest.mock import patch
 
 import pytest
 
-from _04_Nucleo_Operativo.cli_app import dispatch_direct
-from _04_Nucleo_Operativo import cli_semantic as semantic_cli
-from _04_Nucleo_Operativo.cli_semantic import (
+from neocortex.api.cli.cli_app import dispatch_direct
+from neocortex.api.cli import cli_semantic as semantic_cli
+from neocortex.api.cli.cli_semantic import (
     run_integrated_all_semantic_index,
     run_semantic_index,
 )
-from _04_Nucleo_Operativo.cli_parser import build_parser
-from _04_Nucleo_Operativo.cli_validation import validate_arguments
-from _04_Nucleo_Operativo.semantic_config import COMPACT_TEXT_MODEL_ID
-from _04_Nucleo_Operativo.semantic_lexical import (
+from neocortex.api.cli.cli_parser import build_parser
+from neocortex.api.cli.cli_validation import validate_arguments
+from neocortex.semantic.semantic_config import COMPACT_TEXT_MODEL_ID
+from neocortex.semantic.semantic_lexical import (
     LexicalAvailability,
     LexicalRanking,
 )
-from _04_Nucleo_Operativo.protected_content import (
+from neocortex.safety.protected_content import (
     ProtectedContentPolicy,
     ProtectedPathSpec,
 )
-from _04_Nucleo_Operativo.semantic_models import (
+from neocortex.semantic.semantic_models import (
     CalibrationStatus,
     EvidenceDisposition,
     FusedHit,
@@ -41,7 +41,7 @@ from _04_Nucleo_Operativo.semantic_models import (
     GenerationSummary,
     SemanticEvidence,
 )
-from _04_Nucleo_Operativo.semantic_service import (
+from neocortex.semantic.semantic_service import (
     FusedResolvedHit,
     GenerationWorkResult,
     ModelPreparation,
@@ -54,7 +54,7 @@ from _04_Nucleo_Operativo.semantic_service import (
     SemanticSourcePlan,
     SemanticWorkloadPlan,
 )
-from _04_Nucleo_Operativo.semantic_work_budget import (
+from neocortex.semantic.semantic_work_budget import (
     SemanticIndexDeadlineExceeded,
     SemanticWorkBudget,
 )
@@ -69,11 +69,11 @@ def _safe_state_write_policies(
     internal_policy = disjoint_internal_paths_policy(tmp_path.parent / f"{tmp_path.name}-policy")
     protected_policy = ProtectedContentPolicy.capture(())
     monkeypatch.setattr(
-        "_04_Nucleo_Operativo.internal_paths.canonical_internal_paths_policy",
+        "neocortex.safety.internal_paths.canonical_internal_paths_policy",
         lambda: internal_policy,
     )
     monkeypatch.setattr(
-        "_04_Nucleo_Operativo.protected_content.canonical_protected_content_policy",
+        "neocortex.safety.protected_content.canonical_protected_content_policy",
         lambda: protected_policy,
     )
 
@@ -364,7 +364,7 @@ def test_semantic_plan_json_is_read_only_and_uses_selected_profile(
     result = _plan_result(tmp_path)
 
     with patch(
-        "_04_Nucleo_Operativo.semantic_service.plan_semantic_index",
+        "neocortex.semantic.semantic_service.plan_semantic_index",
         return_value=result,
     ) as operation:
         assert dispatch_direct(args) == 0
@@ -405,7 +405,7 @@ def test_semantic_plan_text_output_exposes_ranges_without_claiming_calibration(
     )
     validate_arguments(args)
     with patch(
-        "_04_Nucleo_Operativo.semantic_service.plan_semantic_index",
+        "neocortex.semantic.semantic_service.plan_semantic_index",
         return_value=_plan_result(tmp_path),
     ):
         assert dispatch_direct(args) == 0
@@ -452,7 +452,7 @@ def test_semantic_prepare_is_the_only_cli_action_that_authorizes_downloads(
     prepared = (ModelPreparation("signature", "model-id", 384, 0.25),)
 
     with patch(
-        "_04_Nucleo_Operativo.semantic_service.prepare_semantic_models",
+        "neocortex.semantic.semantic_service.prepare_semantic_models",
         return_value=prepared,
     ) as operation:
         assert dispatch_direct(args) == 0
@@ -487,7 +487,7 @@ def test_semantic_prepare_rejects_protected_missing_state_before_mkdir_or_lock(
         )
     )
     monkeypatch.setattr(
-        "_04_Nucleo_Operativo.protected_content.canonical_protected_content_policy",
+        "neocortex.safety.protected_content.canonical_protected_content_policy",
         lambda: protected_policy,
     )
     args = build_parser().parse_args(
@@ -500,8 +500,8 @@ def test_semantic_prepare_rejects_protected_missing_state_before_mkdir_or_lock(
     validate_arguments(args)
 
     with (
-        patch("_04_Nucleo_Operativo.semantic_service.prepare_semantic_models") as operation,
-        patch("_04_Nucleo_Operativo.locking.FrameworkRunLock") as lock,
+        patch("neocortex.semantic.semantic_service.prepare_semantic_models") as operation,
+        patch("neocortex.runtime.control.locking.FrameworkRunLock") as lock,
     ):
         assert dispatch_direct(args) == 2
 
@@ -516,11 +516,11 @@ def test_semantic_prepare_rejects_protected_missing_state_before_mkdir_or_lock(
     (
         (
             ("--semantic-index", "image"),
-            "_04_Nucleo_Operativo.semantic_service.index_image_embeddings",
+            "neocortex.semantic.semantic_service.index_image_embeddings",
         ),
         (
             ("--semantic-classify", "all"),
-            "_04_Nucleo_Operativo.semantic_service.classify_semantic_index",
+            "neocortex.semantic.semantic_service.classify_semantic_index",
         ),
     ),
 )
@@ -544,7 +544,7 @@ def test_semantic_writes_reject_existing_protected_state_before_lock(
         )
     )
     monkeypatch.setattr(
-        "_04_Nucleo_Operativo.protected_content.canonical_protected_content_policy",
+        "neocortex.safety.protected_content.canonical_protected_content_policy",
         lambda: protected_policy,
     )
     args = build_parser().parse_args(("--state-directory", str(state_directory), *command))
@@ -552,7 +552,7 @@ def test_semantic_writes_reject_existing_protected_state_before_lock(
 
     with (
         patch(operation_path) as operation,
-        patch("_04_Nucleo_Operativo.locking.FrameworkRunLock") as lock,
+        patch("neocortex.runtime.control.locking.FrameworkRunLock") as lock,
     ):
         assert dispatch_direct(args) == 2
 
@@ -596,11 +596,11 @@ def test_semantic_index_all_runs_text_then_image_offline_with_selected_profile(
 
     with (
         patch(
-            "_04_Nucleo_Operativo.semantic_service.index_text_embeddings",
+            "neocortex.semantic.semantic_service.index_text_embeddings",
             side_effect=text_index,
         ) as text_operation,
         patch(
-            "_04_Nucleo_Operativo.semantic_service.index_image_embeddings",
+            "neocortex.semantic.semantic_service.index_image_embeddings",
             side_effect=image_index,
         ) as image_operation,
     ):
@@ -741,24 +741,24 @@ def test_semantic_index_preserves_preparation_execution_and_publication_order(
         record_sources,
     )
     monkeypatch.setattr(
-        "_04_Nucleo_Operativo.semantic_work_budget.SemanticWorkBudget",
+        "neocortex.semantic.semantic_work_budget.SemanticWorkBudget",
         RecordingBudget,
     )
     monkeypatch.setattr(semantic_cli, "_validate_semantic_state_write", record_validate)
     monkeypatch.setattr(
-        "_04_Nucleo_Operativo.locking.FrameworkRunLock",
+        "neocortex.runtime.control.locking.FrameworkRunLock",
         RecordingLock,
     )
     monkeypatch.setattr(
-        "_04_Nucleo_Operativo.semantic_service.index_text_embeddings",
+        "neocortex.semantic.semantic_service.index_text_embeddings",
         text_index,
     )
     monkeypatch.setattr(
-        "_04_Nucleo_Operativo.semantic_service.index_image_embeddings",
+        "neocortex.semantic.semantic_service.index_image_embeddings",
         image_index,
     )
     monkeypatch.setattr(
-        "_04_Nucleo_Operativo.code_semantic_links.current_code_embedding_link_counts",
+        "neocortex.code.code_semantic_links.current_code_embedding_link_counts",
         code_links,
     )
     monkeypatch.setattr(semantic_cli, "_print_semantic_index_result", print_result)
@@ -820,15 +820,15 @@ def test_semantic_index_cancellation_propagates_without_partial_console_publicat
 
     with (
         patch(
-            "_04_Nucleo_Operativo.locking.FrameworkRunLock",
+            "neocortex.runtime.control.locking.FrameworkRunLock",
             RecordingLock,
         ),
         patch(
-            "_04_Nucleo_Operativo.semantic_service.index_text_embeddings",
+            "neocortex.semantic.semantic_service.index_text_embeddings",
             return_value=text_result,
         ),
         patch(
-            "_04_Nucleo_Operativo.semantic_service.index_image_embeddings",
+            "neocortex.semantic.semantic_service.index_image_embeddings",
             side_effect=cancellation,
         ),
         patch.object(semantic_cli, "_print_semantic_index_result") as print_result,
@@ -865,11 +865,11 @@ def test_semantic_index_reports_published_code_link_coverage(
     validate_arguments(args)
     with (
         patch(
-            "_04_Nucleo_Operativo.semantic_service.index_text_embeddings",
+            "neocortex.semantic.semantic_service.index_text_embeddings",
             return_value=_index_result(tmp_path, ("code",)),
         ),
         patch(
-            "_04_Nucleo_Operativo.code_semantic_links.current_code_embedding_link_counts",
+            "neocortex.code.code_semantic_links.current_code_embedding_link_counts",
             return_value=(4, 3),
         ),
     ):
@@ -891,7 +891,7 @@ def test_semantic_index_reports_partial_generation_as_nonzero(
     )
     validate_arguments(args)
     with patch(
-        "_04_Nucleo_Operativo.semantic_service.index_text_embeddings",
+        "neocortex.semantic.semantic_service.index_text_embeddings",
         return_value=_index_result(tmp_path, ("pdf",), pending=1),
     ) as operation:
         assert dispatch_direct(args) == 2
@@ -909,7 +909,7 @@ def test_semantic_index_reports_stale_only_generation_as_nonzero(
     )
     validate_arguments(args)
     with patch(
-        "_04_Nucleo_Operativo.semantic_service.index_text_embeddings",
+        "neocortex.semantic.semantic_service.index_text_embeddings",
         return_value=_index_result(tmp_path, ("pdf",), stale=1),
     ):
         assert dispatch_direct(args) == 2
@@ -929,7 +929,7 @@ def test_semantic_index_reports_budget_truncation_as_nonzero(
     )
     validate_arguments(args)
     with patch(
-        "_04_Nucleo_Operativo.semantic_service.index_text_embeddings",
+        "neocortex.semantic.semantic_service.index_text_embeddings",
         return_value=_index_result(
             tmp_path,
             ("pdf",),
@@ -954,7 +954,7 @@ def test_all_advances_physical_semantic_without_broad_archive_or_code_by_default
     args = build_parser().parse_args(["--all", "--state-directory", str(tmp_path)])
     validate_arguments(args)
     with patch(
-        "_04_Nucleo_Operativo.semantic_service.index_text_embeddings",
+        "neocortex.semantic.semantic_service.index_text_embeddings",
         return_value=_index_result(
             tmp_path,
             ("pdf", "text"),
@@ -988,7 +988,7 @@ def test_all_semantic_uses_shared_progress_and_captures_structured_result(
     progress = RecordingProgress()
     captured: list[tuple[str, object]] = []
     with patch(
-        "_04_Nucleo_Operativo.semantic_service.index_text_embeddings",
+        "neocortex.semantic.semantic_service.index_text_embeddings",
         return_value=result,
     ) as operation:
         assert (
@@ -1028,11 +1028,11 @@ def test_all_accepts_explicit_code_semantic_selection(tmp_path: Path) -> None:
     validate_arguments(args)
     with (
         patch(
-            "_04_Nucleo_Operativo.semantic_service.index_text_embeddings",
+            "neocortex.semantic.semantic_service.index_text_embeddings",
             return_value=_index_result(tmp_path, ("code",)),
         ) as operation,
         patch(
-            "_04_Nucleo_Operativo.code_semantic_links.current_code_embedding_link_counts",
+            "neocortex.code.code_semantic_links.current_code_embedding_link_counts",
             return_value=(0, 0),
         ),
     ):
@@ -1055,7 +1055,7 @@ def test_all_accepts_explicit_archive_semantic_selection(tmp_path: Path) -> None
     )
     validate_arguments(args)
     with patch(
-        "_04_Nucleo_Operativo.semantic_service.index_text_embeddings",
+        "neocortex.semantic.semantic_service.index_text_embeddings",
         return_value=_index_result(tmp_path, ("archive",)),
     ) as operation:
         assert run_integrated_all_semantic_index(args) == 0
@@ -1072,7 +1072,7 @@ def test_semantic_index_without_available_text_cache_fails_explicitly(
     )
     validate_arguments(args)
 
-    with patch("_04_Nucleo_Operativo.semantic_service.index_text_embeddings") as operation:
+    with patch("neocortex.semantic.semantic_service.index_text_embeddings") as operation:
         assert dispatch_direct(args) == 2
 
     operation.assert_not_called()
@@ -1089,7 +1089,7 @@ def test_semantic_index_deadline_failure_returns_two(
     )
     validate_arguments(args)
     with patch(
-        "_04_Nucleo_Operativo.semantic_service.index_text_embeddings",
+        "neocortex.semantic.semantic_service.index_text_embeddings",
         side_effect=SemanticIndexDeadlineExceeded("model startup deadline"),
     ):
         assert dispatch_direct(args) == 2
@@ -1173,7 +1173,7 @@ def test_semantic_search_reports_rank_availability_fusion_and_completeness(
     )
     validate_arguments(args)
     with patch(
-        "_04_Nucleo_Operativo.semantic_service.search_semantic_index",
+        "neocortex.semantic.semantic_service.search_semantic_index",
         return_value=_search_result(),
     ) as operation:
         assert dispatch_direct(args) == 0
@@ -1198,7 +1198,7 @@ def test_semantic_search_incomplete_exact_scan_returns_two(tmp_path, capsys) -> 
     )
     validate_arguments(args)
     with patch(
-        "_04_Nucleo_Operativo.semantic_service.search_semantic_index",
+        "neocortex.semantic.semantic_service.search_semantic_index",
         return_value=_search_result(complete=False),
     ):
         assert dispatch_direct(args) == 2
@@ -1232,7 +1232,7 @@ def test_semantic_search_reports_calibrated_abstention(tmp_path, capsys) -> None
     )
     result = replace(result, rankings=(ranking,), lexical_rankings=(), fused=())
     with patch(
-        "_04_Nucleo_Operativo.semantic_service.search_semantic_index",
+        "neocortex.semantic.semantic_service.search_semantic_index",
         return_value=result,
     ):
         assert dispatch_direct(args) == 0
@@ -1270,7 +1270,7 @@ def test_semantic_search_escapes_unencodable_corpus_text_on_cp1252(
     validate_arguments(args)
     console = StrictCp1252Console()
     with patch(
-        "_04_Nucleo_Operativo.semantic_service.search_semantic_index",
+        "neocortex.semantic.semantic_service.search_semantic_index",
         return_value=_search_result(
             source_identity="page:\ufeff1",
             path="C:/corpus/ficha\uf0b7.pdf",
@@ -1302,7 +1302,7 @@ def test_offline_semantic_failure_names_explicit_model_preparation(
     )
     validate_arguments(args)
     with patch(
-        "_04_Nucleo_Operativo.semantic_service.search_semantic_index",
+        "neocortex.semantic.semantic_service.search_semantic_index",
         side_effect=RuntimeError("model weights are not cached"),
     ):
         assert dispatch_direct(args) == 2
@@ -1333,7 +1333,7 @@ def test_semantic_classification_is_reported_as_advisory(tmp_path, capsys) -> No
         ),
     )
     with patch(
-        "_04_Nucleo_Operativo.semantic_service.classify_semantic_index",
+        "neocortex.semantic.semantic_service.classify_semantic_index",
         return_value=result,
     ) as operation:
         assert dispatch_direct(args) == 0
@@ -1377,7 +1377,7 @@ def test_semantic_evidence_is_read_only_and_never_grants_policy_authority(
         provenance={"authority": "advisory-only"},
     )
     with patch(
-        "_04_Nucleo_Operativo.semantic_state.list_semantic_evidence",
+        "neocortex.semantic.semantic_state.list_semantic_evidence",
         return_value=(evidence,),
     ) as operation:
         assert dispatch_direct(args) == 0
@@ -1417,7 +1417,7 @@ def test_semantic_evidence_limit_reports_truncation(tmp_path, capsys) -> None:
         rank=1,
     )
     with patch(
-        "_04_Nucleo_Operativo.semantic_state.list_semantic_evidence",
+        "neocortex.semantic.semantic_state.list_semantic_evidence",
         return_value=(evidence, evidence),
     ) as operation:
         assert dispatch_direct(args) == 0

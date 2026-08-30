@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from _04_Nucleo_Operativo.semantic_config import (
+from neocortex.semantic.semantic_config import (
     FastEmbedCacheContract,
     fastembed_cache_contract,
     multilingual_text_model,

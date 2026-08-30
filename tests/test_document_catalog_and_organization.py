@@ -8,17 +8,17 @@ from pathlib import Path
 
 import pytest
 
-import _04_Nucleo_Operativo.document_catalog_schema as catalog_schema_module
+import neocortex.documents.document_catalog_schema as catalog_schema_module
 from neocortex.deduplication import snapshot_path
 from neocortex.progress import RecordingProgress
-from _04_Nucleo_Operativo.cli_parser import build_parser
-from _04_Nucleo_Operativo.cli_validation import validate_arguments
-from _04_Nucleo_Operativo.corpus_access import (
+from neocortex.api.cli.cli_parser import build_parser
+from neocortex.api.cli.cli_validation import validate_arguments
+from neocortex.safety.corpus_access import (
     CorpusAccessPolicy,
     CorpusMutationGuard,
 )
-from _04_Nucleo_Operativo.document_cache_sync import synchronize_moved_document
-from _04_Nucleo_Operativo.document_catalog import (
+from neocortex.documents.document_cache_sync import synchronize_moved_document
+from neocortex.documents.document_catalog import (
     MAX_CLASSIFICATION_TEXT_CHARS,
     document_catalog_database,
     initialize_document_catalog,
@@ -26,28 +26,28 @@ from _04_Nucleo_Operativo.document_catalog import (
     update_document_catalog,
     update_document_catalog_source,
 )
-from _04_Nucleo_Operativo.document_naming import suggest_document_stem
-from _04_Nucleo_Operativo.document_organization import (
+from neocortex.documents.document_naming import suggest_document_stem
+from neocortex.documents.document_organization import (
     apply_all_document_organization,
     apply_document_organization,
     default_organization_root,
     list_organization_plans,
     plan_document_organization,
 )
-from _04_Nucleo_Operativo.document_taxonomy import (
+from neocortex.documents.document_taxonomy import (
     DocumentSignals,
     classify_document,
     load_taxonomy,
 )
-from _04_Nucleo_Operativo.docx_state import initialize_docx_state
-from _04_Nucleo_Operativo.models import FrameworkConfig
-from _04_Nucleo_Operativo.pdf_state import initialize_pdf_state
-from _04_Nucleo_Operativo.protected_content import (
+from neocortex.capabilities.formats.docx.state import initialize_docx_state
+from neocortex.runtime.models import FrameworkConfig
+from neocortex.capabilities.formats.pdf.pdf_state import initialize_pdf_state
+from neocortex.safety.protected_content import (
     ProtectedContentError,
     ProtectedContentPolicy,
     ProtectedPathSpec,
 )
-from _04_Nucleo_Operativo.semantic_models import (
+from neocortex.semantic.semantic_models import (
     EmbeddingModality,
     EmbeddingModelSpec,
     EmbeddingRole,
@@ -57,7 +57,7 @@ from _04_Nucleo_Operativo.semantic_models import (
     TextChunk,
     fingerprint_text,
 )
-from _04_Nucleo_Operativo.semantic_state import (
+from neocortex.semantic.semantic_state import (
     claim_embedding_jobs,
     complete_embedding_job,
     enqueue_text_chunk_jobs,

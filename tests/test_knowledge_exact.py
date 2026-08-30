@@ -19,11 +19,11 @@ import pytest
 
 from neocortex.deduplication.fingerprinting import FULL_ALGORITHM, PARTIAL_ALGORITHM
 from neocortex.deduplication.schema import initialize_inventory_schema
-from _04_Nucleo_Operativo import knowledge_exact as knowledge_exact_module
-from _04_Nucleo_Operativo.code_schema import initialize_code_state
-from _04_Nucleo_Operativo.document_catalog import initialize_document_catalog
-from _04_Nucleo_Operativo.file_identity import FileIdentity
-from _04_Nucleo_Operativo.knowledge_contracts import (
+from neocortex.knowledge import knowledge_exact as knowledge_exact_module
+from neocortex.code.code_schema import initialize_code_state
+from neocortex.documents.document_catalog import initialize_document_catalog
+from neocortex.foundation.file_identity import FileIdentity
+from neocortex.knowledge.knowledge_contracts import (
     KnowledgeSnapshot,
     LogicalWatermark,
     OwnerAvailability,
@@ -31,7 +31,7 @@ from _04_Nucleo_Operativo.knowledge_contracts import (
     PublicationHead,
     RevisionState,
 )
-from _04_Nucleo_Operativo.knowledge_exact import (
+from neocortex.knowledge.knowledge_exact import (
     ExactLookupKind,
     ExactLookupRequest,
     ExactLookupResult,
@@ -41,13 +41,13 @@ from _04_Nucleo_Operativo.knowledge_exact import (
     lookup_exact,
     lookup_plan_exact,
 )
-from _04_Nucleo_Operativo.knowledge_planner import (
+from neocortex.knowledge.knowledge_planner import (
     KnowledgePlan,
     KnowledgeQuery,
     plan_knowledge_query,
 )
-from _04_Nucleo_Operativo.knowledge_snapshot import KnowledgeStatePaths
-from _04_Nucleo_Operativo.semantic_models import fingerprint_text
+from neocortex.knowledge.knowledge_snapshot import KnowledgeStatePaths
+from neocortex.semantic.semantic_models import fingerprint_text
 from neocortex.platform_policy import sqlite_path_collation
 # endregion [01]
 

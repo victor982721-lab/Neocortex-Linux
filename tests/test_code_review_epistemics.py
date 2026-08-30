@@ -9,27 +9,27 @@ from types import SimpleNamespace
 
 import pytest
 
-import _04_Nucleo_Operativo.code_review as code_review_module
-import _04_Nucleo_Operativo.code_review_models as code_review_models_module
-from _04_Nucleo_Operativo.code_review import review_code_state
-from _04_Nucleo_Operativo.code_review_actionability import (
+import neocortex.code.code_review as code_review_module
+import neocortex.code.code_review_models as code_review_models_module
+from neocortex.code.code_review import review_code_state
+from neocortex.code.code_review_actionability import (
     CodeReviewActionabilityInput,
     CodeReviewEpistemicState,
     assess_code_review_actionability,
 )
-from _04_Nucleo_Operativo.code_review_models import (
+from neocortex.code.code_review_models import (
     CodeReviewRecommendation,
     CodeReviewResult,
     CodeReviewWorkPackage,
     CodeReviewWorkPackageStep,
     build_code_review_recommendations,
 )
-from _04_Nucleo_Operativo.code_review_work_packages import build_code_review_work_packages
-from _04_Nucleo_Operativo.code_unused_analysis import (
+from neocortex.code.code_review_work_packages import build_code_review_work_packages
+from neocortex.code.code_unused_analysis import (
     UnusedConsensusCandidate,
     UnusedEvidenceSignals,
 )
-from _04_Nucleo_Operativo.semantic_models import canonical_json, fingerprint_text
+from neocortex.semantic.semantic_models import canonical_json, fingerprint_text
 from tests.test_code_review import _build_state, _status
 
 

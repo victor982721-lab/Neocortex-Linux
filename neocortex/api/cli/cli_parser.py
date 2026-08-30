@@ -6,9 +6,6 @@
 # without starting inventory, route, or persistent-state work.
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import argparse
 import sys
 from decimal import Decimal, InvalidOperation
@@ -1069,6 +1066,3 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 # endregion [02]
-
-
-_preserve_legacy_module(globals(), '_04_Nucleo_Operativo.cli_parser')

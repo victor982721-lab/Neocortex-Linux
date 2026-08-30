@@ -6,14 +6,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from _04_Nucleo_Operativo.cli_knowledge import KnowledgeExitCode
-from _04_Nucleo_Operativo.code_contracts import CodeSearchHit
-from _04_Nucleo_Operativo.knowledge_contracts import (
+from neocortex.api.cli.cli_knowledge import KnowledgeExitCode
+from neocortex.code.code_contracts import CodeSearchHit
+from neocortex.knowledge.knowledge_contracts import (
     KnowledgeCompleteness,
     OwnerAvailability,
     SnapshotConsistency,
 )
-from _04_Nucleo_Operativo.knowledge_asset_health_contracts import (
+from neocortex.knowledge.knowledge_asset_health_contracts import (
     KnowledgeAssetHealthCompleteness,
     KnowledgeAssetHealthState,
 )
@@ -241,7 +241,7 @@ def test_asset_health_uses_stable_identity_and_fixed_scopes_without_creating_sta
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    from _04_Nucleo_Operativo import knowledge_asset_health
+    from neocortex.knowledge import knowledge_asset_health
 
     bindings = _bindings(tmp_path)
     observed: list[tuple[Path, str]] = []

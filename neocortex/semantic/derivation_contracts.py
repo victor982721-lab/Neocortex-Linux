@@ -7,9 +7,6 @@ can be reconciled to one of the terminal outcomes declared here.
 """
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import json
 import math
 from collections.abc import Mapping
@@ -934,6 +931,3 @@ __all__ = [
     "WorkOutcome",
     "WorkReceipt",
 ]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.derivation_contracts")

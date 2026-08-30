@@ -6,9 +6,6 @@ connection.  Row counts are lower bounds once their declared scan cap is hit.
 """
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import os
 import sqlite3
 from collections.abc import Mapping, Sequence
@@ -884,6 +881,3 @@ __all__ = [
     "CodeStorageTableObservation",
     "analyze_code_storage",
 ]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.code_storage_analysis")

@@ -17,13 +17,13 @@ from unittest.mock import patch
 
 import pytest
 
-from _04_Nucleo_Operativo import cli_code
-from _04_Nucleo_Operativo.cli_app import dispatch_direct
-from _04_Nucleo_Operativo.cli_config import framework_config_from_args
-from _04_Nucleo_Operativo.cli_parser import build_parser
-from _04_Nucleo_Operativo.cli_validation import validate_arguments
-from _04_Nucleo_Operativo.code_schema import initialize_code_state
-from _04_Nucleo_Operativo.code_coverage_analysis import (
+from neocortex.api.cli import cli_code
+from neocortex.api.cli.cli_app import dispatch_direct
+from neocortex.api.cli.cli_config import framework_config_from_args
+from neocortex.api.cli.cli_parser import build_parser
+from neocortex.api.cli.cli_validation import validate_arguments
+from neocortex.code.code_schema import initialize_code_state
+from neocortex.code.code_coverage_analysis import (
     CODE_COVERAGE_PROVIDER_ID,
     CodeCoverageAnalysis,
     CoverageComparison,
@@ -34,7 +34,7 @@ from _04_Nucleo_Operativo.code_coverage_analysis import (
     CoverageTotals,
     WorkPackageCoverageProjection,
 )
-from _04_Nucleo_Operativo.external_evidence_providers import provider_tool_versions
+from neocortex.code.external_evidence_providers import provider_tool_versions
 
 # endregion [01]
 
@@ -335,19 +335,19 @@ def test_code_experiment_persists_the_exact_public_receipt(
 
     with (
         patch(
-            "_04_Nucleo_Operativo.code_review.review_code_state",
+            "neocortex.code.code_review.review_code_state",
             return_value=review,
         ),
         patch(
-            "_04_Nucleo_Operativo.code_experiment_executor.execute_code_experiment",
+            "neocortex.code.code_experiment_executor.execute_code_experiment",
             return_value=receipt,
         ) as execute,
         patch(
-            "_04_Nucleo_Operativo.code_experiment_store.code_review_digest_identity",
+            "neocortex.code.code_experiment_store.code_review_digest_identity",
             return_value="review:exact",
         ),
         patch(
-            "_04_Nucleo_Operativo.code_experiment_store.record_code_experiment_receipt",
+            "neocortex.code.code_experiment_store.record_code_experiment_receipt",
             return_value=stored,
         ) as record,
     ):
@@ -394,7 +394,7 @@ def test_code_status_projects_bounded_architecture_summary_and_gates(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    from _04_Nucleo_Operativo.code_architecture_analysis import (
+    from neocortex.code.code_architecture_analysis import (
         ArchitectureContract,
         ArchitectureGateEvaluation,
         ArchitectureProviderStatus,
@@ -532,7 +532,7 @@ def test_run_code_review_signature_json_and_abstention_paths(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    from _04_Nucleo_Operativo import code_review
+    from neocortex.code import code_review
 
     assert str(inspect.signature(cli_code.run_code_review)) == (
         "(args: 'argparse.Namespace') -> 'int'"
@@ -590,7 +590,7 @@ def test_run_code_review_propagates_cancellation_and_maps_known_failures(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    from _04_Nucleo_Operativo import code_review
+    from neocortex.code import code_review
 
     args = argparse.Namespace(
         state_directory=tmp_path,
@@ -627,7 +627,7 @@ def test_run_code_review_rejects_incomplete_human_ready_results(
     capsys: pytest.CaptureFixture[str],
     missing: str,
 ) -> None:
-    from _04_Nucleo_Operativo import code_review
+    from neocortex.code import code_review
 
     values: dict[str, object | None] = {
         "snapshot": object(),
@@ -699,7 +699,7 @@ def test_code_review_human_surfaces_architecture_and_work_package_context(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    from _04_Nucleo_Operativo import code_review
+    from neocortex.code import code_review
 
     architecture = SimpleNamespace(
         status="ready",
@@ -986,7 +986,7 @@ def test_run_code_publication_diff_signature_phase_order_and_complete_output(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    from _04_Nucleo_Operativo import code_publication_diff
+    from neocortex.code import code_publication_diff
 
     assert str(inspect.signature(cli_code.run_code_publication_diff)) == (
         "(args: 'argparse.Namespace') -> 'int'"
@@ -1052,7 +1052,7 @@ def test_run_code_publication_diff_json_and_abstention_paths(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    from _04_Nucleo_Operativo import code_publication_diff
+    from neocortex.code import code_publication_diff
 
     result = _ready_code_publication_cli_result(tmp_path)
     monkeypatch.setattr(
@@ -1093,7 +1093,7 @@ def test_run_code_publication_diff_propagates_cancellation_and_maps_failures(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    from _04_Nucleo_Operativo import code_publication_diff
+    from neocortex.code import code_publication_diff
 
     args = argparse.Namespace(
         code_publication_diff=str(tmp_path / "baseline"),
@@ -1143,7 +1143,7 @@ def test_run_code_publication_diff_rejects_incomplete_human_ready_results(
     capsys: pytest.CaptureFixture[str],
     missing: str,
 ) -> None:
-    from _04_Nucleo_Operativo import code_publication_diff
+    from neocortex.code import code_publication_diff
 
     result = _ready_code_publication_cli_result(tmp_path)
     setattr(result, missing, None)
@@ -1173,7 +1173,7 @@ def test_code_publication_diff_human_surfaces_bounded_architecture_delta(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    from _04_Nucleo_Operativo import code_publication_diff
+    from neocortex.code import code_publication_diff
 
     modules = tuple(
         argparse.Namespace(

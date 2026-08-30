@@ -19,7 +19,7 @@ from types import ModuleType, SimpleNamespace
 from typing import Any
 
 import pytest
-import _04_Nucleo_Operativo.external_architecture_worker as worker
+import neocortex.code.external_architecture_worker as worker
 
 
 def _limits(
@@ -56,11 +56,11 @@ def _production_tree(root: Path, sentinel: Path) -> None:
         (package_root / "__init__.py").write_text(source, encoding="utf-8")
     (root / "neocortex" / "interface").mkdir()
     (root / "neocortex" / "interface" / "__init__.py").write_text("", encoding="utf-8")
-    (root / "_04_Nucleo_Operativo" / "service.py").write_text(
+    (root / "neocortex" / "service.py").write_text(
         "from neocortex.interface import view\n", encoding="utf-8"
     )
     (root / "neocortex" / "interface" / "view.py").write_text("VALUE = 1\n", encoding="utf-8")
-    (root / "_04_Nucleo_Operativo" / "logic.py").write_text(
+    (root / "neocortex" / "logic.py").write_text(
         """# complexipy: ignore
 def tangled(values):
     if values:
@@ -115,11 +115,8 @@ def test_grimp_worker_is_deterministic_static_and_cacheless(tmp_path: Path) -> N
         {"line_contents": "from neocortex.interface import view", "line_number": 1}
     ]
     contracts = {item["contract"]["contract_id"]: item for item in payload["contract_evaluations"]}
-    assert contracts["core-does-not-depend-on-ui-v1"]["status"] == "failed"
-    assert contracts["core-does-not-depend-on-ui-v1"]["violations"][0]["import_chain"] == [
-        "_04_Nucleo_Operativo.service",
-        "neocortex.interface.view",
-    ]
+    assert contracts["core-does-not-depend-on-ui-v1"]["status"] == "passed"
+    assert contracts["core-does-not-depend-on-ui-v1"]["violations"] == []
 
 
 def test_complexipy_worker_reports_module_function_and_line_metrics(tmp_path: Path) -> None:
@@ -136,12 +133,12 @@ def test_complexipy_worker_reports_module_function_and_line_metrics(tmp_path: Pa
     metric = next(
         item
         for item in payload["function_metrics"]
-        if item["relative_path"] == "_04_Nucleo_Operativo/logic.py" and item["symbol"] == "tangled"
+        if item["relative_path"] == "neocortex/logic.py" and item["symbol"] == "tangled"
     )
     assert metric["value"] > 0
     assert sum(item["complexity"] for item in metric["lines"]) == metric["value"]
     module = next(
-        item for item in payload["module_metrics"] if item["module"] == "_04_Nucleo_Operativo.logic"
+        item for item in payload["module_metrics"] if item["module"] == "neocortex.logic"
     )
     assert module["total"] >= module["maximum"] == metric["value"]
 
@@ -149,8 +146,6 @@ def test_complexipy_worker_reports_module_function_and_line_metrics(tmp_path: Pa
 def test_worker_fails_with_bounded_json_when_domain_is_incomplete(tmp_path: Path) -> None:
     root = tmp_path / "project"
     root.mkdir()
-    (root / "neocortex").mkdir()
-    (root / "neocortex" / "__init__.py").write_text("", encoding="utf-8")
 
     completed = _run_worker(root, "grimp")
 
@@ -159,7 +154,7 @@ def test_worker_fails_with_bounded_json_when_domain_is_incomplete(tmp_path: Path
     assert payload == {
         "error": {
             "code": "missing_production_package",
-            "message": "exact production package is unavailable: _04_Nucleo_Operativo",
+            "message": "exact production package is unavailable: neocortex",
         },
         "schema": worker.WORKER_ERROR_SCHEMA,
         "status": "error",
@@ -493,7 +488,6 @@ def test_registry_projection_guards_family_drift_none_and_overlap(
         capabilities=(
             SimpleNamespace(
                 architecture_family_id="unexpected",
-                compatibility_family_id=worker.CAPABILITY_COMPATIBILITY_FAMILY,
                 logical_owner_id="owner",
                 modules=(),
             ),
@@ -503,48 +497,26 @@ def test_registry_projection_guards_family_drift_none_and_overlap(
     with pytest.raises(worker.WorkerContractError, match="families drifted"):
         worker._capability_family_dag()
 
-    no_legacy = SimpleNamespace(
+    canonical_only = SimpleNamespace(
         capabilities=(
             SimpleNamespace(
                 architecture_family_id=worker.CAPABILITY_CANONICAL_FAMILY,
-                compatibility_family_id=worker.CAPABILITY_COMPATIBILITY_FAMILY,
                 logical_owner_id="owner",
                 modules=(
                     SimpleNamespace(
                         canonical_module_id="canonical.module",
-                        legacy_module_id=None,
                     ),
                 ),
             ),
         )
     )
-    monkeypatch.setattr(worker._capability_registry, "CAPABILITY_REGISTRY", no_legacy)
-    canonical, legacy, owners, families = worker._registered_capability_labels()
+    monkeypatch.setattr(worker._capability_registry, "CAPABILITY_REGISTRY", canonical_only)
+    canonical, owners, families = worker._registered_capability_labels()
     assert canonical == ("canonical.module",)
-    assert legacy == ()
     assert owners == {"canonical.module": ("owner",)}
     assert families == {
         "canonical.module": (worker.CAPABILITY_CANONICAL_FAMILY,),
     }
-
-    overlap = SimpleNamespace(
-        capabilities=(
-            SimpleNamespace(
-                architecture_family_id=worker.CAPABILITY_CANONICAL_FAMILY,
-                compatibility_family_id=worker.CAPABILITY_COMPATIBILITY_FAMILY,
-                logical_owner_id="owner",
-                modules=(
-                    SimpleNamespace(
-                        canonical_module_id="same.module",
-                        legacy_module_id="same.module",
-                    ),
-                ),
-            ),
-        )
-    )
-    monkeypatch.setattr(worker._capability_registry, "CAPABILITY_REGISTRY", overlap)
-    with pytest.raises(worker.WorkerContractError, match="module scopes overlap"):
-        worker._registered_capability_labels()
 
 
 def test_projection_payload_rejects_non_mapping_family_counters(

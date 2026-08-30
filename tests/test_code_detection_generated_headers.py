@@ -7,18 +7,18 @@ from pathlib import Path
 
 import pytest
 
-import _04_Nucleo_Operativo.code_detection as code_detection
-import _04_Nucleo_Operativo.code_route as code_route_module
+import neocortex.code.code_detection as code_detection
+import neocortex.code.code_route as code_route_module
 from neocortex.deduplication import FileSnapshot
-from _04_Nucleo_Operativo.code_contracts import (
+from neocortex.code.code_contracts import (
     ArtifactKind,
     CodeRouteConfig,
 )
-from _04_Nucleo_Operativo.code_detection import (
+from neocortex.code.code_detection import (
     DETECTOR_VERSION,
     classify_artifact,
 )
-from _04_Nucleo_Operativo.code_route import CodeRoute
+from neocortex.code.code_route import CodeRoute
 
 
 # region [01] Generated-header classification

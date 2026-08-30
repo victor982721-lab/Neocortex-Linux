@@ -11,18 +11,18 @@ from unittest.mock import patch
 
 import pytest
 
-from _04_Nucleo_Operativo import action_policy
-from _04_Nucleo_Operativo.action_policy import validate_mutation_path
-from _04_Nucleo_Operativo.corpus_access import (
+from neocortex.workflow.actions import action_policy
+from neocortex.workflow.actions.action_policy import validate_mutation_path
+from neocortex.safety.corpus_access import (
     CorpusAccessPolicy,
     CorpusMutationGuard,
 )
-from _04_Nucleo_Operativo.document_organization import _create_destination_parent
-from _04_Nucleo_Operativo.document_taxonomy import (
+from neocortex.documents.document_organization import _create_destination_parent
+from neocortex.documents.document_taxonomy import (
     MAX_TAXONOMY_BYTES,
     load_taxonomy,
 )
-from _04_Nucleo_Operativo.pdf_isolation import _read_file_tail
+from neocortex.capabilities.formats.pdf.pdf_isolation import _read_file_tail
 from neocortex.interface.application.controller import MAX_PROCESS_LINE_BYTES, WorkerController
 from tests.internal_paths_test_support import disjoint_internal_paths_policy
 # endregion [01]
@@ -190,7 +190,7 @@ def test_custom_regex_safety_characterization(
     pattern: str,
     expected: str | None,
 ) -> None:
-    from _04_Nucleo_Operativo.document_taxonomy_overlay import (
+    from neocortex.documents.document_taxonomy_overlay import (
         _unsafe_custom_regex_reason,
     )
 
@@ -199,7 +199,7 @@ def test_custom_regex_safety_characterization(
 
 
 def test_custom_regex_safety_reason_precedence_is_left_to_right() -> None:
-    from _04_Nucleo_Operativo.document_taxonomy_overlay import (
+    from neocortex.documents.document_taxonomy_overlay import (
         _unsafe_custom_regex_reason,
     )
 
@@ -212,7 +212,7 @@ def test_custom_regex_safety_reason_precedence_is_left_to_right() -> None:
 def test_custom_regex_safety_signature_is_frozen() -> None:
     from inspect import signature
 
-    from _04_Nucleo_Operativo.document_taxonomy_overlay import (
+    from neocortex.documents.document_taxonomy_overlay import (
         _unsafe_custom_regex_reason,
     )
 

@@ -7,9 +7,6 @@ transition.  Those decision-level claims require isolated experiment receipts.
 """
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from typing import Literal
@@ -519,6 +516,3 @@ __all__ = [
     "build_framework_review_task_protocol_analysis",
     "framework_review_task_questions",
 ]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.code_review_task_analysis")

@@ -1,9 +1,6 @@
 """Explicit, bounded selection criteria shared by content routes."""
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -116,6 +113,3 @@ def framework_selection_predicate(
 
 
 # endregion [02]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.route_filters")

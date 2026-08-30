@@ -1,9 +1,6 @@
 """Embedding-model, semantic-item and bounded text-chunk repository."""
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import json
 import sqlite3
 import time
@@ -644,6 +641,3 @@ def deactivate_text_chunks_for_item(
 
 
 # endregion [04]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.semantic_item_repository")

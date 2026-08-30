@@ -1964,5 +1964,5 @@ for _historical_symbol in (
     list_docx_layout_groups,
     list_missing_pdf_counterparts,
 ):
-    _historical_symbol.__module__ = "_04_Nucleo_Operativo.docx_route"
+    _historical_symbol.__module__ = "neocortex.capabilities.formats.docx.route"
 del _historical_symbol

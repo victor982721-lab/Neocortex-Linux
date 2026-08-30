@@ -10,9 +10,9 @@ from pathlib import Path
 
 import pytest
 
-import _04_Nucleo_Operativo.code_review as code_review_module
+import neocortex.code.code_review as code_review_module
 from neocortex.deduplication import FileSnapshot
-from _04_Nucleo_Operativo.code_contracts import (
+from neocortex.code.code_contracts import (
     AnalysisStatus,
     ArtifactClassification,
     ArtifactKind,
@@ -24,7 +24,7 @@ from _04_Nucleo_Operativo.code_contracts import (
     SourceRange,
     SymbolRecord,
 )
-from _04_Nucleo_Operativo.code_external_evidence import (
+from neocortex.code.code_external_evidence import (
     EXTERNAL_EVIDENCE_SCHEMA,
     RUFF_CONFIGURATION_SIGNATURE,
     ExternalEvidencePublication,
@@ -32,28 +32,28 @@ from _04_Nucleo_Operativo.code_external_evidence import (
     _configuration_payload,
     external_input_signature,
 )
-from _04_Nucleo_Operativo.code_review import review_code_state
-from _04_Nucleo_Operativo.code_review_actionability import (
+from neocortex.code.code_review import review_code_state
+from neocortex.code.code_review_actionability import (
     CodeReviewActionabilityInput,
     assess_code_review_actionability,
     classify_source_role,
 )
-from _04_Nucleo_Operativo.code_schema import (
+from neocortex.code.code_schema import (
     checkpoint_code_wal,
     readonly_code_database,
     remove_checkpointed_code_sidecars,
 )
-from _04_Nucleo_Operativo.code_review_epistemics import (
+from neocortex.code.code_review_epistemics import (
     CodeReviewEvidenceResolutionError,
     resolve_code_review_questions,
 )
-from _04_Nucleo_Operativo.code_review_serialization import (
+from neocortex.code.code_review_serialization import (
     rebuild_code_review_result_digest,
 )
-from _04_Nucleo_Operativo.code_state import CodeState
-from _04_Nucleo_Operativo.self_analysis_freshness import SelfAnalysisFreshness
-from _04_Nucleo_Operativo.self_analysis_status import SelfAnalysisStatus
-from _04_Nucleo_Operativo.semantic_models import (
+from neocortex.code.code_state import CodeState
+from neocortex.workflow.self_analysis.self_analysis_freshness import SelfAnalysisFreshness
+from neocortex.workflow.self_analysis.self_analysis_status import SelfAnalysisStatus
+from neocortex.semantic.semantic_models import (
     canonical_json,
     fingerprint_bytes,
     fingerprint_text,
@@ -760,7 +760,7 @@ def test_canonical_review_integrates_the_reproducible_retention_projection(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import _04_Nucleo_Operativo.app_paths as app_paths
+    import neocortex.runtime.config.app_paths as app_paths
     from tests.test_code_retention_analysis import _initialized_state
 
     self_analysis = tmp_path / "self-analysis"

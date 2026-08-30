@@ -13,10 +13,10 @@ from pathlib import Path
 
 import pytest
 
-import _04_Nucleo_Operativo.code_state as code_state_module
+import neocortex.code.code_state as code_state_module
 from neocortex.deduplication import FileSnapshot
-from _04_Nucleo_Operativo.cancellation import CancellationRequested
-from _04_Nucleo_Operativo.code_contracts import (
+from neocortex.runtime.control.cancellation import CancellationRequested
+from neocortex.code.code_contracts import (
     AnalysisStatus,
     ArtifactClassification,
     ArtifactKind,
@@ -31,10 +31,10 @@ from _04_Nucleo_Operativo.code_contracts import (
     SourceRange,
     SymbolRecord,
 )
-from _04_Nucleo_Operativo.code_state import CodeState, SkippedCodeObservation
-from _04_Nucleo_Operativo.semantic_models import fingerprint_bytes, fingerprint_text
-from _04_Nucleo_Operativo.sqlite_cancellation import SQLiteCancellationBridge
-from _04_Nucleo_Operativo.sqlite_paths import readonly_sqlite_uri
+from neocortex.code.code_state import CodeState, SkippedCodeObservation
+from neocortex.semantic.semantic_models import fingerprint_bytes, fingerprint_text
+from neocortex.sqlite_cancellation import SQLiteCancellationBridge
+from neocortex.persistence.sqlite_paths import readonly_sqlite_uri
 # endregion [01]
 
 # region [02] Implementación

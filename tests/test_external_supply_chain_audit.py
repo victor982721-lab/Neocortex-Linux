@@ -16,7 +16,7 @@ from typing import cast
 
 import pytest
 
-import _04_Nucleo_Operativo.external_supply_chain_audit as audit
+import neocortex.code.external_supply_chain_audit as audit
 
 _FIXTURES = Path(__file__).with_name("fixtures")
 _OBSERVED = datetime(2026, 8, 3, 12, 30, tzinfo=timezone.utc)

@@ -1,9 +1,6 @@
 """Fail-closed eligibility for deterministic review of self-analysis state."""
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 from .code_review_models import ReviewFreshness
 from neocortex.workflow.self_analysis.self_analysis_status import SelfAnalysisStatus
 
@@ -62,6 +59,3 @@ def self_analysis_manifest_root(status: SelfAnalysisStatus) -> str:
 
 
 __all__ = ["code_review_eligibility", "self_analysis_manifest_root"]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.code_review_eligibility")

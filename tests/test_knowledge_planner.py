@@ -11,7 +11,7 @@ from dataclasses import replace
 
 import pytest
 
-from _04_Nucleo_Operativo.knowledge_planner import (
+from neocortex.knowledge.knowledge_planner import (
     KnowledgePlan,
     KnowledgeQuery,
     RetrievalMode,

@@ -1,9 +1,6 @@
 """Versioned SQLite schema and migrations for the document catalog."""
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import sqlite3
 import time
 from collections.abc import Callable
@@ -810,6 +807,3 @@ __all__ = [
     "validate_v5_document_catalog_schema",
     "validate_v6_document_catalog_schema",
 ]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.document_catalog_schema")

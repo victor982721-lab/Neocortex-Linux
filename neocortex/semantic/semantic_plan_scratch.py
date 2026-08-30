@@ -1,15 +1,12 @@
 """Bounded private scratch storage for exact Semantic planning."""
 # region [00] Contexto del módulo
-# Módulo: _04_Nucleo_Operativo/semantic_plan_scratch.py
+# Módulo: neocortex/semantic_plan_scratch.py
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
 
 # region [01] Dependencias del módulo
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import shutil
 import sqlite3
 from collections.abc import Iterator, Mapping, Sequence
@@ -429,6 +426,3 @@ __all__ = [
     "DEFAULT_MAX_SCRATCH_BYTES",
 ]
 # endregion [02]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.semantic_plan_scratch")

@@ -8,9 +8,6 @@ names, or authorize a change.
 """
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 from dataclasses import asdict, dataclass, fields, replace
 from typing import Any, Literal, Mapping, Sequence, cast
 
@@ -812,6 +809,3 @@ __all__ = [
     "invariant_assurance_questions",
     "parse_code_invariant_assurance_payload",
 ]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.code_invariant_assurance_analysis")

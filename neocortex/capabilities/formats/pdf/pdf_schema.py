@@ -1,9 +1,6 @@
 """Canonical PDF schema, additive migrations and structural validation."""
 
 from __future__ import annotations
-
-from . import preserve_legacy_module as _preserve_legacy_module
-
 import sqlite3
 from collections.abc import Callable
 from functools import lru_cache
@@ -560,5 +557,3 @@ __all__ = [
     "validate_pdf_metadata",
     "validate_pdf_schema",
 ]
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.pdf_schema")

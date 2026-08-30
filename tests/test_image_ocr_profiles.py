@@ -10,16 +10,16 @@ from unittest.mock import patch
 import pytest
 from PIL import Image
 
-from _04_Nucleo_Operativo.image_document import (
+from neocortex.capabilities.formats.image.document import (
     DocumentVerifierConfig,
     DocumentVerifierRuntime,
     resolve_document_verifier,
     verify_document_text,
 )
-from _04_Nucleo_Operativo.processing_provenance import (
+from neocortex.foundation.processing_provenance import (
     TesseractRuntimeProvenance,
 )
-from _04_Nucleo_Operativo.image_route import ImageRoute, ImageRouteConfig
+from neocortex.capabilities.formats.image.route import ImageRoute, ImageRouteConfig
 
 
 def _image(root: Path, *, size: tuple[int, int] = (1_800, 1_200)) -> Path:
@@ -98,7 +98,7 @@ def test_latin_profile_uses_deu_without_han_and_preserves_more_than_768px() -> N
     with tempfile.TemporaryDirectory() as temporary:
         path = _image(Path(temporary))
         with patch(
-            "_04_Nucleo_Operativo.image_document.run_bounded_capture",
+            "neocortex.capabilities.formats.image.document.run_bounded_capture",
             side_effect=run,
         ):
             evidence = verify_document_text(path, _runtime())
@@ -136,7 +136,7 @@ def test_generic_han_runs_only_simplified_then_traditional_bounded_fallback() ->
     with tempfile.TemporaryDirectory() as temporary:
         path = _image(Path(temporary), size=(640, 480))
         with patch(
-            "_04_Nucleo_Operativo.image_document.run_bounded_capture",
+            "neocortex.capabilities.formats.image.document.run_bounded_capture",
             side_effect=run,
         ):
             evidence = verify_document_text(path, _runtime())
@@ -165,7 +165,7 @@ def test_han_text_is_preserved_below_latin_word_confidence_cutoff() -> None:
     with tempfile.TemporaryDirectory() as temporary:
         path = _image(Path(temporary), size=(640, 480))
         with patch(
-            "_04_Nucleo_Operativo.image_document.run_bounded_capture",
+            "neocortex.capabilities.formats.image.document.run_bounded_capture",
             side_effect=lambda *_args, **_kwargs: next(responses),
         ):
             evidence = verify_document_text(path, _runtime())
@@ -202,7 +202,7 @@ def test_multilingual_preflight_requests_all_potential_packs_and_reports_missing
         "missing OCR languages: deu, chi_sim, chi_tra",
     )
     with patch(
-        "_04_Nucleo_Operativo.image_document.resolve_tesseract_runtime",
+        "neocortex.capabilities.formats.image.document.resolve_tesseract_runtime",
         return_value=unavailable,
     ) as resolve:
         runtime = resolve_document_verifier(DocumentVerifierConfig(profile="auto-multilingual"))
@@ -236,7 +236,7 @@ def test_configured_image_profile_fails_closed_when_requested_pack_is_missing() 
         root = Path(temporary)
         config = ImageRouteConfig(root / "image.sqlite3", root)
         with patch(
-            "_04_Nucleo_Operativo.image_route.resolve_document_verifier",
+            "neocortex.capabilities.formats.image.route.resolve_document_verifier",
             return_value=runtime,
         ):
             with pytest.raises(RuntimeError, match="missing OCR languages: spa"):

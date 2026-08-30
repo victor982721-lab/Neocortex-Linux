@@ -13,9 +13,9 @@ import pytest
 
 from neocortex.enumeration import UnsupportedPlatformError
 from neocortex.deduplication import DedupIndex, DedupPlanner
-from _04_Nucleo_Operativo import FrameworkConfig, FrameworkOrchestrator
-from _04_Nucleo_Operativo import inventory_coordinator as inventory_module
-from _04_Nucleo_Operativo import orchestrator as orchestrator_module
+from neocortex.api.public import FrameworkConfig, FrameworkOrchestrator
+from neocortex.integrations.inventory import inventory_coordinator as inventory_module
+from neocortex.runtime.orchestration import orchestrator as orchestrator_module
 from tests.synthetic_usn import SyntheticUsnJournal
 
 

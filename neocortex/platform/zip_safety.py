@@ -9,10 +9,6 @@ import zlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO, Callable
-
-from . import preserve_legacy_module as _preserve_legacy_module
-
-
 # region [01] ZIP records and explicit bounds
 
 EOCD_SIGNATURE = b"PK\x05\x06"
@@ -390,6 +386,3 @@ def read_raw_deflate_member(
 
 
 # endregion [04]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.zip_safety")

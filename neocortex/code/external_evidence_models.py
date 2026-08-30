@@ -1,9 +1,6 @@
 """Generic contracts for bounded, advisory external code evidence."""
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import math
 import os
 import re
@@ -837,6 +834,3 @@ __all__ = [
     "external_signature",
     "normalize_external_finding_message",
 ]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.external_evidence_models")

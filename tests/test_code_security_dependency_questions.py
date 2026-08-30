@@ -3,11 +3,11 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
-from _04_Nucleo_Operativo.code_analysis_epistemics import (
+from neocortex.code.code_analysis_epistemics import (
     validate_analysis_question_set,
 )
-from _04_Nucleo_Operativo.code_experiment_planner import plan_code_experiments
-from _04_Nucleo_Operativo.code_security_dependency_questions import (
+from neocortex.code.code_experiment_planner import plan_code_experiments
+from neocortex.code.code_security_dependency_questions import (
     DEPENDENCY_EVIDENCE_QUESTION,
     SECURITY_EVIDENCE_QUESTION,
     security_dependency_questions,

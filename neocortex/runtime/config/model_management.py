@@ -1,9 +1,6 @@
 """Explicit, sequential preparation and local-only model inspection."""
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import gc
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
@@ -196,8 +193,3 @@ __all__ = [
     "inspect_models",
     "prepare_models",
 ]
-
-
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.model_management")

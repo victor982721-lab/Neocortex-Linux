@@ -1,17 +1,13 @@
-"""Public Knowledge Search contracts with legacy facade identities."""
+"""Public Knowledge Search data contracts."""
 # region [00] Contexto del módulo
-# Módulo: _04_Nucleo_Operativo/knowledge_search_contracts.py
+# Módulo: neocortex/knowledge_search_contracts.py
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
 # region [01] Dependencias del módulo
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import math
 from dataclasses import dataclass, field
-from types import FunctionType
 from typing import TYPE_CHECKING
 
 from .knowledge_contracts import (
@@ -33,9 +29,6 @@ if TYPE_CHECKING:
         KnowledgeSnapshot,
     )
     from .knowledge_planner import KnowledgePlan
-
-
-_LEGACY_MODULE = "_04_Nucleo_Operativo.knowledge_search"
 
 
 @dataclass(frozen=True, slots=True)
@@ -250,35 +243,6 @@ class KnowledgeSearchResult:
         return canonical_json(self.to_dict())
 
 
-def _restore_function_module(value: object) -> None:
-    if isinstance(value, FunctionType) and value.__module__ == __name__:
-        value.__module__ = _LEGACY_MODULE
-
-
-def _restore_legacy_module(contract: type[object]) -> None:
-    contract.__module__ = _LEGACY_MODULE
-    for member in vars(contract).values():
-        if isinstance(member, property):
-            for accessor in (member.fget, member.fset, member.fdel):
-                _restore_function_module(accessor)
-            continue
-        if isinstance(member, (classmethod, staticmethod)):
-            _restore_function_module(member.__func__)
-            continue
-        _restore_function_module(member)
-
-
-for _contract in (
-    KnowledgeCandidate,
-    ResourceDiscoverySignal,
-    RankingExecution,
-    KnowledgeSearchResult,
-):
-    _restore_legacy_module(_contract)
-
-del _contract
-
-
 __all__ = (
     "KnowledgeCandidate",
     "KnowledgeSearchResult",
@@ -286,6 +250,3 @@ __all__ = (
     "ResourceDiscoverySignal",
 )
 # endregion [02]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.knowledge_search_contracts")

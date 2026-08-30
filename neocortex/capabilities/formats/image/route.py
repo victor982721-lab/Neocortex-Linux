@@ -1,9 +1,6 @@
 """Incremental, memory-bounded image classification route."""
 
 from __future__ import annotations
-
-from . import preserve_legacy_module as _preserve_legacy_module
-
 import json
 import threading
 import time
@@ -1529,6 +1526,3 @@ def _cached_features_from_row(row: Any) -> Features | None:
 
 
 # endregion [02]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.image_route")

@@ -11,24 +11,24 @@ from neocortex.capabilities import (
     inspect_runtime_capabilities,
 )
 
-from _04_Nucleo_Operativo.code_capability_reachability_analysis import (
+from neocortex.code.code_capability_reachability_analysis import (
     abstained_capability_reachability,
 )
-from _04_Nucleo_Operativo.code_experiment_planner import plan_code_experiments
-from _04_Nucleo_Operativo.code_route_capability_analysis import (
+from neocortex.code.code_experiment_planner import plan_code_experiments
+from neocortex.code.code_route_capability_analysis import (
     parse_code_route_capability_payload,
     resolve_route_capability_analysis,
     route_capability_questions,
 )
-from _04_Nucleo_Operativo.knowledge_contracts import (
+from neocortex.knowledge.knowledge_contracts import (
     KnowledgeSnapshot,
     LogicalWatermark,
     OwnerAvailability,
     OwnerSnapshot,
     SnapshotConsistency,
 )
-from _04_Nucleo_Operativo.route_selection import BUILTIN_ROUTE_ORDER
-from _04_Nucleo_Operativo.state_topology_contracts import STATE_STORE_REGISTRY
+from neocortex.runtime.orchestration.route_selection import BUILTIN_ROUTE_ORDER
+from neocortex.safety.state_topology_contracts import STATE_STORE_REGISTRY
 
 
 def _snapshot(

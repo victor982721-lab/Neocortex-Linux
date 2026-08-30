@@ -1,14 +1,11 @@
 """Inventory relationship support for the Knowledge Search facade."""
 
 # region [00] Contexto del módulo
-# Módulo: _04_Nucleo_Operativo/knowledge_search_inventory.py
+# Módulo: neocortex/knowledge_search_inventory.py
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 # region [01] Dependencias del módulo
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 import sqlite3
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -900,6 +897,3 @@ __all__ = (
     "validated_inventory_blob",
 )
 # endregion [02]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.knowledge_search_inventory")

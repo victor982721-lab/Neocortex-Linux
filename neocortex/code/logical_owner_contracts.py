@@ -8,9 +8,6 @@ remain unknown and overlapping declarations remain visible to the analyzer.
 """
 
 from __future__ import annotations
-
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
-
 from dataclasses import asdict, dataclass
 
 from neocortex.code.code_architecture_contracts import stable_architecture_id
@@ -85,7 +82,7 @@ def _selector(selector_id: str, match_kind: str, value: str) -> LogicalOwnerSele
 
 
 def _registered_capability_owner_spec(owner_id: str) -> LogicalOwnerSpec:
-    """Compose canonical and compatibility selectors from the capability SSOT."""
+    """Compose canonical selectors from the capability SSOT."""
 
     bindings = tuple(
         item for item in capability_logical_owner_bindings() if item.owner_id == owner_id
@@ -118,11 +115,11 @@ LOGICAL_OWNER_SPECS = (
     LogicalOwnerSpec(
         "catalog",
         (
-            _selector("document-catalog", "exact_module", "_04_Nucleo_Operativo.document_catalog"),
+            _selector("document-catalog", "exact_module", "neocortex.documents.document_catalog"),
             _selector(
                 "document-catalog-schema",
                 "exact_module",
-                "_04_Nucleo_Operativo.document_catalog_schema",
+                "neocortex.documents.document_catalog_schema",
             ),
         ),
         ("catalog",),
@@ -130,26 +127,26 @@ LOGICAL_OWNER_SPECS = (
     LogicalOwnerSpec(
         "code-analysis",
         (
-            _selector("code-analysis-modules", "module_prefix", "_04_Nucleo_Operativo.code_"),
+            _selector("code-analysis-modules", "module_tree", "neocortex.code"),
             _selector(
                 "external-analysis-providers",
                 "module_prefix",
-                "_04_Nucleo_Operativo.external_",
+                "neocortex.code.external_",
             ),
             _selector(
                 "self-analysis-modules",
                 "module_prefix",
-                "_04_Nucleo_Operativo.self_analysis",
+                "neocortex.workflow.self_analysis.self_analysis",
             ),
             _selector(
                 "logical-owner-contracts",
                 "exact_module",
-                "_04_Nucleo_Operativo.logical_owner_contracts",
+                "neocortex.code.logical_owner_contracts",
             ),
             _selector(
                 "state-topology-contracts",
                 "exact_module",
-                "_04_Nucleo_Operativo.state_topology_contracts",
+                "neocortex.safety.state_topology_contracts",
             ),
         ),
         ("code",),
@@ -183,7 +180,7 @@ LOGICAL_OWNER_SPECS = (
             _selector(
                 "framework-core-modules",
                 "module_prefix",
-                "_04_Nucleo_Operativo.framework_",
+                "neocortex.persistence.framework_",
             ),
         ),
         ("framework",),
@@ -192,7 +189,7 @@ LOGICAL_OWNER_SPECS = (
     LogicalOwnerSpec(
         "interface",
         (
-            _selector("cli-core-modules", "module_prefix", "_04_Nucleo_Operativo.cli_"),
+            _selector("cli-core-modules", "module_prefix", "neocortex.api.cli"),
             _selector("gui-package", "module_tree", "neocortex.interface"),
             _selector("public-cli", "exact_module", "neocortex.cli"),
             _selector("public-human-cli", "exact_module", "neocortex.human_cli"),
@@ -205,12 +202,12 @@ LOGICAL_OWNER_SPECS = (
             _selector(
                 "inventory-boundary",
                 "exact_module",
-                "_04_Nucleo_Operativo.inventory_boundary",
+                "neocortex.integrations.inventory.inventory_boundary",
             ),
             _selector(
                 "inventory-coordinator",
                 "exact_module",
-                "_04_Nucleo_Operativo.inventory_coordinator",
+                "neocortex.integrations.inventory.inventory_coordinator",
             ),
         ),
         ("inventory",),
@@ -221,7 +218,7 @@ LOGICAL_OWNER_SPECS = (
             _selector(
                 "knowledge-core-modules",
                 "module_prefix",
-                "_04_Nucleo_Operativo.knowledge_",
+                "neocortex.knowledge",
             ),
         ),
     ),
@@ -231,19 +228,19 @@ LOGICAL_OWNER_SPECS = (
         tuple(
             _selector(f"orchestration-{name.replace('_', '-')}", "exact_module", name)
             for name in (
-                "_04_Nucleo_Operativo.action_policy",
-                "_04_Nucleo_Operativo.actions",
-                "_04_Nucleo_Operativo.orchestrator",
-                "_04_Nucleo_Operativo.route_registry",
-                "_04_Nucleo_Operativo.route_selection",
-                "_04_Nucleo_Operativo.run_lifecycle",
-                "_04_Nucleo_Operativo.run_status",
+                "neocortex.workflow.actions.action_policy",
+                "neocortex.workflow.actions.actions",
+                "neocortex.runtime.orchestration.orchestrator",
+                "neocortex.runtime.orchestration.route_registry",
+                "neocortex.runtime.orchestration.route_selection",
+                "neocortex.runtime.orchestration.run_lifecycle",
+                "neocortex.runtime.orchestration.run_status",
             )
         ),
     ),
     LogicalOwnerSpec(
         "pdf",
-        (_selector("pdf-core-modules", "module_prefix", "_04_Nucleo_Operativo.pdf_"),),
+        (_selector("pdf-core-modules", "module_prefix", "neocortex.capabilities.formats.pdf"),),
         ("pdf",),
     ),
     LogicalOwnerSpec(
@@ -262,7 +259,7 @@ LOGICAL_OWNER_SPECS = (
             _selector(
                 "retention-core-modules",
                 "module_prefix",
-                "_04_Nucleo_Operativo.retention_",
+                "neocortex.workflow.retention",
             ),
         ),
     ),
@@ -272,7 +269,7 @@ LOGICAL_OWNER_SPECS = (
             _selector(
                 "review-task-core-modules",
                 "module_prefix",
-                "_04_Nucleo_Operativo.review_",
+                "neocortex.workflow.review.review_",
             ),
             _selector(
                 "review-task-canonical-modules",
@@ -282,7 +279,7 @@ LOGICAL_OWNER_SPECS = (
             _selector(
                 "value-review-core-modules",
                 "module_prefix",
-                "_04_Nucleo_Operativo.value_review_",
+                "neocortex.workflow.review.value_review_",
             ),
             _selector(
                 "value-review-canonical-modules",
@@ -318,14 +315,14 @@ LOGICAL_OWNER_SPECS = (
             _selector(
                 "semantic-core-modules",
                 "module_prefix",
-                "_04_Nucleo_Operativo.semantic_",
+                "neocortex.semantic",
             ),
         ),
         ("semantic",),
     ),
     LogicalOwnerSpec(
         "text",
-        (_selector("text-core-modules", "module_prefix", "_04_Nucleo_Operativo.text_"),),
+        (_selector("text-core-modules", "module_prefix", "neocortex.capabilities.formats.text"),),
         ("text",),
     ),
     _registered_capability_owner_spec("video"),
@@ -333,7 +330,6 @@ LOGICAL_OWNER_SPECS = (
 
 
 PACKAGE_OWNER_SPECS = (
-    PackageOwnerSpec("core", "_04_Nucleo_Operativo", "application_and_domain_core"),
     PackageOwnerSpec("product", "neocortex", "canonical_product_namespace"),
 )
 
@@ -420,6 +416,3 @@ __all__ = [
     "package_owner_registry_fingerprint",
     "package_owner_registry_payload",
 ]
-
-
-_preserve_legacy_module(globals(), "_04_Nucleo_Operativo.logical_owner_contracts")
