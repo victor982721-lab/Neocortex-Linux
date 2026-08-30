@@ -1,6 +1,6 @@
 # NeoCortex — handoff operativo vigente
 
-> Actualizado: 2026-08-29 CST. El basename es histórico y permanece estable.
+> Actualizado: 2026-08-29 23:45 CST. El basename es histórico y permanece estable.
 > `~/.codex/PENDIENTES.md` conserva el compromiso operativo; este archivo
 > describe sólo la frontera técnica de reanudación.
 
@@ -10,18 +10,19 @@
 
 ## Objetivo activo
 
-Reorganizar toda la topología productiva en el namespace único `neocortex`, con
-responsabilidades explícitas, límites de dependencia y compatibilidad
-transitoria verificable, hasta retirar `_01_Enumeracion`, `_02_Deduplicacion`,
-`_03_Progreso`, `_04_Nucleo_Operativo`, `_05_Interfaz` y `Orquestador.py`.
+La cohorte de reorganización quedó cerrada: la topología productiva ejecutable
+vive en el namespace único `neocortex`, con responsabilidades explícitas y
+límites de dependencia comprobados. Las raíces numeradas permanecen únicamente
+como fachadas de compatibilidad verificables, sin una segunda implementación;
+su retirada física queda fuera de esta cohorte para no romper consumidores
+históricos.
 
-## Corte Plataforma aceptado
+## Corte canónico final aceptado
 
 - Checkout: `/home/winterboss/Neocortex/Repository`
-- SHA ejecutable aceptado: `ee4bdec1359fab0cc9fed18af6973f57f792bf33`
-- Árbol verificado limpio; `main` sigue sin publicar. El snapshot de la cohorte
-  foundation quedó publicado únicamente en `codex/neocortex-local-20260829`;
-  no hay merge ni push a `main`.
+- SHA ejecutable aceptado: `5455b90992ef2e6f2b0d49590a99448f0342aeea`
+- Árbol verificado limpio; la rama local está 24 commits por delante de su
+  remoto y no se hizo merge ni push a `main`.
 - Archive, DOCX, Audio, Image, Office, PDF, Video y Text viven físicamente en
   `neocortex/capabilities/formats/{archive,docx,audio,image,office,pdf,text,video}`.
   Las fachadas `_04_Nucleo_Operativo` correspondientes son compatibilidad
@@ -36,31 +37,27 @@ transitoria verificable, hasta retirar `_01_Enumeracion`, `_02_Deduplicacion`,
 
 ## Evidencia de aceptación y release
 
-- `Neocortex code validate --baseline e0f65f8ae2ca054a161b9a4100f7ab3b1a8c473e`
-  sobre `ee4bdec` terminó `passed`: selección `full`, 338 pruebas reportadas,
-  17 barreras, Coverage trusted-deep de 24 shards, experimentos, wheel,
-  replay e identidades públicas. Receipt:
-  `/home/winterboss/.local/state/Neocortex/self-analysis/validation-receipts/ee4bdec1359fab0cc9fed18af6973f57f792bf33-44a05ed08f4da0b7fc5568952862ab1dc533a2bfa5ecb456b6acedbe3582aa9d.json`
-  (`sha256:d6135e44d001e1aa8e269576671192171351bd83f0859cd36a72ed2daa0067c5`).
-- El lote rápido posterior trasladó runtime, workflow, Knowledge, Semantic, Code,
-  Documents, Safety, Inventory, Persistence y API a namespaces canónicos, con
-  aliases legacy de identidad comprobada; los commits principales son `6305e98`,
-  `e0b2137`, `4a366b0`, `ec5b7a1`, `d276b23`, `b1262ed`, `50f0e42`, `a741b41`,
-  `3478e30`, `63955f3` y `eab777f`. Focales de migración, CLI, arquitectura,
-  Semgrep, quality gate y selector de cambios pasaron; no existe aún receipt
-  canónico integral ni release instalada para este árbol posterior.
-- Trusted-deep publicó `run_id=56` con 987 archivos, 981 candidatos,
-  `code_processed=0`, `code_cache_hits=981`, y el replay `run_id=57` conservó
-  los mismos contadores, ambos sin errores.
-- La release vigente se reconstruyó desde el SHA ejecutable aceptado:
-  `0.9.0-ee4bdec1359f-cp314-linux-x86_64`, pip `26.2.1`, Semgrep `1.172.0`;
-  `release_linux.py verify` devolvió `verified=true` y current/manifest/launcher
-  coinciden.
-- E2E público instalado, sin `PYTHONPATH` ni `--apply`: un ZIP produjo
-  `processed=1`, `cache_hits=0`, `complete=1`, `members=1`, `indexed=1` y
-  `errors=0`; el replay mantuvo `processed=1`, `cache_hits=1`, `complete=1`,
-  `members=1`, `indexed=1` y `errors=0`, ambos con exit 0. Evidencia:
-  `/home/winterboss/Documentos/NeoCortex/Auditorias/2026-08-29-neocortex-platform-cohort/`.
+- `Neocortex code validate --baseline 1930aeabd73343468e119dea577c9466848dd075`
+  sobre `5455b90` terminó `passed`: selección `full` con 354 selectores,
+  17 barreras, 5,843 pruebas y Coverage trusted-deep 24/24; wheel candidato,
+  replay y dos procesos de revisión pública quedaron estables. Digest del gate:
+  `sha256:e560a0fabf37593e205bec93f26fc3a85b6c587dc7a0bd58e01eca84252d5a18`.
+  Receipt:
+  `/home/winterboss/.local/state/Neocortex/self-analysis/validation-receipts/5455b90992ef2e6f2b0d49590a99448f0342aeea-e560a0fabf37593e205bec93f26fc3a85b6c587dc7a0bd58e01eca84252d5a18.json`
+  (`sha256:38b13f6d89fecdb24a582cd2a83b279e4c3ad4c1e3ad3c4c1e99620a2b51299a`).
+- La evidencia durable de la cohorte conserva el gate completo, métricas de
+  cobertura/replay y la correspondencia de release:
+  `/home/winterboss/Documentos/NeoCortex/Auditorias/2026-08-29-neocortex-canonical-refactor/summary.json`
+  (`sha256:bd910eb29d58bf936743c636b338c482838815809762a0461d6bb67c1b450349`).
+- La release instalada desde el SHA aceptado es
+  `0.9.0-5455b90992ef-cp314-linux-x86_64`; `release_linux.py verify` devolvió
+  `verified=true`, con `current`, manifest y launcher alineados al mismo SHA.
+- El launcher público `/home/winterboss/.local/bin/Neocortex`, sin
+  `PYTHONPATH` ni `--apply`, procesó un fixture aislado en la primera corrida:
+  Archive `processed=1`, `cache_hits=0`, `complete=1`, `members=1`, `indexed=1`;
+  Text `processed=1`, `cache_hits=0`, `extracted=1`. El replay terminó con exit
+  0, Archive `cache_hits=1` y Text `processed=0`, `cache_hits=1`; Semantic quedó
+  `status=ok` y el receipt de validación fue reutilizado. Ambos exits fueron 0.
 
 ## Corte foundation aceptado en rama de snapshot
 
@@ -86,15 +83,10 @@ transitoria verificable, hasta retirar `_01_Enumeracion`, `_02_Deduplicacion`,
 
 ## Próximo corte, en orden
 
-1. Mantener como evidencia vigente el receipt, la release y el E2E del corte
-   foundation aceptado; la corrida interrumpida anterior no se usa como prueba.
-2. El árbol canónico ya está organizado; mantenerlo congelado en `03b9fba` y
-   ejecutar una sola `Neocortex code validate --baseline HEAD^` como aceptación
-   integral, seguida de release Linux desde el SHA aceptado, instalación,
-   launcher público y E2E/replay con contadores de caché verificables.
-3. Conservar `main` sin merge ni push hasta que el receipt, la release y el E2E
-   final estén comprobados; los snapshots locales y remotos no equivalen a la
-   integración final.
+1. No queda trabajo de refactor ejecutable dentro de esta cohorte; conservar el
+   receipt, la release y el E2E como evidencia vigente.
+2. Si Víctor solicita integración, preparar un cambio separado para merge/push;
+   `main` permanece deliberadamente sin modificar.
 
 ## Límites
 
