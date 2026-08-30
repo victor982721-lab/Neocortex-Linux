@@ -1,6 +1,6 @@
 # NeoCortex — handoff operativo vigente
 
-> Actualizado: 2026-08-30 13:10 CST. El basename es histórico y permanece estable.
+> Actualizado: 2026-08-30 14:00 CST. El basename es histórico y permanece estable.
 > `~/.codex/PENDIENTES.md` conserva el compromiso operativo; este archivo
 > describe sólo la frontera técnica de reanudación.
 
@@ -22,15 +22,16 @@ instalado.
 ## Corte canónico de implementación en verificación final
 
 - Checkout: `/home/winterboss/Neocortex/Repository`
-- El árbol candidato quedó congelado en `076df788d6844e78c36967c7659b6bf236a2d07b`;
+- El árbol candidato quedó congelado en `144055a1438b42c163d07b4dede6631bb17dfa09`;
   no se reutiliza ningún receipt anterior como aceptación de esta migración.
 - La verificación viva observó 453 módulos Python canónicos, sin referencias de
   código a `_04_Nucleo_Operativo` y sin la carpeta legacy en el checkout.
 - El fingerprint del registro exhaustivo actual es
   `core-architecture-target-v1:sha256:8fef783b2ae52f6a26519532f07cbf37a62ccbf4b94db3ddfcc4657f3ef557e9`.
 - Las pruebas focales del candidato pasaron con 407 casos y una advertencia no
-  bloqueante; la suite integral y el gate canónico todavía deben ejecutarse sobre
-  este SHA.
+  bloqueante; la suite integral pasó con 5,520 pruebas, 144 omitidas, 110
+  subtests y la misma advertencia no bloqueante, pero el gate canónico todavía
+  debe ejecutarse sobre este SHA.
 - Archive, DOCX, Audio, Image, Office, PDF, Video y Text viven físicamente en
   `neocortex/capabilities/formats/{archive,docx,audio,image,office,pdf,text,video}`.
   Las rutas de formato y sus consumidores viven únicamente en esos módulos;
