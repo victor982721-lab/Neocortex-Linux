@@ -808,7 +808,7 @@ FORBIDDEN_FAMILY_EDGE_BASELINE: Final = (
     FamilyEdgeBaseline("safety", "runtime", 1),
     FamilyEdgeBaseline("semantic", "knowledge", 4),
     FamilyEdgeBaseline("semantic", "runtime", 1),
-    FamilyEdgeBaseline("workflow", "api", 3),
+    FamilyEdgeBaseline("workflow", "api", 1),
     FamilyEdgeBaseline("workflow", "runtime", 1),
 )
 
