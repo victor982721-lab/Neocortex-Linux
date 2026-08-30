@@ -1,6 +1,6 @@
 # NeoCortex — handoff operativo vigente
 
-> Actualizado: 2026-08-30 14:00 CST. El basename es histórico y permanece estable.
+> Actualizado: 2026-08-30 14:25 CST. El basename es histórico y permanece estable.
 > `~/.codex/PENDIENTES.md` conserva el compromiso operativo; este archivo
 > describe sólo la frontera técnica de reanudación.
 
@@ -22,16 +22,17 @@ instalado.
 ## Corte canónico de implementación en verificación final
 
 - Checkout: `/home/winterboss/Neocortex/Repository`
-- El árbol candidato quedó congelado en `144055a1438b42c163d07b4dede6631bb17dfa09`;
+- El árbol candidato quedó congelado en `04757c37f86dc1bfcc54abadc58be1a59633f037`;
   no se reutiliza ningún receipt anterior como aceptación de esta migración.
-- La verificación viva observó 453 módulos Python canónicos, sin referencias de
+- La verificación viva observó 452 módulos Python canónicos, sin referencias de
   código a `_04_Nucleo_Operativo` y sin la carpeta legacy en el checkout.
 - El fingerprint del registro exhaustivo actual es
-  `core-architecture-target-v1:sha256:8fef783b2ae52f6a26519532f07cbf37a62ccbf4b94db3ddfcc4657f3ef557e9`.
-- Las pruebas focales del candidato pasaron con 407 casos y una advertencia no
-  bloqueante; la suite integral pasó con 5,520 pruebas, 144 omitidas, 110
-  subtests y la misma advertencia no bloqueante, pero el gate canónico todavía
-  debe ejecutarse sobre este SHA.
+  `core-architecture-target-v1:sha256:2b1ad2c3a2b01a76477c69c7205979eb06537fb6c228765f88caf925b2cadbc2`.
+- La suite integral del árbol ejecutable inmediatamente anterior (`144055a…`)
+  pasó con 5,520 pruebas, 144 omitidas, 110 subtests y una advertencia no
+  bloqueante; después de retirar el entrypoint obsoleto, las focales y la
+  recolección pasaron, pero la suite integral y el gate canónico aún deben
+  ejecutarse sobre este SHA.
 - Archive, DOCX, Audio, Image, Office, PDF, Video y Text viven físicamente en
   `neocortex/capabilities/formats/{archive,docx,audio,image,office,pdf,text,video}`.
   Las rutas de formato y sus consumidores viven únicamente en esos módulos;
@@ -88,7 +89,7 @@ instalado.
 ## Próximo corte, en orden
 
 1. Resolver la renovación del snapshot pip-audit y ejecutar una sola validación
-  canónica sobre `076df788…`, incluyendo la suite y los controles arquitectónicos
+  canónica sobre `04757c37…`, incluyendo la suite y los controles arquitectónicos
   sin abrir SQLite cercadas.
 2. Instalar desde el SHA validado, verificar launcher/manifiesto y repetir el
    E2E con replay; sólo entonces queda listo el cierre Git final.
