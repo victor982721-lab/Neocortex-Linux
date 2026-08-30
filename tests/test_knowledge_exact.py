@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 
 from neocortex.deduplication.fingerprinting import FULL_ALGORITHM, PARTIAL_ALGORITHM
-from neocortex.deduplication.persistence.schema import initialize_inventory_schema
+from neocortex.deduplication.persistence import initialize_inventory_schema
 from neocortex.knowledge import knowledge_exact as knowledge_exact_module
 from neocortex.code.code_schema import initialize_code_state
 from neocortex.documents.document_catalog import initialize_document_catalog

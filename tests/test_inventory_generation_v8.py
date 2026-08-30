@@ -23,7 +23,7 @@ from neocortex.deduplication import (
     InventoryCheckpoint,
     InventoryExclusionPolicy,
 )
-from neocortex.deduplication.persistence import schema as inventory_schema_module
+from neocortex.deduplication import persistence as inventory_schema_module
 from neocortex.deduplication.domain.errors import InventoryError
 from neocortex.deduplication.persistence.ddl import (
     LEGACY_SHARED_DDL,

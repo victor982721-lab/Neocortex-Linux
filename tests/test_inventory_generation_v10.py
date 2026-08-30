@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from neocortex.deduplication.persistence import schema as inventory_schema_module
+from neocortex.deduplication import persistence as inventory_schema_module
 from neocortex.deduplication.domain.errors import InventoryError
 from neocortex.deduplication.persistence import (
     inventory_schema_contract as persistent_inventory_schema_contract,
@@ -34,14 +34,14 @@ _NEW_INDEXES = {
 }
 
 
-def test_schema_facade_and_versioned_migration_registry_are_explicit() -> None:
-    assert inventory_schema_module.__all__ == [
+def test_schema_persistence_api_and_versioned_migration_registry_are_explicit() -> None:
+    assert {
         "SCHEMA_VERSION",
         "configure_inventory_connection",
         "initialize_inventory_schema",
         "inventory_schema_contract",
         "validate_inventory_schema",
-    ]
+    } <= set(inventory_schema_module.__all__)
     assert inventory_schema_module.inventory_schema_contract() is (
         persistent_inventory_schema_contract()
     )

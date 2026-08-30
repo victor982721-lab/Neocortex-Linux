@@ -3044,7 +3044,7 @@ def _validation_question_scopes() -> tuple[_ValidationQuestionScope, ...]:
             "retention.durable_hold_safety",
             frozenset(
                 {
-                    "neocortex/deduplication/persistence/schema.py",
+                    "neocortex/deduplication/persistence/ddl.py",
                     "neocortex/code/code_retention_analysis.py",
                     "neocortex/documents/document_catalog.py",
                     "neocortex/persistence/framework_schema.py",
@@ -3110,7 +3110,7 @@ def _validation_question_scopes() -> tuple[_ValidationQuestionScope, ...]:
             "knowledge.asset_health_causal_acceptance",
             frozenset(
                 {
-                    "neocortex/deduplication/persistence/schema.py",
+                    "neocortex/deduplication/persistence/ddl.py",
                     "neocortex/api/cli/cli_knowledge.py",
                     "neocortex/api/cli/cli_knowledge_surface.py",
                     "neocortex/code/code_knowledge_asset_health_analysis.py",
@@ -3144,7 +3144,7 @@ def _validation_question_scopes() -> tuple[_ValidationQuestionScope, ...]:
             "knowledge.pdf_asset_health_causal_acceptance",
             frozenset(
                 {
-                    "neocortex/deduplication/persistence/schema.py",
+                    "neocortex/deduplication/persistence/ddl.py",
                     "neocortex/api/cli/cli_knowledge.py",
                     "neocortex/api/cli/cli_knowledge_surface.py",
                     "neocortex/code/code_knowledge_pdf_asset_health_analysis.py",

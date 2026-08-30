@@ -435,7 +435,6 @@ RESPONSIBILITY_MODULES: Final = {
         "neocortex.deduplication.persistence.migrations.v7_to_v8",
         "neocortex.deduplication.persistence.migrations.v8_to_v9",
         "neocortex.deduplication.persistence.migrations.v9_to_v10",
-        "neocortex.deduplication.persistence.schema",
         "neocortex.deduplication.persistence.validation",
         "neocortex.deduplication.planning",
         "neocortex.deduplication.planning.pipeline",

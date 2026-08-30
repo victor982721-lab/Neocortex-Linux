@@ -14,8 +14,8 @@ from typing import Any
 import pytest
 
 import neocortex.knowledge.knowledge_snapshot as knowledge_snapshot
-from neocortex.deduplication.persistence import schema as inventory_schema_module
-from neocortex.deduplication.persistence.schema import initialize_inventory_schema
+from neocortex.deduplication.persistence import ddl as inventory_ddl
+from neocortex.deduplication.persistence import initialize_inventory_schema
 from neocortex.persistence import framework_schema as framework_schema_module
 from neocortex.capabilities.formats.archive.state import initialize_archive_state
 from neocortex.code.code_schema import initialize_code_state
@@ -142,7 +142,7 @@ def _legacy_read_compatible_fixture(
 ) -> None:
     state.mkdir()
     with sqlite3.connect(state / "dedup.sqlite3") as connection:
-        inventory_schema_module._build_v7_schema(connection)
+        inventory_ddl.build_v7_schema(connection)
         connection.execute("INSERT INTO metadata(key,value) VALUES('schema_version','7')")
     with sqlite3.connect(state / "framework.sqlite3") as connection:
         if framework_version == 19:

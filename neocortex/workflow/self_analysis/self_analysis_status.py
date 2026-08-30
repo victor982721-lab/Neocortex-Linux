@@ -15,7 +15,8 @@ from neocortex.enumeration import (
     NtfsUsnError,
     UsnJournalReader,
 )
-from neocortex.deduplication.persistence import schema as inventory_schema
+from neocortex.deduplication.persistence.ddl import SCHEMA_VERSION as INVENTORY_SCHEMA_VERSION
+from neocortex.deduplication.persistence.validation import validate_inventory_schema
 from neocortex.sqlite_schema_contract import read_metadata_schema_version
 
 from neocortex.persistence import framework_schema
@@ -532,9 +533,9 @@ def _read_checkpoint(database: Path, root: str) -> _CheckpointEvidence | None:
                 connection,
                 label="dedup inventory self-analysis status",
             )
-            if version != inventory_schema.SCHEMA_VERSION:
+            if version != INVENTORY_SCHEMA_VERSION:
                 return None
-            inventory_schema.validate_inventory_schema(connection)
+            validate_inventory_schema(connection)
             rows = connection.execute(
                 """SELECT
                 CASE WHEN length(CAST(c.root AS BLOB)) BETWEEN 1 AND 32768

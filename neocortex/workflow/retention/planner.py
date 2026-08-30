@@ -21,7 +21,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from neocortex.deduplication.persistence import schema as inventory_schema
+from neocortex.deduplication.persistence.ddl import SCHEMA_VERSION as INVENTORY_SCHEMA_VERSION
+from neocortex.deduplication.persistence.validation import validate_inventory_schema
 from neocortex.documents import document_catalog_schema
 from neocortex.persistence import framework_schema
 from neocortex.semantic import semantic_schema
@@ -262,11 +263,11 @@ def _validate_snapshot(
         return version
     if store == "inventory":
         version = _metadata_version(connection, "dedup inventory")
-        if version != inventory_schema.SCHEMA_VERSION:
+        if version != INVENTORY_SCHEMA_VERSION:
             raise RuntimeError(
-                f"dedup inventory schema is {version}; expected {inventory_schema.SCHEMA_VERSION}"
+                f"dedup inventory schema is {version}; expected {INVENTORY_SCHEMA_VERSION}"
             )
-        inventory_schema.validate_inventory_schema(connection)
+        validate_inventory_schema(connection)
         return version
     version = _metadata_version(connection, "framework")
     if version != framework_schema.SCHEMA_VERSION:

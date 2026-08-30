@@ -18,10 +18,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TypeVar, cast
 
-from neocortex.deduplication.persistence.schema import (
-    SCHEMA_VERSION as INVENTORY_SCHEMA_VERSION,
-    validate_inventory_schema,
-)
+from neocortex.deduplication.persistence.ddl import SCHEMA_VERSION as INVENTORY_SCHEMA_VERSION
+from neocortex.deduplication.persistence.validation import validate_inventory_schema
 from neocortex.sqlite_schema_contract import read_application_schema_version
 
 from neocortex.documents import document_catalog_schema

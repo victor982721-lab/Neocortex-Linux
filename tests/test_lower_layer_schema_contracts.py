@@ -8,14 +8,14 @@ from pathlib import Path
 
 import pytest
 
-import neocortex.deduplication.persistence.schema as inventory_schema_module
+import neocortex.deduplication.persistence.lifecycle as inventory_lifecycle_module
 from neocortex.enumeration.path_index.repository import SqlitePathIndex
 from neocortex.enumeration.path_index.schema import (
     initialize_path_index_schema,
     validate_path_index_schema,
 )
 from neocortex.deduplication import DedupIndex, InventoryError
-from neocortex.deduplication.persistence.schema import (
+from neocortex.deduplication.persistence import (
     initialize_inventory_schema,
     validate_inventory_schema,
 )
@@ -235,7 +235,7 @@ def test_dedup_records_every_sequential_version_inside_migration(
     database = tmp_path / "dedup-sequential.sqlite3"
     _historical_fixture(database, 1)
     traces: list[str] = []
-    original_connect = inventory_schema_module._connect
+    original_connect = inventory_lifecycle_module.connect
 
     def traced_connect(path: Path, *, readonly: bool = False) -> sqlite3.Connection:
         connection = original_connect(path, readonly=readonly)
@@ -243,7 +243,7 @@ def test_dedup_records_every_sequential_version_inside_migration(
             connection.set_trace_callback(traces.append)
         return connection
 
-    monkeypatch.setattr(inventory_schema_module, "_connect", traced_connect)
+    monkeypatch.setattr(inventory_lifecycle_module, "connect", traced_connect)
 
     initialize_inventory_schema(database)
 

@@ -12,7 +12,10 @@ from neocortex.enumeration.path_index import schema as path_index_schema
 from neocortex.enumeration.path_index.repository import SqlitePathIndex
 from neocortex.deduplication.inventory import index as inventory_module
 from neocortex.deduplication.inventory.index import DedupIndex
-from neocortex.deduplication.persistence import schema as inventory_schema
+from neocortex.deduplication.persistence import (
+    initialize_inventory_schema,
+)
+from neocortex.deduplication.persistence import connections as inventory_connections
 from neocortex.documents import document_catalog
 from neocortex.persistence import framework_state_writer
 from neocortex.workflow.review import review_evidence
@@ -192,7 +195,7 @@ def _path_connection(path: Path, *, readonly: bool) -> Iterator[sqlite3.Connecti
 
 @contextmanager
 def _inventory_connection(path: Path, *, readonly: bool) -> Iterator[sqlite3.Connection]:
-    connection = inventory_schema._connect(path, readonly=readonly)
+    connection = inventory_connections.connect(path, readonly=readonly)
     try:
         yield connection
     finally:
@@ -203,7 +206,7 @@ def _inventory_connection(path: Path, *, readonly: bool) -> Iterator[sqlite3.Con
     ("initialize", "open_database"),
     (
         (path_index_schema.initialize_path_index_schema, _path_connection),
-        (inventory_schema.initialize_inventory_schema, _inventory_connection),
+        (initialize_inventory_schema, _inventory_connection),
     ),
     ids=("path-index", "dedup-inventory"),
 )
@@ -229,14 +232,18 @@ def test_lower_layer_readers_are_query_only_and_never_create(
 
 
 @pytest.mark.parametrize(
-    ("owner", "module"),
-    (("path-index", path_index_schema), ("dedup-inventory", inventory_schema)),
+    ("owner", "module", "connect"),
+    (
+        ("path-index", path_index_schema, path_index_schema._connect),
+        ("dedup-inventory", inventory_connections, inventory_connections.connect),
+    ),
 )
 def test_lower_layer_factories_close_on_keyboard_interrupt(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     owner: str,
     module: object,
+    connect: Callable[..., object],
 ) -> None:
     class _InterruptedConnection:
         def __init__(self) -> None:
@@ -255,7 +262,7 @@ def test_lower_layer_factories_close_on_keyboard_interrupt(
         lambda *_args, **_kwargs: connection,
     )
     with pytest.raises(KeyboardInterrupt, match=owner):
-        module._connect(tmp_path / "state.sqlite3", readonly=True)  # type: ignore[attr-defined]
+        connect(tmp_path / "state.sqlite3", readonly=True)
     assert connection.closed is True
 
 

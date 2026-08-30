@@ -325,13 +325,14 @@ def _validate_source_schema(
 
 
 def _validate_dedup_schema(connection: sqlite3.Connection) -> int:
-    from neocortex.deduplication.persistence import schema as inventory_schema
+    from neocortex.deduplication.persistence.ddl import SCHEMA_VERSION as inventory_schema_version
+    from neocortex.deduplication.persistence.validation import validate_inventory_schema
 
     return _require_current_schema(
         connection,
         label="dedup inventory",
-        expected_version=inventory_schema.SCHEMA_VERSION,
-        validator=inventory_schema.validate_inventory_schema,
+        expected_version=inventory_schema_version,
+        validator=validate_inventory_schema,
     )
 
 

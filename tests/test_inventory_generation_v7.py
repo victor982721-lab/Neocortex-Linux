@@ -27,7 +27,7 @@ from neocortex.deduplication import (
     snapshot_path,
 )
 from neocortex.deduplication.inventory import scan as inventory_scan_module
-from neocortex.deduplication.persistence import schema as inventory_schema_module
+from neocortex.deduplication import persistence as inventory_schema_module
 from neocortex.deduplication.domain.errors import InventoryError
 from neocortex.deduplication.persistence.ddl import (
     LEGACY_SHARED_DDL,
