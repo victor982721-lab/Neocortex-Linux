@@ -545,7 +545,7 @@ def test_registry_rejects_duplicate_overlap_and_inconsistent_state() -> None:
         modules=(
             replace(
                 archive.modules[0],
-                    legacy_module_id="_04_Nucleo_Operativo.capabilities.formats.docx.compat_models",
+                        legacy_module_id="neocortex.capabilities.formats.docx.compat_models",
             ),
             *archive.modules[1:],
         ),

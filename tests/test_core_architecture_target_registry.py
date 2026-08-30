@@ -34,7 +34,7 @@ from _04_Nucleo_Operativo.platform.shared.capability_registry import (
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-CORE_ROOT = REPOSITORY_ROOT / "_04_Nucleo_Operativo"
+CORE_ROOT = REPOSITORY_ROOT / "neocortex"
 
 
 def _module_id(path: Path) -> str:
@@ -45,10 +45,13 @@ def _module_id(path: Path) -> str:
 def test_registry_exhaustively_assigns_every_current_core_module() -> None:
     observed = tuple(sorted(_module_id(path) for path in CORE_ROOT.rglob("*.py")))
 
-    assert observed == registered_core_modules()
-    assert len(observed) == 377
+    product_registered = tuple(
+        sorted(module for modules in RESPONSIBILITY_MODULES.values() for module in modules)
+    )
+    assert observed == product_registered
+    assert len(observed) == 454
     assert len(COMPATIBILITY_MODULES) == 40
-    assert sum(len(items) for items in RESPONSIBILITY_MODULES.values()) == 337
+    assert sum(len(items) for items in RESPONSIBILITY_MODULES.values()) == 454
     for module in observed:
         families = matching_target_families(module)
         responsibilities = matching_target_responsibilities(module)
@@ -67,14 +70,14 @@ def test_target_vocabulary_dag_and_transition_baseline_are_frozen() -> None:
     assert len(TARGET_RESPONSIBILITY_IDS) == 45
     assert len(TARGET_FAMILIES) == 12
     assert TARGET_FAMILY_DEPENDENCIES == tuple(pairwise(TARGET_FAMILY_LAYERS))
-    assert len(FORBIDDEN_FAMILY_EDGE_BASELINE) == 11
-    assert sum(item.direct_module_edges for item in FORBIDDEN_FAMILY_EDGE_BASELINE) == 100
+    assert len(FORBIDDEN_FAMILY_EDGE_BASELINE) == 28
+    assert sum(item.direct_module_edges for item in FORBIDDEN_FAMILY_EDGE_BASELINE) == 227
     assert payload["responsibility_registry"]["schema"] == (CORE_RESPONSIBILITY_REGISTRY_SCHEMA)
     assert payload["family_dag"]["schema"] == CORE_FAMILY_DAG_SCHEMA
     assert payload["compatibility_matrix"]["schema"] == (CORE_COMPATIBILITY_MATRIX_SCHEMA)
     assert core_architecture_target_fingerprint() == (
         "core-architecture-target-v1:sha256:"
-        "c9abc6faa8d1997fe16709e79dc5da5c08d0c0a414eafa72be98e41cb3086f00"
+        "5b1f31c493ee544417c1ac44f59e84f26aaa4a0bc3fd5fb46530733997af99af"
     )
 
 
@@ -88,11 +91,11 @@ def test_compatibility_matrix_joins_capability_and_shared_migrations() -> None:
     shared_pairs = {
         (
             "_04_Nucleo_Operativo.content_types",
-            "_04_Nucleo_Operativo.platform.shared.content_types",
+            "neocortex.platform.content_types",
         ),
         (
             "_04_Nucleo_Operativo.zip_safety",
-            "_04_Nucleo_Operativo.platform.shared.zip_safety",
+            "neocortex.platform.zip_safety",
         ),
     }
 
@@ -114,6 +117,7 @@ def test_compatibility_matrix_joins_capability_and_shared_migrations() -> None:
 
 def test_forbidden_family_edge_baseline_matches_the_current_import_graph() -> None:
     graph = grimp.build_graph(
+        "neocortex",
         "_04_Nucleo_Operativo",
         include_external_packages=False,
         exclude_type_checking_imports=False,
