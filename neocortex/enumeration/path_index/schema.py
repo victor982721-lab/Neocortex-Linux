@@ -16,11 +16,8 @@ from neocortex.sqlite_schema_contract import (
     schema_contract_from_builder,
     validate_sqlite_schema_contract,
 )
-from neocortex.sqlite_schema_lifecycle import (
-    existing_sqlite_uri,
-    initialize_versioned_sqlite_schema,
-    readonly_sqlite_uri,
-)
+from neocortex.persistence.sqlite_paths import existing_sqlite_uri, readonly_sqlite_uri
+from neocortex.sqlite_schema_lifecycle import initialize_versioned_sqlite_schema
 # endregion [01]
 
 # region [02] Implementación

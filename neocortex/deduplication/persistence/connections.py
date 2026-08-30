@@ -6,7 +6,7 @@ import sqlite3
 from pathlib import Path
 from typing import Protocol
 
-from neocortex.sqlite_schema_lifecycle import existing_sqlite_uri, readonly_sqlite_uri
+from neocortex.persistence.sqlite_paths import existing_sqlite_uri, readonly_sqlite_uri
 
 from ..domain.errors import InventoryError
 

@@ -15,7 +15,7 @@ from neocortex import sqlite_schema_lifecycle as shared_lifecycle
 # region [02] Implementación
 
 
-def test_operational_sqlite_contract_is_a_shared_compatibility_facade() -> None:
+def test_sqlite_contract_identity_is_single_and_canonical() -> None:
     assert (
         operational_contract.SQLiteSchemaContract
         is shared_contract.SQLiteSchemaContract
@@ -34,14 +34,13 @@ def test_operational_sqlite_contract_is_a_shared_compatibility_facade() -> None:
     )
 
 
-def test_operational_sqlite_lifecycle_and_uri_are_shared_facades() -> None:
+def test_sqlite_lifecycle_and_uri_boundaries_are_separate() -> None:
     assert (
         operational_lifecycle.initialize_versioned_sqlite_schema
         is shared_lifecycle.initialize_versioned_sqlite_schema
     )
-    assert (
-        operational_lifecycle.readonly_sqlite_uri
-        is shared_lifecycle.readonly_sqlite_uri
-    )
-    assert sqlite_paths.readonly_sqlite_uri is shared_lifecycle.readonly_sqlite_uri
+    assert sqlite_paths.readonly_sqlite_uri.__module__ == "neocortex.persistence.sqlite_paths"
+    assert sqlite_paths.existing_sqlite_uri.__module__ == "neocortex.persistence.sqlite_paths"
+    assert not hasattr(operational_lifecycle, "readonly_sqlite_uri")
+    assert not hasattr(operational_lifecycle, "existing_sqlite_uri")
 # endregion [02]

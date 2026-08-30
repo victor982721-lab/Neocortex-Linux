@@ -21,7 +21,7 @@ from neocortex.documents.document_cache_sync import _synchronize_database
 from neocortex.persistence.framework_connection import connect_existing_framework
 from neocortex.persistence.framework_state_writer import FrameworkState
 from neocortex.capabilities.formats.pdf.pdf_state import initialize_pdf_state
-from neocortex.sqlite_schema_lifecycle import existing_sqlite_uri
+from neocortex.persistence.sqlite_paths import existing_sqlite_uri
 
 
 # region [01] Existing-file URI and framework-family policy

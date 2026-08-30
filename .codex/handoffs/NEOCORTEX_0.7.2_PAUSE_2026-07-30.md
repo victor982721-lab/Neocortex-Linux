@@ -1,6 +1,6 @@
 # NeoCortex — handoff operativo vigente
 
-> Actualizado: 2026-08-30 05:30 CST. El basename es histórico y permanece estable.
+> Actualizado: 2026-08-30 07:05 CST. El basename es histórico y permanece estable.
 > `~/.codex/PENDIENTES.md` conserva el compromiso operativo; este archivo
 > describe sólo la frontera técnica de reanudación.
 
@@ -19,12 +19,16 @@ Linux y demostrar el recorrido público instalado.
 ## Corte canónico de implementación en verificación final
 
 - Checkout: `/home/winterboss/Neocortex/Repository`
-- El árbol candidato está pendiente de commit; no se reutiliza el receipt de
-  `5455b90992ef2e6f2b0d49590a99448f0342aeea` como aceptación de esta migración.
+- El árbol candidato quedó congelado en `487a1003960add1f689cf1d2b2cb6d13bd38d3f4`;
+  no se reutiliza el receipt de `5455b90992ef2e6f2b0d49590a99448f0342aeea` como
+  aceptación de esta migración.
 - La verificación viva observó 455 módulos Python canónicos, sin referencias de
   código a `_04_Nucleo_Operativo` y sin la carpeta legacy en el checkout.
 - El fingerprint del registro exhaustivo actual es
   `core-architecture-target-v1:sha256:5e5cc16adca95020bc50ffa6920bae5736c9c54b27dc47f806d8339213559e27`.
+- La suite integral local del candidato pasó con 5,528 pruebas, 144 omitidas,
+  110 subtests y una advertencia no bloqueante; el gate canónico todavía no
+  produjo receipt porque se abstuvo en la frescura del snapshot pip-audit.
 - Archive, DOCX, Audio, Image, Office, PDF, Video y Text viven físicamente en
   `neocortex/capabilities/formats/{archive,docx,audio,image,office,pdf,text,video}`.
   Las rutas de formato y sus consumidores viven únicamente en esos módulos;
@@ -80,11 +84,11 @@ Linux y demostrar el recorrido público instalado.
 
 ## Próximo corte, en orden
 
-1. Crear el commit congelado del árbol canónico y registrar su SHA.
-2. Ejecutar una sola validación canónica sobre ese SHA, incluyendo la suite y
-   los controles arquitectónicos sin abrir SQLite cercadas.
-3. Instalar desde el mismo SHA, verificar launcher/manifiesto y repetir el E2E
-   con replay; sólo entonces queda listo el cierre Git final.
+1. Resolver la renovación del snapshot pip-audit y ejecutar una sola validación
+   canónica sobre `487a100…`, incluyendo la suite y los controles arquitectónicos
+   sin abrir SQLite cercadas.
+2. Instalar desde el SHA validado, verificar launcher/manifiesto y repetir el
+   E2E con replay; sólo entonces queda listo el cierre Git final.
 
 ## Límites
 

@@ -10,7 +10,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Final
 
-from .sqlite_schema_lifecycle import existing_sqlite_uri, readonly_sqlite_uri
+from neocortex.persistence.sqlite_paths import existing_sqlite_uri, readonly_sqlite_uri
 
 
 SQLiteRowFactory = Callable[[sqlite3.Cursor, tuple[Any, ...]], Any]

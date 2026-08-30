@@ -28,18 +28,6 @@ class ConnectionFactory(Protocol):
     ) -> sqlite3.Connection: ...
 
 
-def readonly_sqlite_uri(path: str | Path) -> str:
-    """Return a correctly escaped SQLite URI that cannot create or write a file."""
-
-    return f"{Path(path).resolve(strict=False).as_uri()}?mode=ro"
-
-
-def existing_sqlite_uri(path: str | Path) -> str:
-    """Return an escaped read-write URI that refuses to create a missing database."""
-
-    return f"{Path(path).resolve(strict=False).as_uri()}?mode=rw"
-
-
 def _require_supported_version(
     version: int | None,
     *,
@@ -141,8 +129,6 @@ def initialize_versioned_sqlite_schema(
 
 __all__ = [
     "ConnectionFactory",
-    "existing_sqlite_uri",
     "initialize_versioned_sqlite_schema",
-    "readonly_sqlite_uri",
 ]
 # endregion [02]
