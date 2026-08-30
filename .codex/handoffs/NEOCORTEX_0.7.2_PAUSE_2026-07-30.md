@@ -1,6 +1,6 @@
 # NeoCortex — handoff operativo vigente
 
-> Actualizado: 2026-08-30 11:45 CST. El basename es histórico y permanece estable.
+> Actualizado: 2026-08-30 13:10 CST. El basename es histórico y permanece estable.
 > `~/.codex/PENDIENTES.md` conserva el compromiso operativo; este archivo
 > describe sólo la frontera técnica de reanudación.
 
@@ -12,23 +12,25 @@
 
 La migración física del producto ya quedó aplicada en el checkout candidato:
 `neocortex` es la única raíz productiva, la carpeta `_04_Nucleo_Operativo` ya no
-existe y sus consumidores usan los módulos canónicos. El cierre técnico todavía
-requiere congelar el commit, ejecutar el gate canónico, construir la release
-Linux y demostrar el recorrido público instalado.
+existe, el paquete raíz sólo conserva metadatos y `__main__.py`, y los módulos de
+API, plataforma, persistencia, capacidades y tooling viven bajo sus propietarios
+canónicos. No se conservaron alias de compatibilidad ni implementaciones
+duplicadas en las rutas retiradas. El cierre técnico todavía requiere ejecutar
+el gate canónico, construir la release Linux y demostrar el recorrido público
+instalado.
 
 ## Corte canónico de implementación en verificación final
 
 - Checkout: `/home/winterboss/Neocortex/Repository`
-- El árbol candidato quedó congelado en `8e5ea302adbb266a3ccdc6cbce66cb8a7a369c1f`;
-  no se reutiliza el receipt de `5455b90992ef2e6f2b0d49590a99448f0342aeea` como
-  aceptación de esta migración.
+- El árbol candidato quedó congelado en `076df788d6844e78c36967c7659b6bf236a2d07b`;
+  no se reutiliza ningún receipt anterior como aceptación de esta migración.
 - La verificación viva observó 453 módulos Python canónicos, sin referencias de
   código a `_04_Nucleo_Operativo` y sin la carpeta legacy en el checkout.
 - El fingerprint del registro exhaustivo actual es
   `core-architecture-target-v1:sha256:8fef783b2ae52f6a26519532f07cbf37a62ccbf4b94db3ddfcc4657f3ef557e9`.
-- La suite integral local del candidato pasó con 5,528 pruebas, 144 omitidas,
-  110 subtests y una advertencia no bloqueante; el gate canónico todavía no
-  produjo receipt porque se abstuvo en la frescura del snapshot pip-audit.
+- Las pruebas focales del candidato pasaron con 407 casos y una advertencia no
+  bloqueante; la suite integral y el gate canónico todavía deben ejecutarse sobre
+  este SHA.
 - Archive, DOCX, Audio, Image, Office, PDF, Video y Text viven físicamente en
   `neocortex/capabilities/formats/{archive,docx,audio,image,office,pdf,text,video}`.
   Las rutas de formato y sus consumidores viven únicamente en esos módulos;
@@ -85,8 +87,8 @@ Linux y demostrar el recorrido público instalado.
 ## Próximo corte, en orden
 
 1. Resolver la renovación del snapshot pip-audit y ejecutar una sola validación
-  canónica sobre `98e11fe…`, incluyendo la suite y los controles arquitectónicos
-   sin abrir SQLite cercadas.
+  canónica sobre `076df788…`, incluyendo la suite y los controles arquitectónicos
+  sin abrir SQLite cercadas.
 2. Instalar desde el SHA validado, verificar launcher/manifiesto y repetir el
    E2E con replay; sólo entonces queda listo el cierre Git final.
 
