@@ -1298,7 +1298,12 @@ def select_affected_tests(
     direct = tuple(
         path
         for path in change.changed_paths
-        if _TEST_PATH.fullmatch(path) and path not in _LINUX_EXCLUDED_TEST_MODULES
+        if (
+            _TEST_PATH.fullmatch(path)
+            and path not in _LINUX_EXCLUDED_TEST_MODULES
+            and (source / path).is_file()
+            and not (source / path).is_symlink()
+        )
     )
     production = tuple(
         path for path in change.changed_paths if _module_for_source(path) is not None
