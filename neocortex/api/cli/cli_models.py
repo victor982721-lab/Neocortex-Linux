@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
+
 import argparse
 import json
 import sys
@@ -59,5 +61,4 @@ def run_models_prepare(args: argparse.Namespace) -> int:
 __all__ = ["run_models_prepare", "run_models_status"]
 
 
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
 _preserve_legacy_module(globals(), '_04_Nucleo_Operativo.cli_models')

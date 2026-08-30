@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
+
 import argparse
 from collections.abc import Callable
 
@@ -90,5 +92,4 @@ def validate_docx_arguments(args: argparse.Namespace) -> None:
 # endregion [02]
 
 
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
 _preserve_legacy_module(globals(), '_04_Nucleo_Operativo.cli_docx_surface')

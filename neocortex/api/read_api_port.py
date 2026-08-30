@@ -7,6 +7,8 @@ the internal layout of the Knowledge, Code and path owners.
 
 from __future__ import annotations
 
+from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
+
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -104,5 +106,4 @@ __all__ = (
 )
 
 
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
 _preserve_legacy_module(globals(), '_04_Nucleo_Operativo.read_api_port')

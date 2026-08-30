@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
+
 import argparse
 from collections.abc import Callable
 from collections.abc import Set as AbstractSet
@@ -100,5 +102,4 @@ def validate_office_direct_operation(
 # endregion [02]
 
 
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
 _preserve_legacy_module(globals(), '_04_Nucleo_Operativo.cli_office_surface')

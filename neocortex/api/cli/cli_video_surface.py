@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
+
 import argparse
 from collections.abc import Callable
 
@@ -140,5 +142,4 @@ def validate_video_direct_operation(args: argparse.Namespace) -> None:
         raise SystemExit("video direct actions cannot be combined with --route")
 
 
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
 _preserve_legacy_module(globals(), '_04_Nucleo_Operativo.cli_video_surface')

@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
+
 import argparse
 from collections.abc import Callable
 from pathlib import Path
@@ -452,5 +454,4 @@ def validate_code_arguments(args: argparse.Namespace) -> None:
 # endregion [03]
 
 
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
 _preserve_legacy_module(globals(), '_04_Nucleo_Operativo.cli_code_surface')

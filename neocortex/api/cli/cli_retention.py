@@ -8,6 +8,8 @@
 # region [01] Dependencias del módulo
 from __future__ import annotations
 
+from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
+
 import argparse
 import json
 import sqlite3
@@ -99,5 +101,4 @@ __all__ = ["run_retention_status"]
 # endregion [02]
 
 
-from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
 _preserve_legacy_module(globals(), '_04_Nucleo_Operativo.cli_retention')

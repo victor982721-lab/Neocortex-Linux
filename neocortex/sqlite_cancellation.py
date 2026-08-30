@@ -109,8 +109,8 @@ def sqlite_cancellation_scope(
 
 
 __all__ = [
-    "CancellationCheck",
     "DEFAULT_PROGRESS_INSTRUCTIONS",
+    "CancellationCheck",
     "SQLiteCancellationBridge",
     "sqlite_cancellation_scope",
 ]
