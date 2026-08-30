@@ -1,6 +1,6 @@
 # NeoCortex — handoff operativo vigente
 
-> Actualizado: 2026-08-30 07:05 CST. El basename es histórico y permanece estable.
+> Actualizado: 2026-08-30 07:25 CST. El basename es histórico y permanece estable.
 > `~/.codex/PENDIENTES.md` conserva el compromiso operativo; este archivo
 > describe sólo la frontera técnica de reanudación.
 
@@ -19,13 +19,13 @@ Linux y demostrar el recorrido público instalado.
 ## Corte canónico de implementación en verificación final
 
 - Checkout: `/home/winterboss/Neocortex/Repository`
-- El árbol candidato quedó congelado en `487a1003960add1f689cf1d2b2cb6d13bd38d3f4`;
+- El árbol candidato quedó congelado en `b545b9b3a2d09390aefb3a3578044b8063785382`;
   no se reutiliza el receipt de `5455b90992ef2e6f2b0d49590a99448f0342aeea` como
   aceptación de esta migración.
-- La verificación viva observó 455 módulos Python canónicos, sin referencias de
+- La verificación viva observó 454 módulos Python canónicos, sin referencias de
   código a `_04_Nucleo_Operativo` y sin la carpeta legacy en el checkout.
 - El fingerprint del registro exhaustivo actual es
-  `core-architecture-target-v1:sha256:98fe6df8ea8ed9922f8830ae6b8fa5593d04df9c4c4ac0902fdb38fe427ed85d`.
+  `core-architecture-target-v1:sha256:1eaf2f2358fd67c918c7557cf48665d01649b36be95cdd036675947900f3744b`.
 - La suite integral local del candidato pasó con 5,528 pruebas, 144 omitidas,
   110 subtests y una advertencia no bloqueante; el gate canónico todavía no
   produjo receipt porque se abstuvo en la frescura del snapshot pip-audit.
@@ -85,7 +85,7 @@ Linux y demostrar el recorrido público instalado.
 ## Próximo corte, en orden
 
 1. Resolver la renovación del snapshot pip-audit y ejecutar una sola validación
-   canónica sobre `487a100…`, incluyendo la suite y los controles arquitectónicos
+  canónica sobre `b545b9b…`, incluyendo la suite y los controles arquitectónicos
    sin abrir SQLite cercadas.
 2. Instalar desde el SHA validado, verificar launcher/manifiesto y repetir el
    E2E con replay; sólo entonces queda listo el cierre Git final.
