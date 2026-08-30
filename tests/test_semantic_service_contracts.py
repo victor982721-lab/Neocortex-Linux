@@ -546,7 +546,9 @@ def test_contract_cold_import_stays_free_of_owners_pil_planner_and_service() -> 
         f"sys.path.insert(0, {str(repository)!r})\n"
         "import _04_Nucleo_Operativo.semantic_service_contracts\n"
         "print('\\n'.join(sorted(name for name in sys.modules "
-        "if name.startswith('_04_Nucleo_Operativo') or name.startswith('PIL'))))\n"
+        "if name.startswith('_04_Nucleo_Operativo') or "
+        "name.startswith('neocortex.semantic') or "
+        "name.startswith('neocortex.sqlite') or name.startswith('PIL'))))\n"
     )
     completed = subprocess.run(
         [sys.executable, "-I", "-B", "-c", script],
@@ -558,17 +560,19 @@ def test_contract_cold_import_stays_free_of_owners_pil_planner_and_service() -> 
     baseline = frozenset(
         {
             "_04_Nucleo_Operativo",
-            "_04_Nucleo_Operativo.semantic_lexical",
-            "_04_Nucleo_Operativo.semantic_models",
             "_04_Nucleo_Operativo.semantic_service_contracts",
-            "_04_Nucleo_Operativo.sqlite_cancellation",
             "_04_Nucleo_Operativo.sqlite_paths",
+            "neocortex.semantic",
+            "neocortex.semantic.semantic_contract_validation",
+            "neocortex.semantic.semantic_lexical",
+            "neocortex.semantic.semantic_models",
+            "neocortex.semantic.semantic_service_contracts",
+            "neocortex.sqlite_cancellation",
+            "neocortex.sqlite_schema_contract",
+            "neocortex.sqlite_schema_lifecycle",
         }
     )
-    assert loaded in (
-        baseline,
-        baseline | {"_04_Nucleo_Operativo.semantic_contract_validation"},
-    )
+    assert loaded == baseline
 
 
 def test_validation_is_structural_and_does_not_import_its_contract_owner() -> None:
