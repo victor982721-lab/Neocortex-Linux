@@ -561,7 +561,6 @@ def test_contract_cold_import_stays_free_of_owners_pil_planner_and_service() -> 
         {
             "_04_Nucleo_Operativo",
             "_04_Nucleo_Operativo.semantic_service_contracts",
-            "_04_Nucleo_Operativo.sqlite_paths",
             "neocortex.semantic",
             "neocortex.semantic.semantic_contract_validation",
             "neocortex.semantic.semantic_lexical",

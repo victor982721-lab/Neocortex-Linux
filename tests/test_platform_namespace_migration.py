@@ -55,11 +55,11 @@ def test_platform_implementation_lives_under_product_namespace() -> None:
         assert Path(module.__file__).resolve().is_relative_to(PRODUCT_ROOT)
 
     for relative_path in (
-        "_04_Nucleo_Operativo/actions.py",
-        "_04_Nucleo_Operativo/code_change_validation.py",
-        "_04_Nucleo_Operativo/external_architecture_worker.py",
-        "_04_Nucleo_Operativo/framework_state_writer.py",
-        "_04_Nucleo_Operativo/logical_owner_contracts.py",
+        "neocortex/workflow/actions/actions.py",
+        "neocortex/code/code_change_validation.py",
+        "neocortex/code/external_architecture_worker.py",
+        "neocortex/persistence/framework_state_writer.py",
+        "neocortex/code/logical_owner_contracts.py",
         "neocortex/capabilities/formats/archive/route.py",
         "neocortex/capabilities/formats/docx/integrity.py",
         "neocortex/capabilities/formats/docx/route.py",

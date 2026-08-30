@@ -17,9 +17,9 @@ from neocortex.sqlite_cancellation import (
 # region [02] Implementación
 
 
-__all__ = [
-    "DEFAULT_PROGRESS_INSTRUCTIONS",
+__all__ = [  # noqa: RUF022
     "CancellationCheck",
+    "DEFAULT_PROGRESS_INSTRUCTIONS",
     "SQLiteCancellationBridge",
     "sqlite_cancellation_scope",
 ]

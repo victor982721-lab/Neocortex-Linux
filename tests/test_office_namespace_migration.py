@@ -15,7 +15,7 @@ import pytest
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-CANONICAL_ROOT = "_04_Nucleo_Operativo.capabilities.formats.office"
+CANONICAL_ROOT = "neocortex.capabilities.formats.office"
 PRODUCT_ROOT = "neocortex.capabilities.formats.office"
 MODULE_NAMES = (
     "extraction",
@@ -61,16 +61,16 @@ def test_office_implementation_lives_under_the_product_namespace() -> None:
         assert Path(module.__file__).resolve().is_relative_to(product_root)
 
     for relative_path in (
-        "_04_Nucleo_Operativo/__init__.py",
-        "_04_Nucleo_Operativo/application_config_projections.py",
-        "_04_Nucleo_Operativo/cli_direct.py",
-        "_04_Nucleo_Operativo/knowledge_snapshot.py",
-        "_04_Nucleo_Operativo/models.py",
-        "_04_Nucleo_Operativo/orchestrator.py",
-        "_04_Nucleo_Operativo/route_registry.py",
-        "_04_Nucleo_Operativo/semantic_plan_owners.py",
-        "_04_Nucleo_Operativo/state_topology_contracts.py",
-        "_04_Nucleo_Operativo/value_review_repository.py",
+        "neocortex/api/public.py",
+        "neocortex/runtime/config/application_config_projections.py",
+        "neocortex/api/cli/cli_direct.py",
+        "neocortex/knowledge/knowledge_snapshot.py",
+        "neocortex/runtime/models.py",
+        "neocortex/runtime/orchestration/orchestrator.py",
+        "neocortex/runtime/orchestration/route_registry.py",
+        "neocortex/semantic/semantic_plan_owners.py",
+        "neocortex/safety/state_topology_contracts.py",
+        "neocortex/workflow/review/value_review_repository.py",
     ):
         source = (PROJECT_ROOT / relative_path).read_text(encoding="utf-8")
         assert PRODUCT_ROOT in source

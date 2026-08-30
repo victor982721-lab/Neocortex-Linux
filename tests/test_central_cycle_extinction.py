@@ -31,12 +31,14 @@ from _04_Nucleo_Operativo import (
 # region [02] Implementación
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-PACKAGE = "_04_Nucleo_Operativo"
-SELF_ANALYSIS_MODULE = f"{PACKAGE}.self_analysis"
-STATE_WRITER_MODULE = f"{PACKAGE}.framework_state_writer"
-MODELS_MODULE = f"{PACKAGE}.models"
-PDF_ROUTE_MODULE = f"{PACKAGE}.pdf_route"
-PDF_MODELS_MODULE = f"{PACKAGE}.pdf_route_models"
+PACKAGE = "neocortex"
+SELF_ANALYSIS_MODULE = "neocortex.workflow.self_analysis.self_analysis"
+STATE_WRITER_MODULE = "neocortex.persistence.framework_state_writer"
+MODELS_MODULE = "neocortex.runtime.models"
+PDF_ROUTE_MODULE = "neocortex.capabilities.formats.pdf.pdf_route"
+PDF_MODELS_MODULE = "neocortex.capabilities.formats.pdf.pdf_route_models"
+LEGACY_MODELS_MODULE = "_04_Nucleo_Operativo.models"
+LEGACY_PDF_MODELS_MODULE = "_04_Nucleo_Operativo.pdf_route_models"
 PDF_MODELS_PRODUCT_MODULE = "neocortex.capabilities.formats.pdf.pdf_route_models"
 
 SELF_ANALYSIS_CONFIG_FIELDS = {
@@ -129,9 +131,9 @@ def _protocol_properties(contract: ast.ClassDef) -> set[str]:
 
 
 def test_public_contract_owners_reexports_and_signatures_are_unchanged() -> None:
-    assert models.FrameworkConfig.__module__ == MODELS_MODULE
-    assert models.ActionSummary.__module__ == MODELS_MODULE
-    assert pdf_route_models.PdfRouteSummary.__module__ == PDF_MODELS_MODULE
+    assert models.FrameworkConfig.__module__ == LEGACY_MODELS_MODULE
+    assert models.ActionSummary.__module__ == LEGACY_MODELS_MODULE
+    assert pdf_route_models.PdfRouteSummary.__module__ == LEGACY_PDF_MODELS_MODULE
     assert pdf_route.PdfRouteSummary is pdf_route_models.PdfRouteSummary
     assert public_api.FrameworkConfig is models.FrameworkConfig
     assert public_api.ActionSummary is models.ActionSummary
@@ -201,8 +203,8 @@ for module_name in {module_order!r}:
 models = importlib.import_module({MODELS_MODULE!r})
 pdf_route = importlib.import_module({PDF_ROUTE_MODULE!r})
 pdf_models = importlib.import_module({PDF_MODELS_MODULE!r})
-assert models.FrameworkConfig.__module__ == {MODELS_MODULE!r}
-assert models.ActionSummary.__module__ == {MODELS_MODULE!r}
+assert models.FrameworkConfig.__module__ == {LEGACY_MODELS_MODULE!r}
+assert models.ActionSummary.__module__ == {LEGACY_MODELS_MODULE!r}
 assert pdf_route.PdfRouteSummary is pdf_models.PdfRouteSummary
 print("ok")
 """
@@ -220,7 +222,7 @@ print("ok")
 
 
 def test_live_grimp_graph_has_no_production_cycles() -> None:
-    worker = PROJECT_ROOT / PACKAGE / "external_architecture_worker.py"
+    worker = PROJECT_ROOT / "neocortex" / "code" / "external_architecture_worker.py"
     executable = os.environ.get("NEOCORTEX_ARCHITECTURE_TEST_PYTHON", sys.executable)
     completed = subprocess.run(
         [

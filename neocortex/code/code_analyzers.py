@@ -194,10 +194,10 @@ def builtin_analyzer_registry() -> AnalyzerRegistry:
 # endregion [02]
 
 
-__all__ = [
-    "BUILTIN_ANALYZERS",
+__all__ = [  # noqa: RUF022
     "AnalyzerRegistry",
     "AnalyzerSpec",
+    "BUILTIN_ANALYZERS",
     "builtin_analyzer_registry",
 ]
 

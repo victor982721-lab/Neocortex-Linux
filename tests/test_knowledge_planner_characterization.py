@@ -402,8 +402,6 @@ print(
     loaded = set(payload["internal"])
     assert {
         "_04_Nucleo_Operativo",
-        "_04_Nucleo_Operativo.code_detection",
-        "_04_Nucleo_Operativo.semantic_models",
         "neocortex.knowledge",
         "neocortex.knowledge.knowledge_contracts",
         "neocortex.knowledge.knowledge_planner",
@@ -411,9 +409,10 @@ print(
     assert loaded <= {
         "_04_Nucleo_Operativo",
         "_04_Nucleo_Operativo.knowledge_planner",
-        "_04_Nucleo_Operativo.code_contracts",
-        "_04_Nucleo_Operativo.code_retention",
-        "_04_Nucleo_Operativo.code_detection",
+        "neocortex.code",
+        "neocortex.code.code_contracts",
+        "neocortex.code.code_retention",
+        "neocortex.code.code_detection",
         "neocortex.knowledge.knowledge_contract_context",
         "neocortex.knowledge.knowledge_contract_payloads",
         "neocortex.knowledge.knowledge_contract_references",
@@ -425,8 +424,8 @@ print(
         "neocortex.knowledge.knowledge_planner_exact",
         "neocortex.knowledge.knowledge_planner_intents",
         "neocortex.knowledge.knowledge_planner_steps",
-        "_04_Nucleo_Operativo.route_filters",
-        "_04_Nucleo_Operativo.semantic_models",
+        "neocortex.semantic",
+        "neocortex.semantic.semantic_models",
         "neocortex.knowledge",
     }
 

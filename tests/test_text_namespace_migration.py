@@ -29,21 +29,21 @@ def test_legacy_text_modules_are_exact_product_aliases() -> None:
 
 def test_text_consumers_use_the_product_namespace() -> None:
     for relative_path in (
-        "_04_Nucleo_Operativo/application_config_projections.py",
-        "_04_Nucleo_Operativo/code_capability_reachability_analysis.py",
-        "_04_Nucleo_Operativo/code_knowledge_asset_health_analysis.py",
-        "_04_Nucleo_Operativo/code_state_projection_analysis.py",
-        "_04_Nucleo_Operativo/code_state_topology_analysis.py",
-        "_04_Nucleo_Operativo/derivation_lineage_service.py",
-        "_04_Nucleo_Operativo/knowledge_asset_health_repository.py",
-        "_04_Nucleo_Operativo/knowledge_snapshot.py",
-        "_04_Nucleo_Operativo/models.py",
-        "_04_Nucleo_Operativo/orchestrator.py",
-        "_04_Nucleo_Operativo/route_registry.py",
-        "_04_Nucleo_Operativo/semantic_plan_owners.py",
-        "_04_Nucleo_Operativo/semantic_sources.py",
-        "_04_Nucleo_Operativo/state_topology_contracts.py",
-        "_04_Nucleo_Operativo/value_review_repository.py",
+        "neocortex/runtime/config/application_config_projections.py",
+        "neocortex/code/code_capability_reachability_analysis.py",
+        "neocortex/code/code_knowledge_asset_health_analysis.py",
+        "neocortex/code/code_state_projection_analysis.py",
+        "neocortex/code/code_state_topology_analysis.py",
+        "neocortex/semantic/derivation_lineage_service.py",
+        "neocortex/knowledge/knowledge_asset_health_repository.py",
+        "neocortex/knowledge/knowledge_snapshot.py",
+        "neocortex/runtime/models.py",
+        "neocortex/runtime/orchestration/orchestrator.py",
+        "neocortex/runtime/orchestration/route_registry.py",
+        "neocortex/semantic/semantic_plan_owners.py",
+        "neocortex/semantic/semantic_sources.py",
+        "neocortex/safety/state_topology_contracts.py",
+        "neocortex/workflow/review/value_review_repository.py",
     ):
         assert PRODUCT_ROOT in (PROJECT_ROOT / relative_path).read_text(encoding="utf-8")
 
@@ -92,4 +92,3 @@ def test_text_symbols_keep_historical_pickle_fqns() -> None:
         symbol = getattr(module, name)
         assert symbol.__module__ == f"_04_Nucleo_Operativo.{module.__name__.rsplit('.', 1)[-1]}"
         assert pickle.loads(pickle.dumps(symbol, protocol=5)) is symbol
-

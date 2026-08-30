@@ -45,9 +45,10 @@ from _04_Nucleo_Operativo.knowledge_snapshot import KnowledgeStatePaths
 from _04_Nucleo_Operativo.semantic_models import canonical_json, fingerprint_text
 
 
-PUBLIC_MODULE = "_04_Nucleo_Operativo.knowledge_search"
-CODE_MODULE = "_04_Nucleo_Operativo.knowledge_search_code"
-CODE_SEARCH_MODULE = "_04_Nucleo_Operativo.code_search"
+PUBLIC_MODULE = "neocortex.knowledge.knowledge_search"
+CODE_MODULE = "neocortex.knowledge.knowledge_search_code"
+CODE_SEARCH_MODULE = "neocortex.code.code_search"
+LEGACY_PUBLIC_MODULE = "_04_Nucleo_Operativo.knowledge_search"
 EXPECTED_SIGNATURES = {
     "_code_version_metadata": (
         "(path: 'Path', version_ids: 'Sequence[int]', *, "
@@ -317,7 +318,7 @@ def test_code_facade_seam_signatures_metadata_and_pickle_are_stable(
 ) -> None:
     seam = getattr(knowledge_search, name)
     assert str(inspect.signature(seam)) == EXPECTED_SIGNATURES[name]
-    assert seam.__module__ == PUBLIC_MODULE
+    assert seam.__module__ == LEGACY_PUBLIC_MODULE
     assert seam.__qualname__ == name
     assert pickle.loads(pickle.dumps(seam, protocol=5)) is seam
 
@@ -536,7 +537,7 @@ def test_code_extraction_modules_form_expected_relative_import_dag() -> None:
 def test_code_modules_support_all_six_cold_import_orders(
     module_order: tuple[str, str, str],
 ) -> None:
-    repository = Path(knowledge_search.__file__).resolve().parents[1]
+    repository = Path(__file__).resolve().parents[1]
     script = textwrap.dedent(
         f"""
         import importlib
@@ -553,7 +554,7 @@ def test_code_modules_support_all_six_cold_import_orders(
         for public_name in {CODE_DELEGATES!r}:
             seam = getattr(facade, public_name)
             assert str(inspect.signature(seam)) == expected_signatures[public_name]
-            assert seam.__module__ == {PUBLIC_MODULE!r}
+            assert seam.__module__ == {LEGACY_PUBLIC_MODULE!r}
             assert seam.__qualname__ == public_name
             assert pickle.loads(pickle.dumps(seam, protocol=5)) is seam
         for helper_name in (

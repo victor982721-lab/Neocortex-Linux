@@ -390,10 +390,10 @@ def infer_query_plan_signals(
     return terms, intents
 
 
-__all__ = (
+__all__ = (  # noqa: RUF022
     "NormalizedKnowledgeQuery",
-    "QueryLike",
     "QueryLimits",
+    "QueryLike",
     "infer_query_plan_signals",
     "normalize_knowledge_query",
 )

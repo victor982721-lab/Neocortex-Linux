@@ -836,10 +836,13 @@ def test_contract_module_cold_import_has_a_minimal_dag() -> None:
             "_04_Nucleo_Operativo",
             "_04_Nucleo_Operativo.knowledge_contracts",
             "neocortex",
+            "neocortex.api",
+            "neocortex.api.public",
             "neocortex.knowledge",
             "neocortex.knowledge.knowledge_contracts",
-            "_04_Nucleo_Operativo.semantic_models",
             "neocortex.platform",
+            "neocortex.semantic",
+            "neocortex.semantic.semantic_models",
             "xxhash",
         }
         future_extraction_modules = {

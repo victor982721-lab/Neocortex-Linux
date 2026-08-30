@@ -281,9 +281,9 @@ def reconstruct_project(
 # endregion [02]
 
 
-__all__ = [
-    "RECONSTRUCTION_STRATEGIES",
+__all__ = [  # noqa: RUF022
     "ProjectSummary",
+    "RECONSTRUCTION_STRATEGIES",
     "list_projects",
     "reconstruct_project",
     "resolve_project_id",

@@ -955,7 +955,7 @@ def validate_knowledge_plan_v3(
         )
 
 
-__all__ = (
+__all__ = (  # noqa: RUF022
     "CODE_FORMATS",
     "KNOWLEDGE_PLAN_V2_PREFIX",
     "KNOWLEDGE_PLAN_V3_PREFIX",
@@ -970,8 +970,8 @@ __all__ = (
     "validate_knowledge_plan_base",
     "validate_knowledge_plan_v2",
     "validate_knowledge_plan_v3",
-    "validate_retrieval_step",
     "validated_date",
+    "validate_retrieval_step",
 )
 # endregion [02]
 

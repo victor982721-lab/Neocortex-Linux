@@ -50,19 +50,19 @@ def test_legacy_pdf_modules_are_exact_product_aliases() -> None:
 
 def test_pdf_consumers_use_the_product_namespace() -> None:
     for relative_path in (
-        "_04_Nucleo_Operativo/__init__.py",
-        "_04_Nucleo_Operativo/application_config_projections.py",
-        "_04_Nucleo_Operativo/cli_direct.py",
-        "_04_Nucleo_Operativo/code_knowledge_pdf_asset_health_analysis.py",
-        "_04_Nucleo_Operativo/knowledge_asset_health_pdf.py",
-        "_04_Nucleo_Operativo/knowledge_asset_health_repository.py",
-        "_04_Nucleo_Operativo/knowledge_snapshot.py",
-        "_04_Nucleo_Operativo/models.py",
-        "_04_Nucleo_Operativo/orchestrator.py",
-        "_04_Nucleo_Operativo/route_registry.py",
-        "_04_Nucleo_Operativo/semantic_plan_owners.py",
-        "_04_Nucleo_Operativo/state_topology_contracts.py",
-        "_04_Nucleo_Operativo/value_review_repository.py",
+        "neocortex/api/public.py",
+        "neocortex/runtime/config/application_config_projections.py",
+        "neocortex/api/cli/cli_direct.py",
+        "neocortex/code/code_knowledge_pdf_asset_health_analysis.py",
+        "neocortex/knowledge/knowledge_asset_health_pdf.py",
+        "neocortex/knowledge/knowledge_asset_health_repository.py",
+        "neocortex/knowledge/knowledge_snapshot.py",
+        "neocortex/runtime/models.py",
+        "neocortex/runtime/orchestration/orchestrator.py",
+        "neocortex/runtime/orchestration/route_registry.py",
+        "neocortex/semantic/semantic_plan_owners.py",
+        "neocortex/safety/state_topology_contracts.py",
+        "neocortex/workflow/review/value_review_repository.py",
     ):
         source = (PROJECT_ROOT / relative_path).read_text(encoding="utf-8")
         assert PRODUCT_ROOT in source
@@ -132,4 +132,3 @@ def test_legacy_pdf_monkeypatch_reaches_canonical_route_globals(
     monkeypatch.setattr(legacy, "binary_fingerprint", marker)
 
     assert canonical.binary_fingerprint is marker
-

@@ -648,13 +648,13 @@ def code_semantic_search_availability(
     )
 
 
-__all__ = [
+__all__ = [  # noqa: RUF022
     "CODE_SEMANTIC_LINK_PROTOCOL",
     "CodeSemanticAvailability",
     "CodeSemanticLinkError",
     "CodeSemanticLinkSummary",
-    "code_semantic_search_availability",
     "current_code_embedding_link_counts",
+    "code_semantic_search_availability",
     "synchronize_code_embedding_links",
 ]
 

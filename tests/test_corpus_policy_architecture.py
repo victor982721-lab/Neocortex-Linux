@@ -21,9 +21,14 @@ from _04_Nucleo_Operativo import corpus_access, internal_paths, protected_conten
 # region [02] Implementación
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-CORPUS_MODULE = "_04_Nucleo_Operativo.corpus_access"
-INTERNAL_MODULE = "_04_Nucleo_Operativo.internal_paths"
-PROTECTED_MODULE = "_04_Nucleo_Operativo.protected_content"
+CORPUS_MODULE = "neocortex.safety.corpus_access"
+INTERNAL_MODULE = "neocortex.safety.internal_paths"
+PROTECTED_MODULE = "neocortex.safety.protected_content"
+LEGACY_POLICY_MODULES = {
+    "_04_Nucleo_Operativo.corpus_access",
+    "_04_Nucleo_Operativo.internal_paths",
+    "_04_Nucleo_Operativo.protected_content",
+}
 POLICY_MODULES = (CORPUS_MODULE, INTERNAL_MODULE, PROTECTED_MODULE)
 
 EXPECTED_ALL = {
@@ -132,7 +137,7 @@ def test_corpus_policy_public_surface_and_identity_are_stable() -> None:
     for module_name, module in modules.items():
         assert tuple(module.__all__) == EXPECTED_ALL[module_name]
     for contract, expected_fields in EXPECTED_DATACLASS_FIELDS.items():
-        assert contract.__module__ in POLICY_MODULES
+        assert contract.__module__ in LEGACY_POLICY_MODULES
         assert tuple(field.name for field in fields(contract)) == expected_fields
     assert issubclass(
         protected_content.ProtectedContentError,
@@ -174,7 +179,7 @@ def test_corpus_policy_static_dependencies_follow_one_direction() -> None:
 
 
 def test_live_grimp_graph_has_no_corpus_policy_cycle() -> None:
-    worker = PROJECT_ROOT / "_04_Nucleo_Operativo" / "external_architecture_worker.py"
+    worker = PROJECT_ROOT / "neocortex" / "code" / "external_architecture_worker.py"
     executable = os.environ.get("NEOCORTEX_ARCHITECTURE_TEST_PYTHON", sys.executable)
     completed = subprocess.run(
         [

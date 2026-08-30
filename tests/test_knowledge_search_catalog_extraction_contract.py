@@ -29,9 +29,10 @@ from _04_Nucleo_Operativo.knowledge_contracts import (
 from _04_Nucleo_Operativo.knowledge_snapshot import KnowledgeStatePaths
 
 
-PUBLIC_MODULE = "_04_Nucleo_Operativo.knowledge_search"
-CATALOG_MODULE = "_04_Nucleo_Operativo.knowledge_search_catalog"
-DOCUMENT_CATALOG_MODULE = "_04_Nucleo_Operativo.document_catalog"
+PUBLIC_MODULE = "neocortex.knowledge.knowledge_search"
+CATALOG_MODULE = "neocortex.knowledge.knowledge_search_catalog"
+DOCUMENT_CATALOG_MODULE = "neocortex.documents.document_catalog"
+LEGACY_PUBLIC_MODULE = "_04_Nucleo_Operativo.knowledge_search"
 CATALOG_DELEGATES = (
     "_escape_like",
     "_catalog_identifiers",
@@ -296,7 +297,7 @@ def _install_catalog_database(
 def test_catalog_facade_signatures_metadata_and_pickle_are_stable(name: str) -> None:
     seam = getattr(knowledge_search, name)
     assert str(inspect.signature(seam)) == EXPECTED_SIGNATURES[name]
-    assert seam.__module__ == PUBLIC_MODULE
+    assert seam.__module__ == LEGACY_PUBLIC_MODULE
     assert seam.__qualname__ == name
     assert pickle.loads(pickle.dumps(seam, protocol=5)) is seam
 
@@ -468,7 +469,7 @@ def test_catalog_modules_form_expected_normalized_relative_import_dag() -> None:
 def test_catalog_modules_support_all_six_cold_import_orders(
     module_order: tuple[str, str, str],
 ) -> None:
-    repository = Path(knowledge_search.__file__).resolve().parents[1]
+    repository = Path(__file__).resolve().parents[1]
     script = textwrap.dedent(
         f"""
         import importlib
@@ -485,7 +486,7 @@ def test_catalog_modules_support_all_six_cold_import_orders(
         for public_name in {CATALOG_DELEGATES!r}:
             seam = getattr(facade, public_name)
             assert str(inspect.signature(seam)) == expected_signatures[public_name]
-            assert seam.__module__ == {PUBLIC_MODULE!r}
+            assert seam.__module__ == {LEGACY_PUBLIC_MODULE!r}
             assert seam.__qualname__ == public_name
             assert pickle.loads(pickle.dumps(seam, protocol=5)) is seam
         for helper_name in ('escape_like', 'catalog_identifiers', 'catalog_ranking'):
