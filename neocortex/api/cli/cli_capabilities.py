@@ -9,7 +9,7 @@ import json
 import sys
 from enum import IntEnum
 
-from neocortex.capability_broker import (
+from neocortex.capabilities.broker import (
     CAPABILITY_SELECTION_SCHEMA,
     CapabilityPolicy,
     CapabilityPrivacy,

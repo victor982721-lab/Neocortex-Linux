@@ -17,7 +17,7 @@ from neocortex.knowledge.knowledge_asset_health_contracts import (
     KnowledgeAssetHealthCompleteness,
     KnowledgeAssetHealthState,
 )
-from neocortex import read_api
+from neocortex.api import read_api
 
 
 @dataclass
@@ -175,7 +175,7 @@ def test_code_search_is_bounded_labelled_and_read_only(
         "search_code",
         lambda path, query: (
             CodeSearchHit(
-                path="neocortex/cli.py",
+                path="neocortex/interface/entrypoint.py",
                 project="Neocortex",
                 language="python",
                 artifact_kind="source",

@@ -28,7 +28,7 @@ from neocortex.capabilities.formats.docx.state import (
     UNKNOWN_BIRTHTIME_NS,
     initialize_docx_state,
 )
-from neocortex.platform_policy import sqlite_path_collation
+from neocortex.platform.policy import sqlite_path_collation
 
 
 # region [01] Test fixtures

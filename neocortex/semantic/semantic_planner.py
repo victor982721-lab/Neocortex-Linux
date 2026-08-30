@@ -59,7 +59,7 @@ from .semantic_service_contracts import (
     SemanticWorkloadPlan,
 )
 from .semantic_sources import TEXT_SOURCE_KINDS
-from neocortex.sqlite_cancellation import (
+from neocortex.persistence.sqlite_cancellation import (
     CancellationCheck,
     SQLiteCancellationBridge,
     sqlite_cancellation_scope,

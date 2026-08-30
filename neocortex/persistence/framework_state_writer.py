@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from neocortex.enumeration import JournalCursor
 from neocortex.deduplication import FileSnapshot, InventoryExclusionPolicy
-from neocortex.platform_policy import sqlite_path_collation
+from neocortex.platform.policy import sqlite_path_collation
 
 from neocortex.platform.content_types import DetectedType
 from neocortex.safety.corpus_access import (

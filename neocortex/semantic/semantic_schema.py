@@ -10,7 +10,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from neocortex.persistence.sqlite_paths import readonly_sqlite_uri
-from neocortex.sqlite_schema_contract import (
+from neocortex.persistence.sqlite_schema_contract import (
     SQLiteSchemaContract,
     SQLiteSchemaContractError,
     schema_contract_from_builder,

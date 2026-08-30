@@ -21,7 +21,7 @@ from dataclasses import asdict, replace
 from pathlib import Path, PurePosixPath
 
 from packaging.utils import canonicalize_name
-from neocortex.semgrep_tool_contract import managed_semgrep_version
+from neocortex.code.semgrep_tool_contract import managed_semgrep_version
 
 from neocortex.progress import ProgressCallback, ProgressEvent, ProgressMetric, emit_progress
 

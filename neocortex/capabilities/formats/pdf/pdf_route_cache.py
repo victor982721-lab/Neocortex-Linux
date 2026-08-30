@@ -5,7 +5,7 @@ import sqlite3
 import time
 
 from neocortex.deduplication import DedupIndex, FileChangedError, FileSnapshot
-from neocortex.platform_policy import sqlite_path_collation
+from neocortex.platform.policy import sqlite_path_collation
 
 from neocortex.runtime.control.cancellation import CancellationToken
 from neocortex.foundation.file_identity import file_key_from_snapshot as file_key

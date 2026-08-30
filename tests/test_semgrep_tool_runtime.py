@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from neocortex.semgrep_tool_contract import (
+from neocortex.code.semgrep_tool_contract import (
     PIP_BOOTSTRAP_FILENAME,
     PIP_BOOTSTRAP_SHA256,
     SEMGREP_SCAN_WRAPPER,

@@ -302,7 +302,7 @@ class LazyPackageApiTests(unittest.TestCase):
                 "neocortex.interface.application.app",
                 "neocortex.interface.presentation.windows.main",
             }
-            import neocortex.cli as public_cli
+            import neocortex.interface.entrypoint as public_cli
             from neocortex.api.public import ApplicationConfig, FrameworkConfig
             from neocortex.runtime.config.application_config import (
                 audio_route_config_from_application,

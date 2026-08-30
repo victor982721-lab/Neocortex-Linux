@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Protocol, cast
 
-from neocortex.platform_policy import UNAVAILABLE_BIRTHTIME_NS, stat_birthtime_ns
+from neocortex.platform.policy import UNAVAILABLE_BIRTHTIME_NS, stat_birthtime_ns
 # endregion [01]
 
 # region [02] Implementación

@@ -29,7 +29,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal, Protocol, cast
 
-from neocortex import pip_bootstrap
+from neocortex.code import pip_bootstrap
 from neocortex.runtime.source_staging import (
     parse_git_tracked_paths,
     stage_tracked_source,
@@ -1314,7 +1314,7 @@ def select_affected_tests(
         or path.startswith(
             (
                 "tools/release_",
-                "neocortex/platform_policy",
+                "neocortex/platform/policy",
                 "neocortex/persistence/framework_schema",
             )
         )
@@ -2902,7 +2902,7 @@ def _validation_question_scopes() -> tuple[_ValidationQuestionScope, ...]:
                     "neocortex/code/code_capability_reachability_analysis.py",
                     "neocortex/code/code_route_capability_analysis.py",
                     "neocortex/capabilities/formats/text/text_route.py",
-                    "neocortex/cli.py",
+                    "neocortex/interface/entrypoint.py",
                     "tests/test_code_public_route_experiments.py",
                 }
             ),
@@ -2921,9 +2921,9 @@ def _validation_question_scopes() -> tuple[_ValidationQuestionScope, ...]:
             "interfaces.public_cli_contract_acceptance",
             frozenset(
                 {
-                    "neocortex/cli.py",
-                    "neocortex/human_cli.py",
-                    "neocortex/read_api.py",
+                    "neocortex/interface/entrypoint.py",
+                    "neocortex/api/cli/human.py",
+                    "neocortex/api/read_api.py",
                     "neocortex/api/cli/cli_app.py",
                     "neocortex/api/cli/cli_code.py",
                     "neocortex/api/cli/cli_knowledge.py",
@@ -2936,9 +2936,9 @@ def _validation_question_scopes() -> tuple[_ValidationQuestionScope, ...]:
                 }
             ),
             (
-                "neocortex/cli",
-                "neocortex/human_cli",
-                "neocortex/read_api",
+                "neocortex/interface/entrypoint",
+                "neocortex/api/cli/human",
+                "neocortex/api/read_api",
                 "neocortex/api/cli/cli_",
                 "neocortex/code/code_question_resolver",
                 "neocortex/code/code_storage_analysis",
@@ -3083,9 +3083,9 @@ def _validation_question_scopes() -> tuple[_ValidationQuestionScope, ...]:
                     "neocortex/workflow/review/review_task_repository.py",
                     "neocortex/safety/state_topology_contracts.py",
                     "neocortex/workflow/review/value_review_port.py",
-                    "neocortex/cli.py",
-                    "neocortex/human_cli.py",
-                    "neocortex/review_task_cli_adapter.py",
+                    "neocortex/interface/entrypoint.py",
+                    "neocortex/api/cli/human.py",
+                    "neocortex/api/cli/review_task.py",
                     "tests/test_code_framework_review_task_experiments.py",
                     "tests/test_review_task_cli_adapter.py",
                     "tests/test_review_tasks.py",
@@ -3122,9 +3122,9 @@ def _validation_question_scopes() -> tuple[_ValidationQuestionScope, ...]:
                     "neocortex/knowledge/knowledge_snapshot.py",
                     "neocortex/api/read_api_port.py",
                     "neocortex/capabilities/formats/text/text_state.py",
-                    "neocortex/cli.py",
-                    "neocortex/human_cli.py",
-                    "neocortex/read_api.py",
+                    "neocortex/interface/entrypoint.py",
+                    "neocortex/api/cli/human.py",
+                    "neocortex/api/read_api.py",
                     "tests/test_human_cli.py",
                     "tests/test_knowledge_asset_health.py",
                     "tests/test_read_api.py",
@@ -3162,9 +3162,9 @@ def _validation_question_scopes() -> tuple[_ValidationQuestionScope, ...]:
                     "neocortex/capabilities/formats/pdf/pdf_schema.py",
                     "neocortex/api/read_api_port.py",
                     "neocortex/runtime/orchestration/route_registry.py",
-                    "neocortex/cli.py",
-                    "neocortex/human_cli.py",
-                    "neocortex/read_api.py",
+                    "neocortex/interface/entrypoint.py",
+                    "neocortex/api/cli/human.py",
+                    "neocortex/api/read_api.py",
                     "tests/test_code_knowledge_pdf_asset_health_analysis.py",
                     "tests/test_human_cli.py",
                     "tests/test_knowledge_asset_health_pdf.py",

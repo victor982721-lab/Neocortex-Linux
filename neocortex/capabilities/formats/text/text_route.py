@@ -24,7 +24,7 @@ from typing import Any, Protocol
 import xxhash
 
 from neocortex import __version__ as _NEOCORTEX_DISTRIBUTION_VERSION
-from neocortex.capability_broker import (
+from neocortex.capabilities.broker import (
     CapabilityBinaryIdentity,
     CapabilityBroker,
     CapabilityPolicy,
@@ -41,7 +41,7 @@ from neocortex.capabilities.runtime import (
     build_runtime_capability_broker,
     inspect_runtime_capability,
 )
-from neocortex.platform_policy import physical_identity_scheme_for_birthtime
+from neocortex.platform.policy import physical_identity_scheme_for_birthtime
 
 from neocortex.deduplication import FileChangedError, FileSnapshot
 from neocortex.deduplication.fingerprinting import snapshot_path, stat_matches_snapshot

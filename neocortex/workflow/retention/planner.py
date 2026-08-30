@@ -31,7 +31,7 @@ from neocortex.workflow.review.review_task_repository import (
     audit_latest_review_task_source_publications_from_connection,
 )
 from neocortex.persistence.sqlite_paths import readonly_sqlite_uri
-from neocortex.sqlite_schema_contract import validate_sqlite_schema_contract
+from neocortex.persistence.sqlite_schema_contract import validate_sqlite_schema_contract
 # endregion [01]
 
 # region [02] Implementación

@@ -11,8 +11,10 @@ from neocortex.workflow.review.value_review_tasks import (
     ValueReviewTaskQueueStatus,
     ValueReviewTaskStateError,
 )
-from neocortex import human_cli, value_cli_adapter
-from neocortex.read_api import ReadScope, ScopeBinding
+from neocortex.api.cli import human, value_review
+human_cli = human
+value_cli_adapter = value_review
+from neocortex.api.read_api import ReadScope, ScopeBinding
 
 
 def _fake_report(

@@ -13,7 +13,7 @@ import pytest
 
 import neocortex.code.external_architecture_worker as architecture_worker
 from neocortex.code.code_architecture_contracts import ModuleImport
-from neocortex import semgrep_tool_contract
+from neocortex.code import semgrep_tool_contract
 from tools import quality_gate
 from tools.quality_gate import (
     BASELINE_SCHEMA,
@@ -406,7 +406,7 @@ def test_coverage_baseline_is_branch_aware_versioned_and_uses_production_scope()
         report,
         test_inventory=_coverage_inventory("tests/test_alpha.py", "tests/test_beta.py"),
         source_inventory=_coverage_inventory(
-            "neocortex/__init__.py", "neocortex/cli.py"
+            "neocortex/__init__.py", "neocortex/interface/entrypoint.py"
         ),
     )
 
@@ -426,7 +426,7 @@ def test_coverage_baseline_is_branch_aware_versioned_and_uses_production_scope()
             baseline,
             test_inventory=_coverage_inventory("tests/test_alpha.py", "tests/test_beta.py"),
             source_inventory=_coverage_inventory(
-                "neocortex/__init__.py", "neocortex/cli.py"
+                "neocortex/__init__.py", "neocortex/interface/entrypoint.py"
             ),
         )["metrics"]
         == baseline["approved"]
@@ -447,7 +447,7 @@ def test_coverage_gate_rejects_line_or_branch_rate_regression(
         _coverage_report(),
         test_inventory=_coverage_inventory("tests/test_alpha.py", "tests/test_beta.py"),
         source_inventory=_coverage_inventory(
-            "neocortex/__init__.py", "neocortex/cli.py"
+            "neocortex/__init__.py", "neocortex/interface/entrypoint.py"
         ),
     )
 
@@ -457,7 +457,7 @@ def test_coverage_gate_rejects_line_or_branch_rate_regression(
             baseline,
             test_inventory=_coverage_inventory("tests/test_alpha.py", "tests/test_beta.py"),
             source_inventory=_coverage_inventory(
-                "neocortex/__init__.py", "neocortex/cli.py"
+                "neocortex/__init__.py", "neocortex/interface/entrypoint.py"
             ),
         )
 
@@ -467,7 +467,7 @@ def test_coverage_gate_rejects_non_branch_report_and_tool_version_drift() -> Non
         _coverage_report(),
         test_inventory=_coverage_inventory("tests/test_alpha.py", "tests/test_beta.py"),
         source_inventory=_coverage_inventory(
-            "neocortex/__init__.py", "neocortex/cli.py"
+            "neocortex/__init__.py", "neocortex/interface/entrypoint.py"
         ),
     )
     not_branch_aware = _coverage_report()
@@ -481,7 +481,7 @@ def test_coverage_gate_rejects_non_branch_report_and_tool_version_drift() -> Non
             baseline,
             test_inventory=_coverage_inventory("tests/test_alpha.py", "tests/test_beta.py"),
             source_inventory=_coverage_inventory(
-                "neocortex/__init__.py", "neocortex/cli.py"
+                "neocortex/__init__.py", "neocortex/interface/entrypoint.py"
             ),
         )
     with pytest.raises(GateError, match="does not match baseline"):
@@ -490,7 +490,7 @@ def test_coverage_gate_rejects_non_branch_report_and_tool_version_drift() -> Non
             baseline,
             test_inventory=_coverage_inventory("tests/test_alpha.py", "tests/test_beta.py"),
             source_inventory=_coverage_inventory(
-                "neocortex/__init__.py", "neocortex/cli.py"
+                "neocortex/__init__.py", "neocortex/interface/entrypoint.py"
             ),
         )
 
@@ -500,7 +500,7 @@ def test_coverage_gate_rejects_non_branch_report_and_tool_version_drift() -> Non
     (
         (
             _coverage_inventory("tests/test_alpha.py"),
-            _coverage_inventory("neocortex/__init__.py", "neocortex/cli.py"),
+            _coverage_inventory("neocortex/__init__.py", "neocortex/interface/entrypoint.py"),
             "test paths removed",
         ),
         (
@@ -519,7 +519,7 @@ def test_coverage_inventory_ratchet_rejects_deleted_test_or_source_path(
         _coverage_report(),
         test_inventory=_coverage_inventory("tests/test_alpha.py", "tests/test_beta.py"),
         source_inventory=_coverage_inventory(
-            "neocortex/__init__.py", "neocortex/cli.py"
+            "neocortex/__init__.py", "neocortex/interface/entrypoint.py"
         ),
     )
 

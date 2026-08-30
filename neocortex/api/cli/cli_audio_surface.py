@@ -8,7 +8,7 @@ import argparse
 from collections.abc import Callable
 from pathlib import Path
 
-from neocortex.platform_policy import (
+from neocortex.platform.policy import (
     default_local_models_only,
     default_whisper_compute_type,
     default_whisper_device,

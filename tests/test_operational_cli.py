@@ -7,7 +7,7 @@ import pytest
 from neocortex.api.cli.cli_config import framework_config_from_args
 from neocortex.api.cli.cli_parser import build_parser
 from neocortex.api.cli.cli_validation import validate_arguments
-from neocortex.platform_policy import LINUX_MUTATION_REASON
+from neocortex.platform.policy import LINUX_MUTATION_REASON
 
 
 # region [01] Route-only selection

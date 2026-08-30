@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
-from neocortex.platform_policy import current_platform_policy
+from neocortex.platform.policy import current_platform_policy
 
 from neocortex.enumeration import JournalCursor, NtfsEntry, UsnChangeBatch
 from neocortex.deduplication import (

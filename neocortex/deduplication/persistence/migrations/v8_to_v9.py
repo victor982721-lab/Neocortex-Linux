@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 
-from neocortex.sqlite_schema_contract import validate_sqlite_schema_contract
+from neocortex.persistence.sqlite_schema_contract import validate_sqlite_schema_contract
 
 from ...domain.errors import InventoryError
 from ..contracts import inventory_v8_schema_contract

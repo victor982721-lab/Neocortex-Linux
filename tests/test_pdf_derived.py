@@ -12,7 +12,7 @@ from neocortex.capabilities.formats.pdf.pdf_derived import (
     initialize_derived_schema,
 )
 from neocortex.capabilities.formats.pdf.pdf_state import initialize_pdf_state
-from neocortex.platform_policy import sqlite_path_collation
+from neocortex.platform.policy import sqlite_path_collation
 
 
 # region [01] Linear FTS/state reconciliation

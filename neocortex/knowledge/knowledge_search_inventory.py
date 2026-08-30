@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
 
-from neocortex import platform_policy
+from neocortex.platform import policy as platform_policy
 
 from .knowledge_contracts import KnowledgeSnapshot, ResourceRef
 from .knowledge_search_contracts import KnowledgeCandidate, RankingExecution

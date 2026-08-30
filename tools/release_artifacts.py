@@ -35,7 +35,7 @@ from tools.release_archive_safety import ArchiveSafetyError, scan_archive
 SOURCE_DATE_EPOCH: Final = 1_785_369_600
 _DISTRIBUTION: Final = "neocortex-framework"
 _WHEEL_DISTRIBUTION: Final = "neocortex_framework"
-_ENTRY_POINT: Final = ("Neocortex", "neocortex.cli:entrypoint")
+_ENTRY_POINT: Final = ("Neocortex", "neocortex.interface.entrypoint:entrypoint")
 _TYPED_PACKAGES: Final = ("neocortex",)
 _UI_ASSETS: Final = (
     "neocortex/interface/presentation/assets/neocortex-app-icon.ico",
@@ -77,7 +77,7 @@ _REQUIRED_SDIST_CONTENT: Final = (
     "README.md",
     "pyproject.toml",
     "neocortex/__init__.py",
-    "neocortex/cli.py",
+    "neocortex/interface/entrypoint.py",
     "neocortex/py.typed",
 )
 _CACHE_COMPONENTS: Final = frozenset(

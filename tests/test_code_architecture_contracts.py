@@ -29,15 +29,15 @@ def _evaluations(modules: set[str], imports: tuple[ModuleImport, ...]):
 def test_declared_boundary_entry_points_pass_with_acyclic_v5_baseline() -> None:
     modules = {
         "neocortex",
-        "neocortex.cli",
+        "neocortex.interface.entrypoint",
         "neocortex.sdk",
         "neocortex.enumeration",
         "neocortex.enumeration.path_index.schema",
         "neocortex.deduplication",
         "neocortex.deduplication.__main__",
         "neocortex.deduplication.inventory.scanner",
-        "neocortex.platform_policy",
-        "neocortex.sqlite_schema_contract",
+        "neocortex.platform.policy",
+        "neocortex.persistence.sqlite_schema_contract",
             "neocortex.api",
             "neocortex.api.cli.cli_app",
             "neocortex.api.cli.cli_config",
@@ -50,19 +50,19 @@ def test_declared_boundary_entry_points_pass_with_acyclic_v5_baseline() -> None:
     imports = (
             ModuleImport("neocortex.deduplication.__main__", "neocortex.runtime.config.app_paths"),
             ModuleImport("neocortex.deduplication.__main__", "neocortex.api.cli.cli_app"),
-        ModuleImport("neocortex.deduplication.__main__", "neocortex.platform_policy"),
+        ModuleImport("neocortex.deduplication.__main__", "neocortex.platform.policy"),
         ModuleImport("neocortex.deduplication.inventory.scanner", "neocortex.progress"),
         ModuleImport(
             "neocortex.enumeration.path_index.schema",
-            "neocortex.sqlite_schema_contract",
+            "neocortex.persistence.sqlite_schema_contract",
         ),
-            ModuleImport("neocortex.cli", "neocortex.runtime.config.app_paths"),
-            ModuleImport("neocortex.cli", "neocortex.api.cli.cli_app"),
-        ModuleImport("neocortex.cli", "neocortex.interface.application.app"),
-        ModuleImport("neocortex.cli", "neocortex.interface.protocol.worker"),
+            ModuleImport("neocortex.interface.entrypoint", "neocortex.runtime.config.app_paths"),
+            ModuleImport("neocortex.interface.entrypoint", "neocortex.api.cli.cli_app"),
+        ModuleImport("neocortex.interface.entrypoint", "neocortex.interface.application.app"),
+        ModuleImport("neocortex.interface.entrypoint", "neocortex.interface.protocol.worker"),
             ModuleImport("neocortex.interface.application.app", "neocortex.runtime.config.app_paths"),
             ModuleImport("neocortex.interface.protocol.worker", "neocortex.api.cli.cli_config"),
-        ModuleImport("neocortex.interface.application.app", "neocortex.platform_policy"),
+        ModuleImport("neocortex.interface.application.app", "neocortex.platform.policy"),
             ModuleImport("neocortex.sdk", "neocortex.api.public"),
     )
 
@@ -167,9 +167,9 @@ def test_live_repository_graph_satisfies_published_architecture_contracts() -> N
     assert projections["target_family"]["counters"]["forbidden_edges"] == 0
 
     public_facades = {
-        "neocortex.read_api",
-        "neocortex.review_task_cli_adapter",
-        "neocortex.value_cli_adapter",
+        "neocortex.api.read_api",
+        "neocortex.api.cli.review_task",
+        "neocortex.api.cli.value_review",
     }
     crossings = {
         (item["importer"], item["imported"])

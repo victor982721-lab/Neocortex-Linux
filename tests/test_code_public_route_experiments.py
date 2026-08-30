@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from neocortex.cli import entrypoint
+from neocortex.interface.entrypoint import entrypoint
 
 
 def test_public_text_route_replays_and_reaches_search_output(

@@ -11,7 +11,7 @@ from typing import Literal, Protocol, cast
 import xxhash
 
 from neocortex.deduplication import FileSnapshot
-from neocortex.platform_policy import sqlite_path_collation
+from neocortex.platform.policy import sqlite_path_collation
 
 from .pdf_route_cache import RETRYABLE_PAGE_ERROR_SQL, file_key
 from .pdf_route_models import PdfRouteConfig

@@ -18,7 +18,7 @@ from typing import Protocol
 from neocortex.deduplication import FileSnapshot
 from neocortex.deduplication.fingerprinting import FULL_ALGORITHM, stat_matches_snapshot
 from neocortex.deduplication.io import native_io_path
-from neocortex.platform_policy import sqlite_path_collation
+from neocortex.platform.policy import sqlite_path_collation
 
 from neocortex.foundation.file_identity import FileIdentityError, decode_file_identity
 from .derivation_contracts import MaterializationRef

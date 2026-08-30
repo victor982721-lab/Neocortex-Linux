@@ -17,7 +17,7 @@ def test_registry_maps_only_explicit_owner_selectors_without_a_default() -> None
     assert matching_logical_owners("neocortex.semantic.semantic_sources") == ("semantic",)
     assert matching_logical_owners("neocortex.knowledge.knowledge_snapshot") == ("knowledge",)
     assert matching_logical_owners("neocortex.workflow.review.review_task_repository") == ("review",)
-    assert matching_logical_owners("neocortex.review_task_cli_adapter") == ("review",)
+    assert matching_logical_owners("neocortex.api.cli.review_task") == ("review",)
     assert matching_logical_owners("neocortex.workflow.retention.planner") == ("retention",)
     assert matching_logical_owners("neocortex.persistence.framework_state_writer") == ("framework",)
     assert matching_logical_owners("neocortex.workflow.actions.actions") == ("orchestration",)
@@ -53,7 +53,7 @@ def test_registry_maps_only_explicit_owner_selectors_without_a_default() -> None
     assert matching_logical_owners("neocortex.interface.presentation.windows.main") == (
         "interface",
     )
-    assert matching_logical_owners("neocortex.capability_broker") == ("capability",)
+    assert matching_logical_owners("neocortex.capabilities.broker") == ("capability",)
     assert matching_logical_owners("neocortex.progress.events") == ("progress",)
     assert matching_logical_owners("neocortex.runtime.source_staging") == ("runtime",)
     assert matching_logical_owners("neocortex.textual_similarity") == ()
@@ -81,7 +81,7 @@ def test_package_ownership_is_a_separate_explicit_registry() -> None:
     assert matching_package_owners("neocortex.capabilities.formats.text.text_route") == ("product",)
     assert matching_package_owners("neocortex.deduplication.inventory.index") == ("product",)
     assert matching_package_owners("neocortex.interface.protocol.worker") == ("product",)
-    assert matching_package_owners("neocortex.cli") == ("product",)
+    assert matching_package_owners("neocortex.interface.entrypoint") == ("product",)
     assert matching_package_owners("neocortex.progress.events") == ("product",)
     assert matching_package_owners("third_party.module") == ()
     assert package_owner_registry_fingerprint().startswith("package-owner-contract-v1:sha256:")

@@ -158,7 +158,7 @@ def test_pdf_asset_health_question_requires_partial_protected_and_recovery_exper
             "health_source_version": "knowledge-asset-health-v1",
             "resource_id_scheme": "resource:file:{volume_id}:{file_id}:{birthtime_ns}",
             "identity_components": "volume_id,file_id,birthtime_ns",
-            "public_read": "neocortex.read_api.asset_health_payload",
+            "public_read": "neocortex.api.read_api.asset_health_payload",
             "service": (
                 "neocortex.knowledge.knowledge_asset_health.inspect_knowledge_asset_health"
             ),

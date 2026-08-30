@@ -14,7 +14,7 @@ import time
 import unicodedata
 from pathlib import Path
 
-from neocortex.platform_policy import sqlite_path_collation
+from neocortex.platform.policy import sqlite_path_collation
 
 from neocortex.progress import (
     ProgressCallback,

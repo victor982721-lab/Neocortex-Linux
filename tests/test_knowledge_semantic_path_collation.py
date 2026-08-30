@@ -10,7 +10,7 @@ import pytest
 from neocortex.deduplication.fingerprinting import FULL_ALGORITHM
 from neocortex.knowledge import knowledge_exact, knowledge_search_inventory, knowledge_snapshot
 from neocortex.semantic import semantic_sources
-from neocortex.platform_policy import sqlite_path_collation
+from neocortex.platform.policy import sqlite_path_collation
 
 
 _PLATFORM_CASES = (

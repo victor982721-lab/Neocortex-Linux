@@ -7,7 +7,7 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
-from neocortex.platform_policy import default_corpus_root
+from neocortex.platform.policy import default_corpus_root
 
 from neocortex.runtime.config.app_paths import default_state_directory
 

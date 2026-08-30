@@ -1,6 +1,6 @@
 """Safe cooperative-cancellation bridge for bounded SQLite work."""
 # region [00] Contexto del módulo
-# Módulo: neocortex/sqlite_cancellation.py
+# Módulo: neocortex/persistence/sqlite_cancellation.py
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 

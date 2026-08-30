@@ -25,6 +25,17 @@ def test_canonical_read_api_port_is_owned_by_the_api_tree() -> None:
     assert Path(module.__file__).resolve().is_relative_to(API_ROOT)
 
 
+def test_product_root_contains_only_package_metadata_and_module_entrypoint() -> None:
+    """Prevent implementation modules from accumulating at the package root."""
+
+    root = PROJECT_ROOT / "neocortex"
+    assert sorted(path.name for path in root.glob("*.py")) == [
+        "__init__.py",
+        "__main__.py",
+    ]
+    assert not (PROJECT_ROOT / "_04_Nucleo_Operativo").exists()
+
+
 def test_api_packages_remain_import_light() -> None:
     script = """
 import importlib

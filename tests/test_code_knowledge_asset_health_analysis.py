@@ -24,7 +24,7 @@ from neocortex.knowledge.knowledge_asset_health_contracts import (
 from neocortex.knowledge.knowledge_contracts import PhysicalIdentityRef, ResourceRef
 from neocortex.knowledge.knowledge_search_content import direct_resource_ref
 from neocortex.knowledge.knowledge_snapshot import KnowledgeStatePaths
-from neocortex.read_api import asset_health_payload
+from neocortex.api.read_api import asset_health_payload
 
 
 def test_contract_projection_pins_owner_identity_and_public_read_facts() -> None:
@@ -95,7 +95,7 @@ def test_question_requires_runtime_counterevidence_and_isolated_experiment() -> 
     facts = {fact.name: fact.value for evidence in evaluation.evidence for fact in evidence.facts}
     assert facts["causal_stage_owners"] == "inventory,text,catalog,knowledge"
     assert facts["resource_id_scheme"] == ("resource:file:{volume_id}:{file_id}:{birthtime_ns}")
-    assert facts["public_read"] == "neocortex.read_api.asset_health_payload"
+    assert facts["public_read"] == "neocortex.api.read_api.asset_health_payload"
     assert facts["read_only"] is True
     assert facts["mutation_authority"] is False
     assert all(item.mutation_authority is False for item in evaluation.evidence)

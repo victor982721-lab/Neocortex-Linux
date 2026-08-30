@@ -804,7 +804,7 @@ def _framework_review_task_protocol_predicate(
         evaluation,
         "framework_review_task_public_protocol_contract",
         {
-            "public_adapter_module": "neocortex.review_task_cli_adapter",
+            "public_adapter_module": "neocortex.api.cli.review_task",
             "public_port_module": "neocortex.workflow.review.value_review_port",
             "terminal_states": "dismissed,resolved",
             "terminal_decisions_require_human": True,
@@ -993,7 +993,7 @@ def _knowledge_asset_health_predicate(evaluation: AnalysisQuestionEvaluation) ->
         {
             "health_schema": "neocortex.knowledge-asset-health/v1",
             "health_source_version": "knowledge-asset-health-v1",
-            "public_read": "neocortex.read_api.asset_health_payload",
+            "public_read": "neocortex.api.read_api.asset_health_payload",
             "service": (
                 "neocortex.knowledge.knowledge_asset_health."
                 "inspect_knowledge_asset_health"
@@ -1068,7 +1068,7 @@ def _knowledge_pdf_asset_health_predicate(
             "health_source_version": "knowledge-asset-health-v1",
             "resource_id_scheme": "resource:file:{volume_id}:{file_id}:{birthtime_ns}",
             "identity_components": "volume_id,file_id,birthtime_ns",
-            "public_read": "neocortex.read_api.asset_health_payload",
+            "public_read": "neocortex.api.read_api.asset_health_payload",
             "service": (
                 "neocortex.knowledge.knowledge_asset_health."
                 "inspect_knowledge_asset_health"

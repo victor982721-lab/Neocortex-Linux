@@ -6,7 +6,7 @@ import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
 
-from neocortex.sqlite_connection import (
+from neocortex.persistence.sqlite_connection import (
     READONLY_EXISTING,
     READWRITE_CREATE,
     SQLiteConnectionPolicy,
@@ -14,7 +14,7 @@ from neocortex.sqlite_connection import (
     connect_sqlite,
 )
 
-from neocortex.sqlite_schema_lifecycle import initialize_versioned_sqlite_schema
+from neocortex.persistence.sqlite_schema_lifecycle import initialize_versioned_sqlite_schema
 from .schema import (
     DOCX_SCHEMA_VERSION,
     UNKNOWN_BIRTHTIME_NS as DOCX_UNKNOWN_BIRTHTIME_NS,

@@ -426,7 +426,7 @@ print(
         "neocortex.semantic.semantic_models",
         "neocortex.knowledge",
         "neocortex.platform",
-        "neocortex.platform_policy",
+        "neocortex.platform.policy",
         "neocortex.safety",
         "neocortex.safety.route_filters",
     }

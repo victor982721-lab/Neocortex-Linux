@@ -10,10 +10,10 @@ from typing import Any
 
 import pytest
 
-from neocortex import sqlite_cancellation as legacy_cancellation
-from neocortex import sqlite_cancellation as shared_cancellation
-from neocortex import sqlite_integrity as integrity_module
-from neocortex.sqlite_backup import (
+from neocortex.persistence import sqlite_cancellation as legacy_cancellation
+from neocortex.persistence import sqlite_cancellation as shared_cancellation
+from neocortex.persistence import sqlite_integrity as integrity_module
+from neocortex.persistence.sqlite_backup import (
     MAX_BACKUP_PAGES_PER_STEP,
     SQLiteBackupPolicy,
     SQLiteBackupProgress,
@@ -21,7 +21,7 @@ from neocortex.sqlite_backup import (
     SQLiteBackupVerificationError,
     backup_sqlite_online,
 )
-from neocortex.sqlite_integrity import (
+from neocortex.persistence.sqlite_integrity import (
     MAX_REPORTED_ISSUES,
     SQLiteIntegrityPolicy,
     check_sqlite_integrity,

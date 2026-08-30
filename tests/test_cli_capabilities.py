@@ -19,7 +19,7 @@ import pytest
 
 import neocortex.api.cli.cli_capabilities as cli_capabilities
 from neocortex.runtime.config.app_paths import self_analysis_data_directory
-from neocortex.capability_broker import (
+from neocortex.capabilities.broker import (
     CapabilityAvailability,
     CapabilityBroker,
     CapabilityRequest,
@@ -34,7 +34,7 @@ from neocortex.capabilities.runtime import (
     TEXT_BUILTIN_IMPLEMENTATION_ID,
     TEXT_LEGACY_OFFICE_IMPLEMENTATION_ID,
 )
-from neocortex.cli import _translate_canonical_arguments, entrypoint
+from neocortex.interface.entrypoint import _translate_canonical_arguments, entrypoint
 from neocortex.api.cli.cli_app import main
 from neocortex.api.cli.cli_parser import build_parser
 from neocortex.api.cli.cli_validation import validate_arguments
@@ -848,7 +848,7 @@ def test_cold_canonical_probe_loads_no_optional_engine_and_creates_no_state(
                         return None
 
                 sys.meta_path.insert(0, OptionalEngineBlocker())
-                from neocortex.cli import entrypoint
+                from neocortex.interface.entrypoint import entrypoint
 
                 if "neocortex.capabilities" in sys.modules:
                     raise SystemExit("capability backend loaded before dispatch")
@@ -930,7 +930,7 @@ def test_cold_text_selection_loads_no_provider_engine_and_creates_no_state(
                         return None
 
                 sys.meta_path.insert(0, OptionalEngineBlocker())
-                from neocortex.cli import entrypoint
+                from neocortex.interface.entrypoint import entrypoint
 
                 state = Path(os.environ["NEOCORTEX_TEST_STATE"])
                 output = io.StringIO()

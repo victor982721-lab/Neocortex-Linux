@@ -38,31 +38,31 @@ _ENUMERATION_PRODUCT_ALLOWLIST = (
     ),
     (
         "neocortex.enumeration.path_index.schema",
-        "neocortex.sqlite_schema_contract",
+        "neocortex.persistence.sqlite_schema_contract",
     ),
     (
         "neocortex.enumeration.path_index.schema",
-        "neocortex.sqlite_schema_lifecycle",
+        "neocortex.persistence.sqlite_schema_lifecycle",
     ),
 )
 _DEDUP_PRODUCT_ALLOWLIST = (
-    ("neocortex.deduplication.__main__", "neocortex.platform_policy"),
+    ("neocortex.deduplication.__main__", "neocortex.platform.policy"),
     ("neocortex.deduplication.__main__", "neocortex.runtime.config.app_paths"),
     ("neocortex.deduplication.__main__", "neocortex.api.cli.cli_app"),
-    ("neocortex.deduplication.fingerprinting", "neocortex.platform_policy"),
+    ("neocortex.deduplication.fingerprinting", "neocortex.platform.policy"),
     ("neocortex.deduplication.inventory.index", "neocortex.progress"),
-    ("neocortex.deduplication.inventory.policy", "neocortex.platform_policy"),
+    ("neocortex.deduplication.inventory.policy", "neocortex.platform.policy"),
     (
         "neocortex.deduplication.inventory.repository_plans",
-        "neocortex.platform_policy",
+        "neocortex.platform.policy",
     ),
     ("neocortex.deduplication.inventory.repository_scans", "neocortex.progress"),
     ("neocortex.deduplication.inventory.scanner", "neocortex.progress"),
-    ("neocortex.deduplication.inventory.traversal", "neocortex.platform_policy"),
+    ("neocortex.deduplication.inventory.traversal", "neocortex.platform.policy"),
     ("neocortex.deduplication.inventory.traversal", "neocortex.progress"),
     (
         "neocortex.deduplication.persistence.connections",
-        "neocortex.sqlite_schema_lifecycle",
+        "neocortex.persistence.sqlite_schema_lifecycle",
     ),
     (
         "neocortex.deduplication.persistence.connections",
@@ -70,37 +70,49 @@ _DEDUP_PRODUCT_ALLOWLIST = (
     ),
     (
         "neocortex.deduplication.persistence.contracts",
-        "neocortex.sqlite_schema_contract",
+        "neocortex.persistence.sqlite_schema_contract",
     ),
-    ("neocortex.deduplication.persistence.ddl", "neocortex.platform_policy"),
+    ("neocortex.deduplication.persistence.ddl", "neocortex.platform.policy"),
     (
         "neocortex.deduplication.persistence.lifecycle",
-        "neocortex.sqlite_schema_lifecycle",
+        "neocortex.persistence.sqlite_schema_lifecycle",
     ),
     (
         "neocortex.deduplication.persistence.migrations.v6_to_v7",
-        "neocortex.sqlite_schema_contract",
+        "neocortex.persistence.sqlite_schema_contract",
     ),
     (
         "neocortex.deduplication.persistence.migrations.v7_to_v8",
-        "neocortex.sqlite_schema_contract",
+        "neocortex.persistence.sqlite_schema_contract",
     ),
     (
         "neocortex.deduplication.persistence.migrations.v8_to_v9",
-        "neocortex.sqlite_schema_contract",
+        "neocortex.persistence.sqlite_schema_contract",
     ),
     (
         "neocortex.deduplication.persistence.migrations.v9_to_v10",
-        "neocortex.sqlite_schema_contract",
+        "neocortex.persistence.sqlite_schema_contract",
     ),
     (
         "neocortex.deduplication.persistence.validation",
-        "neocortex.sqlite_schema_contract",
+        "neocortex.persistence.sqlite_schema_contract",
     ),
     ("neocortex.deduplication.planning.pipeline", "neocortex.progress"),
     ("neocortex.deduplication.planning.planner", "neocortex.progress"),
 )
 _INTERFACE_CORE_ALLOWLIST = (
+    (
+        "neocortex.interface.entrypoint",
+        "neocortex.api.cli.cli_app",
+    ),
+    (
+        "neocortex.interface.entrypoint",
+        "neocortex.api.cli.human",
+    ),
+    (
+        "neocortex.interface.entrypoint",
+        "neocortex.runtime.config.app_paths",
+    ),
     ("neocortex.interface.application.app", "neocortex.runtime.config.app_paths"),
     (
         "neocortex.interface.presentation.windows.main",
@@ -116,11 +128,23 @@ _INTERFACE_CORE_ALLOWLIST = (
 )
 _INTERFACE_PRODUCT_ALLOWLIST = (
     ("neocortex.interface.application.app", "neocortex"),
-    ("neocortex.interface.application.app", "neocortex.platform_policy"),
+    (
+        "neocortex.interface.entrypoint",
+        "neocortex.api.cli.cli_app",
+    ),
+    (
+        "neocortex.interface.entrypoint",
+        "neocortex.api.cli.human",
+    ),
+    (
+        "neocortex.interface.entrypoint",
+        "neocortex.runtime.config.app_paths",
+    ),
+    ("neocortex.interface.application.app", "neocortex.platform.policy"),
     ("neocortex.interface.application.app", "neocortex.runtime.config.app_paths"),
     (
         "neocortex.interface.presentation.windows.main",
-        "neocortex.platform_policy",
+        "neocortex.platform.policy",
     ),
     (
         "neocortex.interface.presentation.windows.main",
@@ -146,22 +170,23 @@ _INTERFACE_PRODUCT_ALLOWLIST = (
     ),
 )
 _NEOCORTEX_CORE_UI_ALLOWLIST = (
+    ("neocortex.__main__", "neocortex.interface.entrypoint"),
     # Canonical code-analysis facades need the protected owner default without
     # importing the operational CLI graph merely to render help or translate
     # an omitted --state-directory.
-    ("neocortex.cli", "neocortex.runtime.config.app_paths"),
-    ("neocortex.cli", "neocortex.api.cli.cli_app"),
-    ("neocortex.cli", "neocortex.interface.application.app"),
-    ("neocortex.cli", "neocortex.interface.protocol.worker"),
+    ("neocortex.interface.entrypoint", "neocortex.runtime.config.app_paths"),
+    ("neocortex.interface.entrypoint", "neocortex.api.cli.cli_app"),
+    ("neocortex.interface.entrypoint", "neocortex.interface.application.app"),
+    ("neocortex.interface.entrypoint", "neocortex.interface.protocol.worker"),
     # Fixed-scope read operations cross through one declared core port instead
     # of coupling the public adapter to each operational owner.
-    ("neocortex.read_api", "neocortex.api.read_api_port"),
+    ("neocortex.api.read_api", "neocortex.api.read_api_port"),
     ("neocortex.sdk", "neocortex.api.public"),
     # Value review is a separate advisory-only public contract.
-    ("neocortex.value_cli_adapter", "neocortex.workflow.review.value_review_port"),
+    ("neocortex.api.cli.value_review", "neocortex.workflow.review.value_review_port"),
     ("neocortex.workflow.review.value_review_port", "neocortex.api.status_codes"),
     # Durable ReviewTask commands share the same bounded advisory-only port.
-    ("neocortex.review_task_cli_adapter", "neocortex.workflow.review.value_review_port"),
+    ("neocortex.api.cli.review_task", "neocortex.workflow.review.value_review_port"),
     # Processing provenance is now a canonical foundation contract; its
     # bounded subprocess probe remains an explicit runtime seam until the
     # runtime.control cohort moves.
@@ -180,7 +205,7 @@ _NEOCORTEX_CORE_UI_ALLOWLIST = (
     ("neocortex.capabilities.formats.archive.route", "neocortex.safety.route_filters"),
     ("neocortex.capabilities.formats.archive.route", "neocortex.persistence.framework_route_state"),
     ("neocortex.capabilities.formats.archive.state", "neocortex.semantic.semantic_lexical"),
-    ("neocortex.capabilities.formats.archive.state", "neocortex.sqlite_schema_contract"),
+    ("neocortex.capabilities.formats.archive.state", "neocortex.persistence.sqlite_schema_contract"),
     # DOCX uses the same explicit shared platform and workflow boundaries.
     ("neocortex.capabilities.formats.docx.integrity", "neocortex.runtime.control.memory_runtime"),
     ("neocortex.capabilities.formats.docx.integrity", "neocortex.platform.zip_safety"),
@@ -193,8 +218,8 @@ _NEOCORTEX_CORE_UI_ALLOWLIST = (
     ("neocortex.capabilities.formats.docx.route", "neocortex.platform.zip_safety"),
     ("neocortex.capabilities.formats.docx.route", "neocortex.workflow.review.review"),
     ("neocortex.capabilities.formats.docx.route", "neocortex.persistence.framework_route_state"),
-    ("neocortex.capabilities.formats.docx.schema", "neocortex.sqlite_schema_contract"),
-    ("neocortex.capabilities.formats.docx.state", "neocortex.sqlite_schema_lifecycle"),
+    ("neocortex.capabilities.formats.docx.schema", "neocortex.persistence.sqlite_schema_contract"),
+    ("neocortex.capabilities.formats.docx.state", "neocortex.persistence.sqlite_schema_lifecycle"),
     # Audio completes the currently migrated media cohort; transcription and
     # probing still use the shared process and safety contracts.
     ("neocortex.capabilities.formats.audio.models", "neocortex.foundation.processing_provenance"),
@@ -206,7 +231,7 @@ _NEOCORTEX_CORE_UI_ALLOWLIST = (
     ("neocortex.capabilities.formats.audio.route", "neocortex.runtime.control.memory_runtime"),
     ("neocortex.capabilities.formats.audio.route", "neocortex.workflow.review.review"),
     ("neocortex.capabilities.formats.audio.route", "neocortex.persistence.framework_route_state"),
-    ("neocortex.capabilities.formats.audio.state", "neocortex.sqlite_schema_contract"),
+    ("neocortex.capabilities.formats.audio.state", "neocortex.persistence.sqlite_schema_contract"),
     ("neocortex.capabilities.formats.audio.whisper", "neocortex.runtime.control.cancellation"),
     ("neocortex.capabilities.formats.audio.whisper", "neocortex.runtime.control.isolated_process"),
     # Image completes the current OCR/visual format cohort; decoding, OCR and
@@ -230,7 +255,7 @@ _NEOCORTEX_CORE_UI_ALLOWLIST = (
     ("neocortex.capabilities.formats.image.state", "neocortex.foundation.file_identity"),
     ("neocortex.capabilities.formats.image.state", "neocortex.safety.route_filters"),
     ("neocortex.capabilities.formats.image.state", "neocortex.persistence.sqlite_paths"),
-    ("neocortex.capabilities.formats.image.state", "neocortex.sqlite_schema_contract"),
+    ("neocortex.capabilities.formats.image.state", "neocortex.persistence.sqlite_schema_contract"),
     # Office follows the same explicit boundary pattern for ZIP safety,
     # extraction workers and route/state foundations.
     ("neocortex.capabilities.formats.office.extraction", "neocortex.platform.zip_safety"),
@@ -245,7 +270,7 @@ _NEOCORTEX_CORE_UI_ALLOWLIST = (
     ("neocortex.capabilities.formats.office.route", "neocortex.safety.route_filters"),
     ("neocortex.capabilities.formats.office.route", "neocortex.persistence.framework_route_state"),
     ("neocortex.capabilities.formats.office.state", "neocortex.foundation.file_identity"),
-    ("neocortex.capabilities.formats.office.state", "neocortex.sqlite_schema_contract"),
+    ("neocortex.capabilities.formats.office.state", "neocortex.persistence.sqlite_schema_contract"),
     # PDF has a package-owned implementation while its shared safety, OCR,
     # retry and state foundations remain explicit seams.
     ("neocortex.capabilities.formats.pdf.pdf_admin", "neocortex.safety.ocr_profiles"),
@@ -274,8 +299,8 @@ _NEOCORTEX_CORE_UI_ALLOWLIST = (
     ("neocortex.capabilities.formats.pdf.pdf_route_storage", "neocortex.runtime.control.retry_policy"),
     ("neocortex.capabilities.formats.pdf.pdf_runtime", "neocortex.runtime.control.cancellation"),
     ("neocortex.capabilities.formats.pdf.pdf_runtime", "neocortex.runtime.control.memory_runtime"),
-    ("neocortex.capabilities.formats.pdf.pdf_schema", "neocortex.sqlite_schema_contract"),
-    ("neocortex.capabilities.formats.pdf.pdf_state", "neocortex.sqlite_schema_lifecycle"),
+    ("neocortex.capabilities.formats.pdf.pdf_schema", "neocortex.persistence.sqlite_schema_contract"),
+    ("neocortex.capabilities.formats.pdf.pdf_state", "neocortex.persistence.sqlite_schema_lifecycle"),
     # Video completes the media route cohort; frame extraction and probing keep
     # explicit seams to the shared process, OCR, retry and state foundations.
     ("neocortex.capabilities.formats.video.frames", "neocortex.runtime.control.bounded_subprocess"),
@@ -292,7 +317,7 @@ _NEOCORTEX_CORE_UI_ALLOWLIST = (
     ("neocortex.capabilities.formats.video.route", "neocortex.persistence.framework_route_state"),
     ("neocortex.capabilities.formats.video.state", "neocortex.foundation.file_identity"),
     ("neocortex.capabilities.formats.video.state", "neocortex.semantic.semantic_lexical"),
-    ("neocortex.capabilities.formats.video.state", "neocortex.sqlite_schema_contract"),
+    ("neocortex.capabilities.formats.video.state", "neocortex.persistence.sqlite_schema_contract"),
     # Text completes the format routes while derivation, FTS and control
     # foundations remain explicit shared boundaries.
     ("neocortex.capabilities.formats.text.text_derivation_repository", "neocortex.semantic.derivation_contracts"),
@@ -309,7 +334,7 @@ _NEOCORTEX_CORE_UI_ALLOWLIST = (
     ("neocortex.capabilities.formats.text.text_route", "neocortex.safety.route_filters"),
     ("neocortex.capabilities.formats.text.text_route", "neocortex.semantic.semantic_models"),
     ("neocortex.capabilities.formats.text.text_state", "neocortex.semantic.semantic_lexical"),
-    ("neocortex.capabilities.formats.text.text_state", "neocortex.sqlite_schema_contract"),
+    ("neocortex.capabilities.formats.text.text_state", "neocortex.persistence.sqlite_schema_contract"),
 )
 
 # The v5 graph is acyclic.  Keep the baseline empty so that reintroducing even

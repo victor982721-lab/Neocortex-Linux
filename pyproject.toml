@@ -29,7 +29,7 @@ Repository = "https://github.com/victor982721-lab/Neocortex.git"
 Issues = "https://github.com/victor982721-lab/Neocortex/issues"
 
 [project.scripts]
-Neocortex = "neocortex.cli:entrypoint"
+Neocortex = "neocortex.interface.entrypoint:entrypoint"
 
 [project.optional-dependencies]
 agent = [

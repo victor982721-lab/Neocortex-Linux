@@ -44,7 +44,7 @@ from neocortex.persistence.sqlite_immutable import (
     capture_sqlite_immutable_fence,
     immutable_sqlite_database,
 )
-from neocortex.sqlite_schema_contract import (
+from neocortex.persistence.sqlite_schema_contract import (
     read_application_schema_version,
     validate_sqlite_schema_contract,
 )

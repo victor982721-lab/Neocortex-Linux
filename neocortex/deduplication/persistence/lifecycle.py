@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from neocortex.sqlite_schema_lifecycle import initialize_versioned_sqlite_schema
+from neocortex.persistence.sqlite_schema_lifecycle import initialize_versioned_sqlite_schema
 
 from ..domain.errors import InventoryError
 from .connections import ConnectionFactory, connect

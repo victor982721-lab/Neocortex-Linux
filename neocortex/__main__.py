@@ -6,7 +6,7 @@
 
 
 # region [01] Dependencias del módulo
-from .cli import entrypoint
+from .interface.entrypoint import entrypoint
 # endregion [01]
 
 # region [02] Implementación

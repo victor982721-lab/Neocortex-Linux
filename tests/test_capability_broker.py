@@ -13,8 +13,8 @@ from pathlib import Path
 import pytest
 
 import neocortex.capabilities.runtime as capabilities_module
-import neocortex.capability_broker as broker_module
-from neocortex.capability_broker import (
+import neocortex.capabilities.broker as broker_module
+from neocortex.capabilities.broker import (
     CAPABILITY_MANIFEST_SCHEMA,
     CAPABILITY_SELECTION_SCHEMA,
     CapabilityAvailability,

@@ -13,7 +13,8 @@ from neocortex.code.code_invariant_contracts import (
     EXPERIMENT_SCENARIO_IDS,
     runtime_scenario,
 )
-from neocortex import cli, human_cli
+from neocortex.interface import entrypoint as cli
+from neocortex.api.cli import human as human_cli
 
 
 SCENARIO_ID = "interfaces.public_cli_and_static_surface"

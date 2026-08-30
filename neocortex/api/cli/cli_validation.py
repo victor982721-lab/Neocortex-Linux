@@ -5,7 +5,7 @@ import argparse
 import math
 from pathlib import Path
 
-from neocortex.platform_policy import LINUX_MUTATION_REASON, linux_mutation_requested
+from neocortex.platform.policy import LINUX_MUTATION_REASON, linux_mutation_requested
 
 from .cli_audio_surface import (
     validate_audio_arguments,

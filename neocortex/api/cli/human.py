@@ -10,7 +10,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import TextIO
 
-from .read_api import (
+from ..read_api import (
     ReadScope,
     asset_health_payload,
     code_search_payload,
@@ -589,7 +589,7 @@ def _run_review_value(args: argparse.Namespace) -> int:
         )
         return 2
     try:
-        adapter = importlib.import_module("neocortex.value_cli_adapter")
+        adapter = importlib.import_module("neocortex.api.cli.value_review")
         run_value_review = adapter.run_value_review
     except (AttributeError, ImportError):
         _print(
@@ -614,7 +614,7 @@ def _run_review_task(args: argparse.Namespace) -> int:
         )
         return 2
     try:
-        adapter = importlib.import_module("neocortex.review_task_cli_adapter")
+        adapter = importlib.import_module("neocortex.api.cli.review_task")
     except (AttributeError, ImportError):
         _print("La revisión durable no está disponible; no se modificó estado.", file=sys.stderr)
         return 2
@@ -681,7 +681,7 @@ def _run_knowledge_health(args: argparse.Namespace) -> int:
 
 
 def _run_agent_serve() -> int:
-    from .agent_server import run_stdio_server
+    from ..agent_server import run_stdio_server
 
     return run_stdio_server()
 

@@ -6,10 +6,10 @@
 from __future__ import annotations
 
 from neocortex.persistence import sqlite_paths
-from neocortex import sqlite_schema_contract as operational_contract
-from neocortex import sqlite_schema_lifecycle as operational_lifecycle
-from neocortex import sqlite_schema_contract as shared_contract
-from neocortex import sqlite_schema_lifecycle as shared_lifecycle
+from neocortex.persistence import sqlite_schema_contract as operational_contract
+from neocortex.persistence import sqlite_schema_lifecycle as operational_lifecycle
+from neocortex.persistence import sqlite_schema_contract as shared_contract
+from neocortex.persistence import sqlite_schema_lifecycle as shared_lifecycle
 # endregion [01]
 
 # region [02] Implementación

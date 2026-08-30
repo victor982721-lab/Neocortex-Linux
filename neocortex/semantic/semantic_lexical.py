@@ -18,7 +18,7 @@ from itertools import combinations
 from pathlib import Path
 
 from .semantic_models import EmbeddingModality, ResolvedSearchHit, SearchHit
-from neocortex.sqlite_cancellation import (
+from neocortex.persistence.sqlite_cancellation import (
     CancellationCheck,
     SQLiteCancellationBridge,
     sqlite_cancellation_scope,

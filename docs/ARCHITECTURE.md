@@ -39,18 +39,18 @@ eludirlo.
 
 | Tema | Fuente primaria |
 |---|---|
-| Entry point instalado | `[project.scripts]` de `pyproject.toml` y `neocortex.cli` |
+| Entry point instalado | `[project.scripts]` de `pyproject.toml` y `neocortex.interface.entrypoint` |
 | Parser y validación CLI | `neocortex/api/cli/cli_parser.py` y `neocortex/api/cli/cli_validation.py`, con superficies `cli_{audio,code,semantic,knowledge}_surface.py` |
 | Configuración efectiva de una corrida | `neocortex/runtime/models.py`; `application_config.py`, proyecciones en `neocortex/runtime/config/application_config_projections.py` y construcción CLI en `neocortex/api/cli/cli_config.py` |
-| Plataforma y rutas canónicas por usuario | `neocortex/platform_policy.py` y `neocortex/runtime/config/app_paths.py` |
+| Plataforma y rutas canónicas por usuario | `neocortex/platform/policy.py` y `neocortex/runtime/config/app_paths.py` |
 | Protección de rutas propias | `neocortex/safety/internal_paths.py`, `neocortex/integrations/inventory/inventory_boundary.py` y `neocortex/runtime/control/incremental_gate.py` |
 | Orden y adaptadores de rutas | `neocortex/runtime/orchestration/route_selection.py` y `route_registry.py` |
 | Coordinación de corridas | `neocortex/runtime/orchestration/orchestrator.py` |
 | Knowledge Plane read-only | `neocortex/knowledge/knowledge_contracts.py`, `knowledge_snapshot.py`, `knowledge_planner.py`, `knowledge_search.py`, `knowledge_context.py` y `knowledge_service.py` |
 | Derivaciones reproducibles | `neocortex/semantic/derivation_contracts.py`, repositorios owner-local de Text/Semantic, `derivation_projection.py` y `derivation_lineage_service.py` |
-| Manifests y selección de capacidades | contratos en `neocortex/capability_broker.py`, declaraciones/probes en `neocortex/capabilities/runtime.py` y consumidor Text en `neocortex/capabilities/formats/text/text_route.py` |
+| Manifests y selección de capacidades | contratos en `neocortex/capabilities/broker.py`, declaraciones/probes en `neocortex/capabilities/runtime.py` y consumidor Text en `neocortex/capabilities/formats/text/text_route.py` |
 | Planner semántico read-only | `neocortex/semantic/semantic_planner.py` y contratos en `semantic_service_contracts.py` |
-| SDK, consulta y capacidades públicas | `neocortex/sdk`, `neocortex/read_api.py`, `neocortex/human_cli.py`, `neocortex/agent_server.py`, `neocortex/capabilities.py` y markers `py.typed` |
+| SDK, consulta y capacidades públicas | `neocortex/sdk`, `neocortex/api/read_api.py`, `neocortex/api/cli/human.py`, `neocortex/api/agent_server.py`, `neocortex/capabilities/runtime.py` y markers `py.typed` |
 | Apertura SQLite compartida | `neocortex/persistence/sqlite_immutable.py` y `sqlite_paths.py` |
 | Esquemas persistentes | módulos `*_schema.py` y propietarios `*_state.py`/repositorios |
 | Estado operacional | `${XDG_STATE_HOME:-~/.local/state}/Neocortex/state` |
@@ -86,7 +86,7 @@ conocimiento se documentan en [KNOWLEDGE.md](KNOWLEDGE.md).
 ```text
                    Neocortex / python -m neocortex
                                   │
-                   neocortex.cli:entrypoint
+                   neocortex.interface.entrypoint:entrypoint
                      ┌────────────┼────────────┐
                      │            │            │
                   CLI normal     --ui     --gui-worker
@@ -195,7 +195,7 @@ No es autoridad, no posee otra base SQLite y puede borrarse y reconstruirse;
 por tanto no introduce una transacción distribuida ni registra un hecho antes
 del commit del propietario.
 
-`Neocortex inspect lineage IDENTIFICADOR` y `neocortex.read_api.lineage_payload`
+`Neocortex inspect lineage IDENTIFICADOR` y `neocortex.api.read_api.lineage_payload`
 exponen la vista con scopes fijos. La lectura acepta file key/path Text y
 revisiones, materializaciones o recibos actuales/históricos, además de chunks
 Semantic. Abre sólo bases existentes, valida el contrato de cada schema
@@ -217,7 +217,7 @@ declara la inspección del payload, no finge haber ejecutado el modelo original.
 
 ## CapabilityManifest y CapabilityBroker v1
 
-**IMPLEMENTED — selección por trabajo Text.** `neocortex.capability_broker` es
+**IMPLEMENTED — selección por trabajo Text.** `neocortex.capabilities.broker` es
 una capa stdlib-only que define manifests, requests, políticas, observaciones de
 readiness, evaluaciones y una selección o abstención explicable. No importa un
 extractor, abre estado, descarga modelos ni ejecuta providers. Los contratos son
@@ -421,7 +421,7 @@ snapshot.
 Paquete de instalación mínimo:
 
 - declara la versión pública en `neocortex.__version__`;
-- expone `neocortex.cli:entrypoint`;
+- expone `neocortex.interface.entrypoint:entrypoint`;
 - soporta `python -m neocortex`;
 - ofrece la fachada read-only de scopes, CLI humana y MCP/stdio;
 - contiene utilidades compartidas de ciclo de vida y contrato SQLite;
@@ -554,7 +554,7 @@ La invocación canónica es:
 Neocortex --help
 ```
 
-`neocortex.cli` selecciona perezosamente cuatro modos:
+`neocortex.interface.entrypoint` selecciona perezosamente cuatro modos:
 
 1. subcomandos humanos `help/status/search/ask/inspect/review/knowledge/agent`;
 2. CLI normal: delega en `neocortex.api.cli.cli_app`;
@@ -570,7 +570,7 @@ lo requiere. La lista de comandos y códigos de salida está en
 [CLI.md](CLI.md).
 
 `Neocortex doctor capabilities [--json]` es un alias canónico estrecho que
-`neocortex.cli` traduce a flags planos internos ocultos. El handler inspecciona
+`neocortex.interface.entrypoint` traduce a flags planos internos ocultos. El handler inspecciona
 specs, metadata y ejecutables sin cargar engines/modelos ni crear estado; no
 introduce un `--doctor` o `--json` global.
 La variante opt-in `--select text.extract --mime-type MIME --input-bytes BYTES`
@@ -628,10 +628,10 @@ La superficie diferida también exporta `ResourceRef`, `RevisionRef`,
 `plan_knowledge_query`. Estas APIs consultan estado persistente; no sustituyen
 la corrida que lo produce.
 
-`neocortex.read_api.asset_health_payload()` expone las mismas verticales Text/PDF sobre
+`neocortex.api.read_api.asset_health_payload()` expone las mismas verticales Text/PDF sobre
 los scopes fijos Personal/Framework. No acepta rutas de estado arbitrarias y
 mantiene los resultados de cada scope separados.
-`neocortex.read_api.code_question_payload()` hace lo mismo para el lector focal
+`neocortex.api.read_api.code_question_payload()` hace lo mismo para el lector focal
 Code; su valor predeterminado es Framework y nunca convierte una pregunta no
 registrada en una consulta global automática.
 
@@ -1232,7 +1232,7 @@ La propiedad de un esquema implica:
   no mediante foreign keys cruzadas;
 - un run global no vuelve atómica una publicación local incompleta.
 
-`neocortex.sqlite_connection` centraliza modos explícitos y salvaguardas
+`neocortex.persistence.sqlite_connection` centraliza modos explícitos y salvaguardas
 connection-local, pero su adopción productiva actual se limita a las factories
 de PDF, DOCX y catálogo. `FrameworkRouteState` conserva una apertura separada
 de estado existente mediante URI `mode=rw`; no se forzó una factory universal.

@@ -5,7 +5,7 @@ import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
 
-from neocortex.sqlite_connection import (
+from neocortex.persistence.sqlite_connection import (
     READONLY_EXISTING,
     READWRITE_CREATE,
     SQLiteConnectionPolicy,
@@ -21,7 +21,7 @@ from .pdf_schema import (
     validate_pdf_metadata,
     validate_pdf_schema,
 )
-from neocortex.sqlite_schema_lifecycle import initialize_versioned_sqlite_schema
+from neocortex.persistence.sqlite_schema_lifecycle import initialize_versioned_sqlite_schema
 
 
 # region [01] Schema constants

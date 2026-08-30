@@ -27,7 +27,7 @@ from .knowledge_planner import KnowledgePlan
 from .knowledge_search_contracts import KnowledgeCandidate, RankingExecution
 from .knowledge_snapshot import KnowledgeStatePaths
 from neocortex.semantic.semantic_models import ContentFingerprint
-from neocortex.sqlite_cancellation import SQLiteCancellationBridge
+from neocortex.persistence.sqlite_cancellation import SQLiteCancellationBridge
 
 
 _CleanupPreservingPrimary = Callable[..., None]

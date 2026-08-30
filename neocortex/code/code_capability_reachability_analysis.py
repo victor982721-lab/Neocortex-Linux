@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Literal, Mapping, Sequence, cast
 
 from neocortex.capabilities.runtime import CAPABILITY_MANIFESTS, TEXT_EXTRACT_CAPABILITY_ID
-from neocortex.capability_broker import CapabilityManifest
+from neocortex.capabilities.broker import CapabilityManifest
 
 from .code_analysis_epistemics import (
     AnalysisEvidenceRef,
@@ -34,7 +34,7 @@ from .code_analysis_epistemics import (
 from neocortex.runtime.orchestration.route_registry import builtin_route_registry
 from neocortex.runtime.orchestration.route_selection import BUILTIN_ROUTE_ORDER
 from neocortex.persistence.sqlite_immutable import ImmutableSQLiteUnavailable, immutable_sqlite_database
-from neocortex.sqlite_schema_contract import (
+from neocortex.persistence.sqlite_schema_contract import (
     read_application_schema_version,
     validate_sqlite_schema_contract,
 )

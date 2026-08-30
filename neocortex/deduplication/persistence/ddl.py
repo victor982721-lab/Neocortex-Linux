@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 
-from neocortex.platform_policy import sqlite_path_collation
+from neocortex.platform.policy import sqlite_path_collation
 
 
 SCHEMA_VERSION = 10

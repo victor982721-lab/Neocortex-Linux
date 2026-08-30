@@ -98,7 +98,7 @@
       "by_path_rule": [
         {
           "count": 5,
-          "path": "neocortex/agent_server.py",
+          "path": "neocortex/api/agent_server.py",
           "rule": "reportUnusedFunction",
           "severity": "warning"
         },
@@ -106,12 +106,6 @@
           "count": 5,
           "path": "neocortex/api/cli/cli_validation.py",
           "rule": "reportArgumentType",
-          "severity": "error"
-        },
-        {
-          "count": 1,
-          "path": "neocortex/cli.py",
-          "rule": "reportReturnType",
           "severity": "error"
         },
         {
@@ -179,6 +173,12 @@
           "path": "neocortex/documents/document_taxonomy_references.py",
           "rule": "reportUnusedFunction",
           "severity": "warning"
+        },
+        {
+          "count": 1,
+          "path": "neocortex/interface/entrypoint.py",
+          "rule": "reportReturnType",
+          "severity": "error"
         },
         {
           "count": 1,
@@ -308,18 +308,6 @@
       "by_path_rule": [
         {
           "count": 1,
-          "path": "tests/test_framework_schema_contract.py",
-          "rule": "RUF043",
-          "severity": "error"
-        },
-        {
-          "count": 1,
-          "path": "tests/test_knowledge_contract_context_extraction.py",
-          "rule": "C409",
-          "severity": "error"
-        },
-        {
-          "count": 1,
           "path": "tests/test_knowledge_evaluation.py",
           "rule": "B905",
           "severity": "error"
@@ -356,6 +344,12 @@
         },
         {
           "count": 1,
+          "path": "tests/test_value_cli_adapter.py",
+          "rule": "E402",
+          "severity": "error"
+        },
+        {
+          "count": 1,
           "path": "tools/release_windows.py",
           "rule": "RUF022",
           "severity": "error"
@@ -367,7 +361,7 @@
           "severity": "error"
         }
       ],
-      "total": 19,
+      "total": 18,
       "version": "0.15.17"
     }
   }

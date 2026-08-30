@@ -42,7 +42,7 @@ from neocortex.workflow.review.review_task_contracts import (
     ReviewTaskTransition,
     ReviewTaskVersionHead,
 )
-from neocortex.sqlite_cancellation import (
+from neocortex.persistence.sqlite_cancellation import (
     CancellationCheck,
     SQLiteCancellationBridge,
     sqlite_cancellation_scope,

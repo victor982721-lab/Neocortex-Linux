@@ -15,7 +15,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
-from neocortex.platform_policy import (
+from neocortex.platform.policy import (
     UNAVAILABLE_BIRTHTIME_NS,
     physical_identity_scheme_for_birthtime,
 )
@@ -47,7 +47,7 @@ from neocortex.semantic.semantic_lexical import (
 )
 from neocortex.semantic.semantic_models import ContentFingerprint, ResolvedSearchHit
 from neocortex.semantic.semantic_sources import SEMANTIC_TITLE_POLICY, SEMANTIC_TITLE_SECTION_KIND
-from neocortex.sqlite_cancellation import SQLiteCancellationBridge
+from neocortex.persistence.sqlite_cancellation import SQLiteCancellationBridge
 # endregion [01]
 
 # region [02] Implementación

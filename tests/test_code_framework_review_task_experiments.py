@@ -30,7 +30,7 @@ from neocortex.workflow.review.review_task_repository import (
     list_current_review_tasks,
     publish_review_task_page,
 )
-from neocortex.cli import entrypoint
+from neocortex.interface.entrypoint import entrypoint
 
 
 SCENARIO_ID = "framework.review_task_protocol_acceptance"

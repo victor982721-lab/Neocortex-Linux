@@ -9,7 +9,7 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 
-from neocortex.platform_policy import stat_birthtime_ns
+from neocortex.platform.policy import stat_birthtime_ns
 from typing import Any, Iterable, Iterator, Mapping, Protocol, Sequence
 
 import xxhash

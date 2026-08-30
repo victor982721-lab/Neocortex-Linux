@@ -120,14 +120,14 @@ entrypoints = sorted(
     for item in distribution.entry_points
     if item.group == "console_scripts"
 )
-if entrypoints != [("Neocortex", "neocortex.cli:entrypoint")]:
+if entrypoints != [("Neocortex", "neocortex.interface.entrypoint:entrypoint")]:
     raise SystemExit(f"console entrypoint mismatch: {entrypoints!r}")
 installed_files = {str(item).replace("\\", "/") for item in (distribution.files or ())}
 missing_data = sorted(set(contract["package_data"]) - installed_files)
 if missing_data:
     raise SystemExit(f"wheel package data missing: {missing_data!r}")
 print(json.dumps({
-    "entrypoint": "Neocortex=neocortex.cli:entrypoint",
+    "entrypoint": "Neocortex=neocortex.interface.entrypoint:entrypoint",
     "origins": origins,
     "package_data": contract["package_data"],
     "version": distribution.version,

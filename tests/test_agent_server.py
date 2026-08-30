@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from neocortex import agent_server
+from neocortex.api import agent_server
 
 
 def test_agent_server_exposes_only_read_only_fixed_scope_tools() -> None:

@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from neocortex.runtime.config import model_management
 from neocortex.api.cli.cli_app import main
-from neocortex.cli import _translate_canonical_arguments, entrypoint
+from neocortex.interface.entrypoint import _translate_canonical_arguments, entrypoint
 
 
 def _complete_report(root: Path) -> dict[str, object]:

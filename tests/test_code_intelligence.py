@@ -49,7 +49,7 @@ from neocortex.code.code_state import (
     CodeState,
 )
 from neocortex.semantic.semantic_sources import iter_text_source_records
-from neocortex.sqlite_cancellation import (
+from neocortex.persistence.sqlite_cancellation import (
     CancellationCheck,
     SQLiteCancellationBridge,
 )

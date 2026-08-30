@@ -34,7 +34,7 @@ from neocortex.documents.document_organization import (
     OrganizationApplySummary,
     OrganizationPlanSummary,
 )
-from neocortex.platform_policy import default_corpus_root
+from neocortex.platform.policy import default_corpus_root
 from neocortex.runtime.orchestration.route_selection import (
     BUILTIN_ROUTE_ORDER,
     normalize_route_selection,

@@ -43,7 +43,7 @@ from neocortex.capabilities.formats.office.state import (
     office_database,
 )
 from neocortex.safety.route_filters import CandidateSelection
-from neocortex.platform_policy import sqlite_path_collation
+from neocortex.platform.policy import sqlite_path_collation
 from tests.internal_paths_test_support import disjoint_internal_paths_policy
 
 

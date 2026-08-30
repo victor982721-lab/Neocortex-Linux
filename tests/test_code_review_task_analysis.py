@@ -72,7 +72,7 @@ def test_framework_review_task_protocol_payload_and_digest_are_canonical() -> No
     assert analysis.database_name == "framework.sqlite3"
     assert analysis.framework_schema_version == 22
     assert analysis.review_task_contract_version == 1
-    assert analysis.public_adapter_module == "neocortex.review_task_cli_adapter"
+    assert analysis.public_adapter_module == "neocortex.api.cli.review_task"
     assert analysis.public_port_module == "neocortex.workflow.review.value_review_port"
     assert analysis.terminal_states == ("dismissed", "resolved")
     assert analysis.terminal_decisions_require_human is True
@@ -125,7 +125,7 @@ def test_framework_review_task_question_requires_isolated_experiment() -> None:
             "review_task_contract_version": 1,
         },
         "framework_review_task_public_protocol_contract": {
-            "public_adapter_module": "neocortex.review_task_cli_adapter",
+            "public_adapter_module": "neocortex.api.cli.review_task",
             "public_port_module": "neocortex.workflow.review.value_review_port",
             "terminal_states": "dismissed,resolved",
             "terminal_decisions_require_human": True,

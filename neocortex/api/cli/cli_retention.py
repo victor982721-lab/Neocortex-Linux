@@ -1,6 +1,6 @@
 """Read-only CLI facade for bounded retention planning."""
 # region [00] Contexto del módulo
-# Módulo: neocortex/cli_retention.py
+# Módulo: neocortex/api/cli/cli_retention.py
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 

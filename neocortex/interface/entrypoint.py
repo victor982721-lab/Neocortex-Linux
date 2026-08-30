@@ -1,6 +1,6 @@
 """Installed command entry point for the integrated NeoCortex application."""
 # region [00] Contexto del módulo
-# Módulo: neocortex/cli.py
+# Módulo: neocortex/interface/entrypoint.py
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
@@ -374,7 +374,7 @@ def _run_human_mode(arguments: Sequence[str]) -> int | None:
     if not arguments or arguments[0] not in _HUMAN_COMMANDS:
         return None
 
-    from .human_cli import run_human_command
+    from neocortex.api.cli.human import run_human_command
 
     return run_human_command(arguments)
 

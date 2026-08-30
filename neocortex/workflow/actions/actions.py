@@ -13,7 +13,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from neocortex.platform_policy import stat_birthtime_ns
+from neocortex.platform.policy import stat_birthtime_ns
 
 from neocortex.deduplication import (
     DedupIndex,

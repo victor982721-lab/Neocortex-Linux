@@ -21,7 +21,7 @@ from neocortex.progress import (
     ProgressMetric,
     emit_progress,
 )
-from neocortex.platform_policy import sqlite_path_collation
+from neocortex.platform.policy import sqlite_path_collation
 
 from neocortex.workflow.actions.action_policy import same_snapshot
 from .models import (

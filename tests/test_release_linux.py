@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from neocortex.platform_policy import PlatformPolicy
+from neocortex.platform.policy import PlatformPolicy
 from tools import release_linux
 from tools.release_linux import LinuxReleaseLayout
 

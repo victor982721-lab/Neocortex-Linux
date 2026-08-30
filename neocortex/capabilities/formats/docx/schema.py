@@ -6,9 +6,9 @@ import sqlite3
 from collections.abc import Callable
 from functools import lru_cache
 
-from neocortex.platform_policy import sqlite_path_collation
+from neocortex.platform.policy import sqlite_path_collation
 
-from neocortex.sqlite_schema_contract import (
+from neocortex.persistence.sqlite_schema_contract import (
     SQLiteSchemaContract,
     SQLiteSchemaContractError,
     schema_contract_from_builder,

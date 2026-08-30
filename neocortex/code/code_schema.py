@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from functools import lru_cache
 from pathlib import Path
 
-from neocortex.sqlite_connection import (
+from neocortex.persistence.sqlite_connection import (
     READONLY_EXISTING,
     READWRITE_CREATE,
     READWRITE_EXISTING,
@@ -18,9 +18,9 @@ from neocortex.sqlite_connection import (
     SQLiteWriterPragmas,
     connect_sqlite,
 )
-from neocortex.platform_policy import sqlite_path_collation
+from neocortex.platform.policy import sqlite_path_collation
 
-from neocortex.sqlite_schema_contract import (
+from neocortex.persistence.sqlite_schema_contract import (
     SQLiteSchemaContract,
     schema_contract_from_builder,
     validate_sqlite_schema_contract,

@@ -30,7 +30,7 @@ from neocortex.runtime.control.global_resources import (
 from neocortex.runtime.control.memory_runtime import MemorySnapshot
 from neocortex.safety.route_filters import CandidateSelection
 from neocortex.runtime.orchestration.route_registry import RouteExecutionContext, _run_code
-from neocortex.sqlite_cancellation import CancellationCheck
+from neocortex.persistence.sqlite_cancellation import CancellationCheck
 
 
 # region [01] Deterministic collaborators

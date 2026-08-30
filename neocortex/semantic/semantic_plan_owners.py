@@ -50,12 +50,12 @@ from .semantic_sources import (
     IMAGE_SOURCE_KIND,
     semantic_source_database,
 )
-from neocortex.sqlite_cancellation import (
+from neocortex.persistence.sqlite_cancellation import (
     SQLiteCancellationBridge,
     sqlite_cancellation_scope,
 )
 from neocortex.persistence.sqlite_paths import readonly_sqlite_uri
-from neocortex.sqlite_schema_contract import (
+from neocortex.persistence.sqlite_schema_contract import (
     read_application_schema_version,
     validate_sqlite_schema_contract,
 )

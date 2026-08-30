@@ -17,7 +17,7 @@ from neocortex.enumeration import (
 )
 from neocortex.deduplication.persistence.ddl import SCHEMA_VERSION as INVENTORY_SCHEMA_VERSION
 from neocortex.deduplication.persistence.validation import validate_inventory_schema
-from neocortex.sqlite_schema_contract import read_metadata_schema_version
+from neocortex.persistence.sqlite_schema_contract import read_metadata_schema_version
 
 from neocortex.persistence import framework_schema
 from neocortex.safety.corpus_access import CorpusAccessPolicy, ProtectedAnalysisRootError

@@ -34,20 +34,21 @@ from pathlib import Path
 if __package__ in {None, ""}:
     sys.path.insert(0, os.fspath(Path(__file__).resolve().parents[1]))
 
-from neocortex import __version__, pip_bootstrap
-from neocortex.pip_bootstrap import (
+from neocortex import __version__
+from neocortex.code import pip_bootstrap
+from neocortex.code.pip_bootstrap import (
     PIP_BOOTSTRAP_FILENAME,
     PIP_BOOTSTRAP_SHA256,
     PIP_BOOTSTRAP_URL,
     PIP_BOOTSTRAP_VERSION,
 )
-from neocortex.platform_policy import PlatformPolicy, current_platform_policy
+from neocortex.platform.policy import PlatformPolicy, current_platform_policy
 from neocortex.runtime.source_staging import (
     SourceStagingError,
     parse_git_tracked_paths,
     stage_tracked_source,
 )
-from neocortex.semgrep_tool_contract import (
+from neocortex.code.semgrep_tool_contract import (
     SEMGREP_TOOL_VERSION,
 )
 from tools.build_binary_inputs import build_source_only_wheels

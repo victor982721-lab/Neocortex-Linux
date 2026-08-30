@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-from neocortex.sqlite_schema_contract import SQLiteSchemaContract, schema_contract_from_builder
+from neocortex.persistence.sqlite_schema_contract import SQLiteSchemaContract, schema_contract_from_builder
 
 from .ddl import (
     build_current_schema,

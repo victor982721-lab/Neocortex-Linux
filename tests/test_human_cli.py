@@ -7,7 +7,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from neocortex import cli, human_cli
+from neocortex.interface import entrypoint as cli
+from neocortex.api.cli import human as human_cli
 
 
 def _hit() -> dict[str, object]:
@@ -104,7 +105,7 @@ def test_human_review_task_commands_use_one_shared_adapter(
     monkeypatch.setattr(
         human_cli.importlib,
         "import_module",
-        lambda name: fake if name == "neocortex.review_task_cli_adapter" else original_import(name),
+        lambda name: fake if name == "neocortex.api.cli.review_task" else original_import(name),
     )
 
     assert human_cli.run_human_command(arguments) == 0
@@ -435,7 +436,7 @@ def test_value_help_does_not_load_review_task_storage() -> None:
 import contextlib
 import io
 import sys
-from neocortex.cli import entrypoint
+from neocortex.interface.entrypoint import entrypoint
 
 output = io.StringIO()
 try:

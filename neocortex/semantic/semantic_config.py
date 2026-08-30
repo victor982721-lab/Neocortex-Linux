@@ -317,7 +317,7 @@ def fastembed_cache_contract(model_signature: str) -> FastEmbedCacheContract:
 
 def default_semantic_model_cache(state_directory: Path) -> Path:
     if os.name != "nt":
-        from neocortex.platform_policy import current_platform_policy
+        from neocortex.platform.policy import current_platform_policy
 
         return current_platform_policy().models_directory / "fastembed"
     return state_directory.parent / "models" / "fastembed"

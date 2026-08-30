@@ -20,7 +20,7 @@ from typing import TypeVar, cast
 
 from neocortex.deduplication.persistence.ddl import SCHEMA_VERSION as INVENTORY_SCHEMA_VERSION
 from neocortex.deduplication.persistence.validation import validate_inventory_schema
-from neocortex.sqlite_schema_contract import read_application_schema_version
+from neocortex.persistence.sqlite_schema_contract import read_application_schema_version
 
 from neocortex.documents import document_catalog_schema
 from neocortex.capabilities.formats.text import text_state
@@ -29,7 +29,7 @@ from neocortex.capabilities.formats.docx.schema import DOCX_SCHEMA_VERSION, vali
 from neocortex.capabilities.formats.office import state as office_state
 from neocortex.capabilities.formats.pdf.pdf_schema import PDF_SCHEMA_VERSION, validate_pdf_schema
 from neocortex.persistence.sqlite_paths import readonly_sqlite_uri
-from neocortex.sqlite_schema_contract import (
+from neocortex.persistence.sqlite_schema_contract import (
     SQLiteSchemaContract,
     validate_sqlite_schema_contract,
 )

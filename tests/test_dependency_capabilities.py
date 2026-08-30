@@ -419,7 +419,7 @@ def test_base_surfaces_and_absent_knowledge_state_ignore_optional_engines(
         ):
             raise SystemExit("lightweight capability probe touched models")
 
-        from neocortex.cli import entrypoint
+        from neocortex.interface.entrypoint import entrypoint
 
         for option in ("--version", "--help"):
             output = io.StringIO()

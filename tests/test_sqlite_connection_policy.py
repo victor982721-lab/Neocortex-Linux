@@ -16,8 +16,8 @@ from neocortex.documents import document_catalog
 from neocortex.capabilities.formats.docx import state as docx_state
 from neocortex.capabilities.formats.office import state as office_state
 from neocortex.capabilities.formats.pdf import pdf_state
-from neocortex import sqlite_connection
-from neocortex.sqlite_connection import (
+from neocortex.persistence import sqlite_connection
+from neocortex.persistence.sqlite_connection import (
     READONLY_EXISTING,
     READWRITE_CREATE,
     READWRITE_EXISTING,

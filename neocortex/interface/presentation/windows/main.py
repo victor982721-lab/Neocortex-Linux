@@ -9,7 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, cast
 
-from neocortex.platform_policy import default_corpus_root
+from neocortex.platform.policy import default_corpus_root
 
 from PySide6.QtCore import QSettings, Qt, QTimer
 from PySide6.QtGui import QCloseEvent, QColor, QTextCursor

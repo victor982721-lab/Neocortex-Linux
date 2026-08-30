@@ -12,8 +12,8 @@ from pathlib import Path
 
 import pytest
 
-from neocortex import pip_bootstrap
-from neocortex import semgrep_tool_contract
+from neocortex.code import pip_bootstrap
+from neocortex.code import semgrep_tool_contract
 from tools import bootstrap_pip, release_linux, semgrep_tool_runtime
 
 

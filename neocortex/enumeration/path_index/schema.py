@@ -11,13 +11,13 @@ import sqlite3
 from functools import lru_cache
 from pathlib import Path
 
-from neocortex.sqlite_schema_contract import (
+from neocortex.persistence.sqlite_schema_contract import (
     SQLiteSchemaContract,
     schema_contract_from_builder,
     validate_sqlite_schema_contract,
 )
 from neocortex.persistence.sqlite_paths import existing_sqlite_uri, readonly_sqlite_uri
-from neocortex.sqlite_schema_lifecycle import initialize_versioned_sqlite_schema
+from neocortex.persistence.sqlite_schema_lifecycle import initialize_versioned_sqlite_schema
 # endregion [01]
 
 # region [02] Implementación

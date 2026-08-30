@@ -12,7 +12,7 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
-from neocortex.platform_policy import sqlite_path_collation, stat_birthtime_ns
+from neocortex.platform.policy import sqlite_path_collation, stat_birthtime_ns
 from typing import TYPE_CHECKING, Iterator, Literal
 
 from neocortex.progress import (
@@ -21,7 +21,7 @@ from neocortex.progress import (
     ProgressMetric,
     emit_progress,
 )
-from neocortex.sqlite_connection import (
+from neocortex.persistence.sqlite_connection import (
     READONLY_EXISTING,
     READWRITE_CREATE,
     SQLiteConnectionPolicy,
@@ -47,7 +47,7 @@ from .document_catalog_schema import (
 from neocortex.runtime.control.cancellation import CancellationRequested
 from neocortex.foundation.file_identity import decode_file_identity
 from neocortex.persistence.sqlite_paths import readonly_sqlite_uri
-from neocortex.sqlite_schema_contract import (
+from neocortex.persistence.sqlite_schema_contract import (
     read_metadata_schema_version,
     validate_sqlite_schema_contract,
 )

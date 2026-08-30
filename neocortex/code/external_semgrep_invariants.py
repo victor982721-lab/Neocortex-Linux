@@ -21,7 +21,7 @@ from neocortex.runtime.control.bounded_subprocess import run_bounded_capture
 from .code_external_evidence import ExternalEvidenceFile
 from .external_evidence_models import ExternalProviderFinding, external_signature
 from neocortex.semantic.semantic_models import fingerprint_bytes
-from neocortex.semgrep_tool_contract import (
+from neocortex.code.semgrep_tool_contract import (
     ManagedSemgrepRuntime,
     resolve_semgrep_tool_runtime,
 )

@@ -285,7 +285,7 @@ def _framework_review_task_question(
         source_record_id="framework-review-task-public-protocol",
         source_projection_digest="projection:framework-review-task-public-protocol",
         facts=(
-            AnalysisFact("public_adapter_module", "neocortex.review_task_cli_adapter"),
+            AnalysisFact("public_adapter_module", "neocortex.api.cli.review_task"),
             AnalysisFact("terminal_decisions_require_human", True),
         ),
     )

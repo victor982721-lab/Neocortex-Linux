@@ -16,8 +16,8 @@ from neocortex.code.code_interface_surface_analysis import CLI_SURFACE_QUESTION
 from neocortex.api.cli.cli_parser import build_parser
 from neocortex.api.cli.cli_validation import validate_arguments
 from neocortex.persistence.sqlite_immutable import capture_sqlite_immutable_fence
-from neocortex import read_api
-from neocortex.cli import _translate_canonical_arguments, entrypoint
+from neocortex.api import read_api
+from neocortex.interface.entrypoint import _translate_canonical_arguments, entrypoint
 from tests.test_code_review import _build_state, _status
 
 

@@ -33,7 +33,7 @@ from neocortex.capabilities.formats.text.text_derivation_repository import (
 )
 from neocortex.capabilities.formats.text.text_route import TextRoute, TextRouteConfig
 from neocortex.capabilities.formats.text.text_state import initialize_text_state, text_database
-from neocortex.capability_broker import CapabilityBinaryIdentity
+from neocortex.capabilities.broker import CapabilityBinaryIdentity
 
 
 class _FrameworkState:

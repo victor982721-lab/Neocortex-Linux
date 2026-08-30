@@ -17,7 +17,7 @@ from neocortex.safety.route_filters import (
 )
 from neocortex.workflow.self_analysis.self_analysis_status import quiescent_sqlite_database
 from neocortex.persistence.framework_state_writer import FrameworkState
-from neocortex.platform_policy import sqlite_path_collation
+from neocortex.platform.policy import sqlite_path_collation
 
 
 pytestmark = pytest.mark.skipif(

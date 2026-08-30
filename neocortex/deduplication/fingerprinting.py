@@ -6,7 +6,7 @@ import os
 import struct
 from pathlib import Path
 
-from neocortex.platform_policy import stat_birthtime_ns
+from neocortex.platform.policy import stat_birthtime_ns
 
 from .domain.errors import FileChangedError, MissingDependencyError
 from .domain.models import FileSnapshot

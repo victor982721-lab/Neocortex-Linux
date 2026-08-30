@@ -20,7 +20,7 @@ from neocortex.workflow.review.value_review_port import (
     refresh_value_review_tasks,
 )
 
-from .read_api import (
+from ..read_api import (
     FEDERATION_POLICY,
     MAX_HUMAN_RESULTS_PER_SCOPE,
     ReadScope,

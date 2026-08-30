@@ -25,7 +25,7 @@ from .semantic_plan_errors import (
     SemanticScratchLimitExceeded,
     cleanup_preserving_primary as _cleanup_preserving_primary,
 )
-from neocortex.sqlite_cancellation import SQLiteCancellationBridge
+from neocortex.persistence.sqlite_cancellation import SQLiteCancellationBridge
 # endregion [01]
 
 # region [02] Implementación

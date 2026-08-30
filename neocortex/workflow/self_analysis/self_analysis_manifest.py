@@ -17,7 +17,7 @@ from neocortex.deduplication.inventory.scan import (
     MAX_INVENTORY_EXCLUSION_RULE_CHARS,
     MAX_INVENTORY_EXCLUSION_RULES,
 )
-from neocortex.platform_policy import UNAVAILABLE_BIRTHTIME_NS
+from neocortex.platform.policy import UNAVAILABLE_BIRTHTIME_NS
 
 from neocortex.workflow.self_analysis.self_analysis import (
     LEGACY_SELF_ANALYSIS_MANIFEST_SCHEMAS,

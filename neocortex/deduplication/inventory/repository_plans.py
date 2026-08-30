@@ -6,7 +6,7 @@ import sqlite3
 import time
 from collections.abc import Iterable, Iterator
 
-from neocortex.platform_policy import sqlite_path_collation
+from neocortex.platform.policy import sqlite_path_collation
 
 from ..domain.errors import InventoryError
 from ..domain.models import DuplicateGroup, FileSnapshot

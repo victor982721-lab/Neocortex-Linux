@@ -1,7 +1,7 @@
 """Declared core port for NeoCortex's bounded read-only public facade.
 
 Only the fixed-scope public adapter should consume this module.  Keeping the
-cross-package contract here prevents ``neocortex.read_api`` from depending on
+cross-package contract here prevents ``neocortex.api.read_api`` from depending on
 the internal layout of the Knowledge, Code and path owners.
 """
 

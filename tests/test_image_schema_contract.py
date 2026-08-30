@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from neocortex.capabilities.formats.image.state import SCHEMA_VERSION, initialize_image_state
-from neocortex.sqlite_schema_contract import SQLiteSchemaContractError
+from neocortex.persistence.sqlite_schema_contract import SQLiteSchemaContractError
 # endregion [01]
 
 # region [02] Implementación

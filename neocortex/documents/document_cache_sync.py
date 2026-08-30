@@ -9,7 +9,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable
 
-from neocortex.platform_policy import sqlite_path_collation
+from neocortex.platform.policy import sqlite_path_collation
 
 from neocortex.semantic.semantic_schema import SEMANTIC_SCHEMA_VERSION
 from neocortex.persistence.sqlite_paths import existing_sqlite_uri

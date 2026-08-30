@@ -9,7 +9,7 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
-from neocortex.sqlite_schema_contract import (
+from neocortex.persistence.sqlite_schema_contract import (
     SQLiteSchemaContractError,
     read_application_schema_version,
 )

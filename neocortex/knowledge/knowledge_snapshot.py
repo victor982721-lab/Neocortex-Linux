@@ -18,11 +18,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from neocortex.deduplication.persistence.validation import validate_inventory_schema
-from neocortex.sqlite_schema_contract import (
+from neocortex.persistence.sqlite_schema_contract import (
     read_application_schema_version,
     validate_sqlite_schema_contract,
 )
-from neocortex.platform_policy import sqlite_path_collation
+from neocortex.platform.policy import sqlite_path_collation
 
 from neocortex.documents import document_catalog_schema
 from neocortex.capabilities.formats.text import text_state
@@ -50,7 +50,7 @@ from .knowledge_contracts import (
 )
 from neocortex.capabilities.formats.pdf.pdf_schema import validate_pdf_schema
 from neocortex.semantic.semantic_models import canonical_json
-from neocortex.sqlite_cancellation import SQLiteCancellationBridge, sqlite_cancellation_scope
+from neocortex.persistence.sqlite_cancellation import SQLiteCancellationBridge, sqlite_cancellation_scope
 from neocortex.persistence.sqlite_immutable import (
     ImmutableSQLiteUnavailable,
     SQLiteImmutableFence,

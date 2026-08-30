@@ -18,12 +18,12 @@ from neocortex.capabilities.formats.docx.route import DocxRoute
 from neocortex.foundation.file_identity import file_key_from_snapshot
 from neocortex.capabilities.formats.pdf.pdf_route_cache import PdfRouteCacheMixin
 from neocortex.capabilities.formats.pdf.pdf_route_storage import PdfRouteStorageMixin
-from neocortex.sqlite_schema_contract import (
+from neocortex.persistence.sqlite_schema_contract import (
     SQLiteSchemaContractError,
     schema_contract_from_builder,
     validate_sqlite_schema_contract,
 )
-from neocortex.platform_policy import sqlite_path_collation
+from neocortex.platform.policy import sqlite_path_collation
 
 
 # region [01] Route fixtures

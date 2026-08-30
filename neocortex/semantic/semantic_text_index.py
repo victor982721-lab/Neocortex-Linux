@@ -71,7 +71,7 @@ from .semantic_work_budget import (
     SemanticWorkBudget,
     unlimited_semantic_work_budget,
 )
-from neocortex.sqlite_cancellation import (
+from neocortex.persistence.sqlite_cancellation import (
     CancellationCheck,
     SQLiteCancellationBridge,
     sqlite_cancellation_scope,

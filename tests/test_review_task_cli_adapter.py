@@ -27,8 +27,8 @@ from neocortex.workflow.review.review_task_repository import (
     list_current_review_tasks,
     publish_review_task_page,
 )
-from neocortex import review_task_cli_adapter as adapter
-from neocortex.read_api import ReadScope, ScopeBinding
+from neocortex.api.cli import review_task as adapter
+from neocortex.api.read_api import ReadScope, ScopeBinding
 
 
 def _published_task(state_directory: Path) -> tuple[Path, str, str]:

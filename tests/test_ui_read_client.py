@@ -68,8 +68,8 @@ def test_read_request_rejects_blank_unbounded_and_path_like_inputs(
 def test_shared_client_routes_all_operations_without_state_paths(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import neocortex.read_api as read_api
-    import neocortex.value_cli_adapter as value_adapter
+    import neocortex.api.read_api as read_api
+    import neocortex.api.cli.value_review as value_adapter
 
     calls: list[tuple[str, tuple[object, ...], dict[str, object]]] = []
 
@@ -126,7 +126,7 @@ def test_shared_client_fails_closed_on_incompatible_contracts(
     monkeypatch: pytest.MonkeyPatch,
     mutate: Callable[[dict[str, object]], None],
 ) -> None:
-    import neocortex.read_api as read_api
+    import neocortex.api.read_api as read_api
 
     payload = _payload("status")
     mutate(payload)
@@ -139,7 +139,7 @@ def test_shared_client_fails_closed_on_incompatible_contracts(
 def test_review_contract_must_remain_advisory_and_non_mutating(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import neocortex.value_cli_adapter as value_adapter
+    import neocortex.api.cli.value_review as value_adapter
 
     payload = _payload("review", scope="personal")
     payload["mutation_authorized"] = True
@@ -153,8 +153,8 @@ def test_shared_client_keeps_missing_fixture_state_absent(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    import neocortex.read_api as read_api
-    import neocortex.value_cli_adapter as value_adapter
+    import neocortex.api.read_api as read_api
+    import neocortex.api.cli.value_review as value_adapter
 
     missing = tmp_path / "published-state-that-does-not-exist"
     binding = read_api.ScopeBinding(read_api.ReadScope.PERSONAL, missing)

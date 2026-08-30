@@ -20,7 +20,7 @@ from neocortex.documents.document_catalog import (
 from neocortex.documents.document_catalog_schema import (
     document_catalog_schema_contract,
 )
-from neocortex.sqlite_schema_contract import (
+from neocortex.persistence.sqlite_schema_contract import (
     SQLiteSchemaContractError,
     validate_sqlite_schema_contract,
 )

@@ -13,7 +13,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import neocortex
-from neocortex.cli import entrypoint
+from neocortex.interface.entrypoint import entrypoint
 from neocortex.deduplication.__main__ import main as legacy_dedup_main
 # endregion [01]
 
@@ -32,7 +32,7 @@ def test_project_metadata_uses_package_version_and_installed_command() -> None:
     assert metadata["project"]["requires-python"] == ">=3.13,<3.15"
     assert "Operating System :: POSIX :: Linux" in metadata["project"]["classifiers"]
     assert not any("Windows" in classifier for classifier in metadata["project"]["classifiers"])
-    assert metadata["project"]["scripts"]["Neocortex"] == ("neocortex.cli:entrypoint")
+    assert metadata["project"]["scripts"]["Neocortex"] == ("neocortex.interface.entrypoint:entrypoint")
     assert metadata["tool"]["setuptools"]["dynamic"]["version"] == {"attr": "neocortex.__version__"}
     assert neocortex.__version__ == "0.9.0"
 
@@ -92,7 +92,7 @@ def test_svg_release_asset_has_canonical_lf_export() -> None:
 
 def test_installed_entrypoint_forwards_arguments_to_integrated_cli() -> None:
     with (
-        patch("neocortex.cli._run_special_mode", return_value=None),
+        patch("neocortex.interface.entrypoint._run_special_mode", return_value=None),
         patch("neocortex.api.cli.cli_app.main", return_value=7) as run_cli,
     ):
         result = entrypoint(("--status",))
@@ -112,7 +112,7 @@ def test_installed_entrypoint_exposes_owned_pyright_shim_and_node(
     owned_node.mkdir(parents=True)
     original_path = os.pathsep.join(("C:/system/bin", "C:/other/bin"))
     monkeypatch.setenv("PATH", original_path)
-    monkeypatch.setattr("neocortex.cli.sys.prefix", str(prefix))
+    monkeypatch.setattr("neocortex.interface.entrypoint.sys.prefix", str(prefix))
 
     with patch("neocortex.api.cli.cli_app.main", return_value=0):
         assert entrypoint(("--version",)) == 0

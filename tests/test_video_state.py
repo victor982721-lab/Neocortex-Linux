@@ -22,7 +22,7 @@ from neocortex.capabilities.formats.video.state import (
     video_database,
     video_state_status,
 )
-from neocortex.platform_policy import sqlite_path_collation
+from neocortex.platform.policy import sqlite_path_collation
 
 
 def _snapshot(path: Path) -> FileSnapshot:

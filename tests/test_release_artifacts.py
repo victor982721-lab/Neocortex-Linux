@@ -52,7 +52,7 @@ _METADATA = (
 _WHEEL = (
     "Wheel-Version: 1.0\nGenerator: Neocortex fixture\nRoot-Is-Purelib: true\nTag: py3-none-any\n"
 ).encode()
-_ENTRY_POINTS = ("[console_scripts]\nNeocortex = neocortex.cli:entrypoint\n").encode()
+_ENTRY_POINTS = ("[console_scripts]\nNeocortex = neocortex.interface.entrypoint:entrypoint\n").encode()
 _UI_ASSETS = (
     "neocortex/interface/presentation/assets/neocortex-app-icon.ico",
     "neocortex/interface/presentation/assets/neocortex-app-icon.png",
@@ -93,7 +93,7 @@ def _corrupt_first_record_size(value: bytes) -> bytes:
 def _wheel_payloads() -> dict[str, bytes]:
     payloads = {
         "neocortex/__init__.py": b'__version__ = "0.7.2"\n',
-        "neocortex/cli.py": b"def entrypoint():\n    return 0\n",
+        "neocortex/interface/entrypoint.py": b"def entrypoint():\n    return 0\n",
         "neocortex/py.typed": b"",
         f"{_DIST_INFO}/METADATA": _METADATA,
         f"{_DIST_INFO}/WHEEL": _WHEEL,
@@ -139,7 +139,7 @@ def _sdist_payloads(root: str = _SDIST_ROOT) -> dict[str, bytes]:
         f"{root}/MANIFEST.in": b"include README.md\n",
         f"{root}/README.md": b"# Synthetic Neocortex\n",
         f"{root}/neocortex/__init__.py": b'__version__ = "0.7.2"\n',
-        f"{root}/neocortex/cli.py": b"def entrypoint():\n    return 0\n",
+        f"{root}/neocortex/interface/entrypoint.py": b"def entrypoint():\n    return 0\n",
         f"{root}/neocortex/py.typed": b"",
     }
     payloads.update({f"{root}/{path}": payload for path, payload in _UI_ASSET_PAYLOADS.items()})
@@ -301,7 +301,7 @@ def test_tar_rejects_symbolic_and_hard_links(
 ) -> None:
     link = tarfile.TarInfo(f"{_SDIST_ROOT}/linked.py")
     link.type = link_type
-    link.linkname = f"{_SDIST_ROOT}/neocortex/cli.py"
+    link.linkname = f"{_SDIST_ROOT}/neocortex/interface/entrypoint.py"
     path = _write_sdist(_sdist_path(tmp_path, "linked"), extra_members=(link,))
 
     with pytest.raises(ArtifactValidationError, match="TAR links are forbidden"):
@@ -506,7 +506,7 @@ def test_valid_wheel_contract_includes_verified_record_and_typed_markers(
     assert report.distribution == "neocortex-framework"
     assert report.version == "0.7.2"
     assert report.root is None
-    assert report.entry_points == ("Neocortex = neocortex.cli:entrypoint",)
+    assert report.entry_points == ("Neocortex = neocortex.interface.entrypoint:entrypoint",)
     assert report.record_verified
     assert report.typed_packages == ("neocortex",)
     assert validate_release_artifact(path) == report
@@ -747,12 +747,12 @@ def test_logical_payload_comparison_rejects_changed_content(
         first = _write_wheel(tmp_path / "neocortex_framework-0.7.2-py3-none-any.whl")
         second = _write_wheel(
             tmp_path / "changed" / "neocortex_framework-0.7.2-py3-none-any.whl",
-            updates={"neocortex/cli.py": b"def entrypoint():\n    return 1\n"},
+            updates={"neocortex/interface/entrypoint.py": b"def entrypoint():\n    return 1\n"},
         )
     else:
         first = _write_sdist(tmp_path / "neocortex_framework-0.7.2.tar.gz")
         changed = _sdist_payloads()
-        changed[f"{_SDIST_ROOT}/neocortex/cli.py"] = b"def entrypoint():\n    return 1\n"
+        changed[f"{_SDIST_ROOT}/neocortex/interface/entrypoint.py"] = b"def entrypoint():\n    return 1\n"
         second = _write_sdist(
             tmp_path / "changed" / "neocortex_framework-0.7.2.tar.gz",
             payloads=changed,
@@ -767,7 +767,7 @@ def test_sdist_canonicalization_requires_logical_equality_before_output(
 ) -> None:
     first = _write_sdist(_sdist_path(tmp_path, "first"))
     changed = _sdist_payloads()
-    changed[f"{_SDIST_ROOT}/neocortex/cli.py"] = b"changed\n"
+    changed[f"{_SDIST_ROOT}/neocortex/interface/entrypoint.py"] = b"changed\n"
     second = _write_sdist(_sdist_path(tmp_path, "second"), payloads=changed)
     destination = _sdist_path(tmp_path, "canonical")
 

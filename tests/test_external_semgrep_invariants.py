@@ -15,7 +15,7 @@ import pytest
 import neocortex.code.external_semgrep_invariants as adapter
 from neocortex.code.code_external_evidence import ExternalEvidenceFile
 from neocortex.semantic.semantic_models import fingerprint_bytes
-from neocortex.semgrep_tool_contract import (
+from neocortex.code.semgrep_tool_contract import (
     ManagedSemgrepRuntime,
     resolve_semgrep_tool_runtime,
 )

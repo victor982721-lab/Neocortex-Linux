@@ -19,7 +19,7 @@ from neocortex.deduplication.persistence import (
     initialize_inventory_schema,
     validate_inventory_schema,
 )
-from neocortex.sqlite_schema_contract import (
+from neocortex.persistence.sqlite_schema_contract import (
     SQLiteSchemaContractError,
     schema_contract_from_builder,
     validate_sqlite_schema_contract,

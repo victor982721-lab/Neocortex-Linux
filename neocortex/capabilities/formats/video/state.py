@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from neocortex.deduplication import FileSnapshot
-from neocortex.sqlite_connection import (
+from neocortex.persistence.sqlite_connection import (
     READONLY_EXISTING,
     READWRITE_CREATE,
     READWRITE_EXISTING,
@@ -26,10 +26,10 @@ from neocortex.sqlite_connection import (
     SQLiteWriterPragmas,
     connect_sqlite,
 )
-from neocortex.platform_policy import sqlite_path_collation
+from neocortex.platform.policy import sqlite_path_collation
 
 from neocortex.foundation.file_identity import file_key_from_snapshot
-from neocortex.sqlite_schema_contract import (
+from neocortex.persistence.sqlite_schema_contract import (
     SQLiteSchemaContract,
     read_metadata_schema_version,
     schema_contract_from_builder,

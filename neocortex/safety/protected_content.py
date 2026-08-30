@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Literal
 
 import xxhash
-from neocortex.platform_policy import UNAVAILABLE_BIRTHTIME_NS
+from neocortex.platform.policy import UNAVAILABLE_BIRTHTIME_NS
 
 from neocortex.safety.corpus_access import (
     CorpusAccessPolicy,

@@ -46,7 +46,7 @@ from neocortex.workflow.self_analysis.self_analysis_status import (
     quiescent_sqlite_database,
     read_self_analysis_status,
 )
-from neocortex.cli import entrypoint
+from neocortex.interface.entrypoint import entrypoint
 # endregion [01]
 
 # region [02] Implementación

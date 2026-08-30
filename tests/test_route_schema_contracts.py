@@ -23,7 +23,7 @@ from neocortex.capabilities.formats.office.state import (
     OFFICE_SCHEMA_VERSION,
     initialize_office_state,
 )
-from neocortex.sqlite_schema_contract import SQLiteSchemaContractError
+from neocortex.persistence.sqlite_schema_contract import SQLiteSchemaContractError
 from neocortex.capabilities.formats.text.text_state import TEXT_SCHEMA_VERSION, initialize_text_state
 from neocortex.capabilities.formats.video.state import VIDEO_SCHEMA_VERSION, initialize_video_state
 # endregion [01]

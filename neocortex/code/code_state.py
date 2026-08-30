@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from neocortex.deduplication import FileSnapshot
-from neocortex.platform_policy import sqlite_path_collation
+from neocortex.platform.policy import sqlite_path_collation
 
 from neocortex.runtime.control.cancellation import CancellationRequested
 from .code_contracts import (
@@ -48,7 +48,7 @@ from .external_evidence_store import (
 )
 from neocortex.safety.route_filters import CandidateSelection
 from neocortex.semantic.semantic_models import canonical_json, fingerprint_text
-from neocortex.sqlite_cancellation import (
+from neocortex.persistence.sqlite_cancellation import (
     CancellationCheck,
     SQLiteCancellationBridge,
     sqlite_cancellation_scope,

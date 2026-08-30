@@ -11,7 +11,7 @@ import sys
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
-from neocortex.platform_policy import default_corpus_root
+from neocortex.platform.policy import default_corpus_root
 
 from neocortex import __version__
 

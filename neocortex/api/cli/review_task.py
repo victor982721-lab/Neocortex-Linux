@@ -24,7 +24,7 @@ from neocortex.workflow.review.value_review_port import (
     read_review_task_history,
 )
 
-from .read_api import KnowledgeExitCode, ReadScope, scope_bindings
+from ..read_api import KnowledgeExitCode, ReadScope, scope_bindings
 
 
 REVIEW_TASK_API_SCHEMA = "neocortex.review-task/v1"

@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from neocortex.platform_policy import current_platform_policy
+from neocortex.platform.policy import current_platform_policy
 
 
 # region [01] Per-user paths

@@ -33,7 +33,7 @@ from neocortex.code.code_contracts import (
 )
 from neocortex.code.code_state import CodeState, SkippedCodeObservation
 from neocortex.semantic.semantic_models import fingerprint_bytes, fingerprint_text
-from neocortex.sqlite_cancellation import SQLiteCancellationBridge
+from neocortex.persistence.sqlite_cancellation import SQLiteCancellationBridge
 from neocortex.persistence.sqlite_paths import readonly_sqlite_uri
 # endregion [01]
 

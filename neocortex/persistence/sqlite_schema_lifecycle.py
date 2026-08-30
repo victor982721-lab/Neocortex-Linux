@@ -1,6 +1,6 @@
 """Atomic lifecycle primitives for versioned SQLite application databases."""
 # region [00] Contexto del módulo
-# Módulo: neocortex/sqlite_schema_lifecycle.py
+# Módulo: neocortex/persistence/sqlite_schema_lifecycle.py
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 

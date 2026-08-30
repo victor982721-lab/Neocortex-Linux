@@ -15,7 +15,7 @@ import pytest
 
 import neocortex.api.cli.cli_app as cli_app
 from neocortex.api.cli.cli_parser import build_parser
-from neocortex.cli import entrypoint
+from neocortex.interface.entrypoint import entrypoint
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -134,7 +134,7 @@ def test_cold_leaf_avoids_read_and_runtime_owner_imports_with_bounded_latency(
         import time
 
         started = time.perf_counter()
-        from neocortex.cli import entrypoint
+        from neocortex.interface.entrypoint import entrypoint
 
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             try:
@@ -146,8 +146,8 @@ def test_cold_leaf_avoids_read_and_runtime_owner_imports_with_bounded_latency(
             name
             for name in sys.modules
             if name in {{
-                "neocortex.human_cli",
-                "neocortex.read_api",
+                "neocortex.api.cli.human",
+                "neocortex.api.read_api",
                 "neocortex.api.read_api_port",
             }}
             or name.startswith("neocortex.knowledge_")
@@ -177,8 +177,8 @@ def test_cold_leaf_avoids_read_and_runtime_owner_imports_with_bounded_latency(
 
 
 def test_entrypoint_human_recognizer_matches_the_human_facade_contract() -> None:
-    from neocortex.human_cli import HUMAN_COMMANDS
+    from neocortex.api.cli.human import HUMAN_COMMANDS
 
-    from neocortex import cli
+    from neocortex.interface import entrypoint as cli
 
     assert cli._HUMAN_COMMANDS == HUMAN_COMMANDS

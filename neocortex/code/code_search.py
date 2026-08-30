@@ -16,7 +16,7 @@ from .code_contracts import (
     CodeSearchRelation,
 )
 from .code_schema import connect_code_state, readonly_code_database
-from neocortex.sqlite_cancellation import (
+from neocortex.persistence.sqlite_cancellation import (
     CancellationCheck,
     SQLiteCancellationBridge,
     sqlite_cancellation_scope,

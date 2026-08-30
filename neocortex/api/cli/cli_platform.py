@@ -6,7 +6,7 @@ import json
 import platform
 import sys
 
-from neocortex.platform_policy import LINUX_MUTATION_REASON, current_platform_policy
+from neocortex.platform.policy import LINUX_MUTATION_REASON, current_platform_policy
 
 PLATFORM_REPORT_SCHEMA_VERSION = 1
 

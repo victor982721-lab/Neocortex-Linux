@@ -27,7 +27,7 @@ from .code_analysis_epistemics import (
     validate_analysis_question_evaluation,
 )
 from neocortex.persistence.sqlite_immutable import ImmutableSQLiteUnavailable, immutable_sqlite_database
-from neocortex.sqlite_schema_contract import (
+from neocortex.persistence.sqlite_schema_contract import (
     read_application_schema_version,
     validate_sqlite_schema_contract,
 )

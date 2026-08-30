@@ -19,7 +19,7 @@ from enum import Enum, StrEnum
 from pathlib import Path
 from typing import cast
 
-from neocortex.sqlite_schema_contract import (
+from neocortex.persistence.sqlite_schema_contract import (
     SQLiteSchemaContractError,
     read_application_schema_version,
 )

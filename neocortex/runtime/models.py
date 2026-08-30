@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Literal
 
 from neocortex.enumeration import JournalCursor
 from neocortex.deduplication import DedupPlan, ScanSummary
-from neocortex.platform_policy import (
+from neocortex.platform.policy import (
     default_corpus_root,
     default_local_models_only,
     default_whisper_compute_type,

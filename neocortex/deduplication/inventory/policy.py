@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import ClassVar
 
 import xxhash
-from neocortex.platform_policy import current_platform_policy
+from neocortex.platform.policy import current_platform_policy
 
 
 DEFAULT_EXCLUDED_PATHS = (

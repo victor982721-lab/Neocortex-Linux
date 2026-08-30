@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from neocortex.platform_policy import stat_birthtime_ns
+from neocortex.platform.policy import stat_birthtime_ns
 from neocortex.progress import ProgressCallback, ProgressEvent, emit_progress
 
 from ..domain.errors import InventoryError

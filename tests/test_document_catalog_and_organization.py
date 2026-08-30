@@ -71,7 +71,7 @@ from neocortex.semantic.semantic_state import (
     start_embedding_generation,
     upsert_semantic_item,
 )
-from neocortex.platform_policy import LINUX_MUTATION_REASON
+from neocortex.platform.policy import LINUX_MUTATION_REASON
 from tests.internal_paths_test_support import disjoint_internal_paths_policy
 
 WINDOWS_MUTATION_ONLY = pytest.mark.skipif(

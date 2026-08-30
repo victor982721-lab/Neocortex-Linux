@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Literal
 
 import xxhash
-from neocortex.platform_policy import UNAVAILABLE_BIRTHTIME_NS
+from neocortex.platform.policy import UNAVAILABLE_BIRTHTIME_NS
 
 from neocortex.runtime.config.app_paths import (
     local_application_data_directory,

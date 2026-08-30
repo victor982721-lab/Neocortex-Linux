@@ -14,7 +14,7 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
-from neocortex.platform_policy import stat_birthtime_ns
+from neocortex.platform.policy import stat_birthtime_ns
 from typing import TYPE_CHECKING, Mapping, cast
 
 from neocortex.enumeration import JournalCursor, NtfsUsnError, query_journal_cursor

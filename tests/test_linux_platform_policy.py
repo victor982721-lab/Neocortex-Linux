@@ -21,8 +21,8 @@ from neocortex.api.cli.cli_app import main
 from neocortex.foundation.file_identity import FileIdentity
 from neocortex.knowledge.knowledge_contracts import PhysicalIdentityRef, ResourceRef
 from neocortex.knowledge.knowledge_search_inventory import physical_identity_tuple
-from neocortex.cli import _translate_canonical_arguments, entrypoint
-from neocortex.platform_policy import (
+from neocortex.interface.entrypoint import _translate_canonical_arguments, entrypoint
+from neocortex.platform.policy import (
     LINUX_MUTATION_REASON,
     POSIX_PHYSICAL_IDENTITY_SCHEME,
     current_platform_policy,

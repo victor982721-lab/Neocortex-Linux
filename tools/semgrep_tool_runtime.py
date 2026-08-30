@@ -28,8 +28,8 @@ from pathlib import Path
 if __package__ in {None, ""}:
     sys.path.insert(0, os.fspath(Path(__file__).resolve().parents[1]))
 
-from neocortex import pip_bootstrap
-from neocortex.semgrep_tool_contract import (
+from neocortex.code import pip_bootstrap
+from neocortex.code.semgrep_tool_contract import (
     PIP_BOOTSTRAP_FILENAME,
     PIP_BOOTSTRAP_SHA256,
     PIP_BOOTSTRAP_URL,

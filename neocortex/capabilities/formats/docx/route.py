@@ -26,7 +26,7 @@ from neocortex.progress import (
     ProgressMetric,
     emit_progress,
 )
-from neocortex.platform_policy import sqlite_path_collation
+from neocortex.platform.policy import sqlite_path_collation
 
 from neocortex.runtime.control.cancellation import CancellationRequested, CancellationToken
 from neocortex.foundation.file_identity import file_key_from_snapshot as _file_key

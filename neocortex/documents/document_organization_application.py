@@ -13,7 +13,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from neocortex.platform_policy import sqlite_path_collation, stat_birthtime_ns
+from neocortex.platform.policy import sqlite_path_collation, stat_birthtime_ns
 
 from neocortex.deduplication import FileSnapshot, snapshot_path
 from neocortex.progress import (

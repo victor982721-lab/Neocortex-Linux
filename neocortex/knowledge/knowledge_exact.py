@@ -22,7 +22,7 @@ from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
 
-from neocortex.platform_policy import (
+from neocortex.platform.policy import (
     UNAVAILABLE_BIRTHTIME_NS,
     physical_identity_scheme_for_birthtime,
     sqlite_path_collation,
@@ -47,7 +47,7 @@ from .knowledge_contracts import (
 from .knowledge_planner import KnowledgePlan
 from .knowledge_snapshot import KnowledgeStatePaths
 from neocortex.semantic.semantic_models import canonical_json, fingerprint_text
-from neocortex.sqlite_connection import (
+from neocortex.persistence.sqlite_connection import (
     READONLY_EXISTING,
     SQLiteConnectionPolicy,
     connect_sqlite,

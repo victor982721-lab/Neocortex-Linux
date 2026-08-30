@@ -91,7 +91,7 @@ from neocortex.semantic.semantic_lexical import (
     search_lexical_sources,
 )
 from neocortex.semantic.semantic_models import ResolvedSearchHit, canonical_json, fingerprint_text
-from neocortex.sqlite_cancellation import SQLiteCancellationBridge, sqlite_cancellation_scope
+from neocortex.persistence.sqlite_cancellation import SQLiteCancellationBridge, sqlite_cancellation_scope
 from neocortex.persistence.sqlite_paths import readonly_sqlite_uri
 
 # region [01] Public search facade and runtime constants

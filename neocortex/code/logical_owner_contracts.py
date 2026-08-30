@@ -108,7 +108,7 @@ LOGICAL_OWNER_SPECS = (
     LogicalOwnerSpec(
         "capability",
         (
-            _selector("capability-broker", "exact_module", "neocortex.capability_broker"),
+            _selector("capability-broker", "exact_module", "neocortex.capabilities.broker"),
             _selector("capability-manifests", "exact_module", "neocortex.capabilities"),
         ),
     ),
@@ -189,11 +189,11 @@ LOGICAL_OWNER_SPECS = (
     LogicalOwnerSpec(
         "interface",
         (
-            _selector("cli-core-modules", "module_prefix", "neocortex.api.cli"),
+            _selector("cli-core-modules", "module_prefix", "neocortex.api.cli.cli_"),
             _selector("gui-package", "module_tree", "neocortex.interface"),
-            _selector("public-cli", "exact_module", "neocortex.cli"),
-            _selector("public-human-cli", "exact_module", "neocortex.human_cli"),
-            _selector("public-read-api", "exact_module", "neocortex.read_api"),
+            _selector("public-cli", "exact_module", "neocortex.interface.entrypoint"),
+            _selector("public-human-cli", "exact_module", "neocortex.api.cli.human"),
+            _selector("public-read-api", "exact_module", "neocortex.api.read_api"),
         ),
     ),
     LogicalOwnerSpec(
@@ -289,12 +289,12 @@ LOGICAL_OWNER_SPECS = (
             _selector(
                 "review-task-public-adapter",
                 "exact_module",
-                "neocortex.review_task_cli_adapter",
+                "neocortex.api.cli.review_task",
             ),
             _selector(
                 "value-review-public-adapter",
                 "exact_module",
-                "neocortex.value_cli_adapter",
+                "neocortex.api.cli.value_review",
             ),
         ),
         ("framework",),

@@ -26,10 +26,10 @@ class SharedReadClient:
     @staticmethod
     def _execute_selected(request: ReadRequest) -> object:
         if request.operation == "review":
-            adapter = importlib.import_module("neocortex.value_cli_adapter")
+            adapter = importlib.import_module("neocortex.api.cli.value_review")
             return adapter.value_review_payload(request.scope, limit=request.limit)
 
-        read_api = importlib.import_module("neocortex.read_api")
+        read_api = importlib.import_module("neocortex.api.read_api")
         if request.operation == "status":
             return read_api.status_payload(request.scope)
         if request.operation == "search":

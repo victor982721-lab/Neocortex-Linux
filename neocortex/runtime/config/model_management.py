@@ -6,7 +6,7 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from neocortex.platform_policy import current_platform_policy
+from neocortex.platform.policy import current_platform_policy
 
 from neocortex.foundation.processing_provenance import distribution_component
 from neocortex.semantic.semantic_config import production_models

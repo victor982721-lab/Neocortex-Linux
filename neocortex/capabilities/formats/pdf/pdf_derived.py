@@ -19,7 +19,7 @@ from pathlib import Path
 import xxhash
 
 from neocortex.progress import ProgressCallback, ProgressEvent, ProgressMetric, emit_progress
-from neocortex.platform_policy import sqlite_path_collation
+from neocortex.platform.policy import sqlite_path_collation
 
 from neocortex.runtime.control.cancellation import CancellationRequested, CancellationToken
 from .pdf_derived_queries import (

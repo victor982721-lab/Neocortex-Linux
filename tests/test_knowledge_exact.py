@@ -48,7 +48,7 @@ from neocortex.knowledge.knowledge_planner import (
 )
 from neocortex.knowledge.knowledge_snapshot import KnowledgeStatePaths
 from neocortex.semantic.semantic_models import fingerprint_text
-from neocortex.platform_policy import sqlite_path_collation
+from neocortex.platform.policy import sqlite_path_collation
 # endregion [01]
 
 # region [02] Implementación

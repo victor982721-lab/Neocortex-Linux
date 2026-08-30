@@ -35,7 +35,7 @@ from neocortex.semantic.semantic_models import (
     EmbeddingModelSpec,
     EmbeddingRequest,
 )
-from neocortex.sqlite_cancellation import SQLiteCancellationBridge
+from neocortex.persistence.sqlite_cancellation import SQLiteCancellationBridge
 # endregion [01]
 
 # region [02] Implementación

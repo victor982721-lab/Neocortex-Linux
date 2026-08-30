@@ -7,7 +7,7 @@ from dataclasses import asdict, dataclass
 from functools import lru_cache
 from pathlib import Path
 
-from neocortex.sqlite_connection import (
+from neocortex.persistence.sqlite_connection import (
     READONLY_EXISTING,
     READWRITE_CREATE,
     READWRITE_EXISTING,
@@ -16,7 +16,7 @@ from neocortex.sqlite_connection import (
     connect_sqlite,
 )
 
-from neocortex.sqlite_schema_contract import (
+from neocortex.persistence.sqlite_schema_contract import (
     SQLiteSchemaContract,
     read_metadata_schema_version,
     schema_contract_from_builder,
