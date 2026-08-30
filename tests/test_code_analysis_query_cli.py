@@ -50,7 +50,7 @@ def _args(
 
 
 def _install_engine(monkeypatch: pytest.MonkeyPatch, callback: Any) -> None:
-    module = ModuleType("_04_Nucleo_Operativo.code_analysis_query")
+    module = ModuleType("neocortex.code.code_analysis_query")
     module.CodeAnalysisQuery = _FakeQuery  # type: ignore[attr-defined]
     module.query_code_analysis = callback  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, module.__name__, module)

@@ -10,7 +10,7 @@ import subprocess
 from pathlib import Path
 from typing import Any, Mapping
 
-from _04_Nucleo_Operativo.bounded_subprocess import SubprocessOutputLimitError, run_bounded_capture
+from neocortex.runtime.control.bounded_subprocess import SubprocessOutputLimitError, run_bounded_capture
 from .models import (
     SubtitleStreamProbe,
     VideoMediaProbe,

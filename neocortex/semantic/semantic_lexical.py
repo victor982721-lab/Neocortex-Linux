@@ -26,7 +26,7 @@ from neocortex.sqlite_cancellation import (
     SQLiteCancellationBridge,
     sqlite_cancellation_scope,
 )
-from _04_Nucleo_Operativo.sqlite_paths import readonly_sqlite_uri
+from neocortex.persistence.sqlite_paths import readonly_sqlite_uri
 
 # region [01] Public contracts and limits
 

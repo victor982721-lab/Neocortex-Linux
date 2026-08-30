@@ -1,0 +1,48 @@
+rules:
+  - id: neocortex.no-shell-true
+    message: Neocortex subprocesses must never enable shell=True.
+    languages: [python]
+    severity: ERROR
+    metadata:
+      category: project_invariant
+      confidence: HIGH
+      technology: [python]
+      neocortex_code: NEOCORTEX_NO_SHELL_TRUE
+      neocortex_rule_schema: neocortex.semgrep-project-invariant-rule/v1
+    pattern: $CALL(..., shell=True, ...)
+
+  - id: neocortex.no-provider-mutation-authority
+    message: External evidence providers must never claim mutation authority.
+    languages: [python]
+    severity: ERROR
+    paths:
+      include:
+        - "**/_04_Nucleo_Operativo/external_*.py"
+    metadata:
+      category: project_invariant
+      confidence: HIGH
+      technology: [python]
+      neocortex_code: NEOCORTEX_NO_PROVIDER_MUTATION_AUTHORITY
+      neocortex_rule_schema: neocortex.semgrep-project-invariant-rule/v1
+    pattern-either:
+      - pattern: $CALL(..., mutation_authority=True, ...)
+      - pattern: '{"mutation_authority": True, ...}'
+      - pattern: mutation_authority = True
+      - pattern: $OBJECT.mutation_authority = True
+
+  - id: neocortex.no-external-provider-autofix
+    message: External evidence providers must never activate autofix or fix mode.
+    languages: [python]
+    severity: ERROR
+    paths:
+      include:
+        - "**/_04_Nucleo_Operativo/external_*.py"
+    metadata:
+      category: project_invariant
+      confidence: HIGH
+      technology: [python]
+      neocortex_code: NEOCORTEX_NO_EXTERNAL_PROVIDER_AUTOFIX
+      neocortex_rule_schema: neocortex.semgrep-project-invariant-rule/v1
+    pattern-either:
+      - pattern: '"--autofix"'
+      - pattern: '"--fix"'

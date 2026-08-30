@@ -1,13 +1,12 @@
-"""Compatibility facade for filesystem-safe existing-file SQLite URIs."""
+"""Compatibility alias for canonical SQLite paths."""
 
 from __future__ import annotations
 
-from neocortex.sqlite_schema_lifecycle import existing_sqlite_uri, readonly_sqlite_uri
+import sys
+from importlib import import_module
+from typing import TYPE_CHECKING
 
-
-# region [01] Existing-file URI policy
-
-__all__ = ["existing_sqlite_uri", "readonly_sqlite_uri"]
-
-
-# endregion [01]
+if TYPE_CHECKING:
+    from neocortex.persistence.sqlite_paths import *  # noqa: F403
+else:
+    sys.modules[__name__] = import_module("neocortex.persistence.sqlite_paths")

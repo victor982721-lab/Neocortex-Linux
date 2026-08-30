@@ -184,7 +184,7 @@ def _print_canonical_help(command: tuple[str, str]) -> None:
         help="emit one canonical JSON capability report",
     )
     if command in _CODE_ANALYSIS_CANONICAL_COMMANDS:
-        from _04_Nucleo_Operativo.app_paths import self_analysis_data_directory
+        from neocortex.runtime.config.app_paths import self_analysis_data_directory
 
         parser.add_argument(
             "--state-directory",
@@ -315,7 +315,7 @@ def _translate_canonical_arguments(arguments: Sequence[str]) -> list[str]:
         token == "--state-directory" or token.startswith("--state-directory=")
         for token in remaining
     ):
-        from _04_Nucleo_Operativo.app_paths import self_analysis_data_directory
+        from neocortex.runtime.config.app_paths import self_analysis_data_directory
 
         translated.extend(("--state-directory", str(self_analysis_data_directory())))
     translate_options = True
@@ -397,7 +397,7 @@ def entrypoint(arguments: Sequence[str] | None = None) -> int:
             _print_canonical_help(command)
             return 0
         forwarded = _translate_canonical_arguments(forwarded)
-        from _04_Nucleo_Operativo.cli_app import main as run_cli
+        from neocortex.api.cli.cli_app import main as run_cli
 
         return run_cli(forwarded)
     except KeyboardInterrupt:

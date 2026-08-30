@@ -19,7 +19,7 @@ from neocortex.sqlite_connection import (
     connect_sqlite,
 )
 
-from _04_Nucleo_Operativo.sqlite_schema_contract import (
+from neocortex.sqlite_schema_contract import (
     SQLiteSchemaContract,
     read_metadata_schema_version,
     schema_contract_from_builder,
@@ -572,7 +572,7 @@ def read_text_status(path: Path) -> TextStatus:
 
 
 def search_text_state(path: Path, query: str, limit: int = 20) -> tuple[TextSearchHit, ...]:
-    from _04_Nucleo_Operativo.semantic_lexical import compile_natural_fts_query
+    from neocortex.semantic.semantic_lexical import compile_natural_fts_query
 
     if not 1 <= limit <= MAX_TEXT_QUERY_RESULTS:
         raise ValueError(f"text result limit must be between 1 and {MAX_TEXT_QUERY_RESULTS}")

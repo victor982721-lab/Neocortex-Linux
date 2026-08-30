@@ -27,7 +27,7 @@ from .knowledge_planner_steps import (
     validate_knowledge_plan_v3,
     validate_retrieval_step,
 )
-from _04_Nucleo_Operativo.semantic_models import canonical_json, fingerprint_text
+from neocortex.semantic.semantic_models import canonical_json, fingerprint_text
 
 
 # region [01] Public query and plan contracts

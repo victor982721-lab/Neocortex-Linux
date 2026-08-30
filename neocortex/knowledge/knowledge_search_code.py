@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from _04_Nucleo_Operativo.code_contracts import CodeSearchHit, CodeSearchQuery, CodeSearchRelation
+from neocortex.code.code_contracts import CodeSearchHit, CodeSearchQuery, CodeSearchRelation
 from neocortex.foundation.file_identity import FileIdentity
 from .knowledge_contracts import (
     EvidenceMethod,
@@ -29,7 +29,7 @@ from .knowledge_contracts import (
 from .knowledge_planner import KnowledgePlan
 from .knowledge_search_contracts import KnowledgeCandidate, RankingExecution
 from .knowledge_snapshot import KnowledgeStatePaths
-from _04_Nucleo_Operativo.semantic_models import ContentFingerprint
+from neocortex.semantic.semantic_models import ContentFingerprint
 from neocortex.sqlite_cancellation import SQLiteCancellationBridge
 
 

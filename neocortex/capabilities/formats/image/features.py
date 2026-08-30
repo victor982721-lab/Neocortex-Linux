@@ -19,7 +19,7 @@ from .decode import (
 )
 from .models import Features
 from .policy import MIB, SAMPLE_SIDE
-from _04_Nucleo_Operativo.memory_runtime import MemoryResourceLimits, WeightedMemoryGate
+from neocortex.runtime.control.memory_runtime import MemoryResourceLimits, WeightedMemoryGate
 
 try:
     from PIL import Image, ImageFilter, ImageOps, ImageStat

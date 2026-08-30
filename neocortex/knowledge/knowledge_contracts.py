@@ -23,7 +23,7 @@ from .knowledge_contract_validation import (
     optional_text as _contract_optional_text_impl,
     required_text as _contract_required_text_impl,
 )
-from _04_Nucleo_Operativo.semantic_models import canonical_json, fingerprint_text
+from neocortex.semantic.semantic_models import canonical_json, fingerprint_text
 
 # region [01] Versions, bounds and stable vocabulary
 

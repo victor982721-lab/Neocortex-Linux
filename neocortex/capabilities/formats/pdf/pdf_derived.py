@@ -24,7 +24,7 @@ import xxhash
 from neocortex.progress import ProgressCallback, ProgressEvent, ProgressMetric, emit_progress
 from neocortex.platform_policy import sqlite_path_collation
 
-from _04_Nucleo_Operativo.cancellation import CancellationRequested, CancellationToken
+from neocortex.runtime.control.cancellation import CancellationRequested, CancellationToken
 from .pdf_derived_queries import (
     list_layout_groups as list_layout_groups,
     search_pdf_state as search_pdf_state,

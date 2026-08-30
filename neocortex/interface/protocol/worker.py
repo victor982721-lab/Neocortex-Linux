@@ -201,11 +201,11 @@ def _parse_worker_arguments(
 def _prepare_framework(
     arguments: Sequence[str],
 ) -> tuple[Any, Callable[[Any], bool], _WorkerHeartbeat]:
-    from _04_Nucleo_Operativo.cli_config import framework_config_from_args
-    from _04_Nucleo_Operativo.cli_parser import build_parser
-    from _04_Nucleo_Operativo.cli_reporting import has_organization_errors
-    from _04_Nucleo_Operativo.cli_validation import validate_arguments
-    from _04_Nucleo_Operativo.orchestrator import FrameworkOrchestrator
+    from neocortex.api.cli.cli_config import framework_config_from_args
+    from neocortex.api.cli.cli_parser import build_parser
+    from neocortex.api.cli.cli_reporting import has_organization_errors
+    from neocortex.api.cli.cli_validation import validate_arguments
+    from neocortex.runtime.orchestration.orchestrator import FrameworkOrchestrator
 
     parsed = _parse_worker_arguments(arguments, build_parser, validate_arguments)
     config = framework_config_from_args(parsed)

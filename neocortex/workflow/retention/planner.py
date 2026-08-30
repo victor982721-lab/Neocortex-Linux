@@ -24,13 +24,15 @@ from typing import Literal
 from neocortex.deduplication import schema as inventory_schema
 from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
 
-from _04_Nucleo_Operativo import document_catalog_schema, framework_schema, semantic_schema
+from neocortex.documents import document_catalog_schema
+from neocortex.persistence import framework_schema
+from neocortex.semantic import semantic_schema
 from neocortex.workflow.review.review_task_repository import (
     MAX_REVIEW_TASK_SOURCE_PUBLICATION_HEADS,
     audit_latest_review_task_source_publications_from_connection,
 )
-from _04_Nucleo_Operativo.sqlite_paths import readonly_sqlite_uri
-from _04_Nucleo_Operativo.sqlite_schema_contract import validate_sqlite_schema_contract
+from neocortex.persistence.sqlite_paths import readonly_sqlite_uri
+from neocortex.sqlite_schema_contract import validate_sqlite_schema_contract
 # endregion [01]
 
 # region [02] Implementación

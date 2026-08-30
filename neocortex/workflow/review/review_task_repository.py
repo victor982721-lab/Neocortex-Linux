@@ -18,8 +18,8 @@ from pathlib import Path
 from typing import cast
 
 from neocortex.workflow.review import review_task_contracts as _contracts
-from _04_Nucleo_Operativo.framework_connection import connect_existing_framework
-from _04_Nucleo_Operativo.framework_schema import validate_framework_schema_v22
+from neocortex.persistence.framework_connection import connect_existing_framework
+from neocortex.persistence.framework_schema import validate_framework_schema_v22
 from neocortex.workflow.review.review_task_contracts import (
     MAX_REVIEW_TASK_READ_PAGE,
     MAX_REVIEW_TASKS_PER_PAGE,

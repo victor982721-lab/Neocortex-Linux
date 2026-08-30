@@ -18,7 +18,7 @@ from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
 from neocortex import __version__
-from _04_Nucleo_Operativo.app_paths import default_state_directory
+from neocortex.runtime.config.app_paths import default_state_directory
 
 from ..presentation.assets import application_icon_path
 from ..presentation.theme import STYLESHEET

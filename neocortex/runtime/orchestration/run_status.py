@@ -8,7 +8,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from _04_Nucleo_Operativo.framework_connection import connect_existing_framework
+from neocortex.persistence.framework_connection import connect_existing_framework
 from neocortex.runtime.orchestration.run_lifecycle import (
     DEFAULT_STALE_HEARTBEAT_SECONDS,
     process_is_alive,

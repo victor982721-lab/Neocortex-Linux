@@ -27,16 +27,16 @@ from neocortex.sqlite_schema_contract import (
 )
 from neocortex.platform_policy import sqlite_path_collation
 
-from _04_Nucleo_Operativo import document_catalog_schema
+from neocortex.documents import document_catalog_schema
 from neocortex.capabilities.formats.text import text_state
-from _04_Nucleo_Operativo import semantic_schema as semantic_schema_module
+from neocortex.semantic import semantic_schema as semantic_schema_module
 from neocortex.capabilities.formats.audio import state as audio_state
 from neocortex.capabilities.formats.archive import state as archive_state
 from neocortex.capabilities.formats.docx.schema import validate_docx_schema
 from neocortex.capabilities.formats.office import state as office_state
 from neocortex.capabilities.formats.video import state as video_state
-from _04_Nucleo_Operativo.code_schema import validate_code_schema
-from _04_Nucleo_Operativo.framework_schema import (
+from neocortex.code.code_schema import validate_code_schema
+from neocortex.persistence.framework_schema import (
     validate_framework_schema_v19,
     validate_framework_schema_v20,
     validate_framework_schema_v21,
@@ -52,15 +52,15 @@ from .knowledge_contracts import (
     SnapshotConsistency,
 )
 from neocortex.capabilities.formats.pdf.pdf_schema import validate_pdf_schema
-from _04_Nucleo_Operativo.semantic_models import canonical_json
+from neocortex.semantic.semantic_models import canonical_json
 from neocortex.sqlite_cancellation import SQLiteCancellationBridge, sqlite_cancellation_scope
-from _04_Nucleo_Operativo.sqlite_immutable import (
+from neocortex.persistence.sqlite_immutable import (
     ImmutableSQLiteUnavailable,
     SQLiteImmutableFence,
     capture_sqlite_immutable_fence,
 )
-from _04_Nucleo_Operativo.sqlite_paths import readonly_sqlite_uri
-from _04_Nucleo_Operativo.state_topology_contracts import STATE_STORE_REGISTRY
+from neocortex.persistence.sqlite_paths import readonly_sqlite_uri
+from neocortex.safety.state_topology_contracts import STATE_STORE_REGISTRY
 
 
 # region [01] Owner registry and state paths

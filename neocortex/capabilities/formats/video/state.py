@@ -29,7 +29,7 @@ from neocortex.sqlite_connection import (
 from neocortex.platform_policy import sqlite_path_collation
 
 from neocortex.foundation.file_identity import file_key_from_snapshot
-from _04_Nucleo_Operativo.sqlite_schema_contract import (
+from neocortex.sqlite_schema_contract import (
     SQLiteSchemaContract,
     read_metadata_schema_version,
     schema_contract_from_builder,
@@ -779,7 +779,7 @@ def search_video_state(
 ) -> list[dict[str, Any]]:
     """Search frame OCR and an optional published audio transcript with mm:ss evidence."""
 
-    from _04_Nucleo_Operativo.semantic_lexical import compile_natural_fts_query
+    from neocortex.semantic.semantic_lexical import compile_natural_fts_query
 
     normalized_query = compile_natural_fts_query(query)
     if not 1 <= limit <= 1000:
@@ -837,7 +837,7 @@ def _search_linked_audio(
     if not audio_state_path.is_file() or limit <= 0:
         return []
     from ..audio.state import audio_database
-    from _04_Nucleo_Operativo.semantic_lexical import compile_natural_fts_query
+    from neocortex.semantic.semantic_lexical import compile_natural_fts_query
 
     normalized_query = compile_natural_fts_query(query)
 

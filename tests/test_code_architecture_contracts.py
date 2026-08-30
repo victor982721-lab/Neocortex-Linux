@@ -38,10 +38,9 @@ def test_declared_boundary_entry_points_pass_with_acyclic_v5_baseline() -> None:
         "neocortex.deduplication.inventory.scanner",
         "neocortex.platform_policy",
         "neocortex.sqlite_schema_contract",
-        "_04_Nucleo_Operativo",
-        "_04_Nucleo_Operativo.app_paths",
-        "_04_Nucleo_Operativo.cli_app",
-        "_04_Nucleo_Operativo.cli_config",
+            "neocortex.api",
+            "neocortex.api.cli.cli_app",
+            "neocortex.api.cli.cli_config",
         "neocortex.interface",
         "neocortex.interface.application.app",
         "neocortex.interface.protocol.worker",
@@ -49,22 +48,22 @@ def test_declared_boundary_entry_points_pass_with_acyclic_v5_baseline() -> None:
         "neocortex.progress.events",
     }
     imports = (
-        ModuleImport("neocortex.deduplication.__main__", "_04_Nucleo_Operativo.app_paths"),
-        ModuleImport("neocortex.deduplication.__main__", "_04_Nucleo_Operativo.cli_app"),
+            ModuleImport("neocortex.deduplication.__main__", "neocortex.runtime.config.app_paths"),
+            ModuleImport("neocortex.deduplication.__main__", "neocortex.api.cli.cli_app"),
         ModuleImport("neocortex.deduplication.__main__", "neocortex.platform_policy"),
         ModuleImport("neocortex.deduplication.inventory.scanner", "neocortex.progress"),
         ModuleImport(
             "neocortex.enumeration.path_index.schema",
             "neocortex.sqlite_schema_contract",
         ),
-        ModuleImport("neocortex.cli", "_04_Nucleo_Operativo.app_paths"),
-        ModuleImport("neocortex.cli", "_04_Nucleo_Operativo.cli_app"),
+            ModuleImport("neocortex.cli", "neocortex.runtime.config.app_paths"),
+            ModuleImport("neocortex.cli", "neocortex.api.cli.cli_app"),
         ModuleImport("neocortex.cli", "neocortex.interface.application.app"),
         ModuleImport("neocortex.cli", "neocortex.interface.protocol.worker"),
-        ModuleImport("neocortex.interface.application.app", "_04_Nucleo_Operativo.app_paths"),
-        ModuleImport("neocortex.interface.protocol.worker", "_04_Nucleo_Operativo.cli_config"),
+            ModuleImport("neocortex.interface.application.app", "neocortex.runtime.config.app_paths"),
+            ModuleImport("neocortex.interface.protocol.worker", "neocortex.api.cli.cli_config"),
         ModuleImport("neocortex.interface.application.app", "neocortex.platform_policy"),
-        ModuleImport("neocortex.sdk", "_04_Nucleo_Operativo"),
+            ModuleImport("neocortex.sdk", "neocortex.api.public"),
     )
 
     evaluations = _evaluations(modules, imports)
@@ -185,17 +184,7 @@ def test_live_repository_graph_satisfies_published_architecture_contracts() -> N
             or item["imported"].startswith("neocortex.interface.")
         )
     }
-    assert crossings == {
-        ("neocortex.read_api", "_04_Nucleo_Operativo.read_api_port"),
-        (
-            "neocortex.value_cli_adapter",
-            "_04_Nucleo_Operativo.value_review_port",
-        ),
-        (
-            "neocortex.review_task_cli_adapter",
-            "_04_Nucleo_Operativo.value_review_port",
-        ),
-    }
+    assert crossings == set()
 
     central_component = next(
         (

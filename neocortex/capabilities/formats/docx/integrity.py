@@ -10,7 +10,7 @@ from typing import Callable, Iterable
 
 from neocortex.deduplication import FileChangedError
 
-from _04_Nucleo_Operativo.memory_runtime import MemoryBudgetExceeded
+from neocortex.runtime.control.memory_runtime import MemoryBudgetExceeded
 from neocortex.platform.zip_safety import (
     RawDeflateMember,
     ZipStructureError,

@@ -10,7 +10,7 @@ import zlib
 from dataclasses import dataclass
 from pathlib import Path
 
-from _04_Nucleo_Operativo.ocr_profiles import OcrProfileName, resolve_ocr_profile
+from neocortex.safety.ocr_profiles import OcrProfileName, resolve_ocr_profile
 from .pdf_state import connect_pdf_state
 from neocortex.foundation.processing_provenance import resolve_tesseract_runtime
 

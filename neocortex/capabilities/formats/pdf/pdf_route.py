@@ -32,7 +32,7 @@ from neocortex.progress import (
     emit_progress,
 )
 
-from _04_Nucleo_Operativo.cancellation import CancellationRequested, CancellationToken
+from neocortex.runtime.control.cancellation import CancellationRequested, CancellationToken
 from .pdf_cache import binary_fingerprint
 from .pdf_derived import PdfDerivedIndexer, PdfDerivedSummary
 from .pdf_isolation import (
@@ -43,7 +43,7 @@ from .pdf_isolation import (
     _ocr_page_result,
     stream_isolated_extraction,
 )
-from _04_Nucleo_Operativo.ocr_profiles import native_text_quality, resolve_ocr_profile
+from neocortex.safety.ocr_profiles import native_text_quality, resolve_ocr_profile
 from .pdf_runtime import (
     PdfResourceError,
     PdfResourceGate,
@@ -72,14 +72,14 @@ from .pdf_route_storage import (
 )
 from .pdf_state import initialize_pdf_state, pdf_database
 from .pdf_writer import serialized_pdf_write
-from _04_Nucleo_Operativo.retry_policy import (
+from neocortex.runtime.control.retry_policy import (
     PDF_RETRYABLE_PAGE_ERROR_SQL,
     PdfFailureDiagnostic,
     classify_pdf_failure,
 )
-from _04_Nucleo_Operativo.review import ReviewCandidate
-from _04_Nucleo_Operativo.route_filters import CandidateSelection
-from _04_Nucleo_Operativo.state import (
+from neocortex.workflow.review.review import ReviewCandidate
+from neocortex.safety.route_filters import CandidateSelection
+from neocortex.persistence.state import (
     REVIEW_RECONCILIATION_BATCH_SIZE,
     ReviewCandidateReconciliation,
 )
@@ -2029,8 +2029,8 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
     ) -> bool:
         """Recycle one unchanged, contentless PDF and synchronize durable state."""
 
-        from _04_Nucleo_Operativo.actions import FrameworkActions
-        from _04_Nucleo_Operativo.state import FrameworkState
+        from neocortex.workflow.actions.actions import FrameworkActions
+        from neocortex.persistence.state import FrameworkState
 
         with self._recycle_lock:
             try:

@@ -51,9 +51,9 @@ from neocortex.deduplication.fingerprinting import snapshot_path, stat_matches_s
 from neocortex.deduplication.io import native_io_path
 from neocortex.progress import ProgressCallback, ProgressEvent, ProgressMetric, emit_progress
 
-from _04_Nucleo_Operativo.bounded_subprocess import SubprocessOutputLimitError, run_bounded_capture
-from _04_Nucleo_Operativo.cancellation import CancellationRequested, CancellationToken
-from _04_Nucleo_Operativo.derivation_contracts import (
+from neocortex.runtime.control.bounded_subprocess import SubprocessOutputLimitError, run_bounded_capture
+from neocortex.runtime.control.cancellation import CancellationRequested, CancellationToken
+from neocortex.semantic.derivation_contracts import (
     CapabilityFailure,
     InputBinding,
     MaterializationRef,
@@ -64,22 +64,22 @@ from _04_Nucleo_Operativo.derivation_contracts import (
     WorkOutcome,
 )
 from neocortex.foundation.file_identity import file_key_from_snapshot
-from _04_Nucleo_Operativo.knowledge_contracts import (
+from neocortex.knowledge.knowledge_contracts import (
     PhysicalIdentityRef,
     ResourceDisposition,
     ResourceRef,
     RevisionRef,
     RevisionState,
 )
-from _04_Nucleo_Operativo.locking import FrameworkRunLock
+from neocortex.runtime.control.locking import FrameworkRunLock
 from neocortex.foundation.processing_provenance import (
     ROUTE_SUMMARY_SCHEMA,
     ProcessingProvenance,
     build_processing_provenance,
     python_runtime_component,
 )
-from _04_Nucleo_Operativo.route_filters import CandidateSelection
-from _04_Nucleo_Operativo.semantic_models import canonical_json, fingerprint_text
+from neocortex.safety.route_filters import CandidateSelection
+from neocortex.semantic.semantic_models import canonical_json, fingerprint_text
 from .text_derivation_repository import (
     TextDerivationAttemptStart,
     TextDerivationIntegrityError,

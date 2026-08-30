@@ -25,7 +25,7 @@ from neocortex.progress import (
     emit_progress,
 )
 
-from _04_Nucleo_Operativo.cancellation import CancellationRequested, CancellationToken
+from neocortex.runtime.control.cancellation import CancellationRequested, CancellationToken
 from .analysis import (
     ANALYSIS_VERSION,
     DEFAULT_VISUAL_CLASSIFIER,
@@ -76,17 +76,17 @@ from .state import (
     store_error_batch,
     store_success_batch,
 )
-from _04_Nucleo_Operativo.memory_runtime import MemoryBudgetExceeded, MemoryHeadroomTimeout
-from _04_Nucleo_Operativo.ocr_profiles import OcrProfileName
+from neocortex.runtime.control.memory_runtime import MemoryBudgetExceeded, MemoryHeadroomTimeout
+from neocortex.safety.ocr_profiles import OcrProfileName
 from neocortex.foundation.processing_provenance import (
     ROUTE_SUMMARY_SCHEMA,
     ProcessingProvenance,
     build_processing_provenance,
     distribution_component,
 )
-from _04_Nucleo_Operativo.review import ReviewCandidate
-from _04_Nucleo_Operativo.route_filters import CandidateSelection
-from _04_Nucleo_Operativo.state import ReviewCandidateReconciliation
+from neocortex.workflow.review.review import ReviewCandidate
+from neocortex.safety.route_filters import CandidateSelection
+from neocortex.persistence.state import ReviewCandidateReconciliation
 
 
 class ImageRouteState(Protocol):

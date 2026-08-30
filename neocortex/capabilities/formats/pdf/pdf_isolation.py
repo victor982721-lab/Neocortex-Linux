@@ -20,13 +20,13 @@ from typing import Any, Iterator, Literal
 
 from neocortex.deduplication import FileSnapshot, stat_matches_snapshot
 
-from _04_Nucleo_Operativo.cancellation import CancellationToken
-from _04_Nucleo_Operativo.isolated_process import (
+from neocortex.runtime.control.cancellation import CancellationToken
+from neocortex.runtime.control.isolated_process import (
     close_isolated_process as _close_process_handles,
     isolated_spawn_process,
     terminate_isolated_process as _terminate_process_tree,
 )
-from _04_Nucleo_Operativo.retry_policy import (
+from neocortex.runtime.control.retry_policy import (
     classify_pdf_failure,
     is_ocr_scale_retryable_failure,
 )
@@ -34,8 +34,8 @@ from .pdf_route_models import (
     PDF_PAGE_SEQUENCE_ERROR_LIMIT,
     STRUCTURAL_RECOVERY_VERSION,
 )
-from _04_Nucleo_Operativo.ocr_image_preprocess import orient_and_deskew
-from _04_Nucleo_Operativo.ocr_profiles import (
+from neocortex.safety.ocr_image_preprocess import orient_and_deskew
+from neocortex.safety.ocr_profiles import (
     OcrOrientation,
     OcrProfileName,
     contains_traditional_han,
@@ -46,7 +46,7 @@ from _04_Nucleo_Operativo.ocr_profiles import (
     route_ocr_languages,
     should_use_ocr_fallback,
 )
-from _04_Nucleo_Operativo.sqlite_paths import readonly_sqlite_uri
+from neocortex.persistence.sqlite_paths import readonly_sqlite_uri
 
 
 # region [01] Process protocol

@@ -18,8 +18,8 @@ from neocortex.foundation.processing_provenance import (
     executable_component,
     resolve_tesseract_runtime,
 )
-from _04_Nucleo_Operativo.ocr_profiles import OcrProfileName, resolve_ocr_profile
-from _04_Nucleo_Operativo.route_filters import CandidateSelection
+from neocortex.safety.ocr_profiles import OcrProfileName, resolve_ocr_profile
+from neocortex.safety.route_filters import CandidateSelection
 
 
 # region [01] Versioned limits

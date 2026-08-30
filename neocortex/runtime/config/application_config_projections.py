@@ -35,8 +35,8 @@ class _DeferredTypeModule:
 
 if TYPE_CHECKING:
     from neocortex.capabilities.formats.audio import models as _audio_contracts
-    from _04_Nucleo_Operativo import code_contracts as _code_contracts
-    from _04_Nucleo_Operativo import global_resources as _resource_contracts
+    from neocortex.code import code_contracts as _code_contracts
+    from neocortex.runtime.control import global_resources as _resource_contracts
     from neocortex.runtime import models as _application_contracts
     from neocortex.capabilities.formats.office import route as _office_contracts
     from neocortex.capabilities.formats.pdf import pdf_route_models as _pdf_contracts
@@ -49,14 +49,14 @@ else:
     _application_contracts = _DeferredTypeModule("neocortex.runtime.models")
     _archive_contracts = _DeferredTypeModule("neocortex.capabilities.formats.archive.route")
     _audio_contracts = _DeferredTypeModule("neocortex.capabilities.formats.audio.models")
-    _code_contracts = _DeferredTypeModule("_04_Nucleo_Operativo.code_contracts")
+    _code_contracts = _DeferredTypeModule("neocortex.code.code_contracts")
     _docx_contracts = _DeferredTypeModule("neocortex.capabilities.formats.docx.models")
     _image_contracts = _DeferredTypeModule("neocortex.capabilities.formats.image.route")
     _office_contracts = _DeferredTypeModule("neocortex.capabilities.formats.office.route")
     _pdf_contracts = _DeferredTypeModule("neocortex.capabilities.formats.pdf.pdf_route_models")
     _text_contracts = _DeferredTypeModule("neocortex.capabilities.formats.text.text_route")
     _video_contracts = _DeferredTypeModule("neocortex.capabilities.formats.video.route")
-    _resource_contracts = _DeferredTypeModule("_04_Nucleo_Operativo.global_resources")
+    _resource_contracts = _DeferredTypeModule("neocortex.runtime.control.global_resources")
 
 __all__ = [
     "archive_route_config_from_application",
@@ -248,7 +248,7 @@ def code_route_config_from_application(
 ) -> _code_contracts.CodeRouteConfig:
     """Project current application values into the code owner's contract."""
 
-    from _04_Nucleo_Operativo.code_contracts import CodeRouteConfig
+    from neocortex.code.code_contracts import CodeRouteConfig
 
     return CodeRouteConfig(
         state_path=config.code_database,
@@ -443,7 +443,7 @@ def global_resource_limits_from_application(
 ) -> _resource_contracts.GlobalResourceLimits:
     """Project current application values into resource-owner limits."""
 
-    from _04_Nucleo_Operativo.global_resources import GlobalResourceLimits
+    from neocortex.runtime.control.global_resources import GlobalResourceLimits
 
     return GlobalResourceLimits(
         memory_budget_bytes=config.global_memory_budget_bytes,

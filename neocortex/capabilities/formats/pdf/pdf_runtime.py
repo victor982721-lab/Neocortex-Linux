@@ -13,8 +13,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
-from _04_Nucleo_Operativo.cancellation import CancellationToken
-from _04_Nucleo_Operativo.memory_runtime import posix_physical_memory_snapshot
+from neocortex.runtime.control.cancellation import CancellationToken
+from neocortex.runtime.control.memory_runtime import posix_physical_memory_snapshot
 
 
 # region [01] Limits, snapshots and errors

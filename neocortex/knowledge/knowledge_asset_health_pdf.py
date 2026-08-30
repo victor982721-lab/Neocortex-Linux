@@ -20,7 +20,7 @@ from neocortex.sqlite_schema_contract import (
 from neocortex.foundation.file_identity import encode_file_identity
 from .knowledge_asset_health_contracts import KnowledgeAssetIdentity
 from neocortex.capabilities.formats.pdf.pdf_schema import PDF_SCHEMA_VERSION, validate_pdf_schema
-from _04_Nucleo_Operativo.sqlite_immutable import ImmutableSQLiteUnavailable, immutable_sqlite_database
+from neocortex.persistence.sqlite_immutable import ImmutableSQLiteUnavailable, immutable_sqlite_database
 
 
 PDF_STRUCTURAL_RECOVERY_VERSION = "pdf-structural-recovery-v2"

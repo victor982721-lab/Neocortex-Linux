@@ -31,9 +31,9 @@ from neocortex.platform_policy import (
     sqlite_path_collation,
 )
 
-from _04_Nucleo_Operativo.code_detection import LANGUAGE_EXTENSIONS
-from _04_Nucleo_Operativo.code_schema import readonly_code_database
-from _04_Nucleo_Operativo.document_catalog import connect_document_catalog
+from neocortex.code.code_detection import LANGUAGE_EXTENSIONS
+from neocortex.code.code_schema import readonly_code_database
+from neocortex.documents.document_catalog import connect_document_catalog
 from neocortex.foundation.file_identity import FileIdentity, FileIdentityError
 from .knowledge_contracts import (
     EvidenceMethod,
@@ -49,7 +49,7 @@ from .knowledge_contracts import (
 )
 from .knowledge_planner import KnowledgePlan
 from .knowledge_snapshot import KnowledgeStatePaths
-from _04_Nucleo_Operativo.semantic_models import canonical_json, fingerprint_text
+from neocortex.semantic.semantic_models import canonical_json, fingerprint_text
 from neocortex.sqlite_connection import (
     READONLY_EXISTING,
     SQLiteConnectionPolicy,

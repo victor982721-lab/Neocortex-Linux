@@ -8,7 +8,7 @@ import time
 from collections.abc import Callable, Mapping
 from typing import TextIO
 
-from _04_Nucleo_Operativo.value_review_port import (
+from neocortex.workflow.review.value_review_port import (
     KnowledgeExitCode,
     ValueReviewAvailability,
     ValueReviewPaths,

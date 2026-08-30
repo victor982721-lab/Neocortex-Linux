@@ -437,7 +437,7 @@ def index_text_embeddings(
         if "code" in result.sources and result.complete:
             if len(result.generations) != 1:
                 raise RuntimeError("Code Semantic linking requires exactly one text generation")
-            from .code_semantic_links import synchronize_code_embedding_links
+            from neocortex.code.code_semantic_links import synchronize_code_embedding_links
 
             summary = result.generations[0].summary
             synchronize_code_embedding_links(

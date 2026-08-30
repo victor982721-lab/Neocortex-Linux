@@ -8,7 +8,7 @@ import threading
 import time
 from pathlib import Path
 
-from _04_Nucleo_Operativo.framework_connection import connect_existing_framework
+from neocortex.persistence.framework_connection import connect_existing_framework
 
 from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
 

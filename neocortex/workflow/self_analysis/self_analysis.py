@@ -16,7 +16,7 @@ from neocortex.deduplication.inventory.index import (
     DEFAULT_GENERATED_DIRECTORY_PREFIXES,
 )
 
-from _04_Nucleo_Operativo.code_contracts import (
+from neocortex.code.code_contracts import (
     _legacy_deep_configuration_payload,
     deep_configuration_payload,
     deep_configuration_signature,

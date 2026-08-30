@@ -29,7 +29,7 @@ from .knowledge_contracts import (
     KnowledgeHit,
     SnapshotConsistency,
 )
-from _04_Nucleo_Operativo.semantic_models import canonical_json, fingerprint_text
+from neocortex.semantic.semantic_models import canonical_json, fingerprint_text
 
 if TYPE_CHECKING:
     from .knowledge_search import KnowledgeSearchResult

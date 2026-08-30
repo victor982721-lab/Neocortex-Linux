@@ -10,7 +10,7 @@ from typing import Any, IO
 
 import xxhash
 
-from _04_Nucleo_Operativo.cancellation import CancellationToken
+from neocortex.runtime.control.cancellation import CancellationToken
 from .models import ALGORITHM_VERSION
 
 

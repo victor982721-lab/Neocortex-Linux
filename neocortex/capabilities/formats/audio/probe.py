@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .models import AudioProcessingError, MediaProbe
-from _04_Nucleo_Operativo.bounded_subprocess import (
+from neocortex.runtime.control.bounded_subprocess import (
     SubprocessOutputLimitError,
     run_bounded_capture,
 )

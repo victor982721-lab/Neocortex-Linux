@@ -21,7 +21,7 @@ from neocortex.sqlite_schema_contract import (
     validate_sqlite_schema_contract,
 )
 
-from _04_Nucleo_Operativo.document_catalog_schema import (
+from neocortex.documents.document_catalog_schema import (
     CATALOG_SCHEMA_VERSION,
     document_catalog_schema_contract,
 )
@@ -43,8 +43,8 @@ from .knowledge_asset_health_pdf import (
     read_pdf_health_records,
 )
 from neocortex.capabilities.formats.pdf.pdf_schema import PDF_SCHEMA_VERSION
-from _04_Nucleo_Operativo.semantic_models import canonical_json, fingerprint_text
-from _04_Nucleo_Operativo.sqlite_immutable import ImmutableSQLiteUnavailable, immutable_sqlite_database
+from neocortex.semantic.semantic_models import canonical_json, fingerprint_text
+from neocortex.persistence.sqlite_immutable import ImmutableSQLiteUnavailable, immutable_sqlite_database
 from neocortex.capabilities.formats.text.text_state import TEXT_SCHEMA_VERSION, text_schema_contract
 
 

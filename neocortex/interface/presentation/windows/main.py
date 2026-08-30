@@ -40,7 +40,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from _04_Nucleo_Operativo.app_paths import default_ui_settings_path
+from neocortex.runtime.config.app_paths import default_ui_settings_path
 
 from ...application.controller import WorkerController
 from ...application.elevation import is_elevated, start_elevated_ui

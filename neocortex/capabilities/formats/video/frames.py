@@ -23,8 +23,8 @@ from typing import Literal
 
 import xxhash
 
-from _04_Nucleo_Operativo.bounded_subprocess import SubprocessOutputLimitError, run_bounded_capture
-from _04_Nucleo_Operativo.cancellation import CancellationToken
+from neocortex.runtime.control.bounded_subprocess import SubprocessOutputLimitError, run_bounded_capture
+from neocortex.runtime.control.cancellation import CancellationToken
 from neocortex.capabilities.formats.image.png import probe_png_structure
 from .models import VideoProcessingError
 

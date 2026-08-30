@@ -13,7 +13,7 @@ from neocortex.foundation.processing_provenance import (
     executable_component,
     python_runtime_component,
 )
-from _04_Nucleo_Operativo.route_filters import CandidateSelection
+from neocortex.safety.route_filters import CandidateSelection
 
 
 # region [01] Processing configuration

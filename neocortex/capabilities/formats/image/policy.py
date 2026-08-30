@@ -6,7 +6,7 @@ from . import preserve_legacy_module as _preserve_legacy_module
 
 import re
 
-from _04_Nucleo_Operativo.semantic_ontology import (
+from neocortex.semantic.semantic_ontology import (
     INDUSTRIAL_ACTIVITY_HINTS as INDUSTRIAL_ACTIVITY_HINTS,
     INDUSTRIAL_ENTITY_HINTS as INDUSTRIAL_ENTITY_HINTS,
     OPERATIONAL_CONTEXT_HINTS as OPERATIONAL_CONTEXT_HINTS,

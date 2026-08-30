@@ -21,7 +21,7 @@ from .knowledge_contracts import (
     ResourceRef,
     RevisionRef,
 )
-from _04_Nucleo_Operativo.semantic_models import canonical_json
+from neocortex.semantic.semantic_models import canonical_json
 # endregion [01]
 
 # region [02] Implementación

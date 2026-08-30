@@ -335,7 +335,7 @@ def resolve_legacy_label(family: str, label: str) -> str:
 def iter_document_concepts() -> Iterable[ConceptSpec]:
     """Expose every deterministic document label through the shared namespace."""
 
-    from _04_Nucleo_Operativo.document_taxonomy import semantic_label_inventory
+    from neocortex.documents.document_taxonomy import semantic_label_inventory
 
     family_map: tuple[tuple[str, ConceptFamily], ...] = (
         ("document_kind", "document_kind"),

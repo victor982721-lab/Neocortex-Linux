@@ -28,18 +28,18 @@ from neocortex.enumeration import (
 from neocortex.deduplication import DedupIndex, InventoryCheckpoint, InventoryError
 from neocortex.progress import ProgressCallback
 
-from _04_Nucleo_Operativo.corpus_access import CorpusAccessPolicy
-from _04_Nucleo_Operativo.framework_state_writer import (
+from neocortex.safety.corpus_access import CorpusAccessPolicy
+from neocortex.persistence.framework_state_writer import (
     DurableInventoryOwner,
     read_latest_durable_inventory_owner,
 )
-from _04_Nucleo_Operativo.inventory_boundary import (
+from neocortex.integrations.inventory.inventory_boundary import (
     NormalInventoryBoundary,
     build_normal_inventory_boundary,
     initialize_authorized_state_directory,
 )
 from neocortex.runtime.models import FrameworkConfig
-from _04_Nucleo_Operativo.orchestrator import FrameworkOrchestrator
+from neocortex.runtime.orchestration.orchestrator import FrameworkOrchestrator
 from neocortex.runtime.control.watcher_life_lease import (
     WatcherLifeLease,
     WatcherLifeLeaseConflict,

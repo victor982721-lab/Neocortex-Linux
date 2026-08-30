@@ -20,7 +20,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from _04_Nucleo_Operativo.derivation_contracts import (
+from neocortex.semantic.derivation_contracts import (
     DERIVATION_CONTRACT_SCHEMA_VERSION,
     MAX_IDENTIFIER_CHARS,
     CapabilityFailure,
@@ -33,7 +33,7 @@ from _04_Nucleo_Operativo.derivation_contracts import (
     WorkOutcome,
     WorkReceipt,
 )
-from _04_Nucleo_Operativo.knowledge_contracts import (
+from neocortex.knowledge.knowledge_contracts import (
     PhysicalIdentityRef,
     ResourceDisposition,
     ResourceRef,
@@ -41,7 +41,7 @@ from _04_Nucleo_Operativo.knowledge_contracts import (
     RevisionState,
 )
 from neocortex.foundation.file_identity import FileIdentityEncoding, decode_file_identity
-from _04_Nucleo_Operativo.semantic_models import canonical_json, fingerprint_text
+from neocortex.semantic.semantic_models import canonical_json, fingerprint_text
 from .text_state import TEXT_SCHEMA_VERSION, _validate_reader, text_database
 
 

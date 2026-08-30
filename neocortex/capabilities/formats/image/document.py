@@ -26,10 +26,10 @@ from typing import Literal, cast
 
 from PIL import Image
 
-from _04_Nucleo_Operativo.bounded_subprocess import run_bounded_capture
+from neocortex.runtime.control.bounded_subprocess import run_bounded_capture
 from .decode import pillow_decode_scope
-from _04_Nucleo_Operativo.ocr_image_preprocess import bounded_grayscale, orient_and_deskew
-from _04_Nucleo_Operativo.ocr_profiles import (
+from neocortex.safety.ocr_image_preprocess import bounded_grayscale, orient_and_deskew
+from neocortex.safety.ocr_profiles import (
     OcrOrientation,
     OcrProfileName,
     contains_traditional_han,

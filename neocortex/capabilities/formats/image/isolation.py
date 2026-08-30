@@ -12,7 +12,7 @@ from typing import Any
 
 from PIL import Image
 
-from _04_Nucleo_Operativo.cancellation import CancellationRequested, CancellationToken
+from neocortex.runtime.control.cancellation import CancellationRequested, CancellationToken
 from .decode import pillow_decode_scope
 from .errors import (
     ImageFailure,
@@ -30,7 +30,7 @@ from .document import (
     DOCUMENT_OCR_MEMORY_BYTES,
     DocumentVerifierRuntime,
 )
-from _04_Nucleo_Operativo.isolated_process import (
+from neocortex.runtime.control.isolated_process import (
     close_isolated_process,
     isolated_spawn_process,
     set_isolated_process_memory_limit,

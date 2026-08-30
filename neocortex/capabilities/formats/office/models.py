@@ -14,7 +14,7 @@ from neocortex.foundation.processing_provenance import (
     distribution_component,
     python_runtime_component,
 )
-from _04_Nucleo_Operativo.route_filters import CandidateSelection
+from neocortex.safety.route_filters import CandidateSelection
 
 OFFICE_ROUTE_VERSION = "office-route-v2"
 XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"

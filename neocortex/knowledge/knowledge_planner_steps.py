@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Protocol, TypeVar
 
-from _04_Nucleo_Operativo.code_detection import LANGUAGE_EXTENSIONS
+from neocortex.code.code_detection import LANGUAGE_EXTENSIONS
 # endregion [01]
 
 # region [02] Implementación

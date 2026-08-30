@@ -22,7 +22,7 @@ from typing import Any, Iterable, Mapping
 
 import xxhash
 
-from _04_Nucleo_Operativo.bounded_subprocess import run_bounded_capture
+from neocortex.runtime.control.bounded_subprocess import run_bounded_capture
 
 
 # region [01] Canonical manifest and signature contracts

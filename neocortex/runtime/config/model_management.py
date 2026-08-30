@@ -10,8 +10,8 @@ from pathlib import Path
 from neocortex.platform_policy import current_platform_policy
 
 from neocortex.foundation.processing_provenance import distribution_component
-from _04_Nucleo_Operativo.semantic_config import production_models
-from _04_Nucleo_Operativo.semantic_preparation import (
+from neocortex.semantic.semantic_config import production_models
+from neocortex.semantic.semantic_preparation import (
     SemanticModelUnavailableError,
     prepare_semantic_models,
     require_local_fastembed_model,

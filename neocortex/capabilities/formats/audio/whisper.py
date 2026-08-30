@@ -18,8 +18,8 @@ from .models import (
     WhisperRuntime,
     WhisperRuntimeError,
 )
-from _04_Nucleo_Operativo.cancellation import CancellationRequested, CancellationToken
-from _04_Nucleo_Operativo.isolated_process import (
+from neocortex.runtime.control.cancellation import CancellationRequested, CancellationToken
+from neocortex.runtime.control.isolated_process import (
     close_isolated_process,
     isolated_spawn_process,
     terminate_isolated_process,

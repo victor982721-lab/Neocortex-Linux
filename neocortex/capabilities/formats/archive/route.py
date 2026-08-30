@@ -27,12 +27,12 @@ from neocortex.deduplication.fingerprinting import snapshot_path, stat_matches_s
 from neocortex.deduplication.io import native_io_path
 from neocortex.progress import ProgressCallback, ProgressEvent, ProgressMetric, emit_progress
 
-from _04_Nucleo_Operativo.action_policy import same_snapshot
-from _04_Nucleo_Operativo.bounded_subprocess import (
+from neocortex.workflow.actions.action_policy import same_snapshot
+from neocortex.runtime.control.bounded_subprocess import (
     SubprocessOutputLimitError,
     run_bounded_capture,
 )
-from _04_Nucleo_Operativo.cancellation import CancellationToken
+from neocortex.runtime.control.cancellation import CancellationToken
 from neocortex.foundation.file_identity import file_key_from_snapshot
 from neocortex.platform.zip_safety import (
     DEFAULT_MAX_CENTRAL_DIRECTORY_BYTES,
@@ -47,8 +47,8 @@ from neocortex.foundation.processing_provenance import (
     resolve_tesseract_runtime,
     python_runtime_component,
 )
-from _04_Nucleo_Operativo.route_filters import CandidateSelection
-from _04_Nucleo_Operativo.state import FrameworkRouteState
+from neocortex.safety.route_filters import CandidateSelection
+from neocortex.persistence.state import FrameworkRouteState
 from .models import ArchiveRouteSummary
 from .state import archive_database, initialize_archive_state
 

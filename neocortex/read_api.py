@@ -14,7 +14,7 @@ from dataclasses import asdict, dataclass
 from enum import StrEnum
 from pathlib import Path
 
-from _04_Nucleo_Operativo.read_api_port import (
+from neocortex.api.read_api_port import (
     CodeSearchQuery,
     KnowledgeCompleteness,
     KnowledgeExitCode,

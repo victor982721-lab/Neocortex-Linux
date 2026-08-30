@@ -33,7 +33,7 @@ from _04_Nucleo_Operativo.platform.shared.capability_registry import (
 )
 
 
-_FORMATS_ROOT = "_04_Nucleo_Operativo.capabilities.formats"
+_FORMATS_ROOT = "neocortex.capabilities.formats"
 _EXPECTED_TEST_ROOTS = {
     "archive": (
         "tests/test_archive_cli.py",
@@ -545,7 +545,7 @@ def test_registry_rejects_duplicate_overlap_and_inconsistent_state() -> None:
         modules=(
             replace(
                 archive.modules[0],
-                legacy_module_id=f"{_FORMATS_ROOT}.docx.compat_models",
+                    legacy_module_id="_04_Nucleo_Operativo.capabilities.formats.docx.compat_models",
             ),
             *archive.modules[1:],
         ),

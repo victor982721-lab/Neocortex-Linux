@@ -1,8 +1,7 @@
-"""Stable, read-only Python facade for the existing Knowledge Plane.
+"""Stable, read-only Python facade for the canonical Knowledge Plane.
 
-The implementation remains in the operational package during the compatible
-transition.  Symbols are resolved lazily and cached here without wrapping or
-subclassing them, so legacy and canonical imports retain object identity.
+Symbols are resolved lazily and cached here without wrapping or subclassing
+them, so legacy and canonical imports retain object identity.
 The supported operations are the existing ``KnowledgeSearchService`` methods
 ``status()``, ``search()`` and ``context()``; this module deliberately adds no
 future Knowledge endpoints.
@@ -17,7 +16,7 @@ from importlib import import_module
 from typing import TYPE_CHECKING, Any, Final
 
 if TYPE_CHECKING:
-    from _04_Nucleo_Operativo import (
+    from neocortex.api.public import (
         CapabilityFailure as CapabilityFailure,
         ContextBundle as ContextBundle,
         ContextContradictionRef as ContextContradictionRef,
@@ -96,7 +95,7 @@ __all__ = (
 )
 
 _PUBLIC_NAMES: Final = frozenset(__all__)
-_LEGACY_FACADE: Final = "_04_Nucleo_Operativo"
+_PUBLIC_FACADE: Final = "neocortex.api.public"
 
 # endregion [01]
 
@@ -105,12 +104,12 @@ _LEGACY_FACADE: Final = "_04_Nucleo_Operativo"
 
 
 def __getattr__(name: str) -> Any:
-    """Resolve one canonical SDK symbol through the compatible legacy facade."""
+    """Resolve one SDK symbol through the canonical public facade."""
 
     if name not in _PUBLIC_NAMES:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    legacy = import_module(_LEGACY_FACADE)
-    value = getattr(legacy, name)
+    public = import_module(_PUBLIC_FACADE)
+    value = getattr(public, name)
     globals()[name] = value
     return value
 

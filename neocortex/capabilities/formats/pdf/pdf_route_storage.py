@@ -21,7 +21,7 @@ from .pdf_route_models import PdfRouteConfig
 from .pdf_runtime import ensure_free_space
 from .pdf_state import pdf_database
 from .pdf_writer import serialized_pdf_write
-from _04_Nucleo_Operativo.retry_policy import retry_delay_seconds
+from neocortex.runtime.control.retry_policy import retry_delay_seconds
 
 
 # region [01] Persistence bounds and host contract

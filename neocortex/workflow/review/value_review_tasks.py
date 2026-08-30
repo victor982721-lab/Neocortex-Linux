@@ -27,8 +27,8 @@ from neocortex.sqlite_schema_contract import (
     read_application_schema_version,
 )
 
-from _04_Nucleo_Operativo.framework_schema import SCHEMA_VERSION as FRAMEWORK_SCHEMA_VERSION
-from _04_Nucleo_Operativo.knowledge_contracts import (
+from neocortex.persistence.framework_schema import SCHEMA_VERSION as FRAMEWORK_SCHEMA_VERSION
+from neocortex.knowledge.knowledge_contracts import (
     EvidenceMethod,
     EvidenceRef,
     PhysicalIdentityRef,
@@ -49,7 +49,7 @@ from neocortex.workflow.review.review_task_contracts import (
     ReviewTaskState,
     ReviewTaskVersionHead,
 )
-from _04_Nucleo_Operativo.sqlite_paths import readonly_sqlite_uri
+from neocortex.persistence.sqlite_paths import readonly_sqlite_uri
 from neocortex.workflow.review.value_review import rank_value_observations
 from neocortex.workflow.review.value_review_contracts import (
     VALUE_REVIEW_CONTRACT_VERSION,
@@ -539,7 +539,7 @@ def refresh_value_review_tasks(
     logical_keys = tuple(_logical_key(scope, item) for item in actionable)
 
     _checkpoint(cancellation_check)
-    from _04_Nucleo_Operativo.framework_state_writer import FrameworkState
+    from neocortex.persistence.framework_state_writer import FrameworkState
     from neocortex.runtime.control.locking import FrameworkRunLock
 
     database = Path(database)

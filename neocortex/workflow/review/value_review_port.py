@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
 
-from _04_Nucleo_Operativo.cli_knowledge import KnowledgeExitCode
+from neocortex.api.cli.cli_knowledge import KnowledgeExitCode
 from neocortex.workflow.review.value_review import preview_value_review
 from neocortex.workflow.review.value_review_contracts import (
     ValueReviewAvailability,

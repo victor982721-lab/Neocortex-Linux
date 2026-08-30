@@ -21,8 +21,8 @@ from neocortex.enumeration import (
 from neocortex.deduplication import schema as inventory_schema
 from neocortex.sqlite_schema_contract import read_metadata_schema_version
 
-from _04_Nucleo_Operativo import framework_schema
-from _04_Nucleo_Operativo.corpus_access import CorpusAccessPolicy, ProtectedAnalysisRootError
+from neocortex.persistence import framework_schema
+from neocortex.safety.corpus_access import CorpusAccessPolicy, ProtectedAnalysisRootError
 from neocortex.workflow.self_analysis.self_analysis import (
     MAX_SELF_ANALYSIS_MANIFEST_BYTES,
     SELF_ANALYSIS_MANIFEST_MESSAGE,
@@ -43,7 +43,7 @@ from neocortex.workflow.self_analysis.self_analysis_manifest import (
     manifest_integer,
     manifest_mapping,
 )
-from _04_Nucleo_Operativo.sqlite_immutable import (
+from neocortex.persistence.sqlite_immutable import (
     ImmutableSQLiteUnavailable,
     capture_sqlite_immutable_fence,
     immutable_sqlite_database,

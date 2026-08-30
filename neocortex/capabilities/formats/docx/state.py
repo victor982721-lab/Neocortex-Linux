@@ -14,7 +14,7 @@ from neocortex.sqlite_connection import (
     connect_sqlite,
 )
 
-from _04_Nucleo_Operativo.sqlite_schema_lifecycle import initialize_versioned_sqlite_schema
+from neocortex.sqlite_schema_lifecycle import initialize_versioned_sqlite_schema
 from .schema import (
     DOCX_SCHEMA_VERSION,
     UNKNOWN_BIRTHTIME_NS as DOCX_UNKNOWN_BIRTHTIME_NS,

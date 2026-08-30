@@ -1,104 +1,12 @@
-"""Declared core port for NeoCortex's bounded read-only public facade.
-
-Only the fixed-scope public adapter should consume this module.  Keeping the
-cross-package contract here prevents ``neocortex.read_api`` from depending on
-the internal layout of the Knowledge, Code and path owners.
-"""
+"""Compatibility alias for canonical read API port."""
 
 from __future__ import annotations
 
-from pathlib import Path
+import sys
+from importlib import import_module
 from typing import TYPE_CHECKING
 
-from .app_paths import default_state_directory, self_analysis_data_directory
-from .cli_knowledge import (
-    KnowledgeExitCode,
-    knowledge_context_exit_code,
-    knowledge_search_exit_code,
-)
-from .code_contracts import CodeSearchQuery
-from .code_search import available_search_modes, search_code
-from .knowledge_contracts import (
-    KnowledgeCompleteness,
-    KnowledgeSnapshot,
-    OwnerAvailability,
-    SnapshotConsistency,
-)
-from .knowledge_planner import KnowledgeQuery, RetrievalMode
-from .knowledge_service import KnowledgeSearchService
-from .knowledge_snapshot import KnowledgeStatePaths
-
 if TYPE_CHECKING:
-    from .code_question_resolver import CodeQuestionResolution
-    from .knowledge_asset_health_contracts import KnowledgeAssetHealthReport
-
-
-def inspect_derivation_lineage(
-    state_directory: Path,
-    identifier: str,
-) -> dict[str, object]:
-    """Load the lineage reader only when that explicit surface is invoked."""
-
-    from .derivation_lineage_service import inspect_derivation_lineage as inspect
-
-    return inspect(state_directory, identifier)
-
-
-def validate_knowledge_asset_resource_id(resource_id: str) -> str:
-    """Validate one stable asset identifier through the owner contract."""
-
-    from .knowledge_asset_health_contracts import KnowledgeAssetHealthQuery
-
-    return KnowledgeAssetHealthQuery(resource_id).resource_id
-
-
-def inspect_knowledge_asset_health(
-    state_directory: Path,
-    resource_id: str,
-) -> KnowledgeAssetHealthReport:
-    """Load the Health owner only for an explicit fixed-scope inspection."""
-
-    from .knowledge_asset_health import inspect_knowledge_asset_health as inspect
-    from .knowledge_asset_health_contracts import KnowledgeAssetHealthQuery
-
-    return inspect(
-        KnowledgeStatePaths.from_directory(state_directory),
-        KnowledgeAssetHealthQuery(resource_id),
-    )
-
-
-def resolve_code_question(
-    state_directory: Path,
-    question_id: str,
-    *,
-    limit: int = 10,
-) -> CodeQuestionResolution:
-    """Load the focal Code reader only for an exact bounded question."""
-
-    from .code_question_resolver import resolve_code_question as resolve
-
-    return resolve(state_directory, question_id, limit=limit)
-
-
-__all__ = (
-    "CodeSearchQuery",
-    "KnowledgeCompleteness",
-    "KnowledgeExitCode",
-    "KnowledgeQuery",
-    "KnowledgeSearchService",
-    "KnowledgeSnapshot",
-    "KnowledgeStatePaths",
-    "OwnerAvailability",
-    "RetrievalMode",
-    "SnapshotConsistency",
-    "available_search_modes",
-    "default_state_directory",
-    "inspect_derivation_lineage",
-    "inspect_knowledge_asset_health",
-    "knowledge_context_exit_code",
-    "knowledge_search_exit_code",
-    "resolve_code_question",
-    "search_code",
-    "self_analysis_data_directory",
-    "validate_knowledge_asset_resource_id",
-)
+    from neocortex.api.read_api_port import *  # noqa: F403
+else:
+    sys.modules[__name__] = import_module("neocortex.api.read_api_port")

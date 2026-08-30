@@ -43,20 +43,20 @@ from .knowledge_search_contracts import (
     ResourceDiscoverySignal,
 )
 from .knowledge_snapshot import KnowledgeStatePaths
-from _04_Nucleo_Operativo.semantic_lexical import (
+from neocortex.semantic.semantic_lexical import (
     LexicalAvailability,
     LexicalRanking,
     LexicalStatePaths,
 )
-from _04_Nucleo_Operativo.semantic_models import ContentFingerprint, ResolvedSearchHit
-from _04_Nucleo_Operativo.semantic_sources import SEMANTIC_TITLE_POLICY, SEMANTIC_TITLE_SECTION_KIND
+from neocortex.semantic.semantic_models import ContentFingerprint, ResolvedSearchHit
+from neocortex.semantic.semantic_sources import SEMANTIC_TITLE_POLICY, SEMANTIC_TITLE_SECTION_KIND
 from neocortex.sqlite_cancellation import SQLiteCancellationBridge
 # endregion [01]
 
 # region [02] Implementación
 
 if TYPE_CHECKING:
-    from _04_Nucleo_Operativo.semantic_service_contracts import (
+    from neocortex.semantic.semantic_service_contracts import (
         SemanticRanking,
         SemanticSearchResult,
     )

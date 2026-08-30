@@ -24,7 +24,7 @@ from neocortex.sqlite_connection import (
 from neocortex.platform_policy import sqlite_path_collation
 
 from neocortex.foundation.file_identity import file_key_from_snapshot as _file_key
-from _04_Nucleo_Operativo.sqlite_schema_contract import (
+from neocortex.sqlite_schema_contract import (
     SQLiteSchemaContract,
     read_metadata_schema_version,
     schema_contract_from_builder,

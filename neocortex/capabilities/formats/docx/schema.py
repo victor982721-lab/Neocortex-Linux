@@ -8,7 +8,7 @@ from functools import lru_cache
 
 from neocortex.platform_policy import sqlite_path_collation
 
-from _04_Nucleo_Operativo.sqlite_schema_contract import (
+from neocortex.sqlite_schema_contract import (
     SQLiteSchemaContract,
     SQLiteSchemaContractError,
     schema_contract_from_builder,

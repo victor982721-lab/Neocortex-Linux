@@ -9,8 +9,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from _04_Nucleo_Operativo.framework_connection import connect_existing_framework
-from _04_Nucleo_Operativo.run_status import list_run_status
+from neocortex.persistence.framework_connection import connect_existing_framework
+from neocortex.runtime.orchestration.run_status import list_run_status
 
 from .issues import route_issue_count
 

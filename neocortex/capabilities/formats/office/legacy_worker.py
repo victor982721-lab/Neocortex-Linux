@@ -13,7 +13,7 @@ import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from _04_Nucleo_Operativo.bounded_subprocess import SubprocessOutputLimitError, run_bounded_capture
+from neocortex.runtime.control.bounded_subprocess import SubprocessOutputLimitError, run_bounded_capture
 
 _MAX_BACKEND_BYTES = 16 * 1024 * 1024
 

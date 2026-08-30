@@ -254,14 +254,14 @@ def test_each_direct_flag_selects_and_lazily_dispatches_its_registered_handler(
     direct_module = ModuleType(operation.module_name)
     setattr(direct_module, handler_name, handler)
     with patch(
-        "_04_Nucleo_Operativo.cli_operations.importlib.import_module",
+        "neocortex.api.cli.cli_operations.importlib.import_module",
         return_value=direct_module,
     ) as import_module:
         assert dispatch_direct(args) == 37
 
     import_module.assert_called_once_with(
         operation.module_name,
-        package="_04_Nucleo_Operativo",
+        package="neocortex.api.cli",
     )
     handler.assert_called_once_with(args)
 

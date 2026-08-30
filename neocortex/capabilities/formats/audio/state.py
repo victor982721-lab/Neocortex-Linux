@@ -17,7 +17,7 @@ from neocortex.sqlite_connection import (
 )
 from neocortex.platform_policy import sqlite_path_collation
 
-from _04_Nucleo_Operativo.sqlite_schema_contract import (
+from neocortex.sqlite_schema_contract import (
     SQLiteSchemaContract,
     read_metadata_schema_version,
     schema_contract_from_builder,

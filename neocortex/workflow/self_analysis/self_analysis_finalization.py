@@ -12,7 +12,7 @@ from typing import cast
 from neocortex.enumeration import JournalCursor
 from neocortex.deduplication import InventoryExclusionPolicy
 
-from _04_Nucleo_Operativo.corpus_access import CorpusAccessPolicy
+from neocortex.safety.corpus_access import CorpusAccessPolicy
 from neocortex.workflow.self_analysis.self_analysis import (
     build_self_analysis_completion_manifest,
 )

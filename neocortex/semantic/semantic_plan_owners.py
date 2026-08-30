@@ -57,7 +57,7 @@ from neocortex.sqlite_cancellation import (
     SQLiteCancellationBridge,
     sqlite_cancellation_scope,
 )
-from _04_Nucleo_Operativo.sqlite_paths import readonly_sqlite_uri
+from neocortex.persistence.sqlite_paths import readonly_sqlite_uri
 from neocortex.sqlite_schema_contract import (
     read_application_schema_version,
     validate_sqlite_schema_contract,
@@ -301,7 +301,7 @@ def _validate_source_schema(
             ),
         )
     if source_kind == "code":
-        from _04_Nucleo_Operativo import code_schema
+        from neocortex.code import code_schema
 
         def validate_code(connection: sqlite3.Connection) -> None:
             if code_schema._read_version(connection) != code_schema.CODE_SCHEMA_VERSION:

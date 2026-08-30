@@ -16,12 +16,12 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
-from _04_Nucleo_Operativo import semantic_service
-from _04_Nucleo_Operativo.code_contracts import CodeSearchHit, CodeSearchQuery, CodeSearchRelation
-from _04_Nucleo_Operativo.code_detection import LANGUAGE_EXTENSIONS
-from _04_Nucleo_Operativo.code_schema import connect_code_state
-from _04_Nucleo_Operativo.code_search import search_code
-from _04_Nucleo_Operativo.document_catalog import document_catalog_database
+from neocortex.semantic import semantic_service
+from neocortex.code.code_contracts import CodeSearchHit, CodeSearchQuery, CodeSearchRelation
+from neocortex.code.code_detection import LANGUAGE_EXTENSIONS
+from neocortex.code.code_schema import connect_code_state
+from neocortex.code.code_search import search_code
+from neocortex.documents.document_catalog import document_catalog_database
 from neocortex.foundation.file_identity import FileIdentity, FileIdentityEncoding, FileIdentityError
 from .knowledge_contracts import (
     MAX_EVIDENCE_IDENTIFIER_COMPONENT_CHARS,
@@ -88,14 +88,14 @@ from .knowledge_search_fusion import (
     overlaps_or_too_close as _fusion_overlaps_or_too_close,
 )
 from .knowledge_snapshot import KnowledgeStatePaths
-from _04_Nucleo_Operativo.semantic_lexical import (
+from neocortex.semantic.semantic_lexical import (
     LexicalAvailability,
     LexicalStatePaths,
     search_lexical_sources,
 )
-from _04_Nucleo_Operativo.semantic_models import ResolvedSearchHit, canonical_json, fingerprint_text
+from neocortex.semantic.semantic_models import ResolvedSearchHit, canonical_json, fingerprint_text
 from neocortex.sqlite_cancellation import SQLiteCancellationBridge, sqlite_cancellation_scope
-from _04_Nucleo_Operativo.sqlite_paths import readonly_sqlite_uri
+from neocortex.persistence.sqlite_paths import readonly_sqlite_uri
 
 # region [01] Public search facade and runtime constants
 

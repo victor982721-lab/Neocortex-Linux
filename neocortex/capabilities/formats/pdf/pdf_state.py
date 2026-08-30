@@ -24,7 +24,7 @@ from .pdf_schema import (
     validate_pdf_metadata,
     validate_pdf_schema,
 )
-from _04_Nucleo_Operativo.sqlite_schema_lifecycle import initialize_versioned_sqlite_schema
+from neocortex.sqlite_schema_lifecycle import initialize_versioned_sqlite_schema
 
 
 # region [01] Schema constants

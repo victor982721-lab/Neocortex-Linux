@@ -10,7 +10,7 @@ import time
 from neocortex.deduplication import DedupIndex, FileChangedError, FileSnapshot
 from neocortex.platform_policy import sqlite_path_collation
 
-from _04_Nucleo_Operativo.cancellation import CancellationToken
+from neocortex.runtime.control.cancellation import CancellationToken
 from neocortex.foundation.file_identity import file_key_from_snapshot as file_key
 from .pdf_cache import binary_fingerprint
 from .pdf_route_models import (
@@ -20,7 +20,7 @@ from .pdf_route_models import (
 )
 from .pdf_state import UNKNOWN_BIRTHTIME_NS, pdf_database
 from .pdf_writer import serialized_pdf_write
-from _04_Nucleo_Operativo.retry_policy import (
+from neocortex.runtime.control.retry_policy import (
     PDF_RETRYABLE_PAGE_ERROR_SQL,
     automatic_retry_due,
     is_retryable_pdf_document_error,

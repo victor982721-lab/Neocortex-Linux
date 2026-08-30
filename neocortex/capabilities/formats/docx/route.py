@@ -28,9 +28,9 @@ from neocortex.progress import (
 )
 from neocortex.platform_policy import sqlite_path_collation
 
-from _04_Nucleo_Operativo.cancellation import CancellationRequested, CancellationToken
+from neocortex.runtime.control.cancellation import CancellationRequested, CancellationToken
 from neocortex.foundation.file_identity import file_key_from_snapshot as _file_key
-from _04_Nucleo_Operativo.memory_runtime import (
+from neocortex.runtime.control.memory_runtime import (
     MemoryBudgetExceeded,
     MemoryResourceLimits,
     WeightedMemoryGate,
@@ -39,8 +39,8 @@ from neocortex.platform.zip_safety import (
     ZipStructureError,
     inspect_zip_structure,
 )
-from _04_Nucleo_Operativo.review import ReviewCandidate, ReviewRecommendation
-from _04_Nucleo_Operativo.state import ReviewCandidateReconciliation
+from neocortex.workflow.review.review import ReviewCandidate, ReviewRecommendation
+from neocortex.persistence.state import ReviewCandidateReconciliation
 from .integrity import (
     classify_docx_exception,
     diagnostic_for_member,

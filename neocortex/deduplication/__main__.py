@@ -9,7 +9,7 @@ from pathlib import Path
 
 from neocortex.platform_policy import default_corpus_root
 
-from _04_Nucleo_Operativo.app_paths import default_state_directory
+from neocortex.runtime.config.app_paths import default_state_directory
 
 
 def main(arguments: Sequence[str] | None = None) -> int:
@@ -43,7 +43,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
         "El comando de deduplicación aislado está obsoleto; use Neocortex con los mismos argumentos.",
         file=sys.stderr,
     )
-    from _04_Nucleo_Operativo.cli_app import main as run_integrated
+    from neocortex.api.cli.cli_app import main as run_integrated
 
     return run_integrated(
         (

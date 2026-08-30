@@ -16,8 +16,8 @@ from pathlib import Path
 from neocortex.deduplication import FileSnapshot, snapshot_path
 from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
 
-from _04_Nucleo_Operativo.framework_connection import connect_existing_framework
-from _04_Nucleo_Operativo.framework_schema import SCHEMA_VERSION as FRAMEWORK_SCHEMA_VERSION
+from neocortex.persistence.framework_connection import connect_existing_framework
+from neocortex.persistence.framework_schema import SCHEMA_VERSION as FRAMEWORK_SCHEMA_VERSION
 # endregion [01]
 
 # region [02] Implementación

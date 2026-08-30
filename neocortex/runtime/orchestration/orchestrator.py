@@ -28,12 +28,12 @@ from neocortex.deduplication.inventory.index import validate_inventory_root
 from neocortex.progress import NullProgress, ProgressCallback, ProgressEvent, emit_progress
 from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
 
-from _04_Nucleo_Operativo.actions import FrameworkActions
+from neocortex.workflow.actions.actions import FrameworkActions
 from neocortex.runtime.config.application_config_projections import (
     global_resource_limits_from_application,
 )
 from neocortex.runtime.control.cancellation import CancellationToken
-from _04_Nucleo_Operativo.corpus_access import CorpusAccessPolicy, path_trees_intersect
+from neocortex.safety.corpus_access import CorpusAccessPolicy, path_trees_intersect
 from neocortex.runtime.control.global_resources import (
     GlobalResourceCoordinator,
     GlobalResourceSummary,
@@ -42,9 +42,9 @@ from neocortex.runtime.control.incremental_gate import (
     IncrementalGateRequest,
     evaluate_incremental_gate,
 )
-from _04_Nucleo_Operativo.inventory_coordinator import PreparedInventory, prepare_inventory
-from _04_Nucleo_Operativo.internal_paths import InternalPathsPolicy
-from _04_Nucleo_Operativo.inventory_boundary import (
+from neocortex.integrations.inventory.inventory_coordinator import PreparedInventory, prepare_inventory
+from neocortex.safety.internal_paths import InternalPathsPolicy
+from neocortex.integrations.inventory.inventory_boundary import (
     AuthorizedStateDirectory as AuthorizedStateDirectory,
     NormalInventoryBoundary,
     _same_or_descendant as _same_or_descendant,
@@ -67,11 +67,11 @@ from neocortex.runtime.orchestration.route_registry import (
 )
 from neocortex.runtime.orchestration.route_selection import ORGANIZABLE_ROUTE_NAMES
 from neocortex.runtime.orchestration.run_lifecycle import RunHeartbeat
-from _04_Nucleo_Operativo.self_analysis import (
+from neocortex.workflow.self_analysis.self_analysis import (
     build_self_analysis_inventory_policy,
     self_analysis_commands,
 )
-from _04_Nucleo_Operativo.state import FrameworkRouteState, FrameworkState
+from neocortex.persistence.state import FrameworkRouteState, FrameworkState
 # endregion [01]
 
 # region [02] Implementación
@@ -79,14 +79,14 @@ from _04_Nucleo_Operativo.state import FrameworkRouteState, FrameworkState
 if TYPE_CHECKING:
     from neocortex.capabilities.formats.archive.models import ArchiveRouteSummary
     from neocortex.capabilities.formats.audio.models import AudioRouteSummary
-    from _04_Nucleo_Operativo.code_contracts import CodeRouteSummary
+    from neocortex.code.code_contracts import CodeRouteSummary
     from neocortex.capabilities.formats.docx.route import DocxRouteSummary
     from neocortex.capabilities.formats.image.route import ImageRouteSummary
     from neocortex.capabilities.formats.office.route import OfficeRouteSummary
     from neocortex.capabilities.formats.pdf.pdf_route import PdfRouteSummary
     from neocortex.capabilities.formats.text.text_route import TextRouteSummary
     from neocortex.capabilities.formats.video.models import VideoRouteSummary
-    from _04_Nucleo_Operativo.document_organization import (
+    from neocortex.documents.document_organization import (
         OrganizationApplySummary,
         OrganizationPlanSummary,
     )
@@ -417,7 +417,7 @@ class FrameworkOrchestrator:
             and ORGANIZABLE_ROUTE_NAMES.intersection(self.selected_routes)
         ):
             return None, None
-        from _04_Nucleo_Operativo.document_organization import (
+        from neocortex.documents.document_organization import (
             apply_all_document_organization,
             default_organization_root,
             plan_document_organization,

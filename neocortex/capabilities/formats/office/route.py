@@ -11,13 +11,13 @@ from typing import Literal, cast
 from neocortex.deduplication import FileSnapshot, snapshot_path
 from neocortex.progress import ProgressCallback, ProgressEvent, ProgressMetric, emit_progress
 
-from _04_Nucleo_Operativo.action_policy import same_snapshot
-from _04_Nucleo_Operativo.cancellation import CancellationToken
+from neocortex.workflow.actions.action_policy import same_snapshot
+from neocortex.runtime.control.cancellation import CancellationToken
 from neocortex.foundation.file_identity import file_key_from_snapshot as _file_key
-from _04_Nucleo_Operativo.memory_runtime import MemoryResourceLimits, WeightedMemoryGate
-from _04_Nucleo_Operativo.review import ReviewCandidate
-from _04_Nucleo_Operativo.route_filters import CandidateSelection as CandidateSelection
-from _04_Nucleo_Operativo.state import FrameworkRouteState, ReviewCandidateReconciliation
+from neocortex.runtime.control.memory_runtime import MemoryResourceLimits, WeightedMemoryGate
+from neocortex.workflow.review.review import ReviewCandidate
+from neocortex.safety.route_filters import CandidateSelection as CandidateSelection
+from neocortex.persistence.state import FrameworkRouteState, ReviewCandidateReconciliation
 from .extraction import extract_office_document as _extract_office_document
 from .models import (
     MAX_XLSX_CELLS,

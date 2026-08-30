@@ -25,8 +25,8 @@ from neocortex.runtime.config.app_paths import (
     default_code_project_roots,
     default_state_directory,
 )
-from _04_Nucleo_Operativo.ocr_profiles import OcrProfileName
-from _04_Nucleo_Operativo.route_filters import CandidateSelection
+from neocortex.safety.ocr_profiles import OcrProfileName
+from neocortex.safety.route_filters import CandidateSelection
 
 # endregion [01]
 
@@ -35,13 +35,13 @@ from _04_Nucleo_Operativo.route_filters import CandidateSelection
 if TYPE_CHECKING:
     from neocortex.capabilities.formats.archive.models import ArchiveRouteSummary
     from neocortex.capabilities.formats.audio.models import AudioRouteSummary
-    from _04_Nucleo_Operativo.code_contracts import CodeRouteSummary
-    from _04_Nucleo_Operativo.document_organization import (
+    from neocortex.code.code_contracts import CodeRouteSummary
+    from neocortex.documents.document_organization import (
         OrganizationApplySummary,
         OrganizationPlanSummary,
     )
     from neocortex.capabilities.formats.docx.route import DocxRouteSummary
-    from _04_Nucleo_Operativo.global_resources import GlobalResourceSummary
+    from neocortex.runtime.control.global_resources import GlobalResourceSummary
     from neocortex.capabilities.formats.image.route import ImageRouteSummary
     from neocortex.capabilities.formats.office.route import OfficeRouteSummary
     from neocortex.capabilities.formats.pdf.pdf_route_models import PdfRouteSummary

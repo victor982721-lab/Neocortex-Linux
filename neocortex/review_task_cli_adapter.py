@@ -11,7 +11,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import TextIO
 
-from _04_Nucleo_Operativo.value_review_port import (
+from neocortex.workflow.review.value_review_port import (
     CanonicalJsonObject,
     ReviewTaskActorKind,
     ReviewTaskCASConflict,

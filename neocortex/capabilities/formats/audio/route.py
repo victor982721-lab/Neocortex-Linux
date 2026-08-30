@@ -23,7 +23,7 @@ from neocortex.progress import (
 )
 from neocortex.platform_policy import sqlite_path_collation
 
-from _04_Nucleo_Operativo.action_policy import same_snapshot
+from neocortex.workflow.actions.action_policy import same_snapshot
 from .models import (
     AUDIO_ROUTE_VERSION,
     AudioProcessingError,
@@ -36,11 +36,11 @@ from .models import (
 from .probe import probe_media
 from .state import audio_database, initialize_audio_state
 from .whisper import WhisperTranscriber, resolve_whisper_runtime
-from _04_Nucleo_Operativo.cancellation import CancellationToken
+from neocortex.runtime.control.cancellation import CancellationToken
 from neocortex.foundation.file_identity import file_key_from_snapshot as _file_key
-from _04_Nucleo_Operativo.memory_runtime import MemoryResourceLimits, WeightedMemoryGate
-from _04_Nucleo_Operativo.review import ReviewCandidate
-from _04_Nucleo_Operativo.state import FrameworkRouteState, ReviewCandidateReconciliation
+from neocortex.runtime.control.memory_runtime import MemoryResourceLimits, WeightedMemoryGate
+from neocortex.workflow.review.review import ReviewCandidate
+from neocortex.persistence.state import FrameworkRouteState, ReviewCandidateReconciliation
 
 
 # region [01] Media contracts and injectable transcription boundary

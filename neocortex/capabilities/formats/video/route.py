@@ -14,19 +14,19 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
 from neocortex.deduplication import FileSnapshot, snapshot_path
 from neocortex.progress import ProgressCallback, ProgressEvent, ProgressMetric, emit_progress
 
-from _04_Nucleo_Operativo.action_policy import same_snapshot
-from _04_Nucleo_Operativo.cancellation import CancellationToken
+from neocortex.workflow.actions.action_policy import same_snapshot
+from neocortex.runtime.control.cancellation import CancellationToken
 from neocortex.foundation.file_identity import file_key_from_snapshot
-from _04_Nucleo_Operativo.ocr_profiles import OCR_PROFILE_CHOICES, OcrProfileName
+from neocortex.safety.ocr_profiles import OCR_PROFILE_CHOICES, OcrProfileName
 from neocortex.foundation.processing_provenance import (
     ProcessingProvenance,
     build_processing_provenance,
     executable_component,
     python_runtime_component,
 )
-from _04_Nucleo_Operativo.review import ReviewCandidate
-from _04_Nucleo_Operativo.route_filters import CandidateSelection
-from _04_Nucleo_Operativo.state import FrameworkRouteState, ReviewCandidateReconciliation
+from neocortex.workflow.review.review import ReviewCandidate
+from neocortex.safety.route_filters import CandidateSelection
+from neocortex.persistence.state import FrameworkRouteState, ReviewCandidateReconciliation
 from .frames import (
     ExtractedVideoFrame,
     VideoFrameBatch,

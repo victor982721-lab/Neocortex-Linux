@@ -41,16 +41,16 @@ from neocortex.workflow.actions.action_policy import (
     validate_mutation_path as _validate_mutation_path,
 )
 from neocortex.platform.content_types import DETECTOR_VERSION, DetectedType, detect_content_type
-from _04_Nucleo_Operativo.corpus_access import CorpusMutationGuard, ProtectedAnalysisRootError
+from neocortex.safety.corpus_access import CorpusMutationGuard, ProtectedAnalysisRootError
 from neocortex.workflow.actions.file_action_recovery import (
     effect_receipt_json,
     expected_identity_json,
 )
-from _04_Nucleo_Operativo.internal_paths import InternalPathProtectionError
+from neocortex.safety.internal_paths import InternalPathProtectionError
 from neocortex.runtime.models import ActionSummary
-from _04_Nucleo_Operativo.protected_content import ProtectedContentError
-from _04_Nucleo_Operativo.state import FrameworkState
-from _04_Nucleo_Operativo.windows_handle_mutation import (
+from neocortex.safety.protected_content import ProtectedContentError
+from neocortex.persistence.state import FrameworkState
+from neocortex.safety.windows_handle_mutation import (
     IdentityBoundRenameReceipt,
     UnsupportedIdentityBoundMutation,
     rename_no_replace_by_identity,

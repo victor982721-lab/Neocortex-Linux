@@ -507,13 +507,13 @@ def test_sdk_resolves_contracts_lazily_and_preserves_object_identity() -> None:
         import sys
         import neocortex.sdk as sdk
 
-        module = "_04_Nucleo_Operativo.derivation_contracts"
+        module = "neocortex.semantic.derivation_contracts"
         if module in sys.modules:
             raise SystemExit("derivation contracts loaded eagerly")
         resolved = sdk.WorkReceipt
         if module not in sys.modules:
             raise SystemExit("derivation contracts were not resolved")
-        from _04_Nucleo_Operativo.derivation_contracts import WorkReceipt
+        from neocortex.semantic.derivation_contracts import WorkReceipt
         if resolved is not WorkReceipt:
             raise SystemExit("SDK wrapped the public contract")
         print("DERIVATION_SDK_LAZY_OK")

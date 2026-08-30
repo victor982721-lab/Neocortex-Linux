@@ -23,8 +23,8 @@ from .knowledge_snapshot import (
     KnowledgeStateRootError,
     collect_knowledge_snapshot,
 )
-from _04_Nucleo_Operativo.sqlite_immutable import ImmutableSQLiteUnavailable, capture_sqlite_immutable_fence
-from _04_Nucleo_Operativo.state_topology_contracts import STATE_STORE_REGISTRY
+from neocortex.persistence.sqlite_immutable import ImmutableSQLiteUnavailable, capture_sqlite_immutable_fence
+from neocortex.safety.state_topology_contracts import STATE_STORE_REGISTRY
 
 
 KNOWLEDGE_ASSET_HEALTH_SOURCE_VERSION = "knowledge-asset-health-v1"

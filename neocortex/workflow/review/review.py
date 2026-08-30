@@ -15,7 +15,7 @@ from typing import Literal, Mapping
 from neocortex.deduplication import FileSnapshot
 from neocortex.platform import preserve_legacy_module as _preserve_legacy_module
 
-from _04_Nucleo_Operativo.framework_connection import connect_existing_framework
+from neocortex.persistence.framework_connection import connect_existing_framework
 
 ReviewRecommendation = Literal[
     "retry",

@@ -29,7 +29,7 @@ from neocortex.workflow.review.review import (
     ReviewRecommendation,
     serialized_evidence,
 )
-from _04_Nucleo_Operativo.framework_connection import connect_existing_framework
+from neocortex.persistence.framework_connection import connect_existing_framework
 
 
 ReviewEvidenceOutcome = Literal["accepted", "rejected", "abstained"]

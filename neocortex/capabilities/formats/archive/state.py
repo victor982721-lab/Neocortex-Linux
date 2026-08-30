@@ -17,7 +17,7 @@ from neocortex.sqlite_connection import (
     connect_sqlite,
 )
 
-from _04_Nucleo_Operativo.sqlite_schema_contract import (
+from neocortex.sqlite_schema_contract import (
     SQLiteSchemaContract,
     read_metadata_schema_version,
     schema_contract_from_builder,
@@ -332,7 +332,7 @@ def search_archive_state(
 ) -> tuple[ArchiveSearchHit, ...]:
     """Search member names and extracted text through read-only FTS5 state."""
 
-    from _04_Nucleo_Operativo.semantic_lexical import compile_natural_fts_query
+    from neocortex.semantic.semantic_lexical import compile_natural_fts_query
 
     _validate_result_limit(limit)
     normalized = compile_natural_fts_query(query)

@@ -25,12 +25,12 @@ if TYPE_CHECKING:
     from neocortex.capabilities.formats.archive.route import ArchiveRouteConfig as ArchiveRouteConfig
     from neocortex.capabilities.formats.audio.models import AudioRouteConfig as AudioRouteConfig
     from neocortex.capabilities.formats.audio.route import AudioRoute as AudioRoute
-    from _04_Nucleo_Operativo.code_contracts import CodeRouteConfig as CodeRouteConfig
-    from _04_Nucleo_Operativo.code_route import CodeRoute as CodeRoute
+    from neocortex.code.code_contracts import CodeRouteConfig as CodeRouteConfig
+    from neocortex.code.code_route import CodeRoute as CodeRoute
     from neocortex.runtime.control.cancellation import CancellationToken
     from neocortex.capabilities.formats.docx.route import DocxRoute as DocxRoute
     from neocortex.capabilities.formats.docx.route import DocxRouteConfig as DocxRouteConfig
-    from _04_Nucleo_Operativo.document_catalog import CatalogUpdateSummary, SourceKind
+    from neocortex.documents.document_catalog import CatalogUpdateSummary, SourceKind
     from neocortex.runtime.control.global_resources import GlobalResourceCoordinator
     from neocortex.capabilities.formats.image.route import ImageRoute as ImageRoute
     from neocortex.capabilities.formats.image.route import ImageRouteConfig as ImageRouteConfig
@@ -39,7 +39,7 @@ if TYPE_CHECKING:
     from neocortex.capabilities.formats.office.route import OfficeRouteConfig as OfficeRouteConfig
     from neocortex.capabilities.formats.pdf.pdf_route import PdfRoute as PdfRoute
     from neocortex.capabilities.formats.pdf.pdf_route_models import PdfRouteConfig as PdfRouteConfig
-    from _04_Nucleo_Operativo.state import FrameworkRouteState
+    from neocortex.persistence.state import FrameworkRouteState
     from neocortex.capabilities.formats.text.text_route import TextRoute as TextRoute
     from neocortex.capabilities.formats.text.text_route import TextRouteConfig as TextRouteConfig
     from neocortex.capabilities.formats.video.route import VideoRoute as VideoRoute
@@ -89,7 +89,7 @@ _DEFERRED_ROUTE_EXPORTS = {
     "ArchiveRoute": ("neocortex.capabilities.formats.archive.route", "ArchiveRoute"),
     "ArchiveRouteConfig": ("neocortex.capabilities.formats.archive.route", "ArchiveRouteConfig"),
     "CodeRoute": ("_04_Nucleo_Operativo.code_route", "CodeRoute"),
-    "CodeRouteConfig": ("_04_Nucleo_Operativo.code_contracts", "CodeRouteConfig"),
+    "CodeRouteConfig": ("neocortex.code.code_contracts", "CodeRouteConfig"),
     "PdfRoute": ("neocortex.capabilities.formats.pdf.pdf_route", "PdfRoute"),
     "PdfRouteConfig": ("neocortex.capabilities.formats.pdf.pdf_route_models", "PdfRouteConfig"),
     "DocxRoute": ("neocortex.capabilities.formats.docx.route", "DocxRoute"),
@@ -470,7 +470,7 @@ def code_route_config_from_framework(config: "FrameworkConfig") -> "CodeRouteCon
 def _run_code(context: RouteExecutionContext) -> object:
     from neocortex.deduplication import DedupIndex
 
-    from _04_Nucleo_Operativo.code_route import CodeRoute
+    from neocortex.code.code_route import CodeRoute
 
     config = context.config
     gate = None
@@ -499,7 +499,7 @@ def _update_document_catalog_after_route(
 
     if not context.config.document_catalog_enabled:
         return ()
-    from _04_Nucleo_Operativo.document_catalog import update_document_catalog_source
+    from neocortex.documents.document_catalog import update_document_catalog_source
 
     sources: tuple[tuple[Path, "SourceKind"], ...]
     if source_kind == "pdf":

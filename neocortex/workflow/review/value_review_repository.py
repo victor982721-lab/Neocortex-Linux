@@ -27,14 +27,14 @@ from neocortex.deduplication.schema import (
 )
 from neocortex.sqlite_schema_contract import read_application_schema_version
 
-from _04_Nucleo_Operativo import document_catalog_schema
+from neocortex.documents import document_catalog_schema
 from neocortex.capabilities.formats.text import text_state
 from neocortex.capabilities.formats.audio import state as audio_state
 from neocortex.capabilities.formats.docx.schema import DOCX_SCHEMA_VERSION, validate_docx_schema
 from neocortex.capabilities.formats.office import state as office_state
 from neocortex.capabilities.formats.pdf.pdf_schema import PDF_SCHEMA_VERSION, validate_pdf_schema
-from _04_Nucleo_Operativo.sqlite_paths import readonly_sqlite_uri
-from _04_Nucleo_Operativo.sqlite_schema_contract import (
+from neocortex.persistence.sqlite_paths import readonly_sqlite_uri
+from neocortex.sqlite_schema_contract import (
     SQLiteSchemaContract,
     validate_sqlite_schema_contract,
 )

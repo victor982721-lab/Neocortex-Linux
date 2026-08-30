@@ -80,13 +80,13 @@ def test_family_handlers_remain_lazy_and_isolated_in_a_fresh_process() -> None:
                 """
                 import sys
 
-                from _04_Nucleo_Operativo.cli_operations import DIRECT_OPERATIONS
-                from _04_Nucleo_Operativo.cli_parser import build_parser
+                from neocortex.api.cli.cli_operations import DIRECT_OPERATIONS
+                from neocortex.api.cli.cli_parser import build_parser
 
                 names = {
-                    "_04_Nucleo_Operativo.cli_audio",
-                    "_04_Nucleo_Operativo.cli_direct",
-                    "_04_Nucleo_Operativo.cli_semantic",
+                    "neocortex.api.cli.cli_audio",
+                    "neocortex.api.cli.cli_direct",
+                    "neocortex.api.cli.cli_semantic",
                 }
                 if names.intersection(sys.modules):
                     raise SystemExit("family handler imported during parser setup")
@@ -98,7 +98,7 @@ def test_family_handlers_remain_lazy_and_isolated_in_a_fresh_process() -> None:
                     if item.destination == "audio_search"
                 )
                 audio.load_handler()
-                if "_04_Nucleo_Operativo.cli_audio" not in sys.modules:
+                if "neocortex.api.cli.cli_audio" not in sys.modules:
                     raise SystemExit("audio handler was not loaded")
                 if {
                     "_04_Nucleo_Operativo.cli_direct",
