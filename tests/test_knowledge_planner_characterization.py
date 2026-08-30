@@ -370,7 +370,7 @@ assert module.plan_knowledge_query(module.KnowledgeQuery("cold import")).plan_id
 internal = sorted(
     name
     for name in set(sys.modules) - before
-    if name.startswith("_04_Nucleo_Operativo")
+    if name.startswith("_04_Nucleo_Operativo") or name.startswith("neocortex.knowledge")
 )
 heavy = sorted(
     name
@@ -403,28 +403,31 @@ print(
     assert {
         "_04_Nucleo_Operativo",
         "_04_Nucleo_Operativo.code_detection",
-        "_04_Nucleo_Operativo.knowledge_contracts",
-        "_04_Nucleo_Operativo.knowledge_planner",
         "_04_Nucleo_Operativo.semantic_models",
+        "neocortex.knowledge",
+        "neocortex.knowledge.knowledge_contracts",
+        "neocortex.knowledge.knowledge_planner",
     } <= loaded
     assert loaded <= {
         "_04_Nucleo_Operativo",
+        "_04_Nucleo_Operativo.knowledge_planner",
         "_04_Nucleo_Operativo.code_contracts",
         "_04_Nucleo_Operativo.code_retention",
         "_04_Nucleo_Operativo.code_detection",
-        "_04_Nucleo_Operativo.knowledge_contract_context",
-        "_04_Nucleo_Operativo.knowledge_contract_payloads",
-        "_04_Nucleo_Operativo.knowledge_contract_references",
-        "_04_Nucleo_Operativo.knowledge_contract_snapshot",
-        "_04_Nucleo_Operativo.knowledge_contract_telemetry",
-        "_04_Nucleo_Operativo.knowledge_contract_validation",
-        "_04_Nucleo_Operativo.knowledge_contracts",
-        "_04_Nucleo_Operativo.knowledge_planner",
-        "_04_Nucleo_Operativo.knowledge_planner_exact",
-        "_04_Nucleo_Operativo.knowledge_planner_intents",
-        "_04_Nucleo_Operativo.knowledge_planner_steps",
+        "neocortex.knowledge.knowledge_contract_context",
+        "neocortex.knowledge.knowledge_contract_payloads",
+        "neocortex.knowledge.knowledge_contract_references",
+        "neocortex.knowledge.knowledge_contract_snapshot",
+        "neocortex.knowledge.knowledge_contract_telemetry",
+        "neocortex.knowledge.knowledge_contract_validation",
+        "neocortex.knowledge.knowledge_contracts",
+        "neocortex.knowledge.knowledge_planner",
+        "neocortex.knowledge.knowledge_planner_exact",
+        "neocortex.knowledge.knowledge_planner_intents",
+        "neocortex.knowledge.knowledge_planner_steps",
         "_04_Nucleo_Operativo.route_filters",
         "_04_Nucleo_Operativo.semantic_models",
+        "neocortex.knowledge",
     }
 
 

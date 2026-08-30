@@ -835,16 +835,20 @@ def test_contract_module_cold_import_has_a_minimal_dag() -> None:
         required = {
             "_04_Nucleo_Operativo",
             "_04_Nucleo_Operativo.knowledge_contracts",
+            "neocortex",
+            "neocortex.knowledge",
+            "neocortex.knowledge.knowledge_contracts",
             "_04_Nucleo_Operativo.semantic_models",
+            "neocortex.platform",
             "xxhash",
         }
         future_extraction_modules = {
-            "_04_Nucleo_Operativo.knowledge_contract_context",
-            "_04_Nucleo_Operativo.knowledge_contract_payloads",
-            "_04_Nucleo_Operativo.knowledge_contract_references",
-            "_04_Nucleo_Operativo.knowledge_contract_snapshot",
-            "_04_Nucleo_Operativo.knowledge_contract_telemetry",
-            "_04_Nucleo_Operativo.knowledge_contract_validation",
+            "neocortex.knowledge.knowledge_contract_context",
+            "neocortex.knowledge.knowledge_contract_payloads",
+            "neocortex.knowledge.knowledge_contract_references",
+            "neocortex.knowledge.knowledge_contract_snapshot",
+            "neocortex.knowledge.knowledge_contract_telemetry",
+            "neocortex.knowledge.knowledge_contract_validation",
         }
         missing = sorted(required - loaded)
         unexpected = sorted(loaded - required - future_extraction_modules)

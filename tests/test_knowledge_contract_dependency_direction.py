@@ -14,7 +14,7 @@ from pathlib import Path
 # region [02] Implementación
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-PACKAGE = "_04_Nucleo_Operativo"
+PACKAGE = "neocortex.knowledge"
 FACADE = f"{PACKAGE}.knowledge_contracts"
 PROTOCOLS = f"{PACKAGE}.knowledge_contract_protocols"
 HELPERS = tuple(
