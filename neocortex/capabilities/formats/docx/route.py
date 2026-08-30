@@ -40,7 +40,7 @@ from neocortex.platform.zip_safety import (
     inspect_zip_structure,
 )
 from neocortex.workflow.review.review import ReviewCandidate, ReviewRecommendation
-from neocortex.persistence.state import ReviewCandidateReconciliation
+from neocortex.persistence.framework_route_state import ReviewCandidateReconciliation
 from .integrity import (
     classify_docx_exception,
     diagnostic_for_member,

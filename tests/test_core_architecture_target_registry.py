@@ -40,8 +40,8 @@ def test_registry_exhaustively_assigns_every_current_core_module() -> None:
         sorted(module for modules in RESPONSIBILITY_MODULES.values() for module in modules)
     )
     assert observed == registered == product_registered
-    assert len(observed) == 454
-    assert sum(len(items) for items in RESPONSIBILITY_MODULES.values()) == 454
+    assert len(observed) == 453
+    assert sum(len(items) for items in RESPONSIBILITY_MODULES.values()) == 453
     for module in observed:
         families = matching_target_families(module)
         responsibilities = matching_target_responsibilities(module)
@@ -63,7 +63,7 @@ def test_target_vocabulary_is_canonical_and_legacy_free() -> None:
     assert "compatibility_modules" not in payload["responsibility_registry"]
     assert core_architecture_target_fingerprint() == (
         "core-architecture-target-v1:sha256:"
-        "1eaf2f2358fd67c918c7557cf48665d01649b36be95cdd036675947900f3744b"
+        "8fef783b2ae52f6a26519532f07cbf37a62ccbf4b94db3ddfcc4657f3ef557e9"
     )
 
 

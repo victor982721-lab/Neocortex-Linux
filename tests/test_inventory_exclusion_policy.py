@@ -29,7 +29,7 @@ from neocortex.deduplication.inventory.scan import DEFAULT_EXCLUDED_PATHS
 from neocortex.integrations.inventory import inventory_coordinator as inventory_coordinator_module
 from neocortex.integrations.inventory import reconcile as reconcile_module
 from neocortex.integrations.inventory.reconcile import reconcile_usn_window
-from neocortex.persistence.state import FrameworkState
+from neocortex.persistence.framework_state_writer import FrameworkState
 # endregion [01]
 
 # region [02] Implementación

@@ -22,7 +22,7 @@ from neocortex.deduplication import (
 from neocortex.progress import ProgressCallback, ProgressEvent, emit_progress
 
 from neocortex.integrations.inventory.reconcile import ReconcileResult, reconcile_usn_window
-from neocortex.persistence.state import FrameworkState
+from neocortex.persistence.framework_state_writer import FrameworkState
 
 
 # region [01] Inventory result contract

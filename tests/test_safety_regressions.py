@@ -31,7 +31,8 @@ from neocortex.safety.corpus_access import ProtectedAnalysisRootError
 from neocortex.capabilities.formats.image.route import _same_snapshot as image_same_snapshot
 from neocortex.runtime.models import ActionSummary
 from neocortex.capabilities.formats.pdf.pdf_isolation import _source_matches
-from neocortex.persistence.state import SCHEMA_VERSION, FrameworkState
+from neocortex.persistence.framework_schema import SCHEMA_VERSION
+from neocortex.persistence.framework_state_writer import FrameworkState
 from tests.internal_paths_test_support import begin_signed_normal_run
 
 

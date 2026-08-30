@@ -29,11 +29,9 @@ from neocortex.workflow.review.review_evidence import (
     materialize_review_evidence,
     review_evidence_metrics,
 )
-from neocortex.persistence.state import (
-    SCHEMA_VERSION,
-    FrameworkRouteState,
-    FrameworkState,
-)
+from neocortex.persistence.framework_route_state import FrameworkRouteState
+from neocortex.persistence.framework_schema import SCHEMA_VERSION
+from neocortex.persistence.framework_state_writer import FrameworkState
 from tests.internal_paths_test_support import disjoint_internal_paths_policy
 
 

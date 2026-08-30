@@ -69,7 +69,8 @@ from neocortex.workflow.self_analysis.self_analysis import (
     build_self_analysis_inventory_policy,
     self_analysis_commands,
 )
-from neocortex.persistence.state import FrameworkRouteState, FrameworkState
+from neocortex.persistence.framework_route_state import FrameworkRouteState
+from neocortex.persistence.framework_state_writer import FrameworkState
 # endregion [01]
 
 # region [02] Implementación

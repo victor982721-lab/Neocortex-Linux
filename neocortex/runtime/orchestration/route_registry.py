@@ -33,7 +33,7 @@ if TYPE_CHECKING:
     from neocortex.capabilities.formats.office.route import OfficeRouteConfig as OfficeRouteConfig
     from neocortex.capabilities.formats.pdf.pdf_route import PdfRoute as PdfRoute
     from neocortex.capabilities.formats.pdf.pdf_route_models import PdfRouteConfig as PdfRouteConfig
-    from neocortex.persistence.state import FrameworkRouteState
+    from neocortex.persistence.framework_route_state import FrameworkRouteState
     from neocortex.capabilities.formats.text.text_route import TextRoute as TextRoute
     from neocortex.capabilities.formats.text.text_route import TextRouteConfig as TextRouteConfig
     from neocortex.capabilities.formats.video.route import VideoRoute as VideoRoute

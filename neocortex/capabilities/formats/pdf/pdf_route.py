@@ -76,7 +76,7 @@ from neocortex.runtime.control.retry_policy import (
 )
 from neocortex.workflow.review.review import ReviewCandidate
 from neocortex.safety.route_filters import CandidateSelection
-from neocortex.persistence.state import (
+from neocortex.persistence.framework_route_state import (
     REVIEW_RECONCILIATION_BATCH_SIZE,
     ReviewCandidateReconciliation,
 )
@@ -2027,7 +2027,7 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
         """Recycle one unchanged, contentless PDF and synchronize durable state."""
 
         from neocortex.workflow.actions.actions import FrameworkActions
-        from neocortex.persistence.state import FrameworkState
+        from neocortex.persistence.framework_state_writer import FrameworkState
 
         with self._recycle_lock:
             try:

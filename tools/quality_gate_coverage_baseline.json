@@ -11,7 +11,7 @@
   },
   "approved_inventory": {
     "production_source_inventory": {
-      "file_count": 454,
+      "file_count": 453,
       "files": [
         "neocortex/__init__.py",
         "neocortex/__main__.py",
@@ -344,7 +344,6 @@
         "neocortex/persistence/framework_state_writer.py",
         "neocortex/persistence/sqlite_immutable.py",
         "neocortex/persistence/sqlite_paths.py",
-        "neocortex/persistence/state.py",
         "neocortex/pip_bootstrap.py",
         "neocortex/platform/__init__.py",
         "neocortex/platform/architecture_projection.py",
@@ -469,7 +468,7 @@
         "neocortex/workflow/self_analysis/self_analysis_status.py"
       ],
       "hash_algorithm": "sha256(path,lf-size,sha256(lf-content))-v1",
-      "sha256": "057a6265a2cee37a98b564ab14b81b96554d9e91fe039022a3992c8d71883f1d"
+      "sha256": "1b1b7421ea1ab60db0044eb0cc353332681ea0f63e39376fc3317e90aef1940c"
     },
     "test_inventory": {
       "file_count": 358,
@@ -834,7 +833,7 @@
         "tests/test_zip_safety.py"
       ],
       "hash_algorithm": "sha256(path,lf-size,sha256(lf-content))-v1",
-      "sha256": "ba251809ef8d78cad0594491ba72912955432ce1f6a47b69bacf1d242cbbbce3"
+      "sha256": "16c41c156d218ebf70e0933120c6af55905192ad750a6d8cc82ddfbc3a245af9"
     }
   },
   "schema": "neocortex.quality-gate-coverage-baseline/v1",

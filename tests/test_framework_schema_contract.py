@@ -13,7 +13,8 @@ import sqlite3
 import pytest
 
 from neocortex.persistence.framework_schema import initialize_framework_schema
-from neocortex.persistence.state import SCHEMA_VERSION, FrameworkState
+from neocortex.persistence.framework_schema import SCHEMA_VERSION
+from neocortex.persistence.framework_state_writer import FrameworkState
 # endregion [01]
 
 # region [02] Implementación

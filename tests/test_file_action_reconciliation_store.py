@@ -35,7 +35,7 @@ from neocortex.persistence.framework_schema import (
     SCHEMA_VERSION,
     initialize_framework_schema,
 )
-from neocortex.persistence.state import FrameworkState
+from neocortex.persistence.framework_state_writer import FrameworkState
 from tests.internal_paths_test_support import begin_signed_normal_run
 # endregion [01]
 

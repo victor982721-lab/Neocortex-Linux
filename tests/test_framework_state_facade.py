@@ -2,52 +2,26 @@
 # Módulo: tests/test_framework_state_facade.py
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
-# region [01] Dependencias del módulo
+"""Direct ownership contracts for framework persistence modules."""
+
 from __future__ import annotations
 
-import importlib
-# endregion [01]
-
-# region [02] Implementación
-
-
-def test_state_facade_preserves_public_import_contract() -> None:
-    facade = importlib.import_module("neocortex.persistence.state")
-    route_repository = importlib.import_module(
-        "neocortex.persistence.framework_route_state"
-    )
-    schema = importlib.import_module("neocortex.persistence.framework_schema")
-    shared = importlib.import_module("neocortex.persistence.framework_state_common")
-    writer = importlib.import_module("neocortex.persistence.framework_state_writer")
-
-    assert facade.FrameworkState is writer.FrameworkState
-    assert facade.FrameworkRouteState is route_repository.FrameworkRouteState
-    assert (
-        facade.ReviewCandidateReconciliation
-        is route_repository.ReviewCandidateReconciliation
-    )
-    assert facade.FileActionSpec is shared.FileActionSpec
-    assert facade.CACHE_PRUNE_BATCH_SIZE == shared.CACHE_PRUNE_BATCH_SIZE
-    assert (
-        facade.REVIEW_RECONCILIATION_BATCH_SIZE
-        == route_repository.REVIEW_RECONCILIATION_BATCH_SIZE
-    )
-    assert facade.SCHEMA_VERSION == schema.SCHEMA_VERSION
-    assert set(facade.__all__) == {
-        "CACHE_PRUNE_BATCH_SIZE",
-        "REVIEW_RECONCILIATION_BATCH_SIZE",
-        "SCHEMA_VERSION",
-        "FileActionSpec",
-        "FrameworkRouteState",
-        "FrameworkState",
-        "ReviewCandidateReconciliation",
-    }
+from neocortex.persistence.framework_route_state import (
+    FrameworkRouteState,
+    ReviewCandidateReconciliation,
+)
+from neocortex.persistence.framework_schema import SCHEMA_VERSION
+from neocortex.persistence.framework_state_common import (
+    CACHE_PRUNE_BATCH_SIZE,
+    FileActionSpec,
+)
+from neocortex.persistence.framework_state_writer import FrameworkState
 
 
-def test_state_facade_classes_are_physically_separated() -> None:
-    facade = importlib.import_module("neocortex.persistence.state")
-
-    assert facade.FrameworkState.__module__.endswith("framework_state_writer")
-    assert facade.FrameworkRouteState.__module__.endswith("framework_route_state")
-    assert facade.FrameworkState.__module__ != facade.FrameworkRouteState.__module__
-# endregion [02]
+def test_framework_state_contracts_are_owned_by_their_modules() -> None:
+    assert FrameworkState.__module__.endswith("framework_state_writer")
+    assert FrameworkRouteState.__module__.endswith("framework_route_state")
+    assert ReviewCandidateReconciliation.__module__.endswith("framework_route_state")
+    assert FileActionSpec == tuple[str, str, str | None, str | None, str | None, bool]
+    assert isinstance(SCHEMA_VERSION, int)
+    assert CACHE_PRUNE_BATCH_SIZE > 0

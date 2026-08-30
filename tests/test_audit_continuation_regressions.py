@@ -25,7 +25,7 @@ from neocortex.capabilities.formats.pdf.pdf_state import initialize_pdf_state
 from neocortex.runtime.orchestration.run_status import list_run_status
 from neocortex.semantic.semantic_sources import iter_image_source_records
 from neocortex.sqlite_schema_contract import SQLiteSchemaContractError
-from neocortex.persistence.state import FrameworkState
+from neocortex.persistence.framework_state_writer import FrameworkState
 from tests.internal_paths_test_support import begin_signed_normal_run
 
 

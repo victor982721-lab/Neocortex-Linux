@@ -35,7 +35,8 @@ from neocortex.safety.protected_content import (
 from neocortex.workflow.self_analysis.self_analysis import (
     build_self_analysis_inventory_policy,
 )
-from neocortex.persistence.state import FrameworkRouteState, FrameworkState
+from neocortex.persistence.framework_route_state import FrameworkRouteState
+from neocortex.persistence.framework_state_writer import FrameworkState
 from tests.internal_paths_test_support import disjoint_internal_paths_policy
 # endregion [01]
 

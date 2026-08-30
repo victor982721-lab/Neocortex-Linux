@@ -38,7 +38,7 @@ from neocortex.safety.protected_content import (
 from neocortex.workflow.self_analysis.self_analysis import (
     build_self_analysis_inventory_policy,
 )
-from neocortex.persistence.state import FrameworkState
+from neocortex.persistence.framework_state_writer import FrameworkState
 from neocortex.safety.windows_handle_mutation import (
     rename_no_replace_by_identity,
 )

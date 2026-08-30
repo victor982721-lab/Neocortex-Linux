@@ -48,7 +48,7 @@ from neocortex.foundation.processing_provenance import (
     python_runtime_component,
 )
 from neocortex.safety.route_filters import CandidateSelection
-from neocortex.persistence.state import FrameworkRouteState
+from neocortex.persistence.framework_route_state import FrameworkRouteState
 from .models import ArchiveRouteSummary
 from .state import archive_database, initialize_archive_state
 

@@ -83,7 +83,7 @@ from neocortex.foundation.processing_provenance import (
 )
 from neocortex.workflow.review.review import ReviewCandidate
 from neocortex.safety.route_filters import CandidateSelection
-from neocortex.persistence.state import ReviewCandidateReconciliation
+from neocortex.persistence.framework_route_state import ReviewCandidateReconciliation
 
 
 class ImageRouteState(Protocol):

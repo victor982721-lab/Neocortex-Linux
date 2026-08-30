@@ -49,7 +49,8 @@ from neocortex.capabilities.formats.pdf.pdf_route_models import CacheDecision
 from neocortex.capabilities.formats.pdf.pdf_state import SCHEMA_VERSION as PDF_SCHEMA_VERSION
 from neocortex.workflow.review.review import list_review_candidates
 from neocortex.runtime.control.retry_policy import classify_pdf_failure
-from neocortex.persistence.state import FrameworkRouteState, FrameworkState
+from neocortex.persistence.framework_route_state import FrameworkRouteState
+from neocortex.persistence.framework_state_writer import FrameworkState
 # endregion [01]
 
 # region [02] Implementación

@@ -506,7 +506,6 @@ RESPONSIBILITY_MODULES: Final = {
         "neocortex.persistence.framework_state_writer",
         "neocortex.persistence.sqlite_immutable",
         "neocortex.persistence.sqlite_paths",
-        "neocortex.persistence.state",
         "neocortex.sqlite_backup",
         "neocortex.sqlite_cancellation",
         "neocortex.sqlite_connection",

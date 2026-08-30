@@ -18,7 +18,7 @@ from neocortex.safety.internal_paths import (
 from neocortex.integrations.inventory.inventory_boundary import (
     build_normal_inventory_boundary,
 )
-from neocortex.persistence.state import FrameworkState
+from neocortex.persistence.framework_state_writer import FrameworkState
 # endregion [01]
 
 # region [02] Implementación

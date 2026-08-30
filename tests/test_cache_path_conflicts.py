@@ -31,7 +31,7 @@ from neocortex.capabilities.formats.pdf.pdf_state import (
     initialize_pdf_state,
     pdf_database,
 )
-from neocortex.persistence.state import FrameworkRouteState
+from neocortex.persistence.framework_route_state import FrameworkRouteState
 
 
 # region [01] Fixture helpers

@@ -18,7 +18,7 @@ from neocortex.deduplication import DedupIndex, DedupPlanner, InventoryExclusion
 from neocortex.deduplication.io import native_io_path
 from neocortex.workflow.actions.actions import FrameworkActions
 from neocortex.platform.content_types import detect_content_type
-from neocortex.persistence.state import FrameworkState
+from neocortex.persistence.framework_state_writer import FrameworkState
 from tests.internal_paths_test_support import begin_signed_normal_run
 # endregion [01]
 

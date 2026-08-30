@@ -40,11 +40,9 @@ from neocortex.runtime.orchestration.route_selection import (
     normalize_route_selection,
 )
 from neocortex.runtime.orchestration.route_registry import builtin_route_registry
-from neocortex.persistence.state import (
-    SCHEMA_VERSION,
-    FrameworkRouteState,
-    FrameworkState,
-)
+from neocortex.persistence.framework_route_state import FrameworkRouteState
+from neocortex.persistence.framework_schema import SCHEMA_VERSION
+from neocortex.persistence.framework_state_writer import FrameworkState
 from neocortex.progress import (
     LineProgress,
     ProgressEvent,

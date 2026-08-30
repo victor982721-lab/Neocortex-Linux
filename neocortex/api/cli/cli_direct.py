@@ -410,7 +410,8 @@ def run_review_record(args: argparse.Namespace) -> int:
         get_review_candidate,
         get_review_decision_by_key,
     )
-    from neocortex.persistence.state import FrameworkRouteState, FrameworkState
+    from neocortex.persistence.framework_route_state import FrameworkRouteState
+    from neocortex.persistence.framework_state_writer import FrameworkState
 
     database_path = args.state_directory / "framework.sqlite3"
     if not database_path.is_file():

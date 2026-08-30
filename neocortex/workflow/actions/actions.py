@@ -47,7 +47,7 @@ from neocortex.workflow.actions.file_action_recovery import (
 from neocortex.safety.internal_paths import InternalPathProtectionError
 from neocortex.runtime.models import ActionSummary
 from neocortex.safety.protected_content import ProtectedContentError
-from neocortex.persistence.state import FrameworkState
+from neocortex.persistence.framework_state_writer import FrameworkState
 from neocortex.safety.windows_handle_mutation import (
     IdentityBoundRenameReceipt,
     UnsupportedIdentityBoundMutation,

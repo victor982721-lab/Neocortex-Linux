@@ -23,7 +23,7 @@ from neocortex.workflow.self_analysis.self_analysis import (
     SELF_ANALYSIS_MANIFEST_SCHEMA,
     build_self_analysis_completion_manifest,
 )
-from neocortex.persistence.state import FrameworkState
+from neocortex.persistence.framework_state_writer import FrameworkState
 # endregion [01]
 
 # region [02] Implementación

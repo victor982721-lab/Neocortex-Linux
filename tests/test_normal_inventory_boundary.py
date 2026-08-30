@@ -34,7 +34,7 @@ from neocortex.safety.protected_content import (
     ProtectedContentPolicy,
     ProtectedPathSpec,
 )
-from neocortex.persistence.state import FrameworkState
+from neocortex.persistence.framework_state_writer import FrameworkState
 from tests.internal_paths_test_support import (
     begin_signed_normal_run,
     disjoint_internal_paths_policy,
