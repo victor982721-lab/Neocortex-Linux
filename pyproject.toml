@@ -160,5 +160,6 @@ include = [
 
 [tool.setuptools.package-data]
 "neocortex" = ["py.typed"]
+"neocortex.code" = ["semgrep_rules/*.yml"]
 "_04_Nucleo_Operativo" = ["py.typed", "semgrep_rules/*.yml"]
 "neocortex.interface.presentation" = ["assets/*.svg", "assets/*.png", "assets/*.ico"]

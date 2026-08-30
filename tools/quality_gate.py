@@ -41,9 +41,9 @@ DEFAULT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_BASELINE = Path(__file__).with_name("quality_gate_static_baseline.json")
 DEFAULT_COVERAGE_BASELINE = Path(__file__).with_name("quality_gate_coverage_baseline.json")
 DEFAULT_SUPPLY_POLICY = Path(__file__).with_name("quality_gate_supply_policy.json")
-PRODUCTION_ARCHITECTURE_WORKER = Path("_04_Nucleo_Operativo/external_architecture_worker.py")
+PRODUCTION_ARCHITECTURE_WORKER = Path("neocortex/code/external_architecture_worker.py")
 CAPABILITY_REGISTRY_MODULE = Path("neocortex/platform/capability_registry.py")
-CORE_TARGET_REGISTRY_MODULE = Path("_04_Nucleo_Operativo/code/contracts/target_registry.py")
+CORE_TARGET_REGISTRY_MODULE = Path("neocortex/code/contracts/target_registry.py")
 EXPECTED_ARCHITECTURE_WORKER_SCHEMA = "neocortex.external-architecture-worker/grimp-v3"
 EXPECTED_ARCHITECTURE_BASELINE_ID = "neocortex-production-imports-2026-08-23/v5"
 EXPECTED_ARCHITECTURE_PROJECTION_SCHEMA = "neocortex.architecture-projection/v1"
@@ -433,7 +433,7 @@ def run_installed_wheel_gate(root: Path, probe_directory: Path) -> dict[str, obj
     if probe == root or probe.is_relative_to(root):
         _fail("installed-wheel probe directory must be outside the repository")
     probe.mkdir(parents=True, exist_ok=True)
-    rules_root = root / "_04_Nucleo_Operativo" / "semgrep_rules"
+    rules_root = root / "neocortex" / "code" / "semgrep_rules"
     assets_root = root / "neocortex" / "interface" / "presentation" / "assets"
     if any(path.is_symlink() or not path.is_dir() for path in (rules_root, assets_root)):
         _fail("source package-data roots are missing or unsafe")
@@ -698,6 +698,7 @@ def _expected_core_target(root: Path) -> dict[str, object]:
     family_matches = namespace.get("matching_target_families")
     payload = namespace.get("core_architecture_target_payload")
     baseline = namespace.get("forbidden_family_edge_baseline")
+    module_root = namespace.get("CORE_MODULE_ROOT")
     if not all(
         callable(item)
         for item in (
@@ -710,6 +711,8 @@ def _expected_core_target(root: Path) -> dict[str, object]:
         )
     ):
         _fail("Core target registry functions are unavailable")
+    if not isinstance(module_root, str) or not module_root:
+        _fail("Core target registry module root is unavailable")
     fingerprint_function = cast(Callable[[], str], fingerprint)
     registered_function = cast(Callable[[], Sequence[str]], registered)
     responsibility_function = cast(Callable[[str], Sequence[str]], responsibility_matches)
@@ -727,6 +730,7 @@ def _expected_core_target(root: Path) -> dict[str, object]:
         "registered_modules": list(registered_modules),
         "implementation_modules": list(implementation_modules),
         "compatibility_modules": list(compatibility_modules),
+        "module_root": module_root,
         "responsibility_labels": {
             module: tuple(responsibility_function(module)) for module in implementation_modules
         },
@@ -1283,10 +1287,15 @@ def _validate_core_target_scope(
     )
     expected_registered = cast(list[str], expected["registered_modules"])
     expected_compatibility = cast(list[str], expected["compatibility_modules"])
+    core_root = cast(str, expected["module_root"])
     core_modules = {
         module
         for module in modules
-        if module == "_04_Nucleo_Operativo" or module.startswith("_04_Nucleo_Operativo.")
+        if (
+            module == core_root
+            or module.startswith(core_root + ".")
+            or module in set(expected_compatibility)
+        )
     }
     expected_scope = (
         expected_registered,

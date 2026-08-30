@@ -177,6 +177,15 @@ _FULL_SUITE_BOUNDARIES = frozenset(
 )
 _FULL_SUITE_PREFIXES = (
     "neocortex/progress/",
+    "neocortex/api/cli/cli_app.py",
+    "neocortex/api/cli/cli_parser.py",
+    "neocortex/api/cli/cli_validation.py",
+    "neocortex/code/code_change_validation.py",
+    "neocortex/code/code_contracts.py",
+    "neocortex/code/code_route.py",
+    "neocortex/code/code_state.py",
+    "neocortex/code/code_validation_receipts.py",
+    "neocortex/semantic/",
     "_04_Nucleo_Operativo/cli_app.py",
     "_04_Nucleo_Operativo/cli_parser.py",
     "_04_Nucleo_Operativo/cli_validation.py",
@@ -421,6 +430,20 @@ _POST_REPLAY_CLOSURE_RESERVE_SECONDS = (
 
 _EXPERIMENT_CONTROL_PLANE_PATHS = frozenset(
     {
+        "neocortex/api/cli/cli_code.py",
+        "neocortex/code/code_analysis_epistemics.py",
+        "neocortex/code/code_change_validation.py",
+        "neocortex/code/code_experiment_executor.py",
+        "neocortex/code/code_experiment_planner.py",
+        "neocortex/code/code_experiment_store.py",
+        "neocortex/code/code_invariant_contracts.py",
+        "neocortex/code/code_review.py",
+        "neocortex/code/code_review_models.py",
+        "neocortex/code/code_review_serialization.py",
+        "neocortex/code/code_technical_verification.py",
+        "neocortex/code/code_validation_resources.py",
+        "neocortex/code/external_evidence_models.py",
+        "neocortex/code/external_evidence_store.py",
         "_04_Nucleo_Operativo/cli_code.py",
         "_04_Nucleo_Operativo/code_analysis_epistemics.py",
         "_04_Nucleo_Operativo/code_change_validation.py",
@@ -1200,6 +1223,102 @@ def _module_for_source(relative: str) -> str | None:
     return ".".join(parts) if parts else None
 
 
+def _canonical_source_path(relative: str) -> str | None:
+    """Map one historical source path to its canonical Linux path.
+
+    The change validator still accepts old paths for replaying historical
+    receipts, while new diffs are expected to use the canonical ``neocortex``
+    namespaces.  Keeping this mapping in one place lets the question scopes
+    remain compatible without weakening their exact path matching.
+    """
+
+    prefix = "_04_Nucleo_Operativo/"
+    if not relative.startswith(prefix):
+        return relative if relative.startswith("neocortex/") else None
+    tail = relative[len(prefix) :]
+    if tail.startswith("capabilities/formats/"):
+        return "neocortex/" + tail
+    if tail.startswith("platform/shared/"):
+        return "neocortex/platform/" + tail[len("platform/shared/") :]
+    if tail in {"platform/__init__.py", "capabilities/__init__.py", "capabilities/formats/__init__.py"}:
+        target = {
+            "platform/__init__.py": "neocortex/platform/__init__.py",
+            "capabilities/__init__.py": "neocortex/capabilities/__init__.py",
+            "capabilities/formats/__init__.py": "neocortex/capabilities/formats/__init__.py",
+        }
+        return target[tail]
+    if tail.startswith("code/"):
+        return "neocortex/code/" + tail[len("code/") :]
+    if tail.startswith("cli_"):
+        return "neocortex/api/cli/" + tail
+    if tail.startswith(("code_", "external_")) or tail == "logical_owner_contracts.py":
+        return "neocortex/code/" + tail
+    if tail.startswith("knowledge_"):
+        return "neocortex/knowledge/" + tail
+    if tail.startswith(("semantic_", "derivation_")):
+        return "neocortex/semantic/" + tail
+    if tail.startswith("document_"):
+        return "neocortex/documents/" + tail
+    if tail.startswith("archive_"):
+        return "neocortex/capabilities/formats/archive/" + tail
+    if tail.startswith("audio_"):
+        return "neocortex/capabilities/formats/audio/" + tail
+    if tail.startswith("docx_"):
+        return "neocortex/capabilities/formats/docx/" + tail
+    if tail.startswith("image_"):
+        return "neocortex/capabilities/formats/image/" + tail
+    if tail.startswith("office_"):
+        return "neocortex/capabilities/formats/office/" + tail
+    if tail.startswith("pdf_"):
+        return "neocortex/capabilities/formats/pdf/" + tail
+    if tail.startswith("text_"):
+        return "neocortex/capabilities/formats/text/" + tail
+    if tail.startswith("video_"):
+        return "neocortex/capabilities/formats/video/" + tail
+    if tail in {"file_identity.py", "processing_provenance.py"}:
+        return "neocortex/foundation/" + tail
+    if tail in {"content_types.py", "zip_safety.py"}:
+        return "neocortex/platform/" + tail
+    if tail.startswith("inventory_") or tail == "reconcile.py":
+        return "neocortex/integrations/inventory/" + tail
+    if tail in {
+        "corpus_access.py",
+        "internal_paths.py",
+        "ocr_image_preprocess.py",
+        "ocr_profiles.py",
+        "protected_content.py",
+        "route_filters.py",
+        "state_topology_contracts.py",
+        "windows_handle_mutation.py",
+    }:
+        return "neocortex/safety/" + tail
+    if tail.startswith("framework_") or tail in {"sqlite_immutable.py", "sqlite_paths.py", "state.py"}:
+        return "neocortex/persistence/" + tail
+    if tail in {"sqlite_cancellation.py", "sqlite_schema_contract.py", "sqlite_schema_lifecycle.py"}:
+        return "neocortex/" + tail
+    if tail in {"app_paths.py", "application_config.py", "application_config_projections.py", "model_management.py"}:
+        return "neocortex/runtime/config/" + tail
+    if tail == "models.py":
+        return "neocortex/runtime/models.py"
+    if tail in {"bounded_subprocess.py", "cancellation.py", "console_cancellation.py", "cpu_runtime.py", "global_resources.py", "incremental_gate.py", "isolated_process.py", "locking.py", "memory_runtime.py", "retry_policy.py", "watcher.py", "watcher_life_lease.py"}:
+        return "neocortex/runtime/control/" + tail
+    if tail in {"orchestrator.py", "route_registry.py", "route_selection.py", "run_lifecycle.py", "run_status.py"}:
+        return "neocortex/runtime/orchestration/" + tail
+    if tail in {"action_policy.py", "actions.py", "file_action_reconciliation_store.py", "file_action_recovery.py"}:
+        return "neocortex/workflow/actions/" + tail
+    if tail == "retention_planner.py":
+        return "neocortex/workflow/retention/planner.py"
+    if tail in {"review.py", "review_evidence.py", "review_task_contracts.py", "review_task_repository.py", "value_review.py", "value_review_contracts.py", "value_review_port.py", "value_review_repository.py", "value_review_tasks.py"}:
+        return "neocortex/workflow/review/" + tail
+    if tail == "self_analysis.py":
+        return "neocortex/workflow/self_analysis/self_analysis.py"
+    if tail.startswith("self_analysis_"):
+        return "neocortex/workflow/self_analysis/" + tail
+    if tail == "read_api_port.py":
+        return "neocortex/api/read_api_port.py"
+    return None
+
+
 def _convention_candidates(root: Path, relative: str) -> tuple[str, ...]:
     module = _module_for_source(relative)
     if module is None:
@@ -1226,11 +1345,18 @@ def _source_boundary_tests(root: Path, relative: str) -> tuple[str, ...]:
     declared = set(_SOURCE_BOUNDARY_TESTS.get(relative, ()))
     module_id = _module_for_source(relative)
     if module_id is not None:
+        canonical_relative = _canonical_source_path(relative)
+        module_ids = {module_id}
+        if canonical_relative is not None:
+            canonical_module = _module_for_source(canonical_relative)
+            if canonical_module is not None:
+                module_ids.add(canonical_module)
         capabilities = {
             item.capability_id: item
+            for candidate in sorted(module_ids)
             for item in (
-                *resolve_source_capabilities(module_id),
-                *resolve_canonical_capabilities(module_id),
+                *resolve_source_capabilities(candidate),
+                *resolve_canonical_capabilities(candidate),
             )
         }
         for capability in capabilities.values():
@@ -1401,6 +1527,7 @@ def select_affected_tests(
             (
                 "tools/release_",
                 "neocortex/platform_policy",
+                "neocortex/persistence/framework_schema",
                 "_04_Nucleo_Operativo/framework_schema",
             )
         )
@@ -3328,13 +3455,37 @@ def _scope_relevance(
     selection: AffectedTestSelection,
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
     relevant_paths = set(scope.changed_paths)
+    relevant_paths.update(
+        canonical
+        for path in scope.changed_paths
+        if (canonical := _canonical_source_path(path)) is not None
+    )
     if scope.include_experiment_control_plane:
         relevant_paths.update(_EXPERIMENT_CONTROL_PLANE_PATHS)
+        relevant_paths.update(
+            canonical
+            for path in _EXPERIMENT_CONTROL_PLANE_PATHS
+            if (canonical := _canonical_source_path(path)) is not None
+        )
+    prefixes = set(scope.changed_prefixes)
+    prefixes.update(
+        canonical
+        for prefix in scope.changed_prefixes
+        if (canonical := _canonical_source_path(prefix)) is not None
+    )
     matched_paths = tuple(
         path
         for path in change.changed_paths
         if path in relevant_paths
-        or any(path.startswith(prefix) for prefix in scope.changed_prefixes)
+        or _canonical_source_path(path) in relevant_paths
+        or any(
+            path.startswith(prefix)
+            or (
+                (canonical := _canonical_source_path(path)) is not None
+                and canonical.startswith(prefix)
+            )
+            for prefix in prefixes
+        )
     )
     matched_selectors = tuple(
         selector for selector in selection.selectors if selector in scope.test_selectors

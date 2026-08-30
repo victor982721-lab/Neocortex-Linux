@@ -99,8 +99,15 @@ def _payload_int(payload: Mapping[str, object], field: str) -> int:
 
 def _core_scope_modules(modules: Sequence[str], registry: Any) -> tuple[str, ...]:
     root = registry.CORE_MODULE_ROOT
+    compatibility = set(registry.COMPATIBILITY_MODULES)
     return tuple(
-        sorted(module for module in modules if module == root or module.startswith(root + "."))
+        sorted(
+            module
+            for module in modules
+            if module == root
+            or module.startswith(root + ".")
+            or module in compatibility
+        )
     )
 
 
@@ -207,4 +214,3 @@ def build_core_target_projection(
 
 
 __all__ = ["build_core_target_projection"]
-
