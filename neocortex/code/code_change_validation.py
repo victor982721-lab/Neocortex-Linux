@@ -107,7 +107,7 @@ from neocortex.semantic.semantic_models import canonical_json
 
 
 CODE_CHANGE_VALIDATION_SCHEMA = "neocortex.code-change-validation/v3"
-CODE_CHANGE_VALIDATION_POLICY = "local-linux-diff-aware-validation-v12"
+CODE_CHANGE_VALIDATION_POLICY = "local-linux-diff-aware-validation-v13"
 MAX_CHANGED_PATHS = 2_000
 MAX_SELECTED_TEST_FILES = 2_000
 MAX_DEPENDENCY_DEPTH = 8

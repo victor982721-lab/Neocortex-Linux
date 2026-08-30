@@ -124,7 +124,7 @@ def _result(root: Path, state: Path) -> dict[str, object]:
         "schema": "neocortex.code-change-validation/v3",
         "status": "passed",
         "reason": None,
-        "policy_id": "local-linux-diff-aware-validation-v12",
+        "policy_id": "local-linux-diff-aware-validation-v13",
         "source_root": str(root),
         "state_directory": str(state),
         "git": {
