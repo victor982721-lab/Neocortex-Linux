@@ -14,7 +14,6 @@ from unittest.mock import patch
 
 import neocortex
 from neocortex.interface.entrypoint import entrypoint
-from neocortex.deduplication.__main__ import main as legacy_dedup_main
 # endregion [01]
 
 # region [02] Implementación
@@ -157,35 +156,6 @@ def test_interface_package_entrypoint_preserves_forwarding_contract() -> None:
 
     run_application.assert_called_once_with(("--portable",))
 
-
-def test_legacy_dedup_entrypoint_delegates_without_legacy_state(
-    tmp_path: Path,
-    capsys,
-) -> None:
-    database = tmp_path / "state" / "dedup.sqlite3"
-    with patch("neocortex.api.cli.cli_app.main", return_value=0) as run_cli:
-        result = legacy_dedup_main(
-            (
-                "--root",
-                str(tmp_path),
-                "--state-database",
-                str(database),
-                "--show-groups",
-                "3",
-            )
-        )
-
-    assert result == 0
-    forwarded = run_cli.call_args.args[0]
-    assert tuple(forwarded) == (
-        "--root",
-        str(tmp_path),
-        "--state-directory",
-        str(database.parent),
-        "--show-groups",
-        "3",
-    )
-    assert "obsoleto" in capsys.readouterr().err
 
 
 # endregion [02]

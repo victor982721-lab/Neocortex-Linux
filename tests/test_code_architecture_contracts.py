@@ -34,7 +34,6 @@ def test_declared_boundary_entry_points_pass_with_acyclic_v5_baseline() -> None:
         "neocortex.enumeration",
         "neocortex.enumeration.path_index.schema",
         "neocortex.deduplication",
-        "neocortex.deduplication.__main__",
         "neocortex.deduplication.inventory.scanner",
         "neocortex.platform.policy",
         "neocortex.persistence.sqlite_schema_contract",
@@ -48,9 +47,6 @@ def test_declared_boundary_entry_points_pass_with_acyclic_v5_baseline() -> None:
         "neocortex.progress.events",
     }
     imports = (
-            ModuleImport("neocortex.deduplication.__main__", "neocortex.runtime.config.app_paths"),
-            ModuleImport("neocortex.deduplication.__main__", "neocortex.api.cli.cli_app"),
-        ModuleImport("neocortex.deduplication.__main__", "neocortex.platform.policy"),
         ModuleImport("neocortex.deduplication.inventory.scanner", "neocortex.progress"),
         ModuleImport(
             "neocortex.enumeration.path_index.schema",

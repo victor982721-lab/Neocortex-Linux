@@ -402,7 +402,6 @@ RESPONSIBILITY_MODULES: Final = {
     ),
     "integrations.inventory": (
         "neocortex.deduplication",
-        "neocortex.deduplication.__main__",
         "neocortex.deduplication.domain",
         "neocortex.deduplication.domain.errors",
         "neocortex.deduplication.domain.models",
@@ -675,9 +674,8 @@ FORBIDDEN_FAMILY_EDGE_BASELINE: Final = (
     FamilyEdgeBaseline("formats", "workflow", 11),
     FamilyEdgeBaseline("foundation", "integrations", 1),
     FamilyEdgeBaseline("foundation", "runtime", 1),
-    FamilyEdgeBaseline("integrations", "api", 1),
     FamilyEdgeBaseline("integrations", "persistence", 12),
-    FamilyEdgeBaseline("integrations", "runtime", 10),
+    FamilyEdgeBaseline("integrations", "runtime", 9),
     FamilyEdgeBaseline("knowledge", "api", 1),
     FamilyEdgeBaseline("knowledge", "workflow", 2),
     FamilyEdgeBaseline("persistence", "workflow", 8),

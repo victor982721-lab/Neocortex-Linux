@@ -40,8 +40,8 @@ def test_registry_exhaustively_assigns_every_current_core_module() -> None:
         sorted(module for modules in RESPONSIBILITY_MODULES.values() for module in modules)
     )
     assert observed == registered == product_registered
-    assert len(observed) == 453
-    assert sum(len(items) for items in RESPONSIBILITY_MODULES.values()) == 453
+    assert len(observed) == 452
+    assert sum(len(items) for items in RESPONSIBILITY_MODULES.values()) == 452
     for module in observed:
         families = matching_target_families(module)
         responsibilities = matching_target_responsibilities(module)
@@ -55,15 +55,15 @@ def test_target_vocabulary_is_canonical_and_legacy_free() -> None:
     assert len(TARGET_RESPONSIBILITY_IDS) == 45
     assert len(TARGET_FAMILIES) == 12
     assert TARGET_FAMILY_DEPENDENCIES == tuple(pairwise(TARGET_FAMILY_LAYERS))
-    assert len(FORBIDDEN_FAMILY_EDGE_BASELINE) == 28
-    assert sum(item.direct_module_edges for item in FORBIDDEN_FAMILY_EDGE_BASELINE) == 228
+    assert len(FORBIDDEN_FAMILY_EDGE_BASELINE) == 27
+    assert sum(item.direct_module_edges for item in FORBIDDEN_FAMILY_EDGE_BASELINE) == 226
     assert payload["responsibility_registry"]["schema"] == CORE_RESPONSIBILITY_REGISTRY_SCHEMA
     assert payload["family_dag"]["schema"] == CORE_FAMILY_DAG_SCHEMA
     assert "compatibility_matrix" not in payload
     assert "compatibility_modules" not in payload["responsibility_registry"]
     assert core_architecture_target_fingerprint() == (
         "core-architecture-target-v1:sha256:"
-        "f013e71d60f3338512c55c88a39a6b00a726edb819308b517347674d9b5ace32"
+        "2b1ad2c3a2b01a76477c69c7205979eb06537fb6c228765f88caf925b2cadbc2"
     )
 
 

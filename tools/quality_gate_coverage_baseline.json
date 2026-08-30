@@ -11,7 +11,7 @@
   },
   "approved_inventory": {
     "production_source_inventory": {
-      "file_count": 453,
+      "file_count": 452,
       "files": [
         "neocortex/__init__.py",
         "neocortex/__main__.py",
@@ -214,7 +214,6 @@
         "neocortex/code/semgrep_tool_contract.py",
         "neocortex/code/validation_supply.py",
         "neocortex/deduplication/__init__.py",
-        "neocortex/deduplication/__main__.py",
         "neocortex/deduplication/domain/__init__.py",
         "neocortex/deduplication/domain/errors.py",
         "neocortex/deduplication/domain/models.py",
@@ -468,7 +467,7 @@
         "neocortex/workflow/self_analysis/self_analysis_status.py"
       ],
       "hash_algorithm": "sha256(path,lf-size,sha256(lf-content))-v1",
-      "sha256": "aacfe6d8e6d6c3bf8ebbb65de2d027db8262c87de0777eeebc87b3c964c044c2"
+      "sha256": "b484a62f092508b8c579069dd47f08c9d5ab236a41f274e1d8c13726cffe8fd9"
     },
     "test_inventory": {
       "file_count": 358,
@@ -833,7 +832,7 @@
         "tests/test_zip_safety.py"
       ],
       "hash_algorithm": "sha256(path,lf-size,sha256(lf-content))-v1",
-      "sha256": "0723dcef559dd1bb98c8cd453bd184364c7d2fb3ce750a102f118f43c152d350"
+      "sha256": "04db656ceb3b4abe4db55ca0774778efe3e62103745174f19fe79a94c8e7ffc2"
     }
   },
   "schema": "neocortex.quality-gate-coverage-baseline/v1",

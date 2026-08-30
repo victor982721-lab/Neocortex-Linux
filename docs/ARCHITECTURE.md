@@ -542,7 +542,7 @@ de mutación, sin retirar inventario, procesamiento o búsqueda.
 Las raíces numeradas y el shim independiente anterior fueron retirados del
 checkout y del wheel; no existe una segunda implementación ni una fachada
 paralela. Las invocaciones soportadas son `Neocortex`, `python -m neocortex` y,
-para el planner dedicado, `python -m neocortex.deduplication`.
+para el planner dedicado, la ruta integrada `Neocortex` con sus opciones de inventario.
 
 ## Superficies públicas
 

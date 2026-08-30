@@ -28,8 +28,6 @@ _PROGRESS = "neocortex.progress"
 _CANONICAL_FAMILY_TREES = (_DEDUPLICATION, _ENUMERATION, _PROGRESS, _UI)
 
 _DEDUP_CORE_ALLOWLIST = (
-    ("neocortex.deduplication.__main__", "neocortex.runtime.config.app_paths"),
-    ("neocortex.deduplication.__main__", "neocortex.api.cli.cli_app"),
 )
 _ENUMERATION_PRODUCT_ALLOWLIST = (
     (
@@ -46,9 +44,6 @@ _ENUMERATION_PRODUCT_ALLOWLIST = (
     ),
 )
 _DEDUP_PRODUCT_ALLOWLIST = (
-    ("neocortex.deduplication.__main__", "neocortex.platform.policy"),
-    ("neocortex.deduplication.__main__", "neocortex.runtime.config.app_paths"),
-    ("neocortex.deduplication.__main__", "neocortex.api.cli.cli_app"),
     ("neocortex.deduplication.fingerprinting", "neocortex.platform.policy"),
     ("neocortex.deduplication.inventory.index", "neocortex.progress"),
     ("neocortex.deduplication.inventory.policy", "neocortex.platform.policy"),
