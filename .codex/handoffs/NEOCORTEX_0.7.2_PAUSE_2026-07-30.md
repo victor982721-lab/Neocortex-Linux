@@ -31,8 +31,8 @@ transitoria verificable, hasta retirar `_01_Enumeracion`, `_02_Deduplicacion`,
   Las rutas `_04_Nucleo_Operativo.platform.shared.*` y los aliases planos de
   tipos/ZIP son fachadas de compatibilidad, sin una segunda implementación.
 - El registro de arquitectura conserva explícitos los cruces transitorios de
-  las ocho familias hacia foundation/core. El fingerprint de transición actual
-  es `core-architecture-target-v1:sha256:9c6d868bd95490aa6d7a584b37195ba060bf6027de979764f06ddbe480fba354`.
+  las ocho familias hacia foundation/core. El registro canónico actual cubre 454 módulos productivos y su fingerprint es
+  `core-architecture-target-v1:sha256:5b1f31c493ee544417c1ac44f59e84f26aaa4a0bc3fd5fb46530733997af99af`; los aliases legacy permanecen fuera de la implementación.
 
 ## Evidencia de aceptación y release
 
@@ -42,6 +42,13 @@ transitoria verificable, hasta retirar `_01_Enumeracion`, `_02_Deduplicacion`,
   replay e identidades públicas. Receipt:
   `/home/winterboss/.local/state/Neocortex/self-analysis/validation-receipts/ee4bdec1359fab0cc9fed18af6973f57f792bf33-44a05ed08f4da0b7fc5568952862ab1dc533a2bfa5ecb456b6acedbe3582aa9d.json`
   (`sha256:d6135e44d001e1aa8e269576671192171351bd83f0859cd36a72ed2daa0067c5`).
+- El lote rápido posterior trasladó runtime, workflow, Knowledge, Semantic, Code,
+  Documents, Safety, Inventory, Persistence y API a namespaces canónicos, con
+  aliases legacy de identidad comprobada; los commits principales son `6305e98`,
+  `e0b2137`, `4a366b0`, `ec5b7a1`, `d276b23`, `b1262ed`, `50f0e42`, `a741b41`,
+  `3478e30`, `63955f3` y `eab777f`. Focales de migración, CLI, arquitectura,
+  Semgrep, quality gate y selector de cambios pasaron; no existe aún receipt
+  canónico integral ni release instalada para este árbol posterior.
 - Trusted-deep publicó `run_id=56` con 987 archivos, 981 candidatos,
   `code_processed=0`, `code_cache_hits=981`, y el replay `run_id=57` conservó
   los mismos contadores, ambos sin errores.
@@ -81,17 +88,13 @@ transitoria verificable, hasta retirar `_01_Enumeracion`, `_02_Deduplicacion`,
 
 1. Mantener como evidencia vigente el receipt, la release y el E2E del corte
    foundation aceptado; la corrida interrumpida anterior no se usa como prueba.
-2. La continuidad rápida ya está autorizada. Los lotes posteriores al corte
-   aceptado son configuración/modelos (`6305e98`), control runtime (`e0b2137`),
-   orchestration (`4a366b0`), workflow actions/recovery (`ec5b7a1`) y baseline
-   arquitectónico (`e6475fe`); todos siguen sin receipt canónico. Abrir el
-   siguiente lote material de `_04_Nucleo_Operativo` (workflow review/self-analysis,
-   knowledge, semantic o code) con controles focales y un commit por lote, y
-   reservar la secuencia aceptación canónica → release → E2E para el candidato
-   congelado.
-3. Conservar `main` sin merge ni push hasta el cierre integral de
-   `NEO-CORE-004`; el snapshot de la rama sirve para revisión y trazabilidad,
-   no equivale a la integración final.
+2. El árbol canónico ya está organizado; mantenerlo congelado en `03b9fba` y
+   ejecutar una sola `Neocortex code validate --baseline HEAD^` como aceptación
+   integral, seguida de release Linux desde el SHA aceptado, instalación,
+   launcher público y E2E/replay con contadores de caché verificables.
+3. Conservar `main` sin merge ni push hasta que el receipt, la release y el E2E
+   final estén comprobados; los snapshots locales y remotos no equivalen a la
+   integración final.
 
 ## Límites
 
