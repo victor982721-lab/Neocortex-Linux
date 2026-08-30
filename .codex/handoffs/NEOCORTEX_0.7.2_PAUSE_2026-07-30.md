@@ -1,6 +1,6 @@
 # NeoCortex — handoff operativo vigente
 
-> Actualizado: 2026-08-30 00:00 CST. El basename es histórico y permanece estable.
+> Actualizado: 2026-08-30 03:45 CST. El basename es histórico y permanece estable.
 > `~/.codex/PENDIENTES.md` conserva el compromiso operativo; este archivo
 > describe sólo la frontera técnica de reanudación.
 
@@ -10,19 +10,23 @@
 
 ## Objetivo activo
 
-La cohorte de reorganización quedó cerrada: la topología productiva ejecutable
-vive en el namespace único `neocortex`, con responsabilidades explícitas y
-límites de dependencia comprobados. Las raíces numeradas permanecen únicamente
-como fachadas de compatibilidad verificables, sin una segunda implementación;
-su retirada física queda fuera de esta cohorte para no romper consumidores
-históricos.
+La implementación productiva ya está organizada en el namespace único
+`neocortex`, con responsabilidades explícitas y límites de dependencia
+comprobados, pero la migración física todavía no está cerrada: las raíces
+numeradas conservan cientos de fachadas de compatibilidad. El siguiente tramo
+debe inventariar sus consumidores y retirar esas fachadas por cohortes, sin
+declarar final la reorganización mientras `_04_Nucleo_Operativo` siga siendo una
+carpeta poblada de aliases.
 
-## Corte canónico final aceptado
+## Corte canónico de implementación aceptado (no cierre físico)
 
 - Checkout: `/home/winterboss/Neocortex/Repository`
 - SHA ejecutable aceptado: `5455b90992ef2e6f2b0d49590a99448f0342aeea`
 - Árbol verificado limpio; la rama local conserva commits locales posteriores a
   su snapshot remoto y no se hizo merge ni push a `main`.
+- Este corte acepta la implementación canónica y su comportamiento, no la
+  eliminación física de la raíz legacy; el cierre solicitado por Víctor sigue
+  pendiente hasta retirar o reducir explícitamente esa compatibilidad.
 - Archive, DOCX, Audio, Image, Office, PDF, Video y Text viven físicamente en
   `neocortex/capabilities/formats/{archive,docx,audio,image,office,pdf,text,video}`.
   Las fachadas `_04_Nucleo_Operativo` correspondientes son compatibilidad
@@ -81,10 +85,14 @@ históricos.
 
 ## Próximo corte, en orden
 
-1. No queda trabajo de refactor ejecutable dentro de esta cohorte; conservar el
-   receipt, la release y el E2E como evidencia vigente.
-2. Si Víctor solicita integración, preparar un cambio separado para merge/push;
-   `main` permanece deliberadamente sin modificar.
+1. Levantar un inventario read-only de imports, entry points, tests, packaging y
+   consumers que aún atraviesan `_04_Nucleo_Operativo`, distinguiendo aliases
+   necesarios de residuos retirables.
+2. Retirar la compatibilidad en cohortes pequeñas, actualizar consumidores y
+   añadir regresiones; no borrar la raíz ni sus archivos antes de comprobar cada
+   frontera.
+3. Congelar después el nuevo árbol, ejecutar el gate canónico, instalar la
+   release y repetir el E2E/replay; `main` permanece sin merge ni push.
 
 ## Límites
 
