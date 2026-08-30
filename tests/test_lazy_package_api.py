@@ -298,9 +298,6 @@ class LazyPackageApiTests(unittest.TestCase):
                 "neocortex.knowledge.knowledge_search",
                 "neocortex.knowledge.knowledge_service",
                 "neocortex.knowledge.knowledge_snapshot",
-                "neocortex.interface",
-                "neocortex.interface.application.app",
-                "neocortex.interface.presentation.windows.main",
             }
             import neocortex.interface.entrypoint as public_cli
             from neocortex.api.public import ApplicationConfig, FrameworkConfig

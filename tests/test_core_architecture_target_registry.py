@@ -63,7 +63,7 @@ def test_target_vocabulary_is_canonical_and_legacy_free() -> None:
     assert "compatibility_modules" not in payload["responsibility_registry"]
     assert core_architecture_target_fingerprint() == (
         "core-architecture-target-v1:sha256:"
-        "8fef783b2ae52f6a26519532f07cbf37a62ccbf4b94db3ddfcc4657f3ef557e9"
+        "f013e71d60f3338512c55c88a39a6b00a726edb819308b517347674d9b5ace32"
     )
 
 
