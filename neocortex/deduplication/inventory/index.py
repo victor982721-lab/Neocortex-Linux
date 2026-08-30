@@ -14,7 +14,7 @@ from neocortex.progress import ProgressCallback
 
 from ..domain.models import FileSnapshot, ScanSummary
 from ..fingerprinting import snapshot_path
-from ..schema import (
+from ..persistence import (
     SCHEMA_VERSION as SCHEMA_VERSION,
     connect_existing_inventory_database,
     configure_inventory_connection,

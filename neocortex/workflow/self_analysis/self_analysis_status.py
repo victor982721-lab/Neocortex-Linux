@@ -15,7 +15,7 @@ from neocortex.enumeration import (
     NtfsUsnError,
     UsnJournalReader,
 )
-from neocortex.deduplication import schema as inventory_schema
+from neocortex.deduplication.persistence import schema as inventory_schema
 from neocortex.sqlite_schema_contract import read_metadata_schema_version
 
 from neocortex.persistence import framework_schema

@@ -15,7 +15,7 @@ from unittest.mock import patch
 import pytest
 
 from neocortex.deduplication.fingerprinting import FULL_ALGORITHM
-from neocortex.deduplication.schema import initialize_inventory_schema
+from neocortex.deduplication.persistence.schema import initialize_inventory_schema
 from neocortex.foundation.file_identity import encode_file_identity
 from neocortex.api.cli.cli_app import main as cli_main
 from neocortex.capabilities.formats.image.state import image_database, initialize_image_state

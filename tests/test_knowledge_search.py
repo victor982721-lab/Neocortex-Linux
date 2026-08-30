@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 
 from neocortex.deduplication import FileSnapshot
-from neocortex.deduplication.schema import initialize_inventory_schema
+from neocortex.deduplication.persistence.schema import initialize_inventory_schema
 from neocortex.knowledge import knowledge_search as knowledge_search_module
 from neocortex.semantic import semantic_preparation, semantic_service
 from neocortex.capabilities.formats.archive.state import (

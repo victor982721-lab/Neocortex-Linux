@@ -25,7 +25,7 @@ Linux y demostrar el recorrido público instalado.
 - La verificación viva observó 455 módulos Python canónicos, sin referencias de
   código a `_04_Nucleo_Operativo` y sin la carpeta legacy en el checkout.
 - El fingerprint del registro exhaustivo actual es
-  `core-architecture-target-v1:sha256:5e5cc16adca95020bc50ffa6920bae5736c9c54b27dc47f806d8339213559e27`.
+  `core-architecture-target-v1:sha256:98fe6df8ea8ed9922f8830ae6b8fa5593d04df9c4c4ac0902fdb38fe427ed85d`.
 - La suite integral local del candidato pasó con 5,528 pruebas, 144 omitidas,
   110 subtests y una advertencia no bloqueante; el gate canónico todavía no
   produjo receipt porque se abstuvo en la frescura del snapshot pip-audit.

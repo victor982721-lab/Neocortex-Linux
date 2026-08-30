@@ -16,7 +16,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from neocortex.deduplication.schema import initialize_inventory_schema
+from neocortex.deduplication.persistence.schema import initialize_inventory_schema
 from neocortex.persistence import framework_schema
 from neocortex.workflow.retention import planner as retention_module
 from neocortex.api.cli.cli_app import main as cli_main

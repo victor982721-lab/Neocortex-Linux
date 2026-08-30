@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from neocortex.deduplication import schema as inventory_schema
+from neocortex.deduplication.persistence import schema as inventory_schema
 from neocortex.documents import document_catalog_schema
 from neocortex.persistence import framework_schema
 from neocortex.semantic import semantic_schema

@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, fields
 from typing import Literal, Mapping, Sequence
 
-from neocortex.deduplication.schema import SCHEMA_VERSION as INVENTORY_SCHEMA_VERSION
+from neocortex.deduplication.persistence.schema import SCHEMA_VERSION as INVENTORY_SCHEMA_VERSION
 
 from neocortex.capabilities.formats.archive.state import ARCHIVE_SCHEMA_VERSION
 from neocortex.capabilities.formats.audio.state import AUDIO_SCHEMA_VERSION

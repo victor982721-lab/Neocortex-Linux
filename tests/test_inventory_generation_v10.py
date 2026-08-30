@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from neocortex.deduplication import schema as inventory_schema_module
+from neocortex.deduplication.persistence import schema as inventory_schema_module
 from neocortex.deduplication.domain.errors import InventoryError
 from neocortex.deduplication.persistence import (
     inventory_schema_contract as persistent_inventory_schema_contract,

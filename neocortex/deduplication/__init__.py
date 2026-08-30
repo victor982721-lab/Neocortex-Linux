@@ -56,15 +56,7 @@ _EXPORTS: Final = {
     "snapshot_path": (".fingerprinting", "snapshot_path"),
     "stat_matches_snapshot": (".fingerprinting", "stat_matches_snapshot"),
 }
-_MODULE_EXPORTS: Final = {"inventory_schema": ".schema"}
-
-
 def __getattr__(name: str) -> Any:
-    module_name = _MODULE_EXPORTS.get(name)
-    if module_name is not None:
-        value = import_module(module_name, __name__)
-        globals()[name] = value
-        return value
     try:
         module_name, attribute = _EXPORTS[name]
     except KeyError as error:

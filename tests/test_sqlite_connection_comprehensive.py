@@ -12,7 +12,7 @@ from neocortex.enumeration.path_index import schema as path_index_schema
 from neocortex.enumeration.path_index.repository import SqlitePathIndex
 from neocortex.deduplication.inventory import index as inventory_module
 from neocortex.deduplication.inventory.index import DedupIndex
-from neocortex.deduplication import schema as inventory_schema
+from neocortex.deduplication.persistence import schema as inventory_schema
 from neocortex.documents import document_catalog
 from neocortex.persistence import framework_state_writer
 from neocortex.workflow.review import review_evidence

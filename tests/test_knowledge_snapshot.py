@@ -14,8 +14,8 @@ from typing import Any
 import pytest
 
 import neocortex.knowledge.knowledge_snapshot as knowledge_snapshot
-from neocortex.deduplication import schema as inventory_schema_module
-from neocortex.deduplication.schema import initialize_inventory_schema
+from neocortex.deduplication.persistence import schema as inventory_schema_module
+from neocortex.deduplication.persistence.schema import initialize_inventory_schema
 from neocortex.persistence import framework_schema as framework_schema_module
 from neocortex.capabilities.formats.archive.state import initialize_archive_state
 from neocortex.code.code_schema import initialize_code_state

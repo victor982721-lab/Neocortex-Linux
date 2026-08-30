@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from neocortex.deduplication.schema import initialize_inventory_schema
+from neocortex.deduplication.persistence.schema import initialize_inventory_schema
 from neocortex.code.code_retention_analysis import (
     RETENTION_HOLD_QUESTION,
     CodeRetentionResolutionError,

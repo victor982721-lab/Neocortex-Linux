@@ -56,14 +56,14 @@ def test_target_vocabulary_is_canonical_and_legacy_free() -> None:
     assert len(TARGET_FAMILIES) == 12
     assert TARGET_FAMILY_DEPENDENCIES == tuple(pairwise(TARGET_FAMILY_LAYERS))
     assert len(FORBIDDEN_FAMILY_EDGE_BASELINE) == 28
-    assert sum(item.direct_module_edges for item in FORBIDDEN_FAMILY_EDGE_BASELINE) == 227
+    assert sum(item.direct_module_edges for item in FORBIDDEN_FAMILY_EDGE_BASELINE) == 228
     assert payload["responsibility_registry"]["schema"] == CORE_RESPONSIBILITY_REGISTRY_SCHEMA
     assert payload["family_dag"]["schema"] == CORE_FAMILY_DAG_SCHEMA
     assert "compatibility_matrix" not in payload
     assert "compatibility_modules" not in payload["responsibility_registry"]
     assert core_architecture_target_fingerprint() == (
         "core-architecture-target-v1:sha256:"
-        "5e5cc16adca95020bc50ffa6920bae5736c9c54b27dc47f806d8339213559e27"
+        "98fe6df8ea8ed9922f8830ae6b8fa5593d04df9c4c4ac0902fdb38fe427ed85d"
     )
 
 

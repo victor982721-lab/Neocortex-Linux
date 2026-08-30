@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from neocortex.deduplication.schema import initialize_inventory_schema
+from neocortex.deduplication.persistence.schema import initialize_inventory_schema
 from neocortex.documents.document_catalog import initialize_document_catalog
 from neocortex.foundation.file_identity import encode_file_identity
 from neocortex.knowledge.knowledge_asset_health import inspect_knowledge_asset_health

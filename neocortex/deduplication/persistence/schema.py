@@ -1,31 +1,26 @@
-"""Compatibility facade for the deduplication inventory schema lifecycle.
-
-The implementation is partitioned under :mod:`neocortex.deduplication.persistence`.
-This module keeps the established import surface explicit while legacy consumers
-migrate independently.
-"""
+"""Canonical persistence API for the deduplication inventory schema lifecycle."""
 
 from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
 
-from .persistence import connections as _connections
-from .persistence import contracts as _contracts
-from .persistence import ddl as _ddl
-from .persistence import lifecycle as _lifecycle
-from .persistence import migrations as _migrations
-from .persistence import validation as _validation
-from .persistence.migrations import common as _migration_common
-from .persistence.migrations import v1_to_v2 as _v1_to_v2
-from .persistence.migrations import v2_to_v3 as _v2_to_v3
-from .persistence.migrations import v3_to_v4 as _v3_to_v4
-from .persistence.migrations import v4_to_v5 as _v4_to_v5
-from .persistence.migrations import v5_to_v6 as _v5_to_v6
-from .persistence.migrations import v6_to_v7 as _v6_to_v7
-from .persistence.migrations import v7_to_v8 as _v7_to_v8
-from .persistence.migrations import v8_to_v9 as _v8_to_v9
-from .persistence.migrations import v9_to_v10 as _v9_to_v10
+from . import connections as _connections
+from . import contracts as _contracts
+from . import ddl as _ddl
+from . import lifecycle as _lifecycle
+from . import migrations as _migrations
+from . import validation as _validation
+from .migrations import common as _migration_common
+from .migrations import v1_to_v2 as _v1_to_v2
+from .migrations import v2_to_v3 as _v2_to_v3
+from .migrations import v3_to_v4 as _v3_to_v4
+from .migrations import v4_to_v5 as _v4_to_v5
+from .migrations import v5_to_v6 as _v5_to_v6
+from .migrations import v6_to_v7 as _v6_to_v7
+from .migrations import v7_to_v8 as _v7_to_v8
+from .migrations import v8_to_v9 as _v8_to_v9
+from .migrations import v9_to_v10 as _v9_to_v10
 
 SCHEMA_VERSION = _ddl.SCHEMA_VERSION
 configure_inventory_connection = _connections.configure_inventory_connection
@@ -33,7 +28,7 @@ connect_existing_inventory_database = _connections.connect_existing_inventory_da
 inventory_schema_contract = _contracts.inventory_schema_contract
 validate_inventory_schema = _validation.validate_inventory_schema
 
-# Explicit legacy seams retained while internal consumers move to persistence.
+# Shared schema lifecycle helpers used by the inventory persistence owner.
 _SCHEMA_LABEL = _ddl.SCHEMA_LABEL
 _PATH_COLLATION = _ddl.PATH_COLLATION
 _METADATA_DDL = _ddl.METADATA_DDL
@@ -89,7 +84,7 @@ _create_fresh = _lifecycle.create_fresh
 
 
 def _connect(path: Path, *, readonly: bool = False) -> sqlite3.Connection:
-    """Compatibility seam retained for connection-policy tests and consumers."""
+    """Open one inventory database with the canonical connection policy."""
 
     return _connections.connect(path, readonly=readonly)
 
