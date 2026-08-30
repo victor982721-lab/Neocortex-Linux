@@ -1,36 +1,12 @@
-"""Cooperative cancellation shared by framework routes and resource waits."""
+"""Compatibility alias for canonical runtime cancellation control."""
 
 from __future__ import annotations
 
-import threading
+import sys
+from importlib import import_module
+from typing import TYPE_CHECKING
 
-
-# region [01] Cancellation contract
-
-
-class CancellationRequested(Exception):
-    """Stop current work after leaving persistent state transactionally valid."""
-
-
-class CancellationToken:
-    """Thread-safe one-way cancellation signal with interruptible waiting."""
-
-    def __init__(self):
-        self._event = threading.Event()
-
-    @property
-    def is_cancelled(self) -> bool:
-        return self._event.is_set()
-
-    def cancel(self) -> None:
-        self._event.set()
-
-    def wait(self, timeout: float | None = None) -> bool:
-        return self._event.wait(timeout)
-
-    def checkpoint(self) -> None:
-        if self._event.is_set():
-            raise CancellationRequested("framework cancellation requested")
-
-
-# endregion [01]
+if TYPE_CHECKING:
+    from neocortex.runtime.control.cancellation import *  # noqa: F403
+else:
+    sys.modules[__name__] = import_module("neocortex.runtime.control.cancellation")

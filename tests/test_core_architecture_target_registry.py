@@ -68,13 +68,13 @@ def test_target_vocabulary_dag_and_transition_baseline_are_frozen() -> None:
     assert len(TARGET_FAMILIES) == 12
     assert TARGET_FAMILY_DEPENDENCIES == tuple(pairwise(TARGET_FAMILY_LAYERS))
     assert len(FORBIDDEN_FAMILY_EDGE_BASELINE) == 17
-    assert sum(item.direct_module_edges for item in FORBIDDEN_FAMILY_EDGE_BASELINE) == 116
+    assert sum(item.direct_module_edges for item in FORBIDDEN_FAMILY_EDGE_BASELINE) == 115
     assert payload["responsibility_registry"]["schema"] == (CORE_RESPONSIBILITY_REGISTRY_SCHEMA)
     assert payload["family_dag"]["schema"] == CORE_FAMILY_DAG_SCHEMA
     assert payload["compatibility_matrix"]["schema"] == (CORE_COMPATIBILITY_MATRIX_SCHEMA)
     assert core_architecture_target_fingerprint() == (
         "core-architecture-target-v1:sha256:"
-        "529a9c8245d135dc6acf2ba2d9730a7c044a9c4f5952339e47b08f3c079ca5cb"
+        "50b6cbdd8d504fe3f56c0de74a563105cd492d6b6c02aaee2ac5a12585d6a5f5"
     )
 
 
