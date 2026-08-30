@@ -15,7 +15,7 @@ from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import Any, Literal, Mapping, Sequence, cast
 
-from neocortex.capabilities import CAPABILITY_MANIFESTS, TEXT_EXTRACT_CAPABILITY_ID
+from neocortex.capabilities.runtime import CAPABILITY_MANIFESTS, TEXT_EXTRACT_CAPABILITY_ID
 from neocortex.capability_broker import CapabilityManifest
 
 from .code_analysis_epistemics import (

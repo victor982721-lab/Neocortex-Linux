@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from neocortex.capabilities import (
+from neocortex.capabilities.runtime import (
     CAPABILITY_MANIFESTS,
     TEXT_BUILTIN_IMPLEMENTATION_ID,
     TEXT_EXTRACT_CAPABILITY_ID,

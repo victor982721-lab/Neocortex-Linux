@@ -21,7 +21,7 @@ from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import Any, Literal, Mapping, Sequence, cast
 
-from neocortex.capabilities import (
+from neocortex.capabilities.runtime import (
     CAPABILITY_MANIFESTS,
     CAPABILITY_SPECS,
     RUNTIME_CAPABILITY_PROBE_POLICY,

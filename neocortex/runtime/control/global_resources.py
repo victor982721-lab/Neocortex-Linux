@@ -444,7 +444,7 @@ class GlobalResourceCoordinator:
 # endregion [02]
 
 
-# region [03] Compatibility adapter for existing route memory gates
+# region [03] Route memory gate adapter
 
 
 class CoordinatedMemoryGate:

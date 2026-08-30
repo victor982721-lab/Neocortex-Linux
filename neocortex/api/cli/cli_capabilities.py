@@ -16,7 +16,7 @@ from neocortex.capability_broker import (
     CapabilityRequest,
     CapabilitySelection,
 )
-from neocortex.capabilities import (
+from neocortex.capabilities.runtime import (
     RUNTIME_CAPABILITY_PROBE_POLICY,
     RUNTIME_CAPABILITY_SCHEMA_VERSION,
     CapabilityState,

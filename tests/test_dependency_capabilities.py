@@ -13,7 +13,7 @@ import tomllib
 from importlib import metadata
 from pathlib import Path
 
-from neocortex.capabilities import (
+from neocortex.capabilities.runtime import (
     CAPABILITY_SPECS,
     ROUTE_CAPABILITY_NAMES,
     CapabilityState,
@@ -399,7 +399,7 @@ def test_base_surfaces_and_absent_knowledge_state_ignore_optional_engines(
 
         sys.meta_path.insert(0, OptionalEngineBlocker())
 
-        from neocortex.capabilities import (
+        from neocortex.capabilities.runtime import (
             ROUTE_CAPABILITY_NAMES,
             inspect_runtime_capabilities,
         )

@@ -4,7 +4,7 @@ from dataclasses import replace
 
 import pytest
 
-from neocortex.capabilities import (
+from neocortex.capabilities.runtime import (
     CAPABILITY_SPECS,
     ROUTE_CAPABILITY_NAMES,
     RuntimeCapabilityStatus,

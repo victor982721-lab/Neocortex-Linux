@@ -22,7 +22,7 @@ from neocortex.capabilities.formats.image.route import ImageRouteConfig
 from neocortex.capabilities.formats.office.route import OfficeRouteConfig
 from neocortex.capabilities.formats.pdf.pdf_route_models import PdfRouteConfig
 from neocortex.capabilities.formats.video.route import VideoRouteConfig
-from neocortex.capabilities import CAPABILITY_SPECS, inspect_runtime_capabilities
+from neocortex.capabilities.runtime import CAPABILITY_SPECS, inspect_runtime_capabilities
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 

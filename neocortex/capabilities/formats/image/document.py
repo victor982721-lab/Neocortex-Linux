@@ -49,7 +49,7 @@ from neocortex.foundation.processing_provenance import (
 )
 
 DOCUMENT_OCR_VERSION = "document-text-tesseract-v3"
-# Compatibility alias retained for callers which report the historical bound.
+# Public sampling bound for callers that report OCR evidence dimensions.
 # Recognition now preserves materially more source detail and is capped by both
 # dimensions and total pixels rather than blindly thumbnailing every image to 768px.
 DOCUMENT_OCR_SAMPLE_SIDE = 3_200

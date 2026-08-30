@@ -24,7 +24,7 @@ from neocortex.capability_broker import (
     CapabilityBroker,
     CapabilityRequest,
 )
-from neocortex.capabilities import (
+from neocortex.capabilities.runtime import (
     CAPABILITY_MANIFESTS,
     CapabilityState,
     RequirementKind,

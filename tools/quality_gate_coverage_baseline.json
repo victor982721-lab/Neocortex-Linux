@@ -468,7 +468,7 @@
         "neocortex/workflow/self_analysis/self_analysis_status.py"
       ],
       "hash_algorithm": "sha256(path,lf-size,sha256(lf-content))-v1",
-      "sha256": "1b1b7421ea1ab60db0044eb0cc353332681ea0f63e39376fc3317e90aef1940c"
+      "sha256": "31d3c5c9c4e8e71d4b5005e35877d9800a7f15f0f0495a0de8fe684a2bb5314b"
     },
     "test_inventory": {
       "file_count": 358,
@@ -833,7 +833,7 @@
         "tests/test_zip_safety.py"
       ],
       "hash_algorithm": "sha256(path,lf-size,sha256(lf-content))-v1",
-      "sha256": "16c41c156d218ebf70e0933120c6af55905192ad750a6d8cc82ddfbc3a245af9"
+      "sha256": "c78a4354bbbc63769df7b919aee0b4ebace7cae0b8134c48ceac0e84dabe3524"
     }
   },
   "schema": "neocortex.quality-gate-coverage-baseline/v1",

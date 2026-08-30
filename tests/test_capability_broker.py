@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-import neocortex.capabilities as capabilities_module
+import neocortex.capabilities.runtime as capabilities_module
 import neocortex.capability_broker as broker_module
 from neocortex.capability_broker import (
     CAPABILITY_MANIFEST_SCHEMA,
@@ -30,7 +30,7 @@ from neocortex.capability_broker import (
     CapabilityQualityRequirement,
     CapabilityRequest,
 )
-from neocortex.capabilities import (
+from neocortex.capabilities.runtime import (
     CAPABILITY_MANIFESTS,
     RUNTIME_CAPABILITY_SCHEMA_VERSION,
     CapabilityState,

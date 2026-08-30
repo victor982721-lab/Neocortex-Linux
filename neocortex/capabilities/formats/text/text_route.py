@@ -32,7 +32,7 @@ from neocortex.capability_broker import (
     CapabilityRequest,
     CapabilitySelection,
 )
-from neocortex.capabilities import (
+from neocortex.capabilities.runtime import (
     TEXT_BUILTIN_IMPLEMENTATION_ID,
     TEXT_EXTRACT_CAPABILITY_ID,
     TEXT_LEGACY_OFFICE_IMPLEMENTATION_ID,
