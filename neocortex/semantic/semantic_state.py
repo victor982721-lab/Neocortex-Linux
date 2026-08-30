@@ -1,12 +1,12 @@
-"""Stable compatibility facade for the modular semantic-state repositories."""
+"""Public composition boundary for the modular semantic-state repositories."""
 # region [00] Contexto del módulo
-# Módulo: neocortex/semantic_state.py
+# Módulo: neocortex/semantic/semantic_state.py
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
 
-# The imports in this module intentionally preserve the historical public and
-# private compatibility surface while implementations live in cohesive modules.
+# The imports in this module assemble the public semantic state surface while
+# implementations remain in cohesive owner repositories.
 # ruff: noqa: F401
 
 # region [01] Dependencias del módulo
@@ -178,7 +178,7 @@ def publish_semantic_evidence_entities(
     refresh_token: str,
     updated_ns: int | None = None,
 ) -> tuple[int, int]:
-    """Publish evidence while honoring facade-level compatibility limits."""
+    """Publish evidence while honoring the public state publication limits."""
 
     return _publish_semantic_evidence_entities(
         path,

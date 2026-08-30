@@ -34,6 +34,10 @@ _DEDUP_CORE_ALLOWLIST = (
 _ENUMERATION_PRODUCT_ALLOWLIST = (
     (
         "neocortex.enumeration.path_index.schema",
+        "neocortex.persistence.sqlite_paths",
+    ),
+    (
+        "neocortex.enumeration.path_index.schema",
         "neocortex.sqlite_schema_contract",
     ),
     (
@@ -59,6 +63,10 @@ _DEDUP_PRODUCT_ALLOWLIST = (
     (
         "neocortex.deduplication.persistence.connections",
         "neocortex.sqlite_schema_lifecycle",
+    ),
+    (
+        "neocortex.deduplication.persistence.connections",
+        "neocortex.persistence.sqlite_paths",
     ),
     (
         "neocortex.deduplication.persistence.contracts",

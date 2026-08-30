@@ -242,11 +242,11 @@
         "neocortex/deduplication/persistence/migrations/v7_to_v8.py",
         "neocortex/deduplication/persistence/migrations/v8_to_v9.py",
         "neocortex/deduplication/persistence/migrations/v9_to_v10.py",
+        "neocortex/deduplication/persistence/schema.py",
         "neocortex/deduplication/persistence/validation.py",
         "neocortex/deduplication/planning/__init__.py",
         "neocortex/deduplication/planning/pipeline.py",
         "neocortex/deduplication/planning/planner.py",
-        "neocortex/deduplication/schema.py",
         "neocortex/documents/__init__.py",
         "neocortex/documents/document_cache_sync.py",
         "neocortex/documents/document_catalog.py",
@@ -470,7 +470,7 @@
         "neocortex/workflow/self_analysis/self_analysis_status.py"
       ],
       "hash_algorithm": "sha256(path,lf-size,sha256(lf-content))-v1",
-      "sha256": "2a31b79af30ab90dab5924d86c035a2d6c94bdb69fb922733d78ccea9f1ad94a"
+      "sha256": "b2352f89f49a04f63dac3a9887d36b8fcbb25800ccac0062e811fd082dda5bc5"
     },
     "test_inventory": {
       "file_count": 358,
@@ -835,7 +835,7 @@
         "tests/test_zip_safety.py"
       ],
       "hash_algorithm": "sha256(path,lf-size,sha256(lf-content))-v1",
-      "sha256": "5fd5a170e01687587f48ec4a9c0e2fece118f5474099cb21f6a191e1b334c42c"
+      "sha256": "3ab5690d1c06bc64bc37e68d533429daff32a08014ff8abeec628f1d0e3fb01f"
     }
   },
   "schema": "neocortex.quality-gate-coverage-baseline/v1",

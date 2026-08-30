@@ -1,7 +1,7 @@
-"""Compatibility facade for the modular image-analysis pipeline.
+"""Composition boundary for the modular image-analysis pipeline.
 
-Existing imports remain stable while models, feature extraction, semantic
-evidence and decision policy evolve independently.
+Models, feature extraction, semantic evidence and decision policy remain
+independent while this module assembles the public classification operation.
 """
 
 from __future__ import annotations
