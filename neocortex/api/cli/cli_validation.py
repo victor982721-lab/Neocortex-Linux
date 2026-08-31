@@ -202,7 +202,7 @@ def _validate_direct_operation_selection(args: argparse.Namespace) -> None:
     direct_operations = selected_direct_operations(args)
     if len(direct_operations) > 1:
         raise SystemExit(
-            "direct status/recovery/review/semantic/PDF/DOCX/Office/ZIP/audio/video/code/"
+            "direct status/recovery/review/semantic/curation/PDF/DOCX/Office/ZIP/audio/video/code/"
             "Knowledge "
             "operations are mutually exclusive"
         )
@@ -565,6 +565,20 @@ def _validate_organization_operations(
         raise SystemExit("--organization-max-actions requires --organization-apply")
 
 
+def _validate_curation_operation(args: argparse.Namespace, explicit: set[str]) -> None:
+    operation = bool(
+        selected_direct_operations(args, family=DirectOperationFamily.CURATION)
+    )
+    if args.curation_preview is not None and not 1 <= args.curation_preview <= 10_000:
+        raise SystemExit("--curation-preview must be between 1 and 10000")
+    if "curation_json" in explicit and args.curation_preview is None:
+        raise SystemExit("--curation-json requires --curation-preview")
+    if operation and args.apply:
+        raise SystemExit("--curation-preview is read-only and cannot be combined with --apply")
+    if operation and normalize_route_selection(args.route, BUILTIN_ROUTE_ORDER):
+        raise SystemExit("--curation-preview cannot be combined with --route")
+
+
 def _validate_direct_operations(args: argparse.Namespace) -> None:
     explicit: set[str] = set(getattr(args, "_explicit_options", ()))
     validate_knowledge_arguments(args)
@@ -578,6 +592,7 @@ def _validate_direct_operations(args: argparse.Namespace) -> None:
     validate_office_direct_operation(args, explicit)
     validate_archive_direct_operation(args, explicit)
     _validate_organization_operations(args, explicit)
+    _validate_curation_operation(args, explicit)
     validate_audio_direct_operation(args)
     validate_video_direct_operation(args)
 

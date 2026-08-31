@@ -814,6 +814,22 @@ aplicación. Se consulta sin mutar con:
 Neocortex --organization-preview 100 --organization-preview-status recovery_required
 ```
 
+### Curación read-only
+
+La vista de curación compone los planes durables de duplicados y organización,
+además de archivos vacíos que requieren revisión humana. Está limitada por
+cantidad, conserva identidad y evidencia, y no ejecuta ninguna mutación:
+
+```bash
+Neocortex --state-directory "$State" --curation-preview 25
+Neocortex --state-directory "$State" --curation-preview 25 --curation-json
+```
+
+El JSON incluye `preview_fingerprint`, los conteos completos y una muestra
+acotada. La lectura se hace sobre snapshots temporales de los owners SQLite,
+por lo que un cambio concurrente se informa y no se presenta como una vista
+estable. `--curation-preview` rechaza `--apply` y cualquier `--route`.
+
 No copie estos comandos como prueba de instalación. Antes de cualquiera de las
 dos autorizaciones, revise [SECURITY.md](SECURITY.md) y
 [RECOVERY.md](RECOVERY.md), cree un backup SQLite consistente y confirme la raíz

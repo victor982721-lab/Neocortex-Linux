@@ -183,6 +183,18 @@ Neocortex --state-directory "$State" --knowledge-search "término representativo
 Neocortex --state-directory "$State" --catalog-preview 25
 ```
 
+Para revisar propuestas de curación sin tocar el corpus ni los owners SQLite:
+
+```bash
+Neocortex --state-directory "$State" --curation-preview 25
+Neocortex --state-directory "$State" --curation-preview 25 --curation-json
+```
+
+La salida reúne duplicados exactos, planes de organización y archivos vacíos
+como elementos `review`, con identidad, evidencia, razón y un
+`preview_fingerprint`. La operación es bounded/read-only, no crea ni migra
+estado y rechaza `--apply` y `--route`.
+
 La muestra debe combinar texto plano/Markdown, CSV o TSV, HTML/XML/JSON, un EML
 multipart y DOC/XLS/PPT reales. Repita el productor: el segundo resumen debe
 convertir los documentos sin cambios en `cache_hits`. El asunto del EML debe

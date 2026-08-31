@@ -50,6 +50,7 @@ class DirectOperationFamily(Enum):
     ARCHIVE = auto()
     CODE = auto()
     KNOWLEDGE = auto()
+    CURATION = auto()
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,6 +104,7 @@ _VIDEO = DirectOperationFamily.VIDEO
 _ARCHIVE = DirectOperationFamily.ARCHIVE
 _CODE = DirectOperationFamily.CODE
 _KNOWLEDGE = DirectOperationFamily.KNOWLEDGE
+_CURATION = DirectOperationFamily.CURATION
 
 DIRECT_OPERATIONS: tuple[DirectOperation, ...] = (
     DirectOperation(
@@ -226,6 +228,13 @@ DIRECT_OPERATIONS: tuple[DirectOperation, ...] = (
     DirectOperation("catalog_preview", "run_document_catalog_preview", _ORGANIZATION, _VALUE),
     DirectOperation("organization_plan", "run_organization_plan", _ORGANIZATION),
     DirectOperation("organization_preview", "run_organization_preview", _ORGANIZATION, _VALUE),
+    DirectOperation(
+        "curation_preview",
+        "run_curation_preview",
+        _CURATION,
+        _VALUE,
+        module_name=".cli_curation",
+    ),
     DirectOperation("organization_apply", "run_organization_apply", _ORGANIZATION),
     DirectOperation("pdf_search", "run_pdf_search", _PDF, _VALUE),
     DirectOperation("pdf_layout_groups", "run_pdf_layout_groups", _PDF, _VALUE),

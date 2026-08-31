@@ -100,6 +100,11 @@ DIRECT_ARGUMENT_CASES = (
         ("--organization-preview", "1"),
     ),
     (
+        "curation_preview",
+        "run_curation_preview",
+        ("--curation-preview", "1"),
+    ),
+    (
         "organization_apply",
         "run_organization_apply",
         ("--organization-apply",),
@@ -256,7 +261,7 @@ def test_direct_operations_remain_mutually_exclusive_across_domains() -> None:
         validate_arguments(args)
 
     assert str(raised.value) == (
-        "direct status/recovery/review/semantic/PDF/DOCX/Office/ZIP/audio/video/code/"
+        "direct status/recovery/review/semantic/curation/PDF/DOCX/Office/ZIP/audio/video/code/"
         "Knowledge "
         "operations are mutually exclusive"
     )

@@ -490,6 +490,21 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="N",
         help="maximum already-planned moves applied in one explicit operation",
     )
+    curation = parser.add_argument_group("Read-only curation preview")
+    curation.add_argument(
+        "--curation-preview",
+        type=int,
+        metavar="N",
+        help=(
+            "show up to N bounded advisory proposals from durable duplicate, "
+            "organization, and empty-file plans without changing files or state"
+        ),
+    )
+    curation.add_argument(
+        "--curation-json",
+        action="store_true",
+        help="emit --curation-preview as one deterministic JSON object",
+    )
     global_resources = parser.add_argument_group("Global route coordinator")
     global_resources.add_argument("--global-memory-budget-mb", type=int)
     global_resources.add_argument("--global-min-free-memory-mb", type=int)

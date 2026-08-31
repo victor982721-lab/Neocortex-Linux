@@ -372,12 +372,18 @@ Neocortex --root "$Root" --route text --text-max-count 25 --strict-exit-codes
 Neocortex --knowledge-status
 Neocortex --knowledge-search "término representativo" --knowledge-limit 20
 Neocortex --catalog-preview 25
+Neocortex --curation-preview 25 --curation-json
 ```
 
 `text.sqlite3` conserva texto, tipo, título, autor, firma, errores y FTS. El
 catálogo puede proponer clasificación y nombres —por ejemplo, el asunto de un
 EML—, pero en Linux sigue sin existir autoridad de movimiento. Semantic acepta
 esta caché mediante `--semantic-source text`.
+
+`--curation-preview` reúne en una vista acotada los planes durables de
+duplicados, organización y archivos vacíos. Devuelve propuestas advisory con
+identidad, evidencia, razón y fingerprint reproducible; no inicializa ni migra
+SQLite, no modifica sus bytes y nunca mueve, renombra o elimina contenido.
 
 **IMPLEMENTED — broker para Text.** Antes de extraer cada candidato, la ruta
 evalúa manifests estáticos y versionados para `neocortex.text.builtin` y

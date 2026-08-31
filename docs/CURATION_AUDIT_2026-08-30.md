@@ -100,7 +100,10 @@ P0 queda **bloqueado por política**, no entregado: la menor modificación futur
 sería el adaptador POSIX/KIO descrito arriba, pero el contrato vigente no permite
 exponerla ni ejecutar mutaciones Linux. La simplificación efectiva de este corte
 retira la supervisión Windows de workers y mantiene el producto en modo
-Linux/read-only; P1–P4 continúan pendientes y no se simulan como entregados.
+Linux/read-only. P1 tiene ahora una primera capacidad parcial: `--curation-preview`
+compone los planes durables existentes y los archivos vacíos en revisión, sin
+crear un almacén paralelo ni mutar SQLite; el resto de P1 y P2–P4 continúan
+pendientes y no se simulan como entregados.
 
 ## Paquete mínimo recomendado
 
@@ -109,4 +112,4 @@ Linux, si la política superior cambiara, seguiría siendo **P0 acotado**: un
 adaptador POSIX no-replace y un adaptador KIO separados, conectados a los dos
 consumidores existentes y manteniendo intactos guard, ledger, revalidación y
 reconciliación. Bajo la política actual esa modificación no puede promoverse;
-por ahora no se crea `neocortex/curation` ni se ejecuta `curate --apply`.
+`neocortex/curation` sólo expone la vista read-only y no existe `curate --apply`.
