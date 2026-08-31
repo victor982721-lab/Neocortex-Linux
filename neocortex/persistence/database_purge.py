@@ -441,7 +441,8 @@ def _prepare_backup(
         raise DatabasePurgeError(f"backup directory already exists: {backup_directory}")
     try:
         backup_directory.parent.mkdir(parents=True, exist_ok=True)
-        backup_directory.mkdir()
+        backup_directory.mkdir(mode=0o700)
+        backup_directory.chmod(0o700)
     except OSError as exc:
         raise DatabasePurgeError(
             f"database purge backup directory could not be created: {backup_directory}"

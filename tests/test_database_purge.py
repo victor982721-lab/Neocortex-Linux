@@ -107,6 +107,7 @@ def test_apply_backups_and_removes_selected_database_and_sidecars(tmp_path: Path
     assert all(not sidecar.exists() for sidecar in _sidecars(database))
     assert other.is_file()
     assert result.manifest == backup / "database-purge-manifest.json"
+    assert backup.stat().st_mode & 0o777 == 0o700
     manifest = json.loads(result.manifest.read_text(encoding="utf-8"))
     assert manifest["plan_digest"] == result.plan.plan_digest
     assert manifest["entries"][0]["integrity"]["healthy"] is True
