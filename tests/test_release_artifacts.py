@@ -62,8 +62,7 @@ _SOURCE_ONLY_TOOLS = (
     "tools/__init__.py",
     "tools/release_archive_safety.py",
     "tools/release_artifacts.py",
-    "tools/release_windows.py",
-    "tools/release_windows_receipts.py",
+    "tools/release_linux.py",
 )
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 _UI_ASSET_PAYLOADS = {asset: (_PROJECT_ROOT / asset).read_bytes() for asset in _UI_ASSETS}

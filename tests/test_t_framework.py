@@ -67,9 +67,9 @@ class CommandLineTests(unittest.TestCase):
     def test_all_expands_to_complete_safe_maintenance_preset(self) -> None:
         parser = _parser()
         self.assertEqual(parser.prog, "Neocortex")
-        args = parser.parse_args(["--all", *(["--apply"] if os.name == "nt" else [])])
+        args = parser.parse_args(["--all", "--apply"])
         _validate_arguments(args)
-        self.assertEqual(args.apply, os.name == "nt")
+        self.assertTrue(args.apply)
         self.assertEqual(args.route, "all")
         selected_routes = normalize_route_selection(args.route, BUILTIN_ROUTE_ORDER)
         self.assertEqual(

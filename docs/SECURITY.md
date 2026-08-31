@@ -38,7 +38,7 @@ PDF, OCR, Office, audio, código, metadatos o relaciones como autorización.
 | Consulta | `--help`, `--version`, `--status`, `--action-recovery-status`, `--retention-status`, `--knowledge-status`, `--knowledge-search`, `--knowledge-context`, `inspect lineage`, búsquedas, previews y doctors | No debe recorrer ni modificar el corpus; puede fallar si falta estado. SQLite read-only puede participar en WAL/SHM. |
 | Estado sin mutación del corpus | Corrida sin `--apply`, `--semantic-index`, `--semantic-classify`, `--catalog-documents`, `--organization-plan`, `--review-record`, `--action-recovery-record` | Lee contenido o cachés y escribe bases, evidencia o planes. |
 | Descarga/carga externa | `models prepare`; `--semantic-prepare-models`; primera transcripción Windows sin `--audio-local-models-only` | Puede adquirir modelos y ampliar cachés. `models status` es local y read-only. |
-| Mutación de archivos | Corrida integrada con `--apply`; `--organization-apply` | En Windows puede renombrar extensiones o mover documentos sólo bajo el contrato NTFS ligado a handles; en Linux se rechaza antes de crear estado. |
+| Mutación de archivos | Corrida integrada con `--apply`; `--organization-apply` | Linux usa `renameat2(RENAME_NOREPLACE)` para renombres locales y KIO para Papelera, con self-test, revalidación y ledger; sin garantía suficiente la acción se abstiene. |
 | Purga de estado | `Neocortex databases purge --apply --confirm-database-purge DELETE_DATABASES` | Elimina sólo las bases SQLite canónicas y sus sidecars después de backup verificado y locks exclusivos; no toca corpus, releases, modelos ni recibos. |
 
 “No destructivo” significa que una corrida sin autorización no debe mutar los
@@ -116,11 +116,8 @@ Existen dos superficies explícitas:
 Según las rutas y planes, `--apply` puede corregir extensiones incompatibles con
 una firma reconocida y aplicar movimientos documentales con clasificación
 suficiente, siempre que la identidad y plataforma satisfagan la sección
-siguiente. Los duplicados binarios, vacíos, directorios vacíos y PDF
-irrecuperables siguen apareciendo como candidatos en dry-run, pero la aplicación
-los marca `skipped`: la única API de Papelera evaluada era path-bound y no se
-invoca. `Send2Trash` fue retirado como dependencia y no existe un bypass
-permisivo.
+siguiente. Los duplicados binarios pasan por KIO tras self-test y revalidación;
+los vacíos siguen en revisión y los cambios ambiguos quedan `recovery_required`.
 
 Antes de autorizar:
 
@@ -316,22 +313,18 @@ registrarlas no ejecuta una acción sobre el archivo.
 ## Identidad, rutas y TOCTOU
 
 Los rename de extensión y movimientos de organización soportados mantienen
-abierto el archivo fuente y el directorio destino, verifican volumen/FileId y
-ejecutan un rename relativo al handle del padre con semántica *no-replace*. La
-identidad esperada se persiste en `applying` inmediatamente antes de la llamada
-nativa y un recibo posterior confirma `applied`.
+abiertos la fuente y los directorios padre, verifican volumen/inode, persisten
+la identidad esperada en `applying` inmediatamente antes del syscall y exigen
+un recibo posterior `applied`. El backend POSIX usa
+`renameat2(RENAME_NOREPLACE)` y sólo acepta un archivo regular, un hard-link,
+misma unidad, padres sin symlink y destino ausente; otros casos se abstienen.
 
-El contrato se limita a Windows, volumen NTFS local, mismo volumen, archivo
-regular, un único hard link, fuente sin reparse y destino ausente. El framework
-se abstiene ante UNC, filesystem distinto de NTFS, symlink/junction/reparse,
-directorio, hard links múltiples, movimiento cross-volume o garantía nativa no
-disponible. No cae a `Path.rename`, `MoveFileW` por ruta ni reemplazo.
-
-Linux no intenta ejecutar ese contrato NTFS: cualquier `--apply` o
-`--organization-apply` se rechaza antes de crear estado con código `2` y razón
-`linux_mutation_backend_unavailable`. Para observación, la identidad portable
-usa `st_dev`/`st_ino`; cuando no existe nacimiento real persiste
-`birthtime_ns=-1` y nunca disfraza `ctime` como nacimiento.
+La Papelera se ejecuta sólo mediante KIO tras un self-test real y una
+revalidación inmediata. Su receipt es `reversible_path_bound`; si KIO no está
+disponible, falla o produce una entrada ambigua, la acción queda omitida o
+`recovery_required`, nunca se usa `Path.rename`, `rm`, `gio trash` ni un
+fallback permanente. Para observación, la identidad portable usa
+`st_dev`/`st_ino`; cuando no existe nacimiento real persiste `birthtime_ns=-1`.
 
 Esto reduce la sustitución entre validación y syscall dentro del subconjunto
 soportado; no vuelve atómica la posterior escritura SQLite. Un fallo después de
@@ -339,8 +332,8 @@ la llamada queda `recovery_required`, con evidencia append-only, y se concilia
 de sólo lectura. Al reiniciar, `started` abandonado antes de la frontera se
 clasifica como fallo sin efecto intentado; sólo `applying` conserva
 incertidumbre. Los recibos de Papelera no confirman una acción distinta: deben
-ligar origen y destino registrados, aunque Papelera no dispone del enlace por
-handle requerido y por ello se abstiene siempre en modo apply.
+ligar el origen con una única entrada observada en `trash:/`; KIO es path-bound y
+no se presenta como enlace por handle.
 
 Consecuencias operativas:
 
@@ -356,13 +349,11 @@ Consecuencias operativas:
 - La raíz y los elementos se validan para rechazar symlinks, junctions y puntos
   de reanálisis en los recorridos protegidos.
 - No confíe únicamente en una ruta canónica calculada mucho antes de la syscall.
-- La enumeración MFT representa registros de archivo y no necesariamente todos
-  los nombres de un archivo con múltiples hard links. No interprete el
-  inventario auxiliar como catálogo completo de enlaces duros.
-- Por esa razón, una mutación autorizada exige exactamente un hard link; un
+- El inventario portable no sustituye un catálogo completo de enlaces duros;
+  por esa razón, una mutación autorizada exige exactamente un hard link y un
   contador mayor provoca abstención.
-- No use una raíz UNC o un filesystem no NTFS como si ofreciera identidad/USN
-  equivalentes a un volumen NTFS local.
+- Las rutas y snapshots de Windows/NTFS históricas no forman parte del contrato
+  Linux vigente.
 
 ## Archivos protegidos y alcance
 
@@ -449,11 +440,9 @@ otra revisión de privacidad y seguridad.
 
 ## Privilegios
 
-La lectura del volumen NTFS/USN puede requerir elevación, pero es un acelerador
-opcional: la corrida cotidiana debe degradar al recorrido portable. No eleve el
-framework sólo para obtener USN. Si una prueba diagnóstica expresamente necesita
-esa frontera, limite la raíz y confirme los argumentos antes de aceptar UAC; un
-proceso elevado amplía el impacto de cualquier parser o ruta mal seleccionada.
+La corrida Linux no requiere elevación: usa el recorrido portable y los backends
+POSIX/KIO del usuario. Las referencias a NTFS/USN sólo describen estado histórico
+y no forman parte de una barrera vigente.
 
 No ejecute de forma elevada doctors, ayuda, versión o búsquedas que no lo
 requieran. No instale un servicio privilegiado para operar el watcher: el
@@ -496,8 +485,10 @@ Al reportar un defecto:
 
 ## Riesgos residuales que deben permanecer visibles
 
-- Las garantías de identidad sólo cubren el subconjunto NTFS descrito; fuera de
-  él la operación se abstiene y la Papelera permanece deshabilitada.
+- El backend POSIX sólo admite archivos regulares de un hard-link, misma unidad,
+  padres sin symlink y `renameat2(RENAME_NOREPLACE)`; fuera de ese contrato la
+  operación se abstiene. KIO sigue siendo path-bound y puede quedar en revisión
+  o recuperación si no confirma una única entrada.
 - El status de conciliación no modifica estado; record conserva una observación
   pero no persiste decisión/autorización, no existen todavía
   `decide/authorize/recover/verify` productivos y ninguna clasificación autoriza

@@ -69,7 +69,10 @@ def test_sdist_manifest_includes_active_docs_and_release_tools() -> None:
     assert "include docs/CODE_SUBSYSTEM_CLASSIFICATION.md" in manifest_lines
     assert "include constraints-linux-cp314.lock" in manifest_lines
     assert "include tools/__init__.py" in manifest_lines
-    assert "recursive-include tools release_*.py" in manifest_lines
+    assert "include tools/release_archive_safety.py" in manifest_lines
+    assert "include tools/release_artifacts.py" in manifest_lines
+    assert "include tools/release_linux.py" in manifest_lines
+    assert "recursive-include tools release_*.py" not in manifest_lines
 
     with (project_root / "pyproject.toml").open("rb") as stream:
         metadata = tomllib.load(stream)

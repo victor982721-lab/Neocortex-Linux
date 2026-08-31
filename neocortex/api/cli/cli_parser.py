@@ -564,9 +564,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--apply",
         action="store_true",
         help=(
-            "authorize identity-bound extension renames and same-volume document "
-            "organization moves; Recycle Bin candidates are revalidated but skipped "
-            "because the available backend is path-bound; normalized-text PDF "
+            "authorize POSIX no-replace extension renames and same-volume document "
+            "organization moves; Recycle Bin candidates use the verified KIO "
+            "backend when available; normalized-text PDF "
             "matches and uncertain classifications remain advisory"
         ),
     )

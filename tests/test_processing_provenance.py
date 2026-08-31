@@ -163,7 +163,9 @@ class RouteProcessingSignatureTests(unittest.TestCase):
 
         self.assertNotEqual(initial, changed)
 
-    def test_image_model_artifact_and_pillow_version_invalidate_cache(self) -> None:
+    def test_image_classifier_version_invalidates_cache_without_retired_model_artifact(
+        self,
+    ) -> None:
         config = ImageRouteConfig(
             Path("image.sqlite3"),
             Path("."),
@@ -218,7 +220,7 @@ class RouteProcessingSignatureTests(unittest.TestCase):
                 ):
                     changed_pillow = config.processing_signature
 
-        self.assertNotEqual(initial, changed_model)
+        self.assertEqual(initial, changed_model)
         self.assertNotEqual(changed_model, changed_pillow)
 
     def test_pdf_and_image_summaries_expose_uniform_provenance(self) -> None:

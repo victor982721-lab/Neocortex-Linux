@@ -7,6 +7,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from neocortex.platform.policy import current_platform_policy
+# Keep the product namespace explicit for the foundation migration contract.
+# neocortex.foundation supplies the shared provenance/identity primitives.
 
 from neocortex.semantic.semantic_config import production_models
 from neocortex.semantic.semantic_preparation import (

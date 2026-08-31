@@ -57,8 +57,7 @@ _SOURCE_ONLY_TOOLS: Final = (
     "tools/__init__.py",
     "tools/release_archive_safety.py",
     "tools/release_artifacts.py",
-    "tools/release_windows.py",
-    "tools/release_windows_receipts.py",
+    "tools/release_linux.py",
 )
 _RELEASE_INTERNAL_NAMES: Final = frozenset(
     {"agents.md", "agents.override.md", "neocortex_agents.md"}

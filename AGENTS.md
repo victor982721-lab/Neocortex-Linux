@@ -135,11 +135,11 @@ consistente cuando aplique, preview, autorización inequívoca y verificación.
 La opción --apply sólo se usa para la mutación de corpus expresamente revisada;
 no es necesaria para indexar o buscar.
 
-En Linux, `--apply` y `--organization-apply` deben rechazarse antes de crear
-estado con código 2 y razón `linux_mutation_backend_unavailable`. La GUI debe
-mostrar modo portátil Linux, no fingir elevación y desactivar sus controles de
-mutación. Inventario, procesamiento, catálogo y búsqueda siguen siendo
-capacidades de producto.
+En Linux, `--apply` y `--organization-apply` sólo pueden mutar mediante los
+backends POSIX/KIO verificados, con self-test, revalidación y ledger; si falta
+una garantía, la acción se abstiene sin fallback permanente. La GUI debe
+mostrar modo portátil Linux y no fingir elevación. Inventario, procesamiento,
+catálogo y búsqueda siguen siendo capacidades de producto.
 
 Las pruebas y migraciones se ejecutan en fixtures o copias aisladas, nunca sobre
 el único estado vivo. No transmitas corpus, secretos ni estado a servicios
@@ -284,6 +284,11 @@ persistente para coordinarla.
 - No instales `pip`, Node ni dependencias Python globalmente. En Linux usa
   `tools/release_linux.py`; conserva releases anteriores para rollback y no
   publiques KDE si los modelos solicitados están incompletos.
+- Preferencia operativa registrada de Víctor: después de una release nueva
+  solicita retirar la anterior. Esta preferencia queda subordinada a la
+  política de rollback vigente: mientras el proyecto exija conservar releases
+  anteriores, no se elimina la copia previa; sólo se podrá retirar cuando esa
+  política cambie de forma explícita y exista otro rollback verificable.
 
 ## Colaboración, Git y documentación
 

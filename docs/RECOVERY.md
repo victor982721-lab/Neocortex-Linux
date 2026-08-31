@@ -382,9 +382,10 @@ observación no concede ninguna de ellas.
 3. Ejecute el conciliador por páginas hasta no recibir filas y, cuando necesite
    evidencia durable, registre cada observación con actor/confirmación.
 4. No cambie manualmente estados a `applied`, `failed` o `recovery_required`.
-5. No interprete la ausencia de una ruta como prueba de Papelera. En `0.6.0` la
-   aplicación de Papelera está deshabilitada; filas antiguas sin recibo o con
-   un recibo cuyas rutas no coincidan con la acción siguen siendo ambiguas.
+5. No interprete la ausencia de una ruta como prueba de Papelera. KIO debe
+   dejar un receipt que ligue el origen con una única entrada observada de
+   `trash:/`; filas sin recibo o con una entrada ambigua siguen siendo
+   `recovery_required`/ambiguas.
 6. Reanude únicamente cuando cada acción potencialmente repetible tenga una
    resolución humana documentada. Ni status ni record autorizan otra syscall.
 

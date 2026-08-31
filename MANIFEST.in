@@ -23,4 +23,6 @@ include docs/SELF_ANALYSIS.md
 include docs/SECURITY.md
 include docs/THIRD_PARTY_LICENSE_INVENTORY.md
 include tools/__init__.py
-recursive-include tools release_*.py
+include tools/release_archive_safety.py
+include tools/release_artifacts.py
+include tools/release_linux.py

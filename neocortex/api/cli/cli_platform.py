@@ -6,7 +6,7 @@ import json
 import platform
 import sys
 
-from neocortex.platform.policy import LINUX_MUTATION_REASON, current_platform_policy
+from neocortex.platform.policy import current_platform_policy
 
 PLATFORM_REPORT_SCHEMA_VERSION = 1
 
@@ -45,7 +45,7 @@ def platform_report() -> dict[str, object]:
         "mutation": {
             "available": policy.mutation_available,
             "backend": policy.mutation_backend,
-            "reason": None if policy.mutation_available else LINUX_MUTATION_REASON,
+            "reason": None if policy.mutation_available else "mutation_backend_unavailable",
         },
     }
 

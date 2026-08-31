@@ -29,6 +29,12 @@ no se copian aquí para evitar que se conviertan en datos históricos sin contex
 - `Neocortex databases purge` permite retirar bases SQLite y sus sidecars con
   vista previa por defecto, confirmación literal, backup online verificado y
   bloqueo fail-closed ante writers activos o cambios de identidad.
+- Linux habilita el primer paquete de mutación real: renombres locales mediante
+  `renameat2(RENAME_NOREPLACE)` y Papelera KDE mediante KIO con self-test y
+  receipts `reversible_path_bound`; no se usa `Path.rename`, `Send2Trash` ni
+  borrado permanente.
+- Los archivos de cero bytes dejan de ser candidatos automáticos de Papelera y
+  pasan a revisión con evidencia `size=0;policy=review`.
 
 ### Validación vigente
 

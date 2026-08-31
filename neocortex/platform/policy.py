@@ -14,6 +14,8 @@ from pathlib import Path
 from typing import Literal
 
 APPLICATION_DIRECTORY_NAME = "Neocortex"
+# Kept only so readers of historical receipts can decode the former abstention
+# reason; current Linux policy advertises the POSIX/KIO backend instead.
 LINUX_MUTATION_REASON = "linux_mutation_backend_unavailable"
 UNAVAILABLE_BIRTHTIME_NS = -1
 POSIX_PHYSICAL_IDENTITY_SCHEME = "posix_device_inode_birthtime"
@@ -184,8 +186,8 @@ def current_platform_policy(*, platform_name: str | None = None) -> PlatformPoli
         path_collation=POSIX_PATH_COLLATION,
         containment_backend="posix-session-process-group-rlimit",
         elevation="not-required",
-        mutation_backend="intentionally-unavailable",
-        mutation_available=False,
+        mutation_backend="posix-renameat2+kio-trash",
+        mutation_available=True,
         compatible=True,
     )
 

@@ -449,16 +449,15 @@ existe una segunda implementación ni un alias físico paralelo.
 
 ### `neocortex.enumeration`
 
-Frontera de enumeración por plataforma:
+Frontera de enumeración vigente:
 
-- Windows conserva enumeración MFT y lectura/resolución de registros USN;
 - Linux ejecuta un recorrido completo portable, case-sensitive y sin seguir
   enlaces simbólicos;
-- los snapshots conservan identidad durable y metadatos: FileId/volumen en
-  Windows, `st_dev`/`st_ino` en Linux;
-- Linux persiste `birthtime_ns=-1` si el filesystem no expone nacimiento real;
+- los snapshots conservan identidad durable y metadatos con `st_dev`/`st_ino`;
+- Linux persiste `birthtime_ns=-1` si el filesystem no expone nacimiento real,
   nunca usa `ctime` como sustituto;
-- el índice SQLite auxiliar de rutas usa la collation de cada plataforma.
+- los módulos MFT/USN y su índice SQLite quedan fuera del runtime Linux y sólo
+  se conservan como evidencia histórica.
 
 Produce observaciones; no decide eliminación ni clasificación. El
 `SqlitePathIndex` es una API auxiliar soportada y probada, pero no se confirmó
@@ -711,17 +710,16 @@ autoanálisis del repositorio.
 ## Mutación ligada a identidad y recuperación
 
 Las mutaciones soportadas de rename y organización usan
-`windows_handle_mutation.rename_no_replace_by_identity`. La primitiva mantiene
-abiertos el archivo fuente y el directorio destino, verifica volumen/FileId y
-opera de forma relativa al handle del padre con semántica *no-replace*. El
-contrato es deliberadamente estrecho: Windows, NTFS local, archivo regular, un
-solo hard link y mismo volumen. UNC, otros filesystems, reparses, directorios,
-hard links múltiples y movimientos entre volúmenes provocan abstención; no hay
+`neocortex.safety.posix_mutation.rename_no_replace_by_identity` usa
+`renameat2(RENAME_NOREPLACE)` con directorios abiertos, misma unidad, archivo
+regular de un solo hard-link y comprobaciones POSIX de identidad/metadata antes
+y después. Si el syscall no está disponible, la acción se abstiene; no existe
 fallback permisivo por ruta.
 
-Ese backend es exclusivamente Windows. En Linux, `--apply` y
-`--organization-apply` se rechazan antes de crear estado con código `2` y razón
-`linux_mutation_backend_unavailable`; no existe un fallback con `Path.rename`.
+La Papelera usa `neocortex.safety.kio_trash` con `kioclient6`, `kioclient5` o
+`kioclient`, después de un self-test real. Su garantía es
+`reversible_path_bound`, no `identity_bound`; una entrada ausente o ambigua
+queda en recuperación.
 
 `file_actions` conserva en framework v22 la frontera incorporada en v18 y
 endurecida en v20:
@@ -746,16 +744,15 @@ de sólo lectura. `record` agrega a `file_action_reconciliation_events` una
 observación append-only con CAS, key idempotente, actor, procedencia, firma y
 evidencia, pero declara que no autoriza una mutación. No hay todavía contratos
 `decide`, `authorize`, `recover` o `verify`. Un recibo de Papelera sólo
-confirma la acción si liga las rutas origen/destino de esa misma acción, aunque
-la aplicación de Papelera sigue deshabilitada. Los planes de organización
-conservan su propio
+confirma la acción si liga el origen y la entrada observada de esa misma acción;
+la garantía sigue siendo path-bound. Los planes de organización conservan su propio
 `recovery_required`, excluido del selector automático y del reintento; además
 reserva el destino para evitar que otro plan lo reutilice.
 
-La API de Papelera disponible era path-bound. Por ello `0.7.0` conserva la
-planeación y validación en dry-run, pero `--apply` se abstiene y registra esas
-acciones como `skipped`. `Send2Trash` fue retirado y no se ofrece un override
-inseguro.
+La API de Papelera vigente es KIO y se valida con un self-test real antes de
+aplicar. Si KIO no está disponible o la entrada resultante es ambigua, la
+acción queda `skipped` o `recovery_required`; nunca se ofrece un override
+inseguro ni borrado permanente.
 
 ## Registro y ejecución de rutas
 
@@ -1189,9 +1186,9 @@ Los siguientes límites deben permanecer visibles:
 - los propietarios SQLite oficiales quedaron clasificados y sus familias
   verifican existencia/FK/query-only/timeout/rollback/cierre (`NC-AUD-017`);
   SQL externo puede evadirlas y no se comprobaron bases operativas vivas;
-- rename y organización sólo operan con identidad ligada por handles dentro del
-  subconjunto NTFS soportado; Papelera se abstiene y la conciliación de
-  `file_actions` es idempotente y su observación puede persistirse append-only,
+- rename y organización sólo operan con el contrato POSIX no-replace vigente;
+  KIO es reversible pero path-bound, y la conciliación de `file_actions` es
+  idempotente y su observación puede persistirse append-only,
   pero decisión/autorización/recuperación no están implementadas y los planes
   de organización continúan en diagnóstico manual;
 - `semantic_status` eliminó N+1 de conexiones y summaries, y conserva una sola

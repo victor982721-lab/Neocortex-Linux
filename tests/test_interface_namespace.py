@@ -7,7 +7,6 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from unittest.mock import patch
 
 import neocortex.interface as interface
 
@@ -95,8 +94,7 @@ def test_numbered_interface_root_is_extinct() -> None:
 def test_canonical_run_request_patch_seam_is_live(tmp_path: Path) -> None:
     from neocortex.interface.application.request import RunRequest
 
-    with patch("neocortex.interface.application.request.os.name", "nt"):
-        request = RunRequest(tmp_path, ("pdf",), apply=True).validated()
+    request = RunRequest(tmp_path, ("pdf",), apply=True).validated()
 
     assert request.apply is True
     assert request.__class__.__module__ == "neocortex.interface.application.request"
