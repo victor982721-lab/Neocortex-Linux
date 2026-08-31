@@ -1,6 +1,6 @@
 # NeoCortex — handoff operativo vigente
 
-> Actualizado: 2026-08-30 20:48 CST. El basename es histórico y permanece estable.
+> Actualizado: 2026-08-31 04:36 CST. El basename es histórico y permanece estable.
 > `~/.codex/PENDIENTES.md` conserva el compromiso operativo; este archivo
 > describe sólo la frontera técnica de reanudación.
 
@@ -12,11 +12,15 @@
 
 La simplificación física de `neocortex/code` quedó reconciliada sin wrappers:
 conserva ingesta, detección, representación, persistencia, búsqueda y
-relaciones semánticas. En este mismo lote se retiró NudeNet de Image, se elevó
-el schema Image a v6, se limpió el reporte de modelos a cuatro FastEmbed más
-Whisper y se eliminó del runtime de release la infraestructura Node/Pyright/
-Semgrep de QA. El checkout ya puede escribirse desde el namespace host; la
-release instalada anterior todavía apunta al SHA antiguo.
+relaciones semánticas. También se redujo la supervisión de workers a sesiones y
+grupos POSIX con `RLIMIT_AS`, retirando la capa activa de Job Objects Windows.
+La mutación Linux sigue bloqueada por contrato: `--apply` y
+`--organization-apply` deben rechazarse antes de crear estado con
+`linux_mutation_backend_unavailable`; el prototipo POSIX/KIO auditado no se
+promueve ni se incluye en el runtime.
+
+El checkout final es `6d3419040c125a6b57f2c302d87b673330aacf4a`; la release
+compliant se reconstruirá desde este SHA antes del cierre.
 
 Las proyecciones Semantic mutables tienen un scrub explícito y probado para
 retirar claves adultas sin alterar el resto del JSON. No se detectó una base
@@ -96,14 +100,12 @@ trabajo vigente y no deben reactivar el autoanálisis retirado.
 
 ## Próximo corte, en orden
 
-1. Revisar el diff total, limpiar artefactos regenerables y confirmar el árbol
-   Code y los contratos Image/Semantic vigentes.
-2. Crear el commit final y comprobar que el árbol quede limpio.
-3. Ejecutar una sola instalación desde el SHA final con `release_linux.py
-   install --prepare-models --desktop`, seguida de `release_linux.py verify`.
-4. Ejecutar el smoke público y replay aislados con documentos, imagen, audio,
-   vídeo y código; comprobar estado, búsqueda, caché, modelos y ausencia de
-   NudeNet/autoanálisis antes de cerrar el pendiente.
+1. Construir e instalar la release Linux desde `6d3419040c125a6b57f2c302d87b673330aacf4a`,
+   comprobar `current`/manifest/launcher y ejecutar `release_linux.py verify`.
+2. Ejecutar smoke y replay públicos aislados sin `--apply`, comprobar
+   `exact_replay`, cachés, modelos y ausencia de autoanálisis productivo.
+3. Mantener P0 POSIX/KIO sólo como diseño bloqueado hasta que cambie la política
+   superior; no iniciar una corrida real del corpus ni crear `curate --apply`.
 
 ## Límites
 
