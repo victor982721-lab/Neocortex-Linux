@@ -1,6 +1,6 @@
 # NeoCortex — handoff operativo vigente
 
-> Actualizado: 2026-08-30 20:48 CST. El basename es histórico y permanece estable.
+> Actualizado: 2026-08-30 23:18 CST. El basename es histórico y permanece estable.
 > `~/.codex/PENDIENTES.md` conserva el compromiso operativo; este archivo
 > describe sólo la frontera técnica de reanudación.
 
@@ -10,18 +10,23 @@
 
 ## Objetivo activo
 
-La simplificación física de `neocortex/code` quedó reconciliada sin wrappers:
-conserva ingesta, detección, representación, persistencia, búsqueda y
-relaciones semánticas. En este mismo lote se retiró NudeNet de Image, se elevó
-el schema Image a v6, se limpió el reporte de modelos a cuatro FastEmbed más
-Whisper y se eliminó del runtime de release la infraestructura Node/Pyright/
-Semgrep de QA. El checkout ya puede escribirse desde el namespace host; la
-release instalada anterior todavía apunta al SHA antiguo.
+La simplificación física de `neocortex/code` quedó reconciliada sin wrappers y
+el primer paquete de curación Linux ya está integrado: `renameat2(RENAME_NOREPLACE)`
+para renombres locales, KIO con self-test/receipt para Papelera, Apply Linux
+habilitado, zero-byte en revisión y GUI sin controles de mutación deshabilitados.
+La release activa `0.9.0-0903f4403463-cp314-linux-x86_64` apunta al commit
+`0903f44034638e309bcb163cd78186ae5a3a79a3`; las releases anteriores se
+conservan para rollback conforme a la política vigente.
 
 Las proyecciones Semantic mutables tienen un scrub explícito y probado para
 retirar claves adultas sin alterar el resto del JSON. No se detectó una base
 Semantic viva bajo el estado local durante esta sesión, por lo que no se ejecutó
 una migración destructiva sobre datos del usuario.
+
+La verificación del corte P0 pasó con 4,314 pruebas, 128 omitidas, 114 subtests,
+Ruff focal, MyPy focal y `compileall`; el self-test KIO real y el apply sintético
+también terminaron correctamente. La evidencia durable está en
+`/home/winterboss/Documentos/NeoCortex/Auditorias/2026-08-30-neocortex-linux-mutation-p0/summary.json`.
 
 ## Corte físico anterior (referencia histórica)
 
@@ -96,14 +101,14 @@ trabajo vigente y no deben reactivar el autoanálisis retirado.
 
 ## Próximo corte, en orden
 
-1. Revisar el diff total, limpiar artefactos regenerables y confirmar el árbol
-   Code y los contratos Image/Semantic vigentes.
-2. Crear el commit final y comprobar que el árbol quede limpio.
-3. Ejecutar una sola instalación desde el SHA final con `release_linux.py
-   install --prepare-models --desktop`, seguida de `release_linux.py verify`.
-4. Ejecutar el smoke público y replay aislados con documentos, imagen, audio,
-   vídeo y código; comprobar estado, búsqueda, caché, modelos y ausencia de
-   NudeNet/autoanálisis antes de cerrar el pendiente.
+1. Diseñar P1 de curación sobre los contratos existentes: plan durable con
+   fingerprint canónico, preflight/revalidación, disposición semántica de
+   duplicados y post-audit, siempre con fixtures acotados.
+2. Añadir SQLite bundle, sync/open-handle guards y tipos por capas sólo cuando
+   P1 produzca una decisión concreta que los consuma.
+3. Mantener una sola release activa por SHA final y conservar las anteriores
+   para rollback; no borrar una release previa mientras esa política siga
+   vigente.
 
 ## Límites
 
