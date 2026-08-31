@@ -1,6 +1,6 @@
 # NeoCortex — handoff operativo vigente
 
-> Actualizado: 2026-08-31 08:58 CST. El basename es histórico y permanece estable.
+> Actualizado: 2026-08-31 10:41 CST. El basename es histórico y permanece estable.
 > `~/.codex/PENDIENTES.md` conserva el compromiso operativo; este archivo
 > describe sólo la frontera técnica de reanudación.
 
@@ -35,15 +35,19 @@ snapshots `immutable=1`, clasifica `healthy`, `missing`, `orphaned_sidecars`,
 orquestador, watcher y reconciliación mantienen seams lazy para no cargar
 NTFS/USN en las rutas públicas Linux normales.
 
+`--status` también usa ahora lecturas `immutable=1` en la orquestación, la CLI y
+la proyección de estado de la interfaz; no crea `-wal`/`-shm` y se abstiene con
+código 2 cuando un WAL activo no puede probarse estable.
+
 La instalación Linux aplica la retención `current_and_immediate_rollback_v1`:
 verifica procesos host, conserva `current` y el rollback inmediato, retira
 releases más antiguas y registra la poda en el recibo.
 
 El checkout final y la release activa quedan alineados al `HEAD` verificable; el
 manifest/receipt deben conservar el mismo `source_sha` y `release_linux.py verify`
-debe pasar antes de cualquier cierre. La suite completa quedó en 4,327 pruebas,
+debe pasar antes de cualquier cierre. La suite completa quedó en 4,329 pruebas,
 127 omitidas y 114 subtests, y la evidencia de esta evolución queda en
-`/home/winterboss/Documentos/NeoCortex/Auditorias/2026-08-31-neocortex-platform-state-health/summary.json`.
+`/home/winterboss/Documentos/NeoCortex/Auditorias/2026-08-31-neocortex-reaudit-status-safe/summary.json`.
 
 Las proyecciones Semantic mutables tienen un scrub explícito y probado para
 retirar claves adultas sin alterar el resto del JSON. No se detectó una base
