@@ -1100,9 +1100,9 @@ wheel y el sdist deben validarse en un entorno limpio antes de publicar; este
 documento no afirma que esa barrera final ya haya ocurrido.
 
 En Linux, `tools/release_linux.py` instala el wheel `full` desde artefactos
-binarios, activa `current` bajo `flock`, conserva releases anteriores y publica
-launcher, alias y KDE sólo después de validar modelos y runtime. Los recibos
-viven en el estado XDG.
+binarios, activa `current` bajo `flock`, conserva sólo `current` y el rollback
+inmediato, poda releases anteriores y publica launcher, alias y KDE sólo después
+de validar modelos y runtime. Los recibos viven en el estado XDG.
 
 El inventario técnico de metadata/licencias y archivos redistribuidos está en
 [THIRD_PARTY_LICENSE_INVENTORY.md](THIRD_PARTY_LICENSE_INVENTORY.md). La metadata

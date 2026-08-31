@@ -15,8 +15,8 @@ continúa siendo `0.9.0-bb656793c005-cp314-linux-x86_64`, que conserva el contra
 Linux de abstención. Los prototipos POSIX/KIO explorados en el árbol de trabajo
 no se promueven ni se exponen como capacidad productiva porque las instrucciones
 vigentes exigen rechazar `--apply`/`--organization-apply` antes de crear estado.
-Las releases anteriores se conservan para rollback conforme a la política
-vigente del proyecto.
+La política vigente conserva `current` y un único rollback inmediato; las
+releases más antiguas se podan después de verificar la instalación.
 
 ## Mapa requisito → pieza existente
 

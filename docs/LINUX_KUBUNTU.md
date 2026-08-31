@@ -95,7 +95,9 @@ No añade archivos al corpus ni inicia una corrida.
 La activación de `current` se realiza mediante reemplazo atómico bajo `flock`;
 el venv se crea en su ruta final no activa —los venv no son movibles—, se vuelve
 de sólo lectura tras las verificaciones y sólo entonces puede recibir el enlace
-`current`. Las releases anteriores se conservan.
+`current`. Tras una instalación verificada sólo se conservan `current` y el
+rollback inmediato; las releases más antiguas se podan y el staging residual
+se limpia, sin tocar una release que siga en uso.
 
 El último paso publica el launcher, el alias, el icono y la entrada KDE. Si la
 preparación de modelos queda incompleta, conserva cachés reanudables y la
