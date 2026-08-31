@@ -1,6 +1,6 @@
 # NeoCortex — handoff operativo vigente
 
-> Actualizado: 2026-08-31 04:48 CST. El basename es histórico y permanece estable.
+> Actualizado: 2026-08-31 06:33 CST. El basename es histórico y permanece estable.
 > `~/.codex/PENDIENTES.md` conserva el compromiso operativo; este archivo
 > describe sólo la frontera técnica de reanudación.
 
@@ -19,11 +19,19 @@ La mutación Linux sigue bloqueada por contrato: `--apply` y
 `linux_mutation_backend_unavailable`; el prototipo POSIX/KIO auditado no se
 promueve ni se incluye en el runtime.
 
+La primera evolución de curación quedó integrada como `--curation-preview`: lee
+snapshots temporales de `dedup.sqlite3` y `document_catalog.sqlite3`, compone
+duplicados exactos, propuestas de organización y archivos vacíos en revisión,
+y devuelve identidad, evidencia, razones y `preview_fingerprint`. La operación
+no inicializa, migra ni escribe SQLite, no toca WAL/SHM de los owners y falla
+cerrado si un owner cambia o conserva un journal activo; `--curation-json` emite
+la misma vista como un objeto determinista acotado.
+
 El checkout final y la release activa quedan alineados al `HEAD` verificable; el
 manifest/receipt deben conservar el mismo `source_sha` y `release_linux.py verify`
-debe pasar antes de cualquier cierre. La suite completa quedó en 4,307 pruebas, 127 omitidas y 114
-subtests, y la evidencia durable está en
-`/home/winterboss/Documentos/NeoCortex/Auditorias/2026-08-31-neocortex-linux-only-simplification-final/summary.json`.
+debe pasar antes de cualquier cierre. La suite completa quedó en 4,316 pruebas,
+127 omitidas y 114 subtests, y la evidencia de esta evolución queda en
+`/home/winterboss/Documentos/NeoCortex/Auditorias/2026-08-31-neocortex-curation-preview/summary.json`.
 
 Las proyecciones Semantic mutables tienen un scrub explícito y probado para
 retirar claves adultas sin alterar el resto del JSON. No se detectó una base
@@ -105,10 +113,12 @@ trabajo vigente y no deben reactivar el autoanálisis retirado.
 
 1. Mantener el runtime Linux en solo lectura para mutación del corpus mientras
    rija `linux_mutation_backend_unavailable`.
-2. Si Víctor lo solicita de nuevo, auditar de forma separada la retirada
+2. Usar `--curation-preview` sólo sobre estado publicado y fixtures aislados;
+   revisar sus propuestas antes de cualquier cambio de alcance.
+3. Si Víctor lo solicita de nuevo, auditar de forma separada la retirada
    preservativa de adaptadores Windows/NTFS históricos, con alcance y evidencia
    explícitos antes de borrar cualquier archivo.
-3. No iniciar una corrida real del corpus ni crear `curate --apply` bajo la
+4. No iniciar una corrida real del corpus ni crear `curate --apply` bajo la
    política actual.
 
 ## Límites
