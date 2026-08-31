@@ -337,6 +337,7 @@ def test_new_virtual_environment_is_created_at_its_final_non_movable_path(
     layout = LinuxReleaseLayout(source, _policy(tmp_path))
     sha = "e" * 40
     final_release = layout.releases / release_linux.release_id(sha)
+    stale_release = _release(layout, "0.9.0-stale")
     installed_at: list[Path] = []
 
     monkeypatch.setattr(release_linux, "_require_reference_platform", lambda: None)
@@ -394,6 +395,9 @@ def test_new_virtual_environment_is_created_at_its_final_non_movable_path(
     assert report["corpus_root_created"] is True
     assert corpus_root.is_dir()
     assert release_linux._current_target(layout) == final_release.resolve()
+    assert not stale_release.exists()
+    assert report["retention_policy"] == "current_and_immediate_rollback_v1"
+    assert report["pruned_releases"] == (stale_release.name,)
     assert report["artifacts"]["runtime_dependency_lock_filename"] == (
         release_linux.RUNTIME_DEPENDENCY_LOCK_NAME
     )
@@ -424,6 +428,102 @@ def test_atomic_current_replacement_preserves_previous_releases(tmp_path: Path) 
     assert release_linux._current_target(layout) == new.resolve()
     assert old.is_dir()
     assert new.is_dir()
+
+
+def test_prune_old_releases_keeps_current_and_immediate_rollback(
+    tmp_path: Path,
+) -> None:
+    layout = LinuxReleaseLayout(tmp_path / "source", _policy(tmp_path))
+    current = _release(layout, "0.9.0-current")
+    rollback = _release(layout, "0.9.0-rollback")
+    old = _release(layout, "0.9.0-old")
+
+    pruned = release_linux._prune_old_releases(
+        layout,
+        current=current,
+        rollback=rollback,
+    )
+
+    assert pruned == (old.name,)
+    assert current.is_dir()
+    assert rollback.is_dir()
+    assert not old.exists()
+
+
+def test_prune_old_releases_abstains_when_a_release_is_in_use(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    layout = LinuxReleaseLayout(tmp_path / "source", _policy(tmp_path))
+    current = _release(layout, "0.9.0-current")
+    rollback = _release(layout, "0.9.0-rollback")
+    old = _release(layout, "0.9.0-old")
+    monkeypatch.setattr(release_linux, "_release_in_use", lambda _path: (1234,))
+
+    with pytest.raises(release_linux.LinuxReleaseError, match="in use"):
+        release_linux._prune_old_releases(
+            layout,
+            current=current,
+            rollback=rollback,
+        )
+
+    assert old.is_dir()
+
+
+def test_prune_old_releases_rejects_unsafe_matching_entries(tmp_path: Path) -> None:
+    layout = LinuxReleaseLayout(tmp_path / "source", _policy(tmp_path))
+    current = _release(layout, "0.9.0-current")
+    rollback = _release(layout, "0.9.0-rollback")
+    unsafe = layout.releases / "0.9.0-unsafe"
+    unsafe.parent.mkdir(parents=True, exist_ok=True)
+    unsafe.write_text("not a release", encoding="utf-8")
+
+    with pytest.raises(release_linux.LinuxReleaseError, match="not a directory"):
+        release_linux._prune_old_releases(
+            layout,
+            current=current,
+            rollback=rollback,
+        )
+
+    assert unsafe.is_file()
+
+
+def test_retention_receipt_accepts_exact_current_and_rollback_pair(
+    tmp_path: Path,
+) -> None:
+    layout = LinuxReleaseLayout(tmp_path / "source", _policy(tmp_path))
+    current = _release(layout, "0.9.0-current")
+    rollback = _release(layout, "0.9.0-rollback")
+    receipt = {
+        "retention_policy": "current_and_immediate_rollback_v1",
+        "previous_release": str(rollback),
+        "retained_releases": [current.name, rollback.name],
+    }
+
+    release_linux._validate_retention_receipt(
+        layout,
+        current=current,
+        receipt=receipt,
+    )
+
+
+def test_retention_receipt_rejects_an_unpruned_release(tmp_path: Path) -> None:
+    layout = LinuxReleaseLayout(tmp_path / "source", _policy(tmp_path))
+    current = _release(layout, "0.9.0-current")
+    rollback = _release(layout, "0.9.0-rollback")
+    _release(layout, "0.9.0-old")
+    receipt = {
+        "retention_policy": "current_and_immediate_rollback_v1",
+        "previous_release": str(rollback),
+        "retained_releases": [current.name, rollback.name],
+    }
+
+    with pytest.raises(release_linux.LinuxReleaseError, match="retention drift"):
+        release_linux._validate_retention_receipt(
+            layout,
+            current=current,
+            receipt=receipt,
+        )
 
 
 def test_launcher_works_through_user_alias_when_alias_lives_elsewhere(tmp_path: Path) -> None:

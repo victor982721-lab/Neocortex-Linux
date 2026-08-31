@@ -208,6 +208,16 @@ def build_parser() -> argparse.ArgumentParser:
     status.add_argument("--status-run", type=int, metavar="RUN_ID")
     status.add_argument("--status-limit", type=int, default=5, metavar="N")
     status.add_argument("--status-json", action="store_true")
+    status.add_argument(
+        "--state-health",
+        action="store_true",
+        help="inspect every known SQLite owner through sidecar-safe snapshots",
+    )
+    status.add_argument(
+        "--state-health-json",
+        action="store_true",
+        help="emit --state-health as one structured JSON object",
+    )
     recovery = parser.add_argument_group("Uncertain file-action recovery")
     recovery.add_argument(
         "--action-recovery-status",

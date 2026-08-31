@@ -226,6 +226,15 @@ def _validate_status_operation(args: argparse.Namespace) -> None:
         raise SystemExit("--status is read-only and cannot be combined with --apply")
 
 
+def _validate_state_health_operation(args: argparse.Namespace) -> None:
+    if args.state_health_json and not args.state_health:
+        raise SystemExit("--state-health-json requires --state-health")
+    if args.state_health and args.apply:
+        raise SystemExit("--state-health is read-only and cannot be combined with --apply")
+    if args.state_health and normalize_route_selection(args.route, BUILTIN_ROUTE_ORDER):
+        raise SystemExit("--state-health cannot be combined with --route")
+
+
 def _validate_action_recovery_operation(args: argparse.Namespace) -> None:
     recording = args.action_recovery_record is not None
     if not 1 <= args.action_recovery_limit <= 1000:
@@ -585,6 +594,7 @@ def _validate_direct_operations(args: argparse.Namespace) -> None:
     _validate_direct_operation_selection(args)
     validate_capabilities_arguments(args)
     _validate_status_operation(args)
+    _validate_state_health_operation(args)
     _validate_action_recovery_operation(args)
     _validate_retention_operation(args, explicit)
     _validate_watcher_operation(args, explicit)

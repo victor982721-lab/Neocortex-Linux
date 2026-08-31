@@ -133,6 +133,12 @@ DIRECT_OPERATIONS: tuple[DirectOperation, ...] = (
     ),
     DirectOperation("status", "run_operational_status", _STATUS),
     DirectOperation(
+        "state_health",
+        "run_state_health",
+        _STATUS,
+        module_name=".cli_state_health",
+    ),
+    DirectOperation(
         "retention_status",
         "run_retention_status",
         _STATUS,

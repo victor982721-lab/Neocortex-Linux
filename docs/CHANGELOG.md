@@ -35,6 +35,9 @@ no se copian aquí para evitar que se conviertan en datos históricos sin contex
 - `Neocortex --curation-preview` compone en una vista bounded/read-only los
   planes durables de duplicados y organización, además de archivos vacíos en
   revisión, con identidad, evidencia, razones y `preview_fingerprint`.
+- `Neocortex --state-health` inspecciona los owners SQLite mediante snapshots
+  inmutables, clasifica cobertura y sidecars, y devuelve código `2` ante estado
+  parcial sin crear ni migrar bases.
 
 ### Validación vigente
 

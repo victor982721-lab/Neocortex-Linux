@@ -48,9 +48,12 @@ inventario portable.
 Estas piezas son deuda histórica, no requisitos del flujo Linux. La reducción
 segura aplicada en este corte elimina la capa activa de Job Objects para workers
 y limita el sdist a herramientas Linux, pero conserva adaptadores Windows/NTFS
-históricos sin cargarlos en el runtime. Retirar también los modelos de cursor,
-migraciones y tests requiere una campaña separada de compatibilidad de lectura;
-no se borra de forma masiva en este lote.
+históricos sin cargarlos en las rutas públicas Linux normales. Orquestador,
+watcher y reconciliación conservan seams lazy para USN/NTFS, de modo que sus
+imports base no cargan esos proveedores; los módulos siguen disponibles sólo
+para compatibilidad explícita. Retirar modelos de cursor, migraciones y tests
+requiere una campaña separada de compatibilidad de lectura; no se borra de
+forma masiva en este lote.
 
 ## Contrato propuesto para P0
 
@@ -100,10 +103,21 @@ P0 queda **bloqueado por política**, no entregado: la menor modificación futur
 sería el adaptador POSIX/KIO descrito arriba, pero el contrato vigente no permite
 exponerla ni ejecutar mutaciones Linux. La simplificación efectiva de este corte
 retira la supervisión Windows de workers y mantiene el producto en modo
-Linux/read-only. P1 tiene ahora una primera capacidad parcial: `--curation-preview`
-compone los planes durables existentes y los archivos vacíos en revisión, sin
-crear un almacén paralelo ni mutar SQLite; el resto de P1 y P2–P4 continúan
-pendientes y no se simulan como entregados.
+Linux/read-only. P1 tiene ahora dos capacidades parciales: `--curation-preview`
+compone los planes durables existentes y los archivos vacíos en revisión, y
+`--state-health` inspecciona todos los owners mediante snapshots inmutables;
+ninguna crea un almacén paralelo ni muta SQLite. La retención de releases queda
+automatizada en `release_linux.py` para conservar current y el rollback
+inmediato. El resto de P1 y P2–P4 continúa pendiente y no se simula como
+entregado.
+
+La vista `--curation-preview` informa ahora `coverage=complete`, `partial` o
+`unavailable` y conserva los owners faltantes en la salida estructurada. La
+consulta `--state-health` clasifica cada owner como `healthy`, `missing`,
+`orphaned_sidecars`, `blocked` o `unreadable`; usa `immutable=1` sólo con
+sidecars inactivos probados y devuelve código 2 cuando la cobertura no es
+completa. La instalación Linux comprueba procesos host antes de retirar releases
+antiguas y registra en el recibo la pareja current/rollback y la poda realizada.
 
 ## Paquete mínimo recomendado
 
@@ -112,4 +126,5 @@ Linux, si la política superior cambiara, seguiría siendo **P0 acotado**: un
 adaptador POSIX no-replace y un adaptador KIO separados, conectados a los dos
 consumidores existentes y manteniendo intactos guard, ledger, revalidación y
 reconciliación. Bajo la política actual esa modificación no puede promoverse;
-`neocortex/curation` sólo expone la vista read-only y no existe `curate --apply`.
+`neocortex/curation` y `state-health` sólo exponen lecturas read-only y no existe
+`curate --apply`.

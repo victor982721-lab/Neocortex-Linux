@@ -3,7 +3,8 @@
 The tool builds a wheel, creates an immutable release-local virtual environment
 with product dependencies, verifies it, and only then atomically updates
 ``current`` under a POSIX ``flock``. Development analyzers are not bundled in
-the application release. Previous releases are deliberately retained.
+the application release. After a successful install, only ``current`` and the
+immediate previous release remain available for rollback.
 """
 
 from __future__ import annotations
@@ -585,6 +586,103 @@ def _remove_incomplete_release(root: Path) -> None:
     shutil.rmtree(root)
 
 
+def _release_in_use(root: Path) -> tuple[int, ...]:
+    """Return host PIDs whose executable, cwd, or mapped files use *root*."""
+
+    selected = root.resolve(strict=False)
+    users: set[int] = set()
+    for process in Path("/proc").glob("[0-9]*"):
+        try:
+            pid = int(process.name)
+        except ValueError:
+            continue
+        for link_name in ("exe", "cwd"):
+            try:
+                target = Path(os.path.realpath(process / link_name))
+                if target == selected or target.is_relative_to(selected):
+                    users.add(pid)
+                    break
+            except OSError:
+                continue
+        if pid in users:
+            continue
+        try:
+            with (process / "maps").open(encoding="utf-8", errors="ignore") as stream:
+                if any(str(selected) in line for line in stream):
+                    users.add(pid)
+        except OSError:
+            continue
+    return tuple(sorted(users))
+
+
+def _prune_old_releases(
+    layout: LinuxReleaseLayout,
+    *,
+    current: Path,
+    rollback: Path | None,
+) -> tuple[str, ...]:
+    """Remove releases older than the current/rollback pair after preflight."""
+
+    keep = {current.resolve(strict=True)}
+    if rollback is not None:
+        keep.add(rollback.resolve(strict=True))
+    candidates: list[Path] = []
+    for path in sorted(layout.releases.glob("0.9.0-*")):
+        if path.is_symlink():
+            raise LinuxReleaseError(f"release path is an unsafe symlink: {path}")
+        if not path.is_dir():
+            raise LinuxReleaseError(f"release path is not a directory: {path}")
+        if path.resolve(strict=True) not in keep:
+            candidates.append(path)
+    candidates_tuple = tuple(candidates)
+    for path in candidates_tuple:
+        users = _release_in_use(path)
+        if users:
+            joined = ",".join(str(pid) for pid in users)
+            raise LinuxReleaseError(f"release is in use by host processes: {path} ({joined})")
+    for path in candidates_tuple:
+        _remove_incomplete_release(path)
+    return tuple(path.name for path in candidates_tuple)
+
+
+def _validate_retention_receipt(
+    layout: LinuxReleaseLayout,
+    *,
+    current: Path,
+    receipt: dict[str, object],
+) -> None:
+    """Verify the current receipt's two-release retention contract."""
+
+    policy = receipt.get("retention_policy")
+    if policy is None:
+        return
+    if policy != "current_and_immediate_rollback_v1":
+        raise LinuxReleaseError(f"unsupported release retention policy: {policy!r}")
+    previous = receipt.get("previous_release")
+    expected = [current.name]
+    if previous is not None:
+        previous_path = Path(str(previous)).resolve(strict=True)
+        try:
+            previous_path.relative_to(layout.releases.resolve(strict=True))
+        except ValueError as exc:
+            raise LinuxReleaseError("retention rollback points outside releases") from exc
+        expected.append(previous_path.name)
+    retained = receipt.get("retained_releases")
+    if not isinstance(retained, list) or sorted(str(value) for value in retained) != sorted(
+        expected
+    ):
+        raise LinuxReleaseError("retention receipt does not identify current and rollback")
+    actual_paths = sorted(layout.releases.glob("0.9.0-*"))
+    if any(path.is_symlink() for path in actual_paths):
+        raise LinuxReleaseError("release retention contains an unsafe symlink")
+    actual = sorted(path.name for path in actual_paths if path.is_dir())
+    if actual != sorted(expected):
+        raise LinuxReleaseError(
+            "release retention drift: "
+            f"expected={sorted(expected)!r} actual={actual!r}"
+        )
+
+
 @contextmanager
 def _release_lock(layout: LinuxReleaseLayout):
     try:
@@ -1014,6 +1112,9 @@ def install_release(
             operation = "repromote"
         else:
             operation = "install"
+        retained_releases: tuple[str, ...] = (final_release.name,)
+        if operation == "install" and previous is not None:
+            retained_releases = (final_release.name, previous.name)
         public_snapshots: dict[Path, _PathSnapshot] = {}
         _replace_current(layout, final_release)
         try:
@@ -1037,12 +1138,24 @@ def install_release(
                 "corpus_root_created": corpus_root_created,
                 "models_prepared": prepare_models,
                 "desktop_published": desktop,
+                "retention_policy": "current_and_immediate_rollback_v1",
+                "retained_releases": retained_releases,
                 "artifacts": {
                     **release_artifacts,
                     **public_hashes,
                 },
                 "result": "success",
             }
+            pruned_releases = (
+                _prune_old_releases(
+                    layout,
+                    current=final_release,
+                    rollback=previous,
+                )
+                if operation == "install"
+                else ()
+            )
+            receipt["pruned_releases"] = pruned_releases
             receipt_path = _write_receipt(layout, receipt)
         except BaseException:
             _replace_current(layout, previous)
@@ -1072,9 +1185,18 @@ def verify_release(
     receipt = _latest_receipt(layout)
     if receipt is None:
         raise LinuxReleaseError("no valid installation receipt")
+    _validate_retention_receipt(layout, current=current, receipt=receipt)
     corpus_root = Path(str(receipt.get("corpus_root", layout.policy.corpus_root)))
     _require_corpus_root(corpus_root)
     source_sha = receipt.get("source_sha")
+    if source_sha == "rollback":
+        try:
+            rollback_manifest = json.loads(
+                (current / RELEASE_MANIFEST_NAME).read_text(encoding="utf-8")
+            )
+            source_sha = rollback_manifest.get("source_sha")
+        except (OSError, UnicodeError, TypeError, ValueError, json.JSONDecodeError):
+            source_sha = None
     if not isinstance(source_sha, str) or not re.fullmatch(r"[0-9a-f]{40}", source_sha):
         raise LinuxReleaseError("installation receipt source SHA is invalid")
     manifest = _read_release_manifest(
@@ -1192,6 +1314,9 @@ def rollback_release(
                 "corpus_root": str(layout.policy.corpus_root),
                 "models_prepared": False,
                 "desktop_published": layout.desktop.is_file(),
+                "retention_policy": "current_and_immediate_rollback_v1",
+                "retained_releases": (target.name, current.name),
+                "pruned_releases": (),
                 "artifacts": {},
                 "result": "success",
             }

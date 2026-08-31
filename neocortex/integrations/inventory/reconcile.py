@@ -10,15 +10,9 @@ import os
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from neocortex.enumeration import (
-    JournalCursor,
-    NtfsEntry,
-    UsnChangeBatch,
-    VolumeAccessError,
-    consume_changes,
-)
+from neocortex.enumeration.errors import VolumeAccessError
 from neocortex.deduplication import (
     DedupIndex,
     FileChangedError,
@@ -31,6 +25,17 @@ from neocortex.deduplication.inventory.scan import (
     resolve_inventory_exclusion_policy,
 )
 from neocortex.progress import ProgressCallback, ProgressEvent, emit_progress
+
+if TYPE_CHECKING:
+    from neocortex.enumeration.models import JournalCursor, NtfsEntry, UsnChangeBatch
+
+
+def consume_changes(*args: Any, **kwargs: Any):
+    """Lazy compatibility seam for the optional NTFS/USN reconciler."""
+
+    from neocortex.enumeration.ntfs.journal import consume_changes as reader
+
+    return reader(*args, **kwargs)
 # endregion [01]
 
 # region [02] Implementación

@@ -87,8 +87,10 @@ class CurationPreview:
     """Summary and bounded sample of the current durable curation plans."""
 
     schema_version: int
-    root: str
-    scan_id: int
+    coverage: str
+    missing_owners: tuple[str, ...]
+    root: str | None
+    scan_id: int | None
     inventory_files: int
     duplicate_groups: int
     duplicate_members: int
@@ -103,6 +105,7 @@ class CurationPreview:
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "coverage": self.coverage,
             "empty_files": self.empty_files,
             "duplicate_groups": self.duplicate_groups,
             "duplicate_members": self.duplicate_members,
@@ -110,6 +113,7 @@ class CurationPreview:
             "items": [item.to_dict() for item in self.items],
             "items_total": self.items_total,
             "items_truncated": self.items_truncated,
+            "missing_owners": list(self.missing_owners),
             "organization_plans": self.organization_plans,
             "preview_fingerprint": self.preview_fingerprint,
             "preview_limit": self.preview_limit,
@@ -128,11 +132,6 @@ def _canonical_json(value: object) -> str:
         sort_keys=True,
         separators=(",", ":"),
     )
-
-
-def _require_existing_database(path: Path, *, label: str) -> None:
-    if not path.is_file():
-        raise CurationStateError(f"{label} state database does not exist: {path}")
 
 
 def _snapshot_signature(path: Path) -> tuple[tuple[str, int, int, int, int], ...]:
@@ -430,8 +429,10 @@ def _organization_items(
 
 def _preview_fingerprint(
     *,
-    scan_id: int,
-    root: str,
+    coverage: str,
+    missing_owners: tuple[str, ...],
+    scan_id: int | None,
+    root: str | None,
     inventory_files: int,
     duplicate_groups: int,
     duplicate_members: int,
@@ -442,11 +443,13 @@ def _preview_fingerprint(
     items: list[CurationItem],
 ) -> str:
     payload = {
+        "coverage": coverage,
         "empty_files": empty_files,
         "duplicate_groups": duplicate_groups,
         "duplicate_members": duplicate_members,
         "inventory_files": inventory_files,
         "items": [item.to_dict() for item in items],
+        "missing_owners": list(missing_owners),
         "organization_plans": organization_plans,
         "preview_limit": preview_limit,
         "reclaimable_bytes": reclaimable_bytes,
@@ -464,8 +467,46 @@ def build_curation_preview(state_directory: Path, *, limit: int) -> CurationPrev
         raise ValueError("curation preview limit must be between 1 and 10000")
     inventory_path = state_directory / "dedup.sqlite3"
     catalog_path = state_directory / "document_catalog.sqlite3"
-    _require_existing_database(inventory_path, label="dedup")
-    _require_existing_database(catalog_path, label="document catalog")
+    missing_owners = tuple(
+        filename
+        for path, filename in (
+            (inventory_path, "dedup.sqlite3"),
+            (catalog_path, "document_catalog.sqlite3"),
+        )
+        if not path.is_file()
+    )
+    if "dedup.sqlite3" in missing_owners:
+        return CurationPreview(
+            schema_version=CURATION_PREVIEW_SCHEMA_VERSION,
+            coverage="unavailable",
+            missing_owners=missing_owners,
+            root=None,
+            scan_id=None,
+            inventory_files=0,
+            duplicate_groups=0,
+            duplicate_members=0,
+            reclaimable_bytes=0,
+            organization_plans=0,
+            empty_files=0,
+            preview_limit=limit,
+            items_total=0,
+            items_truncated=False,
+            preview_fingerprint=_preview_fingerprint(
+                coverage="unavailable",
+                missing_owners=missing_owners,
+                scan_id=None,
+                root=None,
+                inventory_files=0,
+                duplicate_groups=0,
+                duplicate_members=0,
+                reclaimable_bytes=0,
+                organization_plans=0,
+                empty_files=0,
+                preview_limit=limit,
+                items=[],
+            ),
+            items=(),
+        )
 
     with _readonly_sqlite_snapshot(inventory_path, label="dedup") as inventory_snapshot:
         with connect_inventory(inventory_snapshot, readonly=True) as inventory:
@@ -476,19 +517,25 @@ def build_curation_preview(state_directory: Path, *, limit: int) -> CurationPrev
             )
             empty_files = _empty_file_summary(inventory, scan_id)
             sampled_items = _duplicate_items(inventory, scan_id, limit)
-            with _readonly_sqlite_snapshot(catalog_path, label="document catalog") as catalog_snapshot:
-                with connect_document_catalog(catalog_snapshot, readonly=True) as catalog:
-                    validate_sqlite_schema_contract(
-                        catalog,
-                        document_catalog_schema_contract(),
-                        label="document catalog",
-                        exact=True,
-                    )
-                    organization_plans = _organization_summary(catalog)
-                    if len(sampled_items) < limit:
-                        sampled_items.extend(
-                            _organization_items(catalog, limit - len(sampled_items))
+            if "document_catalog.sqlite3" in missing_owners:
+                organization_plans = 0
+            else:
+                with _readonly_sqlite_snapshot(
+                    catalog_path,
+                    label="document catalog",
+                ) as catalog_snapshot:
+                    with connect_document_catalog(catalog_snapshot, readonly=True) as catalog:
+                        validate_sqlite_schema_contract(
+                            catalog,
+                            document_catalog_schema_contract(),
+                            label="document catalog",
+                            exact=True,
                         )
+                        organization_plans = _organization_summary(catalog)
+                        if len(sampled_items) < limit:
+                            sampled_items.extend(
+                                _organization_items(catalog, limit - len(sampled_items))
+                            )
             if len(sampled_items) < limit:
                 sampled_items.extend(
                     _empty_file_items(inventory, scan_id, limit - len(sampled_items))
@@ -497,6 +544,8 @@ def build_curation_preview(state_directory: Path, *, limit: int) -> CurationPrev
     total_items = duplicate_groups + organization_plans + empty_files
     return CurationPreview(
         schema_version=CURATION_PREVIEW_SCHEMA_VERSION,
+        coverage="complete" if not missing_owners else "partial",
+        missing_owners=missing_owners,
         root=root,
         scan_id=scan_id,
         inventory_files=inventory_files,
@@ -509,6 +558,8 @@ def build_curation_preview(state_directory: Path, *, limit: int) -> CurationPrev
         items_total=total_items,
         items_truncated=total_items > len(sampled_items),
         preview_fingerprint=_preview_fingerprint(
+            coverage="complete" if not missing_owners else "partial",
+            missing_owners=missing_owners,
             scan_id=scan_id,
             root=root,
             inventory_files=inventory_files,

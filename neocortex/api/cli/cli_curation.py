@@ -31,10 +31,11 @@ def run_curation_preview(args: argparse.Namespace) -> int:
                 separators=(",", ":"),
             )
         )
-        return 0
+        return 0 if preview.coverage == "complete" else 2
 
     print(
         f"CURATION_PREVIEW scan={preview.scan_id} root={preview.root} "
+        f"coverage={preview.coverage} missing={','.join(preview.missing_owners) or '-'} "
         f"inventory_files={preview.inventory_files} "
         f"duplicate_groups={preview.duplicate_groups} "
         f"duplicate_members={preview.duplicate_members} "
@@ -57,7 +58,7 @@ def run_curation_preview(args: argparse.Namespace) -> int:
             f"action={item.action} reason={item.reason} source={item.source_path} "
             f"destination={item.destination_path or '-'} evidence={evidence}"
         )
-    return 0
+    return 0 if preview.coverage == "complete" else 2
 
 
 __all__ = ["run_curation_preview"]

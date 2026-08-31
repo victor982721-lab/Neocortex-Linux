@@ -9,8 +9,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
-
-from neocortex.enumeration import JournalCursor
 from neocortex.deduplication import DedupPlan, ScanSummary
 from neocortex.platform.policy import (
     default_corpus_root,
@@ -32,6 +30,7 @@ from neocortex.safety.route_filters import CandidateSelection
 # region [02] Implementación
 
 if TYPE_CHECKING:
+    from neocortex.enumeration.models import JournalCursor
     from neocortex.capabilities.formats.archive.models import ArchiveRouteSummary
     from neocortex.capabilities.formats.audio.models import AudioRouteSummary
     from neocortex.code.code_contracts import CodeRouteSummary

@@ -38,6 +38,7 @@ DIRECT_ARGUMENT_CASES = (
     ("models_prepare", "run_models_prepare", ("--models-prepare",)),
     ("models_status", "run_models_status", ("--models-status",)),
     ("status", "run_operational_status", ("--status",)),
+    ("state_health", "run_state_health", ("--state-health",)),
     ("retention_status", "run_retention_status", ("--retention-status",)),
     (
         "action_recovery_status",

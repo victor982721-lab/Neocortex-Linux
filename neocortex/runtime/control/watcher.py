@@ -16,15 +16,10 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Literal, Protocol, runtime_checkable
+from typing import Any, TYPE_CHECKING, Literal, Protocol, runtime_checkable
 
-from neocortex.enumeration import (
-    JournalCursor,
-    JournalDiscontinuityError,
-    NtfsUsnError,
-    UsnChangeBatch,
-    UsnJournalReader,
-)
+from neocortex.enumeration.errors import JournalDiscontinuityError, NtfsUsnError
+from neocortex.enumeration.models import JournalCursor
 from neocortex.deduplication import DedupIndex, InventoryCheckpoint, InventoryError
 from neocortex.progress import ProgressCallback
 
@@ -44,6 +39,17 @@ from neocortex.runtime.control.watcher_life_lease import (
     WatcherLifeLease,
     WatcherLifeLeaseConflict,
 )
+
+if TYPE_CHECKING:
+    from neocortex.enumeration.models import UsnChangeBatch
+
+
+def UsnJournalReader(volume: str, cursor: JournalCursor, **kwargs: Any):
+    """Lazy compatibility seam for the optional NTFS/USN watcher source."""
+
+    from neocortex.enumeration.ntfs.journal import UsnJournalReader as reader
+
+    return reader(volume, cursor, **kwargs)
 # region [01] Public configuration and observability contracts
 
 BootstrapMode = Literal["if-needed", "always", "never"]

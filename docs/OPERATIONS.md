@@ -195,6 +195,17 @@ como elementos `review`, con identidad, evidencia, razón y un
 `preview_fingerprint`. La operación es bounded/read-only, no crea ni migra
 estado y rechaza `--apply` y `--route`.
 
+Para comprobar la salud de todos los owners sin crear sidecars:
+
+```bash
+Neocortex --state-health --state-health-json
+```
+
+La consulta clasifica cada base como `healthy`, `missing`,
+`orphaned_sidecars`, `blocked` o `unreadable`, y devuelve `2` si la cobertura
+no es completa. No la ejecutes en paralelo con una unidad que esté escribiendo
+el mismo owner; ante un journal o cambio concurrente se abstiene.
+
 La muestra debe combinar texto plano/Markdown, CSV o TSV, HTML/XML/JSON, un EML
 multipart y DOC/XLS/PPT reales. Repita el productor: el segundo resumen debe
 convertir los documentos sin cambios en `cache_hits`. El asunto del EML debe
@@ -633,8 +644,8 @@ Esta sección se usa sólo al instalar, promover, migrar o restaurar una versió
 No forma parte del flujo cotidiano ni de una corrección focal.
 
 En Kubuntu/Linux, la herramienta mantenida construye y verifica una release
-inmutable, activa `current` bajo `flock`, conserva las anteriores y escribe un
-recibo en el estado:
+inmutable, activa `current` bajo `flock`, conserva sólo `current` y el rollback
+inmediato, poda releases anteriores y escribe un recibo en el estado:
 
 ```bash
 python3.14 tools/release_linux.py install \
@@ -645,8 +656,9 @@ python3.14 tools/release_linux.py rollback
 ```
 
 Una preparación incompleta de modelos no promueve el runtime ni publica KDE.
-Rollback cambia sólo el enlace activo; no elimina releases ni sustituye la
-recuperación de bases.
+La instalación comprueba procesos host antes de podar y registra las releases
+retiradas en el recibo; rollback cambia sólo el enlace activo y no elimina
+`current` ni el rollback inmediato, tampoco sustituye la recuperación de bases.
 
 La release CPython 3.14 consume conjuntamente `constraints.txt` y
 `constraints-linux-cp314.lock`. El segundo archivo fija el inventario transitivo

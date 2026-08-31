@@ -4,14 +4,10 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
-from neocortex.enumeration import (
-    JournalCursor,
-    JournalDiscontinuityError,
-    NtfsUsnError,
-    query_journal_cursor,
-)
+from neocortex.enumeration.errors import JournalDiscontinuityError, NtfsUsnError
+from neocortex.enumeration.models import JournalCursor
 from neocortex.deduplication import (
     DedupIndex,
     InventoryCheckpoint,
@@ -21,8 +17,19 @@ from neocortex.deduplication import (
 )
 from neocortex.progress import ProgressCallback, ProgressEvent, emit_progress
 
-from neocortex.integrations.inventory.reconcile import ReconcileResult, reconcile_usn_window
+from neocortex.integrations.inventory.reconcile import reconcile_usn_window
 from neocortex.persistence.framework_state_writer import FrameworkState
+
+if TYPE_CHECKING:
+    from neocortex.integrations.inventory.reconcile import ReconcileResult
+
+
+def query_journal_cursor(volume: str) -> JournalCursor:
+    """Lazy compatibility seam for the optional NTFS/USN provider."""
+
+    from neocortex.enumeration.ntfs.enumeration import query_journal_cursor as reader
+
+    return reader(volume)
 
 
 # region [01] Inventory result contract
@@ -58,14 +65,14 @@ def _checkpoint_cursor(
         checkpoint is not None
         and checkpoint.valid
         and checkpoint.inventory_policy_signature == inventory_policy_signature
-        and checkpoint.journal_available
+        and checkpoint.volume is not None
+        and checkpoint.journal_id is not None
+        and checkpoint.next_usn is not None
         and checkpoint.volume == journal_before.volume
         and checkpoint.journal_id == journal_before.journal_id
         and checkpoint.next_usn is not None
         and checkpoint.next_usn <= journal_before.next_usn
     ):
-        return checkpoint, None
-    if checkpoint.volume is None or checkpoint.journal_id is None or checkpoint.next_usn is None:
         return checkpoint, None
     return checkpoint, JournalCursor(
         checkpoint.volume,

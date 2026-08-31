@@ -17,7 +17,8 @@ from pathlib import Path
 from neocortex.platform.policy import stat_birthtime_ns
 from typing import TYPE_CHECKING, Mapping, cast
 
-from neocortex.enumeration import JournalCursor, NtfsUsnError, query_journal_cursor
+from neocortex.enumeration.errors import NtfsUsnError
+from neocortex.enumeration.models import JournalCursor
 from neocortex.deduplication import (
     DedupIndex,
     DedupPlan,
@@ -65,6 +66,16 @@ from neocortex.runtime.orchestration.route_selection import ORGANIZABLE_ROUTE_NA
 from neocortex.runtime.orchestration.run_lifecycle import RunHeartbeat
 from neocortex.persistence.framework_route_state import FrameworkRouteState
 from neocortex.persistence.framework_state_writer import FrameworkState
+
+
+def query_journal_cursor(volume: str) -> JournalCursor:
+    """Lazy compatibility seam for the optional NTFS/USN provider."""
+
+    from neocortex.enumeration.ntfs.enumeration import query_journal_cursor as reader
+
+    return reader(volume)
+
+
 # endregion [01]
 
 # region [02] Implementación

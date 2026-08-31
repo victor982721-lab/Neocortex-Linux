@@ -17,10 +17,12 @@ import os
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Protocol, cast
+from typing import TYPE_CHECKING, Literal, Protocol, cast
 
-from neocortex.enumeration import JournalCursor
 from neocortex.deduplication import InventoryError
+
+if TYPE_CHECKING:
+    from neocortex.enumeration.models import JournalCursor
 # endregion [01]
 
 # region [02] Implementación

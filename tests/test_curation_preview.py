@@ -12,7 +12,7 @@ import pytest
 from neocortex.api.cli.cli_curation import run_curation_preview
 from neocortex.api.cli.cli_parser import build_parser
 from neocortex.api.cli.cli_validation import validate_arguments
-from neocortex.curation import CurationStateError, build_curation_preview
+from neocortex.curation import build_curation_preview
 from neocortex.deduplication import DedupIndex, DedupPlanner
 from neocortex.documents.document_catalog import initialize_document_catalog
 
@@ -75,6 +75,8 @@ def test_preview_composes_durable_sources_without_writing_state(tmp_path: Path) 
 
     preview = build_curation_preview(state, limit=5)
 
+    assert preview.coverage == "complete"
+    assert preview.missing_owners == ()
     assert preview.inventory_files == 3
     assert preview.duplicate_groups == 1
     assert preview.duplicate_members == 1
@@ -107,12 +109,13 @@ def test_preview_limit_is_bounded_and_marks_truncation(tmp_path: Path) -> None:
     assert preview.items_truncated is True
 
 
-def test_preview_rejects_missing_state_without_creating_it(tmp_path: Path) -> None:
+def test_preview_reports_unavailable_without_creating_missing_state(tmp_path: Path) -> None:
     state = tmp_path / "missing-state"
 
-    with pytest.raises(CurationStateError, match="dedup state database does not exist"):
-        build_curation_preview(state, limit=5)
+    preview = build_curation_preview(state, limit=5)
 
+    assert preview.coverage == "unavailable"
+    assert preview.missing_owners == ("dedup.sqlite3", "document_catalog.sqlite3")
     assert not state.exists()
 
 
@@ -133,6 +136,8 @@ def test_cli_json_is_deterministic_and_read_only(tmp_path: Path) -> None:
     payload = json.loads(output.getvalue())
 
     assert payload["kind"] == "curation-preview"
+    assert payload["coverage"] == "complete"
+    assert payload["missing_owners"] == []
     assert payload["items_total"] == 3
     assert payload["preview_fingerprint"].startswith("sha256:")
     assert _state_bytes(state) == before
@@ -151,8 +156,23 @@ def test_cli_reports_missing_state_without_initializing(tmp_path: Path) -> None:
         exit_code = run_curation_preview(args)
 
     assert exit_code == 2
-    assert "ERROR curation-preview CurationStateError" in output.getvalue()
+    assert "coverage=unavailable" in output.getvalue()
     assert not state.exists()
+
+
+def test_preview_reports_partial_coverage_when_catalog_is_missing(tmp_path: Path) -> None:
+    state = tmp_path / "state"
+    state.mkdir()
+    _build_state(state, tmp_path / "corpus")
+    (state / "document_catalog.sqlite3").unlink()
+
+    preview = build_curation_preview(state, limit=5)
+
+    assert preview.coverage == "partial"
+    assert preview.missing_owners == ("document_catalog.sqlite3",)
+    assert preview.duplicate_groups == 1
+    assert preview.organization_plans == 0
+    assert preview.empty_files == 1
 
 
 @pytest.mark.parametrize(

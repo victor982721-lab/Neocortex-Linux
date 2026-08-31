@@ -23,6 +23,7 @@ que conviene conocer antes de usar `--help`.
 | Revisar valor sin cambios | `Neocortex review value --scope personal` |
 | Avanzar una página durable de revisión | `Neocortex review value --refresh --scope personal` |
 | Diagnóstico de una corrida | `Neocortex --status --status-json` |
+| Salud de owners SQLite | `Neocortex --state-health --state-health-json` |
 
 Empiece por consultas sobre estado publicado. Si debe producir cobertura nueva,
 siga el piloto de 20–50 elementos y 10–15 minutos de
@@ -645,6 +646,9 @@ dependencia incompatible; ausencia segura o un plan listo devuelve `0`.
 No existen opciones `--retention-prepare`, `--retention-apply` o
 `--retention-verify`. La salida de status no autoriza un `DELETE` manual ni
 demuestra que todas las referencias cross-store hayan permanecido estables.
+Para una comprobación de owners que no abra SQLite ordinario ni cree sidecars,
+use `--state-health`; su resultado conserva la causa exacta cuando un owner
+está ausente, bloqueado o tiene un journal activo.
 
 ### Borrado explícito de bases
 
@@ -829,6 +833,19 @@ El JSON incluye `preview_fingerprint`, los conteos completos y una muestra
 acotada. La lectura se hace sobre snapshots temporales de los owners SQLite,
 por lo que un cambio concurrente se informa y no se presenta como una vista
 estable. `--curation-preview` rechaza `--apply` y cualquier `--route`.
+
+### Salud del estado
+
+`--state-health` comprueba los owners SQLite conocidos mediante lecturas
+inmutables: captura su estado dos veces, usa `immutable=1` sólo cuando los
+sidecars están probadamente inactivos y clasifica ausencias o journals como
+`missing`, `orphaned_sidecars` o `blocked`. Un resultado parcial devuelve
+código `2` y no crea ni migra estado:
+
+```bash
+Neocortex --state-health
+Neocortex --state-health --state-health-json
+```
 
 No copie estos comandos como prueba de instalación. Antes de cualquiera de las
 dos autorizaciones, revise [SECURITY.md](SECURITY.md) y

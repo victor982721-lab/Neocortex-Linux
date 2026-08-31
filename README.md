@@ -78,6 +78,7 @@ Neocortex ask "¿qué evidencia existe sobre el tratamiento de aceite?" --scope 
 Neocortex inspect code "dónde se valida SQLite" --scope personal
 Neocortex inspect lineage IDENTIFICADOR --scope personal
 Neocortex review value --scope personal --limit 50
+Neocortex --state-health --state-health-json
 ```
 
 `personal` consulta el estado publicado y `all` conserva la forma de consulta
@@ -190,6 +191,9 @@ python3.14 tools/release_linux.py verify
 La instalación prepara `--corpus-root` como directorio real si todavía no
 existe. No copia documentos ni inicia procesamiento; sólo garantiza que el
 comando cotidiano tenga una raíz válida desde su primera ejecución.
+Después de una instalación verificada, el instalador conserva únicamente
+`current` y el rollback inmediato, retira releases más antiguas y registra la
+poda en el recibo; `.staging` debe quedar vacío.
 
 `constraints.txt` conserva los pins directos compartidos, mientras
 `constraints-linux-cp314.lock` fija el inventario transitivo completo de la
@@ -384,6 +388,11 @@ esta caché mediante `--semantic-source text`.
 duplicados, organización y archivos vacíos. Devuelve propuestas advisory con
 identidad, evidencia, razón y fingerprint reproducible; no inicializa ni migra
 SQLite, no modifica sus bytes y nunca mueve, renombra o elimina contenido.
+
+`--state-health` inspecciona los owners SQLite conocidos mediante lecturas
+inmutables y reporta `healthy`, `missing`, `orphaned_sidecars` o `blocked` sin
+crear, migrar ni tocar WAL/SHM. Un estado parcial devuelve código `2` con la
+causa estructurada.
 
 **IMPLEMENTED — broker para Text.** Antes de extraer cada candidato, la ruta
 evalúa manifests estáticos y versionados para `neocortex.text.builtin` y
@@ -655,7 +664,8 @@ no permisos para repetir una syscall.
 El planificador de retención es también diagnóstico y no destructivo. No poda,
 no aplica cuotas ni ejecuta `VACUUM` o checkpoints. Conserva las publicaciones
 vigente/anterior, evidencia semántica, el último run válido y holds cross-store;
-no existen `prepare/apply/verify` productivos:
+la retención de releases se aplica por separado al instalar y conserva sólo
+`current` y el rollback inmediato:
 
 ```powershell
 Neocortex --retention-status
