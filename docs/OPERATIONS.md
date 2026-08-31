@@ -256,8 +256,10 @@ corresponda, sin un comando agregador dentro de NeoCortex.
 
 ## Reanudación
 
-`--status` muestra runs, rutas y fases con un límite predeterminado de cinco. Se
-puede ampliar hasta 1000:
+`--status` muestra runs, rutas y fases con un límite predeterminado de cinco
+mediante una lectura immutable que no crea ni toca sidecars. Si el framework
+conserva un WAL activo o sidecars no demostrablemente inactivos, devuelve `2` y
+no continúa; el límite se puede ampliar hasta 1000:
 
 ```powershell
 Neocortex --status --status-limit 20

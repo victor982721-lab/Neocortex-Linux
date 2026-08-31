@@ -9,7 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from neocortex.persistence.framework_connection import connect_existing_framework
+from neocortex.persistence.sqlite_immutable import immutable_sqlite_database
 from neocortex.runtime.orchestration.run_status import list_run_status
 
 from .issues import route_issue_count
@@ -73,6 +73,7 @@ class StatusRepository:
             TypeError,
             ValueError,
             OverflowError,
+            RuntimeError,
         ) as exc:
             raise StatusRepositoryError(f"No se pudo leer el estado durable {path}: {exc}") from exc
         return tuple(
@@ -99,8 +100,7 @@ class StatusRepository:
         if not run_ids:
             return {}
         placeholders = ",".join("?" for _run_id in run_ids)
-        connection = connect_existing_framework(path, readonly=True, timeout_seconds=1.0)
-        try:
+        with immutable_sqlite_database(path, timeout_seconds=1.0) as connection:
             details: dict[int, list[int]] = {run_id: [0, 0, 0] for run_id in run_ids}
             for row in connection.execute(
                 f"""SELECT run_id,files_checked,errors FROM run_actions
@@ -122,29 +122,23 @@ class StatusRepository:
                     failed=(str(row["status"]) == "failed" or row["error_type"] is not None),
                 )
             return {run_id: (values[0], values[1], values[2]) for run_id, values in details.items()}
-        finally:
-            connection.close()
 
     def latest_event_details(self, run_id: int, phase: str) -> dict[str, Any]:
         path = self.database_path
         if not path.is_file():
             return {}
-        connection: sqlite3.Connection | None = None
         try:
-            connection = connect_existing_framework(path, readonly=True, timeout_seconds=1.0)
-            row = connection.execute(
-                """SELECT details_json FROM run_events
-                   WHERE run_id=? AND phase=? AND details_json IS NOT NULL
-                   ORDER BY event_id DESC LIMIT 1""",
-                (run_id, phase),
-            ).fetchone()
-        except sqlite3.Error as exc:
+            with immutable_sqlite_database(path, timeout_seconds=1.0) as connection:
+                row = connection.execute(
+                    """SELECT details_json FROM run_events
+                       WHERE run_id=? AND phase=? AND details_json IS NOT NULL
+                       ORDER BY event_id DESC LIMIT 1""",
+                    (run_id, phase),
+                ).fetchone()
+        except (OSError, RuntimeError, sqlite3.Error) as exc:
             raise StatusRepositoryError(
                 f"No se pudo leer el evento durable {run_id}/{phase}: {exc}"
             ) from exc
-        finally:
-            if connection is not None:
-                connection.close()
         if row is None:
             return {}
         try:

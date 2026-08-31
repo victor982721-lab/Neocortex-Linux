@@ -303,8 +303,9 @@ por su ruta exacta:
 ```
 
 `Neocortex --status` es un diagnóstico del estado persistente, no una prueba de
-instalación: en un entorno nuevo sin `framework.sqlite3` devuelve `2` de forma
-esperada y no crea la base.
+instalación: consulta `framework.sqlite3` mediante una lectura immutable y nunca
+crea ni actualiza `-wal`/`-shm`. En un entorno nuevo sin la base, o ante un WAL
+activo que no pueda probarse estable, devuelve `2` de forma esperada.
 
 La versión fuente de esta entrega es `0.9.0`. Si el ejecutable exacto del
 runtime no informa `0.9.0` o no reconoce las opciones de esta guía, deténgase y

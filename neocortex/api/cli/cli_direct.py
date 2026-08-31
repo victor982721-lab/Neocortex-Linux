@@ -60,7 +60,7 @@ def run_operational_status(args: argparse.Namespace) -> int:
             limit=args.status_limit,
             run_id=args.status_run,
         )
-    except (OSError, sqlite3.Error, ValueError) as exc:
+    except (OSError, RuntimeError, sqlite3.Error, ValueError) as exc:
         print(f"ERROR status {exc}")
         return 2
     for status in statuses:

@@ -1262,6 +1262,7 @@ def test_status_reports_stale_dead_owner_without_writing(tmp_path) -> None:
             (stale, run_id),
         )
         connection.commit()
+        connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
     before = database.read_bytes()
     status = list_run_status(database, run_id=run_id, limit=1)[0]
     after = database.read_bytes()

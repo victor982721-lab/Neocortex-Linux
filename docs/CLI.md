@@ -195,7 +195,8 @@ evidencia durable de ejecución de rutas; cualquier ambigüedad rechaza la
 reanudación sin reconstruir estado por inferencia.
 
 No presuponga que cualquier corrida antigua continúa retenida. Compruebe
-primero `--status`.
+primero `--status`; la consulta es bounded e immutable, por lo que un owner con
+WAL activo se reporta con código `2` en lugar de abrirlo de forma ordinaria.
 
 ### Interfaz gráfica
 
@@ -361,6 +362,11 @@ Neocortex --action-recovery-status --action-recovery-limit 100
 Neocortex --retention-status
 Neocortex databases purge --json
 ```
+
+`--status` no inicializa ni migra el estado y no crea `-wal`/`-shm`. Si el
+framework conserva un WAL no vacío o sidecars cuya inactividad no puede probarse,
+la operación se abstiene con código `2`; use `--state-health` para clasificar
+todos los owners sin abrir conexiones SQLite ordinarias.
 
 Una base ausente, dañada o con esquema incompatible puede producir salida `2`;
 eso no convierte el diagnóstico en una operación de reparación.

@@ -38,6 +38,9 @@ no se copian aquí para evitar que se conviertan en datos históricos sin contex
 - `Neocortex --state-health` inspecciona los owners SQLite mediante snapshots
   inmutables, clasifica cobertura y sidecars, y devuelve código `2` ante estado
   parcial sin crear ni migrar bases.
+- `Neocortex --status` y la proyección de estado de la interfaz usan lecturas
+  immutable; ante un WAL activo se abstienen con código `2` en lugar de crear o
+  actualizar sidecars.
 
 ### Validación vigente
 

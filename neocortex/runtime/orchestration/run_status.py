@@ -8,7 +8,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from neocortex.persistence.framework_connection import connect_existing_framework
+from neocortex.persistence.sqlite_immutable import immutable_sqlite_database
 from neocortex.runtime.orchestration.run_lifecycle import (
     DEFAULT_STALE_HEARTBEAT_SECONDS,
     process_is_alive,
@@ -73,10 +73,7 @@ def list_run_status(
         raise ValueError("status limit must be between 1 and 1000")
     if stale_after_seconds <= 0:
         raise ValueError("stale heartbeat threshold must be positive")
-    connection = connect_existing_framework(
-        database_path, readonly=True, timeout_seconds=10
-    )
-    try:
+    with immutable_sqlite_database(database_path, timeout_seconds=10) as connection:
         run_columns = {
             str(row["name"])
             for row in connection.execute("PRAGMA table_info(initial_runs)")
@@ -109,8 +106,6 @@ def list_run_status(
             _run_status(connection, row, now=now, threshold_ns=threshold_ns)
             for row in rows
         )
-    finally:
-        connection.close()
 
 
 def _run_status(
