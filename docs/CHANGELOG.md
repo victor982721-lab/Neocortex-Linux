@@ -35,6 +35,9 @@ no se copian aquí para evitar que se conviertan en datos históricos sin contex
   borrado permanente.
 - Los archivos de cero bytes dejan de ser candidatos automáticos de Papelera y
   pasan a revisión con evidencia `size=0;policy=review`.
+- La supervisión de workers queda reducida a sesiones/grupos POSIX y `RLIMIT_AS`;
+  la capa de Job Objects y el arranque suspendido de Windows salen del runtime
+  activo.
 
 ### Validación vigente
 

@@ -18,7 +18,6 @@ from contextlib import ExitStack
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO
-from .isolated_process import WindowsKillOnCloseJob
 # endregion [01]
 
 # region [02] Implementación
@@ -54,7 +53,7 @@ class _CaptureBuffers:
 @dataclass(slots=True)
 class _TerminationController:
     process: subprocess.Popen[bytes]
-    job: WindowsKillOnCloseJob | None
+    job: object | None
     termination_errors: list[BaseException] = field(default_factory=list)
     termination_lock: threading.Lock = field(default_factory=threading.Lock)
     terminated: bool = False
@@ -86,17 +85,8 @@ class _TerminationController:
             if self.terminated:
                 return
             self.terminated = True
-            if self.job is not None:
-                try:
-                    self.job.terminate()
-                    return
-                except OSError as error:
-                    self.termination_errors.append(error)
             try:
-                if os.name != "nt":
-                    self._terminate_posix_group()
-                elif self.process.poll() is None:
-                    self.process.kill()
+                self._terminate_posix_group()
             except (OSError, RuntimeError) as error:
                 self.termination_errors.append(error)
 
@@ -160,12 +150,8 @@ def _start_bounded_process(
     cwd: str | None,
     environment: Mapping[str, str] | None,
     memory_limit_bytes: int | None,
-) -> tuple[subprocess.Popen[bytes], WindowsKillOnCloseJob | None]:
-    job: WindowsKillOnCloseJob | None = None
+) -> tuple[subprocess.Popen[bytes], None]:
     effective_creationflags = creationflags
-    if os.name == "nt":
-        job = WindowsKillOnCloseJob(memory_limit_bytes)
-        effective_creationflags |= job.suspended_creation_flag()
     effective_command = command
     if os.name != "nt" and memory_limit_bytes is not None:
         prlimit = Path(_PRLIMIT_PATH)
@@ -189,29 +175,8 @@ def _start_bounded_process(
             start_new_session=os.name != "nt",
         )
     except BaseException:
-        if job is not None:
-            job.close()
         raise
-    if job is None:
-        return process, None
-    try:
-        job.assign_suspended(process)
-    except BaseException:
-        try:
-            process.kill()
-        except OSError:
-            pass
-        try:
-            process.wait(timeout=_PROCESS_REAP_SECONDS)
-        except (OSError, subprocess.TimeoutExpired):
-            pass
-        if process.stdout is not None:
-            process.stdout.close()
-        if process.stderr is not None:
-            process.stderr.close()
-        job.close()
-        raise
-    return process, job
+    return process, None
 
 
 def _cleanup_note(error: BaseException) -> str:
@@ -321,16 +286,11 @@ def _wait_for_capture(
 
 def _finalize_capture(
     process: subprocess.Popen[bytes],
-    job: WindowsKillOnCloseJob | None,
+    job: object | None,
     started_readers: tuple[threading.Thread, ...],
     initial_returncode: int | None,
 ) -> tuple[int | None, list[BaseException]]:
     cleanup_errors: list[BaseException] = []
-    if job is not None:
-        try:
-            job.close()
-        except OSError as error:
-            cleanup_errors.append(error)
     returncode = initial_returncode
     assert process.stdout is not None
     assert process.stderr is not None
@@ -444,11 +404,10 @@ def _execute_bounded_capture(
         controller,
         timeout_seconds=timeout_seconds,
     )
-    if os.name != "nt":
-        # A command can exit after spawning descendants that inherited the
-        # capture pipes. Always close the dedicated process group before
-        # joining readers, including on an otherwise successful return.
-        controller.terminate()
+    # A command can exit after spawning descendants that inherited the capture
+    # pipes. Always close the dedicated process group before joining readers,
+    # including on an otherwise successful return.
+    controller.terminate()
     returncode, cleanup_errors = _finalize_capture(
         process,
         job,
@@ -478,13 +437,11 @@ def run_bounded_capture(
     environment: Mapping[str, str] | None = None,
     memory_limit_bytes: int | None = None,
 ) -> subprocess.CompletedProcess[bytes]:
-    """Run a child with bounded capture and exact Windows descendant cleanup.
+    """Run a child with bounded capture and POSIX process-group cleanup.
 
-    Output pipes are drained concurrently. On Windows the child is created
-    suspended, assigned by exact process handle to a kill-on-close Job Object,
-    and only then resumed. Timeout, overflow, caller exceptions, and normal
-    return all reap the direct child and release the Job so descendants cannot
-    survive the call.
+    Output pipes are drained concurrently. Timeout, overflow, caller exceptions
+    and normal return all reap the direct child and terminate its dedicated
+    process group so descendants cannot survive the call.
     """
 
     _validate_capture_bounds(
