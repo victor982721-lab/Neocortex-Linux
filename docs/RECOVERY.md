@@ -12,7 +12,8 @@ frames confirmados del WAL.
    puede existir `archivo.sqlite3-wal`.
 3. Use `sqlite3.Connection.backup`, que incorpora las páginas confirmadas
    visibles para SQLite.
-4. Conserve originales, WAL, SHM y backups. No los elimine para “reparar”.
+4. Conserve originales, WAL, SHM y backups. Para retirar deliberadamente el
+   estado use `Neocortex databases purge`; no elimine archivos manualmente.
 5. Valide `integrity_check`, `foreign_key_check` y versión de esquema después de
    cada copia o restauración.
 6. Nunca simule un downgrade cambiando `PRAGMA user_version` o una tabla de
@@ -157,6 +158,14 @@ causa.
 
 El backup no requiere copiar `-wal` ni `-shm`; copiar esos archivos por separado
 no mejora el snapshot creado por la API.
+
+## Purga explícita del estado
+
+`Neocortex databases purge` elimina bases completas y sus sidecars únicamente
+después de una vista previa, confirmación literal, backup online verificado y
+adquisición de los locks de NeoCortex. La operación conserva el corpus,
+releases, modelos, recibos y archivos no reconocidos; el manifest del backup
+permite restaurar cada base con el procedimiento de esta guía.
 
 El script respalda sólo las bases `*.sqlite3`. `ui.ini`, cachés de modelos y
 otros archivos auxiliares no forman parte de ese conjunto transaccional. Si una
@@ -412,7 +421,8 @@ no vuelven a mover el archivo.
 ## Qué no debe hacerse
 
 - No copiar sólo `.sqlite3` ignorando WAL/SHM.
-- No borrar WAL/SHM, bases, índices o generaciones para liberar espacio.
+- No borrar WAL/SHM, bases, índices o generaciones manualmente para liberar
+  espacio; use la purga explícita y su backup verificable.
 - No modificar números de versión para fingir un downgrade.
 - No repetir automáticamente trash, rename o movimientos inciertos.
 - No restaurar con watcher o GUI activos.

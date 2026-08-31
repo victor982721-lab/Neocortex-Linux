@@ -580,6 +580,32 @@ idempotente. SQLite no proporciona una transacción atómica entre esas bases.
   fallo o cancelación. Existe un planificador dry-run, pero no una poda ni
   enforcement de cuotas para generaciones fallidas, canceladas, superseded,
   `ready_partial` o builds abandonados.
+
+### Borrado explícito de bases
+
+Para retirar todo el estado derivado sin tocar el corpus, use primero la vista
+previa:
+
+```bash
+Neocortex databases purge --json
+Neocortex databases purge --store semantic --store image --json
+```
+
+La ejecución destructiva sólo se habilita con el token literal y crea un backup
+SQLite verificado antes de eliminar:
+
+```bash
+Neocortex databases purge --apply \
+  --confirm-database-purge DELETE_DATABASES
+```
+
+El comando cubre únicamente las bases canónicas registradas y sus sidecars,
+adquiere locks de framework/release y de routes/watcher, revalida identidad y
+preserva releases, modelos, recibos, locks y archivos SQLite no reconocidos. Un
+writer activo, un backup fallido, un symlink o un cambio de snapshot detienen la
+operación sin continuar con el resto de los archivos; el manifest del backup
+queda junto a la copia para recuperación posterior.
+
 - Supervise tamaño de `.sqlite3`, `-wal`, cachés de modelos y espacio libre.
 - No elimine generaciones, runs, modelos, WAL o SHM por antigüedad aparente.
 - No ejecute `VACUUM`, checkpoints, cambios de `journal_mode` ni manipulación

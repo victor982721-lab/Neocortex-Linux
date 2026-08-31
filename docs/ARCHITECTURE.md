@@ -1200,9 +1200,10 @@ Los siguientes límites deben permanecer visibles:
 - el watcher tiene exclusión cross-process de por vida por raíz+estado y se
   abstiene ante owner vivo (`NC-AUD-020`); el archivo de diagnóstico persiste y
   no debe borrarse mientras un proceso pueda poseerlo;
-- no hay comando general incorporado de backup/restauración; retención sólo
-  ofrece dry-run, sin delete/cuotas/compactación, por lo que generaciones
-  fallidas o abandonadas pueden crecer (`NC-AUD-014`);
+- no hay comando general independiente de backup/restauración; `Neocortex
+  databases purge` sí crea un backup online verificado como parte de una
+  purga explícita de bases, mientras retención continúa ofreciendo sólo
+  dry-run, sin delete/cuotas/compactación (`NC-AUD-014`);
 - este corte no promovió el launcher estable; la validación del artefacto,
   dependencias, versión y ayuda sigue siendo una barrera posterior explícita;
 - el proyecto no declara licencia propia ni NOTICE jurídico; el inventario

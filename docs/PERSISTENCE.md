@@ -1320,6 +1320,25 @@ write-ahead de holds más un journal owner-local que haga cada lote reanudable e
 idempotente. La salida de `--retention-status` no autoriza convertir candidatos
 en `DELETE` manuales.
 
+### Purga explícita de bases
+
+La operación `Neocortex databases purge` es distinta de Retention: no clasifica
+generaciones ni elimina filas selectivas, sino que retira bases SQLite completas
+de los owners canónicos elegidos y sus sidecars exactos. La vista previa es
+read-only y devuelve un `plan_digest`; `--apply` exige
+`--confirm-database-purge DELETE_DATABASES`, adquiere los locks comunes,
+comprueba que no haya writers, crea un backup online verificado fuera de `state`
+y vuelve a comparar dispositivo, inode, tamaño y `mtime_ns` antes de cada
+unlink. Un fallo de backup o un cambio de identidad aborta sin borrar la fuente.
+
+El alcance predeterminado cubre los owners `inventory`, `framework`, `catalog`,
+`pdf`, `docx`, `office`, `audio`, `video`, `image`, `semantic`, `code`,
+`archive` y `text`; `--store` puede limitarlo. No se tocan releases, modelos,
+launchers, recibos, locks ni archivos SQLite desconocidos. El directorio de
+backup contiene una copia por base y `database-purge-manifest.json` con hashes,
+integridad y el digest del plan; la recuperación restaura desde esa copia con
+el paquete compatible, nunca editando `schema_version`.
+
 ### Política para una futura ejecución
 
 Clasifique antes de podar:

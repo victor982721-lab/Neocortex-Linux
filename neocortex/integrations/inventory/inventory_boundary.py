@@ -107,9 +107,12 @@ _CANONICAL_STATE_DATABASE_NAMES = (
     "docx.sqlite3",
     "office.sqlite3",
     "audio.sqlite3",
+    "video.sqlite3",
     "image.sqlite3",
     "code.sqlite3",
     "semantic.sqlite3",
+    "archive.sqlite3",
+    "text.sqlite3",
 )
 
 

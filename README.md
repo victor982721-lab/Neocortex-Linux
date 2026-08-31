@@ -664,6 +664,26 @@ Antes de actualizar una instalación con bases existentes, realice un backup
 consistente mediante la API SQLite; no copie sólo el `.sqlite3` si puede existir
 WAL.
 
+### Borrado explícito de bases
+
+Cuando se necesite empezar de nuevo con el estado derivado, `databases purge`
+borra sólo las bases SQLite canónicas y sus sidecars (`-wal`, `-shm` y
+`-journal`). Sin `--apply` siempre muestra una vista previa; la ejecución exige
+el token exacto `DELETE_DATABASES`, toma un backup verificable fuera del
+directorio `state`, comprueba los locks de framework/release/routes/watcher y
+vuelve a validar cada archivo antes de quitarlo. Releases, modelos, launchers,
+recibos y archivos SQLite desconocidos se conservan:
+
+```bash
+Neocortex databases purge --json
+Neocortex databases purge --store image --store semantic --json
+Neocortex databases purge --apply --confirm-database-purge DELETE_DATABASES
+```
+
+El backup queda en un directorio nuevo `database-backups/` junto al estado y su
+manifest conserva tamaño, hash e integridad. Si hay un writer activo, cambia un
+archivo o falla el backup, el comando se abstiene sin borrar la fuente.
+
 ## Documentación
 
 - [Kubuntu/Linux](docs/LINUX_KUBUNTU.md): instalación versionada, XDG, modelos,

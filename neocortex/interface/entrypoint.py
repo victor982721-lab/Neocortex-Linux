@@ -22,7 +22,18 @@ _CANONICAL_OPTIONS = {
 }
 
 _HUMAN_COMMANDS = frozenset(
-    {"help", "status", "search", "ask", "inspect", "review", "knowledge", "agent"}
+    {
+        "help",
+        "status",
+        "search",
+        "ask",
+        "inspect",
+        "review",
+        "knowledge",
+        "databases",
+        "database",
+        "agent",
+    }
 )
 
 

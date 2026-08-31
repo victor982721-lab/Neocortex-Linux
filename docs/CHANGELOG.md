@@ -26,6 +26,9 @@ no se copian aquí para evitar que se conviertan en datos históricos sin contex
 - `Neocortex --all` no consulta ni produce autoanálisis del repositorio. Las
   superficies públicas de Code se limitan a estado, búsqueda, proyectos y
   reconstrucción respaldados por contenido indexado.
+- `Neocortex databases purge` permite retirar bases SQLite y sus sidecars con
+  vista previa por defecto, confirmación literal, backup online verificado y
+  bloqueo fail-closed ante writers activos o cambios de identidad.
 
 ### Validación vigente
 

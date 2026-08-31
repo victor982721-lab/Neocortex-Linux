@@ -39,6 +39,7 @@ PDF, OCR, Office, audio, código, metadatos o relaciones como autorización.
 | Estado sin mutación del corpus | Corrida sin `--apply`, `--semantic-index`, `--semantic-classify`, `--catalog-documents`, `--organization-plan`, `--review-record`, `--action-recovery-record` | Lee contenido o cachés y escribe bases, evidencia o planes. |
 | Descarga/carga externa | `models prepare`; `--semantic-prepare-models`; primera transcripción Windows sin `--audio-local-models-only` | Puede adquirir modelos y ampliar cachés. `models status` es local y read-only. |
 | Mutación de archivos | Corrida integrada con `--apply`; `--organization-apply` | En Windows puede renombrar extensiones o mover documentos sólo bajo el contrato NTFS ligado a handles; en Linux se rechaza antes de crear estado. |
+| Purga de estado | `Neocortex databases purge --apply --confirm-database-purge DELETE_DATABASES` | Elimina sólo las bases SQLite canónicas y sus sidecars después de backup verificado y locks exclusivos; no toca corpus, releases, modelos ni recibos. |
 
 “No destructivo” significa que una corrida sin autorización no debe mutar los
 originales. No significa que sea de sólo lectura: el estado y las cachés sí se
@@ -108,6 +109,9 @@ Existen dos superficies explícitas:
 1. `--apply` autoriza las acciones de una corrida integrada.
 2. `--organization-apply` consume planes de organización ya persistidos sin
    requerir además `--apply`.
+3. `databases purge --apply --confirm-database-purge DELETE_DATABASES` autoriza
+   exclusivamente la eliminación de estado SQLite propio, con backup y
+   revalidación de identidad; no autoriza mutaciones del corpus.
 
 Según las rutas y planes, `--apply` puede corregir extensiones incompatibles con
 una firma reconocida y aplicar movimientos documentales con clasificación
@@ -437,6 +441,8 @@ otra revisión de privacidad y seguridad.
 - No abra una base desconocida con una versión que vaya a migrarla antes de
   respaldarla y validarla.
 - No elimine WAL/SHM ni altere `user_version`.
+- Para retirar una base completa use `Neocortex databases purge`; nunca elimine
+  manualmente sus archivos ni sus sidecars.
 - `integrity_check` y `foreign_key_check` no prueban que la evidencia pertenezca
   al mismo corpus o generación.
 - Una base incompatible debe preservarse y provocar abstención.

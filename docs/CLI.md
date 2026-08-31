@@ -358,6 +358,7 @@ Neocortex knowledge health resource:file:1:2:-1 --scope all --json
 Neocortex --semantic-status
 Neocortex --action-recovery-status --action-recovery-limit 100
 Neocortex --retention-status
+Neocortex databases purge --json
 ```
 
 Una base ausente, dañada o con esquema incompatible puede producir salida `2`;
@@ -645,6 +646,30 @@ No existen opciones `--retention-prepare`, `--retention-apply` o
 `--retention-verify`. La salida de status no autoriza un `DELETE` manual ni
 demuestra que todas las referencias cross-store hayan permanecido estables.
 
+### Borrado explícito de bases
+
+`Neocortex databases purge` inspecciona las bases SQLite canónicas y sus
+sidecars sin modificar nada. Para ejecutar el borrado se requieren `--apply` y
+`--confirm-database-purge DELETE_DATABASES`; antes se adquieren los locks de
+framework/release y los locks de route/watcher existentes, se crea un backup
+SQLite verificado en un directorio nuevo fuera de `state` y se comprueba que
+cada archivo conserve su identidad. El comando sólo toca owners seleccionados
+con `--store`; sin esa opción considera todos los owners registrados. Releases,
+modelos, recibos, locks y archivos SQLite desconocidos no forman parte del
+alcance.
+
+```bash
+Neocortex databases purge --json
+Neocortex databases purge --store semantic --store image --json
+Neocortex databases purge --apply \
+  --confirm-database-purge DELETE_DATABASES
+```
+
+La salida JSON incluye `plan_digest`, archivos, bytes, locks bloqueantes,
+directorio de backup y manifest. Un backup incompleto, un writer activo, un
+symlink o un cambio entre la vista previa y la eliminación provoca abstención y
+salida `2`.
+
 ## Caché, selección y reintentos
 
 La validación rápida de caché usa metadatos por defecto. Para volver a comprobar
@@ -655,9 +680,9 @@ Neocortex --root $Root --route pdf --pdf-cache-validation full
 Neocortex --root $Root --route code --code-cache-validation full
 ```
 
-`full` aumenta la E/S; no cambia la semántica del contenido ya validado. No hay
-un comando público general para “limpiar toda la caché”. No borre bases, WAL o
-SHM manualmente.
+`full` aumenta la E/S; no cambia la semántica del contenido ya validado. Para
+retirar las bases completas existe `Neocortex databases purge`; no borre bases,
+WAL o SHM manualmente.
 
 Code selecciona proyectos por defecto. Detecta sus raíces mediante manifiestos
 fuertes y excluye archivos fuera de ellas, dependencias instaladas, caches y

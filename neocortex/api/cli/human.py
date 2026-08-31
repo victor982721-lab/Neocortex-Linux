@@ -1,4 +1,4 @@
-"""Concise canonical CLI for read-only NeoCortex consultation."""
+"""Concise canonical CLI for consultation and explicit state maintenance."""
 
 from __future__ import annotations
 
@@ -19,10 +19,38 @@ from ..read_api import (
     search_payload,
     status_payload,
 )
+from neocortex.runtime.config.app_paths import default_state_directory
 
 
 HUMAN_COMMANDS = frozenset(
-    {"help", "status", "search", "ask", "inspect", "review", "knowledge", "agent"}
+    {
+        "help",
+        "status",
+        "search",
+        "ask",
+        "inspect",
+        "review",
+        "knowledge",
+        "databases",
+        "database",
+        "agent",
+    }
+)
+
+_DATABASE_STORE_CHOICES = (
+    "inventory",
+    "framework",
+    "catalog",
+    "pdf",
+    "docx",
+    "office",
+    "audio",
+    "video",
+    "image",
+    "semantic",
+    "code",
+    "archive",
+    "text",
 )
 
 
@@ -91,7 +119,8 @@ def build_human_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="Neocortex",
         description=(
-            "Consulta local, trazable y de solo lectura. Los comandos heredados "
+            "Consulta local, trazable y de solo lectura; el borrado de bases "
+            "requiere una acción y confirmación explícitas. Los comandos heredados "
             "con flags siguen disponibles."
         ),
         allow_abbrev=False,
@@ -238,6 +267,51 @@ def build_human_parser() -> argparse.ArgumentParser:
     knowledge_health.add_argument("resource_id", metavar="RESOURCE_ID")
     _add_scope(knowledge_health, default=ReadScope.ALL)
     knowledge_health.add_argument("--json", action="store_true")
+
+    databases = commands.add_parser(
+        "databases",
+        aliases=("database",),
+        help="previsualiza o elimina las bases SQLite propias de NeoCortex",
+        allow_abbrev=False,
+    )
+    database_commands = databases.add_subparsers(
+        dest="database_command",
+        metavar="ACCIÓN",
+    )
+    purge = database_commands.add_parser(
+        "purge",
+        help="borrar bases sólo con backup y confirmación explícita",
+        allow_abbrev=False,
+    )
+    purge.add_argument(
+        "--state-directory",
+        type=Path,
+        default=default_state_directory(),
+        help="directorio de estado; por defecto, el estado Linux canónico",
+    )
+    purge.add_argument(
+        "--store",
+        action="append",
+        choices=_DATABASE_STORE_CHOICES,
+        metavar="OWNER",
+        help="owner a borrar; puede repetirse, por defecto todos los owners",
+    )
+    purge.add_argument(
+        "--backup-directory",
+        type=Path,
+        help="directorio nuevo fuera del estado donde conservar el backup verificado",
+    )
+    purge.add_argument(
+        "--apply",
+        action="store_true",
+        help="ejecuta el borrado; sin esta opción sólo muestra la vista previa",
+    )
+    purge.add_argument(
+        "--confirm-database-purge",
+        metavar="TOKEN",
+        help="debe ser DELETE_DATABASES junto con --apply",
+    )
+    purge.add_argument("--json", action="store_true", help="emite el resultado JSON")
 
     agent = commands.add_parser(
         "agent",
@@ -688,6 +762,12 @@ def _run_agent_serve() -> int:
     return run_stdio_server()
 
 
+def _run_database_purge(args: argparse.Namespace) -> int:
+    from .database_purge import run_database_purge
+
+    return run_database_purge(args)
+
+
 def run_human_command(arguments: Sequence[str]) -> int:
     parser = build_human_parser()
     args = parser.parse_args(list(arguments))
@@ -710,6 +790,8 @@ def run_human_command(arguments: Sequence[str]) -> int:
         return _run_review_task(args)
     if args.command == "knowledge" and args.knowledge_command == "health":
         return _run_knowledge_health(args)
+    if args.command in {"databases", "database"} and args.database_command == "purge":
+        return _run_database_purge(args)
     if args.command == "agent" and args.agent_command == "serve":
         return _run_agent_serve()
     parser.error("falta una acción concreta")

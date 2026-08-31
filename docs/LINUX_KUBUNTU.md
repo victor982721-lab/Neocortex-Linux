@@ -137,6 +137,22 @@ Neocortex models status --json
 `all_prepared=true` es la barrera para publicar KDE cuando se pidió preparar
 modelos.
 
+## Purga de estado
+
+Para eliminar las bases derivadas de una instalación Linux, use la vista previa
+y confirme explícitamente sólo después de revisar el backup que se generará:
+
+```bash
+Neocortex databases purge --json
+Neocortex databases purge --apply \
+  --confirm-database-purge DELETE_DATABASES
+```
+
+La purga no toca el corpus, releases, modelos ni recibos, y se abstiene si hay
+un writer activo, un backup inválido o un cambio de identidad. Las bases
+seleccionadas se copian mediante el backup online de SQLite y los sidecars se
+retiran únicamente después de verificar la copia.
+
 ## Verificación y rollback
 
 ```bash
