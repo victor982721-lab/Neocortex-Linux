@@ -30,15 +30,13 @@ def test_linux_window_is_portable_non_elevated_and_non_mutating(tmp_path: Path) 
     application.processEvents()
     try:
         visible_text = {label.text() for label in window.findChildren(QLabel)}
-        assert "Modo portátil Linux" in visible_text
+        assert "Modo Linux" in visible_text
         assert window.route_toggles["code"].text() == "Código"
         assert window.route_toggles["archive"].text() == "ZIP"
-        assert window._portable_linux is True
-        assert window._execution_elevated is False
         assert window.start_button.text() == "Iniciar ejecución"
         assert window.start_button.isEnabled()
         assert not window.apply_radio.isEnabled()
-        assert "backend seguro de Windows" in window.apply_radio.toolTip()
+        assert "política Linux" in window.apply_radio.toolTip()
         assert not window._current_request().apply
     finally:
         window.close()

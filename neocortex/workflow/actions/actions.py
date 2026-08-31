@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 import time
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from pathlib import Path
 
 from neocortex.platform.policy import stat_birthtime_ns
@@ -40,19 +40,10 @@ from neocortex.workflow.actions.action_policy import (
 )
 from neocortex.platform.content_types import DETECTOR_VERSION, DetectedType, detect_content_type
 from neocortex.safety.corpus_access import CorpusMutationGuard, ProtectedAnalysisRootError
-from neocortex.workflow.actions.file_action_recovery import (
-    effect_receipt_json,
-    expected_identity_json,
-)
 from neocortex.safety.internal_paths import InternalPathProtectionError
 from neocortex.runtime.models import ActionSummary
 from neocortex.safety.protected_content import ProtectedContentError
 from neocortex.persistence.framework_state_writer import FrameworkState
-from neocortex.safety.windows_handle_mutation import (
-    IdentityBoundRenameReceipt,
-    UnsupportedIdentityBoundMutation,
-    rename_no_replace_by_identity,
-)
 # endregion [01]
 
 # region [02] Implementación
@@ -67,12 +58,6 @@ TRASH_IDENTITY_ABSTENTION = (
 # the removed path backend to assert it is never invoked. Production code never
 # reads or calls this sentinel.
 send2trash: None = None
-
-
-@dataclass(slots=True)
-class _RenameProgress:
-    frontier_crossed: bool = False
-    effect_confirmed: bool = False
 
 
 class FrameworkActions:
@@ -1191,200 +1176,9 @@ class FrameworkActions:
             self._apply,
         )
 
-    def _revalidate_rename_boundary(
-        self,
-        planned: FileSnapshot,
-        source: Path,
-        target: Path,
-    ) -> None:
-        source_stat = self._validate_action_path(
-            source,
-            role="rename source",
-        )
-        if source_stat is None or not stat_matches_snapshot(planned, source_stat):
-            raise RuntimeError("rename source changed after mutation preflight")
-        target_stat = self._validate_action_path(
-            target,
-            role="rename target",
-            allow_missing_leaf=True,
-        )
-        if target_stat is not None:
-            raise RuntimeError(f"target already exists: {target}")
-
-    def _prepare_rename_frontier(
-        self,
-        planned: FileSnapshot,
-        source: Path,
-        target: Path,
-    ) -> FileSnapshot:
-        current = snapshot_path(source)
-        if not _same_snapshot(planned, current):
-            raise RuntimeError("metadata changed after inventory")
-        self._revalidate_rename_boundary(planned, source, target)
-        # Repeat directly beside rename to catch a parent/leaf replacement
-        # that occurred after the first complete boundary preflight.
-        self._revalidate_rename_boundary(planned, source, target)
-        frontier_snapshot = snapshot_path(source)
-        if not _same_snapshot(planned, frontier_snapshot):
-            raise RuntimeError("rename source changed immediately before mutation frontier")
-        return frontier_snapshot
-
-    def _mark_rename_frontier(
-        self,
-        *,
-        action_id: int,
-        planned: FileSnapshot,
-        frontier_snapshot: FileSnapshot,
-        source: Path,
-        target: Path,
-        progress: _RenameProgress,
-    ) -> None:
-        self._revalidate_rename_boundary(planned, source, target)
-        self._state.mark_file_actions_applying(
-            (
-                (
-                    action_id,
-                    expected_identity_json(
-                        frontier_snapshot,
-                        source_path=str(source),
-                        target_path=str(target),
-                    ),
-                ),
-            )
-        )
-        progress.frontier_crossed = True
-
-    @staticmethod
-    def _validate_rename_receipt(
-        receipt: IdentityBoundRenameReceipt,
-        source: Path,
-        target: Path,
-        frontier_snapshot: FileSnapshot,
-        renamed: FileSnapshot,
-    ) -> None:
-        if (
-            _path_key(receipt.source_path) != _path_key(source)
-            or _path_key(receipt.destination_path) != _path_key(target)
-            or _path_key(renamed.path) != _path_key(target)
-            or (receipt.volume_id, receipt.file_id) != frontier_snapshot.identity
-            or receipt.file_system != "NTFS"
-            or receipt.link_count != 1
-            or not _same_snapshot(frontier_snapshot, renamed)
-        ):
-            raise RuntimeError(
-                "rename receipt or destination snapshot does not match the authorized source"
-            )
-
-    def _confirm_rename_effect(
-        self,
-        *,
-        action_id: int,
-        source: Path,
-        target: Path,
-        renamed: FileSnapshot,
-        progress: _RenameProgress,
-    ) -> None:
-        self._state.confirm_file_actions_applied(
-            (
-                (
-                    action_id,
-                    effect_receipt_json(
-                        operation="rename",
-                        source_path=str(source),
-                        target_path=str(target),
-                        target_snapshot=renamed,
-                    ),
-                ),
-            )
-        )
-        progress.effect_confirmed = True
-
-    def _apply_identity_bound_rename(
-        self,
-        *,
-        action_id: int,
-        planned: FileSnapshot,
-        source: Path,
-        target: Path,
-        progress: _RenameProgress,
-    ) -> FileSnapshot:
-        frontier_snapshot = self._prepare_rename_frontier(planned, source, target)
-
-        def persist_mutation_frontier() -> None:
-            self._mark_rename_frontier(
-                action_id=action_id,
-                planned=planned,
-                frontier_snapshot=frontier_snapshot,
-                source=source,
-                target=target,
-                progress=progress,
-            )
-
-        receipt = rename_no_replace_by_identity(
-            source,
-            target,
-            frontier_snapshot,
-            before_native_call=persist_mutation_frontier,
-        )
-        renamed = snapshot_path(target)
-        self._validate_rename_receipt(
-            receipt,
-            source,
-            target,
-            frontier_snapshot,
-            renamed,
-        )
-        self._confirm_rename_effect(
-            action_id=action_id,
-            source=source,
-            target=target,
-            renamed=renamed,
-            progress=progress,
-        )
-        self._index.apply_reconciliation(
-            self._scan_id,
-            upserts=(renamed,),
-            remove_paths=(source,),
-        )
-        return renamed
-
-    def _record_rename_failure(
-        self,
-        action_id: int,
-        progress: _RenameProgress,
-        exc: BaseException,
-    ) -> None:
-        if progress.frontier_crossed and not progress.effect_confirmed:
-            self._best_effort_require_recovery(
-                (action_id,),
-                f"post-frontier interruption: {type(exc).__name__}: {exc}",
-                exc,
-            )
-        elif not progress.frontier_crossed:
-            try:
-                self._state.finish_file_action(action_id, "failed", str(exc))
-            except BaseException as persistence_error:
-                exc.add_note(
-                    "pre-frontier failure could not be recorded: "
-                    f"{type(persistence_error).__name__}: {persistence_error}"
-                )
-
-    @staticmethod
-    def _rename_failure_is_fatal(
-        exc: BaseException,
-        progress: _RenameProgress,
-    ) -> bool:
-        return (
-            isinstance(
-                exc,
-                (InternalPathProtectionError, ProtectedAnalysisRootError),
-            )
-            or progress.effect_confirmed
-            or not isinstance(exc, (OSError, RuntimeError))
-        )
-
     def _rename_mismatch(self, planned, detected, summary: ActionSummary) -> ActionSummary:
-        self._validate_apply_root()
+        """Record an extension correction without a product mutation backend."""
+
         source = Path(planned.path)
         target = _corrected_path(source, detected.canonical_extension)
         summary = replace(summary, rename_candidates=summary.rename_candidates + 1)
@@ -1394,28 +1188,29 @@ class FrameworkActions:
         if not self._apply:
             self._state.finish_file_action(action_id, "planned")
             return summary
-        progress = _RenameProgress()
         try:
-            self._apply_identity_bound_rename(
-                action_id=action_id,
-                planned=planned,
-                source=source,
-                target=target,
-                progress=progress,
+            self._validate_apply_root()
+            self._validate_action_path(source, role="rename source")
+            self._validate_action_path(
+                target,
+                role="rename target",
+                allow_missing_leaf=True,
             )
-            return replace(summary, files_renamed=summary.files_renamed + 1)
-        except UnsupportedIdentityBoundMutation as exc:
-            self._state.finish_file_action(action_id, "skipped", str(exc))
-            return replace(summary, rename_skips=summary.rename_skips + 1)
-        except BaseException as exc:
-            self._record_rename_failure(action_id, progress, exc)
-            if self._rename_failure_is_fatal(exc, progress):
-                raise
+        except (InternalPathProtectionError, ProtectedAnalysisRootError):
+            raise
+        except (OSError, RuntimeError) as exc:
+            self._state.finish_file_action(action_id, "failed", str(exc))
             return replace(
                 summary,
                 rename_skips=summary.rename_skips + 1,
                 errors=summary.errors + 1,
             )
+        self._state.finish_file_action(
+            action_id,
+            "skipped",
+            "linux_mutation_backend_unavailable",
+        )
+        return replace(summary, rename_skips=summary.rename_skips + 1)
 
     def _protected_content_skip_reason(
         self,

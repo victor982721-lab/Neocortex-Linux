@@ -32,7 +32,6 @@ from neocortex.workflow.actions.action_policy import (
 from neocortex.safety.corpus_access import (
     CorpusAccessPolicy,
     CorpusMutationGuard,
-    ProtectedAnalysisRootError,
     path_trees_intersect,
 )
 from .document_cache_sync import synchronize_moved_document
@@ -54,14 +53,7 @@ from .document_organization_planning import (
     _same_path,
     _validate_destination,
 )
-from neocortex.safety.internal_paths import InternalPathProtectionError
 from neocortex.safety.protected_content import ProtectedContentError
-from neocortex.safety.windows_handle_mutation import (
-    IdentityBoundMutationError,
-    MutationEffectUncertainError,
-    UnsupportedIdentityBoundMutation,
-    rename_no_replace_by_identity,
-)
 # endregion [01]
 
 # region [02] Implementación
@@ -1024,72 +1016,8 @@ def _move_organization_source(
     root_stat: os.stat_result,
     mutation_guard: CorpusMutationGuard,
 ) -> tuple[str, str]:
-    def revalidate_before_native_call() -> None:
-        _require_organization_boundaries(
-            state_directory,
-            root,
-            source,
-            destination,
-            root_stat,
-            mutation_guard,
-        )
-
-    try:
-        _create_destination_parent(
-            state_directory,
-            source,
-            root,
-            destination,
-            root_stat,
-            mutation_guard,
-        )
-        _require_organization_boundaries(
-            state_directory,
-            root,
-            source,
-            destination,
-            root_stat,
-            mutation_guard,
-        )
-        if os.path.lexists(destination):
-            return "blocked", "destination appeared after directory creation"
-        receipt = rename_no_replace_by_identity(
-            source,
-            destination,
-            expected,
-            before_native_call=revalidate_before_native_call,
-        )
-    except (InternalPathProtectionError, ProtectedAnalysisRootError):
-        raise
-    except FileExistsError:
-        return "blocked", "destination appeared while applying the move"
-    except UnsupportedIdentityBoundMutation as exc:
-        return "blocked", f"identity-bound move unavailable: {exc}"
-    except MutationEffectUncertainError as exc:
-        return "recovery_required", str(exc)
-    except IdentityBoundMutationError as exc:
-        return "blocked", str(exc)
-    except ValueError as exc:
-        return "blocked", str(exc)
-    except OSError as exc:
-        return "failed", f"{type(exc).__name__}: {exc}"
-    try:
-        moved = snapshot_path(destination)
-    except OSError as exc:
-        return (
-            "recovery_required",
-            f"moved destination snapshot failed: {type(exc).__name__}: {exc}",
-        )
-    if not same_snapshot(expected, moved):
-        return (
-            "recovery_required",
-            "moved destination does not match the planned snapshot",
-        )
-    return (
-        "moved",
-        "identity-bound move confirmed without replacement "
-        f"(volume_id={receipt.volume_id}, file_id={receipt.file_id})",
-    )
+    del source, destination, expected, state_directory, root, root_stat, mutation_guard
+    return "blocked", "linux_mutation_backend_unavailable"
 
 
 def _disambiguate_apply_destination(
