@@ -282,13 +282,13 @@ persistente para coordinarla.
   publica una sola vez; `origin/main` sólo confirma entrega Git, no calidad.
 - No crees un venv permanente alternativo al runtime personal.
 - No instales `pip`, Node ni dependencias Python globalmente. En Linux usa
-  `tools/release_linux.py`; conserva releases anteriores para rollback y no
-  publiques KDE si los modelos solicitados están incompletos.
-- Preferencia operativa registrada de Víctor: después de una release nueva
-  solicita retirar la anterior. Esta preferencia queda subordinada a la
-  política de rollback vigente: mientras el proyecto exija conservar releases
-  anteriores, no se elimina la copia previa; sólo se podrá retirar cuando esa
-  política cambie de forma explícita y exista otro rollback verificable.
+  `tools/release_linux.py`; conserva `current` y una sola release anterior
+  verificada como rollback inmediato, y no publiques KDE si los modelos
+  solicitados están incompletos.
+- Preferencia operativa de Víctor: después de instalar y verificar una release
+  nueva, la release inmediatamente anterior queda como el único rollback y se
+  retiran todas las releases más antiguas. Nunca borres `current`, el rollback
+  inmediato ni una release en uso; limpia también cualquier staging residual.
 
 ## Colaboración, Git y documentación
 
