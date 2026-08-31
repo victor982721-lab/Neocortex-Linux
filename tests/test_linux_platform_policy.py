@@ -21,7 +21,7 @@ from neocortex.api.cli.cli_app import main
 from neocortex.foundation.file_identity import FileIdentity
 from neocortex.knowledge.knowledge_contracts import PhysicalIdentityRef, ResourceRef
 from neocortex.knowledge.knowledge_search_inventory import physical_identity_tuple
-from neocortex.interface.entrypoint import _translate_canonical_arguments, entrypoint
+from neocortex.interface.entrypoint import entrypoint
 from neocortex.platform.policy import (
     LINUX_MUTATION_REASON,
     POSIX_PHYSICAL_IDENTITY_SCHEME,
@@ -261,10 +261,6 @@ def test_platform_doctor_is_canonical_versioned_and_read_only(
     assert payload["identity"]["birthtime_unavailable_sentinel"] == -1
     assert payload["mutation"]["reason"] in {None, LINUX_MUTATION_REASON}
     assert not (tmp_path / "state").exists()
-    assert _translate_canonical_arguments(("doctor", "platform", "--json")) == [
-        "--doctor-platform",
-        "--doctor-platform-json",
-    ]
 
 
 def test_existing_windows_shaped_inventory_schema_remains_readable_when_windows_contract_is_built(

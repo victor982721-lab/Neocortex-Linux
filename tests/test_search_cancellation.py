@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from neocortex.code.code_contracts import CodeSearchQuery
-from neocortex.code.code_search import search_code
+from neocortex.code.search.code_search import search_code
 from neocortex.semantic.semantic_lexical import (
     LexicalAvailability,
     LexicalStatePaths,

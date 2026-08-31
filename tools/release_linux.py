@@ -1,9 +1,9 @@
 """Versioned, per-user NeoCortex release installation for Kubuntu/Linux.
 
-The tool never modifies global Python or Node installations. It builds a wheel,
-creates an immutable release-local virtual environment, installs the pinned
-Node/Pyright runtime, verifies it, and only then atomically updates ``current``
-under a POSIX ``flock``. Previous releases are deliberately retained.
+The tool builds a wheel, creates an immutable release-local virtual environment
+with product dependencies, verifies it, and only then atomically updates
+``current`` under a POSIX ``flock``. Development analyzers are not bundled in
+the application release. Previous releases are deliberately retained.
 """
 
 from __future__ import annotations
@@ -20,7 +20,6 @@ import shutil
 import stat
 import subprocess
 import sys
-import tarfile
 import tempfile
 import urllib.request
 import uuid
@@ -35,8 +34,8 @@ if __package__ in {None, ""}:
     sys.path.insert(0, os.fspath(Path(__file__).resolve().parents[1]))
 
 from neocortex import __version__
-from neocortex.code import pip_bootstrap
-from neocortex.code.pip_bootstrap import (
+from tools import pip_bootstrap
+from tools.pip_bootstrap import (
     PIP_BOOTSTRAP_FILENAME,
     PIP_BOOTSTRAP_SHA256,
     PIP_BOOTSTRAP_URL,
@@ -48,29 +47,12 @@ from neocortex.runtime.source_staging import (
     parse_git_tracked_paths,
     stage_tracked_source,
 )
-from neocortex.code.semgrep_tool_contract import (
-    SEMGREP_TOOL_VERSION,
-)
-from tools.build_binary_inputs import build_source_only_wheels
-from tools.pyright_runtime import (
-    NODE_VERSION,
-    PYRIGHT_LOCK_SHA256,
-    PYRIGHT_PACKAGE_INTEGRITY,
-    PYRIGHT_VERSION,
-    PyrightRuntimeError,
-    install_pyright_runtime,
-    verify_pyright_runtime,
-)
-from tools.semgrep_tool_runtime import (
-    SemgrepToolRuntimeError,
-    install_semgrep_tool_runtime,
-    verify_semgrep_tool_runtime,
-)
 
 RECEIPT_SCHEMA_VERSION = 1
 RELEASE_PLATFORM_TAG = "linux-x86_64"
 RELEASE_MANIFEST_NAME = "neocortex-release.json"
 RUNTIME_DEPENDENCY_LOCK_NAME = "constraints-linux-cp314.lock"
+RUNTIME_PROFILE = "product-only-v1"
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _LOCKED_REQUIREMENT = re.compile(r"^([A-Za-z0-9][A-Za-z0-9_.-]*)==([^\s;]+)$")
 _MAX_RUNTIME_DEPENDENCIES = 512
@@ -81,10 +63,8 @@ _IMPORT_MODULES = (
     "fastembed",
     "faster_whisper",
     "fitz",
-    "nudenet",
     "numpy",
     "pytesseract",
-    "sqlglot",
 )
 
 
@@ -414,7 +394,7 @@ def _build_wheel(
     *,
     pip_wheel: Path,
     runner: CommandRunner = _run,
-) -> tuple[Path, tuple[Path, ...]]:
+) -> Path:
     staged_source = workspace / "source"
     try:
         stage_tracked_source(
@@ -446,12 +426,6 @@ def _build_wheel(
     )
     wheelhouse = workspace / "wheelhouse"
     wheelhouse.mkdir()
-    source_only_wheels = build_source_only_wheels(
-        python,
-        wheelhouse,
-        constraints,
-        runner=runner,
-    )
     runner(
         (
             python,
@@ -468,7 +442,7 @@ def _build_wheel(
     wheels = tuple(wheelhouse.glob("neocortex_framework-*.whl"))
     if len(wheels) != 1:
         raise LinuxReleaseError("wheel build did not produce exactly one artifact")
-    return wheels[0], source_only_wheels
+    return wheels[0]
 
 
 def _install_wheel(
@@ -502,25 +476,6 @@ def _install_wheel(
     )
 
 
-def _install_semgrep_runtime(
-    release_root: Path,
-    pip_wheel: Path,
-    *,
-    runner: CommandRunner = _run,
-) -> None:
-    """Install the exact scan-only tool env without polluting the main venv."""
-
-    try:
-        install_semgrep_tool_runtime(
-            release_root,
-            pip_wheel=pip_wheel,
-            constraints=Path(__file__).with_name("semgrep_tool_constraints.txt"),
-            runner=runner,
-        )
-    except SemgrepToolRuntimeError as exc:
-        raise LinuxReleaseError(f"Semgrep tool runtime installation failed: {exc}") from exc
-
-
 def _download(url: str, destination: Path) -> None:
     request = urllib.request.Request(url, headers={"User-Agent": "NeoCortex-release/1"})
     with urllib.request.urlopen(request, timeout=120) as response, destination.open("xb") as output:
@@ -529,69 +484,9 @@ def _download(url: str, destination: Path) -> None:
         os.fsync(output.fileno())
 
 
-def _node_archive(workspace: Path) -> tuple[Path, str]:
-    filename = f"node-v{NODE_VERSION}-linux-x64.tar.xz"
-    base = f"https://nodejs.org/dist/v{NODE_VERSION}"
-    archive = workspace / filename
-    sums = workspace / "SHASUMS256.txt"
-    _download(f"{base}/{filename}", archive)
-    _download(f"{base}/SHASUMS256.txt", sums)
-    expected: str | None = None
-    for line in sums.read_text(encoding="ascii").splitlines():
-        fields = line.split()
-        if len(fields) == 2 and fields[1].lstrip("*") == filename:
-            expected = fields[0]
-            break
-    if expected is None or not _SHA256.fullmatch(expected):
-        raise LinuxReleaseError("Node checksum manifest lacks the requested archive")
-    actual = _sha256_file(archive)
-    if actual != expected:
-        raise LinuxReleaseError("Node archive SHA-256 does not match its manifest")
-    return archive, actual
-
-
-def _install_node_pyright(
-    release_root: Path,
-    workspace: Path,
-    *,
-    runner: CommandRunner = _run,
-) -> str:
-    archive, archive_sha = _node_archive(workspace)
-    tools_root = release_root / "tools"
-    try:
-        tools_root.mkdir(exist_ok=True)
-        tools_metadata = tools_root.lstat()
-    except OSError as exc:
-        raise LinuxReleaseError("release tools directory is unavailable") from exc
-    if not stat.S_ISDIR(tools_metadata.st_mode):
-        raise LinuxReleaseError("release tools directory must be a real directory")
-    with tarfile.open(archive, mode="r:xz") as source:
-        source.extractall(workspace / "node-extract", filter="data")
-    extracted = workspace / "node-extract" / f"node-v{NODE_VERSION}-linux-x64"
-    if not (extracted / "bin" / "node").is_file():
-        raise LinuxReleaseError("Node archive did not contain the expected runtime")
-    shutil.move(extracted, tools_root / "node")
-    node_bin = tools_root / "node" / "bin"
-    environment = os.environ.copy()
-    environment["PATH"] = os.pathsep.join((str(node_bin), environment.get("PATH", "")))
-    try:
-        install_pyright_runtime(
-            tools_root / "pyright",
-            npm=node_bin / "npm",
-            node=node_bin / "node",
-            runner=runner,
-            environment=environment,
-        )
-    except PyrightRuntimeError as exc:
-        raise LinuxReleaseError(f"Pyright runtime installation failed: {exc}") from exc
-    return archive_sha
-
-
 def _candidate_environment(
     layout: LinuxReleaseLayout,
     corpus_root: Path,
-    *,
-    release_root: Path | None = None,
 ) -> dict[str, str]:
     environment = os.environ.copy()
     environment["NEOCORTEX_CORPUS_ROOT"] = str(corpus_root)
@@ -599,14 +494,6 @@ def _candidate_environment(
     environment["XDG_CONFIG_HOME"] = str(layout.policy.config_directory.parent)
     environment["XDG_STATE_HOME"] = str(layout.policy.state_directory.parents[1])
     environment["XDG_DATA_HOME"] = str(layout.policy.data_directory.parent)
-    if release_root is not None:
-        owned_paths = (
-            release_root / "tools" / "pyright" / "node_modules" / ".bin",
-            release_root / "tools" / "node" / "bin",
-        )
-        environment["PATH"] = os.pathsep.join(
-            (*(str(path) for path in owned_paths), environment.get("PATH", ""))
-        )
     return environment
 
 
@@ -618,7 +505,7 @@ def _verify_python_release(
     runtime_lock: Path | None = None,
     runner: CommandRunner = _run,
 ) -> dict[str, str]:
-    environment = _candidate_environment(layout, corpus_root, release_root=release_root)
+    environment = _candidate_environment(layout, corpus_root)
     python = _venv_python(release_root)
     runner((python, "-m", "pip", "check"), timeout=300, environment=environment)
     pip_version = runner(
@@ -635,25 +522,11 @@ def _verify_python_release(
             runner=runner,
             environment=environment,
         )
-    try:
-        semgrep_runtime = verify_semgrep_tool_runtime(release_root, runner=runner)
-    except SemgrepToolRuntimeError as exc:
-        raise LinuxReleaseError(f"Semgrep tool runtime verification failed: {exc}") from exc
     runner(
         (python, "-c", ";".join(f"import {module}" for module in _IMPORT_MODULES)),
         timeout=300,
         environment=environment,
     )
-    node = release_root / "tools" / "node" / "bin" / "node"
-    try:
-        pyright_runtime = verify_pyright_runtime(
-            release_root / "tools" / "pyright",
-            node=node,
-            runner=runner,
-            environment=environment,
-        )
-    except PyrightRuntimeError as exc:
-        raise LinuxReleaseError(f"Pyright runtime verification failed: {exc}") from exc
     runner((_venv_command(release_root), "--version"), timeout=60, environment=environment)
     runner(
         (_venv_command(release_root), "doctor", "platform", "--json"),
@@ -669,15 +542,7 @@ def _verify_python_release(
         timeout=120,
         environment={**environment, "QT_QPA_PLATFORM": "offscreen"},
     )
-    return {
-        "node": pyright_runtime["node"],
-        "pip": pip_version,
-        "pyright": pyright_runtime["pyright"],
-        "pyright_integrity": pyright_runtime["pyright_integrity"],
-        "pyright_lock_sha256": pyright_runtime["pyright_lock_sha256"],
-        "semgrep": semgrep_runtime["semgrep"],
-        "semgrep_runtime_sha256": semgrep_runtime["runtime_digest_sha256"],
-    }
+    return {"pip": pip_version}
 
 
 def _make_immutable(root: Path) -> None:
@@ -913,15 +778,14 @@ def _release_manifest(
     source_sha: str,
     wheel: Path,
     wheel_sha: str,
-    source_only_wheels: dict[str, str],
     runtime_dependency_lock: Path,
-    node_sha: str,
     versions: dict[str, str],
 ) -> dict[str, object]:
     locked_dependencies = _runtime_dependency_lock(runtime_dependency_lock)
     return {
         "schema_version": RECEIPT_SCHEMA_VERSION,
         "kind": "linux_release_manifest",
+        "runtime_profile": RUNTIME_PROFILE,
         "release_id": release_name,
         "source_sha": source_sha,
         "python": platform.python_version(),
@@ -932,9 +796,6 @@ def _release_manifest(
         "runtime_dependency_lock_filename": runtime_dependency_lock.name,
         "runtime_dependency_lock_sha256": _sha256_file(runtime_dependency_lock),
         "runtime_dependency_count": len(locked_dependencies),
-        "source_only_wheels": source_only_wheels,
-        "node_archive_filename": f"node-v{NODE_VERSION}-linux-x64.tar.xz",
-        "node_archive_sha256": node_sha,
         **versions,
     }
 
@@ -953,35 +814,33 @@ def _read_release_manifest(
         raise LinuxReleaseError("existing release manifest is unavailable") from exc
     if not isinstance(payload, dict):
         raise LinuxReleaseError("existing release manifest is malformed")
+    runtime_profile = payload.get("runtime_profile")
+    if runtime_profile not in {None, RUNTIME_PROFILE}:
+        raise LinuxReleaseError("existing release runtime profile is unsupported")
+    if runtime_profile == RUNTIME_PROFILE and any(
+        key in payload
+        for key in (
+            "node_archive_filename",
+            "node_archive_sha256",
+            "pyright",
+            "pyright_integrity",
+            "pyright_lock_sha256",
+            "semgrep",
+            "semgrep_runtime_sha256",
+        )
+    ):
+        raise LinuxReleaseError("product-only release contains development-tool metadata")
     if (
         payload.get("schema_version") != RECEIPT_SCHEMA_VERSION
         or payload.get("kind") != "linux_release_manifest"
         or payload.get("release_id") != release_name
         or payload.get("source_sha") != source_sha
         or not isinstance(payload.get("wheel_filename"), str)
-        or not isinstance(payload.get("node_archive_filename"), str)
         or not isinstance(payload.get("wheel_sha256"), str)
         or not _SHA256.fullmatch(str(payload["wheel_sha256"]))
         or payload.get("pip_bootstrap_wheel_filename") != PIP_BOOTSTRAP_FILENAME
         or payload.get("pip_bootstrap_wheel_sha256") != PIP_BOOTSTRAP_SHA256
         or payload.get("pip") != PIP_BOOTSTRAP_VERSION
-        or payload.get("semgrep") != SEMGREP_TOOL_VERSION
-        or payload.get("pyright") != f"pyright {PYRIGHT_VERSION}"
-        or payload.get("pyright_integrity") != PYRIGHT_PACKAGE_INTEGRITY
-        or payload.get("pyright_lock_sha256") != PYRIGHT_LOCK_SHA256
-        or not isinstance(payload.get("semgrep_runtime_sha256"), str)
-        or not _SHA256.fullmatch(str(payload["semgrep_runtime_sha256"]))
-        or not isinstance(payload.get("source_only_wheels"), dict)
-        or not payload["source_only_wheels"]
-        or not all(
-            isinstance(filename, str)
-            and filename.endswith(".whl")
-            and isinstance(digest, str)
-            and _SHA256.fullmatch(digest)
-            for filename, digest in payload["source_only_wheels"].items()
-        )
-        or not isinstance(payload.get("node_archive_sha256"), str)
-        or not _SHA256.fullmatch(str(payload["node_archive_sha256"]))
     ):
         raise LinuxReleaseError("existing release manifest failed validation")
     lock_fields = {
@@ -1086,7 +945,7 @@ def install_release(
         with tempfile.TemporaryDirectory(prefix=f"{name}-", dir=layout.staging) as temporary:
             workspace = Path(temporary)
             pip_wheel = _prepare_pip_bootstrap(workspace)
-            wheel, source_only_wheels = _build_wheel(
+            wheel = _build_wheel(
                 layout,
                 workspace,
                 pip_wheel=pip_wheel,
@@ -1102,8 +961,6 @@ def install_release(
                     pip_wheel=pip_wheel,
                     runner=runner,
                 )
-                _install_semgrep_runtime(final_release, pip_wheel, runner=runner)
-                node_sha = _install_node_pyright(final_release, workspace, runner=runner)
                 runtime_lock = final_release / RUNTIME_DEPENDENCY_LOCK_NAME
                 shutil.copyfile(source_runtime_lock, runtime_lock)
                 candidate_versions = _verify_python_release(
@@ -1118,12 +975,7 @@ def install_release(
                     source_sha=source_sha,
                     wheel=wheel,
                     wheel_sha=wheel_sha,
-                    source_only_wheels={
-                        dependency.name: _sha256_file(dependency)
-                        for dependency in source_only_wheels
-                    },
                     runtime_dependency_lock=runtime_lock,
-                    node_sha=node_sha,
                     versions=candidate_versions,
                 )
                 _atomic_write(
@@ -1286,13 +1138,8 @@ def verify_release(
         "release_id": current.name,
         "release_path": str(current),
         "receipt_path": receipt.get("_path"),
-        "node": versions["node"],
+        "runtime_profile": manifest.get("runtime_profile", "legacy-qa-bundle"),
         "pip": versions["pip"],
-        "pyright": versions["pyright"],
-        "pyright_integrity": versions["pyright_integrity"],
-        "pyright_lock_sha256": versions["pyright_lock_sha256"],
-        "semgrep": versions["semgrep"],
-        "semgrep_runtime_sha256": versions["semgrep_runtime_sha256"],
         "qpdf": qpdf,
         "ffprobe": ffprobe,
         "tesseract_languages": sorted(languages),
@@ -1413,8 +1260,6 @@ if __name__ == "__main__":
 
 
 __all__ = [
-    "NODE_VERSION",
-    "PYRIGHT_VERSION",
     "LinuxReleaseError",
     "LinuxReleaseLayout",
     "build_parser",

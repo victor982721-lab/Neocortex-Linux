@@ -8,10 +8,6 @@
 from __future__ import annotations
 
 import ast
-import json
-import os
-import subprocess
-import sys
 from dataclasses import fields
 from pathlib import Path
 
@@ -178,33 +174,6 @@ def test_corpus_policy_static_dependencies_follow_one_direction() -> None:
     )
 
 
-def test_live_grimp_graph_has_no_corpus_policy_cycle() -> None:
-    worker = PROJECT_ROOT / "neocortex" / "code" / "external_architecture_worker.py"
-    executable = os.environ.get("NEOCORTEX_ARCHITECTURE_TEST_PYTHON", sys.executable)
-    completed = subprocess.run(
-        [
-            executable,
-            "-I",
-            os.fspath(worker),
-            "grimp",
-            "--root",
-            os.fspath(PROJECT_ROOT),
-        ],
-        cwd=PROJECT_ROOT,
-        check=False,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        timeout=30,
-    )
-
-    assert completed.returncode == 0, completed.stderr or completed.stdout
-    payload = json.loads(completed.stdout)
-    assert payload["status"] == "ready"
-    assert payload["counters"]["contract_violations"] == 0
-    assert payload["counters"]["cyclic_components"] <= 1
-    policy_modules = set(POLICY_MODULES)
-    assert all(policy_modules.isdisjoint(cycle["modules"]) for cycle in payload["cycles"])
 
 
 # endregion [02]

@@ -41,6 +41,7 @@ from neocortex.semantic.semantic_planner import (
     semantic_plan_payload,
 )
 from neocortex.semantic.semantic_service_contracts import SemanticCostCalibration
+from neocortex.semantic.semantic_sources import IMAGE_SOURCE_ADAPTER_VERSION
 from neocortex.semantic.semantic_state import (
     initialize_semantic_state,
     register_embedding_model,
@@ -526,11 +527,11 @@ def test_image_plan_processing_signatures_match_bounded_producer_contracts(
     signatures = {workload.name: workload.processing_signature for workload in plan.workloads}
     assert signatures == {
         "image": (
-            "neocortex-semantic-pipeline-v2|semantic-source-adapters-v3|"
+            f"neocortex-semantic-pipeline-v2|{IMAGE_SOURCE_ADAPTER_VERSION}|"
             "images|enumeration=bounded-v1"
         ),
         "image_ocr": (
-            "neocortex-semantic-pipeline-v2|semantic-source-adapters-v3|"
+            f"neocortex-semantic-pipeline-v2|{IMAGE_SOURCE_ADAPTER_VERSION}|"
             f"image-ocr|{plan.text_chunking_signature}|"
             "tokenizer-contract=unresolved-v1|"
             "quality-policy=semantic-text-quality-v1|enumeration=bounded-v1"

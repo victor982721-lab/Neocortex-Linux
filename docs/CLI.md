@@ -13,9 +13,11 @@ que conviene conocer antes de usar `--help`.
 | Estado publicado | `Neocortex status --scope all` |
 | Buscar evidencia | `Neocortex search "consulta" --scope personal --limit 20` |
 | Preparar contexto citado | `Neocortex ask "consulta" --scope personal --limit 12` |
-| Inspeccionar Code | `Neocortex inspect code "consulta" --scope framework` |
-| Resolver una pregunta Code focal | `Neocortex code question QUESTION_ID --limit 10 --json` |
-| Observar almacenamiento Code | `Neocortex code storage --run-limit 20 --json` |
+| Inspeccionar Code | `Neocortex inspect code "consulta" --scope personal` |
+| Estado del índice Code | `Neocortex --code-status --code-json` |
+| Buscar en Code | `Neocortex --code-search "consulta" --code-search-mode hybrid` |
+| Listar proyectos Code | `Neocortex --code-projects --code-json` |
+| Reconstruir un proyecto Code | `Neocortex --code-reconstruct PROJECT_OR_ID --code-json` |
 | Explicar una derivación | `Neocortex inspect lineage IDENTIFICADOR --scope personal` |
 | Explicar salud causal Text/PDF | `Neocortex knowledge health RESOURCE_ID --scope all --json` |
 | Revisar valor sin cambios | `Neocortex review value --scope personal` |
@@ -106,27 +108,11 @@ Después de aprobar cada ruta y su proyección se acepta una lista separada por
 comas o `--all`. `--all` no se combina con `--route` ni con operaciones
 directas de consulta o diagnóstico.
 
-La corrida `--all` lee primero el receipt exacto de la validación canónica de
-`~/Neocortex/Repository`; nunca produce autoanálisis implícitamente. Un receipt
-ausente u obsoleto se informa y la corrida cotidiana continúa. Para exigirlo en
-un cierre se añade `--require-fresh-self-analysis`; para producir una
-actualización deliberada se añade `--refresh-self-analysis`. Después ejecuta
-las nueve rutas del corpus y, si no hubo errores de acciones u organización,
-avanza Semantic sobre las cachés
-disponibles de PDF, DOCX, XLSX, PPTX, ODT, audio, Archive, texto/correo e
-imágenes. El canal visual sólo se ejecuta cuando existe `image.sqlite3`. Sus
-límites integrados son 100 000 items, 1 000 000 de jobs y 172 800 segundos.
-Una truncación limpia se informa como progreso reanudable y conserva exit `0`;
-errores o estado stale conservan exit `2`. Code sólo participa cuando se
-selecciona expresamente con `--semantic-source code`, porque es una carga de
-análisis distinta y no debe consumir implícitamente el presupuesto documental.
-El conteo real se consulta con `--semantic-status`; la guía no fija cifras
-históricas de vectores o chunks como si fueran estado vigente.
-
-El receipt de autoanálisis y la etapa documental son fronteras independientes.
-Si la raíz del corpus no existe, `--all` conserva la consulta ya realizada,
-informa `ERROR corpus_unavailable: ...` y sale con código `2` sin traceback ni
-creación parcial del estado documental.
+La corrida `--all` ejecuta el flujo documental y no consulta ni produce
+autoanálisis del repositorio. Después avanza Semantic sobre las cachés
+publicadas disponibles, respetando sus límites y su estado real. Si la raíz del
+corpus no existe, informa `ERROR corpus_unavailable: ...` y sale con código `2`
+sin traceback ni creación parcial del estado documental.
 
 ## Modos de ejecución
 
@@ -141,393 +127,30 @@ Neocortex --root $Root --route pdf,docx --MaxCount 25 --docx-max-count 25 --stri
 ```
 
 `InternalPathsPolicy` reserva por ruta e identidad el repositorio, runtime,
-datos de aplicación, laboratorio de autoanálisis y launcher. Una raíz normal
+datos de aplicación y launcher. Una raíz normal
 dentro de esos árboles se rechaza; sus descendientes internos se excluyen del
 inventario. El estado no puede ser igual ni ancestro del corpus. La firma
 efectiva durable combina la firma cruda de exclusión con la firma de rutas
 internas.
 
-### Autoanálisis de código
+### Código como contenido
 
-El preset `--self-analysis` exige raíz y estado explícitos, fuerza exactamente
-la ruta `code` en modo `analyze_only` y rechaza `--all`, `--apply`,
-route-only/resume, selección, catálogo, organización y opciones que no consume.
-Ese rechazo protege la invocación manual combinada. `--all` sólo consume el
-receipt vigente; una actualización exige `--refresh-self-analysis` y conserva
-separadas las raíces y bases.
-Los árboles de raíz y estado deben ser completamente disjuntos:
-
-```powershell
-$Lab = Join-Path $env:LOCALAPPDATA 'Neocortex\self-analysis\fixtures'
-$MiniRoot = Join-Path $Lab 'mini-root'
-$MiniState = Join-Path $Lab 'mini-state'
-Neocortex --self-analysis --root $MiniRoot --state-directory $MiniState
-Neocortex --self-analysis --analysis-profile trusted-static --root $MiniRoot --state-directory $MiniState
-Neocortex --state-directory $MiniState --code-status --code-json
-Neocortex --state-directory $MiniState --code-review
-```
-
-La corrida usa el inventario como entrada directa de code, no crea candidatos
-MIME y sólo completa si candidatos, acciones y organización conservan conteos
-exactos de cero. Su manifest guarda policy/firma, identidades, frescura y los
-argv canónicos `analyze`/`status` como arrays, no como texto de shell.
-`--analysis-profile protected` es el valor predeterminado: Ruff observa los
-Python vigentes publicados por Code con fingerprint exacto y usa la política
-aislada `E4,E7,E9,F`. `trusted-static` conserva ese proveedor y añade doce
-proveedores: Ruff proyecto, Mypy, Pyright, Ruff Analyze, Grimp, Complexipy,
-Vulture, Semgrep, Deptry, pip-audit, inventario del entorno instalado e historial
-Git local. Ruff
-trusted usa `E4,E7,E9,F,B,C4,PIE,RUF` y omite `I,PT,SIM,UP`. Ruff Analyze actúa
-como oráculo diferencial del grafo; Grimp produce imports, fan-in/fan-out, SCC,
-ciclos y contratos; Complexipy produce complejidad cognitiva por símbolo y
-módulo. Semgrep ejecuta tres invariantes locales versionadas con autofix
-deshabilitado; Deptry contrasta imports con `pyproject.toml`; pip-audit captura
-un snapshot fechado de vulnerabilidades de PyPI; el inventario verifica
-versiones, constraints, metadata de licencia y `RECORD` del wheel instalado;
-Git correlaciona historia local por módulo. La suite completa suma 13
-proveedores. No importa módulos del proyecto ni
-aplica fixes, y toda su evidencia es advisory. La única excepción offline es
-pip-audit, que declara el acceso de red de su snapshot; su replay exacto no
-consulta la red. El inventario instalado se recalcula en cada corrida.
-`vulture-unused-static` publica sólo candidatos heurísticos
-`unused_code` y tampoco posee autoridad de fix, borrado o mutación.
-
-`trusted-deep` añade Pytest + Coverage y Cosmic Ray a los 13 proveedores
-estáticos, para un total de 15. Nunca
-es el perfil predeterminado y sólo acepta la identidad física exacta de
-`$HOME\Neocortex\Repository`; cualquier otra raíz se rechaza antes de
-crear un run. Este perfil sí ejecuta código declarado del proyecto, pruebas y
-`conftest.py`, por lo que debe usar estado aislado:
-
-```powershell
-$Root = Join-Path $HOME 'Neocortex\Repository'
-$State = Join-Path $HOME 'Neocortex\Laboratory\self-analysis\trusted-deep'
-Neocortex --self-analysis --analysis-profile trusted-deep --root $Root --state-directory $State
-
-# Selección focal repetible; omitirla significa suite declarada completa.
-Neocortex --self-analysis --analysis-profile trusted-deep --root $Root --state-directory $State `
-  --deep-test-selector tests/test_bounded_subprocess.py `
-  --deep-max-tests 3000 --deep-time-budget-seconds 600 --deep-shard-size 20
-
-# Mutación focal del módulo/símbolo del work package.
-Neocortex --self-analysis --analysis-profile trusted-deep --root $Root --state-directory $State `
-  --deep-test-selector tests/test_external_deep_coverage.py `
-  --deep-mutation-target neocortex/code/external_deep_coverage.py `
-  --deep-mutation-symbol external_deep_coverage._normalize `
-  --deep-mutation-max-mutants 20 --deep-mutation-timeout-seconds 30 `
-  --deep-mutation-time-budget-seconds 600
-```
-
-`--deep-test-selector` acepta sólo una ruta relativa bajo `tests/` o un node id
-de Pytest y puede repetirse. `--deep-max-tests` admite 1–10000 (3000 por defecto),
-`--deep-time-budget-seconds` 30–900 (600) y `--deep-shard-size` 1–250 (20). El
-presupuesto temporal es nominal: tras comprobar al menos un shard terminado o
-reutilizado, el proveedor puede continuar hasta una única cota de 2x. Emite en
-`stderr` eventos `NEOCORTEX_PROGRESS` al recolectar y al iniciar, reutilizar o
-terminar cada shard, con avance, duración y tiempo transcurrido. La
-selección vacía se publica como `full`; una o más selecciones, como `selected`.
-La validación canónica full fija 10000 tests y shards de 250; así falla cerrado
-si la suite excede la cota, pero no la trunca en 5000 ni crea cien shards por
-overhead de arranque.
-El manifest declara `content_executed=true`, la selección y la firma de estos
-controles.
-`--deep-mutation-target` acepta un `.py` relativo a la raíz y exige al menos un
-`--deep-test-selector`; `--deep-mutation-symbol` es opcional y no puede existir
-sin target. Los límites de mutación son 1–100 mutantes (20 por defecto), 1–120
-segundos por mutante (30) y 10–900 segundos totales (600). Estas cinco opciones
-no pueden repetirse. Cosmic Ray modifica únicamente la copia staged, ejecuta
-las pruebas seleccionadas —que pueden usar red— y publica evidencia advisory
-con cero autoridad sobre el repositorio original.
-
-Si USN no está disponible, el preset hace un full scan portable sin checkpoint
-y publica `journal.status=unavailable`; code puede reutilizar caché, pero el
-status no afirma frescura actual. En una corrida normal, el mismo caso publica
-un checkpoint portable de Dedup sin cursor y reporta
-`journal_usn_span=unavailable`; USN sólo acelera la enumeración incremental.
-
-`--code-status --code-json` consulta ese manifest sin crear ni migrar estado.
-Cada propietario exige un snapshot SQLite immutable y una disposición inactiva
-demostrable: sin sidecars, o WAL vacío más SHM exacto de 32 KiB. Un rollback
-journal, WAL no vacío, SHM ausente/malformado o una cerca inestable junto a
-`code.sqlite3`, `framework.sqlite3` o `dedup.sqlite3` causa abstención total con
-código `2` sin tocar el estado.
-La salida añade `analysis_profile` y `external_evidence_suite`: lista cada
-proveedor, versión, ejecución, cobertura, findings, comparabilidad, gate y
-counters; `type_consensus` conserva por separado coincidencias y discrepancias
-Mypy/Pyright. `architecture_analysis` v2 muestra consenso del grafo, módulos,
-imports, SCC, contratos, complejidad y limitaciones. Un proveedor ausente o una
-publicación no comparable queda `not_evaluated`, no `passed`. En review, el
-work package expone `architecture_contracts_not_degraded`,
-`no_new_import_cycles` y `module_complexity_not_displaced`; no son permisos de
-edición. Para `trusted-deep`, `test_coverage` añade selección y completitud,
-resultados de pruebas, totales de líneas/ramas, relaciones test→símbolo, ejemplos
-faltantes, versiones, firmas y limitaciones. Coverage usa contextos dinámicos
-por node id y fase Pytest; mide sólo el proceso principal, no subprocesses.
-`engineering_analytics` v1 correlaciona por módulo complejidad, cobertura,
-mutación, historia y grafo sin emitir score agregado ni probabilidad de defecto;
-expone gates de baseline, completitud y score de mutación.
-
-En `trusted-static` y `trusted-deep`, `unused_analysis` correlaciona Vulture con
-Pyright, grafo, imports, reexports, `__all__`, callbacks, registries, fixtures,
-entry points, Protocols y Coverage disponible. Cada candidato queda exactamente
-en `explained_usage`, `dynamic_usage_possible`, `insufficient_evidence` o
-`probable_unused_high_consensus`. La salida `CODE_UNUSED` y su JSON incluyen
-conteos, ejemplos acotados, firmas, precision/recall/abstención de calibración y
-holdout, gates y limitaciones. Ausencia de cualquiera de los dos proveedores
-estáticos causa abstención del consenso; Coverage puede explicar uso observado,
-pero su ausencia nunca prueba que un símbolo no se use.
-
-La proyección `supply_chain` separa `dependency_hygiene`,
-`known_vulnerability`, `package_integrity` y `license_inventory`; no las reduce
-a un score. Publica seis gates: invariantes Semgrep, declaración de
-dependencias, frescura del snapshot, ausencia de vulnerabilidades conocidas,
-integridad del paquete e inventario de licencias. Un gate fallido conserva sus
-findings y relaciones explicables, pero nunca autoriza una modificación. Status,
-review y work packages consumen la misma evidencia; la ausencia o caducidad de
-un proveedor obliga a abstener sólo la dimensión afectada.
-
-`--code-review` consume esa publicación sin volver a analizar la raíz. El
-envelope `neocortex.code-review/v22` no declara compatibilidad con schemas
-anteriores. Usa `neocortex.code-analysis-epistemics/v1`, una proyección general
-de preguntas con fingerprint de spec y evidencia resuelta contra IDs de
-registros Code. Publica observaciones estructurales confirmadas y separa hipótesis,
-readiness de pregunta, evidencia faltante, contraevidencia, siguiente acción y
-readiness de decisión. Los hotspots quedan `experiment_required`, con
-`construction=unknown`, `change_risk=unknown`, cero recomendaciones y cero
-packages de cambio. La resolución prueba procedencia y concordancia del
-diagnóstico; no prueba daño, cohesión ni necesidad de refactor.
-
-La familia `neocortex.code-class-surface/v1` observa clases Python actuales y
-sus miembros AST directos confirmados. La selección `span >= 500` o
-`direct_methods >= 20` es deliberadamente un filtro provisional de atención.
-No deduce rol, ownership, cohesión, consumidores ni riesgo desde el nombre o la
-ruta; una clase de pruebas, un `Protocol` o un composition root siguen visibles
-como controles negativos y quedan `experiment_required`. El límite solicitado
-se aplica por familia de pregunta.
-
-v22 conserva `neocortex.code-interface-surface/v1`: observa módulos seleccionados
-por span/superficie directa, estructura de configuraciones JSON/TOML y llamadas
-estáticas `argparse`. No expone valores de configuración, no ejecuta módulos y
-no presenta option strings sintácticos como reachability o comportamiento del
-comando público. Formatos text-only o no soportados permanecen explícitamente
-incompletos.
-
-La proyección general incluye además preguntas sobre el grafo estático
-Ruff/Grimp y los contratos de imports versionados. Un contrato `failed` se
-conserva como observación, pero no crea automáticamente un patch. El primer
-segmento del módulo continúa siendo sólo `path_namespace_id`. El registry v1 de
-logical owners declara selectores exactos para `text`, `semantic`, `knowledge`,
-`review`, `retention` y `framework`; es parcial, publica unmapped/overlap y no
-asigna un owner por defecto. Su pregunta queda lista para caracterización, no
-para una decisión de cambio.
-
-Cuando `--code-review` consume el estado canónico protegido, v22 también publica
-`neocortex.code-state-projection/v1`. La observación compara revisiones Text
-elegibles (`complete`, revisión presente, blob presente y `text_chars > 0`) con
-miembros del head Semantic de texto publicado. Las lecturas usan `immutable=1`,
-exigen WAL vacío/sidecars inactivos y verifican fences antes/después. En un
-estado de fixture o una ruta no canónica esta dimensión se abstiene con
-`document_state_not_configured_for_noncanonical_code_review`; no busca ni crea
-otro estado por convención de ruta.
-
-También publica `neocortex.code-retention-analysis/v1`: observa un plan dry-run
-acotado sobre los cuatro owners de Retention, preserva holds faltantes, stores
-bloqueados y cursores como gaps, y exige reproducibilidad antes/después. No
-expone una orden de borrado ni convierte un fixture aprobado en autoridad de
-mutación.
-
-El output incluye además `CODE_STATE_TOPOLOGY`, `CODE_RETENTION_ANALYSIS`,
-`CODE_CHANGE_EVOLUTION`,
-`CODE_ASSURANCE`, `CODE_CAPABILITY_REACHABILITY`,
-`CODE_ANALYZER_EFFECTIVENESS` y `CODE_INTERFACE_SURFACE`. Las preguntas de
-seguridad y dependencias se alimentan del mismo `supply_chain`; un proveedor no
-registrado o stale permanece faltante. La proyección de autoeficacia compara el
-snapshot publicado contra archivos Git visibles por digest y no publica
-precision/recall ni decision rate sin etiquetas independientes.
-
-v22 conserva `CODE_STATE_INTERACTIONS`, `CODE_INVARIANT_ASSURANCE`,
-`CODE_ROUTE_CAPABILITIES`, `CODE_ANALYZER_CALIBRATION` y
-`CODE_EXPERIMENT_PLAN`. SQL literal se parsea con el dialecto SQLite y se liga a
-store/workflow sólo por contratos explícitos. Los placeholders SQLite `?NNN`
-se normalizan de forma token-aware únicamente para el parser. El assurance de invariantes sólo
-acepta outcomes de todos los nodeids exactos registrados para cada escenario;
-un selector parametrizado se expande y debe quedar cubierto por completo.
-`passed` es evidencia del escenario, no prueba universal. La calibración conserva
-las 40 etiquetas existentes como
-`provisional_not_human_validated` y no calcula precision/recall con ellas.
-
-El review imprime hasta 20 `CODE_EXPERIMENT_PROPOSAL` ejecutables. Para ejecutar
-uno de forma explícita:
-
-```text
-Neocortex --state-directory STATE --code-experiment-run PROPOSAL_ID --code-json
-```
-
-El ID debe pertenecer al plan reconstruido en esa misma invocación. El runner
-allow-listed usa trusted-deep, presupuesto acotado y manifest exacto; si cambia
-fuente, proposal, provider o base Code, falla cerrado. Hoy sólo son ejecutables
-`architecture.declared_import_contract_acceptance` (tres nodeids y cuatro
-gates), `capability.public_route_acceptance` (un nodeid),
-`state.runtime_sql_trace` (cuatro nodeids),
-`state.semantic_process_death_recovery` (un nodeid con tres gates),
-`evolution.code_schema_upgrade_matrix` (cinco nodeids con cuatro gates),
-`retention.durable_hold_safety` (catorce nodeids exactos y cuatro gates),
-`security.bounded_boundary_scenarios` (diez nodeids y siete gates),
-`framework.review_task_protocol_acceptance` (ocho nodeids y cinco gates),
-`interfaces.public_cli_contract_acceptance` v3 (veintiséis nodeids y cinco gates) y
-`knowledge.asset_health_causal_acceptance` (doce nodeids y cuatro gates) y
-`knowledge.pdf_asset_health_causal_acceptance` (doce nodeids y cuatro gates,
-distribuidos 5/3/3/1). Los registries runtime/template son v11. El registry
-general contiene otros
-escenarios de assurance/calibración, pero no por ello son ejecutables desde esta
-opción. El escenario arquitectónico verifica sólo los contratos de imports
-declarados, el grafo vivo y controles negativos seleccionados; no observa
-dispatch dinámico ni prueba que el diseño completo sea el correcto.
-El escenario ReviewTask usa un Framework SQLite temporal y recorre
-`show → claim → retry → decide → retry → history` por la CLI pública. Comprueba
-CAS, replay y rollback acotados, pero el actor es sintético/no autenticado y las
-excepciones inyectadas no demuestran muerte de proceso ni pérdida de energía.
-El escenario CLI v3 comprueba ayuda/traducción, precedencia de dispatch,
-rechazos acotados y las lecturas focales de pregunta/storage; no ejecuta cada
-handler, GUI, servidor MCP, worker ni efecto externo. Knowledge Asset Health usa
-fixtures Text y PDF en `tmp_path` y verifica alineación, mismatch, ausencia,
-publicación, identidad, páginas/staging/errores/FTS, recovery estructural y
-cambio de snapshot. El binding PDF exige nueve relaciones de contraevidencia y
-doce para el resultado completo; no inspecciona contenido/OCR, no prueba
-fidelidad visual o semántica, otros owners ni power loss.
-
-Pytest corre directamente sobre la raíz canónica confiable. El temporal fuera
-del repo aloja runtime y checkpoints: no es una copia de la fuente ni un sandbox;
-el provider declara `uses_network=true` y conserva el `HOME` canónico. Antes y
-después se recalcula la firma de los inputs Python publicados y del soporte Git
-observado; una diferencia falla cerrado. El digest before/after cerca además
-`code.sqlite3` durante la ejecución. No hay lock continuo del checkout y el
-corpus y otros owners quedan fuera. La ejecución explícita agrega por escenario
-el receipt medido `neocortex.code-experiment-receipt/v3` únicamente después de
-outcomes terminales y gates tipados para todos sus nodeids. La validación
-canónica no reejecuta esos nodeids: deriva receipts v4 de las relaciones
-Coverage exactas y los liga a la publicación, suite, scope y digest del
-subconjunto con cero procesos propios.
-
-Al terminar, el comando **sí escribe** una evidencia acotada: inserta el receipt
-en la tabla append-only de Code schema v7 y, con `--code-json`, devuelve el
-envelope `neocortex.code-experiment-store/v1` que contiene ese receipt. Por eso
-`code_database_unchanged=true` no significa que la invocación completa sea
-read-only. El review v22 posterior evalúa el terminal más nuevo del proposal y
-la processing signature vigentes; puede reutilizar un `passed` de un run Code
-completado previo cuando el vigente es un replay exacto con la misma firma. Un
-terminal posterior `failed` o `abstained`, o uno stale, corrupto o sin binding,
-permanece auditable pero no satisface evidencia. El envelope digest liga todo el
-contexto durable. El enlace no suplanta a un actor humano. El verificador
-técnico allow-listed v6 de v22 puede publicar
-`no_change_required_within_verified_scope` tras volver a comprobar contrato,
-gates y controles negativos exactos; la disposición es advisory, conserva
-riesgos residuales y no autoriza un patch. Preguntas completas sin una política
-exacta quedan `unresolved`.
-
-`python-maintenance-work-packages-v5` puede entregar, de forma independiente,
-hasta tres paquetes
-`unused_characterization` únicamente cuando pasan los gates de precisión de
-calibración y holdout. Todos sus pasos son de caracterización, exigen revisión
-dinámica y confirmación humana, y declaran `mutation_authority=false`. La
-proyección Coverage demuestra ejecución por una suite passing y líneas/ramas no
-observadas; no demuestra que un test proteja un invariante. `--code-review-limit N
---code-json` permite inspeccionar entre 1 y 50 observaciones por familia. No
-admite `--apply`,
-`--route` ni otra operación directa.
-
-#### Lectura focal de una pregunta y almacenamiento Code
-
-La consulta focal vigente evita construir el review completo para una sola
-pregunta registrada:
+La ruta Code descubre proyectos, reconoce lenguajes, guarda símbolos,
+dependencias y versiones, y permite buscar y relacionar el código indexado. Las
+operaciones públicas son:
 
 ```bash
-Neocortex code question \
-  structure.static_cli_calls_require_runtime_contract_evidence \
-  --limit 10 --json
+Neocortex --code-status --code-json
+Neocortex --code-search "dónde se valida SQLite" --code-search-mode hybrid
+Neocortex --code-projects --code-json
+Neocortex --code-reconstruct PROJECT_OR_ID --code-json
 ```
 
-`--limit` admite `1..50`. v22 registra únicamente esa pregunta CLI y la resuelve
-desde `neocortex.code-interface-surface/v1`, con último run completado, frescura
-y cercas antes/después. La respuesta usa
-`neocortex.code-question-resolution/v1`; `ready` devuelve `0`. Una identidad no
-registrada devuelve `unsupported`, código `2` y un fallback declarativo con
-`automatic=false`: no ejecuta por su cuenta `code query review`, no materializa
-el review global y no adivina lectores por prefijo o lenguaje natural. Ambos
-comandos Code usan por defecto el estado de autoanálisis personal; la opción
-explícita `--state-directory DIRECTORY` sólo debe apuntar a otra publicación
-Code ya existente.
-
-La observabilidad física del owner Code se consulta por separado:
-
-```bash
-Neocortex code storage --run-limit 20 --row-scan-limit 250000 \
-  --retain-runs 5 --json
-```
-
-Los límites son `run-limit=1..50`, `row-scan-limit=1..1000000` y
-`retain-runs=1..run-limit`; si se omite el último, usa
-`min(5, run-limit)`. El envelope `neocortex.code-storage-analysis/v1` abre sólo
-el `code.sqlite3` publicado mediante el lector immutable, cerca el archivo y
-expone páginas, freelist, tablas, providers, una ventana de runs, conteos
-acotados y un delta de filas externas sólo cuando es comparable. Alcanzar el
-límite convierte el conteo en cota inferior. La retención es siempre
-`preview_only`: no borra, poda, hace `VACUUM`/checkpoint ni elimina sidecars, y
-no afirma qué filas serían seguras de retirar.
-
-`--code-publication-diff BASELINE_STATE` compara ese baseline con el owner Code
-de `--state-directory`. Es estrictamente read-only y falla cerrado si falta un
-run completado, el schema no coincide o los sidecars no demuestran la disposición
-inactiva admitida (ninguno, o WAL vacío más SHM de 32 KiB). El
-envelope `neocortex.code-publication-diff/v10`, sin declarar compatibilidad
-estructural con wires anteriores, informa
-calls comunes y exclusivas, resoluciones nuevas/corregidas/perdidas, cambios de hotspots y el
-delta meramente descriptivo de `probable_dead`. También compara por separado
-los proveedores cuyas firmas coinciden, informa findings añadidos/resueltos,
-gate y veredicto agregado; los restantes quedan `not_evaluated` con su
-limitación. En Mypy/Pyright clasifica como `relocated` únicamente el mismo
-finding semántico en la misma ruta con otro rango, publica ejemplos con ambas
-posiciones y no lo convierte en regresión. Cuando la arquitectura es comparable añade deltas por módulo,
-imports, SCC/ciclos, contratos y complejidad desplazada. También compara líneas
-y ramas de Coverage cuando suite, alcance de medición, configuración y versiones
-son equivalentes; en cualquier otro caso publica `not_evaluated`. Nunca aplica
-cambios. `unused_analysis` compara candidatos añadidos/retirados, cambios entre
-los cuatro estados y consenso alto añadido/resuelto sólo cuando coinciden
-proveedores, policy, calibración y holdout. Su gate falla ante consenso alto
-nuevo, pero sigue siendo observacional y jamás autoriza borrar o modificar.
-`supply_chain` compara por proveedor, categoría, gate, observación y relación;
-si el baseline no contiene los cuatro proveedores nuevos o difieren versiones,
-frescura o firmas, publica la dimensión como `not_evaluated` o baseline/current
-sin inventar mejora o regresión. `engineering_analytics` compara sus cinco
-dimensiones y sólo calcula delta de mutation score con alcance comparable.
-El contrato, la puerta incremental de tres evidencias y el mini-root permitido
-se detallan en [SELF_ANALYSIS.md](SELF_ANALYSIS.md).
-
-#### Consulta multidimensional de publicaciones Code
-
-`--code-query {status,review,diff}` consulta las mismas publicaciones mediante
-una interfaz acotada, sin ejecutar otra vez el autoanálisis y sin crear, migrar,
-hacer checkpoint ni escribir sus bases:
-
-```powershell
-Neocortex --state-directory $State --code-query status
-Neocortex --state-directory $State --code-query review `
-  --code-query-provider $Provider --code-query-category $Category `
-  --code-query-module $Module --code-query-status $Status `
-  --code-query-work-package $WorkPackage --code-query-limit 100 --code-json
-Neocortex --state-directory $CurrentState --code-query diff `
-  --code-query-baseline $BaselineState --code-query-delta added --code-json
-```
-
-Cada filtro puede repetirse: valores de la misma dimensión se unen con OR y
-dimensiones diferentes con AND. `module` coincide con el módulo exacto y sus
-descendientes; los demás filtros son valores exactos publicados. El límite
-predeterminado es 50 y el rango válido es 1–500. Baseline es obligatorio para
-`diff` y se rechaza con `status` o `review`. Sin `--code-json`, la salida humana
-usa `CODE_QUERY`, `CODE_QUERY_FILTERS`, `CODE_QUERY_MATCH` y
-`CODE_QUERY_LIMITATION`; JSON conserva el envelope completo. Ambas vistas son
-advisory: fijan `aggregate_score` y `defect_probability` explícitamente en
-`null`, no estiman ninguno de los dos y no autorizan cambios.
+Code no audita el repositorio de NeoCortex, no ejecuta review interno,
+experimentos ni proveedores externos, y no produce receipts de calidad. Las
+herramientas de desarrollo (`pytest`, Ruff, Pyright/Mypy, Semgrep u otras) se
+ejecutan directamente cuando el cambio las necesita, fuera del runtime y sin
+un comando agregador.
 
 ### Ruta sobre un snapshot retenido
 
@@ -558,10 +181,9 @@ Neocortex --root $Root --state-directory $State --resume-run 40
 
 Sin `--candidate-run`, code examina el owner durable más reciente de la raíz
 exacta y exige que sea `normal`; si no coincide, falla sin retroceder a un run
-histórico aunque éste tenga filas MIME. Cero candidatos se acepta únicamente si todas las rutas seleccionadas
-declaran `input_source=inventory_snapshot`; cualquier ruta MIME o combinación
-mixta falla antes de crear o ejecutar el run. El preset `--self-analysis` sigue
-rechazando route-only/resume.
+histórico aunque éste tenga filas MIME. Cero candidatos se acepta únicamente si
+todas las rutas seleccionadas declaran `input_source=inventory_snapshot`;
+cualquier ruta MIME o combinación mixta falla antes de crear o ejecutar el run.
 
 La corrida fuente debe conservar un snapshot de enrutamiento publicado: scan
 completo, candidatos durables cuando la ruta los consume y raíz con la misma
@@ -596,7 +218,8 @@ lifecycle mediante la API compartida.
 ### Consulta humana y agentes locales
 
 Los subcomandos humanos son una fachada sobre las APIs publicadas; no sustituyen
-las rutas productoras ni retiran los flags históricos:
+las rutas productoras. Las superficies retiradas de autoanálisis y QA sólo
+permanecen en documentos históricos:
 
 ```bash
 Neocortex status --scope personal
@@ -729,11 +352,9 @@ Neocortex --audio-doctor
 Neocortex --video-doctor
 Neocortex --video-status
 Neocortex --code-status
-Neocortex --code-review
-Neocortex code question structure.static_cli_calls_require_runtime_contract_evidence --json
-Neocortex code storage --run-limit 20 --json
-Neocortex knowledge health resource:file:1:2:-1 --scope framework --json
-Neocortex --code-doctor
+Neocortex --code-search "consulta" --code-search-mode hybrid --code-json
+Neocortex --code-projects --code-json
+Neocortex knowledge health resource:file:1:2:-1 --scope all --json
 Neocortex --semantic-status
 Neocortex --action-recovery-status --action-recovery-limit 100
 Neocortex --retention-status
@@ -745,230 +366,21 @@ eso no convierte el diagnóstico en una operación de reparación.
 modelos; los diagnósticos profundos siguen siendo específicos de PDF/OCR,
 audio, código y estado semántico.
 
-## Validación canónica de cambios de código
+## Verificación del desarrollo (fuera del producto)
 
-```bash
-Neocortex code validate
-Neocortex code validate --baseline HEAD^ --json
-```
+NeoCortex no ofrece un comando agregador para validar su propio código. Durante
+el desarrollo se usan directamente las herramientas que correspondan:
 
-Esta es la única entrada de aceptación local para una implementación nueva. El
-primer comando valida el árbol de trabajo contra `HEAD`; el segundo valida un
-commit ya creado contra su padre. Las opciones acotadas son `--max-tests N`
-(1–5000; 5000 por defecto) y `--time-budget-seconds N` (30–900; 900 por
-defecto). El máximo configurable gobierna la selección afectada; una frontera
-full fija 10000 tests y shards de 250 para cubrir la suite sin cien arranques.
-El presupuesto es nominal; el proveedor profundo puede usar una sola
-extensión acotada a 2x únicamente después de progreso de shard validado. La
-validación retransmite en `stderr` la salida y los eventos del proceso hijo,
-además de un heartbeat cada 30 segundos; `--json` conserva exclusivamente el
-recibo final en `stdout`.
+- `pytest` para regresiones y pruebas de integración;
+- Ruff y Pyright/Mypy para errores estáticos y de tipos;
+- Semgrep sólo para invariantes que no estén expresadas por una prueba directa;
+- comprobaciones acotadas de imports o ciclos cuando cambie la arquitectura;
+- una verificación de release y launcher sólo cuando el alcance incluya
+  empaquetado o instalación.
 
-El proceso padre no ejecuta los gates directamente: hace preflight de memoria,
-swap y PSI, conserva una reserva adaptativa para el escritorio y reejecuta la
-validación completa en un servicio de usuario systemd/cgroup v2. El grupo tiene
-límites de memoria, swap, CPU, tareas y una cota de seguridad de 75 minutos; un watchdog lo detiene si
-`MemAvailable` cae por debajo de la reserva. La falta de headroom o contención
-produce código 2, nunca una corrida sin límites. Sólo puede existir una
-validación canónica a la vez. `PrivateNetwork=yes` aísla por kernel el árbol
-completo, por lo que ningún provider puede producir egress durante este gate.
-
-El resultado `neocortex.code-change-validation/v3` enlaza el snapshot Git, la
-selección de pruebas, cada gate, los experimentos allow-listed ejecutados, el
-smoke del wheel candidato instalado fuera del checkout y el replay exacto del
-perfil `trusted-deep`, además de la admisión
-`neocortex.code-validation-resources/v3`. El worker verifica en el kernel su
-cgroup exacto, consulta en systemd el `PrivateNetwork=yes` y demuestra que la
-restricción `AF_UNIX` rechaza sockets AF_INET/AF_INET6; un payload de entorno no
-basta.
-El gate enlaza además el diff con preguntas de aceptación versionadas: una
-pregunta relevante sin runner o disposición técnica produce `abstained`, y
-`not_required` exige evidencia explícita de que el diff no la afecta. `passed`
-devuelve 0; `failed` o `abstained` devuelven 2.
-El recibo nunca concede autoridad de mutación, push o release.
-La política diff-aware vigente es v6 y exige las disposiciones técnicas v6 de
-Text/PDF Health cuando el cambio cruza sus contratos, readers o controles.
-
-Los conteos históricos `added/resolved` de cada provider se publican como
-observaciones advisory. No son una comparación contra `--baseline`: sus
-identidades portables incluyen coordenadas y su baseline comparable puede ser
-anterior. El gate estático versionado por path/regla/conteo es quien bloquea
-regresiones Ruff/Mypy/Pyright antes de consumir el review.
-
-La validación canónica no abre red. Sólo puede reutilizar como evidencia un
-audit `pip-audit` ya publicado y aún fresco, con cero findings, enlazado a un
-inventario instalado exactamente idéntico y cuando el diff no cruza
-packaging/política supply. La resolución queda identificada en el recibo; sin
-esas condiciones el resultado se abstiene.
-El inventario instalado no finge un cache hit: se captura dos veces y el gate
-exige igualdad del digest semántico completo después de retirar únicamente los
-campos del reloj de observación.
-
-Sin opciones de selección, `doctor capabilities [--json]` conserva exactamente
-el reporte agregado schema 1 de `RuntimeCapabilitySpec`, incluido su orden y
-semántica de salida. El broker por trabajo es opt-in y en este corte sólo admite
-`text.extract`:
-
-```bash
-Neocortex doctor capabilities --select text.extract \
-  --mime-type text/plain --input-bytes 4096
-Neocortex doctor capabilities --select text.extract \
-  --mime-type application/msword --input-bytes 120000 --json
-```
-
-`--mime-type` debe ser un MIME exacto y `--input-bytes` un entero no negativo;
-ambos son obligatorios con `--select`. La solicitud fija además modalidad
-documental, schemas Text y plataforma viva; admite `environment_bound` o
-`non_replayable` según el manifest elegido. Sólo los MIME del provider builtin
-exige `incremental=true`; para DOC/XLS/PPT la solicitud no impone
-incrementalidad, porque su manifest declara `incremental=false`. La política
-`neocortex-text-local-v1` prohíbe red, sólo admite privacidad `local_only` y no
-presupone GPU.
-
-La salida humana nombra implementación, provider/versión, razones de selección
-y evaluación de cada candidato. Con `--json` emite un documento canónico schema
-`neocortex.capability-selection/v1` con request, política, candidato elegido o
-`null`, readiness, rechazos/preferencias y fingerprints de request, política,
-manifest y selección. `status=selected` devuelve `0`; una abstención explicable
-`status=unavailable` devuelve `2`; un error fatal del probe devuelve `1`. La
-consulta no abre ni crea estado, no carga providers/engines/modelos y no descarga
-modelos.
-
-La selección productiva se ejecuta también por cada candidato de la ruta Text.
-Texto/EML usa `neocortex.text.builtin` sin depender de LibreOffice; DOC/XLS/PPT
-heredado sólo elige `neocortex.text.legacy-office-worker` si existe
-`soffice`/`libreoffice` o el backend exacto del MIME. La salida muestra la
-identidad SHA-256 del ejecutable fijado. El worker no cambia de backend si éste
-falla. El builtin es `environment_bound` y cacheable; el worker Office v2 se
-declara `best_effort`/`non_replayable` e `incremental=false` porque la identidad
-sólo atesta el launcher, no todos los engines, librerías o descendientes que
-pueda invocar. Text vuelve a ejecutar siempre un candidato Office heredado y no
-reutiliza ni su resultado ni su fallo previos, incluso con la misma firma. El
-tradeoff operativo es explícito: Office sigue seleccionable, pero esta vertical
-no promete procesar sólo archivos legacy cambiados. En ausencia de un provider
-elegible, confirma un receipt de fallo y no publica materializaciones parciales.
-
-**PLANNED — no disponible mediante `--select`.** PDF, DOCX, la ruta Office,
-Semantic y plugins/providers externos todavía no consumen este broker. Una
-solicitud distinta de `text.extract` se rechaza durante validación.
-
-`doctor platform` tampoco crea estado. Su esquema versionado informa sistema,
-rutas, backend de inventario, identidad, contención, elevación y mutación. En
-Linux debe indicar `portable-full-scan`, `posix-st_dev-st_ino`, contención por
-sesión/grupo/rlimit, elevación no requerida y mutación intencionalmente no
-disponible; esto no vuelve incompatible a la plataforma.
-
-`models status` sólo inspecciona cachés locales y metadata instalada. La
-adquisición es una operación distinta y explícita:
-
-```bash
-Neocortex models prepare
-Neocortex models prepare --json
-```
-
-Prepara secuencialmente Jina, MiniLM compacto, CLIP texto, CLIP visión y
-Whisper `small` CPU/int8, y valida NudeNet. Conserva descargas parciales
-reanudables si no puede completar el conjunto.
-
-`--code-doctor --code-json` proyecta además
-`external_evidence_providers` para `ruff-protected-basic`,
-`ruff-trusted-project`, `mypy-trusted-project` y
-`pyright-trusted-project`, `vulture-unused-static`, `ruff-analyze-imports`,
-`grimp-architecture`, `complexipy-cognitive`, `semgrep-neocortex-invariants`,
-`deptry-project-dependencies`, `pip-audit-known-vulnerabilities` e
-`installed-package-inventory`, `git-history-local`, además de
-`pytest-coverage-trusted-deep` y `cosmic-ray-focal-mutation`, con disponibilidad,
-versión y autoridad advisory.
-La ausencia de un proveedor trusted degrada ese perfil; no sustituye ni invalida
-por sí sola al proveedor protected.
-
-También son consultas directas las búsquedas y vistas persistidas, por ejemplo:
-
-```powershell
-Neocortex --pdf-search 'transformador AND mantenimiento'
-Neocortex --docx-search 'transformador AND mantenimiento'
-Neocortex --office-search 'transformador AND mantenimiento'
-Neocortex --audio-search 'transformador AND mantenimiento'
-Neocortex --video-search 'placa del transformador' --video-search-limit 20
-Neocortex --archive-search 'transformador AND mantenimiento'
-Neocortex --knowledge-search 'transformador mantenimiento' --knowledge-limit 20
-Neocortex --code-search 'sqlite3' --code-search-mode import --code-language python
-Neocortex --semantic-search 'transformador mantenimiento' --semantic-search-mode all
-Neocortex --catalog-preview 100
-Neocortex --organization-preview 100 --organization-preview-status planned
-Neocortex --review-candidates 100
-Neocortex --review-decisions 100
-Neocortex --review-evidence-list 100 --review-json
-```
-
-Estas consultas leen las bases existentes. No crean evidencia que todavía no
-haya sido materializada y pueden terminar con `2` cuando el estado requerido no
-está disponible. La búsqueda semántica usa modelos ya preparados en modo local;
-no autoriza una descarga implícita. Ejecute primero `--semantic-status`:
-`--semantic-search` sólo lee embeddings y modelos publicados. Cero heads o cero
-embeddings significa que esa señal está indisponible, no que Semantic haya sido
-entregado.
-El contrato exacto Jina/body mixto aplica un piso de recuperación `0.42` a
-Archive, audio, Code, DOCX, imagen OCR, ODT, PDF, PPTX, texto y XLSX; el canal de
-título pasa por la misma barrera. Las exclusiones aparecen como
-`calibrated_abstentions`. Es un filtro de vecinos de baja evidencia, no
-confianza ni probabilidad. Antes de persistir embeddings, la política
-`semantic-text-quality-v1` omite Base64/binario codificado, volcados densos de
-fórmulas, mojibake, tokens desmedidos y repetición mecánica, y colapsa chunks
-idénticos del mismo item. Las cachés de extracción completas no se borran. Si
-un vector fue reutilizado por contenido exacto, el contrato se toma de su
-`payload_provenance`; valores contradictorios no reciben el piso.
-
-La búsqueda lexical conserva la intersección estricta como primera estrategia.
-Sólo ante cero hits elimina stopwords ES/EN/DE y permite un fallback acotado;
-las consultas Han de al menos dos caracteres activan, después de fallar FTS,
-substring exacto sobre un máximo de 50 000 filas por fuente. La procedencia
-declara `sqlite_bounded_cjk_substring` y no se compara como si fuera un score
-vectorial.
-
-La recuperación CLIP requiere un contrato de calibración positivo/negativo
-ligado a firma de modelo, pipeline y backend. Sin él devuelve cero hits,
-`scanned=0` y no carga el backend. La evaluación humana actual no produjo un
-umbral escalar robusto, por lo que la CLI no suministra uno por defecto.
-
-Code integra el canal Semantic mediante enlaces persistidos exactos, no por una
-coincidencia posterior de rutas:
-
-```powershell
-Neocortex --semantic-index text --semantic-source code
-Neocortex --code-search 'dónde se enlazan chunks con la generación publicada' --code-search-mode hybrid
-Neocortex --code-search 'validación de la versión vigente' --code-search-mode semantic --code-json
-```
-
-La indexación publica primero el head Semantic y luego sincroniza un enlace por
-chunk vigente de Code, con modelo, espacio y generación. Su salida añade
-`SEMANTIC_CODE_LINKS`; `--code-status --code-json` informa enlaces
-`active/current/stale`. La búsqueda emite `CODE_SEARCH_CHANNEL` o el objeto JSON
-`code-search-channel`. El modo `semantic` devuelve `2` cuando ese canal no puede
-demostrar head, cobertura y modelo local; `hybrid` continúa con las señales
-léxicas o estructurales. `--semantic-model-cache` y `--semantic-threads` también
-se admiten con una búsqueda Code `semantic`/`hybrid`; el override de cache es
-para laboratorios o instalaciones no canónicas y nunca descarga modelos.
-
-Los hits semánticos sólo se materializan cuando el enlace activo coincide con la
-versión actual, item Semantic, firma de modelo, espacio vectorial y generación
-publicada. Su `raw_score` permanece como similitud no calibrada y autoridad
-`retrieval_evidence_only`; no es confianza de clasificación ni permiso para
-renombrar, mover o eliminar.
-
-En modo `text`, la salida separa los rankings `semantic_text` y
-`semantic_title`. El primero busca contenido con peso RRF `1.0`; el segundo usa
-con peso `0.5` el título durable de la fuente, un encabezado humano acotado si
-el basename es genérico o, como último recurso, el basename sin directorios ni
-extensión. Ambos declaran peso, base y procedencia, comparten una sola
-vectorización de consulta, aplican la misma abstención y conservan de
-preferencia el snippet corporal. La diversidad retiene un recurso por documento
-en discovery y hasta dos evidencias en evidence. El título es advisory: no
-participa en clasificación ni evidencia materializada. Knowledge `evidence` lo
-excluye; Knowledge `discovery` puede reforzar sólo un recurso y revisión ya
-sustentados por cuerpo, nunca crear una cita. Un head anterior a esta política
-mantiene la búsqueda corporal y declara `title_channel_not_indexed` hasta ser
-republicado de forma acotada.
+Los resultados son diagnósticos del trabajo de desarrollo. No crean estado Code,
+no se guardan como evidencia productiva y no sustituyen la revisión humana de
+un cambio.
 
 ### Indexación Semantic acotada
 
@@ -1317,7 +729,7 @@ y compruebe siempre el código de salida.
 |---:|---|
 | `0` | Ayuda/versión o ejecución/consulta completada según su contrato. |
 | `1` | Excepción fatal no normalizada o fallo interno del worker de GUI. No es el código de una validación ordinaria de argumentos. |
-| `2` | Error de argumentos detectado por `argparse` o por la validación posterior, como una combinación incompatible o una solicitud Linux de `--apply`/`--organization-apply`; abstención explicable de `doctor capabilities --select`; estado requerido ausente o incompatible; diagnóstico fallido —incluida abstención total de `--code-status`/`--code-review` ante sidecars, cerca inestable o publicación no elegible—; generación Semantic incompleta, truncada o no publicada; error de acciones u organización; conciliación con efecto ambiguo/imposible —incluso si su evento fue registrado—; plan de retención bloqueado; o, con `--strict-exit-codes`, errores/parciales retenidos por una ruta. El watcher también devuelve `2` si conserva corridas fallidas o errores de fuente. |
+| `2` | Error de argumentos detectado por `argparse` o por la validación posterior, como una combinación incompatible o una solicitud Linux de `--apply`/`--organization-apply`; abstención explicable de `doctor capabilities --select`; estado requerido ausente o incompatible; diagnóstico fallido —incluida abstención de una búsqueda Code semántica sin publicación elegible—; generación Semantic incompleta, truncada o no publicada; error de acciones u organización; conciliación con efecto ambiguo/imposible —incluso si su evento fue registrado—; plan de retención bloqueado; o, con `--strict-exit-codes`, errores/parciales retenidos por una ruta. El watcher también devuelve `2` si conserva corridas fallidas o errores de fuente. |
 | `3` | Knowledge terminó con snapshot estable y cobertura completa, pero search/context no obtuvo evidencia; Archive search/list también lo usa cuando no hay miembros coincidentes; `inspect lineage` no encontró el identificador. |
 | `4` | Knowledge produjo una respuesta parcial o no soportada; incluye propietarios necesarios ausentes. `inspect lineage` encontró evidencia incompleta, legacy o truncada. `review value` también lo usa para una cola parcial o `stale`. |
 | `5` | El snapshot Knowledge volvió a cambiar durante el único reintento global acotado, o el refresh ReviewTask observó un cambio antes de publicar. |

@@ -842,6 +842,8 @@ def test_image_fingerprint_is_stable_when_dedup_cache_appears(
     assert len(streamed) == len(cached) == 1
     assert streamed[0].item.item_id == cached[0].item.item_id == f"item:image:{file_key}"
     assert streamed[0].item.fingerprint == cached[0].item.fingerprint
+    assert "adult_classification" not in streamed[0].item.provenance
+    assert "adult_classification" not in cached[0].item.provenance
     assert streamed[0].item.source_revision["raw_content_xxh3_128"] == digest.hex()
     assert cached[0].item.source_revision["raw_content_xxh3_128"] == digest.hex()
     assert streamed[0].item.source_revision["processing_signature"] == ("image-route-fixture-v1")

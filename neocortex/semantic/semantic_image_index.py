@@ -46,9 +46,9 @@ from .semantic_service_contracts import (
     SemanticIndexResult,
 )
 from .semantic_sources import (
+    IMAGE_SOURCE_ADAPTER_VERSION,
     IMAGE_SOURCE_KIND,
     SEMANTIC_SOURCE_HEAD_PROTOCOL,
-    SOURCE_ADAPTER_VERSION,
     ImageSourceRecord,
     semantic_source_heads,
 )
@@ -225,7 +225,7 @@ def _start_image_generations(
         database,
         model_signature=image_model.model_signature,
         processing_signature=(
-            f"{SEMANTIC_PIPELINE_VERSION}|{SOURCE_ADAPTER_VERSION}|images|"
+            f"{SEMANTIC_PIPELINE_VERSION}|{IMAGE_SOURCE_ADAPTER_VERSION}|images|"
             f"enumeration=bounded-v1|source-head={SEMANTIC_SOURCE_HEAD_PROTOCOL}"
         ),
         provenance=image_provenance,
@@ -237,7 +237,7 @@ def _start_image_generations(
         database,
         model_signature=text_model.model_signature,
         processing_signature=(
-            f"{SEMANTIC_PIPELINE_VERSION}|{SOURCE_ADAPTER_VERSION}|image-ocr|"
+            f"{SEMANTIC_PIPELINE_VERSION}|{IMAGE_SOURCE_ADAPTER_VERSION}|image-ocr|"
             f"{chunking.signature}|quality-policy={SEMANTIC_TEXT_QUALITY_POLICY}|"
             f"enumeration=bounded-v1|source-head={SEMANTIC_SOURCE_HEAD_PROTOCOL}"
         ),

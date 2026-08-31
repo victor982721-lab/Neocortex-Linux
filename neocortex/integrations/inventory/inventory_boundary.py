@@ -93,7 +93,6 @@ _RESTRICTED_CODEX_FILE_SUFFIXES = (
 )
 _AUTHORIZED_INTERNAL_STATE_ROLES: tuple[InternalPathRole, ...] = (
     "application_data",
-    "self_analysis",
 )
 _FORBIDDEN_INTERNAL_STATE_ROLES: tuple[InternalPathRole, ...] = (
     "repository",
@@ -228,10 +227,10 @@ def validate_authorized_state_path(
 ) -> Path:
     """Fail closed unless state and its explicit write targets are authorized.
 
-    Canonical application-data and self-analysis trees may sit below a broader
-    protected container (the user profile AppData tree in the default policy).
-    That exception never covers a protected child, a protected file, or a
-    matching protected file identity inside the authorized internal tree.
+    Canonical application-data may sit below a broader protected container (the
+    user profile AppData tree in the default policy). That exception never
+    covers a protected child, a protected file, or a matching protected file
+    identity inside the authorized internal tree.
     """
 
     internal_paths_policy.verify_identities()
@@ -472,7 +471,7 @@ def initialize_authorized_state_directory(
         access_policy.verify_root_identity()
         raise ValueError("framework root/state boundary cannot be verified") from exc
     if require_disjoint and intersects:
-        raise ValueError("self-analysis root and state directory must be disjoint")
+        raise ValueError("corpus root and state directory must be disjoint")
     if not requested.exists():
         if intersects and not allowed_transition_roles:
             raise ValueError("framework cannot create a state directory inside the corpus root")

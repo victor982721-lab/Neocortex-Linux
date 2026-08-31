@@ -217,14 +217,6 @@ def _print_image_report(result) -> None:
         f"classified={image.classified} document_candidates={image.document_candidates} "
         f"industrial_context_candidates={image.industrial_context_candidates} "
         f"photo_candidates={image.photo_candidates} errors={image.errors} "
-        f"adult_candidates={image.adult_heuristic_candidates} "
-        f"adult_analyzed={image.adult_analyzed} "
-        f"adult_explicit={image.adult_explicit} "
-        f"adult_ambiguous={image.adult_ambiguous} "
-        f"adult_unavailable={image.adult_unavailable} "
-        f"adult_recycled={image.adult_recycled} "
-        f"adult_recycle_failed={image.adult_recycle_failed} "
-        f"adult_recycle_protected={image.adult_recycle_protected} "
         f"document_ocr_attempts={image.document_ocr_attempts} "
         f"document_ocr_positive={image.document_ocr_positive} "
         f"document_ocr_failures={image.document_ocr_failures} "
@@ -391,14 +383,7 @@ def _print_code_report(result) -> None:
         f"code_cache_lookup_ms={summary.cache_lookup_milliseconds} "
         f"code_cache_update_ms={summary.cache_update_milliseconds} "
         f"code_cache_commit_ms={summary.cache_commit_milliseconds} "
-        f"code_graph_ms={summary.graph_milliseconds} "
-        f"code_external_runs={summary.external_tool_runs} "
-        f"code_external_diagnostics={summary.external_diagnostics} "
-        f"code_external_added={summary.external_added_diagnostics} "
-        f"code_external_resolved={summary.external_resolved_diagnostics} "
-        f"code_external_cache_hits={summary.external_cache_hits} "
-        f"code_external_errors={summary.external_errors} "
-        f"code_external_ms={summary.external_milliseconds}"
+        f"code_graph_ms={summary.graph_milliseconds}"
     )
 
 
@@ -430,20 +415,6 @@ def _print_duplicate_groups(result, limit: int) -> None:
 
 
 def print_reports(result, args: argparse.Namespace) -> None:
-    if hasattr(result, "inventory_policy_signature"):
-        _print_inventory_report(result)
-        print(
-            f"mode=self-analysis corpus_access=analyze_only "
-            f"inventory_mode={result.inventory_mode} "
-            f"inventory_attempts={result.inventory_attempts} "
-            f"reconciliation_records={result.reconciliation_records} "
-            f"inventory_policy_signature={result.inventory_policy_signature} "
-            f"route_candidates={result.route_candidate_count} "
-            f"corpus_actions={result.corpus_action_count}"
-        )
-        _print_code_report(result)
-        _print_global_resource_report(result)
-        return
     if hasattr(result, "source_run_id"):
         print(f"run_id={result.run_id} mode=route-only source_run_id={result.source_run_id}")
         _print_pdf_report(result)
@@ -498,8 +469,6 @@ def _route_issue_count(summary: object) -> int:
         "partial",
         "document_timeouts",
         "catalog_errors",
-        "adult_unavailable",
-        "external_errors",
         "safety_issues",
     )
     return sum(int(getattr(summary, field, 0) or 0) for field in fields)
@@ -847,8 +816,6 @@ STRICT_ROUTE_ERROR_FIELDS = (
     "partial",
     "document_timeouts",
     "catalog_errors",
-    "adult_unavailable",
-    "external_errors",
 )
 
 

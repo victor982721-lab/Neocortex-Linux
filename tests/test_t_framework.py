@@ -26,8 +26,6 @@ from PIL import Image
 from neocortex.enumeration import JournalCursor
 from neocortex.deduplication import DedupIndex
 from neocortex.api.public import FrameworkConfig, FrameworkOrchestrator, RouteAdapter
-from neocortex.api.cli.cli_reporting import _print_image_report
-from neocortex.capabilities.formats.image.route import ImageRouteSummary
 from neocortex.integrations.inventory.reconcile import reconcile_usn_window
 from neocortex.runtime.orchestration.orchestrator import RouteExecutionError
 from neocortex.documents.document_organization import (
@@ -173,34 +171,15 @@ class CommandLineTests(unittest.TestCase):
             (),
             {"route_results": {"docx": {"cached_errors": 2}}},
         )()
-        adult_unavailable = type(
+        route_error = type(
             "Result",
             (),
-            {"route_results": {"image": {"adult_unavailable": 1}}},
-        )()
-        external = type(
-            "Result",
-            (),
-            {"route_results": {"code": {"external_errors": 1}}},
+            {"route_results": {"code": {"errors": 1}}},
         )()
         self.assertFalse(_has_strict_route_errors(clean))
         self.assertTrue(_has_strict_route_errors(partial))
         self.assertTrue(_has_strict_route_errors(cached))
-        self.assertTrue(_has_strict_route_errors(adult_unavailable))
-        self.assertTrue(_has_strict_route_errors(external))
-
-    def test_image_report_exposes_adult_model_unavailability(self) -> None:
-        result = type(
-            "Result",
-            (),
-            {"image": ImageRouteSummary(adult_unavailable=3)},
-        )()
-        output = io.StringIO()
-
-        with patch("sys.stdout", new=output):
-            _print_image_report(result)
-
-        self.assertIn("adult_unavailable=3", output.getvalue())
+        self.assertTrue(_has_strict_route_errors(route_error))
 
     def test_defaults_to_platform_corpus_and_unlimited_pdf_controls(self) -> None:
         args = _parser().parse_args([])
@@ -311,8 +290,8 @@ class ProgressTests(unittest.TestCase):
             progress(
                 ProgressEvent(
                     "code",
-                    "trusted-deep-coverage",
-                    "Coverage trusted-deep",
+                    "analysis",
+                    "Code analysis",
                     3,
                     5,
                     "shards",
@@ -323,7 +302,7 @@ class ProgressTests(unittest.TestCase):
         rendered = output.getvalue()
         self.assertTrue(rendered.startswith("NEOCORTEX_PROGRESS "))
         self.assertIn('"completed":3', rendered)
-        self.assertIn('"phase":"trusted-deep-coverage"', rendered)
+        self.assertIn('"phase":"analysis"', rendered)
         self.assertIn('"status":"shard_completed"', rendered)
 
     def test_line_reporter_coalesces_noise_but_never_hides_terminal_progress(self) -> None:

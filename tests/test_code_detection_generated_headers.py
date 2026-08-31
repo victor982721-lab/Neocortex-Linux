@@ -7,14 +7,14 @@ from pathlib import Path
 
 import pytest
 
-import neocortex.code.code_detection as code_detection
+import neocortex.code.ingestion.code_detection as code_detection
 import neocortex.code.code_route as code_route_module
 from neocortex.deduplication import FileSnapshot
 from neocortex.code.code_contracts import (
     ArtifactKind,
     CodeRouteConfig,
 )
-from neocortex.code.code_detection import (
+from neocortex.code.ingestion.code_detection import (
     DETECTOR_VERSION,
     classify_artifact,
 )

@@ -49,7 +49,6 @@ def test_pdf_consumers_use_the_product_namespace() -> None:
         "neocortex/api/public.py",
         "neocortex/runtime/config/application_config_projections.py",
         "neocortex/api/cli/cli_direct.py",
-        "neocortex/code/code_knowledge_pdf_asset_health_analysis.py",
         "neocortex/knowledge/knowledge_asset_health_pdf.py",
         "neocortex/knowledge/knowledge_asset_health_repository.py",
         "neocortex/knowledge/knowledge_snapshot.py",

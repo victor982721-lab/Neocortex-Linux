@@ -295,12 +295,6 @@ CAPABILITY_SPEC_PAYLOADS: Final = (
         "canonical_module_tree": "neocortex.capabilities.formats.image",
         "modules": [
             {
-                "role": "adult",
-                "canonical_module_id": "neocortex.capabilities.formats.image.adult",
-                "public_symbols": [],
-                "warning_policy": "silent",
-            },
-            {
                 "role": "analysis",
                 "canonical_module_id": "neocortex.capabilities.formats.image.analysis",
                 "public_symbols": [],
@@ -422,7 +416,7 @@ CAPABILITY_SPEC_PAYLOADS: Final = (
             "state_store_id": "sqlite:image.sqlite3",
             "database_name": "image.sqlite3",
             "knowledge_path_attribute": "image",
-            "expected_schema_version": 5,
+            "expected_schema_version": 6,
             "knowledge_read_kind": "images",
             "knowledge_capture_mode": "configured",
             "state_module_id": "neocortex.capabilities.formats.image.state",
@@ -435,7 +429,6 @@ CAPABILITY_SPEC_PAYLOADS: Final = (
         },
         "test_roots": [
             "tests/test_capability_registry.py",
-            "tests/test_image_adult.py",
             "tests/test_image_analysis.py",
             "tests/test_image_classifier_memory.py",
             "tests/test_image_document.py",

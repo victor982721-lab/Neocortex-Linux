@@ -52,9 +52,6 @@ if TYPE_CHECKING:
 class FrameworkConfig:
     root: Path = field(default_factory=default_corpus_root)
     state_directory: Path = field(default_factory=default_state_directory)
-    self_analysis: bool = False
-    analysis_profile: Literal["protected", "trusted-static", "trusted-deep"] = "protected"
-    corpus_access_mode: Literal["normal", "analyze_only"] = "normal"
     apply_actions: bool = False
     preview_group_limit: int = 0
     dedup_policy: Literal["fast", "exact"] = "fast"
@@ -226,15 +223,6 @@ class FrameworkConfig:
     pdf_memory_wait_timeout_seconds: float = 60.0
     pdf_large_document_bytes: int = 128 * 1024 * 1024
     pdf_large_document_workers: int = 2
-    deep_test_selectors: tuple[str, ...] = ()
-    deep_max_tests: int = 3000
-    deep_time_budget_seconds: int = 600
-    deep_shard_size: int = 20
-    deep_mutation_target: str | None = None
-    deep_mutation_symbol: str | None = None
-    deep_mutation_max_mutants: int = 20
-    deep_mutation_timeout_seconds: int = 30
-    deep_mutation_time_budget_seconds: int = 600
     image_document_ocr_profile: OcrProfileName = "configured"
     pdf_ocr_profile: OcrProfileName = "configured"
 
@@ -311,31 +299,6 @@ class InitialRunResult:
     global_resources: GlobalResourceSummary | None = None
     organization_plan: OrganizationPlanSummary | None = None
     organization_apply: OrganizationApplySummary | None = None
-
-    @property
-    def journal_usn_span(self) -> int | None:
-        if self.journal_before is None or self.journal_after is None:
-            return None
-        return self.journal_after.next_usn - self.journal_before.next_usn
-
-
-@dataclass(frozen=True, slots=True)
-class SelfAnalysisRunResult:
-    """Results of protected code analysis without a corpus-action phase."""
-
-    run_id: int
-    scan: ScanSummary
-    journal_before: JournalCursor | None
-    journal_after: JournalCursor | None
-    reconciliation_records: int
-    inventory_attempts: int
-    inventory_mode: Literal["full", "incremental"]
-    inventory_policy_signature: str
-    code: CodeRouteSummary
-    route_results: dict[str, object] = field(default_factory=dict)
-    global_resources: GlobalResourceSummary | None = None
-    corpus_action_count: int = 0
-    route_candidate_count: int = 0
 
     @property
     def journal_usn_span(self) -> int | None:

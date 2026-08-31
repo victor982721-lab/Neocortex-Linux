@@ -258,7 +258,7 @@ class CapabilityStateContract:
 
 @dataclass(frozen=True, slots=True)
 class CapabilityLogicalOwnerBinding:
-    """Data-only projection consumed by ``logical_owner_contracts``."""
+    """Data-only projection of a capability's product ownership."""
 
     owner_id: str
     selector_id: str

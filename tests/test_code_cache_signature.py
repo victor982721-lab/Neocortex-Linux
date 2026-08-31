@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from neocortex.code.code_analyzers import AnalyzerRegistry, AnalyzerSpec
+from neocortex.code.ingestion.code_analyzers import AnalyzerRegistry, AnalyzerSpec
 from neocortex.code.code_contracts import CodeRouteConfig
 # endregion [01]
 

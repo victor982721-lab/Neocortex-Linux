@@ -22,7 +22,7 @@ from neocortex.runtime.control.cancellation import (
     CancellationRequested,
     CancellationToken,
 )
-from neocortex.code.code_analyzers import AnalyzerRegistry, AnalyzerSpec
+from neocortex.code.ingestion.code_analyzers import AnalyzerRegistry, AnalyzerSpec
 from neocortex.code.code_contracts import (
     AnalysisStatus,
     ArtifactKind,
@@ -31,9 +31,9 @@ from neocortex.code.code_contracts import (
     CodeRouteConfig,
     CodeSearchQuery,
 )
-from neocortex.code.code_detection import classify_artifact, decode_text
-from neocortex.code.code_generic import GenericAnalyzer
-from neocortex.code.code_projects import list_projects, reconstruct_project
+from neocortex.code.ingestion.code_detection import classify_artifact, decode_text
+from neocortex.code.ingestion.code_generic import GenericAnalyzer
+from neocortex.code.ingestion.code_projects import list_projects, reconstruct_project
 from neocortex.code.code_route import CodeRoute
 from neocortex.code.code_schema import (
     CODE_SCHEMA_VERSION,
@@ -43,7 +43,7 @@ from neocortex.code.code_schema import (
     initialize_code_state,
     remove_checkpointed_code_sidecars,
 )
-from neocortex.code.code_search import search_code
+from neocortex.code.search.code_search import search_code
 from neocortex.code.code_state import (
     CODE_GRAPH_RESOLVER_SIGNATURE,
     CodeState,
@@ -417,11 +417,6 @@ def test_route_preserves_analysis_graph_publication_lifecycle(
         _observed_call(events, "state:finalize_graph", CodeState.finalize_graph),
     )
     monkeypatch.setattr(
-        CodeRoute,
-        "_external_evidence",
-        _observed_call(events, "external_evidence", CodeRoute._external_evidence),
-    )
-    monkeypatch.setattr(
         CodeState,
         "complete_run",
         _observed_call(events, "state:complete_run", CodeState.complete_run),
@@ -462,7 +457,6 @@ def test_route_preserves_analysis_graph_publication_lifecycle(
         "framework:begin:graph",
         "state:mark_missing",
         "state:finalize_graph",
-        "external_evidence",
         "state:complete_run",
         "framework:complete:graph",
         "checkpoint_wal",
@@ -1396,7 +1390,7 @@ def test_newly_available_analyzer_invalidates_runtime_fallback_cache(
 ) -> None:
     source = tmp_path / "worker.py"
     source.write_text("def runtime_upgrade():\n    return 1\n", encoding="utf-8")
-    module_name = "neocortex.code._fixture_optional_code_analyzer"
+    module_name = "neocortex.code.ingestion._fixture_optional_code_analyzer"
     sys.modules.pop(module_name, None)
     specs = (
         AnalyzerSpec(
@@ -1484,7 +1478,7 @@ def test_cached_incomplete_status_counters_match_first_publication(
         encoding="utf-8",
     )
     failing.write_text("pub fn failing() {}\n", encoding="utf-8")
-    module_name = "neocortex.code._fixture_failing_code_analyzer"
+    module_name = "neocortex.code.ingestion._fixture_failing_code_analyzer"
 
     class FixtureFailingAnalyzer:
         analyzer_id = "fixture-failing-rust"

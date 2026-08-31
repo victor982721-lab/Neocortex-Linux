@@ -8,8 +8,8 @@ recursive-exclude docs TECHNICAL_AUDIT_*.md
 recursive-exclude docs TECHNICAL_EVOLUTION_*.md
 include neocortex/deduplication/README.md
 include neocortex/enumeration/README.md
-include neocortex/code/semgrep_rules/*.yml
 include docs/ARCHITECTURE.md
+include docs/CODE_SUBSYSTEM_CLASSIFICATION.md
 include docs/AUDIT_REPORTING_STANDARD.md
 include docs/CHANGELOG.md
 include docs/CLI.md
@@ -23,9 +23,4 @@ include docs/SELF_ANALYSIS.md
 include docs/SECURITY.md
 include docs/THIRD_PARTY_LICENSE_INVENTORY.md
 include tools/__init__.py
-include tools/build_binary_inputs.py
-include tools/pyright_runtime.py
-include tools/pyright_runtime_lock/package-lock.json
-include tools/pyright_runtime_lock/package.json
-include tools/source_only_requirements.txt
 recursive-include tools release_*.py

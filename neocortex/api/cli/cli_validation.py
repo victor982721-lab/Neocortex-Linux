@@ -3,7 +3,6 @@
 from __future__ import annotations
 import argparse
 import math
-from pathlib import Path
 
 from neocortex.platform.policy import LINUX_MUTATION_REASON, linux_mutation_requested
 
@@ -32,15 +31,6 @@ from .cli_video_surface import (
     validate_video_arguments,
     validate_video_direct_operation,
 )
-from neocortex.code.code_contracts import (
-    DEFAULT_DEEP_MUTATION_MAX_MUTANTS,
-    DEFAULT_DEEP_MUTATION_TIME_BUDGET_SECONDS,
-    DEFAULT_DEEP_MUTATION_TIMEOUT_SECONDS,
-    normalize_deep_mutation_symbol,
-    normalize_deep_mutation_target,
-    normalize_deep_test_selectors,
-)
-from neocortex.safety.corpus_access import path_trees_intersect
 from neocortex.safety.ocr_profiles import parse_language_spec
 from neocortex.runtime.orchestration.route_selection import (
     BUILTIN_ROUTE_ORDER,
@@ -63,284 +53,6 @@ ALL_PRESET = {
     "semantic_time_budget_seconds": 172_800.0,
 }
 
-_SELF_ANALYSIS_UNUSED_PREFIXES = (
-    "archive_",
-    "audio_",
-    "docx_",
-    "image_",
-    "office_",
-    "pdf_",
-    "text_",
-    "video_",
-    "retry_audio_",
-    "retry_archive_",
-    "retry_docx_",
-    "retry_image_",
-    "retry_office_",
-    "retry_pdf_",
-    "retry_text_",
-    "retry_video_",
-    "semantic_",
-    "whisper_",
-)
-_SELF_ANALYSIS_UNUSED_OPTIONS = frozenset(
-    {
-        "dedup_policy",
-        "document_taxonomy",
-        "failed_pages_only",
-        "ffprobe_path",
-        "max_ocr_pages",
-        "max_pdf_pages",
-        "ocr",
-        "ocr_lang",
-        "ocr_profile",
-        "ocr_timeout",
-        "ocr_workers",
-        "organization_min_confidence",
-        "organization_root",
-        "select_error_type",
-        "select_path",
-        "select_recommendation",
-        "select_status",
-        "show_groups",
-        "tessdata_dir",
-        "tesseract_cmd",
-    }
-)
-_TRUSTED_DEEP_OPTIONS = frozenset(
-    {
-        "deep_test_selectors",
-        "deep_max_tests",
-        "deep_time_budget_seconds",
-        "deep_shard_size",
-        "deep_mutation_target",
-        "deep_mutation_symbol",
-        "deep_mutation_max_mutants",
-        "deep_mutation_timeout_seconds",
-        "deep_mutation_time_budget_seconds",
-    }
-)
-_DEEP_MUTATION_OPTIONS = frozenset(
-    {
-        "deep_mutation_target",
-        "deep_mutation_symbol",
-        "deep_mutation_max_mutants",
-        "deep_mutation_timeout_seconds",
-        "deep_mutation_time_budget_seconds",
-    }
-)
-
-
-def trusted_deep_expected_root(home: Path | None = None) -> Path:
-    """Return the sole project root permitted to execute trusted content."""
-
-    base = Path.home() if home is None else Path(home)
-    return base / "Neocortex" / "Repository"
-
-
-def _is_exact_trusted_deep_root(root: Path) -> bool:
-    """Compare physical root identity without any configurable bypass."""
-
-    expected = trusted_deep_expected_root()
-    resolved_root = root.resolve(strict=True)
-    resolved_expected = expected.resolve(strict=True)
-    return resolved_root == resolved_expected and resolved_root.samefile(resolved_expected)
-
-
-def _validate_self_analysis_mode(
-    args: argparse.Namespace,
-    explicit_deep: list[str],
-) -> bool:
-    if args.self_analysis:
-        if args.analysis_profile != "trusted-deep" and explicit_deep:
-            option = "--" + explicit_deep[0].replace("_", "-")
-            raise SystemExit(f"{option} requires --analysis-profile trusted-deep")
-        return True
-    if "analysis_profile" in getattr(args, "_explicit_options", ()):
-        raise SystemExit("--analysis-profile requires --self-analysis")
-    if explicit_deep:
-        option = "--" + explicit_deep[0].replace("_", "-")
-        raise SystemExit(f"{option} requires --self-analysis --analysis-profile trusted-deep")
-    return False
-
-
-def _reject_duplicate_self_analysis_mutations(args: argparse.Namespace) -> None:
-    explicit_counts = getattr(args, "_explicit_option_counts", {})
-    duplicated_mutation_options = sorted(
-        name for name in _DEEP_MUTATION_OPTIONS if explicit_counts.get(name, 0) > 1
-    )
-    if duplicated_mutation_options:
-        option = "--" + duplicated_mutation_options[0].replace("_", "-")
-        raise SystemExit(f"{option} cannot be repeated")
-
-
-def _normalize_self_analysis_deep_controls(args: argparse.Namespace) -> None:
-    try:
-        args.deep_test_selectors = normalize_deep_test_selectors(args.deep_test_selectors)
-    except ValueError as exc:
-        raise SystemExit(f"invalid --deep-test-selector: {exc}") from exc
-    if not 1 <= args.deep_max_tests <= 10_000:
-        raise SystemExit("--deep-max-tests must be between 1 and 10000")
-    if not 30 <= args.deep_time_budget_seconds <= 900:
-        raise SystemExit("--deep-time-budget-seconds must be between 30 and 900")
-    if not 1 <= args.deep_shard_size <= 250:
-        raise SystemExit("--deep-shard-size must be between 1 and 250")
-    try:
-        args.deep_mutation_target = normalize_deep_mutation_target(args.deep_mutation_target)
-    except ValueError as exc:
-        raise SystemExit(f"invalid --deep-mutation-target: {exc}") from exc
-    try:
-        args.deep_mutation_symbol = normalize_deep_mutation_symbol(args.deep_mutation_symbol)
-    except ValueError as exc:
-        raise SystemExit(f"invalid --deep-mutation-symbol: {exc}") from exc
-
-
-def _validate_self_analysis_deep_limits(args: argparse.Namespace) -> None:
-    if not 1 <= args.deep_mutation_max_mutants <= 100:
-        raise SystemExit("--deep-mutation-max-mutants must be between 1 and 100")
-    if not 1 <= args.deep_mutation_timeout_seconds <= 120:
-        raise SystemExit("--deep-mutation-timeout-seconds must be between 1 and 120")
-    if not 10 <= args.deep_mutation_time_budget_seconds <= 900:
-        raise SystemExit("--deep-mutation-time-budget-seconds must be between 10 and 900")
-
-
-def _validate_self_analysis_mutation_dependencies(
-    args: argparse.Namespace,
-    explicit: set[str],
-) -> None:
-    explicit_mutation = explicit & _DEEP_MUTATION_OPTIONS
-    if args.deep_mutation_symbol is not None and args.deep_mutation_target is None:
-        raise SystemExit("--deep-mutation-symbol requires --deep-mutation-target")
-    if args.deep_mutation_target is None and explicit_mutation:
-        option = "--" + sorted(explicit_mutation)[0].replace("_", "-")
-        raise SystemExit(f"{option} requires --deep-mutation-target")
-    if args.deep_mutation_target is not None and not args.deep_test_selectors:
-        raise SystemExit("--deep-mutation-target requires explicit --deep-test-selector")
-    if args.deep_mutation_target is None and (
-        args.deep_mutation_max_mutants != DEFAULT_DEEP_MUTATION_MAX_MUTANTS
-        or args.deep_mutation_timeout_seconds != DEFAULT_DEEP_MUTATION_TIMEOUT_SECONDS
-        or args.deep_mutation_time_budget_seconds != DEFAULT_DEEP_MUTATION_TIME_BUDGET_SECONDS
-    ):
-        raise SystemExit("deep mutation limits require --deep-mutation-target")
-
-
-def _validate_self_analysis_deep_controls(
-    args: argparse.Namespace,
-    explicit: set[str],
-) -> None:
-    _reject_duplicate_self_analysis_mutations(args)
-    _normalize_self_analysis_deep_controls(args)
-    if not 1 <= args.deep_max_tests <= 10_000:
-        raise SystemExit("--deep-max-tests must be between 1 and 10000")
-    if not 30 <= args.deep_time_budget_seconds <= 900:
-        raise SystemExit("--deep-time-budget-seconds must be between 30 and 900")
-    if not 1 <= args.deep_shard_size <= 250:
-        raise SystemExit("--deep-shard-size must be between 1 and 250")
-    _validate_self_analysis_deep_limits(args)
-    _validate_self_analysis_mutation_dependencies(args, explicit)
-
-
-def _validate_self_analysis_required_scope(
-    args: argparse.Namespace,
-    explicit: set[str],
-) -> None:
-    if "root" not in explicit:
-        raise SystemExit("--self-analysis requires explicit --root")
-    if "state_directory" not in explicit:
-        raise SystemExit("--self-analysis requires explicit --state-directory")
-    if args.all:
-        raise SystemExit("--self-analysis cannot be combined with --all")
-    if args.apply:
-        raise SystemExit("--self-analysis cannot be combined with --apply")
-    if args.route_only or args.candidate_run is not None or args.resume_run is not None:
-        raise SystemExit("--self-analysis cannot be combined with route-only or resume controls")
-    if selected_direct_operations(args):
-        raise SystemExit("--self-analysis cannot be combined with direct operations")
-
-
-def _validate_self_analysis_route(
-    args: argparse.Namespace,
-    explicit: set[str],
-) -> None:
-    if "route" in explicit:
-        try:
-            requested_routes = normalize_route_selection(args.route, BUILTIN_ROUTE_ORDER)
-        except ValueError as exc:
-            raise SystemExit(str(exc)) from exc
-        if requested_routes != ("code",):
-            raise SystemExit("--self-analysis permits only --route code")
-
-
-def _validate_self_analysis_unused_options(
-    args: argparse.Namespace,
-    explicit: set[str],
-) -> None:
-    unused = sorted(
-        name
-        for name in explicit
-        if name in _SELF_ANALYSIS_UNUSED_OPTIONS or name.startswith(_SELF_ANALYSIS_UNUSED_PREFIXES)
-    )
-    if unused:
-        option = "--" + unused[0].replace("_", "-")
-        raise SystemExit(f"{option} is not consumed by --self-analysis")
-    if "code_include_generated" in explicit and args.code_include_generated:
-        raise SystemExit("--self-analysis rejects --code-generated")
-    if "code_include_vendored" in explicit and args.code_include_vendored:
-        raise SystemExit("--self-analysis rejects --code-vendored")
-    if "code_candidate_scope" in explicit and args.code_candidate_scope != "projects":
-        raise SystemExit("--self-analysis rejects --code-scope broad")
-
-
-def _validate_self_analysis_paths(args: argparse.Namespace) -> None:
-    from neocortex.deduplication import InventoryError
-    from neocortex.deduplication.inventory.index import validate_inventory_root
-
-    try:
-        args.root = validate_inventory_root(args.root)
-    except (InventoryError, OSError, RuntimeError, ValueError) as exc:
-        raise SystemExit(f"invalid --self-analysis root: {exc}") from exc
-    if args.analysis_profile == "trusted-deep":
-        try:
-            exact_trusted_root = _is_exact_trusted_deep_root(args.root)
-        except (OSError, RuntimeError, ValueError) as exc:
-            raise SystemExit(
-                "trusted-deep requires the exact canonical root; "
-                "canonical root identity cannot be verified: "
-                f"{type(exc).__name__}: {exc}"
-            ) from exc
-        if not exact_trusted_root:
-            raise SystemExit(
-                f"trusted-deep requires the exact canonical root {trusted_deep_expected_root()}"
-            )
-    try:
-        intersects = path_trees_intersect(args.root, args.state_directory)
-    except (OSError, ValueError) as exc:
-        raise SystemExit(
-            f"--self-analysis root/state boundary cannot be verified: {type(exc).__name__}: {exc}"
-        ) from exc
-    if intersects:
-        raise SystemExit("--self-analysis root and state directory must be disjoint")
-
-
-def apply_self_analysis_preset(args: argparse.Namespace) -> None:
-    """Expand the protected code-only preset and reject unused controls."""
-
-    explicit = set(getattr(args, "_explicit_options", ()))
-    explicit_deep = sorted(explicit & _TRUSTED_DEEP_OPTIONS)
-    if not _validate_self_analysis_mode(args, explicit_deep):
-        return
-    _validate_self_analysis_deep_controls(args, explicit)
-    _validate_self_analysis_required_scope(args, explicit)
-    _validate_self_analysis_route(args, explicit)
-    _validate_self_analysis_unused_options(args, explicit)
-    _validate_self_analysis_paths(args)
-    args.route = "code"
-    args.no_document_catalog = True
-    args.code_candidate_scope = "projects"
-    args.code_include_generated = False
-    args.code_include_vendored = False
-
-
 def apply_all_preset(args: argparse.Namespace) -> None:
     """Expand --all without overwriting explicit user options."""
 
@@ -356,10 +68,6 @@ def apply_all_preset(args: argparse.Namespace) -> None:
         if name not in explicit:
             setattr(args, name, value)
 
-
-def _validate_all_self_analysis_controls(args: argparse.Namespace) -> None:
-    if (args.refresh_self_analysis or args.require_fresh_self_analysis) and not args.all:
-        raise SystemExit("--refresh-self-analysis and --require-fresh-self-analysis require --all")
 
 
 # endregion [01]
@@ -913,9 +621,7 @@ def _validate_route_only(args: argparse.Namespace) -> None:
 
 
 def validate_arguments(args: argparse.Namespace) -> None:
-    apply_self_analysis_preset(args)
     apply_all_preset(args)
-    _validate_all_self_analysis_controls(args)
     if args.show_groups < 0:
         raise SystemExit("--show-groups cannot be negative")
     try:

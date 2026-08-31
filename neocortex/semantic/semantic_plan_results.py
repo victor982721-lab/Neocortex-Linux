@@ -48,6 +48,7 @@ from .semantic_service_contracts import (
     SemanticWorkloadPlan,
 )
 from .semantic_sources import (
+    IMAGE_SOURCE_ADAPTER_VERSION,
     IMAGE_SOURCE_KIND,
     SEMANTIC_TEXT_ENUMERATION_PROTOCOL,
     SOURCE_ADAPTER_VERSION,
@@ -300,7 +301,7 @@ def _plan_images(
     snapshot_hasher.update(
         canonical_json(
             {
-                "adapter": SOURCE_ADAPTER_VERSION,
+                "adapter": IMAGE_SOURCE_ADAPTER_VERSION,
                 "dedup_schema": dedup_schema_snapshot_xxh3_128,
                 "schema": schema_snapshot_xxh3_128,
                 "source_kind": IMAGE_SOURCE_KIND,
@@ -382,7 +383,7 @@ def _plan_images(
             section_kind="image_ocr",
             section_id="ocr",
             text=ocr_text,
-            provenance={"adapter": SOURCE_ADAPTER_VERSION},
+            provenance={"adapter": IMAGE_SOURCE_ADAPTER_VERSION},
         )
         item_id = _sources._item_id(IMAGE_SOURCE_KIND, str(row["file_key"]))
         for chunk in iter_semantic_text_chunks(item_id, (section,), chunking):
@@ -513,7 +514,7 @@ def _build_workload_specs(
                 clip_image_model(),
                 EmbeddingRole.IMAGE,
                 (
-                    f"{SEMANTIC_PIPELINE_VERSION}|{SOURCE_ADAPTER_VERSION}|images|"
+                    f"{SEMANTIC_PIPELINE_VERSION}|{IMAGE_SOURCE_ADAPTER_VERSION}|images|"
                     f"enumeration={SEMANTIC_TEXT_ENUMERATION_PROTOCOL}"
                 ),
             )
@@ -528,7 +529,7 @@ def _build_workload_specs(
                     selected_text_model,
                     EmbeddingRole.PASSAGE,
                     (
-                        f"{SEMANTIC_PIPELINE_VERSION}|{SOURCE_ADAPTER_VERSION}|"
+                        f"{SEMANTIC_PIPELINE_VERSION}|{IMAGE_SOURCE_ADAPTER_VERSION}|"
                         f"image-ocr|{planning_chunking_signature}|"
                         f"quality-policy={SEMANTIC_TEXT_QUALITY_POLICY}|"
                         f"enumeration={SEMANTIC_TEXT_ENUMERATION_PROTOCOL}"

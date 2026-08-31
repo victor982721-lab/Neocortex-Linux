@@ -114,7 +114,6 @@ def _image_worker(task_channel, result_channel) -> None:
                 memory_gate=None,
                 features=features,
                 document_verifier=document_verifier,
-                analyze_adult=False,
             )
         except BaseException as exc:
             failure = refine_image_failure(

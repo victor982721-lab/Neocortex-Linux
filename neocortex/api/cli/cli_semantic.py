@@ -461,7 +461,7 @@ def _current_semantic_code_link_status(
 ) -> tuple[int, str, int, int] | None:
     if "code" not in result.sources or not result.complete:
         return None
-    from neocortex.code.code_semantic_links import current_code_embedding_link_counts
+    from neocortex.code.search.code_semantic_links import current_code_embedding_link_counts
 
     summary = result.generations[0].summary
     active_links, current_links = current_code_embedding_link_counts(

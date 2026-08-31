@@ -27,7 +27,7 @@ from neocortex.api.cli.cli_validation import validate_arguments
 
 AUDIO_GROUP_TITLE = "Audio/video Whisper transcription route"
 VIDEO_GROUP_TITLE = "Visual video route"
-CODE_GROUP_TITLE = "Structured source-code intelligence route"
+CODE_GROUP_TITLE = "Code knowledge"
 SEMANTIC_GROUP_TITLE = "Multimodal semantic index"
 KNOWLEDGE_GROUP_TITLE = "Read-only Knowledge Plane"
 

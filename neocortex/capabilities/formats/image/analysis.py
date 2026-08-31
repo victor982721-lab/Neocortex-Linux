@@ -5,13 +5,7 @@ independent while this module assembles the public classification operation.
 """
 
 from __future__ import annotations
-from dataclasses import replace
 from pathlib import Path
-
-from .adult import (
-    DEFAULT_ADULT_CLASSIFIER,
-    AdultContentClassifier,
-)
 
 from .decision import (
     add,
@@ -35,8 +29,6 @@ from .features import (
     projection_features,
 )
 from .models import (
-    AdultContentEvidence,
-    AdultDetection,
     Decision,
     DocumentCandidate,
     Features,
@@ -83,8 +75,6 @@ def classify(
     features: Features | None = None,
     document_verifier: DocumentVerifierRuntime | None = None,
     visual_classifier: VisualSemanticClassifier = DEFAULT_VISUAL_CLASSIFIER,
-    adult_classifier: AdultContentClassifier = DEFAULT_ADULT_CLASSIFIER,
-    analyze_adult: bool = True,
 ) -> Decision:
     """Classify through modular components while preserving patchable seams."""
 
@@ -98,15 +88,7 @@ def classify(
         verifier=verify_document_text,
         visual_classifier=visual_classifier,
     )
-    if not analyze_adult:
-        return decision
-    adult_content = adult_classifier.classify(
-        path,
-        decision.category,
-        decision.features,
-        decision.document_candidate,
-    )
-    return replace(decision, adult_content=adult_content)
+    return decision
 
 
 # endregion [01]
@@ -125,9 +107,6 @@ __all__ = [
     "NAME_HINT_POINTS",
     "PROFILE_EXCLUDED_DIRS",
     "SAMPLE_SIDE",
-    "AdultContentClassifier",
-    "AdultContentEvidence",
-    "AdultDetection",
     "Decision",
     "DocumentCandidate",
     "FeatureVisualClassifier",

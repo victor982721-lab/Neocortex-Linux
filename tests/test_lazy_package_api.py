@@ -65,7 +65,6 @@ EXPECTED_EXPORTS = [
     "OfficeRouteConfig",
     "OfficeRouteSummary",
     "RouteOnlyRunResult",
-    "SelfAnalysisRunResult",
     "StageDescriptor",
     "detect_content_type",
     "verify_pdf_state",
@@ -150,13 +149,12 @@ EXPECTED_SOURCES = {
     "OfficeRouteConfig": "neocortex.capabilities.formats.office.route",
     "OfficeRouteSummary": "neocortex.capabilities.formats.office.route",
     "RouteOnlyRunResult": "neocortex.runtime.models",
-    "SelfAnalysisRunResult": "neocortex.runtime.models",
     "StageDescriptor": "neocortex.semantic.derivation_contracts",
     "detect_content_type": "neocortex.platform.content_types",
     "verify_pdf_state": "neocortex.capabilities.formats.pdf.pdf_admin",
-    "list_projects": "neocortex.code.code_projects",
-    "reconstruct_project": "neocortex.code.code_projects",
-    "search_code": "neocortex.code.code_search",
+    "list_projects": "neocortex.code.ingestion.code_projects",
+    "reconstruct_project": "neocortex.code.ingestion.code_projects",
+    "search_code": "neocortex.code.search.code_search",
     "ContextBundle": "neocortex.knowledge.knowledge_contracts",
     "ContextContradictionRef": "neocortex.knowledge.knowledge_contracts",
     "ContextEntityRef": "neocortex.knowledge.knowledge_contracts",
@@ -333,12 +331,13 @@ class LazyPackageApiTests(unittest.TestCase):
 
             sys.argv = ["Neocortex", "--help"]
             try:
-                public_cli.entrypoint()
+                result = public_cli.entrypoint()
             except SystemExit as exc:
                 if exc.code != 0:
                     raise
             else:
-                raise SystemExit("--help did not terminate through argparse")
+                if result != 0:
+                    raise SystemExit(f"--help returned {result}")
 
             loaded_after_help = forbidden.intersection(sys.modules)
             if loaded_after_help:

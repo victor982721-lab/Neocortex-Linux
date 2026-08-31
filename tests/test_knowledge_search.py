@@ -30,7 +30,7 @@ from neocortex.code.code_contracts import (
     CodeSearchQuery,
     CodeSearchRelation,
 )
-from neocortex.code.code_detection import DETECTOR_VERSION
+from neocortex.code.ingestion.code_detection import DETECTOR_VERSION
 from neocortex.code.code_route import CodeRoute
 from neocortex.documents.document_catalog import initialize_document_catalog
 from neocortex.knowledge.knowledge_contracts import (

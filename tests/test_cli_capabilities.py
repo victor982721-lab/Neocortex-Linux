@@ -18,7 +18,6 @@ from unittest.mock import patch
 import pytest
 
 import neocortex.api.cli.cli_capabilities as cli_capabilities
-from neocortex.runtime.config.app_paths import self_analysis_data_directory
 from neocortex.capabilities.broker import (
     CapabilityAvailability,
     CapabilityBroker,
@@ -34,7 +33,7 @@ from neocortex.capabilities.runtime import (
     TEXT_BUILTIN_IMPLEMENTATION_ID,
     TEXT_LEGACY_OFFICE_IMPLEMENTATION_ID,
 )
-from neocortex.interface.entrypoint import _translate_canonical_arguments, entrypoint
+from neocortex.interface.entrypoint import entrypoint
 from neocortex.api.cli.cli_app import main
 from neocortex.api.cli.cli_parser import build_parser
 from neocortex.api.cli.cli_validation import validate_arguments
@@ -129,139 +128,6 @@ def _unavailable_status() -> RuntimeCapabilityStatus:
     )
 
 
-def test_canonical_argv_translates_to_hidden_flat_compatibility_flags() -> None:
-    with patch("neocortex.api.cli.cli_app.main", return_value=7) as run_cli:
-        result = entrypoint(("doctor", "capabilities", "--json"))
-
-    assert result == 7
-    run_cli.assert_called_once_with(["--doctor-capabilities", "--doctor-capabilities-json"])
-    assert _translate_canonical_arguments(("doctor", "other")) == [
-        "doctor",
-        "other",
-    ]
-    assert _translate_canonical_arguments(("--version",)) == ["--version"]
-    assert _translate_canonical_arguments(("--ui", "--help")) == [
-        "--ui",
-        "--help",
-    ]
-
-    with patch("neocortex.api.cli.cli_app.main", return_value=3) as run_cli:
-        result = entrypoint(
-            (
-                "doctor",
-                "capabilities",
-                "--select=text.extract",
-                "--mime-type",
-                "text/plain",
-                "--input-bytes=42",
-                "--json",
-            )
-        )
-
-    assert result == 3
-    run_cli.assert_called_once_with(
-        [
-            "--doctor-capabilities",
-            "--doctor-capabilities-select=text.extract",
-            "--doctor-capabilities-mime-type",
-            "text/plain",
-            "--doctor-capabilities-input-bytes=42",
-            "--doctor-capabilities-json",
-        ]
-    )
-
-    canonical_state = str(self_analysis_data_directory())
-    with patch("neocortex.api.cli.cli_app.main", return_value=9) as run_cli:
-        result = entrypoint(
-            (
-                "code",
-                "query",
-                "review",
-                "--question-id",
-                "state.text_terminal_publication_is_relationally_closed",
-                "--status=decision:experiment_required",
-                "--executable-only",
-                "--limit",
-                "25",
-                "--json",
-            )
-        )
-
-    assert result == 9
-    run_cli.assert_called_once_with(
-        [
-            "--code-query",
-            "review",
-            "--state-directory",
-            canonical_state,
-            "--code-query-category",
-            "state.text_terminal_publication_is_relationally_closed",
-            "--code-query-status=decision:experiment_required",
-            "--code-query-status",
-            "execution:executable",
-            "--code-query-limit",
-            "25",
-            "--code-json",
-        ]
-    )
-
-    assert _translate_canonical_arguments(
-        ("code", "review", "--state-directory=/tmp/code", "--limit=7")
-    ) == [
-        "--code-review",
-        "--state-directory=/tmp/code",
-        "--code-review-limit=7",
-    ]
-    assert _translate_canonical_arguments(("code", "experiment", "proposal-v1", "--json")) == [
-        "--code-experiment-run",
-        "proposal-v1",
-        "--state-directory",
-        canonical_state,
-        "--code-json",
-    ]
-    assert _translate_canonical_arguments(
-        ("code", "query", "--json", "--limit", "3", "review")
-    ) == [
-        "--code-query",
-        "review",
-        "--state-directory",
-        canonical_state,
-        "--code-json",
-        "--code-query-limit",
-        "3",
-    ]
-    assert _translate_canonical_arguments(("code", "experiment", "--json", "proposal-v1")) == [
-        "--code-experiment-run",
-        "proposal-v1",
-        "--state-directory",
-        canonical_state,
-        "--code-json",
-    ]
-
-    with patch("neocortex.api.cli.cli_app.main", return_value=5) as run_cli:
-        result = entrypoint(
-            (
-                "code",
-                "validate",
-                "--baseline=HEAD^",
-                "--max-tests",
-                "42",
-                "--time-budget-seconds=120",
-                "--json",
-            )
-        )
-
-    assert result == 5
-    run_cli.assert_called_once_with(
-        [
-            "--code-validate-change",
-            "--code-validation-baseline=HEAD^",
-            "--code-validation-max-tests",
-            "42",
-            "--code-validation-time-budget-seconds=120",
-            "--code-json",
-        ]
-    )
 
 
 def test_flat_alias_is_explicit_but_hidden_from_global_help() -> None:
@@ -316,32 +182,6 @@ def test_canonical_help_is_specific_without_changing_global_parser_help(
     assert "--input-bytes" in captured.out
     assert "--doctor-capabilities" not in captured.out
 
-    assert entrypoint(("code", "validate", "--help")) == 0
-    captured = capsys.readouterr()
-    assert captured.err == ""
-    assert "usage: Neocortex code validate" in captured.out
-    assert "--baseline" in captured.out
-    assert "--max-tests" in captured.out
-    assert "--time-budget-seconds" in captured.out
-    assert "--code-validate-change" not in captured.out
-
-    assert entrypoint(("code", "query", "--help")) == 0
-    captured = capsys.readouterr()
-    assert captured.err == ""
-    assert "usage: Neocortex code query" in captured.out
-    assert "{status,review,diff}" in captured.out
-    assert "--question-id" in captured.out
-    assert "--executable-only" in captured.out
-    assert "--state-directory" in captured.out
-    assert "--code-query" not in captured.out
-
-    assert entrypoint(("code", "experiment", "--help")) == 0
-    captured = capsys.readouterr()
-    assert captured.err == ""
-    assert "usage: Neocortex code experiment" in captured.out
-    assert "PROPOSAL_ID" in captured.out
-    assert "--state-directory" in captured.out
-    assert "--code-experiment-run" not in captured.out
 
 
 def test_available_capabilities_emit_canonical_json_and_exit_zero(
@@ -833,7 +673,7 @@ def test_cold_canonical_probe_loads_no_optional_engine_and_creates_no_state(
 
                 blocked_roots = {
                     "PIL", "PySide6", "ctranslate2", "fastembed",
-                    "faster_whisper", "fitz", "nudenet", "numpy",
+                    "faster_whisper", "fitz", "numpy",
                     "pdfminer", "pytesseract",
                 }
 
@@ -915,7 +755,7 @@ def test_cold_text_selection_loads_no_provider_engine_and_creates_no_state(
 
                 blocked_roots = {
                     "PIL", "PySide6", "ctranslate2", "fastembed",
-                    "faster_whisper", "fitz", "nudenet", "numpy",
+                    "faster_whisper", "fitz", "numpy",
                     "pdfminer", "pytesseract",
                 }
 

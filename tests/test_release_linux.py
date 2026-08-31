@@ -107,7 +107,6 @@ def test_wheel_build_uses_a_git_owned_source_stage_without_build_residue(
         lambda root, *_args, **_kwargs: (root / "bin").mkdir(parents=True),
     )
     monkeypatch.setattr(release_linux, "_venv_python", lambda root: root / "bin/python")
-    monkeypatch.setattr(release_linux, "build_source_only_wheels", lambda *_args, **_kwargs: ())
 
     def runner(arguments, **_kwargs):
         command = tuple(os.fspath(item) for item in arguments)
@@ -124,7 +123,7 @@ def test_wheel_build_uses_a_git_owned_source_stage_without_build_residue(
             (wheelhouse / "neocortex_framework-0.9.0-py3-none-any.whl").write_bytes(b"wheel")
         return subprocess.CompletedProcess(command, 0, "", "")
 
-    wheel, dependencies = release_linux._build_wheel(
+    wheel = release_linux._build_wheel(
         layout,
         workspace,
         pip_wheel=tmp_path / "pip.whl",
@@ -133,7 +132,6 @@ def test_wheel_build_uses_a_git_owned_source_stage_without_build_residue(
 
     assert observed_build_source == [workspace / "source"]
     assert wheel.read_bytes() == b"wheel"
-    assert dependencies == ()
 
 
 def test_pip_bootstrap_policy_is_hash_pinned_and_matches_constraints() -> None:
@@ -149,10 +147,12 @@ def test_linux_cp314_runtime_lock_is_exact_and_complete() -> None:
     lock = PROJECT_ROOT / release_linux.RUNTIME_DEPENDENCY_LOCK_NAME
     entries = release_linux._runtime_dependency_lock(lock)
 
-    assert len(entries) >= 100
+    assert len(entries) >= 50
     assert entries["pip"] == release_linux.PIP_BOOTSTRAP_VERSION
     assert "neocortex-framework" not in entries
     assert all(name == release_linux._normalized_distribution_name(name) for name in entries)
+    assert "nudenet" not in entries
+    assert not {"pytest", "ruff", "mypy", "coverage", "pip-audit"} & entries.keys()
 
 
 def test_release_install_uses_the_runtime_lock_as_a_second_constraint(
@@ -217,8 +217,34 @@ def test_runtime_dependency_verifier_rejects_inventory_drift(tmp_path: Path) -> 
         )
 
 
-def test_linux_release_smoke_imports_sqlglot_required_by_code_analysis() -> None:
-    assert "sqlglot" in release_linux._IMPORT_MODULES
+def test_product_release_manifest_excludes_development_tool_metadata(tmp_path: Path) -> None:
+    lock = _write_runtime_lock(tmp_path)
+    wheel = tmp_path / "neocortex_framework-0.9.0-py3-none-any.whl"
+    wheel.write_bytes(b"wheel")
+
+    manifest = release_linux._release_manifest(
+        release_name="candidate",
+        source_sha="a" * 40,
+        wheel=wheel,
+        wheel_sha="b" * 64,
+        runtime_dependency_lock=lock,
+        versions={"pip": release_linux.PIP_BOOTSTRAP_VERSION},
+    )
+
+    assert manifest["runtime_profile"] == release_linux.RUNTIME_PROFILE
+    assert not {
+        "node_archive_filename",
+        "node_archive_sha256",
+        "pyright",
+        "pyright_integrity",
+        "pyright_lock_sha256",
+        "semgrep",
+        "semgrep_runtime_sha256",
+    } & manifest.keys()
+
+def test_linux_release_smoke_does_not_require_development_sqlglot() -> None:
+    assert "sqlglot" not in release_linux._IMPORT_MODULES
+    assert "nudenet" not in release_linux._IMPORT_MODULES
 
 
 def test_pip_bootstrap_rejects_wrong_artifact_before_creating_venv(
@@ -325,10 +351,8 @@ def test_new_virtual_environment_is_created_at_its_final_non_movable_path(
         wheelhouse = workspace / "wheelhouse"
         wheelhouse.mkdir()
         wheel = wheelhouse / "neocortex_framework-0.9.0-py3-none-any.whl"
-        dependency = wheelhouse / "yattag-1.16.1-py3-none-any.whl"
         wheel.write_bytes(b"project")
-        dependency.write_bytes(b"dependency")
-        return wheel, (dependency,)
+        return wheel
 
     def install_wheel(release_root, *_args, **_kwargs):
         installed_at.append(release_root)
@@ -339,16 +363,11 @@ def test_new_virtual_environment_is_created_at_its_final_non_movable_path(
 
     monkeypatch.setattr(release_linux, "_build_wheel", build_wheel)
     monkeypatch.setattr(release_linux, "_install_wheel", install_wheel)
-    monkeypatch.setattr(release_linux, "_install_semgrep_runtime", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(release_linux, "_install_node_pyright", lambda *_args, **_kwargs: "1" * 64)
     monkeypatch.setattr(
         release_linux,
         "_verify_python_release",
         lambda release_root, *_args, **_kwargs: (
-            {
-                "node": "v24.18.1",
-                "pyright": "pyright 1.1.411",
-            }
+            {"pip": release_linux.PIP_BOOTSTRAP_VERSION}
             if release_root == final_release
             else pytest.fail("release validation used a movable staging venv")
         ),
@@ -495,7 +514,7 @@ def test_failed_install_receipt_restores_current_launcher_and_alias(
     monkeypatch.setattr(
         release_linux,
         "_verify_python_release",
-        lambda *_args, **_kwargs: {"node": "v24.18.1", "pyright": "pyright 1.1.411"},
+        lambda *_args, **_kwargs: {"pip": release_linux.PIP_BOOTSTRAP_VERSION},
     )
     monkeypatch.setattr(
         release_linux,
@@ -507,10 +526,7 @@ def test_failed_install_receipt_restores_current_launcher_and_alias(
             "source_sha": sha,
             "wheel_filename": "neocortex.whl",
             "wheel_sha256": "1" * 64,
-            "node_archive_filename": "node.tar.xz",
-            "node_archive_sha256": "2" * 64,
-            "node": "v24.18.1",
-            "pyright": "pyright 1.1.411",
+            "pip": release_linux.PIP_BOOTSTRAP_VERSION,
         },
     )
     manifest = new / release_linux.RELEASE_MANIFEST_NAME
@@ -555,14 +571,13 @@ def test_failed_model_preparation_never_promotes_or_publishes_access(
     monkeypatch.setattr(
         release_linux,
         "_verify_python_release",
-        lambda *_args, **_kwargs: {"node": "v24.18.1", "pyright": "pyright 1.1.411"},
+        lambda *_args, **_kwargs: {"pip": release_linux.PIP_BOOTSTRAP_VERSION},
     )
     monkeypatch.setattr(
         release_linux,
         "_read_release_manifest",
         lambda *_args, **_kwargs: {
-            "node": "v24.18.1",
-            "pyright": "pyright 1.1.411",
+            "pip": release_linux.PIP_BOOTSTRAP_VERSION,
         },
     )
 

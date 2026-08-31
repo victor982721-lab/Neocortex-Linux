@@ -263,8 +263,6 @@ class IncrementalWatcher:
     ):
         if framework_config.apply_actions:
             raise ValueError("incremental watcher does not allow apply_actions")
-        if framework_config.self_analysis or framework_config.corpus_access_mode != "normal":
-            raise ValueError("incremental watcher requires normal corpus access")
         if framework_config.route_only or framework_config.resume_run_id is not None:
             raise ValueError("incremental watcher requires integrated initial runs")
         if framework_config.candidate_run_id is not None:

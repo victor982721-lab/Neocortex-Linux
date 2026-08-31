@@ -15,9 +15,9 @@ from pathlib import Path
 
 from neocortex.semantic import semantic_service
 from neocortex.code.code_contracts import CodeSearchHit, CodeSearchQuery, CodeSearchRelation
-from neocortex.code.code_detection import LANGUAGE_EXTENSIONS
+from neocortex.code.ingestion.code_detection import LANGUAGE_EXTENSIONS
 from neocortex.code.code_schema import connect_code_state
-from neocortex.code.code_search import search_code
+from neocortex.code.search.code_search import search_code
 from neocortex.documents.document_catalog import document_catalog_database
 from neocortex.foundation.file_identity import FileIdentity, FileIdentityEncoding, FileIdentityError
 from .knowledge_contracts import (

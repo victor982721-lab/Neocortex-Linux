@@ -411,6 +411,11 @@ _V2_DDL = (
         ON external_tool_runs(tool_name,tool_version,status,analysis_run_id)""",
 )
 
+# Fresh Code owners contain only product tables. The provider and experiment
+# statements remain available solely for validating and migrating old databases
+# without deleting their historical rows.
+_PRODUCT_V2_DDL = _V2_DDL[:-2]
+
 
 _V3_DDL = (
     """CREATE TABLE external_run_contracts(
@@ -833,9 +838,9 @@ def readonly_code_database(
         and selected.is_file()
         and not any(os.path.lexists(sidecar) for sidecar in sidecars)
     ):
-        from neocortex.workflow.self_analysis.self_analysis_status import quiescent_sqlite_database
+        from neocortex.persistence.sqlite_immutable import immutable_sqlite_database
 
-        with quiescent_sqlite_database(selected, timeout_seconds=60) as connection:
+        with immutable_sqlite_database(selected, timeout_seconds=60) as connection:
             yield connection
         return
     connection = connect(selected, readonly=True, create=False)
@@ -852,6 +857,13 @@ def _execute(connection: sqlite3.Connection, statements: tuple[str, ...]) -> Non
 
 
 def _build_current_schema(connection: sqlite3.Connection) -> None:
+    _execute(connection, _CURRENT_V1_DDL)
+    _execute(connection, _PRODUCT_V2_DDL)
+
+
+def _build_legacy_current_schema(connection: sqlite3.Connection) -> None:
+    """Build the pre-simplification v7 shape for legacy validation only."""
+
     _execute(connection, _CURRENT_V1_DDL)
     _execute(connection, _V2_DDL)
     _execute(connection, _V3_DDL)
@@ -888,11 +900,23 @@ def _legacy_code_schema_contract(version: int) -> SQLiteSchemaContract:
     )
 
 
+@lru_cache(maxsize=1)
+def _legacy_current_code_schema_contract() -> SQLiteSchemaContract:
+    return schema_contract_from_builder(_build_legacy_current_schema)
+
+
 def validate_code_schema(connection: sqlite3.Connection) -> None:
+    legacy_objects = {
+        str(row[0])
+        for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name IN "
+            "('external_tool_runs','code_experiment_receipts')"
+        )
+    }
     validate_sqlite_schema_contract(
         connection,
-        code_schema_contract(),
-        label="code",
+        _legacy_current_code_schema_contract() if legacy_objects else code_schema_contract(),
+        label="legacy Code" if legacy_objects else "code",
         exact=True,
     )
 
@@ -1008,25 +1032,23 @@ def _create_fresh(connection: sqlite3.Connection, applied_ns: int) -> None:
         "versioned file observations, symbols, relations, diagnostics and FTS",
         applied_ns,
     )
-    _execute(connection, _V2_DDL)
+    _execute(connection, _PRODUCT_V2_DDL)
     _record_migration(
         connection,
         2,
         "probable projects, reconstruction provenance and semantic links",
         applied_ns + 1,
     )
-    _execute(connection, _V3_DDL)
     _record_migration(
         connection,
         3,
-        "normalized multi-provider external code evidence",
+        "retired external provider evidence (legacy-readable)",
         applied_ns + 2,
     )
-    _execute(connection, _V4_DDL)
     _record_migration(
         connection,
         4,
-        "portable external provider metrics and relations",
+        "retired external provider metrics (legacy-readable)",
         applied_ns + 3,
     )
     _record_migration(
@@ -1035,17 +1057,16 @@ def _create_fresh(connection: sqlite3.Connection, applied_ns: int) -> None:
         "platform-aware current filesystem path identity",
         applied_ns + 4,
     )
-    _execute(connection, _V7_DDL)
     _record_migration(
         connection,
         6,
-        "immutable post-publication Code experiment receipts",
+        "retired Code experiment receipts (legacy-readable)",
         applied_ns + 5,
     )
     _record_migration(
         connection,
         7,
-        "versioned Code experiment receipt compatibility",
+        "product Code schema without development evidence tables",
         applied_ns + 6,
     )
 

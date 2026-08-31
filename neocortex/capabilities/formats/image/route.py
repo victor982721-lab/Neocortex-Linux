@@ -5,7 +5,7 @@ import json
 import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator, Literal, Protocol, cast
 
@@ -26,23 +26,13 @@ from neocortex.runtime.control.cancellation import CancellationRequested, Cancel
 from .analysis import (
     ANALYSIS_VERSION,
     DEFAULT_VISUAL_CLASSIFIER,
-    AdultContentEvidence,
     Decision,
     Features,
     ImageMemoryGate,
     ImageResourceLimits,
     cached_features_are_compatible,
     classify,
-    estimated_image_memory_bytes,
     requires_document_verification,
-)
-from .adult import (
-    ADULT_ANALYSIS_VERSION,
-    ADULT_MODEL_PHYSICAL_BYTES,
-    ADULT_POLICY_VERSION,
-    DEFAULT_ADULT_CLASSIFIER,
-    adult_model_component,
-    is_adult_model_candidate,
 )
 from .document import (
     DocumentTextEvidence,
@@ -134,13 +124,11 @@ class ImageFingerprintIndex(Protocol):
 
 INVENTORY_BATCH_SIZE = 1000
 RESULT_BATCH_SIZE = 64
-IMAGE_ROUTE_VERSION = "image-route-v6"
+IMAGE_ROUTE_VERSION = "image-route-v7-no-nudenet"
 IMAGE_SUCCESS_REVIEW_REASON_CODES = frozenset(
     {
         "image_raster_document_candidate",
         "image_recovered_truncated_decode",
-        "image_explicit_adult_content",
-        "image_adult_content_requires_review",
     }
 )
 IMAGE_FAILURE_REVIEW_REASON_CODES = frozenset(
@@ -156,9 +144,8 @@ IMAGE_FAILURE_REVIEW_REASON_CODES = frozenset(
     }
 )
 # A completed current-signature analysis evaluated every bounded image detector
-# and traversed every failure phase.  This explicit set prevents one detector
-# (for example, raster-document evidence) from resolving an unrelated adult
-# finding while still retiring genuinely stale results from older generations.
+# and traversed every failure phase, which lets reconciliation retire stale
+# results without conflating unrelated review reasons.
 IMAGE_COMPLETE_REVIEW_REASON_CODES = (
     IMAGE_SUCCESS_REVIEW_REASON_CODES | IMAGE_FAILURE_REVIEW_REASON_CODES
 )
@@ -235,7 +222,7 @@ def _image_processing_provenance(
         ocr_component["manifest"] = ocr_manifest
     return build_processing_provenance(
         "image",
-        f"{IMAGE_ROUTE_VERSION}|{ANALYSIS_VERSION}|{ADULT_ANALYSIS_VERSION}",
+        f"{IMAGE_ROUTE_VERSION}|{ANALYSIS_VERSION}",
         {
             "document_ocr_language": config.document_ocr_lang,
             "document_ocr_mode": config.document_ocr_mode,
@@ -244,7 +231,6 @@ def _image_processing_provenance(
         },
         (
             distribution_component("pillow", "Pillow"),
-            adult_model_component(),
             {
                 "name": "visual-classifier",
                 "kind": "classifier",
@@ -279,14 +265,6 @@ class ImageRouteSummary:
     document_candidates: int = 0
     photo_candidates: int = 0
     industrial_context_candidates: int = 0
-    adult_heuristic_candidates: int = 0
-    adult_analyzed: int = 0
-    adult_explicit: int = 0
-    adult_ambiguous: int = 0
-    adult_unavailable: int = 0
-    adult_recycled: int = 0
-    adult_recycle_failed: int = 0
-    adult_recycle_protected: int = 0
     errors: int = 0
     document_ocr_attempts: int = 0
     document_ocr_positive: int = 0
@@ -333,11 +311,6 @@ class _ImageCounterDelta:
     document_candidates: int = 0
     photo_candidates: int = 0
     industrial_context_candidates: int = 0
-    adult_heuristic_candidates: int = 0
-    adult_analyzed: int = 0
-    adult_explicit: int = 0
-    adult_ambiguous: int = 0
-    adult_unavailable: int = 0
 
 
 @dataclass(slots=True)
@@ -464,12 +437,6 @@ class ImageRoute:
                 industrial_context_candidates=int(
                     _semantic_json_has_evidence(row["semantic_json"])
                 ),
-                adult_heuristic_candidates=int(bool(row["adult_candidate"])),
-                adult_analyzed=int(bool(row["adult_analyzed"])),
-                adult_explicit=int(row["adult_classification"] == "explicit"),
-                adult_ambiguous=int(row["adult_classification"] == "ambiguous"),
-                adult_unavailable=int(row["adult_classification"] == "unavailable"),
-                deletion_candidates=int(row["adult_classification"] == "explicit"),
                 recovered_decodes=int(row["decode_quality"] == "recovered_truncated"),
             )
         if row["status"] != "error" or not signature_matches or retry_selected:
@@ -565,18 +532,9 @@ class ImageRoute:
     ) -> _ImageCounterDelta:
         decision = result.decision
         assert decision is not None
-        adult = decision.adult_content or AdultContentEvidence(
-            candidate=False,
-            analyzed=False,
-            classification="not_analyzed",
-            confidence=0.0,
-            detections=(),
-            evidence=("adult_evidence_missing",),
-            provenance=(ADULT_POLICY_VERSION,),
-        )
         stored_ocr_text = _prepare_decision_ocr_text(decision.document_text)
         success_batch.append(
-            self._success_storage_row(result, decision, adult, stored_ocr_text, now)
+            self._success_storage_row(result, decision, stored_ocr_text, now)
         )
         success_reviews = _success_review_candidates(result.snapshot, decision)
         review_batch.extend(success_reviews)
@@ -600,12 +558,6 @@ class ImageRoute:
             photo_candidates=int(decision.category == "foto"),
             recovered_decodes=int(decision.features.decode_quality == "recovered_truncated"),
             industrial_context_candidates=int(decision.industrial_context.has_evidence),
-            adult_heuristic_candidates=int(adult.candidate),
-            adult_analyzed=int(adult.analyzed),
-            adult_explicit=int(adult.classification == "explicit"),
-            adult_ambiguous=int(adult.classification == "ambiguous"),
-            adult_unavailable=int(adult.classification == "unavailable"),
-            deletion_candidates=int(adult.classification == "explicit"),
             document_ocr_attempts=attempted,
             document_ocr_positive=positive,
             document_ocr_failures=ocr_failure,
@@ -615,7 +567,6 @@ class ImageRoute:
         self,
         result: _AnalysisResult,
         decision: Decision,
-        adult: AdultContentEvidence,
         stored_ocr_text: EncodedOcrText,
         now: int,
     ) -> tuple:
@@ -631,12 +582,6 @@ class ImageRoute:
             int(decision.document_candidate.is_candidate),
             decision.document_candidate.heuristic_score,
             decision.document_candidate.uncertainty,
-            int(adult.candidate),
-            int(adult.analyzed),
-            adult.classification,
-            adult.confidence,
-            "|".join(adult.provenance),
-            json.dumps(asdict(adult), ensure_ascii=True),
             stored_ocr_text.compressed,
             stored_ocr_text.characters,
             stored_ocr_text.xxh3_128,
@@ -663,7 +608,6 @@ class ImageRoute:
                         stored_ocr_text,
                     ),
                     "visual_semantics": asdict(decision.visual_semantics),
-                    "adult_content": asdict(adult),
                 },
                 ensure_ascii=True,
             ),
@@ -897,8 +841,6 @@ class ImageRoute:
         deletion_candidates = review_candidates_stored = 0
         document_ocr_attempts = document_ocr_positive = document_ocr_failures = 0
         document_candidates = photo_candidates = industrial_context_candidates = 0
-        adult_heuristic_candidates = adult_analyzed = 0
-        adult_explicit = adult_ambiguous = adult_unavailable = 0
         success_batch: list[tuple] = []
         error_batch: list[tuple] = []
         review_batch: list[ReviewCandidate] = []
@@ -920,9 +862,7 @@ class ImageRoute:
             nonlocal deletion_candidates, document_ocr_attempts
             nonlocal document_ocr_positive, document_ocr_failures
             nonlocal document_candidates, photo_candidates
-            nonlocal industrial_context_candidates, adult_heuristic_candidates
-            nonlocal adult_analyzed, adult_explicit, adult_ambiguous
-            nonlocal adult_unavailable
+            nonlocal industrial_context_candidates
             processed += delta.processed
             cache_hits += delta.cache_hits
             cached_errors += delta.cached_errors
@@ -938,11 +878,6 @@ class ImageRoute:
             document_candidates += delta.document_candidates
             photo_candidates += delta.photo_candidates
             industrial_context_candidates += delta.industrial_context_candidates
-            adult_heuristic_candidates += delta.adult_heuristic_candidates
-            adult_analyzed += delta.adult_analyzed
-            adult_explicit += delta.adult_explicit
-            adult_ambiguous += delta.adult_ambiguous
-            adult_unavailable += delta.adult_unavailable
 
         def flush_results() -> None:
             nonlocal review_candidates_stored
@@ -979,7 +914,6 @@ class ImageRoute:
                         ProgressMetric("remaining", max(0, selection_total - processed)),
                         ProgressMetric("cached_errors", cached_errors),
                         ProgressMetric("completed_work", classified),
-                        ProgressMetric("adult_unavailable", adult_unavailable),
                         ProgressMetric("ocr_attempts", document_ocr_attempts),
                         ProgressMetric("memory_waits", self.memory_gate.wait_count),
                         ProgressMetric("review_candidates", len(review_batch)),
@@ -1043,11 +977,6 @@ class ImageRoute:
             document_candidates=document_candidates,
             photo_candidates=photo_candidates,
             industrial_context_candidates=industrial_context_candidates,
-            adult_heuristic_candidates=adult_heuristic_candidates,
-            adult_analyzed=adult_analyzed,
-            adult_explicit=adult_explicit,
-            adult_ambiguous=adult_ambiguous,
-            adult_unavailable=adult_unavailable,
             errors=errors,
             document_ocr_attempts=document_ocr_attempts,
             document_ocr_positive=document_ocr_positive,
@@ -1116,7 +1045,6 @@ class ImageRoute:
                     self.config.root,
                     features=cached_features,
                     document_verifier=self.document_verifier,
-                    analyze_adult=False,
                 )
             elif self.config.isolate_decoders:
                 reservation = image_worker_memory_reservation(
@@ -1141,38 +1069,7 @@ class ImageRoute:
                     self.memory_gate,
                     features=cached_features,
                     document_verifier=self.document_verifier,
-                    analyze_adult=False,
                 )
-            if decision.adult_content is None:
-                adult_candidate, _reasons = is_adult_model_candidate(
-                    path,
-                    decision.category,
-                    decision.features,
-                    decision.document_candidate,
-                )
-                if adult_candidate:
-                    adult_reservation = ADULT_MODEL_PHYSICAL_BYTES + (
-                        estimated_image_memory_bytes(
-                            decision.features.width,
-                            decision.features.height,
-                            decision.features.file_size,
-                        )
-                    )
-                    with self.memory_gate.admit(adult_reservation):
-                        adult_content = DEFAULT_ADULT_CLASSIFIER.classify(
-                            path,
-                            decision.category,
-                            decision.features,
-                            decision.document_candidate,
-                        )
-                else:
-                    adult_content = DEFAULT_ADULT_CLASSIFIER.classify(
-                        path,
-                        decision.category,
-                        decision.features,
-                        decision.document_candidate,
-                    )
-                decision = replace(decision, adult_content=adult_content)
             self.cancellation.checkpoint()
             after = snapshot_path(snapshot.path)
             if not _same_snapshot(snapshot, after):
@@ -1369,35 +1266,6 @@ def _success_review_candidates(
                 detector_version=decision.features.decode_provenance,
             )
         )
-    adult = decision.adult_content
-    if adult is not None and adult.classification in {
-        "explicit",
-        "ambiguous",
-        "unavailable",
-    }:
-        explicit = adult.classification == "explicit"
-        candidates.append(
-            ReviewCandidate(
-                route_name="image",
-                snapshot=snapshot,
-                reason_code=(
-                    "image_explicit_adult_content"
-                    if explicit
-                    else "image_adult_content_requires_review"
-                ),
-                source_status="done",
-                recommendation=("deletion_candidate" if explicit else "manual_review"),
-                retryable=adult.classification == "unavailable",
-                confidence=adult.confidence if adult.analyzed else 0.50,
-                evidence={
-                    "classification": adult.classification,
-                    "detections": [asdict(value) for value in adult.detections],
-                    "signals": adult.evidence,
-                    "provenance": adult.provenance,
-                },
-                detector_version="|".join(adult.provenance),
-            )
-        )
     return tuple(candidates)
 
 
@@ -1450,38 +1318,6 @@ def _cached_success_review_candidates(
                     "classification_confidence": float(row["confidence"]),
                 },
                 detector_version=str(row["decode_provenance"] or "pillow-truncated-recovery-v1"),
-            )
-        )
-    classification = str(row["adult_classification"] or "not_analyzed")
-    if classification in {"explicit", "ambiguous", "unavailable"}:
-        adult_payload: dict[str, Any] = {}
-        try:
-            decoded_adult = json.loads(row["adult_evidence_json"] or "{}")
-            if isinstance(decoded_adult, dict):
-                adult_payload = decoded_adult
-        except (TypeError, ValueError):
-            pass
-        explicit = classification == "explicit"
-        candidates.append(
-            ReviewCandidate(
-                route_name="image",
-                snapshot=snapshot,
-                reason_code=(
-                    "image_explicit_adult_content"
-                    if explicit
-                    else "image_adult_content_requires_review"
-                ),
-                source_status="done",
-                recommendation=("deletion_candidate" if explicit else "manual_review"),
-                retryable=classification == "unavailable",
-                confidence=(
-                    float(row["adult_confidence"] or 0.0) if bool(row["adult_analyzed"]) else 0.50
-                ),
-                evidence={
-                    "classification": classification,
-                    "details": adult_payload,
-                },
-                detector_version=str(row["adult_provenance"] or ADULT_POLICY_VERSION),
             )
         )
     return tuple(candidates)

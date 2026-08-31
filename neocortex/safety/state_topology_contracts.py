@@ -37,7 +37,7 @@ DURABLE_WORKFLOW_BINDING_SCHEMA: Literal["neocortex.durable-workflow-implementat
 # Knowledge intentionally avoids importing image_state until the database is
 # present because that module loads the image-processing runtime.  The public
 # reader contract therefore pins the same schema version without importing it.
-KNOWLEDGE_IMAGE_SCHEMA_VERSION = 5
+KNOWLEDGE_IMAGE_SCHEMA_VERSION = 6
 
 KnowledgeCaptureMode = Literal["configured", "if_present"]
 TransactionAuthority = Literal["caller", "callee"]

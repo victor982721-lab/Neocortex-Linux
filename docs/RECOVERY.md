@@ -402,7 +402,7 @@ no vuelven a mover el archivo.
 
    ```powershell
    Neocortex --pdf-verify
-   Neocortex --code-doctor
+   Neocortex --code-status --code-json
    Neocortex --semantic-status
    ```
 

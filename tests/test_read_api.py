@@ -66,10 +66,7 @@ class _FakeService:
 
 
 def _bindings(tmp_path: Path) -> tuple[read_api.ScopeBinding, ...]:
-    return (
-        read_api.ScopeBinding(read_api.ReadScope.PERSONAL, tmp_path / "personal"),
-        read_api.ScopeBinding(read_api.ReadScope.FRAMEWORK, tmp_path / "framework"),
-    )
+    return (read_api.ScopeBinding(read_api.ReadScope.PERSONAL, tmp_path / "personal"),)
 
 
 def test_scope_bindings_are_fixed_ordered_and_reject_arbitrary_paths(
@@ -77,17 +74,9 @@ def test_scope_bindings_are_fixed_ordered_and_reject_arbitrary_paths(
     tmp_path: Path,
 ) -> None:
     monkeypatch.setattr(read_api, "default_state_directory", lambda: tmp_path / "personal")
-    monkeypatch.setattr(
-        read_api,
-        "self_analysis_data_directory",
-        lambda: tmp_path / "framework",
-    )
-
     assert [item.scope for item in read_api.scope_bindings("all")] == [
         read_api.ReadScope.PERSONAL,
-        read_api.ReadScope.FRAMEWORK,
     ]
-    assert read_api.scope_bindings("framework")[0].state_directory == tmp_path / "framework"
     with pytest.raises(ValueError, match="personal, framework or all"):
         read_api.scope_bindings(str(tmp_path / "attacker-controlled"))
 
@@ -121,11 +110,8 @@ def test_status_search_and_context_keep_scopes_independent(
     assert status["federation_policy"] == read_api.FEDERATION_POLICY
     assert search["limit_per_scope"] == 3
     assert context["limit_per_scope"] == 2
-    assert [entry["scope"] for entry in search["scopes"]] == ["personal", "framework"]
-    assert [entry["result"]["hits"][0]["scope_marker"] for entry in search["scopes"]] == [
-        "personal",
-        "framework",
-    ]
+    assert [entry["scope"] for entry in search["scopes"]] == ["personal"]
+    assert [entry["result"]["hits"][0]["scope_marker"] for entry in search["scopes"]] == ["personal"]
     assert search["exit_code"] == 0
 
 
@@ -168,7 +154,7 @@ def test_code_search_is_bounded_labelled_and_read_only(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    binding = read_api.ScopeBinding(read_api.ReadScope.FRAMEWORK, tmp_path / "framework")
+    binding = read_api.ScopeBinding(read_api.ReadScope.PERSONAL, tmp_path / "personal")
     monkeypatch.setattr(read_api, "scope_bindings", lambda _scope: (binding,))
     monkeypatch.setattr(
         read_api,
@@ -226,14 +212,8 @@ def test_lineage_uses_only_fixed_scope_roots_and_keeps_results_independent(
     assert payload["read_only"] is True
     assert payload["federation_policy"] == read_api.FEDERATION_POLICY
     assert payload["identifier"] == "revision:text:one"
-    assert observed == [
-        (tmp_path / "personal", "revision:text:one"),
-        (tmp_path / "framework", "revision:text:one"),
-    ]
-    assert [entry["lineage"]["marker"] for entry in payload["scopes"]] == [
-        "personal",
-        "framework",
-    ]
+    assert observed == [(tmp_path / "personal", "revision:text:one")]
+    assert [entry["lineage"]["marker"] for entry in payload["scopes"]] == ["personal"]
     assert payload["exit_code"] == int(KnowledgeExitCode.SUCCESS)
 
 
@@ -273,13 +253,9 @@ def test_asset_health_uses_stable_identity_and_fixed_scopes_without_creating_sta
 
     assert payload["read_only"] is True
     assert payload["resource_id"] == resource_id
-    assert observed == [
-        (tmp_path / "personal", resource_id),
-        (tmp_path / "framework", resource_id),
-    ]
-    assert [item["status"] for item in payload["scopes"]] == ["healthy", "healthy"]
+    assert observed == [(tmp_path / "personal", resource_id)]
+    assert [item["status"] for item in payload["scopes"]] == ["healthy"]
     assert not (tmp_path / "personal").exists()
-    assert not (tmp_path / "framework").exists()
 
 
 @pytest.mark.parametrize(

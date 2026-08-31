@@ -36,7 +36,7 @@ PDF, OCR, Office, audio, código, metadatos o relaciones como autorización.
 | Nivel | Ejemplos | Efecto |
 |---|---|---|
 | Consulta | `--help`, `--version`, `--status`, `--action-recovery-status`, `--retention-status`, `--knowledge-status`, `--knowledge-search`, `--knowledge-context`, `inspect lineage`, búsquedas, previews y doctors | No debe recorrer ni modificar el corpus; puede fallar si falta estado. SQLite read-only puede participar en WAL/SHM. |
-| Estado sin mutación del corpus | Corrida sin `--apply`, `--self-analysis`, `--semantic-index`, `--semantic-classify`, `--catalog-documents`, `--organization-plan`, `--review-record`, `--action-recovery-record` | Lee contenido o cachés y escribe bases, evidencia o planes. |
+| Estado sin mutación del corpus | Corrida sin `--apply`, `--semantic-index`, `--semantic-classify`, `--catalog-documents`, `--organization-plan`, `--review-record`, `--action-recovery-record` | Lee contenido o cachés y escribe bases, evidencia o planes. |
 | Descarga/carga externa | `models prepare`; `--semantic-prepare-models`; primera transcripción Windows sin `--audio-local-models-only` | Puede adquirir modelos y ampliar cachés. `models status` es local y read-only. |
 | Mutación de archivos | Corrida integrada con `--apply`; `--organization-apply` | En Windows puede renombrar extensiones o mover documentos sólo bajo el contrato NTFS ligado a handles; en Linux se rechaza antes de crear estado. |
 
@@ -84,129 +84,22 @@ modelos, runtimes, el launcher `~/.local/share/Neocortex/bin/Neocortex`, el alia
 `~/.local/bin/Neocortex` y los archivos `.desktop`; el inventario nunca sigue
 symlinks.
 
-### Autoanálisis de código
+### Código como contenido
 
-`--self-analysis` pertenece al nivel **Estado sin mutación del corpus**. Exige
-una raíz y un estado explícitos cuyos árboles sean disjuntos, captura y vuelve
-a verificar sus identidades, fuerza `analyze_only` y sólo admite la ruta
-`code` desde el inventario. Rechaza `--apply`, route-only/resume, rutas MIME,
-catálogo, organización y generated/vendored. El contenido se analiza como
-evidencia no confiable y no se ejecuta en `protected` ni `trusted-static`. El
-perfil predeterminado `protected`
-integra sólo Ruff basic: recibe el manifest de archivos Python ya publicados,
-abre copias temporales verificadas, ignora la configuración del proyecto y usa
-entorno/cwd controlados, `--no-cache` y ninguna capacidad de fix.
+La ruta Code recibe archivos del usuario como datos no confiables. Puede leer su
+texto, extraer estructura, guardar identidad y relaciones, y ofrecer búsquedas,
+pero nunca ejecuta el código observado ni autoriza cambios sobre él.
 
-`trusted-static` es una frontera explícita para una raíz que Victor declara
-confiable. Conserva Ruff basic y permite leer el `pyproject.toml` versionado para
-Ruff proyecto, Mypy, Pyright, Deptry y el inventario de dependencias. El
-adaptador limita Ruff trusted a
-`E4,E7,E9,F,B,C4,PIE,RUF` y omite `I,PT,SIM,UP`; además rechaza mecanismos que
-amplían la confianza: Ruff `extend`, plugins o `mypy_path`, y rutas externas de
-Pyright. Doce de los trece proveedores estáticos declaran `uses_network=false`;
-pip-audit declara red porque consulta PyPI para crear un snapshot fechado y su
-replay exacto vigente reutiliza ese snapshot sin otra consulta. Todos declaran
-`imports_content=false`, `executes_content=false`, `authority=advisory` y
-`mutation_authority=false`. Semgrep usa sólo tres reglas empaquetadas, desactiva
-autofix y excluye sus fixtures propios del gate del proyecto. Su proveedor sólo
-acepta el wrapper `scan` contenido en el tool-runtime separado cuyo recibo,
-inventario y hashes aprueban; nunca resuelve Semgrep desde el runtime principal
-ni desde `PATH`. Deptry no instala ni retira dependencias; el inventario sólo
-verifica metadata y `RECORD`. Esto
-incluye `vulture-unused-static`: su confidence no prueba ausencia de uso y ni
-siquiera el consenso alto tiene autoridad de borrado. Ningún gate de supply
-chain autoriza actualizar, desinstalar o modificar paquetes.
-`git-history-local` sólo lee objetos del repositorio local verificado bajo
-límites de commits, archivos, relaciones, tiempo y salida; no usa red, hooks,
-`textconv` ni drivers de diff externos, y sus señales son advisory. Si la
-protección de ownership de Git requiere `safe.directory`, el proveedor autoriza
-únicamente la raíz exacta ya resuelta mediante `-c` en cada invocación; nunca
-usa comodines ni modifica configuración global, local o del sistema.
+La ruta productiva no mantiene review interno, experimentos, proveedores de QA,
+receipts de validación ni un agregador de herramientas. `pytest`, Ruff,
+Pyright/Mypy y Semgrep pertenecen al desarrollo y se ejecutan directamente,
+fuera del runtime, sólo cuando una modificación lo requiera.
 
-`trusted-deep` es la única frontera que ejecuta contenido. La CLI exige la
-identidad física exacta de `$HOME\Neocortex\Repository`, estado
-disjunto y límites efectivos acotados; cualquier otra raíz se rechaza antes de
-crear el run. Pytest carga plugins/código confiable y puede ejecutar comportamiento de
-red porque el proveedor no impone un sandbox de red; el descriptor lo declara
-en vez de prometer aislamiento inexistente. Coverage observa sólo el proceso
-principal. Ningún resultado adquiere autoridad de mutación y el perfil nunca es
-predeterminado. `cosmic-ray-focal-mutation/v1` se habilita sólo en esta frontera
-con target y tests declarados: copia exactamente el snapshot a staging, muta
-únicamente esa copia, verifica hashes de fuentes antes y después y aplica
-límites por mutante y por corrida. El corte aceptado se limitó a `20` mutantes.
-El proveedor es `authority=advisory`, conserva `mutation_authority=false` y
-declara `uses_network=true` porque los tests podrían usar red; no es una
-autorización para modificar la raíz canónica.
-
-`--code-experiment-run` reutiliza esa misma frontera trusted-deep para nodeids
-allow-listed. El directorio temporal contiene runtime/checkpoints, pero Pytest
-ejecuta el checkout canónico directamente: no es una copia, contenedor, namespace
-de red ni sandbox de filesystem. Conserva el `HOME` canónico y el descriptor
-declara `uses_network=true`; la allowlist limita qué tests se seleccionan, no los
-efectos que pueda realizar su código. Debe usarse sólo sobre este repositorio
-confiable. La barrera `PrivateNetwork=yes` de `Neocortex code validate` pertenece
-al orquestador Linux y no debe atribuirse a una invocación standalone.
-
-El ejecutor recalcula antes/después la firma exacta de los inputs Python
-publicados y del soporte Git observado, y compara un fence Linux de identidad,
-sidecars y anclas acotadas de `code.sqlite3` durante la fase de tests. No
-mantiene un lock continuo del checkout ni cerca el
-corpus u otros owners. Tras medir, la CLI escribe deliberadamente el receipt
-terminal v3 en la tabla inmutable append-only de Code schema v7;
-`code_database_unchanged=true` no significa que todo el comando sea read-only.
-La validación canónica reutiliza en cambio la publicación Coverage primaria:
-emite receipts v4 de cero procesos, ligados al run/tool/publicación y al digest
-del subconjunto exacto de relaciones, y vuelve a validar esos bindings dentro de
-la transacción que los persiste.
-La frontera canónica publica `neocortex.code-validation-resources/v3`: el
-worker exige que `/proc/self/cgroup` termine en el transient unit exacto,
-consulta en systemd su `PrivateNetwork=yes` y prueba ante el kernel que la
-restricción a `AF_UNIX` deniega AF_INET y AF_INET6. Una propiedad systemd o un
-receipt de entorno sin esa prueba no pueden declarar ausencia de egress. La ausencia de runner tampoco
-degrada una pregunta afectada a `not_required`; el binding diff→pregunta debe
-demostrar irrelevancia o el gate se abstiene.
-El review v22 verifica además el envelope digest y sólo enlaza el terminal
-`passed` más nuevo por proposal/firma a gates registrados; un terminal posterior
-fallido o abstenido lo invalida. Los trata como evidencia del contrato de tests
-y nunca como autorización, verdad formal o decisión humana. La disposición
-técnica allow-listed v6 de v22 tampoco concede autoridad: está limitada a la
-pregunta y gates exactos, publica riesgos residuales y mantiene
-`mutation_authority=false`.
-
-Los templates incorporados en v22 no amplían la frontera de confianza. El
-scenario CLI v4/template v3 (veintiséis nodeids/cinco gates), Knowledge Asset Health Text (doce
-nodeids/cuatro gates) y PDF (doce/cuatro, distribución 5/3/3/1) ejecutan
-únicamente tests allow-listed con estado bajo `pytest_tmp_path`. PDF exige nueve
-relaciones de contraevidencia y doce para el resultado completo. No prueban cada
-handler, GUI/MCP/worker, otros owners de Knowledge, contenido/OCR, fidelidad
-visual/semántica ni pérdida de energía. Un receipt aprobado sólo satisface los
-facts y controles negativos exactos de su pregunta. Los registries
-runtime/template son v11 y la política diff-aware es v6.
-
-`Neocortex code question` abre el estado publicado únicamente para el lector
-focal registrado de CLI; las preguntas desconocidas producen un fallback
-declarativo `automatic=false`, no ejecución implícita del review global.
-`Neocortex code storage` usa una conexión immutable y una cerca before/after;
-sus previews de retención nunca ejecutan `DELETE`, prune, `VACUUM`, checkpoint
-ni manipulación de WAL/SHM. Ambas superficies conservan autoridad advisory y
-cero autoridad de mutación.
-
-La finalización no confía únicamente en la CLI: Framework v22 conserva la
-protección de v20 que impide enlazar
-acciones a un run protegido, Dedup v10 exige el scan ligado a su firma y Code v6
-conserva el run analítico. Los owners de mutación reciben
-`CorpusMutationGuard` y el commit exige ceros durables en candidatos, acciones
-y organización. Una identidad cambiada, un árbol intersectante o una frontera
-indemostrable propaga `ProtectedAnalysisRootError`; no activa un fallback.
-
-El diagnóstico asociado, `--code-status --code-json`, sí es consulta read-only
-estricta. A diferencia de lectores que pueden participar en WAL, exige
-instantáneas SQLite immutable con sidecars inactivos demostrables y fences
-estables antes/después. Acepta ausencia de sidecars o WAL vacío más SHM exacto
-de 32 KiB; un journal, WAL con contenido, SHM inválido o cerca inestable en
-Code, Framework o Dedup provoca abstención total con código `2`.
-No se emite evidencia parcial ni se crean sidecars, migraciones o reparaciones. Consulte
-[SELF_ANALYSIS.md](SELF_ANALYSIS.md).
+La CLI pública de Code se limita a estado, búsqueda, proyectos y reconstrucción.
+No acepta `--self-analysis`, `--code-review`, `--code-experiment-run` ni otros
+comandos de autoevaluación. El contenido, los nombres y los resultados
+semánticos siguen siendo datos; ninguna similitud, diagnóstico o clasificación
+puede mover, renombrar o eliminar archivos.
 
 ## Autorizaciones de mutación
 
@@ -322,13 +215,11 @@ reconstruirse. Recovery de acciones, OCR dudoso, entities/claims y otros
 dominios todavía no producen ReviewTask general: esa ausencia no debe ocultarse
 creando tareas nominales o habilitando decisiones automáticas.
 
-El experimento del autoanalizador para este protocolo tampoco concede autoridad:
-usa un actor sintético declarado, no autentica una identidad humana y opera sólo
-sobre estado Framework aislado. Sus cinco gates comprueban CAS, publicación,
-replay y rollback ante excepciones inyectadas; un receipt `passed` no equivale a
-una decisión humana, muerte real del proceso ni garantía frente a pérdida de
-energía. La única disposición derivable permanece advisory y
-`mutation_authority=false`.
+Los experimentos históricos del autoanalizador no forman parte de este
+protocolo ni conceden autoridad sobre el estado actual. Cualquier decisión de
+mutación sigue requiriendo el actor humano y las barreras explícitas de la
+operación correspondiente; una evidencia histórica no equivale a aprobación
+ni a un permiso vigente.
 
 ### Receipts y linaje como datos sensibles
 
@@ -498,64 +389,23 @@ completo. Mantenga actualizadas las dependencias compatibles y no desactive
 límites para procesar un archivo sospechoso sobre el corpus vivo. Reproduzca en
 un fixture no confidencial y aislado.
 
-La ruta `code` analiza texto/AST/estructura y no ejecuta el código observado. El
-analizador Rust vigente es léxico; Cargo y Clippy no se ejecutan como parte del
-contrato actual. Los trece proveedores `trusted-static` sólo participan en
-`--self-analysis`: no descubren archivos fuera del inventario, no importan
-módulos del proyecto y no aplican fixes. El perfil protected no carga
-configuración del corpus; trusted-static carga sólo las políticas y metadata
-declaradas arriba. El flujo crea copias temporales verificadas
-bajo el estado explícito y disjunto, nunca bajo la raíz observada aunque
-`TEMP/TMP` apunten allí. NeoCortex cierra los handles y vuelve a comprobar los
-inputs originales después de cada proceso.
-
-Mypy se invoca con el intérprete aislado y una caché efímera. Pyright `1.1.411`
-se ejecuta mediante Node desde un paquete npm owned junto al runtime; no usa
-`npx`, no descarga herramientas durante la corrida y no ejecuta scripts del
-proyecto. Ningún otro linter, compilador, plugin o script puede incorporarse sin
-una política explícita de confianza, timeout, recursos, publicación y
-proveniencia.
+La ruta `code` analiza texto, AST y estructura sin ejecutar el código observado.
+El analizador Rust vigente es léxico; Cargo y Clippy no se ejecutan como parte
+del contrato. Los resultados estructurales, diagnósticos y relaciones conservan
+su procedencia y límites, pero son evidencia de contenido, no conclusiones sobre
+la calidad del repositorio ni permisos de mutación.
 
 ## Herramientas externas
 
-NeoCortex puede localizar o usar Tesseract, FFprobe/FFmpeg, qpdf, LibreOffice y
-los extractores Office heredados `catdoc`/`xls2csv`/`catppt`.
+NeoCortex puede usar Tesseract, FFprobe/FFmpeg, qpdf, LibreOffice y extractores
+Office heredados cuando una ruta de contenido los necesita. Cada proceso recibe
+rutas absolutas verificadas, límites de entrada/salida, memoria y tiempo; una
+herramienta ausente se informa sin ejecutar un sustituto no confiable.
 
-- Use rutas absolutas verificadas cuando se proporcionen overrides.
-- No sustituya un binario mientras exista una corrida activa.
-- Registre versión y origen del ejecutable.
-- qpdf es un fallback opcional; su ausencia no debe provocar la ejecución de un
-  binario alternativo no confiable.
-- LibreOffice y los extractores Office heredados sólo reciben una copia
-  temporal acotada; no se habilitan macros ni se reutiliza el perfil personal.
-- Ruff y Mypy son dependencias base del runtime y se invocan con el mismo
-  intérprete (`python -I -m ...`), nunca mediante ejecutables encontrados en
-  `PATH`.
-- La instalación canónica de Pyright requiere Node y conserva el paquete npm
-  aislado junto al runtime; cualquier resolución alternativa queda incorporada
-  a la firma de entorno y no concede autoridad adicional.
-- Semgrep, Deptry y pip-audit se resuelven desde el mismo runtime Python. Las
-  reglas Semgrep están empaquetadas y autofix permanece deshabilitado; Deptry es
-  read-only; pip-audit crea un snapshot sin `--fix` y declara su red de forma
-  explícita.
-- No interpole rutas o consultas de usuario dentro de comandos de shell propios.
-
-Los temporales de recuperación deben permanecer en el directorio temporal del
-sistema, tener límites y retirarse sólo después de cerrar procesos y handles.
-Nunca modifique el original para “repararlo” durante extracción.
-
-En Windows, la frontera `run_bounded_capture()` y los workers aislados crean el
-hijo suspendido y lo asignan por su handle exacto a un Job Object con
-`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` antes de reanudarlo. Timeout, desborde de
-stdout/stderr, cancelación o excepción terminan el Job, esperan al proceso
-directo y cierran pipes y handles. Esta contención cubre los descendientes de
-esas fronteras; los proveedores estáticos añaden límites de memoria, cwd y entorno
-explícitos. Esto no autoriza matar procesos por nombre ni debe atribuirse a un
-callsite que no use esos supervisores.
-
-En POSIX, esos supervisores crean una sesión/grupo propio, terminan el árbol con
-`SIGTERM`/`SIGKILL` y aplican memoria con `RLIMIT_AS` o `/usr/bin/prlimit`. Si se
-solicita un límite que no puede imponerse, fallan cerrado antes de ejecutar.
+Los validadores del desarrollo no son dependencias del runtime: Ruff, Pyright,
+Mypy, Semgrep, Coverage, Vulture, Grimp, Complexipy, pip-audit y Cosmic Ray se
+invocan sólo de forma individual y explícita durante el mantenimiento, nunca a
+través de una capacidad productiva de NeoCortex.
 
 ## Modelos y red
 
@@ -565,11 +415,9 @@ solicita un límite que no puede imponerse, fallan cerrado antes de ejecutar.
 Linux, audio usa Whisper CPU/int8 y local-only por defecto; en Windows, la
 primera carga puede descargar pesos salvo `--audio-local-models-only`.
 
-El perfil `trusted-static` también puede acceder a la red únicamente mediante
-pip-audit para capturar el snapshot de vulnerabilidades. Esa consulta no
-descarga ni instala paquetes; el replay de un snapshot vigente no usa red. La
-fecha de captura y la frescura deben permanecer visibles y un snapshot vencido
-obliga a abstener su gate.
+NeoCortex no accede a la red para validar su propio código. Una auditoría de
+dependencias sólo procede por solicitud expresa y con el mínimo de nombres y
+versiones necesario; no instala paquetes ni usa `--fix`.
 
 Antes de permitir red:
 

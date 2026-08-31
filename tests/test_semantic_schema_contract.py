@@ -5,6 +5,7 @@
 # region [01] Dependencias del módulo
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 
@@ -40,6 +41,10 @@ def test_semantic_state_facade_reexports_schema_lifecycle_contract() -> None:
     assert semantic_state.SemanticStateError is semantic_schema.SemanticStateError
     assert semantic_state.semantic_database is semantic_schema.semantic_database
     assert semantic_state.initialize_semantic_state is semantic_schema.initialize_semantic_state
+    assert (
+        semantic_state.scrub_retired_image_provenance
+        is semantic_schema.scrub_retired_image_provenance
+    )
     assert semantic_state._migrate_to_v1 is semantic_schema._migrate_to_v1
     assert semantic_state._migrate_to_v2 is semantic_schema._migrate_to_v2
 
@@ -206,6 +211,74 @@ def test_new_schema_records_exact_complete_migration_history(tmp_path: Path) -> 
             int(row[0])
             for row in connection.execute("SELECT version FROM schema_migrations ORDER BY version")
         ) == (1, 2, 3, 4, 5, 6, 7)
+
+
+def test_retired_image_provenance_scrub_preserves_product_keys(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "semantic.sqlite3"
+    semantic_schema.initialize_semantic_state(database)
+    provenance = {
+        "adapter": "legacy-image-source-v3",
+        "category": "industrial",
+        "adult_classification": "explicit",
+        "nested": {"adult_confidence": 0.99, "safe": True},
+        "entries": [{"adult_candidate": 1, "label": "kept"}],
+    }
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            """INSERT INTO semantic_items(
+                item_id,source_kind,source_identity,identity_version,path,
+                content_xxh3_128,content_bytes,content_xxh3_64_guard,
+                provenance_json,refresh_token,active,updated_ns)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                "item:image:legacy",
+                "image",
+                "legacy",
+                "legacy-v3",
+                "/tmp/legacy.png",
+                "a" * 32,
+                10,
+                "b" * 16,
+                json.dumps(provenance),
+                "refresh-token",
+                1,
+                1,
+            ),
+        )
+
+    assert semantic_schema.scrub_retired_image_provenance(database) == (1, 0)
+
+    with sqlite3.connect(database) as connection:
+        row = connection.execute(
+            "SELECT provenance_json,refresh_token,active FROM semantic_items "
+            "WHERE item_id='item:image:legacy'"
+        ).fetchone()
+        marker = connection.execute(
+            "SELECT value FROM metadata WHERE key='retired_image_adult_scrub_ns'"
+        ).fetchone()
+    assert row is not None
+    scrubbed = json.loads(str(row[0]))
+    assert scrubbed == {
+        "adapter": "legacy-image-source-v3",
+        "category": "industrial",
+        "nested": {"safe": True},
+        "entries": [{"label": "kept"}],
+    }
+    assert row[1:] == (None, 0)
+    assert marker is not None and str(marker[0]).isdigit()
+
+
+def test_retired_image_provenance_scrub_is_noop_for_clean_state(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "semantic.sqlite3"
+    semantic_schema.initialize_semantic_state(database)
+    before = database.read_bytes()
+
+    assert semantic_schema.scrub_retired_image_provenance(database) == (0, 0)
+    assert database.read_bytes() == before
 
 
 # endregion [02]

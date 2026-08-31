@@ -31,7 +31,7 @@ from neocortex.runtime.config.application_config_projections import (
     global_resource_limits_from_application,
 )
 from neocortex.runtime.control.cancellation import CancellationToken
-from neocortex.safety.corpus_access import CorpusAccessPolicy, path_trees_intersect
+from neocortex.safety.corpus_access import CorpusAccessPolicy
 from neocortex.runtime.control.global_resources import (
     GlobalResourceCoordinator,
     GlobalResourceSummary,
@@ -41,7 +41,6 @@ from neocortex.runtime.control.incremental_gate import (
     evaluate_incremental_gate,
 )
 from neocortex.integrations.inventory.inventory_coordinator import PreparedInventory, prepare_inventory
-from neocortex.safety.internal_paths import InternalPathsPolicy
 from neocortex.integrations.inventory.inventory_boundary import (
     AuthorizedStateDirectory as AuthorizedStateDirectory,
     NormalInventoryBoundary,
@@ -55,7 +54,6 @@ from neocortex.runtime.models import (
     FrameworkConfig,
     InitialRunResult,
     RouteOnlyRunResult,
-    SelfAnalysisRunResult,
 )
 from neocortex.runtime.orchestration.route_registry import (
     RouteAdapter,
@@ -65,10 +63,6 @@ from neocortex.runtime.orchestration.route_registry import (
 )
 from neocortex.runtime.orchestration.route_selection import ORGANIZABLE_ROUTE_NAMES
 from neocortex.runtime.orchestration.run_lifecycle import RunHeartbeat
-from neocortex.workflow.self_analysis.self_analysis import (
-    build_self_analysis_inventory_policy,
-    self_analysis_commands,
-)
 from neocortex.persistence.framework_route_state import FrameworkRouteState
 from neocortex.persistence.framework_state_writer import FrameworkState
 # endregion [01]
@@ -89,16 +83,6 @@ if TYPE_CHECKING:
         OrganizationApplySummary,
         OrganizationPlanSummary,
     )
-
-
-@dataclass(frozen=True, slots=True)
-class _SelfAnalysisExecution:
-    inventory: PreparedInventory
-    journal_after: JournalCursor | None
-    code: CodeRouteSummary
-    route_results: dict[str, object]
-    global_resources: GlobalResourceSummary | None
-    safety: Mapping[str, int]
 
 
 @dataclass(frozen=True, slots=True)
@@ -232,142 +216,8 @@ class FrameworkOrchestrator:
         )
         return tuple(Path(path) for path in boundary.exclusion_policy.explicit_roots)
 
-    def _validated_self_analysis(
-        self,
-        root: Path,
-    ) -> tuple[
-        CorpusAccessPolicy,
-        InventoryExclusionPolicy,
-        Path,
-        InternalPathsPolicy,
-        CorpusAccessPolicy,
-    ]:
-        """Validate the preset and initialize only its exact disjoint state tree."""
 
-        if not self.config.self_analysis:
-            raise ValueError("self-analysis execution requires self_analysis=True")
-        if self.config.corpus_access_mode != "analyze_only":
-            raise ValueError("self-analysis requires analyze_only corpus access")
-        if self.config.apply_actions:
-            raise ValueError("self-analysis cannot apply corpus actions")
-        if self.selected_routes != ("code",):
-            raise ValueError("self-analysis requires exactly the code route")
-        code_adapter = self.route_registry.get("code")
-        if code_adapter is None or code_adapter.input_source != "inventory_snapshot":
-            raise ValueError("self-analysis code route must consume inventory_snapshot")
-        if (
-            self.config.route_only
-            or self.config.candidate_run_id is not None
-            or self.config.resume_run_id is not None
-            or self.config.selection.active
-        ):
-            raise ValueError("self-analysis cannot use route-only or selection controls")
-        if self.config.document_catalog_enabled or self.config.organization_root is not None:
-            raise ValueError("self-analysis cannot enable catalog or organization work")
-        if self.config.code_include_generated or self.config.code_include_vendored:
-            raise ValueError("self-analysis requires generated and vendored exclusions")
-        if self.config.code_candidate_scope != "projects":
-            raise ValueError("self-analysis requires project-scoped Code selection")
 
-        access_policy = CorpusAccessPolicy.capture("analyze_only", root)
-        state_layout = initialize_authorized_state_directory(
-            access_policy,
-            self.config.state_directory,
-            require_disjoint=True,
-        )
-        state_directory = state_layout.path
-        internal_paths_policy = state_layout.internal_paths_policy
-        internal_paths_policy.validate_corpus_access(access_policy)
-        self.config = replace(
-            self.config,
-            root=access_policy.root,
-            state_directory=state_directory,
-        )
-        inventory_policy = build_self_analysis_inventory_policy(
-            access_policy.root,
-            state_directory,
-        )
-        return (
-            access_policy,
-            inventory_policy,
-            state_directory,
-            internal_paths_policy,
-            state_layout.state_policy,
-        )
-
-    def _revalidate_self_analysis_boundary(
-        self,
-        access_policy: CorpusAccessPolicy,
-        internal_paths_policy: InternalPathsPolicy,
-        state_directory: Path,
-        *,
-        require_state: bool,
-        expected_state_identity: CorpusAccessPolicy | None = None,
-    ) -> CorpusAccessPolicy | None:
-        """Recheck the protected root and canonical state identity at I/O fences."""
-
-        internal_paths_policy.validate_corpus_access(access_policy)
-        state_directory = Path(os.path.abspath(state_directory))
-        try:
-            lexical_key = os.path.normcase(os.fspath(state_directory))
-            physical_key = os.path.normcase(os.path.abspath(os.path.realpath(state_directory)))
-            if lexical_key != physical_key:
-                raise ValueError(
-                    "self-analysis state_directory cannot use an alias or reparse path"
-                )
-            if path_trees_intersect(access_policy.root, state_directory):
-                raise ValueError("self-analysis root and state directory must remain disjoint")
-            if not require_state:
-                observed_state_identity = None
-            else:
-                observed_state_identity = CorpusAccessPolicy.capture(
-                    "analyze_only",
-                    state_directory,
-                )
-                if os.path.normcase(os.fspath(observed_state_identity.root)) != lexical_key:
-                    raise ValueError("self-analysis state_directory is not canonical")
-                if expected_state_identity is not None and (
-                    observed_state_identity.root_device_id,
-                    observed_state_identity.root_file_id,
-                    observed_state_identity.root_birthtime_ns,
-                ) != (
-                    expected_state_identity.root_device_id,
-                    expected_state_identity.root_file_id,
-                    expected_state_identity.root_birthtime_ns,
-                ):
-                    raise ValueError("self-analysis state_directory identity changed")
-        except (OSError, ValueError) as exc:
-            internal_paths_policy.validate_corpus_access(access_policy)
-            raise ValueError("self-analysis state boundary cannot be verified") from exc
-        internal_paths_policy.validate_corpus_access(access_policy)
-        return observed_state_identity
-
-    def _self_analysis_incremental_gate(
-        self,
-        *,
-        state: FrameworkState,
-        dedup_index: DedupIndex,
-        root: Path,
-        access_policy: CorpusAccessPolicy,
-        inventory_policy: InventoryExclusionPolicy,
-        journal_before: JournalCursor,
-    ) -> tuple[bool, str, int | None]:
-        """Authorize checkpoint reuse only behind three matching owners."""
-
-        request = IncrementalGateRequest.from_access_policy(
-            access_policy,
-            framework_policy_signature=inventory_policy.signature,
-            inventory_policy_signature=inventory_policy.signature,
-            journal_before=journal_before,
-            verify_final=access_policy.verify_root_identity,
-        )
-        if request.root != root:
-            raise ValueError("self-analysis gate root differs from its access policy")
-        return evaluate_incremental_gate(
-            request,
-            state=state,
-            inventory=dedup_index,
-        ).as_tuple()
 
     def _normal_incremental_gate(
         self,
@@ -471,51 +321,6 @@ class FrameworkOrchestrator:
             {"organization_root": str(organization_root), **asdict(apply_summary)},
         )
         return plan_summary, apply_summary
-
-    def _apply_explicit_adult_images(
-        self,
-        action_runner: FrameworkActions,
-        image_summary: ImageRouteSummary | None,
-        state: FrameworkState,
-        run_id: int,
-    ) -> ImageRouteSummary | None:
-        """Plan or recycle only current-signature high-confidence image results."""
-
-        if image_summary is None:
-            return None
-        from neocortex.capabilities.formats.image.state import iter_explicit_adult_candidates
-
-        if image_summary.processing_signature is None:
-            return image_summary
-        candidates = iter_explicit_adult_candidates(
-            self.config.image_database,
-            run_id,
-            image_summary.processing_signature,
-        )
-        applied, failed, protected = action_runner.recycle_verified_files(
-            "trash_explicit_adult_image",
-            candidates,
-        )
-        updated = replace(
-            image_summary,
-            adult_recycled=applied,
-            adult_recycle_failed=failed,
-            adult_recycle_protected=protected,
-        )
-        state.record_event(
-            run_id,
-            "warning" if failed else "info",
-            "image-adult-actions",
-            "Candidatos explícitos procesados con política de Papelera",
-            {
-                "apply_actions": self.config.apply_actions,
-                "explicit_candidates": image_summary.adult_explicit,
-                "recycled": applied,
-                "failed": failed,
-                "protected": protected,
-            },
-        )
-        return updated
 
     def _run_content_routes(
         self,
@@ -657,484 +462,15 @@ class FrameworkOrchestrator:
 
     def run(
         self,
-    ) -> InitialRunResult | SelfAnalysisRunResult | RouteOnlyRunResult:
+    ) -> InitialRunResult | RouteOnlyRunResult:
         """Dispatch a full inventory run or an explicitly isolated route run."""
 
-        if self.config.self_analysis:
-            return self.run_self_analysis()
         if self.config.route_only or self.config.resume_run_id is not None:
             return self.run_route_only()
         return self.run_initial()
-
-    def run_self_analysis(self) -> SelfAnalysisRunResult:
-        """Analyze one protected source root without common corpus work."""
-
-        self._cancellation = CancellationToken()
-        root = self._validated_root()
-        (
-            access_policy,
-            inventory_policy,
-            state_directory,
-            internal_paths_policy,
-            state_identity,
-        ) = self._validated_self_analysis(root)
-        observed_state_identity = self._revalidate_self_analysis_boundary(
-            access_policy,
-            internal_paths_policy,
-            state_directory,
-            require_state=True,
-            expected_state_identity=state_identity,
-        )
-        if observed_state_identity is None:
-            raise RuntimeError("self-analysis state identity was not captured")
-        with FrameworkRunLock(state_directory / "framework.lock"):
-            return self._run_self_analysis_locked(
-                access_policy,
-                inventory_policy,
-                state_identity,
-                internal_paths_policy,
-            )
-
-    def _run_self_analysis_locked(
-        self,
-        access_policy: CorpusAccessPolicy,
-        inventory_policy: InventoryExclusionPolicy,
-        state_identity: CorpusAccessPolicy,
-        internal_paths_policy: InternalPathsPolicy,
-    ) -> SelfAnalysisRunResult:
-        root = access_policy.root
-        journal_before, journal_error = self._prepare_self_analysis(
-            access_policy,
-            state_identity,
-            internal_paths_policy,
-        )
-        commands = self_analysis_commands(
-            self.config,
-            root,
-            self.config.state_directory,
-        )
-        self._revalidate_self_analysis_boundary(
-            access_policy,
-            internal_paths_policy,
-            self.config.state_directory,
-            require_state=True,
-            expected_state_identity=state_identity,
-        )
-        with FrameworkState(self.config.framework_database) as state:
-            state.mark_abandoned_runs()
-            state.mark_abandoned_actions()
-            run_id = state.begin_self_analysis_run(
-                access_policy,
-                journal_before,
-                state_directory=self.config.state_directory,
-                inventory_policy_signature=inventory_policy.signature,
-            )
-            execution = self._manage_self_analysis_run(
-                state=state,
-                run_id=run_id,
-                access_policy=access_policy,
-                inventory_policy=inventory_policy,
-                state_identity=state_identity,
-                internal_paths_policy=internal_paths_policy,
-                journal_before=journal_before,
-                journal_error=journal_error,
-                commands=commands,
-            )
-
-        emit_progress(
-            self.progress,
-            ProgressEvent(
-                "framework",
-                "complete",
-                "Autoanálisis protegido completado",
-                1,
-                1,
-                "fase",
-                True,
-            ),
-        )
-        return self._self_analysis_result(run_id, inventory_policy, execution)
-
-    def _prepare_self_analysis(
-        self,
-        access_policy: CorpusAccessPolicy,
-        state_identity: CorpusAccessPolicy,
-        internal_paths_policy: InternalPathsPolicy,
-    ) -> tuple[JournalCursor | None, str | None]:
-        self._revalidate_self_analysis_boundary(
-            access_policy,
-            internal_paths_policy,
-            self.config.state_directory,
-            require_state=True,
-            expected_state_identity=state_identity,
-        )
-        emit_progress(
-            self.progress,
-            ProgressEvent(
-                "framework",
-                "prepare",
-                "Preparando autoanálisis protegido",
-                0,
-                1,
-                "fase",
-            ),
-        )
-        journal_error: str | None = None
-        if os.name != "nt":
-            journal_before = None
-            journal_error = "portable_inventory_backend"
-        else:
-            try:
-                journal_before = query_journal_cursor(access_policy.root.drive)
-            except (NtfsUsnError, OSError) as exc:
-                journal_before = None
-                journal_error = f"{type(exc).__name__}: {exc}"
-        emit_progress(
-            self.progress,
-            ProgressEvent(
-                "framework",
-                "prepare",
-                "Autoanálisis preparado",
-                1,
-                1,
-                "fase",
-                True,
-            ),
-        )
-        return journal_before, journal_error
-
-    def _manage_self_analysis_run(
-        self,
-        *,
-        state: FrameworkState,
-        run_id: int,
-        access_policy: CorpusAccessPolicy,
-        inventory_policy: InventoryExclusionPolicy,
-        state_identity: CorpusAccessPolicy,
-        internal_paths_policy: InternalPathsPolicy,
-        journal_before: JournalCursor | None,
-        journal_error: str | None,
-        commands: dict[str, list[str]],
-    ) -> _SelfAnalysisExecution:
-        heartbeat = RunHeartbeat(
-            self.config.framework_database,
-            run_id,
-            interval_seconds=self.config.heartbeat_interval_seconds,
-        ).start()
-        try:
-            return self._execute_self_analysis_run(
-                state=state,
-                run_id=run_id,
-                access_policy=access_policy,
-                inventory_policy=inventory_policy,
-                state_identity=state_identity,
-                internal_paths_policy=internal_paths_policy,
-                journal_before=journal_before,
-                journal_error=journal_error,
-                commands=commands,
-            )
-        except KeyboardInterrupt as exc:
-            self._persist_self_analysis_termination(state, run_id, exc, cancelled=True)
-            raise
-        except BaseException as exc:
-            self._persist_self_analysis_termination(state, run_id, exc, cancelled=False)
-            raise
-        finally:
-            heartbeat.stop()
-
-    @staticmethod
-    def _persist_self_analysis_termination(
-        state: FrameworkState,
-        run_id: int,
-        exc: BaseException,
-        *,
-        cancelled: bool,
-    ) -> None:
-        transition_name = "cancellation" if cancelled else "failure"
-        try:
-            transitioned = (
-                state.cancel_initial_run(run_id) if cancelled else state.fail_initial_run(run_id)
-            )
-        except Exception as transition_exc:
-            exc.add_note(
-                f"{transition_name} status could not be persisted: "
-                f"{type(transition_exc).__name__}: {transition_exc}"
-            )
-            return
-        if not transitioned:
-            return
-        try:
-            state.record_event(
-                run_id,
-                "warning" if cancelled else "error",
-                "run",
-                ("Autoanálisis cancelado por el usuario" if cancelled else "Autoanálisis fallido"),
-                None if cancelled else {"error_type": type(exc).__name__, "detail": str(exc)},
-            )
-        except Exception as event_exc:
-            exc.add_note(
-                f"{transition_name} event could not be persisted: "
-                f"{type(event_exc).__name__}: {event_exc}"
-            )
-
-    def _execute_self_analysis_run(
-        self,
-        *,
-        state: FrameworkState,
-        run_id: int,
-        access_policy: CorpusAccessPolicy,
-        inventory_policy: InventoryExclusionPolicy,
-        state_identity: CorpusAccessPolicy,
-        internal_paths_policy: InternalPathsPolicy,
-        journal_before: JournalCursor | None,
-        journal_error: str | None,
-        commands: dict[str, list[str]],
-    ) -> _SelfAnalysisExecution:
-        self._record_self_analysis_start(
-            state,
-            run_id,
-            access_policy,
-            inventory_policy,
-            internal_paths_policy,
-            journal_before,
-            journal_error,
-        )
-        inventory = self._prepare_self_analysis_inventory(
-            state=state,
-            run_id=run_id,
-            access_policy=access_policy,
-            inventory_policy=inventory_policy,
-            state_identity=state_identity,
-            internal_paths_policy=internal_paths_policy,
-            journal_before=journal_before,
-        )
-        code_summary, route_results, global_resources, journal_after = (
-            self._run_self_analysis_code_routes(
-                state=state,
-                run_id=run_id,
-                root=access_policy.root,
-                inventory=inventory,
-            )
-        )
-        safety = self._finalize_self_analysis(
-            state=state,
-            run_id=run_id,
-            access_policy=access_policy,
-            inventory_policy=inventory_policy,
-            state_identity=state_identity,
-            internal_paths_policy=internal_paths_policy,
-            journal_after=journal_after,
-            code_processing_signature=code_summary.processing_signature,
-            commands=commands,
-        )
-        return _SelfAnalysisExecution(
-            inventory,
-            journal_after,
-            code_summary,
-            route_results,
-            global_resources,
-            safety,
-        )
-
-    def _record_self_analysis_start(
-        self,
-        state: FrameworkState,
-        run_id: int,
-        access_policy: CorpusAccessPolicy,
-        inventory_policy: InventoryExclusionPolicy,
-        internal_paths_policy: InternalPathsPolicy,
-        journal_before: JournalCursor | None,
-        journal_error: str | None,
-    ) -> None:
-        state.record_event(
-            run_id,
-            "info",
-            "run",
-            "Autoanálisis protegido iniciado",
-            {
-                "root": str(access_policy.root),
-                "state_directory": str(self.config.state_directory),
-                "corpus_access_mode": "analyze_only",
-                "inventory_policy_signature": inventory_policy.signature,
-                "journal_status": ("available" if journal_before is not None else "unavailable"),
-                "journal_error": journal_error,
-                "internal_paths_policy": internal_paths_policy.manifest(),
-                "selected_routes": ["code"],
-            },
-        )
-
-    def _prepare_self_analysis_inventory(
-        self,
-        *,
-        state: FrameworkState,
-        run_id: int,
-        access_policy: CorpusAccessPolicy,
-        inventory_policy: InventoryExclusionPolicy,
-        state_identity: CorpusAccessPolicy,
-        internal_paths_policy: InternalPathsPolicy,
-        journal_before: JournalCursor | None,
-    ) -> PreparedInventory:
-        state.set_run_phase(run_id, "inventory")
-        with DedupIndex(self.config.dedup_database) as dedup_index:
-            allow_incremental = False
-            gate_reason = "journal_unavailable_full_scan"
-            source_run_id = None
-            if journal_before is not None:
-                allow_incremental, gate_reason, source_run_id = (
-                    self._self_analysis_incremental_gate(
-                        state=state,
-                        dedup_index=dedup_index,
-                        root=access_policy.root,
-                        access_policy=access_policy,
-                        inventory_policy=inventory_policy,
-                        journal_before=journal_before,
-                    )
-                )
-            state.record_event(
-                run_id,
-                "info" if allow_incremental else "warning",
-                "self-analysis-incremental-gate",
-                "Reutilización incremental evaluada",
-                {
-                    "allowed": allow_incremental,
-                    "reason": gate_reason,
-                    "source_run_id": source_run_id,
-                    "inventory_policy_signature": inventory_policy.signature,
-                },
-            )
-            inventory = prepare_inventory(
-                dedup_index,
-                state,
-                run_id,
-                access_policy.root,
-                journal_before,
-                progress=self.progress,
-                allow_incremental=allow_incremental,
-                exclusion_policy=inventory_policy,
-            )
-            self._revalidate_self_analysis_boundary(
-                access_policy,
-                internal_paths_policy,
-                self.config.state_directory,
-                require_state=True,
-                expected_state_identity=state_identity,
-            )
-        candidate_rows = state.route_candidate_run_count(run_id)
-        if candidate_rows != 0:
-            raise RuntimeError("self-analysis produced MIME route candidates")
-        state.publish_initial_routing_snapshot(
-            run_id,
-            inventory.scan.scan_id,
-            inventory.reconciliation_records,
-            inventory.inventory_attempts,
-            inventory.inventory_mode,
-            candidate_rows,
-        )
-        return inventory
-
-    def _run_self_analysis_code_routes(
-        self,
-        *,
-        state: FrameworkState,
-        run_id: int,
-        root: Path,
-        inventory: PreparedInventory,
-    ) -> tuple[
-        CodeRouteSummary,
-        dict[str, object],
-        GlobalResourceSummary | None,
-        JournalCursor | None,
-    ]:
-        route_results, global_resources = self._run_content_routes(
-            root=root,
-            state=state,
-            run_id=run_id,
-            scan_id=inventory.scan.scan_id,
-        )
-        code_summary = cast("CodeRouteSummary | None", route_results.get("code"))
-        if code_summary is None:
-            raise RuntimeError("self-analysis code route returned no summary")
-        code_processing_signature = code_summary.processing_signature
-        if not isinstance(code_processing_signature, str) or not code_processing_signature:
-            raise RuntimeError("self-analysis code route returned no effective signature")
-        journal_after = self._self_analysis_journal_after(inventory)
-        return code_summary, route_results, global_resources, journal_after
-
-    @staticmethod
-    def _self_analysis_journal_after(
-        inventory: PreparedInventory,
-    ) -> JournalCursor | None:
-        reconciliation = inventory.reconciliation
-        journal_after = None if reconciliation is None else reconciliation.cursor
-        journal_before = inventory.journal_before
-        if (journal_after is None) != (journal_before is None):
-            raise RuntimeError("self-analysis inventory returned partial journal evidence")
-        if (
-            journal_after is not None
-            and journal_before is not None
-            and journal_after.journal_id != journal_before.journal_id
-        ):
-            raise RuntimeError("the USN journal changed during protected self-analysis")
-        return journal_after
-
-    def _finalize_self_analysis(
-        self,
-        *,
-        state: FrameworkState,
-        run_id: int,
-        access_policy: CorpusAccessPolicy,
-        inventory_policy: InventoryExclusionPolicy,
-        state_identity: CorpusAccessPolicy,
-        internal_paths_policy: InternalPathsPolicy,
-        journal_after: JournalCursor | None,
-        code_processing_signature: str,
-        commands: dict[str, list[str]],
-    ) -> Mapping[str, int]:
-        self._revalidate_self_analysis_boundary(
-            access_policy,
-            internal_paths_policy,
-            self.config.state_directory,
-            require_state=True,
-            expected_state_identity=state_identity,
-        )
-        state.set_run_phase(run_id, "finalize")
-        completion_manifest = state.complete_self_analysis_run(
-            run_id,
-            journal_after,
-            inventory_policy=inventory_policy,
-            code_processing_signature=code_processing_signature,
-            commands=commands,
-        )
-        return cast(Mapping[str, int], completion_manifest["safety"])
-
-    @staticmethod
-    def _self_analysis_result(
-        run_id: int,
-        inventory_policy: InventoryExclusionPolicy,
-        execution: _SelfAnalysisExecution,
-    ) -> SelfAnalysisRunResult:
-        inventory = execution.inventory
-        return SelfAnalysisRunResult(
-            run_id=run_id,
-            scan=inventory.scan,
-            journal_before=inventory.journal_before,
-            journal_after=execution.journal_after,
-            reconciliation_records=inventory.reconciliation_records,
-            inventory_attempts=inventory.inventory_attempts,
-            inventory_mode=inventory.inventory_mode,
-            inventory_policy_signature=inventory_policy.signature,
-            code=execution.code,
-            route_results=execution.route_results,
-            global_resources=execution.global_resources,
-            corpus_action_count=execution.safety["file_actions"],
-            route_candidate_count=execution.safety["route_candidates"],
-        )
-
     def run_initial(self) -> InitialRunResult:
         """Run the pre-index stage, optionally applying explicitly enabled actions."""
 
-        if self.config.self_analysis or self.config.corpus_access_mode != "normal":
-            raise ValueError("run_initial cannot execute an analyze-only configuration")
         self._cancellation = CancellationToken()
         root = self._validated_root()
         access_policy = CorpusAccessPolicy.capture("normal", root)
@@ -1440,14 +776,6 @@ class FrameworkOrchestrator:
             scan_id=scan_id,
         )
         image_summary = cast("ImageRouteSummary | None", route_results.get("image"))
-        image_summary = self._apply_explicit_adult_images(
-            action_runner,
-            image_summary,
-            state,
-            run_id,
-        )
-        if image_summary is not None:
-            route_results["image"] = image_summary
         organization_plan, organization_apply = self._run_document_organization(
             root=root,
             state=state,
@@ -1740,8 +1068,6 @@ class FrameworkOrchestrator:
     def run_route_only(self) -> RouteOnlyRunResult:
         """Run content routes over durable inputs without common maintenance."""
 
-        if self.config.self_analysis or self.config.corpus_access_mode != "normal":
-            raise ValueError("run_route_only cannot execute self-analysis")
         self._cancellation = CancellationToken()
         root = self._validated_root()
         access_policy = CorpusAccessPolicy.capture("normal", root)

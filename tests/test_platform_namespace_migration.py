@@ -25,10 +25,7 @@ def test_platform_implementation_lives_under_product_namespace() -> None:
 
     for relative_path in (
         "neocortex/workflow/actions/actions.py",
-        "neocortex/code/code_change_validation.py",
-        "neocortex/code/external_architecture_worker.py",
         "neocortex/persistence/framework_state_writer.py",
-        "neocortex/code/logical_owner_contracts.py",
         "neocortex/capabilities/formats/archive/route.py",
         "neocortex/capabilities/formats/docx/integrity.py",
         "neocortex/capabilities/formats/docx/route.py",

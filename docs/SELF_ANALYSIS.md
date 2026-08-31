@@ -1,4 +1,11 @@
-# Autoanálisis de código y evidencia externa
+# Autoanálisis de código y evidencia externa (referencia histórica)
+
+> **Documento no normativo.** Describe una arquitectura anterior que ya no
+> forma parte del producto. NeoCortex no expone `--self-analysis`,
+> `trusted-deep`, review interno ni un quality gate agregador; Code sólo procesa
+> código como contenido. Para el diseño vigente consulta
+> [ARCHITECTURE.md](ARCHITECTURE.md) y
+> [CODE_SUBSYSTEM_CLASSIFICATION.md](CODE_SUBSYSTEM_CLASSIFICATION.md).
 
 > **Estado del contrato.** Esta capacidad pertenece a la fuente `0.9.0` bajo
 > `~/Neocortex/Repository`. Debe ejecutarse desde un runtime Linux versionado

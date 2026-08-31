@@ -12,9 +12,8 @@ from pathlib import Path
 
 import pytest
 
-from neocortex.code import pip_bootstrap
-from neocortex.code import semgrep_tool_contract
-from tools import bootstrap_pip, release_linux, semgrep_tool_runtime
+from tools import pip_bootstrap
+from tools import bootstrap_pip, release_linux
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -63,18 +62,13 @@ def test_release_linux_import_does_not_require_posix_fcntl() -> None:
     assert completed.stdout.strip() == "ok"
 
 
-def test_neutral_contract_preserves_release_and_semgrep_reexports() -> None:
+def test_release_contract_preserves_pip_bootstrap_reexports() -> None:
     assert pip_bootstrap.PIP_BOOTSTRAP_VERSION == "26.2.1"
     assert pip_bootstrap.PIP_BOOTSTRAP_FILENAME == "pip-26.2.1-py3-none-any.whl"
     assert len(pip_bootstrap.PIP_BOOTSTRAP_SHA256) == 64
     assert pip_bootstrap.PIP_BOOTSTRAP_URL.startswith("https://files.pythonhosted.org/")
-    assert semgrep_tool_contract.PIP_BOOTSTRAP_FILENAME == pip_bootstrap.PIP_BOOTSTRAP_FILENAME
-    assert semgrep_tool_contract.PIP_BOOTSTRAP_SHA256 == pip_bootstrap.PIP_BOOTSTRAP_SHA256
-    assert semgrep_tool_contract.PIP_BOOTSTRAP_URL == pip_bootstrap.PIP_BOOTSTRAP_URL
-    assert semgrep_tool_contract.SEMGREP_TOOL_PIP_VERSION == pip_bootstrap.PIP_BOOTSTRAP_VERSION
     assert release_linux.PIP_BOOTSTRAP_VERSION == pip_bootstrap.PIP_BOOTSTRAP_VERSION
     assert release_linux._PIP_WHEEL_RUNNER == pip_bootstrap.PIP_WHEEL_RUNNER
-    assert semgrep_tool_runtime._PIP_WHEEL_RUNNER == pip_bootstrap.PIP_WHEEL_RUNNER
 
 
 def test_wrong_download_hash_never_executes_the_target_interpreter(tmp_path: Path) -> None:

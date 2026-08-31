@@ -1,5 +1,11 @@
 # Inventario técnico de licencias y componentes de terceros
 
+> **DOCUMENTO HISTÓRICO — NO NORMATIVO.** Este inventario describe
+> resoluciones y releases anteriores, incluida infraestructura de QA que ya no
+> forma parte del runtime de Code, así como la dependencia NudeNet que ya fue
+> retirada de Image. Las dependencias vigentes se definen en
+> `pyproject.toml` y `constraints.txt`.
+
 > Snapshot de metadata técnica observada. No concede permisos, no elige una licencia para NeoCortex y no constituye asesoría jurídica.
 
 ## Alcance y fecha

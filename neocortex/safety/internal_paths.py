@@ -23,7 +23,6 @@ from neocortex.platform.policy import UNAVAILABLE_BIRTHTIME_NS
 from neocortex.runtime.config.app_paths import (
     local_application_data_directory,
     program_installation_directory,
-    self_analysis_data_directory,
     source_repository_directory,
     stable_launcher_path,
 )
@@ -43,7 +42,6 @@ InternalPathRole = Literal[
     "repository",
     "runtime",
     "application_data",
-    "self_analysis",
     "launcher",
 ]
 InternalPathKind = Literal["tree", "file"]
@@ -54,12 +52,11 @@ EFFECTIVE_INVENTORY_POLICY_VERSION_V2 = "effective-inventory-policy-v2"
 INTERNAL_PATH_PROTECTION_REASON = "internal_framework_root"
 MAX_INTERNAL_PATH_ENTRIES = 16
 MAX_INTERNAL_PATH_MANIFEST_BYTES = 64 * 1024
-_VALID_ROLES = frozenset({"repository", "runtime", "application_data", "self_analysis", "launcher"})
+_VALID_ROLES = frozenset({"repository", "runtime", "application_data", "launcher"})
 _REQUIRED_ROLE_KINDS: dict[InternalPathRole, InternalPathKind] = {
     "repository": "tree",
     "runtime": "tree",
     "application_data": "tree",
-    "self_analysis": "tree",
     "launcher": "file",
 }
 
@@ -439,17 +436,14 @@ def _validate_policy_topology(
     repository = by_role["repository"].canonical_path
     runtime = by_role["runtime"].canonical_path
     application_data = by_role["application_data"].canonical_path
-    self_analysis = by_role["self_analysis"].canonical_path
     launcher = by_role["launcher"].canonical_path
     if any(
         path_trees_intersect(repository, other)
-        for other in (runtime, application_data, self_analysis, launcher)
+        for other in (runtime, application_data, launcher)
     ):
         raise ValueError("repository must be disjoint from every other internal path")
     if path_trees_intersect(runtime, application_data):
         raise ValueError("runtime and application data must be disjoint")
-    if not _is_strict_descendant(self_analysis, application_data):
-        raise ValueError("self-analysis must be below application data")
     if not _is_strict_descendant(launcher, runtime):
         raise ValueError("launcher must be below runtime")
 
@@ -531,11 +525,6 @@ def canonical_internal_paths_policy() -> InternalPathsPolicy:
                 "application_data",
                 "tree",
                 local_application_data_directory(),
-            ),
-            InternalPathSpec(
-                "self_analysis",
-                "tree",
-                self_analysis_data_directory(),
             ),
             InternalPathSpec("launcher", "file", stable_launcher_path()),
         )

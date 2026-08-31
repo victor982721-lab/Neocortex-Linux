@@ -48,20 +48,18 @@ def _internal_policy_factory(base: Path):
     repository = base / "Repository"
     runtime = base / "Programs" / "Neocortex"
     application_data = base / "Local" / "Neocortex"
-    self_analysis = application_data / "self-analysis"
     launcher = runtime / "bin" / "Neocortex.exe"
     specs = (
         InternalPathSpec("repository", "tree", repository),
         InternalPathSpec("runtime", "tree", runtime),
         InternalPathSpec("application_data", "tree", application_data),
-        InternalPathSpec("self_analysis", "tree", self_analysis),
         InternalPathSpec("launcher", "file", launcher),
     )
 
     def capture() -> InternalPathsPolicy:
         return InternalPathsPolicy.capture(specs)
 
-    return capture, repository, runtime, application_data, self_analysis, launcher
+    return capture, repository, runtime, application_data, launcher
 
 
 @pytest.fixture(autouse=True)
@@ -84,7 +82,7 @@ def test_fresh_state_materialization_is_fenced_and_policy_bound(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    capture, repository, runtime, application_data, _, launcher = _internal_policy_factory(
+    capture, repository, runtime, application_data, launcher = _internal_policy_factory(
         tmp_path / "internal"
     )
     repository.mkdir(parents=True)
@@ -123,14 +121,13 @@ def test_state_setup_never_creates_inside_repository(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    capture, repository, _, application_data, self_analysis, launcher = _internal_policy_factory(
+    capture, repository, _, application_data, launcher = _internal_policy_factory(
         tmp_path / "internal"
     )
     repository.mkdir(parents=True)
     launcher.parent.mkdir(parents=True)
     launcher.write_bytes(b"launcher")
     application_data.mkdir(parents=True)
-    self_analysis.mkdir()
     monkeypatch.setattr(
         inventory_boundary_module,
         "canonical_internal_paths_policy",
@@ -461,7 +458,7 @@ def test_canonical_internal_state_remains_allowed_below_protected_appdata(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    capture, repository, _, application_data, _, launcher = _internal_policy_factory(
+    capture, repository, _, application_data, launcher = _internal_policy_factory(
         tmp_path / "internal"
     )
     repository.mkdir(parents=True)
@@ -511,7 +508,7 @@ def test_protected_child_inside_authorized_appdata_is_still_rejected(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    capture, repository, _, application_data, _, launcher = _internal_policy_factory(
+    capture, repository, _, application_data, launcher = _internal_policy_factory(
         tmp_path / "internal"
     )
     repository.mkdir(parents=True)
@@ -575,35 +572,6 @@ def test_signed_normal_run_helper_persists_exact_effective_signature(
         assert state.source_inventory_policy_signature(run_id) == (expected.effective_signature)
 
 
-def test_fresh_self_analysis_state_captures_both_authorized_transitions(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    capture, repository, _, application_data, self_analysis, launcher = _internal_policy_factory(
-        tmp_path / "internal"
-    )
-    repository.mkdir(parents=True)
-    launcher.parent.mkdir(parents=True)
-    launcher.write_bytes(b"launcher")
-    monkeypatch.setattr(
-        inventory_boundary_module,
-        "canonical_internal_paths_policy",
-        capture,
-    )
-    corpus = tmp_path / "external-corpus"
-    corpus.mkdir()
-    access = CorpusAccessPolicy.capture("analyze_only", corpus)
-
-    layout = initialize_authorized_state_directory(
-        access,
-        self_analysis / "smoke",
-        require_disjoint=True,
-    )
-
-    assert layout.path.is_dir()
-    assert application_data.is_dir()
-    assert self_analysis.is_dir()
-    layout.internal_paths_policy.validate_corpus_access(access)
 
 
 def _publish_completed_owner(

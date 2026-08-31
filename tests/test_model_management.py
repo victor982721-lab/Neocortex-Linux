@@ -8,7 +8,6 @@ from unittest.mock import patch
 
 from neocortex.runtime.config import model_management
 from neocortex.api.cli.cli_app import main
-from neocortex.interface.entrypoint import _translate_canonical_arguments, entrypoint
 
 
 def _complete_report(root: Path) -> dict[str, object]:
@@ -51,7 +50,7 @@ def test_prepare_models_runs_semantic_then_whisper_and_requires_complete_status(
     inspect.assert_called_once_with(models_root=tmp_path / "models")
 
 
-def test_models_status_is_local_read_only_and_reports_six_models(tmp_path: Path) -> None:
+def test_models_status_is_local_read_only_and_reports_five_models(tmp_path: Path) -> None:
     root = tmp_path / "missing-models"
     with (
         patch.object(model_management, "current_platform_policy") as policy,
@@ -62,31 +61,19 @@ def test_models_status_is_local_read_only_and_reports_six_models(tmp_path: Path)
         ),
         patch.object(
             model_management,
-            "distribution_component",
-            return_value={"status": "unavailable"},
+            "_whisper_snapshot_directory",
+            return_value=None,
         ),
     ):
         policy.return_value.models_directory = root
         report = model_management.inspect_models()
 
     assert report["all_prepared"] is False
-    assert len(report["models"]) == 6
+    assert len(report["models"]) == 5
+    assert all("nudenet" not in str(item["model_id"]).casefold() for item in report["models"])
     assert not root.exists()
 
 
-def test_canonical_models_facade_translates_help_and_json(
-    capsys,
-) -> None:
-    assert _translate_canonical_arguments(("models", "prepare", "--json")) == [
-        "--models-prepare",
-        "--models-json",
-    ]
-    assert _translate_canonical_arguments(("models", "status", "--json")) == [
-        "--models-status",
-        "--models-json",
-    ]
-    assert entrypoint(("models", "status", "--help")) == 0
-    assert "Neocortex models status" in capsys.readouterr().out
 
 
 def test_models_status_json_exit_contract(capsys) -> None:

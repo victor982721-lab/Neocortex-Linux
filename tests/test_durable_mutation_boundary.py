@@ -27,9 +27,6 @@ from neocortex.safety.protected_content import (
     ProtectedContentPolicy,
     ProtectedPathSpec,
 )
-from neocortex.workflow.self_analysis.self_analysis import (
-    build_self_analysis_inventory_policy,
-)
 from neocortex.persistence.framework_route_state import FrameworkRouteState
 from neocortex.persistence.framework_state_writer import FrameworkState
 from tests.internal_paths_test_support import disjoint_internal_paths_policy
@@ -490,38 +487,6 @@ def test_relative_or_empty_persisted_paths_fail_closed(
             state.corpus_mutation_guard(run_id)
 
 
-def test_analyze_only_requires_exact_raw_policy_then_still_rejects_mutation(
-    tmp_path: Path,
-) -> None:
-    root = tmp_path / "repository"
-    state_directory = tmp_path / "state"
-    root.mkdir()
-    state_directory.mkdir()
-    access_policy = boundary_module.CorpusAccessPolicy.capture("analyze_only", root)
-    raw_policy = build_self_analysis_inventory_policy(root, state_directory)
-
-    with FrameworkState(state_directory / "framework.sqlite3") as state:
-        valid_run = state.begin_self_analysis_run(
-            access_policy,
-            JournalCursor(root.drive, 1, 0),
-            state_directory=state_directory,
-            inventory_policy_signature=raw_policy.signature,
-        )
-        valid_guard = state.corpus_mutation_guard(valid_run)
-        with pytest.raises(ProtectedAnalysisRootError):
-            valid_guard.require_paths_allowed(root / "module.py")
-
-        mismatch_run = state.begin_self_analysis_run(
-            access_policy,
-            JournalCursor(root.drive, 1, 0),
-            state_directory=state_directory,
-            inventory_policy_signature="mismatched-self-analysis-policy",
-        )
-        with pytest.raises(
-            InternalPathProtectionError,
-            match="signature does not match",
-        ):
-            state.corpus_mutation_guard(mismatch_run)
 
 
 def test_in_memory_main_database_is_never_a_durable_owner(tmp_path: Path) -> None:

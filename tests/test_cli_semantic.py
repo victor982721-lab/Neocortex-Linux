@@ -758,7 +758,7 @@ def test_semantic_index_preserves_preparation_execution_and_publication_order(
         image_index,
     )
     monkeypatch.setattr(
-        "neocortex.code.code_semantic_links.current_code_embedding_link_counts",
+        "neocortex.code.search.code_semantic_links.current_code_embedding_link_counts",
         code_links,
     )
     monkeypatch.setattr(semantic_cli, "_print_semantic_index_result", print_result)
@@ -869,7 +869,7 @@ def test_semantic_index_reports_published_code_link_coverage(
             return_value=_index_result(tmp_path, ("code",)),
         ),
         patch(
-            "neocortex.code.code_semantic_links.current_code_embedding_link_counts",
+            "neocortex.code.search.code_semantic_links.current_code_embedding_link_counts",
             return_value=(4, 3),
         ),
     ):
@@ -1032,7 +1032,7 @@ def test_all_accepts_explicit_code_semantic_selection(tmp_path: Path) -> None:
             return_value=_index_result(tmp_path, ("code",)),
         ) as operation,
         patch(
-            "neocortex.code.code_semantic_links.current_code_embedding_link_counts",
+            "neocortex.code.search.code_semantic_links.current_code_embedding_link_counts",
             return_value=(0, 0),
         ),
     ):

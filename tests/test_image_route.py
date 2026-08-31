@@ -17,7 +17,6 @@ from neocortex.capabilities.formats.image.document import (
     DocumentTextEvidence,
     DocumentVerifierRuntime,
 )
-from neocortex.capabilities.formats.image.models import AdultContentEvidence
 from neocortex.capabilities.formats.image.route import ImageRoute, ImageRouteConfig
 from neocortex.capabilities.formats.image.state import (
     initialize_image_state,
@@ -142,21 +141,6 @@ class _FingerprintIndex:
         self.values[self._key(snapshot, algorithm)] = digest
 
 
-class _UnavailableAdultClassifier:
-    signature = "unavailable-adult-test"
-
-    def classify(self, *_args: Any, **_kwargs: Any) -> AdultContentEvidence:
-        return AdultContentEvidence(
-            candidate=True,
-            analyzed=False,
-            classification="unavailable",
-            confidence=0.0,
-            detections=(),
-            evidence=("model_error:AttributeError",),
-            provenance=("test-adult-model:error",),
-        )
-
-
 # endregion [01]
 
 
@@ -197,16 +181,16 @@ class ImageRouteTests(unittest.TestCase):
             self.assertIn("semantic_json", columns)
             self.assertIn("document_candidate", columns)
             self.assertIn("error_disposition", columns)
-            self.assertIn("adult_classification", columns)
-            self.assertIn("adult_evidence_json", columns)
+            self.assertNotIn("adult_classification", columns)
+            self.assertNotIn("adult_evidence_json", columns)
             self.assertIn("ocr_text_zlib", columns)
             self.assertIn("ocr_text_chars", columns)
             self.assertIn("ocr_text_xxh3_128", columns)
             self.assertIn("ocr_text_truncated", columns)
-            self.assertEqual(version, "5")
+            self.assertEqual(version, "6")
             self.assertEqual(count, 1)
 
-    def test_schema_five_migration_preserves_legacy_cache_hits(self):
+    def test_schema_six_migration_preserves_legacy_cache_hits(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             path = root / "cached.png"
@@ -242,7 +226,7 @@ class ImageRouteTests(unittest.TestCase):
                     "SELECT value FROM metadata WHERE key='schema_version'"
                 ).fetchone()[0]
             self.assertEqual(row, (None, None, None, 0))
-            self.assertEqual(version, "5")
+            self.assertEqual(version, "6")
 
     def test_classifies_resumes_caches_errors_and_prunes(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -631,41 +615,6 @@ class ImageRouteTests(unittest.TestCase):
                     "SELECT category FROM images WHERE path=?", (str(path),)
                 ).fetchone()[0]
             self.assertEqual(category, "foto")
-
-    def test_adult_unavailable_counts_new_and_cached_results(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            path = root / "inspección_ñ.jpeg"
-            with Image.effect_noise((900, 700), 80).convert("RGB") as image:
-                image.save(path, quality=88)
-            state = _State((("image/jpeg", snapshot_path(path)),))
-
-            with patch(
-                "neocortex.capabilities.formats.image.route.DEFAULT_ADULT_CLASSIFIER",
-                new=_UnavailableAdultClassifier(),
-            ):
-                first = _route(root, state, 1).run()
-
-            self.assertEqual(first.classified, 1)
-            self.assertEqual(first.adult_heuristic_candidates, 1)
-            self.assertEqual(first.adult_analyzed, 0)
-            self.assertEqual(first.adult_unavailable, 1)
-
-            cached = _route(root, state, 2).run()
-
-            self.assertEqual(cached.classified, 0)
-            self.assertEqual(cached.cache_hits, 1)
-            self.assertEqual(cached.adult_unavailable, 1)
-            self.assertEqual(len(state.reconciliations), 2)
-            for reconciliation in state.reconciliations:
-                evaluated = reconciliation[4]
-                active = reconciliation[5]
-                self.assertIn("image_raster_document_candidate", evaluated)
-                self.assertIn("image_explicit_adult_content", evaluated)
-                self.assertEqual(
-                    active,
-                    frozenset({"image_adult_content_requires_review"}),
-                )
 
     def test_persists_unicode_ocr_text_without_json_duplication(self):
         with tempfile.TemporaryDirectory() as temporary:

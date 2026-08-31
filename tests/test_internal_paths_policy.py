@@ -38,7 +38,6 @@ class _Layout:
     repository: Path
     runtime: Path
     application_data: Path
-    self_analysis: Path
     launcher: Path
 
 
@@ -47,10 +46,9 @@ def _create_layout(tmp_path: Path) -> _Layout:
     repository = profile / "Neocortex" / "Repository"
     runtime = profile / "AppData" / "Local" / "Programs" / "Neocortex"
     application_data = profile / "AppData" / "Local" / "Neocortex"
-    self_analysis = application_data / "self-analysis"
     launcher = runtime / "bin" / "Neocortex.exe"
     repository.mkdir(parents=True)
-    self_analysis.mkdir(parents=True)
+    application_data.mkdir(parents=True)
     launcher.parent.mkdir(parents=True)
     launcher.write_bytes(b"launcher")
     return _Layout(
@@ -58,7 +56,6 @@ def _create_layout(tmp_path: Path) -> _Layout:
         repository,
         runtime,
         application_data,
-        self_analysis,
         launcher,
     )
 
@@ -72,7 +69,6 @@ def _specs(layout: _Layout) -> tuple[InternalPathSpec, ...]:
             "tree",
             layout.application_data,
         ),
-        InternalPathSpec("self_analysis", "tree", layout.self_analysis),
         InternalPathSpec("launcher", "file", layout.launcher),
     )
 
@@ -95,7 +91,6 @@ def test_policy_signature_and_manifest_are_deterministic(tmp_path: Path) -> None
         "launcher",
         "repository",
         "runtime",
-        "self_analysis",
     ]
 
 
@@ -117,7 +112,7 @@ def test_capture_rejects_an_unbounded_spec_source_after_six_items(
     with pytest.raises(ValueError, match="entry count"):
         InternalPathsPolicy.capture(unbounded_specs())
 
-    assert len(consumed) == 6
+    assert len(consumed) == 5
 
 
 def test_existing_internal_alias_is_rejected(
@@ -295,14 +290,11 @@ def test_policy_requires_complete_valid_roles_and_disjoint_repository(
     with pytest.raises(ValueError, match="every role exactly once"):
         InternalPathsPolicy.capture(_specs(layout)[:-1])
 
-    overlapping_self_analysis = layout.repository / "self-analysis"
-    overlapping_self_analysis.mkdir()
     overlapping = _Layout(
         layout.profile,
         layout.repository,
         layout.runtime,
         layout.repository,
-        overlapping_self_analysis,
         layout.launcher,
     )
     with pytest.raises(ValueError, match="repository must be disjoint"):

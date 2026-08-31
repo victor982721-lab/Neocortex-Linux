@@ -1,9 +1,10 @@
-"""Bounded read-only facade over personal and framework Knowledge state.
+"""Bounded read-only facade over published local Knowledge state.
 
-The operational owners remain the source of truth.  This module only selects
-the two canonical state roots, invokes their published readers independently,
-and labels every result with its scope.  It never accepts an arbitrary state
-path and never fuses scores from separate snapshots.
+The operational owners remain the source of truth. This module selects the
+canonical local state root, invokes its published readers independently, and
+keeps the historical ``framework`` name as a compatibility label where needed.
+It never accepts an arbitrary state path and never fuses scores from separate
+snapshots.
 """
 
 from __future__ import annotations
@@ -31,9 +32,7 @@ from neocortex.api.read_api_port import (
     inspect_derivation_lineage,
     knowledge_context_exit_code,
     knowledge_search_exit_code,
-    resolve_code_question,
     search_code,
-    self_analysis_data_directory,
     validate_knowledge_asset_resource_id,
 )
 
@@ -47,7 +46,7 @@ CancellationCheck = Callable[[], None]
 
 
 class ReadScope(StrEnum):
-    """Fixed, non-user-selectable state namespaces exposed by NeoCortex."""
+    """Fixed state names; ``framework`` remains a read-only compatibility alias."""
 
     PERSONAL = "personal"
     FRAMEWORK = "framework"
@@ -71,10 +70,12 @@ def scope_bindings(value: str | ReadScope) -> tuple[ScopeBinding, ...]:
     """Resolve one public scope without accepting an arbitrary filesystem path."""
 
     selected = _scope(value)
-    available = (
-        ScopeBinding(ReadScope.PERSONAL, default_state_directory()),
-        ScopeBinding(ReadScope.FRAMEWORK, self_analysis_data_directory()),
-    )
+    state_directory = default_state_directory()
+    available = (ScopeBinding(ReadScope.PERSONAL, state_directory),)
+    if selected is ReadScope.FRAMEWORK:
+        # The former self-analysis owner was retired. Keep the named scope as
+        # a read-only compatibility alias for the shared framework state.
+        return (ScopeBinding(ReadScope.FRAMEWORK, state_directory),)
     if selected is ReadScope.ALL:
         return available
     return tuple(binding for binding in available if binding.scope is selected)
@@ -449,7 +450,7 @@ def evidence_payload(
 
 def code_search_payload(
     query: str,
-    scope: str | ReadScope = ReadScope.FRAMEWORK,
+    scope: str | ReadScope = ReadScope.PERSONAL,
     *,
     limit: int = 10,
     modes: Sequence[str] = ("hybrid",),
@@ -501,75 +502,6 @@ def code_search_payload(
     }
 
 
-def code_question_payload(
-    question_id: str,
-    scope: str | ReadScope = ReadScope.FRAMEWORK,
-    *,
-    limit: int = 10,
-) -> dict[str, object]:
-    """Resolve one exact Code question independently under fixed state roots."""
-
-    if (
-        not isinstance(question_id, str)
-        or not question_id
-        or question_id.strip() != question_id
-        or len(question_id) > 256
-    ):
-        raise ValueError("question_id must be non-empty trimmed text up to 256 characters")
-    normalized = question_id
-    selected = _scope(scope)
-    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 50:
-        raise ValueError("Code question limit must be between 1 and 50 per scope")
-    bounded_limit = limit
-    entries: list[dict[str, object]] = []
-    for binding in scope_bindings(selected):
-        try:
-            resolution = resolve_code_question(
-                binding.state_directory,
-                normalized,
-                limit=bounded_limit,
-            )
-            entries.append(
-                {
-                    "scope": binding.scope.value,
-                    "state_directory": str(binding.state_directory),
-                    "status": resolution.status,
-                    "exit_code": 0 if resolution.status == "ready" else 2,
-                    "question": resolution.as_payload(),
-                }
-            )
-        except (OSError, RuntimeError, sqlite3.Error, TypeError, ValueError) as exc:
-            entries.append(
-                {
-                    "scope": binding.scope.value,
-                    "state_directory": str(binding.state_directory),
-                    "status": "abstained",
-                    "exit_code": 2,
-                    "error_type": type(exc).__name__,
-                    "reason": str(exc),
-                }
-            )
-    statuses = tuple(entry["status"] for entry in entries)
-    status = (
-        "ready"
-        if statuses and all(item == "ready" for item in statuses)
-        else "unsupported"
-        if statuses and all(item == "unsupported" for item in statuses)
-        else "abstained"
-    )
-    return {
-        "schema": READ_API_SCHEMA,
-        "kind": "neocortex_scoped_code_question",
-        "read_only": True,
-        "scope_requested": selected.value,
-        "federation_policy": FEDERATION_POLICY,
-        "question_id": normalized,
-        "limit_per_scope": bounded_limit,
-        "status": status,
-        "exit_code": 0 if status == "ready" else 2,
-        "scopes": entries,
-    }
-
 
 def lineage_payload(
     identifier: str,
@@ -618,7 +550,6 @@ __all__ = (
     "ReadScope",
     "ScopeBinding",
     "asset_health_payload",
-    "code_question_payload",
     "code_search_payload",
     "context_payload",
     "evidence_payload",

@@ -35,6 +35,7 @@ Neocortex = "neocortex.interface.entrypoint:entrypoint"
 agent = [
     "mcp==1.29.0",
 ]
+# Development-only tools for individual checks; never required by the runtime.
 analysis = [
     "complexipy>=6.2,<7",
     "cosmic-ray>=8.4.6,<8.5",
@@ -60,7 +61,6 @@ audio = [
     "faster-whisper>=1.2,<2",
 ]
 image = [
-    "nudenet>=3.4.2,<4",
     "Pillow>=12.3,<13",
 ]
 semantic = [
@@ -72,29 +72,16 @@ ui = [
     "PySide6>=6.11,<7",
 ]
 full = [
-    "complexipy>=6.2,<7",
-    "cosmic-ray>=8.4.6,<8.5",
-    "coverage>=7.14,<8",
     "ctranslate2>=4.8,<5",
-    "deptry>=0.25,<0.26",
     "fastembed==0.8.0",
     "faster-whisper>=1.2,<2",
-    "grimp>=3.15,<4",
     "mcp==1.29.0",
-    "mypy>=2.1,<3",
-    "nudenet>=3.4.2,<4",
     "numpy>=2.1,<3",
     "Pillow>=12.3,<13",
-    "pip-audit>=2.10,<2.11",
     "PyMuPDF>=1.27,<2",
     "pdfminer.six>=20260107",
     "PySide6>=6.11,<7",
-    "pytest>=9.1,<10",
     "pytesseract>=0.3.13,<0.4",
-    "radon>=6.0.1,<7",
-    "ruff>=0.15,<0.16",
-    "sqlglot>=30.17,<31",
-    "vulture>=2.16,<2.17",
 ]
 dev = [
     "build>=1.5,<2",
@@ -159,5 +146,4 @@ include = [
 
 [tool.setuptools.package-data]
 "neocortex" = ["py.typed"]
-"neocortex.code" = ["semgrep_rules/*.yml"]
 "neocortex.interface.presentation" = ["assets/*.svg", "assets/*.png", "assets/*.ico"]

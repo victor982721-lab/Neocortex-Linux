@@ -45,23 +45,14 @@ from neocortex.capabilities.formats.text.text_route import TextRouteConfig
 # region [02] Implementación
 
 
-def test_application_config_preserves_the_complete_legacy_dataclass() -> None:
+def test_application_config_preserves_the_product_dataclass() -> None:
     assert ApplicationConfig is FrameworkConfig
     application_fields = fields(ApplicationConfig)
-    assert len(application_fields) == 187
-    assert {item.name for item in application_fields} >= {
-        "analysis_profile",
-        "deep_test_selectors",
-        "deep_max_tests",
-        "deep_time_budget_seconds",
-        "deep_shard_size",
-        "deep_mutation_target",
-        "deep_mutation_symbol",
-        "deep_mutation_max_mutants",
-        "deep_mutation_timeout_seconds",
+    assert len(application_fields) == 175
+    field_names = {item.name for item in application_fields}
+    assert {
         "code_candidate_scope",
         "code_project_roots",
-        "deep_mutation_time_budget_seconds",
         "archive_max_depth",
         "archive_max_members",
         "archive_max_total_uncompressed_bytes",
@@ -77,7 +68,22 @@ def test_application_config_preserves_the_complete_legacy_dataclass() -> None:
         "video_ocr_profile",
         "image_document_ocr_profile",
         "pdf_ocr_profile",
-    }
+    } <= field_names
+    assert not field_names.intersection(
+        {
+            "analysis_profile",
+            "deep_test_selectors",
+            "deep_max_tests",
+            "deep_time_budget_seconds",
+            "deep_shard_size",
+            "deep_mutation_target",
+            "deep_mutation_symbol",
+            "deep_mutation_max_mutants",
+            "deep_mutation_timeout_seconds",
+            "code_validation_baseline",
+            "code_validation_time_budget_seconds",
+        }
+    )
     base = Path("synthetic-application-config")
 
     original = ApplicationConfig(

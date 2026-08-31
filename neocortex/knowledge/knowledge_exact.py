@@ -28,7 +28,7 @@ from neocortex.platform.policy import (
     sqlite_path_collation,
 )
 
-from neocortex.code.code_detection import LANGUAGE_EXTENSIONS
+from neocortex.code.ingestion.code_detection import LANGUAGE_EXTENSIONS
 from neocortex.code.code_schema import readonly_code_database
 from neocortex.documents.document_catalog import connect_document_catalog
 from neocortex.foundation.file_identity import FileIdentity, FileIdentityError
@@ -1021,11 +1021,9 @@ def _inventory_database(path: Path):
 def _catalog_database(path: Path):
     sidecars = (Path(f"{path}-wal"), Path(f"{path}-shm"))
     if path.is_file() and not any(os.path.lexists(item) for item in sidecars):
-        from neocortex.workflow.self_analysis.self_analysis_status import (
-            quiescent_sqlite_database,
-        )
+        from neocortex.persistence.sqlite_immutable import immutable_sqlite_database
 
-        with quiescent_sqlite_database(path, timeout_seconds=60) as connection:
+        with immutable_sqlite_database(path, timeout_seconds=60) as connection:
             yield connection
         return
     connection = connect_document_catalog(path, readonly=True)

@@ -1,25 +1,29 @@
 # NeoCortex — handoff operativo vigente
 
-> Actualizado: 2026-08-30 14:25 CST. El basename es histórico y permanece estable.
+> Actualizado: 2026-08-30 20:48 CST. El basename es histórico y permanece estable.
 > `~/.codex/PENDIENTES.md` conserva el compromiso operativo; este archivo
 > describe sólo la frontera técnica de reanudación.
 
-> Modo de trabajo vigente: desarrollo rápido por lotes materiales, con controles
-> focales durante la organización y un único gate canónico al congelar la cohorte;
-> ningún candidato provisional tiene aceptación hasta contar con receipt local.
+> Modo de trabajo vigente: cierre de producto por lote material, validaciones
+> individuales proporcionales y una sola release al final. No existe un quality
+> gate agregador ni un receipt de autoanálisis como requisito del producto.
 
 ## Objetivo activo
 
-La migración física del producto ya quedó aplicada en el checkout candidato:
-`neocortex` es la única raíz productiva, la carpeta `_04_Nucleo_Operativo` ya no
-existe, el paquete raíz sólo conserva metadatos y `__main__.py`, y los módulos de
-API, plataforma, persistencia, capacidades y tooling viven bajo sus propietarios
-canónicos. No se conservaron alias de compatibilidad ni implementaciones
-duplicadas en las rutas retiradas. El cierre técnico todavía requiere ejecutar
-el gate canónico, construir la release Linux y demostrar el recorrido público
-instalado.
+La simplificación física de `neocortex/code` quedó reconciliada sin wrappers:
+conserva ingesta, detección, representación, persistencia, búsqueda y
+relaciones semánticas. En este mismo lote se retiró NudeNet de Image, se elevó
+el schema Image a v6, se limpió el reporte de modelos a cuatro FastEmbed más
+Whisper y se eliminó del runtime de release la infraestructura Node/Pyright/
+Semgrep de QA. El checkout ya puede escribirse desde el namespace host; la
+release instalada anterior todavía apunta al SHA antiguo.
 
-## Corte canónico de implementación en verificación final
+Las proyecciones Semantic mutables tienen un scrub explícito y probado para
+retirar claves adultas sin alterar el resto del JSON. No se detectó una base
+Semantic viva bajo el estado local durante esta sesión, por lo que no se ejecutó
+una migración destructiva sobre datos del usuario.
+
+## Corte físico anterior (referencia histórica)
 
 - Checkout: `/home/winterboss/Neocortex/Repository`
 - El árbol candidato quedó congelado en `04757c37f86dc1bfcc54abadc58be1a59633f037`;
@@ -42,7 +46,11 @@ instalado.
 - El registro de arquitectura conserva explícitos los cruces permitidos de las
   familias hacia foundation/core, sin una matriz de aliases legacy.
 
-## Evidencia de aceptación y release
+## Evidencia histórica de aceptación y release (no normativa)
+
+Los siguientes receipts, gates y releases describen cortes anteriores. Se
+conservan para trazabilidad, pero no son requisitos ni instrucciones para el
+trabajo vigente y no deben reactivar el autoanálisis retirado.
 
 - `Neocortex code validate --baseline 1930aeabd73343468e119dea577c9466848dd075`
   sobre `5455b90` terminó `passed`: selección `full` con 354 selectores,
@@ -64,7 +72,7 @@ instalado.
   reutilizó Archive, Text y Semantic en el replay; ambos exits fueron 0 y los
   contadores de caché quedan registrados en la evidencia durable.
 
-## Corte foundation aceptado en rama de snapshot
+## Corte foundation aceptado en rama de snapshot (referencia histórica)
 
 - El candidato `c183afc088aaa78d82efcd0841085568d543416a` mueve
   `file_identity.py` y `processing_provenance.py` a `neocortex/foundation` y
@@ -88,17 +96,21 @@ instalado.
 
 ## Próximo corte, en orden
 
-1. Resolver la renovación del snapshot pip-audit y ejecutar una sola validación
-  canónica sobre `04757c37…`, incluyendo la suite y los controles arquitectónicos
-  sin abrir SQLite cercadas.
-2. Instalar desde el SHA validado, verificar launcher/manifiesto y repetir el
-   E2E con replay; sólo entonces queda listo el cierre Git final.
+1. Revisar el diff total, limpiar artefactos regenerables y confirmar el árbol
+   Code y los contratos Image/Semantic vigentes.
+2. Crear el commit final y comprobar que el árbol quede limpio.
+3. Ejecutar una sola instalación desde el SHA final con `release_linux.py
+   install --prepare-models --desktop`, seguida de `release_linux.py verify`.
+4. Ejecutar el smoke público y replay aislados con documentos, imagen, audio,
+   vídeo y código; comprobar estado, búsqueda, caché, modelos y ausencia de
+   NudeNet/autoanálisis antes de cerrar el pendiente.
 
 ## Límites
 
 - Linux/Kubuntu es la única plataforma activa; Windows y GitHub Actions quedan
   fuera de alcance.
-- Durante gates observa únicamente stream, transcript, proceso y systemd en el
-  namespace real; no abras SQLite cercadas con lectores ordinarios.
-- pip-audit sólo se renueva mediante su productor explícito autorizado, sin
-  `--fix` ni otros proveedores remotos.
+- Las herramientas de desarrollo se ejecutan directamente, de forma focal y
+  proporcional; no se mantiene ni se crea un agregador de calidad.
+- No se ejecuta `pip-audit` ni ningún proveedor remoto de forma implícita.
+- Las bases históricas sólo se migran tras backup verificable y sobre una copia
+  aislada durante las pruebas; no se modifica el corpus real en el smoke.

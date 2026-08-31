@@ -164,7 +164,7 @@ def create_server() -> Any:
     @server.tool(
         name="status",
         title="NeoCortex published-state status",
-        description="Inspect fixed personal/framework state roots without creating state.",
+        description="Inspect the fixed published state root without creating state.",
         annotations=read_only,
         structured_output=True,
     )
@@ -253,7 +253,7 @@ def create_server() -> Any:
     )
     def inspect_code(
         query: str,
-        scope: str = "framework",
+        scope: str = "personal",
         limit: int = 10,
         mode: str = "hybrid",
     ) -> dict[str, object]:

@@ -18,7 +18,6 @@ import xxhash
 from neocortex.safety.corpus_access import (
     CorpusAccessPolicy,
     CorpusMutationGuard,
-    path_trees_intersect,
 )
 from neocortex.safety.internal_paths import (
     InternalPathProtectionError,
@@ -30,7 +29,6 @@ from neocortex.safety.protected_content import (
     ProtectedContentPolicy,
     canonical_protected_content_policy,
 )
-from neocortex.workflow.self_analysis.self_analysis import build_self_analysis_inventory_policy
 # endregion [01]
 
 # region [02] Implementación
@@ -116,13 +114,11 @@ def corpus_mutation_guard(
         raise ValueError(f"framework run does not exist: {run_id}")
     run_kind = str(row[0])
     mode = str(row[1])
-    if run_kind not in {"initial", "self_analysis", "route_only", "resume"}:
+    if run_kind not in {"initial", "route_only", "resume"}:
         raise InternalPathProtectionError(
             f"run {run_id} has unsupported mutation provenance: {run_kind!r}"
         )
-    if (run_kind == "initial" and mode != "normal") or (
-        run_kind == "self_analysis" and mode != "analyze_only"
-    ):
+    if run_kind == "initial" and mode != "normal":
         raise InternalPathProtectionError(f"run {run_id} has an inconsistent kind/access mode")
     if mode not in {"normal", "analyze_only"}:
         raise InternalPathProtectionError(
@@ -211,22 +207,9 @@ def _mutation_inventory_boundary(
             protected_content_policy=protected_content_policy,
         )
         return boundary.effective_signature, boundary.protected_content_policy
-    try:
-        intersects = path_trees_intersect(
-            access_policy.root,
-            state_policy.root,
-        )
-    except (OSError, ValueError) as exc:
-        raise InternalPathProtectionError(
-            f"run {run_id} root/state boundary cannot be verified"
-        ) from exc
-    if intersects:
-        raise InternalPathProtectionError(f"run {run_id} root and state directory are not disjoint")
-    expected_signature = build_self_analysis_inventory_policy(
-        access_policy.root,
-        state_policy.root,
-    ).signature
-    return expected_signature, protected_content_policy
+    raise InternalPathProtectionError(
+        f"run {run_id} uses retired analyze-only inventory mode"
+    )
 
 
 def _main_database_state_policy(

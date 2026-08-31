@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Literal
 
 from .document import DocumentTextEvidence
 
@@ -126,27 +125,6 @@ class DocumentCandidate:
 
 
 @dataclass(frozen=True)
-class AdultDetection:
-    label: str
-    score: float
-    box: tuple[int, int, int, int]
-    area_fraction: float
-
-
-@dataclass(frozen=True)
-class AdultContentEvidence:
-    candidate: bool
-    analyzed: bool
-    classification: Literal[
-        "not_analyzed", "unavailable", "not_explicit", "ambiguous", "explicit"
-    ]
-    confidence: float
-    detections: tuple[AdultDetection, ...]
-    evidence: tuple[str, ...]
-    provenance: tuple[str, ...]
-
-
-@dataclass(frozen=True)
 class Decision:
     category: str
     confidence: float
@@ -162,7 +140,6 @@ class Decision:
     visual_semantics: VisualSemanticEvidence
     document_candidate: DocumentCandidate
     document_text: DocumentTextEvidence | None = None
-    adult_content: AdultContentEvidence | None = None
 
 
 # endregion [02]

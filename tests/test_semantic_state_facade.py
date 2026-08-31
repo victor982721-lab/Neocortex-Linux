@@ -53,6 +53,7 @@ _HISTORICAL_OPERATIONS = {
     "reuse_cached_jobs",
     "search_exact_page",
     "semantic_database",
+    "scrub_retired_image_provenance",
     "stage_label_prototypes",
     "stage_semantic_evidence",
     "stage_semantic_items",

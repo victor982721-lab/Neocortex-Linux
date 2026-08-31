@@ -79,12 +79,6 @@ def program_installation_directory() -> Path:
     return local_application_data_directory().parent / "Programs" / APPLICATION_DIRECTORY_NAME
 
 
-def self_analysis_data_directory() -> Path:
-    """Return the non-production root for self-analysis state and artifacts."""
-
-    return local_application_data_directory() / "self-analysis"
-
-
 def stable_launcher_path() -> Path:
     """Return the stable per-user launcher path outside version directories."""
 

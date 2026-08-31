@@ -129,28 +129,6 @@ DIRECT_ARGUMENT_CASES = (
     ("video_search", "run_video_search", ("--video-search", "query")),
     ("video_doctor", "run_video_doctor", ("--video-doctor",)),
     ("code_status", "run_code_status", ("--code-status",)),
-    ("code_review", "run_code_review", ("--code-review",)),
-    (
-        "code_question",
-        "run_code_question",
-        ("--code-question", "structure.static_cli_calls_require_runtime_contract_evidence"),
-    ),
-    ("code_storage", "run_code_storage", ("--code-storage",)),
-    (
-        "code_validate_change",
-        "run_code_validate_change",
-        ("--code-validate-change",),
-    ),
-    (
-        "code_experiment_run",
-        "run_code_experiment",
-        ("--code-experiment-run", "experiment-proposal-v1:fixture"),
-    ),
-    (
-        "code_publication_diff",
-        "run_code_publication_diff",
-        ("--code-publication-diff", "baseline"),
-    ),
     ("code_search", "run_code_search", ("--code-search", "query")),
     ("code_projects", "run_code_projects", ("--code-projects",)),
     (
@@ -158,8 +136,6 @@ DIRECT_ARGUMENT_CASES = (
         "run_code_reconstruct",
         ("--code-reconstruct", "project"),
     ),
-    ("code_doctor", "run_code_doctor", ("--code-doctor",)),
-    ("code_query", "run_code_query", ("--code-query", "status")),
     ("knowledge_status", "run_knowledge_status", ("--knowledge-status",)),
     (
         "knowledge_health",

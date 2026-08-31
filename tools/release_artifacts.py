@@ -55,9 +55,6 @@ _UI_ASSET_SHA256: Final = {
 }
 _SOURCE_ONLY_TOOLS: Final = (
     "tools/__init__.py",
-    "tools/pyright_runtime.py",
-    "tools/pyright_runtime_lock/package-lock.json",
-    "tools/pyright_runtime_lock/package.json",
     "tools/release_archive_safety.py",
     "tools/release_artifacts.py",
     "tools/release_windows.py",

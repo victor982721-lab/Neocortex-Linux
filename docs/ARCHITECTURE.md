@@ -63,7 +63,6 @@ Fuente:       ~/Neocortex/Repository
 Runtime:      ~/.local/share/Neocortex/releases/<runtime-id>
 Launcher:     ~/.local/share/Neocortex/bin/Neocortex
 Estado:       ${XDG_STATE_HOME:-~/.local/state}/Neocortex/state
-Autoanálisis: ${XDG_STATE_HOME:-~/.local/state}/Neocortex/self-analysis
 ```
 
 Los runtimes son versionados y el launcher estable se valida contra el artefacto
@@ -77,9 +76,10 @@ La guía de bases, migraciones, backup y retención es
 [PERSISTENCE.md](PERSISTENCE.md). La operación diaria se explica en
 [OPERATIONS.md](OPERATIONS.md), la recuperación en
 [RECOVERY.md](RECOVERY.md) y los límites de seguridad en
-[SECURITY.md](SECURITY.md). El perfil code-only protegido se especifica en
-[SELF_ANALYSIS.md](SELF_ANALYSIS.md) y los contratos y límites del plano de
-conocimiento se documentan en [KNOWLEDGE.md](KNOWLEDGE.md).
+[SECURITY.md](SECURITY.md). La clasificación vigente de Code como contenido
+se conserva en [CODE_SUBSYSTEM_CLASSIFICATION.md](CODE_SUBSYSTEM_CLASSIFICATION.md);
+los contratos y límites del plano de conocimiento se documentan en
+[KNOWLEDGE.md](KNOWLEDGE.md).
 
 ## Vista de alto nivel
 
@@ -508,8 +508,9 @@ mantiene una sola implementación física. Contiene:
 - extractores, clasificadores, cachés y repositorios por formato;
 - catálogo documental, organización, revisión y evidencia;
 - búsqueda PDF/DOCX/audio/video/código y servicio semántico;
-- plataforma de evidencia externa, métricas/relaciones portables, contratos de
-  arquitectura y proyecciones de status/review/diff para el autoanálisis;
+- contratos de estado, relaciones y proyecciones necesarias para las
+  capacidades de contenido, sin una plataforma de evidencia de QA del propio
+  repositorio;
 - contratos, snapshot lógico, planner, recuperación, fusión y contexto de la
   Knowledge Plane read-only;
 - watcher incremental foreground;
@@ -593,11 +594,11 @@ ausentes, incompatibles, futuros o corruptos sin crearlos ni migrarlos. Sus
 formatos, opciones auxiliares y códigos de salida se detallan en
 [KNOWLEDGE.md](KNOWLEDGE.md).
 
-Las fachadas canónicas `Neocortex code question QUESTION_ID` y
-`Neocortex code storage` se traducen a operaciones planas ocultas del mismo
-parser. La primera usa sólo un lector focal registrado y nunca cae
-automáticamente al review global; la segunda observa el owner Code mediante un
-snapshot immutable y su retención es exclusivamente `preview_only`.
+Las operaciones de Code se limitan a contenido del corpus y se exponen mediante
+`Neocortex --code-status`, `Neocortex --code-search`, `Neocortex --code-projects`
+y `Neocortex --code-reconstruct`. Son lecturas acotadas del índice publicado;
+no ejecutan auditorías del repositorio, review interno, experimentos ni
+retención de evidencias de QA.
 
 `Neocortex agent serve` adapta la misma API a MCP por stdio. El transporte
 CPython 3.14 usa pipes asyncio nativos para evitar delegar stdin/stdout a
@@ -628,12 +629,9 @@ La superficie diferida también exporta `ResourceRef`, `RevisionRef`,
 `plan_knowledge_query`. Estas APIs consultan estado persistente; no sustituyen
 la corrida que lo produce.
 
-`neocortex.api.read_api.asset_health_payload()` expone las mismas verticales Text/PDF sobre
-los scopes fijos Personal/Framework. No acepta rutas de estado arbitrarias y
-mantiene los resultados de cada scope separados.
-`neocortex.api.read_api.code_question_payload()` hace lo mismo para el lector focal
-Code; su valor predeterminado es Framework y nunca convierte una pregunta no
-registrada en una consulta global automática.
+`neocortex.api.read_api.asset_health_payload()` expone las mismas verticales Text/PDF
+sobre el estado publicado, sin aceptar rutas arbitrarias. La consulta Code usa
+`code_search_payload()` y conserva la misma frontera read-only.
 
 `route_registry` sólo contiene adaptadores y contratos de ejecución; los
 consumidores importan cada ruta desde su módulo canónico.
@@ -675,7 +673,7 @@ La publicación del snapshot de enrutamiento ocurre después de que
 
 Para corridas normales, `NormalInventoryBoundary` captura raíz, estado,
 `InternalPathsPolicy` y exclusiones. La policy reserva por ruta e identidad
-física el repositorio, runtime, datos de aplicación, autoanálisis y launcher;
+física el repositorio, runtime, datos de aplicación y launcher;
 detecta aliases/reparses y el hardlink del launcher. Los árboles internos que
 quedan bajo un corpus permitido se excluyen, pero una raíz situada dentro de
 ellos se rechaza. El estado tampoco puede ser igual ni ancestro del corpus. La
@@ -683,242 +681,32 @@ firma cruda de `InventoryExclusionPolicy` se guarda desde Dedup v9; Framework y
 watcher usan la firma efectiva versionada que combina esa firma con la de
 `InternalPathsPolicy`.
 
-## Autoanálisis de código
+## Code como contenido
 
-`FrameworkOrchestrator.run_self_analysis()` es una rama vertical distinta de la
-corrida común. El preflight exige `analyze_only`, raíz/estado disjuntos y
-una única ruta `code` cuyo `RouteAdapter.input_source` sea
-`inventory_snapshot`. Después captura las identidades, crea el estado sólo tras
-validarlas y repite la frontera en los fences de E/S. No instancia el planner
-de duplicados, `FrameworkActions`, catálogo ni organización.
+La capacidad Code pertenece al producto porque permite procesar código del
+usuario como contenido: descubre proyectos, detecta lenguajes, representa
+símbolos y dependencias, guarda versiones, indexa texto y ofrece búsquedas y
+relaciones semánticas. Sus módulos productivos se concentran en
+`neocortex/code/ingestion`, `neocortex/code/search`, `code_contracts`,
+`code_route`, `code_schema`, `code_state` y `code_retention`.
 
-El inventario completo y USN comparten una policy concreta y su firma
-`inventory-exclusion-policy-v2:xxh3_128:...`. La reutilización incremental se
-autoriza sólo por la conjunción del último binding durable del framework, el
-checkpoint Dedup del mismo scan/cursor y la identidad/cursor vivos. Un fallo en
-cualquiera fuerza full scan sin invalidar el checkpoint; no se recupera una
-firma histórica detrás de un run durable más reciente incompatible.
+Code no audita el repositorio de NeoCortex ni mantiene review interno,
+experimentos, proveedores externos, epistemología, work packages o receipts de
+validación. Las herramientas de desarrollo se ejecutan fuera del runtime y de
+forma individual: `pytest`, Ruff, Pyright/Mypy, Semgrep u otra herramienta que
+corresponda a la propiedad modificada. No existe un agregador automático de
+calidad como capacidad del producto.
 
-El autoanálisis admite además un full scan portable cuando USN es inaccesible.
-Ese camino no publica checkpoint, conserva nulos los cursores y falla cerrado
-en frescura. La corrida normal usa la misma enumeración portable y publica un
-checkpoint Dedup v10 con cursor nulo; sus consumidores obtienen incrementalidad
-comparando el snapshot contra caches por identidad y metadatos. USN es una
-optimización durable, no un requisito de corrección ni una identidad ficticia
-del fallback.
+El esquema Code nuevo contiene sólo las tablas necesarias para observaciones,
+proyectos, símbolos, referencias, dependencias, diagnósticos, chunks y enlaces
+semánticos. Las tablas de proveedores o experimentos que puedan aparecer en una
+base histórica se leen únicamente para compatibilidad y no son producidas por
+la ruta actual ni autorizan retención o mutación.
 
-Code consume directamente el scan publicado con cero `route_candidates`. La
-finalización incorpora una plataforma genérica de proveedores sobre las
-versiones Python vigentes con fingerprint exacto, incluidas las parciales.
-`protected` ejecuta Ruff basic aislado; `trusted-static` añade Ruff con
-configuración versionada del proyecto acotada a `E4,E7,E9,F,B,C4,PIE,RUF`,
-Mypy, Pyright, Ruff Analyze, Grimp, Complexipy, Vulture, Semgrep, Deptry,
-pip-audit, inventario del entorno instalado e historia Git local como
-productores independientes.
-`I,PT,SIM,UP` se excluyen para que estilo y modernización no
-desplacen la señal de mantenimiento. Cada proveedor conserva
-descriptor, firma de entorno/configuración/comparabilidad, inputs, findings y
-counters normalizados. La suite y el fence de Code se confirman atómicamente;
-los proveedores no participan en el processing signature AST.
-
-Code schema v7 conserva las dos proyecciones portables introducidas en v4 y la
-identidad de rutas introducida en v5 (`BINARY` en Linux y `NOCASE` en Windows).
-`external_metrics` vincula un nombre/valor/unidad con un sujeto
-tipado (`file`, `symbol`, `module`, `project`, `run`, `contract` o `scc`);
-`external_relations` vincula dos sujetos tipados con dirección, confianza y
-metadata determinista. Sus IDs y digests no dependen de IDs SQLite locales. El
-replay enlaza esas filas desde el run fuente; status, review, diff y work
-packages son sus consumidores, de modo que la plataforma no acumula métricas o
-relaciones sin una decisión pública.
-
-V6 añade `code_experiment_receipts` como evidencia machine-produced append-only,
-no como una segunda base de hechos. Cada fila queda ligada al run Code
-completado, processing signature, evaluación/pregunta/sujeto, proposal/template,
-digest del review y payload `neocortex.code-experiment-receipt/v3`; los triggers
-rechazan update y delete. El writer admite estados `passed`, `failed` y
-`abstained`, pero el review `neocortex.code-review/v22` sólo proyecta el `passed`
-más nuevo que siga coincidiendo con el proposal actual y con bindings tipados de
-gate a requisito. El enlace produce evidencia de tests exactos, no verdad formal
-ni decisión humana. Un verificador técnico separado puede derivar únicamente una
-disposición allow-listed y acotada de no-cambio tras recomprobar controles
-negativos; conserva `authority=advisory` y `mutation_authority=false`.
-
-V7 preserva sin reinterpretar todas las columnas y el payload de las filas v3,
-y admite receipts v4 para la ruta canónica. Estos últimos no relanzan una
-plantilla por proposal: atestiguan un subconjunto de las relaciones Coverage
-primarias y ligan analysis/tool-run,
-publicación portable, firmas de entorno/configuración/suite/scope y digest de
-relaciones. El batch durable revalida esa fuente exacta dentro de la misma
-transacción y exige cero procesos propios; no convierte un resultado de tests en
-prueba formal ni en autoridad humana.
-
-Review v22 conserva además una proyección Retention owner-local sobre los
-cuatro stores productivos. Reutiliza el planner dry-run y sus holds declarados,
-publica paginación y gaps, y exige una segunda lectura idéntica. El template
-ejecutable sólo cubre una matriz aislada de catorce nodeids exactos; aun con receipt
-`passed`, la disposición excluye power loss, atomicidad cross-store y cualquier
-ejecutor de borrado.
-
-La vertical Framework ReviewTask no añade otro datastore ni duplica tareas o
-decisiones. Su `QuestionSpec` vuelve a resolver desde contratos versionados el
-owner lógico `review`, el state owner/store Framework, schemas, adapter y puerto
-públicos. La evidencia de decisión sólo puede provenir del template
-`framework.review_task_protocol_acceptance`: ocho nodeids sobre SQLite/XDG
-temporales, cinco gates de publicación, CAS, replay, rollback y journey CLI. El
-verificador técnico vuelve a comprobar los dos records estructurales y el
-receipt exacto. Esto demuestra únicamente el protocolo acotado; el actor del
-fixture no está autenticado y las excepciones inyectadas no prueban power loss.
-
-Review v22 conserva la superficie CLI y Text Health y añade un tercer binding
-experimental exacto para PDF. La superficie CLI pública
-usa el scenario v4/template v3 de veintiséis nodeids y cinco gates para contrastar la
-proyección estática con ayuda/traducción, dispatch, rechazos y lectores focales.
-Knowledge Asset Health usa doce nodeids y cuatro gates para la traza Text
-Inventory→Text→Catalog→Knowledge, incluidos controles negativos de identidad,
-publicación, schema, corrupción, WAL y snapshot. La traza PDF schema 13 usa doce
-nodeids y cuatro gates 5/3/3/1 para estados, páginas/staging/errores/FTS,
-Catalog/Search, recovery y fences; el binding counter exige nueve relaciones y
-el resultado completo doce. Los tres corren en `pytest_tmp_path`; no prueban
-todos los handlers/owners, contenido/OCR, fidelidad visual/semántica ni power
-loss. Sólo el
-receipt y los facts que coinciden con su template pueden producir la disposición
-técnica acotada; nunca una decisión humana o autoridad de mutación.
-
-Los registries runtime/template son v11. La aceptación diff-aware es v6 y el
-verificador técnico es v7: un cambio PDF relevante sin el receipt de sus gates
-exactos se abstiene y nunca se degrada a `not_required` por falta de runner.
-
-La lectura focal `code-question-resolution/v1` es un router sobre QuestionSpec,
-no un segundo motor de review. v22 registra sólo la pregunta de superficie CLI,
-reconstruye `code-interface-surface/v1` y cerca el último run Code completado.
-Una pregunta no registrada emite un fallback explícito no automático. En
-paralelo, `code-storage-analysis/v1` observa con una conexión immutable el
-tamaño, páginas, tablas, providers y ventana temporal del mismo owner. Sus
-conteos son acotados y la política de retención es `preview_only`; no existe un
-writer, prune, `VACUUM`, checkpoint o eliminación de sidecars en esa capa.
-
-La capa arquitectónica divide fuente, política y consumo:
-
-1. `ruff-analyze-imports` normaliza la salida de Ruff Analyze y actúa como
-   oráculo diferencial, independiente del productor principal.
-2. `grimp-architecture` construye el grafo mediante Grimp `3.15`, publica
-   relaciones `module_import`, fan-in/fan-out y componentes fuertemente
-   conexos, y evalúa `neocortex.code-architecture-contracts/v1`.
-3. `complexipy-cognitive` usa la API `file_complexity` de Complexipy `6.2.0`
-   para publicar complejidad cognitiva por símbolo y agregados total/máximo por
-   módulo.
-
-El dominio versionado incluye el único paquete raíz de producción `neocortex`;
-interfaz, enumeración, deduplicación y progreso son
-familias canónicas bajo `neocortex`; excluye `tests`, `tools` y `benchmarks`.
-Los contratos impiden dependencias transitivas Core→UI y
-Foundation→Core/UI, imports de producción hacia namespaces no productivos,
-restringen las fronteras Dedup→Core y `neocortex`→Core/UI mediante allowlists.
-El baseline `neocortex-production-imports-2026-08-23/v5` de
-`no-new-production-import-cycles-v1` es vacío: el grafo de producción es
-acíclico y reintroducir incluso uno de los cuatro SCC históricos falla el
-contrato principal.
-
-La proyección `neocortex.code-architecture-analysis/v3` conserva por módulo un
-`path_namespace_id`, que es únicamente el primer componente del módulo y nunca
-se presenta como ownership lógico, estatal ni del repositorio,
-los SCC y sus ciclos explícitos. Sobre el mismo grafo publica
-`dependency_reach` y `blast_radius`, con banderas `*_truncated` cuando el límite
-convierte el valor en una cota inferior, `directed_degree_centrality` y cruces
-de namespace de ruta entrantes y salientes. El corte vivo de NeoCortex 0.9 resolvió `325`
-módulos, `1316` relaciones de import y `0` SCC cíclicos; no registró violaciones
-de contratos.
-
-Import Linter `2.13` se midió viable sobre el mismo dominio, pero no quedó en la
-ruta productiva: envolverlo repetiría el grafo que ya entrega Grimp y su salida
-de contratos no ofrece un contrato JSON directo. Complexipy se consume por API
-porque el código de salida de su CLI también representa superar un umbral
-predeterminado; esa semántica no debe confundirse con un fallo de herramienta.
-
-El replay exacto valida de nuevo los inputs y enlaza la publicación completa
-mediante `external_run_replays`; no duplica findings, métricas o relaciones.
-Conserva como costo real el tiempo y bytes de verificación. Los proveedores de
-código no abren procesos; pip-audit reutiliza el snapshot vigente sin red y el
-inventario instalado vuelve a verificar los hashes y tamaños `RECORD`, por lo
-que ese replay conserva trabajo local real. Mypy y
-Pyright se mantienen en espacios de evidencia separados y sólo producen un
-resumen de coincidencias/discrepancias cuando ambos tienen cobertura completa.
-Los trece proveedores `trusted-static` son advisory, no ejecutan contenido del
-proyecto, no aplican fixes y no poseen autoridad de mutación. Sólo pip-audit
-declara red para capturar el snapshot de PyPI; los otros doce son locales.
-`trusted-deep` añade
-`pytest-coverage-trusted-deep` únicamente para la identidad física exacta de la
-raíz canónica: carga plugins y contenido, ejecuta la suite declarada bajo
-límites y reconoce que no impone sandbox de red. Sigue siendo advisory, nunca
-predeterminado y carece de autoridad de mutación. En esa misma frontera,
-`cosmic-ray-focal-mutation` (`neocortex.cosmic-ray-focal-mutation/v1`) exige un
-target y tests declarados, crea una copia staged exacta, muta sólo esa copia y
-verifica hashes antes y después bajo límites de tiempo, salida y mutantes. El
-corte final fijó un máximo medido de `20` y completó los `20` mutantes: `5`
-killed, `5` survived, `10` incompetent y `0` timeout; el score focal fue
-`0.5`, excluyendo incompetentes, y el replay exacto abrió `0` procesos Cosmic
-Ray. El contrato
-sigue siendo advisory, declara `mutation_authority=false` y `uses_network=true`
-porque los tests declarados podrían usar red.
-
-`git-history-local` (`neocortex.git-history-local/v1`) lee sólo el repositorio
-Git local verificado bajo ventanas y límites explícitos. Publica por identidad
-churn, frecuencia de cambio y edad/recencia, además de relaciones de cochange;
-la corrida final produjo `10460` métricas y `859` relaciones. Son observaciones
-históricas, no una probabilidad de defecto.
-
-`vulture-unused-static` aporta candidatos heurísticos que
-`neocortex.code-unused-analysis/v1` correlaciona con Pyright, grafo, exports,
-contratos dinámicos y Coverage. Los cuatro estados explicables, calibración y
-holdout alimentan status, review, diff y work packages sin score mágico. Incluso
-`probable_unused_high_consensus` sólo crea trabajo de caracterización con
-confirmación humana; nunca autorización de borrado.
-
-La proyección `neocortex.code-supply-chain-analysis/v1` consume cuatro
-proveedores sin crear otro datastore: Semgrep publica invariantes específicas
-de NeoCortex; Deptry, higiene entre imports y declaraciones; pip-audit, un
-snapshot fechado de vulnerabilidades conocidas; e `importlib.metadata` más
-`RECORD`, constraints, integridad y metadata de licencia del wheel instalado.
-Las observaciones conservan las categorías `dependency_hygiene`,
-`known_vulnerability`, `package_integrity` y `license_inventory`. Seis gates
-se evalúan por dimensión y nunca se combinan en un score ni en una probabilidad
-de defecto. Status, review, diff y work packages son consumidores reales de
-findings, métricas y relaciones; ninguna evidencia concede autoridad de
-mutación.
-
-La proyección pública `architecture_analysis` mantiene por separado
-`import_graph_consensus`, `architecture_contracts` y
-`module_complexity_displacement`. Review v10 y publication diff v8 sólo aprueban
-los gates comparables `architecture_contracts_not_degraded`,
-`no_new_import_cycles` y `module_complexity_not_displaced`; en un baseline,
-ante cobertura parcial o firma incompatible quedan `baseline` o
-`not_evaluated`. Los work packages añaden módulo primario, cadenas de imports
-acotadas, contratos afectados y esos gates, pero conservan autoridad advisory.
-El consumidor correlaciona estas señales con los callers/callees estáticos ya
-publicados por Code: fan-in/fan-out y dependencias aportan contexto modular,
-mientras el grafo de llamadas conserva alcance por símbolo. No duplica ese
-grafo en otra tabla ni combina ambas dimensiones dentro de un score mágico.
-
-`neocortex.code-engineering-analytics/v2` correlaciona por identidad publicada
-las dimensiones separadas de complejidad, cobertura, mutación, historia y
-grafo. Conserva procedencia, limitaciones y abstenciones por dimensión; nunca
-produce un score agregado ni una probabilidad de defecto, y permanece advisory
-sin autoridad de mutación.
-
-La finalización adquiere una transacción propia y exige exactamente una ruta code
-completada, identidad vigente y ceros en candidatos, `file_actions`,
-`run_actions` y organización. El cambio del run a `completed` y el único
-manifest `neocortex.self-analysis-manifest/v2` se confirman juntos. Framework
-v20 conserva modo, identidad, estado y firma; sus triggers y
-`CorpusMutationGuard` forman una segunda defensa en los propietarios de mutación.
-
-`--code-status --code-json` proyecta el manifest y su frescura sin crear o
-migrar estado. Sus lectores usan SQLite `immutable`, `query_only` y fences
-pre/post. Sólo aceptan ausencia de sidecars o WAL vacío más SHM exacto de 32 KiB;
-un journal, WAL con contenido, SHM inválido o una cerca inestable en Code,
-Framework o Dedup causa abstención total con código `2`. El diseño
-completo, argv reproducible y límites de validación están en
-[SELF_ANALYSIS.md](SELF_ANALYSIS.md).
+La CLI pública expone únicamente operaciones de contenido:
+`--code-status`, `--code-search`, `--code-projects` y `--code-reconstruct`.
+`Neocortex --all` ejecuta el flujo documental y no consulta ni produce
+autoanálisis del repositorio.
 
 ## Mutación ligada a identidad y recuperación
 
@@ -1281,19 +1069,12 @@ Herramientas externas posibles:
 - Tesseract para OCR;
 - FFprobe/FFmpeg para audio y vídeo;
 - qpdf opcional para recuperación estructural PDF;
-- Ruff y Mypy como evidencia advisory del autoanálisis, resueltos desde el
-  runtime Python; Ruff usa política basic aislada o política trusted del proyecto;
-- Pyright `1.1.411` como paquete npm aislado junto al runtime, ejecutado mediante
-  Node únicamente en `trusted-static`;
-- Ruff Analyze como oráculo diferencial de imports, ejecutado por el mismo Ruff
-  del runtime y sin configuración extensible;
-- Grimp `3.15` y Complexipy `6.2.0` como productores Python aislados de grafo,
-  contratos y complejidad cognitiva en `trusted-static`;
-- Vulture `2.16` para candidatos heurísticos de código potencialmente no usado;
-- Semgrep `1.172.0` con tres reglas locales y autofix deshabilitado, desde un
-  tool-runtime scan-only separado y verificado; Deptry `0.25.1`, pip-audit
-  `2.10.1` y Packaging `26.2` para la evidencia separada de supply chain;
 - FastEmbed y Faster-Whisper para inferencia local.
+
+Ruff, Pyright/Mypy, pytest, Semgrep y otras herramientas de desarrollo no son
+dependencias del runtime ni productores de estado Code. Codex las ejecuta de
+forma individual cuando una modificación lo requiere; sus resultados no se
+convierten en receipts ni en una proyección productiva.
 
 No se observó `shell=True` en el motor auditado. La presencia de límites no
 equivale a sandbox completo; véase [SECURITY.md](SECURITY.md).
@@ -1301,13 +1082,14 @@ equivale a sandbox completo; véase [SECURITY.md](SECURITY.md).
 ## Empaquetado y dependencias opcionales
 
 El paquete se construye con setuptools y exige Python `>=3.13,<3.15`; la
-plataforma objetivo vigente es Linux con CPython 3.14. Incluye `neocortex`, el
-core aún en transición, las reglas Semgrep y los assets de la GUI. La base exacta incluye Packaging, Rich y
-xxHash; `agent` declara MCP y `analysis` agrupa Complexipy, Cosmic Ray,
+plataforma objetivo vigente es Linux con CPython 3.14. Incluye `neocortex` y
+los assets de la GUI. La base exacta incluye Packaging, Rich y
+xxHash; `agent` declara MCP y `analysis` agrupa únicamente herramientas de
+desarrollo como Complexipy, Cosmic Ray,
 Coverage, Deptry, Grimp, Mypy, pip-audit, Pytest, Radon, Ruff y Vulture.
 `documents`, `audio`, `image`, `semantic` y `ui` declaran runtimes de dominio;
-`full` es la unión canónica. Semgrep no pertenece a base, `analysis` ni `full`:
-la release lo provisiona en su entorno administrado separado.
+`full` es la unión canónica de las capacidades de producto y `agent`; las
+herramientas de calidad no se incluyen en el runtime.
 `neocortex.capabilities` conserva el reporte agregado schema 1 y proyecta
 readiness por implementación Text para el broker. Los contratos de selección
 son stdlib-only; no certifican inferencia, caché de modelos, digest de binario
@@ -1318,10 +1100,9 @@ wheel y el sdist deben validarse en un entorno limpio antes de publicar; este
 documento no afirma que esa barrera final ya haya ocurrido.
 
 En Linux, `tools/release_linux.py` instala el wheel `full` desde artefactos
-binarios, integra Node/Pyright dentro de una release inmutable, activa
-`current` bajo `flock`, conserva releases anteriores y publica launcher, alias
-y KDE sólo después de validar modelos y runtime. Los recibos viven en el estado
-XDG.
+binarios, activa `current` bajo `flock`, conserva releases anteriores y publica
+launcher, alias y KDE sólo después de validar modelos y runtime. Los recibos
+viven en el estado XDG.
 
 El inventario técnico de metadata/licencias y archivos redistribuidos está en
 [THIRD_PARTY_LICENSE_INVENTORY.md](THIRD_PARTY_LICENSE_INVENTORY.md). La metadata

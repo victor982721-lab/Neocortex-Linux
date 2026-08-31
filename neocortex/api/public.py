@@ -21,10 +21,10 @@ if TYPE_CHECKING:
     from neocortex.code.code_contracts import CodeSearchHit as CodeSearchHit
     from neocortex.code.code_contracts import CodeSearchQuery as CodeSearchQuery
     from neocortex.code.code_contracts import CodeSearchRelation as CodeSearchRelation
-    from neocortex.code.code_projects import list_projects as list_projects
-    from neocortex.code.code_projects import reconstruct_project as reconstruct_project
+    from neocortex.code.ingestion.code_projects import list_projects as list_projects
+    from neocortex.code.ingestion.code_projects import reconstruct_project as reconstruct_project
     from neocortex.code.code_route import CodeRoute as CodeRoute
-    from neocortex.code.code_search import search_code as search_code
+    from neocortex.code.search.code_search import search_code as search_code
     from neocortex.platform.content_types import DetectedType as DetectedType
     from neocortex.platform.content_types import detect_content_type as detect_content_type
     from neocortex.capabilities.formats.docx.route import DocxRoute as DocxRoute
@@ -83,7 +83,6 @@ if TYPE_CHECKING:
     from neocortex.runtime.models import FrameworkConfig as FrameworkConfig
     from neocortex.runtime.models import InitialRunResult as InitialRunResult
     from neocortex.runtime.models import RouteOnlyRunResult as RouteOnlyRunResult
-    from neocortex.runtime.models import SelfAnalysisRunResult as SelfAnalysisRunResult
     from neocortex.capabilities.formats.office.route import OfficeRoute as OfficeRoute
     from neocortex.capabilities.formats.office.route import OfficeRouteConfig as OfficeRouteConfig
     from neocortex.capabilities.formats.office.route import OfficeRouteSummary as OfficeRouteSummary
@@ -155,7 +154,6 @@ __all__ = [  # noqa: RUF022
     "OfficeRouteConfig",
     "OfficeRouteSummary",
     "RouteOnlyRunResult",
-    "SelfAnalysisRunResult",
     "StageDescriptor",
     "detect_content_type",
     "verify_pdf_state",
@@ -250,13 +248,12 @@ _EXPORTS: Final[dict[str, tuple[str, str]]] = {
     "OfficeRouteConfig": ("neocortex.capabilities.formats.office.route", "OfficeRouteConfig"),
     "OfficeRouteSummary": ("neocortex.capabilities.formats.office.route", "OfficeRouteSummary"),
     "RouteOnlyRunResult": ("neocortex.runtime.models", "RouteOnlyRunResult"),
-    "SelfAnalysisRunResult": ("neocortex.runtime.models", "SelfAnalysisRunResult"),
     "StageDescriptor": ("neocortex.semantic.derivation_contracts", "StageDescriptor"),
     "detect_content_type": ("neocortex.platform.content_types", "detect_content_type"),
     "verify_pdf_state": ("neocortex.capabilities.formats.pdf.pdf_admin", "verify_pdf_state"),
-    "list_projects": ("neocortex.code.code_projects", "list_projects"),
-    "reconstruct_project": ("neocortex.code.code_projects", "reconstruct_project"),
-    "search_code": ("neocortex.code.code_search", "search_code"),
+    "list_projects": ("neocortex.code.ingestion.code_projects", "list_projects"),
+    "reconstruct_project": ("neocortex.code.ingestion.code_projects", "reconstruct_project"),
+    "search_code": ("neocortex.code.search.code_search", "search_code"),
     "ContextBundle": ("neocortex.knowledge.knowledge_contracts", "ContextBundle"),
     "ContextContradictionRef": (
         "neocortex.knowledge.knowledge_contracts",

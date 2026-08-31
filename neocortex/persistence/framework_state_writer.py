@@ -40,16 +40,6 @@ from neocortex.persistence.framework_state_common import (
     finish_file_actions,
     mark_file_actions_applying,
 )
-from neocortex.workflow.self_analysis.self_analysis import (
-    SELF_ANALYSIS_MANIFEST_MESSAGE,
-    SELF_ANALYSIS_MANIFEST_PHASE,
-)
-from neocortex.workflow.self_analysis.self_analysis_finalization import (
-    CompletedCodeRoute,
-    SelfAnalysisCompletionEvidence,
-    SelfAnalysisRunEvidence,
-    SelfAnalysisSafetyCounts,
-)
 from neocortex.persistence.sqlite_paths import existing_sqlite_uri
 # endregion [01]
 
@@ -164,9 +154,9 @@ def read_latest_durable_inventory_owner(
     # an empty ``-wal`` plus ``-shm`` on Windows.  The watcher calls this reader
     # between integrated runs, so use the fenced immutable snapshot contract:
     # it both abstains from active state and preserves quiescence after reading.
-    from neocortex.workflow.self_analysis.self_analysis_status import quiescent_sqlite_database
+    from neocortex.persistence.sqlite_immutable import immutable_sqlite_database
 
-    with quiescent_sqlite_database(database_path, timeout_seconds=60) as connection:
+    with immutable_sqlite_database(database_path, timeout_seconds=60) as connection:
         try:
             row = connection.execute(
                 f"""SELECT run_id,scan_id,corpus_access_mode,
@@ -175,7 +165,7 @@ def read_latest_durable_inventory_owner(
                 FROM initial_runs
                 WHERE root=? COLLATE {_PATH_COLLATION} AND status='completed'
                 AND scan_id IS NOT NULL
-                AND run_kind IN ('initial','self_analysis')
+                AND run_kind='initial'
                 ORDER BY run_id DESC LIMIT 1""",
                 (str(Path(os.path.abspath(os.path.realpath(root)))),),
             ).fetchone()
@@ -660,78 +650,6 @@ class FrameworkState:
             raise RuntimeError("SQLite did not return a framework run identifier")
         return int(result.lastrowid)
 
-    def begin_self_analysis_run(
-        self,
-        policy: CorpusAccessPolicy,
-        cursor: JournalCursor | None,
-        *,
-        state_directory: Path,
-        inventory_policy_signature: str,
-    ) -> int:
-        """Start one root-identity-bound analyze-only inventory run."""
-
-        if policy.mode != "analyze_only":
-            raise ValueError("self-analysis requires analyze_only corpus access")
-        policy.verify_root_identity()
-        signature = inventory_policy_signature
-        if not signature or signature.strip() != signature or len(signature.encode("utf-8")) > 4096:
-            raise ValueError("inventory policy signature must be trimmed and bounded")
-        owner_state = Path(os.path.abspath(os.path.realpath(self.path.parent)))
-        try:
-            owner_intersects_request = path_trees_intersect(
-                state_directory,
-                owner_state,
-            )
-            requested_metadata = os.stat(state_directory)
-            owner_metadata = os.stat(owner_state)
-        except (OSError, ValueError) as exc:
-            raise ValueError("self-analysis state ownership cannot be verified") from exc
-        if not owner_intersects_request or (
-            int(requested_metadata.st_dev),
-            int(requested_metadata.st_ino),
-        ) != (
-            int(owner_metadata.st_dev),
-            int(owner_metadata.st_ino),
-        ):
-            raise ValueError("self-analysis state directory does not own this database")
-        requested_state = owner_state
-        try:
-            intersects = path_trees_intersect(policy.root, requested_state)
-        except (OSError, ValueError) as exc:
-            raise ValueError("self-analysis root/state boundary cannot be verified") from exc
-        if intersects:
-            raise ValueError("self-analysis root and state directory must be disjoint")
-        now = time.time_ns()
-        journal_values = (
-            (None, None, None)
-            if cursor is None
-            else (cursor.volume, str(cursor.journal_id), cursor.next_usn)
-        )
-        with self._connection:
-            result = self._connection.execute(
-                """INSERT INTO initial_runs(
-                root,started_ns,status,run_kind,current_phase,owner_pid,heartbeat_ns,
-                journal_volume,journal_id,start_usn,corpus_access_mode,
-                root_device_id_hex,root_file_id_hex,root_birthtime_ns,state_directory,
-                inventory_policy_signature)
-                VALUES(?,?,'running','self_analysis','prepare',?,?, ?,?,?, ?,?,?,?,?,?)""",
-                (
-                    str(policy.root),
-                    now,
-                    os.getpid(),
-                    now,
-                    *journal_values,
-                    policy.mode,
-                    policy.root_device_id_hex,
-                    policy.root_file_id_hex,
-                    policy.root_birthtime_ns,
-                    str(requested_state),
-                    signature,
-                ),
-            )
-        if result.lastrowid is None:
-            raise RuntimeError("SQLite did not return a framework run identifier")
-        return int(result.lastrowid)
 
     def begin_operational_run(
         self,
@@ -794,7 +712,7 @@ class FrameworkState:
             FROM initial_runs
             WHERE root=? COLLATE {_PATH_COLLATION} AND status='completed'
             AND scan_id IS NOT NULL
-            AND run_kind IN ('initial','self_analysis')
+            AND run_kind='initial'
             ORDER BY run_id DESC LIMIT 1""",
             (str(Path(os.path.abspath(os.path.realpath(root)))),),
         ).fetchone()
@@ -910,10 +828,8 @@ class FrameworkState:
             if row is None:
                 raise ValueError(f"initial run {run_id} does not exist")
             status, run_kind, current_scan_id, *metadata = row
-            if str(run_kind) not in {"initial", "self_analysis"} or str(status) != "running":
+            if str(run_kind) != "initial" or str(status) != "running":
                 raise ValueError(f"run {run_id} cannot bind inventory while {run_kind}/{status}")
-            if str(run_kind) == "self_analysis" and candidate_rows != 0:
-                raise ValueError("self-analysis cannot publish MIME route candidates")
             actual_candidates = int(
                 self._connection.execute(
                     "SELECT COUNT(*) FROM route_candidates WHERE run_id=?",
@@ -948,7 +864,7 @@ class FrameworkState:
                 """UPDATE initial_runs SET scan_id=?,reconciliation_records=?,
                 inventory_attempts=?,inventory_mode=?,heartbeat_ns=?
                 WHERE run_id=? AND status='running'
-                AND run_kind IN ('initial','self_analysis')
+                AND run_kind='initial'
                 AND scan_id IS NULL""",
                 (
                     scan_id,
@@ -1308,138 +1224,6 @@ class FrameworkState:
             )
         )
 
-    def complete_self_analysis_run(
-        self,
-        run_id: int,
-        cursor: JournalCursor | None,
-        *,
-        inventory_policy: InventoryExclusionPolicy,
-        code_processing_signature: str,
-        commands: Mapping[str, Sequence[str]],
-    ) -> dict[str, object]:
-        """Publish the protected completion manifest and status atomically."""
-
-        if self._connection.in_transaction:
-            raise RuntimeError("self-analysis finalization requires transaction ownership")
-        self._connection.execute("BEGIN IMMEDIATE")
-        try:
-            row = self._connection.execute(
-                """SELECT root,status,run_kind,corpus_access_mode,
-                root_device_id_hex,root_file_id_hex,root_birthtime_ns,
-                state_directory,inventory_policy_signature,scan_id,
-                journal_volume,journal_id,start_usn,reconciliation_records,
-                inventory_attempts,inventory_mode
-                FROM initial_runs WHERE run_id=?""",
-                (run_id,),
-            ).fetchone()
-            run_evidence = SelfAnalysisRunEvidence.decode(run_id, row)
-            run_evidence.validate_inventory_boundary(cursor, inventory_policy)
-            self._validate_inventory_binding(*run_evidence.inventory_binding())
-            run_evidence.access_policy().verify_root_identity()
-
-            snapshot_markers = self._connection.execute(
-                """SELECT event_id FROM run_events WHERE run_id=?
-                AND phase='routing-snapshot'
-                AND message='Snapshot de rutas publicado'
-                ORDER BY event_id LIMIT 2""",
-                (run_id,),
-            ).fetchall()
-            route_rows = self._connection.execute(
-                """SELECT route_name,status,summary_json,error_type
-                FROM route_runs WHERE run_id=? ORDER BY route_name LIMIT 2""",
-                (run_id,),
-            ).fetchall()
-            code_evidence = CompletedCodeRoute.decode(
-                snapshot_markers,
-                route_rows,
-                code_processing_signature,
-            )
-
-            safety_counts = SelfAnalysisSafetyCounts(
-                route_candidates=int(
-                    self._connection.execute(
-                        "SELECT COUNT(*) FROM route_candidates WHERE run_id=?",
-                        (run_id,),
-                    ).fetchone()[0]
-                ),
-                file_actions=int(
-                    self._connection.execute(
-                        "SELECT COUNT(*) FROM file_actions WHERE run_id=?",
-                        (run_id,),
-                    ).fetchone()[0]
-                ),
-                run_actions=int(
-                    self._connection.execute(
-                        "SELECT COUNT(*) FROM run_actions WHERE run_id=?",
-                        (run_id,),
-                    ).fetchone()[0]
-                ),
-                organization_events=int(
-                    self._connection.execute(
-                        """SELECT COUNT(*) FROM run_events WHERE run_id=?
-                        AND phase IN ('document-organization-plan',
-                        'document-organization-apply')""",
-                        (run_id,),
-                    ).fetchone()[0]
-                ),
-            )
-            safety_counts.validate()
-            existing_manifest = self._connection.execute(
-                """SELECT event_id FROM run_events WHERE run_id=? AND phase=?
-                AND message=? ORDER BY event_id LIMIT 1""",
-                (
-                    run_id,
-                    SELF_ANALYSIS_MANIFEST_PHASE,
-                    SELF_ANALYSIS_MANIFEST_MESSAGE,
-                ),
-            ).fetchone()
-            if existing_manifest is not None:
-                raise ValueError("self-analysis manifest already exists")
-
-            evidence = SelfAnalysisCompletionEvidence(
-                run_evidence,
-                cursor,
-                code_evidence,
-                safety_counts,
-            )
-            manifest, manifest_json = evidence.build_manifest(
-                inventory_policy=inventory_policy,
-                commands=commands,
-            )
-            now = time.time_ns()
-            updated = self._connection.execute(
-                """UPDATE initial_runs SET completed_ns=?,status='completed',
-                current_phase='completed',heartbeat_ns=?,end_usn=?
-                WHERE run_id=? AND status='running'
-                AND run_kind='self_analysis' AND corpus_access_mode='analyze_only'
-                AND scan_id=?""",
-                (
-                    now,
-                    now,
-                    None if cursor is None else cursor.next_usn,
-                    run_id,
-                    run_evidence.scan_id,
-                ),
-            )
-            if updated.rowcount != 1:
-                raise RuntimeError("self-analysis completion lost its owner row")
-            self._connection.execute(
-                """INSERT INTO run_events(
-                run_id,occurred_ns,level,phase,message,details_json)
-                VALUES(?,?,'info',?,?,?)""",
-                (
-                    run_id,
-                    now,
-                    SELF_ANALYSIS_MANIFEST_PHASE,
-                    SELF_ANALYSIS_MANIFEST_MESSAGE,
-                    manifest_json,
-                ),
-            )
-            self._connection.commit()
-        except BaseException:
-            self._connection.rollback()
-            raise
-        return manifest
 
     def complete_initial_run(
         self,

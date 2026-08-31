@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from neocortex.code.code_analyzer_common import manifest_evidence
+from neocortex.code.ingestion.code_analyzer_common import manifest_evidence
 from neocortex.code.code_contracts import DiagnosticSeverity
 # endregion [01]
 

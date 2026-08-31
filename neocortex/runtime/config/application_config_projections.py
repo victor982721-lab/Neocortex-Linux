@@ -229,20 +229,7 @@ def code_route_config_from_application(
         include_vendored=config.code_include_vendored,
         complexity_warning=config.code_complexity_warning,
         function_lines_warning=config.code_function_lines_warning,
-        external_evidence_root=config.root if config.self_analysis else None,
-        explicit_project_roots=(
-            (config.root,) if config.self_analysis else config.code_project_roots
-        ),
-        analysis_profile=getattr(config, "analysis_profile", "protected"),
-        deep_test_selectors=getattr(config, "deep_test_selectors", ()),
-        deep_max_tests=getattr(config, "deep_max_tests", 3000),
-        deep_time_budget_seconds=getattr(config, "deep_time_budget_seconds", 600),
-        deep_shard_size=getattr(config, "deep_shard_size", 20),
-        deep_mutation_target=getattr(config, "deep_mutation_target", None),
-        deep_mutation_symbol=getattr(config, "deep_mutation_symbol", None),
-        deep_mutation_max_mutants=getattr(config, "deep_mutation_max_mutants", 20),
-        deep_mutation_timeout_seconds=getattr(config, "deep_mutation_timeout_seconds", 30),
-        deep_mutation_time_budget_seconds=getattr(config, "deep_mutation_time_budget_seconds", 600),
+        explicit_project_roots=config.code_project_roots,
         selection=config.selection,
     )
 

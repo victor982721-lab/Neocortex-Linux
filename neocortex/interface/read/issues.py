@@ -14,7 +14,6 @@ _ADDITIVE_FIELDS = (
     "cached_errors",
     "profile_errors",
     "catalog_errors",
-    "adult_unavailable",
     "safety_issues",
 )
 

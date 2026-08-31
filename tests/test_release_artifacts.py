@@ -60,9 +60,6 @@ _UI_ASSETS = (
 )
 _SOURCE_ONLY_TOOLS = (
     "tools/__init__.py",
-    "tools/pyright_runtime.py",
-    "tools/pyright_runtime_lock/package-lock.json",
-    "tools/pyright_runtime_lock/package.json",
     "tools/release_archive_safety.py",
     "tools/release_artifacts.py",
     "tools/release_windows.py",

@@ -8,7 +8,6 @@ from pathlib import Path
 
 from neocortex.platform.policy import current_platform_policy
 
-from neocortex.foundation.processing_provenance import distribution_component
 from neocortex.semantic.semantic_config import production_models
 from neocortex.semantic.semantic_preparation import (
     SemanticModelUnavailableError,
@@ -106,33 +105,11 @@ def _whisper_status(models_root: Path) -> ManagedModelStatus:
     )
 
 
-def _nudenet_status() -> ManagedModelStatus:
-    component = distribution_component(
-        "adult-model",
-        "nudenet",
-        artifact_relative_path="nudenet/320n.onnx",
-    )
-    artifact = component.get("artifact")
-    prepared = bool(
-        component.get("status") == "available"
-        and isinstance(artifact, dict)
-        and isinstance(artifact.get("xxh3_128"), str)
-        and int(artifact.get("size_bytes", 0)) > 0
-    )
-    return ManagedModelStatus(
-        "nudenet/320n.onnx",
-        "bundled-nudenet",
-        prepared,
-        "available" if prepared else "bundled_nudenet_model_unavailable",
-        "installed-distribution:nudenet",
-    )
-
-
 def inspect_models(*, models_root: Path | None = None) -> dict[str, object]:
     """Inspect local files and package metadata without creating any path."""
 
     root = current_platform_policy().models_directory if models_root is None else models_root
-    statuses = (*_semantic_statuses(root), _whisper_status(root), _nudenet_status())
+    statuses = (*_semantic_statuses(root), _whisper_status(root))
     return {
         "schema_version": MODELS_REPORT_SCHEMA_VERSION,
         "kind": "models_report",

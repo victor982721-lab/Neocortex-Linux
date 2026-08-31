@@ -9,14 +9,14 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from neocortex.runtime.config.app_paths import default_state_directory, self_analysis_data_directory
+from neocortex.runtime.config.app_paths import default_state_directory
 from neocortex.api.status_codes import KnowledgeExitCode
 from neocortex.api.cli.cli_knowledge import (
     knowledge_context_exit_code,
     knowledge_search_exit_code,
 )
 from neocortex.code.code_contracts import CodeSearchQuery
-from neocortex.code.code_search import available_search_modes, search_code
+from neocortex.code.search.code_search import available_search_modes, search_code
 from neocortex.knowledge.knowledge_contracts import (
     KnowledgeCompleteness,
     KnowledgeSnapshot,
@@ -28,7 +28,6 @@ from neocortex.knowledge.knowledge_service import KnowledgeSearchService
 from neocortex.knowledge.knowledge_snapshot import KnowledgeStatePaths
 
 if TYPE_CHECKING:
-    from neocortex.code.code_question_resolver import CodeQuestionResolution
     from neocortex.knowledge.knowledge_asset_health_contracts import KnowledgeAssetHealthReport
 
 
@@ -66,18 +65,6 @@ def inspect_knowledge_asset_health(
     )
 
 
-def resolve_code_question(
-    state_directory: Path,
-    question_id: str,
-    *,
-    limit: int = 10,
-) -> CodeQuestionResolution:
-    """Load the focal Code reader only for an exact bounded question."""
-
-    from neocortex.code.code_question_resolver import resolve_code_question as resolve
-
-    return resolve(state_directory, question_id, limit=limit)
-
 
 __all__ = (
     "CodeSearchQuery",
@@ -96,8 +83,6 @@ __all__ = (
     "inspect_knowledge_asset_health",
     "knowledge_context_exit_code",
     "knowledge_search_exit_code",
-    "resolve_code_question",
     "search_code",
-    "self_analysis_data_directory",
     "validate_knowledge_asset_resource_id",
 )

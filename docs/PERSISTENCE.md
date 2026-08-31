@@ -1,15 +1,19 @@
 # Persistencia, esquemas y migraciones
 
-> **Estado del documento.** Contrato actualizado el 11 de agosto de 2026. El
+> **Estado del documento.** Contrato actualizado el 30 de agosto de 2026. El
 > árbol fuente `0.9.0` declara inventario Dedup v10, framework v22,
-> PDF v13, Text v2, catálogo v7 y semántica v7; la barrera integral y el paquete
-> final se registran por separado. En una auditoría histórica, bases vivas se
+> PDF v13, Text v2, catálogo v7, Code v7 y semántica v7. En una auditoría histórica, bases vivas se
 > inspeccionaron sin
 > migrarlas: dedup permanecía
 > en v6, framework en v16 y catálogo en v5; semantic no existía. La lectura
 > confirmó integridad lógica, pero SQLite creó
 > o modificó auxiliares WAL/SHM incluso con `mode=ro` y `query_only=ON`; esa
 > incidencia se detalla más adelante.
+
+> **Cambio de alcance vigente (30 de agosto de 2026).** NeoCortex ya no produce
+> ni consulta autoanálisis de su propio código. Las referencias históricas a
+> proveedores, receipts o un propietario `self_analysis` describen bases legacy
+> y no forman parte del flujo productivo actual.
 
 ## Alcance
 
@@ -37,7 +41,6 @@ Fuente:       %USERPROFILE%\Neocortex\Repository
 Runtime:      %LOCALAPPDATA%\Programs\Neocortex\versions\<runtime-id>\venv
 Launcher:     %LOCALAPPDATA%\Programs\Neocortex\bin\Neocortex.exe
 Estado:       %LOCALAPPDATA%\Neocortex\state
-Autoanálisis: %LOCALAPPDATA%\Neocortex\self-analysis
 ```
 
 La configuración visual está fuera de las bases:
@@ -72,12 +75,11 @@ mezcle bases de dos directorios de estado ni restaure una sola base sin revisar
 la compatibilidad del conjunto.
 
 `InternalPathsPolicy` captura ruta e identidad física de repositorio, runtime,
-datos de aplicación, autoanálisis y launcher. En una corrida normal, Dedup v10
+datos de aplicación y launcher. En una corrida normal, Dedup v10
 guarda en cada scan la firma cruda de `InventoryExclusionPolicy`; Framework
 guarda la firma efectiva que combina esa evidencia con la firma versionada de
 rutas internas. Un estado igual o ancestro del corpus se rechaza porque su
-exclusión podaría la raíz completa; el autoanálisis exige además disjunción en
-ambas direcciones.
+exclusión podaría la raíz completa.
 
 ## Reglas de propiedad
 
@@ -111,9 +113,9 @@ a los archivos vivos.
 | `text.sqlite3` | `text_state`, `TextRoute`, `text_derivation_repository` | **2** | texto físico, EML y Office heredado; documento/FTS, revisiones, intentos, bindings, materializaciones, heads, receipts y outbox de derivación | `metadata.schema_version`; migración exacta 1→2 sin receipts sintéticos |
 | `audio.sqlite3` | `audio_state`, `AudioRoute` | 2 | inventario, documentos, segmentos y FTS de transcripción | `metadata.schema_version`; migraciones secuenciales |
 | `video.sqlite3` | `video_state`, `VideoRoute` | 2 | documentos, streams, frames, selección, OCR, timestamps, métricas y FTS | `metadata.schema_version`; migraciones secuenciales |
-| `image.sqlite3` | `capabilities.formats.image.state`, `capabilities.formats.image.route.ImageRoute` | 5 | imágenes, estado de extracción/clasificación y metadata | `metadata.schema_version`; migraciones aditivas |
+| `image.sqlite3` | `capabilities.formats.image.state`, `capabilities.formats.image.route.ImageRoute` | **6** | imágenes, estado de extracción, OCR, semántica visual y metadata | `metadata.schema_version`; v6 reconstruye `images` para retirar datos históricos de NudeNet |
 | `document_catalog.sqlite3` | `document_catalog_schema`, `document_catalog` | **7** | runs, generaciones/staging, publicación por fuente, proyección de documentos, historial y planes de organización | `metadata.schema_version`; migraciones secuenciales |
-| `code.sqlite3` | `code_schema`, `code_state`, `code_experiment_store` | **7** | proyectos, runs, archivos/versiones, símbolos, referencias, dependencias, grafo, chunks, FTS, métricas/relaciones, evidencia externa normalizada y receipts de experimentos append-only v3/v4 | metadata + `PRAGMA user_version` + `schema_migrations` exacto; 5→6 añade receipts; 6→7 conserva cada fila v3 y admite atestaciones v4 |
+| `code.sqlite3` | `code_schema`, `code_state`, `code_retention` | **7** | proyectos, runs, archivos/versiones, símbolos, referencias, dependencias, grafo, chunks, FTS, métricas y enlaces semánticos | metadata + `PRAGMA user_version` + `schema_migrations` exacto; las bases nuevas registran las migraciones históricas sin crear tablas de QA |
 | `semantic.sqlite3` | `semantic_schema`, repositorios y servicio semántico | **7** | espacios/modelos, revisiones inmutables, miembros/heads generacionales, jobs, payloads, receipts, derivaciones de chunks y outbox | metadata + `PRAGMA user_version` + `schema_migrations` exacto; 6→7 aditiva sin atribución legacy |
 
 La base del índice MFT es una API auxiliar con ruta elegida por el llamador y
@@ -121,14 +123,14 @@ no forma parte de las propiedades predeterminadas de `FrameworkConfig`.
 `code.sqlite3` y `semantic.sqlite3` pueden no existir hasta usar esas
 capacidades.
 
-En Code, 6→7 reconstruye únicamente `code_experiment_receipts` dentro de una
-transacción, copia las columnas exactas, compara conteos y `EXCEPT` bilateral y
-recrea índices/triggers; cualquier deriva revierte al contrato v6 completo. Una
-apertura ordinaria del schema vigente valida estructura e historial, pero no
-ejecuta `PRAGMA integrity_check` sobre todos los gigabytes retenidos. Esa
-auditoría física sigue siendo obligatoria en migraciones y está disponible en la
-frontera explícita `verify_code_storage_integrity`, destinada a backup y
-mantenimiento, no a cada replay incremental.
+En Code, las bases nuevas crean sólo las tablas productivas y registran las
+migraciones 3, 4 y 6 como retiradas y legibles históricamente. Una base antigua
+que todavía contenga tablas de proveedores o experimentos se valida con el
+contrato legacy y conserva sus filas; no recibe escritores nuevos ni se limpia
+de forma destructiva. La apertura ordinaria valida estructura e historial, pero
+no ejecuta una auditoría física completa sobre todos los gigabytes retenidos.
+`verify_code_storage_integrity` permanece como operación explícita de
+mantenimiento o backup, no como paso de cada ejecución incremental.
 
 ### Matriz de propietarios del snapshot Knowledge
 
@@ -150,9 +152,9 @@ ejecutó esas rutas mantiene el vector base de once owners:
 | `text` (aditivo si existe) | `text.sqlite3` | 2 | documentos actuales, último update/run; `best_effort_non_generational`; el linaje owner-local se consulta aparte |
 | `audio` | `audio.sqlite3` | 2 | filas actuales, último update/run; `best_effort_non_generational` |
 | `video` | `video.sqlite3` | 2 | frames/OCR actuales, último update/run; `best_effort_non_generational` |
-| `image` | `image.sqlite3` | 5 | imágenes actuales, último update/run; `best_effort_non_generational` |
+| `image` | `image.sqlite3` | 6 | imágenes actuales, último update/run; `best_effort_non_generational` |
 | `semantic` | `semantic.sqlite3` | 7 | generación `ready` publicada por modelo, espacio y firma de procesamiento; receipts nuevos no atribuyen filas legacy |
-| `code` | `code.sqlite3` | 7 | archivos actuales, última versión/run y receipts de experimentos posteriores a publicación; `best_effort_non_generational` |
+| `code` | `code.sqlite3` | 7 | archivos, versiones, símbolos, relaciones, chunks y enlaces semánticos actuales; `best_effort_non_generational` |
 
 Una base ausente se representa como `absent`; no se crea para completar la
 matriz. Una versión menor, futura, inconsistente o un contrato malformado
@@ -323,33 +325,13 @@ sólo abre el schema existente y usa
 la cola vigente o el preview legacy. El flag explícito `--refresh` puede crear
 o migrar Framework, pero no escribe los owners fuente ni el corpus.
 
-#### Manifest durable de autoanálisis
+#### Estado histórico de autoanálisis
 
-Un autoanálisis persiste un run `self_analysis/analyze_only`, publica el scan
-con cero candidatos y ejecuta una única ruta `code` desde
-`inventory_snapshot`. `complete_self_analysis_run()` abre `BEGIN IMMEDIATE`,
-vuelve a verificar policy, identidad, scan, journal disponible o explícitamente
-no disponible, una ruta completada y
-ceros exactos en candidatos, acciones y organización. En la misma transacción
-cambia el owner a `completed` e inserta un único evento con el manifest
-`neocortex.self-analysis-manifest/v2`, limitado a 256 KiB. El decoder conserva
-compatibilidad de lectura estricta con v1.
-
-El manifest contiene policy y firma
-`inventory-exclusion-policy-v2:xxh3_128:...`, evidencia code, conteos cero y
-argv `analyze`/`status` como arrays acotados. No es una tabla paralela ni una
-fuente independiente. `--code-status --code-json` lo vincula al último run de
-code y calcula frescura contra framework, checkpoint Dedup, identidad y USN.
-Sin acceso USN, las cuatro columnas del cursor permanecen nulas, no existe
-checkpoint para ese scan y el manifest registra `journal.status=unavailable`;
-por contrato nunca resulta `current=true`.
-Para evitar la incidencia histórica de sidecars, cada owner exige
-`mode=ro&immutable=1`, `query_only`, fences pre/post y ausencia de `-wal`,
-`-shm` y `-journal`. Cualquier auxiliar —incluso vacío o desacoplado— o cerca
-inestable en code, framework o Dedup causa abstención total con código `2`, sin
-vista parcial ni modificación del estado. Ningún caso crea, migra o hace
-checkpoint. Véase
-[SELF_ANALYSIS.md](SELF_ANALYSIS.md).
+Las versiones anteriores de Code creaban un propietario separado para
+autoanálisis y receipts de proveedores. Esa capacidad ya no se produce ni se
+consulta; las tablas y manifests que pudieran existir en una base antigua se
+tratan como datos legacy-readable y no participan en el flujo productivo. No se
+introduce una migración destructiva sólo para borrar esas filas.
 
 #### Publicación del snapshot de enrutamiento
 
@@ -393,8 +375,14 @@ almacena segmentos. Video v2 migra la equivalencia de raíz/path; el contrato v1
 ya conservaba documentos, inventario, streams/probe,
 frames con razones de muestreo, timestamp, dimensiones, XXH3, OCR/provenance y
 FTS, además del vínculo exacto al transcript Audio cuando existe. Imagen
-almacena clasificación/evidencia y su ruta productora garantiza la huella
-completa XXH3-128 en Dedup. La poda de una caché sólo debe
+almacena clasificación visual, evidencia industrial y OCR; desde schema 6 ya no
+persiste datos de NudeNet y su ruta productora garantiza la huella completa
+XXH3-128 en Dedup. `scrub_retired_image_provenance()` permite retirar de forma
+explícita las claves adultas que aún existan en proyecciones Semantic mutables,
+conservando el resto del JSON y desactivando los items que deben reprocesarse;
+las revisiones, payloads, receipts y outbox append-only permanecen como historia
+inmutable y requieren una migración independiente si alguna vez se autoriza su
+reescritura. La poda de una caché sólo debe
 ocurrir después de una reconciliación que demuestre qué filas dejaron de ser
 vigentes.
 
@@ -487,86 +475,23 @@ no debe desenrollarlo ni cerrar indirectamente esa conexión.
 
 ### Código
 
-La base de código separa proyecto, archivo lógico y versión. Sí declara foreign
-keys extensas y conserva historial de migración. La construcción del grafo se
-publica actualmente dentro de una transacción global de finalización; hacer
-batches sin una generación y un puntero publicados no sería una corrección
-segura (`NC-AUD-015`).
+La base de código separa proyecto, archivo lógico y versión, y conserva
+símbolos, referencias, dependencias, chunks, FTS, métricas y enlaces semánticos.
+La ingesta incremental publica un `analysis_run` terminal y puede reutilizar
+observaciones compatibles sin reanalizar bytes sin cambios; una ruta o identidad
+nueva conserva la versión anterior y crea la sucesora correspondiente.
 
-El esquema vigente es 4. Un cache hit con ruta exacta actualiza los run IDs de
-presencia/observación sin DML sobre `code_fts`. Una ruta distinta no reutiliza la
-versión: la publicación normal invalida la vigente y crea una sucesora con su
-propio `path_observed`, FTS y evidencia, conservando la versión anterior.
+La construcción del grafo y la actualización de FTS ocurren dentro de la
+transacción del owner Code. Los conflictos de resolución permanecen ambiguos en
+lugar de fabricar relaciones, y el estado parcial o fallido no se presenta como
+publicado. La retención sólo poda runs terminales del propio procesamiento Code,
+con límites acotados y dentro de la transacción del writer.
 
-En reconciliaciones sin límite ni selección, `mark_missing` invalida por lotes
-keyset las identidades no vistas antes de resolver el grafo. `finalize_graph`
-reinicia únicamente membresías derivadas y diagnósticos/edges reconstruibles de
-versiones vigentes. Después de resolver membresías y conflictos, un mapa TEMP
-con `version_id` indexado sincroniza en un solo scan únicamente los labels FTS
-distintos; las membresías de manifest, versiones y labels históricos permanecen
-como evidencia.
-
-El resolver v4 carga símbolos y dependencias vigentes en conjuntos TEMP
-indexados. Resuelve primero llamadas con ámbito demostrable dentro del mismo
-módulo o clase y dependencias Python relativas mediante candidatos léxicos
-`module.py`/`module\__init__.py`; si ambos candidatos existen se abstiene. El
-fallback global por nombre cualificado o simple sólo publica una resolución
-única. Conflictos y ausencias permanecen ambiguos o no resueltos, sin fabricar
-edges.
-
-`metadata['code_graph_completion_v3']` es un fence derivado tipado y versionado,
-no un head generacional. Registra schema, `analysis_run_id` y
-`code-graph-resolver-v4`, y avanza en la misma transacción que cambia su
-`analysis_run` de `running` a `completed`. El fastpath sólo acepta el run
-inmediatamente anterior, completo, con la misma firma, summary válido y
-todos los candidatos como cache hits compatibles con los analizadores del
-runtime. Cualquier discrepancia —o una base existente todavía sin fence— fuerza
-una finalización completa; los estados cacheados `partial` y `error` siguen
-contabilizándose en el nuevo summary.
-
-Schema 3 conserva `external_tool_runs` y la proyección Ruff legacy de v2, y
-añade cinco tablas normalizadas:
-
-- `external_run_contracts`: identidad de proveedor, perfil/confianza, raíz,
-  firmas de configuración, entorno, inputs y comparabilidad, estrategia,
-  límites lógicos y declaraciones de autoridad;
-- `external_run_inputs`: versión Code, identidad portable, ruta, digest, tamaño
-  y cobertura de cada input elegible;
-- `external_findings`: identidad portable, owner Code, categoría/regla,
-  severidad, rango, metadata, confianza y enlace opcional a `diagnostics`;
-- `external_run_replays`: ejecución completa reutilizada y firma/conteos de la
-  verificación exacta;
-- `external_run_counters`: contadores no negativos de cobertura, bytes,
-  procesos, salida, tiempo, findings, comparabilidad, caché y errores.
-
-Cada proveedor inserta una fila terminal en `external_tool_runs` y su contrato,
-inputs, findings/counters y proyección `diagnostics.source='external:*'` dentro
-de la transacción que finaliza Code. Un fallo, timeout o proveedor indisponible
-publica su estado terminal y no deja una proyección vieja aparentando frescura;
-no borra las publicaciones válidas de los otros proveedores.
-
-El owner Code aplica en esa misma frontera una retención generacional acotada.
-Conserva los dos runs completados más recientes, cuatro runs incidentales,
-todos los `code_experiment_receipts` y cualquier run que sea fuente de un
-replay; las filas `external_*` y el `analysis_run` antiguo se eliminan sólo en
-lotes acotados de un run por frontera cuando no tienen un hold. La selección también impone un techo
-de 64 runs terminales y se revierte junto con la transacción si falla. No toca
-`file_versions`, símbolos, FTS, grafo vigente ni `VACUUM`: el espacio liberado
-queda disponible para SQLite y la compactación física sigue siendo una
-operación de mantenimiento separada.
-
-Un input exacto sólo reutiliza una línea base con el mismo proveedor, perfil,
-versión, configuración, entorno, raíz y firma de inputs. El replay registra
-`execution=cache_replay`, vuelve a verificar todos los archivos y bytes, enlaza
-la ejecución completa y no duplica findings ni invoca el proceso externo. La
-lectura recomputa el digest y valida la proyección; cualquier discordancia causa
-abstención fail-closed. Mypy y Pyright permanecen separados; el consenso de
-tipos es una proyección reconstruible, no otra fuente de verdad.
-
-No se añadieron generación, staging ni CAS de head. La transacción global no
-admite cancelación dentro de una sentencia SQLite; los empates de resolución se
-conservan ambiguos y la firma del registro de analizadores sigue siendo global,
-por lo que un cambio de contrato puede invalidar otros lenguajes.
+Las bases históricas pueden contener `external_*` o
+`code_experiment_receipts`. Esos objetos son legibles únicamente para validar y
+proteger la migración conservadora; la ruta actual no los crea, no ejecuta
+proveedores y no los expone como evidencia del producto. Las herramientas de
+desarrollo se ejecutan fuera de este owner y no escriben en su estado.
 
 ### Semántica
 
@@ -690,7 +615,7 @@ reservado comprobado; v18 valida el layout v17 exacto de `file_actions`, agrega
 cuatro columnas sin reinterpretar filas legacy y crea la bitácora de transición.
 V19 valida el layout v18 y agrega la bitácora de conciliación append-only.
 V20 preserva esos owners y agrega evidencia inmutable de policy/identidad para
-autoanálisis y acciones. V21 preserva todo ese estado y agrega la cola
+acciones; los campos históricos de autoanálisis no reciben nuevos productores. V21 preserva todo ese estado y agrega la cola
 ReviewTask vacía sin sintetizar hallazgos históricos. V22 migra la identidad
 de rutas y versiona los dos triggers de lifecycle ReviewTask para decisiones
 scoped; conserva todas sus tablas y filas sin reinterpretarlas.

@@ -1,6 +1,17 @@
 # Instalación sin red
 
+> **DOCUMENTO HISTÓRICO — NO NORMATIVO.** Conserva instrucciones y resultados
+> de instalaciones anteriores, incluidos contratos Windows y autoanálisis ya
+> retirados; las referencias a NudeNet describen únicamente esas instalaciones
+> antiguas. Para el estado vigente consulte [README.md](../README.md),
+> [CLI.md](CLI.md) y [LINUX_KUBUNTU.md](LINUX_KUBUNTU.md).
+
 Esta guía distingue validación de artefactos, reutilización del entorno del sistema e instalación hermética. No existe actualmente un wheelhouse completo versionado dentro del repositorio.
+
+**Estado vigente del empaquetado:** el extra `image` sólo requiere Pillow y el
+extra `full` no incluye NudeNet ni herramientas de autoanálisis. Las tablas y
+comandos fechados más abajo conservan únicamente la evidencia histórica que
+motivó esta guía y no deben usarse para preparar la release actual.
 
 ## Estado verificado el 2026-07-25
 

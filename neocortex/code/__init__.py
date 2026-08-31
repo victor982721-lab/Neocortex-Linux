@@ -1,4 +1,4 @@
-"""Import-light canonical Code and external-evidence plane."""
+"""Import-light product Code content plane."""
 
 from __future__ import annotations
 

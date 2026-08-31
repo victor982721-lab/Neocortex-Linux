@@ -5,9 +5,9 @@
 # endregion [00]
 
 
-The evaluator deliberately owns the ordering shared by normal and protected
-self-analysis runs.  It reads evidence from the framework and inventory owners,
-but never creates, updates, or repairs either owner.
+The evaluator deliberately owns the ordering shared by normal and read-only
+inventory runs. It reads evidence from the framework and inventory owners, but
+never creates, updates, or repairs either owner.
 """
 
 # region [01] Dependencias del módulo
@@ -26,6 +26,8 @@ from neocortex.deduplication import InventoryError
 # region [02] Implementación
 
 
+# ``analyze_only`` is retained solely to read legacy framework rows; no current
+# public command produces that mode.
 IncrementalAccessMode = Literal["normal", "analyze_only"]
 RootIdentity = tuple[int | None, int | None, int | None]
 IncrementalGateReason = Literal[

@@ -105,10 +105,7 @@ def test_code_projection_uses_only_the_configured_project_allowlist(tmp_path: Pa
     )
 
     projected = code_route_config_from_application(config)
-    self_analysis = code_route_config_from_application(replace(config, self_analysis=True))
-
     assert projected.explicit_project_roots == owned_roots
-    assert self_analysis.explicit_project_roots == (tmp_path,)
     assert default_code_project_roots() == (
         source_repository_directory(),
         Path.home() / "Frameworks" / "Generador de bitácoras EPS",

@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from neocortex.deduplication import FileSnapshot
-from neocortex.code import code_search as code_search_module
+from neocortex.code.search import code_search as code_search_module
 from neocortex.code.code_contracts import (
     AnalysisStatus,
     ArtifactClassification,
@@ -27,7 +27,7 @@ from neocortex.code.code_contracts import (
     SourceRange,
     SymbolRecord,
 )
-from neocortex.code.code_search import search_code
+from neocortex.code.search.code_search import search_code
 from neocortex.code.code_state import CodeState
 from neocortex.knowledge.knowledge_context import build_context_bundle
 from neocortex.knowledge.knowledge_contracts import (

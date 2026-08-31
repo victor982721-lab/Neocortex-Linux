@@ -18,14 +18,14 @@ from typing import Iterable, Mapping, Sequence
 import pytest
 
 from neocortex.deduplication import FileSnapshot
-from neocortex.code import code_search as code_search_implementation
+from neocortex.code.search import code_search as code_search_implementation
 from neocortex.semantic import semantic_service
 from neocortex.semantic import semantic_search_service as semantic_search_implementation
 from neocortex.code.code_contracts import CodeRouteConfig, CodeSearchQuery
 from neocortex.code.code_route import CodeRoute
 from neocortex.code.code_schema import readonly_code_database
-from neocortex.code.code_search import search_code
-from neocortex.code.code_semantic_links import (
+from neocortex.code.search.code_search import search_code
+from neocortex.code.search.code_semantic_links import (
     CodeSemanticLinkError,
     code_semantic_search_availability,
     synchronize_code_embedding_links,

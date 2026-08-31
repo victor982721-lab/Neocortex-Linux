@@ -16,7 +16,7 @@ from neocortex.code.code_contracts import (
     CodeFileInput,
     CodeRouteConfig,
 )
-from neocortex.code.code_rust import RustAnalyzer
+from neocortex.code.ingestion.code_rust import RustAnalyzer
 
 
 REPRESENTATIVE_RUST = """use serde::Serialize;

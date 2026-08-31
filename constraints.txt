@@ -1,32 +1,19 @@
-# Direct dependency constraints validated with CPython 3.13 and 3.14 on Windows and Linux.
-# Transitive packages remain resolver-managed except yattag, whose hash-pinned
-# source artifact is normalized to a local wheel before binary-only installation.
+# Direct product/build dependency constraints for the Linux release.
+# Transitive packages remain resolver-managed; the Linux runtime lock captures
+# the product closure used by the release installer.
 build==1.5.0
-complexipy==6.2.0
-cosmic-ray==8.4.6
-coverage==7.14.1
 ctranslate2==4.8.1
-deptry==0.25.1
 fastembed==0.8.0
 faster-whisper==1.2.1
-grimp==3.15
 mcp==1.29.0
-mypy==2.1.0
-nudenet==3.4.2
 numpy==2.4.6
 packaging==26.2
 pdfminer.six==20260107
 Pillow==12.3.0
 pip==26.2.1
-pip-audit==2.10.1
 PyMuPDF==1.27.2.3
 PySide6==6.11.1
-pytest==9.1.0
 pytesseract==0.3.13
-radon==6.0.1
 rich==15.0.0
-ruff==0.15.17
 setuptools==83.0.0
-vulture==2.16
 xxhash==3.8.1
-yattag==1.16.1

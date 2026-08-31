@@ -63,8 +63,8 @@ def _add_scope(parser: argparse.ArgumentParser, *, default: ReadScope) -> None:
         choices=tuple(scope.value for scope in ReadScope),
         default=default.value,
         help=(
-            "personal consulta el corpus; framework consulta el autoanálisis; "
-            "all los agrupa sin mezclar scores"
+            "personal consulta el estado publicado; framework es un alias de "
+            "lectura del mismo owner; all agrupa sin mezclar scores"
         ),
     )
 
@@ -141,7 +141,7 @@ def build_human_parser() -> argparse.ArgumentParser:
         allow_abbrev=False,
     )
     inspect_code.add_argument("query", metavar="CONSULTA")
-    _add_scope(inspect_code, default=ReadScope.FRAMEWORK)
+    _add_scope(inspect_code, default=ReadScope.PERSONAL)
     inspect_code.add_argument("--limit", type=int, default=10, metavar="N")
     inspect_code.add_argument(
         "--mode",
@@ -261,7 +261,9 @@ def _entries(payload: Mapping[str, object]) -> list[dict[str, object]]:
 
 
 def _scope_label(value: object) -> str:
-    return {"personal": "Personal", "framework": "Framework"}.get(str(value), str(value))
+    return {"personal": "Personal", "framework": "Framework", "all": "Todos"}.get(
+        str(value), str(value)
+    )
 
 
 def _render_scope_error(entry: Mapping[str, object]) -> None:

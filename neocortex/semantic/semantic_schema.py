@@ -1,6 +1,7 @@
 """SQLite connection, schema contract, and migrations for semantic state."""
 
 from __future__ import annotations
+import json
 import sqlite3
 import time
 from collections.abc import Callable, Iterator
@@ -19,6 +20,17 @@ from neocortex.persistence.sqlite_schema_contract import (
 
 
 SEMANTIC_SCHEMA_VERSION = 7
+_RETIRED_IMAGE_KEYS = frozenset(
+    {
+        "adult_classification",
+        "adult_content",
+        "adult_candidate",
+        "adult_analyzed",
+        "adult_confidence",
+        "adult_provenance",
+        "adult_evidence_json",
+    }
+)
 
 
 class SemanticStateError(RuntimeError):
@@ -1355,6 +1367,188 @@ def initialize_semantic_state(path: Path) -> None:
         raise
     finally:
         connection.close()
+
+
+def _scrub_retired_image_value(value: object) -> tuple[object, bool]:
+    if isinstance(value, dict):
+        changed = False
+        cleaned: dict[str, object] = {}
+        for key, child in value.items():
+            if key in _RETIRED_IMAGE_KEYS or key.startswith("adult_"):
+                changed = True
+                continue
+            scrubbed, child_changed = _scrub_retired_image_value(child)
+            cleaned[str(key)] = scrubbed
+            changed = changed or child_changed
+        return cleaned, changed
+    if isinstance(value, list):
+        cleaned_list: list[object] = []
+        changed = False
+        for child in value:
+            scrubbed, child_changed = _scrub_retired_image_value(child)
+            cleaned_list.append(scrubbed)
+            changed = changed or child_changed
+        return cleaned_list, changed
+    return value, False
+
+
+def _scrub_json_payload(raw: object, *, label: str) -> tuple[str, bool]:
+    try:
+        decoded = json.loads(str(raw))
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise SemanticStateError(f"{label} is malformed") from exc
+    scrubbed, changed = _scrub_retired_image_value(decoded)
+    if not changed:
+        return str(raw), False
+    return (
+        json.dumps(scrubbed, ensure_ascii=True, sort_keys=True, separators=(",", ":")),
+        True,
+    )
+
+
+def _image_scrub_projection_queries() -> tuple[tuple[str, str], ...]:
+    """Return mutable image projection scans and their human-readable labels."""
+
+    return (
+        (
+            "semantic_items",
+            "SELECT item_id,provenance_json,source_revision_json "
+            "FROM semantic_items WHERE source_kind='image' ORDER BY item_id",
+        ),
+        (
+            "image_embeddings",
+            "SELECT e.ref_id,e.provenance_json FROM image_embeddings e "
+            "JOIN semantic_items i ON i.item_id=e.item_id "
+            "WHERE i.source_kind='image' ORDER BY e.ref_id",
+        ),
+        (
+            "semantic_evidence",
+            "SELECT e.evidence_id,e.provenance_json FROM semantic_evidence e "
+            "JOIN semantic_items i ON i.item_id=e.item_id "
+            "WHERE i.source_kind='image' ORDER BY e.evidence_id",
+        ),
+        (
+            "embedding_generation_members",
+            "SELECT m.member_id,m.provenance_json FROM embedding_generation_members m "
+            "JOIN semantic_items i ON i.item_id=m.item_id "
+            "WHERE m.entity_kind='image_item' AND i.source_kind='image' "
+            "ORDER BY m.member_id",
+        ),
+        (
+            "embedding_generations",
+            "SELECT g.generation_id,g.provenance_json FROM embedding_generations g "
+            "JOIN embedding_models m ON m.model_signature=g.model_signature "
+            "WHERE m.modality='image' ORDER BY g.generation_id",
+        ),
+    )
+
+
+def _image_scrub_has_work(connection: sqlite3.Connection) -> bool:
+    for label, query in _image_scrub_projection_queries():
+        for row in connection.execute(query):
+            identifier = str(row[0])
+            if label == "semantic_items":
+                _, provenance_changed = _scrub_json_payload(
+                    row[1], label=f"{label} provenance for {identifier}"
+                )
+                _, revision_changed = _scrub_json_payload(
+                    row[2], label=f"{label} source revision for {identifier}"
+                )
+                if provenance_changed or revision_changed:
+                    return True
+            else:
+                _, changed = _scrub_json_payload(
+                    row[1], label=f"{label} provenance for {identifier}"
+                )
+                if changed:
+                    return True
+    return False
+
+
+def scrub_retired_image_provenance(path: Path) -> tuple[int, int]:
+    """Scrub mutable image projections after the NudeNet removal.
+
+    The operation is deliberately explicit and idempotent.  Immutable revision,
+    payload, receipt, and outbox tables are not rewritten; they remain
+    historical evidence and can be handled only by a separately authorized
+    migration.  Current image items are deactivated so a later image refresh
+    republishes them from the NudeNet-free source adapter.  The return value is
+    ``(changed_items, changed_projection_rows)``.
+    """
+
+    selected = Path(path)
+    if not selected.is_file():
+        return 0, 0
+    if _inspect_existing_schema(selected) != SEMANTIC_SCHEMA_VERSION:
+        raise SemanticStateError(
+            f"semantic image scrub requires schema {SEMANTIC_SCHEMA_VERSION}"
+        )
+    with semantic_database(selected, readonly=True) as connection:
+        if not _image_scrub_has_work(connection):
+            return 0, 0
+
+    changed_items = 0
+    changed_projections = 0
+    now = time.time_ns()
+    with semantic_database(selected) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        for label, query in _image_scrub_projection_queries():
+            for row in connection.execute(query):
+                identifier = str(row[0])
+                if label == "semantic_items":
+                    provenance, provenance_changed = _scrub_json_payload(
+                        row[1], label=f"{label} provenance for {identifier}"
+                    )
+                    source_revision, revision_changed = _scrub_json_payload(
+                        row[2], label=f"{label} source revision for {identifier}"
+                    )
+                    if not (provenance_changed or revision_changed):
+                        continue
+                    connection.execute(
+                        """UPDATE semantic_items SET provenance_json=?,
+                        source_revision_json=?,active=0,refresh_token=NULL,
+                        updated_ns=? WHERE item_id=?""",
+                        (provenance, source_revision, now, identifier),
+                    )
+                    changed_items += 1
+                    continue
+                provenance, changed = _scrub_json_payload(
+                    row[1], label=f"{label} provenance for {identifier}"
+                )
+                if not changed:
+                    continue
+                if label == "image_embeddings":
+                    connection.execute(
+                        "UPDATE image_embeddings SET provenance_json=?,updated_ns=? "
+                        "WHERE ref_id=?",
+                        (provenance, now, int(row[0])),
+                    )
+                elif label == "semantic_evidence":
+                    connection.execute(
+                        "UPDATE semantic_evidence SET provenance_json=?,active=0,updated_ns=? "
+                        "WHERE evidence_id=?",
+                        (provenance, now, int(row[0])),
+                    )
+                elif label == "embedding_generation_members":
+                    connection.execute(
+                        "UPDATE embedding_generation_members SET provenance_json=?,updated_ns=? "
+                        "WHERE member_id=?",
+                        (provenance, now, int(row[0])),
+                    )
+                elif label == "embedding_generations":
+                    connection.execute(
+                        "UPDATE embedding_generations SET provenance_json=? WHERE generation_id=?",
+                        (provenance, int(row[0])),
+                    )
+                else:  # pragma: no cover - query table list is module-owned
+                    raise SemanticStateError(f"unknown image scrub projection: {label}")
+                changed_projections += 1
+        connection.execute(
+            """INSERT INTO metadata(key,value) VALUES('retired_image_adult_scrub_ns',?)
+            ON CONFLICT(key) DO UPDATE SET value=excluded.value""",
+            (str(now),),
+        )
+    return changed_items, changed_projections
 
 
 # endregion [04]

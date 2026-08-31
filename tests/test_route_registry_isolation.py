@@ -66,7 +66,7 @@ class RouteRegistryIsolationTests(unittest.TestCase):
                 "neocortex.capabilities.formats.audio.route",
                 "neocortex.capabilities.formats.video.route",
                 "neocortex.code.code_route",
-                "neocortex.code.code_analyzers",
+                "neocortex.code.ingestion.code_analyzers",
             }
             loaded = forbidden.intersection(sys.modules)
             if loaded:

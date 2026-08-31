@@ -28,7 +28,7 @@ from neocortex.persistence.sqlite_schema_contract import (
 # region [01] Connection and schema
 # Keep the image cache independent while preserving explicit schema evolution.
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 
 _IMAGE_TABLE_DDL = (
@@ -56,12 +56,6 @@ _IMAGE_TABLE_DDL = (
         document_candidate INTEGER NOT NULL DEFAULT 0,
         document_candidate_score REAL,
         document_candidate_uncertainty TEXT,
-        adult_candidate INTEGER NOT NULL DEFAULT 0,
-        adult_analyzed INTEGER NOT NULL DEFAULT 0,
-        adult_classification TEXT,
-        adult_confidence REAL,
-        adult_provenance TEXT,
-        adult_evidence_json TEXT,
         ocr_text_zlib BLOB,
         ocr_text_chars INTEGER,
         ocr_text_xxh3_128 TEXT,
@@ -82,6 +76,60 @@ _IMAGE_TABLE_DDL = (
     ) WITHOUT ROWID""",
 )
 
+_IMAGE_PRODUCT_COLUMNS = (
+    "file_key",
+    "path",
+    "mime",
+    "size",
+    "mtime_ns",
+    "birthtime_ns",
+    "last_seen_run_id",
+    "processing_signature",
+    "status",
+    "category",
+    "confidence",
+    "confidence_kind",
+    "winner_score",
+    "runner_up",
+    "runner_up_score",
+    "score_margin",
+    "document_candidate",
+    "document_candidate_score",
+    "document_candidate_uncertainty",
+    "ocr_text_zlib",
+    "ocr_text_chars",
+    "ocr_text_xxh3_128",
+    "ocr_text_truncated",
+    "decode_quality",
+    "decode_provenance",
+    "features_json",
+    "attributes_json",
+    "semantic_json",
+    "evidence_json",
+    "error_type",
+    "error_message",
+    "error_phase",
+    "error_retryable",
+    "error_disposition",
+    "error_provenance",
+    "updated_ns",
+)
+_RETIRED_ADULT_COLUMNS = frozenset(
+    {
+        "adult_candidate",
+        "adult_analyzed",
+        "adult_classification",
+        "adult_confidence",
+        "adult_provenance",
+        "adult_evidence_json",
+    }
+)
+_IMAGE_REBUILT_TABLE_DDL = _IMAGE_TABLE_DDL[1].replace(
+    "CREATE TABLE IF NOT EXISTS images(",
+    "CREATE TABLE images_without_nudenet(",
+    1,
+)
+
 _IMAGE_INDEX_DDL = (
     """CREATE INDEX IF NOT EXISTS images_run_path_idx
         ON images(last_seen_run_id,path)""",
@@ -92,17 +140,15 @@ _IMAGE_INDEX_DDL = (
         WHERE status='done' AND document_candidate=1""",
     """CREATE INDEX IF NOT EXISTS images_error_review_idx
         ON images(error_disposition,error_retryable) WHERE status='error'""",
-    """CREATE INDEX IF NOT EXISTS images_adult_review_idx
-        ON images(adult_classification,adult_confidence DESC)
-        WHERE status='done' AND adult_candidate=1""",
     """CREATE INDEX IF NOT EXISTS images_ocr_text_idx
         ON images(updated_ns,file_key)
         WHERE status='done' AND ocr_text_zlib IS NOT NULL""",
 )
 
 # The v1 DDL is retained by existing installations.  Later schema versions were
-# additive; keeping declarations grouped by their target version documents that
-# history while permitting safe repair of any pre-v5 cache during its upgrade.
+# additive until v6, which deliberately rebuilds the table without the retired
+# adult-content columns.  The historical additions are not recreated during an
+# upgrade, so a legacy cache cannot regain that capability accidentally.
 _IMAGE_COLUMN_MIGRATIONS: tuple[tuple[int, tuple[tuple[str, str], ...]], ...] = (
     (
         2,
@@ -121,19 +167,8 @@ _IMAGE_COLUMN_MIGRATIONS: tuple[tuple[int, tuple[tuple[str, str], ...]], ...] = 
         ),
     ),
     (
-        3,
-        (
-            ("adult_candidate", "INTEGER NOT NULL DEFAULT 0"),
-            ("adult_analyzed", "INTEGER NOT NULL DEFAULT 0"),
-            ("adult_classification", "TEXT"),
-            ("adult_confidence", "REAL"),
-            ("adult_provenance", "TEXT"),
-        ),
-    ),
-    (
         4,
         (
-            ("adult_evidence_json", "TEXT"),
             ("decode_quality", "TEXT"),
             ("decode_provenance", "TEXT"),
         ),
@@ -228,7 +263,47 @@ def _add_missing_image_columns(connection: sqlite3.Connection) -> None:
 def _migrate_image_schema(connection: sqlite3.Connection) -> None:
     _execute_statements(connection, _IMAGE_TABLE_DDL)
     _add_missing_image_columns(connection)
+    _remove_retired_adult_columns(connection)
     _execute_statements(connection, _IMAGE_INDEX_DDL)
+
+
+def _remove_retired_adult_columns(connection: sqlite3.Connection) -> None:
+    """Rebuild a legacy image table without NudeNet-owned data."""
+
+    columns = {
+        str(column[1])
+        for column in connection.execute("PRAGMA table_info(images)")
+    }
+    retired = columns & _RETIRED_ADULT_COLUMNS
+    if not retired:
+        return
+    required = set(_IMAGE_PRODUCT_COLUMNS)
+    missing = required - columns
+    if missing:
+        raise RuntimeError(
+            "cannot remove retired image columns; product columns are missing: "
+            + ",".join(sorted(missing))
+        )
+    unexpected = columns - required - _RETIRED_ADULT_COLUMNS
+    if unexpected:
+        raise RuntimeError(
+            "cannot remove retired image columns; unknown columns are present: "
+            + ",".join(sorted(unexpected))
+        )
+    connection.execute("DROP INDEX IF EXISTS images_adult_review_idx")
+    collision = connection.execute(
+        "SELECT type FROM sqlite_master WHERE name='images_without_nudenet'"
+    ).fetchone()
+    if collision is not None:
+        raise RuntimeError("reserved image migration table already exists")
+    connection.execute(_IMAGE_REBUILT_TABLE_DDL)
+    column_sql = ",".join(_IMAGE_PRODUCT_COLUMNS)
+    connection.execute(
+        f"INSERT INTO images_without_nudenet({column_sql}) "
+        f"SELECT {column_sql} FROM images"
+    )
+    connection.execute("DROP TABLE images")
+    connection.execute("ALTER TABLE images_without_nudenet RENAME TO images")
 
 
 def _validate_current_image_schema(connection: sqlite3.Connection) -> None:
@@ -240,8 +315,20 @@ def _validate_current_image_schema(connection: sqlite3.Connection) -> None:
     )
 
 
+def _validate_image_integrity(connection: sqlite3.Connection) -> None:
+    foreign_key_error = connection.execute("PRAGMA foreign_key_check").fetchone()
+    if foreign_key_error is not None:
+        raise RuntimeError(
+            "image migration created a foreign-key violation: "
+            f"{tuple(foreign_key_error)!r}"
+        )
+    integrity = tuple(str(row[0]) for row in connection.execute("PRAGMA integrity_check"))
+    if integrity != ("ok",):
+        raise RuntimeError(f"image migration failed integrity_check: {integrity!r}")
+
+
 def initialize_image_state(path: Path) -> None:
-    """Create or additively migrate image state without rewriting current v5."""
+    """Create or migrate image state to the NudeNet-free schema v6."""
 
     if path.is_file():
         with image_database(path, readonly=True) as connection:
@@ -264,6 +351,7 @@ def initialize_image_state(path: Path) -> None:
                 (str(SCHEMA_VERSION),),
             )
             _validate_current_image_schema(connection)
+            _validate_image_integrity(connection)
         except BaseException:
             connection.rollback()
             raise
@@ -513,9 +601,7 @@ def store_success_batch(
                 processing_signature=?,status='done',category=?,confidence=?,
                 confidence_kind=?,winner_score=?,runner_up=?,runner_up_score=?,
                 score_margin=?,document_candidate=?,document_candidate_score=?,
-                document_candidate_uncertainty=?,adult_candidate=?,adult_analyzed=?,
-                adult_classification=?,adult_confidence=?,adult_provenance=?,
-                adult_evidence_json=?,ocr_text_zlib=?,ocr_text_chars=?,
+                document_candidate_uncertainty=?,ocr_text_zlib=?,ocr_text_chars=?,
                 ocr_text_xxh3_128=?,ocr_text_truncated=?,decode_quality=?,decode_provenance=?,
                 features_json=?,attributes_json=?,semantic_json=?,evidence_json=?,
                 error_type=NULL,error_message=NULL,error_phase=NULL,
@@ -534,8 +620,6 @@ def store_error_batch(path: Path, rows: Iterable[tuple]) -> None:
                 confidence_kind=NULL,winner_score=NULL,runner_up=NULL,
                 runner_up_score=NULL,score_margin=NULL,document_candidate=0,
                 document_candidate_score=NULL,document_candidate_uncertainty=NULL,
-                adult_candidate=0,adult_analyzed=0,adult_classification=NULL,
-                adult_confidence=NULL,adult_provenance=NULL,adult_evidence_json=NULL,
                 ocr_text_zlib=NULL,ocr_text_chars=NULL,ocr_text_xxh3_128=NULL,
                 ocr_text_truncated=0,
                 decode_quality=NULL,decode_provenance=NULL,features_json=NULL,
@@ -563,32 +647,6 @@ def prune_missing(path: Path, run_id: int, batch_size: int = 1000) -> int:
             )
             removed += len(keys)
             connection.commit()
-
-
-def iter_explicit_adult_candidates(
-    path: Path,
-    run_id: int,
-    processing_signature: str,
-) -> Iterator[tuple[FileSnapshot, str]]:
-    """Yield only current-signature explicit candidates for verified recycling."""
-
-    with image_database(path) as connection:
-        rows = connection.execute(
-            """SELECT * FROM images
-            WHERE last_seen_run_id=? AND status='done' AND processing_signature=?
-                AND adult_candidate=1 AND adult_analyzed=1
-                AND adult_classification='explicit'
-            ORDER BY path,file_key""",
-            (run_id, processing_signature),
-        )
-        while batch := rows.fetchmany(256):
-            for row in batch:
-                evidence = (
-                    f"classification=explicit;confidence="
-                    f"{float(row['adult_confidence'] or 0.0):.4f};"
-                    f"provenance={row['adult_provenance'] or 'unknown'!s}"
-                )
-                yield snapshot_from_row(row), evidence
 
 
 # endregion [03]

@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from neocortex.capabilities.formats.image.state import SCHEMA_VERSION, initialize_image_state
+from neocortex.persistence.sqlite_backup import backup_sqlite_online
 from neocortex.persistence.sqlite_schema_contract import SQLiteSchemaContractError
 # endregion [01]
 
@@ -87,12 +88,6 @@ _CURRENT_IMAGE_COLUMNS = {
     "document_candidate",
     "document_candidate_score",
     "document_candidate_uncertainty",
-    "adult_candidate",
-    "adult_analyzed",
-    "adult_classification",
-    "adult_confidence",
-    "adult_provenance",
-    "adult_evidence_json",
     "ocr_text_zlib",
     "ocr_text_chars",
     "ocr_text_xxh3_128",
@@ -113,7 +108,6 @@ _CURRENT_IMAGE_COLUMNS = {
 }
 
 _CURRENT_IMAGE_INDEXES = {
-    "images_adult_review_idx",
     "images_category_idx",
     "images_document_review_idx",
     "images_error_review_idx",
@@ -189,6 +183,16 @@ def _create_legacy_image_state(path: Path, version: int) -> None:
                 999,
             ),
         )
+        if version >= 3:
+            connection.execute(
+                """UPDATE images SET adult_candidate=1,adult_analyzed=1,
+                adult_classification='explicit',adult_confidence=0.99,
+                adult_provenance='legacy-nudenet'"""
+            )
+        if version >= 4:
+            connection.execute(
+                "UPDATE images SET adult_evidence_json='{""legacy"":true}'"
+            )
 
 
 def _schema_names(path: Path, object_type: str) -> set[str]:
@@ -203,7 +207,7 @@ def _schema_names(path: Path, object_type: str) -> set[str]:
 
 
 @pytest.mark.parametrize("legacy_version", range(5))
-def test_additive_migrations_preserve_v0_through_v4_state(
+def test_migrations_preserve_product_state_and_remove_nudenet_columns(
     tmp_path: Path,
     legacy_version: int,
 ) -> None:
@@ -248,6 +252,31 @@ def test_current_schema_validation_is_read_only_and_idempotent(tmp_path: Path) -
     initialize_image_state(database)
 
     assert database.read_bytes() == before
+
+
+def test_nudenet_migration_preserves_a_verified_backup_before_removing_data(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "image.sqlite3"
+    backup = tmp_path / "backups" / "image-before-v6.sqlite3"
+    _create_legacy_image_state(database, 4)
+    backup.parent.mkdir()
+
+    result = backup_sqlite_online(database, backup)
+    assert result.integrity.healthy
+    initialize_image_state(database)
+
+    with sqlite3.connect(backup) as connection:
+        backup_columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(images)")}
+        legacy_classification = connection.execute(
+            "SELECT adult_classification FROM images"
+        ).fetchone()[0]
+    with sqlite3.connect(database) as connection:
+        current_columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(images)")}
+
+    assert "adult_classification" in backup_columns
+    assert legacy_classification == "explicit"
+    assert "adult_classification" not in current_columns
 
 
 @pytest.mark.parametrize(

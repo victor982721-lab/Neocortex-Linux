@@ -147,6 +147,7 @@ from .semantic_schema import (
     _migrate_to_v7 as _migrate_to_v7,
     initialize_semantic_state as initialize_semantic_state,
     semantic_database,
+    scrub_retired_image_provenance as scrub_retired_image_provenance,
 )
 from .semantic_search_repository import (
     _exact_search_hit,

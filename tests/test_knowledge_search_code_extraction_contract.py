@@ -47,7 +47,7 @@ from neocortex.semantic.semantic_models import canonical_json, fingerprint_text
 
 PUBLIC_MODULE = "neocortex.knowledge.knowledge_search"
 CODE_MODULE = "neocortex.knowledge.knowledge_search_code"
-CODE_SEARCH_MODULE = "neocortex.code.code_search"
+CODE_SEARCH_MODULE = "neocortex.code.search.code_search"
 LEGACY_PUBLIC_MODULE = "neocortex.knowledge.knowledge_search"
 EXPECTED_SIGNATURES = {
     "_code_version_metadata": (

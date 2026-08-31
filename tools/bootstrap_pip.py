@@ -15,7 +15,7 @@ from pathlib import Path
 if __package__ in {None, ""}:
     sys.path.insert(0, os.fspath(Path(__file__).resolve().parents[1]))
 
-from neocortex.code import pip_bootstrap
+from tools import pip_bootstrap
 
 
 def _parser() -> argparse.ArgumentParser:

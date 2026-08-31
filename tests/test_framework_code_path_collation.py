@@ -15,7 +15,7 @@ from neocortex.safety.route_filters import (
     CandidateSelection,
     framework_selection_predicate,
 )
-from neocortex.workflow.self_analysis.self_analysis_status import quiescent_sqlite_database
+from neocortex.persistence.sqlite_immutable import immutable_sqlite_database
 from neocortex.persistence.framework_state_writer import FrameworkState
 from neocortex.platform.policy import sqlite_path_collation
 
@@ -444,7 +444,7 @@ def test_current_owner_validation_is_read_only_and_sidecar_free(tmp_path: Path) 
     with FrameworkState(framework_path):
         pass
     framework_before = framework_path.read_bytes()
-    with quiescent_sqlite_database(framework_path) as connection:
+    with immutable_sqlite_database(framework_path) as connection:
         framework_schema.validate_framework_schema_v22(connection)
     assert framework_path.read_bytes() == framework_before
     assert not Path(f"{framework_path}-wal").exists()

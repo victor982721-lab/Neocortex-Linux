@@ -6,7 +6,7 @@ import os
 import sqlite3
 import time
 import zlib
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -20,31 +20,11 @@ from .code_contracts import (
     CodeAnalysis,
     DiagnosticRecord,
 )
-from .code_external_evidence import (
-    RUFF_SOURCE,
-    ExternalEvidenceBaseline,
-    ExternalEvidenceFile,
-    ExternalEvidencePublication,
-    decode_external_baseline,
-    external_input_signature,
-    read_external_evidence,
-    read_external_evidence_files,
-)
 from .code_schema import connect_code_state, initialize_code_state
 from .code_retention import (
     CodeRetentionPolicy,
     CodeRetentionResult,
     apply_code_retention,
-)
-from .external_evidence_models import (
-    ExternalEvidenceBundle,
-    ExternalProviderBaseline,
-    ExternalProviderPublication,
-    ProviderDescriptor,
-)
-from .external_evidence_store import (
-    publish_external_provider,
-    read_external_provider_baselines,
 )
 from neocortex.safety.route_filters import CandidateSelection
 from neocortex.semantic.semantic_models import canonical_json, fingerprint_text
@@ -67,13 +47,7 @@ _DERIVED_DIAGNOSTIC_SOURCES = (
     "neocortex-project-resolver",
     "neocortex-project-graph",
     "neocortex-reference-graph",
-    RUFF_SOURCE,
-    "external:ruff-protected-basic",
-    "external:ruff-trusted-project",
-    "external:mypy",
-    "external:pyright",
 )
-
 
 @dataclass(frozen=True, slots=True)
 class CachedCodeVersion:
@@ -294,58 +268,11 @@ class CodeState:
         *,
         partial: bool,
         graph_current: bool = False,
-        external_evidence: (
-            ExternalEvidencePublication
-            | ExternalEvidenceBundle
-            | Sequence[ExternalProviderPublication]
-            | None
-        ) = None,
         retention_policy: CodeRetentionPolicy | None = None,
     ) -> CodeRetentionResult | None:
         """Complete one run and optionally publish its graph-completion fence."""
 
         with self.connection:
-            # Provider publishers use SAVEPOINT so each projection is internally
-            # consistent.  A top-level RELEASE commits immediately when no outer
-            # transaction exists, however, which could leave earlier providers
-            # published beneath an owner that later fails.  Start the bundle
-            # transaction explicitly so providers, legacy evidence, the owner
-            # transition and graph fence commit or roll back together.
-            if not self.connection.in_transaction:
-                self.connection.execute("BEGIN IMMEDIATE")
-            if isinstance(external_evidence, ExternalEvidencePublication):
-                self._publish_external_evidence(
-                    analysis_run_id,
-                    external_evidence,
-                )
-            elif isinstance(external_evidence, ExternalEvidenceBundle):
-                provider_ids = tuple(
-                    item.descriptor.provider_id for item in external_evidence.providers
-                )
-                if len(set(provider_ids)) != len(provider_ids):
-                    raise ValueError("external provider suite contains duplicate providers")
-                for publication in external_evidence.providers:
-                    publish_external_provider(
-                        self.connection,
-                        analysis_run_id,
-                        publication,
-                    )
-                if external_evidence.legacy is not None:
-                    self._publish_external_evidence(
-                        analysis_run_id,
-                        external_evidence.legacy,
-                    )
-            elif external_evidence is not None:
-                publications = tuple(external_evidence)
-                provider_ids = tuple(item.descriptor.provider_id for item in publications)
-                if len(set(provider_ids)) != len(provider_ids):
-                    raise ValueError("external provider suite contains duplicate providers")
-                for publication in publications:
-                    publish_external_provider(
-                        self.connection,
-                        analysis_run_id,
-                        publication,
-                    )
             updated = self.connection.execute(
                 """UPDATE analysis_runs SET status=?,completed_ns=?,candidates=?,
                 processed=?,cache_hits=?,errors=?,summary_json=?,error_type=NULL,
@@ -386,182 +313,6 @@ class CodeState:
                     policy=effective_retention,
                 )
         return None
-
-    def external_evidence_files(self, root: Path) -> tuple[ExternalEvidenceFile, ...]:
-        """Return every current fingerprinted Python version under an owner root."""
-
-        return read_external_evidence_files(self.connection, root)
-
-    def external_evidence_baselines(
-        self,
-        *,
-        root: Path,
-        tool_name: str,
-        tool_version: str,
-        configuration_signature: str,
-        files: tuple[ExternalEvidenceFile, ...],
-    ) -> tuple[ExternalEvidenceBaseline | None, ExternalEvidenceBaseline | None]:
-        """Return an exact reusable publication and latest comparable baseline."""
-
-        input_signature = external_input_signature(files)
-        normalized_root = os.path.normcase(os.path.abspath(root))
-        rows = self.connection.execute(
-            """SELECT r.tool_run_id,r.analysis_run_id,r.tool_version,
-            r.configuration_signature,r.status,r.provenance_json
-            FROM external_tool_runs r JOIN analysis_runs a
-            ON a.analysis_run_id=r.analysis_run_id
-            WHERE r.tool_name=? AND r.tool_version=? AND r.configuration_signature=?
-            AND r.status='completed' AND a.status='completed'
-            ORDER BY r.tool_run_id DESC LIMIT 128""",
-            (tool_name, tool_version, configuration_signature),
-        ).fetchall()
-        comparable: ExternalEvidenceBaseline | None = None
-        exact: ExternalEvidenceBaseline | None = None
-        for row in rows:
-            baseline = decode_external_baseline(
-                int(row["tool_run_id"]),
-                int(row["analysis_run_id"]),
-                str(row["tool_version"]),
-                str(row["configuration_signature"]),
-                str(row["provenance_json"]),
-            )
-            if baseline is None:
-                continue
-            try:
-                baseline_root = os.path.normcase(os.path.abspath(baseline.root))
-            except (OSError, TypeError, ValueError):
-                continue
-            if baseline_root != normalized_root:
-                continue
-            if comparable is None:
-                comparable = baseline
-            if baseline.input_signature == input_signature:
-                exact = baseline
-                break
-        if exact is None:
-            return None, comparable
-        projection_status, _, _ = read_external_evidence(
-            self.connection,
-            exact.analysis_run_id,
-            enforce_current_runtime=False,
-        )
-        if (
-            projection_status.status != "ready"
-            or projection_status.effective_tool_run_id != exact.tool_run_id
-        ):
-            return None, comparable
-        return exact, comparable
-
-    def external_provider_baselines(
-        self,
-        *,
-        descriptor: ProviderDescriptor,
-        tool_version: str,
-        root_identity: str,
-        input_signature: str,
-    ) -> tuple[ExternalProviderBaseline | None, ExternalProviderBaseline | None]:
-        """Return exact and comparable normalized baselines for one provider."""
-
-        return read_external_provider_baselines(
-            self.connection,
-            provider_id=descriptor.provider_id,
-            profile=descriptor.profile,
-            tool_version=tool_version,
-            configuration_signature=descriptor.configuration_signature,
-            environment_signature=descriptor.environment_signature,
-            root_identity=root_identity,
-            input_signature=input_signature,
-            comparability_signature=descriptor.comparability_signature,
-        )
-
-    def _delete_current_external_diagnostics(self) -> None:
-        self.connection.execute(
-            """DELETE FROM diagnostics WHERE source=? AND version_id IN(
-            SELECT v.version_id FROM file_versions v
-            JOIN files f ON f.current_version_id=v.version_id
-            WHERE f.status='current' AND v.invalidated_ns IS NULL)""",
-            (RUFF_SOURCE,),
-        )
-
-    def _publish_external_evidence(
-        self,
-        analysis_run_id: int,
-        publication: ExternalEvidencePublication,
-    ) -> None:
-        owner = self.connection.execute(
-            "SELECT status FROM analysis_runs WHERE analysis_run_id=?",
-            (analysis_run_id,),
-        ).fetchone()
-        if owner is None or str(owner["status"]) != "running":
-            raise RuntimeError("external evidence requires one running Code owner")
-        cursor = self.connection.execute(
-            """INSERT INTO external_tool_runs(
-            analysis_run_id,project_id,tool_name,tool_version,
-            configuration_signature,status,started_ns,completed_ns,provenance_json)
-            VALUES(?,NULL,?,?,?,?,?,?,?)""",
-            (
-                analysis_run_id,
-                publication.tool_name,
-                publication.tool_version,
-                publication.configuration_signature,
-                publication.status,
-                publication.started_ns,
-                publication.completed_ns,
-                _json(publication.provenance),
-            ),
-        )
-        tool_run_id = _lastrowid(cursor)
-        if publication.status == "skipped" and publication.execution == "cache_replay":
-            return
-        self._delete_current_external_diagnostics()
-        if publication.status != "completed":
-            return
-        for diagnostic in publication.diagnostics:
-            current = self.connection.execute(
-                """SELECT 1 FROM files f JOIN file_versions v
-                ON v.version_id=f.current_version_id
-                WHERE v.version_id=? AND f.status='current'
-                AND v.invalidated_ns IS NULL""",
-                (diagnostic.version_id,),
-            ).fetchone()
-            if current is None:
-                raise RuntimeError("external diagnostic version is no longer current")
-            metadata = {
-                "schema": "neocortex.external-diagnostic/v1",
-                "external_tool_run_id": tool_run_id,
-                "external_diagnostic_identity": diagnostic.identity,
-                "relative_path": diagnostic.relative_path,
-                "claim_scope": "tool_reported",
-                "authority": "advisory",
-                "mutation_authority": False,
-                "fix_available": diagnostic.fix_available,
-                "url": diagnostic.url,
-            }
-            self.connection.execute(
-                """INSERT INTO diagnostics(
-                version_id,source,code,severity,message,tool_name,tool_version,
-                confirmed,confidence,start_line,start_column,end_line,end_column,
-                start_byte,end_byte,metadata_json)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (
-                    diagnostic.version_id,
-                    RUFF_SOURCE,
-                    diagnostic.code,
-                    "warning",
-                    diagnostic.message,
-                    publication.tool_name,
-                    publication.tool_version,
-                    1,
-                    1.0,
-                    diagnostic.start_line,
-                    diagnostic.start_column,
-                    diagnostic.end_line,
-                    diagnostic.end_column,
-                    None,
-                    None,
-                    _json(metadata),
-                ),
-            )
 
     def fail_run(self, analysis_run_id: int, exc: BaseException) -> None:
         status = (
@@ -719,12 +470,11 @@ class CodeState:
             ),
             1,
         )
-        derived_placeholders = ",".join("?" for _ in _DERIVED_DIAGNOSTIC_SOURCES)
         merge(
             self.connection.execute(
-                f"""SELECT version_id,COUNT(*) FROM diagnostics
-                WHERE source NOT LIKE 'external:%'
-                AND source NOT IN ({derived_placeholders}) GROUP BY version_id""",
+                "SELECT version_id,COUNT(*) FROM diagnostics "
+                "WHERE source NOT LIKE 'external:%' "
+                "AND source NOT IN (?,?,?) GROUP BY version_id",
                 _DERIVED_DIAGNOSTIC_SOURCES,
             ),
             2,

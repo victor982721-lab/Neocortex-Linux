@@ -49,29 +49,16 @@ ANALYSIS_DEPENDENCIES = (
 DEV_DEPENDENCIES = ("build>=1.5,<2",)
 
 FULL_DEPENDENCIES = (
-    "complexipy>=6.2,<7",
-    "cosmic-ray>=8.4.6,<8.5",
-    "coverage>=7.14,<8",
     "ctranslate2>=4.8,<5",
-    "deptry>=0.25,<0.26",
     "fastembed==0.8.0",
     "faster-whisper>=1.2,<2",
-    "grimp>=3.15,<4",
     "mcp==1.29.0",
-    "mypy>=2.1,<3",
-    "nudenet>=3.4.2,<4",
     "numpy>=2.1,<3",
     "Pillow>=12.3,<13",
-    "pip-audit>=2.10,<2.11",
     "PyMuPDF>=1.27,<2",
     "pdfminer.six>=20260107",
     "PySide6>=6.11,<7",
-    "pytest>=9.1,<10",
     "pytesseract>=0.3.13,<0.4",
-    "radon>=6.0.1,<7",
-    "ruff>=0.15,<0.16",
-    "sqlglot>=30.17,<31",
-    "vulture>=2.16,<2.17",
 )
 
 OPTIONAL_DEPENDENCIES = {
@@ -85,7 +72,6 @@ OPTIONAL_DEPENDENCIES = {
     ),
     "audio": ("ctranslate2>=4.8,<5", "faster-whisper>=1.2,<2"),
     "image": (
-        "nudenet>=3.4.2,<4",
         "Pillow>=12.3,<13",
     ),
     "semantic": (
@@ -146,20 +132,22 @@ def test_project_metadata_separates_canonical_runtime_and_extras() -> None:
     assert {"coverage>=7.14,<8", "pytest>=9.1,<10"}.isdisjoint(project["dependencies"])
     assert set(extras["agent"]).isdisjoint(project["dependencies"])
     assert set(extras["analysis"]).isdisjoint(project["dependencies"])
+    assert all("nudenet" not in dependency.casefold() for values in extras.values() for dependency in values)
     assert {"coverage>=7.14,<8", "pytest>=9.1,<10"}.isdisjoint(extras["dev"])
 
     full_union = {
         dependency
-        for name in ("agent", "analysis", "documents", "audio", "image", "semantic", "ui")
+        for name in ("agent", "documents", "audio", "image", "semantic", "ui")
         for dependency in extras[name]
     }
     assert set(extras["full"]) == full_union
+    assert set(extras["full"]).isdisjoint(extras["analysis"])
     assert "Pillow>=12.3,<13" in extras["documents"]
     assert "Pillow>=12.3,<13" in extras["image"]
     assert "Pillow>=12.3,<13" in extras["semantic"]
     package_data = metadata_document["tool"]["setuptools"]["package-data"]
     assert package_data["neocortex"] == ["py.typed"]
-    assert package_data["neocortex.code"] == ["semgrep_rules/*.yml"]
+    assert "neocortex.code" not in package_data
     assert "_04_Nucleo_Operativo" not in package_data
     assert (PROJECT_ROOT / "neocortex" / "py.typed").is_file()
 
@@ -211,17 +199,8 @@ def test_missing_optional_runtimes_are_explicitly_unavailable_or_degraded() -> N
 
     assert statuses["docx"].state is CapabilityState.AVAILABLE
     assert statuses["office"].state is CapabilityState.AVAILABLE
-    assert statuses["code"].state is CapabilityState.DEGRADED
-    assert statuses["code"].degradation_reasons == (
-        "code_ruff_provider_unavailable",
-        "code_mypy_provider_unavailable",
-        "code_vulture_provider_unavailable",
-        "code_grimp_provider_unavailable",
-        "code_complexipy_provider_unavailable",
-        "code_sqlglot_provider_unavailable",
-        "code_pyright_node_unavailable",
-        "code_pyright_provider_unavailable",
-    )
+    assert statuses["code"].state is CapabilityState.AVAILABLE
+    assert statuses["code"].degradation_reasons == ()
     assert statuses["pdf"].state is CapabilityState.UNAVAILABLE
     assert "pdf_extractor_unavailable" in statuses["pdf"].degradation_reasons
     assert statuses["audio"].state is CapabilityState.UNAVAILABLE
@@ -257,10 +236,7 @@ def test_optional_route_components_produce_stable_degradation_reasons() -> None:
         executable_finder=lambda _name: None,
     )
     assert image.state is CapabilityState.DEGRADED
-    assert image.degradation_reasons == (
-        "image_adult_classifier_unavailable",
-        "image_document_ocr_unavailable",
-    )
+    assert image.degradation_reasons == ("image_document_ocr_unavailable",)
     assert image.to_dict()["models_loaded"] is False
     assert image.to_dict()["models_downloaded"] is False
 
@@ -380,7 +356,6 @@ def test_base_surfaces_and_absent_knowledge_state_ignore_optional_engines(
             "fastembed",
             "faster_whisper",
             "fitz",
-            "nudenet",
             "numpy",
             "onnxruntime",
             "pdfminer",
@@ -425,12 +400,13 @@ def test_base_surfaces_and_absent_knowledge_state_ignore_optional_engines(
             output = io.StringIO()
             with contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
                 try:
-                    entrypoint((option,))
+                    result = entrypoint((option,))
                 except SystemExit as exc:
                     if exc.code != 0:
                         raise
                 else:
-                    raise SystemExit(f"{option} did not terminate through argparse")
+                    if result != 0:
+                        raise SystemExit(f"{option} returned {result}")
 
         from neocortex.sdk import (
             KnowledgeQuery,
@@ -517,7 +493,6 @@ def test_base_knowledge_reads_existing_image_state_without_pillow(
             "fastembed",
             "faster_whisper",
             "fitz",
-            "nudenet",
             "numpy",
             "onnxruntime",
             "pdfminer",

@@ -1,10 +1,11 @@
 # Kubuntu/Linux
 
 NeoCortex `0.9.0` admite Kubuntu/Ubuntu 26.04 sobre Linux x86-64 con CPython
-3.14 como entorno personal de referencia. Python 3.13 permanece cubierto por
-la matriz de CI. El modo Linux conserva inventario, procesamiento, catálogo,
-búsqueda, Semantic y la interfaz KDE; las mutaciones del corpus continúan
-reservadas al backend seguro de Windows.
+3.14 como entorno personal de referencia. Python 3.13 permanece como piso
+sintáctico local. El modo Linux conserva inventario, procesamiento, catálogo,
+búsqueda, Semantic y la interfaz KDE. Linux es la plataforma activa y las
+mutaciones del corpus permanecen deshabilitadas hasta que exista un backend
+Linux seguro explícitamente autorizado.
 
 ## Contrato de seguridad
 
@@ -45,8 +46,9 @@ válida, se usa `~/Documents`.
 
 ## Prerrequisitos
 
-No instale dependencias Python, `pip` ni Node globalmente. El instalador crea un
-runtime aislado y obtiene Node dentro de la release. En el host de referencia:
+No instale dependencias Python ni `pip` globalmente. El instalador crea un
+runtime aislado; las herramientas de calidad no se incorporan a la release. En
+el host de referencia:
 
 ```bash
 sudo apt install python3.14-venv qpdf tesseract-ocr tesseract-ocr-spa \
@@ -60,10 +62,10 @@ NeoCortex prioriza estos dos últimos para XLS y PPT heredados, respectivamente,
 y conserva LibreOffice como alternativa cuando el extractor específico no está
 disponible.
 
-La instalación necesita red para resolver wheels binarios, Node y, cuando se
-solicita, modelos. Requiere al menos 4 GiB libres para modelos y cachés. No
-promueve una release que falle imports nativos, `pip check`, Node/Pyright,
-doctor de plataforma o el arranque PySide6 offscreen.
+La instalación necesita red para resolver wheels binarios y, cuando se solicita,
+modelos. Requiere al menos 4 GiB libres para modelos y cachés. No promueve una
+release que falle imports nativos, `pip check`, doctor de plataforma o el
+arranque PySide6 offscreen.
 
 ## Instalación versionada
 
@@ -80,10 +82,8 @@ python3.14 tools/release_linux.py install \
 El identificador inmutable tiene la forma
 `<version>-<sha12>-cp314-linux-x86_64`. El wheel se construye con
 `setuptools==83.0.0`, se instala con el extra `full`, constraints y únicamente
-wheels binarios. La dependencia transitiva `yattag`, publicada sólo como sdist,
-se descarga con versión y SHA-256 fijados, se normaliza primero mediante
-`pip wheel` y sólo entonces entra al instalador como wheel local. Node `24.18.1`
-y Pyright `1.1.411` quedan dentro de la release.
+wheels binarios. La release no incorpora herramientas de QA ni runtimes
+auxiliares de Node.
 `constraints-linux-cp314.lock` fija todas las distribuciones del runtime Linux
 CPython 3.14; el archivo se copia a la release, su hash queda ligado al manifest
 y `verify` exige igualdad exacta del inventario instalado. `constraints.txt`
@@ -107,11 +107,10 @@ guardan en:
 ${XDG_STATE_HOME:-~/.local/state}/Neocortex/state/installation-receipts
 ```
 
-Después de los pilotos por ruta, `Neocortex --all` ejecuta primero el
-autoanálisis protegido del checkout canónico y luego el flujo documental. Si el
-directorio del corpus se elimina después de instalar, el autoanálisis todavía
-se publica y la etapa documental se abstiene con `corpus_unavailable` y código
-`2`, sin traceback.
+Después de los pilotos por ruta, `Neocortex --all` ejecuta el flujo documental
+sin consultar ni producir autoanálisis del checkout. Si el directorio del corpus
+se elimina después de instalar, la etapa documental informa
+`corpus_unavailable` y código `2`, sin traceback.
 
 ## Modelos
 
@@ -123,8 +122,7 @@ Neocortex models prepare
 Neocortex models prepare --json
 ```
 
-Prepara Jina, MiniLM compacto, CLIP texto, CLIP visión y Whisper `small`, y
-valida además el modelo NudeNet incluido en su distribución. Los modelos se
+Prepara Jina, MiniLM compacto, CLIP texto, CLIP visión y Whisper `small`. Los modelos se
 comparten entre releases bajo `~/.local/share/Neocortex/models`; Whisper usa
 CPU/int8.
 

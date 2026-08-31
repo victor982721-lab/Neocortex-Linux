@@ -66,11 +66,9 @@ def test_sdist_manifest_includes_active_docs_and_release_tools() -> None:
     }
 
     assert "include docs/SELF_ANALYSIS.md" in manifest_lines
+    assert "include docs/CODE_SUBSYSTEM_CLASSIFICATION.md" in manifest_lines
     assert "include constraints-linux-cp314.lock" in manifest_lines
     assert "include tools/__init__.py" in manifest_lines
-    assert "include tools/pyright_runtime.py" in manifest_lines
-    assert "include tools/pyright_runtime_lock/package-lock.json" in manifest_lines
-    assert "include tools/pyright_runtime_lock/package.json" in manifest_lines
     assert "recursive-include tools release_*.py" in manifest_lines
 
     with (project_root / "pyproject.toml").open("rb") as stream:
@@ -98,30 +96,6 @@ def test_installed_entrypoint_forwards_arguments_to_integrated_cli() -> None:
 
     assert result == 7
     run_cli.assert_called_once_with(["--status"])
-
-
-def test_installed_entrypoint_exposes_owned_pyright_shim_and_node(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    prefix = tmp_path / "venv"
-    owned_bin = prefix / "tools" / "pyright" / "node_modules" / ".bin"
-    owned_node = tmp_path / "tools" / "node"
-    owned_bin.mkdir(parents=True)
-    owned_node.mkdir(parents=True)
-    original_path = os.pathsep.join(("C:/system/bin", "C:/other/bin"))
-    monkeypatch.setenv("PATH", original_path)
-    monkeypatch.setattr("neocortex.interface.entrypoint.sys.prefix", str(prefix))
-
-    with patch("neocortex.api.cli.cli_app.main", return_value=0):
-        assert entrypoint(("--version",)) == 0
-        assert entrypoint(("--version",)) == 0
-
-    assert os.environ["PATH"].split(os.pathsep) == [
-        str(owned_bin),
-        str(owned_node),
-        *original_path.split(os.pathsep),
-    ]
 
 
 def test_interface_package_does_not_import_optional_qt_stack_eagerly() -> None:

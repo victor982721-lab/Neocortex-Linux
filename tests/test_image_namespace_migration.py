@@ -15,7 +15,6 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PRODUCT_ROOT = "neocortex.capabilities.formats.image"
 
 IMAGE_MODULES = (
-    "adult",
     "analysis",
     "decision",
     "decode",
@@ -33,6 +32,7 @@ IMAGE_MODULES = (
 )
 def test_image_implementation_lives_under_the_product_namespace() -> None:
     product_root = PROJECT_ROOT / "neocortex" / "capabilities" / "formats" / "image"
+    assert not (product_root / "adult.py").exists()
     for name in IMAGE_MODULES:
         module = importlib.import_module(f"{PRODUCT_ROOT}.{name}")
         assert Path(module.__file__).resolve().is_relative_to(product_root)
@@ -153,6 +153,6 @@ def test_image_schema_and_processing_contracts_remain_stable() -> None:
         "neocortex.capabilities.formats.image.state"
     )
 
-    assert state.SCHEMA_VERSION == 5
+    assert state.SCHEMA_VERSION == 6
     config = route.ImageRouteConfig(Path("state") / "image.sqlite3", Path("corpus"))
     assert config.state_path.name == "image.sqlite3"

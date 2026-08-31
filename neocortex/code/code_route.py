@@ -1,4 +1,4 @@
-"""Incremental, non-destructive source-code analysis over the shared inventory.
+"""Incremental, non-destructive ingestion and structural analysis of source code.
 
 The route never walks the filesystem independently.  It consumes immutable
 ``FileSnapshot`` records, binds every read to the observed physical identity,
@@ -10,12 +10,10 @@ searchable textual representation.
 from __future__ import annotations
 import os
 import stat
-import subprocess
 import time
 from collections.abc import Iterable, Mapping
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import asdict, dataclass, replace
-from pathlib import Path
 from typing import Protocol
 
 from neocortex.deduplication import (
@@ -32,8 +30,8 @@ from neocortex.progress import (
 )
 
 from neocortex.runtime.control.cancellation import CancellationRequested, CancellationToken
-from .code_analyzers import AnalyzerRegistry, builtin_analyzer_registry
-from .code_candidate_scope import ProjectCandidateScope, is_project_marker
+from .ingestion.code_analyzers import AnalyzerRegistry, builtin_analyzer_registry
+from .ingestion.code_candidate_scope import ProjectCandidateScope, is_project_marker
 from .code_contracts import (
     AnalysisStatus,
     ArtifactClassification,
@@ -44,32 +42,15 @@ from .code_contracts import (
     DiagnosticRecord,
     DiagnosticSeverity,
 )
-from .code_detection import (
+from .ingestion.code_detection import (
     DETECTOR_VERSION,
     classify_artifact,
     decode_text,
     likely_code_candidate,
     looks_binary,
 )
-from .code_external_evidence import (
-    ExternalEvidencePublication,
-    RuffEvidenceProvider,
-    external_input_signature,
-    failed_external_publication,
-    skipped_external_publication,
-)
 from .code_schema import checkpoint_code_wal, remove_checkpointed_code_sidecars
 from .code_state import CachedCodeVersion, CodeState, SkippedCodeObservation
-from .external_evidence_models import (
-    ExternalEvidenceBundle,
-    ExternalProviderPublication,
-    external_root_identity,
-)
-from .external_evidence_providers import (
-    RUFF_PROTECTED_PROVIDER_ID,
-    RuffProtectedBasicProvider,
-    providers_for_profile,
-)
 from neocortex.semantic.semantic_models import fingerprint_bytes
 
 # region [01] Structural collaborators and safe I/O
@@ -299,7 +280,6 @@ class CodeRoute:
         cancellation: CancellationToken | None = None,
         analyzers: AnalyzerRegistry | None = None,
         memory_gate: CodeResourceGate | None = None,
-        external_evidence_provider: RuffEvidenceProvider | None = None,
     ):
         self.config = config
         self.dedup_index = dedup_index
@@ -310,7 +290,6 @@ class CodeRoute:
         self.cancellation = cancellation or CancellationToken()
         self.analyzers = analyzers or builtin_analyzer_registry()
         self.memory_gate = memory_gate
-        self.external_evidence_provider = external_evidence_provider
         self.processing_signature = (
             f"{self.config.processing_signature}|"
             f"artifact-detector={DETECTOR_VERSION}|"
@@ -382,246 +361,12 @@ class CodeRoute:
             return nullcontext()
         return self.memory_gate.admit(estimate_code_graph_memory_bytes(self.config.state_path))
 
-    def _external_evidence(
-        self,
-        state: CodeState,
-        *,
-        full_reconciliation: bool,
-        counters: dict[str, int],
-    ) -> ExternalEvidencePublication | ExternalEvidenceBundle | None:
-        root = self.config.external_evidence_root
-        if root is None:
-            return None
-        started = time.perf_counter_ns()
-        if self.external_evidence_provider is not None:
-            return self._legacy_external_evidence(
-                state,
-                root=root,
-                full_reconciliation=full_reconciliation,
-                counters=counters,
-                started=started,
-            )
-        publications: tuple[ExternalProviderPublication, ...]
-        try:
-            files = state.external_evidence_files(root)
-        except (OSError, ValueError) as exc:
-            legacy = failed_external_publication(
-                root,
-                reason="input_projection_failed",
-                error=exc,
-            )
-            publications = ()
-        else:
-            if not full_reconciliation:
-                legacy = skipped_external_publication(
-                    root,
-                    files=files,
-                    reason="partial_code_run_not_publishable",
-                )
-                publications = ()
-            else:
-                deep_configuration = (
-                    self.config.deep_configuration_payload
-                    if self.config.analysis_profile == "trusted-deep"
-                    else None
-                )
-                deep_configuration_signature = (
-                    self.config.deep_configuration_signature
-                    if self.config.analysis_profile == "trusted-deep"
-                    else None
-                )
-                providers = providers_for_profile(
-                    self.config.analysis_profile,
-                    root,
-                    deep_configuration=deep_configuration,
-                    deep_configuration_signature=deep_configuration_signature,
-                    progress=self.progress,
-                )
-                normalized: list[ExternalProviderPublication] = []
-                protected_provider = next(
-                    item
-                    for item in providers
-                    if item.descriptor.provider_id == RUFF_PROTECTED_PROVIDER_ID
-                )
-                assert isinstance(protected_provider, RuffProtectedBasicProvider)
-                protected_version = protected_provider.tool_version()
-                protected_exact = None
-                protected_comparable = None
-                if protected_version is not None:
-                    protected_exact, protected_comparable = state.external_provider_baselines(
-                        descriptor=protected_provider.descriptor,
-                        tool_version=protected_version,
-                        root_identity=external_root_identity(root),
-                        input_signature=external_input_signature(files),
-                    )
-                legacy_provider = RuffEvidenceProvider()
-                legacy_version = legacy_provider.tool_version()
-                legacy_exact = None
-                legacy_comparable = None
-                if legacy_version is not None:
-                    legacy_exact, legacy_comparable = state.external_evidence_baselines(
-                        root=root,
-                        tool_name=legacy_provider.tool_name,
-                        tool_version=legacy_version,
-                        configuration_signature=legacy_provider.configuration_signature,
-                        files=files,
-                    )
-                if protected_exact is not None and legacy_exact is not None:
-                    legacy = legacy_provider.replay(root, files, legacy_exact)
-                else:
-                    legacy = legacy_provider.run(
-                        root,
-                        files,
-                        baseline=legacy_comparable,
-                        scratch_root=self.config.state_path.parent,
-                    )
-                normalized.append(
-                    protected_provider.normalize_legacy(
-                        root,
-                        files,
-                        legacy,
-                        baseline=(
-                            protected_exact if protected_exact is not None else protected_comparable
-                        ),
-                    )
-                )
-                for provider in providers:
-                    if provider is protected_provider:
-                        continue
-                    version = provider.tool_version()
-                    exact = None
-                    comparable = None
-                    provider_input_signature: str | None = external_input_signature(files)
-                    baseline_input_signature = getattr(
-                        provider,
-                        "baseline_input_signature",
-                        None,
-                    )
-                    if callable(baseline_input_signature):
-                        try:
-                            computed_signature = baseline_input_signature(files)
-                        except (
-                            OSError,
-                            RuntimeError,
-                            TypeError,
-                            ValueError,
-                            subprocess.TimeoutExpired,
-                        ):
-                            provider_input_signature = None
-                        else:
-                            provider_input_signature = (
-                                computed_signature if isinstance(computed_signature, str) else None
-                            )
-                    if version is not None and provider_input_signature is not None:
-                        exact, comparable = state.external_provider_baselines(
-                            descriptor=provider.descriptor,
-                            tool_version=version,
-                            root_identity=external_root_identity(root),
-                            input_signature=provider_input_signature,
-                        )
-                    normalized.append(
-                        provider.run(
-                            root,
-                            files,
-                            baseline=exact if exact is not None else comparable,
-                            scratch_root=self.config.state_path.parent,
-                        )
-                    )
-                publications = tuple(normalized)
-        counters["external_tool_runs"] = len(publications) or 1
-        counters["external_diagnostics"] = (
-            sum(int(item.counters.get("findings", len(item.findings))) for item in publications)
-            if publications
-            else legacy.diagnostic_count
-        )
-        counters["external_added_diagnostics"] = (
-            sum(int(item.counters.get("added", 0)) for item in publications)
-            if publications
-            else legacy.added_count
-        )
-        counters["external_resolved_diagnostics"] = (
-            sum(int(item.counters.get("resolved", 0)) for item in publications)
-            if publications
-            else legacy.resolved_count
-        )
-        counters["external_cache_hits"] = (
-            sum(int(item.execution == "cache_replay") for item in publications)
-            if publications
-            else int(legacy.execution == "cache_replay")
-        )
-        counters["external_errors"] = (
-            sum(int(item.status in {"failed", "timeout", "unavailable"}) for item in publications)
-            if publications
-            else int(legacy.status in {"failed", "timeout", "unavailable"})
-        )
-        counters["external_milliseconds"] = (time.perf_counter_ns() - started) // 1_000_000
-        return ExternalEvidenceBundle(legacy, publications)
-
-    def _legacy_external_evidence(
-        self,
-        state: CodeState,
-        *,
-        root: Path,
-        full_reconciliation: bool,
-        counters: dict[str, int],
-        started: int,
-    ) -> ExternalEvidencePublication:
-        provider = self.external_evidence_provider
-        assert provider is not None
-        try:
-            files = state.external_evidence_files(root)
-        except (OSError, ValueError) as exc:
-            publication = failed_external_publication(
-                root,
-                reason="input_projection_failed",
-                error=exc,
-            )
-        else:
-            if not full_reconciliation:
-                publication = skipped_external_publication(
-                    root,
-                    files=files,
-                    reason="partial_code_run_not_publishable",
-                )
-            else:
-                version = provider.tool_version()
-                exact = None
-                comparable = None
-                if version is not None:
-                    exact, comparable = state.external_evidence_baselines(
-                        root=root,
-                        tool_name=provider.tool_name,
-                        tool_version=version,
-                        configuration_signature=provider.configuration_signature,
-                        files=files,
-                    )
-                publication = (
-                    provider.replay(root, files, exact)
-                    if exact is not None
-                    else provider.run(
-                        root,
-                        files,
-                        baseline=comparable,
-                        scratch_root=self.config.state_path.parent,
-                    )
-                )
-        counters["external_tool_runs"] = 1
-        counters["external_diagnostics"] = publication.diagnostic_count
-        counters["external_added_diagnostics"] = publication.added_count
-        counters["external_resolved_diagnostics"] = publication.resolved_count
-        counters["external_cache_hits"] = int(publication.execution == "cache_replay")
-        counters["external_errors"] = int(
-            publication.status in {"failed", "timeout", "unavailable"}
-        )
-        counters["external_milliseconds"] = (time.perf_counter_ns() - started) // 1_000_000
-        return publication
-
     def _resolve_analyzer_identity(
         self,
         language: str | None,
         generic_only: bool,
     ) -> tuple[str, str]:
-        """Resolve the analyzer that would execute under current availability."""
+        """Resolve the analyzer selected by the current lazy registry."""
 
         analyzer = self.analyzers.analyzer_for(None if generic_only else language)
         return analyzer.analyzer_id, analyzer.analyzer_version
@@ -1081,12 +826,6 @@ class CodeRoute:
             self.cancellation.checkpoint()
         run.counters["graph_milliseconds"] = (time.perf_counter_ns() - graph_started) // 1_000_000
         self.cancellation.checkpoint()
-        external_evidence = self._external_evidence(
-            state,
-            full_reconciliation=full_reconciliation,
-            counters=run.counters,
-        )
-        self.cancellation.checkpoint()
         summary = CodeRouteSummary(
             processing_signature=self.processing_signature,
             **run.counters,
@@ -1097,7 +836,6 @@ class CodeRoute:
             payload,
             partial=(self.config.max_documents is not None or self.config.selection.active),
             graph_current=True,
-            external_evidence=external_evidence,
         )
         self.framework_state.complete_route_phase(
             self.framework_run_id,

@@ -37,11 +37,6 @@ def disjoint_internal_paths_policy(base: Path) -> InternalPathsPolicy:
             InternalPathSpec("runtime", "tree", runtime),
             InternalPathSpec("application_data", "tree", application_data),
             InternalPathSpec(
-                "self_analysis",
-                "tree",
-                application_data / "self-analysis",
-            ),
-            InternalPathSpec(
                 "launcher",
                 "file",
                 runtime / "bin" / "Neocortex.exe",

@@ -70,6 +70,7 @@ SOURCE_DATABASE_NAMES = {
     IMAGE_SOURCE_KIND: "image.sqlite3",
 }
 SOURCE_ADAPTER_VERSION = "semantic-source-adapters-v3"
+IMAGE_SOURCE_ADAPTER_VERSION = "semantic-image-source-v4-no-nudenet"
 CODE_SOURCE_ADAPTER_VERSION = "semantic-code-source-v1"
 SEMANTIC_TITLE_SECTION_KIND = "semantic_metadata_title"
 SEMANTIC_TITLE_POLICY = "semantic-content-aware-title-v3"
@@ -1251,8 +1252,7 @@ def _image_rows(
             else ",NULL AS last_seen_run_id"
         )
         image_projection = f"""i.file_key,i.path,i.size,i.mtime_ns,i.birthtime_ns,
-            i.processing_signature,i.category,i.document_candidate,
-            i.adult_classification{run_projection}"""
+            i.processing_signature,i.category,i.document_candidate{run_projection}"""
         if "ocr_text_zlib" in image_columns:
             ocr_payload = "i.ocr_text_zlib" if include_ocr_payload else "NULL"
             ocr_projection = f""",{ocr_payload} AS ocr_text_zlib,i.ocr_text_chars,
@@ -1362,7 +1362,6 @@ def _image_source_head(state_directory: Path) -> SemanticSourceHead:
                     "processing_signature",
                     "category",
                     "document_candidate",
-                    "adult_classification",
                     "ocr_text_chars",
                     "ocr_text_xxh3_128",
                     "ocr_text_truncated",
@@ -1387,7 +1386,7 @@ def _image_source_head(state_directory: Path) -> SemanticSourceHead:
         return SemanticSourceHead(
             IMAGE_SOURCE_KIND,
             image_database.name,
-            SOURCE_ADAPTER_VERSION,
+            IMAGE_SOURCE_ADAPTER_VERSION,
             schema_version,
             row_count,
             "sha256:" + hasher.hexdigest(),
@@ -1400,7 +1399,7 @@ def _image_source_head(state_directory: Path) -> SemanticSourceHead:
     return SemanticSourceHead(
         IMAGE_SOURCE_KIND,
         image_database.name,
-        SOURCE_ADAPTER_VERSION,
+        IMAGE_SOURCE_ADAPTER_VERSION,
         schema_version,
         row_count,
         "sha256:" + hasher.hexdigest(),
@@ -1480,18 +1479,17 @@ def iter_image_source_records(
             source_kind="image",
             source_identity=str(row["file_key"]),
             identity_version=(
-                f"{SOURCE_ADAPTER_VERSION}|{processing_signature}|"
+                f"{IMAGE_SOURCE_ADAPTER_VERSION}|{processing_signature}|"
                 f"snapshot={snapshot.size}:{snapshot.mtime_ns}:{snapshot.birthtime_ns}"
             ),
             fingerprint=fingerprint,
             path=snapshot.path,
             source_revision=source_revision,
             provenance={
-                "adapter": SOURCE_ADAPTER_VERSION,
+                "adapter": IMAGE_SOURCE_ADAPTER_VERSION,
                 "processing_signature": processing_signature,
                 "category": row["category"],
                 "document_candidate": bool(row["document_candidate"]),
-                "adult_classification": row["adult_classification"],
                 "fingerprint_basis": fingerprint_basis,
                 "fingerprint_acquisition": fingerprint_acquisition,
             },
@@ -1510,7 +1508,7 @@ def iter_image_source_records(
                 section_id="ocr",
                 text=ocr_text,
                 provenance={
-                    "adapter": SOURCE_ADAPTER_VERSION,
+                    "adapter": IMAGE_SOURCE_ADAPTER_VERSION,
                     "processing_signature": processing_signature,
                     "truncated": bool(row["ocr_text_truncated"]),
                 },

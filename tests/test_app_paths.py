@@ -17,7 +17,6 @@ from neocortex.runtime.config.app_paths import (
     default_ui_settings_path,
     local_application_data_directory,
     program_installation_directory,
-    self_analysis_data_directory,
     source_repository_directory,
     stable_launcher_path,
 )
@@ -44,10 +43,6 @@ class ApplicationPathTests(unittest.TestCase):
                 self.assertEqual(
                     program_installation_directory(),
                     local_appdata / "Programs" / "Neocortex",
-                )
-                self.assertEqual(
-                    self_analysis_data_directory(),
-                    local_appdata / "Neocortex" / "self-analysis",
                 )
                 self.assertEqual(
                     default_generated_artifact_directories(),
@@ -91,11 +86,7 @@ class ApplicationPathTests(unittest.TestCase):
                     Path(directory) / "Neocortex" / "state",
                 )
                 help_text = parser.format_help()
-                self_analysis = parser._option_string_actions["--self-analysis"]
-                self.assertIn(
-                    "requires explicit --root and --state-directory",
-                    self_analysis.help,
-                )
+                self.assertNotIn("--self-analysis", parser._option_string_actions)
                 self.assertNotIn("\n  --state-directory", help_text)
 
 

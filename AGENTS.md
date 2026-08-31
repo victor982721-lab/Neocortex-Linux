@@ -49,9 +49,9 @@ un productor y un consumidor reales dentro del flujo integrado.
   depura, empaqueta ni usa como barrera hasta que Víctor lo solicite de nuevo.
 - GitHub Actions está prohibido para este repositorio. No crear ni conservar
   workflows, no habilitarlo, no dispararlo y no usar sus checks como gate.
-- Toda validación de integración y release se ejecuta localmente en Linux con
-  los tests, quality gates, autoanalizador, artefacto instalado y launcher
-  público existentes.
+- Toda comprobación de integración o release se ejecuta localmente en Linux con
+  las pruebas y herramientas individuales que correspondan, además del
+  artefacto instalado y el launcher público cuando ese alcance aplique.
 
 Rutas canónicas Linux:
 
@@ -66,12 +66,9 @@ Rutas canónicas Linux:
 - Comando público: `Neocortex`
 
 El instalador Linux prepara la raíz de corpus seleccionada como directorio real.
-El comando `Neocortex --all` consulta primero el receipt exacto vigente del
-autoanálisis, sin producir ni refrescar esa evidencia, y después ejecuta el
-flujo documental. Si el corpus falta, debe conservar el resultado de esa
-consulta e informar `corpus_unavailable` con salida `2`, nunca abortar con un
-traceback. Sólo una opción productora explícita puede refrescar el
-autoanálisis.
+El comando `Neocortex --all` ejecuta el flujo documental y no consulta, produce
+ni refresca autoanálisis del repositorio. Si el corpus falta, informa
+`corpus_unavailable` con salida `2`, nunca aborta con un traceback.
 
 El runtime personal canónico debe instalar y exponer la capacidad completa. Los
 extras individuales existen para empaquetado y desarrollo; no son decisiones
@@ -214,12 +211,11 @@ un máximo pequeño de acciones y verificación de destinos. Nunca uses --all
 --apply como smoke o piloto.
 
 La interfaz cotidiana vigente es `Neocortex --all` en Linux, sin mutación. Este
-recorrido consume un receipt exacto vigente del autoanálisis; no vuelve a
-producirlo por costumbre ni desplaza una publicación `trusted-deep`. Si falta o
-está obsoleto, la ejecución cotidiana lo informa y continúa con el corpus; un
-modo de release expresamente estricto puede fallar cerrado. Si alguna etapa
-todavía no está integrada, corrige esa brecha y descríbela con honestidad. Las
-interfaces Windows son legado fuera del alcance activo.
+recorrido no depende de autoanálisis del repositorio ni de receipts externos.
+Si falta el corpus, la ejecución cotidiana informa `corpus_unavailable` y
+continúa de forma controlada. Si alguna etapa todavía no está integrada,
+corrige esa brecha y descríbela con honestidad. Las interfaces Windows son
+legado fuera del alcance activo.
 
 ### Watcher
 
@@ -241,86 +237,32 @@ informes anteriores son sólo referencia histórica.
 
 ## Validación proporcional
 
-La entrada ordinaria y única para aceptar una implementación nueva es
-`Neocortex code validate` (`--baseline HEAD^` después de crear el commit). Este
-comando debe orquestar selección afectada, pruebas/Coverage, estática,
-arquitectura, publicación/review del autoanalizador, experimentos allow-listed,
-wheel candidato instalado y replay. No ejecutes Ruff, Mypy, Pyright, pytest ni
-`quality_gate.py` como rutas de aceptación paralelas por costumbre; se permiten
-sólo para diagnosticar un gate concreto que el recibo canónico haya señalado.
-Nunca declares el cambio validado si el comando termina `failed` o `abstained`.
-Los deltas portables `added/resolved` de providers permanecen como evidencia
-histórica advisory: pueden abarcar publicaciones anteriores al baseline Git y
-desplazamientos de coordenadas. La barrera estática canónica que bloquea una
-regresión es el baseline versionado por path/regla/conteo ejecutado antes del
-review; no conviertas esos deltas globales en un veto paralelo.
+La verificación del desarrollo no es una capacidad del runtime productivo y no
+existe un comando agregador obligatorio. `neocortex/code` sólo contiene la
+capacidad de trabajar con código como contenido: ingesta, detección,
+representación, persistencia, búsqueda y relaciones semánticas.
 
-La unidad de auditoría del autoanalizador es un lote material y coherente ya
-terminado, no cada edición. Reserva la corrida canónica para cerrar una
-funcionalidad, refactor transversal, cambio de schema/pipeline o conjunto
-sustancial de correcciones sobre la misma frontera. Un ajuste aislado de
-tipado, timeout, documentación, una prueba o pocas líneas recibe sólo la
-comprobación focal correspondiente y se acumula dentro del lote activo. Si un
-gate integral falla, no lo reinicies tras corregir el primer síntoma: termina
-el diagnóstico, agrupa todas las correcciones y revisa el control-plane barato
-antes de congelar otro candidato. Cuando el lote sustancial quede terminado,
-ejecuta proactivamente una sola corrida canónica: no pidas confirmación ni
-esperes un recordatorio de Víctor. No amplíes el alcance artificialmente para
-aparentar un cambio grande; sin un hito sustancial no hay corrida integral.
+Para cambios de código, Codex ejecuta directamente la herramienta que demuestra
+la propiedad modificada, con límites proporcionales:
 
-La validación canónica debe reejecutar todo su árbol dentro del cgroup de usuario
-Linux declarado por `neocortex.code-validation-resources/v3`. El worker debe
-probar contra `/proc/self/cgroup` que pertenece al transient unit exacto y
-consultar en systemd que ese unit mantiene `PrivateNetwork=yes`; además debe
-probar ante el kernel que AF_INET y AF_INET6 están denegados por la restricción
-de familias del unit. Un receipt de entorno ni una propiedad declarativa por sí
-solos demuestran contención. Antes de iniciar,
-reserva memoria física para KDE/Chrome mediante el coordinador global y rechaza
-la corrida si no hay headroom o PSI seguro. Durante la ejecución conserva
-`MemoryMax`, `MemorySwapMax`, cuota de CPU, límite total de tiempo y watchdog;
-si se pierde la reserva del escritorio, detén cooperativamente el grupo con
-SIGINT y abstente; systemd conserva SIGKILL como último recurso acotado. No
-puede degradarse a subprocesses sin contención ni lanzar dos validaciones en
-paralelo. El mismo servicio debe usar una red privada sin ruta externa; la
-validación canónica nunca inicia egress.
+- `pytest` para regresiones de comportamiento y pruebas de integración;
+- Ruff, Pyright/Mypy u otra herramienta de tipos para errores estáticos;
+- Semgrep sólo para invariantes específicas que no exprese una prueba directa;
+- una comprobación acotada de imports/ciclos cuando cambie la arquitectura;
+- `tools/release_linux.py` y un smoke instalado sólo cuando el alcance incluya
+  packaging o release.
 
-Para una selección afectada, `trusted-deep` reserva 15 minutos adicionales a
-la cota 2x de Coverage para los demás providers y la finalización. Una frontera
-full reserva 30 minutos: con el presupuesto canónico de 900 segundos queda
-acotada a 60 minutos dentro del límite global de 75. No reduzcas esa reserva por
-haber terminado el último shard; la publicación terminal forma parte del gate.
+No se mantiene `Neocortex code validate`, `trusted-deep`, una base de evidencias
+externas, work packages, receipts del propio desarrollo ni una plataforma
+interna que agregue pytest, Coverage, Ruff, Pyright/Mypy, Semgrep, Vulture,
+Complexipy, Grimp, pip-audit, Cosmic Ray o Git. Las herramientas de calidad
+viven en `tools/` y `tests/`, nunca como imports del runtime. Una comprobación
+individual verde se reporta como focal, no como aceptación integral de todo el
+repositorio.
 
-Usa la barrera más pequeña que demuestre el resultado y proteja la frontera
-modificada:
-
-- documentación o configuración: diff, formato, enlaces y parseo o comando
-  afectado;
-- lógica local: regresión focal y comando canónico;
-- recuperación, ranking, clasificación o calibración: muestra representativa y
-  comparación con línea base, incluyendo abstención;
-- schema o migración: bases pobladas compatibles, idempotencia, integridad,
-  backup y recuperación;
-- cambio transversal, packaging o release: suite y barreras integradas que
-  correspondan.
-
-No ejecutes una suite completa por rutina. No presentes una validación parcial
-como integral, pero tampoco bloquees una mejora acotada porque no cruzó
-fronteras que no modificó.
-
-El orden de cierre de un cambio ejecutable es: pruebas focales; commit local
-congelado; una sola validación canónica; instalación/verificación Linux desde
-ese SHA; E2E desde el launcher instalado; replay integral sólo cuando el diff
-cruce caché, reanudación, schema o pipeline; y un único push. Toda comprobación
-que todavía pueda exigir cambios de código debe quedar dentro de la validación
-canónica o ejecutarse una sola vez antes de instalar, nunca como `pre-push`
-solapado después del E2E.
-
-Cuando corresponda una segunda ejecución, su aceptación exige contadores de
-trabajo omitido además de exit 0: Code debe publicar cero procesados y todos los
-candidatos reutilizados; un replay Semantic exacto debe enumerar cero fuentes,
-preparar cero elementos/fragmentos y crear cero jobs. Repetir el recorrido
-completo y llamarlo incremental constituye un defecto de optimización, no una
-barrera aprobada.
+Si Víctor solicita una auditoría puntual, se ejecutan sólo los comandos
+necesarios y se conserva el resultado observable; no se crea infraestructura
+persistente para coordinarla.
 
 ## Dependencias, código y herramientas
 
@@ -359,7 +301,8 @@ barrera aprobada.
 
 ## Cierre
 
-Una tarea termina cuando Victor recibe una capacidad usable, una explicación
+Una tarea termina cuando Víctor recibe una capacidad usable, una explicación
 clara de lo que funciona y de lo que falta, y evidencia proporcional de que sus
-datos y estado permanecen seguros. Si sólo quedaron infraestructura, pruebas o
-planes sin un resultado visible, la capacidad sigue pendiente.
+datos y estado permanecen seguros. La validación del desarrollo se realiza con
+herramientas individuales fuera del runtime; no se exige ni se presenta un
+receipt de autoanálisis como condición de cierre.

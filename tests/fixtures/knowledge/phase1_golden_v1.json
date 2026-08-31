@@ -1659,7 +1659,7 @@
         {
           "owner": "image",
           "condition": "absent",
-          "expected_schema_version": 5
+          "expected_schema_version": 6
         }
       ],
       "rankings": [],

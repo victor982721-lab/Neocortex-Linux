@@ -268,7 +268,6 @@ def test_run_code_passes_a_releasing_coordinator_gate(tmp_path: Path) -> None:
 
     config = SimpleNamespace(
         root=tmp_path,
-        self_analysis=False,
         dedup_database=tmp_path / "dedup.sqlite3",
         code_database=tmp_path / "code.sqlite3",
         code_max_file_bytes=1024 * 1024,

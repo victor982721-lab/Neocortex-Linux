@@ -60,58 +60,10 @@ def run_framework(args: argparse.Namespace, *, progress=None):
         return _run_framework_with_progress(args, progress)
 
 
-def _integrated_self_analysis_arguments() -> tuple[str, ...]:
-    """Return the canonical protected self-analysis invocation owned by ``--all``."""
-
-    from neocortex.runtime.config.app_paths import self_analysis_data_directory, source_repository_directory
-
-    return (
-        "--self-analysis",
-        "--root",
-        str(source_repository_directory()),
-        "--state-directory",
-        str(self_analysis_data_directory()),
-    )
 
 
-def _run_integrated_self_analysis() -> int:
-    """Execute the existing protected service before the document ``--all`` flow."""
-
-    try:
-        return main(_integrated_self_analysis_arguments())
-    except SystemExit as exc:
-        return exc.code if isinstance(exc.code, int) else 2
 
 
-def _resolve_integrated_self_analysis(args: argparse.Namespace) -> int:
-    """Refresh explicitly or consume one exact receipt without starting analysis."""
-
-    if args.refresh_self_analysis:
-        exit_code = _run_integrated_self_analysis()
-        print(
-            f"SELF_ANALYSIS status=refreshed exit_code={exit_code}",
-            file=sys.stderr,
-        )
-        if exit_code != 0:
-            return exit_code
-        if not args.require_fresh_self_analysis:
-            return 0
-
-    from neocortex.code.code_validation_receipts import load_current_code_validation_receipt
-
-    receipt = load_current_code_validation_receipt()
-    fields = [
-        f"status={receipt.status}",
-        f"reason={receipt.reason}",
-    ]
-    if receipt.validation_digest is not None:
-        fields.append(f"digest={receipt.validation_digest}")
-    if receipt.head_sha is not None:
-        fields.append(f"head={receipt.head_sha}")
-    print("SELF_ANALYSIS " + " ".join(fields), file=sys.stderr)
-    if receipt.status == "reused":
-        return 0
-    return 2 if args.require_fresh_self_analysis else 0
 
 
 # endregion [03]
@@ -289,11 +241,6 @@ def main(arguments: Sequence[str] | None = None) -> int:
     if direct_exit_code is not None:
         return direct_exit_code
 
-    self_analysis_exit_code = 0
-    if args.all:
-        self_analysis_exit_code = _resolve_integrated_self_analysis(args)
-        if self_analysis_exit_code != 0:
-            return 2
 
     from neocortex.progress import LineProgress, RichProgress
     from rich.console import Console
@@ -348,8 +295,6 @@ def main(arguments: Sequence[str] | None = None) -> int:
     if (actions is not None and actions.errors) or has_organization_errors(result):
         return 2
     if semantic_exit_code != 0:
-        return 2
-    if self_analysis_exit_code != 0:
         return 2
     if args.strict_exit_codes and has_strict_route_errors(result):
         return 2

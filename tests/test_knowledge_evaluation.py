@@ -199,7 +199,7 @@ def test_fixture_is_input_only_and_covers_all_seventeen_contracts() -> None:
         "docx": 5,
         "office": 1,
         "audio": 1,
-        "image": 5,
+        "image": 6,
         "semantic": 6,
         "code": 2,
     }

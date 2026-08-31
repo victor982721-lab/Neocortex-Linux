@@ -27,10 +27,6 @@ def test_text_modules_are_owned_by_the_canonical_tree() -> None:
 def test_text_consumers_use_the_product_namespace() -> None:
     for relative_path in (
         "neocortex/runtime/config/application_config_projections.py",
-        "neocortex/code/code_capability_reachability_analysis.py",
-        "neocortex/code/code_knowledge_asset_health_analysis.py",
-        "neocortex/code/code_state_projection_analysis.py",
-        "neocortex/code/code_state_topology_analysis.py",
         "neocortex/semantic/derivation_lineage_service.py",
         "neocortex/knowledge/knowledge_asset_health_repository.py",
         "neocortex/knowledge/knowledge_snapshot.py",
