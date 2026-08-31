@@ -10,11 +10,13 @@ documentos, propuestas de nombres, planes de organización, `CorpusMutationGuard
 ledger de acciones y recuperación/reconciliación. El runtime publicado es
 Linux-first y el estado real se conserva en SQLite.
 
-La release `0.9.0-bb656793c005-cp314-linux-x86_64` quedó instalada desde el
-SHA `bb656793c0059ff873f8d2ad22757b6e54a26a24`, `release_linux.py verify` pasó y el
-launcher público superó un smoke y un replay aislados con texto, audio, vídeo,
-imagen y código. La release anterior se conserva para rollback conforme a la
-política vigente del proyecto.
+La release de código inicial `0.9.0-0903f4403463-cp314-linux-x86_64` quedó
+instalada desde `0903f44034638e309bcb163cd78186ae5a3a79a3`; después, el handoff
+documental se publicó como `0.9.0-2a6c40202a47-cp314-linux-x86_64` desde el SHA
+final `2a6c40202a473d74dfc93694a59b6f910ffcab26`. En ambos cortes
+`release_linux.py verify` pasó y el launcher público superó smoke/replay y apply
+aislados con texto, audio, vídeo, imagen y código. Las releases anteriores se
+conservan para rollback conforme a la política vigente del proyecto.
 
 ## Mapa requisito → pieza existente
 
