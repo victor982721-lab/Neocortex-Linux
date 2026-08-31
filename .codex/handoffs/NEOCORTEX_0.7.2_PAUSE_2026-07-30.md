@@ -1,6 +1,6 @@
 # NeoCortex — handoff operativo vigente
 
-> Actualizado: 2026-08-31 04:36 CST. El basename es histórico y permanece estable.
+> Actualizado: 2026-08-31 04:41 CST. El basename es histórico y permanece estable.
 > `~/.codex/PENDIENTES.md` conserva el compromiso operativo; este archivo
 > describe sólo la frontera técnica de reanudación.
 
@@ -19,8 +19,11 @@ La mutación Linux sigue bloqueada por contrato: `--apply` y
 `linux_mutation_backend_unavailable`; el prototipo POSIX/KIO auditado no se
 promueve ni se incluye en el runtime.
 
-El checkout final es `6d3419040c125a6b57f2c302d87b673330aacf4a`; la release
-compliant se reconstruirá desde este SHA antes del cierre.
+El checkout final es `fe0fafae0dee79bcd9f7b61efd0ca02576eacce9` y la release activa
+`0.9.0-fe0fafae0dee-cp314-linux-x86_64` identifica ese mismo SHA; `release_linux.py
+verify` pasó. La suite completa quedó en 4,307 pruebas, 127 omitidas y 114
+subtests, y la evidencia durable está en
+`/home/winterboss/Documentos/NeoCortex/Auditorias/2026-08-31-neocortex-linux-only-simplification/summary.json`.
 
 Las proyecciones Semantic mutables tienen un scrub explícito y probado para
 retirar claves adultas sin alterar el resto del JSON. No se detectó una base
@@ -100,12 +103,13 @@ trabajo vigente y no deben reactivar el autoanálisis retirado.
 
 ## Próximo corte, en orden
 
-1. Construir e instalar la release Linux desde `6d3419040c125a6b57f2c302d87b673330aacf4a`,
-   comprobar `current`/manifest/launcher y ejecutar `release_linux.py verify`.
-2. Ejecutar smoke y replay públicos aislados sin `--apply`, comprobar
-   `exact_replay`, cachés, modelos y ausencia de autoanálisis productivo.
-3. Mantener P0 POSIX/KIO sólo como diseño bloqueado hasta que cambie la política
-   superior; no iniciar una corrida real del corpus ni crear `curate --apply`.
+1. Mantener el runtime Linux en solo lectura para mutación del corpus mientras
+   rija `linux_mutation_backend_unavailable`.
+2. Si Víctor lo solicita de nuevo, auditar de forma separada la retirada
+   preservativa de adaptadores Windows/NTFS históricos, con alcance y evidencia
+   explícitos antes de borrar cualquier archivo.
+3. No iniciar una corrida real del corpus ni crear `curate --apply` bajo la
+   política actual.
 
 ## Límites
 
