@@ -1,6 +1,6 @@
 # NeoCortex — handoff operativo vigente
 
-> Actualizado: 2026-08-31 04:41 CST. El basename es histórico y permanece estable.
+> Actualizado: 2026-08-31 04:45 CST. El basename es histórico y permanece estable.
 > `~/.codex/PENDIENTES.md` conserva el compromiso operativo; este archivo
 > describe sólo la frontera técnica de reanudación.
 
@@ -19,11 +19,11 @@ La mutación Linux sigue bloqueada por contrato: `--apply` y
 `linux_mutation_backend_unavailable`; el prototipo POSIX/KIO auditado no se
 promueve ni se incluye en el runtime.
 
-El checkout final es `fe0fafae0dee79bcd9f7b61efd0ca02576eacce9` y la release activa
-`0.9.0-fe0fafae0dee-cp314-linux-x86_64` identifica ese mismo SHA; `release_linux.py
+El checkout final es `549e002e66d2f8097e704ebd511b463620a438a2` y la release activa
+`0.9.0-549e002e66d2-cp314-linux-x86_64` identifica ese mismo SHA; `release_linux.py
 verify` pasó. La suite completa quedó en 4,307 pruebas, 127 omitidas y 114
 subtests, y la evidencia durable está en
-`/home/winterboss/Documentos/NeoCortex/Auditorias/2026-08-31-neocortex-linux-only-simplification/summary.json`.
+`/home/winterboss/Documentos/NeoCortex/Auditorias/2026-08-31-neocortex-linux-only-simplification-final/summary.json`.
 
 Las proyecciones Semantic mutables tienen un scrub explícito y probado para
 retirar claves adultas sin alterar el resto del JSON. No se detectó una base
