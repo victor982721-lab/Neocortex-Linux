@@ -1,6 +1,6 @@
 # NeoCortex — handoff operativo vigente
 
-> Actualizado: 2026-08-31 06:33 CST. El basename es histórico y permanece estable.
+> Actualizado: 2026-08-31 08:58 CST. El basename es histórico y permanece estable.
 > `~/.codex/PENDIENTES.md` conserva el compromiso operativo; este archivo
 > describe sólo la frontera técnica de reanudación.
 
@@ -25,13 +25,25 @@ duplicados exactos, propuestas de organización y archivos vacíos en revisión,
 y devuelve identidad, evidencia, razones y `preview_fingerprint`. La operación
 no inicializa, migra ni escribe SQLite, no toca WAL/SHM de los owners y falla
 cerrado si un owner cambia o conserva un journal activo; `--curation-json` emite
-la misma vista como un objeto determinista acotado.
+la misma vista como un objeto determinista acotado. Cuando falta un owner, la
+vista conserva los resultados disponibles y declara `coverage=partial` o
+`unavailable` sin inventar un plan completo.
+
+La nueva superficie `--state-health` inspecciona todos los owners mediante
+snapshots `immutable=1`, clasifica `healthy`, `missing`, `orphaned_sidecars`,
+`blocked` o `unreadable` y devuelve código 2 ante cobertura parcial. El
+orquestador, watcher y reconciliación mantienen seams lazy para no cargar
+NTFS/USN en las rutas públicas Linux normales.
+
+La instalación Linux aplica la retención `current_and_immediate_rollback_v1`:
+verifica procesos host, conserva `current` y el rollback inmediato, retira
+releases más antiguas y registra la poda en el recibo.
 
 El checkout final y la release activa quedan alineados al `HEAD` verificable; el
 manifest/receipt deben conservar el mismo `source_sha` y `release_linux.py verify`
-debe pasar antes de cualquier cierre. La suite completa quedó en 4,316 pruebas,
+debe pasar antes de cualquier cierre. La suite completa quedó en 4,327 pruebas,
 127 omitidas y 114 subtests, y la evidencia de esta evolución queda en
-`/home/winterboss/Documentos/NeoCortex/Auditorias/2026-08-31-neocortex-curation-preview/summary.json`.
+`/home/winterboss/Documentos/NeoCortex/Auditorias/2026-08-31-neocortex-platform-state-health/summary.json`.
 
 Las proyecciones Semantic mutables tienen un scrub explícito y probado para
 retirar claves adultas sin alterar el resto del JSON. No se detectó una base
@@ -113,8 +125,8 @@ trabajo vigente y no deben reactivar el autoanálisis retirado.
 
 1. Mantener el runtime Linux en solo lectura para mutación del corpus mientras
    rija `linux_mutation_backend_unavailable`.
-2. Usar `--curation-preview` sólo sobre estado publicado y fixtures aislados;
-   revisar sus propuestas antes de cualquier cambio de alcance.
+2. Usar `--state-health` y `--curation-preview` sólo sobre estado publicado y
+   fixtures aislados; revisar sus propuestas antes de cualquier cambio de alcance.
 3. Si Víctor lo solicita de nuevo, auditar de forma separada la retirada
    preservativa de adaptadores Windows/NTFS históricos, con alcance y evidencia
    explícitos antes de borrar cualquier archivo.
