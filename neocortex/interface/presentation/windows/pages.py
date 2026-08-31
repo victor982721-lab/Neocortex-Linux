@@ -112,7 +112,11 @@ def build_execution_page(window: Any) -> QWidget:
     state_layout.setSpacing(2)
     state_path = QLabel(str(window._state_directory))
     state_path.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-    state_note = QLabel("Ubicación XDG aislada; queda fuera del inventario.")
+    state_note = QLabel(
+        "Ubicación XDG aislada; queda fuera del inventario."
+        if window._portable_linux
+        else "Ubicación fija dentro de AppData; queda fuera del inventario."
+    )
     state_note.setProperty("muted", True)
     state_layout.addWidget(state_path)
     state_layout.addWidget(state_note)
@@ -158,6 +162,11 @@ def build_execution_page(window: Any) -> QWidget:
     window.apply_radio = QRadioButton("Aplicar cambios")
     window.apply_radio.setObjectName("ModeButton")
     window.apply_radio.setProperty("danger", True)
+    if window._portable_linux:
+        window.apply_radio.setEnabled(False)
+        window.apply_radio.setToolTip(
+            "Las mutaciones del corpus requieren el backend seguro de Windows."
+        )
     mode_group = QButtonGroup(window)
     mode_group.addButton(window.analysis_radio)
     mode_group.addButton(window.apply_radio)
@@ -171,15 +180,26 @@ def build_execution_page(window: Any) -> QWidget:
     config_layout.addLayout(options_row)
 
     safety = QLabel(
-        "Analizar no modifica archivos. Aplicar usa renameat2/KIO y las mismas "
-        "validaciones, protecciones y recuperación del motor NeoCortex."
+        (
+            "Modo portátil Linux: inventario, búsqueda y procesamiento están "
+            "disponibles; las mutaciones del corpus permanecen deshabilitadas."
+        )
+        if window._portable_linux
+        else (
+            "Analizar no modifica archivos. Aplicar usa las mismas validaciones, "
+            "protecciones y papelera del motor NeoCortex."
+        )
     )
     safety.setProperty("muted", True)
     safety.setWordWrap(True)
     config_layout.addWidget(safety)
 
     actions = QHBoxLayout()
-    window.start_button = QPushButton("Iniciar ejecución")
+    window.start_button = QPushButton(
+        "Iniciar ejecución"
+        if window._portable_linux or window._execution_elevated
+        else "Habilitar ejecución"
+    )
     window.start_button.setObjectName("PrimaryButton")
     window.start_button.clicked.connect(window._start_execution)
     window.cancel_button = QPushButton("Solicitar cancelación")
@@ -297,12 +317,23 @@ def build_system_page(window: Any) -> QWidget:
     note_layout.addWidget(
         window._section_heading(
             "Distribución",
-            "Runtime versionado y acceso integrado en KDE",
+            (
+                "Runtime versionado y acceso integrado en KDE"
+                if window._portable_linux
+                else "Runtime personal versionado"
+            ),
         )
     )
     detail = QLabel(
-        "El launcher estable usa el release activo; los modelos y el estado "
-        "permanecen compartidos fuera de cada release inmutable."
+        (
+            "El launcher estable usa el release activo; los modelos y el estado "
+            "permanecen compartidos fuera de cada release inmutable."
+        )
+        if window._portable_linux
+        else (
+            "La interfaz separa el proceso operativo, el protocolo de progreso "
+            "y la persistencia del runtime versionado."
+        )
     )
     detail.setProperty("muted", True)
     detail.setWordWrap(True)

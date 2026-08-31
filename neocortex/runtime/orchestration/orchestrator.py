@@ -32,7 +32,6 @@ from neocortex.runtime.config.application_config_projections import (
 )
 from neocortex.runtime.control.cancellation import CancellationToken
 from neocortex.safety.corpus_access import CorpusAccessPolicy
-from neocortex.safety.kio_trash import KioTrashBackend
 from neocortex.runtime.control.global_resources import (
     GlobalResourceCoordinator,
     GlobalResourceSummary,
@@ -744,12 +743,6 @@ class FrameworkOrchestrator:
             excluded_paths=excluded_paths,
             exclusion_policy=inventory_policy,
             progress=self.progress,
-            trash_backend=(KioTrashBackend() if self.config.apply_actions else None),
-            trash_self_test_receipt=(
-                state.path.parent / "mutation-backend-kio-self-test.json"
-                if self.config.apply_actions
-                else None
-            ),
         )
         state.set_run_phase(run_id, "actions")
         actions = runner.execute(

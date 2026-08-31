@@ -34,7 +34,28 @@ ejecutable de backup y restauración se mantiene en
 ## Ubicaciones
 
 `neocortex/platform_policy.py` y `app_paths.py` definen la topología canónica
-por usuario. La topología operativa vigente es Linux:
+por usuario. En Windows:
+
+```text
+Fuente:       %USERPROFILE%\Neocortex\Repository
+Runtime:      %LOCALAPPDATA%\Programs\Neocortex\versions\<runtime-id>\venv
+Launcher:     %LOCALAPPDATA%\Programs\Neocortex\bin\Neocortex.exe
+Estado:       %LOCALAPPDATA%\Neocortex\state
+```
+
+La configuración visual está fuera de las bases:
+
+```text
+%LOCALAPPDATA%\Neocortex\ui.ini
+```
+
+La caché predeterminada de FastEmbed está en el directorio hermano:
+
+```text
+%LOCALAPPDATA%\Neocortex\models\fastembed
+```
+
+En Linux:
 
 ```text
 Fuente:        ~/Neocortex/Repository
@@ -45,10 +66,9 @@ Configuración: ${XDG_CONFIG_HOME:-~/.config}/Neocortex
 Modelos:       ${XDG_DATA_HOME:-~/.local/share}/Neocortex/models
 ```
 
-Las rutas y bases Windows/NTFS sólo se conservan como evidencia histórica. No
-se migran identidades NTFS: los originales se incorporan a una raíz Linux y se
-capturan de nuevo con `st_dev`/`st_ino`; `birthtime_ns=-1` es el sentinel cuando
-no existe nacimiento real.
+No migre bases ni identidades NTFS a Linux. Copie únicamente originales y
+construya un estado Linux nuevo; `birthtime_ns=-1` es el sentinel portable
+cuando no existe nacimiento real.
 
 `--state-directory` puede seleccionar otra ubicación para una invocación. No
 mezcle bases de dos directorios de estado ni restaure una sola base sin revisar

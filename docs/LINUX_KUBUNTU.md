@@ -4,7 +4,8 @@ NeoCortex `0.9.0` admite Kubuntu/Ubuntu 26.04 sobre Linux x86-64 con CPython
 3.14 como entorno personal de referencia. Python 3.13 permanece como piso
 sintáctico local. El modo Linux conserva inventario, procesamiento, catálogo,
 búsqueda, Semantic y la interfaz KDE. Linux es la plataforma activa y las
-mutaciones del corpus usan únicamente los backends POSIX/KIO verificados.
+mutaciones del corpus permanecen deshabilitadas hasta que exista un backend
+Linux seguro explícitamente autorizado.
 
 ## Contrato de seguridad
 
@@ -17,10 +18,9 @@ mutaciones del corpus usan únicamente los backends POSIX/KIO verificados.
   árbol con `SIGTERM` y, si es necesario, `SIGKILL`.
 - Un límite de memoria solicitado debe imponerse mediante `RLIMIT_AS` o
   `/usr/bin/prlimit`; si no se puede, NeoCortex se abstiene.
-- `--apply` y `--organization-apply` ejecutan sólo renombres
-  `renameat2(RENAME_NOREPLACE)` y movimientos KIO que superen self-test,
-  revalidación y ledger; sin esos backends la acción se abstiene. No existe un
-  reemplazo inseguro basado en `Path.rename` ni borrado permanente.
+- `--apply` y `--organization-apply` se rechazan antes de crear estado, con
+  código `2` y razón estable `linux_mutation_backend_unavailable`. No existe un
+  reemplazo inseguro basado en `Path.rename`.
 
 ## Rutas XDG
 
@@ -54,7 +54,7 @@ el host de referencia:
 sudo apt install python3.14-venv qpdf tesseract-ocr tesseract-ocr-spa \
   tesseract-ocr-eng tesseract-ocr-deu tesseract-ocr-chi-sim \
   tesseract-ocr-chi-tra tesseract-ocr-osd ffmpeg libreoffice catdoc rsync \
-  desktop-file-utils kde-cli-tools
+  desktop-file-utils
 ```
 
 En Ubuntu, el paquete `catdoc` aporta `catdoc`, `xls2csv` y `catppt`.
@@ -210,9 +210,17 @@ La primera ejecución debe usar una raíz de laboratorio con 20–50 fixtures, u
 sola ruta por vez y un máximo de 10–15 minutos. Compare hashes antes y después;
 nunca use `--apply`, `--organization-apply` ni `--all` en el piloto.
 
-## Estado histórico de Windows
+## Copia futura desde Windows
 
-Las rutas y bases Windows/NTFS sólo se conservan como evidencia histórica; no
-forman parte del runtime Linux ni de la validación vigente. Para incorporar
-originales desde otro sistema, cópielos a una raíz Linux nueva y deje que el
-inventario genere identidades POSIX, sin migrar bases ni identificadores NTFS.
+Cuando exista un volumen o backup Windows montado, copie sólo originales a
+ext4, nunca SQLite ni identidades NTFS. No use `--delete`:
+
+```bash
+rsync -a --info=progress2 /medio/windows/Corpus/ \
+  "$HOME/Documentos/NeoCortex/Corpus/"
+rsync -a --checksum --dry-run /medio/windows/Corpus/ \
+  "$HOME/Documentos/NeoCortex/Corpus/"
+```
+
+El segundo pase debe quedar vacío. Después construya estado Linux nuevo; no
+migre las bases de estado de Windows.

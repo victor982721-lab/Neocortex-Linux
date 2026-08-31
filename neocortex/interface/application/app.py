@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 import multiprocessing
+import os
 import sys
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Any, cast
 
 from neocortex.platform.policy import default_corpus_root
 
@@ -39,6 +42,12 @@ def create_window(arguments: Sequence[str] = ()) -> MainWindow:
     )
 
 
+def _set_windows_application_identity() -> None:
+    if os.name == "nt":
+        windll = cast(Any, ctypes).windll
+        windll.shell32.SetCurrentProcessExplicitAppUserModelID("Neocortex.Desktop")
+
+
 def main(arguments: Sequence[str] | None = None) -> int:
     multiprocessing.freeze_support()
     parsed_arguments = sys.argv[1:] if arguments is None else list(arguments)
@@ -52,6 +61,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
         application = instance
     else:
         raise RuntimeError("A non-GUI Qt application already exists")
+    _set_windows_application_identity()
     application.setApplicationDisplayName("NeoCortex")
     application.setAttribute(
         Qt.ApplicationAttribute.AA_DontShowIconsInMenus,

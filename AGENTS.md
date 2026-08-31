@@ -135,11 +135,11 @@ consistente cuando aplique, preview, autorización inequívoca y verificación.
 La opción --apply sólo se usa para la mutación de corpus expresamente revisada;
 no es necesaria para indexar o buscar.
 
-En Linux, `--apply` y `--organization-apply` sólo pueden mutar mediante los
-backends POSIX/KIO verificados, con self-test, revalidación y ledger; si falta
-una garantía, la acción se abstiene sin fallback permanente. La GUI debe
-mostrar modo portátil Linux y no fingir elevación. Inventario, procesamiento,
-catálogo y búsqueda siguen siendo capacidades de producto.
+En Linux, `--apply` y `--organization-apply` deben rechazarse antes de crear
+estado con código 2 y razón `linux_mutation_backend_unavailable`. La GUI debe
+mostrar modo portátil Linux, no fingir elevación y desactivar sus controles de
+mutación. Inventario, procesamiento, catálogo y búsqueda siguen siendo
+capacidades de producto.
 
 Las pruebas y migraciones se ejecutan en fixtures o copias aisladas, nunca sobre
 el único estado vivo. No transmitas corpus, secretos ni estado a servicios

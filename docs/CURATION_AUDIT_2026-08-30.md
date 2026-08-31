@@ -10,13 +10,13 @@ documentos, propuestas de nombres, planes de organización, `CorpusMutationGuard
 ledger de acciones y recuperación/reconciliación. El runtime publicado es
 Linux-first y el estado real se conserva en SQLite.
 
-La release de código inicial `0.9.0-0903f4403463-cp314-linux-x86_64` quedó
-instalada desde `0903f44034638e309bcb163cd78186ae5a3a79a3`; después, el handoff
-documental se publicó como `0.9.0-2a6c40202a47-cp314-linux-x86_64` desde el SHA
-final `2a6c40202a473d74dfc93694a59b6f910ffcab26`. En ambos cortes
-`release_linux.py verify` pasó y el launcher público superó smoke/replay y apply
-aislados con texto, audio, vídeo, imagen y código. Las releases anteriores se
-conservan para rollback conforme a la política vigente del proyecto.
+La auditoría se ejecutó sobre la rama de trabajo; la release pública vigente
+continúa siendo `0.9.0-bb656793c005-cp314-linux-x86_64`, que conserva el contrato
+Linux de abstención. Los prototipos POSIX/KIO explorados en el árbol de trabajo
+no se promueven ni se exponen como capacidad productiva porque las instrucciones
+vigentes exigen rechazar `--apply`/`--organization-apply` antes de crear estado.
+Las releases anteriores se conservan para rollback conforme a la política
+vigente del proyecto.
 
 ## Mapa requisito → pieza existente
 
@@ -25,7 +25,7 @@ conservan para rollback conforme a la política vigente del proyecto.
 | Inventario e identidad | `deduplication.inventory`, `FileSnapshot`, `CorpusAccessPolicy` | El cursor USN/NTFS sigue mezclado con contratos portables. |
 | Duplicados exactos | `DedupPlanner`, fingerprints y `files_equal_exact` | `DuplicateGroup.keep` es una decisión de planificación, no una disposición semántica. |
 | Renombre/organización | `document_organization_planning`, `FrameworkActions` | El syscall activo depende de `windows_handle_mutation`; Linux se abstiene. |
-| Papelera reversible | `safety.kio_trash`, ledger y reconciliación de `workflow/actions` | KIO ya está implementado; la integración real se limita a archivos regulares y deja directorios en revisión. |
+| Papelera reversible | ledger y reconciliación de `workflow/actions` | No existe un backend KIO productivo mientras rija la abstención Linux; la estrategia KIO queda como diseño futuro. |
 | Zero-byte | `_trash_empty_files` | La política actual `size=0;policy=trash-all-empty` autoriza demasiado. |
 | Tipo físico/funcional | `platform.content_types`, extractores y taxonomía | Falta una proyección explícita por capas. |
 | Nombres recuperados | `documents.document_naming` | Hay heurísticas útiles, pero no una propuesta ligada a evidencia y colisiones para curación. |
@@ -45,13 +45,12 @@ consumidores productivos importan directamente el adaptador Win32:
 orquestador también conserva el cursor USN aunque en Linux siempre termina en
 inventario portable.
 
-Estas piezas son deuda histórica, no requisitos del flujo Linux. La primera
-reducción segura es retirar sus imports del runtime, sustituir el punto único de
-mutación por contratos POSIX/KIO y dejar los módulos históricos fuera del wheel y
-de los gates Linux hasta una limpieza posterior. Borrar el árbol NTFS completo en
-el mismo cambio no es seguro: todavía hay modelos de cursor, migraciones y tests
-que lo referencian, y una eliminación masiva rompería estado histórico sin un
-adaptador de lectura.
+Estas piezas son deuda histórica, no requisitos del flujo Linux. La reducción
+segura aplicada en este corte elimina la capa activa de Job Objects para workers
+y limita el sdist a herramientas Linux, pero conserva adaptadores Windows/NTFS
+históricos sin cargarlos en el runtime. Retirar también los modelos de cursor,
+migraciones y tests requiere una campaña separada de compatibilidad de lectura;
+no se borra de forma masiva en este lote.
 
 ## Contrato propuesto para P0
 
@@ -63,12 +62,12 @@ adaptador de lectura.
    `kioclient`; self-test opt-in con fixture tokenizado, enumeración real de
    `trash:/`, restauración y SHA-256. El backend se clasifica
    `reversible_path_bound`, nunca `identity_bound`.
-3. `FrameworkActions` y organización consumen ambos contratos; el ledger se
-   marca antes de cruzar el frontier y queda `recovery_required` si la
-   confirmación falla.
-4. `--apply`/`--organization-apply` dejan de rechazarse globalmente en Linux,
-   pero exigen todos los fences existentes, backend disponible y revalidación
-   inmediata. Los archivos vacíos pasan a `REVIEW`/skip por defecto.
+3. Si la política de plataforma se autoriza en el futuro, `FrameworkActions` y
+   organización podrán consumir ambos contratos; el ledger se marca antes del
+   frontier y queda `recovery_required` si la confirmación falla.
+4. El runtime actual mantiene `--apply`/`--organization-apply` bloqueados en
+   Linux antes de crear estado; los archivos vacíos deben pasar a `REVIEW` antes
+   de habilitar cualquier backend.
 
 ## Estados y receipts
 
@@ -97,18 +96,17 @@ MyPy focal, `compileall`, smoke público y replay desde la release instalada.
 
 ## Estado del paquete mínimo
 
-El paquete P0 quedó implementado en el checkout: `posix_mutation.py`,
-`kio_trash.py`, integración de acciones/organización, habilitación Linux en la
-CLI/GUI y política zero-byte en revisión. El self-test KIO real del host
-`kioclient5 6.6.4` pasó y se añadió una prueba local opt-in; P1–P4 continúan
-pendientes y no se simulan como entregados.
+P0 queda **bloqueado por política**, no entregado: la menor modificación futura
+sería el adaptador POSIX/KIO descrito arriba, pero el contrato vigente no permite
+exponerla ni ejecutar mutaciones Linux. La simplificación efectiva de este corte
+retira la supervisión Windows de workers y mantiene el producto en modo
+Linux/read-only; P1–P4 continúan pendientes y no se simulan como entregados.
 
 ## Paquete mínimo recomendado
 
-La menor modificación arquitectónicamente correcta que habilita mutaciones Linux
-sin debilitar invariantes es **P0 acotado**: un único adaptador POSIX para
-renombre no-replace, un adaptador KIO separado y la conexión de ambos a los dos
-consumidores existentes, manteniendo intactos el guard, el ledger, la
-revalidación y la reconciliación. No hace falta crear todavía `neocortex/curation`
-ni duplicar el inventario; P1–P4 deben consumir este contrato después de que la
-frontera de mutación esté probada.
+La menor modificación arquitectónicamente correcta para habilitar mutaciones
+Linux, si la política superior cambiara, seguiría siendo **P0 acotado**: un
+adaptador POSIX no-replace y un adaptador KIO separados, conectados a los dos
+consumidores existentes y manteniendo intactos guard, ledger, revalidación y
+reconciliación. Bajo la política actual esa modificación no puede promoverse;
+por ahora no se crea `neocortex/curation` ni se ejecuta `curate --apply`.

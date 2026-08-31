@@ -781,18 +781,24 @@ Neocortex --root $Root --route pdf --MaxCount 25 --strict-exit-codes
 
 ## Operaciones que requieren autorización explícita
 
-`--apply` y `--organization-apply` habilitan únicamente las mutaciones Linux
-que superan el guard de corpus, la revalidación y el ledger. Los rename de
-extensión y movimientos de organización usan
-`renameat2(RENAME_NOREPLACE)` en la misma unidad, sobre archivos regulares de un
-solo hard-link, padres sin symlink y destinos ausentes; los casos restantes se
-abstienen.
+Esta sección describe exclusivamente el backend seguro de Windows. En Linux,
+`--apply` y `--organization-apply` se rechazan antes de validar la raíz o crear
+estado con código `2` y razón estable
+`linux_mutation_backend_unavailable`. Inventario, procesamiento, catálogo y
+búsqueda permanecen disponibles; no se usa `Path.rename` como sustituto.
 
-Los candidatos de Papelera (duplicados y otros artefactos admitidos) usan KIO
-después de un self-test real. El receipt declara `reversible_path_bound`; si el
-cliente no existe o la entrada no puede confirmarse, la acción queda `skipped` o
-`recovery_required`. Nunca se degrada a `Path.rename`, `gio trash` o borrado
-permanente, y los archivos vacíos permanecen en revisión.
+`--apply` permite que una corrida integrada ejecute únicamente las mutaciones
+que satisfacen el contrato físico de `0.9.0`. Los rename de extensión y los
+movimientos de organización requieren NTFS local, mismo volumen, archivo
+regular con un único hard link, ausencia de reparse y operación ligada a handles
+retenidos con *no-replace*. UNC, otros filesystems, directorios, múltiples hard
+links y movimientos entre volúmenes se abstienen.
+
+Los candidatos de Papelera (duplicados, vacíos y PDF irrecuperables) se siguen
+planeando en dry-run, pero su aplicación está deshabilitada porque la API
+disponible opera por ruta. Con `--apply` terminan `skipped` con evidencia de
+abstención; no se invoca `Send2Trash`. No hay flag para degradar a la operación
+path-bound.
 
 La organización persistida dispone además de una autorización directa distinta:
 

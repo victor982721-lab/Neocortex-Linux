@@ -41,8 +41,8 @@ def _policy(tmp_path: Path) -> PlatformPolicy:
         path_collation="BINARY",
         containment_backend="posix-session-process-group-rlimit",
         elevation="not-required",
-        mutation_backend="posix-renameat2+kio-trash",
-        mutation_available=True,
+        mutation_backend="intentionally-unavailable",
+        mutation_available=False,
         compatible=True,
     )
 

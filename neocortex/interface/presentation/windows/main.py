@@ -43,6 +43,7 @@ from PySide6.QtWidgets import (
 from neocortex.runtime.config.app_paths import default_ui_settings_path
 
 from ...application.controller import WorkerController
+from ...application.elevation import is_elevated, start_elevated_ui
 from ...application.request import ROUTE_ORDER, RunRequest
 from ...read.client import SharedReadClient
 from ...read.models import (
@@ -143,6 +144,8 @@ class MainWindow(QMainWindow):
             QSettings.Format.IniFormat,
         )
         self._repository = StatusRepository(self._state_directory)
+        self._portable_linux = os.name != "nt"
+        self._execution_elevated = is_elevated()
         self._controller = controller or WorkerController(self)
         self._read_client = read_client or SharedReadClient()
         self._read_tasks = ReadTaskController(self._read_client, self)
@@ -204,7 +207,7 @@ class MainWindow(QMainWindow):
         names.setSpacing(0)
         name = QLabel("NEOCORTEX")
         name.setObjectName("BrandName")
-        caption = QLabel("Modo Linux")
+        caption = QLabel("Modo portátil Linux" if self._portable_linux else "Control operativo")
         caption.setObjectName("BrandCaption")
         names.addWidget(name)
         names.addWidget(caption)
@@ -674,13 +677,18 @@ class MainWindow(QMainWindow):
         route_only = bool(self.scope_combo.currentData())
         if route_only:
             self.analysis_radio.setChecked(True)
-        self.apply_radio.setEnabled(not route_only and not self._controller.is_running)
+        self.apply_radio.setEnabled(
+            not self._portable_linux and not route_only and not self._controller.is_running
+        )
 
     def _start_execution(self) -> None:
         try:
             request = self._current_request()
         except (ValueError, OSError) as exc:
             QMessageBox.warning(self, "Configuración no válida", str(exc))
+            return
+        if not self._portable_linux and not self._execution_elevated:
+            self._offer_elevated_restart(request.root)
             return
         if request.apply:
             routes = ", ".join(request.routes) or "mantenimiento común"
@@ -712,6 +720,31 @@ class MainWindow(QMainWindow):
             "Worker iniciado; esperando el primer evento del motor.",
             indeterminate=True,
         )
+
+    def _offer_elevated_restart(self, root: Path) -> None:
+        answer = QMessageBox.information(
+            self,
+            "Permiso requerido para ejecutar",
+            "Windows exige privilegios administrativos para consultar el diario USN "
+            "del volumen. La interfaz se reabrirá con esos permisos; ninguna ejecución "
+            "se iniciará automáticamente.\n\n¿Deseas continuar?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self._save_settings()
+        try:
+            process_id = start_elevated_ui(root)
+        except OSError as exc:
+            QMessageBox.critical(
+                self,
+                "No fue posible obtener permisos",
+                str(exc),
+            )
+            return
+        self._append_log(f"UI elevada iniciada · PID {process_id}")
+        self.close()
 
     def _request_cancellation(self) -> None:
         if self._controller.request_cancellation():
@@ -900,7 +933,9 @@ class MainWindow(QMainWindow):
         self.root_edit.setEnabled(not running)
         self.scope_combo.setEnabled(not running)
         self.analysis_radio.setEnabled(not running)
-        self.apply_radio.setEnabled(not running and not bool(self.scope_combo.currentData()))
+        self.apply_radio.setEnabled(
+            not self._portable_linux and not running and not bool(self.scope_combo.currentData())
+        )
         for toggle in self.route_toggles.values():
             toggle.setEnabled(not running)
 
@@ -968,9 +1003,17 @@ class MainWindow(QMainWindow):
 
     def _dependency_specs(self) -> tuple[tuple[str, bool, str], ...]:
         platform_dependency = (
-            "Modo de plataforma",
-            True,
-            "Linux · renameat2 y KIO con verificación",
+            (
+                "Modo de plataforma",
+                True,
+                "Portátil Linux · mutaciones deshabilitadas",
+            )
+            if self._portable_linux
+            else (
+                "Permisos USN",
+                self._execution_elevated,
+                "Administrador" if self._execution_elevated else "Se solicitarán antes de ejecutar",
+            )
         )
         return (
             platform_dependency,

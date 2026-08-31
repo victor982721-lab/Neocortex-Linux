@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from neocortex.runtime.orchestration.route_selection import (
@@ -29,7 +30,8 @@ class UiRunRequestTests(unittest.TestCase):
                 apply=True,
             )
 
-            arguments = request.cli_arguments()
+            with patch("neocortex.interface.application.request.os.name", "nt"):
+                arguments = request.cli_arguments()
 
             self.assertNotIn("--all", arguments)
             self.assertIn("--apply", arguments)
@@ -95,15 +97,18 @@ class UiRunRequestTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "siempre no destructiva"):
                 request.validated()
 
-    def test_linux_accepts_apply_for_the_verified_backend(self) -> None:
+    def test_linux_rejects_apply_before_starting_a_worker(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             request = RunRequest(
                 root=Path(directory),
                 routes=("pdf",),
                 apply=True,
             )
-            validated = request.validated()
-            self.assertTrue(validated.apply)
+            with (
+                patch("neocortex.interface.application.request.os.name", "posix"),
+                self.assertRaisesRegex(ValueError, "linux_mutation_backend_unavailable"),
+            ):
+                request.validated()
 
 
 if __name__ == "__main__":

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -51,6 +52,10 @@ class RunRequest:
             raise ValueError("La ejecución aislada requiere al menos una ruta")
         if self.route_only and self.apply:
             raise ValueError("La ejecución aislada es siempre no destructiva; desactiva Apply")
+        if os.name != "nt" and self.apply:
+            raise ValueError(
+                "linux_mutation_backend_unavailable: el modo Apply no está disponible en Linux"
+            )
 
     def cli_arguments(self) -> list[str]:
         request = self.validated()

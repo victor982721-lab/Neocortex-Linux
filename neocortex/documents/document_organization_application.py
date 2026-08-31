@@ -56,7 +56,7 @@ from .document_organization_planning import (
 )
 from neocortex.safety.internal_paths import InternalPathProtectionError
 from neocortex.safety.protected_content import ProtectedContentError
-from neocortex.safety.posix_mutation import (
+from neocortex.safety.windows_handle_mutation import (
     IdentityBoundMutationError,
     MutationEffectUncertainError,
     UnsupportedIdentityBoundMutation,
@@ -1064,7 +1064,7 @@ def _move_organization_source(
     except FileExistsError:
         return "blocked", "destination appeared while applying the move"
     except UnsupportedIdentityBoundMutation as exc:
-        return "blocked", f"POSIX no-replace move unavailable: {exc}"
+        return "blocked", f"identity-bound move unavailable: {exc}"
     except MutationEffectUncertainError as exc:
         return "recovery_required", str(exc)
     except IdentityBoundMutationError as exc:
@@ -1087,7 +1087,7 @@ def _move_organization_source(
         )
     return (
         "moved",
-        "POSIX no-replace move confirmed without replacement "
+        "identity-bound move confirmed without replacement "
         f"(volume_id={receipt.volume_id}, file_id={receipt.file_id})",
     )
 

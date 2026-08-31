@@ -71,9 +71,11 @@ artefacto ya descargado en un flujo offline; no relaja la autenticación.
 
 3. Confirme la raíz exacta y que no sea un symlink, junction o punto de
    reanálisis.
-4. El recorrido portable funciona sin USN. Las implementaciones MFT/USN de
-   Windows quedan sólo como código histórico y no se usan para una corrida
-   Linux; mantenga la raíz POSIX y sus identidades `st_dev`/`st_ino`.
+4. El recorrido portable funciona sin USN. Para probar su acelerador opcional,
+   use un volumen NTFS local y los permisos de lectura ya disponibles; no eleve
+   la corrida cotidiana sólo para habilitarlo. Las rutas UNC y otros sistemas de
+   archivos no ofrecen identidad/USN equivalentes, pero sí pueden usar el
+   baseline portable si cumplen el resto de las protecciones de la raíz.
 5. Antes de una actualización, migración o acción sobre archivos, siga
    [RECOVERY.md](RECOVERY.md).
 
@@ -483,12 +485,15 @@ Si se interrumpió una operación autorizada sobre archivos, **no la repita
 automáticamente**. Siga la sección de acciones inciertas de
 [RECOVERY.md](RECOVERY.md).
 
-En `0.9.0`, los rename y movimientos locales admitidos usan
-`renameat2(RENAME_NOREPLACE)` para archivos regulares con un hard link, misma
-unidad, padres sin symlink y destino ausente. Los demás casos se abstienen.
-Los candidatos de Papelera pasan por un self-test de KIO y una revalidación
-inmediata; el receipt conserva la entrada observada en `trash:/` y no se usa
-ningún fallback permanente. Un cambio incierto queda `recovery_required`.
+En `0.9.0`, los rename y movimientos admitidos son únicamente de archivos
+regulares con un hard link en NTFS local y mismo volumen, mediante handles
+retenidos y sin reemplazo. Los demás casos se abstienen. La aplicación de
+candidatos de Papelera está deshabilitada; el dry-run continúa registrando el
+plan y un `--apply` los marca `skipped` sin llamar a `Send2Trash`.
+
+Linux no expone aún ese backend de mutación. `--apply` y
+`--organization-apply` se rechazan antes de crear estado con salida `2` y razón
+`linux_mutation_backend_unavailable`.
 
 ## Diagnóstico operativo
 

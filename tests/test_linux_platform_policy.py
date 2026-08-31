@@ -90,8 +90,7 @@ def test_linux_policy_uses_xdg_roots_and_safe_documents_file(tmp_path: Path) -> 
     assert policy.user_alias == home / ".local" / "bin" / "Neocortex"
     assert policy.inventory_backend == "portable-full-scan"
     assert policy.path_collation == "BINARY"
-    assert policy.mutation_available is True
-    assert policy.mutation_backend == "posix-renameat2+kio-trash"
+    assert policy.mutation_available is False
 
 
 def test_windows_policy_preserves_profile_and_localappdata_contract(tmp_path: Path) -> None:
@@ -187,9 +186,9 @@ def test_linux_inventory_preserves_case_and_accents_and_skips_symlinks(tmp_path:
     assert scan.skipped_links == 1
 
 
-@pytest.mark.skipif(os.name == "nt", reason="Linux mutation contract")
+@pytest.mark.skipif(os.name == "nt", reason="Linux mutation abstention contract")
 @pytest.mark.parametrize("flag", ("--apply", "--organization-apply"))
-def test_linux_mutation_flags_are_accepted_by_argument_validation(
+def test_linux_mutation_abstains_with_exit_two_before_state(
     tmp_path: Path,
     flag: str,
     capsys: pytest.CaptureFixture[str],
@@ -200,12 +199,11 @@ def test_linux_mutation_flags_are_accepted_by_argument_validation(
     arguments = ["--root", str(root), "--state-directory", str(state), "--route", "none", flag]
     if flag == "--organization-apply":
         arguments.extend(("--organization-root", str(root / "organized")))
-    from neocortex.api.cli.cli_parser import build_parser
-    from neocortex.api.cli.cli_validation import validate_arguments
-
-    args = build_parser().parse_args(arguments)
-    validate_arguments(args)
-    assert capsys.readouterr().err == ""
+    with pytest.raises(SystemExit) as raised:
+        main(arguments)
+    assert raised.value.code == 2
+    assert LINUX_MUTATION_REASON in capsys.readouterr().err
+    assert not state.exists()
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Linux mutation abstention contract")

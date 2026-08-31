@@ -29,9 +29,9 @@ observado y la siguiente acción única, está en el
 
 Esta precaución aplica al arranque y diagnóstico, no elimina la experiencia
 simple buscada. El flujo cotidiano vigente es `Neocortex --all` en Linux:
-inventario, procesamiento y búsqueda están disponibles, mientras que
-`--apply` y `--organization-apply` sólo ejecutan acciones después de superar los
-fences POSIX/KIO descritos en [Kubuntu/Linux](docs/LINUX_KUBUNTU.md).
+inventario, procesamiento y búsqueda están disponibles, pero `--apply` y
+`--organization-apply` se abstienen deliberadamente hasta que exista un backend
+ext4 con garantías equivalentes.
 
 `--all` ejecuta el flujo documental y no consulta ni produce evidencia de
 autoanálisis del repositorio. Si la raíz documental no es utilizable, la etapa
@@ -619,17 +619,17 @@ y segunda corrida incremental.
 ## Uso seguro
 
 `--apply` y `--organization-apply` son autorizaciones explícitas para mutar
-archivos; no son necesarias para indexar o buscar. En Linux, los renombres y
-movimientos locales usan `renameat2(RENAME_NOREPLACE)`, con directorios abiertos,
-misma unidad, archivo regular de un solo hard-link y verificación de identidad,
-tamaño y mtime antes y después. Si el syscall no está disponible, la acción se
-abstiene; nunca cae a `Path.rename` ni reemplaza un destino.
+archivos; no son necesarias para indexar o buscar. En `0.9.0`, rename y
+organización sólo operan sobre un archivo regular con un único hard link, en
+NTFS local y en el mismo volumen, mediante handles retenidos y semántica
+*no-replace*. Rutas UNC, otros filesystems, reparses, directorios y movimientos
+entre volúmenes provocan abstención. La planeación en seco conserva candidatos
+de Papelera, pero la aplicación por ruta está deshabilitada y se registra como
+`skipped`; `Send2Trash` ya no es una dependencia.
 
-Los candidatos de Papelera usan KIO (`kioclient6`, `kioclient5` o `kioclient`)
-únicamente después de un self-test real y una revalidación inmediata. El receipt
-los clasifica `reversible_path_bound`, no `identity_bound`; una ausencia o una
-entrada ambigua deja la acción en `recovery_required`. Los archivos de cero bytes
-quedan en revisión y no se envían a la Papelera sólo por su tamaño.
+En Linux ambas autorizaciones se rechazan antes de crear estado, con código `2`
+y razón `linux_mutation_backend_unavailable`. No se degrada el contrato NTFS a
+una operación basada sólo en rutas.
 
 Una acción que cruzó la frontera de mutación sin poder confirmar el registro
 queda `recovery_required` y nunca se repite automáticamente. `status` sólo

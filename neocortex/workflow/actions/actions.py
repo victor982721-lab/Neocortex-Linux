@@ -48,14 +48,8 @@ from neocortex.safety.internal_paths import InternalPathProtectionError
 from neocortex.runtime.models import ActionSummary
 from neocortex.safety.protected_content import ProtectedContentError
 from neocortex.persistence.framework_state_writer import FrameworkState
-from neocortex.safety.kio_trash import (
-    KioTrashBackend,
-    KioTrashEffectUncertain,
-    KioTrashError,
-    UnsupportedKioTrash,
-)
-from neocortex.safety.posix_mutation import (
-    PosixRenameReceipt,
+from neocortex.safety.windows_handle_mutation import (
+    IdentityBoundRenameReceipt,
     UnsupportedIdentityBoundMutation,
     rename_no_replace_by_identity,
 )
@@ -96,8 +90,6 @@ class FrameworkActions:
         excluded_paths: Iterable[str | Path] = DEFAULT_EXCLUDED_PATHS,
         exclusion_policy: InventoryExclusionPolicy | None = None,
         progress: ProgressCallback | None = None,
-        trash_backend: KioTrashBackend | None = None,
-        trash_self_test_receipt: Path | None = None,
     ):
         self._index = index
         self._state = state
@@ -111,9 +103,6 @@ class FrameworkActions:
             excluded_paths
         )
         self._progress = progress
-        self._trash_backend = trash_backend
-        self._trash_self_test_receipt = trash_self_test_receipt
-        self._trash_self_test_done = False
 
     def execute(self, plan: DedupPlan, *, cleanup_empty_directories: bool = True) -> ActionSummary:
         self._validate_apply_root()
@@ -392,72 +381,17 @@ class FrameworkActions:
         preflight_failures += revalidation_failures
         if not ready:
             return 0, preflight_failures, protected
-        if self._trash_backend is None or action_type == "trash_empty_directory":
-            detail = (
-                TRASH_IDENTITY_ABSTENTION
-                if self._trash_backend is None
-                else "KIO directory trash is deferred; only regular files are supported"
-            )
-            self._state.finish_file_actions(
-                (candidate[0] for candidate in ready),
-                "skipped",
-                detail,
-            )
-            return 0, preflight_failures, protected + len(ready)
-
-        applied = 0
-        failed = preflight_failures
-        for action_id, path, planned, _reference, _current_stat in ready:
-            if planned is None:
-                self._state.finish_file_action(
-                    action_id,
-                    "failed",
-                    "trash candidate has no expected snapshot",
-                )
-                failed += 1
-                continue
-            try:
-                if not self._trash_self_test_done:
-                    self._trash_backend.ensure_self_test(
-                        parent=Path(path).parent,
-                        receipt_path=self._trash_self_test_receipt,
-                    )
-                    self._trash_self_test_done = True
-                self._state.mark_file_actions_applying(
-                    (
-                        (
-                            action_id,
-                            expected_identity_json(
-                                planned,
-                                source_path=path,
-                                target_path=None,
-                            ),
-                        ),
-                    )
-                )
-                receipt = self._trash_backend.move_to_trash(
-                    Path(path),
-                    planned,
-                    before_native_call=lambda: None,
-                )
-                self._state.confirm_file_actions_applied(
-                    ((action_id, receipt.as_json()),)
-                )
-                self._index.apply_reconciliation(
-                    self._scan_id,
-                    remove_paths=(path,),
-                )
-                applied += 1
-            except UnsupportedKioTrash as exc:
-                self._state.finish_file_action(action_id, "skipped", str(exc))
-                protected += 1
-            except KioTrashEffectUncertain as exc:
-                self._best_effort_require_recovery((action_id,), str(exc), exc)
-                failed += 1
-            except KioTrashError as exc:
-                self._state.finish_file_action(action_id, "failed", str(exc))
-                failed += 1
-        return applied, failed, protected
+        # Send2Trash accepts paths only. Revalidation cannot prevent another
+        # process from replacing the directory entry before its syscall, so
+        # destructive mode fails closed until a handle-bound Recycle Bin
+        # primitive is available and tested.  The frontier pass above remains
+        # mandatory so a future backend cannot bypass the TOCTOU contract.
+        self._state.finish_file_actions(
+            (candidate[0] for candidate in ready),
+            "skipped",
+            TRASH_IDENTITY_ABSTENTION,
+        )
+        return 0, preflight_failures, protected + len(ready)
 
     def _best_effort_require_recovery(
         self,
@@ -760,8 +694,6 @@ class FrameworkActions:
         return bool(original_birthtime == current_birthtime)
 
     def _trash_empty_files(self, plan: DedupPlan, summary: ActionSummary) -> ActionSummary:
-        """Keep zero-byte files in review; size alone never authorizes trash."""
-
         candidates = self._index.file_count_by_size(plan.scan_id, 0)
         if not candidates:
             return summary
@@ -780,55 +712,25 @@ class FrameworkActions:
                 "archivos",
             ),
         )
+        pending: list[tuple[str, str, FileSnapshot]] = []
         completed = 0
         with DedupIndex(self._index.path) as read_index:
             for snapshot in read_index.snapshots_by_size(plan.scan_id, 0):
-                if self._apply:
-                    try:
-                        self._validate_trash_candidate(
-                            "trash_empty_file",
-                            snapshot.path,
-                            snapshot,
-                            None,
-                        )
-                    except (InternalPathProtectionError, ProtectedAnalysisRootError):
-                        raise
-                    except (OSError, RuntimeError) as exc:
-                        action_id = self._state.begin_file_action(
-                            self._run_id,
-                            "trash_empty_file",
-                            snapshot.path,
-                            None,
-                            "application/octet-stream",
-                            "size=0;policy=review",
-                            self._apply,
-                        )
-                        self._state.finish_file_action(action_id, "failed", str(exc))
-                        summary = replace(
-                            summary,
-                            duplicate_skips=summary.duplicate_skips + 1,
-                            errors=summary.errors + 1,
-                        )
-                        completed += 1
-                        continue
-                action_id = self._state.begin_file_action(
-                    self._run_id,
+                pending.append((snapshot.path, "size=0;policy=trash-all-empty", snapshot))
+                if len(pending) < TRASH_BATCH_SIZE:
+                    continue
+                applied, failed, protected = self._apply_trash_batch(
                     "trash_empty_file",
-                    snapshot.path,
-                    None,
-                    "application/octet-stream",
-                    "size=0;policy=review",
-                    self._apply,
+                    tuple((path, evidence) for path, evidence, _snapshot in pending),
+                    expected_snapshots=tuple(snapshot for _path, _evidence, snapshot in pending),
                 )
-                self._state.finish_file_action(
-                    action_id,
-                    "skipped",
-                    "size=0;policy=review;human evidence required",
-                )
-                completed += 1
+                completed += len(pending)
+                pending.clear()
                 summary = replace(
                     summary,
-                    duplicate_skips=summary.duplicate_skips + 1,
+                    duplicates_trashed=summary.duplicates_trashed + applied,
+                    duplicate_skips=summary.duplicate_skips + failed + protected,
+                    errors=summary.errors + failed,
                 )
                 emit_progress(
                     self._progress,
@@ -841,6 +743,19 @@ class FrameworkActions:
                         "archivos",
                     ),
                 )
+        if pending:
+            applied, failed, protected = self._apply_trash_batch(
+                "trash_empty_file",
+                tuple((path, evidence) for path, evidence, _snapshot in pending),
+                expected_snapshots=tuple(snapshot for _path, _evidence, snapshot in pending),
+            )
+            completed += len(pending)
+            summary = replace(
+                summary,
+                duplicates_trashed=summary.duplicates_trashed + applied,
+                duplicate_skips=summary.duplicate_skips + failed + protected,
+                errors=summary.errors + failed,
+            )
         emit_progress(
             self._progress,
             ProgressEvent(
@@ -1341,7 +1256,7 @@ class FrameworkActions:
 
     @staticmethod
     def _validate_rename_receipt(
-        receipt: PosixRenameReceipt,
+        receipt: IdentityBoundRenameReceipt,
         source: Path,
         target: Path,
         frontier_snapshot: FileSnapshot,
@@ -1352,8 +1267,7 @@ class FrameworkActions:
             or _path_key(receipt.destination_path) != _path_key(target)
             or _path_key(renamed.path) != _path_key(target)
             or (receipt.volume_id, receipt.file_id) != frontier_snapshot.identity
-            or receipt.file_system != "POSIX"
-            or receipt.guarantee != "verified_no_replace"
+            or receipt.file_system != "NTFS"
             or receipt.link_count != 1
             or not _same_snapshot(frontier_snapshot, renamed)
         ):
@@ -1385,7 +1299,7 @@ class FrameworkActions:
         )
         progress.effect_confirmed = True
 
-    def _apply_posix_rename(
+    def _apply_identity_bound_rename(
         self,
         *,
         action_id: int,
@@ -1482,7 +1396,7 @@ class FrameworkActions:
             return summary
         progress = _RenameProgress()
         try:
-            self._apply_posix_rename(
+            self._apply_identity_bound_rename(
                 action_id=action_id,
                 planned=planned,
                 source=source,

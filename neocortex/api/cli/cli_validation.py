@@ -4,6 +4,8 @@ from __future__ import annotations
 import argparse
 import math
 
+from neocortex.platform.policy import LINUX_MUTATION_REASON, linux_mutation_requested
+
 from .cli_audio_surface import (
     validate_audio_arguments,
     validate_audio_direct_operation,
@@ -640,6 +642,13 @@ def validate_arguments(args: argparse.Namespace) -> None:
     validate_platform_arguments(args)
     validate_models_arguments(args)
     _validate_direct_operations(args)
+    if linux_mutation_requested(
+        apply=bool(getattr(args, "apply", False)),
+        organization_apply=bool(getattr(args, "organization_apply", False)),
+    ):
+        raise SystemExit(
+            f"{LINUX_MUTATION_REASON}: corpus mutation is intentionally unavailable on Linux"
+        )
     _validate_route_only(args)
 
 
