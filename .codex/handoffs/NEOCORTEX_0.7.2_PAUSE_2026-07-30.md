@@ -1,6 +1,6 @@
 # NeoCortex — handoff operativo vigente
 
-> Actualizado: 2026-08-30 23:18 CST. El basename es histórico y permanece estable.
+> Actualizado: 2026-08-30 23:38 CST. El basename es histórico y permanece estable.
 > `~/.codex/PENDIENTES.md` conserva el compromiso operativo; este archivo
 > describe sólo la frontera técnica de reanudación.
 
@@ -14,8 +14,9 @@ La simplificación física de `neocortex/code` quedó reconciliada sin wrappers 
 el primer paquete de curación Linux ya está integrado: `renameat2(RENAME_NOREPLACE)`
 para renombres locales, KIO con self-test/receipt para Papelera, Apply Linux
 habilitado, zero-byte en revisión y GUI sin controles de mutación deshabilitados.
-La release activa `0.9.0-0903f4403463-cp314-linux-x86_64` apunta al commit
-`0903f44034638e309bcb163cd78186ae5a3a79a3`; las releases anteriores se
+La release activa `0.9.0-fc5b1e9b815a-cp314-linux-x86_64` apunta al commit
+`fc5b1e9b815ae04ba42a83a3e084bb75af14fd76`; los commits de código y documentación
+anteriores quedaron ligados por deltas docs-only, y las releases anteriores se
 conservan para rollback conforme a la política vigente.
 
 Las proyecciones Semantic mutables tienen un scrub explícito y probado para
