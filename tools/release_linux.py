@@ -1829,7 +1829,14 @@ def install_release(
                 # workspace, so restore the workspace directory's write bit
                 # after hardening the release tree itself.
                 candidate_root.parent.chmod(0o700)
+                # POSIX rename also requires the source directory itself to
+                # be writable.  Move the validated candidate with a private
+                # mode, then re-apply immutability at its final pathname
+                # before it can become current.
+                candidate_root.chmod(0o755)
                 os.replace(candidate_root, final_release)
+                _make_immutable(final_release)
+                _require_immutable(final_release)
                 _fsync_directory(layout.releases)
 
         release_artifacts = {
